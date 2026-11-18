@@ -131,6 +131,7 @@ func TestWireGoogleSyncers_GlobalTogglesGateEachKind(t *testing.T) {
 // keeps a healthy one from getting its client.
 func TestBuildAtlassianClients_StatusWriter(t *testing.T) {
 	cfg := wiringTestConfig(t)
+	t.Setenv("WATCHTOWER_JIRA_CLIENT_ID", "test-client") // a build that has an Atlassian client
 	database := db.OpenTestDB(t)
 	create := func(cloudID, label string, token bool) int64 {
 		id, err := database.CreateJiraAccount(db.JiraAccount{CloudID: cloudID, Label: label})

@@ -306,6 +306,9 @@ func refreshTokenAt(ctx context.Context, cfg JiraOAuthConfig, refreshToken, toke
 		if isInvalidGrant(respBody) {
 			return nil, fmt.Errorf("%w: %s", ErrAuthRevoked, respBody)
 		}
+		if isClientRejected(respBody) {
+			return nil, fmt.Errorf("%w (%d): %s", ErrClientRejected, resp.StatusCode, respBody)
+		}
 		return nil, fmt.Errorf("refresh token failed (%d): %s", resp.StatusCode, respBody)
 	}
 

@@ -19,7 +19,7 @@ const (
 
 // CheckDeletedIssues removes the issues Jira no longer has, at most once per
 // deletionCheckEvery per project. It returns how many rows were removed.
-// ErrAuthRevoked is returned as is; any other per-project failure (a listing
+// ErrAuthRevoked and ErrClientRejected are returned as is; any other per-project failure (a listing
 // error, an incomplete listing, a failed lookup) is logged and the project is
 // retried after deletionRetryAfter. A project with no completed sync yet is
 // not stamped and is looked at again on the next call.
@@ -62,7 +62,7 @@ func (s *Syncer) CheckDeletedIssues(ctx context.Context, now time.Time) (removed
 		n, done, err := s.checkProjectDeletions(ctx, project, boardsOf[project], now)
 		removed += n
 		switch {
-		case errors.Is(err, ErrAuthRevoked):
+		case accountLost(err):
 			return removed, err
 		case err != nil:
 			s.logger.Printf("jira deletions: account %d project %s: %v, retrying in %s",
@@ -160,7 +160,7 @@ func (s *Syncer) checkProjectDeletions(ctx context.Context, project string, boar
 	var confirmErr error
 	for _, key := range missing {
 		current, err := s.client.issueCurrentKey(ctx, key)
-		if errors.Is(err, ErrAuthRevoked) {
+		if accountLost(err) {
 			return 0, false, err
 		}
 		if err != nil {

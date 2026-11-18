@@ -95,7 +95,7 @@ func TestJiraLoginDuringPurge_Refused(t *testing.T) {
 
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
-	_, err = connectJiraAccount(cmd, cfg, database, id, &jira.OAuthToken{AccessToken: "new"},
+	_, err = connectJiraAccount(cmd, cfg, database, id, jira.JiraOAuthConfig{}, false, &jira.OAuthToken{AccessToken: "new"},
 		jira.CloudResource{ID: "c1", URL: "https://acme.example.com", Name: "acme"}, false)
 	require.ErrorIs(t, err, errLoginDuringPurge)
 	assert.False(t, jira.NewTokenStore(cfg.WorkspaceDir(), id).Exists())

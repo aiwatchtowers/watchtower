@@ -256,10 +256,21 @@ type clientSource string // "company", "account_file", "env", "baked"
 var errUnknownCompany = errors.New("no stored company")
 var errNoOAuthClient = errors.New("no OAuth client configured")
 func resolveJiraOAuthConfigForCompany(workspaceDir, slug string) (jira.JiraOAuthConfig, clientSource, error)
-func resolveJiraOAuthConfigForAccount(cfg *config.Config, database *db.DB, accountID int64) (jira.JiraOAuthConfig, clientSource, error)
+// as built (Task 7a): every call site already holds the row, and the tools' client factory has no DB handle
+func resolveJiraOAuthConfigForAccount(workspaceDir string, account db.JiraAccount) (jira.JiraOAuthConfig, clientSource, error)
+var errClientChanged = errors.New("your company changed its Atlassian app — sign in again") // tied account: bundle client id != the account file's
+func jiraLoginOAuthConfig(workspaceDir string, account db.JiraAccount) (jira.JiraOAuthConfig, error) // re-login: the company's app as it stands
+type jiraAddTarget struct{ OAuth jira.JiraOAuthConfig; Slug, Site string; Confluence bool }
+func addJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB, target jiraAddTarget) error // `jira add` internals; Task 13's check passes the draft's client
 // internal/jira
 var ErrClientRejected = errors.New("atlassian rejected the OAuth client")
+const CodeInvalidClient, CodeUnknownClient = "invalid_client", "unknown_client"
+func ClientRejectedCode(companySlug string) string
+var ErrNotAtlassianCloud = errors.New("not an Atlassian Cloud site")
+func ValidateCloudSite(ctx context.Context, hc *http.Client, site string) error // *.atlassian.net, else _edge/tenant_info cloudId; Task 17 reuses it
 ```
+- **As built:** the per-account client file (`jira_client_<id>.json`) records the client the account's grant was issued to: written by `jira add --company` and by a re-login of a tied account, **not** by a Replace confirm (writers table). A tied account whose bundle's client id differs from it gets `errClientChanged` → the daemon marks `error`/`invalid_client` before any refresh, so a Replace whose account marking failed still asks for the login, and Atlassian's answer to a foreign refresh token can never read as `revoked`. A rotated secret under the same client id is just used.
+- **As built:** with no client on any layer (no company, no env, nothing baked — the public build after D4) the daemon marks an `ok` account `error`/`unknown_client` (tied: `invalid_client`) and CLI commands fail with "re-login needed — open your company's link"; `jira add` without `--company` fails before the browser.
 - `jira add --company <slug>`: `ForCompany` before any browser opens (unknown slug → error, exit 1); the new row gets `CompanySlug` in the same `CreateJiraAccount`; `oauthclient` file written from the bundle; `--with-confluence` implied by the bundle's `confluence: true`.
 - Refresh `invalid_client` (Atlassian answers 401 `{"error":"invalid_client"}` or `unauthorized_client`) → `ErrClientRejected`; the sync marks `status='error'`, `error = invalid_client | unknown_client` (P5), never `revoked`.
 

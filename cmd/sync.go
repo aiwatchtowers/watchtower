@@ -1460,7 +1460,6 @@ func buildAtlassianClients(cfg *config.Config, database *db.DB, logger *log.Logg
 		logger.Printf("jira: failed to list accounts: %v", err)
 		return nil, clients
 	}
-	jiraCfg := resolveJiraOAuthConfig()
 	for _, acct := range accounts {
 		store := jira.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
 		if acct.CloudID == "" || !store.Exists() {
@@ -1471,7 +1470,31 @@ func buildAtlassianClients(cfg *config.Config, database *db.DB, logger *log.Logg
 			}
 			continue
 		}
+		jiraCfg, _, err := resolveJiraOAuthConfigForAccount(cfg.WorkspaceDir(), acct)
+		if err != nil {
+			logger.Printf("jira: account %d: %v", acct.ID, err)
+			// No client on any layer, or the company's app is not the one
+			// the grant was issued to: the token can never be refreshed —
+			// Re-login needed (#1887 §5, P5), never revoked. Any other failure
+			// (a damaged client file) is shown on the row as it is, so an
+			// account that cannot sync never stays green.
+			if acct.Status == "ok" {
+				code := err.Error()
+				if errors.Is(err, errNoOAuthClient) || errors.Is(err, errClientChanged) {
+					code = jira.ClientRejectedCode(acct.CompanySlug)
+				}
+				if dbErr := database.SetJiraAccountAuthState(acct.ID, "error", code); dbErr != nil {
+					logger.Printf("jira: account %d: record auth state: %v", acct.ID, dbErr)
+				}
+			}
+			continue
+		}
 		client := jira.NewClient(acct.CloudID, jiraCfg, store)
+		// Resolved again at each refresh: a re-login through the company's
+		// new app while the daemon runs must not be refreshed through the
+		// client the daemon started with (#1887).
+		id := acct.ID
+		client.SetOAuthSource(jiraAccountOAuthSource(cfg.WorkspaceDir(), func() (db.JiraAccount, error) { return database.GetJiraAccount(id) }))
 		client.SetLogger(subLogger(logger, "[jira] "))
 		clients[acct.ID] = client
 	}

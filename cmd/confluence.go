@@ -177,7 +177,13 @@ func openConfluenceSession() (*confluenceSession, error) {
 		}
 		return nil, errConfluenceConsent(account.ID)
 	}
-	client := jira.NewClient(account.CloudID, resolveJiraOAuthConfig(), store)
+	jiraCfg, _, err := resolveJiraOAuthConfigForAccount(cfg.WorkspaceDir(), account)
+	if err != nil {
+		database.Close()
+		return nil, err
+	}
+	client := jira.NewClient(account.CloudID, jiraCfg, store)
+	client.SetOAuthSource(jiraAccountRowOAuthSource(cfg.WorkspaceDir(), account))
 	return &confluenceSession{cfg: cfg, db: database, account: account, fetcher: newConfluenceFetcher(client, account.SiteURL)}, nil
 }
 
