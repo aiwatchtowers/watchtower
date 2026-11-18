@@ -8,11 +8,11 @@ With several sessions running, the terminals say nothing until you open each one
 
 ## How it works
 
-A session runs the agent exactly as your own terminal does: the same login, permissions and project memory. Click a workbench in the left panel to see its sessions; a filled dot means running. Sessions keep running while you switch sessions, workbenches or tabs.
+A session runs the agent as your own terminal does: the same login, permissions and project memory. Click a workbench in the left panel to see its sessions; a filled dot means running. Sessions keep running when you switch sessions, workbenches or tabs.
 
-Copying from inside the terminal works as in your own terminal: when Claude Code, vim or tmux copies text, it lands on your clipboard. The terminal does not answer clipboard-read requests hidden in program output, so a file or tool output cannot pull in what you copied. Programs you run can still read it (for example `pbpaste`). Paste with ⌘V.
+Copying inside the terminal works as in your own: when Claude Code, vim or tmux copies text, it lands on your clipboard. The terminal does not answer clipboard-read requests hidden in program output, so a file cannot pull in what you copied. Programs you run can still read it (such as `pbpaste`). Paste with ⌘V.
 
-Updating Watchtower never stops your sessions, and quitting asks you. See [Updates and quitting](updates-and-quitting.md).
+Updating Watchtower never stops your sessions; quitting asks you. See [Updates and quitting](updates-and-quitting.md).
 
 ### Session states
 <!-- learn
@@ -25,10 +25,10 @@ kind: tip
 since: 0.28.0
 action: nav:projects
 replaces: [sessions-states]
-changed: A background command keeps a session working, and a turn that ended reads **Idle** instead of Stopped.
+changed: A session whose spec or plan is being reviewed reads **Spec review**.
 -->
 
-A caption under the session name says what the agent is doing. When several apply, the first row wins.
+A caption under the session name says what the agent does. When several apply, the first row wins.
 
 | State | Colour | Meaning |
 |---|---|---|
@@ -40,12 +40,13 @@ A caption under the session name says what the agent is doing. When several appl
 | **Ready to check · ask #N** | purple | Its open asks are only checks or reviews for you (**Ready for review** when all are reviews). |
 | **Finished** | blue | The agent said it is done. Orange while an ask is still open, such as the one that tells you what it left of its target and why. |
 | **Waiting for you · ask #N** | orange | A question of the agent waits for your answer. |
+| **Spec review · round N** | green | A reviewer checks the agent's spec or plan; it comes to you when done. |
 | **Idle** | grey | The turn is over; the agent waits for you. |
 | **Running** / **Not running** | green / grey | No state reported yet, or not started. |
 
 A ring instead of a filled dot means the session is not running. A blue ring is finished, orange still has a question, purple still has checks or reviews for you. A state from before an exit, a Restart or a Watchtower restart is never shown.
 
-Two limits: interrupting the agent with Esc or Ctrl+C reports nothing, so it keeps saying "Working" until your next prompt; and only sessions started in a workbench's terminal in Watchtower report a state.
+Two limits: interrupting the agent with Esc or Ctrl+C reports nothing, so it says "Working" until your next prompt; and only sessions started in a workbench's terminal report a state.
 
 After 30 minutes without news from a helper, Watchtower asks Claude Code whether the session still works, then every 30 minutes, and shows **Idle** on a no or after two failed checks.
 
@@ -83,7 +84,7 @@ since: 0.24.0
 action: nav:projects
 -->
 
-- **+** in the sessions panel starts a session of the default agent (hold it to pick one; ⌘T on a workbench page). It is on screen at once and reads **Starting…** while it is set up (and its [worktree](worktrees-and-cleanup.md) made, when it gets one).
+- **+** in the sessions panel starts a session of the default agent (hold it to pick one; ⌘T on a workbench page). It shows at once and reads **Starting…** while it is set up (and its [worktree](worktrees-and-cleanup.md) made, when it gets one).
 - **Work on It** on a board card starts a session for that target. See [Board and targets](board-and-targets.md).
 - **Resume** continues a stopped session where it left off. **Restart** appears when one exits and **Start fresh** when it cannot be resumed.
 - **Settings → System → Workbench → Default Agent** picks the agent for new sessions. Codex differs in a few ways; see [Codex](codex.md).
@@ -117,13 +118,13 @@ since: 0.24.0
 action: nav:projects
 -->
 
-- A session that is finished with no open ask moves into **▸ N finished** at the bottom, most recent first. The group remembers whether it is open. A session you are looking at never jumps.
-- Drag a session to reorder it. Right-click for **Rename…** and **Delete…**.
+- A session that is finished with no open ask moves into **▸ N finished** at the bottom, most recent first. The group remembers if it is open; a session you look at never jumps.
+- Drag a session to reorder it; right-click for **Rename…** and **Delete…**.
 - Right-click an agent session, then **Session Target**, to pick the target its progress counts; **None — Count What It Touched** resets it.
 - Hover a **Ready to check** session for **Review Branch**, which opens its [Branch review](diff-review.md); the right-click menu has it for every session.
 - Hover a session that is finished, idle, failed or not running to get a **✕**. One click deletes it without a dialog. Any other session needs **Delete…**.
 - After a delete, **Undo** in the bar brings it back with its report, target links and asks for about five seconds. Then its merged or pushed worktrees and branches go in the background; one left **Not fully cleaned** stays listed ([details](worktrees-and-cleanup.md#what-a-delete-cleans-up)).
-- Quitting before the bar goes away deletes at the next launch; a busy database can hold the quit a few seconds ("Finishing session deletes…").
+- Quitting before the bar goes deletes at the next launch; a busy database can hold the quit a few seconds ("Finishing session deletes…").
 
 ### Read a session's report and analytics
 
