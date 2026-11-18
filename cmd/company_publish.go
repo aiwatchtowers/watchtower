@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -181,7 +180,7 @@ func readPublishInput(r io.Reader) (companyPublishInput, error) {
 		// The decoder's message never quotes a value, so the token stays out.
 		return companyPublishInput{}, fmt.Errorf("publish request on stdin: %w", err)
 	}
-	if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{")) || dec.More() {
+	if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{")) || !errors.Is(dec.Decode(&struct{}{}), io.EOF) {
 		return companyPublishInput{}, errors.New("publish request on stdin: give exactly one JSON object")
 	}
 	in.Company = strings.TrimSpace(in.Company)
@@ -322,15 +321,14 @@ func publishCompany(ctx context.Context, deps companyPublishDeps, in companyPubl
 	}
 	// The draft published is the one deleted: one saved meanwhile (one wizard
 	// runs at a time, so only a stray writer) is kept for the next Publish.
-	if now, _, _, err := deps.store.LoadDraft(deps.now); err == nil && !reflect.DeepEqual(now, d) {
-		res.DraftError = "the setup changed while it was published; it is kept"
-		return res, nil
-	}
-	if err := deps.store.DiscardDraft(); err != nil {
-		// Published all the same; the wizard says the draft is still there
-		// (it shows as in progress until the next Discard or Publish).
+	// Either way it is published; the wizard says the draft is still there
+	// (it shows as in progress until the next Discard or Publish).
+	switch deleted, err := deps.store.DiscardDraftIf(d); {
+	case err != nil:
 		res.DraftError = err.Error()
 		fmt.Fprintf(deps.warn, "company publish: deleting the draft: %v\n", err)
+	case !deleted:
+		res.DraftError = "the setup changed while it was published; it is kept"
 	}
 	return res, nil
 }

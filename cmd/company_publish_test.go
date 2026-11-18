@@ -87,7 +87,7 @@ func TestPublish_NewerDraftIsKept(t *testing.T) {
 }
 
 func TestPublish_InputRefusals(t *testing.T) {
-	for _, in := range []string{"null", "", "[]", `{"company":"Acme"} {"company":"B"}`, `{"company":"Acme","token":"x"}`} {
+	for _, in := range []string{"null", "", "[]", `{"company":"Acme"} {"company":"B"}`, `{"company":"Acme"}}`, `{"company":"Acme","token":"x"}`} {
 		_, err := readPublishInput(strings.NewReader(in))
 		assert.Error(t, err, in)
 	}
