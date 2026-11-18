@@ -459,7 +459,8 @@ Approved by the owner (asks #1545, #1548):
 7. `remove-confirm` and `remove-refused` (sessions running; last folder).
 8. `feed-parent` — started / from / finished / waiting peer bubbles.
 8a. `merge-confirm`, `merge-refused`, and `suggest-card-merge` (§6.13).
-8b. `message-in-prompt` — row flag and pane notice (§6.6, D40).
+8b. `message-in-prompt` — row flag and pane notice (§6.6, D40). The `Dismiss` button shows
+    only with a pre-`PromptState` host (§5) and sits after `Show in Terminal` as a quiet button.
 9. `strip-child` — `📁 hub › ⑂ export-api › ⎇ … ↖ from “…”`.
 10. `board-card-folder` — folder chip, drift `folder removed`.
 
