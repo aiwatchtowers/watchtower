@@ -266,6 +266,31 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         )
     }
 
+    /// Spec 2026-11-18 §6.14 (F6): the fixture carries the folder and the
+    /// parent; a Mac older than the keys sends neither, and a state value
+    /// this build does not know still decodes, so an old phone never fails
+    /// a record over them.
+    func testOldMacSendsNoFolder() throws {
+        let session = try TerminalSessionState.decode(payload: try fixture("terminal_session"))
+        XCTAssertEqual(session.folder, "hub")
+        XCTAssertEqual(session.parentSessionID, 30)
+
+        var json = try object("terminal_session")
+        json.removeValue(forKey: "folder")
+        json.removeValue(forKey: "parent_session_id")
+        let old = try TerminalSessionState.decode(payload: try data(json))
+        XCTAssertNil(old.folder)
+        XCTAssertNil(old.parentSessionID)
+        XCTAssertEqual(old.id, 31)
+
+        json["state_kind"] = "waiting_in_a_folder"
+        json["state_tone"] = "teal"
+        let future = try TerminalSessionState.decode(payload: try data(json))
+        XCTAssertEqual(future.stateKind.rawValue, "waiting_in_a_folder")
+        XCTAssertFalse(future.stateKind.isKnown)
+        XCTAssertEqual(future.stateTone.rawValue, "teal")
+    }
+
     /// A record from a Mac older than the `phone` key still decodes, with
     /// no key: the phone then keeps that Mac's rule.
     func testTerminalSessionWithoutPhoneDecodes() throws {

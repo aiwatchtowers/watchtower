@@ -14,6 +14,9 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
     let isCollapsed: Bool
     var caption: String?
     var wrapsText = false
+    /// The bench's folders: the card names its folder after the status chip
+    /// when there are several (spec 2026-11-18 §6.10). nil = not read yet.
+    var folders: BenchFolders?
     let onToggle: () -> Void
     @ViewBuilder let trailing: (_ hovering: Bool) -> Trailing
 
@@ -21,7 +24,7 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
     @State private var chevronHovering = false
 
     private var target: Target { row.node.target }
-    private var card: WorkbenchBoardCard { WorkbenchBoardCard(row.node) }
+    private var card: WorkbenchBoardCard { WorkbenchBoardCard(row.node, folders: folders) }
 
     var body: some View {
         let card = card
@@ -129,6 +132,18 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
                 text: WorkbenchBoardCard.statusLabel(target.status),
                 color: Tone.status(target.statusColor)
             )
+            switch card.folderChip {
+            case let .folder(name):
+                Chip(text: name, color: .secondary)
+                    .help("Folder")
+            case .removed:
+                Text(WorkbenchBoardCard.folderRemovedText)
+                    .font(.caption2)
+                    .foregroundStyle(Tone.warning)
+                    .help("This folder is no longer on the bench")
+            case nil:
+                EmptyView()
+            }
             if row.node.archived {
                 Chip(text: "Archived", color: .secondary)
                     .help("Archived: closed longer than the archive setting, or before the last Archive Now. Reopen it to bring it back.")

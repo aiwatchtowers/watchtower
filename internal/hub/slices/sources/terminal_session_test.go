@@ -118,7 +118,7 @@ func TestTerminalSessionMatchesKitFixtureKeys(t *testing.T) {
 		"title_clipped", "target_id", "state_at", "state_caption_clipped", "oldest_ask_id",
 		"finish_summary_clipped", "agent_error_clipped", "report_target_id", "report_done",
 		"report_total", "report_merged", "report_merged_stale", "report_pr_line", "report_pr_line_clipped",
-		"watch_issue", "watch_help")
+		"watch_issue", "watch_help", "folder", "parent_session_id")
 	keys := allKeys(p)
 	for _, k := range neverPublishedKeys {
 		if keys[k] {
@@ -657,5 +657,47 @@ func TestSpecReviewCountsAsWorking(t *testing.T) {
 	hideInSpecLoop(t, r.d, project, id, 1)
 	if got := countsOf(t, r.d, r.source([]int64{id}, time.Time{}, nil))[project]; got != (sessionCounts{Working: 1}) {
 		t.Errorf("counts = %+v", got)
+	}
+}
+
+// Spec 2026-11-18 §6.14: a session row names its folder only on a bench of
+// more than one live folder (a row with no folder is in the home folder),
+// and a sub-session names its parent; a one-folder bench and a top-level
+// session carry neither key, as a Mac before the keys wrote it.
+func TestTerminalSessionSliceCarriesFolderAndParent(t *testing.T) {
+	r := newSessionRig(t)
+	project := insertWorkbench(t, r.d, "acme", "/tmp/acme")
+	solo := insertSession(t, r.d, project, sessionSeed{})
+	if p := payloads(t, r.source(nil, time.Time{}, nil))[solo]; p["folder"] != nil || p["parent_session_id"] != nil {
+		t.Errorf("one folder, no parent = %v", p)
+	}
+
+	var hub int64
+	if err := r.d.QueryRow(`SELECT id FROM workbench_folders WHERE workbench_id = ?`, project).Scan(&hub); err != nil {
+		t.Fatal(err)
+	}
+	site := lastID(t, exec(t, r.d, `INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
+		VALUES (?, '/tmp/site', 1, 'owner', 'site')`, project))
+	inSite := insertSession(t, r.d, project, sessionSeed{})
+	child := insertSession(t, r.d, project, sessionSeed{})
+	exec(t, r.d, `UPDATE terminal_sessions SET workbench_folder_id = ? WHERE id = ?`, site, inSite)
+	exec(t, r.d, `UPDATE terminal_sessions SET workbench_folder_id = ?, parent_session_id = ? WHERE id = ?`, hub, inSite, child)
+
+	all := payloads(t, r.source(nil, time.Time{}, nil))
+	if all[inSite]["folder"] != "site" || all[inSite]["parent_session_id"] != nil {
+		t.Errorf("in site = %v", all[inSite])
+	}
+	if all[child]["folder"] != "home-1" || num(all[child]["parent_session_id"]) != inSite {
+		t.Errorf("child = %v", all[child])
+	}
+	if all[solo]["folder"] != "home-1" {
+		t.Errorf("a row with no folder is in the home folder = %v", all[solo])
+	}
+
+	// The folder leaves the bench: its row names no folder, the others stay.
+	exec(t, r.d, `UPDATE workbench_folders SET removed_at = '2026-01-01T00:00:00Z' WHERE id = ?`, site)
+	all = payloads(t, r.source(nil, time.Time{}, nil))
+	if all[inSite]["folder"] != nil || all[solo]["folder"] != nil {
+		t.Errorf("back to one live folder = %v %v", all[inSite], all[solo])
 	}
 }

@@ -54,6 +54,18 @@ package struct TargetCounts {
 /// another process (the agent over the project MCP server, the CLI, a second
 /// window) after the screen loaded it. The update touched no row, so the
 /// mutator throws instead of reporting a success that never happened.
+package enum TargetFolderError: LocalizedError, Equatable {
+    case notOnABoard(Int)
+    case notAFolderOfTheBench(Int64)
+
+    package var errorDescription: String? {
+        switch self {
+        case let .notOnABoard(id): "target #\(id) is not on a workbench board"
+        case .notAFolderOfTheBench: "that folder is not on this workbench"
+        }
+    }
+}
+
 package struct TargetNotFoundError: LocalizedError, Equatable {
     package let id: Int
 
@@ -408,6 +420,32 @@ package enum TargetQueries {
             arguments: [priority, id]
         )
         try requireUpdated(db, id: id)
+    }
+
+    /// The owner's folder pick for a workbench target (spec 2026-11-18
+    /// §6.10): nil = the home folder. The folder must be a live one of the
+    /// target's own workbench, as Go's `SetTargetFolderTx` demands. The CLI
+    /// (`update_target`) writes the same column: the last write wins.
+    package static func setFolder(_ db: Database, targetID: Int, folderID: Int64?) throws {
+        guard let row = try Row.fetchOne(
+            db, sql: "SELECT project_id FROM targets WHERE id = ?", arguments: [targetID]
+        ) else { throw TargetNotFoundError(id: targetID) }
+        guard let projectID: Int64 = row["project_id"] else { throw TargetFolderError.notOnABoard(targetID) }
+        if let folderID {
+            let owned = try Bool.fetchOne(db, sql: """
+                SELECT EXISTS (SELECT 1 FROM workbench_folders
+                               WHERE id = ? AND workbench_id = ? AND removed_at IS NULL)
+                """, arguments: [folderID, projectID]) ?? false
+            guard owned else { throw TargetFolderError.notAFolderOfTheBench(folderID) }
+        }
+        try db.execute(
+            sql: """
+                UPDATE targets SET workbench_folder_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [folderID, targetID]
+        )
+        try requireUpdated(db, id: targetID)
     }
 
     package static func updateText(_ db: Database, id: Int, text: String) throws {

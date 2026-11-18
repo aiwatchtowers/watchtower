@@ -108,6 +108,9 @@ struct WorkbenchBoardView: View {
             takeKanbanRequest()
             viewModel?.startPolling()
         }
+        .onChange(of: appState.workbenchesViewModel?.benchFolders[projectID], initial: true) { _, folders in
+            viewModel?.folders = folders
+        }
         // A target id in the Session view opens its card here.
         .onChange(of: appState.workbenchesViewModel?.boardFocus[projectID]) { _, _ in takeFocus() }
         // The header menu's Edit Columns on the Kanban (#713 AI-14 §1).
@@ -361,6 +364,7 @@ struct WorkbenchBoardView: View {
                     row: row,
                     isSelected: vm.selectedTargetID == row.id,
                     isCollapsed: vm.collapsed.contains(row.id),
+                    folders: vm.folders,
                     onToggle: { vm.toggle(row.id) },
                     trailing: { hovering in
                         WorkOnTargetButton(target: row.node.target, compact: true,

@@ -164,6 +164,14 @@ public struct TerminalSessionState: SliceMirror, Identifiable {
     /// Mac's rule (lines, permission answers and Interrupt for Claude Code
     /// sessions only).
     public let phone: PhoneCaps?
+    /// The bench folder the session was started in, named only on a bench of
+    /// more than one live folder (spec 2026-11-18 §6.14). Absent on a
+    /// one-folder bench and from a Mac older than the key.
+    public let folder: String?
+    /// The session that started this one as a sub-session; the phone lists
+    /// it flat, as "from #<id>". Absent for a top-level session and from a
+    /// Mac older than the key.
+    public let parentSessionID: Int64?
 
     // convertFromSnakeCase maps "*_id" -> "*Id" and "report_pr_line" ->
     // "reportPrLine", so those keys use that form.
@@ -180,7 +188,8 @@ public struct TerminalSessionState: SliceMirror, Identifiable {
         case reportDone, reportTotal, reportMerged, reportMergedStale
         case reportPRLine = "reportPrLine"
         case reportPRLineClipped = "reportPrLineClipped"
-        case watchIssue, watchHelp, phone
+        case watchIssue, watchHelp, phone, folder
+        case parentSessionID = "parentSessionId"
     }
 }
 

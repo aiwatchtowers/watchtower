@@ -133,4 +133,128 @@ final class WorkbenchBoardCardTests: XCTestCase {
         XCTAssertEqual(unknown.statusColor, "secondary", "unknown status = neutral")
         XCTAssertEqual(WorkbenchBoardCard.statusLabel(unknown.status), "waiting_on_vendor")
     }
+
+    // MARK: - Folder chip (spec 2026-11-18 §6.10)
+
+    private func folder(_ id: Int64, _ name: String, removed: Bool = false) -> WorkbenchFolder {
+        WorkbenchFolder(
+            id: id, workbenchID: 1, folderPath: "/tmp/\(name)", position: Int(id),
+            removedAt: removed ? "2026-11-01T00:00:00Z" : nil, name: name
+        )
+    }
+
+    /// A target of the bench, in `folderID` (nil = the home folder).
+    private func target(_ id: Int, folderID: Int64?) throws -> Target {
+        _ = try target(id)
+        return try queue.write { db in
+            try db.execute(sql: "UPDATE targets SET workbench_folder_id = ? WHERE id = ?", arguments: [folderID, id])
+            return try XCTUnwrap(TargetQueries.fetchByID(db, id: id))
+        }
+    }
+
+    private func seedBench() throws {
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/app')")
+            for (id, name, position) in [(1, "app", 0), (2, "hub", 1)] {
+                try db.execute(
+                    sql: """
+                        INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name)
+                        VALUES (?, 1, ?, ?, 'owner', ?)
+                        """,
+                    arguments: [id, "/tmp/\(name)", position, name]
+                )
+            }
+        }
+    }
+
+    func testFolderChipOnlyWithMoreThanOneFolder() throws {
+        try seedBench()
+        let hub = try target(1, folderID: 2)
+        let home = try target(2, folderID: nil)
+        let two = BenchFolders(folders: [folder(1, "app"), folder(2, "hub")], homeID: 1)
+        XCTAssertEqual(WorkbenchBoardCard(node(hub), folders: two).folderChip, .folder("hub"))
+        XCTAssertEqual(WorkbenchBoardCard(node(hub), folders: two).folderChip?.text, "hub")
+        XCTAssertEqual(WorkbenchBoardCard(node(home), folders: two).folderChip, .folder("app"), "no folder stored = home")
+
+        let one = BenchFolders(folders: [folder(1, "app")], homeID: 1)
+        XCTAssertNil(WorkbenchBoardCard(node(home), folders: one).folderChip, "a one-folder bench looks as before")
+        let oneLiveOfTwo = BenchFolders(folders: [folder(1, "app"), folder(2, "hub", removed: true)], homeID: 1)
+        XCTAssertNil(WorkbenchBoardCard(node(home), folders: oneLiveOfTwo).folderChip)
+        XCTAssertNil(WorkbenchBoardCard(node(home)).folderChip, "folders not read yet")
+        let stranger = try target(3, folderID: nil)
+        XCTAssertNil(WorkbenchBoardCard(node(stranger), folders: BenchFolders()).folderChip, "no home row to name")
+    }
+
+    func testRemovedFolderShowsFolderRemoved() throws {
+        try seedBench()
+        let hub = try target(1, folderID: 2)
+        let two = BenchFolders(folders: [folder(1, "app"), folder(2, "hub", removed: true), folder(3, "site")], homeID: 1)
+        let chip = WorkbenchBoardCard(node(hub), folders: two).folderChip
+        XCTAssertEqual(chip, .removed)
+        XCTAssertEqual(chip?.text, "· folder removed")
+        XCTAssertEqual(WorkbenchBoardCard.folderRemovedText, "· folder removed")
+        // Said even once the bench is down to one live folder: the work cannot be checked.
+        let one = BenchFolders(folders: [folder(1, "app"), folder(2, "hub", removed: true)], homeID: 1)
+        XCTAssertEqual(WorkbenchBoardCard(node(hub), folders: one).folderChip, .removed)
+    }
+
+    func testFolderMenuTitles() {
+        XCTAssertEqual(WorkbenchBoardCard.folderMenuTitle(folder(1, "app")), "app")
+        XCTAssertEqual(WorkbenchBoardCard.folderMenuTitle(folder(2, "hub", removed: true)), "Folder removed")
+        XCTAssertEqual(WorkbenchBoardCard.folderMenuTitle(nil), "Folder")
+    }
+
+    func testOwnerFolderEditWritesTheColumn() throws {
+        try seedBench()
+        _ = try target(1)
+        try queue.write { db in
+            try db.execute(sql: "UPDATE targets SET project_id = 1 WHERE id = 1")
+            try TargetQueries.setFolder(db, targetID: 1, folderID: 2)
+        }
+        XCTAssertEqual(try queue.read { try TargetQueries.fetchByID($0, id: 1) }?.workbenchFolderID, 2)
+
+        // Back to the home folder: nil.
+        try queue.write { try TargetQueries.setFolder($0, targetID: 1, folderID: nil) }
+        XCTAssertNil(try queue.read { try TargetQueries.fetchByID($0, id: 1) }?.workbenchFolderID)
+
+        // Last write wins with the CLI (PROJ-07 note): a later write over the same column stands.
+        try queue.write { db in
+            try db.execute(sql: "UPDATE targets SET workbench_folder_id = 1 WHERE id = 1")
+            try TargetQueries.setFolder(db, targetID: 1, folderID: 2)
+        }
+        XCTAssertEqual(try queue.read { try TargetQueries.fetchByID($0, id: 1) }?.workbenchFolderID, 2)
+    }
+
+    func testOwnerFolderEditRefusesAForeignRemovedOrUnboardedTarget() throws {
+        try seedBench()
+        _ = try target(1)
+        try queue.write { db in
+            try db.execute(sql: "UPDATE targets SET project_id = 1 WHERE id = 1")
+            try db.execute(sql: "INSERT INTO projects (id, name, folder_path) VALUES (2, 'other', '/tmp/other')")
+            try db.execute(sql: """
+                INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name)
+                VALUES (3, 2, '/tmp/other', 0, 'owner', 'other')
+                """)
+            try db.execute(sql: "UPDATE workbench_folders SET removed_at = '2026-11-01T00:00:00Z' WHERE id = 2")
+        }
+        XCTAssertThrowsError(try queue.write { try TargetQueries.setFolder($0, targetID: 1, folderID: 3) }) {
+            XCTAssertEqual($0 as? TargetFolderError, .notAFolderOfTheBench(3))
+        }
+        XCTAssertThrowsError(try queue.write { try TargetQueries.setFolder($0, targetID: 1, folderID: 2) }) {
+            XCTAssertEqual($0 as? TargetFolderError, .notAFolderOfTheBench(2))
+        }
+        _ = try target(5)
+        XCTAssertThrowsError(try queue.write { try TargetQueries.setFolder($0, targetID: 5, folderID: nil) }) {
+            XCTAssertEqual($0 as? TargetFolderError, .notOnABoard(5))
+        }
+        XCTAssertThrowsError(try queue.write { try TargetQueries.setFolder($0, targetID: 99, folderID: nil) }) {
+            XCTAssertEqual($0 as? TargetNotFoundError, TargetNotFoundError(id: 99))
+        }
+        XCTAssertEqual(
+            TargetFolderError.notOnABoard(5).errorDescription, "target #5 is not on a workbench board"
+        )
+        XCTAssertEqual(
+            TargetFolderError.notAFolderOfTheBench(3).errorDescription, "that folder is not on this workbench"
+        )
+    }
 }
