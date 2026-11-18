@@ -1,9 +1,11 @@
 import AppKit
+import ChatWire
 import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerChatText
+@testable import ChatUI
 
 /// Reproducible numbers for the large-text hot paths (#167): a streamed
 /// answer's per-delta re-render and the parses that feed it. The timed
@@ -71,7 +73,8 @@ final class TextRenderingBenchmarkTests: XCTestCase {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources/Views/Chat/MarkdownView.swift")
+            .deletingLastPathComponent()
+            .appendingPathComponent("WatchtowerChat/Sources/ChatUI/Platform/macOS/MarkdownView.swift")
         let code = try String(contentsOf: source, encoding: .utf8)
             .split(separator: "\n")
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
@@ -93,7 +96,7 @@ final class TextRenderingBenchmarkTests: XCTestCase {
         print("BENCH streamed delta, 10k-char message: before \(median(before)), after \(median(after))")
     }
 
-    /// The streamed row parses its text in `AssistantMessageBody.body` and
+    /// The streamed row parses its text in ChatUI's `ChatMessageParts` and
     /// again in `ChatViewModel.updateLiveArtifacts` per published delta; the
     /// second parse (and every finished row's re-parse on a scroll rebuild)
     /// is now a cache hit — read from the cache itself, not timed.
@@ -117,7 +120,9 @@ final class TextRenderingBenchmarkTests: XCTestCase {
             let base = Self.markdown(chars: length, seed: length)
             let samples = streamSamples(base: base, deltas: 6) { text in
                 _ = ArtifactParser.parse(text, final: false) // updateLiveArtifacts
-                return AssistantMessageBody(text: text, steps: [], isRunning: true)
+                return ChatUIShotRow.message(ChatFeed.Message(id: 1, role: "assistant", text: text,
+                                                              status: EmbeddedChatFeedAdapter.pendingStatus,
+                                                              createdAt: .distantPast))
             }
             print("BENCH streamed answer frame @\(length) chars: median \(median(samples))")
         }
@@ -133,7 +138,8 @@ final class TextRenderingBenchmarkTests: XCTestCase {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     ForEach(0..<count, id: \.self) { index in
-                        AssistantMessageBody(text: answers[index], steps: [], isRunning: false)
+                        ChatUIShotRow.message(ChatFeed.Message(id: Int64(index), role: "assistant", text: answers[index],
+                                                               createdAt: .distantPast))
                     }
                 }
             }

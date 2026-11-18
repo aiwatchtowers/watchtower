@@ -12,10 +12,12 @@ A workbench session's transcript holds hundreds of tool calls; the owner wants t
 | Ledger | migration `00127_*` `terminal_session_agent_sessions`, `internal/db/terminal_session_agent_sessions.go` (`ListTerminalAgentSessions`) |
 | CLI | `watchtower workbench session-feed --session N [--after C] [--subagent TOOL_USE_ID] [--json]` (`cmd/workbench_session_feed.go`) |
 | Desktop model/store/poller | `WatchtowerCore` `Models/SessionFeed.swift`, `Services/SessionFeedStore.swift`, `Services/SessionFeedPoller.swift` |
-| Desktop views | `Views/Workbench/SessionChatView.swift`, `SessionChatSubagentView.swift`, `SessionChatRow.swift` |
+| Desktop views | `Views/Workbench/SessionChatView.swift`, `SessionChatSubagentView.swift`, `SessionChatRow.swift` (since the unified chat, 2026-11-17 T12: the feed is drawn by `ChatUI` through `WorkchatFeedAdapter`/`WorkchatFeed`; `SessionChatRow` draws only the system rows: the Watchtower bubble "via Watchtower", the brief disclosure, the notice toggle, the separator, the subagent card) |
 | Workchat composer (#711) | `ViewModels/WorkchatModel.swift`, `Views/Workbench/WorkchatComposer.swift`, `Views/Workbench/WorkchatCards.swift`, `Services/SessionControl.swift`, `WatchtowerCore` `Services/WorkchatOutgoing.swift` |
 
 The Desktop runs the CLI with `--json` and decodes it; there is no Swift twin of the filter rules (the Go reader is the only parser).
+
+**Rendering through ChatUI (T12, [unified-chat.md](unified-chat.md)).** `WorkchatFeedAdapter` maps `SessionFeedEntry` to `ChatFeed` messages (owner and ask answers as the user, agent text as the assistant, Watchtower, brief, event, separator and subagent entries as system rows; an unknown kind is dropped; ids are a stable hash of the entry id; a caption "Ask #N: title · via Watchtower · time"). The pane keeps its own engine and cursor contract. Changes the owner sees: Workchat still loads earlier messages by itself on scroll-to-top (`ChatFeedContext.loadsEarlierAtTop`; the window grows and pins), subagent runs open at the bottom, agent rows gain Copy and a time caption, and the owner-ask drawer's question card is `ChatUI`'s `QuestionPartView`. Question cards in Workchat answer through `WorkchatModel.sendLine`.
 
 ## Entry kinds (agent-neutral)
 

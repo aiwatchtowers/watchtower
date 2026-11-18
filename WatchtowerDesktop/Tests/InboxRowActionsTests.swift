@@ -1,3 +1,4 @@
+import ChatWire
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
@@ -190,7 +191,7 @@ final class InboxRowActionsTests: XCTestCase {
         let summary = try XCTUnwrap(content.actionSummary)
         XCTAssertTrue(summary.contains("ACME"), summary)
         XCTAssertTrue(summary.contains("Fix the link"), summary)
-        XCTAssertFalse(summary.contains(AgentActionCardView.title(for: vm.feed.proposals[0])), summary)
+        XCTAssertFalse(summary.contains(MacAgentActionCard.title(for: vm.feed.proposals[0])), summary)
         XCTAssertEqual(content.state, .idle)
         XCTAssertNotNil(hooks.hooks.nativeFooter(ArtifactRef(kind: .action, id: id), .inbox),
                         "an idle proposal row draws its summary under the line")
@@ -203,7 +204,7 @@ final class InboxRowActionsTests: XCTestCase {
         }
         let vm = await strip()
         let action = try XCTUnwrap(vm.feed.proposals.first { $0.id == id })
-        XCTAssertEqual(AgentActionCardView.rowSummary(for: action), AgentActionCardView.title(for: action))
+        XCTAssertEqual(MacAgentActionCard.rowSummary(for: action), MacAgentActionCard.title(for: action))
     }
 
     /// A pending `save_automation` is saved in the editor only: Open Draft and Reject, never Approve.
@@ -244,7 +245,7 @@ final class InboxRowActionsTests: XCTestCase {
 
     /// An edit the card cannot show is never approved (F7).
     func testUnreadableConfluenceEditHasNoApprove() async throws {
-        let buttons = try await actionButtons(tool: AgentActionCardView.confluenceEditTool, argsJSON: "{}")
+        let buttons = try await actionButtons(tool: MacAgentActionCard.confluenceEditTool, argsJSON: "{}")
         XCTAssertEqual(buttons, [.reject, .edit])
     }
 

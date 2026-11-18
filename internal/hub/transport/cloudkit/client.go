@@ -15,10 +15,10 @@ import (
 	"syscall"
 	"time"
 
-	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/cloudkit/bridgepb"
+	"watchtower/internal/platform"
 )
 
 // The hub dir's folders the bridge reads assets from and writes downloads

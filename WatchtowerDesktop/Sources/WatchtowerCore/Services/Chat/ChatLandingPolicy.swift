@@ -1,9 +1,10 @@
+import ChatWire
 import Foundation
 
 /// Entering the Chat tab: reopen the last conversation or show the landing
 /// (owner decision 2026-09-28). Pure — the clock and every input are
-/// injected (the `ChatSessionPolicy` precedent); `ChatViewModel.enterTab`
-/// gathers the snapshot and applies the decision.
+/// injected; `ChatViewModel.enterTab` gathers the snapshot (from the
+/// engine's list) and applies the decision.
 ///
 /// Resume when the last-open conversation still exists and is not
 /// archived, and either has a turn running or unsent composer input (both
@@ -49,10 +50,11 @@ package enum ChatLandingPolicy {
             self.isStreaming = isStreaming
         }
 
-        /// A conversation with no message has no active leaf.
-        package init(_ conv: ChatConversation, isStreaming: Bool) {
-            self.init(id: conv.id, updatedAt: conv.updatedDate, isArchived: conv.archivedAt != nil,
-                      hasMessages: conv.activeLeafMessageID != nil, isStreaming: isStreaming)
+        /// A listed conversation: one with a message has its title (the engine
+        /// sets the first message's prefix title at once).
+        package init(_ conv: ChatList.Conversation, isStreaming: Bool) {
+            self.init(id: conv.id, updatedAt: conv.updatedAt, isArchived: false, hasMessages: !conv.title.isEmpty,
+                      isStreaming: isStreaming)
         }
     }
 
@@ -69,12 +71,12 @@ package enum ChatLandingPolicy {
         return now.timeIntervalSince(lastActivity) < resumeWindow ? .resume(last.id) : .landing
     }
 
-    /// The landing's jump-back list: pinned first, then recent; archived
-    /// chats and chats with neither a message nor an unsent file (an
-    /// untouched "New Chat") are left out.
-    package static func recents(_ conversations: [ChatConversation]) -> [ChatConversation] {
+    /// The landing's jump-back list: pinned first, then recent; a chat with
+    /// no message yet (no title, nothing answered) is left out. The engine's
+    /// list holds no archived chat.
+    package static func recents(_ conversations: [ChatList.Conversation]) -> [ChatList.Conversation] {
         let candidates = conversations
-            .filter { $0.archivedAt == nil && ($0.activeLeafMessageID != nil || $0.hasAttachments) }
+            .filter { !$0.title.isEmpty || !$0.lastLine.isEmpty }
             .sorted { $0.updatedAt > $1.updatedAt }
         let pinned = candidates.filter(\.pinned).prefix(pinnedLimit)
         let recent = candidates.filter { !$0.pinned }.prefix(recentLimit)

@@ -1,21 +1,21 @@
-import GRDB
+import ChatWire
 import SwiftUI
 import WatchtowerCore
 
-/// Picks one entity to pin as a project source (spec §6.1): a Jira project,
-/// Slack channel, Confluence space, target, track or person, from the local DB.
+/// Picks one entity to pin as a project source (spec §6.1): a Jira project, Slack channel, Confluence space, target,
+/// track or person, searched by the engine (`entity_search` with the kind).
 struct ProjectSourcePickerSheet: View {
-    let dbPool: DatabasePool
+    let client: any ChatClient
     let onPick: (ChatEntityHit) -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var kind: ChatEntityKind = .jiraProject
+    @State private var kind = "jira_project"
     @State private var query = ""
     @State private var hits: [ChatEntityHit] = []
     @State private var searchError: String?
 
-    private static let kinds: [(ChatEntityKind, String)] = [
-        (.jiraProject, "Jira project"), (.channel, "Slack channel"), (.confluenceSpace, "Confluence space"),
-        (.target, "Target"), (.track, "Track"), (.person, "Person")
+    private static let kinds: [(String, String)] = [
+        ("jira_project", "Jira project"), ("channel", "Slack channel"), ("confluence_space", "Confluence space"),
+        ("target", "Target"), ("track", "Track"), ("person", "Person")
     ]
 
     var body: some View {
@@ -29,7 +29,7 @@ struct ProjectSourcePickerSheet: View {
             TextField("Search", text: $query)
                 .textFieldStyle(.roundedBorder)
             if let searchError {
-                Text(searchError).font(.caption).foregroundStyle(.red)
+                Text(searchError).font(.caption).foregroundStyle(Tone.error)
             }
             List(hits, id: \.self) { hit in
                 Button {
@@ -59,18 +59,24 @@ struct ProjectSourcePickerSheet: View {
         }
         .padding(16)
         .frame(width: 600)
-        .onAppear(perform: runSearch)
-        .onChange(of: kind) { runSearch() }
-        .onChange(of: query) { runSearch() }
+        .task(id: "\(kind)|\(query)") { await runSearch() }
     }
 
-    private func runSearch() {
+    private func runSearch() async {
         do {
-            hits = try dbPool.read { try ChatEntitySearch.search($0, kind: kind, query: query, limit: 30) }
-            searchError = nil
+            switch try await client.send(.entitySearch(query: query, kinds: [kind])) {
+            case .applied(.entities(let found)):
+                hits = found
+                searchError = nil
+            case let .refused(_, message):
+                hits = []
+                searchError = message.isEmpty ? "Couldn't search." : message
+            case .applied:
+                hits = []
+            }
         } catch {
             hits = []
-            searchError = error.localizedDescription
+            searchError = "Couldn't reach Watchtower to search."
         }
     }
 }

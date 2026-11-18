@@ -1,4 +1,5 @@
 import AppKit
+import ChatWire
 import Foundation
 import Yams
 import WatchtowerCore

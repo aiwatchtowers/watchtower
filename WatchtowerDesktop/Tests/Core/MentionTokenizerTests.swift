@@ -1,5 +1,7 @@
+import ChatWire
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 final class MentionTokenizerTests: XCTestCase {
     private func utf16Count(_ s: String) -> Int { s.utf16.count }
@@ -47,50 +49,6 @@ final class MentionTokenizerTests: XCTestCase {
             ComposerTrigger(start: 4, query: "an"), in: "ask @an about", cursor: 7, with: "@Anna Ivanova ")
         XCTAssertEqual(edit.text, "ask @Anna Ivanova  about")
         XCTAssertEqual(edit.cursor, 4 + "@Anna Ivanova ".utf16.count)
-    }
-
-    func testLiveMentionsKeepsOnlyThoseStillInTextDeduped() {
-        let anna = MentionCandidate(kind: .person, ref: "1:U1", label: "Anna", detail: "")
-        let pay = MentionCandidate(kind: .jira, ref: "PAY-1", label: "PAY-1", detail: "")
-        XCTAssertEqual(
-            MentionTokenizer.liveMentions(text: "ping @Anna about it", mentions: [anna, pay, anna]),
-            [anna]
-        )
-    }
-
-    func testReferenceTokensAndInsertionText() {
-        XCTAssertEqual(MentionCandidate(kind: .person, ref: "1:U1", label: "Anna", detail: "").referenceToken, "person:1:U1")
-        XCTAssertEqual(MentionCandidate(kind: .channel, ref: "1:C1", label: "#pay", detail: "").referenceToken, "channel:1:C1")
-        XCTAssertEqual(MentionCandidate(kind: .jira, ref: "PAY-1", label: "PAY-1", detail: "").referenceToken, "jira:PAY-1")
-        XCTAssertEqual(MentionCandidate(kind: .linear, ref: "ENG-1", label: "ENG-1", detail: "").referenceToken, "linear:ENG-1")
-        XCTAssertEqual(MentionCandidate(kind: .target, ref: "5", label: "Ship", detail: "").referenceToken, "target:5")
-        XCTAssertEqual(MentionCandidate(kind: .track, ref: "9", label: "Rev", detail: "").referenceToken, "track:9")
-        XCTAssertEqual(MentionCandidate(kind: .channel, ref: "1:C1", label: "#pay", detail: "").insertionText, "@#pay")
-    }
-
-    func testCandidateFromHitSkipsJiraProjects() {
-        XCTAssertNil(MentionCandidate(hit: ChatEntityHit(kind: .jiraProject, ref: "PAY", label: "PAY", detail: "")))
-        XCTAssertNil(MentionCandidate(hit: ChatEntityHit(kind: .confluenceSpace, ref: "ENG", label: "ENG", detail: "")))
-        XCTAssertEqual(
-            MentionCandidate(hit: ChatEntityHit(kind: .jiraIssue, ref: "PAY-1", label: "PAY-1", detail: "x"))?.kind,
-            .jira
-        )
-        XCTAssertEqual(
-            MentionCandidate(hit: ChatEntityHit(kind: .linearIssue, ref: "ENG-1", label: "ENG-1", detail: "x"))?.kind,
-            .linear
-        )
-    }
-
-    /// A raw newline in a label would break the single-line REFERENCED
-    /// format and the `@Label` insertion text (review Minor a) — collapsed
-    /// to a space at construction, in both initializers.
-    func testMentionCandidateCollapsesNewlinesInLabel() {
-        let direct = MentionCandidate(kind: .person, ref: "1:U1", label: "Anna\r\nIvanova\nJane", detail: "")
-        XCTAssertEqual(direct.label, "Anna Ivanova Jane")
-        XCTAssertFalse(direct.insertionText.contains("\n"))
-
-        let hit = ChatEntityHit(kind: .target, ref: "5", label: "Ship\nit", detail: "")
-        XCTAssertEqual(MentionCandidate(hit: hit)?.label, "Ship it")
     }
 
     func testActiveSkillOnlyAtTheStartOfTheDraft() {

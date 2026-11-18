@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// The registrations of the loopback preview server: each is one folder
 /// (a workbench html file's own folder) under its own random, unguessable

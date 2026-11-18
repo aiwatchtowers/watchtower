@@ -9,12 +9,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// policyHygieneMigration is the version of 00194_policy_hygiene.sql.
-const policyHygieneMigration = 194
+// policyHygieneMigration is the version of 00195_policy_hygiene.sql.
+const policyHygieneMigration = 195
 
 // TestMigration_PeopleSurveillanceCleared replays goose to the version
-// before 00194, seeds a card with the dropped fields set, a summary with an
-// attention list and one row in each legacy table, applies 00194 and checks
+// before 00195, seeds a card with the dropped fields set, a summary with an
+// attention list and one row in each legacy table, applies 00195 and checks
 // the fields are back at their defaults and the legacy tables are empty.
 // Running the Up's data statements again changes nothing.
 func TestMigration_PeopleSurveillanceCleared(t *testing.T) {
@@ -76,7 +76,7 @@ func TestMigration_PeopleSurveillanceCleared(t *testing.T) {
 // stripped.
 func policyHygieneUpStatements(t *testing.T) []string {
 	t.Helper()
-	body, err := migrationsFS.ReadFile("migrations/00194_policy_hygiene.sql")
+	body, err := migrationsFS.ReadFile("migrations/00195_policy_hygiene.sql")
 	require.NoError(t, err)
 	up, _, ok := strings.Cut(string(body), "-- +goose Down")
 	require.True(t, ok)

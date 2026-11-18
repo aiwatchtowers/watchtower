@@ -92,7 +92,7 @@ func init() {
 	desktop := &cobra.Command{Use: "desktop", Short: "Desktop's reports to the hub"}
 	beat := &cobra.Command{Use: "heartbeat", Short: "Tell the hub Desktop (the transcriber) is running", Args: cobra.NoArgs, RunE: runHubDesktopHeartbeat}
 	beat.Flags().Bool("json", false, "print JSON")
-	beat.Flags().Int("chat-lease", 0, "1 = this app honours the chat turn lease (the iPhone chat runs only beside such an app)")
+	beat.Flags().Int("chat-lease", 0, "accepted and ignored (an older app sends it; chat no longer depends on the app)")
 	desktop.AddCommand(beat)
 
 	recording := &cobra.Command{Use: "recording", Short: "Phone recording jobs"}
@@ -151,7 +151,7 @@ func runHubDesktopHeartbeat(cmd *cobra.Command, _ []string) error {
 	}
 	a, err := hubWrite(hub.ControlRequest{Op: hub.OpDesktopHeartbeat, ChatLease: lease}, func(_ string, st *state.Store) (hub.ControlAnswer, error) {
 		now := hubNow()
-		return hub.ControlAnswer{OK: true, At: &now}, st.HeartbeatChat(now, lease == 1)
+		return hub.ControlAnswer{OK: true, At: &now}, st.Heartbeat(now)
 	})
 	if err != nil {
 		return err

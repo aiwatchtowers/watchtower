@@ -1,3 +1,4 @@
+import ChatWire
 import Foundation
 
 /// What a provider's transport offers: the Go capability table
@@ -82,18 +83,15 @@ package struct ProviderCapabilities: Decodable, Equatable, Sendable {
     /// The transport reads a folder's files itself.
     package var readsFolder: Bool { !readFolder.isEmpty && readFolder != "none" }
     /// The transport takes any binary attachment (an image or a PDF).
-    package var takesAttachments: Bool { images || pdfs }
+    package var takesAttachments: Bool { chatCaps.takesAttachments }
 
     /// Why the composer cannot attach a file to this transport (mockup U1,
-    /// spec §3.7); nil when it takes images or PDFs.
-    package var attachUnavailableReason: String? {
-        takesAttachments ? nil : "Images and PDFs need a provider that reads them."
-    }
+    /// spec §3.7); nil when it takes images or PDFs. The copy is the chat's
+    /// (`ChatProviderCaps`), one table for the Mac and the phone.
+    package var attachUnavailableReason: String? { chatCaps.attachUnavailableReason }
 
     /// Why the composer refuses a PDF from a transport that takes images
     /// only (Codex); nil when it takes PDFs, or takes no attachment at all
     /// (`attachUnavailableReason` names that).
-    package var pdfUnavailableReason: String? {
-        takesAttachments && !pdfs ? "PDFs need a provider that reads them." : nil
-    }
+    package var pdfUnavailableReason: String? { chatCaps.pdfUnavailableReason }
 }

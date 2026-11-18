@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"watchtower/internal/auditlog"
+	"watchtower/internal/chat/listenstub"
 	"watchtower/internal/codex"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
@@ -60,6 +61,10 @@ import (
 func TestMain(m *testing.M) {
 	// Read tests' audit lines stay out of the machine's unified log.
 	auditlog.SetSinkForTest(func(string) {})
+	// The `ai session --listen` stand-in (sync stop's chat tests).
+	if os.Getenv(listenstub.Env) == "1" {
+		listenstub.Main()
+	}
 	if len(os.Args) == 3 && os.Args[1] == extractPDFTextCmd.Name() {
 		if err := extract.ServePDFHelper(os.Stdout, os.Stderr, os.Args[2]); err != nil {
 			os.Exit(1)

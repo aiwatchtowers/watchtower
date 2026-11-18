@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// Owner asks without the mouse (board #412, spec 2026-10-10 Part 9.4):
 /// which action a key press means where the keyboard is. Every key here is
@@ -208,25 +209,5 @@ package enum OwnerAskKeyStop: Hashable, Sendable {
         guard !order.isEmpty else { return nil }
         guard let active, let place = order.firstIndex(of: active) else { return forward ? order.first : order.last }
         return order[(place + (forward ? 1 : order.count - 1)) % order.count]
-    }
-}
-
-extension ChatQuestionAnswer.Entry {
-    /// `label` clicked or picked by its digit: a multi-choice question's
-    /// labels toggle it; a single-choice question's become it alone, its
-    /// Other cleared (one answer per single-choice question).
-    package func toggling(_ label: String, multi: Bool) -> Self {
-        var entry = self
-        if multi {
-            if let index = entry.labels.firstIndex(of: label) {
-                entry.labels.remove(at: index)
-            } else {
-                entry.labels.append(label)
-            }
-        } else {
-            entry.labels = [label]
-            entry.other = nil
-        }
-        return entry
     }
 }

@@ -297,7 +297,7 @@ func (db *DB) SlackRosterSyncedAt(id int64) (time.Time, error) {
 }
 
 // SlackEmojiScopeMissing reports whether accountID's legacy token (no
-// recorded grant) answered emoji.list with missing_scope (migration 00194);
+// recorded grant) answered emoji.list with missing_scope (migration 00195);
 // false for a missing row.
 func (db *DB) SlackEmojiScopeMissing(id int64) (bool, error) {
 	var missing bool

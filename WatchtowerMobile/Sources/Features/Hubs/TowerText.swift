@@ -215,6 +215,14 @@ enum ChatText {
     /// Mockup 2h.
     static func newChatTitle(_ host: TowerHost) -> String { host == .mac ? "Ask your Mac" : "Ask your tower" }
 
+    /// What the phone's chat cannot do (project editing, artifact comments, files by path): the app there does.
+    static func onlyOnTower(_ host: TowerHost) -> String {
+        host == .mac ? "This works in Watchtower on your Mac." : "This works in Watchtower on your tower."
+    }
+
+    /// A page or a search whose record did not come within the patience.
+    static func noAnswerRetry(_ host: TowerHost) -> String { "\(noAnswer(host)). Try again." }
+
     /// Mockup 2c without the `permissions` grant.
     static func approveElsewhere(_ host: TowerHost) -> String { host == .mac ? "Approve on the Mac" : "Approve on your tower" }
 

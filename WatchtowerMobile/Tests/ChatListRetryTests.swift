@@ -1,3 +1,4 @@
+import ChatWire
 import WatchtowerKit
 @testable import WatchtowerSync
 import XCTest

@@ -263,7 +263,7 @@ RunRollups(ctx)
 
 ## Pipeline 3: People Cards
 
-`internal/guide` (`Pipeline.Run`). The earlier per-user analysis (`analysis.user`, `user_analyses`, active-hours and volume statistics, red flags, the period summary's attention list) was removed in #1769; its rows were deleted by migration 00194 and nothing writes them.
+`internal/guide` (`Pipeline.Run`). The earlier per-user analysis (`analysis.user`, `user_analyses`, active-hours and volume statistics, red flags, the period summary's attention list) was removed in #1769; its rows were deleted by migration 00195 and nothing writes them.
 
 ### Algorithm: Run
 

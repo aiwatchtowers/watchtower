@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// The press-time check of a card link (`link`, an action's `open`). Go
 /// refuses any other link at write time; this is defence in depth against a

@@ -58,10 +58,10 @@ package struct InboxRowActionsContent: Equatable {
         case idea(kind: Idea.Kind, status: Idea.Status, awaitsVerdict: Bool)
         /// A due reminder: Done, Snooze 1h.
         case reminder
-        /// A proposal: its own summary (`AgentActionCardView.rowSummary`),
+        /// A proposal: its own summary (`MacAgentActionCard.rowSummary`),
         /// drawn under the row's line next to Approve whatever the look's
         /// row says (A's contract item 3), and the buttons its native card
-        /// offers today (`AgentActionCardView.rowButtons`).
+        /// offers today (`MacAgentActionCard.rowButtons`).
         case action(summary: String, buttons: [ActionButton])
     }
 

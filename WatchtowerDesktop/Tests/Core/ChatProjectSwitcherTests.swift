@@ -1,6 +1,5 @@
+import ChatWire
 import XCTest
-import GRDB
-import WatchtowerTestSupport
 @testable import WatchtowerCore
 
 final class ChatProjectSwitcherTests: XCTestCase {
@@ -43,56 +42,32 @@ final class ChatProjectSwitcherTests: XCTestCase {
                        [SwitcherSegment(text: "8d", tone: .secondary)])
     }
 
-    func testRowsCountAnsweringChatsPerProjectAndOrder() {
-        let summaries = [summary(1, "old", at: 10, answering: 5), summary(2, "new", at: 20)]
-        let chats: [(id: Int64, projectID: Int64?)] = [(10, 1), (11, 1), (12, 2), (13, nil), (14, 1)]
-        let answering: Set<Int64> = [10, 11, 13]
-        let rows = Presentation.rows(summaries, chats: chats) { answering.contains($0) }
-        XCTAssertEqual(rows.map(\.id), [2, 1])
-        // A stale count is replaced, a chat outside any project counts nowhere.
-        XCTAssertEqual(rows.map(\.answeringCount), [0, 2])
-    }
-
-    func testSwitcherSummaries() throws {
-        let db = try TestDatabase.create()
-        try db.write { d in
-            try d.execute(sql: "INSERT INTO chat_projects (id, name, created_at, updated_at) VALUES (1,'A',0,100),(2,'Empty',0,70)")
-            try d.execute(sql: "INSERT INTO chat_projects (id, name, created_at, updated_at, archived_at) VALUES (3,'Gone',0,0,5)")
-            // c1: unread answer; c2: read; c3: no answer; c4 archived; c5 no project
-            for id in 1...5 {
-                try d.execute(sql: """
-                    INSERT INTO chat_conversations (id, title, created_at, updated_at, project_id, read_at, archived_at)
-                    VALUES (?, 't', 0, ?, ?, ?, ?)
-                    """, arguments: [id, Double(200 + id), id == 5 ? nil : 1, id == 2 ? 500.0 : nil, id == 4 ? 1.0 : nil])
-            }
-            try d.execute(sql: "INSERT INTO chat_conversations (id, title, created_at, updated_at, project_id) VALUES (6,'t',0,1,3)")
-            for (conv, at) in [(1, 300.0), (2, 300.0), (4, 300.0), (5, 300.0), (6, 300.0)] {
-                try d.execute(sql: """
-                    INSERT INTO chat_messages (conversation_id, role, text, status, created_at)
-                    VALUES (?, 'assistant', 'hi', 'complete', ?)
-                    """, arguments: [conv, at])
-            }
-            for conv in [1, 1, 5] {
-                try d.execute(sql: """
-                    INSERT INTO agent_actions (conversation_id, status, tool, args_json, created_at)
-                    VALUES (?, 'pending', 't', '{}', 0)
-                    """, arguments: [conv])
-            }
+    /// One row per listed project from the engine's list: its chats' states counted, the latest chat update, no
+    /// age for a project without chats; a chat in the Undo window counts for nothing (spec §5.3).
+    func testSummariesCountTheListsStates() {
+        let a = ChatList.Project(id: 1, name: "A")
+        let empty = ChatList.Project(id: 2, name: "Empty")
+        func chat(_ id: Int64, _ state: ChatList.State, at: Double, project: ChatList.Project?) -> ChatList.Conversation {
+            ChatList.Conversation(id: id, title: "t", updatedAt: Date(timeIntervalSince1970: at), project: project,
+                                  state: state)
         }
-        let rows = try db.read { try ChatProjectQueries.switcherSummaries($0) }.sorted { $0.id < $1.id }
-        XCTAssertEqual(rows.map(\.id), [1, 2], "archived project excluded")
+        let list = ChatList(conversations: [
+            chat(1, .unread, at: 201, project: a), chat(2, .waiting, at: 202, project: a),
+            chat(3, .answering, at: 203, project: a), chat(4, .read, at: 204, project: nil)
+        ], projects: [a, empty])
+        let rows = Presentation.summaries(list)
+        XCTAssertEqual(rows.map(\.id), [1, 2], "latest activity first; a project with no chat last")
         XCTAssertEqual(rows[0].unreadCount, 1)
-        XCTAssertEqual(rows[0].waitingCount, 2)
-        XCTAssertEqual(rows[0].lastActivity, Date(timeIntervalSince1970: 203), "archived chat 4 and project-less 5 ignored")
-        XCTAssertEqual(rows[1].lastActivity, Date(timeIntervalSince1970: 70), "falls back to the project")
-        XCTAssertEqual(rows[1].unreadCount, 0)
+        XCTAssertEqual(rows[0].waitingCount, 1)
+        XCTAssertEqual(rows[0].answeringCount, 1)
+        XCTAssertEqual(rows[0].lastActivity, Date(timeIntervalSince1970: 203), "a chat outside the project is ignored")
+        XCTAssertEqual(rows[1].lastActivity, .distantPast)
+        XCTAssertEqual(Presentation.segments(summary: rows[1], now: now), [], "no age without a chat")
 
-        // A chat waiting in the panel's Undo window counts for nothing (spec §5.3).
-        let hidingFirst = try db.read { try ChatProjectQueries.switcherSummaries($0, hiding: [1]) }.sorted { $0.id < $1.id }
-        XCTAssertEqual(hidingFirst[0].unreadCount, 0)
-        XCTAssertEqual(hidingFirst[0].waitingCount, 0)
-        let hidingNewest = try db.read { try ChatProjectQueries.switcherSummaries($0, hiding: [3, 2]) }.sorted { $0.id < $1.id }
-        XCTAssertEqual(hidingNewest[0].lastActivity, Date(timeIntervalSince1970: 201))
-        XCTAssertEqual(hidingNewest[0].unreadCount, 1)
+        let hiding = Presentation.summaries(list, hiding: [1, 3])
+        XCTAssertEqual(hiding[0].unreadCount, 0)
+        XCTAssertEqual(hiding[0].answeringCount, 0)
+        XCTAssertEqual(hiding[0].lastActivity, Date(timeIntervalSince1970: 202))
+        XCTAssertTrue(Presentation.summaries(nil).isEmpty)
     }
 }

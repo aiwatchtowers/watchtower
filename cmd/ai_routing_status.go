@@ -9,20 +9,18 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/config"
-	"watchtower/internal/digest"
 	"watchtower/internal/providerhealth"
 	"watchtower/internal/providerrouting"
-	"watchtower/internal/providers"
 )
 
+// routingStatusOutput is providerrouting.Output after the command's own
+// application fields (the embedded struct's keys follow them, so the bytes
+// are as before).
 type routingStatusOutput struct {
-	ApplicationError  string                   `json:"application_error,omitempty"`
-	SavedVersion      string                   `json:"saved_version,omitempty"`
-	Application       *routingApplication      `json:"application,omitempty"`
-	Revision          string                   `json:"revision"`
-	PreferredProvider string                   `json:"preferred_provider"`
-	Enabled           bool                     `json:"enabled"`
-	Providers         []providerrouting.Status `json:"providers"`
+	ApplicationError string              `json:"application_error,omitempty"`
+	SavedVersion     string              `json:"saved_version,omitempty"`
+	Application      *routingApplication `json:"application,omitempty"`
+	providerrouting.Output
 }
 
 // Tests replace only the acknowledgement reader; production retains strict
@@ -45,34 +43,14 @@ func init() {
 				return err
 			}
 			router := &providerrouting.Router{Health: health}
-			req := providerrouting.Request{Tier: digest.TierStrong, Model: func(p string, _ digest.Tier) string {
-				_, model := providers.ResolveModelsFor(cfg, p)
-				return model
-			}}
 			application, applicationErr := routingStatusApplication(cfg)
-			out := routingStatusOutput{SavedVersion: routingSavedVersion(flagConfig), Revision: providers.RoutingRevision(cfg), PreferredProvider: cfg.AI.ConfiguredProviderID(), Enabled: cfg.AI.Fallback.Enabled,
-				Providers: []providerrouting.Status{}, Application: application}
+			status, err := providerrouting.ReadStatus(cmd.Context(), cfg, router, checkAgain)
+			if err != nil {
+				return err
+			}
+			out := routingStatusOutput{SavedVersion: routingSavedVersion(flagConfig), Application: application, Output: status}
 			if applicationErr != nil {
 				out.ApplicationError = routingApplicationError(applicationErr)
-			}
-			for _, p := range []string{out.PreferredProvider, cfg.AI.Fallback.Provider} {
-				if p == "" {
-					continue
-				}
-				if c, ok := providers.CapsFor(p); !ok || !c.Quota {
-					continue // only a provider with a subscription quota has a status
-				}
-				var status providerrouting.Status
-				var err error
-				if checkAgain {
-					status, err = router.CheckStatus(cmd.Context(), req, p)
-				} else {
-					status, err = router.Status(cmd.Context(), req, p)
-				}
-				if err != nil {
-					return err
-				}
-				out.Providers = append(out.Providers, status)
 			}
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(out)
 		}}
