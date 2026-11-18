@@ -717,3 +717,23 @@ func TestLearn_RelabelFailureLogIsRedacted(t *testing.T) {
 	assert.Contains(t, buf.String(), "the relabel pass stopped after 0 precedents, 1 left")
 	assert.NotContains(t, buf.String(), "secret plan")
 }
+
+// A permission row whose session is being deleted reads as missing: parked.
+func TestRelabel_DeletingSessionPermissionIsParked(t *testing.T) {
+	d := openSourceDB(t)
+	require.NoError(t, d.EnableWatchmanWorkbench(1, learnT0, 0))
+	s := seedSession(t, d, 1, nil)
+	at := srcT0
+	id := seedPermission(t, d, s, 1, "Bash", "go test ./...", "allowed", &at)
+	_, err := d.Exec(`UPDATE terminal_sessions SET delete_requested_at = '2026-11-02T09:00:00Z' WHERE id = ?`, s)
+	require.NoError(t, err)
+	rows := listRows(1, SourcePermission, 1, CategoryPermission)
+	rows[0].SourceKey = strconv.FormatInt(id, 10)
+	seedUnflagged(t, d, rows)
+
+	_, err = Learn(context.Background(), d, 1, LearnOptions{Now: fixedNow, Labeler: &fakeLabeler{}})
+	require.NoError(t, err)
+	f := flagsOf(t, d, 1, SourcePermission, rows[0].SourceKey)
+	assert.Equal(t, wmBool(true), f.Decision)
+	assert.Equal(t, wmBool(true), f.Parked, "an unparked command, parked because its session is deleting")
+}

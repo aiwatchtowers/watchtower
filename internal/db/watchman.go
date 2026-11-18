@@ -417,7 +417,7 @@ const (
 			s.folder_path, COALESCE(p.folder_path, ''),
 			(SELECT COALESCE(json_group_array(w.root), '[]') FROM terminal_session_worktrees w WHERE w.session_id = r.terminal_session_id)
 		FROM permission_requests r
-		JOIN terminal_sessions s ON s.id = r.terminal_session_id
+		JOIN terminal_sessions s ON s.id = r.terminal_session_id AND s.` + NotDeletingSQL + `
 		LEFT JOIN projects p ON p.id = r.workbench_id
 		WHERE r.workbench_id = ? AND r.status IN ('allowed','denied')`
 )
@@ -583,7 +583,8 @@ func (db *DB) WatchmanPermissionDecisions(workbenchID int64, from *WatchmanMark,
 
 // WatchmanPermissionRequests returns the workbench's decided permission
 // requests with the given ids, by id; an id with no such row (deleted, its
-// session gone, undecided, another workbench) is absent from the map.
+// session gone or deleting, undecided, another workbench) is absent from the
+// map.
 func (db *DB) WatchmanPermissionRequests(workbenchID int64, ids []int64) (map[int64]WatchmanPermissionRow, error) {
 	out := map[int64]WatchmanPermissionRow{}
 	if len(ids) == 0 {
