@@ -528,10 +528,12 @@ final class FakeHostedRelayTests: XCTestCase {
         let socket = try await liveSocket(relay, phone, subscribe: [zone])
         // Two records filling the budget exactly: envelope + 1 (name) + zone + 32 each.
         let fill = (128 << 10) - 1 - zone.utf8.count - 32
-        _ = try saveResult(relay, mac, [item(zone, "a", String(repeating: "x", count: fill)), item(zone, "b", String(repeating: "y", count: fill))])
+        let half = String(repeating: "x", count: fill)
+        _ = try saveResult(relay, mac, [item(zone, "a", half), item(zone, "b", half)])
         let fits = try await frame(socket).event.zoneChanged
         XCTAssertEqual(fits.records.map(\.name), ["a", "b"], "exactly the budget fits")
-        _ = try saveResult(relay, mac, [item(zone, "c", String(repeating: "x", count: fill)), item(zone, "d", String(repeating: "y", count: fill + 1))])
+        let over = String(repeating: "y", count: fill + 1)
+        _ = try saveResult(relay, mac, [item(zone, "c", String(repeating: "x", count: fill)), item(zone, "d", over)])
         let first = try await frame(socket).event.zoneChanged
         XCTAssertEqual(first.records.map(\.name), ["c"], "one byte over: split")
         let second = try await frame(socket).event.zoneChanged

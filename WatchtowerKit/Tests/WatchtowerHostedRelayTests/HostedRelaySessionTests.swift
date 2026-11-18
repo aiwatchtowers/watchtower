@@ -107,7 +107,7 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         await eventually { probe.zoneEvents.contains { $0.seq == 7 } }
 
         let counts = probe.events.compactMap { event -> Int? in
-            guard case .zoneChanged(_, let seq, let records) = event, seq > 0 else { return nil }
+            guard case let .zoneChanged(_, seq, records) = event, seq > 0 else { return nil }
             return records.count
         }
         XCTAssertEqual(counts, [1, 1, 1, 1, 1, 0, 1], "the sixth is over the bound; the small seventh fits")
