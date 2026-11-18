@@ -425,7 +425,6 @@ private struct CodeFilesRootRow: View {
             .buttonStyle(.plain)
             .onHover { isHovering = $0 }
             .animation(Motion.toggle, value: isHovering)
-            .accessibilityElement(children: .ignore)
             .accessibilityLabel(line.accessibilityLabel)
             .accessibilityValue(CodeFilesRootLine.accessibilityValue(expanded: isExpanded))
     }
