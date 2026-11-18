@@ -23,9 +23,9 @@ const Port = 18551
 // URL our manifest registers. http on the loopback is allowed only because
 // the app has PKCE on (without it Slack treats the redirect as a server one,
 // which must be https: https://docs.slack.dev/authentication/using-pkce).
-// Slack matches the redirect with its port and documents no loopback port
-// wildcard (https://docs.slack.dev/authentication/installing-with-oauth), so
-// the port is fixed: with 18551 busy nothing can finish a connect (A9). The
+// The plan B spike (Q4) found that Slack matches the redirect with its scheme
+// and port and offers no loopback port wildcard, so the port is fixed: with
+// 18551 busy nothing can finish a connect (A9). The
 // IP literal, not "localhost", is what the listener binds and checks in Host
 // (RFC 8252 §8.3).
 var RedirectURL = "http://127.0.0.1:" + strconv.Itoa(Port) + callbackPath

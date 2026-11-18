@@ -97,6 +97,7 @@ func slackAppTestCmd(stdin string, flags map[string]string) (*cobra.Command, *by
 	c.Flags().Bool("clear", false, "")
 	c.Flags().Bool("attach", false, "")
 	c.Flags().String("client-id", "", "")
+	c.Flags().Bool("enable-pkce", false, "")
 	for k, v := range flags {
 		_ = c.Flags().Set(k, v)
 	}
@@ -344,4 +345,38 @@ func TestAppSetup_AdoptWrongTeamCLI(t *testing.T) {
 	assert.Equal(t, "wrong_team", lines[len(lines)-1]["result"])
 	assert.Equal(t, []string{"auth.test"}, fake.calls, "nothing exported or updated")
 	require.NotNil(t, slackAppAdoptCmd.Flags().Lookup("team"), "the Desktop passes --team to adopt")
+}
+
+// TestAppSetup_AdoptPKCEConsentCLI: adopt without --enable-pkce changes
+// nothing on an app without PKCE and says so; with it, PKCE is turned on.
+func TestAppSetup_AdoptPKCEConsentCLI(t *testing.T) {
+	cfg, _ := setupSlackAppWorkspace(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	id, err := database.CreateSlackAccount(db.SlackAccount{TeamID: "T0ACME", TeamName: "Acme", CurrentUserID: "1:U1"})
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE slack_accounts SET client_id = '5555.6666', app_id = 'A0CORP', status = 'ok' WHERE id = ?`, id)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+	fake := &fakeSlackAppServer{manifest: `{"display_information":{"name":"Acme Watchtower"},"oauth_config":{"scopes":{"user":[]}}}`}
+	fake.serve(t)
+
+	c, out, _ := slackAppTestCmd(slackAppTestToken+"\n", map[string]string{"json": "true", "team": "T0ACME"})
+	require.NoError(t, runSlackAppAdopt(c, nil))
+	lines := jsonLines(t, out.String())
+	assert.Equal(t, "needs_pkce_consent", lines[len(lines)-1]["result"])
+	assert.NotContains(t, fake.calls, "apps.manifest.update", "nothing changed without --enable-pkce")
+
+	c, _, _ = slackAppTestCmd(slackAppTestToken+"\n", map[string]string{"team": "T0ACME"})
+	err = runSlackAppAdopt(c, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--enable-pkce")
+
+	c, out, _ = slackAppTestCmd(slackAppTestToken+"\n", map[string]string{"json": "true", "team": "T0ACME", "enable-pkce": "true"})
+	require.NoError(t, runSlackAppAdopt(c, nil))
+	lines = jsonLines(t, out.String())
+	assert.Equal(t, "ok", lines[len(lines)-1]["result"])
+	assert.Contains(t, fake.manifest, `"pkce_enabled":true`)
+	require.NotNil(t, slackAppAdoptCmd.Flags().Lookup("enable-pkce"))
+	assert.Contains(t, slackAppAdoptCmd.Long, "only Slack support can turn it off")
 }

@@ -46,8 +46,13 @@ var slackAppCreateCmd = &cobra.Command{
 var slackAppAdoptCmd = &cobra.Command{
 	Use:   "adopt",
 	Short: "Bring the workspace's existing Watchtower app in line with ours (token on stdin)",
-	Args:  noArgsToken,
-	RunE:  runSlackAppAdopt,
+	Long: "Adds the loopback redirect URL, any missing user scopes and the connect link to\n" +
+		"the workspace's existing Watchtower app, and turns on PKCE sign-in for it. Turning\n" +
+		"PKCE on is one-way: only Slack support can turn it off, and the app's refresh tokens\n" +
+		"then expire after 30 days. Pass --enable-pkce to agree; without it an app that does\n" +
+		"not have PKCE yet is left unchanged (needs_pkce_consent).",
+	Args: noArgsToken,
+	RunE: runSlackAppAdopt,
 }
 
 var slackAppLinkCmd = &cobra.Command{
@@ -82,6 +87,7 @@ func init() {
 	}
 	slackAppAdoptCmd.Flags().String("app-id", "", "the app's App ID (Basic Information page), when Watchtower does not know it")
 	slackAppAdoptCmd.Flags().String("confirm-app-id", "", "repeat --app-id after checking the app's name (confirm_app)")
+	slackAppAdoptCmd.Flags().Bool("enable-pkce", false, "agree to turn on PKCE sign-in for the app (one-way: only Slack support can turn it off)")
 	slackAppLinkCmd.Flags().String("team", "", "the workspace's team id (default: the token's workspace)")
 	slackAppAdoptCmd.Flags().String("team", "", "the workspace the app must be in; another workspace's token changes nothing (wrong_team)")
 	slackAppPendingCmd.Flags().String("team", "", "the workspace's team id (required)")
@@ -143,8 +149,9 @@ func runSlackAppAdopt(cmd *cobra.Command, _ []string) error {
 	appID, _ := cmd.Flags().GetString("app-id")
 	confirm, _ := cmd.Flags().GetString("confirm-app-id")
 	team, _ := cmd.Flags().GetString("team")
+	enablePKCE, _ := cmd.Flags().GetBool("enable-pkce")
 	return runSlackAppSetup(cmd, func(ctx context.Context, r *slackapp.Runner, tok string) (slackapp.Result, error) {
-		return r.Adopt(ctx, tok, strings.TrimSpace(team), strings.TrimSpace(appID), strings.TrimSpace(confirm))
+		return r.Adopt(ctx, tok, strings.TrimSpace(team), strings.TrimSpace(appID), strings.TrimSpace(confirm), enablePKCE)
 	})
 }
 
@@ -231,6 +238,9 @@ func printSlackAppResult(out io.Writer, res slackapp.Result) error {
 		fmt.Fprintf(out, "App %s is %q. If that is your Watchtower app, run again with --confirm-app-id %s; nothing was changed.\n",
 			res.AppID, res.AppName, res.AppID)
 		return nil
+	case slackapp.KindNeedsPKCEConsent:
+		return fmt.Errorf("adopting app %s turns on PKCE sign-in, which only Slack support can turn off; "+
+			"run again with --enable-pkce to agree. Nothing was changed", res.AppID)
 	case slackapp.KindExists:
 		fmt.Fprintf(out, "%s already has Watchtower's app %s (client id %s); nothing was created.\n", res.TeamName, res.AppID, res.ClientID)
 		return nil

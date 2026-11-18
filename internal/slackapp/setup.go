@@ -37,6 +37,9 @@ const (
 	KindLinkFailed      = "link_failed" // the app was created, the About link was not written
 	KindStorage         = "storage"     // Slack did its part, the local database write failed (Err holds why)
 	KindBusy            = "busy"        // another setup run holds the lock
+	// KindNeedsPKCEConsent: adopt would turn PKCE on (one-way) and the run
+	// did not opt in (--enable-pkce); nothing was changed.
+	KindNeedsPKCEConsent = "needs_pkce_consent"
 )
 
 // Codes of a KindNeedAppID or KindBadIDs result.
@@ -90,9 +93,12 @@ var (
 		"invalid_auth": true, "not_authed": true, "token_expired": true, "token_revoked": true,
 		"account_inactive": true, "not_allowed_token_type": true,
 	}
-	// The workspace does not let this user make or change apps.
-	notAllowedCodes = map[string]bool{
-		"restricted_action": true, "access_denied": true, "feature_not_enabled": true,
+	notAllowedCodes = map[string]bool{"restricted_action": true}
+	// createNotAllowedCodes are apps.manifest.create's codes for "this user
+	// may not make apps here" (its error table); only a create maps them to
+	// KindNotAllowed — on adopt/link no_permission is not_collaborator.
+	createNotAllowedCodes = map[string]bool{
+		"no_permission": true, "access_denied": true, "feature_not_enabled": true,
 		"team_access_not_granted": true,
 	}
 	// no_permission: the creator's config token on someone else's app (Q11).
@@ -352,10 +358,7 @@ func (r *Runner) createApp(ctx context.Context, cfgToken string, link Link) (app
 			return "", "", &Result{Kind: KindPendingCreate, Error: pendingCreateHelp + " (" + err.Error() + ")"}
 		}
 		f := failure(err)
-		if f.Kind == KindNotCollaborator {
-			// no_permission on a create: the token may not make apps here
-			// (apps.manifest.create's error table); there is no app to
-			// collaborate on yet.
+		if createNotAllowedCodes[f.Code] {
 			f.Kind = KindNotAllowed
 		}
 		if dErr := r.DB.DeleteSlackAppSetup(link.TeamID); dErr != nil {
@@ -441,7 +444,12 @@ func adoptAppID(acct db.SlackAccount, appIDFlag string) (appID string, fromFlag 
 // changing nothing, until confirmAppID repeats that App ID; then
 // check_token → read_app → update_app. The record (link written) is
 // inserted only after the update succeeded.
-func (r *Runner) Adopt(ctx context.Context, cfgToken, team, appIDFlag, confirmAppID string) (Result, error) {
+//
+// The update turns PKCE on (MergeManifest), which Slack cannot undo without
+// its support. Unless enablePKCE (the owner's opt-in, --enable-pkce) is set
+// or the app already has PKCE on, update_app answers KindNeedsPKCEConsent
+// after reading the app and before changing anything.
+func (r *Runner) Adopt(ctx context.Context, cfgToken, team, appIDFlag, confirmAppID string, enablePKCE bool) (Result, error) {
 	return r.locked(func() (Result, error) {
 		teamID, teamName, fail := r.team(ctx, cfgToken)
 		if fail != nil {
@@ -501,6 +509,9 @@ func (r *Runner) Adopt(ctx context.Context, cfgToken, team, appIDFlag, confirmAp
 				if f := read(); f != nil {
 					return f
 				}
+			}
+			if !enablePKCE && !theirs.PKCEEnabled() {
+				return &Result{Kind: KindNeedsPKCEConsent}
 			}
 			m, err := MergeManifest(theirs, link)
 			if err != nil {

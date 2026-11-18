@@ -94,7 +94,8 @@ func BuildManifest(l Link) (Manifest, error) {
 // on is one-way and makes every refresh token the app issues expire after 30
 // days; PKCE arguments stay optional for the app's existing web-URL OAuth
 // flows (https://docs.slack.dev/authentication/using-pkce,
-// https://docs.slack.dev/changelog/2026/03/30/pkce). The adopt sheet says so
+// https://docs.slack.dev/changelog/2026/03/30/pkce). Adopt needs the
+// owner's opt-in for it (KindNeedsPKCEConsent); the adopt sheet says so
 // before Update the app. A manifest that carries a credentials object loses
 // it: secrets are never sent back or kept.
 func MergeManifest(theirs Manifest, l Link) (Manifest, error) {
@@ -134,6 +135,13 @@ func WithLongDescription(theirs Manifest, l Link) (Manifest, error) {
 	}
 	m.object("display_information")["long_description"] = long
 	return m, nil
+}
+
+// PKCEEnabled reports whether the manifest has oauth_config.pkce_enabled on.
+func (m Manifest) PKCEEnabled() bool {
+	oauth, _ := m["oauth_config"].(map[string]any)
+	on, _ := oauth["pkce_enabled"].(bool)
+	return on
 }
 
 // LongDescription is the manifest's About text, "" when it has none.

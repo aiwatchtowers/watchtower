@@ -274,7 +274,7 @@ func TestAppSetup_ConcurrentRunBusy(t *testing.T) {
 	defer unlock()
 	for name, run := range map[string]func() (Result, error){
 		"create": func() (Result, error) { return h.r.Create(context.Background(), cfgToken) },
-		"adopt":  func() (Result, error) { return h.r.Adopt(context.Background(), cfgToken, "", "", "") },
+		"adopt":  func() (Result, error) { return h.r.Adopt(context.Background(), cfgToken, "", "", "", true) },
 		"link":   func() (Result, error) { return h.r.Link(context.Background(), cfgToken, "") },
 	} {
 		res, err := run()
@@ -338,7 +338,7 @@ func TestAdopt_OK(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest()
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "", true)
 	require.NoError(t, err)
 	assert.Equal(t, Result{Kind: KindOK, TeamID: "T0ACME", TeamName: "Acme", AppID: "A0CORP", AppName: "Acme Watchtower", ClientID: "5555.6666", LinkWritten: true}, res)
 	assert.Equal(t, []Step{
@@ -360,7 +360,7 @@ func TestAdopt_AppIDFlag(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "", "ok")
 	h.api.manifests["A0FLAG"] = theirManifest()
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "A0FLAG", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "A0FLAG", "", true)
 	require.NoError(t, err)
 	assert.Equal(t, KindConfirmApp, res.Kind, "a flag-only App ID is confirmed by name first")
 	assert.Equal(t, "A0FLAG", res.AppID)
@@ -372,13 +372,13 @@ func TestAdopt_AppIDFlag(t *testing.T) {
 		{StepReadApp, StateRunning}, {StepReadApp, StateDone},
 	}, h.steps)
 
-	res, err = h.r.Adopt(context.Background(), cfgToken, "", "A0FLAG", "A0OTHER")
+	res, err = h.r.Adopt(context.Background(), cfgToken, "", "A0FLAG", "A0OTHER", true)
 	require.NoError(t, err)
 	assert.Equal(t, KindConfirmApp, res.Kind, "a confirmation of another id changes nothing")
 	assert.Zero(t, h.api.updates)
 
 	h.steps = nil
-	res, err = h.r.Adopt(context.Background(), cfgToken, "", "A0FLAG", "A0FLAG")
+	res, err = h.r.Adopt(context.Background(), cfgToken, "", "A0FLAG", "A0FLAG", true)
 	require.NoError(t, err)
 	assert.Equal(t, KindOK, res.Kind)
 	assert.Equal(t, "A0FLAG", res.AppID)
@@ -395,7 +395,7 @@ func TestAdopt_RowAppIDSkipsConfirm(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest()
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "A0CORP", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "A0CORP", "", true)
 	require.NoError(t, err)
 	assert.Equal(t, KindOK, res.Kind)
 	assert.Equal(t, 1, h.api.updates)
@@ -404,7 +404,7 @@ func TestAdopt_RowAppIDSkipsConfirm(t *testing.T) {
 func TestAdopt_ConfirmUnknownApp(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "", "ok")
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "A0GONE", "A0GONE")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "A0GONE", "A0GONE", true)
 	require.NoError(t, err)
 	assert.Equal(t, KindAppNotFound, res.Kind)
 	assert.Zero(t, h.api.updates)
@@ -413,7 +413,7 @@ func TestAdopt_ConfirmUnknownApp(t *testing.T) {
 func TestAdopt_NeedAppID(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "", "ok")
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "", true)
 	require.NoError(t, err)
 	assert.Equal(t, KindNeedAppID, res.Kind)
 	assert.Equal(t, "5555.6666", res.ClientID)
@@ -423,7 +423,7 @@ func TestAdopt_NeedAppID(t *testing.T) {
 
 func TestAdopt_NoApp(t *testing.T) {
 	h := newHarness(t)
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "A0X", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "A0X", "", true)
 	require.NoError(t, err)
 	assert.Equal(t, KindNoApp, res.Kind)
 	assert.Zero(t, h.api.exports)
@@ -433,7 +433,7 @@ func TestAdopt_NotCollaborator(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.exportErr = &SlackError{Method: "apps.manifest.export", Code: "no_permission"}
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "", true)
 	require.NoError(t, err)
 	assert.Equal(t, KindNotCollaborator, res.Kind)
 	assert.Equal(t, "no_permission", res.Code)
@@ -447,7 +447,7 @@ func TestAdopt_AppNotFound(t *testing.T) {
 		h := newHarness(t)
 		h.account(t, "T0ACME", "5555.6666", "A0GONE", "ok")
 		h.api.exportErr = &SlackError{Code: code}
-		res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "")
+		res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "", true)
 		require.NoError(t, err)
 		assert.Equal(t, KindAppNotFound, res.Kind, code)
 		assert.Empty(t, h.setups(t))
@@ -459,7 +459,7 @@ func TestAdopt_UpdateFailsNoRecord(t *testing.T) {
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest()
 	h.api.updateErrs = []error{&SlackError{Code: "invalid_manifest"}}
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "", true)
 	require.NoError(t, err)
 	assert.Equal(t, KindRefused, res.Kind)
 	assert.Equal(t, "invalid_manifest", res.Code)
@@ -470,7 +470,7 @@ func TestAdopt_SecretNeverStored(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest() // carries credentials.client_secret
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "", true)
 	require.NoError(t, err)
 	require.Equal(t, KindOK, res.Kind)
 	_, creds := h.api.lastUpdate["credentials"]
@@ -595,7 +595,7 @@ func TestAdopt_StorageAfterUpdate(t *testing.T) {
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest()
 	h.api.afterUpdate = func() { _ = h.db.Close() }
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "", true)
 	require.NoError(t, err)
 	assert.Equal(t, KindStorage, res.Kind)
 	assert.Error(t, res.Err)
@@ -614,7 +614,7 @@ func TestAdopt_AppIDFlagChecks(t *testing.T) {
 			h.account(t, "T0ACME", "5555.6666", tc.rowAppID, "ok")
 			h.api.manifests["A0CORP"] = theirManifest()
 			h.api.manifests["A0OTHER"] = theirManifest()
-			res, err := h.r.Adopt(context.Background(), cfgToken, "", tc.flag, "")
+			res, err := h.r.Adopt(context.Background(), cfgToken, "", tc.flag, "", true)
 			require.NoError(t, err)
 			assert.Equal(t, KindNeedAppID, res.Kind)
 			assert.Equal(t, tc.code, res.Code)
@@ -626,7 +626,7 @@ func TestAdopt_AppIDFlagChecks(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest()
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "A0CORP", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "A0CORP", "", true)
 	require.NoError(t, err)
 	assert.Equal(t, KindOK, res.Kind, "the row's own App ID repeated is fine")
 }
@@ -652,6 +652,53 @@ func TestAppSetup_CreateCodesThatMayHaveMadeTheApp(t *testing.T) {
 	for _, code := range []string{"invalid_auth", "invalid_manifest", "invalid_app", "restricted_action",
 		"no_permission", "ratelimited", "missing_scope", "not_in_team"} {
 		assert.True(t, notCreated(&SlackError{Code: code}), code)
+	}
+}
+
+// TestAdopt_PKCENeedsConsent: without the owner's opt-in, adopt of an app
+// without PKCE reads it and changes nothing (Slack cannot undo PKCE); an app
+// that already has PKCE on needs no opt-in.
+func TestAdopt_PKCENeedsConsent(t *testing.T) {
+	h := newHarness(t)
+	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
+	h.api.manifests["A0CORP"] = theirManifest()
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, KindNeedsPKCEConsent, res.Kind)
+	assert.Equal(t, "A0CORP", res.AppID)
+	assert.Zero(t, h.api.updates, "nothing updated without consent")
+	assert.Empty(t, h.setups(t))
+	assert.Equal(t, []Step{
+		{StepCheckToken, StateRunning}, {StepCheckToken, StateDone},
+		{StepUpdateApp, StateRunning}, {StepUpdateApp, StateFailed},
+	}, h.steps)
+
+	withPKCE := theirManifest()
+	withPKCE.object("oauth_config")["pkce_enabled"] = true
+	h.api.manifests["A0CORP"] = withPKCE
+	res, err = h.r.Adopt(context.Background(), cfgToken, "", "", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, KindOK, res.Kind, "PKCE already on: nothing one-way left to agree to")
+	assert.Equal(t, 1, h.api.updates)
+}
+
+// TestAdopt_CreateOnlyNotAllowedCodes: the create-only not_allowed codes keep
+// adopt's own mapping (no_permission = not a collaborator).
+func TestAdopt_CreateOnlyNotAllowedCodes(t *testing.T) {
+	for code, kind := range map[string]string{
+		"no_permission": KindNotCollaborator, "access_denied": KindRefused,
+		"feature_not_enabled": KindRefused, "team_access_not_granted": KindRefused,
+		"restricted_action": KindNotAllowed,
+	} {
+		t.Run(code, func(t *testing.T) {
+			h := newHarness(t)
+			h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
+			h.api.manifests["A0CORP"] = theirManifest()
+			h.api.updateErrs = []error{&SlackError{Code: code}}
+			res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "", true)
+			require.NoError(t, err)
+			assert.Equal(t, kind, res.Kind)
+		})
 	}
 }
 
@@ -738,14 +785,14 @@ func TestAdopt_WrongTeam(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest()
-	res, err := h.r.Adopt(context.Background(), cfgToken, "T0OTHER", "", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "T0OTHER", "", "", true)
 	require.NoError(t, err)
 	assert.Equal(t, Result{Kind: KindWrongTeam, TeamID: "T0ACME", TeamName: "Acme"}, res)
 	assert.Zero(t, h.api.exports)
 	assert.Zero(t, h.api.updates)
 	assert.Empty(t, h.setups(t))
 
-	res, err = h.r.Adopt(context.Background(), cfgToken, "T0ACME", "", "")
+	res, err = h.r.Adopt(context.Background(), cfgToken, "T0ACME", "", "", true)
 	require.NoError(t, err)
 	assert.Equal(t, KindOK, res.Kind, "the named team matches: the update runs")
 }

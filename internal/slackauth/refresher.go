@@ -16,11 +16,11 @@ import (
 // refresh_token call to it.
 const OAuthAccessURL = "https://slack.com/api/oauth.v2.access"
 
-// refreshExpiryField names the refresh token's lifetime (seconds) in the
-// refresh response: the name oauth.v2.access's reference lists
-// (https://docs.slack.dev/reference/methods/oauth.v2.access). Slack does not
-// document when it is sent; without it the token gets
-// slackRefreshTokenDefaultTTL.
+// refreshExpiryField is the refresh token's lifetime (seconds) if a refresh
+// response ever carries one. Slack documents no such field (neither the
+// oauth.v2.access reference nor the token-rotation page names it), so in
+// practice the token gets slackRefreshTokenDefaultTTL, the 30 days of the
+// PKCE changelog (https://docs.slack.dev/changelog/2026/03/30/pkce).
 const refreshExpiryField = "refresh_token_expires_in"
 
 // Error codes of oauth.v2.access after which only a new sign-in helps: the
