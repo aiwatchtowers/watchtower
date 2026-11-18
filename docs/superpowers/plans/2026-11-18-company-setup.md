@@ -409,7 +409,7 @@ Order: slack, google, atlassian, microsoft, linear (spec §3 step 2). A policy-f
 ```go
 type Draft struct {
     Company, Slug string; Services []string; Step string; StartedAt time.Time
-    Slack struct{ AppID string }; Google *companybundle.Google; Atlassian *companybundle.Atlassian
+    Slack DraftSlack; Google *companybundle.Google; Atlassian *companybundle.Atlassian
     Linear *companybundle.Linear; Microsoft *companybundle.Microsoft; DenyHosts []string
     Skipped []string; Checked map[string]string // vendor → sha256 of the checked values
     MicrosoftWaiting bool
@@ -417,12 +417,15 @@ type Draft struct {
 type DraftState string // "none", "ok", "unreadable"
 func (s Store) LoadDraft(now time.Time) (Draft, DraftState, string /*bad file name*/, error) // unreadable → rename, keep newest .bad only
 func (s Store) SaveDraft(d Draft) error; func (s Store) DiscardDraft() error // deletes draft + every .bad-*
+// SaveDraft keeps the stored StartedAt and Checked; only MarkDraftChecked writes a mark (hash taken when the check started)
+func (s Store) MarkDraftChecked(vendor, hash string) error // ErrDraftValuesChanged when hash is not the current values' (a late result)
+func ParseDraftJSON(raw []byte) (Draft, error) // strict; ErrSlackTokenInDraft for a token field or an xoxe… value
 func (s Store) CleanStaleBadDrafts(now time.Time) error                      // > 30 days
-func CheckHash(vendor string, d Draft) string; func (d Draft) IsChecked(vendor string) bool
-type Candidate struct{ Vendor, ClientID, AppID, Label, Source, SourceLabel string; HasSecret bool }
+func CheckHash(vendor string, d Draft) string; func (d Draft) IsChecked(vendor string) bool; func (d Draft) CheckedVendors() []string
+type Candidate struct{ Vendor, ClientID, AppID, TenantID, Label, Source, SourceLabel string; HasSecret bool } // json snake_case
 func Discover(ctx context.Context, workspaceDir string, database *db.DB, forced string) ([]Candidate, error)
 ```
-CLI: `company draft show --json` (`{"state","draft","bad_file"}`), `company draft save` (stdin JSON; the Slack config token field is refused if present), `company draft discard`, `company discover --json` (`{"candidates":[…]}`). Sources: `stored` ("Acme's saved company setup"), `draft`, `credentials_file` ("the credentials file of <account>"), `account` ("<vendor> app — your connected account <label>"); our baked shared ids never count.
+CLI: `company draft show --json` (`{"state","draft","bad_file","checked_vendors"}`), `company draft save` (stdin JSON; the Slack config token field is refused if present), `company draft discard`, `company discover --json` (`{"candidates":[…]}`). Sources: `stored` ("Acme's saved company setup"), `draft`, `credentials_file` ("the credentials file of <account>"), `account` ("<vendor> app — your connected account <label>"); our baked shared ids never count. Per-account client files are read as `google_credentials_<id>.json` and `<account source>_client_<id>.json` (`jira`, `linear`, `outlook` — Task 7b names its `oauthclient` vendors `linear` and `outlook` to match); the account source is Google only (`google_accounts.client_id`) until plan B T2 gives Slack accounts a client id. Removed/purged accounts and personal bundles are not candidates; a client found twice is listed once (first source wins, `has_secret` OR-ed).
 
 - [ ] **Step 1: Failing tests:** `TestCompanyDraft_RoundTrip` (0600), `TestCompanyDraft_NeverStoresSlackToken`, `TestCompanyDraft_CorruptRenamed` (state `unreadable`, file `draft.json.bad-<ts>` 0600, original gone, content intact), `TestCompanyDraft_OnlyNewestBadKept`, `TestCompanyDraft_StaleBadDeletedAfter30Days` (fake clock: 29 d kept, 31 d deleted), `TestCompanyDraft_DiscardDeletesBad`, `TestCompanyDraft_CheckHashMismatchIsUnchecked`, `TestCompanyDraft_SameValuesKeepCheck`, `TestDiscover_EverySource` (stored, draft, credentials file, non-shared account, a bridged corp account), `TestDiscover_SharedBakedIDNeverCandidate`, `TestCompanyList_DraftState`, `TestDaemon_CleansStaleBadDraftAtStart`.
 - [ ] **Step 2:** `go test ./internal/company ./internal/daemon ./cmd -run 'CompanyDraft|Discover|CompanyList|StaleBadDraft'` → FAIL; implement; → PASS; `make lint-diff`.

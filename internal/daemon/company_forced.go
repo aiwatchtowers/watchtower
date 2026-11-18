@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"time"
+
 	"watchtower/internal/company"
 	"watchtower/internal/policy"
 )
@@ -26,5 +28,15 @@ func (d *Daemon) applyForcedCompany() {
 	}
 	if len(changes) > 0 {
 		d.logger.Printf("company: the forced bundle changed %d app value(s); the changed vendors' accounts were marked for a new login", len(changes))
+	}
+}
+
+// cleanStaleBadDrafts deletes a wizard draft set aside as unreadable
+// (draft.json.bad-*) once it is older than company.BadDraftMaxAge, so an
+// abandoned setup does not keep its typed secrets on disk for good. Run
+// calls it once per start; an error is logged.
+func (d *Daemon) cleanStaleBadDrafts(now time.Time) {
+	if err := company.NewStore(d.config.WorkspaceDir()).CleanStaleBadDrafts(now); err != nil {
+		d.logger.Printf("company: deleting an old unreadable setup draft: %v", err)
 	}
 }
