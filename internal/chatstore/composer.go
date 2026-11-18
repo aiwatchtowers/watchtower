@@ -45,11 +45,6 @@ func displayParts(stored string) (skill, body, referencedLine string) {
 	return skill, body, referencedLine
 }
 
-// composeOwnerText is ChatTurnComposer.compose with no skill and no mentions.
-func composeOwnerText(text string) string {
-	return escapedBody(swiftTrim(text), false, false)
-}
-
 // recompose is ChatTurnComposer.recompose: an edited message keeps the
 // original's skill line and REFERENCED line around its new body.
 func recompose(stored, newBody string) string {

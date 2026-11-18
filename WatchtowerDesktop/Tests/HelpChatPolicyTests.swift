@@ -1,6 +1,7 @@
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerChatText
 
 final class HelpChatPolicyTests: XCTestCase {
     func testChatTabFocusesItsComposer() {

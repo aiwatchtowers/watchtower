@@ -97,6 +97,7 @@ func runSlackBackfill(cmd *cobra.Command, _ []string) error {
 	orch := sync.NewOrchestrator(database, client, cfg, accountID)
 	orch.SetLogger(logger)
 	orch.SetTokenTeam(token.TeamID)
+	orch.SetTokenScope(token.Scope)
 	det := newIssueKeyDetector(cfg, database, logger)
 	if det != nil {
 		orch.SetJiraKeyDetector(det)

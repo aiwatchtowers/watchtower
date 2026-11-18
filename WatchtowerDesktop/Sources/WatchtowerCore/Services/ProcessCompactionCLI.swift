@@ -52,6 +52,10 @@ package struct ProcessCompactionCLI: CompactionCLI {
         return try ProcessCompactionChild(process, onPhase: onPhase)
     }
 
+    package func chatShutdown() async {
+        await DaemonManager.chatShutdownBounded(cliPath: executablePath ?? Constants.findCLIPath())
+    }
+
     private func makeProcess(_ arguments: [String]) throws -> Process {
         guard let cliPath = executablePath ?? Constants.findCLIPath() else { throw Failure.cliNotFound }
         let process = Process()

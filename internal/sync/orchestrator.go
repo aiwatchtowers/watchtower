@@ -119,6 +119,11 @@ type Orchestrator struct {
 	// token left on another team than the row is caught on every path.
 	tokenTeamID string
 
+	// tokenScope is the grant the account's token file records
+	// (SetTokenScope; Token.Scope); "" for a legacy token saved before
+	// grants were recorded. syncEmoji decides by it.
+	tokenScope string
+
 	// runStart is when the current Run began and firstCycleAt the account's
 	// first sync attempt (slack_accounts.first_cycle_at; this Run's start
 	// while it is the first): stampSyncedAt's bounds. Run sets both.
@@ -147,6 +152,10 @@ type Orchestrator struct {
 
 // SetTokenTeam records the team the account's token file names.
 func (o *Orchestrator) SetTokenTeam(teamID string) { o.tokenTeamID = teamID }
+
+// SetTokenScope records the grant the account's token file names
+// (Token.Scope; "" when the token predates recorded grants).
+func (o *Orchestrator) SetTokenScope(scope string) { o.tokenScope = scope }
 
 // TeamMismatch reports that the last Run refused the account's token or team
 // as another team than the account's data (ErrSlackTeamMismatch).
@@ -1143,11 +1152,36 @@ func (o *Orchestrator) syncMetadata(ctx context.Context, opts SyncOptions) error
 
 // syncMessages is implemented in message_sync.go.
 
+// emojiScope is the user scope emoji.list needs.
+const emojiScope = "emoji:read"
+
 // syncEmoji fetches custom workspace emojis and stores them in the database.
+// A token without emoji:read is skipped quietly (spec A6/A26): a recorded
+// grant decides alone; a legacy token (no recorded grant) is tried until its
+// first missing_scope, which sets slack_accounts.emoji_scope_missing (this
+// function is its only writer) with one log line, and is skipped from then
+// on, across restarts, until a re-login records a grant.
 func (o *Orchestrator) syncEmoji(ctx context.Context) error {
+	if o.tokenScope != "" {
+		if !(&watchtowerslack.Token{Scope: o.tokenScope}).HasScope(emojiScope) {
+			return nil
+		}
+	} else if missing, err := o.db.SlackEmojiScopeMissing(o.accountID); err != nil {
+		return err
+	} else if missing {
+		return nil
+	}
+
 	o.logger.Println("syncing custom emojis")
 	emojiMap, err := o.slackClient.GetEmoji(ctx)
 	if err != nil {
+		if o.tokenScope == "" && isMissingScopeError(err) {
+			if dbErr := o.db.SetSlackEmojiScopeMissing(o.accountID); dbErr != nil {
+				return dbErr
+			}
+			o.logger.Printf("emojis: the token lacks %s; custom emoji skipped until the next login", emojiScope)
+			return nil
+		}
 		return fmt.Errorf("fetching emojis: %w", err)
 	}
 
@@ -1203,6 +1237,15 @@ func isNonFatalError(err error) bool {
 		}
 	}
 	return false
+}
+
+// isMissingScopeError reports whether err is Slack's missing_scope.
+func isMissingScopeError(err error) bool {
+	var slackErr slack.SlackErrorResponse
+	if errors.As(err, &slackErr) {
+		return slackErr.Err == "missing_scope"
+	}
+	return err != nil && strings.Contains(err.Error(), "missing_scope")
 }
 
 // isRateLimitError reports whether err is specifically a Slack rate-limit

@@ -60,12 +60,13 @@ extension AppState {
         ensureChatViewModels()
         guard let chat = chatViewModel else { return }
         // A failed create says why on the chat itself.
-        if await chat.newConversation() != nil {
+        if let id = await chat.newConversation() {
+            chatPanelModel?.selectedConversationID = id
             let attachment = Self.inboxChatAttachment(subject, outputs: actionStripViewModel?.outputRows ?? [])
             if await !chat.attachPasted(Data(attachment.markdown.utf8), name: attachment.name) {
                 chat.errorMessage = "Couldn't attach the Inbox card to this chat."
             }
-            chat.draft = HelpChatPrefill.merge(draft: chat.draft, prefill: message)
+            chat.composer.draft = HelpChatPrefill.merge(draft: chat.composer.draft, prefill: message)
         }
         selectedDestination = .chat
         chat.requestComposerFocus()

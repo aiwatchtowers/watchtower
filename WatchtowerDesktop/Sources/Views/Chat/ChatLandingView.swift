@@ -1,3 +1,4 @@
+import ChatWire
 import SwiftUI
 import WatchtowerCore
 
@@ -6,9 +7,8 @@ import WatchtowerCore
 /// and the pinned + recent chats to jump back into.
 struct ChatLandingView: View {
     @Bindable var chatVM: ChatViewModel
-    let recents: [ChatConversation]
+    let recents: [ChatList.Conversation]
     let ownerName: String
-    let modelSuggestions: [String]
     let maxComposerHeight: CGFloat
     let onOpen: (Int64) -> Void
 
@@ -16,9 +16,8 @@ struct ChatLandingView: View {
         ScrollView {
             VStack(spacing: 20) {
                 ChatEmptyState(ownerName: ownerName, onPrompt: usePrompt)
-                ChatComposerView(
+                MainChatComposer(
                     chatVM: chatVM,
-                    modelSuggestions: modelSuggestions,
                     maxHeight: maxComposerHeight
                 )
                 if let error = chatVM.errorMessage {
@@ -49,9 +48,9 @@ struct ChatLandingView: View {
                         Image(systemName: conv.pinned ? "pin.fill" : "bubble.left")
                             .foregroundStyle(.secondary)
                             .frame(width: 16)
-                        Text(conv.displayTitle).lineLimit(1)
+                        Text(title(conv)).lineLimit(1)
                         Spacer()
-                        Text(conv.updatedDate.formatted(.relative(presentation: .named)))
+                        Text(conv.updatedAt.formatted(.relative(presentation: .named)))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -60,17 +59,18 @@ struct ChatLandingView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(conv.pinned ? "Pinned chat: \(conv.displayTitle)" : "Chat: \(conv.displayTitle)")
+                .accessibilityLabel(conv.pinned ? "Pinned chat: \(title(conv))" : "Chat: \(title(conv))")
             }
         }
         .padding(.horizontal, 16)
     }
 
+    private func title(_ conv: ChatList.Conversation) -> String {
+        conv.title.isEmpty ? "New Chat" : conv.title
+    }
+
     private func usePrompt(_ prompt: ChatStarterPrompt) {
-        if prompt.sendsImmediately {
-            Task { await chatVM.send(text: prompt.text) }
-        } else {
-            chatVM.draft = prompt.text
-        }
+        chatVM.composer.draft = prompt.text
+        if prompt.sendsImmediately { Task { await chatVM.sendDraft() } }
     }
 }

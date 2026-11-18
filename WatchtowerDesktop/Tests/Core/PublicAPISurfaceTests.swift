@@ -5,7 +5,9 @@ import XCTest
 /// the `WatchtowerDesktop` executable target depends on `WatchtowerSync`, and
 /// `WatchtowerCore` stays Kit-free, so the Core test bundle is unchanged.
 /// Grep tests over the sources and the manifest, so a stray import or
-/// dependency fails here instead of quietly coupling Core to CloudKit.
+/// dependency fails here instead of quietly coupling Core to CloudKit. Core
+/// may take the shared chat's `ChatWire` (Foundation only), never its
+/// `ChatUI` (views on the Kit's design tokens; unified chat spec §6.1, §14).
 final class PublicAPISurfaceTests: XCTestCase {
     /// …/WatchtowerDesktop, from …/WatchtowerDesktop/Tests/Core/<this file>.
     private static let desktopDir = URL(fileURLWithPath: #filePath)
@@ -14,7 +16,9 @@ final class PublicAPISurfaceTests: XCTestCase {
         .deletingLastPathComponent()  // …/WatchtowerDesktop
 
     /// WatchtowerDesign (the shared tokens) is DesignKit's, never Core's.
-    private static let kitModules = ["WatchtowerSync", "WatchtowerKit", "WatchtowerDesign"]
+    /// ChatUI (the shared chat views) sits on WatchtowerDesign, so it is the
+    /// app's, never Core's.
+    private static let kitModules = ["WatchtowerSync", "WatchtowerKit", "WatchtowerDesign", "ChatUI"]
 
     func testNoCoreSourceImportsTheKit() throws {
         let coreDir = Self.desktopDir.appendingPathComponent("Sources/WatchtowerCore")
@@ -38,6 +42,8 @@ final class PublicAPISurfaceTests: XCTestCase {
         XCTAssertTrue(Self.importsKit("@_exported import WatchtowerSync"))
         XCTAssertTrue(Self.importsKit("  import struct WatchtowerSync.CloudRecord"))
         XCTAssertTrue(Self.importsKit("import WatchtowerDesign"))
+        XCTAssertTrue(Self.importsKit("import ChatUI"))
+        XCTAssertFalse(Self.importsKit("import ChatWire"))
         XCTAssertFalse(Self.importsKit("import WatchtowerCore"))
         XCTAssertFalse(Self.importsKit("// mentions WatchtowerSync in a comment"))
     }
@@ -51,6 +57,10 @@ final class PublicAPISurfaceTests: XCTestCase {
         for module in Self.kitModules {
             XCTAssertFalse(core.contains(module), "WatchtowerCore must not depend on \(module)")
         }
+        XCTAssertTrue(
+            core.contains(#".product(name: "ChatWire", package: "WatchtowerChat")"#),
+            "WatchtowerCore takes the shared chat's wire models"
+        )
         let app = try XCTUnwrap(Self.targetBlock(named: "WatchtowerDesktop", in: manifest))
         XCTAssertTrue(app.contains(#".product(name: "WatchtowerSync", package: "WatchtowerKit")"#))
         XCTAssertFalse(app.contains(#".product(name: "WatchtowerKit""#), "the app takes WatchtowerSync only")

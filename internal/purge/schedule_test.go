@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/policy"
 	"watchtower/internal/policy/policytest"
 )
 
@@ -20,6 +21,10 @@ func acct(source string, id int64, status string, okAt time.Time) db.PurgeAccoun
 	return a
 }
 
+// setting is the rules of a switch the owner set (origin setting) with every
+// source allowed: when on, every rule of the purge (RuleFull).
+func setting(on bool) func(db.PurgeAccount) Rule { return Rules(on, OriginSetting, nil) }
+
 func row(id int64, source string, accountID int64, reason, state string, due time.Time) db.AccountPurge {
 	return db.AccountPurge{ID: id, Source: source, AccountID: accountID, Reason: reason, State: state, DueAt: ts(due)}
 }
@@ -27,7 +32,7 @@ func row(id int64, source string, accountID int64, reason, state string, due tim
 func TestPurge01_RevokedSchedulesAtRevokedPlusGrace(t *testing.T) {
 	a := acct("slack", 1, "revoked", t0.Add(-time.Hour))
 	a.RevokedAt = ts(t0)
-	got := Plan([]db.PurgeAccount{a}, nil, true, t0)
+	got := Plan([]db.PurgeAccount{a}, nil, setting(true), t0)
 	if len(got.Schedule) != 1 {
 		t.Fatalf("want one schedule, got %+v", got)
 	}
@@ -41,13 +46,13 @@ func TestPurge01_RevokedSchedulesAtRevokedPlusGrace(t *testing.T) {
 	// revocation (a newer one would cancel it).
 	a.RevokedAt = ts(t0.Add(-30 * 24 * time.Hour))
 	a.AccessOKAt = ts(t0.Add(-31 * 24 * time.Hour))
-	got = Plan([]db.PurgeAccount{a}, nil, true, t0)
+	got = Plan([]db.PurgeAccount{a}, nil, setting(true), t0)
 	if len(got.Schedule) != 1 || !got.Schedule[0].DueAt.Equal(t0.Add(Grace)) {
 		t.Fatalf("an old revocation must be due Grace after scheduling, got %+v", got.Schedule)
 	}
 
 	// Off: nothing scheduled.
-	if got := Plan([]db.PurgeAccount{a}, nil, false, t0); len(got.Schedule) != 0 {
+	if got := Plan([]db.PurgeAccount{a}, nil, setting(false), t0); len(got.Schedule) != 0 {
 		t.Fatalf("off must schedule nothing, got %+v", got.Schedule)
 	}
 }
@@ -55,7 +60,7 @@ func TestPurge01_RevokedSchedulesAtRevokedPlusGrace(t *testing.T) {
 func TestPurge01_ReconnectCancels(t *testing.T) {
 	a := acct("linear", 1, "ok", t0)
 	open := []db.AccountPurge{row(7, "linear", 1, ReasonRevoked, "scheduled", t0.Add(time.Hour))}
-	got := Plan([]db.PurgeAccount{a}, open, true, t0)
+	got := Plan([]db.PurgeAccount{a}, open, setting(true), t0)
 	if len(got.Cancel) != 1 || got.Cancel[0] != 7 || len(got.Due) != 0 || len(got.Schedule) != 0 {
 		t.Fatalf("ok must cancel the revoked row, got %+v", got)
 	}
@@ -64,16 +69,16 @@ func TestPurge01_ReconnectCancels(t *testing.T) {
 func TestPurge01_ErrorStatusWaits(t *testing.T) {
 	a := acct("jira", 1, "error", t0.Add(-time.Hour))
 	open := []db.AccountPurge{row(3, "jira", 1, ReasonRevoked, "scheduled", t0.Add(-time.Minute))}
-	got := Plan([]db.PurgeAccount{a}, open, true, t0)
+	got := Plan([]db.PurgeAccount{a}, open, setting(true), t0)
 	if len(got.Due) != 0 || len(got.Cancel) != 0 || len(got.Schedule) != 0 {
 		t.Fatalf("due + error must wait, got %+v", got)
 	}
 	a.Status = "revoked"
-	got = Plan([]db.PurgeAccount{a}, open, true, t0)
+	got = Plan([]db.PurgeAccount{a}, open, setting(true), t0)
 	if len(got.Due) != 1 || got.Due[0].ID != 3 {
 		t.Fatalf("due + still revoked must run, got %+v", got)
 	}
-	got = Plan([]db.PurgeAccount{a}, open, true, t0.Add(-2*time.Minute))
+	got = Plan([]db.PurgeAccount{a}, open, setting(true), t0.Add(-2*time.Minute))
 	if len(got.Due) != 0 {
 		t.Fatalf("not yet due must not run, got %+v", got)
 	}
@@ -87,7 +92,7 @@ func TestPurge01_LeaseSchedulesWhenAllStale(t *testing.T) {
 		acct("jira", 1, "ok", t0.Add(-time.Hour)),
 	}
 	accounts[1].Enabled = false // disabled accounts count (ask #477)
-	got := Plan(accounts, nil, true, t0)
+	got := Plan(accounts, nil, setting(true), t0)
 	if len(got.Schedule) != 2 {
 		t.Fatalf("both slack accounts must be scheduled, got %+v", got.Schedule)
 	}
@@ -101,25 +106,25 @@ func TestPurge01_LeaseSchedulesWhenAllStale(t *testing.T) {
 
 	// One fresh account of the source blocks it.
 	accounts[1].AccessOKAt = ts(t0.Add(-time.Hour))
-	if got := Plan(accounts, nil, true, t0); len(got.Schedule) != 0 {
+	if got := Plan(accounts, nil, setting(true), t0); len(got.Schedule) != 0 {
 		t.Fatalf("one fresh account must block the lease, got %+v", got.Schedule)
 	}
 
 	// An account with no access_ok_at is no evidence: no lease.
 	accounts[1].AccessOKAt = ""
-	if got := Plan(accounts, nil, true, t0); len(got.Schedule) != 0 {
+	if got := Plan(accounts, nil, setting(true), t0); len(got.Schedule) != 0 {
 		t.Fatalf("an unknown clock must block the lease, got %+v", got.Schedule)
 	}
 
 	// Not yet within the grace window: nothing.
 	accounts[1].AccessOKAt = ts(stale)
-	if got := Plan(accounts, nil, true, t0.Add(-2*time.Minute)); len(got.Schedule) != 0 {
+	if got := Plan(accounts, nil, setting(true), t0.Add(-2*time.Minute)); len(got.Schedule) != 0 {
 		t.Fatalf("too early, got %+v", got.Schedule)
 	}
 
 	// Long stale (daemon did not run): still a full grace notice.
 	old := []db.PurgeAccount{acct("google", 1, "ok", t0.Add(-60*24*time.Hour))}
-	got = Plan(old, nil, true, t0)
+	got = Plan(old, nil, setting(true), t0)
 	if len(got.Schedule) != 1 || !got.Schedule[0].DueAt.Equal(t0.Add(Grace)) {
 		t.Fatalf("a long-stale lease must be due Grace after scheduling, got %+v", got.Schedule)
 	}
@@ -129,16 +134,16 @@ func TestPurge01_LeaseCancelledByFreshAccess(t *testing.T) {
 	stale := t0.Add(-Lease + time.Hour)
 	accounts := []db.PurgeAccount{acct("slack", 1, "ok", stale)}
 	open := []db.AccountPurge{row(5, "slack", 1, ReasonLease, "scheduled", stale.Add(Lease))}
-	got := Plan(accounts, open, true, t0)
+	got := Plan(accounts, open, setting(true), t0)
 	if len(got.Cancel) != 0 || len(got.Due) != 0 {
 		t.Fatalf("unchanged stale lease keeps its row, got %+v", got)
 	}
-	got = Plan(accounts, open, true, stale.Add(Lease))
+	got = Plan(accounts, open, setting(true), stale.Add(Lease))
 	if len(got.Due) != 1 {
 		t.Fatalf("a due stale lease runs, got %+v", got)
 	}
 	accounts[0].AccessOKAt = ts(t0)
-	got = Plan(accounts, open, true, t0)
+	got = Plan(accounts, open, setting(true), t0)
 	if len(got.Cancel) != 1 || got.Cancel[0] != 5 {
 		t.Fatalf("fresh access must cancel the lease row, got %+v", got)
 	}
@@ -150,7 +155,7 @@ func TestPurge01_OffCancelsScheduledKeepsRunning(t *testing.T) {
 		row(1, "slack", 1, ReasonRevoked, "scheduled", t0.Add(-time.Hour)),
 		row(2, "jira", 1, ReasonRevoked, "running", t0.Add(-time.Hour)),
 	}
-	got := Plan(accounts, open, false, t0)
+	got := Plan(accounts, open, setting(false), t0)
 	if len(got.Cancel) != 1 || got.Cancel[0] != 1 {
 		t.Fatalf("off must cancel the scheduled row, got %+v", got.Cancel)
 	}
@@ -166,7 +171,7 @@ func TestPurge01_RunningNeverCancelled(t *testing.T) {
 	accounts := []db.PurgeAccount{acct("linear", 1, "ok", t0)}
 	open := []db.AccountPurge{row(9, "linear", 1, ReasonRevoked, "running", t0.Add(time.Hour))}
 	for _, on := range []bool{true, false} {
-		got := Plan(accounts, open, on, t0)
+		got := Plan(accounts, open, setting(on), t0)
 		if len(got.Cancel) != 0 || len(got.Due) != 1 || len(got.Schedule) != 0 {
 			t.Fatalf("enabled=%v: running row must resume and never cancel, got %+v", on, got)
 		}
@@ -174,12 +179,15 @@ func TestPurge01_RunningNeverCancelled(t *testing.T) {
 }
 
 func TestPurge01_RemovedAccountLease(t *testing.T) {
+	// Google: a removed Slack account has a zero lease (#1769, A2,
+	// TestPurgePolicy_RemovedSlackZeroLease); every other source keeps the
+	// 30-day removed lease.
 	accounts := []db.PurgeAccount{
-		acct("slack", 1, "removed", t0.Add(-Lease-time.Minute)), // stale removed
-		acct("slack", 2, "removed", t0.Add(-Lease+time.Hour)),   // fresh enough removed
-		acct("slack", 3, "ok", t0.Add(-time.Hour)),              // live, fresh
+		acct("google", 1, "removed", t0.Add(-Lease-time.Minute)), // stale removed
+		acct("google", 2, "removed", t0.Add(-Lease+time.Hour)),   // fresh enough removed
+		acct("google", 3, "ok", t0.Add(-time.Hour)),              // live, fresh
 	}
-	got := Plan(accounts, nil, true, t0)
+	got := Plan(accounts, nil, setting(true), t0)
 	if len(got.Schedule) != 1 {
 		t.Fatalf("only the stale removed account is scheduled, got %+v", got.Schedule)
 	}
@@ -194,18 +202,18 @@ func TestPurge01_RemovedAccountLease(t *testing.T) {
 		acct("jira", 1, "removed", t0.Add(-time.Hour)), // fresh removed
 		acct("jira", 2, "ok", t0.Add(-Lease+Grace-time.Minute)),
 	}
-	got = Plan(live, nil, true, t0)
+	got = Plan(live, nil, setting(true), t0)
 	if len(got.Schedule) != 1 || got.Schedule[0].AccountID != 2 {
 		t.Fatalf("the fresh removed account must not block the live lease, got %+v", got.Schedule)
 	}
 
 	// A removed account's lease is off when the purge is off.
-	if got := Plan(accounts, nil, false, t0); len(got.Schedule) != 0 {
+	if got := Plan(accounts, nil, setting(false), t0); len(got.Schedule) != 0 {
 		t.Fatalf("off schedules nothing, got %+v", got.Schedule)
 	}
 	// A purged account is never scheduled.
 	purged := []db.PurgeAccount{acct("slack", 1, "purged", t0.Add(-90*24*time.Hour))}
-	if got := Plan(purged, nil, true, t0); len(got.Schedule) != 0 {
+	if got := Plan(purged, nil, setting(true), t0); len(got.Schedule) != 0 {
 		t.Fatalf("purged schedules nothing, got %+v", got.Schedule)
 	}
 }
@@ -214,14 +222,14 @@ func TestPurge01_RemovedLeaseCancelledWhenReadded(t *testing.T) {
 	okAt := t0.Add(-Lease - time.Hour)
 	open := []db.AccountPurge{row(4, "linear", 1, ReasonLease, "scheduled", t0.Add(Grace))}
 	removed := []db.PurgeAccount{acct("linear", 1, "removed", okAt)}
-	if got := Plan(removed, open, true, t0); len(got.Cancel) != 0 {
+	if got := Plan(removed, open, setting(true), t0); len(got.Cancel) != 0 {
 		t.Fatalf("a still-removed stale account keeps its row, got %+v", got.Cancel)
 	}
-	if got := Plan(removed, open, true, t0.Add(Grace)); len(got.Due) != 1 {
+	if got := Plan(removed, open, setting(true), t0.Add(Grace)); len(got.Due) != 1 {
 		t.Fatalf("a due removed lease runs, got %+v", got.Due)
 	}
 	readded := []db.PurgeAccount{acct("linear", 1, "ok", t0)}
-	got := Plan(readded, open, true, t0)
+	got := Plan(readded, open, setting(true), t0)
 	if len(got.Cancel) != 1 || got.Cancel[0] != 4 {
 		t.Fatalf("an account added back must cancel its removed lease row, got %+v", got)
 	}
@@ -236,14 +244,14 @@ func TestApply_WritesScheduleAndCancel(t *testing.T) {
 	if _, err := d.Exec(`INSERT INTO slack_accounts (id, team_id, status, revoked_at, access_ok_at) VALUES (1, 'T1', 'revoked', ?, ?)`, ts(t0), ts(t0)); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Apply(d, true, true, t0)
+	got, err := Apply(d, setting(true), true, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got.Schedule) != 1 {
 		t.Fatalf("want one inserted schedule, got %+v", got)
 	}
-	again, err := Apply(d, true, true, t0)
+	again, err := Apply(d, setting(true), true, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +265,7 @@ func TestApply_WritesScheduleAndCancel(t *testing.T) {
 	if err := d.SetSlackAccountAuthState(1, "ok", ""); err != nil {
 		t.Fatal(err)
 	}
-	got, err = Apply(d, true, true, t0)
+	got, err = Apply(d, setting(true), true, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,17 +291,17 @@ func TestPurge01_AccessAfterRevocationCancels(t *testing.T) {
 	open := []db.AccountPurge{row(3, "jira", 1, ReasonRevoked, "scheduled", t0.Add(-time.Minute))}
 
 	for _, status := range []string{"revoked", "error"} {
-		got := Plan([]db.PurgeAccount{revoked(status, t0.Add(-time.Hour))}, open, true, t0)
+		got := Plan([]db.PurgeAccount{revoked(status, t0.Add(-time.Hour))}, open, setting(true), t0)
 		if len(got.Cancel) != 1 || got.Cancel[0] != 3 || len(got.Due) != 0 || len(got.Schedule) != 0 {
 			t.Fatalf("%s + access after the revocation must cancel, got %+v", status, got)
 		}
-		if got := Plan([]db.PurgeAccount{revoked(status, t0.Add(-time.Hour))}, nil, true, t0); len(got.Schedule) != 0 {
+		if got := Plan([]db.PurgeAccount{revoked(status, t0.Add(-time.Hour))}, nil, setting(true), t0); len(got.Schedule) != 0 {
 			t.Fatalf("%s + access after the revocation must not schedule, got %+v", status, got.Schedule)
 		}
 	}
 
 	// Access before the revocation: still revoked, the due row runs.
-	got := Plan([]db.PurgeAccount{revoked("revoked", t0.Add(-3*time.Hour))}, open, true, t0)
+	got := Plan([]db.PurgeAccount{revoked("revoked", t0.Add(-3*time.Hour))}, open, setting(true), t0)
 	if len(got.Due) != 1 || len(got.Cancel) != 0 {
 		t.Fatalf("access older than the revocation must not cancel, got %+v", got)
 	}
@@ -301,11 +309,11 @@ func TestPurge01_AccessAfterRevocationCancels(t *testing.T) {
 	for _, okAt := range []string{"", "not a time"} {
 		a := revoked("revoked", time.Time{})
 		a.AccessOKAt = okAt
-		got := Plan([]db.PurgeAccount{a}, open, true, t0)
+		got := Plan([]db.PurgeAccount{a}, open, setting(true), t0)
 		if len(got.Due) != 1 || len(got.Cancel) != 0 {
 			t.Fatalf("access_ok_at %q must count as still revoked, got %+v", okAt, got)
 		}
-		if got := Plan([]db.PurgeAccount{a}, nil, true, t0); len(got.Schedule) != 1 {
+		if got := Plan([]db.PurgeAccount{a}, nil, setting(true), t0); len(got.Schedule) != 1 {
 			t.Fatalf("access_ok_at %q must schedule, got %+v", okAt, got.Schedule)
 		}
 	}
@@ -330,7 +338,7 @@ func TestApply_ContinuesPastOneBadRow(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := Apply(d, true, false, t0)
+	got, err := Apply(d, setting(true), false, t0)
 	if err == nil {
 		t.Fatal("the failed schedule must be returned")
 	}
@@ -352,11 +360,11 @@ func TestApply_LeasesOnlyWhenAsked(t *testing.T) {
 	if _, err := d.Exec(`INSERT INTO slack_accounts (id, team_id, status, access_ok_at) VALUES (1, 'T1', 'ok', ?)`, stale); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Apply(d, true, false, t0)
+	got, err := Apply(d, setting(true), false, t0)
 	if err != nil || len(got.Schedule) != 0 {
 		t.Fatalf("no leases before the syncs, got %+v %v", got, err)
 	}
-	got, err = Apply(d, true, true, t0)
+	got, err = Apply(d, setting(true), true, t0)
 	if err != nil || len(got.Schedule) != 1 || got.Schedule[0].Reason != ReasonLease {
 		t.Fatalf("the pass after the syncs schedules the lease, got %+v %v", got, err)
 	}
@@ -369,25 +377,26 @@ func TestApply_LeasesOnlyWhenAsked(t *testing.T) {
 func TestPurge01_PolicyForbiddenSourceHoldsLease(t *testing.T) {
 	stale := t0.Add(-Lease + Grace - time.Minute)
 	accounts := []db.PurgeAccount{acct("slack", 1, "ok", stale), acct("slack", 2, "removed", stale.Add(-Lease))}
-	held := func(source string) bool { return source == "slack" }
-	if got := PlanWith(accounts, nil, true, t0, held); len(got.Schedule) != 0 {
+	held := Rules(true, OriginSetting, func(source string) bool { return source != "slack" })
+	if got := Plan(accounts, nil, held, t0); len(got.Schedule) != 0 {
 		t.Fatalf("a held source schedules no lease, got %+v", got.Schedule)
 	}
 	open := []db.AccountPurge{{ID: 7, Source: "slack", AccountID: 1, Reason: ReasonLease, State: "scheduled", DueAt: ts(t0.Add(Grace))}}
-	if got := PlanWith(accounts, open, true, t0, held); len(got.Cancel) != 1 || got.Cancel[0] != 7 {
+	if got := Plan(accounts, open, held, t0); len(got.Cancel) != 1 || got.Cancel[0] != 7 {
 		t.Fatalf("an open lease row of a held source is cancelled, got %+v", got)
 	}
-	if got := PlanWith(accounts, nil, true, t0, nil); len(got.Schedule) != 2 {
+	if got := Plan(accounts, nil, setting(true), t0); len(got.Schedule) != 2 {
 		t.Fatalf("not held: both leases are scheduled, got %+v", got.Schedule)
 	}
 	revoked := []db.PurgeAccount{acct("slack", 3, "revoked", stale)}
 	revoked[0].RevokedAt = ts(t0.Add(-time.Hour))
-	if got := PlanWith(revoked, nil, true, t0, held); len(got.Schedule) != 1 || got.Schedule[0].Reason != ReasonRevoked {
+	if got := Plan(revoked, nil, held, t0); len(got.Schedule) != 1 || got.Schedule[0].Reason != ReasonRevoked {
 		t.Fatalf("a revoked account still schedules its revoked purge, got %+v", got.Schedule)
 	}
 }
 
-// Apply reads the live policy: a forbidden source's stale lease is not
+// Apply with the daemon's rules (policy.SourceAllowed, read on every call)
+// follows the live policy: a forbidden source's stale lease is not
 // scheduled, and it is as soon as the source is allowed again (#608).
 func TestPurge01_ApplyLeaseHoldFollowsLivePolicy(t *testing.T) {
 	d, err := db.Open(":memory:")
@@ -399,14 +408,226 @@ func TestPurge01_ApplyLeaseHoldFollowsLivePolicy(t *testing.T) {
 	if _, err := d.Exec(`INSERT INTO slack_accounts (id, team_id, status, access_ok_at) VALUES (1, 'T1', 'ok', ?)`, ts(stale)); err != nil {
 		t.Fatal(err)
 	}
+	livePolicy := Rules(true, OriginSetting, policy.SourceAllowed)
 	policytest.Set(t, map[string]any{"AllowedSources": []any{"google"}})
-	got, err := Apply(d, true, true, t0)
+	got, err := Apply(d, livePolicy, true, t0)
 	if err != nil || len(got.Schedule) != 0 {
 		t.Fatalf("held: Apply = %+v, %v; want no lease", got, err)
 	}
 	policytest.Set(t, nil)
-	got, err = Apply(d, true, true, t0)
+	got, err = Apply(d, livePolicy, true, t0)
 	if err != nil || len(got.Schedule) != 1 || got.Schedule[0].Reason != ReasonLease {
 		t.Fatalf("allowed again: Apply = %+v, %v; want the lease scheduled", got, err)
+	}
+}
+
+// TestPurgePolicy_RemovedSlackZeroLease (#1769, A2): a removed Slack account
+// is scheduled by the first pass after the remove, due Grace later, under any
+// rule that is not RuleNone; adding it back before then cancels the row.
+func TestPurgePolicy_RemovedSlackZeroLease(t *testing.T) {
+	removed := []db.PurgeAccount{acct("slack", 1, "removed", t0.Add(-time.Minute))}
+	for _, rules := range []func(db.PurgeAccount) Rule{setting(true), Rules(true, OriginDefault, nil)} {
+		got := Plan(removed, nil, rules, t0)
+		if len(got.Schedule) != 1 || got.Schedule[0].Reason != ReasonLease || !got.Schedule[0].DueAt.Equal(t0.Add(Grace)) {
+			t.Fatalf("a removed slack account is due Grace after the pass, got %+v", got.Schedule)
+		}
+	}
+	// No access time at all: the remove itself is the evidence.
+	unknown := []db.PurgeAccount{acct("slack", 1, "removed", time.Time{})}
+	if got := Plan(unknown, nil, setting(true), t0); len(got.Schedule) != 1 {
+		t.Fatalf("a removed slack account without access_ok_at is still scheduled, got %+v", got.Schedule)
+	}
+	if got := Plan(removed, nil, setting(false), t0); len(got.Schedule) != 0 {
+		t.Fatalf("off schedules nothing, got %+v", got.Schedule)
+	}
+
+	open := []db.AccountPurge{row(4, "slack", 1, ReasonLease, "scheduled", t0.Add(Grace))}
+	if got := Plan(removed, open, setting(true), t0); len(got.Cancel) != 0 || len(got.Due) != 0 {
+		t.Fatalf("not due yet: kept, got %+v", got)
+	}
+	if got := Plan(removed, open, setting(true), t0.Add(Grace)); len(got.Due) != 1 {
+		t.Fatalf("due after Grace, got %+v", got)
+	}
+	readded := []db.PurgeAccount{acct("slack", 1, "ok", t0)}
+	if got := Plan(readded, open, setting(true), t0); len(got.Cancel) != 1 || got.Cancel[0] != 4 {
+		t.Fatalf("an account added back cancels its row, got %+v", got)
+	}
+}
+
+// TestPlan_DefaultOriginHoldsLiveLeaseButSchedulesRemovedSlack (#1769, A1,
+// A21): with origin default a live account is never deleted for inactivity,
+// a removed Slack account is due Grace after the pass, and a removed account
+// of another source keeps its 30-day lease.
+func TestPlan_DefaultOriginHoldsLiveLeaseButSchedulesRemovedSlack(t *testing.T) {
+	allowAll := func(string) bool { return true }
+	accounts := []db.PurgeAccount{
+		acct("slack", 1, "ok", t0.Add(-40*24*time.Hour)),
+		acct("slack", 2, "removed", t0.Add(-time.Hour)),
+		acct("jira", 1, "removed", t0.Add(-time.Hour)),
+	}
+	got := Plan(accounts, nil, Rules(true, OriginDefault, allowAll), t0)
+	if len(got.Schedule) != 1 {
+		t.Fatalf("only the removed slack account is scheduled, got %+v", got.Schedule)
+	}
+	if s := got.Schedule[0]; s.Source != "slack" || s.AccountID != 2 || s.Reason != ReasonLease || !s.DueAt.Equal(t0.Add(Grace)) {
+		t.Fatalf("schedule = %+v, want slack 2 lease due now + 72h", s)
+	}
+	// An open live lease row (scheduled under another origin) is cancelled.
+	open := []db.AccountPurge{row(8, "slack", 1, ReasonLease, "scheduled", t0.Add(Grace))}
+	got = Plan(accounts, open, Rules(true, OriginDefault, allowAll), t0)
+	if len(got.Cancel) != 1 || got.Cancel[0] != 8 {
+		t.Fatalf("a live lease row under origin default is cancelled, got %+v", got)
+	}
+}
+
+// TestPlan_LongOfflineRevokedGetsFullNotice (#1769 review focus): a Mac off
+// for a week that comes back to a revoked token gives the full 72 h notice
+// from its first pass, never deletes at once.
+func TestPlan_LongOfflineRevokedGetsFullNotice(t *testing.T) {
+	a := acct("slack", 1, "revoked", t0.Add(-9*24*time.Hour))
+	a.RevokedAt = ts(t0.Add(-8 * 24 * time.Hour))
+	for _, rules := range []func(db.PurgeAccount) Rule{setting(true), Rules(true, OriginDefault, nil)} {
+		got := Plan([]db.PurgeAccount{a}, nil, rules, t0)
+		if len(got.Schedule) != 1 || !got.Schedule[0].DueAt.Equal(t0.Add(Grace)) || len(got.Due) != 0 {
+			t.Fatalf("want one revoked row due now + 72h and nothing due, got %+v", got)
+		}
+	}
+}
+
+// TestPlan_ReaddAndRemoveAgainReschedules (#1769 fix round 1, F1): a removed
+// Slack account added back and removed again before the next pass keeps its
+// old row, but access confirmed after that row was scheduled invalidates it:
+// the row is cancelled (never due at its old date) and the next pass gives a
+// fresh 72 h notice.
+func TestPlan_ReaddAndRemoveAgainReschedules(t *testing.T) {
+	scheduledAt := t0.Add(-time.Hour)
+	removedAgain := []db.PurgeAccount{acct("slack", 1, "removed", t0)} // re-added (access stamped) at t0, removed again
+	open := []db.AccountPurge{row(4, "slack", 1, ReasonLease, "scheduled", scheduledAt.Add(Grace))}
+	open[0].ScheduledAt = ts(scheduledAt)
+	for _, now := range []time.Time{t0, scheduledAt.Add(Grace)} {
+		got := Plan(removedAgain, open, setting(true), now)
+		if len(got.Cancel) != 1 || got.Cancel[0] != 4 || len(got.Due) != 0 {
+			t.Fatalf("at %s: the stale row must be cancelled, never due, got %+v", now, got)
+		}
+	}
+	got := Plan(removedAgain, nil, setting(true), t0.Add(time.Hour))
+	if len(got.Schedule) != 1 || !got.Schedule[0].DueAt.Equal(t0.Add(time.Hour+Grace)) {
+		t.Fatalf("the next pass gives a fresh notice, got %+v", got.Schedule)
+	}
+	// Access older than the row's scheduling keeps it.
+	removed := []db.PurgeAccount{acct("slack", 1, "removed", scheduledAt.Add(-time.Minute))}
+	if got := Plan(removed, open, setting(true), scheduledAt.Add(Grace)); len(got.Due) != 1 || len(got.Cancel) != 0 {
+		t.Fatalf("an unchanged removed account's row runs, got %+v", got)
+	}
+}
+
+// TestPurgeRun_VerifyFailureHoldsWithoutLoop (#1769 fix round 1, F4, spec §9):
+// an account whose purge failed its verify count stays held — never
+// scheduled again on its own, so a leftover that cannot be deleted gives no
+// new notice every 72 h — until access is confirmed after the failure (a
+// Re-login or "add again"); a chunk failure keeps today's retry.
+func TestPurgeRun_VerifyFailureHoldsWithoutLoop(t *testing.T) {
+	failedAt := t0.Add(-time.Hour)
+	revoked := acct("slack", 1, "revoked", t0.Add(-48*time.Hour))
+	revoked.RevokedAt = ts(t0.Add(-24 * time.Hour))
+	rows := []db.AccountPurge{
+		{ID: 1, Source: "slack", AccountID: 1, Reason: ReasonRevoked, State: "failed", FinishedAt: ts(t0.Add(-200 * time.Hour)), Error: "boom"},
+		{ID: 2, Source: "slack", AccountID: 1, Reason: ReasonRevoked, State: "failed", FinishedAt: ts(failedAt), Error: "left: messages=1"},
+	}
+	held := VerifyHeld([]db.PurgeAccount{revoked}, rows)
+	if !held("slack", 1) || held("slack", 2) {
+		t.Fatal("the verify-failed account is held, no other")
+	}
+	rules := holdRules(setting(true), held)
+	for _, now := range []time.Time{t0, t0.Add(Grace), t0.Add(30 * 24 * time.Hour)} {
+		if got := Plan([]db.PurgeAccount{revoked}, nil, rules, now); len(got.Schedule) != 0 {
+			t.Fatalf("at %s: a held account is never rescheduled, got %+v", now, got.Schedule)
+		}
+	}
+	// A Re-login after the failure releases it.
+	back := revoked
+	back.AccessOKAt = ts(t0)
+	if VerifyHeld([]db.PurgeAccount{back}, rows)("slack", 1) {
+		t.Fatal("access after the failure releases the hold")
+	}
+	// A chunk failure is not a verify failure: no hold.
+	chunk := []db.AccountPurge{rows[0]}
+	if VerifyHeld([]db.PurgeAccount{revoked}, chunk)("slack", 1) {
+		t.Fatal("a chunk failure keeps the retry")
+	}
+	// A newer row (scheduled after a release) replaces the failed one.
+	newer := append(rows, db.AccountPurge{ID: 3, Source: "slack", AccountID: 1, Reason: ReasonRevoked, State: "scheduled"})
+	if VerifyHeld([]db.PurgeAccount{revoked}, newer)("slack", 1) {
+		t.Fatal("only the newest row decides")
+	}
+}
+
+// Apply reads the whole ledger: a verify-failed account is not scheduled
+// again by the daemon's passes.
+func TestApply_VerifyFailedAccountNotRescheduled(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if _, err := d.Exec(`INSERT INTO slack_accounts (id, team_id, status, revoked_at) VALUES (1, 'T1', 'revoked', ?)`, ts(t0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO account_purges (source, account_id, reason, due_at, state, finished_at, error)
+		VALUES ('slack', 1, 'revoked', ?, 'failed', ?, 'left: messages=1')`, ts(t0), ts(t0)); err != nil {
+		t.Fatal(err)
+	}
+	for _, now := range []time.Time{t0, t0.Add(10 * Grace)} {
+		got, err := Apply(d, setting(true), true, now)
+		if err != nil || len(got.Schedule) != 0 {
+			t.Fatalf("at %s: Apply = %+v, %v; want nothing scheduled", now, got, err)
+		}
+	}
+}
+
+// Fix round 2 (R2): same-second clocks resolve toward not deleting — access
+// stamped in the second the row was scheduled cancels the zero-lease row,
+// and access in the second the verify failed releases the hold.
+func TestPurge_SameSecondTiesKeepData(t *testing.T) {
+	removed := []db.PurgeAccount{acct("slack", 1, "removed", t0)}
+	open := []db.AccountPurge{row(4, "slack", 1, ReasonLease, "scheduled", t0.Add(Grace))}
+	open[0].ScheduledAt = ts(t0)
+	if got := Plan(removed, open, setting(true), t0.Add(Grace)); len(got.Cancel) != 1 || len(got.Due) != 0 {
+		t.Fatalf("access in the scheduling second cancels, got %+v", got)
+	}
+	revoked := acct("slack", 1, "revoked", t0)
+	failed := []db.AccountPurge{{ID: 1, Source: "slack", AccountID: 1, State: "failed", FinishedAt: ts(t0), Error: "left: messages=1"}}
+	if VerifyHeld([]db.PurgeAccount{revoked}, failed)("slack", 1) {
+		t.Fatal("access in the failure's second releases the hold")
+	}
+}
+
+// Fix round 2 (R3): only an account that does not sync anyway (revoked,
+// removed) is verify-held; a live account under a lease purge whose verify
+// failed is released and scheduled again under its lease with a new notice.
+func TestPurge_VerifyHoldOnlyRevokedOrRemoved(t *testing.T) {
+	stale := t0.Add(-40 * 24 * time.Hour)
+	failed := func(id int64) db.AccountPurge {
+		return db.AccountPurge{ID: id, Source: "jira", AccountID: id, Reason: ReasonLease, State: "failed",
+			FinishedAt: ts(t0.Add(-time.Hour)), Error: "left: jira_issues=1"}
+	}
+	accounts := []db.PurgeAccount{
+		acct("jira", 1, "ok", stale), acct("jira", 2, "error", stale),
+		acct("jira", 3, "revoked", stale), acct("jira", 4, "removed", stale),
+	}
+	ledger := []db.AccountPurge{failed(1), failed(2), failed(3), failed(4)}
+	held := VerifyHeld(accounts, ledger)
+	for id, want := range map[int64]bool{1: false, 2: false, 3: true, 4: true} {
+		if held("jira", id) != want {
+			t.Errorf("jira %d held = %v, want %v", id, !want, want)
+		}
+	}
+	got := Plan(accounts, nil, holdRules(setting(true), held), t0)
+	scheduled := map[int64]bool{}
+	for _, s := range got.Schedule {
+		scheduled[s.AccountID] = true
+	}
+	if !scheduled[1] || !scheduled[2] || scheduled[3] || scheduled[4] {
+		t.Fatalf("live accounts rescheduled under their lease, held ones not, got %+v", got.Schedule)
 	}
 }

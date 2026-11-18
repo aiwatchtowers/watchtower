@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 /// Owner asks without the mouse (board #412, spec 2026-10-10 Part 9.4):
 /// each key's action where it is pressed, and nothing while a field, the

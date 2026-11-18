@@ -84,9 +84,30 @@ final class AccountPurgeViewTests: XCTestCase {
     }
 
     func testFootnoteUsesGoNumbers() {
-        let text = PrivacySettingsContent.footnote(AccountPurgeStatus(enabled: true, enabledBy: "build", graceHours: 48, leaseDays: 14))
+        let text = AccountPurgeStatus.footnote(
+            AccountPurgeStatus(enabled: true, enabledBy: "build", graceHours: 48, leaseDays: 14), shown: true)
         XCTAssertTrue(text.contains("for 14 days"))
         XCTAssertTrue(text.contains("48 hours later"))
         XCTAssertTrue(text.contains("meeting transcripts are kept"))
+    }
+
+    /// Fix round 1: a failed status read is shown, not hidden by "On by default".
+    func testPrivacyStatusErrorWinsOverDefaultCaption() throws {
+        let failed = PrivacySettingsContent(isOn: .constant(true), status: nil, statusError: "x")
+        XCTAssertNoThrow(try failed.inspect().find(text: "x"))
+        XCTAssertThrowsError(try failed.inspect().find(text: "On by default"))
+
+        let unknown = PrivacySettingsContent(isOn: .constant(true), status: nil, statusError: nil)
+        XCTAssertNoThrow(try unknown.inspect().find(text: "On by default"))
+    }
+
+    /// Fix round 1: a policy-forced value shows no "On by default", even
+    /// before the CLI answered.
+    func testPrivacyPolicyBeforeTheCLIShowsNoDefaultCaption() throws {
+        let forced = PrivacySettingsContent(
+            isOn: .constant(true), lockedByPolicy: true, status: nil, statusError: nil,
+            origin: AccountPurgeStatus.shownOrigin(policy: true, setting: nil, status: nil))
+        XCTAssertThrowsError(try forced.inspect().find(text: "On by default"))
+        XCTAssertNoThrow(try forced.inspect().find(text: "Managed by your organization"))
     }
 }

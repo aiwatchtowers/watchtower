@@ -65,7 +65,6 @@ type expertCandidate struct {
 	DecisionRole       string `json:"decision_role,omitempty"`
 	CommunicationGuide string `json:"communication_guide,omitempty"`
 	CommunicationStyle string `json:"communication_style,omitempty"`
-	ActiveHours        string `json:"active_hours,omitempty"`
 }
 
 type expertsResult struct {
@@ -175,7 +174,6 @@ func (a *expertAccumulator) rank(d *db.DB, limit int) []expertCandidate {
 			c.DecisionRole = card.DecisionRole
 			c.CommunicationGuide = card.CommunicationGuide
 			c.CommunicationStyle = card.CommunicationStyle
-			c.ActiveHours = card.ActiveHoursJSON
 		}
 		out = append(out, *c)
 	}

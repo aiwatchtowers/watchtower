@@ -738,6 +738,15 @@ CREATE TABLE IF NOT EXISTS people_cards (
 CREATE INDEX IF NOT EXISTS idx_people_cards_user ON people_cards(user_id);
 CREATE INDEX IF NOT EXISTS idx_people_cards_period ON people_cards(period_from, period_to);
 
+-- People the owner stopped cards for (Stop card for this person; see 00195).
+-- user_id is namespaced "<account>:<raw user id>"; written only by
+-- `watchtower people exclude|include`. The people pipeline makes no card for
+-- these ids.
+CREATE TABLE IF NOT EXISTS people_card_exclusions (
+    user_id    TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
 -- People card summaries (cross-user team health for a time window)
 CREATE TABLE IF NOT EXISTS people_card_summaries (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1604,7 +1613,9 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     deletion_sweep_day TEXT NOT NULL DEFAULT '',  -- last UTC day (YYYY-MM-DD) the Slack deletion sweep finished (see 00139)
     access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
     revoked_at        TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
-    first_cycle_at    TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC of the account's first sync attempt; older messages a sync stores keep their post time as synced_at (see 00190)
+    first_cycle_at    TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the account's first sync attempt; older messages a sync stores keep their post time as synced_at (see 00190)
+    emoji_scope_missing INTEGER NOT NULL DEFAULT 0,  -- 1 = a legacy token (no recorded grant) lacks emoji:read; the emoji sync skips the account until a re-login (see 00195)
+    people_prune_done_at TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when the one-time pass deleting people cards of non-partners finished; '' = pending (see 00195)
 );
 
 -- Multi-account IMAP/Outlook email source: one row per connected mailbox
@@ -2474,10 +2485,12 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     tokens_out      INTEGER,
     parent_id       INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE,
     error_code      TEXT,
-    error_message   TEXT
+    error_message   TEXT,
+    client_key      TEXT                                 -- the client's id of the chat_turn that inserted this row; NULL = none (00194)
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_parent ON chat_messages(parent_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_messages_client_key ON chat_messages(conversation_id, client_key) WHERE client_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS chat_turn_steps (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,

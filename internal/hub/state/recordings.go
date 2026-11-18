@@ -23,16 +23,7 @@ const (
 	MetaDesktopSeen   = "desktop_seen"
 	MetaDesktopSeenAt = "desktop_seen_at"
 	MetaRecordings    = "recordings"
-	// MetaDesktopChatLease is the latest Desktop heartbeat's chat_lease flag
-	// ("1" = the app honours chat_turn_leases, "0" = it does not say so: an
-	// app from before the iPhone chat); written with desktop_at, so the two
-	// always belong to the same beat.
-	MetaDesktopChatLease = "desktop_chat_lease"
 )
-
-// ChatDesktopFreshFor is how recent a Desktop heartbeat must be to count as
-// a running app for the chat capability (iPhone chat spec §4.8, D18).
-const ChatDesktopFreshFor = 2 * time.Minute
 
 // The switch's stored values.
 const (
@@ -108,22 +99,11 @@ type RecordingJob struct {
 
 func realMeta(t time.Time) string { return strconv.FormatFloat(toReal(t), 'f', 3, 64) }
 
-// Heartbeat records a Desktop heartbeat at now from an app that does not say
-// it honours the chat lease (HeartbeatChat with false).
-func (s *Store) Heartbeat(now time.Time) error { return s.HeartbeatChat(now, false) }
-
-// HeartbeatChat records a Desktop heartbeat at now with its chat_lease flag;
-// the first one also sets desktop_seen_at, which nothing clears.
-func (s *Store) HeartbeatChat(now time.Time, chatLease bool) error {
-	flag := "0"
-	if chatLease {
-		flag = "1"
-	}
+// Heartbeat records a Desktop heartbeat at now; the first one also sets
+// desktop_seen_at, which nothing clears.
+func (s *Store) Heartbeat(now time.Time) error {
 	return s.write(func(tx *sql.Tx) error {
 		if err := SetMetaTx(tx, MetaDesktopAt, realMeta(now)); err != nil {
-			return err
-		}
-		if err := SetMetaTx(tx, MetaDesktopChatLease, flag); err != nil {
 			return err
 		}
 		if _, ok, err := MetaTx(tx, MetaDesktopSeenAt); err != nil || ok {
@@ -282,22 +262,6 @@ func (s *Store) DesktopHost(now time.Time) (fresh, everSeen bool, err error) {
 		return false, true, fmt.Errorf("reading the Desktop heartbeat: %w", err)
 	}
 	return now.Sub(fromReal(f)) <= DesktopFreshFor, true, nil
-}
-
-// OldDesktopRuns reports whether a Desktop app that does not honour the chat
-// lease is running: its latest heartbeat is at most ChatDesktopFreshFor old
-// and carried no chat_lease flag (D18). No fresh heartbeat (no app, or a
-// headless host) is false.
-func (s *Store) OldDesktopRuns(now time.Time) (bool, error) {
-	at, ok, err := s.DesktopHeartbeatAt()
-	if err != nil || !ok || now.Sub(at) > ChatDesktopFreshFor {
-		return false, err
-	}
-	flag, _, err := s.Meta(MetaDesktopChatLease)
-	if err != nil {
-		return false, err
-	}
-	return flag != "1", nil
 }
 
 // DesktopHeartbeatAt is the last heartbeat; ok is false when none arrived.

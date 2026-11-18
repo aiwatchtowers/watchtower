@@ -1,4 +1,5 @@
 import XCTest
+import WatchtowerChatText
 @testable import WatchtowerCore
 
 /// The two decode paths of `ChatQuestionParser` (spec 2026-10-10 Part 3.5):

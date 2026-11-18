@@ -10,11 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"watchtower/internal/chatstore"
+	"watchtower/internal/chatengine"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/actions/handlers"
-	"watchtower/internal/hub/chatrun"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
@@ -35,10 +34,6 @@ const hostWarmBudget = 10 * time.Second
 // reportKinds is what a stored report or summary changes: the report, its
 // timeline milestones and the terminal_session record's report_* fields.
 var reportKinds = []slices.Kind{"session_report", "session_timeline", "terminal_session"}
-
-// chatCloseBudget bounds the chat runner's close at the hub's stop (its own
-// sequence is close, 2 s, SIGTERM, 3 s, SIGKILL).
-const chatCloseBudget = 10 * time.Second
 
 // watchBusy is the dedicated read handle's busy timeout: one data_version
 // read never waits longer for a lock.
@@ -93,26 +88,21 @@ type wiring struct {
 	live *liveness
 	// away nudges the work alerts when the owner leaves the Mac.
 	away *awayWatch
-	// chat runs the hub's AI chat turns (nil = no database file or no
-	// executable: chat is off). Nothing runs until a turn starts.
-	chat *chatrun.Runner
-	// chatStore writes the hub's chat rows (the runner's and the
-	// handlers'); chatTimer republishes what only time changes (nil under
-	// workbench_only); titles are the AI titles running, cancelled and
-	// waited for at close.
-	chatStore *chatstore.Store
+	// chat is the daemon's chat engine (Options.ChatEngine; nil = chat off,
+	// runner_down). The hub uses it and never closes it: the daemon stops
+	// it after the hub.
+	chat *chatengine.Engine
+	// chatTimer republishes what only time changes (nil under
+	// workbench_only).
 	chatTimer *chatTimer
 	chatPush  *chatPushWatch
-	// bg is the chat's background work (AI titles, approved actions'
+	// bg is the chat's background work (turn-end pushes, approved actions'
 	// applies), started only through spawn: bgClosed, set under bgMu at
-	// close, refuses new work so no Add ever races the close's Wait.
-	// titlesCtx is cancelled at close (a title is optional); an apply runs
-	// to its end within chatBackgroundBudget.
-	bgMu         sync.Mutex
-	bgClosed     bool
-	bg           sync.WaitGroup
-	titlesCtx    context.Context
-	titlesCancel context.CancelFunc
+	// close, refuses new work so no Add ever races the close's Wait. An
+	// apply runs to its end within chatBackgroundBudget.
+	bgMu     sync.Mutex
+	bgClosed bool
+	bg       sync.WaitGroup
 }
 
 // chatBackgroundBudget bounds the hub stop's wait for the chat's background
@@ -230,16 +220,13 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 	w.away = &awayWatch{away: away, active: h.phoneLinked, nudge: func() { h.publishSoon(slices.KindAskAlert) }}
 	home, _ := os.UserHomeDir()
 	watches := handlers.NewChatWatchRegistry()
-	// The chat runner first: the chat sources read its live turns. Its sweep
-	// runs before the handlers register, so nothing claims a chat turn
-	// before this hub's leases of an earlier run are released.
+	// The daemon's chat engine first: the chat sources read it and the
+	// chat handlers call it.
 	dbPath, _ := mainFile(context.Background(), o.DB)
-	w.titlesCtx, w.titlesCancel = context.WithCancel(context.Background())
-	w.chatStore = h.newChatStore(o, w)
-	w.chat = h.newChatRunner(o, w.chatStore, w.spawn)
-	var chatLive sources.LiveText
+	w.chat = h.useChatEngine(o, w.spawn)
+	var chatReader sources.ChatReader
 	if w.chat != nil {
-		chatLive = w.chat
+		chatReader = w.chat
 	}
 	set, err := sources.All(sources.Config{
 		DB: o.DB, Store: st, Watches: watches, Sealer: h.kr, Mode: mode, Live: live,
@@ -252,7 +239,8 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 		GitFetch:       o.gitFetch,
 		RunnerGap:      o.runnerGap,
 		Now:            o.Clock,
-		ChatLive:       chatLive,
+		ChatEngine:     chatReader,
+		ChatRouting:    o.ChatRouting,
 	})
 	if err != nil {
 		w.close()
@@ -528,40 +516,19 @@ func (w *wiring) retrySeed(ctx context.Context) {
 	}
 }
 
-// newChatRunner builds the hub's chat runner over o.DB and runs its startup
-// sweep (spec §4.3). A database with no file, or no path to this binary,
-// leaves the hub without one. spawn runs a turn end's push off the runner's
-// goroutine as tracked background work (wiring.spawn: close waits for it);
-// it refuses once the hub stops.
-func (h *hubRuntime) newChatRunner(o Options, store *chatstore.Store, spawn func(func()) bool) *chatrun.Runner {
-	path, err := mainFile(context.Background(), o.DB)
-	if err != nil {
-		log.Printf("hub: no chat runner: the database has no file")
+// useChatEngine hooks the daemon's chat engine (o.ChatEngine; nil = chat
+// off) into this hub: a turn's text, steps and end reach the phone's feed
+// and list (the publisher coalesces the per-event calls), and a turn's end
+// pushes through spawn (wiring.spawn: close waits for it). close unhooks
+// it; the engine itself, its sweep and its close are the daemon's.
+func (h *hubRuntime) useChatEngine(o Options, spawn func(func()) bool) *chatengine.Engine {
+	e := o.ChatEngine
+	if e == nil {
 		return nil
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		log.Printf("hub: no chat runner: the executable is unknown (%s)", errClass(err))
-		return nil
-	}
-	clock := o.Clock
-	if clock == nil {
-		clock = time.Now
-	}
-	if store == nil {
-		store = chatstore.New(o.DB, db.ChatLeaseHub, h.kr.HubIDText(), chatstore.WithClock(clock))
-	}
-	r := chatrun.New(chatrun.Config{Exe: exe, DBPath: path, HubID: h.kr.HubIDText(), Dir: o.Dir, DB: o.DB, Clock: clock,
-		Store: store,
-		// A turn's text, steps and end reach the phone's feed and list (the
-		// publisher coalesces the per-event calls).
-		OnChange:  func(int64) { h.publishSoon(slices.KindChatFeed, slices.KindChatList) },
-		OnTurnEnd: h.chatTurnEnded(spawn),
-	})
-	if err := r.Sweep(); err != nil {
-		log.Printf("hub: the chat sweep failed (%s)", errClass(err))
-	}
-	return r
+	e.OnChange(func(int64) { h.publishSoon(slices.KindChatFeed, slices.KindChatList) })
+	e.OnTurnEnd(h.chatTurnEnded(spawn))
+	return e
 }
 
 // chatTurnEnded is the runner's OnTurnEnd: the chat_answer push (spec
@@ -579,47 +546,17 @@ func (h *hubRuntime) chatTurnEnded(spawn func(func()) bool) func(conv int64, tur
 	}
 }
 
-// newChatStore is the hub's chat turn store: lease owner this hub, the
-// automatic routing's preferred provider, and the AI title after a
-// conversation's first complete answer (off the turn's goroutine, cancelled
-// at close).
-func (h *hubRuntime) newChatStore(o Options, w *wiring) *chatstore.Store {
-	clock := o.Clock
-	if clock == nil {
-		clock = time.Now
-	}
-	opts := []chatstore.Option{chatstore.WithClock(clock), chatstore.WithPreferredProvider(o.ChatPreferredProvider)}
-	if title := o.ChatTitle; title != nil {
-		opts = append(opts, chatstore.WithTitleHook(func(conv int64) {
-			w.spawn(func() {
-				ctx, cancel := context.WithTimeout(w.titlesCtx, chatTitleBudget)
-				defer cancel()
-				if err := title(ctx, conv); err != nil {
-					log.Printf("hub: chat %d got no AI title (%s)", conv, errClass(err))
-				}
-			})
-		}))
-	}
-	return chatstore.New(o.DB, db.ChatLeaseHub, h.kr.HubIDText(), opts...)
-}
-
-// close stops the chat sessions (before the daemon closes the database) and
+// close unhooks the chat engine (it keeps running: the daemon owns it) and
 // releases the watch's handle once the goroutines are done.
 func (w *wiring) close() {
 	if w == nil {
 		return
 	}
-	// The runner first: once it closed no turn finalizes, so no title hook
-	// fires; then the background work (spawn refuses anything later).
+	// Unhook the engine first, so no turn end spawns work any more; then
+	// the background work (spawn refuses anything later).
 	if w.chat != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), chatCloseBudget)
-		if err := w.chat.Close(ctx); err != nil {
-			log.Printf("hub: closing the chat sessions failed (%s)", errClass(err))
-		}
-		cancel()
-	}
-	if w.titlesCancel != nil {
-		w.titlesCancel()
+		w.chat.OnChange(func(int64) {})
+		w.chat.OnTurnEnd(func(int64, string, string) {})
 	}
 	w.stopBackground(chatBackgroundBudget)
 	if w.port != nil {

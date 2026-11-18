@@ -25,7 +25,7 @@ func seedNamespacedLowDataUsers(t *testing.T, database *db.DB, userIDs ...string
 	for u, id := range userIDs {
 		seedUser(t, database, id, fmt.Sprintf("user%d", u))
 		for i := range 4 {
-			seedMessage(t, database, "1:C1", fmt.Sprintf("%.6f", base+float64((u*10+i)*60)), id, "msg")
+			seedPartnerMessage(t, database, "1:C1", fmt.Sprintf("%.6f", base+float64((u*10+i)*60)), id, "msg")
 		}
 	}
 	seedDigestWithSituations(t, database, "1:C1", from, to, `[]`,

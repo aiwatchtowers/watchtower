@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// A track read in full as an Inbox card (`InboxTrackPane`): its narrative,
 /// a custom track's controls and activity, its links, the card's buttons

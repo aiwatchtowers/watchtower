@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// A manual check's steps (spec 2026-10-03 Part 8, board #502): each marked
 /// Works, Doesn't work (with "What happened?") or Didn't check; an item left
