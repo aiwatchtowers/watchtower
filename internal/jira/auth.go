@@ -58,7 +58,7 @@ var (
 // setup (#1887 D15). The release that ships it sets the date; "" = not known
 // yet. `jira accounts --json` passes it on, and the shared-Atlassian banner
 // counts the days to it.
-var SharedAppCutoff = ""
+var SharedAppCutoff string
 
 // JiraOAuthConfig holds credentials for the Jira Cloud OAuth 2.0 (3LO) flow.
 type JiraOAuthConfig struct {

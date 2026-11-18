@@ -22,7 +22,7 @@ import (
 // Calendar scopes only, and the account listings carry the retirement
 // banners' flags.
 
-const sharedGoogleID = "shared-google.apps.googleusercontent.com"
+const sharedGoogleID = "9999-shared.apps.googleusercontent.com"
 
 // bakeSharedGoogle makes sharedGoogleID the build's baked Google client and
 // clears the development env.
@@ -61,8 +61,7 @@ func newGoogleSharedHarness(t *testing.T) *googleSharedHarness {
 }
 
 // TestGoogleShared_CalendarOnly: a sign-in through our shared client asks
-// for Calendar only, and an existing Gmail row on a shared grant keeps
-// syncing (the daemon still wires its Gmail syncer).
+// for Calendar only.
 func TestGoogleShared_CalendarOnly(t *testing.T) {
 	h := newGoogleSharedHarness(t)
 	cmd, out := cmdWithFlags(t, googleAddCmd, map[string]string{"calendar": "true"})
@@ -72,10 +71,14 @@ func TestGoogleShared_CalendarOnly(t *testing.T) {
 	require.Len(t, h.scopes, 1)
 	assert.Equal(t, []string{calendar.ScopeCalendarReadonly}, h.scopes[0])
 	assert.NotContains(t, h.scopes[0], gmail.ScopeGmailReadonly)
+}
 
-	// An existing Gmail row on the shared client keeps syncing.
+// TestGoogleShared_ExistingGmailKeepsSyncing: a Gmail row that already holds
+// a grant on the shared client is still wired by the daemon (D11: existing
+// tokens live on until Google refuses them).
+func TestGoogleShared_ExistingGmailKeepsSyncing(t *testing.T) {
 	wcfg := wiringTestConfig(t)
-	t.Setenv("WATCHTOWER_GOOGLE_CLIENT_ID", "")
+	bakeSharedGoogle(t)
 	wcfg.Calendar.Enabled, wcfg.Gmail.Enabled = true, true
 	wdb := db.OpenTestDB(t)
 	_, gmSeen := stubGoogleClients(t, nil, nil)
@@ -88,10 +91,11 @@ func TestGoogleShared_CalendarOnly(t *testing.T) {
 }
 
 // TestGoogleShared_GmailRefusedWithHint: Gmail through our shared client —
-// baked, or the env naming the baked id — is refused before any browser,
-// with the way out, and leaves no row; a re-login that would carry the
-// row's Gmail is refused and keeps the row's grant. A company's client, an
-// own project and a development env client of another id still get Gmail.
+// baked, or the baked id on any other layer — is refused before any
+// browser, with the way out, and leaves no row; a re-login that would carry
+// the row's Gmail is refused and keeps the row's grant. A company's client,
+// an own project, a development env client of another id and a flavoured
+// build's baked client still get Gmail.
 func TestGoogleShared_GmailRefusedWithHint(t *testing.T) {
 	t.Run("add", func(t *testing.T) {
 		h := newGoogleSharedHarness(t)
@@ -117,16 +121,30 @@ func TestGoogleShared_GmailRefusedWithHint(t *testing.T) {
 		assert.Empty(t, h.scopes)
 	})
 
+	t.Run("gmail login on a fresh install", func(t *testing.T) {
+		h := newGoogleSharedHarness(t)
+		cmd, out := cmdWithFlags(t, gmailLoginCmd, map[string]string{})
+
+		require.ErrorIs(t, runGmailLogin(cmd, nil), errGmailNeedsOwnProject, out.String())
+
+		assert.Empty(t, h.scopes)
+		accounts, err := h.database.ListGoogleAccounts()
+		require.NoError(t, err)
+		assert.Empty(t, accounts, "the row the login created is rolled back")
+	})
+
 	t.Run("re-login of a shared Gmail row", func(t *testing.T) {
 		h := newGoogleSharedHarness(t)
 		ws := h.cfg.WorkspaceDir()
 		id, err := h.database.CreateGoogleAccount(db.GoogleAccount{Email: "a@example.com", CalendarEnabled: true, GmailEnabled: true})
 		require.NoError(t, err)
 		require.NoError(t, calendar.NewAccountTokenStore(ws, id).Save(&calendar.OAuthToken{RefreshToken: "shared-refresh"}))
-		cmd, out := cmdWithFlags(t, googleLoginCmd, map[string]string{})
+		cmd, out := cmdWithFlags(t, calendarLoginCmd, map[string]string{})
 
 		// `calendar login` carries the row's Gmail (wantGmail from the row).
-		require.ErrorIs(t, connectGoogleAccount(cmd, h.cfg, h.database, id, true, true, false), errGmailNeedsOwnProject, out.String())
+		err = runCalendarLogin(cmd, nil)
+		require.ErrorIs(t, err, errGmailNeedsOwnProject, out.String())
+		assert.Contains(t, err.Error(), "google account")
 
 		assert.Empty(t, h.scopes)
 		tok, err := calendar.NewAccountTokenStore(ws, id).Load()
@@ -137,25 +155,35 @@ func TestGoogleShared_GmailRefusedWithHint(t *testing.T) {
 		assert.True(t, a.GmailEnabled)
 	})
 
+	t.Run("the baked id from a bundle", func(t *testing.T) {
+		h := newGoogleSharedHarness(t)
+		b := companySample("Acme")
+		b.Google.ClientID = sharedGoogleID
+		saveCompany(t, h.cfg.WorkspaceDir(), b)
+		cmd, out := cmdWithFlags(t, googleAddCmd, map[string]string{"company": "acme", "gmail": "true"})
+
+		require.ErrorIs(t, runGoogleAdd(cmd, nil), errGmailNeedsOwnProject, out.String())
+		assert.Empty(t, h.scopes)
+	})
+
 	t.Run("other clients keep Gmail", func(t *testing.T) {
 		bakeSharedGoogle(t)
 		want := []string{calendar.ScopeCalendarReadonly, gmail.ScopeGmailReadonly}
-		for _, c := range []struct {
-			src clientSource
-			id  string
-		}{
-			{clientSourceCompany, "1234-abcd.apps.googleusercontent.com"},
-			{clientSourceAccountFile, "own-project-id"},
-			{clientSourceEnv, "developer-project-id"},
-		} {
-			got, err := googleScopesFor(c.src, c.id, true, true)
-			require.NoError(t, err, c.src)
-			assert.Equal(t, want, got, c.src)
+		for _, id := range []string{"1234-abcd.apps.googleusercontent.com", "own-project-id", "developer-project-id"} {
+			got, err := googleScopesFor(id, true, true)
+			require.NoError(t, err, id)
+			assert.Equal(t, want, got, id)
 		}
-		// No baked client (a development build): an env client is the
-		// developer's own project.
+		// A flavoured build's baked client is its company's app.
+		prev := BuildFlavor
+		BuildFlavor = "corp"
+		t.Cleanup(func() { BuildFlavor = prev })
+		_, err := googleScopesFor(sharedGoogleID, false, true)
+		require.NoError(t, err)
+		BuildFlavor = prev
+		// No baked client (a development build): nothing is shared.
 		calendar.DefaultGoogleClientID = ""
-		got, err := googleScopesFor(clientSourceEnv, "", false, true)
+		got, err := googleScopesFor("", false, true)
 		require.NoError(t, err)
 		assert.Equal(t, []string{gmail.ScopeGmailReadonly}, got)
 	})
@@ -206,6 +234,17 @@ func TestConnectionsJSON_SharedFlags(t *testing.T) {
 		assert.False(t, got[removed].SharedGmail)
 		assert.Equal(t, "shared gmail", got[sharedGmail].Label)
 		assert.True(t, got[sharedGmail].GmailEnabled)
+
+		// The env naming the baked id is the shared client too; a flavoured
+		// build's baked client is its company's.
+		t.Setenv("WATCHTOWER_GOOGLE_CLIENT_ID", sharedGoogleID)
+		a, err := database.GetGoogleAccount(sharedGmail)
+		require.NoError(t, err)
+		assert.True(t, googleSharedGmail(ws, a))
+		prev := BuildFlavor
+		BuildFlavor = "corp"
+		t.Cleanup(func() { BuildFlavor = prev })
+		assert.False(t, googleSharedGmail(ws, a))
 	})
 
 	t.Run("jira", func(t *testing.T) {
@@ -267,6 +306,13 @@ func TestConnectionsJSON_SharedFlags(t *testing.T) {
 			if r.ID == unbaked {
 				assert.True(t, r.SharedAtlassian)
 			}
+		}
+		// A flavoured build's baked client is its company's app.
+		prevFlavor := BuildFlavor
+		BuildFlavor = "corp"
+		t.Cleanup(func() { BuildFlavor = prevFlavor })
+		for _, r := range read().Accounts {
+			assert.False(t, r.SharedAtlassian, r.ID)
 		}
 	})
 }

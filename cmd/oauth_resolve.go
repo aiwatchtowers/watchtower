@@ -314,46 +314,39 @@ func resolveGoogleOAuthConfigForAccount(workspaceDir string, account db.GoogleAc
 }
 
 // googleLoginOAuthConfig is the client a sign-in of an existing Google
-// account uses, with its layer: a tied account's company app as it stands (a
-// changed app is what the re-login is for), else the account's resolver
-// order.
-func googleLoginOAuthConfig(workspaceDir string, account db.GoogleAccount) (calendar.GoogleOAuthConfig, clientSource, error) {
+// account uses: a tied account's company app as it stands (a changed app is
+// what the re-login is for), else the account's resolver order.
+func googleLoginOAuthConfig(workspaceDir string, account db.GoogleAccount) (calendar.GoogleOAuthConfig, error) {
 	if account.CompanySlug != "" {
-		if cfg, src, err := resolveGoogleOAuthConfigForCompany(workspaceDir, account.CompanySlug); err == nil {
-			return cfg, src, nil
+		if cfg, _, err := resolveGoogleOAuthConfigForCompany(workspaceDir, account.CompanySlug); err == nil {
+			return cfg, nil
 		}
 	}
-	return resolveGoogleOAuthConfigForAccount(workspaceDir, account)
+	cfg, _, err := resolveGoogleOAuthConfigForAccount(workspaceDir, account)
+	return cfg, err
 }
 
 // errGmailNeedsOwnProject is a Gmail sign-in through our shared Google
 // client, which keeps the Calendar scopes only (#1887 D11).
 var errGmailNeedsOwnProject = errors.New("gmail needs your company's or your own Google project: " +
-	"open your company's Watchtower link, or add the account with --client-id and --client-secret-stdin; " +
-	"to keep only Calendar on the shared app, turn Gmail off for the account first")
+	"open your company's Watchtower link, or add the account with --client-id and --client-secret-stdin")
 
 // googleOnSharedClient reports a client that is our shared Google app: the
-// baked one, or the env naming the baked id. A development env client of
-// another id is the developer's own project.
-func googleOnSharedClient(src clientSource, clientID string) bool {
-	switch src {
-	case clientSourceBaked:
-		return true
-	case clientSourceEnv:
-		return calendar.DefaultGoogleClientID != "" && clientID == calendar.DefaultGoogleClientID
-	default:
-		return false
-	}
+// public build's baked id, on whatever layer it arrives (baked, the env, a
+// credentials file or a bundle that names it). A flavoured build's baked
+// client is its company's app, and a development build bakes none.
+func googleOnSharedClient(clientID string) bool {
+	return BuildFlavor == "" && calendar.DefaultGoogleClientID != "" && clientID == calendar.DefaultGoogleClientID
 }
 
-// googleScopesFor returns the OAuth scopes to request through a client of
-// layer src for the selected services, calendar before gmail — the order
-// Google's consent screen lists the per-service checkboxes in. Our shared
-// client never asks for Gmail (D11): that is errGmailNeedsOwnProject, before
-// any browser opens. Gmail rows that already hold a shared grant keep
-// syncing on it; only a new sign-in is refused.
-func googleScopesFor(src clientSource, clientID string, wantCalendar, wantGmail bool) ([]string, error) {
-	if wantGmail && googleOnSharedClient(src, clientID) {
+// googleScopesFor returns the OAuth scopes to request through clientID for
+// the selected services, calendar before gmail — the order Google's consent
+// screen lists the per-service checkboxes in. Our shared client never asks
+// for Gmail (D11): that is errGmailNeedsOwnProject, before any browser
+// opens. Gmail rows that already hold a shared grant keep syncing on it;
+// only a new sign-in is refused.
+func googleScopesFor(clientID string, wantCalendar, wantGmail bool) ([]string, error) {
+	if wantGmail && googleOnSharedClient(clientID) {
 		return nil, errGmailNeedsOwnProject
 	}
 	var scopes []string

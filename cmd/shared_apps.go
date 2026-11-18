@@ -40,13 +40,14 @@ type googleAccountJSON struct {
 
 // googleSharedGmail reports an account that syncs Gmail on our shared Google
 // client (googleOnSharedClient). An account whose client cannot be resolved
-// is a Re-login row, not a banner one.
+// is a Re-login row (the daemon records the error on it, carried in status
+// and error), not a banner one.
 func googleSharedGmail(workspaceDir string, a db.GoogleAccount) bool {
 	if !a.GmailEnabled || accountGone(a.Status) {
 		return false
 	}
-	cfg, src, err := resolveGoogleOAuthConfigForAccount(workspaceDir, a)
-	return err == nil && googleOnSharedClient(src, cfg.ClientID)
+	cfg, _, err := resolveGoogleOAuthConfigForAccount(workspaceDir, a)
+	return err == nil && googleOnSharedClient(cfg.ClientID)
 }
 
 func writeGoogleAccountsJSON(w io.Writer, workspaceDir string, accounts []db.GoogleAccount) error {
@@ -91,10 +92,11 @@ type jiraAccountsJSON struct {
 // jiraOnSharedApp reports an OAuth account on our shared Atlassian app: no
 // company and no client file of its own, so its client is the env or baked
 // one — or none at all once the public build stops baking it (D4), when the
-// account needs a company's app to sign in again. An API-token site has no
-// app; a tied account or an own client file is a company's app.
+// account needs a company's app to sign in again (its status and error say
+// so). An API-token site has no app; a tied account or an own client file is
+// a company's app, and so is a flavoured build's baked client.
 func jiraOnSharedApp(workspaceDir string, a db.JiraAccount) bool {
-	if a.AuthKind == "api_token" || a.CompanySlug != "" || accountGone(a.Status) {
+	if BuildFlavor != "" || a.AuthKind == "api_token" || a.CompanySlug != "" || accountGone(a.Status) {
 		return false
 	}
 	_, src, err := resolveJiraOAuthConfigForAccount(workspaceDir, a)

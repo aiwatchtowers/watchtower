@@ -534,19 +534,19 @@ func connectGoogleAccount(cmd *cobra.Command, cfg *config.Config, database *db.D
 	if err != nil {
 		return fmt.Errorf("loading account %d: %w", accountID, err)
 	}
-	googleCfg, src, err := googleLoginOAuthConfig(cfg.WorkspaceDir(), acct)
+	googleCfg, err := googleLoginOAuthConfig(cfg.WorkspaceDir(), acct)
 	if err != nil {
 		if isNewRow {
 			rollbackGoogleAccount(database, cfg.WorkspaceDir(), accountID, cmd.ErrOrStderr())
 		}
 		return fmt.Errorf("%w: open your company's Watchtower link, or set WATCHTOWER_GOOGLE_CLIENT_ID for development", err)
 	}
-	scopes, err := googleScopesFor(src, googleCfg.ClientID, wantCalendar, wantGmail)
+	scopes, err := googleScopesFor(googleCfg.ClientID, wantCalendar, wantGmail)
 	if err != nil {
 		if isNewRow {
 			rollbackGoogleAccount(database, cfg.WorkspaceDir(), accountID, cmd.ErrOrStderr())
 		}
-		return err
+		return fmt.Errorf("google account %d: %w", accountID, err)
 	}
 	tied := acct.CompanySlug != ""
 	token, err := loginAndSaveGoogleToken(cmd, cfg, database, accountID, googleCfg, tied, scopes, noOpen, appReturn, isNewRow)
@@ -579,9 +579,9 @@ func addGoogleAccountForCompany(cmd *cobra.Command, cfg *config.Config, database
 	appReturn, _ := cmd.Flags().GetBool("app-return")
 	googleCfg := calendar.GoogleOAuthConfig{ClientID: g.ClientID, ClientSecret: g.ClientSecret}
 
-	scopes, err := googleScopesFor(clientSourceCompany, googleCfg.ClientID, wantCalendar, wantGmail)
+	scopes, err := googleScopesFor(googleCfg.ClientID, wantCalendar, wantGmail)
 	if err != nil {
-		return err
+		return fmt.Errorf("company %s: %w", slug, err)
 	}
 	token, err := runGoogleConsent(cmd, googleCfg, scopes, noOpen, appReturn)
 	if err != nil {

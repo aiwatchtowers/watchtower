@@ -144,7 +144,7 @@ func TestListenLocal_PortRange(t *testing.T) {
 // day (YYYY-MM-DD), never another form the Desktop cannot read.
 func TestSharedAppCutoff_EmptyOrADay(t *testing.T) {
 	if SharedAppCutoff == "" {
-		return
+		t.Skip("SharedAppCutoff is not set yet")
 	}
 	_, err := time.Parse(time.DateOnly, SharedAppCutoff)
 	require.NoError(t, err, "SharedAppCutoff %q is not a YYYY-MM-DD day", SharedAppCutoff)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -124,7 +125,7 @@ func TestPurge02_ClientFileGoesWithItsAccountOnly(t *testing.T) {
 			gone := []string{c.source + "_token_1.json", c.source + "_client_1.json"}
 			kept := []string{c.source + "_client_10.json", c.source + "_token_10.json", c.source + "_client_2.json",
 				c.sibling + "_client_1.json", "google_credentials_1.json"}
-			for _, name := range append(append([]string{}, gone...), kept...) {
+			for _, name := range slices.Concat(gone, kept) {
 				if err := os.WriteFile(filepath.Join(dir, name), []byte(`{"client_id":"x"}`), 0o600); err != nil {
 					t.Fatal(err)
 				}
