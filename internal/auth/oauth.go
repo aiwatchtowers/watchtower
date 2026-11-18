@@ -55,6 +55,24 @@ var (
 // app manifest's (internal/slackmanifest), its single source.
 var UserScopes = slackmanifest.UserScopes()
 
+// LoginScopes are the scopes this login asks for: the manifest's minus
+// emoji:read. The login runs on apps configured before emoji:read joined the
+// manifest (the baked app, an env or custom client id), and Slack refuses a
+// user_scope the app does not declare, so the scope is never requested from
+// them (owner decision, ask #1464). Their tokens skip the emoji sync
+// (spec A6); apps made from the manifest get it at their own connect.
+var LoginScopes = withoutScope(UserScopes, "emoji:read")
+
+func withoutScope(scopes []string, drop string) []string {
+	out := make([]string, 0, len(scopes))
+	for _, s := range scopes {
+		if s != drop {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // slackHTTPClient makes the code exchange. Its timeout bounds the call on its
 // own: a stalled oauth.v2.access must not hang the CLI the Desktop is waiting
 // on, whatever deadline the caller's context carries.
@@ -147,7 +165,7 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 	// Build authorize URL with user_scope (not scope) for user tokens
 	params := url.Values{
 		"client_id":    {cfg.ClientID},
-		"user_scope":   {strings.Join(UserScopes, ",")},
+		"user_scope":   {strings.Join(LoginScopes, ",")},
 		"redirect_uri": {redirectURI},
 		"state":        {state},
 	}

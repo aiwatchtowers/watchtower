@@ -69,6 +69,7 @@ Out of scope: database encryption Stage 2 + 3 (#603; this work ships the FileVau
 | A22 | Database encryption (Stage 2 + 3) is out of scope of this work and stays tracked in #603 with its own plans and gate; the FileVault line (A18) is the interim here, removed when Stage 2 ships | Stage 2 is a large, separately designed project parked by the owner (ask #497); bundling it would block the rest | ask #1416: «Принять все» (review finding 7) |
 | A23 | The privacy policy's deletion sentence names the switch and both of its states (§7, item 2) | It must be true for an owner who turned the purge off | ask #1416: «Принять все» (review finding 5) |
 | A24 | Task H3 also updates the embedded developer skill `watchtower-who-to-ask` and checks `get_person`'s output (§5.3, "Readers") | Both name the dropped fields today | ask #1416: «Принять все» (review finding 6) |
+| A25 | The existing login (baked, env or custom client id) never requests `emoji:read`; only apps made from the manifest get it at their own connect | Slack refuses a user scope the app does not declare, and those apps predate the scope | ask #1464 ("do not ask existing apps") |
 
 ## 1. What Slack asks of an internal app
 
