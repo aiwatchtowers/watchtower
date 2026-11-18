@@ -5,12 +5,14 @@
 > from @Vadym.
 >
 > AI assistant: when working in `cmd/slack.go` (`runSlackRemove`,
-> `removeSlackAccount`, `rollbackSlackAccount`) or
-> `internal/db/slack_accounts.go` (`SetSlackAccountRemoved`), read this file
-> first. Any proposed change that would break a guard test or remove a
+> `removeSlackAccount`, `rollbackSlackAccount`),
+> `internal/db/slack_accounts.go` (`SetSlackAccountRemoved`),
+> `internal/slackmode/`, `internal/slackconnect/`, `internal/slackapp/`,
+> `internal/slackauth/`, `cmd/slack_connect*.go` or `cmd/slack_app.go`, read
+> this file first. Any proposed change that would break a guard test or remove a
 > contract must be raised as a question before touching code.
 
-**Module:** `cmd/slack.go` (account removal and connect rollback), `internal/db/slack_accounts.go`
+**Module:** `cmd/slack.go` (account removal and connect rollback), `internal/db/slack_accounts.go`, `internal/slackmode/` (SLACKMODE-01), the Slack Full entry (SLACKFULL-01/02: `internal/slackconnect/`, `internal/slackapp/`, `internal/slackauth/`, `cmd/slack_connect.go`, `cmd/slack_connect_serve.go`, `cmd/slack_app.go`, Desktop `SlackConnectFlowModel`, `SlackAppSetupModel`)
 **Last full audit:** 2026-10-01
 
 ## SLACK-01 — Removing a Slack account keeps its data
@@ -29,6 +31,8 @@
 **Note (2026-10-21, board #601):** revocation is not removal; SLACK-01 is unchanged and `slack remove` stays soft. A removed account's data, kept by the remove, is deleted by an enabled lease purge 30 days after its last confirmed access, after a 72 h notice (PURGE-01, `docs/inventory/account-purge.md`); with the purge off it is kept for good.
 
 **Note (2026-11-17, #1769, ask #1412):** the data is still kept at once; with the purge on (the default) it is deleted 72 h after the first purge pass that follows the remove (a removed Slack account has a zero lease, PURGE-01). `slack remove` first revokes the account's token at Slack (`auth.revoke`, 10 s), which also signs out every other place using that sign-in; a failed revoke prints "Slack did not confirm the token was revoked; it may stay valid until a workspace admin removes the app" and the remove goes on (token file deleted, row `removed`); it is also logged on stderr with its cause, and the Desktop shows it as a notice in Connections → Slack (`SlackRevokeNotice`). Before the token delete a remove of a not-yet-removed account cancels its scheduled purge rows (`CancelScheduledAccountPurges`; a retry on a removed account keeps its row and due date, `TestSlackRemove_RetryKeepsTheRemovedAccountsPurgeRow`): a lease row scheduled while the workspace was live would otherwise keep its old due date and cut the 72 h notice. Guards: `cmd/slack_remove_test.go` `TestSlackRemove_RevokesBeforeDelete`, `TestSlackRemove_RevokeFailureStillRemoves`, `TestSlackRemove_CancelsScheduledPurge`.
+
+**Note (2026-11-18, #1709 plan B, ask #1425):** SLACK-01 is unchanged and gains no caller. Moving an account off the retired shared Slack app to its workspace's own app re-binds the same row (new token and `client_id`, same account id and data, `writeConnectedAccount` in `cmd/slack_connect.go`); it neither soft-removes nor purges anything (`TestSlackLinkConnect_RebindKeepsHistory`). Since plan B Task 8 the token-file delete runs under the account's token flock: `removeSlackAccount` reads the token, revokes it and deletes the file (`NewTokenStore(...).Delete`) inside one `withSlackTokenLock` section, so a concurrent refresh never rewrites the file of a removed account (`TestSlackRemove_HoldsTheTokenLockThroughRevoke`, `TestSlackTokenWriters_AllLocked`). The observable behaviour and the guards above are unchanged.
 
 **Locked since:** 2026-10-01
 
@@ -53,3 +57,39 @@
 
 **Changelog:**
 - 2026-11-18 (ask #1525, owner-approved contract change): Live is read from the newest probe batch of each provider in both Go and Swift; before, Go counted any `ok` row, so an older `ok` kept the daemon Live while the Desktop showed Off. The shared fixture gained `probes` cases (newest batch wins both ways, two providers, a same-instant batch with team `''` and team rows).
+
+## SLACKFULL-01 — Nothing connects to Slack without the owner's press
+
+**Status:** Enforced
+
+**Observable:** Opening the connect link `http://127.0.0.1:18551/slack/connect?team=…&client=…` — from Slack's About page or from any web page — only brings Watchtower forward with "Connect a Slack workspace?". Nothing reaches Slack, no browser tab opens and nothing is stored until the owner presses **Connect**. A link that arrives while a flow runs starts nothing. A pasted link or code, an MDM **Connect**, Reconnect and the setup's admin connect are the owner's own press and skip the question.
+
+**Mechanism:** The loopback listener (`internal/slackconnect` `Handler`, held by the Desktop's `slack connect serve` child or the one-shot `slack connect`) answers `/slack/connect` with the "Switch to Watchtower" page and a `link` event; `Registry.Begin(t, needsConfirm: true)` creates the flow without an authorize URL, and `Confirm` is the only way a link flow gets one (`ErrNotConfirmed` otherwise). Only `GET` on `/slack/connect` and `/callback`, `Host` exactly `127.0.0.1:18551`, no files. One flow at a time in the child (`ErrFlowRunning`) and in the Desktop (`SlackConnectFlowModel` refuses a start while anything runs and cancels an unshown link). A callback with no live flow stores nothing.
+
+**Why locked:** Any web page can open a loopback URL. Without the confirm, a page could start an OAuth into a workspace the owner never chose and attach it to their Watchtower.
+
+**Test guards:**
+- `internal/slackconnect/server_test.go`: `TestSlackConnectListener_RequiresConfirm` (a link → one `link` event, no exchange, no browser), `TestSlackConnectListener_CallbackWithoutFlow`, `TestSlackConnectListener_RejectsOtherHostsMethodsPaths`.
+- `internal/slackconnect/flow_test.go`: `TestRegistry_ConfirmRequiredForLink`, `TestRegistry_OneFlowAtATime`.
+- `cmd/slack_connect_serve_test.go`: `TestSlackConnectServe_LinkConfirmConnected`, `TestSlackConnectServe_SecondStartBusy`.
+- `WatchtowerDesktop/Tests/Core/SlackConnectFlowModelTests.swift`: `testLinkStartsAtConfirm`, `testSecondLinkWhileRunningIsRefused`.
+
+**Locked since:** 2026-11-18 (approved in ask #1414, plan B A16)
+
+## SLACKFULL-02 — No Slack client secret or configuration token is kept
+
+**Status:** Enforced
+
+**Observable:** Setting up Watchtower's Slack app for a company and connecting through it leave no Slack client secret and no configuration token in any file, the database, a log line, standard output or a process's arguments. The configuration token is pasted into the setup sheet, used for that run and forgotten; the sign-in exchange and every token refresh send no secret.
+
+**Mechanism:** `slack app create|adopt|link` read the token from the first line of standard input only (no flag; a positional argument is refused without being echoed); `SlackAppSetupModel` passes it only as stdin, holds it only while a run lasts and empties the field on submit. The `apps.manifest.create` answer is decoded into a struct with no secret field, and an exported manifest's `credentials` object is dropped (`internal/slackapp`). The PKCE exchange (`slackconnect` exchanger) and the refresher (`slackauth`) post no `client_secret`.
+
+**Why locked:** A company's app secret on one colleague's Mac, or a 12-hour configuration token in a log, would let anyone holding that file act as the company's app. Nothing in Watchtower needs either.
+
+**Test guards:**
+- `cmd/slack_app_test.go`: `TestAppSetup_SecretNeverStored` (a fake Slack returns `client_secret`: the workspace dir, every DB table and stdout/stderr hold neither the secret nor the token), `TestAppSetup_TokenNeverInArgv`.
+- `internal/slackapp`: `TestAdopt_SecretNeverStored`, `TestClient_CreateDropsTheSecret`.
+- `internal/slackconnect/exchange_test.go`: `TestExchange_NoSecretInForm`; `internal/slackauth/fresh_test.go`: `TestSlackRefresh_NoSecretInForm`.
+- `WatchtowerDesktop/Tests/Core/SlackAppSetupModelTests.swift`: `testTokenNeverInArgv`, `testTokenDroppedAfterRun`, `testSubmitClearsTheTokenField`.
+
+**Locked since:** 2026-11-18 (approved in ask #1414, plan B A16)

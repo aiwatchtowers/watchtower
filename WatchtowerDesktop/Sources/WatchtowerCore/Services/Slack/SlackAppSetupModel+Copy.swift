@@ -26,8 +26,10 @@ extension SlackAppSetupModel {
     package static let appIDHelp = "Find it on the app's Basic Information page at api.slack.com/apps."
     package static let clientIDLabel = "Client ID"
     package static let adminNoteCopiedLine = "Copied. Send it to a workspace admin."
-    package static let guideURL = ReleaseLinks.repository
-        .appendingPathComponent("blob/main/docs/guide/concepts/sources-and-accounts.md")
+    /// The guide's company-setup section (A23): `main`, not the build's tag,
+    /// because the note goes to an admin who may run another version.
+    package static let guideURL = URL(string: ReleaseLinks.repository.absoluteString
+        + "/blob/main/docs/guide/features/slack-full.md#set-up-slack-for-your-company") ?? ReleaseLinks.repository
     static let noAnswer = "the watchtower command gave no result"
 
     package static func adminNote(workspace: String) -> String {

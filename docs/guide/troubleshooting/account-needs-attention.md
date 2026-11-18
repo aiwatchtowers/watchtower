@@ -17,7 +17,7 @@ The service revoked or expired the sign-in (a password change, an admin removing
 
 ## Fix
 
-1. **Slack:** on the account row press **Re-login**, then approve in the browser. A healthy row shows **Reconnect**, which also grants new permissions such as sending messages.
+1. **Slack:** on the account row press **Re-login**, then approve in the browser. A healthy row shows **Reconnect**, which also grants new permissions such as sending messages. A row that shows **Move to Full** is on Watchtower's retired shared app and cannot sign in again there: connect it through your workspace's app ([Move off the shared Slack app](../features/slack-full.md#move-off-the-shared-slack-app)).
 2. **Google and Jira:** press **Re-login** on the row and approve in the browser.
 3. **Linear:** in **Connections** → **Linear**, press **Re-login** on the row. A browser workspace signs in again; an API-key workspace asks for a new key. `watchtower linear login --account N` does the same in a terminal.
 4. **Email (IMAP, Outlook) and CalDAV or ICS:** these rows have no **Re-login**. Remove the account and add it again, using SSL or STARTTLS for mail and an https URL for CalDAV.
