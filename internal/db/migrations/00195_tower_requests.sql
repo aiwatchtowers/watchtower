@@ -11,7 +11,7 @@
 --   refusal_json a non-idempotent command's marshalled refusal on a done
 --                row ('' otherwise); a resend answers the same refusal
 --   at           when the row was last written (UTC, %Y-%m-%dT%H:%M:%SZ)
-CREATE TABLE tower_requests (
+CREATE TABLE IF NOT EXISTS tower_requests (
     request_id  TEXT PRIMARY KEY,
     command     TEXT NOT NULL,
     state       TEXT NOT NULL CHECK (state IN ('begun','done')),
@@ -19,7 +19,7 @@ CREATE TABLE tower_requests (
     refusal_json TEXT NOT NULL DEFAULT '',
     at          TEXT NOT NULL
 );
-CREATE INDEX idx_tower_requests_at ON tower_requests(at);
+CREATE INDEX IF NOT EXISTS idx_tower_requests_at ON tower_requests(at);
 
 -- +goose Down
 DROP INDEX IF EXISTS idx_tower_requests_at;
