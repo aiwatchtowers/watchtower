@@ -137,3 +137,28 @@ func isManualSync(ctx context.Context) bool {
 	manual, _ := ctx.Value(manualSyncKey{}).(bool)
 	return manual
 }
+
+// freshenSlackTokens reads every account's token through the freshener at
+// the start of the Slack phase — also for an account the cadence skips this
+// cycle, so a rarely-due account's refresh token never lapses (plan B Task 8)
+// — and hands a changed token to the account's client. A failure is logged;
+// the run then goes on with the token it has (a dead sign-in is marked on its
+// row by the freshener).
+func (d *Daemon) freshenSlackTokens(ctx context.Context) {
+	if d.slackTokenFreshener == nil {
+		return
+	}
+	for _, o := range d.orchestrators {
+		if d.purgeHeld("slack", o.AccountID()) {
+			continue
+		}
+		token, err := d.slackTokenFreshener(ctx, o.AccountID())
+		if err != nil {
+			d.logger.Printf("slack account %d: reading its token: %v", o.AccountID(), err)
+			continue
+		}
+		if token != "" {
+			o.SlackClient().SetToken(token)
+		}
+	}
+}

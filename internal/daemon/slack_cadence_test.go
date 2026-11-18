@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	gosync "sync"
 	"sync/atomic"
 	"testing"
@@ -287,4 +288,49 @@ func newSecondAccountOrchestrator(t *testing.T, mux *http.ServeMux, searches *at
 		&config.Config{Sync: config.SyncConfig{Workers: 1, InitialHistoryDays: 1}}, 2)
 	orch.SetLogger(log.New(os.Stderr, "[test-account-2] ", 0))
 	return orch
+}
+
+// An account the cadence skips still has its token read fresh at the start
+// of the cycle, so its refresh token never lapses; the fresh token reaches
+// its client for the next run (plan B Task 8).
+func TestSlackRefresh_SkippedCadenceStillRefreshes(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var mu gosync.Mutex
+	var seenTokens []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/search.messages", func(w http.ResponseWriter, r *http.Request) {
+		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		mu.Lock()
+		seenTokens = append(seenTokens, tok)
+		mu.Unlock()
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	var searches atomic.Int32
+	orch, _ := newStatusTrackingOrchestrator(t, mux, &searches)
+	cfg := &config.Config{ActiveWorkspace: "ws", Sync: config.SyncConfig{PollInterval: cadenceBase}}
+	d := New(cfg)
+	d.SetLogger(log.New(os.Stderr, "[test-freshen] ", 0))
+	d.SetOrchestrators([]*sync.Orchestrator{orch})
+	d.slackCadenceBase = cadenceBase
+	d.cadenceNow = func() time.Time { return cadenceT0 }
+	d.slackCadence(orch.AccountID()).nextDue = cadenceT0.Add(time.Hour) // not due this cycle
+	require.NoError(t, os.MkdirAll(cfg.WorkspaceDir(), 0o700))
+
+	var calls []int64
+	d.SetSlackTokenFreshener(func(_ context.Context, id int64) (string, error) {
+		calls = append(calls, id)
+		return "xoxe.xoxp-fresh", nil
+	})
+
+	_, _ = d.phaseSlackSync(context.Background())
+	assert.Equal(t, []int64{orch.AccountID()}, calls, "read fresh although the run is not due")
+	assert.Zero(t, searches.Load(), "the skipped account fetches nothing")
+
+	// The next run uses the fresh token.
+	_, _ = d.phaseSlackSync(withManualSync(context.Background()))
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, seenTokens)
+	assert.Equal(t, "xoxe.xoxp-fresh", seenTokens[0])
 }

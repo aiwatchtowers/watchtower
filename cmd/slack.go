@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/oauthpage"
+	"watchtower/internal/slackauth"
 
 	watchtowerslack "watchtower/internal/slack"
 
@@ -186,27 +187,35 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 		return slackIdentity{}, fmt.Errorf("recording connection: %w", err)
 	}
 
+	// The token file and the row's client id are written under the account's
+	// token lock, so a refresh or repair in another process (slackauth.LoadFresh)
+	// never sees one without the other.
 	store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id)
-	if err := store.Save(&watchtowerslack.Token{
-		AccessToken: accessToken,
-		TeamID:      identity.TeamID,
-		TeamName:    identity.TeamName,
-		UserID:      identity.UserID,
-		Scope:       grant.Scope,
-		ClientID:    clientID,
-	}); err != nil {
-		if isNewRow {
-			rollbackSlackAccount(database, id, warnOut)
+	err = withSlackTokenLock(ctx, store, func() error {
+		if err := store.Save(&watchtowerslack.Token{
+			AccessToken: accessToken,
+			TeamID:      identity.TeamID,
+			TeamName:    identity.TeamName,
+			UserID:      identity.UserID,
+			Scope:       grant.Scope,
+			ClientID:    clientID,
+		}); err != nil {
+			return fmt.Errorf("saving token: %w", err)
 		}
-		return slackIdentity{}, fmt.Errorf("saving token: %w", err)
-	}
-	if err := recordSlackClientID(database, id, clientID); err != nil {
+		if err := recordSlackClientID(database, id, clientID); err != nil {
+			if isNewRow {
+				// The token was saved for this row only: a rolled-back row keeps no token.
+				if delErr := store.Delete(); delErr != nil {
+					err = errors.Join(err, fmt.Errorf("removing the token of rolled-back slack account %d: %w", id, delErr))
+				}
+			}
+			return err
+		}
+		return nil
+	})
+	if err != nil {
 		if isNewRow {
 			rollbackSlackAccount(database, id, warnOut)
-			// The token was saved for this row only: a rolled-back row keeps no token.
-			if delErr := store.Delete(); delErr != nil {
-				err = errors.Join(err, fmt.Errorf("removing the token of rolled-back slack account %d: %w", id, delErr))
-			}
 		}
 		return slackIdentity{}, err
 	}
@@ -235,6 +244,40 @@ func recordSlackClientID(database *db.DB, id int64, clientID string) error {
 		return fmt.Errorf("recording client id: %w", err)
 	}
 	return nil
+}
+
+// slackTokenRefresher builds the refresher every token read uses; a test
+// seam.
+var slackTokenRefresher = slackauth.DefaultRefresher
+
+// loadSlackToken reads account id's token through slackauth.LoadFresh, so a
+// rotated token is refreshed first when it is due. A missing file is
+// (nil, nil).
+func loadSlackToken(ctx context.Context, cfg *config.Config, database *db.DB, id int64) (*watchtowerslack.Token, error) {
+	return slackauth.LoadFresh(ctx, cfg.WorkspaceDir(), database, id, slackTokenRefresher(), time.Now)
+}
+
+// slackTokenLockWait bounds the wait for an account's token lock held by
+// another process (a refresh), as the Linear and Jira helpers do.
+const slackTokenLockWait = time.Minute
+
+// withSlackTokenLock runs fn under the account's cross-process token lock
+// (TokenStore.Lock): every write or delete of slack_token_<id>.json does, so
+// it never interleaves with a refresh (slackauth.LoadFresh).
+func withSlackTokenLock(ctx context.Context, store *watchtowerslack.TokenStore, fn func() error) error {
+	lockCtx, cancel := context.WithTimeout(ctx, slackTokenLockWait)
+	defer cancel()
+	unlock, err := store.Lock(lockCtx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return fn()
+}
+
+// deleteSlackTokenLocked deletes the token file under the account's token lock.
+func deleteSlackTokenLocked(ctx context.Context, store *watchtowerslack.TokenStore) error {
+	return withSlackTokenLock(ctx, store, store.Delete)
 }
 
 // checkSlackLoginTeam decides whether a sign-in as identity may be recorded
@@ -606,7 +649,7 @@ func removeSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB
 			return err
 		}
 	}
-	if err := store.Delete(); err != nil {
+	if err := deleteSlackTokenLocked(ctx, store); err != nil {
 		return fmt.Errorf("deleting token file: %w", err)
 	}
 	return database.SetSlackAccountRemoved(id)

@@ -214,13 +214,14 @@ func fail(d *db.DB, id int64, err error) error {
 }
 
 // deleteTokens removes the account's credential files, as the per-source
-// remove commands do; a missing file is fine. Jira and Linear tokens are
-// deleted under their cross-process token lock, so a refresh in another
+// remove commands do; a missing file is fine. Slack, Jira and Linear tokens
+// are deleted under their cross-process token lock, so a refresh in another
 // process cannot write the file back.
 func deleteTokens(ctx context.Context, dir, source string, id int64) error {
 	switch source {
 	case "slack":
-		return wrapTokenErr(source, slack.NewTokenStore(dir, id).Delete())
+		store := slack.NewTokenStore(dir, id)
+		return wrapTokenErr(source, deleteLocked(ctx, store.Lock, store.Delete))
 	case "google":
 		return wrapTokenErr(source, errors.Join(
 			calendar.NewAccountTokenStore(dir, id).Delete(),

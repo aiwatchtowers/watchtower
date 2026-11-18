@@ -51,6 +51,7 @@ import (
 	"watchtower/internal/providerrouting"
 	"watchtower/internal/skills"
 	watchtowerslack "watchtower/internal/slack"
+	"watchtower/internal/slackauth"
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
 	"watchtower/internal/tracks"
@@ -1009,6 +1010,13 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 
 	d := daemon.New(cfg)
 	d.SetOrchestrators(orchestrators)
+	d.SetSlackTokenFreshener(func(ctx context.Context, accountID int64) (string, error) {
+		tok, err := loadSlackToken(ctx, cfg, database, accountID)
+		if err != nil || tok == nil {
+			return "", err
+		}
+		return tok.AccessToken, nil
+	})
 	d.SetLogger(logger)
 	d.SetDB(database)
 	// #880: no scheduled cycle starts in a Power Nap dark wake.
@@ -1356,7 +1364,8 @@ func remeasureCoachBaselines(cfg *config.Config, database *db.DB, al *agentlogdb
 }
 
 // wireSlackSyncers builds one sync.Orchestrator per connected, enabled Slack
-// account (slack_accounts row) whose per-account token file exists. An account
+// account (slack_accounts row) whose per-account token file exists, read
+// through slackauth.LoadFresh (a rotated token is refreshed first). An account
 // with a missing or unreadable token is skipped and logged rather than
 // aborting the rest — the wireImapSyncers/wireGoogleSyncers fan-out pattern.
 // Returns an empty slice when no account is connected (Slack simply doesn't
@@ -1373,8 +1382,19 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 	keyDetector := newIssueKeyDetector(cfg, database, logger)
 	var orchestrators []*sync.Orchestrator
 	for _, acct := range accounts {
-		store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
-		token, err := store.Load()
+		token, err := loadSlackToken(context.Background(), cfg, database, acct.ID)
+		if errors.Is(err, slackauth.ErrReloginNeeded) {
+			// LoadFresh marked the row for Re-login already.
+			logger.Printf("slack: account %d: %v", acct.ID, err)
+			continue
+		}
+		if err != nil {
+			// A refresh that failed for now (offline at start) must not
+			// unwire the account for the daemon's life: wire the stored
+			// token; the Slack phase reads it fresh again every cycle.
+			logger.Printf("slack: account %d: reading its token fresh: %v; using the stored one", acct.ID, err)
+			token, err = watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), acct.ID).Load()
+		}
 		if err != nil {
 			logger.Printf("slack: account %d: failed to load token: %v", acct.ID, err)
 			recordSlackWireError(database, logger, acct.ID, acct.Status, err)
