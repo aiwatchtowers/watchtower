@@ -88,25 +88,40 @@ type Result struct {
 // <checked sha>`). A failure that is not git's own refusal stops the apply:
 // the rest is left untouched and reported not_attempted. In session mode
 // the result is saved through Deps.Results (best effort). The error is
-// non-nil only when nothing was done.
+// non-nil only when nothing was done. A sweep over several repositories
+// applies them one after another (sweepBuilders); a failure that stops one
+// leaves the later ones not_attempted.
 func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error) {
 	res := Result{SessionID: r.SessionID, WorkbenchID: r.WorkbenchID, Mode: ModeApply, Sweep: r.Sweep,
 		Plan: Plan{Items: []Item{}, Notes: []string{}}}
 	if r.Sweep && len(only) == 0 {
 		return res, ErrSweepNeedsItems
 	}
-	b, err := newBuilder(ctx, d, r)
+	parts, err := evaluationBuilders(ctx, d, r)
 	if err != nil {
 		return res, err
 	}
-	b.walked = map[string]string{}
-	p := b.evaluate(ctx)
-	a := newApplier(b, p, only)
-	a.run(ctx)
-	res.WorkbenchID, res.Plan = b.req.WorkbenchID, Plan{Items: a.items, DefaultBranch: b.repo.defaultBranch, Notes: p.Notes}
-	res.RemovedBytes, res.RemovedBytesKnown = removedBytes(a.items)
-	res.Summary = Summarize(a.items)
-	a.save(ctx, &res)
+	reportListing(parts)
+	plans := make([]Plan, 0, len(parts))
+	var a *applier
+	var halt error
+	for _, b := range parts {
+		b.walked = map[string]string{}
+		p := b.evaluate(ctx)
+		a = newApplier(b, p, only)
+		a.halt = halt
+		a.run(ctx)
+		halt = a.halt
+		p.Items = a.items
+		plans = append(plans, p)
+	}
+	res.WorkbenchID, res.Plan = parts[0].req.WorkbenchID, mergePlans(plans)
+	if len(parts) > 1 {
+		res.Items = dropForeignNotInPlan(res.Items)
+	}
+	res.RemovedBytes, res.RemovedBytesKnown = removedBytes(res.Items)
+	res.Summary = Summarize(res.Items)
+	a.save(ctx, &res) // a session's apply has one part; a sweep saves nothing
 	return res, nil
 }
 
