@@ -16,7 +16,7 @@ package enum SessionDeletePolicy {
         switch state.kind {
         case .finished, .stopped, .failed:
             return true
-        case .notStarted, .running, .working, .needsApproval, .waitingOnAsk, .readyToCheck, .background:
+        case .notStarted, .running, .working, .needsApproval, .waitingOnAsk, .readyToCheck, .background, .specReview:
             return false
         }
     }

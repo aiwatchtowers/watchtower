@@ -95,7 +95,7 @@ final class SessionControl {
         guard status.state.live else { return false }
         guard status.at != nil else { return status.runMarked }
         switch status.state.kind {
-        case .stopped, .finished, .waitingOnAsk, .readyToCheck, .failed: return true
+        case .stopped, .finished, .waitingOnAsk, .readyToCheck, .failed, .specReview: return true
         case .notStarted, .running, .working, .background, .needsApproval: return false
         }
     }
@@ -132,7 +132,7 @@ final class SessionControl {
         guard status.state.live else { return false }
         switch status.state.kind {
         case .working, .background: return true
-        case .notStarted, .running, .needsApproval, .stopped, .finished, .waitingOnAsk, .readyToCheck, .failed:
+        case .notStarted, .running, .needsApproval, .stopped, .finished, .waitingOnAsk, .readyToCheck, .failed, .specReview:
             return false
         }
     }

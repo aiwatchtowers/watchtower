@@ -293,7 +293,7 @@ package struct SessionAgentStatus: Equatable, Sendable {
     package var isAtPrompt: Bool {
         guard state.live, at != nil else { return false }
         switch state.kind {
-        case .stopped, .failed, .finished, .waitingOnAsk, .readyToCheck, .background: return true
+        case .stopped, .failed, .finished, .waitingOnAsk, .readyToCheck, .background, .specReview: return true
         case .notStarted, .running, .working, .needsApproval: return false
         }
     }

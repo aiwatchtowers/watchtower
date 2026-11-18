@@ -136,6 +136,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(SlackAdaptiveSyncShotFixtures.shots)
     }
 
+    /// The session's Spec review state mockups (board #1945).
+    func testSpecReviewStateShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("session-state-spec-review") })
+    }
+
     private func renderShots(_ shots: [DesignShot]) throws {
         guard let outputDir = ProcessInfo.processInfo.environment["DESKTOP_SHOTS_DIR"]
             .flatMap({ $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) })

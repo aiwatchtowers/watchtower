@@ -95,7 +95,7 @@ package struct SessionAgentNoticePolicy: Sendable {
             if status.state.asksAreOnlyChecks { return nil }
             if status.finishedAt != nil { return .finished }
             return status.state.openAsks > 0 ? nil : .stopped
-        case .notStarted, .running, .working, .waitingOnAsk, .readyToCheck, .background: return nil
+        case .notStarted, .running, .working, .waitingOnAsk, .readyToCheck, .background, .specReview: return nil
         }
     }
 

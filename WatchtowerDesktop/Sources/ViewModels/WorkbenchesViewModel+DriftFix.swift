@@ -16,7 +16,7 @@ extension WorkbenchesViewModel {
     /// at its prompt (or called `finish_session`). A Fix waiting on the
     /// owner (an ask, an approval) or with background agents still works.
     static let driftFixDoneKinds: Set<SessionSwitcherPresentation.State.Kind> = [
-        .stopped, .finished, .failed, .readyToCheck
+        .stopped, .finished, .failed, .readyToCheck, .specReview
     ]
 
     /// The working Fix session the popover button should open instead of

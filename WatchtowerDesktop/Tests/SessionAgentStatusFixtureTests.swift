@@ -105,6 +105,7 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
         case .finished: return "finished"
         case .background: return "agents_working"
         case .readyToCheck: return "ready_to_check"
+        case .specReview: return "spec_review"
         }
     }
 }
