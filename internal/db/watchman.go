@@ -24,6 +24,10 @@ type WatchmanPrecedent struct {
 	OwnerWords  string
 	DecidedAt   time.Time
 	Weight      float64
+	// IsDecision and Parked are the relabel pass's flags (nil = unset; an
+	// unset row still counts as a backtest candidate). On upsert a nil flag
+	// keeps the stored one.
+	IsDecision, Parked *bool
 }
 
 // WatchmanProfile is one learned profile entry; Key is a category or
@@ -62,6 +66,7 @@ type WatchmanBacktestRow struct {
 	CostUSD     float64
 	Baseline    float64 // share of the most common owner choice among the hidden items (informational)
 	RecBaseline float64 // share of the decisions where the owner picked the agent's recommended option (informational)
+	Handed      int     // decisions the twin handed to the owner (not scored)
 }
 
 func wmTime(t time.Time) string { return t.UTC().Format(time.RFC3339) }
@@ -71,15 +76,24 @@ func wmTime(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 // another workbench.
 func (db *DB) UpsertWatchmanPrecedents(tx *sql.Tx, ps []WatchmanPrecedent) error {
 	for _, p := range ps {
+		var flagsAt any
+		if p.IsDecision != nil || p.Parked != nil {
+			flagsAt = wmTime(time.Now())
+		}
 		_, err := tx.Exec(`INSERT INTO watchman_precedents
-			(workbench_id, source, source_key, category, situation, choice, owner_words, decided_at, weight)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(workbench_id, source, source_key, category, situation, choice, owner_words, decided_at, weight,
+				is_decision, parked, flags_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(workbench_id, source, source_key) DO UPDATE SET
 				category = excluded.category,
 				situation = excluded.situation, choice = excluded.choice,
 				owner_words = excluded.owner_words, decided_at = excluded.decided_at,
-				weight = excluded.weight`,
-			p.WorkbenchID, p.Source, p.SourceKey, p.Category, p.Situation, p.Choice, p.OwnerWords, wmTime(p.DecidedAt), p.Weight)
+				weight = excluded.weight,
+				is_decision = COALESCE(excluded.is_decision, is_decision),
+				parked = COALESCE(excluded.parked, parked),
+				flags_at = COALESCE(excluded.flags_at, flags_at)`,
+			p.WorkbenchID, p.Source, p.SourceKey, p.Category, p.Situation, p.Choice, p.OwnerWords, wmTime(p.DecidedAt), p.Weight,
+			wmFlag(p.IsDecision), wmFlag(p.Parked), flagsAt)
 		if err != nil {
 			return fmt.Errorf("upserting watchman precedent %s/%s: %w", p.Source, p.SourceKey, err)
 		}
@@ -287,7 +301,7 @@ func (db *DB) watchmanBacktestWhere(where string, workbenchID int64) (*WatchmanB
 		t, _ := time.Parse(time.RFC3339, fin.String)
 		b.FinishedAt = &t
 	}
-	rows, err := db.Query(`SELECT category, total, agree, acceptable, bad, wrong_high, status, cost_usd, baseline, rec_baseline
+	rows, err := db.Query(`SELECT category, total, agree, acceptable, bad, wrong_high, status, cost_usd, baseline, rec_baseline, handed
 		FROM watchman_backtest_rows WHERE backtest_id = ? ORDER BY category`, b.ID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading watchman backtest rows %d: %w", b.ID, err)
@@ -297,7 +311,7 @@ func (db *DB) watchmanBacktestWhere(where string, workbenchID int64) (*WatchmanB
 	for rows.Next() {
 		var r WatchmanBacktestRow
 		if err := rows.Scan(&r.Category, &r.Total, &r.Agree, &r.Acceptable, &r.Bad, &r.WrongHigh, &r.Status, &r.CostUSD,
-			&r.Baseline, &r.RecBaseline); err != nil {
+			&r.Baseline, &r.RecBaseline, &r.Handed); err != nil {
 			return nil, nil, fmt.Errorf("scanning watchman backtest row: %w", err)
 		}
 		out = append(out, r)

@@ -3599,7 +3599,7 @@ agree INTEGER NOT NULL DEFAULT 0,
 wrong_high INTEGER NOT NULL DEFAULT 0,
 cost_usd REAL NOT NULL DEFAULT 0,
 baseline REAL NOT NULL DEFAULT 0, -- share of the most common owner choice among the hidden items
-status TEXT NOT NULL CHECK (status IN ('strong','weak','not_measured')), acceptable INTEGER NOT NULL DEFAULT 0, bad INTEGER NOT NULL DEFAULT 0, rec_baseline REAL NOT NULL DEFAULT 0,
+status TEXT NOT NULL CHECK (status IN ('strong','weak','not_measured')), acceptable INTEGER NOT NULL DEFAULT 0, bad INTEGER NOT NULL DEFAULT 0, rec_baseline REAL NOT NULL DEFAULT 0, handed INTEGER NOT NULL DEFAULT 0,
 PRIMARY KEY (backtest_id, category)
 )
 
@@ -3655,7 +3655,7 @@ situation TEXT NOT NULL DEFAULT '',
 choice TEXT NOT NULL DEFAULT '',
 owner_words TEXT NOT NULL DEFAULT '',
 decided_at TEXT NOT NULL,
-weight REAL NOT NULL DEFAULT 1,
+weight REAL NOT NULL DEFAULT 1, is_decision INTEGER, parked INTEGER, flags_at TEXT,
 UNIQUE (workbench_id, source, source_key)
 )
 
@@ -7007,6 +7007,7 @@ GROUP BY up.ancestor
 8	acceptable	INTEGER	notnull=1	dflt=0	pk=0
 9	bad	INTEGER	notnull=1	dflt=0	pk=0
 10	rec_baseline	REAL	notnull=1	dflt=0	pk=0
+11	handed	INTEGER	notnull=1	dflt=0	pk=0
 
 ## watchman_backtests
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -7058,6 +7059,9 @@ GROUP BY up.ancestor
 7	owner_words	TEXT	notnull=1	dflt=''	pk=0
 8	decided_at	TEXT	notnull=1	dflt=NULL	pk=0
 9	weight	REAL	notnull=1	dflt=1	pk=0
+10	is_decision	INTEGER	notnull=0	dflt=NULL	pk=0
+11	parked	INTEGER	notnull=0	dflt=NULL	pk=0
+12	flags_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## watchman_profile
 0	workbench_id	INTEGER	notnull=1	dflt=NULL	pk=1

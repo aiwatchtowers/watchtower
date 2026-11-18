@@ -2510,7 +2510,7 @@ CREATE TABLE IF NOT EXISTS watchman_precedents (
     choice       TEXT NOT NULL DEFAULT '',
     owner_words  TEXT NOT NULL DEFAULT '',
     decided_at   TEXT NOT NULL,
-    weight       REAL NOT NULL DEFAULT 1,
+    weight       REAL NOT NULL DEFAULT 1, is_decision INTEGER, parked INTEGER, flags_at TEXT,
     UNIQUE (workbench_id, source, source_key)
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS watchman_fts USING fts5(
@@ -2553,7 +2553,7 @@ CREATE TABLE IF NOT EXISTS watchman_backtest_rows (
     wrong_high  INTEGER NOT NULL DEFAULT 0,
     cost_usd    REAL NOT NULL DEFAULT 0,
     baseline    REAL NOT NULL DEFAULT 0,  -- share of the most common owner choice among the hidden items
-    status      TEXT NOT NULL CHECK (status IN ('strong','weak','not_measured')), acceptable INTEGER NOT NULL DEFAULT 0, bad INTEGER NOT NULL DEFAULT 0, rec_baseline REAL NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL CHECK (status IN ('strong','weak','not_measured')), acceptable INTEGER NOT NULL DEFAULT 0, bad INTEGER NOT NULL DEFAULT 0, rec_baseline REAL NOT NULL DEFAULT 0, handed INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (backtest_id, category)
 );
 CREATE TABLE IF NOT EXISTS watchman_skipped_keys (

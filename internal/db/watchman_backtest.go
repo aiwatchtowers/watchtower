@@ -17,9 +17,10 @@ import (
 // ever "undid hunk") and every git item (a merge is only ever "merged", a
 // rewrite of the agent's commit only ever "rewrote").
 func (db *DB) WatchmanBacktestCandidates(workbenchID int64, category string, limit int) ([]WatchmanPrecedent, error) {
-	rows, err := db.Query(`SELECT id, workbench_id, source, source_key, category, situation, choice, owner_words, decided_at, weight
+	rows, err := db.Query(`SELECT `+watchmanPrecedentCols+`
 		FROM watchman_precedents WHERE workbench_id = ? AND category = ?
 			AND source <> 'git'
+			AND COALESCE(is_decision, 1) = 1 AND COALESCE(parked, 0) = 0
 			AND NOT (source = 'review' AND (source_key LIKE ? OR source_key LIKE ?))
 		ORDER BY decided_at DESC, id DESC LIMIT ?`,
 		workbenchID, category, WatchmanReviewRound+":%", WatchmanReviewRevert+":%", limit)
@@ -32,7 +33,7 @@ func (db *DB) WatchmanBacktestCandidates(workbenchID int64, category string, lim
 // WatchmanPrecedentsBefore returns the newest limit precedents of a category
 // in a workbench decided strictly before `before`, newest first.
 func (db *DB) WatchmanPrecedentsBefore(workbenchID int64, category string, before time.Time, limit int) ([]WatchmanPrecedent, error) {
-	rows, err := db.Query(`SELECT id, workbench_id, source, source_key, category, situation, choice, owner_words, decided_at, weight
+	rows, err := db.Query(`SELECT `+watchmanPrecedentCols+`
 		FROM watchman_precedents WHERE workbench_id = ? AND category = ? AND decided_at < ?
 		ORDER BY decided_at DESC, id DESC LIMIT ?`, workbenchID, category, wmTime(before), limit)
 	if err != nil {
@@ -47,9 +48,11 @@ func scanWatchmanPrecedents(rows *sql.Rows) ([]WatchmanPrecedent, error) {
 	for rows.Next() {
 		var p WatchmanPrecedent
 		var decided string
-		if err := rows.Scan(&p.ID, &p.WorkbenchID, &p.Source, &p.SourceKey, &p.Category, &p.Situation, &p.Choice, &p.OwnerWords, &decided, &p.Weight); err != nil {
+		var isDec, parked sql.NullBool
+		if err := rows.Scan(&p.ID, &p.WorkbenchID, &p.Source, &p.SourceKey, &p.Category, &p.Situation, &p.Choice, &p.OwnerWords, &decided, &p.Weight, &isDec, &parked); err != nil {
 			return nil, fmt.Errorf("scanning watchman precedent: %w", err)
 		}
+		p.IsDecision, p.Parked = wmNullBool(isDec), wmNullBool(parked)
 		p.DecidedAt, _ = time.Parse(time.RFC3339, decided)
 		out = append(out, p)
 	}
@@ -95,8 +98,8 @@ func (db *DB) AddWatchmanBacktestRow(backtestID int64, r WatchmanBacktestRow) er
 // transaction).
 func insertWatchmanBacktestRow(e execer, backtestID int64, r WatchmanBacktestRow) error {
 	if _, err := e.Exec(`INSERT INTO watchman_backtest_rows (backtest_id, category, total, agree, acceptable, bad, wrong_high,
-		cost_usd, baseline, rec_baseline, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		backtestID, r.Category, r.Total, r.Agree, r.Acceptable, r.Bad, r.WrongHigh, r.CostUSD, r.Baseline, r.RecBaseline, r.Status); err != nil {
+		cost_usd, baseline, rec_baseline, status, handed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		backtestID, r.Category, r.Total, r.Agree, r.Acceptable, r.Bad, r.WrongHigh, r.CostUSD, r.Baseline, r.RecBaseline, r.Status, r.Handed); err != nil {
 		return fmt.Errorf("saving watchman backtest %d row %s: %w", backtestID, r.Category, err)
 	}
 	return nil
