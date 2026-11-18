@@ -408,12 +408,15 @@ struct BoardModel {
 
         let online = MacStatus(heartbeat: snapshot.heartbeat, now: now).isOnline
         let tree = BoardTree(snapshot: snapshot, signals: signals, captions: Self.captions(board, snapshot: snapshot, now: now))
-        let created = query.isEmpty && filter != .archive ? Self.createdCards(workbenchID: workbenchID, snapshot: snapshot) : []
-        let carded = Set(created.map(\.actionID))
+        let created = query.isEmpty
+            ? Self.createdCards(workbenchID: workbenchID, snapshot: snapshot, now: now).filter { filter.matches($0.target, signals) }
+            : []
+        // A create shown as a card, or whose record already shows before its echo, is not listed again.
+        let shownCreates = Set(created.map(\.overlay.actionID)).union(snapshot.matchedActionIDs)
         pendingCreates = BoardWriteRow.rows(in: snapshot, now: now) {
             $0.action.kind == .boardTargetCreate
                 && (try? BoardTargetCreateParams(wireParams: $0.action.params).workbenchID) == workbenchID
-                && !carded.contains($0.id)
+                && !shownCreates.contains($0.id)
         }
         if query.isEmpty {
             let pool = board.filter { $0.archived == (filter == .archive) }
@@ -421,7 +424,8 @@ struct BoardModel {
             roots = shown.roots
             visibleIDs = shown.visible
             matchCount = 0
-            let newCards = created.enumerated().map { Self.createdNode($1, id: -Int64($0 + 1), macOnline: online) }
+            let meta = snapshot.workbench(workbenchID)?.name
+            let newCards = created.map { Self.createdNode($0.overlay, $0.target, workbench: meta, macOnline: online) }
             lanes = BoardLane.lanes(shown.roots + newCards, columns: columns)
         } else {
             let match = { (target: WorkbenchTarget) in Self.matches(target, query: query) }
@@ -462,23 +466,36 @@ struct BoardModel {
         return captions
     }
 
-    /// The live top-level create overlays of this workbench: each is a card in its status's lane (a sub-target's
-    /// stays a pending row: its parent's tree is the Mac's).
-    private static func createdCards(workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot) -> [PendingOverlay] {
-        snapshot.overlays.filter {
+    /// The live top-level create overlays of this workbench, each with the target it will be (a placeholder id
+    /// below zero), which the board's filter judges like any other. A sub-target's stays a pending row: its
+    /// parent's tree is the Mac's.
+    private static func createdCards(
+        workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, now: Date
+    ) -> [(overlay: PendingOverlay, target: WorkbenchTarget)] {
+        let creates = snapshot.overlays.filter {
             if case let .create(workbench, parent, _, _) = $0.expected { return workbench == workbenchID && parent == nil }
             return false
         }
+        return creates.enumerated().compactMap { index, overlay in
+            guard case let .create(_, _, title, priority) = overlay.expected else { return nil }
+            let target = WorkbenchTarget.provisional(
+                id: -Int64(index + 1), workbenchID: workbenchID, parentID: nil, text: title, priority: priority, at: overlay.createdAt)
+            return (overlay, target)
+        }
     }
 
-    /// A new target's card before its record exists: Todo, no number, nothing to open.
-    private static func createdNode(_ overlay: PendingOverlay, id: Int64, macOnline: Bool) -> BoardNode {
-        guard case let .create(_, _, title, priority) = overlay.expected else { preconditionFailure("a create overlay") }
+    /// A new target's card before its record exists: Todo, no number (the meta line names the workbench and the
+    /// priority, mockup 1), nothing to open.
+    private static func createdNode(
+        _ overlay: PendingOverlay, _ target: WorkbenchTarget, workbench: String?, macOnline: Bool
+    ) -> BoardNode {
         let label = BoardRowModel.statusLabel(.todo)
+        let meta = ([workbench].compactMap { $0 } + [BoardRowModel.priorityName(target.priority)]).joined(separator: " · ")
         return BoardNode(
-            id: id, status: .todo, label: label,
+            id: target.id, status: .todo, label: label,
             card: BoardCardModel(
-                number: nil, title: title, status: .todo, statusText: label, priority: priority, compact: true, statusChip: false
+                number: nil, title: target.text, status: .todo, statusText: label, priority: target.priority,
+                unnumbered: meta, compact: true, statusChip: false
             ),
             isDimmed: false, children: [],
             caption: BoardCardCaption(state: overlay.caption(macOnline: macOnline), row: nil), opensDetail: false

@@ -45,8 +45,8 @@ struct AppliedAnswer: Equatable {
 @MainActor
 @Observable
 final class AskAnswerer {
-    /// Returns the queued action's id.
-    typealias Enqueue = (_ entity: String, _ params: [String: JSONValue]) async throws -> String
+    /// Queues the answer under the given id (chosen at the tap, so its overlay shows first); returns that id.
+    typealias Enqueue = (_ entity: String, _ params: [String: JSONValue], _ id: String) async throws -> String
 
     /// Ask id → its answer the Mac applied this run.
     private(set) var applied: [Int64: AppliedAnswer] = [:]
@@ -84,8 +84,8 @@ final class AskAnswerer {
     ) -> AskAnswerer {
         AskAnswerer(
             drafts: drafts,
-            enqueue: { entity, params in
-                try await outbox.enqueue(kind: .askAnswer, entityRecordName: entity, params: params)
+            enqueue: { entity, params, id in
+                try await outbox.enqueue(kind: .askAnswer, entityRecordName: entity, params: params, id: id)
             },
             remove: { try store.dismissAction(id: $0) },
             failedRows: { entity in
@@ -119,15 +119,33 @@ final class AskAnswerer {
         let entity = Self.recordName(ask.id)
         let stale = try failedRows(entity)
         let tappedAt = now()
-        var actionID: String?
-        guard try await sendGuard.run(entity, { actionID = try await enqueue(entity, params) }) else { return false }
-        if let overlays, let actionID {
-            overlays.add(overlays.overlay(actionID: actionID, entityID: ask.id, expected: .askAnswer, createdAt: tappedAt))
+        let sent = try await sendGuard.run(entity) {
+            // The answer shows as sent at the tap; a save that throws takes it back.
+            let id = UUID().uuidString
+            if let overlays {
+                overlays.add(overlays.overlay(
+                    actionID: id, entityID: ask.id, expected: .askAnswer(label: Self.answerLabel(answer)), createdAt: tappedAt))
+            }
+            do {
+                _ = try await enqueue(entity, params, id)
+            } catch {
+                overlays?.remove(actionID: id)
+                throw error
+            }
         }
+        guard sent else { return false }
         for id in stale {
             try remove(id)
         }
         return true
+    }
+
+    /// What an answer says in one line, for its caption while on its way (live link R5): the verdict, else the
+    /// picked options (and "Other: …") as the closed ask lists them; nil for a checklist or a note alone.
+    nonisolated static func answerLabel(_ answer: OwnerAskAnswer) -> String? {
+        if let verdict = answer.verdict { return AskText.verdictLabel(verdict) }
+        let picked = answer.answers.flatMap { $0.labels + ($0.other.isEmpty ? [] : [AskText.otherLabel($0.other)]) }
+        return picked.isEmpty ? nil : picked.joined(separator: ", ")
     }
 
     /// An `applied` echo: keeps its delivery and drops the ask's draft.

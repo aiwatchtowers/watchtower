@@ -776,6 +776,7 @@ final class AskFormTests: XCTestCase {
         await model.send(ask)
         XCTAssertEqual(book.overlays.map(\.kind), [.askAnswer])
         XCTAssertEqual(book.overlays.first?.entityID, 140)
+        XCTAssertEqual(book.overlays.first?.expected, .askAnswer(label: nil), "a check has no option to name")
 
         var echo = try XCTUnwrap(store.pendingActions().first).action
         echo.status = .applied
@@ -946,7 +947,7 @@ final class AskFormTests: XCTestCase {
         let sent = Counter()
         let answerer = AskAnswerer(
             drafts: drafts,
-            enqueue: { _, _ in
+            enqueue: { _, _, _ in
                 sent.count += 1
                 await gate.wait()
                 return "action"

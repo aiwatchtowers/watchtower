@@ -18,8 +18,9 @@ struct PendingOverlay: Equatable, Identifiable {
         case comment(body: String, isReply: Bool)
         case status(WorkbenchTargetStatus)
         case priority(WorkbenchTargetPriority)
-        /// The ask (`entityID`) is no longer open.
-        case askAnswer
+        /// The ask (`entityID`) is no longer open; `label` names the answer sent ("Approved", the picked options),
+        /// nil when it has no option to name.
+        case askAnswer(label: String?)
     }
 
     /// The tower's `applied` echo: when it came, the new record's id (`target_id` / `comment_id`) for a create.
@@ -89,6 +90,8 @@ final class OverlayBook {
     let hubID: String
     /// Every overlay, a hidden create or comment (its record already showing, unconfirmed) included; oldest first.
     private(set) var overlays: [PendingOverlay] = []
+    /// The hidden creates and comments of the last `reconcile`: their records show, so their pending rows do not.
+    private(set) var matched: Set<String> = []
     /// Called after `add` and `receiveEcho`: the replica model reconciles again.
     var onChange: (() -> Void)?
 
@@ -108,10 +111,23 @@ final class OverlayBook {
         PendingOverlay(actionID: actionID, hubID: hubID, entityID: entityID, expected: expected, createdAt: createdAt)
     }
 
+    /// Adds a write's overlay; the newest write to a field wins, so an older overlay of the same status, priority
+    /// or answer goes (its timing still counts).
     func add(_ overlay: PendingOverlay) {
         guard overlay.hubID == hubID, !overlays.contains(where: { $0.actionID == overlay.actionID }) else { return }
+        if let entity = overlay.entityID, [.status, .priority, .askAnswer].contains(overlay.kind) {
+            overlays.removeAll { $0.entityID == entity && $0.kind == overlay.kind }
+        }
         overlays.append(overlay)
         taps[overlay.actionID] = (Self.actionKind(overlay), overlay.createdAt)
+        onChange?()
+    }
+
+    /// Takes back the overlay of a write that was never queued (its save threw).
+    func remove(actionID: String) {
+        taps[actionID] = nil
+        guard overlays.contains(where: { $0.actionID == actionID }) else { return }
+        overlays.removeAll { $0.actionID == actionID }
         onChange?()
     }
 
@@ -144,12 +160,18 @@ final class OverlayBook {
         let refused = Set(snapshot.pending.filter { $0.state == .failed }.map(\.id))
         var kept: [PendingOverlay] = []
         var shown: [PendingOverlay] = []
+        var hidden: Set<String> = []
+        // A record an echo named belongs to that write; each other record matches at most one write.
+        var claims = Claims(
+            targets: Set(overlays.filter { $0.kind == .create }.compactMap { $0.echo?.createdID }),
+            comments: Set(overlays.filter { $0.kind == .comment }.compactMap { $0.echo?.createdID }))
         for var overlay in overlays {
             guard !refused.contains(overlay.actionID), now < overlay.deadline else { continue }
-            switch Self.state(of: &overlay, in: snapshot) {
+            switch Self.state(of: &overlay, in: snapshot, claims: &claims) {
             case .done:
                 continue
             case .hidden:
+                hidden.insert(overlay.actionID)
                 kept.append(overlay)
             case .live:
                 kept.append(overlay)
@@ -157,6 +179,7 @@ final class OverlayBook {
             }
         }
         overlays = kept
+        matched = hidden
         taps = taps.filter { now.timeIntervalSince($0.value.at) < PendingOverlay.expiry }
         return shown
     }
@@ -170,7 +193,15 @@ final class OverlayBook {
         case live, hidden, done
     }
 
-    private static func state(of overlay: inout PendingOverlay, in snapshot: WorkbenchReplicaSnapshot) -> State {
+    /// Records already matched to a write in this pass, per kind.
+    private struct Claims {
+        var targets: Set<Int64>
+        var comments: Set<Int64>
+    }
+
+    private static func state(
+        of overlay: inout PendingOverlay, in snapshot: WorkbenchReplicaSnapshot, claims: inout Claims
+    ) -> State {
         switch overlay.expected {
         case let .status(status):
             let target = snapshot.targets.first { $0.id == overlay.entityID }
@@ -186,12 +217,12 @@ final class OverlayBook {
             let matches = snapshot.targets
                 .filter { $0.workbenchID == workbenchID && $0.parentID == parentID && $0.text == title }
                 .map(\.id)
-            return created(&overlay, ids: ids, matches: matches)
+            return created(&overlay, ids: ids, matches: matches, claimed: &claims.targets)
         case let .comment(body, isReply):
             let matches = snapshot.comments
-                .filter { $0.body == body && (isReply ? $0.parentID : $0.targetID) == overlay.entityID }
+                .filter { $0.body == body && (isReply ? $0.parentID == overlay.entityID : $0.targetID == overlay.entityID && $0.parentID == nil) }
                 .map(\.id)
-            return created(&overlay, ids: snapshot.comments.map(\.id), matches: matches)
+            return created(&overlay, ids: snapshot.comments.map(\.id), matches: matches, claimed: &claims.comments)
         }
     }
 
@@ -211,16 +242,21 @@ final class OverlayBook {
         return .live
     }
 
-    /// A create or a comment: done once the echo's id has a record; before the echo, a same-content record newer
-    /// than the tap hides it (no duplicate) until the echo confirms.
-    private static func created(_ overlay: inout PendingOverlay, ids: [Int64], matches: [Int64]) -> State {
+    /// A create or a comment: done once the echo's id has a record; before the echo, the oldest same-content
+    /// record newer than the tap that no other write claimed hides it (no duplicate) until the echo confirms. Two
+    /// writes with the same content need two records.
+    private static func created(
+        _ overlay: inout PendingOverlay, ids: [Int64], matches: [Int64], claimed: inout Set<Int64>
+    ) -> State {
         if let echo = overlay.echo {
             guard let id = echo.createdID else { return .live }
             return ids.contains(id) ? .done : .live
         }
         let earlier = overlay.earlierMatches ?? Set(matches)
         overlay.earlierMatches = earlier
-        return matches.contains { !earlier.contains($0) } ? .hidden : .live
+        guard let match = matches.filter({ !earlier.contains($0) && !claimed.contains($0) }).min() else { return .live }
+        claimed.insert(match)
+        return .hidden
     }
 
     private static func actionKind(_ overlay: PendingOverlay) -> ActionKind {
@@ -234,13 +270,22 @@ final class OverlayBook {
     }
 }
 
+extension PendingOverlay {
+    /// The answer an `askAnswer` overlay sends; nil for any other kind or an answer with no option to name.
+    var answerLabel: String? {
+        if case let .askAnswer(label) = expected { return label }
+        return nil
+    }
+}
+
 extension WorkbenchReplicaSnapshot {
     /// This replica with `overlays` (a `reconcile` result) shown: a moved or re-prioritised target carries the
     /// requested value. New targets are not records yet: the board draws them from `overlays`; so does an answered
-    /// ask's line.
-    func applying(_ overlays: [PendingOverlay]) -> Self {
+    /// ask's line. `matched`: the writes whose records already show (`OverlayBook.matched`), whose pending rows go.
+    func applying(_ overlays: [PendingOverlay], matched: Set<String> = []) -> Self {
         var shown = self
         shown.overlays = overlays
+        shown.matchedActionIDs = matched
         guard !overlays.isEmpty else { return shown }
         shown.targets = targets.map { target in
             overlays.reduce(target) { target, overlay in
@@ -260,8 +305,14 @@ extension WorkbenchReplicaSnapshot {
         overlays.last { $0.entityID == targetID && [.status, .priority].contains($0.kind) }
     }
 
-    /// Whether an answer to the ask is shown as sent (its overlay is live).
-    func answerOverlaid(_ askID: Int64) -> Bool {
-        overlays.contains { $0.kind == .askAnswer && $0.entityID == askID }
+    /// The live overlay of an answer to the ask: it is shown as sent.
+    func answerOverlay(_ askID: Int64) -> PendingOverlay? {
+        overlays.last { $0.kind == .askAnswer && $0.entityID == askID }
+    }
+
+    /// Today's caption of a write on its way ("Sending…" / "Waiting for your tower"), with the answer it sends
+    /// after the meta separator when there is one (live link R5, mockup 6).
+    static func sendingCaption(_ caption: String, answer label: String?) -> String {
+        label.map { "\(caption) · \($0)" } ?? caption
     }
 }

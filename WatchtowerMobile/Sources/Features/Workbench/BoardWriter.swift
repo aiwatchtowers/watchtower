@@ -19,8 +19,8 @@ import WatchtowerSync
 @MainActor
 @Observable
 final class BoardWriter {
-    /// Returns the queued action's id.
-    typealias Enqueue = (ActionKind, String?, [String: JSONValue]) async throws -> String
+    /// Queues an action under the given id (chosen at the tap, so its overlay shows first); returns that id.
+    typealias Enqueue = (ActionKind, String?, [String: JSONValue], String) async throws -> String
 
     /// Keys (`BoardWriter.key`) of the sends still waiting for the outbox.
     var inFlight: Set<String> { sendGuard.inFlight }
@@ -57,8 +57,8 @@ final class BoardWriter {
         through outbox: ActionOutbox, store: ReplicaStore, overlays: OverlayBook? = nil, now: @escaping () -> Date = { Date() }
     ) -> BoardWriter {
         BoardWriter(
-            enqueue: { kind, entity, params in
-                try await outbox.enqueue(kind: kind, entityRecordName: entity, params: params)
+            enqueue: { kind, entity, params, id in
+                try await outbox.enqueue(kind: kind, entityRecordName: entity, params: params, id: id)
             },
             remove: { try store.dismissAction(id: $0) },
             failedRows: { kind, entity in
@@ -226,8 +226,9 @@ final class BoardWriter {
     }
 
     /// Enqueues unless the same key is already in flight; returns whether
-    /// it sent. A sent board write's overlay (`expected` on `entityID`, nil
-    /// for a create) goes into the book, stamped with the tap.
+    /// it sent. A board write's overlay (`expected` on `entityID`, nil for a
+    /// create) goes into the book at the tap, before the save, and comes out
+    /// again if the save throws.
     private func send(
         _ kind: ActionKind,
         _ entity: String?,
@@ -236,12 +237,19 @@ final class BoardWriter {
         on entityID: Int64? = nil
     ) async throws -> Bool {
         let tappedAt = now()
-        var actionID: String?
-        let sent = try await sendGuard.run(Self.key(kind, entity)) { actionID = try await enqueue(kind, entity, params) }
-        if let overlays, let expected, let actionID {
-            overlays.add(overlays.overlay(actionID: actionID, entityID: entityID, expected: expected, createdAt: tappedAt))
+        return try await sendGuard.run(Self.key(kind, entity)) {
+            let id = UUID().uuidString
+            let overlays = expected == nil ? nil : overlays
+            if let overlays, let expected {
+                overlays.add(overlays.overlay(actionID: id, entityID: entityID, expected: expected, createdAt: tappedAt))
+            }
+            do {
+                _ = try await enqueue(kind, entity, params, id)
+            } catch {
+                overlays?.remove(actionID: id)
+                throw error
+            }
         }
-        return sent
     }
 
     /// An "apply anyway" resend's expected effect.

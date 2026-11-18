@@ -27,6 +27,8 @@ struct WorkbenchReplicaSnapshot: Equatable {
     var pending: [PendingAction] = []
     /// The phone's optimistic writes shown over the replica (live link R5, `applying(_:)`); empty in a read.
     var overlays: [PendingOverlay] = []
+    /// The phone's creates and comments whose records already show before their echo: their pending rows go.
+    var matchedActionIDs: Set<String> = []
     /// Undecodable records per kind in this read; kinds without any are
     /// absent.
     var skippedRecords: [SliceKind: Int] = [:]
@@ -261,7 +263,7 @@ final class WorkbenchReplicaModel {
     private func publish(now: Date = Date()) {
         var next = replica
         if let overlays {
-            next = replica.applying(overlays.reconcile(with: replica, now: now))
+            next = replica.applying(overlays.reconcile(with: replica, now: now), matched: overlays.matched)
             scheduleDeadline(overlays.nextDeadline)
         }
         if next != snapshot { snapshot = next }

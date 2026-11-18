@@ -68,6 +68,17 @@ final class PendingOverlayTests: XCTestCase {
             expected: .create(workbenchID: DemoSeed.acmeID, parentID: nil, title: title, priority: .medium), createdAt: t0))
     }
 
+    /// The replica as the model publishes it: the book's live overlays and its matched-but-unconfirmed writes.
+    private func shown(_ snapshot: WorkbenchReplicaSnapshot, _ book: OverlayBook, at now: Date) -> WorkbenchReplicaSnapshot {
+        snapshot.applying(book.reconcile(with: snapshot, now: now), matched: book.matched)
+    }
+
+    private func writer(_ book: OverlayBook) throws -> (BoardWriter, ReplicaStore) {
+        let store = try TestPhone.replica()
+        let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
+        return (BoardWriter.sending(through: outbox, store: store, overlays: book) { self.t0 }, store)
+    }
+
     private func lane(of title: String, in board: BoardModel) -> BoardLane? {
         board.lanes.first { $0.nodes.contains { $0.card.title == title } }
     }
@@ -200,6 +211,137 @@ final class PendingOverlayTests: XCTestCase {
             actionID: "x", entityID: 1, expected: .comment(body: "b", isReply: true), createdAt: t0).kind)
     }
 
+    /// Review fix 1: the replica's record beats the echo; the create's pending row goes with the overlay, so the
+    /// new target shows once.
+    func testCreateMatchedBeforeEchoHidesItsPendingRowToo() async throws {
+        let book = book()
+        let (writer, store) = try writer(book)
+        var draft = NewBoardTargetDraft(workbenchID: DemoSeed.acmeID)
+        draft.title = "Fix login timeout"
+        try await writer.create(draft)
+        let pending = try store.pendingActions()
+        _ = book.reconcile(with: try replica(pending: pending), now: t0)
+
+        let arrived = try replica(targets: { $0.append(try self.newTarget(900, title: "Fix login timeout")) }, pending: pending)
+        let board = BoardModel(workbenchID: DemoSeed.acmeID, snapshot: shown(arrived, book, at: t0.addingTimeInterval(0.4)), filter: .all, now: t0)
+        XCTAssertTrue(board.pendingCreates.isEmpty, "no second row under New targets")
+        XCTAssertEqual(board.lanes.flatMap(\.nodes).filter { $0.card.title == "Fix login timeout" }.map(\.id), [900])
+    }
+
+    /// Review fix 4: the newest write to a field wins. In Progress was applied (its slice not in yet), then Todo
+    /// again: the board shows Todo, not the older overlay's In Progress.
+    func testTheNewestWriteToAFieldWins() async throws {
+        let book = book()
+        let (writer, store) = try writer(book)
+        let todo = try XCTUnwrap(try replica().targets.first { $0.id == 416 })
+        XCTAssertEqual(todo.status, .todo)
+        try await writer.setStatus(.inProgress, on: todo)
+        let first = try XCTUnwrap(book.overlays.first).actionID
+        book.receiveEcho(echo(first, .boardTargetStatus, entity: 416), now: t0.addingTimeInterval(0.2))
+        try store.dismissAction(id: first)
+        let moved = shown(try replica(pending: try store.pendingActions()), book, at: t0.addingTimeInterval(0.3))
+        try await writer.setStatus(.todo, on: try XCTUnwrap(moved.targets.first { $0.id == 416 }))
+
+        XCTAssertFalse(book.overlays.contains { $0.actionID == first }, "the older write to the field went")
+        let back = shown(try replica(pending: try store.pendingActions()), book, at: t0.addingTimeInterval(0.5))
+        XCTAssertEqual(back.targets.first { $0.id == 416 }?.status, .todo)
+    }
+
+    /// Review fix 5: a new card shows only under a filter that would show it; otherwise its pending row stays.
+    func testANewCardFollowsTheBoardFilter() throws {
+        let book = book()
+        create(book)
+        let snapshot = try replica()
+        let shown = shown(snapshot, book, at: t0)
+        let high = BoardModel(workbenchID: DemoSeed.acmeID, snapshot: shown, filter: .high, now: t0)
+        XCTAssertNil(lane(of: "Fix login timeout", in: high), "a medium target is not High")
+        let blocked = BoardModel(workbenchID: DemoSeed.acmeID, snapshot: shown, filter: .blocked, now: t0)
+        XCTAssertNil(lane(of: "Fix login timeout", in: blocked))
+        let all = BoardModel(workbenchID: DemoSeed.acmeID, snapshot: shown, filter: .all, now: t0)
+        let card = try XCTUnwrap(all.lanes.flatMap(\.nodes).first { $0.card.title == "Fix login timeout" })
+        // Review fix 7: the meta line names the workbench and the priority (mockup 1).
+        XCTAssertEqual(card.card.numberText, "Acme · Medium")
+    }
+
+    /// Review fix 5, the other half: under a filter that hides the card, today's pending row shows instead.
+    func testAFilteredOutNewCardKeepsItsPendingRow() async throws {
+        let book = book()
+        let (writer, store) = try writer(book)
+        var draft = NewBoardTargetDraft(workbenchID: DemoSeed.acmeID)
+        draft.title = "Fix login timeout"
+        try await writer.create(draft)
+        let shown = shown(try replica(pending: try store.pendingActions()), book, at: t0)
+        XCTAssertEqual(BoardModel(workbenchID: DemoSeed.acmeID, snapshot: shown, filter: .high, now: t0).pendingCreates.count, 1)
+        XCTAssertTrue(BoardModel(workbenchID: DemoSeed.acmeID, snapshot: shown, filter: .all, now: t0).pendingCreates.isEmpty)
+    }
+
+    /// Review fix 6: a comment's record that beats its echo replaces the phone's row in the thread; two comments
+    /// with the same body are two, and one record claims only one of them.
+    func testACommentRecordBeforeTheEchoShowsOnceAndTwinsStayTwo() async throws {
+        let book = book()
+        let (writer, store) = try writer(book)
+        let target = try XCTUnwrap(try replica().targets.first { $0.id == 415 })
+        _ = try await writer.addComment("Looks good.", on: target)
+        _ = try await writer.addComment("Looks good.", on: target)
+        let pending = try store.pendingActions()
+        XCTAssertEqual(pending.count, 2)
+        _ = book.reconcile(with: try replica(pending: pending), now: t0)
+
+        let record = try mirror(WorkbenchComment.self, DemoSeed.JSON.comment(
+            900, workbench: DemoSeed.acmeID, target: 415, ["author": "owner", "body": "Looks good."]))
+        let arrived = shown(try replica(comments: [record], pending: pending), book, at: t0.addingTimeInterval(0.4))
+        let thread = try XCTUnwrap(BoardTargetDetailModel(targetID: 415, snapshot: arrived, now: t0)).thread
+        XCTAssertEqual(thread.filter { $0.id == "comment-900" }.count, 1)
+        XCTAssertEqual(thread.filter { $0.id.hasPrefix("action-") }.map(\.id), ["action-\(pending[1].id)"],
+                       "the first comment is the record; its twin still waits")
+    }
+
+    /// Review fix 3: the overlay shows at the tap, while the outbox is still saving; a save that throws takes it
+    /// away again.
+    func testTheOverlayShowsBeforeTheSaveAndGoesWhenItFails() async throws {
+        let book = book()
+        let gate = OverlayGate()
+        let clock = { self.t0 }
+        let writer = BoardWriter(
+            enqueue: { _, _, _, id in
+                await gate.wait()
+                return id
+            },
+            remove: { _ in }, overlays: book, now: clock
+        )
+        let target = try XCTUnwrap(try replica().targets.first { $0.id == 415 })
+        let saving = Task { try await writer.setStatus(.inReview, on: target) }
+        try await poll { !book.overlays.isEmpty }
+        XCTAssertEqual(book.overlays.map(\.kind), [.status], "shown while the save runs")
+        await gate.release()
+        try await saving.value
+        XCTAssertEqual(book.overlays.count, 1)
+
+        struct SaveFailed: Error {}
+        let failing = BoardWriter(enqueue: { _, _, _, _ in throw SaveFailed() }, remove: { _ in }, overlays: book, now: clock)
+        do {
+            try await failing.setPriority(.low, on: target)
+            XCTFail("the save threw")
+        } catch is SaveFailed {}
+        XCTAssertEqual(book.overlays.map(\.kind), [.status], "the failed write's overlay went")
+    }
+
+    /// Review fix 2: an answered ask shows the chosen answer after today's caption (mockup 6).
+    func testAnAnsweredAskShowsItsAnswer() throws {
+        let book = book()
+        book.add(book.overlay(actionID: "q1", entityID: 110, expected: .askAnswer(label: "Approved"), createdAt: t0))
+        let snapshot = try replica()
+        let shown = shown(snapshot, book, at: t0)
+        XCTAssertEqual(NowModel(snapshot: shown, linked: true, now: t0).waitingForYou.first { $0.id == .ask(110) }?.answer,
+                       .sending("Sending answer… · Approved"))
+        let ask = try XCTUnwrap(snapshot.asks.first { $0.id == 110 })
+        XCTAssertEqual(AskFormModel.status(ask, snapshot: shown, now: t0, applied: nil), .sending("Sending… · Approved"))
+        XCTAssertEqual(AskAnswerer.answerLabel(OwnerAskAnswer(verdict: .approved)), "Approved")
+        XCTAssertEqual(AskAnswerer.answerLabel(OwnerAskAnswer(answers: [.init(id: "a", labels: ["Yes"]), .init(id: "b", other: "Later")])),
+                       "Yes, Other: Later")
+        XCTAssertNil(AskAnswerer.answerLabel(OwnerAskAnswer(note: "All good")))
+    }
+
     // MARK: - Refusal, a slow tower, expiry
 
     func testRefusedEchoDropsOverlayAndShowsRefusal() async throws {
@@ -280,6 +422,8 @@ final class PendingOverlayTests: XCTestCase {
 
         XCTAssertEqual(towerA.overlays.map(\.hubID), ["hub-a"])
         XCTAssertTrue(towerB.overlays.isEmpty)
+        towerB.add(try XCTUnwrap(towerA.overlays.first))
+        XCTAssertTrue(towerB.overlays.isEmpty, "another tower's overlay never enters this book")
         let snapshot = try replica(pending: try store.pendingActions())
         XCTAssertTrue(snapshot.applying(towerB.reconcile(with: snapshot, now: t0)).overlays.isEmpty)
         XCTAssertEqual(snapshot.applying(towerA.reconcile(with: snapshot, now: t0)).overlays.count, 1)
@@ -347,5 +491,21 @@ final class PendingOverlayTests: XCTestCase {
         XCTAssertEqual(rows.map(\.confirmMs), [180], "one row: the tap → the applied echo, not → the slice")
         XCTAssertEqual(rows.map(\.kind), ["board_target_status"])
         XCTAssertEqual(try XCTUnwrap(rows.first).at.timeIntervalSince(t0), 0.18, accuracy: 0.001, "stamped when the echo came")
+    }
+}
+
+private actor OverlayGate {
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if released { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        waiters.forEach { $0.resume() }
+        waiters = []
     }
 }

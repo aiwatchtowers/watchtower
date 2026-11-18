@@ -124,4 +124,19 @@ extension WorkbenchTarget {
             updatedAt: updatedAt
         )
     }
+
+    /// A new target the phone asked for, before its record exists (live link R5): `id` is the phone's own
+    /// placeholder (never a record's), status todo, nothing else yet. The board's filters and cards treat it like
+    /// any target.
+    public static func provisional(
+        id: Int64, workbenchID: Int64, parentID: Int64?, text: String, priority: WorkbenchTargetPriority, at: Date
+    ) -> Self {
+        Self(
+            id: id, workbenchID: workbenchID, parentID: parentID, text: text, textClipped: nil, intent: "",
+            intentClipped: nil, status: .todo, priority: priority, progress: 0, branch: "", branchClipped: nil, pr: "",
+            prClipped: nil, archived: false, column: nil, childrenCount: 0, openComments: 0, unreadForOwner: 0,
+            openAsks: 0, sessionIDs: [], sessionIDsMore: nil, lastStatusAt: nil, lastStatusActor: nil, workOnPrompt: "",
+            workOnPromptClipped: nil, createdAt: at, updatedAt: at
+        )
+    }
 }

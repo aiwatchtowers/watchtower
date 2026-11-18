@@ -41,6 +41,7 @@ struct BoardCardModel: Equatable {
         status: WorkbenchTargetStatus,
         statusText: String,
         priority: WorkbenchTargetPriority,
+        unnumbered: String = "",
         counter: String? = nil,
         progress: Double? = nil,
         liveSessions: Int = 0,
@@ -49,8 +50,8 @@ struct BoardCardModel: Equatable {
         statusChip: Bool = true
     ) {
         let style = TargetStatusStyle.of(status)
-        // nil: a new target the phone just asked for, not numbered yet.
-        numberText = number.map { "#\($0)" } ?? ""
+        // nil: a new target the phone just asked for, not numbered yet: `unnumbered` stands in.
+        numberText = number.map { "#\($0)" } ?? unnumbered
         self.title = title.isEmpty ? "Untitled" : title
         glyph = style.glyph
         tone = style.tone
