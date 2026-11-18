@@ -66,7 +66,7 @@ enum FilesSectionShotFixtures {
             do {
                 return try make()
             } catch {
-                return AnyView(Text("fixture failed: \(error.localizedDescription)"))
+                return DesignShotFixtures.failure(error)
             }
         }
     }

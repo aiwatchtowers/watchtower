@@ -35,10 +35,31 @@ final class CodeFilesRootLineTests: XCTestCase {
         XCTAssertEqual(line.accessibilityLabel, "Folder app, detached at b1c2d3e")
     }
 
-    func testLongBranchIsCappedLikeTheHeaderButton() {
+    /// The caption is capped like the header's button; VoiceOver and the
+    /// tooltip read the full name.
+    func testLongBranchIsCappedOnScreenOnly() {
         let name = String(repeating: "x", count: WorkbenchBranchPresentation.maxButtonNameLength + 8)
         let line = CodeFilesRootLine(root: root, status: WorkbenchGitStatus(branch: name))
         XCTAssertEqual(line.branch?.text, WorkbenchBranchPresentation.capped(name))
+        XCTAssertEqual(line.fullBranch, name)
+        XCTAssertEqual(line.branchHelp, name)
+        XCTAssertEqual(line.accessibilityLabel, "Folder app, branch \(name)")
+    }
+
+    /// A refresh that failed after a good read keeps the last status, marked
+    /// out of date as the header marks it.
+    func testAStatusTheLaterReadsCouldNotRefreshIsMarkedStale() {
+        let line = CodeFilesRootLine(
+            root: root, status: WorkbenchGitStatus(branch: "main", dirty: true), staleError: "git: index.lock exists"
+        )
+        XCTAssertEqual(line.branch?.text, "main")
+        XCTAssertTrue(line.dirty)
+        XCTAssertEqual(line.staleError, "git: index.lock exists")
+        XCTAssertEqual(line.branchHelp, "main\nStatus may be out of date: git: index.lock exists")
+        XCTAssertEqual(
+            line.accessibilityLabel, "Folder app, branch main, uncommitted changes, status may be out of date"
+        )
+        XCTAssertEqual(CodeFilesRootLine(root: root, status: nil, staleError: "boom").staleError, nil)
     }
 
     func testNoUsableGitStatusLeavesTheRightSideEmpty() {
@@ -65,21 +86,28 @@ final class CodeFilesRootLineTests: XCTestCase {
     }
 }
 
-final class CodeFilesHeaderCopyTests: XCTestCase {
+final class CodeFilesCopyTests: XCTestCase {
     func testCopy() {
-        XCTAssertEqual(CodeFilesHeaderCopy.collapse, "Collapse files")
-        XCTAssertEqual(CodeFilesHeaderCopy.expand, "Expand files")
-        XCTAssertEqual(CodeFilesHeaderCopy.newEntry, "New file or folder")
-        XCTAssertEqual(CodeFilesHeaderCopy.newFile, "New File…")
-        XCTAssertEqual(CodeFilesHeaderCopy.newFolder, "New Folder…")
-        XCTAssertEqual(CodeFilesHeaderCopy.collapseAll, "Collapse all folders")
-        XCTAssertEqual(CodeFilesHeaderCopy.reload, "Reload the tree")
+        XCTAssertEqual(CodeFilesCopy.collapse, "Collapse files")
+        XCTAssertEqual(CodeFilesCopy.expand, "Expand files")
+        XCTAssertEqual(CodeFilesCopy.newEntry, "New file or folder")
+        XCTAssertEqual(CodeFilesCopy.newFile, "New File…")
+        XCTAssertEqual(CodeFilesCopy.newFolder, "New Folder…")
+        XCTAssertEqual(CodeFilesCopy.collapseAll, "Collapse all folders")
+        XCTAssertEqual(CodeFilesCopy.reload, "Reload the tree")
+        XCTAssertEqual(CodeFilesCopy.rename, "Rename…")
+        XCTAssertEqual(CodeFilesCopy.moveToTrash, "Move to Trash")
+        XCTAssertEqual(CodeFilesCopy.revealInFinder, "Reveal in Finder")
+        XCTAssertEqual(CodeFilesCopy.copyRelativePath, "Copy Relative Path")
+        XCTAssertEqual(CodeFilesCopy.gitUnavailable, "Git status unavailable — the marks may be out of date.")
+        XCTAssertEqual(CodeFilesCopy.notCommitted, "Not committed")
+        XCTAssertEqual(CodeFilesCopy.holdsChanges, "Holds uncommitted changes")
     }
 
     func testCaptionHelpNamesAWorktreeOnly() {
         let worktree = CodeRoot(workbenchID: 7, worktree: URL(fileURLWithPath: "/tmp/acme-wt/mobile-a"))
         XCTAssertEqual(
-            CodeFilesHeaderCopy.captionHelp(worktree), "The worktree the session on screen works in:\n/tmp/acme-wt/mobile-a"
+            CodeFilesCopy.captionHelp(worktree), "The worktree the session on screen works in:\n/tmp/acme-wt/mobile-a"
         )
         XCTAssertEqual(worktree.filesCaption, "FILES — ⑂ mobile-a")
     }

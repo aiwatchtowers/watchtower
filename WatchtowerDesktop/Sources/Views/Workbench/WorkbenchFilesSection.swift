@@ -35,7 +35,7 @@ struct WorkbenchFilesSection: View {
                 notices(files)
                 CodeFileTreeList(
                     tree: tree,
-                    rootLine: CodeFilesRootLine(root: root, status: vm.gitStatus[root]),
+                    rootLine: CodeFilesRootLine(root: root, status: vm.gitStatus[root], staleError: vm.gitStatusErrors[root]),
                     activeFile: files.tabs(for: root).active,
                     git: files.git(for: root),
                     edit: $edit,
@@ -110,7 +110,7 @@ struct WorkbenchFilesSection: View {
             Text(error).font(.caption2).foregroundStyle(Tone.warning).padding(.horizontal, Spacing.medium)
         }
         if let error = files.gitErrors[root] {
-            Text("Git status unavailable — the marks may be out of date.")
+            Text(CodeFilesCopy.gitUnavailable)
                 .font(.caption2)
                 .foregroundStyle(Tone.warning)
                 .padding(.horizontal, Spacing.medium)
@@ -258,19 +258,19 @@ struct CodeFilesHeader: View {
                     Text(root.filesCaption).sidebarSectionLabel()
                         .lineLimit(1)
                         .truncationMode(.middle)
-                        .help(CodeFilesHeaderCopy.captionHelp(root))
+                        .help(CodeFilesCopy.captionHelp(root))
                     Spacer(minLength: 0)
                 }
-                .frame(minHeight: IconSize.tile)
+                .frame(minHeight: ListLayout.rowMinHeight)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(isExpanded ? CodeFilesHeaderCopy.collapse : CodeFilesHeaderCopy.expand)
+            .accessibilityLabel(isExpanded ? CodeFilesCopy.collapse : CodeFilesCopy.expand)
             .accessibilityAddTraits(.isHeader)
             if isExpanded {
                 Menu {
-                    Button(CodeFilesHeaderCopy.newFile) { newEntry(false) }
-                    Button(CodeFilesHeaderCopy.newFolder) { newEntry(true) }
+                    Button(CodeFilesCopy.newFile) { newEntry(false) }
+                    Button(CodeFilesCopy.newFolder) { newEntry(true) }
                 } label: {
                     Image(systemName: "plus")
                 }
@@ -278,20 +278,20 @@ struct CodeFilesHeader: View {
                 .buttonStyle(.kitIcon(isOn: false))
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .help(CodeFilesHeaderCopy.newEntry)
-                .accessibilityLabel(CodeFilesHeaderCopy.newEntry)
+                .help(CodeFilesCopy.newEntry)
+                .accessibilityLabel(CodeFilesCopy.newEntry)
                 Button(action: collapseAll) {
                     Image(systemName: "rectangle.compress.vertical")
                 }
                 .buttonStyle(.kitIcon(isOn: false))
-                .help(CodeFilesHeaderCopy.collapseAll)
-                .accessibilityLabel(CodeFilesHeaderCopy.collapseAll)
+                .help(CodeFilesCopy.collapseAll)
+                .accessibilityLabel(CodeFilesCopy.collapseAll)
                 Button(action: reload) {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.kitIcon(isOn: false))
-                .help(CodeFilesHeaderCopy.reload)
-                .accessibilityLabel(CodeFilesHeaderCopy.reload)
+                .help(CodeFilesCopy.reload)
+                .accessibilityLabel(CodeFilesCopy.reload)
             }
         }
         .padding(.leading, Spacing.medium)
@@ -421,6 +421,16 @@ private struct CodeFilesRootRow: View {
     @State private var isHovering = false
 
     var body: some View {
+        Button(action: toggle) { label }
+            .buttonStyle(.plain)
+            .onHover { isHovering = $0 }
+            .animation(Motion.toggle, value: isHovering)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(line.accessibilityLabel)
+            .accessibilityValue(CodeFilesRootLine.accessibilityValue(expanded: isExpanded))
+    }
+
+    private var label: some View {
         HStack(spacing: Spacing.small) {
             CodeTreeChevron(isExpanded: isExpanded)
             Image(systemName: "folder.fill")
@@ -441,17 +451,10 @@ private struct CodeFilesRootRow: View {
         .padding(.trailing, Spacing.compact)
         .padding(.vertical, Spacing.small)
         .background(
-            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
-                .fill(isHovering ? Fill.hover : .clear)
+            RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
+                .fill(KitRow.fill(isSelected: false, isHovered: isHovering))
         )
         .contentShape(Rectangle())
-        .onTapGesture(perform: toggle)
-        .onHover { isHovering = $0 }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(line.accessibilityLabel)
-        .accessibilityValue(CodeFilesRootLine.accessibilityValue(expanded: isExpanded))
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction { toggle() }
     }
 
     private func branchCaption(_ branch: WorkbenchBranchPresentation.ButtonLabel) -> some View {
@@ -472,11 +475,17 @@ private struct CodeFilesRootRow: View {
             if let counters = line.counters {
                 Text(counters).monospacedDigit()
             }
+            if line.staleError != nil {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(Tone.warning)
+            }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
         .lineLimit(1)
         .truncationMode(.middle)
+        .help(line.branchHelp)
     }
 }
 
@@ -563,35 +572,37 @@ private struct CodeFileTreeRow: View {
                 Text(status.letter)
                     .font(.caption2.monospaced())
                     .foregroundStyle(GitMark.color(status))
-                    .help("Not committed")
+                    .help(CodeFilesCopy.notCommitted)
             } else if holdsChanges {
                 Circle()
                     .fill(Tone.warning)
                     .frame(width: IconSize.stateDot, height: IconSize.stateDot)
-                    .help("Holds uncommitted changes")
+                    .help(CodeFilesCopy.holdsChanges)
             }
         }
         .padding(.leading, CodeTreeIndent.leading(depth))
         .padding(.trailing, Spacing.compact)
         .padding(.vertical, Spacing.tight)
         .background(
-            RoundedRectangle(cornerRadius: Radius.control, style: .continuous).fill(background)
+            RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
+                .fill(KitRow.fill(isSelected: isOpen, isHovered: isHovering))
         )
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { if !row.entry.isDirectory { actions.open(row.entry, false) } }
         .simultaneousGesture(TapGesture().onEnded { actions.open(row.entry, true) })
         .onHover { isHovering = $0 }
+        .animation(Motion.toggle, value: isHovering)
         .contextMenu {
-            Button("New File…") { actions.newEntry(row.entry, false) }
-            Button("New Folder…") { actions.newEntry(row.entry, true) }
+            Button(CodeFilesCopy.newFile) { actions.newEntry(row.entry, false) }
+            Button(CodeFilesCopy.newFolder) { actions.newEntry(row.entry, true) }
             Divider()
-            Button("Rename…") { actions.rename(row.entry) }
-            Button("Move to Trash") { actions.trash(row.entry) }
+            Button(CodeFilesCopy.rename) { actions.rename(row.entry) }
+            Button(CodeFilesCopy.moveToTrash) { actions.trash(row.entry) }
             Divider()
-            Button("Reveal in Finder") {
+            Button(CodeFilesCopy.revealInFinder) {
                 NSWorkspace.shared.activateFileViewerSelecting([root.appendingPathComponent(row.entry.relPath)])
             }
-            Button("Copy Relative Path") {
+            Button(CodeFilesCopy.copyRelativePath) {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(row.entry.relPath, forType: .string)
             }
@@ -599,10 +610,5 @@ private struct CodeFileTreeRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { actions.open(row.entry, true) }
-    }
-
-    private var background: Color {
-        if isOpen { return Fill.selected }
-        return isHovering ? Fill.hover : .clear
     }
 }
