@@ -1084,6 +1084,71 @@
   }
  },
  {
+  "name": "trailing comma in the object",
+  "json": "{\"v\":1,\"company\":\"Acme\",}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "trailing comma before whitespace",
+  "json": "{\"v\":1,\"company\":\"Acme\", \n}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "trailing comma in a list",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"a.example.com\",]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "trailing comma in a block",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"linear\":{\"client_id\":\"acmelinear01\",}}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "whitespace between every token",
+  "json": " { \"v\" : 1 ,\n \"company\" : \"Acme\" ,\t\"link_deny_hosts\" : [ \"a.example.com\" ] } ",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme",
+    "link_deny_hosts": [
+     "a.example.com"
+    ]
+   },
+   "slug": "acme"
+  }
+ },
+ {
+  "name": "comma and brackets inside a string",
+  "json": "{\"v\":1,\"company\":\"Acme, {Inc}]\"}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme, {Inc}]"
+   },
+   "slug": "acme-inc"
+  }
+ },
+ {
   "name": "top level a list",
   "json": "[1]",
   "origin": "link",

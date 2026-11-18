@@ -133,8 +133,9 @@ package struct CompanyBundle: Encodable, Equatable, Sendable {
     /// Go's `plainJSONText`, byte for byte: refuses a NUL byte (Foundation
     /// sniffs UTF-16/32 without a BOM), a `\u` escape of a UTF-16 surrogate
     /// (Go reads a lone one as U+FFFD), an object key that is not printable
-    /// ASCII without escapes (Swift would merge canonically equal keys), and a
-    /// key twice in one object. A bracket-and-string scan, not a validator.
+    /// ASCII without escapes (Swift would merge canonically equal keys), a
+    /// key twice in one object, and a comma right before a closing bracket
+    /// (Foundation accepts it). A bracket-and-string scan, not a validator.
     private static func plainJSONText(_ raw: [UInt8]) -> Bool {
         struct Frame {
             var object: Bool
@@ -142,6 +143,7 @@ package struct CompanyBundle: Encodable, Equatable, Sendable {
             var keys: Set<[UInt8]> = []
         }
         var stack: [Frame] = []
+        var prev: UInt8 = 0 // the last byte outside strings and whitespace
         var i = 0
         while i < raw.count {
             switch raw[i] {
@@ -152,7 +154,7 @@ package struct CompanyBundle: Encodable, Equatable, Sendable {
             case UInt8(ascii: "["):
                 stack.append(Frame(object: false, wantKey: false))
             case UInt8(ascii: "}"), UInt8(ascii: "]"):
-                guard stack.popLast() != nil else { return false }
+                guard prev != UInt8(ascii: ","), stack.popLast() != nil else { return false }
             case UInt8(ascii: ","):
                 if stack.last?.object == true { stack[stack.count - 1].wantKey = true }
             case UInt8(ascii: "\""):
@@ -163,9 +165,12 @@ package struct CompanyBundle: Encodable, Equatable, Sendable {
                     stack[stack.count - 1].keys.insert(key)
                     stack[stack.count - 1].wantKey = false
                 }
-                i = end
+                i = end // at the closing quote, which becomes prev below
             default:
                 break
+            }
+            if ![UInt8(ascii: " "), UInt8(ascii: "\t"), UInt8(ascii: "\n"), UInt8(ascii: "\r")].contains(raw[i]) {
+                prev = raw[i]
             }
             i += 1
         }

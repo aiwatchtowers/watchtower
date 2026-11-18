@@ -156,7 +156,8 @@ func asciiLower(s string) string {
 //     write raw UTF-8);
 //   - an object key that is not printable ASCII without escapes (every real
 //     key is; Swift would merge canonically equal Unicode keys), or a key
-//     twice in one object (which duplicate wins is not pinned in Foundation).
+//     twice in one object (which duplicate wins is not pinned in Foundation);
+//   - a comma right before a closing bracket (Foundation accepts it).
 //
 // It is a bracket-and-string scan, not a validator: malformed JSON is the
 // decoder's to refuse. The Swift twin runs the same scan.
@@ -166,6 +167,7 @@ func plainJSONText(raw []byte) bool {
 		keys            map[string]bool
 	}
 	var stack []*frame
+	var prev byte // the last byte outside strings and whitespace
 	for i := 0; i < len(raw); i++ {
 		switch raw[i] {
 		case 0:
@@ -175,7 +177,7 @@ func plainJSONText(raw []byte) bool {
 		case '[':
 			stack = append(stack, &frame{})
 		case '}', ']':
-			if len(stack) == 0 {
+			if prev == ',' || len(stack) == 0 {
 				return false
 			}
 			stack = stack[:len(stack)-1]
@@ -196,7 +198,10 @@ func plainJSONText(raw []byte) bool {
 				stack[n-1].keys[key] = true
 				stack[n-1].wantKey = false
 			}
-			i = end
+			i = end // at the closing quote, which becomes prev below
+		}
+		if c := raw[i]; c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			prev = c
 		}
 	}
 	return true
