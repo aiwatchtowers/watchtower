@@ -1255,7 +1255,9 @@ func (d *Daemon) phaseImapSync(ctx context.Context) {
 // The one failure a pass DOES persist is jira.ErrAuthRevoked: the grant itself
 // is gone, Sync aborts on it, and the row needs status "revoked" for the
 // Settings Re-login button to appear; and jira.ErrClientRejected, recorded as
-// "error" with its client code (recordJiraClientRejected). Every other Sync error is logged and
+// "error" with its client code (recordJiraClientRejected). A dead API token
+// (jira.ErrAPITokenDead) is recorded by its client at the 401 as "error" /
+// api_token_dead (D22: never "revoked") and proves no access here. Every other Sync error is logged and
 // left off the row entirely — a rate limit, a dropped connection or a failing
 // local read says nothing about the grant, and stamping it would strand a red
 // badge that only a re-login could clear. A cancelled context (shutdown, or
@@ -1302,7 +1304,7 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 		// (one board, a later request); a revoked grant never does. No
 		// request (no boards selected) proves nothing. access_ok_at only,
 		// never status: a pass still never writes "ok" (#601, LINEAR-03).
-		if s.ReachedSource() && !errors.Is(err, jira.ErrAuthRevoked) {
+		if s.ReachedSource() && !errors.Is(err, jira.ErrAuthRevoked) && !errors.Is(err, jira.ErrAPITokenDead) {
 			d.markAccessOK("jira", s.AccountID())
 		}
 		if err != nil {
@@ -1325,6 +1327,9 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 			case errors.Is(err, jira.ErrClientRejected):
 				d.recordJiraClientRejected(s.AccountID())
 			}
+			// jira.ErrAPITokenDead is recorded by the client itself, at the
+			// 401 (Client.SetOnAPITokenDead): a write here, after the whole
+			// pass, could mark dead a token a re-auth replaced meanwhile.
 			continue
 		}
 		anyClean = true
