@@ -55,6 +55,8 @@ final class WatchmanJournalViewModel {
         var sendFailed = false
         /// Open session is offered: the item has a session.
         var canOpen = false
+        /// Mark done is offered (a waiting item the owner can clear).
+        var canMarkDone = false
     }
 
     /// A one-line decision (sure) or a check nobody ran.
@@ -80,6 +82,8 @@ final class WatchmanJournalViewModel {
         var saving = false
 
         var canSend: Bool { !saving && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        /// Cancel (and Escape) is off while the correction is being saved.
+        var canCancel: Bool { !saving }
     }
 
     /// A correction on its way to a session.
@@ -168,8 +172,9 @@ final class WatchmanJournalViewModel {
     @ObservationIgnored private let tick: @Sendable (Duration) async -> Void
     /// Bumped by every read: an older reply never overwrites a newer one.
     @ObservationIgnored private var readToken = 0
-    /// Corrections stored but not delivered, for Retry.
-    @ObservationIgnored private var unsent: [Int64: (item: WatchmanItem, text: String)] = [:]
+    /// Corrections stored this run, by item id (Retry's text before the
+    /// reread has it).
+    @ObservationIgnored private var storedCorrections: [Int64: String] = [:]
 
     init(
         read: @escaping @Sendable () async throws -> Snapshot,
@@ -358,9 +363,11 @@ final class WatchmanJournalViewModel {
         await save(.ok(itemID))
     }
 
-    /// Mark done: a check nobody ran was run; it leaves the list.
+    /// Mark done on a check nobody ran (it was run), or on a waiting item
+    /// (the owner dealt with it): either leaves its list.
     func markDone(_ itemID: Int64) async {
-        await save(.checkDone(itemID))
+        let waiting = item(itemID)?.isWaitingKind == true
+        await save(waiting ? .ownerDone(itemID) : .checkDone(itemID))
     }
 
     /// Opens the Correct… sheet on a decision.
@@ -371,9 +378,16 @@ final class WatchmanJournalViewModel {
             note: WatchmanJournalCopy.correctNote(item, sessionAlive: item.sessionID > 0 && actions.isLive(item.sessionID)))
     }
 
+    /// Cancel: closes the sheet, never while its correction is being saved.
+    func cancelCorrect() {
+        guard correcting?.canCancel == true else { return }
+        correcting = nil
+    }
+
     /// Send Correction: the owner's words are stored first, so a delivery
     /// that fails keeps them (and offers Retry); then they go to the
-    /// session as a typed line, or a new session starts with them.
+    /// session as a typed line, or a new session starts with them. A
+    /// decision judged meanwhile keeps the sheet and its text, and says so.
     func sendCorrection() async {
         guard var draft = correcting, draft.canSend, let item = item(draft.id) else { return }
         let text = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -385,22 +399,27 @@ final class WatchmanJournalViewModel {
             wrote = try await actions.write(.correct(item.id, text))
         } catch {
             NSLog("WatchmanJournal: saving the correction of item %lld: %@", item.id, error.localizedDescription)
-            draft.saving = false
-            draft.error = WatchmanJournalCopy.saveFailed(Self.reason(error))
-            if correcting?.id == draft.id { correcting = draft }
+            keepSheet(draft, error: WatchmanJournalCopy.saveFailed(Self.reason(error)))
+            return
+        }
+        guard wrote else {
+            keepSheet(draft, error: WatchmanJournalCopy.alreadyJudged)
+            await load()
             return
         }
         if correcting?.id == draft.id { correcting = nil }
+        storedCorrections[item.id] = text
+        sends[item.id] = .sending
         await load()
-        // Judged meanwhile (another tap): the stored feedback stands, nothing goes.
-        guard wrote else { return }
         await deliver(item, text: text)
     }
 
-    /// Retry: a stored correction that did not reach a session goes again.
+    /// Retry: a stored correction that did not reach a session goes again —
+    /// only from Not sent, and once at a time.
     func retrySend(_ itemID: Int64) async {
-        guard let unsent = unsent[itemID] else { return }
-        await deliver(unsent.item, text: unsent.text)
+        guard let item = item(itemID), case .failed? = sendState(item) else { return }
+        sends[itemID] = .sending
+        await deliver(item, text: storedCorrections[itemID] ?? item.feedbackText)
     }
 
     /// Open session: the item's session (or the one its correction started)
@@ -410,6 +429,13 @@ final class WatchmanJournalViewModel {
         let sessionID = startedSessions[itemID] ?? item.sessionID
         guard sessionID > 0 else { return }
         actions.open(WorkbenchRoute(projectID: item.workbenchID, pane: .terminal, subjectID: sessionID))
+    }
+
+    private func keepSheet(_ draft: CorrectDraft, error: String) {
+        var draft = draft
+        draft.saving = false
+        draft.error = error
+        if correcting?.id == draft.id { correcting = draft }
     }
 
     private func save(_ change: WatchmanFeedbackWrite) async {
@@ -424,9 +450,8 @@ final class WatchmanJournalViewModel {
         await load()
     }
 
+    /// Sends the stored correction; the caller has set `.sending`.
     private func deliver(_ item: WatchmanItem, text: String) async {
-        unsent[item.id] = (item, text)
-        sends[item.id] = .sending
         let line = WatchmanJournalCopy.correctionLine(item, text: text)
         if item.sessionID > 0 {
             let delivery = await actions.deliver(line, item.id, item.sessionID) { [weak self] event in
@@ -434,7 +459,7 @@ final class WatchmanJournalViewModel {
             }
             if let sent = Self.sentText(delivery, sessionID: item.sessionID) {
                 sends[item.id] = .done(sent)
-                if delivery != .held, delivery != .queued { unsent[item.id] = nil }
+                if delivery != .held, delivery != .queued { await markSent(item.id) }
                 return
             }
         }
@@ -443,11 +468,23 @@ final class WatchmanJournalViewModel {
             let started = try await actions.startSession(item, line)
             startedSessions[item.id] = started
             sends[item.id] = .done(WatchmanJournalCopy.startedSession(started))
-            unsent[item.id] = nil
+            await markSent(item.id)
         } catch {
             NSLog("WatchmanJournal: starting a session for the correction of item %lld: %@", item.id,
                   error.localizedDescription)
             sends[item.id] = .failed(WatchmanJournalCopy.notSent(Self.reason(error)))
+        }
+    }
+
+    /// The correction reached a session: stored, so a relaunch does not
+    /// call it Not sent. A failed write is logged; this run still shows
+    /// where it went.
+    private func markSent(_ itemID: Int64) async {
+        do {
+            _ = try await actions.write(.correctionSent(itemID))
+        } catch {
+            NSLog("WatchmanJournal: storing that the correction of item %lld was sent: %@", itemID,
+                  error.localizedDescription)
         }
     }
 
@@ -456,10 +493,17 @@ final class WatchmanJournalViewModel {
         guard case let .tried(delivery) = event else { return }
         if let sent = Self.sentText(delivery, sessionID: item.sessionID) {
             sends[item.id] = .done(sent)
-            if delivery != .held, delivery != .queued { unsent[item.id] = nil }
+            if delivery != .held, delivery != .queued { Task { await markSent(item.id) } }
         } else {
             sends[item.id] = .failed(WatchmanJournalCopy.notSent(WatchmanJournalCopy.sessionStopped))
         }
+    }
+
+    /// This run's send state, else Not sent for a correction stored but never
+    /// delivered (the app quit first).
+    private func sendState(_ item: WatchmanItem) -> Send? {
+        if let send = sends[item.id] { return send }
+        return item.correctionUnsent ? .failed(WatchmanJournalCopy.notSent(WatchmanJournalCopy.appQuit)) : nil
     }
 
     /// Where a delivered line went; nil = no session took it.
@@ -476,8 +520,6 @@ final class WatchmanJournalViewModel {
     // MARK: - Why a new session did not start (`Not sent — <reason>`)
 
     nonisolated static let workbenchesNotLoaded = "the workbenches are not loaded yet"
-    nonisolated static let workbenchGone = "the workbench is gone"
-    nonisolated static let sessionDidNotStart = "the new session did not start"
 
     nonisolated static func startFailure(_ error: WorkbenchesViewModel.TargetStartError, targetID: Int64) -> String {
         switch error {
@@ -538,7 +580,7 @@ final class WatchmanJournalViewModel {
              question: WatchmanJournalCopy.question(item), badge: nil,
              reason: WatchmanJournalCopy.waitingReason(item), choice: nil, rationale: nil, precedents: [],
              meta: WatchmanJournalCopy.meta(item), outcome: nil, handed: item.outcome == "handed",
-             canOpen: item.sessionID > 0)
+             canOpen: item.sessionID > 0, canMarkDone: true)
     }
 
     private func decidedCard(_ item: WatchmanItem) -> Card {
@@ -548,8 +590,8 @@ final class WatchmanJournalViewModel {
              rationale: item.rationale.isEmpty ? nil : item.rationale,
              precedents: item.precedentIDs.compactMap { snapshot.precedents[$0] },
              meta: WatchmanJournalCopy.meta(item), outcome: WatchmanJournalCopy.outcome(item), handed: false,
-             canJudge: item.feedback.isEmpty, feedbackLine: feedbackLine(item), sendLine: sendLine(item.id),
-             sendFailed: sends[item.id].map { if case .failed = $0 { true } else { false } } ?? false,
+             canJudge: item.feedback.isEmpty, feedbackLine: feedbackLine(item), sendLine: sendLine(item),
+             sendFailed: sendState(item).map { if case .failed = $0 { true } else { false } } ?? false,
              canOpen: item.sessionID > 0 || startedSessions[item.id] != nil)
     }
 
@@ -561,8 +603,8 @@ final class WatchmanJournalViewModel {
         }
     }
 
-    private func sendLine(_ itemID: Int64) -> String? {
-        switch sends[itemID] {
+    private func sendLine(_ item: WatchmanItem) -> String? {
+        switch sendState(item) {
         case .sending?: WatchmanJournalCopy.sending
         case let .done(text)?, let .failed(text)?: text
         case nil: nil

@@ -201,6 +201,11 @@ package enum WatchmanJournalCopy {
         "Started session \(sessionID) with your correction"
     }
 
+    /// A stored correction found unsent on a fresh read.
+    package static let appQuit = "the app quit before it went"
+    /// Correct… lost to another judgement of the same decision.
+    package static let alreadyJudged = "This decision was already judged; your text is kept here."
+
     /// A held correction's session stopped before it went.
     package static let sessionStopped = "the session stopped before it went"
 

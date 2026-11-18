@@ -26,12 +26,20 @@ final class WatchmanCorrectTests: XCTestCase {
 
     private func date(_ text: String) -> Date { AutomationDates.parse(text) ?? .distantPast }
 
-    private func item(_ id: Int64 = 1826, session: Int64 = 3, target: Int64 = 1801, feedback: String = "") -> WatchmanItem {
+    private func item(
+        _ id: Int64 = 1826,
+        session: Int64 = 3,
+        target: Int64 = 1801,
+        outcome: String = "answered",
+        feedback: String = "",
+        feedbackText: String = "",
+        sentAt: Date? = nil
+    ) -> WatchmanItem {
         WatchmanItem(id: id, workbenchID: 1, workbenchName: "acme-api", sessionID: session, targetID: target,
-                     question: "Store the window per workbench or global?", choice: "Per workbench",
+                     outcome: outcome, question: "Store the window per workbench or global?", choice: "Per workbench",
                      rationale: "You split settings per workbench.", confidence: "low", category: "design",
                      createdAt: date("2026-11-17T02:14:00Z"), decidedAt: date("2026-11-17T02:15:00Z"),
-                     feedback: feedback)
+                     feedback: feedback, feedbackText: feedbackText, correctionSentAt: sentAt)
     }
 
     private func model(
@@ -112,8 +120,8 @@ final class WatchmanCorrectTests: XCTestCase {
         XCTAssertEqual(vm.correcting?.canSend, false, "a blank correction cannot be sent")
         vm.correcting?.text = "  Global, one window for all.  "
         await vm.sendCorrection()
-        XCTAssertEqual(recorder.calls, ["write", "deliver"])
-        XCTAssertEqual(recorder.writes, [.correct(1826, "Global, one window for all.")])
+        XCTAssertEqual(recorder.calls, ["write", "deliver", "write"])
+        XCTAssertEqual(recorder.writes, [.correct(1826, "Global, one window for all."), .correctionSent(1826)])
         XCTAssertNil(vm.correcting, "the sheet closes once the correction is stored")
     }
 
@@ -164,7 +172,8 @@ final class WatchmanCorrectTests: XCTestCase {
             + "correction. Your answer also teaches Watchman.")
         vm.correcting?.text = "Global."
         await vm.sendCorrection()
-        XCTAssertEqual(recorder.calls, ["write", "deliver", "start"])
+        XCTAssertEqual(recorder.calls, ["write", "deliver", "start", "write"])
+        XCTAssertEqual(recorder.writes.last, .correctionSent(1826))
         XCTAssertEqual(recorder.starts.map(\.item), [1826])
         XCTAssertTrue(recorder.starts.first?.line.hasSuffix("My correction: Global.") == true)
         XCTAssertEqual(vm.page?.decided.first?.sendLine, "Started session 42 with your correction")
@@ -235,6 +244,96 @@ final class WatchmanCorrectTests: XCTestCase {
         let failing = WatchmanJournalViewModel { .init(nights: [], deciding: []) }
         await failing.ok(1)
         XCTAssertEqual(failing.actionError, "Couldn't save: the journal is read-only here")
+    }
+
+    /// Fix 1: Mark done on a waiting card clears it (owner_done_at), not feedback.
+    func testMarkDoneClearsAWaitingItem() async {
+        let recorder = Recorder()
+        let parked = item(1830, outcome: "parked")
+        let night = WatchmanNight(date: date("2026-11-16T12:00:00Z"), waiting: [parked])
+        var actions = WatchmanJournalViewModel.Actions.none
+        actions.write = { recorder.writes.append($0); return true }
+        let vm = WatchmanJournalViewModel(read: { .init(nights: [night], deciding: []) }, actions: actions)
+        vm.apply(.success(.init(nights: [night], deciding: [])))
+        XCTAssertEqual(vm.page?.waiting.first?.canMarkDone, true)
+        XCTAssertEqual(vm.page?.waiting.first?.canJudge, false)
+        await vm.markDone(1830)
+        XCTAssertEqual(recorder.writes, [.ownerDone(1830)])
+    }
+
+    /// Fix 2: a correction stored but never delivered (the app quit) is Not
+    /// sent on a fresh journal, with Retry; once delivered it is stored as sent.
+    func testUnsentCorrectionAfterRelaunchOffersRetry() async {
+        let recorder = Recorder()
+        let unsent = item(feedback: "corrected", feedbackText: "Global.")
+        let vm = model([unsent], recorder: recorder)
+        let card = vm.page?.decided.first
+        XCTAssertEqual(card?.sendLine, "Not sent — the app quit before it went")
+        XCTAssertEqual(card?.sendFailed, true)
+        XCTAssertEqual(card?.feedbackLine, "You corrected: Global.")
+        await vm.retrySend(1826)
+        XCTAssertEqual(recorder.lines.first?.line.hasSuffix("My correction: Global."), true)
+        XCTAssertEqual(recorder.writes, [.correctionSent(1826)])
+        XCTAssertEqual(vm.page?.decided.first?.sendLine, "Sent to session 3")
+        let sent = model([item(feedback: "corrected", feedbackText: "Global.", sentAt: date("2026-11-17T08:00:00Z"))],
+                         recorder: Recorder())
+        XCTAssertNil(sent.page?.decided.first?.sendLine)
+        XCTAssertEqual(sent.page?.decided.first?.sendFailed, false)
+    }
+
+    /// Fix 4: Retry only from Not sent; a second tap while it sends starts nothing.
+    func testRetryWhileSendingStartsOneSession() async {
+        final class Gate: @unchecked Sendable {
+            var waiting: CheckedContinuation<Void, Never>?
+            var starts = 0
+        }
+        let gate = Gate()
+        let night = WatchmanNight(date: date("2026-11-16T12:00:00Z"),
+                                  decided: [item(feedback: "corrected", feedbackText: "Global.")])
+        var actions = WatchmanJournalViewModel.Actions.none
+        actions.write = { _ in true }
+        actions.startSession = { _, _ in
+            gate.starts += 1
+            await withCheckedContinuation { gate.waiting = $0 }
+            return 42
+        }
+        let vm = WatchmanJournalViewModel(read: { .init(nights: [night], deciding: []) }, actions: actions)
+        vm.apply(.success(.init(nights: [night], deciding: [])))
+        let first = Task { await vm.retrySend(1826) }
+        for _ in 0..<1000 where gate.waiting == nil { await Task.yield() }
+        XCTAssertEqual(vm.page?.decided.first?.sendLine, "Sending your correction…")
+        await vm.retrySend(1826)
+        XCTAssertEqual(gate.starts, 1, "a second Retry while sending does nothing")
+        gate.waiting?.resume()
+        await first.value
+        XCTAssertEqual(vm.page?.decided.first?.sendLine, "Started session 42 with your correction")
+        await vm.retrySend(1826)
+        XCTAssertEqual(gate.starts, 1, "nothing to retry once it went")
+    }
+
+    /// Fix 5: Cancel does nothing while the correction is being saved.
+    func testCancelIsOffWhileSaving() {
+        let vm = model([item()], recorder: Recorder())
+        vm.beginCorrect(1826)
+        XCTAssertEqual(vm.correcting?.canCancel, true)
+        vm.correcting?.saving = true
+        XCTAssertEqual(vm.correcting?.canCancel, false)
+        vm.cancelCorrect()
+        XCTAssertNotNil(vm.correcting)
+        vm.correcting?.saving = false
+        vm.cancelCorrect()
+        XCTAssertNil(vm.correcting)
+    }
+
+    /// Fix 6: a decision judged elsewhere keeps the sheet and the text, says so, sends nothing.
+    func testCorrectAlreadyJudgedKeepsTheSheet() async {
+        let recorder = Recorder()
+        let vm = model([item()], recorder: recorder, writes: false)
+        await correct(vm)
+        XCTAssertEqual(vm.correcting?.text, "Global, one window for all.")
+        XCTAssertEqual(vm.correcting?.error, "This decision was already judged; your text is kept here.")
+        XCTAssertEqual(vm.correcting?.saving, false)
+        XCTAssertEqual(recorder.calls, ["write"])
     }
 
     func testStartFailureReasons() {

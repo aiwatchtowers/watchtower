@@ -28,27 +28,20 @@ extension AppState {
 
     /// A new session with the correction as its first instruction: on the
     /// item's target (Work on it's start path, always a new session), else
-    /// in its workbench. It starts in the background; Open session shows it.
+    /// in its workbench. Both start in the background with a checked launch:
+    /// a launch that did not run throws (Not sent, Retry). Open session shows it.
     private static func startCorrectionSession(
         _ workbenches: WorkbenchesViewModel, item: WatchmanItem, line: String
     ) async throws -> Int64 {
-        if item.targetID > 0 {
-            do {
+        do {
+            if item.targetID > 0 {
                 return try await workbenches.startForTarget(
                     targetID: item.targetID, prompt: line, mode: .new, placement: .background).id
-            } catch let error as WorkbenchesViewModel.TargetStartError {
-                throw WatchmanCorrectionError(
-                    reason: WatchmanJournalViewModel.startFailure(error, targetID: item.targetID))
             }
+            return try await workbenches.startInBackground(
+                projectID: item.workbenchID, title: TerminalSessionNaming.provisional(now: Date()), prompt: line).id
+        } catch let error as WorkbenchesViewModel.TargetStartError {
+            throw WatchmanCorrectionError(reason: WatchmanJournalViewModel.startFailure(error, targetID: item.targetID))
         }
-        guard let project = await workbenches.project(id: item.workbenchID) else {
-            throw WatchmanCorrectionError(reason: WatchmanJournalViewModel.workbenchGone)
-        }
-        guard let row = await workbenches.startNewSession(
-            project: project, title: TerminalSessionNaming.provisional(now: Date()), prompt: line,
-            placement: .background, agent: workbenches.currentDefaultAgent()) else {
-            throw WatchmanCorrectionError(reason: WatchmanJournalViewModel.sessionDidNotStart)
-        }
-        return row.id
     }
 }

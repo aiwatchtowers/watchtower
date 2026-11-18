@@ -37,6 +37,10 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
     /// The owner's correction (`feedback = 'corrected'`).
     package var feedbackText: String
     package var checkDoneAt: Date?
+    /// The owner marked a waiting (parked, handed) item done.
+    package var ownerDoneAt: Date?
+    /// The owner's correction reached a session (typed, or a new session).
+    package var correctionSentAt: Date?
 
     package init(
         id: Int64,
@@ -61,7 +65,9 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         decidedAt: Date? = nil,
         feedback: String = "",
         feedbackText: String = "",
-        checkDoneAt: Date? = nil
+        checkDoneAt: Date? = nil,
+        ownerDoneAt: Date? = nil,
+        correctionSentAt: Date? = nil
     ) {
         self.id = id
         self.workbenchID = workbenchID
@@ -86,6 +92,8 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         self.feedback = feedback
         self.feedbackText = feedbackText
         self.checkDoneAt = checkDoneAt
+        self.ownerDoneAt = ownerDoneAt
+        self.correctionSentAt = correctionSentAt
     }
 
     package init(row: Row) throws {
@@ -117,6 +125,8 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         feedback = row["feedback"]
         feedbackText = row["feedback_text"] ?? ""
         checkDoneAt = AutomationDates.parse(row["check_done_at"])
+        ownerDoneAt = AutomationDates.parse(row["owner_done_at"])
+        correctionSentAt = AutomationDates.parse(row["correction_sent_at"])
     }
 
     /// Malformed `precedent_ids` JSON is logged once per launch (never its
@@ -138,7 +148,17 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
 
     /// Parked or handed back: the owner has to act.
     package var waitsForOwner: Bool {
-        state == "done" && (outcome == "parked" || outcome == "handed") && feedback.isEmpty
+        isWaitingKind && feedback.isEmpty && ownerDoneAt == nil
+    }
+
+    /// Parked or handed back, whether or not the owner has dealt with it.
+    package var isWaitingKind: Bool {
+        state == "done" && (outcome == "parked" || outcome == "handed")
+    }
+
+    /// The owner corrected it and the correction never reached a session.
+    package var correctionUnsent: Bool {
+        feedback == "corrected" && correctionSentAt == nil
     }
 
     /// A check Watchman passed on that nobody has run since.

@@ -218,7 +218,7 @@ private struct WatchmanNightPage: View {
             if !page.waiting.isEmpty {
                 section(model.waitingTitle, count: page.waiting.count, trailing: nil) {
                     ForEach(page.waiting) { card in
-                        WatchmanWaitingCard(card: card, openTitle: model.openSessionTitle) { model.openSession(card.id) }
+                        WatchmanWaitingCard(card: card, model: model)
                     }
                 }
             }
@@ -297,8 +297,7 @@ private struct WatchmanNightPage: View {
 /// A parked or handed item: what the owner has to do.
 private struct WatchmanWaitingCard: View {
     let card: WatchmanJournalViewModel.Card
-    let openTitle: String
-    let onOpen: () -> Void
+    let model: WatchmanJournalViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.compact) {
@@ -311,7 +310,12 @@ private struct WatchmanWaitingCard: View {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
                 Text(card.place).font(.caption).foregroundStyle(.secondary)
                 Spacer(minLength: Spacing.regular)
-                if card.canOpen { Button(openTitle, action: onOpen).buttonStyle(.kitQuiet) }
+                if card.canOpen {
+                    Button(model.openSessionTitle) { model.openSession(card.id) }.buttonStyle(.kitQuiet)
+                }
+                if card.canMarkDone {
+                    Button(model.markDoneTitle) { Task { await model.markDone(card.id) } }.buttonStyle(.kitSecondary)
+                }
             }
         }
         .padding(Spacing.medium)

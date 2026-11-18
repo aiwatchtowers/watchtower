@@ -104,4 +104,42 @@ final class WatchmanFeedbackQueriesTests: XCTestCase {
         XCTAssertEqual(decided?.first?.feedback, "corrected")
         XCTAssertEqual(decided?.first?.feedbackText, "Global")
     }
+
+    /// Mark done on a waiting item: it leaves Waiting for you and the
+    /// Inbox count, once; feedback is untouched and a decision refuses it.
+    func testOwnerDoneClearsWaitingOnce() throws {
+        let queue = try TestDatabase.create()
+        let (parked, answered) = try queue.write { (try item($0, outcome: "parked"), try item($0)) }
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO watchman_workbenches (workbench_id, enabled_at) VALUES (1, '2026-11-10T00:00:00Z')")
+        }
+        let waiting = { try queue.read { try WatchmanJournalQueries.inboxSummary($0)?.waiting } }
+        let shown = { try queue.read { try WatchmanJournalQueries.nights($0, limit: 1).first?.waiting.map(\.id) } }
+        XCTAssertEqual(try waiting(), 1)
+        XCTAssertEqual(try shown(), [parked])
+        let first = first
+        XCTAssertTrue(try queue.write { try WatchmanFeedbackQueries.ownerDone($0, itemID: parked, now: first) })
+        XCTAssertFalse(try queue.write { try WatchmanFeedbackQueries.ownerDone($0, itemID: parked) })
+        XCTAssertFalse(try queue.write { try WatchmanFeedbackQueries.ownerDone($0, itemID: answered) })
+        XCTAssertEqual(try waiting(), 0)
+        XCTAssertEqual(try shown(), [])
+        let night = try XCTUnwrap(queue.read { try WatchmanJournalQueries.nights($0, limit: 1).first })
+        XCTAssertFalse(night.decided.contains { $0.id == parked }, "a done waiting item is not a decision")
+        let row = try XCTUnwrap(feedback(queue, parked))
+        XCTAssertEqual(row["feedback"], "", "Mark done is not feedback")
+    }
+
+    /// correction_sent_at is written once, and only on a corrected item.
+    func testCorrectionSentOnce() throws {
+        let queue = try TestDatabase.create()
+        let id = try queue.write { try item($0) }
+        XCTAssertFalse(try queue.write { try WatchmanFeedbackQueries.correctionSent($0, itemID: id) }, "not corrected")
+        try queue.write { _ = try WatchmanFeedbackQueries.correct($0, itemID: id, text: "Global") }
+        XCTAssertEqual(try queue.read { try WatchmanJournalQueries.nights($0, limit: 1).first?.decided.first?.correctionUnsent },
+                       true)
+        XCTAssertTrue(try queue.write { try WatchmanFeedbackQueries.correctionSent($0, itemID: id) })
+        XCTAssertFalse(try queue.write { try WatchmanFeedbackQueries.correctionSent($0, itemID: id) })
+        XCTAssertEqual(try queue.read { try WatchmanJournalQueries.nights($0, limit: 1).first?.decided.first?.correctionUnsent },
+                       false)
+    }
 }

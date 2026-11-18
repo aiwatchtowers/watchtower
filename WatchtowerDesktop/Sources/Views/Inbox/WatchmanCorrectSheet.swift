@@ -50,9 +50,10 @@ struct WatchmanCorrectSheet: View {
             }
             HStack(spacing: Spacing.regular) {
                 Spacer()
-                Button(model.cancelTitle) { model.correcting = nil }
+                Button(model.cancelTitle) { model.cancelCorrect() }
                     .buttonStyle(.kitSecondary)
                     .keyboardShortcut(.cancelAction)
+                    .disabled(!draft.canCancel)
                 Button(model.sendTitle) { Task { await model.sendCorrection() } }
                     .buttonStyle(.kitPrimary)
                     .keyboardShortcut(.defaultAction)
@@ -63,6 +64,7 @@ struct WatchmanCorrectSheet: View {
         .padding(Spacing.page)
         .frame(width: Self.width, alignment: .topLeading)
         .detailBackground()
+        .interactiveDismissDisabled(!draft.canCancel)
     }
 
     /// The sheet's width (the mockup's).
