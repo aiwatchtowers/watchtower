@@ -73,15 +73,14 @@ overlay:
 An overlay is dropped as soon as the **replica already shows the expected effect**, whichever of the echo and the
 slice record came first:
 
-- **Change of an existing entity** (move, status, priority, ask answer, comment on a target): the overlay is dropped
-  when the replica's value equals the requested one (the status is `done`, the ask is no longer open, the comment
-  with this action's `client_key` is listed). If the echo says `applied` but the replica's value differs (someone
+- **Change of an existing entity** (move, status, priority, ask answer): the overlay is dropped when the replica's
+  value equals the requested one (the status is `done`, the ask is no longer open). If the echo says `applied` but the replica's value differs (someone
   changed it again right after), the overlay is dropped at the first slice record of that entity after the echo, or
   30 s after the echo if none comes.
-- **Create** (a new target): there is no id at tap time. The overlay is keyed by the action id; the `applied` echo
-  carries the new `target_id` (`handlers/board.go:251` already returns it), and the overlay is dropped once the
-  replica has a record for that id — at once if the slice came first. Before the echo, a replica target that appeared
-  after the tap with the same title and parent hides the overlay (no duplicate card); the echo then confirms the
+- **Create** (a new target or a comment): there is no id at tap time. The overlay is keyed by the action id; the `applied` echo
+  carries the new id (`target_id` / `comment_id`; `handlers/board.go:154, 196, 251` already return them), and the
+  overlay is dropped once the replica has a record for that id — at once if the slice came first. Before the echo, a
+  replica target (comment) that appeared after the tap with the same title and parent (body and target) hides the overlay (no duplicate card); the echo then confirms the
   match.
 - echo refused / the action fails → the overlay is removed at once and the existing refusal line with Dismiss shows.
 - no echo while the tower's heartbeat is stale → the caption turns to "Waiting for your tower"; after 10 min the
