@@ -37,10 +37,19 @@ func (s *permissionSource) Next(ctx context.Context, d *db.DB, workbenchID int64
 		if r.Status == db.PermissionAllowed {
 			choice = "allow"
 		}
+		flags := permissionFlags(PermissionAsk{
+			Tool: r.ToolName, Summary: r.Summary, WorkbenchFolder: r.WorkbenchFolder,
+			Worktrees: append([]string{r.SessionFolder}, r.Worktrees...),
+			PRBase: func(pr int) (string, bool) {
+				base, known, err := d.WatchmanPRBase(workbenchID, pr)
+				return base, known && err == nil
+			},
+		})
 		out = append(out, db.WatchmanPrecedent{
 			WorkbenchID: workbenchID, Source: SourcePermission, SourceKey: strconv.FormatInt(r.ID, 10),
 			Category: CategoryPermission, Situation: clean(joinNonEmpty("\n", "Tool: "+r.ToolName, r.Summary)),
 			Choice: choice, DecidedAt: at, Weight: 1,
+			IsDecision: flags.IsDecision, Parked: flags.Parked,
 		})
 	}
 	return out, next, done, nil

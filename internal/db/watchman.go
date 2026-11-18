@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -412,9 +413,13 @@ const (
 			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL
 			AND (s.id IS NULL OR s.` + NotDeletingSQL + `)
 			AND m.state IN ('ok','comment','not_useful')`
-	wmPermissionSQL = `SELECT COALESCE(strftime(` + wmAtFormat + `, decided_at), '') AS wm_at, id AS wm_id, '' AS wm_sub, tool_name, summary, status
-		FROM permission_requests
-		WHERE workbench_id = ? AND status IN ('allowed','denied')`
+	wmPermissionSQL = `SELECT COALESCE(strftime(` + wmAtFormat + `, r.decided_at), '') AS wm_at, r.id AS wm_id, '' AS wm_sub, r.tool_name, r.summary, r.status,
+			s.folder_path, COALESCE(p.folder_path, ''),
+			(SELECT COALESCE(json_group_array(w.root), '[]') FROM terminal_session_worktrees w WHERE w.session_id = r.terminal_session_id)
+		FROM permission_requests r
+		JOIN terminal_sessions s ON s.id = r.terminal_session_id
+		LEFT JOIN projects p ON p.id = r.workbench_id
+		WHERE r.workbench_id = ? AND r.status IN ('allowed','denied')`
 )
 
 // wmPage wraps inner, which selects wm_at, wm_id and wm_sub first, in the
@@ -557,6 +562,9 @@ type WatchmanPermissionRow struct {
 	Mark                      WatchmanMark
 	ID                        int64
 	ToolName, Summary, Status string
+	SessionFolder             string   // terminal_sessions.folder_path
+	WorkbenchFolder           string   // the workbench's project folder; '' = unknown
+	Worktrees                 []string // terminal_session_worktrees roots of the session
 }
 
 // WatchmanPermissionDecisions pages the workbench's allowed and denied
@@ -574,11 +582,36 @@ func (db *DB) WatchmanPermissionDecisions(workbenchID int64, from *WatchmanMark,
 	var out []WatchmanPermissionRow
 	for rows.Next() {
 		var r WatchmanPermissionRow
-		if err := rows.Scan(&r.Mark.At, &r.Mark.ID, &r.Mark.Sub, &r.ToolName, &r.Summary, &r.Status); err != nil {
+		var worktrees string
+		if err := rows.Scan(&r.Mark.At, &r.Mark.ID, &r.Mark.Sub, &r.ToolName, &r.Summary, &r.Status,
+			&r.SessionFolder, &r.WorkbenchFolder, &worktrees); err != nil {
 			return nil, fmt.Errorf("scanning permission decision: %w", err)
+		}
+		if err := json.Unmarshal([]byte(worktrees), &r.Worktrees); err != nil {
+			return nil, fmt.Errorf("decoding worktrees of permission request %d: %w", r.Mark.ID, err)
 		}
 		r.ID = r.Mark.ID
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// WatchmanPRBase reports the base branch recorded for a pull request by a
+// merge verdict ('into:<base>:<branch>'); known is false when none is.
+func (db *DB) WatchmanPRBase(workbenchID int64, pr int) (base string, known bool, err error) {
+	var ref string
+	err = db.QueryRow(`SELECT ref FROM workbench_pr_states WHERE project_id = ? AND pr_number = ? AND ref LIKE 'into:%' ORDER BY checked_at DESC LIMIT 1`,
+		workbenchID, pr).Scan(&ref)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("reading the base of PR %d: %w", pr, err)
+	}
+	rest := strings.TrimPrefix(ref, "into:")
+	i := strings.Index(rest, ":")
+	if i <= 0 {
+		return "", false, nil
+	}
+	return rest[:i], true, nil
 }
