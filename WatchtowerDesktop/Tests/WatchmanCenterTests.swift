@@ -23,6 +23,8 @@ private final class ScriptedWatchmanRunner: CLIRunnerProtocol, @unchecked Sendab
     private var textFiles: [String] = []
     private var afterEdit: (@Sendable () -> Void)?
     private var heldReads: [String: AsyncGate] = [:]
+    private var heldArrived: Set<String> = []
+    private var heldWaiters: [(verb: String, continuation: CheckedContinuation<Void, Never>)] = []
 
     /// The gate the next `learn`/`backtest` call waits on.
     var gate: AsyncGate { lock.withLock { currentGate } }
@@ -46,8 +48,22 @@ private final class ScriptedWatchmanRunner: CLIRunnerProtocol, @unchecked Sendab
     /// returned gate is released (a read overtaken by a newer one).
     func holdNextRead(_ verb: String) -> AsyncGate {
         let gate = AsyncGate()
-        lock.withLock { heldReads[verb] = gate }
+        lock.withLock {
+            heldReads[verb] = gate
+            heldArrived.remove(verb)
+        }
         return gate
+    }
+    /// Returns once the held read of `verb` has taken its reply and waits.
+    func untilHeld(_ verb: String) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now = lock.withLock { () -> Bool in
+                if heldArrived.contains(verb) { return true }
+                heldWaiters.append((verb, continuation))
+                return false
+            }
+            if now { continuation.resume() }
+        }
     }
     /// The `--text-file` contents each `profile set` read.
     var textFileContents: [String] { lock.withLock { textFiles } }
@@ -78,7 +94,16 @@ private final class ScriptedWatchmanRunner: CLIRunnerProtocol, @unchecked Sendab
             default: (statusJSON, statusError)
             }
         }
-        if let held = lock.withLock({ heldReads.removeValue(forKey: verb) }) { await held.wait() }
+        if let held = lock.withLock({ heldReads.removeValue(forKey: verb) }) {
+            let ready = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+                heldArrived.insert(verb)
+                let ready = heldWaiters.filter { $0.verb == verb }.map(\.continuation)
+                heldWaiters.removeAll { $0.verb == verb }
+                return ready
+            }
+            ready.forEach { $0.resume() }
+            await held.wait()
+        }
         if let error { throw error }
         return Data(json.utf8)
     }
@@ -554,17 +579,11 @@ final class WatchmanCenterTests: XCTestCase {
     func testStaleLimitsReadIsDropped() async {
         let runner = ScriptedWatchmanRunner(status: Fixtures.results)
         let center = await editingCenter(runner)
-        let limitsReads = { runner.invocations.filter { $0 == ["watchman", "limits", "list", "--json"] }.count }
-        let before = limitsReads()
         let gate = runner.holdNextRead("limits")
+        defer { gate.release() }
         let stale = Task { await center.refresh() }
-        // Until the refresh's limits read has taken its (old) reply and waits on the gate.
-        var yields = 0
-        while limitsReads() == before {
-            yields += 1
-            guard yields < 1000 else { return XCTFail("the refresh never read the limits") }
-            await Task.yield()
-        }
+        // The refresh's limits read has taken its (old) reply and waits on the gate.
+        await runner.untilHeld("limits")
         runner.onEdit { runner.setLimits(Fixtures.limits([(7, "tool", "create_jira_issue")])) }
         await center.removeLimit(id: 4)
         XCTAssertEqual(center.editing.limits?.owner.map(\.id), [7])
@@ -604,6 +623,60 @@ final class WatchmanCenterTests: XCTestCase {
         let runner = ScriptedWatchmanRunner(status: Fixtures.results)
         let center = await editingCenter(runner)
         runner.failStatus(CLIRunnerError.nonZeroExit(code: 1, stderr: "database is locked"))
+        runner.setProfile(Fixtures.profileEmpty)
+        await center.refresh()
+        XCTAssertEqual(center.readError, "database is locked")
+        XCTAssertEqual(center.editing.profiles[1]?.categories, [])
+    }
+
+    /// A profile read a newer one overtook does not count as read: the
+    /// next status read reads the profile again.
+    func testSupersededProfileReadDoesNotMarkTheWorkbenchRead() async {
+        let runner = ScriptedWatchmanRunner(status: Fixtures.results)
+        let gate = runner.holdNextRead("profile")
+        defer { gate.release() }
+        let center = WatchmanCenter(runner: runner)
+        let first = Task { await center.refresh() }
+        await runner.untilHeld("profile")
+        // A save rereads the profile and publishes first.
+        let saved = await center.saveProfile(workbench: 1, key: "design", text: "One rule.")
+        XCTAssertTrue(saved)
+        gate.release()
+        await first.value
+        let reads = { runner.invocations.filter { $0.dropFirst().first == "profile" && $0.count == 5 }.count }
+        XCTAssertEqual(reads(), 2)
+        await center.load()
+        XCTAssertEqual(reads(), 3)
+        await center.load()
+        XCTAssertEqual(reads(), 3)
+    }
+
+    /// A profile read started before a `refresh()` does not mark the
+    /// workbench read for the refresh: the refresh reads it again.
+    func testProfileReadFromBeforeARefreshDoesNotCountForIt() async {
+        let runner = ScriptedWatchmanRunner(status: Fixtures.results)
+        let profileGate = runner.holdNextRead("profile")
+        defer { profileGate.release() }
+        let center = WatchmanCenter(runner: runner)
+        let first = Task { await center.load() }
+        await runner.untilHeld("profile")
+        let statusGate = runner.holdNextRead("status")
+        defer { statusGate.release() }
+        let second = Task { await center.refresh() }
+        await runner.untilHeld("status")
+        profileGate.release()
+        await first.value
+        statusGate.release()
+        await second.value
+        XCTAssertEqual(runner.invocations.filter { $0.dropFirst().first == "profile" }.count, 2)
+    }
+
+    /// A status reply with ok == false is a failed read: the profiles of the
+    /// last status are still read.
+    func testNotOKStatusReplyStillReadsProfiles() async {
+        let runner = ScriptedWatchmanRunner(status: Fixtures.results)
+        let center = await editingCenter(runner)
+        runner.setStatus(#"{"ok": false, "error": "database is locked", "workbenches": []}"#)
         runner.setProfile(Fixtures.profileEmpty)
         await center.refresh()
         XCTAssertEqual(center.readError, "database is locked")

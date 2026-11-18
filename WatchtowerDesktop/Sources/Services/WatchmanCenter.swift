@@ -51,6 +51,9 @@ final class WatchmanCenter {
     /// the last `refresh()`; a cancelled read leaves its workbench out, so
     /// the next read retries it.
     @ObservationIgnored private var profilesAsked: Set<Int64> = []
+    /// Bumped by `refresh()`: a profile read started before it never marks
+    /// its workbench read for the new round.
+    @ObservationIgnored private var profileGeneration = 0
 
     init(
         runner: any CLIRunnerProtocol,
@@ -92,11 +95,14 @@ final class WatchmanCenter {
             let data = try await runner.run(args: ["watchman", "status", "--json"])
             let status = try JSONDecoder().decode(WatchmanStatus.self, from: data)
             guard token == readToken else { return }
-            guard status.ok else { return readFailed(Self.replyError(data) ?? "the status reply was not ok") }
-            lastStatus = status
-            daemon = status.daemon
-            readError = nil
-            apply()
+            if status.ok {
+                lastStatus = status
+                daemon = status.daemon
+                readError = nil
+                apply()
+            } else {
+                readFailed(Self.replyError(data) ?? "the status reply was not ok")
+            }
         } catch {
             guard token == readToken, !(error is CancellationError) else { return }
             readFailed(Self.message(error))
@@ -109,6 +115,7 @@ final class WatchmanCenter {
     /// profile and the limits. Opening Settings and **Retry** run it.
     func refresh() async {
         profilesAsked.removeAll()
+        profileGeneration += 1
         await load()
         await loadLimits()
     }
@@ -171,7 +178,10 @@ final class WatchmanCenter {
     /// shows its line.
     private func loadNewProfiles() async {
         for row in lastStatus?.workbenches ?? [] where row.isLearned && !profilesAsked.contains(row.workbench) {
-            if await loadProfile(workbench: row.workbench) { profilesAsked.insert(row.workbench) }
+            let generation = profileGeneration
+            if await loadProfile(workbench: row.workbench), generation == profileGeneration {
+                profilesAsked.insert(row.workbench)
+            }
         }
     }
 
@@ -190,7 +200,8 @@ final class WatchmanCenter {
         }
     }
 
-    /// False when the read was cancelled: nothing changed.
+    /// True only when this read published its profile or its error; false
+    /// when it was cancelled or a newer read overtook it.
     @discardableResult
     private func loadProfile(workbench: Int64) async -> Bool {
         let token = (profileTokens[workbench] ?? 0) + 1
@@ -198,12 +209,12 @@ final class WatchmanCenter {
         do {
             let data = try await runner.run(args: ["watchman", "profile", "--workbench", String(workbench), "--json"])
             let profile = try JSONDecoder().decode(WatchmanProfile.self, from: data)
-            guard profileTokens[workbench] == token else { return true }
+            guard profileTokens[workbench] == token else { return false }
             editing.profiles[workbench] = profile
             editing.profileReadErrors[workbench] = nil
         } catch {
             if error is CancellationError { return false }
-            guard profileTokens[workbench] == token else { return true }
+            guard profileTokens[workbench] == token else { return false }
             editing.profileReadErrors[workbench] = Self.message(error)
         }
         return true
