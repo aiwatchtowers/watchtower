@@ -74,13 +74,36 @@ extension AppState {
     /// one that was wanted but never mounted is re-asserted with its model.
     func presentBackgroundAIConsent() {
         bringMainWindowForward()
-        let outcome = backgroundAIConsentSheet.present(configUnreadable: backgroundAIConfigUnreadable) {
-            makeBackgroundAIConsentModel()
-        }
-        if case let .retry(kind, model) = outcome {
+        backgroundAIConsentSheet.dismissCatalogRetry()
+        let outcome = backgroundAIConsentSheet.present(
+            configUnreadable: backgroundAIConfigUnreadable, catalogLoaded: aiModelCatalog.isLoaded
+        ) { makeBackgroundAIConsentModel() }
+        switch outcome {
+        case let .retry(kind, model):
             backgroundAIConsentSheet.close()
             Task { @MainActor [weak self] in self?.backgroundAIConsentSheet.reopen(kind, model: model) }
+        case .needsCatalog:
+            // The plan and usage-limit lines come from the provider catalog:
+            // read it first; a read that fails shows Try again instead of a
+            // disclosure without them.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if await self.readCatalogForConsent() {
+                    self.presentBackgroundAIConsent()
+                } else {
+                    self.backgroundAIConsentSheet.showCatalogRetry()
+                }
+            }
+        case .opened, .configError, .alreadyVisible:
+            break
         }
+    }
+
+    /// One provider catalog read when none finished yet; whether the
+    /// catalog is read now.
+    func readCatalogForConsent() async -> Bool {
+        if !aiModelCatalog.isLoaded { await aiModelCatalog.load() }
+        return aiModelCatalog.isLoaded
     }
 
     /// The upgrade sheet, once per launch while the answer is due, never over
@@ -90,13 +113,29 @@ extension AppState {
     func syncBackgroundAIConsentSheet() {
         backgroundAIConsentSheet.follow(backgroundAI)
         let wasOpen = isBackgroundAIConsentPresented
+        let onboardingDone = onboarding.currentStep == .complete
         backgroundAIConsentSheet.presentIfDue(
-            onboardingDone: onboarding.currentStep == .complete,
+            onboardingDone: onboardingDone,
             state: backgroundAI,
             configUnreadable: backgroundAIConfigUnreadable,
-            releaseNotesPending: !updateService.isWhatsNewSettled || updateService.installedRelease != nil
+            releaseNotesPending: !updateService.isWhatsNewSettled || updateService.installedRelease != nil,
+            catalogLoaded: aiModelCatalog.isLoaded
         ) { makeBackgroundAIConsentModel() }
         if !wasOpen, isBackgroundAIConsentPresented { bringMainWindowForward() }
+        // Due, but the provider catalog is not read: read it, then look
+        // again; a read that fails offers Try again (never a disclosure
+        // without the plan lines).
+        if !aiModelCatalog.isLoaded, !isBackgroundAIConsentPresented,
+           BackgroundAIConsentPrompt.shouldPresent(onboardingDone: onboardingDone, state: backgroundAI) {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if await self.readCatalogForConsent() {
+                    self.syncBackgroundAIConsentSheet()
+                } else if !self.isBackgroundAIConsentPresented {
+                    self.backgroundAIConsentSheet.showCatalogRetry()
+                }
+            }
+        }
     }
 
     /// The sheet's answer was saved: re-read it, then close.
@@ -132,9 +171,10 @@ extension AppState {
         case .unreadable: return nil
         }
         let catalog = AIModelCatalog.shared
-        let setup = BackgroundAIConsentSetup.read(
+        // A key set twice in different case reads as unreadable (fail closed).
+        guard let setup = try? BackgroundAIConsentSetup.read(
             yaml, displayName: catalog.displayName, subscription: catalog.subscription, reservePeer: catalog.reservePeer(of:)
-        )
+        ) else { return nil }
         return BackgroundAIConsentModel(runner: runner, configPath: path, setup: setup)
     }
 }

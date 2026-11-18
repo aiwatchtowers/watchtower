@@ -257,6 +257,20 @@ struct ConfigServiceTests {
         #expect(clean.backgroundRunsUnreadable)
     }
 
+    /// #1886 (C2): config.yaml gone means not answered, as Go reads it; a
+    /// save from the last reload's snapshot never writes the cached answer back.
+    @Test("Save after config.yaml was deleted does not write the cached background AI answer back")
+    func testSaveAfterTheFileWentDropsTheCachedAnswer() throws {
+        let path = makeTempConfig("AI: {provider: claude, Background_Runs: allowed}\nsync: {poll_interval: 5m}\n")
+        let service = ConfigService(configPath: path)
+        #expect(service.backgroundRuns == "allowed")
+        try FileManager.default.removeItem(atPath: path)
+        try service.save()
+        let text = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(!text.lowercased().contains("background_runs"), "\(text)")
+        #expect(text.contains("poll_interval"), "the rest of the snapshot is kept")
+    }
+
     @Test("Save over a config that exists but does not parse throws and writes nothing")
     func testSaveRefusesUnparsableConfig() throws {
         let path = makeTempConfig("ai: {background_runs: allowed}\nsync: {workers: 2}\n")

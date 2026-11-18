@@ -47,6 +47,18 @@ struct BackgroundAIConsentPresenter: ViewModifier {
             } message: {
                 Text(BackgroundAIConsentCopy.configUnreadable)
             }
+            .alert(
+                BackgroundAIConsentCopy.catalogUnavailableTitle,
+                isPresented: Binding(
+                    get: { appState.backgroundAIConsentSheet.showsCatalogRetry },
+                    set: { if !$0 { appState.backgroundAIConsentSheet.dismissCatalogRetry() } }
+                )
+            ) {
+                Button(BackgroundAIConsentCopy.finishRetry) { appState.presentBackgroundAIConsent() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(BackgroundAIConsentCopy.catalogUnavailable)
+            }
             .onAppear { appState.syncBackgroundAIConsentSheet() }
             .onChange(of: inputs) { _, _ in appState.syncBackgroundAIConsentSheet() }
     }

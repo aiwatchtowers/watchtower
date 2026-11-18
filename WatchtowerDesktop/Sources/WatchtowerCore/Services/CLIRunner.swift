@@ -96,6 +96,16 @@ package enum CLIRunnerError: LocalizedError {
     /// through `runModel(args:origin:…)`.
     case modelCommandNeedsOrigin(String)
 
+    /// Go's `aiconsent.ErrPaused` text, as a refused CLI prints it.
+    package static let backgroundAIPausedText = "Background AI is paused"
+
+    /// The CLI refused a background model call because background AI is
+    /// paused (`aiconsent.ErrPaused`): no model ran.
+    package var isBackgroundAIPaused: Bool {
+        if case let .nonZeroExit(_, stderr) = self { return stderr.contains(Self.backgroundAIPausedText) }
+        return false
+    }
+
     /// Throws `modelCommandNeedsOrigin` when `args` run a model command.
     package static func refuseModelCommand(_ args: [String]) throws {
         if let path = ModelCommands.match(args) { throw modelCommandNeedsOrigin(path) }

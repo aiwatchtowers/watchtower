@@ -99,6 +99,11 @@ package enum BackgroundAIConsentCopy {
     /// Instead of the consent sheet while config.yaml cannot be read: the
     /// answer's writer refuses a file it cannot parse.
     package static let configUnreadableTitle = "Watchtower can't read config.yaml"
+    /// Instead of the consent screen while the AI provider list cannot be
+    /// read: the plan and usage limits the screen names come from it.
+    package static let catalogUnavailableTitle = "Watchtower can't read your AI providers"
+    package static let catalogUnavailable = "The background AI screen names your plan and its usage limits, "
+        + "so it waits until Watchtower can read them. Try again in a moment."
     package static let configUnreadable = "Your background AI choice can't be saved until the file is fixed."
 
     // MARK: Settings → System → AI → Background AI

@@ -14,10 +14,12 @@ struct TerminalTitleService {
     let runner: any CLIRunnerProtocol
 
     /// The origin follows the session, not the poll that asks: a title of
-    /// the owner's own session is owner work (background AI consent spec
-    /// §2.2), one of a session an automation run started is background.
+    /// the owner's own session, or of a session a run the owner triggered
+    /// started (Run now, a button, a reply), is owner work (background AI
+    /// consent spec §2.2); one of a schedule, event, sync or catch-up run's
+    /// session is background (`TerminalSession.isBackgroundRunSession`).
     static func origin(for session: TerminalSession) -> CLIOrigin {
-        session.automationRunID == nil ? .owner : .background
+        session.isBackgroundRunSession ? .background : .owner
     }
 
     func title(session: TerminalSession) async throws -> TerminalTitleResult {

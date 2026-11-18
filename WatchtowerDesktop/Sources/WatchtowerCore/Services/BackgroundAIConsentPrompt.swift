@@ -41,6 +41,10 @@ package struct BackgroundAIConsentSheet {
     /// Shown instead of the sheet while config.yaml cannot be read: the
     /// answer's writer refuses a file it cannot parse.
     package private(set) var showsConfigError = false
+    /// Shown instead of the sheet when the provider catalog could not be
+    /// read: the agent's plan and usage-limit lines come from it, and the
+    /// screen never discloses without them. Its Try again presents again.
+    package private(set) var showsCatalogRetry = false
     /// The upgrade sheet opens once per launch.
     private var upgradeShown = false
 
@@ -48,6 +52,9 @@ package struct BackgroundAIConsentSheet {
     package enum Presentation: Equatable {
         /// Opened now, or the config error is shown instead.
         case opened, configError
+        /// The provider catalog is not read yet: the caller reads it, then
+        /// presents again (or `showCatalogRetry()` when the read failed).
+        case needsCatalog
         /// Already on screen: only bring its window forward.
         case alreadyVisible
         /// Wanted but never mounted: the caller re-asserts it with
@@ -57,7 +64,8 @@ package struct BackgroundAIConsentSheet {
 
         package static func == (lhs: Self, rhs: Self) -> Bool {
             switch (lhs, rhs) {
-            case (.opened, .opened), (.configError, .configError), (.alreadyVisible, .alreadyVisible): true
+            case (.opened, .opened), (.configError, .configError), (.alreadyVisible, .alreadyVisible),
+                 (.needsCatalog, .needsCatalog): true
             case let (.retry(lk, lm), .retry(rk, rm)): lk == rk && lm === rm
             default: false
             }
@@ -67,17 +75,19 @@ package struct BackgroundAIConsentSheet {
     package init() {}
 
     /// The upgrade sheet, once per launch, when it is due, config.yaml is
-    /// readable (`makeModel` returns nil when it is not), and no release
-    /// notes window is open or still to come (`UpdateService.isWhatsNewSettled`),
-    /// so the two never stack.
+    /// readable (`makeModel` returns nil when it is not), the provider
+    /// catalog is read (`catalogLoaded`: the plan lines come from it), and no
+    /// release notes window is open or still to come
+    /// (`UpdateService.isWhatsNewSettled`), so the two never stack.
     package mutating func presentIfDue(
         onboardingDone: Bool,
         state: BackgroundAIConsent.State,
         configUnreadable: Bool,
         releaseNotesPending: Bool,
+        catalogLoaded: Bool = true,
         makeModel: () -> BackgroundAIConsentModel?
     ) {
-        guard !upgradeShown, opened == nil, !configUnreadable, !releaseNotesPending,
+        guard !upgradeShown, opened == nil, !configUnreadable, !releaseNotesPending, catalogLoaded,
               BackgroundAIConsentPrompt.shouldPresent(onboardingDone: onboardingDone, state: state),
               let made = makeModel() else { return }
         upgradeShown = true
@@ -87,10 +97,11 @@ package struct BackgroundAIConsentSheet {
     /// The owner's re-entry (Settings, Home, empty states, Automations).
     @discardableResult
     package mutating func present(
-        configUnreadable: Bool, makeModel: () -> BackgroundAIConsentModel?
+        configUnreadable: Bool, catalogLoaded: Bool = true, makeModel: () -> BackgroundAIConsentModel?
     ) -> Presentation {
         if let opened, model != nil {
             if isMounted { return .alreadyVisible }
+            guard catalogLoaded else { return .needsCatalog }
             guard !configUnreadable, let rebuilt = makeModel() else {
                 close()
                 showsConfigError = true
@@ -98,12 +109,23 @@ package struct BackgroundAIConsentSheet {
             }
             return .retry(opened, rebuilt)
         }
+        if !configUnreadable, !catalogLoaded { return .needsCatalog }
         guard !configUnreadable, let made = makeModel() else {
             showsConfigError = true
             return .configError
         }
         open(.reEntry, model: made)
         return .opened
+    }
+
+    /// The provider catalog could not be read for a sheet that was wanted:
+    /// the retry shows instead of a disclosure without the plan lines.
+    package mutating func showCatalogRetry() {
+        showsCatalogRetry = true
+    }
+
+    package mutating func dismissCatalogRetry() {
+        showsCatalogRetry = false
     }
 
     /// The sheet's content appeared.
@@ -146,10 +168,18 @@ package enum BackgroundAIConsentStepLoad {
     case pending
     case ready(BackgroundAIConsentModel)
     case unreadable
+    /// The provider catalog could not be read: the plan lines are unknown,
+    /// so the step offers Try again instead of the screen.
+    case catalogUnavailable
 
-    /// Reads (or re-reads after `.unreadable`); a no-op once `.ready`.
-    package mutating func load(_ makeModel: () -> BackgroundAIConsentModel?) {
+    /// Reads (or re-reads after `.unreadable` or `.catalogUnavailable`); a
+    /// no-op once `.ready`. `catalogLoaded` false holds the screen back.
+    package mutating func load(catalogLoaded: Bool = true, _ makeModel: () -> BackgroundAIConsentModel?) {
         if case .ready = self { return }
+        guard catalogLoaded else {
+            self = .catalogUnavailable
+            return
+        }
         self = makeModel().map(Self.ready) ?? .unreadable
     }
 }

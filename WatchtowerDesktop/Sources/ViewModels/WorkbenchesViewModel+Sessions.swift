@@ -741,7 +741,8 @@ extension WorkbenchesViewModel {
     }
 
     /// One title attempt for `sessionID` if `TerminalSessionPolicy.needsTitle`
-    /// says so. Only a failed call counts as an attempt: `written: false`
+    /// says so. Only a failed call counts as an attempt (a refusal while
+    /// background AI is paused is not one): `written: false`
     /// (no owner message yet) cost no AI call and must not use the budget up
     /// before the owner has typed; `maxNotYetTitledPolls` of those in a row
     /// pause the poll for that session until the owner switches back to it. A session with no transcript yet cannot
@@ -766,9 +767,17 @@ extension WorkbenchesViewModel {
                 notYetTitledStreak[sessionID, default: 0] += 1
             }
         } catch {
+            guard Self.countsAsTitleAttempt(error) else { return }
             titleAttempts[sessionID, default: 0] += 1
             NSLog("WorkbenchesViewModel: title for session %lld failed: %@", sessionID, error.localizedDescription)
         }
+    }
+
+    /// Whether a failed title call uses the attempt budget up. A refusal
+    /// while background AI is paused (a background run's session) ran no
+    /// model: it does not, so the title is still asked for once allowed.
+    nonisolated static func countsAsTitleAttempt(_ error: Error) -> Bool {
+        !((error as? CLIRunnerError)?.isBackgroundAIPaused ?? false)
     }
 
     // MARK: - Process exits

@@ -127,6 +127,44 @@ final class BackgroundAIConsentPromptTests: XCTestCase {
         XCTAssertTrue(sheet.showsConfigError)
     }
 
+    /// #1886 (C4): the screen never discloses without the provider catalog
+    /// (the plan and usage-limit lines come from it). Unread, the upgrade
+    /// sheet waits, a re-entry asks the caller to read it, and the caller's
+    /// failed read shows Try again; no model is made meanwhile.
+    @MainActor
+    func testNothingOpensBeforeTheCatalogIsRead() {
+        var made = 0
+        var sheet = BackgroundAIConsentSheet()
+        sheet.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false,
+                           releaseNotesPending: false, catalogLoaded: false) { made += 1; return self.model() }
+        XCTAssertNil(sheet.opened, "the upgrade sheet waits for the catalog")
+        XCTAssertEqual(sheet.present(configUnreadable: false, catalogLoaded: false) { made += 1; return self.model() },
+                       .needsCatalog)
+        XCTAssertNil(sheet.opened)
+        XCTAssertEqual(made, 0)
+        sheet.showCatalogRetry()
+        XCTAssertTrue(sheet.showsCatalogRetry)
+        sheet.dismissCatalogRetry()
+        XCTAssertEqual(sheet.present(configUnreadable: false, catalogLoaded: true) { self.model() }, .opened)
+        XCTAssertEqual(sheet.opened, .reEntry)
+
+        var upgrade = BackgroundAIConsentSheet()
+        upgrade.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false,
+                             releaseNotesPending: false, catalogLoaded: true) { self.model() }
+        XCTAssertEqual(upgrade.opened, .upgrade, "once read, the upgrade sheet opens")
+    }
+
+    /// The onboarding step offers Try again while the catalog is unread, and
+    /// shows the screen once a re-read finds it.
+    @MainActor
+    func testStepLoadWaitsForTheCatalog() {
+        var load = BackgroundAIConsentStepLoad.pending
+        load.load(catalogLoaded: false) { XCTFail("no model before the catalog"); return nil }
+        guard case .catalogUnavailable = load else { return XCTFail("catalogUnavailable") }
+        load.load(catalogLoaded: true) { self.model() }
+        guard case .ready = load else { return XCTFail("ready after the catalog read") }
+    }
+
     /// Onboarding's step re-reads config.yaml after `.unreadable` and never
     /// replaces a loaded model.
     @MainActor

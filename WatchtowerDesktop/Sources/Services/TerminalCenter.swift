@@ -509,15 +509,6 @@ final class TerminalCenter {
         }
     }
 
-    /// The path with symlinks resolved; a path that does not exist (any
-    /// more) only standardized.
-    static func resolvedPath(_ path: String) -> String {
-        let standard = URL(fileURLWithPath: path).standardizedFileURL.path
-        guard let resolved = realpath(standard, nil) else { return standard }
-        defer { free(resolved) }
-        return String(cString: resolved)
-    }
-
     func focus(_ sessionID: Int64) {
         // Every click reports here: an unchanged order is not reassigned,
         // so it notifies no observer.
@@ -1154,8 +1145,10 @@ final class TerminalCenter {
         setup: String?
     ) {
         wire(process, session: session, startedAt: now())
+        let runMarked = !droppedRunMarkers.contains(session.id)
         process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: session.id, codex: codex, setup: setup,
-                            automationRunID: droppedRunMarkers.contains(session.id) ? nil : session.automationRunID))
+                            automationRunID: runMarked ? session.automationRunID : nil,
+                            originEnvironment: runMarked ? session.agentOriginEnvironment : []))
     }
 
     /// Registers `process` as the row's current run, `.running` from

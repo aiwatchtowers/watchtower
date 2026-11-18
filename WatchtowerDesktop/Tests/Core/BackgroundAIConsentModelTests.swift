@@ -203,26 +203,36 @@ final class BackgroundAIConsentModelTests: XCTestCase {
         XCTAssertNotNil(model.errorLine)
     }
 
-    func testSetupReadsThePersistedConfig() {
+    func testSetupReadsThePersistedConfig() throws {
         let names = { (id: String) in id == "ollama" ? "Ollama / Local" : id }
         let peer = { (id: String) -> String? in id == "claude" ? "codex" : id == "codex" ? "claude" : nil }
         let catalog = AIModelCatalog(providers: ProviderCatalogFixture.providers())
         let plans = catalog.subscription
-        let empty = BackgroundAIConsentSetup.read([:], displayName: names, subscription: plans, reservePeer: peer)
+        let empty = try BackgroundAIConsentSetup.read([:], displayName: names, subscription: plans, reservePeer: peer)
         XCTAssertEqual(empty, BackgroundAIConsentSetup(agent: .claude, reserve: nil, pollMinutes: 15, backfillDays: 30))
 
-        let codex = BackgroundAIConsentSetup.read(
+        let codex = try BackgroundAIConsentSetup.read(
             ["ai": ["provider": "codex", "fallback": ["enabled": true]], "sync": ["poll_interval": "5m", "backfill_days": 7]],
             displayName: names, subscription: plans, reservePeer: peer
         )
         XCTAssertEqual(codex, BackgroundAIConsentSetup(agent: .codex, reserve: .claude, pollMinutes: 5, backfillDays: 7))
 
-        let off = BackgroundAIConsentSetup.read(
+        let off = try BackgroundAIConsentSetup.read(
             ["ai": ["provider": "ollama", "fallback": ["enabled": false, "provider": "codex"]]],
             displayName: names, subscription: plans, reservePeer: peer
         )
         XCTAssertEqual(off.agent, .other(name: "Ollama / Local"))
         XCTAssertNil(off.reserve, "no reserve line while the automatic reserve is off")
+
+        // Keys in any case, as Go reads them (#1886, C3).
+        let upper = try BackgroundAIConsentSetup.read(
+            ["AI": ["Provider": "codex", "Fallback": ["Enabled": true]], "Sync": ["Poll_Interval": "5m", "Backfill_Days": 7]],
+            displayName: names, subscription: plans, reservePeer: peer
+        )
+        XCTAssertEqual(upper, codex)
+        XCTAssertThrowsError(try BackgroundAIConsentSetup.read(
+            ["AI": ["provider": "codex"], "ai": ["provider": "claude"]], displayName: names, subscription: plans, reservePeer: peer
+        )) { XCTAssertEqual($0 as? BackgroundAIConsentSetup.AmbiguousKey, .init(key: "ai")) }
     }
 
     func testWhatRunsUsesTheConfiguredCadence() {

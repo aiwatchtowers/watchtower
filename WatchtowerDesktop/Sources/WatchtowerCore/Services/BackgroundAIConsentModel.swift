@@ -136,32 +136,48 @@ package struct BackgroundAIConsentSetup: Equatable, Sendable {
     package let pollMinutes: Int
     package let backfillDays: Int
 
-    /// `yaml` is the parsed file (empty when absent or unreadable).
-    /// `displayName`, `subscription` and `reservePeer` come from the
-    /// provider catalog.
+    /// A key the file holds more than once in different case (`AI:` and
+    /// `ai:`): Go and the Desktop could read different values, so the
+    /// screen shows the config error instead (fail closed, #1886).
+    package struct AmbiguousKey: Error, Equatable {
+        package let key: String
+    }
+
+    /// `yaml` is the parsed file (empty when absent or unreadable). Keys
+    /// match without regard to case, as Go's viper and `aiconsent` read them
+    /// (`ConfigService.foldKey`'s twin); a key set twice in different case
+    /// throws `AmbiguousKey`. `displayName`, `subscription` and
+    /// `reservePeer` come from the provider catalog.
     package static func read(
         _ yaml: [String: Any],
         displayName: (String) -> String,
         subscription: (String) -> AIModelCatalog.Subscription?,
         reservePeer: (String) -> String?
-    ) -> Self {
-        let ai = yaml["ai"] as? [String: Any] ?? [:]
-        let sync = yaml["sync"] as? [String: Any] ?? [:]
-        let fallback = ai["fallback"] as? [String: Any] ?? [:]
-        let provider = (ai["provider"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "claude"
+    ) throws -> Self {
+        let ai = try fold(yaml, "ai") as? [String: Any] ?? [:]
+        let sync = try fold(yaml, "sync") as? [String: Any] ?? [:]
+        let fallback = try fold(ai, "fallback") as? [String: Any] ?? [:]
+        let provider = (try fold(ai, "provider") as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "claude"
         func agent(_ id: String) -> BackgroundAIConsentCopy.Agent {
             BackgroundAIConsentCopy.Agent(provider: id, displayName: displayName(id), subscription: subscription)
         }
-        let reserveID = (fallback["enabled"] as? Bool ?? false)
-            ? (fallback["provider"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? reservePeer(provider)
+        let reserveID = (try fold(fallback, "enabled") as? Bool ?? false)
+            ? (try fold(fallback, "provider") as? String).flatMap { $0.isEmpty ? nil : $0 } ?? reservePeer(provider)
             : nil
-        let poll = sync["poll_interval"].map { "\($0)" }
+        let poll = try fold(sync, "poll_interval").map { "\($0)" }
         return Self(
             agent: agent(provider),
             reserve: reserveID.map { agent($0) },
             pollMinutes: FeatureReadiness.parsePollInterval(poll),
-            backfillDays: sync["backfill_days"] as? Int ?? BackgroundAIConsentModel.defaultBackfillDays
+            backfillDays: try fold(sync, "backfill_days") as? Int ?? BackgroundAIConsentModel.defaultBackfillDays
         )
+    }
+
+    /// `m[key]` matched without regard to case; nil when absent.
+    private static func fold(_ m: [String: Any], _ key: String) throws -> Any? {
+        let matches = m.keys.filter { $0.caseInsensitiveCompare(key) == .orderedSame }
+        guard matches.count <= 1 else { throw AmbiguousKey(key: key) }
+        return matches.first.flatMap { m[$0] }
     }
 }
 

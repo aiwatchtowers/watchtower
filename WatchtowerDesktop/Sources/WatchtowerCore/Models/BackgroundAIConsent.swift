@@ -6,6 +6,20 @@ import Foundation
 /// it by the shared fixture `internal/aiconsent/testdata/consent_cases.json`
 /// (BGAI-03).
 package enum BackgroundAIConsent {
+    /// The automation run triggers that are background work (spec §2.2): the
+    /// twin of Go's `aiconsent.BackgroundTrigger`. Every other trigger
+    /// (`manual`, `button`, `dry_run`, `reply`) is the owner's gesture.
+    package static let backgroundRunTriggers: Set<String> = ["schedule", "catch_up", "event", "sync"]
+
+    /// The env a process that serves admitted background unit `unit` passes
+    /// to its children (Go `aiconsent.ChildEnv` of an admitted ctx).
+    package static func admittedEnvironment(unit: String) -> [String] {
+        ["\(CLIOrigin.environmentKey)=background", "\(admittedEnvironmentKey)=\(unit)"]
+    }
+
+    /// Go's `aiconsent.EnvAdmitted`.
+    package static let admittedEnvironmentKey = "WATCHTOWER_AI_ADMITTED"
+
     package enum Effective: String, Sendable {
         case allowed, paused
     }

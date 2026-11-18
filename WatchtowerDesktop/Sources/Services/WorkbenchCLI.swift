@@ -1104,9 +1104,10 @@ struct WorkbenchCLI {
     /// `WorkbenchCLIError.agentNotFound`; a call past `timeout` seconds is
     /// ended and thrown as the runner's timeout.
     func sessionStart(_ r: SessionStartRequest, timeout: TimeInterval = 30) async throws -> SessionStartResult {
-        // Owner origin: a start the owner asked for. One carrying
-        // `--automation-run` was admitted with its run (spec §2.2), and Go
-        // reads the run's trigger from that marker.
+        // Owner origin: this call starts no model. A session carrying
+        // `--automation-run` takes its run's origin in Go
+        // (`sessionstart.originEnv`): a background run's agent is admitted
+        // as `run:<id>`, an owner-triggered run's carries none (spec §2.2).
         let data: Data
         do {
             if let stdin = r.stdin {

@@ -688,19 +688,33 @@ final class ConfigService {
         }
     }
 
+    /// `yaml` without the background AI answer (`ai.background_runs`, any
+    /// key case): config.yaml gone means not answered, as Go reads it
+    /// (#1886), so a save from the last reload's snapshot never writes a
+    /// cached answer back. An ambiguous section is left whole; the write
+    /// then refuses it as it would the file.
+    static func withoutBackgroundRuns(_ yaml: [String: Any]) -> [String: Any] {
+        guard let aiKey = try? foldKey(yaml, "ai"), var ai = yaml[aiKey] as? [String: Any],
+              let key = try? foldKey(ai, "background_runs") else { return yaml }
+        var out = yaml
+        ai.removeValue(forKey: key)
+        out[aiKey] = ai
+        return out
+    }
+
     /// Re-reads the file inside the config write lock (`ConfigFileLock`),
     /// lets `change` edit it and writes the whole file through
     /// `ConfigFileWriter` (owner-only: it holds tokens). Returns what was
     /// written. Reading inside the lock, not the `rawYAML` snapshot of the
     /// last reload(), keeps the sections another process wrote meanwhile
     /// (`watchtower jira login`, `ai background allow`, …); `rawYAML` is the
-    /// fallback only when the file is gone. A file that exists but cannot be
+    /// fallback only when the file is gone, without `ai.background_runs`. A file that exists but cannot be
     /// read or parsed throws `ConfigUnreadableError` and is not written: a
     /// snapshot would drop the keys only the file holds.
     private func writeLocked(_ change: (inout [String: Any]) throws -> Void) throws -> [String: Any] {
         var written: [String: Any] = [:]
         try fileAccess.withLock(configPath) { token in
-            var yaml = try lockedYAMLOnDisk() ?? rawYAML
+            var yaml = try lockedYAMLOnDisk() ?? Self.withoutBackgroundRuns(rawYAML)
             try change(&yaml)
             try fileAccess.writeConfigFile(try Yams.dump(object: yaml, allowUnicode: true), configPath, token)
             written = yaml

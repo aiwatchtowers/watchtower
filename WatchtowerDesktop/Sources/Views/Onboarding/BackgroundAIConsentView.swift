@@ -141,6 +141,20 @@ struct BackgroundAIConsentStep: View {
                 Color.clear.frame(width: 1, height: 1)
             case .ready(let model):
                 BackgroundAIConsentView(model: model, host: .step(onBack: onBack), onAnswered: onAnswered)
+            case .catalogUnavailable:
+                VStack(alignment: .leading, spacing: Spacing.medium) {
+                    Text(BackgroundAIConsentCopy.catalogUnavailableTitle).font(.title2.weight(.semibold))
+                    Text(BackgroundAIConsentCopy.catalogUnavailable).foregroundStyle(Tone.error)
+                    HStack(spacing: Spacing.regular) {
+                        Button(BackgroundAIConsentCopy.back, action: onBack).buttonStyle(.kitQuiet)
+                        Spacer()
+                        Button(BackgroundAIConsentCopy.finishRetry) {
+                            Task { await loadStep() }
+                        }
+                        .buttonStyle(.kitPrimary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             case .unreadable:
                 VStack(alignment: .leading, spacing: Spacing.medium) {
                     Text(BackgroundAIConsentCopy.configUnreadableTitle).font(.title2.weight(.semibold))
@@ -150,7 +164,7 @@ struct BackgroundAIConsentStep: View {
                         Spacer()
                         // Re-reads config.yaml once the owner fixed it.
                         Button(BackgroundAIConsentCopy.finishRetry) {
-                            load.load { appState.makeBackgroundAIConsentModel() }
+                            Task { await loadStep() }
                         }
                         .buttonStyle(.kitPrimary)
                     }
@@ -159,12 +173,16 @@ struct BackgroundAIConsentStep: View {
             }
         }
         .task {
-            // The agent's plan copy comes from the provider catalog: a first
-            // run that reaches this step before the launch read finished
-            // waits for one read (a missing CLI fails it quickly).
-            if !appState.aiModelCatalog.isLoaded { await appState.aiModelCatalog.load() }
             guard case .pending = load else { return }
-            load.load { appState.makeBackgroundAIConsentModel() }
+            await loadStep()
         }
+    }
+
+    /// The agent's plan copy comes from the provider catalog: a first run
+    /// that reaches this step before the launch read finished waits for one
+    /// read; a read that fails offers Try again instead of the screen.
+    private func loadStep() async {
+        let catalogLoaded = await appState.readCatalogForConsent()
+        load.load(catalogLoaded: catalogLoaded) { appState.makeBackgroundAIConsentModel() }
     }
 }

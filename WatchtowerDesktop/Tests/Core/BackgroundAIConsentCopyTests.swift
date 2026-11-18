@@ -116,4 +116,57 @@ final class BackgroundAIConsentCopyTests: XCTestCase {
         XCTAssertEqual(Copy.configUnreadable, "Your background AI choice can't be saved until the file is fixed.")
         XCTAssertEqual(Copy.finishRetry, "Try again")
     }
+
+    /// One case of `internal/aiconsent/testdata/consent_text.json`, the
+    /// consent text the CLI's `ai background allow` is pinned to too
+    /// (Go `TestAIBackground_ConsentTextSharedGolden`).
+    private struct Golden: Decodable {
+        let agent, reserve: String
+        let pollMinutes, backfillDays: Int
+        let title, intro, plan: String
+        let reserveLine: String?
+        let whatRunsTitle: String
+        let whatRuns: [String]
+        let userStarted, changeLater: String
+
+        enum CodingKeys: String, CodingKey {
+            case agent, reserve, title, intro, plan
+            case pollMinutes = "poll_minutes"
+            case backfillDays = "backfill_days"
+            case reserveLine = "reserve_line"
+            case whatRunsTitle = "what_runs_title"
+            case whatRuns = "what_runs"
+            case userStarted = "user_started"
+            case changeLater = "change_later"
+        }
+    }
+
+    /// The Desktop's screen says what the CLI says (Go↔Swift twins, spec
+    /// §5.1), with the agents named by the Go-written provider catalog.
+    @MainActor
+    func testTheScreenMatchesTheSharedGolden() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Core
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("internal/aiconsent/testdata/consent_text.json")
+        let cases = try JSONDecoder().decode([Golden].self, from: Data(contentsOf: url))
+        XCTAssertFalse(cases.isEmpty)
+        let catalog = AIModelCatalog(providers: ProviderCatalogFixture.providers())
+        func agent(_ id: String) -> Copy.Agent {
+            Copy.Agent(provider: id, displayName: catalog.displayName(id), subscription: catalog.subscription)
+        }
+        for c in cases {
+            let name = "\(c.agent)/\(c.reserve)"
+            XCTAssertEqual(Copy.title, c.title, name)
+            XCTAssertEqual(Copy.intro(agent(c.agent)), c.intro, name)
+            XCTAssertEqual(Copy.plan(agent(c.agent)), c.plan, name)
+            XCTAssertEqual(c.reserve.isEmpty ? nil : Copy.reserve(from: agent(c.agent), to: agent(c.reserve)), c.reserveLine, name)
+            XCTAssertEqual(Copy.whatRunsTitle, c.whatRunsTitle, name)
+            XCTAssertEqual(Copy.whatRuns(pollMinutes: c.pollMinutes, backfillDays: c.backfillDays), c.whatRuns, name)
+            XCTAssertEqual(Copy.userStarted, c.userStarted, name)
+            XCTAssertEqual(Copy.changeLater, c.changeLater, name)
+        }
+    }
 }
