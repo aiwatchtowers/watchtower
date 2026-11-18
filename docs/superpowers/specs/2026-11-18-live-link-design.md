@@ -1,207 +1,155 @@
-# Live link — the phone talks to its tower over the socket, replication stays underneath
+# Live link — one write over the socket, the relay stores and delivers it in the same hop
 
-**Board:** #1992. **Research:** [2026-11-18-relay-latency-research.md](2026-11-18-relay-latency-research.md) (approved, ask #1526).
+**Board:** #1992 / #2002. **Research:** [2026-11-18-relay-latency-research.md](2026-11-18-relay-latency-research.md) (approved, ask #1526).
 **Notes:** `docs/features/go-hub.md`, `docs/features/relay-client.md`, `docs/features/mobile-companion.md`; relay contract
 in the relay repository (`proto/relay/v1/relay.proto`, design `docs/superpowers/specs/2026-10-28-relay-design.md`).
 
 ## Why
 
-Every phone ↔ tower exchange today is replication: the phone writes a record into its mailbox zone, the hub reads it,
-applies it, writes an echo, re-publishes slice records, and the phone reads them back — five storage round trips and
-an HTTPS request for each (the phone sends every op over HTTPS, the socket only carries change notices). After the
-app wakes, a socket iOS killed is not noticed for up to 40 s and every first op pays a new TLS handshake. The owner:
-creating a target "takes long", waking the app should sync "at once, not in seconds" — the whole thing must feel
-instant (ask #1526).
+Every phone ↔ tower exchange is replication through relay zones, and the phone sends every op as its own HTTPS request
+(the socket carries only change notices, `HostedRelayClient.post`). One action costs: phone save → notice → hub read →
+apply → echo save → notice → phone read → slice save → notice → phone read. After the app wakes, a socket iOS killed
+is not noticed for up to 40 s, and each first op pays a new TLS handshake. The owner: creating a target "takes long",
+waking must sync "at once, not in seconds", the whole thing must feel instant (ask #1526).
 
-## Goal
+## Is a socket enough for a responsive UI? (ask #1527)
 
-| Measure (good network, tower online) | Today (live install, see research) | Target |
+No — alone it is not. What the owner feels is the sum of four parts, and the socket fixes only two:
+
+| Part | Today | Fixed by |
 |---|---|---|
-| tap → change visible on the phone | seconds (p50 several s) | p50 ≤ 300 ms, p90 ≤ 800 ms |
-| app becomes active → replica fresh | up to 40–60 s with a dead socket | p50 ≤ 700 ms, p90 ≤ 1.5 s |
-| Mac-side change → visible on an open phone | seconds | p50 ≤ 300 ms |
+| The phone shows the change only after the round trip | yes, for everything but answers | **R5 optimistic apply** — the change shows at tap time (0 ms) |
+| Extra round trips (HTTPS per op, a `changes` read after every notice) | 2–4 per action | **R1 + R2** — ops over the socket, records delivered inside the event |
+| The hub's own queue and handlers (`read_applied` p50 ~1 s on the live install) | ~1 s | **R4 hub event lane** — a socket does nothing for it |
+| Relay hops (phone → Cloudflare edge → device DOs → peer) | not measured — the external probe has never run (`PROBE_URL_STAGING` unset in the relay repo) | **R7** measures it first; estimate 20–60 ms per one-way hop in one region |
 
-## Two modes
-
-1. **Live** — while the phone's app is active and both it and the tower hold a relay socket: sealed frames go
-   device → relay → device, nothing stored. Actions, their results and slice changes travel this way.
-2. **Replication** — the zones as today. Always on: it is the durable copy, the offline path, the background (push)
-   path, and the only path for CloudKit towers and phones without a relay subscription.
-
-Live is an accelerator over replication, never a replacement: anything sent live is also written to its zone, so a
-lost frame costs speed, never data.
+Estimated after the change, good network, tower online: tap → visible **0 ms** (optimistic), tap → confirmed by the
+tower ~150–300 ms (two one-way hops each way + apply). R7 runs before tuning anything, so the estimate is checked, not
+trusted.
 
 ## Design
 
-### R1. Relay: a direct frame (relay repository change)
+### R1. The relay multiplexes: one write, stored and delivered in the same hop (relay repository change)
 
-- New op `Direct { to_device, payload ≤ 64 KiB }` → answer `DirectResult { delivered }`; new event
-  `Direct { from_device, payload }` on the recipient's socket.
-- Allowed only between a phone and a Mac in one of its slots (the relay already knows the pairs: slots and hub
-  readers); anything else `FORBIDDEN`. `delivered = false` (`PEER_OFFLINE`-like, not an error) when the recipient
-  holds no socket. Nothing is stored; no push is sent for it.
-- Counts against the device's 50 ops/s like any op. The payload is opaque (sealed by the devices).
-- Implementation: the sender's device Durable Object forwards to the recipient's device DO, which writes to its
-  socket. Advertised through a protocol capability in `HelloOk`; a client that does not see it stays replication-only.
+The owner's format (ask #1527): a client writes once over its socket; the relay persists the write **and** pushes the
+written records to every subscribed peer socket in the same step. Clients never send anything twice.
+
+- Today `ZoneChanged` carries a record inline only when the save wrote exactly one record of ≤ 64 KiB. New: it
+  carries **every record of the save** (`repeated Record records`), up to a 256 KiB frame budget; a save larger than
+  that is split into several events by record, and only a single record over the budget goes without its body (the
+  receiver reads it with `changes`, as today).
+- The event goes out after the write is durable, so a delivered record is always a stored one: there is one copy of
+  the truth, the zone, and one order, its `seq`. No second path, no tie-break between copies.
+- Old field `record` kept for one release for old clients; a protocol capability in `HelloOk` tells a client the new
+  field is there.
+- No new op: "direct" is this delivery mode of the existing `save`.
 
 ### R2. Ops over the socket
 
-Phone and hub send every op over the open socket (`HostedRelayConnection.send` already exists) and fall back to HTTPS
-only without one. No TLS handshake per op, one connection to keep warm.
+Phone and hub send every op over the open socket (the relay already serves `Request` frames on it,
+`worker/src/do/device/ws.ts`; the Kit has `HostedRelayConnection.send`) and use HTTPS only without a socket.
 
-### R3. Live frames
+### R3. Receiving inline records
 
-Sealed by `secure.Sealer` (Go) / `SecureTransport` (Kit) with the current epoch's pair keys, as a new envelope kind
-`live`. **Replay:** each live session has a random 128-bit `live_session` id the phone picks for its `hello` and the
-hub echoes in `welcome`; every frame's authenticated data is `sender ‖ recipient ‖ live_session ‖ direction ‖ counter`,
-the counter grows by one per frame and direction. A frame whose `live_session` is not the receiver's current one, or
-whose counter is not above the last one accepted, is dropped. A frame from an earlier session therefore never
-verifies in a later one, although the epoch key is the same. Frame kinds:
+Both sides apply the records of an event without a read when the event continues their cursor (`seq` = token + count
+of records, the same rule as the hub's `PullEvent` today, `relay/transport.go:736`); anything else is a `changes` read
+of that zone, as today. The phone gains this path (today it ignores the inline record and always reads,
+`HostedRelayTransport.swift:281-285`).
 
-| Frame | From | Content |
-|---|---|---|
-| `action` | phone | the exact sealed action the mailbox gets (same action id and `action_seq`) |
-| `result` | hub | action id, outcome (`applied` / `refused` / `held`), and the slice records the apply changed |
-| `records` | hub | slice records (name, kind, payload, `pub_seq`), chunked to fit 64 KiB |
-| `hello` | phone | `live_session`, the hub `generation` and highest `pub_seq` it has from this hub, its live protocol version |
-| `welcome` | hub | `live_session`, the hub's `generation` and current `pub_seq` (sent after the catch-up `records`) |
-| `keepalive` / `bye` | phone | every 20 s while the app is active / when it resigns active (best effort) |
+### R4. Hub event lane
 
-### R4. Actions: write-through
+Mailbox events are handled on their own lane, not queued behind the backstop pass, link upkeep or housekeeping in
+`work()` (`runtime.go:731-772`); the lane holds the processor only for the apply transaction. Right after an apply
+commits: the nudge (before the echo flush), and the echo + nudged slice kinds saved in one save where they share a
+zone. A `PublishNow` arriving during a running cycle is taken between kinds instead of after the cycle.
 
-The phone sends the `action` frame and, in parallel, saves the same record into its mailbox as today. The hub applies
-whichever copy it reads first through the one `actions.Processor` (ledger exactly-once by `action_seq`); the second
-copy is a duplicate and settles as today. Right after the apply commits the hub sends `result` with the changed
-records of the nudged kinds, before any echo is written. The phone applies them to its replica at once and drops the
-pending row. No `result` within 1.5 s → the phone keeps the "Waiting for your Mac" chip as today and replication
-finishes the job. The 1.5 s is a starting value (a named constant), tuned from R9's `live_ms` numbers.
+### R5. Optimistic apply on the phone
 
-Ops per action: a live action costs two phone ops (the `Direct` and the mailbox `Save`) instead of one. The hub's
-side is unchanged (its `result` replaces nothing: one `Direct` per phone). At tap rates (a few per second at most)
-that stays far under the relay's 50 ops/s per device.
+At tap time the phone applies the action's expected effect to its replica as a **pending overlay** (a new target
+appears, a moved card moves, an answered ask leaves the list), marked pending. The overlay row is dropped when either
+(a) the tower's echo for that action arrives — then the slice record delivered with or after it shows the real
+value — or (b) the echo says refused / the action fails — then the overlay is removed and the existing error chip
+shows. Writers of what a screen shows: the overlay (phone) and the replica (hub's records); the replica wins as soon
+as the echo for the action is in. An overlay older than 10 min without an echo is dropped and the "Waiting for your
+Mac" chip stays (an offline tower).
 
-The hub handles `Direct` events on their own lane, not queued behind the backstop pass, link upkeep or housekeeping;
-the lane holds the processor only for the apply transaction.
+Kinds covered in v1: board create / move / priority / status, ask answer (today's `AppliedAnswer` folds into it),
+comment. Other kinds keep today's chip.
 
-### R5. Live slice push
-
-Every publish cycle hands each changed record to the live fan-out before its `Save`: phones with a live session get
-it as a `records` frame. A phone's live session is open from its `hello` until a `bye`, a `Direct` answered
-`delivered = false`, or 45 s without any frame from it (it sends `keepalive` every 20 s while active) — so a socket
-iOS killed while the relay still counts it open stops the fan-out within 45 s. A frame sent into such a socket is
-lost harmlessly: replication carries the same record. So a change made on the Mac,
-by an agent or by another phone reaches an open phone without waiting for the save and the read.
-
-### R6. `pub_seq` — which copy wins
-
-The hub stamps each published record with `(generation, pub_seq)`: `generation` is a random id created together with
-the sidecar (a new one whenever the sidecar is created anew, e.g. lost or reset), `pub_seq` a counter that only grows
-within a generation (kept in the sidecar, survives restarts and transport switches). The sealed slice payload carries
-both on both paths. The phone keeps the pair per record and per hub:
-
-- same `generation`: apply only a higher `pub_seq`; equal = same content;
-- a different `generation` (from `welcome` or from any record): the hub was reset — the phone forgets every stored
-  `pub_seq` of that hub, adopts the new generation and applies the record; the full catch-up that follows (its `hello`
-  carried the old generation, so the hub sends everything) overwrites the rest;
-- a record with no `pub_seq` (an old hub): applied as today, by replication order; such a hub never answers `hello`,
-  so no live record competes with it. Writers of a phone's replica row: the live path and the replication path, both fed by the one hub
-publisher; the higher `pub_seq` wins, whichever path brings it.
-
-### R7. Wake
+### R6. Wake
 
 When the app becomes active:
 
-1. The screens render from the local replica at once (as today).
-2. The socket is pinged; if no pong comes within 300 ms a second socket is dialled in parallel and whichever is
-   ready first carries on (the other is closed). A slow network therefore costs at most one extra dial, never a
-   wait. The session token is reused while valid (login only on `UNAUTHENTICATED`). 300 ms is a starting value
-   (named constant), tuned from R9's `wake_ms`.
-3. The phone sends `hello` to each of its relay towers; each answers with `records` for every record with a higher
-   `pub_seq` (current kinds first: asks, sessions, Now), then `welcome`.
-4. In parallel the replication catch-up reads its zones over the socket, as today.
+1. Screens render from the local replica at once (as today).
+2. The socket is pinged; if no pong comes within 300 ms a second socket is dialled in parallel and whichever is ready
+   first carries on (the other is closed): a slow network costs at most an extra dial, never a wait. The session
+   token is reused while valid. 300 ms is a starting value (named constant), tuned from R7's `wake_ms`.
+3. The `changes` reads of all its zones go out at once over that socket, pipelined, current kinds' zones first.
 
-A tower that is offline or on CloudKit answers nothing: the phone stays on replication and shows the existing
-freshness line.
+### R7. Measurements first
+
+- Turn the relay's external probe on for staging (set `PROBE_URL_STAGING`) and run `relayprobe` from the Mac's network
+  for a day: one-way delivery p50/p90 for `data` and `mailbox`.
+- Hub: `nudge_saved` (cycle end for a nudged kind, written or not), `event_read` (event arrival → mailbox read),
+  per-record `readAt`, by action kind, in `hub diagnostics`.
+- Phone: `wake_ms` (became active → all zones read) and `confirm_ms` (tap → echo applied) next to the existing
+  `answer_ms`/`result_ms`, in the phone's latency rows and log. No screen changes.
 
 ### R8. Towers
 
-Each tower (Mac or headless server, up to 4 per phone) is its own live peer over the phone's one socket. CloudKit
-towers have no live mode. Nothing changes for phones without a relay subscription.
-
-### R9. Measurements
-
-`hub diagnostics` gains `live_result` (direct frame read → result sent) and `live_fanout` (record changed → frame
-sent); the phone's latency rows gain `live_ms` (action sent → result applied) and `wake_ms` (became active →
-`welcome` applied). No screen changes in this spec: the numbers are read with `hub diagnostics` and in the phone's
-log.
+Each tower (Mac or headless server, up to 4 per phone) is its own set of zones over the phone's one socket. CloudKit
+towers keep replication as it is, plus R5 (optimistic apply works on any transport).
 
 ## Failure paths
 
 | Case | What happens | Test |
 |---|---|---|
-| Hub gets `action`, dies before apply | the mailbox copy is applied after restart; the phone shows the waiting chip until then | hub restart between read and apply |
-| Hub applies, `result` lost (socket drops) | the echo and slice arrive by replication; ledger has it once | drop the socket after apply |
-| Both copies arrive | second one is a duplicate, one ledger row | both orders |
-| Live record older than the replicated one | lower `pub_seq` ignored | out-of-order delivery |
-| Socket dies mid catch-up | records applied so far stay (each atomic); redial sends `hello` again | cut after N frames |
-| Hub restarts | `generation` and `pub_seq` read back from the sidecar; nothing changes for the phone | restart |
-| Sidecar lost or reset | new `generation`; the phone drops that hub's stored `pub_seq`s, takes the full catch-up and every later record with the low new numbers | wiped sidecar: catch-up applied, then a new record with `pub_seq` 1 applied |
-| A frame replayed from an earlier live session | `live_session` differs → dropped | replay across sessions; replay within a session |
-| Phone socket dead, relay still counts it open | live session closes after 45 s without a frame; frames lost meanwhile come by replication | no keepalive for 45 s |
-| New phone, old hub (no `pub_seq`, no `welcome`) | no live mode, records applied as today | old-hub fixture |
-| Old phone, new hub | no `hello` → no live; the extra payload fields are ignored | old-phone decoder fixture |
-| Relay without `Direct` | capability missing → replication only | old-relay stub |
-| Epoch rotation mid-session | frames under the old epoch refused, the phone re-sends `hello` after it has the new keybox | rotate during a session |
-| App backgrounded mid-send | write-through mailbox copy still goes out (or on the next foreground) | background during send |
-
-## Out of scope (v1)
-
-- Direct LAN connection (Bonjour) — the relay hop is tens of ms; revisit after R9's numbers.
-- Live terminal streams.
-- Screen changes (Diagnostics lines come with a separate spec and mockups).
+| Socket drops after the save is sent, before its answer | the save is resent with its precondition; a conflict with its own record is success (as today) | drop between send and answer |
+| Event with inline records lost (socket died) | the next event or the wake read finds a gap and reads `changes` | gap after a lost event |
+| Event arrives before the save's answer | records applied by `seq`; the answer then only confirms | event-before-answer order |
+| Hub dies after reading the action, before apply | applied after restart from the mailbox (exactly-once ledger); the phone's overlay stays pending meanwhile | restart between read and apply |
+| Action refused by the hub | overlay removed, error chip shown | refused echo |
+| Tower offline for long | overlay dropped after 10 min, waiting chip stays; the action applies when the tower is back | 10-min expiry |
+| Save larger than the frame budget | split by record; an oversized record has no body, receiver reads it | 300 KiB save; one 300 KiB record |
+| Old relay (no capability) | single-record inline only, as today; everything still works | old-relay stub |
+| Old phone, new relay | reads the old `record` field, as today | old-client fixture |
+| App backgrounded mid-wake read | the next wake reads from the stored cursor | background during read |
 
 ## Rollout
 
-The paths that change together: the relay (`Direct` + capability), the Go hub (`internal/hub/secure`, `slices`,
-`actions`, `transport/relay`, sidecar migration for `generation`/`pub_seq`), the Kit (`WatchtowerRelayProto` re-pin,
-`WatchtowerHostedRelay`, `WatchtowerSync` Secure/Replica/Relay) and the phone app (`HubSession` wake). Order:
+Paths that change together: relay (`ZoneChanged.records`, capability), Go hub (`internal/hub/transport/relay`,
+`actions`, `slices`, `runtime`), Kit (`WatchtowerRelayProto` re-pin, `WatchtowerHostedRelay`, `WatchtowerSync`
+Replica/Relay), phone app (`HubSession` wake, overlays). Order: relay (R1, R2 already works) → hub (R3, R4) → phone
+(R2, R3, R5, R6). Each side checks the capability; any mix of versions works at today's speed.
 
-1. Relay ships `Direct` behind the capability flag (no client uses it yet).
-2. Hub ships `generation`/`pub_seq` in slices and answers `hello` (old phones ignore both).
-3. Phone ships live mode; it turns on per tower only when the relay advertises the capability and the tower answers
-   `welcome` with a live protocol version it knows.
+## Out of scope (v1)
 
-Any mix of versions falls back to replication (failure table above).
+- Direct LAN connection (Bonjour) — revisit after R7's numbers.
+- Ephemeral (unstored) frames — nothing in v1 needs them.
+- Live terminal streams. Screen changes (beyond overlays on existing screens).
 
-## Contract changes (need the owner's approval)
-
-- Relay protocol: the `Direct` op and event, the capability flag (relay repository; both clients re-pin the proto).
-- Slice payload: `pub_seq` added (the phone and the hub must ship together; old phones ignore the field).
-- The phone writes each action twice (live + mailbox) — double ops per action, inside the relay's limits.
-
-## What happens to the research plan's stages
+## What happens to the research plan's stages (ask #1527: "Да, так")
 
 | Stage | Fate |
 |---|---|
-| 1 measurements | kept for the replication path; the live part is R9 |
-| 2 hub fast path | the event lane is R4; nudge-before-flush, cycle pre-emption and the backoff fix — owner's call, ask #1527 |
-| 3 runners on request | kept — a session report still needs its runner |
-| 4 inline records | owner's call, ask #1527: still speeds the non-live path (background, CloudKit-free offline catch-up) |
-| 5 foreground redial | part of R7 |
-| 6 board overlay | owner's call, ask #1527: still needed when `result` does not come (offline tower, CloudKit) |
+| 1 measurements | R7 |
+| 2 hub fast path | R4 keeps the event lane, the early nudge and the in-cycle `PublishNow`; the rest dropped |
+| 3 runners on request | kept, separate target |
+| 4 inline records | dropped as a separate stage; its effect is R1 + R3 |
+| 5 foreground redial | R6 |
+| 6 board overlay | dropped as a separate stage; R5 is the general version (see Decisions) |
 | 7 ordered actions skip the plain queue | kept (low) |
 | 8 error storms | kept |
 
 ## Decisions
 
-- Two modes: a live socket for the conversation, replication underneath — ask #1526 (owner's note).
-- Wake must sync at once, not in seconds — ask #1526.
-- Live rides the relay socket with a new `Direct` op rather than a new server or LAN — proposed by the agent, owner's
-  answer pending in ask #1527.
-- Write-through of actions (live + mailbox) — proposed by the agent, ask #1527.
-- `(generation, pub_seq)` decides between the two copies — proposed by the agent, ask #1527.
-- Fate of research stages 2, 4 and 6 — proposed by the agent, ask #1527.
-- Replay bound to `live_session`; live session closes after 45 s without a frame — decided by the agent.
-- 1.5 s result wait and 300 ms wake ping are starting values tuned from R9 — decided by the agent.
-- Ops move onto the socket — decided by the agent.
-- No screen changes in this spec — decided by the agent.
+- Two modes → one: a socket for every op, the relay delivers records in the same hop as it stores them — ask #1526
+  (owner's note) and ask #1527 ("multiplexing inside the relay, clients don't send twice").
+- Direct is needed, but as a delivery mode of the relay, not a separate client frame — ask #1527.
+- Write-through by the client rejected — ask #1527.
+- `pub_seq` approved in ask #1527, **dropped by the agent** in this revision: with one path (the zone, ordered by
+  `seq`) there are no two copies to decide between. Pending the owner's confirmation in the review ask.
+- Stages 1, 3, 7, 8 kept, 2, 4, 6 closed, 5 into wake — ask #1527.
+- R5 optimistic apply — decided by the agent (it is what makes a tap feel instant; the owner closed stage 6 under the
+  assumption that live results replace it). Pending the owner's confirmation in the review ask.
+- Frame budget 256 KiB, 300 ms wake ping, 10-min overlay expiry — decided by the agent, starting values tuned from R7.
