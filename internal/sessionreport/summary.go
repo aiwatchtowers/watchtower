@@ -195,7 +195,9 @@ func agentSessions(ctx context.Context, d *db.DB, workbenchID int64) ([]agentSes
 		if folderID.Valid {
 			folder = benchFolder{id: folderID.Int64, path: folderPath.String}
 		}
-		out = append(out, agentSession{row: s, sc: newScope(b, s.SessionID, target, links[s.SessionID], owners), folder: folder})
+		sc := newScope(b, s.SessionID, target, links[s.SessionID], owners)
+		sc.folder, sc.home = folder.id, home.id
+		out = append(out, agentSession{row: s, sc: sc, folder: folder})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("listing workbench %d sessions: %w", workbenchID, err)

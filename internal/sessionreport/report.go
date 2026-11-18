@@ -190,6 +190,9 @@ func (s scope) prs(states map[string]db.PRState) []PR {
 		}
 	}
 	for _, t := range s.targets() {
+		if !s.inFolder(t) {
+			continue // another folder's PR or branch: that folder's report reads it
+		}
 		if p := strings.TrimSpace(t.target.PR); p != "" {
 			key, number := prRef(p)
 			add(key, number, nil, t.id())

@@ -187,7 +187,13 @@ func TestRun_AgentGetsTheResolvedFolder(t *testing.T) {
 
 func TestRun_AgentCwdWorktreeWins(t *testing.T) {
 	f, askID := runFixture(t)
+	// wt is a linked worktree of the folder's repository (git files written
+	// by hand): only such a directory, or one inside the folder, is read.
+	wtGit := filepath.Join(f.folder, ".git", "worktrees", "wt")
+	require.NoError(t, os.MkdirAll(wtGit, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wtGit, "commondir"), []byte("../..\n"), 0o644))
 	wt := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+wtGit+"\n"), 0o644))
 	_, err := f.d.Exec(`UPDATE terminal_sessions SET agent_cwd = ? WHERE id = ?`, wt, f.session)
 	require.NoError(t, err)
 	agent := &fakeAgent{out: runReply}
@@ -251,6 +257,24 @@ func TestSpecReviewReadsTheSessionsFolder(t *testing.T) {
 	setSession(nil, homeTree)
 	assert.Equal(t, hubPath, readFor(hubDoc), "a hub document of a home session: the hub folder")
 	assert.Equal(t, homeTree, readFor(sql.NullInt64{}), "a legacy session (no folder) is a home session")
+
+	// A hub session's cwd counts only inside the hub's repository: a linked
+	// worktree of it (git files written by hand: no git runs) is read, a
+	// directory of another repository is not.
+	wtGit := filepath.Join(hubPath, ".git", "worktrees", "wt1")
+	require.NoError(t, os.MkdirAll(wtGit, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wtGit, "commondir"), []byte("../..\n"), 0o644))
+	linked, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(linked, ".git"), []byte("gitdir: "+wtGit+"\n"), 0o644))
+	setSession(hub, linked)
+	assert.Equal(t, linked, readFor(hubDoc), "a worktree of the hub's repository")
+
+	elsewhere, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(elsewhere, ".git"), 0o755))
+	setSession(hub, elsewhere)
+	assert.Equal(t, hubPath, readFor(hubDoc), "another repository: the document's folder")
 }
 
 // dumpTables is every table's rows but spec_reviews', as text, in a stable

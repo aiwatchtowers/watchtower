@@ -238,13 +238,16 @@ func TestRefreshedSummaries_EachSessionInItsOwnFolder(t *testing.T) {
 		VALUES (99, ?, ?, 1, 'owner', 'hub')`, id, hubDir)
 	runSQL(t, d, `INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_path, claude_session_id,
 		workbench_folder_id, parent_session_id) VALUES (2, ?, 'claude', 'Hub', 100, ?, 'u2', 99, 1)`, id, hubDir)
+	runSQL(t, d, `UPDATE targets SET workbench_folder_id = 99 WHERE id IN (101, 102)`)
 
 	rows, _, err := RefreshedSummaries(context.Background(), d, id, RefreshOptions{Now: fixedNow})
 	require.NoError(t, err)
 	require.Len(t, rows, 2)
-	assert.Equal(t, 1, rows[0].Merged, "home: wt/m only")
+	assert.Equal(t, 0, rows[0].Merged, "home: the hub's leaves are not read here")
 	assert.Equal(t, 2, rows[1].Merged, "hub: wt/m and wt/open")
-	assert.Equal(t, "open", states(t, d, id)["into:feature/x:wt/open"].State)
+	home := states(t, d, id)
+	assert.NotContains(t, home, "into:feature/x:wt/open", "home's refresh never checks a hub branch")
+	assert.NotContains(t, home, "into:feature/x:wt/m")
 	hub, err := d.PRStates(id, 99)
 	require.NoError(t, err)
 	assert.Equal(t, "merged", hub["into:feature/x:wt/open"].State)

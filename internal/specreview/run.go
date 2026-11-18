@@ -8,10 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"watchtower/internal/db"
 	"watchtower/internal/sessionfeed"
+	"watchtower/internal/workbenchgit"
 )
 
 // Run budget (spec §3): wall clock of the model call and the turn cap of a
@@ -198,7 +201,7 @@ func ReadFolder(ctx context.Context, d *db.DB, ask *db.OwnerAsk) (string, error)
 		return "", err
 	}
 	if ask.SessionID.Valid {
-		cwd, err := sessionCwdIn(ctx, d, ask.SessionID.Int64, docFolderID)
+		cwd, err := sessionCwdIn(ctx, d, ask.SessionID.Int64, docFolderID, docFolder)
 		if err != nil {
 			return "", err
 		}
@@ -243,9 +246,11 @@ func askDocFolder(ctx context.Context, d *db.DB, ask *db.OwnerAsk) (id int64, pa
 }
 
 // sessionCwdIn is session sessionID's recorded working directory when the
-// session was started in bench folder folderID; "" otherwise, or when the
+// session was started in bench folder folderID and the directory lies in
+// that folder (docFolder) or in a work tree of its repository (a worktree
+// of it; read from the git files, no git runs); "" otherwise, or when the
 // session row is gone.
-func sessionCwdIn(ctx context.Context, d *db.DB, sessionID, folderID int64) (string, error) {
+func sessionCwdIn(ctx context.Context, d *db.DB, sessionID, folderID int64, docFolder string) (string, error) {
 	id, err := d.SessionFolderID(ctx, sessionID)
 	if errors.Is(err, db.ErrTerminalSessionNotFound) || errors.Is(err, db.ErrWorkbenchNotFound) {
 		return "", nil
@@ -257,10 +262,27 @@ func sessionCwdIn(ctx context.Context, d *db.DB, sessionID, folderID int64) (str
 		return "", nil
 	}
 	cwd, err := d.TerminalAgentCwd(sessionID)
-	if err != nil {
+	if err != nil || cwd.Path == "" {
 		return "", err
 	}
+	if !within(cwd.Path, docFolder) && !workbenchgit.SameRepository(cwd.Path, docFolder) {
+		return "", nil
+	}
 	return cwd.Path, nil
+}
+
+// within reports whether path is folder or inside it, symlinks resolved.
+func within(path, folder string) bool {
+	p, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	f, err := filepath.EvalSymlinks(folder)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(f, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // oneLine is err's text on one line, clipped for the screen.
