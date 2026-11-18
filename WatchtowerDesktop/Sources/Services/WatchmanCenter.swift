@@ -47,7 +47,9 @@ final class WatchmanCenter {
     /// Bumped by every limits read, and per workbench by every profile read.
     @ObservationIgnored private var limitsToken = 0
     @ObservationIgnored private var profileTokens: [Int64: Int] = [:]
-    /// Learned workbenches whose profile was read since the last `refresh()`.
+    /// Learned workbenches whose profile read ended (read or failed) since
+    /// the last `refresh()`; a cancelled read leaves its workbench out, so
+    /// the next read retries it.
     @ObservationIgnored private var profilesAsked: Set<Int64> = []
 
     init(
@@ -98,8 +100,8 @@ final class WatchmanCenter {
         } catch {
             guard token == readToken, !(error is CancellationError) else { return }
             readFailed(Self.message(error))
-            return
         }
+        // Also after a failed read: the workbenches of the last status read.
         await loadNewProfiles()
     }
 
@@ -164,11 +166,12 @@ final class WatchmanCenter {
     // MARK: - Editing (phase 2)
 
     /// Reads the profile of each workbench the last status shows learned
-    /// for the first time since `refresh()`, also while polling goes on for
-    /// another. A failed read keeps what was read before and shows its line.
+    /// and whose read has not ended since `refresh()`, also while polling
+    /// goes on for another. A failed read keeps what was read before and
+    /// shows its line.
     private func loadNewProfiles() async {
-        for row in lastStatus?.workbenches ?? [] where row.isLearned && profilesAsked.insert(row.workbench).inserted {
-            await loadProfile(workbench: row.workbench)
+        for row in lastStatus?.workbenches ?? [] where row.isLearned && !profilesAsked.contains(row.workbench) {
+            if await loadProfile(workbench: row.workbench) { profilesAsked.insert(row.workbench) }
         }
     }
 
@@ -187,19 +190,23 @@ final class WatchmanCenter {
         }
     }
 
-    private func loadProfile(workbench: Int64) async {
+    /// False when the read was cancelled: nothing changed.
+    @discardableResult
+    private func loadProfile(workbench: Int64) async -> Bool {
         let token = (profileTokens[workbench] ?? 0) + 1
         profileTokens[workbench] = token
         do {
             let data = try await runner.run(args: ["watchman", "profile", "--workbench", String(workbench), "--json"])
             let profile = try JSONDecoder().decode(WatchmanProfile.self, from: data)
-            guard profileTokens[workbench] == token else { return }
+            guard profileTokens[workbench] == token else { return true }
             editing.profiles[workbench] = profile
             editing.profileReadErrors[workbench] = nil
         } catch {
-            guard profileTokens[workbench] == token, !(error is CancellationError) else { return }
+            if error is CancellationError { return false }
+            guard profileTokens[workbench] == token else { return true }
             editing.profileReadErrors[workbench] = Self.message(error)
         }
+        return true
     }
 
     /// Saves and pins a category's text or, under `sleep_window`, the sleep

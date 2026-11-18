@@ -559,7 +559,12 @@ final class WatchmanCenterTests: XCTestCase {
         let gate = runner.holdNextRead("limits")
         let stale = Task { await center.refresh() }
         // Until the refresh's limits read has taken its (old) reply and waits on the gate.
-        while limitsReads() == before { await Task.yield() }
+        var yields = 0
+        while limitsReads() == before {
+            yields += 1
+            guard yields < 1000 else { return XCTFail("the refresh never read the limits") }
+            await Task.yield()
+        }
         runner.onEdit { runner.setLimits(Fixtures.limits([(7, "tool", "create_jira_issue")])) }
         await center.removeLimit(id: 4)
         XCTAssertEqual(center.editing.limits?.owner.map(\.id), [7])
@@ -573,5 +578,35 @@ final class WatchmanCenterTests: XCTestCase {
         XCTAssertTrue(data.isLoadingProfile(1))
         data.profileReadErrors[1] = "database is locked"
         XCTAssertFalse(data.isLoadingProfile(1))
+    }
+
+    /// A cancelled profile read leaves the workbench unread: the next status
+    /// read retries it instead of showing "Reading…" for good.
+    func testCancelledProfileReadIsRetried() async {
+        let runner = ScriptedWatchmanRunner(status: Fixtures.running)
+        runner.failRead("profile", CancellationError())
+        let center = WatchmanCenter(runner: runner)
+        await center.refresh()
+        XCTAssertTrue(center.editing.isLoadingProfile(1))
+        XCTAssertNil(center.editing.profileReadErrors[1])
+
+        runner.failRead("profile", nil)
+        await center.load()
+        XCTAssertNotNil(center.editing.profiles[1])
+        XCTAssertFalse(center.editing.isLoadingProfile(1))
+        await center.load()
+        XCTAssertEqual(runner.invocations.filter { $0.dropFirst().first == "profile" }.count, 2)
+    }
+
+    /// Opening Settings again while the status read fails still rereads the
+    /// profiles of the workbenches the last status showed learned.
+    func testRefreshWithAFailedStatusReadStillReadsProfiles() async {
+        let runner = ScriptedWatchmanRunner(status: Fixtures.results)
+        let center = await editingCenter(runner)
+        runner.failStatus(CLIRunnerError.nonZeroExit(code: 1, stderr: "database is locked"))
+        runner.setProfile(Fixtures.profileEmpty)
+        await center.refresh()
+        XCTAssertEqual(center.readError, "database is locked")
+        XCTAssertEqual(center.editing.profiles[1]?.categories, [])
     }
 }
