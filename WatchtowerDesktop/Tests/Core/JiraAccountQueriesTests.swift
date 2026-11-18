@@ -49,6 +49,25 @@ final class JiraAccountQueriesTests: XCTestCase {
         XCTAssertTrue(accounts.isEmpty)
     }
 
+    /// Migration 00198's columns read back: defaults on a plain row, stored
+    /// values on a company API-token row.
+    func testFetchAllDecodesCompanySlugAndAuthKind() throws {
+        let pool = try makePool()
+        try pool.write { db in
+            _ = try TestDatabase.insertJiraAccount(db, siteName: "Shared")
+            let id = try TestDatabase.insertJiraAccount(db, siteName: "Acme")
+            try db.execute(
+                sql: "UPDATE jira_accounts SET company_slug = 'acme', auth_kind = 'api_token' WHERE id = ?",
+                arguments: [id]
+            )
+        }
+
+        let accounts = try pool.read { db in try JiraAccountQueries.fetchAll(db) }
+
+        XCTAssertEqual(accounts.map(\.companySlug), ["", "acme"])
+        XCTAssertEqual(accounts.map(\.authKind), ["oauth", "api_token"])
+    }
+
     func testFetchAllDecodesAllFields() throws {
         let pool = try makePool()
         try pool.write { db in

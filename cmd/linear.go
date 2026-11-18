@@ -506,6 +506,9 @@ type linearAccountJSON struct {
 	Enabled bool   `json:"enabled"`
 	Error   string `json:"error"`
 	Auth    string `json:"auth"`
+	// CompanySlug is the company bundle whose OAuth client the account signed
+	// in with; "" = our shared client.
+	CompanySlug string `json:"company_slug"`
 }
 
 // linearAuthKind reads the credential kind from the account's token file:
@@ -534,7 +537,11 @@ func printLinearAccounts(w io.Writer, database *db.DB, workspaceDir string, asJS
 	if asJSON {
 		rows := make([]linearAccountJSON, 0, len(accounts))
 		for _, a := range accounts {
-			rows = append(rows, linearAccountJSON{a.ID, a.Label, a.OrgName, linearWorkspaceURL(a), a.Status, a.Enabled, a.Error, linearAuthKind(workspaceDir, a.ID)})
+			rows = append(rows, linearAccountJSON{
+				ID: a.ID, Label: a.Label, OrgName: a.OrgName, URL: linearWorkspaceURL(a),
+				Status: a.Status, Enabled: a.Enabled, Error: a.Error,
+				Auth: linearAuthKind(workspaceDir, a.ID), CompanySlug: a.CompanySlug,
+			})
 		}
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")

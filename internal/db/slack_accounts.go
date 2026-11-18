@@ -23,6 +23,9 @@ type SlackAccount struct {
 	Enabled        bool
 	SearchLastDate string
 	CreatedAt      string
+	// CompanySlug ties the account to a company bundle's Slack app; '' = our
+	// shared app (migration 00198).
+	CompanySlug string
 }
 
 // FormatConnectedWorkspaces renders "<label1> (<domain1>), <label2> (<domain2>)"
@@ -49,23 +52,23 @@ func FormatConnectedWorkspaces(accounts []SlackAccount) string {
 // ListEnabledSlackAccounts, and GetSlackAccount — one place to keep the
 // SELECT list and scanSlackAccount's Scan targets in lockstep.
 const slackAccountColumns = `id, team_id, team_name, team_domain, label, current_user_id,
-        status, error, enabled, search_last_date, created_at`
+        status, error, enabled, search_last_date, created_at, company_slug`
 
 // scanSlackAccount scans one slackAccountColumns row from either *sql.Row or
 // *sql.Rows (the jira.scanJiraIssue precedent).
 func scanSlackAccount(scanner interface{ Scan(dest ...any) error }) (SlackAccount, error) {
 	var a SlackAccount
 	err := scanner.Scan(&a.ID, &a.TeamID, &a.TeamName, &a.TeamDomain, &a.Label, &a.CurrentUserID,
-		&a.Status, &a.Error, &a.Enabled, &a.SearchLastDate, &a.CreatedAt)
+		&a.Status, &a.Error, &a.Enabled, &a.SearchLastDate, &a.CreatedAt, &a.CompanySlug)
 	return a, err
 }
 
 // CreateSlackAccount inserts a new connected Slack account and returns its ID.
 func (db *DB) CreateSlackAccount(a SlackAccount) (int64, error) {
 	res, err := db.Exec(`INSERT INTO slack_accounts
-        (team_id, team_name, team_domain, label, current_user_id)
-        VALUES (?,?,?,?,?)`,
-		a.TeamID, a.TeamName, a.TeamDomain, a.Label, a.CurrentUserID)
+        (team_id, team_name, team_domain, label, current_user_id, company_slug)
+        VALUES (?,?,?,?,?,?)`,
+		a.TeamID, a.TeamName, a.TeamDomain, a.Label, a.CurrentUserID, a.CompanySlug)
 	if err != nil {
 		return 0, fmt.Errorf("creating slack account: %w", err)
 	}

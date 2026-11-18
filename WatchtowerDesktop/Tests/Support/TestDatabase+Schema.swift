@@ -624,7 +624,7 @@ CREATE TABLE IF NOT EXISTS email_accounts (
     uidvalidity    INTEGER NOT NULL DEFAULT 0,    -- IMAP UIDVALIDITY; a change means last_uid must reset
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, ideas_email_floor REAL NOT NULL DEFAULT 0);
+, ideas_email_floor REAL NOT NULL DEFAULT 0, company_slug TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS imap_messages (
     account_id     INTEGER NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
     uid            INTEGER NOT NULL,              -- IMAP UID; unique within (account_id, uidvalidity, uid)
@@ -715,7 +715,7 @@ CREATE TABLE IF NOT EXISTS google_accounts (
     memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,   -- per-account memory extraction watermark (was workspace.memory_gmail_last_extracted_ts)
     created_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, ideas_email_floor REAL NOT NULL DEFAULT 0, deletions_checked_at TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '');
+, ideas_email_floor REAL NOT NULL DEFAULT 0, deletions_checked_at TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '', company_slug TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS "gmail_messages" (
     account_id     INTEGER NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
     id             TEXT NOT NULL,
@@ -747,7 +747,7 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     enabled           INTEGER NOT NULL DEFAULT 1,
     search_last_date  TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '');
+, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '', company_slug TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS jira_accounts (
     id                            INTEGER PRIMARY KEY AUTOINCREMENT,
     cloud_id                      TEXT NOT NULL DEFAULT '',
@@ -759,7 +759,7 @@ CREATE TABLE IF NOT EXISTS jira_accounts (
     enabled                       INTEGER NOT NULL DEFAULT 1,
     memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- per-account memory extraction watermark (was workspace.memory_jira_last_extracted_ts)
     created_at                    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, ideas_jira_floor TEXT NOT NULL DEFAULT '', owner_account_id TEXT NOT NULL DEFAULT '', owner_email TEXT NOT NULL DEFAULT '', owner_display_name TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '');
+, ideas_jira_floor TEXT NOT NULL DEFAULT '', owner_account_id TEXT NOT NULL DEFAULT '', owner_email TEXT NOT NULL DEFAULT '', owner_display_name TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '', company_slug TEXT NOT NULL DEFAULT '', auth_kind TEXT NOT NULL DEFAULT 'oauth' CHECK (auth_kind IN ('oauth','api_token')), last_pdr_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS "jira_boards" (
     account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
     id INTEGER NOT NULL, name TEXT NOT NULL, project_key TEXT NOT NULL DEFAULT '',
@@ -1601,7 +1601,7 @@ CREATE TABLE IF NOT EXISTS linear_accounts (
     ideas_floor              TEXT NOT NULL DEFAULT '',
     moved_watermark          TEXT NOT NULL DEFAULT '',  -- moved-issue reconcile cursor; advances only on success
     created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '');
+, access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '', company_slug TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS linear_teams (
     account_id  INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
     id          TEXT NOT NULL,
