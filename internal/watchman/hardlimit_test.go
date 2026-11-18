@@ -132,6 +132,19 @@ func TestParkedBy(t *testing.T) {
 		{"pr merge branch", withPR("gh pr merge feat", map[int]string{12: "feature/x"}), LimitMainRef},
 		{"pr merge bare", withPR("gh pr merge", map[int]string{12: "feature/x"}), LimitMainRef},
 		{"edit in workbench folder", edit("Write", "/w/docs/x.md"), ""},
+		{"escaped quote hides no path", bash(`rm O\'Brien /tmp/obsolete`), LimitDeleteOutside},
+		{"escaped quote inside", bash(`rm -f O\'Brien /w/a/x`), ""},
+		{"quoted path inside", bash(`rm "/w/a/a b"`), ""},
+		{"double-quote escape", bash(`rm "/w/a/x\"y" /tmp/z`), LimitDeleteOutside},
+		{"single quote no escape", bash(`rm '/w/a/x\' /tmp/z`), LimitDeleteOutside},
+		{"unterminated quote", bash(`echo "abc`), LimitMainRef},
+		{"quoted separator", bash(`git commit -m "fix; tidy" && git push origin feat`), ""},
+		{"quoted separator hides no push", bash(`echo "a" ; git push origin main`), LimitMainRef},
+		{"comment line separator", bash("# Next step; git push origin main\ngo test ./..."), ""},
+		{"numeric file name", edit("Write", "123"), ""},
+		{"true file name", edit("Write", "true"), ""},
+		{"null file name", edit("Edit", "null"), ""},
+		{"json array fallback", edit("Edit", `["x"]`), LimitOutsideFolder},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

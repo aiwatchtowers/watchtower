@@ -98,68 +98,123 @@ var wrappers = map[string]map[string]bool{
 	"xargs":   {"-n": true, "-L": true, "-I": true, "-P": true, "-s": true, "-d": true, "-E": true, "-a": true, "--max-args": true, "--max-lines": true, "--max-procs": true, "--max-chars": true, "--delimiter": true, "--arg-file": true, "--replace": true, "--eof": true},
 }
 
-// unresolved stands for a wrapper that wraps nothing readable; it parks.
+// unresolved stands for a command that cannot be read (a wrapper around
+// nothing readable, an unterminated quote); it parks.
 const unresolved = "<unresolved>"
 
 // commandPart is one simple command of a line and the separator before it.
 type commandPart struct{ text, sep string }
 
-// splitCommands splits a command line on ; && || | and newlines.
+// splitCommands splits a command line on ; && || | and newlines outside
+// quotes. A whole comment line (first non-blank character #) is dropped
+// first, so a separator inside it splits nothing. Quotes and backslashes
+// are kept for splitWords.
 func splitCommands(line string) []commandPart {
 	var out []commandPart
-	start, sep := 0, ""
-	for i := 0; i < len(line); {
-		var next string
+	var cur strings.Builder
+	sep := ""
+	var quote byte
+	lineStart := true
+	for i := 0; i < len(line); i++ {
+		if quote == 0 && lineStart {
+			lineStart = false
+			if rest := strings.TrimLeft(line[i:], " \t\r"); strings.HasPrefix(rest, "#") {
+				nl := strings.IndexByte(rest, '\n')
+				if nl < 0 {
+					break
+				}
+				i = len(line) - len(rest) + nl // the comment's newline
+			}
+		}
+		ch := line[i]
 		switch {
-		case strings.HasPrefix(line[i:], "&&"):
-			next = "&&"
-		case strings.HasPrefix(line[i:], "||"):
-			next = "||"
-		case line[i] == ';' || line[i] == '|' || line[i] == '\n':
-			next = line[i : i+1]
-		}
-		if next == "" {
+		case quote == '\'':
+			if ch == '\'' {
+				quote = 0
+			}
+		case ch == '\\' && i+1 < len(line):
+			cur.WriteByte(ch)
 			i++
-			continue
+			ch = line[i]
+		case quote == '"':
+			if ch == '"' {
+				quote = 0
+			}
+		case ch == '\'' || ch == '"':
+			quote = ch
+		default:
+			next := ""
+			switch {
+			case strings.HasPrefix(line[i:], "&&"):
+				next = "&&"
+			case strings.HasPrefix(line[i:], "||"):
+				next = "||"
+			case ch == ';' || ch == '|' || ch == '\n':
+				next = line[i : i+1]
+			}
+			if next != "" {
+				out = append(out, commandPart{cur.String(), sep})
+				cur.Reset()
+				sep = next
+				i += len(next) - 1
+				lineStart = ch == '\n'
+				continue
+			}
 		}
-		out = append(out, commandPart{line[start:i], sep})
-		i += len(next)
-		start, sep = i, next
+		cur.WriteByte(ch)
 	}
-	return append(out, commandPart{line[start:], sep})
+	return append(out, commandPart{cur.String(), sep})
 }
 
-// splitWords splits a command on blanks, keeping a quoted string as one
-// word with its quotes removed.
-func splitWords(text string) []string {
-	var words []string
+// splitWords splits a command on blanks the way a POSIX shell does: quotes
+// are removed, outside quotes \x is a literal x, inside double quotes \
+// escapes only " \ $ and backtick, inside single quotes nothing escapes.
+// ok is false for an unterminated quote: the command cannot be read.
+func splitWords(text string) (words []string, ok bool) {
 	var cur strings.Builder
-	var quote rune
+	var quote byte
 	has := false
-	for _, ch := range text {
+	flush := func() {
+		if has || cur.Len() > 0 {
+			words = append(words, cur.String())
+		}
+		cur.Reset()
+		has = false
+	}
+	for i := 0; i < len(text); i++ {
+		ch := text[i]
 		switch {
-		case quote != 0:
-			if ch == quote {
+		case quote == '\'':
+			if ch == '\'' {
 				quote = 0
 			} else {
-				cur.WriteRune(ch)
+				cur.WriteByte(ch)
+			}
+		case ch == '\\' && i+1 < len(text) && (quote == 0 || strings.IndexByte("\"\\$`\n", text[i+1]) >= 0):
+			i++
+			if text[i] != '\n' { // backslash-newline is a line continuation
+				cur.WriteByte(text[i])
+				has = true
+			}
+		case quote == '"':
+			if ch == '"' {
+				quote = 0
+			} else {
+				cur.WriteByte(ch)
 			}
 		case ch == '"' || ch == '\'':
 			quote, has = ch, true
-		case ch == ' ' || ch == '\t' || ch == '\r':
-			if has || cur.Len() > 0 {
-				words = append(words, cur.String())
-			}
-			cur.Reset()
-			has = false
+		case ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n':
+			flush()
 		default:
-			cur.WriteRune(ch)
+			cur.WriteByte(ch)
 		}
 	}
-	if has || cur.Len() > 0 {
-		words = append(words, cur.String())
+	if quote != 0 {
+		return nil, false
 	}
-	return words
+	flush()
+	return words, true
 }
 
 // stripWrappers removes leading env assignments and wrappers, with their
@@ -214,7 +269,11 @@ func commands(summary string) []shellCmd {
 		if strings.HasPrefix(strings.TrimSpace(part.text), "#") {
 			continue
 		}
-		words := splitWords(part.text)
+		words, ok := splitWords(part.text)
+		if !ok { // an unterminated quote: unreadable, so it parks
+			out = append(out, shellCmd{w: []string{unresolved}, cwd: cwd})
+			continue
+		}
 		c := shellCmd{cwd: cwd}
 		words = stripWrappers(words, &c)
 		if len(words) == 0 {
@@ -354,7 +413,7 @@ func prMergeNumber(args []string) (int, bool) {
 // most push decisions (the live pre-push hook covers it).
 func matchMainRef(r PermissionAsk) bool {
 	return anyCmd(r, func(c shellCmd) bool {
-		if c.w[0] == unresolved { // a wrapper around nothing readable: cannot be judged
+		if c.w[0] == unresolved { // an unreadable command: cannot be judged
 			return true
 		}
 		if _, pos, ok := pushArgs(c); ok {
@@ -579,8 +638,10 @@ func filePath(r PermissionAsk) (p string, isFileTool, placed bool) {
 	case plainPathTools[r.Tool]:
 		p, _, _ = strings.Cut(r.Summary, "\n")
 		p = strings.TrimSpace(p)
-		// A JSON fallback summary is not a path.
-		return p, true, p != "" && !json.Valid([]byte(p))
+		// A JSON fallback summary (an object or array) is not a path; a
+		// file named 123, true or null is.
+		isJSON := strings.HasPrefix(p, "{") || strings.HasPrefix(p, "[")
+		return p, true, p != "" && !(isJSON && json.Valid([]byte(p)))
 	case jsonPathTools[r.Tool]:
 		var in struct {
 			FilePath     string `json:"file_path"`
