@@ -6,11 +6,13 @@ package watchmanact
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -58,6 +60,37 @@ func WriteSidecar(path string, sessions []db.ArmedSession, targetsArmed bool) er
 		return fmt.Errorf("writing the watchman sidecar: %w", err)
 	}
 	return nil
+}
+
+// sidecarAfterRead, a test seam, runs inside RefreshSidecar's lock between
+// the database read and the write; nil outside tests.
+var sidecarAfterRead func()
+
+// RefreshSidecar rewrites the workspace's sidecar from the database under
+// a cross-process flock (<sidecar>.lock) held from the read through the
+// rename, so of two writers — `watchman arm|disarm` and the daemon's upkeep
+// — the one that reads later also writes later: a stale state never
+// overwrites a newer one. It returns the arming rows it was written from.
+func RefreshSidecar(ctx context.Context, workspace string, d *db.DB) ([]db.WatchmanArming, error) {
+	path := SidecarPath(workspace)
+	unlock, err := fsutil.LockFile(ctx, path+".lock")
+	if err != nil {
+		return nil, fmt.Errorf("locking the watchman sidecar: %w", err)
+	}
+	defer unlock()
+	arming, err := d.ListWatchmanArming()
+	if err != nil {
+		return nil, err
+	}
+	sessions, err := d.WatchmanArmedSessions()
+	if err != nil {
+		return arming, err
+	}
+	if sidecarAfterRead != nil {
+		sidecarAfterRead()
+	}
+	targets := slices.ContainsFunc(arming, func(a db.WatchmanArming) bool { return a.Scope == "target" })
+	return arming, WriteSidecar(path, sessions, targets)
 }
 
 // ReadSidecar reads the sidecar; a missing file is nothing armed. Lines it

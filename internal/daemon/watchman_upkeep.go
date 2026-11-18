@@ -2,10 +2,8 @@ package daemon
 
 import (
 	"context"
-	"slices"
 	"time"
 
-	"watchtower/internal/db"
 	"watchtower/internal/watchmanact"
 )
 
@@ -58,10 +56,19 @@ func (d *Daemon) phaseWatchmanUpkeep(ctx context.Context) {
 		return
 	}
 	st := &d.watchmanUpkeep
-	arming, err := d.db.ListWatchmanArming()
+	// Rows nothing can be decided for any more (the session ended or went,
+	// the target went) go first, so they hold nothing awake.
+	if n, err := d.db.PruneWatchmanArming(); err != nil {
+		d.logger.Printf("watchman upkeep: %v", err)
+	} else if n > 0 {
+		d.logger.Printf("watchman upkeep: %d arming row(s) of ended sessions or removed targets dropped", n)
+	}
+	arming, err := watchmanact.RefreshSidecar(ctx, d.config.WorkspaceDir(), d.db)
 	if err != nil {
 		d.logger.Printf("watchman upkeep: %v", err)
-		return
+		if arming == nil {
+			return
+		}
 	}
 	armed := len(arming) > 0
 	d.watchmanHold(armed)
@@ -71,10 +78,6 @@ func (d *Daemon) phaseWatchmanUpkeep(ctx context.Context) {
 	if err != nil {
 		d.logger.Printf("watchman upkeep: %v", err)
 		return
-	}
-	targets := slices.ContainsFunc(arming, func(a db.WatchmanArming) bool { return a.Scope == "target" })
-	if err := watchmanact.WriteSidecar(watchmanact.SidecarPath(d.config.WorkspaceDir()), sessions, targets); err != nil {
-		d.logger.Printf("watchman upkeep: %v", err)
 	}
 	if st.hooks == nil {
 		return
@@ -111,9 +114,13 @@ func (d *Daemon) watchmanHold(armed bool) {
 
 // watchmanRecordGap records a watchman_gaps row when the Mac slept between
 // the previous upkeep and this one while something was armed: the wall
-// clock ran watchmanGapMin or more ahead of the monotonic clock. The span
-// starts where the monotonic clock says the previous cycle's time ran out
-// and ends now.
+// clock ran watchmanGapMin or more ahead of the monotonic clock. The span is
+// [previous upkeep + the monotonic time that ran since, now]: exactly as
+// long as the sleep, but shifted later by the awake time between the wake
+// and this upkeep (usually seconds: the daemon runs a cycle on wake), so it
+// starts and ends at most that much after the real sleep did.
+// A forward jump of the wall clock (a manual change, an NTP step of 10 min
+// or more) also reads as a sleep and records a false gap.
 func (d *Daemon) watchmanRecordGap(armed bool) {
 	st := &d.watchmanUpkeep
 	now := time.Now

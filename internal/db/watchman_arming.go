@@ -59,6 +59,21 @@ func (db *DB) ClearWatchmanArming() (n int64, err error) {
 	return res.RowsAffected()
 }
 
+// PruneWatchmanArming removes arming rows nothing can be decided for any
+// more: a session row whose session is gone, finished or being deleted, and
+// a target row whose target is gone. A target with no live session stays
+// armed (a new session under it is handed to the twin). n is how many went.
+func (db *DB) PruneWatchmanArming() (n int64, err error) {
+	res, err := db.Exec(`DELETE FROM watchman_arming WHERE
+		(scope = 'session' AND NOT EXISTS (SELECT 1 FROM terminal_sessions ts
+			WHERE ts.id = watchman_arming.ref_id AND ts.finished_at IS NULL AND ts.` + NotDeletingSQL + `))
+		OR (scope = 'target' AND NOT EXISTS (SELECT 1 FROM targets t WHERE t.id = watchman_arming.ref_id))`)
+	if err != nil {
+		return 0, fmt.Errorf("pruning watchman arming: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 // ListWatchmanArming returns every arming row, oldest first.
 func (db *DB) ListWatchmanArming() ([]WatchmanArming, error) {
 	rows, err := db.Query(`SELECT scope, ref_id, armed_at, armed_by FROM watchman_arming ORDER BY armed_at, id`)
@@ -81,10 +96,6 @@ func (db *DB) ListWatchmanArming() ([]WatchmanArming, error) {
 	return out, rows.Err()
 }
 
-// liveAgentSession is the filter of a session the twin may decide for: an
-// agent session (not a shell) neither finished nor being deleted.
-const liveAgentSession = `ts.finished_at IS NULL AND ts.delete_requested_at IS NULL AND ts.kind <> 'shell'`
-
 // armedSessionsFrom selects live (not finished, not being deleted) sessions
 // armed directly, or whose ticket sits in the subtree of an armed target.
 const armedSessionsFrom = `
@@ -95,7 +106,7 @@ const armedSessionsFrom = `
 	)
 	SELECT ts.id, ts.project_id, ts.folder_path, p.folder_path, COALESCE(ts.target_id, 0)
 	FROM terminal_sessions ts JOIN projects p ON p.id = ts.project_id
-	WHERE ` + liveAgentSession + `
+	WHERE ts.finished_at IS NULL AND ts.` + NotDeletingSQL + ` AND ts.kind <> 'shell'
 	  AND (EXISTS (SELECT 1 FROM watchman_arming a WHERE a.scope = 'session' AND a.ref_id = ts.id)
 	       OR ts.target_id IN (SELECT id FROM sub))`
 
@@ -104,7 +115,7 @@ const armedSessionsFrom = `
 func (db *DB) WatchmanLiveSessions() ([]ArmedSession, error) {
 	rows, err := db.Query(`SELECT ts.id, ts.project_id, ts.folder_path, p.folder_path, COALESCE(ts.target_id, 0)
 		FROM terminal_sessions ts JOIN projects p ON p.id = ts.project_id
-		WHERE ` + liveAgentSession + ` ORDER BY ts.id`)
+		WHERE ts.finished_at IS NULL AND ts.` + NotDeletingSQL + ` AND ts.kind <> 'shell' ORDER BY ts.id`)
 	if err != nil {
 		return nil, fmt.Errorf("listing live workbench sessions: %w", err)
 	}

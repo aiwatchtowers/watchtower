@@ -9,9 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/watchman"
 	"watchtower/internal/watchmanact"
@@ -156,7 +158,7 @@ func TestWatchmanArm_JSONKeysPinned(t *testing.T) {
 	_, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--json")
 	require.NoError(t, err, out)
 	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "learning_started", "ok",
-		"protection_warning"}, jsonKeys(t, out))
+		"protection_warning", "sidecar_error"}, jsonKeys(t, out))
 	var raw struct {
 		Armed []map[string]json.RawMessage `json:"armed"`
 	}
@@ -167,17 +169,17 @@ func TestWatchmanArm_JSONKeysPinned(t *testing.T) {
 	_, out, err = armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--check", "--json")
 	require.NoError(t, err, out)
 	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "learning_started", "ok",
-		"protection_warning"}, jsonKeys(t, out))
+		"protection_warning", "sidecar_error"}, jsonKeys(t, out))
 
 	_, out, err = armCLI(t, "disarm", "--session", strconv.FormatInt(s1, 10), "--json")
 	require.NoError(t, err, out)
-	assert.Equal(t, []string{"armed", "error", "ok"}, jsonKeys(t, out))
+	assert.Equal(t, []string{"armed", "error", "ok", "sidecar_error"}, jsonKeys(t, out))
 
 	// A refused arm still prints its JSON.
 	_, out, err = armCLI(t, "arm", "--session", "999", "--json")
 	require.Error(t, err)
 	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "learning_started", "ok",
-		"protection_warning"}, jsonKeys(t, out))
+		"protection_warning", "sidecar_error"}, jsonKeys(t, out))
 }
 
 func TestWatchmanArm_RefusedUnderAgent(t *testing.T) {
@@ -188,6 +190,8 @@ func TestWatchmanArm_RefusedUnderAgent(t *testing.T) {
 		{"arm", "--session", strconv.FormatInt(s1, 10)},
 		{"arm", "--all-running"},
 		{"disarm", "--all"},
+		{"disarm", "--session", strconv.FormatInt(s1, 10)},
+		{"disarm", "--target", "1"},
 	} {
 		_, _, err := armCLI(t, args...)
 		require.Error(t, err, args)
@@ -199,6 +203,12 @@ func TestWatchmanArm_RefusedUnderAgent(t *testing.T) {
 	assert.False(t, analytics)
 	_, err := os.Stat(testSidecarPath(t))
 	assert.ErrorIs(t, err, os.ErrNotExist)
+
+	// --check only reads: it stays open under an agent.
+	r, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--check", "--json")
+	require.NoError(t, err, out)
+	assert.True(t, r.OK)
+	assert.True(t, r.FirstTime)
 }
 
 func TestWatchmanArm_WritesRowThenSidecar(t *testing.T) {
@@ -319,4 +329,98 @@ func TestWatchmanArm_AllRunningArmsEachLiveSession(t *testing.T) {
 	assert.Equal(t, []int64{s1, s2}, sc.Sessions)
 	assert.Equal(t, []string{f1, f2}, sc.Worktrees)
 	assert.Equal(t, filepath.Clean(f1), f1)
+}
+
+// countArmingNudges replaces the daemon nudge with a counter.
+func countArmingNudges(t *testing.T) *int {
+	t.Helper()
+	n := 0
+	prev := watchmanArmingNudge
+	watchmanArmingNudge = func(*cobra.Command, *config.Config) { n++ }
+	t.Cleanup(func() { watchmanArmingNudge = prev })
+	return &n
+}
+
+// Every arming change nudges the daemon, so its upkeep takes or releases
+// the keep-awake hold now; a call that changed nothing does not.
+func TestWatchmanArm_NudgesDaemonOnEveryChange(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	s1, _ := armSession(t, wb, "claude", nil, false)
+	nudges := countArmingNudges(t)
+	id := strconv.FormatInt(s1, 10)
+	steps := []struct {
+		args []string
+		want int
+	}{
+		{[]string{"arm", "--session", id, "--check"}, 0},
+		{[]string{"arm", "--session", id}, 1},
+		{[]string{"arm", "--session", id}, 1}, // already armed: no change
+		{[]string{"disarm", "--session", id}, 2},
+		{[]string{"disarm", "--all"}, 2}, // nothing left: no change
+		{[]string{"arm", "--all-running"}, 3},
+		{[]string{"disarm", "--all"}, 4},
+	}
+	for _, st := range steps {
+		_, out, err := armCLI(t, st.args...)
+		require.NoError(t, err, out)
+		assert.Equal(t, st.want, *nudges, st.args)
+	}
+}
+
+// --check never creates or migrates the database.
+func TestWatchmanArm_CheckNeverCreatesTheDatabase(t *testing.T) {
+	d := writeActionsConfig(t)
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	require.NoError(t, d.Close())
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		require.NoError(t, os.RemoveAll(cfg.DBPath()+suffix))
+	}
+	r, out, err := armCLI(t, "arm", "--session", "1", "--check", "--json")
+	require.Error(t, err)
+	assert.False(t, r.OK, out)
+	_, err = os.Stat(cfg.DBPath())
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+// Re-arming an armed session keeps its armed_at ("Sleep since" stays).
+func TestWatchmanArm_RearmKeepsArmedAt(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	s1, _ := armSession(t, wb, "claude", nil, false)
+	var path string
+	d := openAgentsTestMain(t, &path)
+	at := time.Date(2026, 11, 17, 23, 40, 0, 0, time.UTC)
+	require.NoError(t, d.UpsertWatchmanArming(db.WatchmanArming{Scope: "session", RefID: s1, ArmedAt: at, ArmedBy: "desktop"}))
+	r, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--json")
+	require.NoError(t, err, out)
+	require.Len(t, r.Armed, 1)
+	assert.Equal(t, at.Format(time.RFC3339), r.Armed[0].ArmedAt)
+	rows := armingRows(t)
+	require.Len(t, rows, 1)
+	assert.True(t, rows[0].ArmedAt.Equal(at))
+	assert.Equal(t, "desktop", rows[0].ArmedBy)
+}
+
+// A sidecar that cannot be rewritten after the rows were written: ok, with
+// sidecar_error (the rows exist; the daemon's upkeep rewrites it).
+func TestWatchmanArm_SidecarFailureStillOK(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	s1, _ := armSession(t, wb, "claude", nil, false)
+	// A non-empty directory where the sidecar goes: the rename over it fails.
+	require.NoError(t, os.MkdirAll(filepath.Join(testSidecarPath(t), "x"), 0o755))
+	r, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--json")
+	require.NoError(t, err, out)
+	assert.True(t, r.OK)
+	assert.Empty(t, r.Error)
+	assert.NotEmpty(t, r.SidecarError)
+	require.Len(t, r.Armed, 1)
+	assert.Len(t, armingRows(t), 1)
+
+	var d watchmanDisarmJSON
+	_, out, err = armCLI(t, "disarm", "--session", strconv.FormatInt(s1, 10), "--json")
+	require.NoError(t, err, out)
+	require.NoError(t, json.Unmarshal([]byte(out), &d))
+	assert.True(t, d.OK)
+	assert.NotEmpty(t, d.SidecarError)
+	assert.Empty(t, armingRows(t))
 }

@@ -196,3 +196,37 @@ func TestWatchmanUpkeep_EnsuresHooksPerArmedWorktree(t *testing.T) {
 	assert.Equal(t, []string{folder}, got)
 	assert.Contains(t, logs.String(), "session")
 }
+
+// Rows nothing can be decided for are pruned before the hold: an ended
+// session's row goes and holds nothing awake; an armed target with no live
+// session stays and holds.
+func TestWatchmanUpkeep_PrunesStaleArmingBeforeHold(t *testing.T) {
+	d, database, _, _ := newUpkeepDaemon(t)
+	awake := &fakeAwake{}
+	d.SetWatchmanAwake(awake.hold)
+	ctx := context.Background()
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	s := upkeepSession(t, database, wb, t.TempDir())
+	armUpkeepSession(t, database, s)
+	require.NoError(t, database.UpsertWatchmanArming(db.WatchmanArming{Scope: "session", RefID: 999, ArmedAt: time.Now(), ArmedBy: "cli"}))
+	_, err = database.Exec(`UPDATE terminal_sessions SET finished_at = '2026-11-18T01:00:00.000Z' WHERE id = ?`, s)
+	require.NoError(t, err)
+
+	d.phaseWatchmanUpkeep(ctx)
+	rows, err := database.ListWatchmanArming()
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+	assert.Empty(t, awake.holds, "nothing left to decide for: no hold")
+
+	res, err := database.Exec(`INSERT INTO targets (text, period_start, period_end, project_id) VALUES ('acme', '2026-11-01', '2026-11-30', ?)`, wb)
+	require.NoError(t, err)
+	target, err := res.LastInsertId()
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertWatchmanArming(db.WatchmanArming{Scope: "target", RefID: target, ArmedAt: time.Now(), ArmedBy: "cli"}))
+	d.phaseWatchmanUpkeep(ctx)
+	rows, err = database.ListWatchmanArming()
+	require.NoError(t, err)
+	assert.Len(t, rows, 1)
+	assert.Equal(t, []string{WatchmanAwakeReason}, awake.holds)
+}

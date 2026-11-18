@@ -76,13 +76,34 @@ type watchmanArmJSON struct {
 	LearningStarted   bool                     `json:"learning_started"`
 	Estimate          *watchman.EstimateStatus `json:"estimate"`
 	Error             string                   `json:"error"`
+	// SidecarError: the rows were written (ok stays true) but the sidecar
+	// rewrite failed; the daemon's upkeep rewrites it next cycle.
+	SidecarError string `json:"sidecar_error"`
 }
 
 // watchmanDisarmJSON is `watchman disarm --json`.
 type watchmanDisarmJSON struct {
-	OK    bool                  `json:"ok"`
-	Armed []watchman.ArmedEntry `json:"armed"`
-	Error string                `json:"error"`
+	OK           bool                  `json:"ok"`
+	Armed        []watchman.ArmedEntry `json:"armed"`
+	Error        string                `json:"error"`
+	SidecarError string                `json:"sidecar_error"` // as on arm
+}
+
+// watchmanArmingNudge asks a running daemon for a cycle after an arming
+// change, so its upkeep takes or releases the keep-awake hold and rewrites
+// the sidecar now rather than at the next poll (accepted cost: a cycle
+// already fetching restarts its fetches). No daemon is fine. Tests count it.
+var watchmanArmingNudge = func(cmd *cobra.Command, cfg *config.Config) {
+	if _, err := signalSyncNow(cfg); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the daemon was not asked to pick the change up now (it does at its next cycle): %v\n", err)
+	}
+}
+
+// sidecarWarning is the text form of a failed sidecar rewrite.
+func sidecarWarning(cmd *cobra.Command, sidecarErr string) {
+	if sidecarErr != "" {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the arm sidecar was not rewritten (the daemon rewrites it at its next cycle): %s\n", sidecarErr)
+	}
 }
 
 // exactlyOne is whether exactly one of the choices is set.
@@ -112,6 +133,7 @@ func runWatchmanArm(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	sidecarWarning(cmd, out.SidecarError)
 	w := cmd.OutOrStdout()
 	if watchmanArmFlagCheck {
 		if out.Estimate != nil {
@@ -158,7 +180,12 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 	if err != nil {
 		return err
 	}
-	database, err := db.Open(cfg.DBPath())
+	// --check only reads: it never creates or migrates the database.
+	open := db.Open
+	if watchmanArmFlagCheck {
+		open = func(path string) (*db.DB, error) { return db.OpenExisting(path, watchmanCheckBusy) }
+	}
+	database, err := open(cfg.DBPath())
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
@@ -213,21 +240,46 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 		}
 		out.LearningStarted = len(notOn) > 0
 	}
+	// A row already there keeps its armed_at: re-arming does not move
+	// "Sleep since".
+	existing, err := database.ListWatchmanArming()
+	if err != nil {
+		return err
+	}
 	now := time.Now()
+	changed := false
 	for _, r := range rows {
+		if slices.ContainsFunc(existing, func(a db.WatchmanArming) bool { return a.Scope == r.Scope && a.RefID == r.RefID }) {
+			continue
+		}
 		r.ArmedAt, r.ArmedBy = now, "cli"
 		if err := database.UpsertWatchmanArming(r); err != nil {
 			return err
 		}
+		changed = true
 	}
-	arming, err := writeWatchmanSidecar(cfg, database)
+	arming, err := watchmanact.RefreshSidecar(cmd.Context(), cfg.WorkspaceDir(), database)
 	out.Armed = watchman.ArmedEntries(arming)
-	if out.LearningStarted {
-		// The daemon's learning phase does the backfill; arm never runs it.
-		nudgeDaemon(cmd, cfg)
+	if err != nil {
+		if arming == nil {
+			if arming, err = database.ListWatchmanArming(); err != nil {
+				return err
+			}
+			out.Armed = watchman.ArmedEntries(arming)
+		}
+		out.SidecarError = err.Error()
 	}
-	return err
+	// The daemon's upkeep takes the hold and its learning phase does the
+	// backfill; arm never runs either.
+	if changed || out.LearningStarted {
+		watchmanArmingNudge(cmd, cfg)
+	}
+	return nil
 }
+
+// watchmanCheckBusy bounds how long `arm --check` waits for another
+// process's lock on the read-only database.
+const watchmanCheckBusy = 2 * time.Second
 
 // watchmanArmRows resolves the flags to the arming rows to write and the
 // workbenches they cover. Only a running workbench agent session (not a
@@ -290,24 +342,9 @@ func watchmanTurnOnAll(cmd *cobra.Command, cfg *config.Config, database *db.DB, 
 	return turned, nil
 }
 
-// writeWatchmanSidecar rewrites <workspace>/watchman.armed from the
-// database and returns the arming rows it was written from.
-func writeWatchmanSidecar(cfg *config.Config, database *db.DB) ([]db.WatchmanArming, error) {
-	arming, err := database.ListWatchmanArming()
-	if err != nil {
-		return nil, err
-	}
-	sessions, err := database.WatchmanArmedSessions()
-	if err != nil {
-		return arming, err
-	}
-	targets := slices.ContainsFunc(arming, func(a db.WatchmanArming) bool { return a.Scope == "target" })
-	return arming, watchmanact.WriteSidecar(watchmanact.SidecarPath(cfg.WorkspaceDir()), sessions, targets)
-}
-
 func runWatchmanDisarm(cmd *cobra.Command, _ []string) error {
 	out := watchmanDisarmJSON{Armed: []watchman.ArmedEntry{}}
-	err := watchmanDisarm(&out)
+	err := watchmanDisarm(cmd, &out)
 	out.OK = err == nil
 	if err != nil {
 		out.Error = err.Error()
@@ -321,6 +358,7 @@ func runWatchmanDisarm(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	sidecarWarning(cmd, out.SidecarError)
 	if len(out.Armed) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "Taken back: Watchman has nothing now.")
 	} else {
@@ -331,7 +369,7 @@ func runWatchmanDisarm(cmd *cobra.Command, _ []string) error {
 
 // watchmanDisarm removes the named arming row (or every row with --all),
 // then rewrites the sidecar.
-func watchmanDisarm(out *watchmanDisarmJSON) error {
+func watchmanDisarm(cmd *cobra.Command, out *watchmanDisarmJSON) error {
 	if err := refuseUnderAgent("take a session back from Watchman"); err != nil {
 		return err
 	}
@@ -347,9 +385,10 @@ func watchmanDisarm(out *watchmanDisarmJSON) error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
+	changed := int64(1) // disarmOne fails when there was no row
 	switch {
 	case watchmanDisarmFlagAll:
-		_, err = database.ClearWatchmanArming()
+		changed, err = database.ClearWatchmanArming()
 	case watchmanDisarmFlagSession != 0:
 		err = disarmOne(database, "session", watchmanDisarmFlagSession)
 	default:
@@ -358,9 +397,20 @@ func watchmanDisarm(out *watchmanDisarmJSON) error {
 	if err != nil {
 		return err
 	}
-	arming, err := writeWatchmanSidecar(cfg, database)
+	arming, err := watchmanact.RefreshSidecar(cmd.Context(), cfg.WorkspaceDir(), database)
+	if err != nil {
+		out.SidecarError = err.Error()
+		if arming == nil {
+			if arming, err = database.ListWatchmanArming(); err != nil {
+				return err
+			}
+		}
+	}
 	out.Armed = watchman.ArmedEntries(arming)
-	return err
+	if changed > 0 {
+		watchmanArmingNudge(cmd, cfg)
+	}
+	return nil
 }
 
 func disarmOne(database *db.DB, scope string, id int64) error {
