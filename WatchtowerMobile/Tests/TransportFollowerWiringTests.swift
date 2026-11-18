@@ -523,16 +523,19 @@ final class Bed {
         alertWake: (any PushWake)? = nil,
         startsActive: Bool = true,
         relayHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil,
+        relaySockets: ((any RelaySocketDialer) -> any RelaySocketDialer)? = nil,
         farewellLive: Bool = false,
         secondRelayHub: String? = nil,
         refusing: @escaping @Sendable (HubRoute) -> Bool = { _ in false }
     ) async throws -> Bed {
         let relayClock = ManualRelayClock(now: Date())
         let fake = FakeHostedRelay(attest: .off, clock: relayClock)
-        let sockets = SocketCounter(inner: fake.sockets)
+        // The HTTP wrapper first: a gate made there wraps the sockets too (ops ride the socket while it is live).
+        let http = relayHTTP?(fake.http) ?? fake.http
+        let sockets = SocketCounter(inner: relaySockets?(fake.sockets) ?? fake.sockets)
         let parts = RelayParts(
-            attest: FakeAppAttest(), keychain: InMemoryKeychainBackend(), keychainGroup: nil, http: relayHTTP?(fake.http) ?? fake.http,
-            sockets: sockets, clock: relayClock
+            attest: FakeAppAttest(), keychain: InMemoryKeychainBackend(), keychainGroup: nil, http: http, sockets: sockets,
+            clock: relayClock
         )
         let shared = SharedRelaySession(config: RelayConfig.parse(fake.origin)) { parts }
         let phone = try XCTUnwrap(try shared.session()).client

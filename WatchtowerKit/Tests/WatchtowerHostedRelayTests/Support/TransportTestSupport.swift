@@ -6,7 +6,8 @@ import WatchtowerSync
 
 /// A `RelayHTTP` in front of another: `answer` may replace an op's answer (or throw, as a
 /// lost network would) before the request reaches the backend; `download` and `upload` may
-/// replace a blob GET's or PUT's status. Every GET and PUT it lets through or answers is counted.
+/// replace a blob GET's or PUT's status. Every GET and PUT it lets through or answers is counted, and
+/// every op it is posted (`ops`).
 final class InterceptingRelayHTTP: RelayHTTP, @unchecked Sendable {
     private struct State {
         var answer: ((Relay_V1_Request) throws -> Relay_V1_Response?)?
@@ -14,6 +15,7 @@ final class InterceptingRelayHTTP: RelayHTTP, @unchecked Sendable {
         var upload: ((URL) -> Int?)?
         var gets: [URL] = []
         var puts: [URL] = []
+        var ops: [String] = []
         var hold: ((Relay_V1_Request) -> Bool)?
         var held: CheckedContinuation<Void, Never>?
     }
@@ -65,8 +67,17 @@ final class InterceptingRelayHTTP: RelayHTTP, @unchecked Sendable {
         state.withLock { $0.puts }
     }
 
+    /// The case names of the ops posted over HTTPS, in order.
+    var ops: [String] {
+        state.withLock { $0.ops }
+    }
+
     func post(_ url: URL, body: Data, headers: [String: String]) async throws -> (status: Int, body: Data) {
-        if let request = try? Relay_V1_Request(serializedBytes: body),
+        let parsed = try? Relay_V1_Request(serializedBytes: body)
+        if let op = parsed?.op {
+            state.withLock { $0.ops.append(Mirror(reflecting: op).children.first?.label ?? "unknown") }
+        }
+        if let request = parsed,
            state.withLock({ state in
                guard let hold = state.hold, hold(request) else { return false }
                state.hold = nil
@@ -75,7 +86,7 @@ final class InterceptingRelayHTTP: RelayHTTP, @unchecked Sendable {
             await withCheckedContinuation { continuation in state.withLock { $0.held = continuation } }
         }
         let hook = state.withLock { $0.answer }
-        if let hook, let request = try? Relay_V1_Request(serializedBytes: body), let response = try hook(request) {
+        if let hook, let request = parsed, let response = try hook(request) {
             return (200, try response.serializedData())
         }
         return try await base.post(url, body: body, headers: headers)

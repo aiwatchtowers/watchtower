@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 import os
-import WatchtowerHostedRelay
+@testable import WatchtowerHostedRelay
 import WatchtowerHostedRelayTesting
 import WatchtowerRelayProto
 import XCTest
@@ -307,7 +307,15 @@ class HostedRelayScenarioCase: XCTestCase {
         }
     }
 
-    enum ScenarioFailure: Error {
+    /// Spins (pumping the fake's clock) until `session`'s socket is live, with no wall-clock cap.
+    func waitUntilLive(_ session: HostedRelaySession) async {
+        while await session.connection?.isLive != true {
+            pump()
+            await Task.yield()
+        }
+    }
+
+        enum ScenarioFailure: Error {
         case unexpected(String)
     }
 }

@@ -39,6 +39,8 @@ public final class HostedRelayConnection: Sendable {
     static let closeGoingAway = 1001
     static let closeUnsupportedVersion = 4000
     static let closeUnauthenticated = 4001
+    /// How long a request waits for its answer after the write: the HTTPS client's request timeout.
+    static let requestTimeout = Duration.seconds(URLSessionRelayHTTP.requestTimeout)
 
     private static var logger: Logger {
         HostedRelayClient.logger
@@ -49,12 +51,18 @@ public final class HostedRelayConnection: Sendable {
         let generation: Int
     }
 
+    /// A request waiting for its answer, on the socket generation it was written to.
+    private struct Waiter {
+        let continuation: CheckedContinuation<Relay_V1_Response, any Error>
+        let generation: Int
+    }
+
     private struct State {
         var zones: [String]
         var live: Live?
         var generation = 0
         var nextID: UInt64 = 0
-        var pending: [UInt64: CheckedContinuation<Relay_V1_Response, any Error>] = [:]
+        var pending: [UInt64: Waiter] = [:]
         var runner: Task<Void, Never>?
         var closed = false
     }
@@ -128,8 +136,27 @@ public final class HostedRelayConnection: Sendable {
     /// `.unreachable` while disconnected, or when the connection drops before the answer
     /// (the request may or may not have run).
     public func send(_ op: Relay_V1_Request.OneOf_Op) async throws -> Relay_V1_Response {
+        do {
+            return try await request(op)
+        } catch is SocketLoss {
+            throw HostedRelayError.unreachable
+        }
+    }
+
+    /// Why a socket request got no answer: what `send` reports as `.unreachable`, told apart for the
+    /// session's fallback to HTTPS (`HostedRelaySession.send`).
+    enum SocketLoss: Error, Equatable {
+        /// Refused before its frame was handed to the socket (no live socket, or the socket was replaced):
+        /// the op never reached the relay.
+        case notSent
+        /// The socket dropped, or failed the write, after the frame was handed to it: the op may have run.
+        case lost
+    }
+
+    /// `send`, its lost answers as `SocketLoss`.
+    func request(_ op: Relay_V1_Request.OneOf_Op) async throws -> Relay_V1_Response {
         try await HostedRelayClient.retryingUnavailable(op, clock: clock) {
-            guard let live = state.withLock({ $0.live }) else { throw HostedRelayError.unreachable }
+            guard let live = state.withLock({ $0.live }) else { throw SocketLoss.notSent }
             return try await roundTrip(op, on: live.socket, generation: live.generation)
         }
     }
@@ -162,7 +189,7 @@ public final class HostedRelayConnection: Sendable {
             }
             return (state.runner, state.live, state.pending)
         }
-        for waiter in pending.values { waiter.resume(throwing: HostedRelayError.unreachable) }
+        for waiter in pending.values { waiter.continuation.resume(throwing: SocketLoss.lost) }
         runner?.cancel()
         await live?.socket.close(code: Self.closeNormal)
         await runner?.value
@@ -490,8 +517,10 @@ public final class HostedRelayConnection: Sendable {
 
     // MARK: - Requests
 
-    /// One `Request` frame on `socket`, answered by id. `.unreachable` when the socket is no
-    /// longer the live one or drops before the answer.
+    /// One `Request` frame on `socket`, answered by id. `SocketLoss.notSent` when the socket is no
+    /// longer the live one, `.lost` when it drops (or fails the write) before the answer, or when no
+    /// answer comes within `requestTimeout` (a relay that still pongs but never answers, or a write that
+    /// never returns): the socket is then retired (`expire`).
     private func roundTrip(_ op: Relay_V1_Request.OneOf_Op, on socket: any RelaySocket, generation: Int) async throws -> Relay_V1_Response {
         let id = state.withLock { state in
             state.nextID += 1
@@ -501,22 +530,32 @@ public final class HostedRelayConnection: Sendable {
         frame.request.id = id
         frame.request.op = op
         let data = try frame.serializedData()
+        // The request's deadline and its write, both cancelled once it is answered, failed or cancelled.
+        let tasks = OSAllocatedUnfairLock<[Task<Void, Never>]>(initialState: [])
+        defer { tasks.withLock { $0.forEach { $0.cancel() } } }
         let response: Relay_V1_Response = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let refusal: (any Error)? = state.withLock { state in
                     if Task.isCancelled { return CancellationError() }
-                    guard state.live?.generation == generation else { return HostedRelayError.unreachable }
-                    state.pending[id] = continuation
+                    guard state.live?.generation == generation else { return SocketLoss.notSent }
+                    state.pending[id] = Waiter(continuation: continuation, generation: generation)
                     return nil
                 }
                 if let refusal { return continuation.resume(throwing: refusal) }
-                Task {
+                // Started before the write, so a write that never returns is covered too.
+                let timer = Task {
+                    do { try await self.clock.sleep(for: Self.requestTimeout) } catch { return }
+                    await self.expire(id, op: op, socket: socket, generation: generation)
+                }
+                let writer = Task {
+                    guard !Task.isCancelled else { return }
                     do {
                         try await socket.send(data)
                     } catch {
-                        self.fail(id, with: HostedRelayError.unreachable)
+                        self.fail(id, with: SocketLoss.lost)
                     }
                 }
+                tasks.withLock { $0 += [timer, writer] }
             }
         } onCancel: {
             fail(id, with: CancellationError())
@@ -527,12 +566,31 @@ public final class HostedRelayConnection: Sendable {
 
     private func resolve(_ response: Relay_V1_Response) {
         let waiter = state.withLock { $0.pending.removeValue(forKey: response.id) }
-        waiter?.resume(returning: response)
+        waiter?.continuation.resume(returning: response)
     }
 
-    private func fail(_ id: UInt64, with error: any Error) {
-        let waiter = state.withLock { $0.pending.removeValue(forKey: id) }
-        waiter?.resume(throwing: error)
+    /// Fails request `id`; false when it was already answered or failed.
+    @discardableResult
+    private func fail(_ id: UInt64, with error: any Error) -> Bool {
+        guard let waiter = state.withLock({ $0.pending.removeValue(forKey: id) }) else { return false }
+        waiter.continuation.resume(throwing: error)
+        return true
+    }
+
+    /// Request `id` got no answer within `requestTimeout`: it is lost (it may have run), and the socket is
+    /// retired, since a relay that pongs but never answers would hold every later request for as long.
+    /// The connection redials; until then a request is refused before its write (`.notSent`). The socket
+    /// stops being live in the same step that takes the requests of its generation, and is closed before any
+    /// of them is resumed, so a caller sending again at once is refused (`.notSent`) rather than written to it.
+    private func expire(_ id: UInt64, op: Relay_V1_Request.OneOf_Op, socket: any RelaySocket, generation: Int) async {
+        let retired: [Waiter]? = state.withLock { state in
+            guard state.pending[id] != nil else { return nil }
+            return Self.retire(generation, in: &state)
+        }
+        guard let retired else { return }
+        Self.logger.error("relay socket: \(HostedRelayClient.name(op), privacy: .public) got no answer in time, reconnecting")
+        await socket.close(code: Self.closeNormal)
+        for waiter in retired { waiter.continuation.resume(throwing: SocketLoss.lost) }
     }
 
     // MARK: - State
@@ -555,14 +613,23 @@ public final class HostedRelayConnection: Sendable {
         }
     }
 
-    /// Forgets the live socket and fails the requests waiting on it.
-    private func detach(_ generation: Int) {
-        let pending = state.withLock { state in
-            if state.live?.generation == generation { state.live = nil }
-            defer { state.pending = [:] }
-            return state.pending
-        }
-        for waiter in pending.values { waiter.resume(throwing: HostedRelayError.unreachable) }
+    /// Forgets the socket of `generation` and fails the requests written to it; a newer socket's requests
+    /// stay. Internal for tests.
+    func detach(_ generation: Int) {
+        let retired = state.withLock { Self.retire(generation, in: &$0) }
+        for waiter in retired { waiter.continuation.resume(throwing: SocketLoss.lost) }
+    }
+
+    /// `generation` stops being live, and its waiters leave `pending` (lock held): the caller resumes them.
+    private static func retire(_ generation: Int, in state: inout State) -> [Waiter] {
+        if state.live?.generation == generation { state.live = nil }
+        let ids = state.pending.filter { $0.value.generation == generation }.map(\.key)
+        return ids.compactMap { state.pending.removeValue(forKey: $0) }
+    }
+
+    /// The live socket's generation, nil while disconnected. Internal for tests.
+    var liveGeneration: Int? {
+        state.withLock { $0.live?.generation }
     }
 
     /// `body`, or nil when `limit` passes on the clock first. Whenever `body` did not finish

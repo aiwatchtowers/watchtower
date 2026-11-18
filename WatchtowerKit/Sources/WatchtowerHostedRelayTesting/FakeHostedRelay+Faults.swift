@@ -15,6 +15,8 @@ extension FakeHostedRelay {
         var silenced: Set<String> = []
         /// Op case name → how many of its next calls run and then crash the server unanswered.
         var crashAfter: [String: Int] = [:]
+        /// Op case name → how many of its next socket calls run and then have their socket cut unanswered.
+        var cutAfter: [String: Int] = [:]
     }
 
     /// The next `times` calls of `op` (the oneof case name: `save`, `createUpload`,
@@ -54,6 +56,19 @@ extension FakeHostedRelay {
     /// answer is queued: the caller cannot tell whether it ran. `restart()` brings it back.
     public func crashAfterNext(_ op: String) {
         locked { state.faults.crashAfter[op, default: 0] += 1 }
+    }
+
+    /// The next call of `op` over a socket runs (its writes stay) and then that socket is cut before the
+    /// answer: the server stays up, so the caller's HTTPS works and its socket redials.
+    public func cutSocketAfterNext(_ op: String) {
+        locked { state.faults.cutAfter[op, default: 0] += 1 }
+    }
+
+    /// Whether `cutSocketAfterNext` armed a cut for this socket call of `op`, consumed (lock held).
+    func takeCutAfter(_ op: String) -> Bool {
+        guard let count = state.faults.cutAfter[op], count > 0 else { return false }
+        state.faults.cutAfter[op] = count > 1 ? count - 1 : nil
+        return true
     }
 
     /// `crash` with the lock held.

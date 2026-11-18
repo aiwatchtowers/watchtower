@@ -30,18 +30,34 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
         var pings = 0
         var pingWaiters: [CheckedContinuation<Void, any Error>] = []
         var closedWith: Int?
+        /// Request writes held by `hangsRequests`, resumed (throwing) by the client's close or the writer's cancellation.
+        var hungWrites: [Int: CheckedContinuation<Void, any Error>] = [:]
+        var nextWrite = 0
+        var cancelledWrites = 0
     }
 
     private let hello: HelloReply
     private let pongs: Bool
     private let subscribeAnswers: [String: Answer]
+    private let requestAnswers: [String: Answer]
+    private let hangsRequests: Bool
     private let state = OSAllocatedUnfairLock(initialState: State())
 
-    /// `subscribe`: the answer per zone (every other zone, and every other op, gets `Ok`).
-    init(hello: HelloReply = .ok, pongs: Bool = true, subscribe: [String: Answer] = [:]) {
+    /// `subscribe`: the answer per zone (every other zone, and every other op, gets `Ok`). `requests`:
+    /// the answer per op case name (`getDownload`, ...) for the ops but `subscribe`. `hangsRequests`: a
+    /// `Request` write never returns until the client closes the socket (`Hello` is still answered).
+    init(
+        hello: HelloReply = .ok,
+        pongs: Bool = true,
+        subscribe: [String: Answer] = [:],
+        requests: [String: Answer] = [:],
+        hangsRequests: Bool = false
+    ) {
         self.hello = hello
         self.pongs = pongs
         self.subscribeAnswers = subscribe
+        self.requestAnswers = requests
+        self.hangsRequests = hangsRequests
     }
 
     // MARK: - What the test sees
@@ -125,6 +141,7 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
 
     func send(_ data: Data) async throws {
         let frame = try Relay_V1_Frame(serializedBytes: data)
+        if hangsRequests, case .request = frame.kind { try await hang() }
         try state.withLock { state in
             guard state.closedWith == nil else { throw ClosedByClient() }
             state.sent.append(frame)
@@ -145,6 +162,46 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
             answer(request)
         default:
             break
+        }
+    }
+
+    /// Request writes held now (`hangsRequests`).
+    var hangingWrites: Int {
+        state.withLock { $0.hungWrites.count }
+    }
+
+    /// Request writes given up because their writer was cancelled.
+    var cancelledWrites: Int {
+        state.withLock { $0.cancelledWrites }
+    }
+
+    /// A request write that never completes (nothing is written): it ends, throwing, when the client closes
+    /// the socket or cancels the writer.
+    private func hang() async throws {
+        let id = state.withLock { state in
+            state.nextWrite += 1
+            return state.nextWrite
+        }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                let refusal: (any Error)? = state.withLock { state in
+                    if Task.isCancelled {
+                        state.cancelledWrites += 1
+                        return CancellationError()
+                    }
+                    if state.closedWith != nil { return ClosedByClient() }
+                    state.hungWrites[id] = continuation
+                    return nil
+                }
+                if let refusal { continuation.resume(throwing: refusal) }
+            }
+        } onCancel: {
+            let waiter = state.withLock { state -> CheckedContinuation<Void, any Error>? in
+                guard let waiter = state.hungWrites.removeValue(forKey: id) else { return nil }
+                state.cancelledWrites += 1
+                return waiter
+            }
+            waiter?.resume(throwing: CancellationError())
         }
     }
 
@@ -174,16 +231,17 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
     }
 
     func close(code: Int) async {
-        let (receiver, pingWaiters) = state.withLock { state in
+        let (receiver, waiters) = state.withLock { state in
             if state.closedWith == nil { state.closedWith = code }
             defer {
                 state.receiver = nil
                 state.pingWaiters = []
+                state.hungWrites = [:]
             }
-            return (state.receiver, state.pingWaiters)
+            return (state.receiver, state.pingWaiters + Array(state.hungWrites.values))
         }
         receiver?.resume(throwing: ClosedByClient())
-        for waiter in pingWaiters { waiter.resume(throwing: ClosedByClient()) }
+        for waiter in waiters { waiter.resume(throwing: ClosedByClient()) }
     }
 
     // MARK: - Private
@@ -194,6 +252,8 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
         var answer = Answer.ok
         if case .subscribe(let subscribe) = request.op, let zone = subscribe.zones.first {
             answer = subscribeAnswers[zone] ?? .ok
+        } else if let op = request.op, let scripted = requestAnswers[Mirror(reflecting: op).children.first?.label ?? ""] {
+            answer = scripted
         }
         switch answer {
         case .ok:

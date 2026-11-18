@@ -134,6 +134,12 @@ extension FakeHostedRelay {
                 response = respond(request, bearer: socket.token).response
                 // `crashAfterNext`: the op ran, the socket was cut before the answer.
                 if state.faults.crashed { return }
+                // `cutSocketAfterNext`: the op ran, this socket is cut before the answer.
+                if let op = request.op, takeCutAfter(Self.name(op)) {
+                    socket.cut()
+                    state.sockets.removeAll { $0 === socket }
+                    return
+                }
             }
             response.id = request.id
             var out = Relay_V1_Frame()
