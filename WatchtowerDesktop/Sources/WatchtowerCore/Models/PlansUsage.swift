@@ -224,7 +224,8 @@ package struct PlansOperationError: Decodable, Equatable, Sendable {
     package let code: String
     package let message: String
     package static let codes = ["no_credentials", "unsupported_auth", "cli_missing", "unsupported_cli", "network", "parse",
-                                "storage", "busy", "feature_disabled", "cancelled", "timeout"]
+                                "storage", "busy", "feature_disabled", "cancelled", "timeout",
+                                "cloud_bedrock", "cloud_vertex", "cloud_foundry"]
     package init(code: String, message: String = "") { self.code = code; self.message = message }
 }
 

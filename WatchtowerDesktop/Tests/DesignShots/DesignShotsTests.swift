@@ -18,6 +18,17 @@ final class DesignShotsTests: XCTestCase {
         super.tearDown()
     }
 
+    /// Every background AI consent frame (#1886) has its shot.
+    func testEveryBackgroundAIConsentFrameHasAShot() {
+        let names = Set(BackgroundAIConsentShotFixtures.shots.map(\.name))
+        for step in BackgroundAIConsentShotFixtures.Step.allCases {
+            XCTAssertTrue(names.contains("ai-consent-step-\(step.rawValue)"))
+        }
+        for state in BackgroundAIConsentShotFixtures.Settings.allCases {
+            XCTAssertTrue(names.contains("ai-consent-settings-\(state.rawValue)"))
+        }
+    }
+
     func testShotNamesAreUnique() {
         let shots = DesignShotCatalog.all
         XCTAssertFalse(shots.isEmpty, "the catalog registers no shots")
@@ -93,7 +104,16 @@ final class DesignShotsTests: XCTestCase {
         })
     }
 
+    /// The plan limits without a token spec's mockups (#1885).
+    func testPlanLimitsNoTokenShotsRender() throws {
+        try renderShots(PlanLimitsNoTokenShotFixtures.shots)
+    }
+
     /// The Slack Full / Live screens spec's mockups (#1779).
+    func testBackgroundAIConsentShotsRender() throws {
+        try renderShots(BackgroundAIConsentShotFixtures.shots)
+    }
+
     func testSlackFullLiveShotsRender() throws {
         try renderShots(SlackFullLiveShotFixtures.shots)
     }
@@ -174,6 +194,11 @@ final class DesignShotsTests: XCTestCase {
     /// The adaptive Slack sync plan's Statistics mockups (#1709).
     func testSlackAdaptiveSyncShotsRender() throws {
         try renderShots(SlackAdaptiveSyncShotFixtures.shots)
+    }
+
+    /// The session's Spec review state mockups (board #1945).
+    func testSpecReviewStateShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("session-state-spec-review") })
     }
 
     /// The Slack Developer Policy hygiene spec's mockups (#1769).

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/db"
 	"watchtower/internal/llmusage"
 )
@@ -131,6 +133,10 @@ type BoardAnalyzer struct {
 	language   string
 	logger     *log.Logger
 
+	// consent reads the background-AI consent for the auto-refresh (nil =
+	// aiconsent.Current): a refresh started by a sync cycle is background AI.
+	consent aiconsent.Reader
+
 	// Accumulated usage from LLM calls.
 	totalInputTokens  int
 	totalOutputTokens int
@@ -199,6 +205,18 @@ func (a *BoardAnalyzer) addUsage(usage *ai.Usage) {
 	a.totalInputTokens += usage.InputTokens()
 	a.totalOutputTokens += usage.OutputTokens()
 	a.totalAPITokens += usage.TotalAPITokens()
+}
+
+// SetConsent injects the background-AI consent reader (nil =
+// aiconsent.Current).
+func (a *BoardAnalyzer) SetConsent(r aiconsent.Reader) {
+	a.consent = r
+}
+
+// backgroundAIAllowed reports whether a model call on ctx may start now
+// (aiconsent.CheckWith; a refusal is a skip, not an error).
+func (a *BoardAnalyzer) backgroundAIAllowed(ctx context.Context) bool {
+	return aiconsent.CheckWith(ctx, a.consent) == nil
 }
 
 // SetLanguage sets the output language for board analysis.
@@ -440,6 +458,13 @@ type RefreshResult struct {
 // generated, existing user_overrides_json stale_thresholds are merged on top.
 // If autoRefresh is false, only logs which boards need refresh without running LLM.
 func (a *BoardAnalyzer) CheckAndRefreshProfiles(ctx context.Context, autoRefresh bool) ([]RefreshResult, error) {
+	// The auto-refresh re-analyzes with the model: a background caller
+	// (the daemon's Jira sync) skips it whole while background AI is
+	// paused — no fetch, no call, no retry-budget spend. The sync itself
+	// is not gated. An owner's command passes.
+	if autoRefresh && !a.backgroundAIAllowed(ctx) {
+		return nil, nil
+	}
 	boards, err := a.db.GetJiraSelectedBoards(a.accountID)
 	if err != nil {
 		return nil, fmt.Errorf("getting selected boards: %w", err)
@@ -546,6 +571,12 @@ func (a *BoardAnalyzer) skipRefresh(boardID int, full db.JiraBoard, newHash stri
 // today" line (skipRefresh's later same-day skips stay silent instead of
 // repeating it).
 func (a *BoardAnalyzer) recordAndLogFailedRefresh(boardID int, hash string, err error) {
+	if errors.Is(err, aiconsent.ErrPaused) {
+		// Refused because background AI is paused: deferred, not a failed
+		// attempt, so it spends none of today's retry budget.
+		a.logger.Printf("board %d: re-analysis skipped: background AI is paused", boardID)
+		return
+	}
 	attempts := a.recordFailedRefresh(boardID, hash)
 	if attempts >= maxDailyBoardRefreshAttempts {
 		a.logger.Printf("board %d: giving up for today after %d failed refresh attempts, will retry tomorrow: %v",

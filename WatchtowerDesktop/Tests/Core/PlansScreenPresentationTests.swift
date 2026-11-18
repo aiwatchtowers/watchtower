@@ -72,4 +72,27 @@ final class PlansScreenPresentationTests: XCTestCase {
         XCTAssertEqual(screen.statusDetail, "Check each provider's message, then retry. Providers update independently.")
         XCTAssertEqual(PlansScreenCopy.providerAction(screen.providers[0].presentation), "Retry Claude")
     }
+
+    /// The surface block shows whenever the reader supplies a breakdown and
+    /// hides when it does not (#1885: `get_usage` may answer without one).
+    func testSurfaceBreakdownShowsWhenPresentAndHidesWhenAbsent() {
+        let weekly = PlanUsageLimit(key: "weekly_all", label: "Weekly", group: "weekly", percent: 42,
+                                    resetsAt: now.addingTimeInterval(3600), severity: nil,
+                                    projection: PlanUsageProjection(state: "collecting", hitAt: nil, ratePerHour: 0), windowDurationMinutes: 10080)
+        let session = PlanUsageLimit(key: "session", label: "5-hour", group: "session", percent: 17,
+                                     resetsAt: now.addingTimeInterval(1800), severity: nil,
+                                     projection: PlanUsageProjection(state: "collecting", hitAt: nil, ratePerHour: 0), windowDurationMinutes: 300)
+        func screen(_ breakdown: [PlanUsageBreakdownRow]) -> PlansScreenPresentation {
+            PlansScreenPresentation(claude: PlanUsageStatus(state: "ok", reason: "", plan: "max", fetchedAt: now, lastError: "",
+                                                            limits: [weekly, session], breakdown: breakdown),
+                                    codex: nil, now: now)
+        }
+        let rows = screen([PlanUsageBreakdownRow(key: "code", label: "Claude Code", percent: 82),
+                           PlanUsageBreakdownRow(key: "chats", label: "Chats", percent: 18)])
+        let none = screen([])
+        XCTAssertTrue(rows.providers[0].otherLimits.isEmpty, "precondition: only the breakdown can add details")
+        XCTAssertTrue(none.providers[0].otherLimits.isEmpty, "precondition: only the breakdown can add details")
+        XCTAssertTrue(rows.hasDetails)
+        XCTAssertFalse(none.hasDetails)
+    }
 }

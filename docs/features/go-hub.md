@@ -190,7 +190,6 @@ checked against the code named).
 | `internal/workbenchgit` `.worktreeinclude` (`clone_other.go`) | `clonefile` | plain copy |
 | `internal/hub/platform` (`away_linux.go`, `awake_linux.go`) | console lock, input idle and display sleep; keep-awake | always away, no keep-awake (`Hold` does nothing) |
 | `internal/chat` sandbox (`NewChildSandbox`) | `sandbox-exec` profile | refused ("needs macOS"), so claude.ai mode stays off |
-| `internal/planusage` (`DefaultCredentialSource`) | Keychain, then `~/.claude/.credentials.json` | the credentials file only, no Keychain |
 | `internal/daemon` process identity (`procident_other.go`) | `kern.proc.pid` sysctl start time | `ps -o lstart=` under `LC_ALL=C` |
 | Phone line or ask answer the session cannot take (`internal/hub/actions/handlers`: `deps.go` `Clipboard`/`DesktopHost`, `session_input.go`, `ask.go`) | a line: copied to the clipboard (pbcopy) while the Desktop heartbeat is fresh, echo `failed(cannot_type)` saying so; an ask answer: saved, `failed(cannot_type)` | no Desktop heartbeat, so no clipboard: `failed(cannot_type)` with `CannotTypeMessage` (an ask answer still saved) |
 | `internal/sqlcipher` crypto (`wt_cgo.go`) | CommonCrypto | OpenSSL `libcrypto` (dynamic) |
@@ -741,6 +740,11 @@ The hub runs phone-started chat turns: `internal/chatstore` (the Go turn store) 
   15:20), 1 phone(s)` (local time, the date when not today; "never saved since the hub started" before the first
   save). `--json` already carried `relay.state`/`since`/`last_saved_at`; Settings → Mobile's Relay row already reads
   them ("Relay unavailable for <N> min.", "Connected · last change delivered … ago").
+- **Heartbeat `background_ai`** (optional string, #1886): `allowed`, `paused` (the owner's answer, or none yet) or
+  `organization` (paused by the AllowBackgroundAI policy). `runtime.go`'s `backgroundAIValue(aiconsent.Current())`
+  feeds `HeartbeatFacts.BackgroundAI` (nil or empty = absent); a change restamps the heartbeat at once, as `caps`
+  does. The Kit's `HeartbeatPayload.backgroundAI` is `BackgroundAIStatus?`; an absent key (an older hub) and an
+  unknown value read as nil.
 - **Heartbeat `stuck_since`** (optional Unix seconds): when the oldest kind whose last attempt did not go through
   whole first failed — a failed save or source read, or a record the cycle skipped (oversized, unsealable, refused by
   the transport). `Publisher.StuckSince` keeps it per kind (`slices/stuck.go`) until an attempt goes through whole; an

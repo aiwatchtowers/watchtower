@@ -60,6 +60,13 @@ enum DesignShotCatalog {
             DesignShot(name: "session-rows-title-narrow", size: NSSize(width: 214, height: 0)) {
                 DesignShotFixtures.sessionRowsTitle(width: 190)
             },
+            // Board #1945: Spec review beside Working, Ready for review, Idle.
+            DesignShot(name: "session-state-spec-review", size: NSSize(width: 300, height: 0)) {
+                SpecReviewStateShotFixtures.rows(width: 276)
+            },
+            DesignShot(name: "session-state-spec-review-narrow", size: NSSize(width: 214, height: 0)) {
+                SpecReviewStateShotFixtures.rows(width: 190)
+            },
             DesignShot(name: "chat-rows", size: NSSize(width: 560, height: 280)) {
                 AnyView(DesignShotFixtures.chatRows().padding(12).shotFrame().detailBackground())
             },
@@ -617,11 +624,13 @@ enum DesignShotCatalog {
             + SlackFullLiveShotFixtures.shots // Slack Full / Live screens spec (#1779), design only.
             + SlackAdaptiveSyncShotFixtures.shots // Adaptive Slack sync, Statistics → Channels (#1709).
             + SlackPolicyShotFixtures.shots // Slack Developer Policy hygiene (#1769): People frames real, the rest design only.
+            + PlanLimitsNoTokenShotFixtures.shots // Plan limits without a token spec (#1885), design only.
             + IPhoneChatShotFixtures.shots // The iPhone chat's Mac side (#1791), mockup 4b.
             + UnifiedChatShotFixtures.shots // The unified chat's new states and baselines (#1822 T0).
             + ComposerShotFixtures.shots // The composer on every Mac surface, before and after ChatUI (#1822 T13).
             + ApprovalCardShotFixtures.shots // The approval card before and after its move to ChatUI (#1822 T15).
             + RoutingPillShotFixtures.shots // The routing pill and fallback card before and after ChatUI (#1822 T17).
+            + BackgroundAIConsentShotFixtures.shots // Background AI consent spec (#1886), design only.
     }
 }
 

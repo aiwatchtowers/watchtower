@@ -66,6 +66,16 @@ package enum ReadinessFeature: String, CaseIterable, Sendable {
     /// Whether the feature has nothing to work on until the first Slack sync
     /// finishes (when Slack is connected). Slack sync is that sync itself.
     package var readsSyncedData: Bool { self != .slackSync }
+
+    /// Whether the daemon makes the feature with background AI, which waits
+    /// for the owner's or the organization's "yes" (#1886, spec §6.2). Sync,
+    /// Inbox's rules and the knowledge index run either way.
+    package var usesBackgroundAI: Bool {
+        switch self {
+        case .digests, .streamDigests, .tracks, .peopleCards, .briefing, .dayPlan, .ideas, .memory: true
+        case .slackSync, .inbox, .knowledgeIndex, .calendar, .jira, .linear: false
+        }
+    }
 }
 
 /// The source a feature reads.
@@ -160,6 +170,11 @@ package enum Readiness: Equatable, Sendable {
     /// On, with no content yet, and the daemon skips it while Slack Digests
     /// is off (`ReadinessFeature.runsOnlyWithDigests`, #575).
     case needsDigests
+    /// On, with no content yet, and background AI is paused
+    /// (`ReadinessFeature.usesBackgroundAI`, #1886): by the owner or not
+    /// answered yet, or turned off by the organization (`managed`, no
+    /// button).
+    case backgroundAIPaused(managed: Bool)
     /// The daemon has been down for `FeatureReadiness.daemonDownGrace`:
     /// nothing scheduled will happen until it is started (from the app-wide
     /// banner; the state itself carries no button).
@@ -171,6 +186,11 @@ package enum Readiness: Equatable, Sendable {
 
     /// A Slack feature while Slack is Live only (screens spec §2.1).
     package static let needsFullSlack = Self.needsSource(.fullSlack)
+
+    package var isBackgroundAIPaused: Bool {
+        if case .backgroundAIPaused = self { return true }
+        return false
+    }
 }
 
 /// The newest `pipeline_runs` row of one pipeline.
@@ -240,6 +260,8 @@ package struct ReadinessInputs: Equatable {
     /// is on (each provider's newest probe batch, SLACKMODE-01). Turns a
     /// missing Slack into `Readiness.needsFullSlack`.
     package var slackLiveOnly: Bool
+    /// The background AI consent (`AppState.backgroundAI`).
+    package var backgroundAI: BackgroundAIConsent.State
 
     package init(
         now: Date,
@@ -258,7 +280,8 @@ package struct ReadinessInputs: Equatable {
         memoryHasRun: Bool = false,
         backfillOff: Bool = false,
         jiraBoardsSelected: Bool = true,
-        slackLiveOnly: Bool = false
+        slackLiveOnly: Bool = false,
+        backgroundAI: BackgroundAIConsent.State = .allowedByOwner
     ) {
         self.now = now
         self.disabledFeatureIDs = disabledFeatureIDs
@@ -277,5 +300,6 @@ package struct ReadinessInputs: Equatable {
         self.backfillOff = backfillOff
         self.jiraBoardsSelected = jiraBoardsSelected
         self.slackLiveOnly = slackLiveOnly
+        self.backgroundAI = backgroundAI
     }
 }

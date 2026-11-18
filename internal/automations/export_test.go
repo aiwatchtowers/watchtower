@@ -77,3 +77,6 @@ func SetLiveCadenceZone(t interface{ Cleanup(func()) }, zone *time.Location) {
 	liveCadenceZone = func() *time.Location { return zone }
 	t.Cleanup(func() { liveCadenceZone = old })
 }
+
+// ShellEnv exposes shellEnv to the external tests.
+var ShellEnv = shellEnv

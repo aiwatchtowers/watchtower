@@ -331,6 +331,7 @@ final class GettingReadyTests: XCTestCase {
             (.waitingForSync(detail: nil), .waiting, false),
             (.scheduled(.inAboutADay), .waiting, false),
             (.needsDigests, .waiting, false),
+            (.backgroundAIPaused(managed: false), .waiting, false),
             // Not terminal: a zone of stopped cards must not complete and fold.
             (.daemonStopped, .waiting, false),
             (nil, .waiting, false)
@@ -359,5 +360,54 @@ final class GettingReadyTests: XCTestCase {
         XCTAssertEqual(sourceRows(second.zone), [])
         XCTAssertNil(second.memory.completedAt)
         XCTAssertFalse(try XCTUnwrap(cards(second.zone).last).isTerminal)
+    }
+
+    // MARK: - Background AI paused (#1886, spec §6.3)
+
+    /// Home's one paused card speaks for the AI features: their cards leave
+    /// the zone, which keeps its other cards, its Connect rows and its Hide.
+    func testPausedLeavesAIFeatureCardsOut() {
+        let readiness = readinessMap([
+            .slackSync: .preparing(detail: nil),
+            .digests: .backgroundAIPaused(managed: false),
+            .tracks: .backgroundAIPaused(managed: false),
+            .calendar: .needsSource(.calendar),
+            .jira: .needsSource(.jira)
+        ])
+        let result = step(readiness)
+        XCTAssertEqual(cards(result.zone).map(\.feature), [.slackSync])
+        XCTAssertEqual(sourceRows(result.zone).map(\.source), [.calendar, .jira])
+        XCTAssertEqual(step(readiness, memory: GettingReadyMemory(hiddenByOwner: true)).zone, .hidden)
+    }
+
+    /// The zone never completes while AI features wait on the answer: with
+    /// every other card ready it stays shown (cards, rows, Hide), and once it
+    /// is allowed their cards come back instead of a zone gone for good.
+    func testPausedHoldsCompletion() {
+        let first = step(readinessMap([
+            .slackSync: .preparing(detail: nil), .digests: .backgroundAIPaused(managed: true), .jira: .needsSource(.jira)
+        ]))
+        let second = step(
+            readinessMap([.slackSync: .ready, .digests: .backgroundAIPaused(managed: true), .jira: .needsSource(.jira)]),
+            memory: first.memory, sawUnready: first.sawUnready)
+        XCTAssertEqual(cards(second.zone).map(\.feature), [.slackSync])
+        XCTAssertEqual(sourceRows(second.zone).map(\.source), [.jira])
+        XCTAssertNil(second.memory.completedAt)
+
+        let allowed = step(
+            readinessMap([.slackSync: .ready, .digests: .scheduled(.nextCycle(minutes: 15))]),
+            memory: second.memory, sawUnready: second.sawUnready)
+        XCTAssertEqual(cards(allowed.zone).map(\.feature), [.slackSync, .digests])
+    }
+
+    /// Nothing left to show (every sourced feature paused, no Connect row):
+    /// hidden, and nothing persisted as complete.
+    func testPausedWithNothingLeftHidesWithoutCompleting() {
+        let result = step(readinessMap([
+            .digests: .backgroundAIPaused(managed: false), .briefing: .backgroundAIPaused(managed: false)
+        ]))
+        XCTAssertEqual(result.zone, .hidden)
+        XCTAssertNil(result.memory.completedAt)
+        XCTAssertNil(result.memory.firstShownAt)
     }
 }

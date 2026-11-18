@@ -684,4 +684,69 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertEqual(evaluate(.inbox, input), .needsSource(.anySource))
         XCTAssertEqual(FeatureReadiness.line(.needsSource(.slack)), "Connect Slack to get this")
     }
+
+    // MARK: - Background AI paused (#1886, spec §6.2)
+
+    private let paused = BackgroundAIConsent.resolve(answer: "paused", policy: nil)
+    private let orgOff = BackgroundAIConsent.resolve(answer: nil, policy: false)
+
+    func testBackgroundAIPausedOnlyForAIFeatures() {
+        var input = inputs(now: today(10))
+        // Stream digests read Jira or mail: mail connected lets it reach the gate.
+        input.connected = ConnectedSources(slack: true, mail: true)
+        let allowed = FeatureReadiness.evaluate(input)
+        input.backgroundAI = paused
+        let result = FeatureReadiness.evaluate(input)
+        let aiFeatures: Set<ReadinessFeature> = [
+            .digests, .streamDigests, .tracks, .peopleCards, .briefing, .dayPlan, .ideas, .memory
+        ]
+        XCTAssertEqual(Set(ReadinessFeature.allCases.filter(\.usesBackgroundAI)), aiFeatures)
+        for feature in aiFeatures {
+            XCTAssertEqual(result[feature], .backgroundAIPaused(managed: false), "\(feature)")
+        }
+        for feature: ReadinessFeature in [.slackSync, .inbox, .knowledgeIndex, .calendar, .jira, .linear] {
+            XCTAssertEqual(result[feature], allowed[feature], "\(feature)")
+        }
+    }
+
+    func testContentWinsOverPaused() {
+        var input = inputs(now: today(10))
+        input.backgroundAI = paused
+        input.contentPresent = [.digests]
+        XCTAssertEqual(evaluate(.digests, input), .ready)
+        // Off, a missing source and the Slack Digests wait come first too.
+        input.disabledFeatureIDs = ["ideas"]
+        XCTAssertEqual(evaluate(.ideas, input), .off)
+        input.disabledFeatureIDs = ["slack-digests"]
+        XCTAssertEqual(evaluate(.tracks, input), .needsDigests)
+        input.connected = .none
+        XCTAssertEqual(evaluate(.memory, input), .needsSource(.anySource))
+    }
+
+    func testPausedBeforeDaemonStopped() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.backgroundAI = paused
+        input.daemonRunning = false
+        input.daemonNotRunningSince = now.addingTimeInterval(-FeatureReadiness.daemonDownGrace - 1)
+        XCTAssertEqual(evaluate(.digests, input), .backgroundAIPaused(managed: false))
+        XCTAssertEqual(evaluate(.slackSync, input), .daemonStopped)
+        // A paused state is a fact, not a promise: the owner gate keeps it.
+        XCTAssertEqual(
+            FeatureReadiness.honoringOwner(.backgroundAIPaused(managed: false), of: .briefing, ownerKnown: false),
+            .backgroundAIPaused(managed: false))
+    }
+
+    func testManagedPausedHasNoButton() {
+        var input = inputs(now: today(10))
+        input.backgroundAI = orgOff
+        XCTAssertEqual(evaluate(.digests, input), .backgroundAIPaused(managed: true))
+        XCTAssertEqual(FeatureReadiness.line(.backgroundAIPaused(managed: true)), BackgroundAIConsentCopy.readinessOrg)
+        XCTAssertEqual(FeatureReadiness.line(.backgroundAIPaused(managed: false)), BackgroundAIConsentCopy.readinessPaused)
+        // The organization's "yes" and the owner's both run.
+        input.backgroundAI = BackgroundAIConsent.resolve(answer: nil, policy: true)
+        XCTAssertEqual(evaluate(.digests, input), .scheduled(.nextCycle(minutes: 15)))
+        input.backgroundAI = .allowedByOwner
+        XCTAssertEqual(evaluate(.digests, input), .scheduled(.nextCycle(minutes: 15)))
+    }
 }

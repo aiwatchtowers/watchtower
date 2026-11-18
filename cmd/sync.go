@@ -18,6 +18,7 @@ import (
 
 	"encoding/json"
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
@@ -1032,12 +1033,14 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 		d.SetAgentLogDB(al, agentlogdb.PathFor(cfg.DBPath()))
 	}
 	d.SetPIDPath(pidFilePath(cfg))
-	d.SetSpecReviewLaunch(func(askID int64) error {
+	// The sweep's relaunch is background work: the reviewer carries its
+	// origin (D20 of #1886).
+	d.SetSpecReviewLaunch(func(ctx context.Context, askID int64) error {
 		exe, err := specReviewExe()
 		if err != nil {
 			return fmt.Errorf("locating the watchtower binary: %w", err)
 		}
-		return LaunchSpecReview(exe, askID, filepath.Join(cfg.WorkspaceDir(), "logs"))
+		return LaunchSpecReview(exe, askID, filepath.Join(cfg.WorkspaceDir(), "logs"), aiconsent.ChildEnv(ctx))
 	})
 	// Every pipeline is constructed unconditionally now (Task 3 demoted
 	// digest.enabled from a master switch to a per-phase gate) — each is a
@@ -1175,8 +1178,10 @@ func startChatEngine(ctx context.Context, cfg *config.Config, logger *log.Logger
 		// The AI title after a chat's first complete answer, `watchtower chat
 		// title`'s code; the automatic routing's preferred provider is the
 		// config the Mac's automatic routing reads.
+		// The title serves the owner's chat, so it is an owner call even in
+		// this background process (Decision 3 of #1886).
 		Title: func(ctx context.Context, conv int64) error {
-			_, err := chat.GenerateTitle(ctx, write, cfg, chatTitleGeneratorFactory(cfg), conv)
+			_, err := chat.GenerateTitle(aiconsent.WithOwnerStarted(ctx), write, cfg, daemonChatTitleGenerator(cfg), conv)
 			return err
 		},
 		PreferredProvider: cfg.AI.ConfiguredProviderID()})

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/chat"
 	"watchtower/internal/chatstore"
 )
@@ -805,15 +806,21 @@ type execProcess struct {
 	exited chan struct{}
 }
 
+// startCmd starts a session child's command; tests capture the command
+// without starting it.
+var startCmd = (*exec.Cmd).Start
+
 // execStart spawns exe in its own process group, with the daemon's working
-// directory and environment; stderr is discarded (FILES-01: it may carry
-// content).
+// directory and environment less the background-AI origin (each spawn serves
+// one owner turn: aiconsent.OwnerEnv, Decision 3 of #1886); stderr is
+// discarded (FILES-01: it may carry content).
 func execStart(exe string) StartFunc {
 	return func(argv []string) (Process, error) {
 		if exe == "" {
 			return nil, errors.New("chatengine: no watchtower executable")
 		}
 		cmd := exec.Command(exe, argv...)
+		cmd.Env = aiconsent.OwnerEnv(os.Environ())
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		pr, pw, err := os.Pipe()
 		if err != nil {
@@ -825,7 +832,7 @@ func execStart(exe string) StartFunc {
 			_, _ = pr.Close(), pw.Close()
 			return nil, err
 		}
-		if err := cmd.Start(); err != nil {
+		if err := startCmd(cmd); err != nil {
 			_, _ = pr.Close(), pw.Close()
 			return nil, err
 		}

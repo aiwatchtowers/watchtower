@@ -65,6 +65,30 @@ final class HomeViewTests: XCTestCase {
         XCTAssertThrowsError(try loading.inspect().find(text: "Nothing needs you right now."))
     }
 
+    // MARK: - Background AI (#1886, spec §6.3)
+
+    /// The paused card shows whatever the Getting ready zone does (hidden
+    /// here), and its Allow opens the consent screen; the organization's
+    /// card has no button.
+    func testBackgroundAICardOutsideGettingReady() throws {
+        var allowed = 0
+        let paused = HomeContent(
+            snapshot: viewSnapshot(.hidden), today: Date(), onLink: { _ in }, onHideGettingReady: {},
+            onAllowBackgroundAI: { allowed += 1 },
+            backgroundAI: HomeBackgroundAICard.make(BackgroundAIConsent.resolve(answer: nil, policy: nil)))
+        XCTAssertNoThrow(try paused.inspect().find(text: BackgroundAIConsentCopy.homeTitle))
+        try paused.inspect().find(button: BackgroundAIConsentCopy.allowAction).tap()
+        XCTAssertEqual(allowed, 1)
+
+        let org = HomeContent(
+            snapshot: nil, today: Date(), onLink: { _ in }, onHideGettingReady: {},
+            backgroundAI: HomeBackgroundAICard.make(BackgroundAIConsent.resolve(answer: nil, policy: false)))
+        XCTAssertNoThrow(try org.inspect().find(text: BackgroundAIConsentCopy.homeOrgBody))
+        XCTAssertThrowsError(try org.inspect().find(button: BackgroundAIConsentCopy.allowAction))
+
+        XCTAssertThrowsError(try makeContent(viewSnapshot()).inspect().find(text: BackgroundAIConsentCopy.homeTitle))
+    }
+
     // MARK: - Layout
 
     /// The columns share the whole width about 60/40 (the mockup's 1.55 : 1).

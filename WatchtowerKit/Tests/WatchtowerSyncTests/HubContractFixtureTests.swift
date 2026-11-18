@@ -75,6 +75,9 @@ final class HubContractFixtureTests: XCTestCase {
             // #1873: stuck_since reads as a date and re-encodes as the hub wrote it; absent unless a kind is stuck.
             XCTAssertEqual(heartbeat.stuckSince?.timeIntervalSince1970, kit["stuck_since"] as? Double, name)
             XCTAssertEqual(encoded["stuck_since"] as? Double, json["stuck_since"] as? Double, name)
+            // #1886: background_ai is optional; an unknown value reads as nil.
+            XCTAssertEqual(heartbeat.backgroundAI?.rawValue, kit["background_ai"] as? String, name)
+            XCTAssertEqual(encoded["background_ai"] as? String, json["background_ai"] as? String, name)
             // Re-encoded, the capabilities this build knows are what the hub wrote (an unknown key is dropped).
             let known = (json["capabilities"] as? [String: Any])?.filter { ["recordings", "chat", "chat_reason"].contains($0.key) }
             XCTAssertEqual(encoded["capabilities"] as? NSDictionary, known as NSDictionary?, name)

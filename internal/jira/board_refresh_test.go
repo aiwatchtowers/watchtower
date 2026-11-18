@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/db"
 )
 
@@ -137,4 +139,51 @@ func TestAnalyzeAllSelected(t *testing.T) {
 	n, err = NewBoardAnalyzer(nil, d, &scriptedAI{reply: `{"workflow_stages":[]}`}, 1).AnalyzeAllSelected(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 0, n, "an empty workflow is a failed analysis")
+}
+
+// asDaemonProcess makes the process default origin background (the daemon)
+// for one test, as `sync --daemon` sets it.
+func asDaemonProcess(t *testing.T) {
+	t.Helper()
+	none := func(string) string { return "" }
+	aiconsent.InitProcess("daemon", none)
+	t.Cleanup(func() { aiconsent.InitProcess("", none) })
+}
+
+// BGAI-01 / D18: the board auto-refresh a sync cycle starts is background
+// AI. Paused, it is skipped whole: no model call, no result, no retry
+// budget spent. Allowed again, the same board is re-analyzed.
+func TestCheckAndRefreshProfiles_PausedSkipsBackgroundRefresh(t *testing.T) {
+	asDaemonProcess(t)
+	d := refreshTestDB(t, "oldhash", time.Now().UTC().Add(-25*time.Hour).Format(time.RFC3339), "")
+	gen := &scriptedAI{reply: freshProfileJSON}
+	a := NewBoardAnalyzer(nil, d, gen, 1)
+	a.SetConsent(func() aiconsent.State { return aiconsent.Resolve(aiconsent.AnswerPaused, nil) })
+
+	results, err := a.CheckAndRefreshProfiles(context.Background(), true)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+	assert.Empty(t, gen.calls, "no model call while paused")
+	assert.Empty(t, a.refreshAttempts, "no retry budget spent")
+
+	a.SetConsent(func() aiconsent.State { return aiconsent.Resolve(aiconsent.AnswerAllowed, nil) })
+	results, err = a.CheckAndRefreshProfiles(context.Background(), true)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].Refreshed)
+}
+
+// A re-analysis refused with ErrPaused (the per-call backstop) is deferred,
+// not a failed attempt: today's retry budget stays whole.
+func TestCheckAndRefreshProfiles_ErrPausedSpendsNoAttempt(t *testing.T) {
+	d := refreshTestDB(t, "oldhash", time.Now().UTC().Add(-25*time.Hour).Format(time.RFC3339), "")
+	gen := &scriptedAI{err: fmt.Errorf("query: %w", aiconsent.ErrPaused)}
+	a := NewBoardAnalyzer(nil, d, gen, 1)
+
+	for range maxDailyBoardRefreshAttempts + 1 {
+		_, err := a.CheckAndRefreshProfiles(context.Background(), true)
+		require.NoError(t, err)
+	}
+	assert.Len(t, gen.calls, maxDailyBoardRefreshAttempts+1, "never given up for the day")
+	assert.Empty(t, a.refreshAttempts)
 }

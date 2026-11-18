@@ -158,7 +158,8 @@ final class CoachCenter {
         // Unstructured on purpose: awaiting it does not tie it to this caller.
         let call = Task { [runner] () -> Result<Data, Error> in
             do {
-                return .success(try await runner.run(args: ["coach", "run", "--json"], timeout: Self.runTimeout))
+                return .success(try await runner.runModel(
+                    args: ["coach", "run", "--json"], origin: .owner, timeout: Self.runTimeout, stdin: nil))
             } catch {
                 return .failure(error)
             }

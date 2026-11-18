@@ -21,6 +21,20 @@ package enum TerminalSessionQueryError: LocalizedError, Equatable {
 package enum TerminalSessionQueries {
     private static let now = "strftime('%Y-%m-%dT%H:%M:%SZ','now')"
 
+    /// A `TerminalSession` read's columns: the row, plus its automation
+    /// run's trigger (`automationRunTrigger`) and whether that run was
+    /// claimed (`automationRunClaimed`: out of the queue with a start time,
+    /// and not the paused hold's cancel; Go `sessionstart.runClaimed`) for
+    /// the origin its agent and its AI title carry. `table` is the row's
+    /// table name or alias.
+    package static func sessionColumns(_ table: String = "terminal_sessions") -> String {
+        let run = "FROM automation_runs r WHERE r.id = \(table).automation_run_id"
+        let claimed = "r.status <> 'queued' AND r.started_at IS NOT NULL "
+            + "AND NOT (r.status = 'cancelled' AND r.error = '\(CLIRunnerError.backgroundAIPausedText)')"
+        return "\(table).*, (SELECT r.trigger \(run)) AS automation_run_trigger, "
+            + "(SELECT \(claimed) \(run)) AS automation_run_claimed"
+    }
+
     package struct NewSession: Sendable {
         package var projectID: Int64?
         package var kind: TerminalSession.Kind
@@ -85,7 +99,7 @@ package enum TerminalSessionQueries {
     }
 
     package static func fetch(_ db: Database, id: Int64) throws -> TerminalSession? {
-        try TerminalSession.fetchOne(db, sql: "SELECT * FROM terminal_sessions WHERE id = ?", arguments: [id])
+        try TerminalSession.fetchOne(db, sql: "SELECT \(sessionColumns()) FROM terminal_sessions WHERE id = ?", arguments: [id])
     }
 
     /// Where a start Go runs (`workbench session start`, Go hub 3 Task 8)
@@ -130,7 +144,7 @@ package enum TerminalSessionQueries {
         try TerminalSession.fetchAll(
             db,
             sql: """
-                SELECT * FROM terminal_sessions WHERE project_id = ? AND delete_requested_at IS NULL
+                SELECT \(sessionColumns()) FROM terminal_sessions WHERE project_id = ? AND delete_requested_at IS NULL
                 ORDER BY last_active_at DESC, id DESC
                 """,
             arguments: [projectID]
@@ -143,7 +157,7 @@ package enum TerminalSessionQueries {
         try TerminalSession.fetchAll(
             db,
             sql: """
-                SELECT * FROM terminal_sessions WHERE project_id IS NOT NULL AND delete_requested_at IS NULL
+                SELECT \(sessionColumns()) FROM terminal_sessions WHERE project_id IS NOT NULL AND delete_requested_at IS NULL
                 ORDER BY last_active_at DESC, id DESC
                 """
         )
@@ -153,7 +167,7 @@ package enum TerminalSessionQueries {
         try TerminalSession.fetchAll(
             db,
             sql: """
-                SELECT * FROM terminal_sessions WHERE project_id IS NULL AND delete_requested_at IS NULL
+                SELECT \(sessionColumns()) FROM terminal_sessions WHERE project_id IS NULL AND delete_requested_at IS NULL
                 ORDER BY last_active_at DESC, id DESC
                 """
         )
@@ -215,7 +229,7 @@ package enum TerminalSessionQueries {
         try TerminalSession.fetchAll(
             db,
             sql: """
-                SELECT * FROM terminal_sessions WHERE target_id = ? AND delete_requested_at IS NULL
+                SELECT \(sessionColumns()) FROM terminal_sessions WHERE target_id = ? AND delete_requested_at IS NULL
                 ORDER BY last_active_at DESC, id DESC
                 """,
             arguments: [targetID]
@@ -251,7 +265,9 @@ package enum TerminalSessionQueries {
                        (SELECT COUNT(*) FROM owner_asks a
                         WHERE a.session_id = s.id AND a.status = 'open' AND \(open) AND a.kind = 'question') AS open_question_asks,
                        (SELECT COUNT(*) FROM owner_asks a
-                        WHERE a.session_id = s.id AND a.status = 'open' AND \(open) AND a.kind = 'review') AS open_review_asks
+                        WHERE a.session_id = s.id AND a.status = 'open' AND \(open) AND a.kind = 'review') AS open_review_asks,
+                       (SELECT COALESCE(MAX(sr.round), 0) FROM spec_reviews sr JOIN owner_asks a2 ON a2.id = sr.ask_id
+                        WHERE a2.session_id = s.id AND a2.status = 'open' AND sr.loop = 'author') AS spec_review_round
                 FROM terminal_sessions s
                 LEFT JOIN projects p ON p.id = s.project_id
                 WHERE s.delete_requested_at IS NULL
@@ -436,12 +452,12 @@ package enum TerminalSessionQueries {
     package static func fetchDeleting(_ db: Database, projectID: Int64?) throws -> [TerminalSession] {
         if let projectID {
             return try TerminalSession.fetchAll(db, sql: """
-                SELECT * FROM terminal_sessions WHERE project_id = ? AND delete_requested_at IS NOT NULL
+                SELECT \(sessionColumns()) FROM terminal_sessions WHERE project_id = ? AND delete_requested_at IS NOT NULL
                 ORDER BY delete_requested_at, id
                 """, arguments: [projectID])
         }
         return try TerminalSession.fetchAll(db, sql: """
-            SELECT * FROM terminal_sessions WHERE project_id IS NOT NULL AND delete_requested_at IS NOT NULL
+            SELECT \(sessionColumns()) FROM terminal_sessions WHERE project_id IS NOT NULL AND delete_requested_at IS NOT NULL
             ORDER BY delete_requested_at, id
             """)
     }

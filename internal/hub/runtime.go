@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"watchtower/docs/guide"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/alerts"
 	"watchtower/internal/hub/identity"
@@ -556,7 +557,8 @@ func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFac
 			defer h.mu.Unlock()
 			return h.lastRelay, !h.lastRelay.IsZero()
 		},
-		Chat: h.chatAvailable,
+		Chat:         h.chatAvailable,
+		BackgroundAI: func() string { return backgroundAIValue(aiconsent.Current()) },
 		Recordings: func() bool {
 			on, _, err := st.Recordings()
 			if err != nil {
@@ -575,6 +577,20 @@ func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFac
 		f.Accounts = slices.DBAccounts(h.sup.o.DB)
 	}
 	return f
+}
+
+// backgroundAIValue is the heartbeat's background_ai for a consent state:
+// allowed; paused by the organization; otherwise paused (the owner's answer
+// or none yet).
+func backgroundAIValue(s aiconsent.State) string {
+	switch {
+	case s.Allowed():
+		return wire.BackgroundAIAllowed
+	case s.Reason == aiconsent.ReasonOrganization:
+		return wire.BackgroundAIOrganization
+	default:
+		return wire.BackgroundAIPaused
+	}
 }
 
 // publishSoon marks kinds dirty on the publisher (none before it is built).

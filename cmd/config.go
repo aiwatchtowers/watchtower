@@ -2,7 +2,11 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -13,6 +17,7 @@ import (
 	"time"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/auth"
 	"watchtower/internal/config"
 	"watchtower/internal/hub"
@@ -20,6 +25,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 var configCmd = &cobra.Command{
@@ -84,6 +90,11 @@ func runConfigInit(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(out, "Watchtower Configuration Wizard")
 	fmt.Fprintln(out, "================================")
 	fmt.Fprintln(out)
+
+	// A file init could not carry over is reported before any prompt.
+	if _, err := readInitConfig(configPath); err != nil {
+		return err
+	}
 
 	reader := bufio.NewReader(cmd.InOrStdin())
 	var workspace, slackToken string
@@ -160,31 +171,21 @@ func runConfigInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Ensure config directory exists
-	configDir := filepath.Dir(configPath)
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		return fmt.Errorf("creating config directory: %w", err)
-	}
-
-	// Write config file
-	v := viper.New()
-	v.Set("active_workspace", workspace)
-	v.Set("workspaces."+workspace+".slack_token", slackToken)
 	// OAuth credentials are sourced from env vars at runtime — never persisted to config.
 	// ai.model is deliberately not seeded: empty means "use the provider
 	// registry's tier defaults" (aliases that track new model releases).
-	v.Set("ai.context_budget", config.DefaultAIContextBudget)
-	v.Set("sync.workers", config.DefaultSyncWorkers)
-	v.Set("sync.initial_history_days", config.DefaultInitialHistDays)
-	v.Set("sync.poll_interval", config.DefaultPollInterval.String())
-	v.Set("sync.sync_threads", config.DefaultSyncThreads)
-	v.Set("sync.sync_on_wake", config.DefaultSyncOnWake)
-	v.Set("digest.enabled", config.DefaultDigestEnabled)
-	v.Set("digest.min_messages", config.DefaultDigestMinMsgs)
-
-	// Write to a temp file with restricted permissions, then atomically rename
-	// to avoid a race window where secrets could be world-readable.
-	if err := writeConfigAtomic(v, configPath); err != nil {
+	if err := writeInitConfig(configPath, map[string]any{
+		"active_workspace":                         workspace,
+		"workspaces." + workspace + ".slack_token": slackToken,
+		"ai.context_budget":                        config.DefaultAIContextBudget,
+		"sync.workers":                             config.DefaultSyncWorkers,
+		"sync.initial_history_days":                config.DefaultInitialHistDays,
+		"sync.poll_interval":                       config.DefaultPollInterval.String(),
+		"sync.sync_threads":                        config.DefaultSyncThreads,
+		"sync.sync_on_wake":                        config.DefaultSyncOnWake,
+		"digest.enabled":                           config.DefaultDigestEnabled,
+		"digest.min_messages":                      config.DefaultDigestMinMsgs,
+	}); err != nil {
 		return err
 	}
 
@@ -307,6 +308,12 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	configPath := flagConfig
 
 	lk := strings.ToLower(key) // viper keys are case-insensitive
+	// The owner's background AI answer has one writer, so a Settings save or
+	// a script can never answer for the owner. A parent path ("ai") would
+	// replace the whole map and erase the answer, so it is refused too.
+	if lk == backgroundRunsKey || strings.HasPrefix(backgroundRunsKey, lk+".") {
+		return fmt.Errorf("%s is set only by its own command: use \"watchtower ai background allow|pause\"; nothing was written", key)
+	}
 	if retiredConfigKeys[lk] {
 		return fmt.Errorf("%q is retired and has no effect; nothing was written", key)
 	}
@@ -437,10 +444,96 @@ func maskValue(s string) string {
 	return "****"
 }
 
+// writeInitConfig writes the config wizard's keys. The prompts and the OAuth
+// login run before it, outside the lock; inside it the current file is
+// re-read (readInitConfig) and only the wizard's keys are set, so a key
+// another writer saved meanwhile (the Desktop's agent path,
+// ai.background_runs) survives.
+func writeInitConfig(configPath string, keys map[string]any) error {
+	return config.WithWriteLock(configPath, func(lk *config.WriteLock) error {
+		v, err := readInitConfig(configPath)
+		if err != nil {
+			return err
+		}
+		for key, val := range keys {
+			v.Set(key, val)
+		}
+		return writeConfigAtomic(lk, v, configPath)
+	})
+}
+
+// readInitConfig reads the config `config init` will rewrite, as YAML
+// whatever the path's extension. A missing file is an empty config. A file
+// that cannot be read, does not parse, or holds more than one YAML document
+// (the rewrite would keep only the first) is refused, so init never drops
+// what it cannot carry over. runConfigInit calls it once before the prompts,
+// so a broken file is reported before the owner types anything, and
+// writeInitConfig again inside the lock.
+func readInitConfig(configPath string) (*viper.Viper, error) {
+	v := viper.New()
+	v.SetConfigType("yaml")
+	raw, err := os.ReadFile(configPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return v, nil
+	}
+	refuse := func(err error) error {
+		return fmt.Errorf("existing config %s cannot be carried over (fix or remove it, then run config init again): %w", configPath, err)
+	}
+	if err != nil {
+		return nil, refuse(err)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	for docs := 0; ; docs++ {
+		var doc yaml.Node
+		err := dec.Decode(&doc)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, refuse(err)
+		}
+		if docs == 1 {
+			return nil, refuse(errors.New("more than one YAML document"))
+		}
+	}
+	if err := v.ReadConfig(bytes.NewReader(raw)); err != nil {
+		return nil, refuse(err)
+	}
+	return v, nil
+}
+
+// readConfigForWrite reads the config a writer is about to change, inside
+// the write lock. A missing file is an empty config; any other read or parse
+// error is returned, so a file that cannot be read is never overwritten with
+// only the writer's own keys.
+func readConfigForWrite(configPath string) (*viper.Viper, error) {
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
+	if err := v.ReadInConfig(); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("reading config %s: %w", configPath, err)
+	}
+	return v, nil
+}
+
 // writeConfigAtomic writes viper config to a temp file with 0o600 permissions,
 // then atomically renames it into place to avoid a race window where secrets
-// could be briefly world-readable.
-func writeConfigAtomic(v *viper.Viper, configPath string) error {
+// could be briefly world-readable. lk is the config write lock the caller
+// holds (config.WithWriteLock), inside which it read v; a path lk does not
+// cover is refused.
+func writeConfigAtomic(lk *config.WriteLock, v *viper.Viper, configPath string) error {
+	if !lk.Covers(configPath) {
+		return fmt.Errorf("writing config %s: %w", configPath, config.ErrWriteNotLocked)
+	}
+	// Viper folded keys that differ only in case when it read the file: an
+	// ambiguous background AI answer is refused, never persisted folded.
+	if raw, err := os.ReadFile(configPath); err == nil {
+		if err := aiconsent.CheckUnambiguous(raw); err != nil {
+			return fmt.Errorf("writing config %s: %w", configPath, err)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("reading config %s: %w", configPath, err)
+	}
 	dir := filepath.Dir(configPath)
 
 	// Set restrictive umask before creating the temp file so it's never
@@ -473,12 +566,20 @@ func writeConfigAtomic(v *viper.Viper, configPath string) error {
 }
 
 // setAIConfigKey stages migration and validation before the atomic replacement.
+// The read, the migration and the write all run inside the config write lock.
 func setAIConfigKey(path, key string, value any) error {
 	if !strings.HasPrefix(strings.ToLower(key), "ai.") {
 		return setConfigKey(path, key, value)
 	}
+	return config.WithWriteLock(path, func(lk *config.WriteLock) error {
+		return setAIConfigKeyLocked(lk, path, key, value)
+	})
+}
+
+func setAIConfigKeyLocked(lk *config.WriteLock, path, key string, value any) error {
 	v := viper.New()
 	v.SetConfigFile(path)
+	v.SetConfigType("yaml")
 	if err := v.ReadInConfig(); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -536,8 +637,5 @@ func setAIConfigKey(path, key string, value any) error {
 			return err
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return writeConfigAtomic(v, path)
+	return writeConfigAtomic(lk, v, path)
 }

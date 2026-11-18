@@ -68,6 +68,7 @@ func printPolicy(w io.Writer, p policy.Policy) error {
 		{policy.KeyAllowedAIProviders, plainList(k.AllowedAIProviders)},
 		{policy.KeyAllowClaudeAITools, plainAllowed(k.AllowClaudeAITools)},
 		{policy.KeyPurgeRevokedData, plainOnOff(k.PurgeRevokedData)},
+		{policy.KeyAllowBackgroundAI, plainAllowed(k.AllowBackgroundAI)},
 		{policy.KeySlackApps, plainSlackApps(k.SlackApps)},
 	}
 	for _, l := range lines {

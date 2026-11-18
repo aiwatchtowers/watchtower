@@ -77,6 +77,7 @@ func TestPolicy01_WrongTypesFailClosed(t *testing.T) {
 		{KeyAllowAutomationShell, int64(1), func(p Policy) bool { return !p.ShellAllowed() }},
 		{KeyAllowedAIProviders, "claude", func(p Policy) bool { return !p.ProviderAllowed("claude") }},
 		{KeyAllowClaudeAITools, "yes", func(p Policy) bool { return !p.ClaudeAIToolsAllowed() }},
+		{KeyAllowBackgroundAI, "1", func(p Policy) bool { return p.Keys.AllowBackgroundAI != nil && !*p.Keys.AllowBackgroundAI }},
 		{KeySlackApps, "T01ABC", func(p Policy) bool { return len(p.SlackApps()) == 0 && p.SlackApps() != nil }},
 		{KeyPurgeRevokedData, 0, func(p Policy) bool { on, set := p.PurgeRevokedData(); return on && set }},
 	}

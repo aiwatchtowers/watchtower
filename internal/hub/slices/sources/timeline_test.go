@@ -299,6 +299,7 @@ func TestTimelineTextForReadyToCheck(t *testing.T) {
 		{sessionState{kind: kindBackground, live: true, shells: 1}, "Background task running"},
 		{sessionState{kind: kindBackground, live: true, agents: 1, shells: 1}, "Agents working"},
 		{sessionState{kind: kindStopped, live: true}, "Idle"},
+		{sessionState{kind: kindSpecReview, live: true, specRound: 3}, "Spec review"},
 		{sessionState{kind: kindNotStarted}, ""},
 	}
 	for _, c := range cases {

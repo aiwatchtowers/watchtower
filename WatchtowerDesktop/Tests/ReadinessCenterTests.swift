@@ -185,6 +185,40 @@ final class ReadinessCenterTests: XCTestCase {
         XCTAssertEqual(center.readiness(for: .briefing), .scheduled(.nextCycle(minutes: 15)))
     }
 
+    /// #1886: the consent state reaches the AI features' readiness.
+    func testBackgroundAIConsentWiring() async throws {
+        let environment = FakeReadinessEnvironment()
+        let center = ReadinessCenter(environment: environment)
+        center.start(pool: try makePool())
+        defer { center.stop() }
+        await waitUntil(center) { !$0.isEmpty }
+        XCTAssertNotEqual(center.readiness(for: .digests), .backgroundAIPaused(managed: false))
+
+        environment.consent = BackgroundAIConsent.resolve(answer: "paused", policy: nil)
+        center.refresh()
+        XCTAssertEqual(center.readiness(for: .digests), .backgroundAIPaused(managed: false))
+        XCTAssertNotEqual(center.readiness(for: .slackSync), .backgroundAIPaused(managed: false))
+    }
+
+    /// An answer or a profile change (observable, as `AppState.backgroundAI`
+    /// is) re-evaluates on its own, without a refresh.
+    func testObservedConsentChangeReevaluates() async throws {
+        let box = ConsentBox()
+        let environment = FakeReadinessEnvironment()
+        environment.consentRead = { box.state }
+        let center = ReadinessCenter(environment: environment)
+        // The 30 s poll is held shut: only the observation can re-evaluate.
+        let ticks = HandOpenedSleeps()
+        center.tickSleep = { _ in await ticks.sleep() }
+        center.start(pool: try makePool())
+        defer { center.stop() }
+        await waitUntil(center) { !$0.isEmpty }
+        XCTAssertNotEqual(center.readiness(for: .digests), .backgroundAIPaused(managed: true))
+
+        box.state = BackgroundAIConsent.resolve(answer: nil, policy: false)
+        await waitUntil(center) { $0[.digests] == .backgroundAIPaused(managed: true) }
+    }
+
     /// F5 (#578): the backfill rows, memory's first run and the kill switch
     /// reach Memory's readiness through the snapshot and the environment.
     func testMemoryWaitsForHistoryWiring() async throws {
@@ -231,8 +265,9 @@ final class ReadinessCenterTests: XCTestCase {
         try "briefing:\n  hour: 7\nsync:\n  poll_interval: 30m\n  backfill_days: 0\n".write(toFile: configPath, atomically: true, encoding: .utf8)
 
         let environment = LiveReadinessEnvironment(
-            daemon: DaemonManager(), visibility: FeatureVisibilityStore(), configPath: configPath
-        ) { dir }
+            daemon: DaemonManager(), visibility: FeatureVisibilityStore(), configPath: configPath,
+            backgroundAI: { .allowedByOwner }, workspaceDir: { dir }
+        )
         XCTAssertNil(environment.stamp("last_people.txt"))
         XCTAssertNil(environment.stamp("last_briefing.txt"))
         XCTAssertEqual(environment.stamp("last_ideas.txt"), Date(timeIntervalSince1970: 1_700_000_000))
@@ -241,8 +276,9 @@ final class ReadinessCenterTests: XCTestCase {
         XCTAssertEqual(environment.backfillDays, 0)
 
         let noWorkspace = LiveReadinessEnvironment(
-            daemon: DaemonManager(), visibility: FeatureVisibilityStore(), configPath: configPath
-        ) { nil }
+            daemon: DaemonManager(), visibility: FeatureVisibilityStore(), configPath: configPath,
+            backgroundAI: { .allowedByOwner }, workspaceDir: { nil }
+        )
         XCTAssertNil(noWorkspace.stamp("last_ideas.txt"))
         // The names read are the daemon's stamp files (Reset LLM data clears the same list).
         XCTAssertTrue(Set(ReadinessCenter.stampFiles).isSubset(of: DaemonStampFiles.names))
@@ -306,4 +342,10 @@ final class ReadinessCenterTests: XCTestCase {
 @Observable
 private final class HookCalls {
     var count = 0
+}
+
+@MainActor
+@Observable
+private final class ConsentBox {
+    var state = BackgroundAIConsent.State.allowedByOwner
 }

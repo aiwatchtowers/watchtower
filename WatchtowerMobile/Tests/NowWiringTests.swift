@@ -25,6 +25,25 @@ final class NowWiringTests: XCTestCase {
         NowModel(snapshot: snapshot, linked: linked, now: date ?? now)
     }
 
+    /// #1886: the line follows the heartbeat's key and has no button; an older hub shows nothing.
+    func testBackgroundAILineFollowsHeartbeat() {
+        func line(_ status: BackgroundAIStatus?) -> String? {
+            var beat = heartbeat(now)
+            beat = HeartbeatPayload(
+                updatedAt: beat.updatedAt, appVersion: beat.appVersion, hubID: beat.hubID, macName: beat.macName,
+                flavor: beat.flavor, lastPublishAt: beat.lastPublishAt, lastRelayAt: beat.lastRelayAt,
+                relayBacklog: beat.relayBacklog, accounts: [], enabledAt: beat.enabledAt, ownerUser: beat.ownerUser,
+                sharing: .none, backgroundAI: status
+            )
+            return BackgroundAIConsentCopy.phoneLine(beat.backgroundAI)
+        }
+        XCTAssertTrue(NowView.topBlocks.contains(.backgroundAI))
+        XCTAssertEqual(line(.paused)?.hasSuffix("Allow it in Watchtower on the Mac."), true)
+        XCTAssertEqual(line(.organization)?.contains("your organization"), true)
+        XCTAssertNil(line(.allowed))
+        XCTAssertNil(line(nil))
+    }
+
     func testNothingWaitingShowsNothingIsWaiting() throws {
         var snapshot = try demoSnapshot(now: now)
         snapshot.asks = snapshot.asks.filter { $0.status != .open }
@@ -155,6 +174,7 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(finished.glyph, "checkmark")
         XCTAssertEqual(finished.tone, .blue)
         XCTAssertFalse(model.ended.contains { $0.id == .session(17) }, "a session that never ran has not ended")
+        XCTAssertFalse(model.ended.contains { $0.id == .session(22) }, "a live spec review session has not ended")
     }
 
     func testAnEndedRowMarkedSeenLeavesUntilTheSessionEndsAgain() throws {
@@ -510,7 +530,7 @@ final class NowWiringTests: XCTestCase {
     // MARK: - The Relay banner (relay client Phase 4 Task 10)
 
     func testTheBannerSitsAboveWaitingToSend() {
-        XCTAssertEqual(NowView.topBlocks, [.chip, .freshness, .relayBanner, .outbox])
+        XCTAssertEqual(NowView.topBlocks, [.chip, .freshness, .relayBanner, .outbox, .backgroundAI])
     }
 
     @MainActor

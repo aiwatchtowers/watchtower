@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 @MainActor
 final class SessionFeedSubagentObservationTests: XCTestCase {

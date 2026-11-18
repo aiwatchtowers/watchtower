@@ -244,7 +244,7 @@ func TestHubContractFixture_RecordingSwitch(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &f))
 	require.ElementsMatch(t, []string{"capabilities_on", "capabilities_off", "capabilities_absent",
 		"capabilities_unknown_value", "unknown_capability_key",
-		"hub_kind_mac", "hub_kind_server", "hub_kind_unknown_value", "chat_on", "chat_off_runner_down", "stuck_since"}, names(f.Heartbeat))
+		"hub_kind_mac", "hub_kind_server", "hub_kind_unknown_value", "chat_on", "chat_off_runner_down", "stuck_since", "background_ai_organization"}, names(f.Heartbeat))
 	require.ElementsMatch(t, []string{"failed_not_supported", "failed_expired", "received",
 		"failed_legacy_no_reason"}, names(f.UploadEcho))
 	for _, c := range f.Heartbeat {
@@ -263,6 +263,9 @@ func TestHubContractFixture_RecordingSwitch(t *testing.T) {
 			} else {
 				require.Nil(t, hb.StuckSince)
 			}
+			// #1886: background_ai is optional and travels as the fixture wrote it.
+			bgAI, _ := c.Kit["background_ai"].(string)
+			require.Equal(t, bgAI, hb.BackgroundAI)
 			if want, ok := c.Kit["chat"]; ok {
 				// iPhone chat §4.8: the phone shows chat only on an explicit "on".
 				require.NotNil(t, hb.Capabilities)

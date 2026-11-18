@@ -14,6 +14,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -66,6 +67,7 @@
           ],
           "AllowClaudeAITools": false,
           "PurgeRevokedData": true,
+          "AllowBackgroundAI": null,
           "SlackApps": [
             {
               "team_id": "T01ABC",
@@ -93,6 +95,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -120,6 +123,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -150,6 +154,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -177,6 +182,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -209,6 +215,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -236,6 +243,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -258,6 +266,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -285,6 +294,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -312,6 +322,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -339,6 +350,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": false,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -366,6 +378,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": true,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -393,6 +406,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": false,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -420,6 +434,7 @@
           ],
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -449,6 +464,7 @@
           "AllowedAIProviders": [],
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -482,6 +498,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -509,6 +526,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -531,6 +549,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [
@@ -559,6 +578,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [
@@ -594,6 +614,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -618,6 +639,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": true,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -662,6 +684,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -704,6 +727,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -741,6 +765,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": null
         },
         "reserved_not_enforced": [],
@@ -778,6 +803,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": [
             {
               "team_id": "T01ABC",
@@ -809,6 +835,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": []
         },
         "reserved_not_enforced": [],
@@ -853,6 +880,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": [
             {
               "team_id": "T03GHI",
@@ -894,6 +922,7 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": [
             {
               "team_id": "T01ABC",
@@ -926,10 +955,128 @@
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
           "PurgeRevokedData": null,
+          "AllowBackgroundAI": null,
           "SlackApps": []
         },
         "reserved_not_enforced": [],
         "errors": []
+      }
+    },
+    {
+      "name": "background_ai_true",
+      "raw": {
+        "AllowBackgroundAI": true
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": true,
+          "SlackApps": null
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "background_ai_false",
+      "raw": {
+        "AllowBackgroundAI": false
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": false,
+          "SlackApps": null
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "background_ai_as_string",
+      "raw": {
+        "AllowBackgroundAI": "yes"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": false,
+          "SlackApps": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowBackgroundAI",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    },
+    {
+      "name": "several_invalid_keys_keep_key_order",
+      "raw": {
+        "AllowBackgroundAI": "1",
+        "AllowedAIProviders": "claude",
+        "AllowAutomationShell": 1,
+        "AllowClaudeAITools": "x"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": false,
+          "AllowedAIProviders": [],
+          "AllowClaudeAITools": false,
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": false,
+          "SlackApps": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowAutomationShell",
+            "problem": "wrong_type"
+          },
+          {
+            "key": "AllowedAIProviders",
+            "problem": "wrong_type"
+          },
+          {
+            "key": "AllowClaudeAITools",
+            "problem": "wrong_type"
+          },
+          {
+            "key": "AllowBackgroundAI",
+            "problem": "wrong_type"
+          }
+        ]
       }
     }
   ],

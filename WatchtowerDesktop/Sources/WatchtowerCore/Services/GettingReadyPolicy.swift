@@ -51,7 +51,11 @@ package enum GettingReadyPolicy {
 
         var next = memory
         // A rows-only zone is never complete: it stays until a source connects.
-        if sourcedCards, !liveOnly, cards.allSatisfy(\.isTerminal) {
+        // Nor is one with AI features left out while background AI is paused
+        // (#1886): they are not ready, and their cards come back once it is
+        // allowed; meanwhile the zone keeps its other cards, rows and Hide.
+        let paused = readiness.values.contains(where: \.isBackgroundAIPaused)
+        if sourcedCards, !liveOnly, !paused, cards.allSatisfy(\.isTerminal) {
             // An install that was already ready at first look never was getting ready.
             next.completedAt = now
             return GettingReadyStep(zone: sawUnready ? .allReady : .hidden, memory: next, sawUnready: sawUnready)
@@ -87,7 +91,8 @@ package enum GettingReadyPolicy {
             // zone stays open until the owner is known.
             let state = honored == nil && readiness[feature] != nil ? .needsSource(ownerGap) : honored
             switch state {
-            case .off:
+            // Home's one background AI card speaks for them (#1886, spec §6.3).
+            case .off, .backgroundAIPaused:
                 continue
             // Linear is a peer of Jira, not a second tracker to ask for: the
             // Connect Jira row stays the one tracker prompt, and Linear shows
