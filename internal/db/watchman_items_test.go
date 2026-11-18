@@ -225,3 +225,40 @@ func TestSetWatchmanItemKind_CollisionIsSentinel(t *testing.T) {
 	require.False(t, ok)
 	require.ErrorIs(t, err, ErrWatchmanItemExists)
 }
+
+func TestParkWatchmanGuard_OneRowPerSessionGathersItsDenials(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	at := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	park := func(reason, line string, at time.Time) {
+		t.Helper()
+		require.NoError(t, d.ParkWatchmanGuard(WatchmanItem{WorkbenchID: 1, SessionID: 7, TargetID: 3, Question: line, ParkReason: reason}, at))
+	}
+	park("main_ref", "main_ref — Bash: git push origin main", at)
+	park("main_ref", "main_ref — Bash: git push origin main", at.Add(time.Minute)) // the same denial again
+	park("release", "release — Bash: gh release create v1", at.Add(2*time.Minute))
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM watchman_items`).Scan(&n))
+	require.Equal(t, 1, n)
+	it, err := scanWatchmanItem(d.QueryRow(`SELECT ` + watchmanItemCols + ` FROM watchman_items`))
+	require.NoError(t, err)
+	require.Equal(t, "guard", it.Kind)
+	require.Equal(t, "session", it.RefKind)
+	require.Equal(t, int64(7), it.RefID)
+	require.Equal(t, int64(7), it.SessionID)
+	require.Equal(t, int64(3), it.TargetID)
+	require.Equal(t, "done", it.State)
+	require.Equal(t, "parked", it.Outcome)
+	require.True(t, it.Unsure)
+	require.Equal(t, "release", it.ParkReason)
+	require.Equal(t, "main_ref — Bash: git push origin main\nrelease — Bash: gh release create v1", it.Question)
+	require.NotNil(t, it.DecidedAt)
+	require.True(t, it.DecidedAt.Equal(at.Add(2*time.Minute)))
+
+	// The question stays within its cap however many denials there are.
+	long := strings.Repeat("x", 1500)
+	park("owner", "owner — Bash: "+long, at)
+	park("owner", "owner — Bash: y"+long, at)
+	require.NoError(t, d.QueryRow(`SELECT length(question) FROM watchman_items`).Scan(&n))
+	require.LessOrEqual(t, n, watchmanQuestionMax)
+}
