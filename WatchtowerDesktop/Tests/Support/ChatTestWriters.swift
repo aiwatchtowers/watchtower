@@ -37,14 +37,12 @@ extension ChatConversationQueries {
         """, arguments: [title, now, id])
     }
 
-
     package static func setProviderModel(_ db: Database, id: Int64, provider: String, model: String?) throws {
         try db.execute(
             sql: "UPDATE chat_conversations SET provider = ?, model = ? WHERE id = ?",
             arguments: [provider, model, id]
         )
     }
-
 
     package static func touch(_ db: Database, id: Int64) throws {
         let now = Date().timeIntervalSince1970
@@ -57,9 +55,7 @@ extension ChatConversationQueries {
         try db.execute(sql: "DELETE FROM chat_conversations WHERE id = ?", arguments: [id])
     }
 
-
 }
-
 
 extension ChatMessageQueries {
     @discardableResult
