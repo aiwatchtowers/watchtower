@@ -546,6 +546,37 @@ final class HostedRelayConnectionTests: XCTestCase {
         await connection.close()
     }
 
+    /// Writes stay in order past a cancelled one: A is stuck in its send, B (queued behind it) is cancelled, C is
+    /// queued behind B. C's frame is written only once A's send has returned.
+    func testACancelledQueuedWriteDoesNotLetTheNextOvertake() async throws {
+        let harness = try RelayClientHarness()
+        let socket = ScriptedRelaySocket(stuckWrites: true)
+        harness.sockets.script([.socket(socket)])
+        let connection = await harness.client.connect(zones: [])
+        let events = EventProbe(connection)
+        _ = await events.next()
+        func requests() -> Int {
+            socket.sent.filter { if case .request = $0.kind { true } else { false } }.count
+        }
+
+        let first = Task { try await connection.request(RelayClientHarness.removeSlot) }
+        await spin { socket.stuckCount == 1 }
+        let second = Task { try await connection.request(RelayClientHarness.removeSlot) }
+        for _ in 0..<1_000 { await Task.yield() }
+        second.cancel()
+        _ = await second.result
+        let third = Task { try await connection.request(RelayClientHarness.removeSlot) }
+        for _ in 0..<20_000 where requests() == 0 { await Task.yield() }
+        XCTAssertEqual(requests(), 0, "C was written while A was still in its send")
+
+        socket.releaseStuck()
+        _ = await first.result
+        for _ in 0..<50_000 where requests() == 0 { await Task.yield() }
+        XCTAssertEqual(requests(), 1, "C goes out once A's send returned; B was never written")
+        _ = await third.result
+        await connection.close()
+    }
+
     /// The second dial hangs past the handshake timeout: the loop stops waiting for it and dials again at once; the
     /// socket the hung dial produces later is closed, never live.
     func testAHungSecondDialIsGivenUpAfterTheHandshakeTimeout() async throws {
@@ -574,6 +605,7 @@ final class HostedRelayConnectionTests: XCTestCase {
         harness.clock.manual.advance(by: .seconds(60))
         XCTAssertEqual(connection.liveGeneration, 2)
         XCTAssertNil(third.closedWith)
+        XCTAssertTrue(late.sent.isEmpty, "the given-up redial never said Hello")
         await connection.close()
     }
 

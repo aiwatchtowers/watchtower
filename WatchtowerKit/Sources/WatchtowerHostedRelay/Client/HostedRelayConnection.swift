@@ -580,12 +580,15 @@ public final class HostedRelayConnection: Sendable {
         Self.logger.error("relay socket: wake, no pong in time, redialling")
         for waiter in retired { waiter.continuation.resume(throwing: SocketLoss.lost) }
         let clock = clock
+        let dial = Task { await self.redial(replacing: old.generation, promise: promise) }
         let timer = Task {
             do { try await clock.sleep(for: Self.handshakeTimeout) } catch { return }
             if promise.fulfil(nil) { Self.logger.error("relay socket: wake, no second socket in time, reconnecting") }
+            // Given up: the loop dials again, and a late upgrade of this redial would displace its socket.
+            dial.cancel()
         }
         Task {
-            await self.redial(replacing: old.generation, promise: promise)
+            await dial.value
             timer.cancel()
         }
         Task { await old.socket.close(code: Self.closeNormal) }
@@ -610,7 +613,10 @@ public final class HostedRelayConnection: Sendable {
     /// The background dial of a wake: login, upgrade, `Hello`. The socket is handed over only while `promise` is
     /// unsettled (its timer has not given up) and the connection is open; otherwise it is closed.
     private func redial(replacing generation: Int, promise: HandoverPromise) async {
+        // A login is not cancellable: once it returns, a redial given up meanwhile (or overtaken by the loop's own
+        // socket) must not upgrade, since the relay would displace the newer socket for it.
         guard let token = try? await client.sessionToken(stale: nil),
+              mayUpgrade(replacing: generation),
               case .open(let socket) = await upgrade(token) else {
             if promise.fulfil(nil) { Self.logger.error("relay socket: wake, the second dial failed, reconnecting") }
             return
@@ -629,6 +635,12 @@ public final class HostedRelayConnection: Sendable {
         let next = promise.settle { self.handOver(socket, token: token, replacing: generation) }
         guard next != nil else { return await socket.close(code: Self.closeNormal) }
         Self.logger.info("relay socket: wake, a second socket is live")
+    }
+
+    /// Whether the redial replacing `generation` may still dial: not given up (cancelled), and no socket attached since.
+    private func mayUpgrade(replacing generation: Int) -> Bool {
+        guard !Task.isCancelled else { return false }
+        return state.withLock { !$0.closed && $0.live == nil && $0.generation == generation }
     }
 
     /// Makes `socket` live as the next generation in place of `generation`, already retired by the wake. Nil once
@@ -715,29 +727,40 @@ public final class HostedRelayConnection: Sendable {
         defer { tasks.withLock { $0.forEach { $0.cancel() } } }
         let response: Relay_V1_Response = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                let refusal: (any Error)? = state.withLock { state in
-                    if Task.isCancelled { return CancellationError() }
-                    guard state.live?.generation == generation else { return SocketLoss.notSent }
+                // Writes go out in the order sent: each waits for the one before it on its generation. The request
+                // is registered and linked into the chain in one step, so a retired generation never relinks it.
+                let done = Latch()
+                let queued: Result<Latch?, any Error> = state.withLock { state in
+                    if Task.isCancelled { return .failure(CancellationError()) }
+                    guard state.live?.generation == generation else { return .failure(SocketLoss.notSent) }
                     state.pending[id] = Waiter(continuation: continuation, generation: generation)
-                    return nil
+                    let previous = state.lastWrite?.generation == generation ? state.lastWrite?.done : nil
+                    state.lastWrite = (generation, done)
+                    return .success(previous)
                 }
-                if let refusal { return continuation.resume(throwing: refusal) }
+                let previous: Latch?
+                switch queued {
+                case .success(let latch): previous = latch
+                case .failure(let refusal): return continuation.resume(throwing: refusal)
+                }
                 // Started before the write, so a write that never returns is covered too.
                 let timer = Task {
                     do { try await self.clock.sleep(for: Self.requestTimeout) } catch { return }
                     await self.expire(id, op: op, socket: socket, generation: generation)
                 }
-                // Writes go out in the order sent: each waits for the one before it.
-                let done = Latch()
-                let previous = state.withLock { state in
-                    defer { state.lastWrite = (generation, done) }
-                    return state.lastWrite?.generation == generation ? state.lastWrite?.done : nil
-                }
                 let writer = Task {
-                    defer { done.fire() }
                     // A wait the request's end (or cancel) cuts short: never stuck behind a write that never returns.
                     await previous?.wait()
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled else {
+                        // Skipped, not written: the chain passes through, so the next write still waits for the
+                        // one before this (a task of its own: this one is cancelled).
+                        Task {
+                            await previous?.wait()
+                            done.fire()
+                        }
+                        return
+                    }
+                    defer { done.fire() }
                     do {
                         try await socket.send(data)
                     } catch {

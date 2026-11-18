@@ -34,8 +34,14 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
         var hungWrites: [Int: CheckedContinuation<Void, any Error>] = [:]
         var nextWrite = 0
         var cancelledWrites = 0
-        /// Request writes held by `stuckWrites`: only `releaseStuck()` ends them.
+        /// The request write held by `stuckWrites` (the first one only): only `releaseStuck()` ends it.
         var stuck: [CheckedContinuation<Void, Never>] = []
+        var stuckClaimed = false
+
+        mutating func claimStuck() -> Bool {
+            defer { stuckClaimed = true }
+            return !stuckClaimed
+        }
     }
 
     private let hello: HelloReply
@@ -156,7 +162,7 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
     func send(_ data: Data) async throws {
         let frame = try Relay_V1_Frame(serializedBytes: data)
         if hangsRequests, case .request = frame.kind { try await hang() }
-        if stuckWrites, case .request = frame.kind {
+        if stuckWrites, case .request = frame.kind, state.withLock({ $0.claimStuck() }) {
             // A write that never returns, not on close and not on cancel (a stuck send).
             await withCheckedContinuation { continuation in state.withLock { $0.stuck.append(continuation) } }
             throw ClosedByClient()
