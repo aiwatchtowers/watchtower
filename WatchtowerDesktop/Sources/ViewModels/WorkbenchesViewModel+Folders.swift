@@ -65,6 +65,14 @@ extension WorkbenchesViewModel {
         return folderRoot(folder)
     }
 
+    /// A stored folder id as git calls send it (`--workbench-folder`): nil
+    /// for home — and while the bench's folders are unread, when Go places
+    /// the folder by its path — so the home argv stays today's.
+    func nonHomeFolderID(_ folderID: Int64?, projectID: Int64) -> Int64? {
+        guard let folderID, let bench = benchFolders[projectID], folderID != bench.homeID else { return nil }
+        return folderID
+    }
+
     /// The root a git key names, rebuilt for a re-read (nil: a folder no
     /// longer on the bench).
     func codeRoot(for key: GitRootKey, project: Workbench) -> CodeRoot? {
@@ -107,7 +115,7 @@ extension WorkbenchesViewModel {
         guard let cli else { return }
         do {
             let folders = try await cli.folderList(workbenchID: projectID)
-            folderInstalled[projectID] = Dictionary(folders.map { ($0.id, $0.installed) }, uniquingKeysWith: { $1 })
+            folderInstalled[projectID] = Dictionary(folders.map { ($0.id, $0.installed) }) { $1 }
         } catch {
             if error is CancellationError || Task.isCancelled { return }
             print("[WorkbenchFolders] workbench folder list for workbench \(projectID) failed: \(error)")
@@ -159,7 +167,8 @@ extension WorkbenchesViewModel {
     /// added now.
     @discardableResult
     func putOnBench(
-        _ folder: URL, projectID: Int64,
+        _ folder: URL,
+        projectID: Int64,
         home: String = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().path
     ) async -> PutOnBenchStep {
         if let location = WorkbenchFolderPolicy.tccSensitiveLocation(path: folder.path, home: home) {

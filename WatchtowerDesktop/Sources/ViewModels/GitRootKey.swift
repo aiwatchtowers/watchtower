@@ -23,9 +23,6 @@ struct GitRootKey: Hashable, Sendable {
     /// The workbench's main (home) folder.
     static func mainFolder(_ workbenchID: Int64) -> Self { Self(workbenchID: workbenchID, folderID: nil, worktreeFolder: nil) }
 
-    /// The home folder's main root or the root of another bench folder.
-    var isFolderRoot: Bool { worktreeFolder == nil }
-
     private init(workbenchID: Int64, folderID: Int64?, worktreeFolder: String?) {
         self.workbenchID = workbenchID
         self.folderID = folderID

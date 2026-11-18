@@ -8,6 +8,9 @@ import WatchtowerCore
 struct SwitcherPopoverRow: View {
     let name: String
     let isCurrent: Bool
+    /// Secondary text after the name on its line (`· app, hub, site`),
+    /// the line truncated at the tail.
+    var detail: String?
     let tooltip: String
     let segments: [SwitcherSegment]
     let onSelect: () -> Void
@@ -20,10 +23,16 @@ struct SwitcherPopoverRow: View {
                     .opacity(isCurrent ? 1 : 0)
                     .accessibilityHidden(!isCurrent)
                 VStack(alignment: .leading, spacing: Spacing.tight) {
-                    Text(name)
-                        .font(.callout.weight(isCurrent ? .semibold : .regular))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    HStack(spacing: Spacing.small) {
+                        Text(name)
+                            .font(.callout.weight(isCurrent ? .semibold : .regular))
+                            .layoutPriority(1)
+                        if let detail {
+                            Text("· \(detail)").font(.callout).foregroundStyle(.secondary)
+                        }
+                    }
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                     if !segments.isEmpty {
                         HStack(spacing: Spacing.compact) {
                             SwitcherStateSegments(segments: segments)

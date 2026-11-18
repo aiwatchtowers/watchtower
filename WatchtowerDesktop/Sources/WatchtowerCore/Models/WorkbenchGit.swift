@@ -52,6 +52,10 @@ package struct WorkbenchGitStatus: Decodable, Equatable, Sendable {
     package var folderRoot: String
     /// The linked worktree's folder name; empty unless `worktree`.
     package var worktreeName: String
+    /// The bench folder Go resolved against (#2003, `workbench_folder_path`):
+    /// `--workbench-folder`'s, else the one holding `--folder`, else home;
+    /// "" from a CLI before multi-folder benches.
+    package var workbenchFolderPath: String
 
     package init(
         workbenchID: Int64 = 0,
@@ -76,7 +80,8 @@ package struct WorkbenchGitStatus: Decodable, Equatable, Sendable {
         folderRequested: String = "",
         folderScope: WorkbenchFolderScope = .main,
         folderRoot: String = "",
-        worktreeName: String = ""
+        worktreeName: String = "",
+        workbenchFolderPath: String = ""
     ) {
         self.workbenchID = workbenchID
         self.gitAvailable = gitAvailable
@@ -101,6 +106,7 @@ package struct WorkbenchGitStatus: Decodable, Equatable, Sendable {
         self.folderScope = folderScope
         self.folderRoot = folderRoot
         self.worktreeName = worktreeName
+        self.workbenchFolderPath = workbenchFolderPath
     }
 
     package init(from decoder: Decoder) throws {
@@ -130,6 +136,7 @@ package struct WorkbenchGitStatus: Decodable, Equatable, Sendable {
             .map { WorkbenchFolderScope(rawValue: $0) ?? .unresolved } ?? .main
         folderRoot = try c.decodeIfPresent(String.self, forKey: .folderRoot) ?? ""
         worktreeName = try c.decodeIfPresent(String.self, forKey: .worktreeName) ?? ""
+        workbenchFolderPath = try c.decodeIfPresent(String.self, forKey: .workbenchFolderPath) ?? ""
     }
 
     package enum CodingKeys: String, CodingKey {
@@ -145,6 +152,7 @@ package struct WorkbenchGitStatus: Decodable, Equatable, Sendable {
         case folderScope = "folder_scope"
         case folderRoot = "folder_root"
         case worktreeName = "worktree_name"
+        case workbenchFolderPath = "workbench_folder_path"
     }
 }
 

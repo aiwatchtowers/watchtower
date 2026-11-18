@@ -6,8 +6,9 @@ import WatchtowerCore
 
 /// The multi-folder workbench spec's mockups (board #2003, spec
 /// 2026-11-18-multi-folder-workbench-design.md §9): static views on `acme`
-/// sample data, drawn from the design kit and plain SwiftUI. Design only —
-/// nothing here is the feature; the strings are the spec's §6 words.
+/// sample data, drawn from the design kit and plain SwiftUI; the strings are
+/// the spec's §6 words. Built parts use the production views: the FILES
+/// root rows (`FilesRootRow`) and the switcher rows (`SwitcherPopoverRow`).
 @MainActor
 enum MultiFolderShotFixtures {
     static var shots: [DesignShot] {
@@ -98,9 +99,9 @@ private struct FolderLabel: View {
 /// The FILES header's Put on the Bench… icon button (§6.1).
 private struct PutOnBenchIcon: View {
     var body: some View {
-        Button {} label: { Image(systemName: "plus.rectangle.on.folder") }
+        Button {} label: { Image(systemName: WorkbenchFolderPresentation.putOnBenchIcon) }
             .buttonStyle(.kitIcon(isOn: false))
-            .help(MultiFolderMockCopy.putOnTheBench)
+            .help(WorkbenchFolderPresentation.tooltip)
     }
 }
 
@@ -307,13 +308,19 @@ private struct MultiFolderPanel: View {
 
     private var nestedFiles: some View {
         VStack(alignment: .leading, spacing: 0) {
-            FilesRow(kind: .root(expanded: true), name: "app", trailing: "⎇ feature/pdf-export ● ↑2")
+            rootRow("app", branch: WorkbenchGitStatus(branch: "feature/pdf-export", ahead: 2, dirty: true), expanded: true)
             FilesRow(kind: .folder, name: "cmd")
             FilesRow(kind: .folder, name: "internal")
             FilesRow(kind: .file, name: "export.go", nameTone: Tone.warning)
-            FilesRow(kind: .root(expanded: false), name: "hub", trailing: "⎇ main")
-            FilesRow(kind: .root(expanded: false), name: "site", trailing: "⎇ main ↓1")
+            rootRow("hub", branch: WorkbenchGitStatus(branch: "main"))
+            rootRow("site", branch: WorkbenchGitStatus(branch: "main", behind: 1))
         }
+    }
+
+    private func rootRow(_ name: String, branch: WorkbenchGitStatus, expanded: Bool = false) -> some View {
+        FilesRootRow(name: name, path: "~/code/\(name)", state: .normal,
+                     branchLine: WorkbenchFolderPresentation.branchLine(branch), isExpanded: expanded)
+            .padding(.horizontal, -Spacing.small)
     }
 
     private var singleFiles: some View {
@@ -323,8 +330,8 @@ private struct MultiFolderPanel: View {
             FilesRow(kind: .file, name: "go.mod").padding(.leading, -Spacing.large)
             FilesRow(kind: .file, name: "README.md").padding(.leading, -Spacing.large)
             HStack(spacing: Spacing.small) {
-                Text(MultiFolderMockCopy.singleHintLead).foregroundStyle(.tertiary)
-                Button(MultiFolderMockCopy.putOnTheBench) {}.buttonStyle(.kitQuiet).foregroundStyle(Color.accentColor)
+                Text(WorkbenchFolderPresentation.hintLead).foregroundStyle(.tertiary)
+                Button(WorkbenchFolderPresentation.putOnBenchTitle) {}.buttonStyle(.kitQuiet).foregroundStyle(Color.accentColor)
             }
             .font(.caption2)
             .padding(.top, Spacing.compact)
@@ -338,60 +345,28 @@ private struct MultiFolderFilesRootErrors: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
             FilesHeader()
-            FilesRow(kind: .root(expanded: false), name: "app", trailing: "⎇ main")
-            FilesRow(kind: .root(expanded: false), name: "hub", trailing: MultiFolderMockCopy.folderNotFound,
-                     trailingTone: Tone.error, nameTone: Tone.error)
-            VStack(alignment: .leading, spacing: Spacing.tight) {
-                Text(MultiFolderMockCopy.movedOrDeleted).foregroundStyle(.secondary)
-                HStack(spacing: Spacing.small) {
-                    Button("Locate…") {}.buttonStyle(.kitQuiet).foregroundStyle(Color.accentColor)
-                    Text("·").foregroundStyle(.tertiary)
-                    Button("Remove") {}.buttonStyle(.kitQuiet).foregroundStyle(Color.accentColor)
-                }
+            Group {
+                row("app", .normal, branch: "⎇ main")
+                row("hub", WorkbenchFolderPresentation.rootState(exists: false, gitAvailable: true, isRepository: true,
+                                                                 installed: true))
+                row("site", WorkbenchFolderPresentation.rootState(exists: true, gitAvailable: false, isRepository: false,
+                                                                  installed: true))
+                row("notes", WorkbenchFolderPresentation.rootState(exists: true, gitAvailable: true, isRepository: false,
+                                                                   installed: true))
             }
-            .font(.caption2)
-            .padding(.leading, Spacing.wide)
-            .padding(.bottom, Spacing.small)
-            FilesRow(kind: .root(expanded: false), name: "site", trailing: MultiFolderMockCopy.gitUnavailable,
-                     trailingTone: Tone.warning)
-            FilesRow(kind: .root(expanded: false), name: "notes", trailing: MultiFolderMockCopy.notARepository)
+            .padding(.horizontal, -Spacing.small)
         }
         .padding(Spacing.medium)
         .panelBackground()
     }
+
+    private func row(_ name: String, _ state: WorkbenchFolderPresentation.RootState, branch: String? = nil) -> some View {
+        FilesRootRow(name: name, path: NSHomeDirectory() + "/code/\(name)", state: state, branchLine: branch,
+                     isExpanded: false, actions: FilesRootActions(removeFromBench: {}, locate: {}))
+    }
 }
 
 // MARK: - 4. The workbench switcher
-
-/// A switcher row as §6.14 draws it: the folders after the bench name,
-/// secondary, truncated at the tail; a single-folder bench has no list.
-private struct FolderListRow: View {
-    let name: String
-    let folders: String?
-    let isCurrent: Bool
-    let segments: [SwitcherSegment]
-
-    var body: some View {
-        HStack(spacing: Spacing.compact) {
-            Image(systemName: "checkmark").font(.caption).opacity(isCurrent ? 1 : 0)
-            VStack(alignment: .leading, spacing: Spacing.tight) {
-                HStack(spacing: Spacing.small) {
-                    Text(name).font(.callout.weight(isCurrent ? .semibold : .regular)).layoutPriority(1)
-                    if let folders {
-                        Text("· \(folders)").font(.callout).foregroundStyle(.secondary)
-                    }
-                }
-                .lineLimit(1)
-                .truncationMode(.tail)
-                HStack(spacing: Spacing.compact) { SwitcherStateSegments(segments: segments) }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, Spacing.compact)
-        .frame(minHeight: 32)
-        .background(RoundedRectangle(cornerRadius: Radius.mark).fill(isCurrent ? Fill.selected : .clear))
-    }
-}
 
 private struct MultiFolderSwitcher: View {
     /// `switcher-folders`: the bench row lists its folders after the name.
@@ -402,11 +377,14 @@ private struct MultiFolderSwitcher: View {
             TextField("Find workbench", text: .constant("")).textFieldStyle(.kit)
             Text("RECENT").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
             if showFolders {
-                FolderListRow(name: MultiFolderMockCopy.bench, folders: MultiFolderMockCopy.benchFolders, isCurrent: true,
-                              segments: [.init(text: "2 new comments", tone: .badge), .init(text: "1 blocked", tone: .warning),
-                                         .init(text: "3 working", tone: .secondary)])
-                FolderListRow(name: MultiFolderMockCopy.otherBench, folders: nil, isCurrent: false,
-                              segments: [.init(text: "6d", tone: .secondary)])
+                SwitcherPopoverRow(name: MultiFolderMockCopy.bench, isCurrent: true,
+                                   detail: WorkbenchFolderPresentation.switcherFolders(["app", "hub", "site"]),
+                                   tooltip: "~/code/app",
+                                   segments: [.init(text: "2 new comments", tone: .badge), .init(text: "1 blocked", tone: .warning),
+                                              .init(text: "3 working", tone: .secondary)]) {}
+                SwitcherPopoverRow(name: MultiFolderMockCopy.otherBench, isCurrent: false,
+                                   detail: WorkbenchFolderPresentation.switcherFolders(["tools"]),
+                                   tooltip: "~/code/tools", segments: [.init(text: "6d", tone: .secondary)]) {}
             } else {
                 SwitcherPopoverRow(name: MultiFolderMockCopy.bench, isCurrent: true, tooltip: "~/code/app",
                                    segments: [.init(text: "2 new comments", tone: .badge), .init(text: "1 blocked", tone: .warning),
@@ -419,11 +397,12 @@ private struct MultiFolderSwitcher: View {
             Button {} label: {
                 Label {
                     VStack(alignment: .leading, spacing: Spacing.tight) {
-                        Text(MultiFolderMockCopy.putOnTheBench)
-                        Text(MultiFolderMockCopy.putOnTheBenchSubtitle).font(.caption2).foregroundStyle(.secondary)
+                        Text(WorkbenchFolderPresentation.putOnBenchTitle)
+                        Text(WorkbenchFolderPresentation.putOnBenchSubtitle(bench: MultiFolderMockCopy.bench))
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
                 } icon: {
-                    Image(systemName: "plus.rectangle.on.folder")
+                    Image(systemName: WorkbenchFolderPresentation.putOnBenchIcon)
                 }
             }
             .buttonStyle(.kitQuiet)

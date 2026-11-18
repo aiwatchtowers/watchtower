@@ -6,10 +6,10 @@ import WatchtowerCore
 struct FilesRootActions {
     var toggle: () -> Void = {}
     var showInFinder: () -> Void = {}
+    var retryInstall: () -> Void = {}
     var newSessionHere: (() -> Void)?
     var removeFromBench: (() -> Void)?
     var locate: (() -> Void)?
-    var retryInstall: () -> Void = {}
 }
 
 /// One bench folder in FILES (#2003, spec §6.2): the chevron, the folder,

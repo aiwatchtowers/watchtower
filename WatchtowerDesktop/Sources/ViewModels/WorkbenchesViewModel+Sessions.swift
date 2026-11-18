@@ -1488,7 +1488,10 @@ extension WorkbenchesViewModel {
         guard let cli, let center = terminalCenter else { return false }
         let status: WorkbenchGitStatus
         do {
-            status = try await cli.gitStatus(projectID: projectID, folder: row.folderPath)
+            status = try await cli.gitStatus(
+                projectID: projectID, folder: row.folderPath,
+                folderID: nonHomeFolderID(row.workbenchFolderID, projectID: projectID)
+            )
         } catch {
             center.refuseLaunch(row, reason: "The worktree at \(top) could not be checked: \(error.localizedDescription)")
             return false

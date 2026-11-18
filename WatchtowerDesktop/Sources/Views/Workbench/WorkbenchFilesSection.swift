@@ -132,13 +132,13 @@ struct WorkbenchFilesSection: View {
         return FilesRootActions(
             toggle: { vm.toggleFolderRoot(item.folder.id, projectID: projectID) },
             showInFinder: { NSWorkspace.shared.activateFileViewerSelecting([url]) },
+            retryInstall: { Task { await vm.retryFolderInstall(projectID: projectID) } },
             // New Session Here starts in the folder once session start takes
             // one (Task 15); Remove and Locate are the remove/locate flows
             // (Task 16). Until then the items show disabled.
             newSessionHere: nil,
             removeFromBench: nil,
-            locate: nil,
-            retryInstall: { Task { await vm.retryFolderInstall(projectID: projectID) } }
+            locate: nil
         )
     }
 
@@ -422,7 +422,7 @@ struct CodeFileTreeList: View {
     var body: some View {
         ScrollView {
             CodeFileTreeRows(tree: tree, activeFile: activeFile, git: git, edit: $edit, actions: actions)
-                .padding(.bottom, 6)
+                .padding(.bottom, Spacing.compact)
         }
     }
 }

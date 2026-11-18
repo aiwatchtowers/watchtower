@@ -88,7 +88,9 @@ struct WorkbenchSessionsPanel: View {
             // row and no FILES tree, and a click on it is not a click on
             // the list's empty space (only Undo hands the panel the keyboard).
             SessionDeleteToast(vm: vm)
-            WorkbenchFilesSection(vm: vm, root: vm.activeCodeRoot(project: project))
+            WorkbenchFilesSection(vm: vm, project: project, root: vm.activeCodeRoot(project: project)) {
+                switcherActions.putOnBench(project.id)
+            }
         }
         // A swipe right over the panel goes back to the list (board #743).
         .background(WorkbenchBackSwipeCatcher(isEnabled: !paletteOpen, onBack: switcherActions.showAll))
