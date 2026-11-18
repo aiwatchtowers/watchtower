@@ -75,6 +75,88 @@ final class AutomationListSectionsTests: XCTestCase {
                        ["Needs confirmation", "Paused", "Can't read", "Draft"])
     }
 
+    // MARK: - Background AI paused (#1886, spec §6.4)
+
+    private let pausedByOwner = BackgroundAIConsent.resolve(answer: "paused", policy: nil)
+    private let unanswered = BackgroundAIConsent.resolve(answer: nil, policy: nil)
+    private let orgOff = BackgroundAIConsent.resolve(answer: nil, policy: false)
+
+    /// A runnable recipe with a trigger and its permissions.
+    private func recipe(
+        id: Int64 = 1,
+        trigger: String = "schedule",
+        permissions: [String],
+        enabled: Bool = true,
+        confirmed: Bool = true
+    ) -> AutomationListItem {
+        let automation = Automation(
+            id: id, slug: "r\(id)", name: "Recipe \(id)", triggerKind: trigger, permissions: permissions,
+            approvalHash: "h2", confirmedHash: confirmed ? "h2" : "h1", enabled: enabled
+        )
+        return AutomationListItem(
+            automation: automation, lastRun: nil, activeRun: nil, tokens7d: 0,
+            badges: AutomationListItem.badges(for: automation, grants: []), triggerText: ""
+        )
+    }
+
+    /// A runnable AI recipe started by a schedule, an event or a sync slot
+    /// reads Waiting while paused, for any reason; never while allowed.
+    func testPausedAIRowShowsWaiting() {
+        for trigger in ["schedule", "event", "sync"] {
+            let row = recipe(trigger: trigger, permissions: ["llm:light"])
+            for state in [pausedByOwner, unanswered, orgOff] {
+                XCTAssertEqual(AutomationRowPresentation.chips(row, consent: state), [.waitingForBackgroundAI], trigger)
+                XCTAssertEqual(AutomationRowPresentation.state(row, now: now, consent: state),
+                               .chip(.waitingForBackgroundAI), trigger)
+            }
+            XCTAssertEqual(AutomationRowPresentation.chips(row, consent: .allowedByOwner), [], trigger)
+        }
+        let orgAllowed = BackgroundAIConsent.resolve(answer: nil, policy: true)
+        XCTAssertEqual(AutomationRowPresentation.chips(recipe(permissions: ["agent:run"]), consent: orgAllowed), [])
+        XCTAssertEqual(AutomationRowChip.waitingForBackgroundAI.title, BackgroundAIConsentCopy.automationWaitingChip)
+    }
+
+    /// No Waiting for a recipe the pause does not hold: no AI, a trigger the
+    /// owner pulls (manual, button), or a recipe that would not run anyway.
+    func testPausedNonAIRowHasNoWaiting() {
+        XCTAssertEqual(AutomationRowPresentation.chips(recipe(permissions: ["shell:make"]), consent: pausedByOwner), [])
+        XCTAssertEqual(AutomationRowPresentation.chips(
+            recipe(permissions: ["builtin:attention.waiting"]), consent: pausedByOwner), [])
+        for trigger in ["manual", "button"] {
+            XCTAssertEqual(AutomationRowPresentation.chips(
+                recipe(trigger: trigger, permissions: ["llm:strong"]), consent: pausedByOwner), [], trigger)
+        }
+        XCTAssertEqual(AutomationRowPresentation.chips(
+            recipe(permissions: ["llm:light"], enabled: false), consent: pausedByOwner), [])
+        XCTAssertEqual(AutomationRowPresentation.chips(
+            recipe(permissions: ["llm:light"], confirmed: false), consent: pausedByOwner), [.needsConfirmation])
+    }
+
+    /// The notice shows only while paused and only with a row that waits;
+    /// the owner's (or unanswered) pause offers the consent screen.
+    func testNoticeOnlyWithAnAIRow() {
+        let ai = recipe(id: 1, permissions: ["llm:light"])
+        let plain = recipe(id: 2, permissions: ["shell:make"])
+        let manualAI = recipe(id: 3, trigger: "manual", permissions: ["llm:light"])
+        XCTAssertNil(AutomationsBackgroundAINotice.make(state: pausedByOwner, items: [plain, manualAI]))
+        XCTAssertNil(AutomationsBackgroundAINotice.make(state: pausedByOwner, items: []))
+        XCTAssertNil(AutomationsBackgroundAINotice.make(state: .allowedByOwner, items: [ai, plain]))
+        for state in [pausedByOwner, unanswered] {
+            let notice = AutomationsBackgroundAINotice.make(state: state, items: [plain, ai])
+            XCTAssertEqual(notice?.text, BackgroundAIConsentCopy.automationsNotice)
+            XCTAssertEqual(notice?.actionTitle, BackgroundAIConsentCopy.allowAction)
+            XCTAssertEqual(notice?.isOrganization, false)
+        }
+    }
+
+    /// The organization's pause says so and offers nothing to click.
+    func testOrgNoticeHasNoAction() {
+        let notice = AutomationsBackgroundAINotice.make(state: orgOff, items: [recipe(permissions: ["agent:run"])])
+        XCTAssertEqual(notice?.text, BackgroundAIConsentCopy.automationsOrgNotice)
+        XCTAssertNil(notice?.actionTitle)
+        XCTAssertEqual(notice?.isOrganization, true)
+    }
+
     /// A scheduled recipe, optionally with a newest run and a next run.
     private func scheduled(
         enabled: Bool = true,

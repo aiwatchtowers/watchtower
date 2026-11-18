@@ -229,10 +229,13 @@ package enum AutomationListSections {
 /// A row's chip. "Disabled" is none: the dot and the "Off · " line say it.
 package enum AutomationRowChip: Equatable, Sendable {
     case needsConfirmation, paused, cantRead, draft, blockedByPolicy
+    /// Held while background AI is paused (#1886, spec §6.4).
+    case waitingForBackgroundAI
 
     package var title: String {
         switch self {
         case .blockedByPolicy: "Blocked by your organization's policy"
+        case .waitingForBackgroundAI: BackgroundAIConsentCopy.automationWaitingChip
         case .needsConfirmation: "Needs confirmation"
         case .paused: "Paused"
         case .cantRead: "Can't read"
@@ -243,8 +246,11 @@ package enum AutomationRowChip: Equatable, Sendable {
 
 package enum AutomationRowPresentation {
     /// Needs confirmation; Paused for auto-paused grants or a recipe the app
-    /// turned off with a reason; Can't read for a parse error.
-    package static func chips(_ item: AutomationListItem) -> [AutomationRowChip] {
+    /// turned off with a reason; Can't read for a parse error; Waiting for a
+    /// recipe the background AI pause holds (`isHeld`).
+    package static func chips(
+        _ item: AutomationListItem, consent: BackgroundAIConsent.State = .allowedByOwner
+    ) -> [AutomationRowChip] {
         // A parse error alone, as the badges have it: nothing else is known.
         if !item.automation.parseError.isEmpty { return [.cantRead] }
         var chips: [AutomationRowChip] = []
@@ -258,7 +264,20 @@ package enum AutomationRowPresentation {
         if !item.automation.enabled, !item.automation.disabledReason.isEmpty, !chips.contains(.paused) {
             chips.append(.paused)
         }
+        if !consent.isAllowed, isHeld(item) { chips.append(.waitingForBackgroundAI) }
         return chips
+    }
+
+    /// The triggers that start a run on their own (spec §2): the pause holds
+    /// them. Go's background run triggers are these plus `catch_up`, a
+    /// missed `schedule` slot. `manual` and `button` are the owner's.
+    private static let backgroundTriggerKinds: Set<String> = ["schedule", "event", "sync"]
+
+    /// A runnable recipe that grants AI and starts on its own: while
+    /// background AI is paused its runs wait (Run now still runs).
+    package static func isHeld(_ item: AutomationListItem) -> Bool {
+        item.automation.isRunnable && backgroundTriggerKinds.contains(item.automation.triggerKind)
+            && AutomationAIUse.usesAI(permissions: item.automation.permissions)
     }
 
     /// The row's third line: the trigger and its fact. A failed last run
@@ -300,8 +319,10 @@ package enum AutomationRowPresentation {
     }
 
     /// The compact right-hand state: chip > failed > off > last run > next run > none.
-    package static func state(_ item: AutomationListItem, now: Date) -> AutomationRowState {
-        if let chip = chips(item).first { return .chip(chip) }
+    package static func state(
+        _ item: AutomationListItem, now: Date, consent: BackgroundAIConsent.State = .allowedByOwner
+    ) -> AutomationRowState {
+        if let chip = chips(item, consent: consent).first { return .chip(chip) }
         if isFailed(item) { return .failed }
         if !isOn(item) { return .off }
         if let last = item.lastRun, let at = last.finishedAt ?? last.startedAt {
@@ -319,4 +340,28 @@ package enum AutomationRowPresentation {
 /// What a compact row shows at its right edge.
 package enum AutomationRowState: Equatable, Sendable {
     case chip(AutomationRowChip), failed, off, lastRun(word: String, ago: String), next(String), none
+}
+
+// MARK: - Background AI notice (#1886, spec §6.4)
+
+/// The one card above the Automations list while background AI is paused
+/// and at least one recipe waits for it (`AutomationRowPresentation.isHeld`).
+package struct AutomationsBackgroundAINotice: Equatable, Sendable {
+    package let text: String
+    /// "Allow background AI…" opens the consent screen; nil when the
+    /// organization turned it off (nothing the owner can allow).
+    package let actionTitle: String?
+    package let isOrganization: Bool
+
+    package static func make(state: BackgroundAIConsent.State, items: [AutomationListItem]) -> Self? {
+        guard !state.isAllowed, items.contains(where: AutomationRowPresentation.isHeld) else { return nil }
+        if state.reason == .organization {
+            return Self(text: BackgroundAIConsentCopy.automationsOrgNotice, actionTitle: nil, isOrganization: true)
+        }
+        return Self(
+            text: BackgroundAIConsentCopy.automationsNotice,
+            actionTitle: BackgroundAIConsentCopy.allowAction,
+            isOrganization: false
+        )
+    }
 }
