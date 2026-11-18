@@ -188,7 +188,11 @@ enum SlackFullLiveMockCopy {
 
     static let pendingBody = "Slack did not answer when Watchtower asked it to create the app in acme, so the app may "
         + "exist. Look for “Watchtower” on api.slack.com/apps. If it is there, enter its App ID and Client ID from its "
-        + "Basic Information page; if not, start again."
+        + "Basic Information page, then paste a fresh configuration token to add the connect link; if not, start again."
+    static let confirmClear = "Watchtower may have created the app already. Check Slack's app page first: if “Watchtower” "
+        + "is there, enter its ids and use it. Start again only if it is not there, or the workspace gets a second "
+        + "Watchtower app."
+    static let confirmClearAction = "Nothing there: start again"
     static let clientIDLabel = "Client ID"
     static let openAppsPage = "Open Slack's app page"
     static let pendingStartAgain = "Start again"

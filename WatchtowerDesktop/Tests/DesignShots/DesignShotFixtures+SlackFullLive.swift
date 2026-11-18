@@ -23,7 +23,7 @@ enum SlackFullLiveShotFixtures {
         case empty, ready, progress, success, badToken, notAllowed, linkFailed, approval
         case addLinkEmpty, addLinkBusy, addLinkError, addLinkDone
         case adopt, adoptAppId, adoptNotCollaborator
-        case pendingCreate, adoptConfirm, adoptAppIdProblem, busy
+        case pendingCreate, pendingConfirmClear, adoptConfirm, adoptAppIdProblem, busy
     }
 
     /// Connecting from a link or a pasted code.
@@ -238,7 +238,7 @@ enum SlackSetupShotFixture {
         case .adoptAppId: Model(streamer: nil, form: .adopt(needsID))
         case .adoptNotCollaborator:
             Model(streamer: nil, form: .adopt(adopt), phase: .finished(.problem(.notCollaborator(workspace: "acme"))))
-        case .pendingCreate, .adoptConfirm, .adoptAppIdProblem, .busy: reviewModel(frame, adopt: needsID)
+        case .pendingCreate, .pendingConfirmClear, .adoptConfirm, .adoptAppIdProblem, .busy: reviewModel(frame, adopt: needsID)
         }
     }
 
@@ -248,8 +248,14 @@ enum SlackSetupShotFixture {
         confirm.confirm = ("A0ACME", "Watchtower")
         var problem = adopt
         problem.appIDProblem = .format
+        let pending = Model.Form.pending(SlackSetupTarget(teamID: "T0ACME", teamName: "acme"))
+        if frame == .pendingConfirmClear {
+            let model = Model(streamer: nil, form: pending)
+            model.clearPending() // the first press asks to check Slack's app page first
+            return model
+        }
         return switch frame {
-        case .pendingCreate: Model(streamer: nil, form: .pending(SlackSetupTarget(teamID: "T0ACME", teamName: "acme")))
+        case .pendingCreate: Model(streamer: nil, form: pending)
         case .adoptConfirm: Model(streamer: nil, form: .adopt(confirm))
         case .adoptAppIdProblem: Model(streamer: nil, form: .adopt(problem))
         default: Model(streamer: nil, phase: .finished(.problem(.busy)))

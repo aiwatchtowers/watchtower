@@ -111,7 +111,7 @@ extension SlackAppSetupModel {
     package var appIDProblemLine: String? {
         guard case let .adopt(adopt) = form, let problem = adopt.appIDProblem else { return nil }
         return switch problem {
-        case .format: "That is not an App ID: it starts with A."
+        case .format: Self.appIDFormatLine
         case .mismatch: "That App ID is not the app this workspace connects through."
         case .notFound: "Slack has no app with that App ID in this workspace."
         }
@@ -157,7 +157,8 @@ extension SlackAppSetupModel {
             } ?? Self.adoptBody
             return Notice(icon: "arrow.triangle.2.circlepath", tone: .blue, title: Self.adoptTitle(adopt.target.workspace), body: body)
         case let .pending(target):
-            return Notice(icon: "questionmark.circle", tone: .warning, title: nil, body: Self.pendingBody(target.workspace))
+            return Notice(icon: "questionmark.circle", tone: .warning, title: nil,
+                          body: confirmingClear ? Self.confirmClearBody : Self.pendingBody(target.workspace))
         }
     }
 
@@ -187,8 +188,12 @@ extension SlackAppSetupModel {
     package static func pendingBody(_ workspace: String) -> String {
         "Slack did not answer when Watchtower asked it to create the app in \(workspace), so the app may exist. "
             + "Look for “Watchtower” on api.slack.com/apps. If it is there, enter its App ID and Client ID from its "
-            + "Basic Information page; if not, start again."
+            + "Basic Information page, then paste a fresh configuration token to add the connect link; if not, start again."
     }
+
+    package static let confirmClearBody = "Watchtower may have created the app already. Check Slack's app page first: "
+        + "if “Watchtower” is there, enter its ids and use it. Start again only if it is not there, or the workspace "
+        + "gets a second Watchtower app."
 
     private func outcomeNotice(_ outcome: Outcome) -> Notice {
         switch outcome {
@@ -222,9 +227,12 @@ extension SlackAppSetupModel {
         "The setup for \(workspace) no longer waits for Slack's answer. Connections → Slack shows where it stands."
     }
 
+    package static let appIDFormatLine = "That is not an App ID: it starts with A."
+    package static let clientIDFormatLine = "That is not a Client ID: two numbers joined by a dot."
+
     package static let busyBody = "Another setup is already running on this Mac. Try again once it has finished."
-    package static let storageBody = "Slack did its part, but Watchtower could not save the setup on this Mac. "
-        + "Connections → Slack shows where it got to; the app is never created twice."
+    package static let storageBody = "Watchtower could not save the setup on this Mac, so it stopped. If Connections → "
+        + "Slack shows the setup, press Continue setup there; otherwise try again. The app is never created twice."
 
     private var isAdopt: Bool {
         if case .adopt = form { return true }
@@ -255,9 +263,7 @@ extension SlackAppSetupModel {
             return "Watchtower's app is not connected in \(workspace) any more, so there is nothing to update. "
                 + "Create the app instead."
         case let .idsRejected(clientID):
-            return clientID
-                ? "That is not a Client ID: two numbers joined by a dot, on the app's Basic Information page."
-                : "That is not an App ID: it starts with A, on the app's Basic Information page."
+            return clientID ? Self.clientIDFormatLine : Self.appIDFormatLine
         case let .notPending(workspace):
             return Self.notPendingLine(workspace)
         case .saveFailed:
@@ -272,7 +278,7 @@ extension SlackAppSetupModel {
 
     package enum Action: Equatable, Sendable {
         case cancel, close, done, create, tryAgain, copyAdminNote, updateApp, copyCode
-        case showAddLink, addLink, continueSetup, checkAgain, clearPending, attachPending
+        case showAddLink, addLink, continueSetup, checkAgain, clearPending, confirmClear, attachPending
     }
 
     package struct ActionButton: Equatable, Sendable, Identifiable {
@@ -300,7 +306,8 @@ extension SlackAppSetupModel {
         case .create: [button(.cancel), button(.create, prominent: true)]
         case .addLink: [button(.cancel), button(.addLink, prominent: true)]
         case .adopt: [button(.cancel), button(.updateApp, prominent: true)]
-        case .pending: [button(.cancel), button(.clearPending), button(.attachPending, prominent: true)]
+        case .pending:
+            [button(.cancel), button(confirmingClear ? .confirmClear : .clearPending), button(.attachPending, prominent: true)]
         }
     }
 
@@ -336,6 +343,7 @@ extension SlackAppSetupModel {
         case .continueSetup: "Continue setup"
         case .checkAgain: "Check again"
         case .clearPending: "Start again"
+        case .confirmClear: "Nothing there: start again"
         case .attachPending: "Use this app"
         }
     }
@@ -351,7 +359,7 @@ extension SlackAppSetupModel {
         case .attachPending:
             return !isRunning && !appID.trimmingCharacters(in: .whitespaces).isEmpty
                 && !clientID.trimmingCharacters(in: .whitespaces).isEmpty
-        case .clearPending:
+        case .clearPending, .confirmClear:
             return !isRunning
         case .copyCode:
             return connectCode != nil
@@ -390,11 +398,20 @@ extension SlackAppSetupModel {
         case .copyCode: return connectCode
         case .showAddLink: showAddLink()
         case .continueSetup, .checkAgain: checkAgain()
-        case .clearPending: clearPending()
+        case .clearPending, .confirmClear: clearPending()
         case .attachPending: attachPending(appID: fields.appID, clientID: fields.clientID)
         }
         if [.create, .updateApp, .addLink].contains(action) { fields.token = "" }
         return nil
+    }
+
+    /// The note for a workspace admin, shown ready to copy (ask #1438 A23)
+    /// while the setup needs someone with more rights.
+    package var adminNotePreview: String? {
+        switch phase {
+        case .finished(.problem(.notAllowed)), .finished(.problem(.notCollaborator)): Self.adminNote(workspace: problemWorkspace)
+        default: nil
+        }
     }
 
     /// The connect code of a finished setup (`<team id>:<client id>`).

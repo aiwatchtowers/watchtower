@@ -563,7 +563,8 @@ final class SlackAppSetupModelTests: XCTestCase {
         XCTAssertFalse(model.showsTokenForm)
         XCTAssertEqual(model.notice?.body, "Slack did not answer when Watchtower asked it to create the app in acme, so "
             + "the app may exist. Look for “Watchtower” on api.slack.com/apps. If it is there, enter its App ID and "
-            + "Client ID from its Basic Information page; if not, start again.")
+            + "Client ID from its Basic Information page, then paste a fresh configuration token to add the connect link; "
+            + "if not, start again.")
         XCTAssertEqual(labels(model), ["Cancel", "Start again", "Use this app"])
         XCTAssertFalse(model.isEnabled(.attachPending, token: "", appID: "A0ACME", clientID: ""))
 
@@ -571,8 +572,7 @@ final class SlackAppSetupModelTests: XCTestCase {
         fake.enqueue(noSetups)
         model.attachPending(appID: "A0ACME", clientID: "x")
         await settled(model)
-        XCTAssertEqual(model.notice?.body, "That is not a Client ID: two numbers joined by a dot, on the app's Basic "
-            + "Information page.")
+        XCTAssertEqual(model.notice?.body, "That is not a Client ID: two numbers joined by a dot.")
         model.tryAgain()
 
         fake.enqueue(reply(result("ok", linkWritten: false)))
@@ -589,6 +589,13 @@ final class SlackAppSetupModelTests: XCTestCase {
         let target = SlackSetupTarget(teamID: "T0ACME", teamName: "acme")
         let (model, fake, _) = make([reply(#"{"result":"ok","team_id":"T0ACME"}"#), noSetups], form: .pending(target))
         model.clearPending()
+        XCTAssertTrue(fake.invocations.isEmpty, "the first Start again only asks to check Slack first")
+        XCTAssertEqual(model.notice?.body, "Watchtower may have created the app already. Check Slack's app page first: "
+            + "if “Watchtower” is there, enter its ids and use it. Start again only if it is not there, or the workspace "
+            + "gets a second Watchtower app.")
+        XCTAssertEqual(labels(model), ["Cancel", "Nothing there: start again", "Use this app"])
+        var fields = Model.Fields()
+        _ = model.perform(.confirmClear, fields: &fields)
         await untilObserved { model.form == .create }
         XCTAssertEqual(fake.invocations[0].args, ["slack", "app", "pending", "--json", "--team", "T0ACME", "--clear"])
         XCTAssertNil(fake.invocations[0].stdin)
@@ -698,6 +705,7 @@ final class SlackAppSetupModelTests: XCTestCase {
         let target = SlackSetupTarget(teamID: "T0ACME", teamName: "acme")
         let (model, _, _) = make([reply(#"{"result":"no_pending","team_id":"T0ACME"}"#), noSetups], form: .pending(target))
         model.clearPending()
+        model.clearPending()
         await finished(model)
         XCTAssertEqual(model.notice?.body, "The setup for acme no longer waits for Slack's answer. Connections → Slack "
             + "shows where it stands.")
@@ -729,5 +737,50 @@ final class SlackAppSetupModelTests: XCTestCase {
         await settled(model)
         XCTAssertNil(model.notice?.title)
         XCTAssertEqual(model.notice?.body, Model.notCollaboratorBody)
+    }
+
+    // MARK: - Spec review round
+
+    func testNotAllowedShowsTheAdminNote() async {
+        let model = await problem(result("not_allowed", appID: "", clientID: ""))
+        XCTAssertEqual(model.adminNotePreview, "Please set up Watchtower for acme in Slack: " + Model.guideURL.absoluteString)
+        model.tryAgain()
+        XCTAssertNil(model.adminNotePreview)
+        let bad = await problem(#"{"result":"bad_token"}"#)
+        XCTAssertNil(bad.adminNotePreview)
+    }
+
+    func testStorageSaysHowToGoOn() async {
+        let model = await problem(#"{"result":"storage"}"#)
+        XCTAssertEqual(model.notice?.body, "Watchtower could not save the setup on this Mac, so it stopped. If Connections → "
+            + "Slack shows the setup, press Continue setup there; otherwise try again. The app is never created twice.")
+    }
+
+    func testLinkWithUnreadableStatusGoesOnToTheConnect() async {
+        let target = SlackSetupTarget(teamID: "T0ACME", teamName: "acme", appID: "A0ACME", clientID: "1111.2222")
+        let failedRead = FakeCLILineStream.Reply(lines: [], exitCode: 1, stderr: "database is locked")
+        let (model, _, connector) = make([reply(result("ok")), failedRead, noSetups], form: .addLink(target))
+        model.startLink(team: "T0ACME", token: token)
+        await settled(model)
+        XCTAssertEqual(connector.calls, ["T0ACME:1111.2222"], "an unconfirmed status never ends at Done")
+        guard case .finished(.success) = model.phase else { return XCTFail("\(model.phase)") }
+    }
+
+    func testOverlappingReadsKeepTheNewest() async {
+        let (model, fake, _) = make()
+        async let first = model.reloadRecords()
+        let older = await fake.session(number: 1)
+        async let second = model.reloadRecords()
+        let newer = await fake.session(number: 2)
+        newer.emit(#"{"setups":[\#(record(connected: false, stage: "install"))]}"#)
+        newer.exit()
+        let newerRead = await second
+        XCTAssertTrue(newerRead)
+        XCTAssertEqual(model.records.count, 1)
+        older.emit(#"{"setups":[]}"#)
+        older.exit()
+        let olderRead = await first
+        XCTAssertTrue(olderRead)
+        XCTAssertEqual(model.records.count, 1, "the superseded read's answer is dropped")
     }
 }

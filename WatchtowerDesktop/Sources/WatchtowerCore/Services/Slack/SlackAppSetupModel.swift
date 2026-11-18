@@ -188,6 +188,10 @@ package final class SlackAppSetupModel {
     private var streamer: (any CLILineStreaming)? { makeStreamer() }
     /// The configuration token of the running run; nil once it ends.
     private var heldToken: String?
+    /// Bumped per status read; a read answers only while it is the newest.
+    @ObservationIgnored private var readGeneration = 0
+    /// **Start again** on a lost create asks once more first: Slack may have made the app.
+    package private(set) var confirmingClear = false
 
     package convenience init(
         streamer: (any CLILineStreaming)?,
@@ -259,6 +263,7 @@ package final class SlackAppSetupModel {
     }
 
     private func reset(_ next: Form) {
+        confirmingClear = false
         form = next
         phase = .editing
         steps = []
@@ -306,6 +311,12 @@ package final class SlackAppSetupModel {
     /// A lost create, nothing on api.slack.com/apps: drop the pending record.
     package func clearPending() {
         guard case let .pending(target) = form, !isRunning else { return }
+        // A create may have made the app: the first press only asks to check.
+        guard confirmingClear else {
+            confirmingClear = true
+            return
+        }
+        confirmingClear = false
         phase = .running
         steps = []
         Task { [self] in
@@ -343,15 +354,24 @@ package final class SlackAppSetupModel {
 
     /// `slack app status --json`: the setup records behind the rows of §3.4.
     /// A failed read keeps the last records.
-    package func reloadRecords() async {
-        guard let streamer else { return }
+    /// Reads may overlap (a run ends while the accounts change): a read that
+    /// a later one has superseded drops its answer, so older records never
+    /// overwrite newer ones. Returns false when this read failed.
+    @discardableResult
+    package func reloadRecords() async -> Bool {
+        guard let streamer else { return false }
+        readGeneration += 1
+        let generation = readGeneration
         var last: String?
         do {
             for try await line in streamer.lines(args: Self.statusArgs, stdin: nil) { last = line }
-            guard let last, let data = last.data(using: .utf8) else { return }
-            records = try JSONDecoder().decode(StatusDocument.self, from: data).setups ?? []
+            guard let last, let data = last.data(using: .utf8) else { return false }
+            let read = try JSONDecoder().decode(StatusDocument.self, from: data).setups ?? []
+            if generation == readGeneration { records = read }
+            return true
         } catch {
             print("[SlackAppSetup] status read failed: \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -509,17 +529,23 @@ package final class SlackAppSetupModel {
         if !team.isEmpty { args += ["--team", team] }
         guard let result = await stream(args, token: token) else { return }
         if result.result == "ok" {
-            await reloadRecords()
-            let written = result.target(fallback: nil)
-            guard let record = records.first(where: { $0.teamID == written.teamID }), !record.connected else {
-                phase = .finished(.linkDone)
-                return
+            var target = result.target(fallback: nil)
+            target.linkWritten = true
+            // Done only when the records confirm the owner is connected; an
+            // unreadable status goes on to the connect (re-connecting re-binds
+            // the same account, so it is safe).
+            if await reloadRecords() {
+                let record = records.first { $0.teamID == target.teamID }
+                if record?.connected ?? true {
+                    phase = .finished(.linkDone)
+                    return
+                }
+                if let record { target = SlackSetupTarget(teamID: record.teamID, teamName: record.teamName,
+                                                          appID: record.appID, clientID: record.clientID, linkWritten: true) }
             }
             // A setup whose owner is not connected yet (an attached app): on to the connect.
             form = .create
             steps = Self.continueSteps(linkWritten: true)
-            var target = record.target
-            target.linkWritten = true
             await finishSetup(target)
         } else if result.result == "pending_create" {
             reset(.pending(result.target(fallback: nil)))
@@ -561,7 +587,7 @@ package final class SlackAppSetupModel {
     }
 
     /// The workspace the current problem names (the admin note's).
-    private var problemWorkspace: String {
+    var problemWorkspace: String {
         switch phase {
         case let .finished(.problem(.notAllowed(workspace))), let .finished(.problem(.notCollaborator(workspace))):
             workspace

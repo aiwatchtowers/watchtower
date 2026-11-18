@@ -39,6 +39,7 @@ struct SlackAppSetupSheet: View {
             if let notice = model.notice { noticeCard(notice) }
             if model.showsAppIDField { appIDField }
             if model.showsPendingFields { pendingFields }
+            if let note = model.adminNotePreview { adminNote(note) }
             if model.adminNoteCopied {
                 Text(Model.adminNoteCopiedLine).font(.caption).foregroundStyle(.secondary)
             }
@@ -141,6 +142,17 @@ struct SlackAppSetupSheet: View {
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
+    }
+
+    /// The note for the admin, selectable as well as copyable.
+    private func adminNote(_ note: String) -> some View {
+        Text(note)
+            .font(.callout)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(Spacing.medium)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card()
     }
 
     private var appIDField: some View {
