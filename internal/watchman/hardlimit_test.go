@@ -494,5 +494,64 @@ func TestParkedBy_ShellStringsAreWrappers(t *testing.T) {
 		{"dot a file", bash(`. ./env.sh`), LimitUnreadable},
 		{"xargs sh -c", bash(`echo x | xargs sh -c 'git push origin feat'`), LimitUnreadable},
 		{"too deep", bash(`bash -c "bash -c 'bash -c \"bash -c go\"'"`), LimitUnreadable},
+		// Shell options with operands before -c (round 4).
+		{"bash -o pipefail -c", bash(`bash -o pipefail -c 'git push origin main'`), LimitMainRef},
+		{"bash --rcfile -c", bash(`bash --rcfile x.rc -c 'gh release create v1'`), LimitRelease},
+		{"bash +O extglob -c harmless", bash(`bash +O extglob -c 'go test ./...'`), ""},
+		{"bash -c after a script", bash(`bash script.sh -c 'git push origin main'`), LimitUnreadable},
+		// A string run elsewhere has no known directory (round 4).
+		{"env -C bash -c relative delete", bash(`env -C /x bash -c 'rm -rf y'`), LimitDeleteOutside},
+		{"cd then bash -c relative delete", bash(`cd /tmp && bash -c 'rm -rf y'`), LimitDeleteOutside},
+		{"bash -c relative delete here", bash(`bash -c 'rm -rf y'`), ""},
+	})
+}
+
+// Round 4: shapes the parser does not follow park as unreadable, and a
+// coarse text backstop parks any merge-looking request with a tool that
+// can merge a pull request (main_ref), however the command is shaped.
+func TestParkedBy_HiddenShapesAndMergeBackstop(t *testing.T) {
+	expectParked(t, []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}{
+		{"subshell", bash("(gh pr merge 1)"), LimitUnreadable},
+		{"group", bash("{ gh pr merge 1; }"), LimitUnreadable},
+		{"command substitution", bash("echo $(gh pr merge 1)"), LimitUnreadable},
+		{"backtick substitution", bash("echo `git push origin main`"), LimitUnreadable},
+		{"background job", bash("true & gh pr merge 1"), LimitUnreadable},
+		{"if body", bash("if true; then gh pr merge 1; fi"), LimitUnreadable},
+		{"for body", bash("for b in a; do git push origin main; done"), LimitUnreadable},
+		{"negation", bash("! gh pr merge 1"), LimitUnreadable},
+		{"pipe into bash", bash("echo 'gh pr merge 1' | bash"), LimitUnreadable},
+		{"pipe into sh", bash("cat cmds.txt | sh"), LimitUnreadable},
+		{"here-string", bash("bash <<< 'gh pr merge 1'"), LimitUnreadable},
+		{"gh alias set", bash("gh alias set m 'pr merge'"), LimitUnreadable},
+		{"gh api body from a file", bash("gh api graphql -F query=@m.graphql"), LimitUnreadable},
+		{"gh api --input", bash("gh api repos/o/r/pulls --input body.json"), LimitUnreadable},
+		{"gh api merges endpoint", bash("gh api -X POST repos/o/r/merges -f base=main"), LimitMainRef},
+		{"curl merges endpoint", bash("curl -X POST https://api.github.com/repos/o/r/merges"), LimitMainRef},
+		{"auto-merge mutation", bash(`gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }'`), LimitMainRef},
+		{"auto-merge setting", bash("gh api -X PATCH repos/o/r -F allow_auto_merge=true"), LimitMainRef},
+		{"automerge word", bash("gh label create automerge"), LimitMainRef},
+		{"pr merge --auto", bash("gh pr merge 1 --auto --squash"), LimitMainRef},
+		{"merge word in the description", bash("gh pr view 1\n# check it before the merge"), LimitMainRef},
+		{"merge word and gh apart", bash("git log --grep merge && gh pr view 1"), LimitMainRef},
+		// What the backstop and the shapes leave alone.
+		{"go test -run Merge", bash("go test ./... -run Merge"), ""},
+		{"go test TestMergeRows", bash("go test ./internal/x -run TestMergeRows"), ""},
+		{"git merge without a PR tool", bash("git merge --no-ff feature/x"), ""},
+		{"gh without a merge word", bash("gh pr view 1 --json title"), ""},
+		{"stderr redirect", bash("go test ./... 2>&1 | tail -5"), ""},
+		{"both streams redirect", bash("make build &> build.log"), ""},
+		{"bash -c list", bash("bash -c 'go vet ./... && go test ./...'"), ""},
+		// Wrappers added in round 4.
+		{"timeout", bash("timeout 30 git push origin main"), LimitMainRef},
+		{"timeout with options", bash("timeout -k 5 -s KILL 1m git push --tags"), LimitTag},
+		{"caffeinate", bash("caffeinate -i git push -f origin feat"), LimitForcePush},
+		{"doas", bash("doas gh release create v1"), LimitRelease},
+		{"stdbuf attached", bash("stdbuf -oL git push origin main"), LimitMainRef},
+		{"stdbuf separate", bash("stdbuf -o L git push origin main"), LimitMainRef},
+		{"timeout harmless", bash("timeout 10m go test ./..."), ""},
 	})
 }

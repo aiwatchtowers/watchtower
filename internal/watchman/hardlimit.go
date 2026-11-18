@@ -134,8 +134,13 @@ var wrappers = map[string]map[string]bool{
 	"env":     {"-u": true, "-C": true, "-S": true, "--unset": true, "--chdir": true, "--split-string": true},
 	"exec":    {"-a": true},
 	"nice":    {"-n": true, "--adjustment": true},
-	"xcrun":   {"--sdk": true, "-sdk": true, "--toolchain": true, "-toolchain": true},
-	"xargs":   {"-n": true, "-L": true, "-I": true, "-P": true, "-s": true, "-d": true, "-E": true, "-a": true, "--max-args": true, "--max-lines": true, "--max-procs": true, "--max-chars": true, "--delimiter": true, "--arg-file": true, "--replace": true, "--eof": true},
+	// timeout's command follows a duration as well (stripWrappers).
+	"timeout":    {"-s": true, "-k": true, "--signal": true, "--kill-after": true},
+	"caffeinate": {"-t": true, "-w": true},
+	"doas":       {"-u": true, "-C": true},
+	"stdbuf":     {"-i": true, "-o": true, "-e": true, "--input": true, "--output": true, "--error": true},
+	"xcrun":      {"--sdk": true, "-sdk": true, "--toolchain": true, "-toolchain": true},
+	"xargs":      {"-n": true, "-L": true, "-I": true, "-P": true, "-s": true, "-d": true, "-E": true, "-a": true, "--max-args": true, "--max-lines": true, "--max-procs": true, "--max-chars": true, "--delimiter": true, "--arg-file": true, "--replace": true, "--eof": true},
 }
 
 // unresolved stands for a command that cannot be read (a wrapper around
@@ -291,6 +296,9 @@ func stripWrappers(words []string, c *shellCmd) []string {
 				words = words[1:]
 			}
 		}
+		if path.Base(w) == "timeout" && len(words) > 0 { // the duration
+			words = words[1:]
+		}
 	}
 	if wrapped {
 		return []string{unresolved}
@@ -320,6 +328,14 @@ const maxShellDepth = 3
 // shells are the programs whose -c option runs a string.
 var shells = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true, "ksh": true}
 
+// shellValued are the shell options that take an operand.
+var shellValued = map[string]bool{"-o": true, "-O": true, "+o": true, "+O": true, "--rcfile": true, "--init-file": true}
+
+// isShellDashC reports a shell's -c option, alone or among short options.
+func isShellDashC(w string) bool {
+	return strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "--") && strings.Contains(w, "c")
+}
+
 // shellInner returns the string words run as commands: a shell's -c
 // string or eval's argument. isShell is false when words do not run a
 // string; inner is "" when they do but it cannot be read (always for
@@ -333,13 +349,18 @@ func shellInner(words []string) (inner string, isShell bool) {
 		return "", true
 	case shells[prog]:
 		i, dashC := 1, false
-		for ; i < len(words) && strings.HasPrefix(words[i], "-") && words[i] != "--"; i++ {
-			dashC = dashC || (!strings.HasPrefix(words[i], "--") && strings.Contains(words[i], "c"))
+		for ; i < len(words) && (strings.HasPrefix(words[i], "-") || strings.HasPrefix(words[i], "+")) && words[i] != "--"; i++ {
+			if shellValued[words[i]] {
+				i++ // the option's operand
+				continue
+			}
+			dashC = dashC || isShellDashC(words[i])
 		}
 		if !dashC {
-			return "", false
+			// A -c the options above did not reach cannot be read.
+			return "", slices.ContainsFunc(words[1:], isShellDashC)
 		}
-		rest = words[i:]
+		rest = words[min(i, len(words)):]
 	default:
 		return "", false
 	}
@@ -347,6 +368,60 @@ func shellInner(words []string) (inner string, isShell bool) {
 		return "", true
 	}
 	return rest[0], true
+}
+
+// compoundStarts are the first words of shell syntax this reader does not
+// follow (subshells, groups, negation, the bodies of if/for/while).
+var compoundStarts = map[string]bool{"(": true, "{": true, "!": true, "then": true, "do": true, "else": true, "elif": true}
+
+// hiddenShape reports a command whose real command this reader cannot see,
+// so it parks: shell syntax it does not follow (a compound start, a command
+// substitution, a here-string, a lone & sending a job to the background), a
+// shell reading its commands from a pipe, a gh alias definition, or a gh
+// api call whose body comes from a file.
+func hiddenShape(c shellCmd, sep string) bool {
+	if compoundStarts[c.w[0]] || strings.HasPrefix(c.w[0], "(") {
+		return true
+	}
+	for _, w := range c.w {
+		if strings.Contains(w, "$(") || strings.Contains(w, "`") || strings.Contains(w, "<<<") || loneAmpersand(w) {
+			return true
+		}
+	}
+	if sep == "|" && shells[c.w[0]] {
+		if _, isShell := shellInner(c.w); !isShell {
+			return true
+		}
+	}
+	if verb, ok := c.ghCmd("alias"); ok && verb == "set" {
+		return true
+	}
+	if args, ok := c.sub("gh", "api"); ok {
+		return slices.ContainsFunc(args, func(a string) bool {
+			return strings.HasPrefix(a, "@") || strings.Contains(a, "=@") || a == "--input" || strings.HasPrefix(a, "--input=")
+		})
+	}
+	return false
+}
+
+// loneAmpersand reports a & in w that is neither a redirection (2>&1,
+// &>file, >&2) nor part of && (a shell -c string's own list): a job sent to
+// the background.
+func loneAmpersand(w string) bool {
+	for i := 0; i < len(w); i++ {
+		if w[i] != '&' {
+			continue
+		}
+		if i+1 < len(w) && w[i+1] == '&' {
+			i++
+			continue
+		}
+		if (i > 0 && (w[i-1] == '>' || w[i-1] == '<')) || (i+1 < len(w) && w[i+1] == '>') {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // commandsIn is commands for a string run from directory cwd at shell
@@ -369,12 +444,20 @@ func commandsIn(summary, cwd string, depth int) ([]shellCmd, string) {
 		}
 		words[0] = path.Base(words[0])
 		c.w = words
+		if hiddenShape(c, part.sep) {
+			out = append(out, shellCmd{w: []string{unresolved}, cwd: cwd})
+			continue
+		}
 		if inner, isShell := shellInner(words); isShell {
 			if inner == "" || c.xargs || depth >= maxShellDepth {
 				out = append(out, shellCmd{w: []string{unresolved}, cwd: cwd})
 				continue
 			}
-			sub, subCwd := commandsIn(inner, cwd, depth+1)
+			innerCwd := cwd
+			if c.elsewhere { // env -C, sudo -D...: the string runs elsewhere
+				innerCwd = cwdUnknown
+			}
+			sub, subCwd := commandsIn(inner, innerCwd, depth+1)
 			for _, ic := range sub {
 				ic.elsewhere = ic.elsewhere || c.elsewhere
 				out = append(out, ic)
@@ -571,6 +654,22 @@ func matchUnreadable(r PermissionAsk) bool {
 	return anyCmd(r, func(c shellCmd) bool { return c.w[0] == unresolved })
 }
 
+// mergeWords and mergeTools are the backstop's two halves: a merge word
+// (merge, merges, mergePullRequest, an auto-merge) and a tool that can
+// merge a pull request.
+var (
+	mergeWords = regexp.MustCompile(`(?i)(^|[^a-z])merges?([^a-z]|$)|mergepullrequest|automerge`)
+	mergeTools = regexp.MustCompile(`(?i)(^|[^a-z])(gh|hub|api|graphql|pulls|curl)([^a-z]|$)`)
+)
+
+// mergeBackstop is the coarse check after the parser (fail closed): a
+// shell request whose whole text, comments included, has a merge word and
+// a tool that can merge a pull request parks, however the command is
+// shaped.
+func mergeBackstop(r PermissionAsk) bool {
+	return isBash(r) && mergeWords.MatchString(r.Summary) && mergeTools.MatchString(r.Summary)
+}
+
 // prMergePath is a GitHub REST path that merges a pull request.
 var prMergePath = regexp.MustCompile(`(?i)/pulls/[^/\s]+/merge\b`)
 
@@ -596,6 +695,9 @@ func isPRMerge(c shellCmd) bool {
 // matched: its destination is unknown here, and parking every plain push
 // would drop most push decisions (the live pre-push hook covers it).
 func matchMainRef(r PermissionAsk) bool {
+	if mergeBackstop(r) {
+		return true
+	}
 	return anyCmd(r, func(c shellCmd) bool {
 		if isPRMerge(c) {
 			return true
