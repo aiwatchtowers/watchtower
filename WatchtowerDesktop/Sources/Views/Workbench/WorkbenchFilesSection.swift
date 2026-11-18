@@ -35,6 +35,17 @@ struct WorkbenchFilesSection: View {
     /// main thread.
     @State private var trashCount: Int?
     @State private var operationError: String?
+    /// Remove from Bench…'s confirmation or refusal on screen.
+    @State private var removing: RemoveFolder?
+    /// Locate… waiting on the TCC warning: the folder and its new place.
+    @State private var locating: (folder: WorkbenchFolder, url: URL)?
+    @State private var sensitiveLocation: String?
+
+    /// A folder and the remove dialog about it.
+    private struct RemoveFolder {
+        let folder: WorkbenchFolder
+        let dialog: WorkbenchFolderPresentation.RemoveDialog
+    }
 
     var body: some View {
         let files = vm.codeFiles
@@ -45,7 +56,7 @@ struct WorkbenchFilesSection: View {
             header(tree)
             if isExpanded {
                 notices(files)
-                if roots.count > 1 {
+                if WorkbenchesViewModel.showsRootRows(roots) {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(roots) { rootSection($0, files: files) }
@@ -92,6 +103,26 @@ struct WorkbenchFilesSection: View {
             Text(trashMessage)
         }
         .alert(
+            removing?.dialog.title ?? "",
+            isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
+            presenting: removing
+        ) { pending in
+            if pending.dialog.confirms {
+                Button(Copy.cancel, role: .cancel) {}
+                Button(Copy.remove, role: .destructive) { remove(pending.folder) }
+            } else {
+                Button(Copy.ok, role: .cancel) {}
+            }
+        } message: { pending in
+            Text(pending.dialog.message)
+        }
+        .sensitiveLocationAlert($sensitiveLocation) {
+            if let pending = locating { Task { await vm.locateFolder(pending.folder, to: pending.url) } }
+            locating = nil
+        } onCancel: {
+            locating = nil
+        }
+        .alert(
             "Could not change the files",
             isPresented: Binding(get: { operationError != nil }, set: { if !$0 { operationError = nil } })
         ) {
@@ -129,17 +160,43 @@ struct WorkbenchFilesSection: View {
     private func rootActions(_ item: FilesRootItem) -> FilesRootActions {
         let projectID = project.id
         let url = item.folder.url
-        return FilesRootActions(
+        var actions = FilesRootActions(
             toggle: { vm.toggleFolderRoot(item.folder.id, projectID: projectID) },
             showInFinder: { NSWorkspace.shared.activateFileViewerSelecting([url]) },
-            retryInstall: { Task { await vm.retryFolderInstall(projectID: projectID) } },
-            // New Session Here starts in the folder once session start takes
-            // one (Task 15); Remove and Locate are the remove/locate flows
-            // (Task 16). Until then the items show disabled.
-            newSessionHere: nil,
-            removeFromBench: nil,
-            locate: nil
+            retryInstall: { Task { await vm.retryFolderInstall(projectID: projectID) } }
         )
+        // New Session Here starts in the folder once session start takes
+        // one (Task 15). Until then the item shows disabled.
+        actions.locate = { locate(item.folder) }
+        // The bench's only folder cannot leave it (a missing one is located instead).
+        if vm.canRemoveFolder(projectID: projectID) {
+            actions.removeFromBench = { removing = RemoveFolder(folder: item.folder, dialog: vm.removeDialog(item.folder)) }
+        }
+        return actions
+    }
+
+    /// Locate… (§6.3): the folder panel, Open Folder…'s TCC warning when the
+    /// new place needs it, then `workbench folder locate`.
+    private func locate(_ folder: WorkbenchFolder) {
+        guard let url = WorkbenchesView.runFolderPanel(
+            title: Copy.locatePanelTitle(name: folder.name), prompt: Copy.locatePanelPrompt, canCreate: false
+        ) else { return }
+        Task {
+            if case let .confirmLocation(location) = await vm.locate(folder, to: url) {
+                locating = (folder, url)
+                sensitiveLocation = location
+            }
+        }
+    }
+
+    /// Remove after its confirmation; Go's own refusal (a session started
+    /// meanwhile) comes back as the dialog to show.
+    private func remove(_ folder: WorkbenchFolder) {
+        Task {
+            if let refused = await vm.removeFromBench(folder) {
+                removing = RemoveFolder(folder: folder, dialog: refused)
+            }
+        }
     }
 
     /// Under a one-folder tree: `Task touches another repo? Put on the Bench…`.

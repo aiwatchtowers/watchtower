@@ -113,19 +113,7 @@ struct WorkbenchesView: View {
             Task { await vm.tabAppeared() }
         }
         .onChange(of: appState.pendingWorkbenchRoute) { _, _ in consumeRoute() }
-        .alert(
-            "Folder in \(sensitiveLocation ?? "")",
-            isPresented: Binding(get: { sensitiveLocation != nil }, set: { if !$0 { sensitiveLocation = nil } })
-        ) {
-            Button("Open anyway") { startPending() }
-            Button("Choose another folder", role: .cancel) { pendingFolder = nil }
-        } message: {
-            Text(
-                "The embedded terminal runs as part of Watchtower, so macOS may ask whether "
-                    + "Watchtower can access \(sensitiveLocation ?? "this folder"). A folder outside Documents, "
-                    + "Desktop, Downloads and cloud storage avoids that prompt."
-            )
-        }
+        .sensitiveLocationAlert($sensitiveLocation, onConfirm: startPending) { pendingFolder = nil }
     }
 
     @ViewBuilder
@@ -310,6 +298,12 @@ struct WorkbenchesView: View {
     }
 
     private func runFolderPanel(title: String?, prompt: String, canCreate: Bool) -> URL? {
+        Self.runFolderPanel(title: title, prompt: prompt, canCreate: canCreate)
+    }
+
+    /// The folder panel of Open Folder…, Put on the Bench… and Locate…: one
+    /// directory, symlinks resolved; nil when cancelled.
+    static func runFolderPanel(title: String?, prompt: String, canCreate: Bool) -> URL? {
         let panel = NSOpenPanel()
         if let title { panel.title = title }
         panel.canChooseDirectories = true

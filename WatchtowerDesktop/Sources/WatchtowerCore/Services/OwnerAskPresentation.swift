@@ -130,7 +130,7 @@ package enum OwnerAskPresentation {
     }
 
     /// A folder suggestion's next step in "Waiting for you".
-    package static let folderNextStep = "Put on Bench?"
+    package static let folderNextStep = FolderSuggestionPresentation.putOnBench
 
     /// A "Waiting for you" row's next step (board #366): "Review doc",
     /// "Answer 2 questions", "Run 1 check".
@@ -238,7 +238,7 @@ package enum OwnerAskPresentation {
         case .review: "doc.text.magnifyingglass"
         case .check: "checklist"
         case .question: "questionmark.bubble"
-        case .folder: "folder"
+        case .folder: FolderSuggestionPresentation.icon
         }
     }
 
