@@ -108,7 +108,7 @@ func TestParkedBy(t *testing.T) {
 		{"nice -n push", bash("nice -n 5 git push origin main"), LimitMainRef},
 		{"xargs -n rm", bash("ls | xargs -n 1 rm"), LimitDeleteOutside},
 		{"sudo -u feature push", bash("sudo -u build git push origin feat"), ""},
-		{"bare wrapper unresolved", bash("sudo -u"), LimitMainRef},
+		{"bare wrapper unresolved", bash("sudo -u"), LimitUnreadable},
 		{"cd or true rm", bash("cd /w/a || true; rm -rf x"), LimitDeleteOutside},
 		{"cd semicolon rm", bash("cd /w/a; rm -rf x"), LimitDeleteOutside},
 		{"cd and rm", bash("cd /w/a && rm -rf x"), ""},
@@ -150,14 +150,14 @@ func TestParkedBy(t *testing.T) {
 		{"quoted path inside", bash(`rm "/w/a/a b"`), ""},
 		{"double-quote escape", bash(`rm "/w/a/x\"y" /tmp/z`), LimitDeleteOutside},
 		{"single quote no escape", bash(`rm '/w/a/x\' /tmp/z`), LimitDeleteOutside},
-		{"unterminated quote", bash(`echo "abc`), LimitMainRef},
+		{"unterminated quote", bash(`echo "abc`), LimitUnreadable},
 		{"quoted separator", bash(`git commit -m "fix; tidy" && git push origin feat`), ""},
 		{"quoted separator hides no push", bash(`echo "a" ; git push origin main`), LimitMainRef},
 		{"comment line separator", bash("# Next step; git push origin main\ngo test ./..."), ""},
 		{"numeric file name", edit("Write", "123"), ""},
 		{"true file name", edit("Write", "true"), ""},
 		{"null file name", edit("Edit", "null"), ""},
-		{"json array fallback", edit("Edit", `["x"]`), LimitOutsideFolder},
+		{"json array is a file name", edit("Edit", `["x"]`), ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -188,4 +188,176 @@ func TestPermissionFlags(t *testing.T) {
 	f = permissionFlags(clipped)
 	require.True(t, *f.IsDecision)
 	require.True(t, *f.Parked, "a clipped summary hides its tail: it parks")
+}
+
+// expectParked runs ParkedBy over each case and checks the row it parks under
+// ("" = not parked).
+func expectParked(t *testing.T, cases []struct {
+	name  string
+	ask   PermissionAsk
+	limit HardLimit
+}) {
+	t.Helper()
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, parked := ParkedBy(c.ask)
+			require.Equal(t, c.limit != "", parked)
+			require.Equal(t, c.limit, got)
+		})
+	}
+}
+
+func TestParkedBy_ResetHardOnSharedLocalBranch(t *testing.T) {
+	onBranch := func(cmd string, b *BranchInfo) PermissionAsk {
+		r := bash(cmd)
+		r.Branch = b
+		return r
+	}
+	shared := []string{"main", "feature/watchman"}
+	expectParked(t, []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}{
+		{"checkout main then reset", bash("git checkout main && git reset --hard HEAD~1"), LimitResetShared},
+		{"switch master then reset", bash("git switch master; git reset --hard HEAD~1"), LimitResetShared},
+		{"checkout feature then reset", bash("git checkout feat && git reset --hard HEAD~1"), LimitResetShared},
+		{"reset then checkout main", bash("git reset --hard HEAD~1 && git checkout main"), ""},
+		{"checkout file then reset", bash("git checkout feat -- a.go && git reset --hard HEAD~1"), LimitResetShared},
+		{"checkout -B main", bash("git checkout -B main HEAD~2"), LimitResetShared},
+		{"branch -f main", bash("git branch -f main HEAD~2"), LimitResetShared},
+		{"branch --force master", bash("git branch --force master HEAD~2"), LimitResetShared},
+		{"branch -D main", bash("git branch -D main"), LimitResetShared},
+		{"branch -M main", bash("git branch -M main"), LimitResetShared},
+		{"branch -f feature", bash("git branch -f feat HEAD~2"), ""},
+		{"branch create", bash("git branch main2"), ""},
+		{"branch -f umbrella", onBranch("git branch -f feature/watchman HEAD~2", &BranchInfo{Current: "wt/session-3", Shared: shared}), LimitResetShared},
+		{"update-ref master", bash("git update-ref refs/heads/master abc"), LimitResetShared},
+		{"update-ref -d main", bash("git update-ref -d refs/heads/main"), LimitResetShared},
+		{"update-ref feature", bash("git update-ref refs/heads/feat abc"), ""},
+		{"update-ref stdin", bash("git update-ref --stdin"), LimitResetShared},
+		{"reset on shared current", onBranch("git reset --hard HEAD~1", &BranchInfo{Current: "feature/watchman", Shared: shared}), LimitResetShared},
+		{"reset on main current", onBranch("git reset --hard HEAD~1", &BranchInfo{Current: "main"}), LimitResetShared},
+		{"reset on session branch", onBranch("git reset --hard HEAD~1", &BranchInfo{Current: "wt/session-3", Shared: shared}), ""},
+		{"reset on unknown branch", onBranch("git reset --hard HEAD~1", &BranchInfo{Current: "", Shared: shared}), LimitResetShared},
+		{"reset branch not recorded", onBranch("git reset --hard HEAD~1", nil), ""},
+		{"soft reset on shared", onBranch("git reset --soft HEAD~1", &BranchInfo{Current: "main"}), ""},
+		{"switch away then reset", onBranch("git switch wt/session-3 && git reset --hard HEAD~1", &BranchInfo{Current: "main"}), LimitResetShared},
+		{"switch -c then reset", onBranch("git switch -c wt/new && git reset --hard HEAD~1", &BranchInfo{Current: "wt/session-3"}), LimitResetShared},
+		{"checkout dot then reset", onBranch("git checkout . && git reset --hard HEAD~1", &BranchInfo{Current: "feat", Shared: shared}), LimitResetShared},
+		{"reset alone on feature", onBranch("git reset --hard HEAD~1", &BranchInfo{Current: "feat", Shared: shared}), ""},
+		{"gh pr checkout then reset", onBranch("gh pr checkout 12 && git reset --hard HEAD~1", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"git -C reset", onBranch("git -C /other reset --hard HEAD~1", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"git -C reset not recorded", bash("git -C /other reset --hard HEAD~1"), LimitResetShared},
+		{"git --git-dir reset", onBranch("git --git-dir=/other/.git reset --hard HEAD~1", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"cd then reset", onBranch("cd /main && git reset --hard HEAD~1", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"cd semicolon then reset", bash("cd /w/a; git reset --hard HEAD~1"), LimitResetShared},
+		{"pushd then reset", onBranch("pushd /main && git reset --hard HEAD~1", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"checkout without reset", onBranch("git checkout main && go test ./...", &BranchInfo{Current: "feat"}), ""},
+		{"branch -C onto main", bash("git branch -C x main"), LimitResetShared},
+		{"branch --copy -f onto main", bash("git branch --copy -f x main"), LimitResetShared},
+		{"branch -m -f onto main", bash("git branch -m -f x main"), LimitResetShared},
+		{"branch -m without force", bash("git branch -m x main"), ""},
+		{"branch -fD main", bash("git branch -fD main"), LimitResetShared},
+		{"branch -fq main", bash("git branch -fq main HEAD~2"), LimitResetShared},
+		{"branch -fM main", bash("git branch -fM x main"), LimitResetShared},
+		{"branch -M rename current main", onBranch("git branch -M newname", &BranchInfo{Current: "main"}), LimitResetShared},
+		{"branch -M rename current unknown", onBranch("git branch -M newname", &BranchInfo{Current: ""}), LimitResetShared},
+		{"branch -M rename current feature", onBranch("git branch -M newname", &BranchInfo{Current: "feat", Shared: shared}), ""},
+		{"branch -M rename after cd", bash("cd /main && git branch -M newname"), LimitResetShared},
+		{"switch --force-create main", bash("git switch --force-create main"), LimitResetShared},
+		{"switch -fB main", bash("git switch -fB main"), LimitResetShared},
+		{"checkout -fC main", bash("git checkout -fC main origin/x"), LimitResetShared},
+		{"checkout -B feature from main", bash("git checkout -B feat main"), ""},
+		{"update-ref HEAD on feature", onBranch("git update-ref HEAD abc", &BranchInfo{Current: "feat"}), ""},
+		{"git -c then -C reset", onBranch("git -c core.x=1 -C /other reset --hard HEAD~1", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"git -c then -C reset not recorded", bash("git -c core.x=1 -C /other reset --hard HEAD~1"), LimitResetShared},
+		{"git --git-dir separate reset", bash("git --git-dir /x reset --hard"), LimitResetShared},
+		{"git --work-tree= reset", bash("git --work-tree=/x reset --hard HEAD~1"), LimitResetShared},
+		{"git -c only reset on feature", onBranch("git -c core.x=1 reset --hard HEAD~1", &BranchInfo{Current: "feat"}), ""},
+		{"git --namespace separate reset on main", onBranch("git --namespace ns reset --hard HEAD~1", &BranchInfo{Current: "main"}), LimitResetShared},
+		{"git --exec-path= reset on main", onBranch("git --exec-path=/x reset --hard HEAD~1", &BranchInfo{Current: "main"}), LimitResetShared},
+		{"git -c branch -f main", bash("git -c core.x=1 branch -f main HEAD~2"), LimitResetShared},
+		{"checkout -Bmain", bash("git checkout -Bmain"), LimitResetShared},
+		{"switch -Cmain", bash("git switch -Cmain"), LimitResetShared},
+		{"switch --force-create=main", bash("git switch --force-create=main"), LimitResetShared},
+		{"switch -fCmain", bash("git switch -fCmain origin/x"), LimitResetShared},
+		{"switch -Cfeature", bash("git switch -Cfeat"), ""},
+		{"checkout -- -B main is a path checkout", bash("git checkout -- -B main"), ""},
+		{"checkout -- -B main then reset", onBranch("git checkout -- -B main && git reset --hard HEAD~1", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"branch -- after force", bash("git branch -f -- main"), LimitResetShared},
+		{"rebase onto main then reset", bash("git rebase main feat && git reset --hard"), LimitMainRef}, // parked by the earlier main_ref row
+		{"rebase then reset", onBranch("git rebase origin/feature/x wt/x && git reset --hard HEAD~1", &BranchInfo{Current: "wt/session-3"}), LimitResetShared},
+		{"rebase then reset not recorded", bash("git rebase origin/feature/x wt/x && git reset --hard"), LimitResetShared},
+		{"worktree then reset", onBranch("git worktree add ../x main; git reset --hard HEAD~1", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"GIT_DIR reset", onBranch("GIT_DIR=/other/.git git reset --hard HEAD~1", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"GIT_WORK_TREE reset not recorded", bash("GIT_WORK_TREE=/other git reset --hard HEAD~1"), LimitResetShared},
+		{"env GIT_DIR reset", bash("env GIT_DIR=/other/.git git reset --hard HEAD~1"), LimitResetShared},
+		{"export GIT_DIR then reset", bash("export GIT_DIR=/other/.git && git reset --hard HEAD~1"), LimitResetShared},
+		{"env -C reset", onBranch("env -C /other git reset --hard HEAD~1", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"other env reset on feature", onBranch("GIT_TRACE=1 git reset --hard HEAD~1", &BranchInfo{Current: "feat"}), ""},
+		{"update-ref HEAD after checkout", onBranch("git checkout main; git update-ref HEAD abc", &BranchInfo{Current: "feat"}), LimitResetShared},
+	})
+}
+
+func TestParkedBy_InlineCommentApostrophe(t *testing.T) {
+	expectParked(t, []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}{
+		{"comment with apostrophe", bash("go test ./... # don't cache"), ""},
+		{"push with comment", bash("git push origin main # it's fine"), LimitMainRef},
+		{"hash inside quotes", bash(`echo "it's # not a comment" && git push origin main`), LimitMainRef},
+		{"hash inside a word", bash("echo a#b"), ""},
+		{"hash inside a word then push", bash("echo a#b; git push origin main"), LimitMainRef},
+		{"escaped hash", bash(`echo \# 'open`), LimitUnreadable},
+		{"comment hides separator", bash("go test ./... # then; git push origin main"), ""},
+		{"comment ends at newline", bash("go test ./... # don't\ngit push origin main"), LimitMainRef},
+		{"comment on a continued line", bash("go test \\\n# don't cache"), ""},
+		{"continuation then comment then push", bash("go test \\\n# don't\ngit push origin main"), LimitMainRef},
+		{"continuation inside a word is no comment", bash("echo a\\\n#b; git push origin main"), LimitMainRef},
+	})
+}
+
+func TestParkedBy_DescriptionLinesAreComments(t *testing.T) {
+	expectParked(t, []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}{
+		{"two description lines", bash("go test ./...\n# Run tests\n# then don't push to main"), ""},
+		{"description names a push", bash("go test ./...\n# Run tests\n# git push origin main"), ""},
+	})
+}
+
+func TestParkedBy_JSONPathFieldsDecodedApart(t *testing.T) {
+	ask := func(tool, summary string) PermissionAsk {
+		return PermissionAsk{Tool: tool, Summary: summary, WorkbenchFolder: "/wb"}
+	}
+	expectParked(t, []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}{
+		{"read with numeric path", ask("Read", `{"file_path":"/wb/a.go","path":7}`), ""},
+		{"read numeric path only", ask("Read", `{"path":7}`), LimitOutsideFolder},
+		{"read outside with numeric path", ask("Read", `{"file_path":"/etc/hosts","path":7}`), LimitOutsideFolder},
+		{"grep relative path", ask("Grep", `{"pattern":"x","path":"src"}`), ""},
+		{"edit bracket file name", ask("Edit", "[1]"), ""},
+		{"edit object fallback", ask("Edit", `{"file_path":"/elsewhere/x","old_string":"a"}`), LimitOutsideFolder},
+	})
+}
+
+func TestParkedBy_UnreadableIsItsOwnRow(t *testing.T) {
+	expectParked(t, []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}{
+		{"bare sudo", bash("sudo"), LimitUnreadable},
+		{"env with only an assignment", bash("env FOO=1"), LimitUnreadable},
+		{"unterminated single quote", bash("echo 'open"), LimitUnreadable},
+		{"unreadable before push", bash("sudo; git push origin main"), LimitUnreadable},
+	})
 }
