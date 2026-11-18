@@ -189,6 +189,7 @@ func (h *Handlers) storeAnswer(askID, workbenchID int64, a asks.Answer) (bool, e
 	at := h.d.Clock().UTC().Format("2006-01-02T15:04:05Z")
 	var n int64
 	err = h.d.DB.WithTx(func(tx *sql.Tx) error {
+		//nolint:gosec // G202: db.AskInSpecLoopSQL returns a constant predicate; every value is a bound arg.
 		res, err := tx.Exec(`UPDATE owner_asks SET status = 'answered', answer = ?, answered_at = ?
 			WHERE id = ? AND project_id = ? AND status = 'open'
 			  AND NOT `+db.AskInSpecLoopSQL("owner_asks"),
