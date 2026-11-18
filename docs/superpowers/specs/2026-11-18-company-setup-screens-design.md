@@ -668,6 +668,7 @@ Screen tasks (C) follow the parent's tasks they need.
 | A24 | The services' order and their one-line descriptions; the drop warning appears in place on the Services step, **Keep** prominent |
 | A29 | Per-vendor admin needs and fallbacks of §2.11: Google's noOrgAccess state with steps to copy; Microsoft's admin-consent link with **Continue** allowed and **Waiting** (not blocking Publish); Atlassian needs no admin; Linear to be confirmed by spike S3 |
 | A30 | §2.12's rules: edit keeps the old pair until the re-check re-logs the same account; a check over a stored company's client acts as Replace and warns first; Discard keeps the bundle and accounts; under an MDM-forced bundle the check is stored but the overlay wins |
+| A31 | Organization policy values for the new keys read "allowed" / "not allowed" in lowercase like the pane's existing lines (the `company-policy-privacy` mockup capitalises them); a forced `CompanyBundle` adds a "Company: <name>" line (name only, never the bundle) — found when comparing Task 20's shots with the mockup |
 | A26 | The company plan builds `SlackAppSetupModel` first (C0) instead of waiting for the Slack screens plan |
 | A27 | An unreadable draft is renamed `draft.json.bad-<ts>` (0600) and shown with **Show file in Finder**; Discard or Publish deletes it; only the newest is kept; the daemon deletes one older than 30 days |
 | A28 | Editing a field a step's check used un-checks the step (hash of the checked values in the draft) |
