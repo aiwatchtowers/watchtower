@@ -141,6 +141,19 @@ package struct SlackModePresentation: Equatable, Sendable {
         }
     }
 
+    // MARK: - §2.2 the Knowledge note
+
+    /// Under the Knowledge search field while the mode is Live: Live answers
+    /// are never indexed. nil in every other mode.
+    package var knowledgeNote: String? {
+        guard display == .live else { return nil }
+        return "Slack is not in Knowledge: Live answers are not kept. "
+            + "Connect your workspace's app to add synced Slack."
+    }
+
+    /// The note's quiet button; it opens Connections → Slack.
+    package var knowledgeNoteAction: String { ReadinessSource.fullSlack.actionTitle }
+
     /// Shown under the rows while a probe pass runs.
     package var busyLine: String? { isBusy ? "Checking Live… this takes a few seconds." : nil }
 

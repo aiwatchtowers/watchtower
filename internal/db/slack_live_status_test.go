@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -55,4 +56,30 @@ func TestListSlackLiveStatus_NewestFirst(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 	require.Equal(t, "T2", got[0].TeamID)
+}
+
+// A row whose checked_at does not parse fails the read: dropping it could
+// let an older ok outlive a newer failed check (SLACKMODE-01).
+func TestListSlackLiveStatusContext_UnreadableCheckedAtFails(t *testing.T) {
+	d, err := Open(":memory:")
+	require.NoError(t, err)
+	defer d.Close()
+
+	require.NoError(t, d.UpsertSlackLiveStatus(SlackLiveStatus{TeamID: "T1", Provider: "claude", Status: "ok", CheckedAt: slackLiveAt(8, 0)}))
+	_, err = d.Exec(`INSERT INTO slack_live_status (team_id, provider, status, error_class, connector_id, checked_at)
+VALUES ('', 'claude', 'not_connected', '', '', 'yesterday')`)
+	require.NoError(t, err)
+	_, err = d.ListSlackLiveStatusContext(context.Background())
+	require.ErrorContains(t, err, "checked_at")
+}
+
+func TestListSlackLiveStatusContext_HonoursCancel(t *testing.T) {
+	d, err := Open(":memory:")
+	require.NoError(t, err)
+	defer d.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = d.ListSlackLiveStatusContext(ctx)
+	require.ErrorIs(t, err, context.Canceled)
 }
