@@ -11,9 +11,10 @@ import (
 
 // The retirement banners' data (#1887 T10): `google accounts --json` and
 // `jira accounts --json` say which accounts still run on our shared apps —
-// Gmail on the shared Google client (D11), Jira on the retiring shared
-// Atlassian app (D4, D15) — and the day Atlassian sharing ends. The Desktop
-// shows the banners from these flags; Go owns the resolver that decides them.
+// Gmail on the shared Google client (D11), Jira on the retired shared
+// Atlassian app (D4; D15 amended, ask #1600: no countdown, its accounts
+// sign in again through a company's app). The Desktop shows the banners
+// from these flags; Go owns the resolver that decides them.
 
 // accountGone is a row that no longer syncs anything (removed or purged), so
 // no banner counts it.
@@ -76,17 +77,9 @@ type jiraAccountJSON struct {
 	// CompanySlug is the company bundle whose OAuth client the account signed
 	// in with; "" = no company.
 	CompanySlug string `json:"company_slug"`
-	// SharedAtlassian: the account signed in through our retiring shared
-	// Atlassian app (D4) — the shared-Atlassian banner.
+	// SharedAtlassian: the account signed in through our retired shared
+	// Atlassian app (D4) — the shared-Atlassian banner ("sign in again").
 	SharedAtlassian bool `json:"shared_atlassian"`
-}
-
-// jiraAccountsJSON is the `jira accounts --json` document.
-type jiraAccountsJSON struct {
-	// SharedAppCutoff is jira.SharedAppCutoff (YYYY-MM-DD; "" = not known):
-	// the day Atlassian sharing on our shared app ends (D15).
-	SharedAppCutoff string            `json:"shared_app_cutoff"`
-	Accounts        []jiraAccountJSON `json:"accounts"`
 }
 
 // jiraOnSharedApp reports an OAuth account on our shared Atlassian app: no
@@ -108,18 +101,18 @@ func jiraOnSharedApp(workspaceDir string, a db.JiraAccount) bool {
 }
 
 func writeJiraAccountsJSON(w io.Writer, workspaceDir string, accounts []db.JiraAccount) error {
-	doc := jiraAccountsJSON{SharedAppCutoff: jira.SharedAppCutoff, Accounts: make([]jiraAccountJSON, 0, len(accounts))}
+	rows := make([]jiraAccountJSON, 0, len(accounts))
 	for _, a := range accounts {
 		authKind := a.AuthKind
 		if authKind == "" {
 			authKind = "oauth"
 		}
-		doc.Accounts = append(doc.Accounts, jiraAccountJSON{
+		rows = append(rows, jiraAccountJSON{
 			ID: a.ID, Label: a.Label, SiteURL: a.SiteURL, Status: a.Status, Enabled: a.Enabled, Error: a.Error,
 			AuthKind: authKind, CompanySlug: a.CompanySlug, SharedAtlassian: jiraOnSharedApp(workspaceDir, a),
 		})
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(doc)
+	return enc.Encode(rows)
 }

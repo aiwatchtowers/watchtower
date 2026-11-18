@@ -192,8 +192,7 @@ func TestGoogleShared_GmailRefusedWithHint(t *testing.T) {
 // TestConnectionsJSON_SharedFlags: `google accounts --json` flags the Gmail
 // accounts on our shared Google client, `jira accounts --json` the OAuth
 // sites on our shared Atlassian app (with or without a client left to
-// refresh through) and carries the cutoff day; every row carries its
-// company.
+// refresh through); every row carries its company.
 func TestConnectionsJSON_SharedFlags(t *testing.T) {
 	t.Run("google", func(t *testing.T) {
 		database := jiraCmdFixture(t)
@@ -254,9 +253,9 @@ func TestConnectionsJSON_SharedFlags(t *testing.T) {
 		ws := cfg.WorkspaceDir()
 		saveCompany(t, ws, companySample("Acme"))
 		t.Setenv("WATCHTOWER_JIRA_CLIENT_ID", "")
-		prevID, prevCutoff := jira.DefaultJiraClientID, jira.SharedAppCutoff
-		jira.DefaultJiraClientID, jira.SharedAppCutoff = "", "2027-01-15"
-		t.Cleanup(func() { jira.DefaultJiraClientID, jira.SharedAppCutoff = prevID, prevCutoff })
+		prevID := jira.DefaultJiraClientID
+		jira.DefaultJiraClientID = ""
+		t.Cleanup(func() { jira.DefaultJiraClientID = prevID })
 
 		create := func(a db.JiraAccount) int64 {
 			id, err := database.CreateJiraAccount(a)
@@ -274,18 +273,16 @@ func TestConnectionsJSON_SharedFlags(t *testing.T) {
 		_, err = database.Exec(`UPDATE jira_accounts SET status = 'removed' WHERE id = ?`, removed)
 		require.NoError(t, err)
 
-		read := func() jiraAccountsJSON {
+		read := func() []jiraAccountJSON {
 			t.Helper()
 			cmd, out := cmdWithFlags(t, jiraAccountsCmd, map[string]string{"json": "true"})
 			require.NoError(t, runJiraAccounts(cmd, nil))
-			var doc jiraAccountsJSON
-			require.NoError(t, json.Unmarshal(out.Bytes(), &doc), out.String())
-			return doc
+			var rows []jiraAccountJSON
+			require.NoError(t, json.Unmarshal(out.Bytes(), &rows), out.String())
+			return rows
 		}
-		doc := read()
-		assert.Equal(t, "2027-01-15", doc.SharedAppCutoff)
 		got := map[int64]jiraAccountJSON{}
-		for _, r := range doc.Accounts {
+		for _, r := range read() {
 			got[r.ID] = r
 		}
 		require.Len(t, got, 5)
@@ -302,14 +299,14 @@ func TestConnectionsJSON_SharedFlags(t *testing.T) {
 		// A build that still bakes the shared app (or a development env):
 		// the same site is on it.
 		jira.DefaultJiraClientID = "shared-jira"
-		for _, r := range read().Accounts {
+		for _, r := range read() {
 			if r.ID == unbaked {
 				assert.True(t, r.SharedAtlassian)
 			}
 		}
 		// A developer's own app in the env is not the shared one.
 		t.Setenv("WATCHTOWER_JIRA_CLIENT_ID", "developer-app")
-		for _, r := range read().Accounts {
+		for _, r := range read() {
 			assert.False(t, r.SharedAtlassian, r.ID)
 		}
 		t.Setenv("WATCHTOWER_JIRA_CLIENT_ID", "")
@@ -317,7 +314,7 @@ func TestConnectionsJSON_SharedFlags(t *testing.T) {
 		prevFlavor := BuildFlavor
 		BuildFlavor = "corp"
 		t.Cleanup(func() { BuildFlavor = prevFlavor })
-		for _, r := range read().Accounts {
+		for _, r := range read() {
 			assert.False(t, r.SharedAtlassian, r.ID)
 		}
 	})

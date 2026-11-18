@@ -12,7 +12,7 @@ Every screen the parent promises has a mockup for each of its states and a model
 3. Connections: a **Companies** zone on the overview, account rows grouped by company in every service, **Re-login needed** (`invalid_client`) and **Not connected — Connect** rows.
 4. **Use my own Google project** (personal Gmail) and its policy lock (`AllowOwnGoogleProject = false`).
 5. **Connect with an API token** for Atlassian, its errors, the dead-token row with the 30-day lease notice, and its policy lock (`AllowAtlassianAPIToken = false`).
-6. The two retirement banners (shared Google = Calendar only; shared Atlassian app retiring).
+6. The two retirement banners (shared Google = Calendar only; shared Atlassian app retired — Re-login).
 7. The IT guide link from Settings → Privacy → Organization policy and from every policy lock.
 
 No production code changes with this spec. The mockups are design-only SwiftUI scenes in the DesignShots test target (§12).
@@ -260,7 +260,7 @@ Each service's account list is split into `SettingsSection`s, in this order, an 
 1. one section per company the accounts use (`company_slug`), titled with the company name, caption "<company>'s <vendor> app" plus what identifies it ("Acme's Google project · example.com", "Acme's Atlassian app · acme.atlassian.net", "Acme's Slack app · Watchtower (A0ACME)", "Acme's Linear app", "Acme's Microsoft 365 app · tenant 0000-acme");
 2. Google only: **Your own Google project** — "Gmail and Calendar through a project you own" (a `personal` bundle or an untied legacy credentials file, parent §4);
 3. Jira only: **API tokens** — "Sites connected with your own token" (`auth_kind = 'api_token'`), each row with the outline tag **API token**;
-4. **Watchtower's shared app** (Google: caption "Calendar only"; Jira: while it still works; Linear: "Watchtower's Linear app"; Outlook: "Watchtower's Microsoft app"), rows tagged **Shared app** where the app is retiring;
+4. **Watchtower's shared app** (Google: caption "Calendar only"; Jira: until its Re-login (D15 amended, ask #1600); Linear: "Watchtower's Linear app"; Outlook: "Watchtower's Microsoft app"), rows tagged **Shared app** where the app is retiring or retired;
 5. **Other accounts** — "Signed in through an app this Watchtower no longer knows" (parent §5 step 3: `company_slug = ''` and an unknown client).
 
 Shots: `company-google-detail` (+ `-narrow`), `company-jira-detail` (+ `-narrow`), `company-slack-workspaces`, `company-linear-detail`, `company-outlook-detail`. Loading and read-failed states of the list: `company-google-detail-loading` ("Reading Google accounts…"), `company-google-detail-readFailed` ("Could not read Google accounts: database is locked." + **Try again**), `company-jira-detail-loading`, `company-jira-detail-readFailed`. Empty: §5.3 and §6.4.
@@ -356,7 +356,7 @@ Both on the service detail's top, `Tone.warning` tint at `ChipTint.fillOpacity`,
 | Banner | Shown while | Title / body | Buttons | Overview card line |
 |---|---|---|---|---|
 | Shared Google (D11) | a Gmail account syncs on the shared client | "Gmail is leaving Watchtower's shared Google app" / "<label> keeps syncing Gmail until Google stops the old sign-in. Move Gmail to your company's or your own Google project; Calendar stays on the shared app." | **Use my own Google project** (hidden by the §5.4 lock), quiet **Paste a company code** | "Gmail on the shared app" |
-| Shared Atlassian (D4, D15) | a Jira account syncs on the shared app | "Watchtower's shared Atlassian app is retiring" / "Your company needs its own Atlassian app — ask your admin or set it up. <site> syncs through the shared app for <n> more days." (days to D15's cut-off; past it: "…until Atlassian turns it off.") | **Set up for my company**, quiet **Connect with an API token** (hidden by the §6.5 lock) | "Shared app retiring" |
+| Shared Atlassian (D4; D15 amended, ask #1600) | a Jira account signed in through the shared app (`jira accounts --json` `shared_atlassian`) | "Watchtower's shared Atlassian app is retired" / "Your company needs its own Atlassian app — ask your admin or set it up. Sign <site> in again through your company's app or with an API token." (no countdown: the release that ships company setup stops baking the shared app, so its accounts need a Re-login at once) | **Set up for my company**, quiet **Connect with an API token** (hidden by the §6.5 lock) | "Shared app retired — sign in again" |
 
 Shots: `company-google-detail` and `company-jira-detail` (+ `-narrow`).
 
@@ -635,7 +635,7 @@ Screen tasks (C) follow the parent's tasks they need.
 | S11 | Own Google project wizard (External, test user, publish unverified) and the weekly fallback | parent §4, D1 (ask #1440) |
 | S12 | API token as an option beside OAuth; 401 → error, data kept, only the 30-day lease | parent §4b, D20, D22 (ask #1476) |
 | S13 | Policy locks for own Google projects and API tokens; stopped accounts keep data | parent D24 (ask #1476), POLICY-03 |
-| S14 | Banner texts for shared Google (Calendar only) and the retiring Atlassian app | parent §5, D11 (ask #1455), D15 (ask #1455) |
+| S14 | Banner texts for shared Google (Calendar only) and the retired Atlassian app | parent §5, D11 (ask #1455), D15 (ask #1455, amended by ask #1600: no countdown) |
 | S15 | One IT page linked from Privacy, Connections locks and Publish | parent D21 (conversation 2026-11-18) |
 | S16 | Screens spec with a mockup for every state, strings in models with tests | parent D14, T3 |
 | S17 | The wizard's first step, "What does your company use?", picks the services; only ticked ones become steps; discovery pre-ticks; anything else is connected through Quick Connections (MCP connectors), said in a note under the list | conversation 2026-11-18 (owner: first step picks the services; others through MCP connectors) |

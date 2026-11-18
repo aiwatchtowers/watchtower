@@ -644,12 +644,11 @@ const OwnProjectWeeklyRelogin = false // S2 outcome B → true
 
 **Depends on:** Task 7a, Task 7b
 
-**Files:** Modify `cmd/google.go:359 buildGoogleOAuthScopes` (+ the shared-client check), `scripts/build-app.sh` (release guard: a public release must not set `WATCHTOWER_JIRA_CLIENT_ID/SECRET`), `scripts/tests/test-build-app-profile.sh`, `cmd/connections.go` (account JSON gains `shared_gmail`, `shared_atlassian`, `company_slug`), `internal/jira/auth.go` (`SharedAppCutoff`).
+**Files:** Modify `cmd/google.go:359 buildGoogleOAuthScopes` (+ the shared-client check), `scripts/build-app.sh` (release guard: a public release must not set `WATCHTOWER_JIRA_CLIENT_ID/SECRET`), `scripts/tests/test-build-app-profile.sh`, `cmd/connections.go` (account JSON gains `shared_gmail`, `shared_atlassian`, `company_slug`), `internal/jira/auth.go` (comment only: D15 amended by ask #1600 dropped `SharedAppCutoff` and the countdown).
 
 **Interfaces:**
 ```go
 func googleScopesFor(src clientSource, wantCalendar, wantGmail bool) ([]string, error) // shared ("baked"/"env" with the baked id) + Gmail → errGmailNeedsOwnProject
-var SharedAppCutoff = "" // RFC 3339 date set by the release that ships Phase 5 (D15: +30 days); "" = unknown
 ```
 - [ ] **Step 1: Failing tests:** `TestGoogleShared_CalendarOnly` (shared client never requests `gmail.readonly`; existing shared Gmail rows keep syncing), `TestGoogleShared_GmailRefusedWithHint`, `TestConnectionsJSON_SharedFlags`, `test-build-app-profile.sh`: public profile with a Jira id → fails.
 - [ ] **Step 2:** `go test ./cmd -run 'GoogleShared|ConnectionsJSON'`, `make test-scripts` → FAIL; implement; → PASS; `make lint-diff`.
@@ -734,9 +733,9 @@ enum CompanyVendorGuide { static func servicesRow(_:) -> (title: String, detail:
 
 **Files:** Create `WatchtowerCore/Services/Company/CompanyConnectionsPresentation.swift`; Test `Tests/Core/CompanyConnectionsPresentationTests.swift`.
 
-**Interfaces:** `struct CompanyConnectionsPresentation { static func zone(companies:, errors:, draft:, portBusy:, loading:) -> CompaniesZoneState; static func groups(vendor: CompanyVendor, accounts: [AccountRef], companies: [CompanyRef], ownProject: (AccountRef) -> Bool) -> [AccountGroup]; static func rowStatus(_ a: AccountRef, purgeLease: Date?) -> RowStatus; static func banner(_ v: CompanyVendor, accounts:, now:, cutoff:) -> Banner?; static func lockCard(_ key: LockKey) -> LockCard }`.
+**Interfaces:** `struct CompanyConnectionsPresentation { static func zone(companies:, errors:, draft:, portBusy:, loading:) -> CompaniesZoneState; static func groups(vendor: CompanyVendor, accounts: [AccountRef], companies: [CompanyRef], ownProject: (AccountRef) -> Bool) -> [AccountGroup]; static func rowStatus(_ a: AccountRef, purgeLease: Date?) -> RowStatus; static func banner(_ v: CompanyVendor, accounts:) -> Banner?; static func lockCard(_ key: LockKey) -> LockCard }`.
 
-- [ ] **Step 1: Failing tests:** `testZoneForPrivateUserIsOneInvitingLine` (no company, no draft → `CompaniesZoneState.empty` with exactly one line and the **Set up for my company** / **Connect with a company code** actions, ask #1498 S25), `testSetupInProgressRow`, `testUnconnectedVendorsShowConnect`, `testPortBusyLine`, `testDamagedFileIsNotEmpty`, `testMDMCompanyIsProminent`, `testInvalidClientRow`, `testUntiedRow`, `testReplacedRow`, `testReloginRowsAreAttentionNotConnectedIsNot` (A5), `testGroupOrder` (company → own project → API tokens → shared → other), `testDeadTokenRowAndLeaseNote` (note only while the lease counts), `testSharedGoogleBanner`, `testSharedAtlassianBanner` (days to cutoff; past → "until Atlassian turns it off"), `testBannersAreNotAttention`, `testOwnGoogleLock`, `testTokenLock`, `testStringsEqualMockCopy`.
+- [ ] **Step 1: Failing tests:** `testZoneForPrivateUserIsOneInvitingLine` (no company, no draft → `CompaniesZoneState.empty` with exactly one line and the **Set up for my company** / **Connect with a company code** actions, ask #1498 S25), `testSetupInProgressRow`, `testUnconnectedVendorsShowConnect`, `testPortBusyLine`, `testDamagedFileIsNotEmpty`, `testMDMCompanyIsProminent`, `testInvalidClientRow`, `testUntiedRow`, `testReplacedRow`, `testReloginRowsAreAttentionNotConnectedIsNot` (A5), `testGroupOrder` (company → own project → API tokens → shared → other), `testDeadTokenRowAndLeaseNote` (note only while the lease counts), `testSharedGoogleBanner`, `testSharedAtlassianBanner` (Re-login banner, no countdown — D15 amended, ask #1600), `testBannersAreNotAttention`, `testOwnGoogleLock`, `testTokenLock`, `testStringsEqualMockCopy`.
 - [ ] **Step 2:** FAIL → implement → PASS.
 - [ ] **Step 3: Commit** `feat(desktop): company rows, zone and banners presentation (#1887)`.
 
@@ -817,7 +816,7 @@ What moved where (spec §5): clients → the bundle (Task 28); `PURGE_DEFAULT` �
 
 **Depends on:** Tasks 4–28 merged into the umbrella
 
-**Files:** Modify `docs/guide/concepts/sources-and-accounts.md`, `docs/guide/concepts/managed-by-your-organization.md`, `docs/guide/concepts/privacy.md` (PDR erase scope; derived texts age out), `docs/guide/features/mail.md`, `docs/guide/features/jira-and-linear.md`, `docs/guide/reference/organization-policy.md`, `docs/guide/reference/cli.md` (`company …`, `jira add --api-token-stdin`, `--company` flags); Create `docs/guide/start/company-setup.md`; Create `docs/features/company-setup.md` (+ line in `CLAUDE.md` Feature Notes and summary in `docs/features/README.md`); Modify `docs/features/connections-tab.md`, `mdm-policy.md` (links the IT page), `jira-multi-account.md`, `google-multi-account.md`, `linear.md`; `docs/inventory/README.md` module map (`internal/companybundle`, `internal/company`, `internal/oauthclient`, `internal/atlassianpdr`, `cmd/company*.go`); release checklist line in `.claude/commands/release.md`: "`docs/mdm/keys.json` changed → rebuild the site; set `jira.SharedAppCutoff` = ship date + 30 days (D15)".
+**Files:** Modify `docs/guide/concepts/sources-and-accounts.md`, `docs/guide/concepts/managed-by-your-organization.md`, `docs/guide/concepts/privacy.md` (PDR erase scope; derived texts age out), `docs/guide/features/mail.md`, `docs/guide/features/jira-and-linear.md`, `docs/guide/reference/organization-policy.md`, `docs/guide/reference/cli.md` (`company …`, `jira add --api-token-stdin`, `--company` flags); Create `docs/guide/start/company-setup.md`; Create `docs/features/company-setup.md` (+ line in `CLAUDE.md` Feature Notes and summary in `docs/features/README.md`); Modify `docs/features/connections-tab.md`, `mdm-policy.md` (links the IT page), `jira-multi-account.md`, `google-multi-account.md`, `linear.md`; `docs/inventory/README.md` module map (`internal/companybundle`, `internal/company`, `internal/oauthclient`, `internal/atlassianpdr`, `cmd/company*.go`); release checklist line in `.claude/commands/release.md`: "`docs/mdm/keys.json` changed → rebuild the site; a public release must not set `WATCHTOWER_JIRA_CLIENT_ID/SECRET` (D4, D15 amended)".
 
 - [ ] **Step 1:** write per `docs/guide/WRITING.md` (8 KB cap per page).
 - [ ] **Step 2:** `go test ./docs/guide` → PASS.
@@ -833,7 +832,7 @@ What moved where (spec §5): clients → the bundle (Task 28); `PURGE_DEFAULT` �
 - [ ] **Step 2:** set the three values and remove the `t.Skip` from `TestITGuideURL_NotPlaceholder`; `go test ./internal/policy ./cmd -run 'PolicyKeys|PolicyShow|ITGuideURL'` → PASS with the test running (not `SKIP`), `make test-swift FILTER=ManagedPolicyHelpTests` → PASS.
 - [ ] **Step 3: Commit** `feat(policy): IT guide URL (#1887)`.
 
-Owner actions outside code (not tasks): turn Sharing off on the shared Atlassian app 30 days after ship (D15); rotate nothing else.
+Owner actions outside code (not tasks): turn Sharing off on the shared Atlassian app once the release that ships company setup is out (D15 amended, ask #1600: its accounts already need a Re-login); rotate nothing else.
 
 ---
 

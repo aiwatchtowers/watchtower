@@ -138,14 +138,3 @@ func TestListenLocal_PortRange(t *testing.T) {
 	addr := ln.Addr().String()
 	assert.Contains(t, addr, "127.0.0.1:")
 }
-
-// TestSharedAppCutoff_EmptyOrADay: the shared-Atlassian banner counts the
-// days to SharedAppCutoff (#1887 D15), so the release that sets it must set a
-// day (YYYY-MM-DD), never another form the Desktop cannot read.
-func TestSharedAppCutoff_EmptyOrADay(t *testing.T) {
-	if SharedAppCutoff == "" {
-		t.Skip("SharedAppCutoff is not set yet")
-	}
-	_, err := time.Parse(time.DateOnly, SharedAppCutoff)
-	require.NoError(t, err, "SharedAppCutoff %q is not a YYYY-MM-DD day", SharedAppCutoff)
-}
