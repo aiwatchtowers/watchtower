@@ -127,6 +127,19 @@ final class NewSessionFolderStartTests: XCTestCase {
         XCTAssertNil(lastFolder)
     }
 
+    /// ⌘T with Files the only pane on screen while a home session still runs
+    /// off screen: the root the owner opened, not that session's folder.
+    func testShortcutWithOnlyFilesShowingUsesTheOpenedRoot() async throws {
+        await vm.newSessionOnPage(folder: .menu(folderID: home))
+        XCTAssertNil(lastFolder)
+        var filesOnly = WorkspaceLayout.default
+        filesOnly.primary = .files
+        vm.setLayout(filesOnly, projectID: projectID)
+        vm.toggleFolderRoot(hub, projectID: projectID)
+        await vm.newSessionOnPage()
+        XCTAssertEqual(lastFolder, String(hub), "the off-screen app session is not the context")
+    }
+
     /// Work on It on a target whose folder left the bench: home, and the
     /// start notice says why.
     func testWorkOnItOnARemovedFolderStartsInHomeAndSaysSo() async throws {

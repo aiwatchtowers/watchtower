@@ -54,6 +54,27 @@ final class SessionNestingPresentationTests: XCTestCase {
         XCTAssertEqual(sections.shortcutOrder, [1, 3, 2], "⌘1…⌘9 follow the nested order")
     }
 
+    /// A finished child of a live parent stays under it in the main list,
+    /// drawn finished; a finished child of a finished parent folds with it.
+    func testFinishedChildStaysUnderItsMainListParent() {
+        let finished = { (id: Int64) in
+            SessionAgentStatus(sessionID: id, workbenchID: 1, workbenchName: "acme", title: "t",
+                               state: .init(kind: .finished, live: false), at: nil, finishedAt: "2026-11-18T10:00:00.000Z")
+        }
+        let sessions = [session(1), session(2, parent: 1), session(3), session(4), session(5, parent: 4)]
+        let sections = SessionPanelSections.grouping(
+            sessions: sessions, savedOrder: [1, 2, 3, 4, 5],
+            statuses: [2: finished(2), 4: finished(4), 5: finished(5)], liveIDs: [1, 3], now: Date(),
+            expanded: true, sticky: nil
+        )
+        XCTAssertEqual(sections.main.map(\.id), [1, 2, 3])
+        XCTAssertEqual(sections.main.map(\.depth), [0, 1, 0])
+        XCTAssertEqual(sections.main[1].state.kind, .finished, "marked finished where it sits")
+        XCTAssertEqual(sections.finished.map(\.id), [4, 5])
+        XCTAssertEqual(sections.finished.map(\.depth), [0, 1])
+        XCTAssertEqual(sections.finishedCount, 2)
+    }
+
     func testSubSessionsSuffix() {
         XCTAssertNil(Copy.subSessionsSuffix(0))
         XCTAssertEqual(Copy.subSessionsSuffix(1), "· 1 sub-session")

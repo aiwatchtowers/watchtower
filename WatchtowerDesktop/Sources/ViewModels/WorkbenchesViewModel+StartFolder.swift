@@ -31,15 +31,20 @@ extension WorkbenchesViewModel {
         return StartFolder(id: resolved.folderID == home ? nil : resolved.folderID, notice: resolved.notice)
     }
 
-    /// ⌘T's context (and the plain New Session click's): the session on
-    /// screen, else the FILES root the owner last opened.
+    /// ⌘T's context (and the plain New Session click's): a session whose
+    /// pane is on screen (the focused one first), else the FILES root a file
+    /// was opened from or the root the owner last opened, else home. A live
+    /// session off screen is not the context: with only Files showing, the
+    /// owner's root wins.
     func shortcutFolder(projectID: Int64) -> NewSessionFolder.Context {
-        let session = pageSessionID(projectID: projectID).flatMap { id in
-            terminalSessions[projectID]?.first { $0.id == id }
-        }
-        let root = selectedFolderRoot[projectID].flatMap { benchFolders[projectID]?.folder($0) }
+        let visible = layout(projectID: projectID).visiblePanes.compactMap(WorkspaceLayout.sessionID(ofAny:))
+        let focused = activeSessionID(projectID: projectID).flatMap { visible.contains($0) ? $0 : nil }
+        let session = (focused ?? visible.first).flatMap { id in terminalSessions[projectID]?.first { $0.id == id } }
+        let opened = selectedFolderRoot[projectID].flatMap { benchFolders[projectID]?.folder($0) }
             .flatMap { $0.isRemoved ? nil : folderRoot($0) }
-        return .shortcut(currentSession: session, selectedRoot: root)
+        // A file's root holds while the page's session it was chosen under does.
+        let fileRoot = selectedFilesRoot[projectID].flatMap { $0.sessionID == pageSessionID(projectID: projectID) ? $0.root : nil }
+        return .shortcut(currentSession: session, selectedRoot: fileRoot ?? opened)
     }
 
     /// The New Session (+) menu's folders for the page's context.

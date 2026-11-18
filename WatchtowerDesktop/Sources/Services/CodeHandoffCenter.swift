@@ -172,7 +172,10 @@ final class CodeHandoffCenter {
         case let .newSession(agent):
             finish(request)
             await vm.startNewSession(project: request.project, title: TerminalSessionNaming.provisional(now: now()),
-                                     prompt: request.text, placement: .beside(.files), agent: agent)
+                                     prompt: request.text, placement: .beside(.files), agent: agent,
+                                     // The folder of the FILES root the question was asked in.
+                                     folder: vm.startFolder(.filesRoot(vm.activeCodeRoot(project: request.project)),
+                                                            bench: vm.benchFolders[request.project.id]))
         }
         return true
     }

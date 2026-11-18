@@ -33,6 +33,22 @@ enum WorkbenchRefusalCode: String, CaseIterable, Equatable, Sendable {
         guard let colon = text.firstIndex(of: ":") else { return nil }
         self.init(rawValue: String(text[..<colon]))
     }
+
+    /// A refusal's sentence for the owner: Go's `"<code>: <sentence>"` text
+    /// without its code; the code itself when there is no text, and
+    /// `noReason` when there is neither.
+    static func sentence(_ error: String, code: String) -> String {
+        if error.isEmpty { return code.isEmpty ? WorkbenchFolderPresentation.noReason : code }
+        guard !code.isEmpty, error.hasPrefix(code + ":") else { return error }
+        return error.dropFirst(code.count + 1).trimmingCharacters(in: .whitespaces)
+    }
+}
+
+/// A folder suggestion's CLI call could not run.
+enum FolderSuggestionError: LocalizedError {
+    case noCLI
+
+    var errorDescription: String? { WorkbenchesViewModel.cliMissingMessage }
 }
 
 /// Who put a folder on the bench (`workbench_folders.added_by`).
@@ -82,6 +98,9 @@ struct FolderResult: Decodable, Equatable {
 
     /// The refusal's code when this build knows it.
     var code: WorkbenchRefusalCode? { WorkbenchRefusalCode(rawValue: errorCode) }
+
+    /// Why it was refused, as the owner reads it (no `<code>:` prefix).
+    var reason: String { WorkbenchRefusalCode.sentence(error, code: errorCode) }
 
     enum CodingKeys: String, CodingKey {
         case ok, error, folder, install

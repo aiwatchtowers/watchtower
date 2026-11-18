@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"watchtower/internal/sessionagent"
 )
 
 // The session state hooks (UserPromptSubmit, Notification, PostToolUse,
@@ -40,6 +42,9 @@ func TestWorkbenchSessionStateHookCommand(t *testing.T) {
 // notification type), one async command entry with timeout 5.
 func assertOneAsyncStateEntry(t *testing.T, event string, groups []any, cmd string) {
 	t.Helper()
+	if event == "PostToolUse" {
+		groups = withoutOutsideTouchGroup(t, groups, strings.Replace(cmd, " session-state ", " outside-touch ", 1))
+	}
 	if len(groups) != 1 || countCommand(groups, cmd) != 1 {
 		t.Fatalf("expected one %s group running %q, got %#v", event, cmd, groups)
 	}
@@ -51,6 +56,36 @@ func assertOneAsyncStateEntry(t *testing.T, event string, groups []any, cmd stri
 	if h["async"] != true || h["timeout"] != float64(5) || h["type"] != "command" {
 		t.Fatalf("%s: entry %#v, want an async command with timeout 5", event, h)
 	}
+}
+
+// withoutOutsideTouchGroup checks that PostToolUse holds the outside-bench
+// entry (multi-folder workbench §6.7) — alone in its group with the path
+// tools' matcher, one synchronous command entry with timeout 5 running cmd
+// — and returns the other groups.
+func withoutOutsideTouchGroup(t *testing.T, groups []any, cmd string) []any {
+	t.Helper()
+	var rest []any
+	found := 0
+	for _, g := range groups {
+		gm := g.(map[string]any)
+		if countCommand([]any{g}, cmd) == 0 {
+			rest = append(rest, g)
+			continue
+		}
+		found++
+		hs := gm["hooks"].([]any)
+		h := hs[0].(map[string]any)
+		if gm["matcher"] != sessionagent.OutsideTouchMatcher || len(hs) != 1 {
+			t.Fatalf("PostToolUse: the outside-bench entry sits alone in its matcher group: %#v", gm)
+		}
+		if _, async := h["async"]; async || h["timeout"] != float64(5) || h["type"] != "command" {
+			t.Fatalf("PostToolUse: outside-bench entry %#v, want a synchronous command with timeout 5", h)
+		}
+	}
+	if found != 1 {
+		t.Fatalf("expected one PostToolUse group running %q, got %#v", cmd, groups)
+	}
+	return rest
 }
 
 // assertToolStartEntry: PreToolUse holds exactly one group with matcher "*"

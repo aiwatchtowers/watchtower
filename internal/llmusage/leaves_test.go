@@ -37,6 +37,7 @@ var knownNonLLMExec = map[string]string{
 	"claude.loginShellPATHUntil":         "login shell `echo $PATH` for the usage reader, bounded by the poll",
 	"claude.usageProcess":                "claude -p get_usage control request: Claude Code's own usage read, no turn, no model call",
 	"claudesession.SystemProcs.Start":    "ps -o lstart",
+	"cmd.runSubSessionStart":             "starts this binary's `workbench session start --parent` for a sub-session; the child agent's model calls record in its own process",
 	"cmd.LaunchSpecReview":               "starts this binary's `workbench spec-review run`, whose reviewer call records in that process",
 	"cmd.execCommandRunner":              "claude mcp add/remove/get for the workbench install (MCP config, no model call)",
 	"cmd.registerMCPWithClaudeCode":      "claude mcp add (MCP config, no model call)",

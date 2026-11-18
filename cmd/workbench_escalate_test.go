@@ -149,7 +149,8 @@ func TestEscalateFilesAQuickAskWithTheSameOptions(t *testing.T) {
 
 // PROJ-11 (amended, ask #1545): a parent's question is not raised while a
 // sub-session of it runs in the host — busy, nothing written, the question
-// kept — and is filed once the last child is no longer live. A session
+// kept; an unreadable host is internal — and is filed once the last child
+// is no longer live. A session
 // with no sub-session never reads the host.
 func TestProj11_NoEscalationWhileChildrenAreLive(t *testing.T) {
 	f := newEscalateFixture(t, twoOptions())
@@ -176,7 +177,8 @@ func TestProj11_NoEscalationWhileChildrenAreLive(t *testing.T) {
 
 	hostErr = errors.New("host down")
 	got = f.escalate(t, escalateReasonTimeout)
-	assert.Equal(t, escalateErrBusy, got.ErrorCode, "an unreadable host holds it too: %+v", got)
+	assert.Equal(t, escalateErrInternal, got.ErrorCode, "an unreadable host is internal, not retried forever: %+v", got)
+	assert.Zero(t, countAsks(t, f.database, f.pid))
 
 	hostErr = nil
 	delete(runs, child)

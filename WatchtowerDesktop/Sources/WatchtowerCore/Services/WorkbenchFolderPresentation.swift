@@ -65,6 +65,9 @@ package enum WorkbenchFolderPresentation {
     package static let hintLead = "Task touches another repo?"
     package static let hint = "\(hintLead) \(putOnBenchTitle)"
 
+    /// The reason of a refusal the CLI gave no words for.
+    package static let noReason = "the command gave no reason."
+
     /// An add that failed or was refused, under the FILES header.
     package static func putOnBenchFailed(name: String, reason: String) -> String {
         "Couldn’t put \(name) on the bench: \(reason)"
@@ -123,6 +126,66 @@ package enum WorkbenchFolderPresentation {
         if status.dirty { parts.append("●") }
         if let counters = WorkbenchBranchPresentation.counters(status) { parts.append(counters) }
         return parts.joined(separator: " ")
+    }
+
+    // MARK: Remove from Bench / Locate (§6.3)
+
+    /// The confirmation, or a refusal (`OK` only), before or instead of a
+    /// remove.
+    package struct RemoveDialog: Equatable, Sendable {
+        package let title: String
+        package let message: String
+        /// `Cancel` · `Remove` (destructive); otherwise `OK`.
+        package let confirms: Bool
+    }
+
+    package static let cancel = "Cancel"
+    package static let ok = "OK"
+
+    package static func removeConfirm(name: String) -> RemoveDialog {
+        RemoveDialog(
+            title: "Remove \(name) from the bench?",
+            message: "Watchtower's install in this folder is removed. Your files and git are not touched.",
+            confirms: true
+        )
+    }
+
+    package static func removeRefusedTitle(name: String) -> String {
+        "Can’t remove \(name) from the bench"
+    }
+
+    package static func removeRefusedSessions(name: String, count: Int) -> RemoveDialog {
+        let message = count == 1
+            ? "1 session is running in \(name). Finish it first."
+            : "\(count) sessions are running in \(name). Finish them first."
+        return RemoveDialog(title: removeRefusedTitle(name: name), message: message, confirms: false)
+    }
+
+    package static func removeRefusedLast(name: String) -> RemoveDialog {
+        RemoveDialog(title: removeRefusedTitle(name: name), message: "A workbench needs at least one folder.", confirms: false)
+    }
+
+    /// A refusal Go sent after the confirmation (a session started
+    /// meanwhile): its own sentence.
+    package static func removeRefused(name: String, reason: String) -> RemoveDialog {
+        RemoveDialog(title: removeRefusedTitle(name: name), message: reason, confirms: false)
+    }
+
+    /// A remove that failed, under the FILES header.
+    package static func removeFailed(name: String, reason: String) -> String {
+        "Couldn’t remove \(name) from the bench: \(reason)"
+    }
+
+    /// Locate…'s folder panel: its title and button.
+    package static func locatePanelTitle(name: String) -> String {
+        "Locate \(name)"
+    }
+
+    package static let locatePanelPrompt = "Choose"
+
+    /// A Locate… that failed or was refused, under the FILES header.
+    package static func locateFailed(name: String, reason: String) -> String {
+        "Couldn’t locate \(name): \(reason)"
     }
 
     // MARK: Switcher (§6.14)

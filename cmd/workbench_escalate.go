@@ -175,10 +175,15 @@ func runEscalateQuestion(positional []string) escalateResult {
 	if err := database.SetBusyTimeout(escalateBusyTimeout); err != nil {
 		return escalateFailure(escalateErrInternal, err)
 	}
-	if err := escalateWaitsForSubSessions(database, a.sessionID, func(ctx context.Context) (map[int64]bool, error) {
+	held, err := escalateWaitsForSubSessions(database, a.sessionID, func(ctx context.Context) (map[int64]bool, error) {
 		return escalateHostRuns(ctx, cfg)
-	}); err != nil {
-		return escalateFailure(escalateErrBusy, err)
+	})
+	switch {
+	case db.IsBusy(err), err == nil && held != nil:
+		// Live sub-sessions (or a locked read): busy, which the Desktop retries.
+		return escalateFailure(escalateErrBusy, errors.Join(held, err))
+	case err != nil:
+		return escalateFailure(escalateErrInternal, err)
 	}
 	res, err := escalateQuestion(database, a, hookNow())
 	switch {
@@ -202,29 +207,32 @@ const escalateHostReadTimeout = 2 * time.Second
 
 // escalateWaitsForSubSessions is the PROJ-11 hold (spec 2026-11-18 §6.5): a
 // session's question is not raised while a sub-session of it is live — the
-// parent waits on its children, not on the owner. It answers an error (the
-// envelope's busy: the Desktop retries) while one is live, or while a
-// session that has sub-sessions cannot learn which run; nil otherwise. A
-// session without sub-sessions never reaches the host.
-func escalateWaitsForSubSessions(database *db.DB, sessionID int64, runs func(context.Context) (map[int64]bool, error)) error {
+// parent waits on its children, not on the owner. held names the live
+// sub-sessions (the envelope's busy: the Desktop retries); err is a read that
+// failed (the database, or the host for a session that has sub-sessions),
+// which the caller maps to busy or internal. A session without sub-sessions
+// never reaches the host.
+func escalateWaitsForSubSessions(
+	database *db.DB, sessionID int64, runs func(context.Context) (map[int64]bool, error),
+) (held, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), escalateHostReadTimeout)
 	defer cancel()
 	children, err := sessionstate.CountLiveChildren(ctx, database, sessionID, func(int64) bool { return true })
 	if err != nil || children == 0 {
-		return err //nolint:wrapcheck // CountLiveChildren names the session
+		return nil, err //nolint:wrapcheck // CountLiveChildren names the session
 	}
 	live, err := runs(ctx)
 	if err != nil {
-		return fmt.Errorf("session %d has sub-sessions and the session host could not be read: %w", sessionID, err)
+		return nil, fmt.Errorf("session %d has sub-sessions and the session host could not be read: %w", sessionID, err)
 	}
 	n, err := sessionstate.CountLiveChildren(ctx, database, sessionID, func(id int64) bool { return live[id] })
 	if err != nil {
-		return err //nolint:wrapcheck // CountLiveChildren names the session
+		return nil, err //nolint:wrapcheck // CountLiveChildren names the session
 	}
 	if !sessionstate.MayEscalate(sessionstate.Row{LiveChildren: n}) {
-		return fmt.Errorf("%d sub-sessions of session %d are still working", n, sessionID)
+		return fmt.Errorf("%d sub-sessions of session %d are still working", n, sessionID), nil
 	}
-	return nil
+	return nil, nil
 }
 
 // escalateQuestion is Part 5.3's compare-and-take: in one write transaction

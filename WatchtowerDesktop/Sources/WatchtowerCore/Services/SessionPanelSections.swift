@@ -100,9 +100,17 @@ package struct SessionPanelSections: Equatable, Sendable {
             let section = panelSection(of: session.id, liveIDs: liveIDs, statuses: statuses)
             if heldInGroup(session.id, section: section, sticky: sticky) { groupSessions.append(session) } else { mainSessions.append(session) }
         }
+        // A finished sub-session of a main-list parent stays under it (spec
+        // 2026-11-18 §6.5), drawn finished, never folded away from its parent.
+        var mainIDs = Set(mainSessions.map(\.id))
+        while let index = groupSessions.firstIndex(where: { $0.parentSessionID.map(mainIDs.contains) ?? false }) {
+            let child = groupSessions.remove(at: index)
+            mainSessions.append(child)
+            mainIDs.insert(child.id)
+        }
         groupSessions.sort { finishedFirst($0, $1, statuses: statuses) }
-        // Sub-sessions under their parent within each list (spec 2026-11-18
-        // §6.5); a child whose parent sits in the other list stays at the top.
+        // Sub-sessions under their parent within each list; a child of a
+        // folded parent stays at the top of the main list.
         let nestedMain = SessionNestingPresentation.nest(mainSessions)
         let nestedGroup = SessionNestingPresentation.nest(groupSessions)
         mainSessions = nestedMain.map(\.row)

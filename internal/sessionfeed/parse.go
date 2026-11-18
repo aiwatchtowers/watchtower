@@ -66,6 +66,20 @@ type block struct {
 	Input     json.RawMessage `json:"input"`
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error"`
+}
+
+// recordPeerResults hands the tool_results of a user record to the peer tracker.
+func (st *state) recordPeerResults(rec record, at time.Time) {
+	var blocks []block
+	if json.Unmarshal(rec.Message.Content, &blocks) != nil {
+		return
+	}
+	for _, b := range blocks {
+		if b.Type == "tool_result" {
+			st.peers.result(b.ToolUseID, resultText(b.Content), b.IsError, at)
+		}
+	}
 }
 
 // state is the mutable parse state of one pass over a transcript file.
@@ -74,6 +88,7 @@ type state struct {
 	conv      string
 	byMsg     map[string]int // assistant message id -> index in res.Entries
 	markers   map[string]int // Agent tool_use id -> index in res.Entries
+	peers     peerTracker    // send_to_session / start_session calls and their results
 	sidechain bool           // reading a subagent file: its records are the feed
 	hasTask   bool
 	handback  string
@@ -92,9 +107,10 @@ func parse(r io.Reader, startOffset int64, conv string, limit int) (*Result, err
 }
 
 func newState(conv string, startOffset int64, sidechain bool) *state {
+	res := &Result{Offset: startOffset, Unknown: map[string]int{}}
 	return &state{
-		res:  &Result{Offset: startOffset, Unknown: map[string]int{}},
-		conv: conv, byMsg: map[string]int{}, markers: map[string]int{}, sidechain: sidechain,
+		res:  res,
+		conv: conv, byMsg: map[string]int{}, markers: map[string]int{}, peers: newPeerTracker(res, conv), sidechain: sidechain,
 	}
 }
 
@@ -157,6 +173,9 @@ func (st *state) handleUser(rec record, at time.Time) {
 		return
 	}
 	st.recordParentReport(rec)
+	if !st.sidechain {
+		st.recordPeerResults(rec, at)
+	}
 	if st.sidechain {
 		// only the first plain-string record is the task
 		var task string
@@ -246,6 +265,10 @@ func classifyUserText(uuid, text string) (Entry, bool) {
 		return noticeEntry(uuid, text), true
 	}
 	e := Entry{ID: uuid, Kind: KindOwner, Text: text}
+	if peer, body, ok := parsePeerLine(text); ok {
+		e.Kind, e.Peer, e.Text = KindPeer, peer, body
+		return e, true
+	}
 	switch {
 	case strings.HasPrefix(text, "<command-name>"):
 		name := firstGroup(cmdNameRe, text)
@@ -324,12 +347,15 @@ func (st *state) assistant(rec record, at time.Time) {
 	}
 	var parts []string
 	var calls []block
+	var peers []block
 	for _, b := range blocks {
 		switch {
 		case b.Type == "text" && strings.TrimSpace(b.Text) != "":
 			parts = append(parts, strings.TrimSpace(b.Text))
 		case b.Type == "tool_use" && b.Name == "Agent":
 			calls = append(calls, b)
+		case b.Type == "tool_use" && !st.sidechain && isPeerTool(b.Name):
+			peers = append(peers, b)
 		case b.Type == "tool_use" && b.Name == handbackTool && st.sidechain:
 			var in struct {
 				Message string `json:"message"`
@@ -354,6 +380,9 @@ func (st *state) assistant(rec record, at time.Time) {
 	}
 	for _, b := range calls {
 		st.marker(b, at)
+	}
+	for _, b := range peers {
+		st.peers.call(b.ID, b.Name, b.Input, at)
 	}
 }
 

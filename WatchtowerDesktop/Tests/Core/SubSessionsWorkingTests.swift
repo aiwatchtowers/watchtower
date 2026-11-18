@@ -85,6 +85,22 @@ final class SubSessionsWorkingTests: XCTestCase {
         XCTAssertEqual(decide(liveChildren: 0), .escalate(.away), "the owner was away: raised once the child stopped")
     }
 
+    /// Background shells alone (a dev server) do not hide the wait on a
+    /// child, and no stop banner comes while it works (Go `Resolve`, the
+    /// shared fixture's shells case).
+    func testShellsOnlyParentWaitsOnItsChildWithoutANotice() {
+        var shells = rows()
+        shells[0].agentBackground = 0
+        shells[0].agentBackgroundShells = 1
+        shells[0].agentBackgroundAt = stamp(60)
+        XCTAssertEqual(resolve(shells, live: [1, 2])[1]?.state.kind, .subSessionsWorking)
+        var notices = SessionAgentNoticePolicy()
+        XCTAssertEqual(notices.update(resolve(shells, live: [1, 2]), canPost: true), [])
+        XCTAssertEqual(resolve(shells, live: [1])[1]?.state.kind, .background, "the child stopped: the shells show")
+        XCTAssertEqual(notices.update(resolve(shells, live: [1]), canPost: true).count, 1,
+                       "the turn's stop is announced once the child ends")
+    }
+
     func testSubSessionsWorkingPresentation() {
         let state = SessionSwitcherPresentation.State.live(.subSessionsWorking, liveSubSessions: 2)
         XCTAssertEqual(SessionStatePresentation.caption(for: state), "Sub-sessions working")

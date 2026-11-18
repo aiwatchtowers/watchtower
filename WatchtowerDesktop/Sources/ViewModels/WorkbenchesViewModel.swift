@@ -630,12 +630,18 @@ final class WorkbenchesViewModel {
     /// The FILES root the owner last opened (a folder id), per workbench:
     /// ⌘T starts there while no session is on screen (spec §6.4).
     var selectedFolderRoot: [Int64: Int64] = [:]
+    /// The FILES root a file was opened from when it is not the page
+    /// session's (#2003), per workbench; stale once the session changes.
+    var selectedFilesRoot: [Int64: FilesRootSelection] = [:]
     /// The last Put on the Bench… failure per workbench, under the FILES header.
     var putOnBenchErrors: [Int64: String] = [:]
     /// Workbenches with a Put on the Bench… add in flight.
     var puttingOnBench: Set<Int64> = []
     /// A seam for tests: whether a folder's directory exists.
     @ObservationIgnored var folderExists: (String) -> Bool = { CodeRootPolicy.directoryExists(URL(fileURLWithPath: $0)) }
+    /// A seam for tests: the sessions running now (Remove from Bench… counts
+    /// a folder's before it asks).
+    @ObservationIgnored lazy var liveSessionIDs: () -> Set<Int64> = { [weak self] in self?.terminalCenter?.liveIDs ?? [] }
     @ObservationIgnored var gitWatchers: [GitRootKey: any GitRefsWatching] = [:]
     @ObservationIgnored var gitWatchedDirs: [GitRootKey: [String]] = [:]
     @ObservationIgnored var gitTimers: [Int64: Task<Void, Never>] = [:]
@@ -726,6 +732,7 @@ final class WorkbenchesViewModel {
             let automations = AutomationsCLI(runner: cli.runner)
             asks.wakeAutomations = { try await automations.wake() }
             rescanAutomations = { try await automations.rescan(workbenchID: $0) }
+            asks.folderCLI = cli
         }
         codeFiles.onAutomationRecipesChanged = { [weak self] in self?.automationRecipesChanged(workbenchID: $0) }
         terminalCenter?.onSessionExit = { [weak self] id, code, closedByApp in
@@ -758,6 +765,10 @@ final class WorkbenchesViewModel {
         }
         // A closed session's ring follows its open asks without a poll.
         asks.onAnswered = { [weak agentStates] in await agentStates?.poll() }
+        asks.addSuggestedFolder = { [weak self] path, projectID in
+            guard let self else { throw FolderSuggestionError.noCLI }
+            return try await self.addSuggestedFolder(path: path, projectID: projectID)
+        }
         // A line (an answer's) is held while its session waits on a permission
         // prompt and goes once the states show it answered (PROJ-12); its
         // Return only into a session whose hooks reported this run (a
@@ -1166,7 +1177,7 @@ final class WorkbenchesViewModel {
         if installed {
             await startNewSession(project: project, title: TerminalSessionNaming.setupTitle,
                                   prompt: TerminalLaunch.firstRunPrompt,
-                                  agent: setupAgent(projectID: project.id))
+                                  agent: setupAgent(projectID: project.id), folder: .home)
         }
     }
 

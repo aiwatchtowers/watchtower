@@ -21,6 +21,13 @@ struct FilesRootItem: Identifiable, Equatable {
     var id: Int64 { folder.id }
 }
 
+/// A FILES root chosen by opening one of its files, and the page session
+/// it was chosen under.
+struct FilesRootSelection: Equatable {
+    let root: CodeRoot
+    let sessionID: Int64?
+}
+
 /// What Put on the Bench… did with the picked folder.
 enum PutOnBenchStep: Equatable {
     /// The add ran (its outcome is in FILES).
@@ -155,6 +162,19 @@ extension WorkbenchesViewModel {
         }
     }
 
+    /// FILES draws a row per root with several folders, and also when a
+    /// folder is gone: its row carries `Folder not found` and Locate… (a
+    /// bench whose only folder moved must still reach it). One healthy
+    /// folder keeps today's tree.
+    static func showsRootRows(_ roots: [FilesRootItem]) -> Bool {
+        roots.count > 1 || roots.contains { $0.state == .notFound }
+    }
+
+    /// Remove from Bench… on a root: off for the bench's only folder.
+    func canRemoveFolder(projectID: Int64) -> Bool {
+        liveFolders(projectID: projectID).count > 1
+    }
+
     /// A root row's click: open or close its tree; the root opened is the
     /// one ⌘T starts in while no session is on screen.
     func toggleFolderRoot(_ folderID: Int64, projectID: Int64) {
@@ -202,14 +222,34 @@ extension WorkbenchesViewModel {
         let name = folder.lastPathComponent
         let result: FolderResult
         do {
-            result = try await cli.folderAdd(workbenchID: projectID, path: folder.path)
+            result = try await runFolderAdd(cli, path: folder.path, projectID: projectID, addedBy: .owner)
         } catch {
             print("[WorkbenchFolders] workbench folder add for workbench \(projectID) failed: \(error)")
             putOnBenchErrors[projectID] = WorkbenchFolderPresentation.putOnBenchFailed(
                 name: name, reason: error.localizedDescription)
             return
         }
+        if result.ok || result.code == .alreadyHere { return }
+        putOnBenchErrors[projectID] = WorkbenchFolderPresentation.putOnBenchFailed(name: name, reason: result.reason)
+    }
+
+    /// The folder card's Put on Bench (spec §6.7): the same add as the
+    /// owner's, filed as the agent's suggestion. The card says how it went.
+    func addSuggestedFolder(path: String, projectID: Int64) async throws -> FolderResult {
+        guard let cli else { throw FolderSuggestionError.noCLI }
+        return try await runFolderAdd(cli, path: path, projectID: projectID, addedBy: .agentSuggestion)
+    }
+
+    /// `workbench folder add`, then FILES again: the folder it added (or
+    /// already was, `already_here`) is highlighted and opened, a new one's
+    /// install flag and git status read.
+    private func runFolderAdd(
+        _ cli: WorkbenchCLI, path: String, projectID: Int64, addedBy: FolderAddedBy
+    ) async throws -> FolderResult {
+        let result = try await cli.folderAdd(workbenchID: projectID, path: path, addedBy: addedBy)
         await loadBenchFolders(projectID: projectID)
+        // Added, but the CLI named no folder: nothing to highlight (and,
+        // being ok, no error either).
         if result.ok || result.code == .alreadyHere, let added = result.folder {
             highlightedFolderRoot[projectID] = added.id
             selectedFolderRoot[projectID] = added.id
@@ -218,10 +258,8 @@ extension WorkbenchesViewModel {
             if result.ok, gitWatching.contains(projectID), let added = benchFolders[projectID]?.folder(added.id) {
                 await refreshGitStatus(root: folderRoot(added))
             }
-            return
         }
-        putOnBenchErrors[projectID] = WorkbenchFolderPresentation.putOnBenchFailed(
-            name: name, reason: result.error.isEmpty ? result.errorCode : result.error)
+        return result
     }
 
     /// Retry on a root whose install is missing: Re-run Setup installs into

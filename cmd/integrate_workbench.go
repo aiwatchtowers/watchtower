@@ -441,6 +441,10 @@ func printWorkbenchLeftovers(w io.Writer, st devpack.WorkbenchStatus) {
 		fmt.Fprintln(w, "  still present: ask guard hooks")
 		left = true
 	}
+	if st.OutsideTouch {
+		fmt.Fprintln(w, "  still present: outside-bench hook")
+		left = true
+	}
 	if st.CleanupPermission {
 		fmt.Fprintln(w, "  still present: cleanup permission")
 		left = true
@@ -502,6 +506,9 @@ type workbenchStatusJSON struct {
 	// for an answer from the phone (#517). Additive; a workbench missing it
 	// is offered Repair.
 	PermissionWait bool `json:"permission_wait"`
+	// OutsideTouch: the PostToolUse entry counting the agent's touches of
+	// folders outside the bench (multi-folder workbench §6.7). Additive.
+	OutsideTouch bool `json:"outside_touch"`
 	// CleanupPermission: the permissions.allow rule for `watchtower
 	// workbench cleanup` (session cleanup §10) is there. Additive; a
 	// Re-run Setup adds it to a folder set up before it.
@@ -567,6 +574,7 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 			CurrentMCP: st.CurrentMCP, StateHooks: st.StateHooks,
 			AskGuard: st.AskGuard, AskToolBlock: st.AskToolBlock,
 			PermissionWait:    st.PermissionWait,
+			OutsideTouch:      st.OutsideTouch,
 			CleanupPermission: st.CleanupPermission,
 			GroupPrompt:       st.GroupPrompt,
 			Codex: codexStatusJSON{

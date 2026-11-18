@@ -103,9 +103,21 @@ const BackgroundShellCap = 2 * time.Hour
 // sub-sessions of it are live (Row.LiveChildren) is sub_sessions_working: its
 // turn is its children's, not the owner's. Once the last child is no longer
 // live it shows its own state again.
+// Background shells alone (no background agents) do not hold that back: the
+// turn rests as it would without them, so a parent with a dev server running
+// is still waiting on its children (no stop notice meanwhile).
 func Resolve(r Row, now time.Time) State {
 	s := resolveOwn(r, now)
-	if r.LiveChildren > 0 && r.RunStartedAt != "" && (s == StateStopped || (s == StateFinished && r.OpenAsks == 0)) {
+	if r.LiveChildren == 0 || r.RunStartedAt == "" {
+		return s
+	}
+	resting := s
+	if s == StateAgentsWorking && !BackgroundAgentsRun(r, now) {
+		bare := r
+		bare.AgentBackgroundShells = nil
+		resting = resolveOwn(bare, now)
+	}
+	if resting == StateStopped || (resting == StateFinished && r.OpenAsks == 0) {
 		return StateSubSessionsWorking
 	}
 	return s

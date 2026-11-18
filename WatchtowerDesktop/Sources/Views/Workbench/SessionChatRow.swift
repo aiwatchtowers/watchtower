@@ -132,6 +132,10 @@ struct SessionChatRow: View, Equatable {
             if let subagent = entry.subagent {
                 subagentCard(subagent)
             }
+        case "peer":
+            if let bubble = PeerBubblePresentation.bubble(for: entry) {
+                PeerBubbleCard(bubble: bubble, blocks: entry.peer?.kind == "started" ? nil : blocks)
+            }
         default:
             EmptyView()
         }

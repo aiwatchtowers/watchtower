@@ -189,6 +189,69 @@ final class WorkbenchesViewModelFoldersTests: XCTestCase {
         XCTAssertNil(vm.highlightedFolderRoot[bench])
     }
 
+    func testAnAddWithoutAFolderIsNoFailure() async throws {
+        let runner = runner()
+        runner.answer("folder add", .success(Data(#"{"ok":true}"#.utf8)))
+        let vm = makeVM(runner)
+        await vm.addFolderToBench(URL(fileURLWithPath: "/tmp/acme-hub"), projectID: bench)
+        XCTAssertNil(vm.putOnBenchErrors[bench], "ok without a folder is an add, not “Couldn’t put …: ”")
+    }
+
+    func testARefusalWithoutWordsStillSaysSomething() async throws {
+        let runner = runner()
+        runner.answer("folder add", .success(Data(#"{"ok":false}"#.utf8)))
+        let vm = makeVM(runner)
+        await vm.addFolderToBench(URL(fileURLWithPath: "/tmp/billing"), projectID: bench)
+        XCTAssertEqual(vm.putOnBenchErrors[bench], "Couldn’t put billing on the bench: the command gave no reason.")
+    }
+
+    // MARK: - The selected FILES root
+
+    /// A file opened from another folder's root puts that root in the Files
+    /// pane and under the branch crumb, switch and fetch (spec §6.8), until
+    /// the page's session changes.
+    func testOpeningAFileInAnotherRootMakesItThePagesRoot() async throws {
+        let hub = try addFolder("/tmp/acme-hub", name: "hub", position: 1)
+        let session = try await pool.write { [bench] db in
+            try TerminalSessionQueries.create(db, .init(
+                projectID: bench, kind: .claude, title: "s", folderPath: "/tmp/acme-app",
+                claudeSessionID: UUID().uuidString.lowercased()
+            ))
+        }
+        let runner = runner([.init(id: hub, path: "/tmp/acme-hub", branch: "feature/hub")])
+        runner.answer("git switch", .success(Data(
+            #"{"workbench_id":\#(bench),"branch":"feature/x","switched":true,"status":{}}"#.utf8)))
+        let vm = makeVM(runner)
+        let project = try project()
+        await vm.reload()
+        _ = await vm.loadSessions(projectID: bench)
+        let hubRoot = try vm.folderRoot(XCTUnwrap(vm.benchFolders[bench]?.folder(hub)))
+
+        // No session on the page: the Files pane follows the root.
+        vm.selectFilesRoot(hubRoot, project: project)
+        XCTAssertEqual(vm.activeCodeRoot(project: project), hubRoot)
+        XCTAssertEqual(vm.filesRoots(project: project, active: hubRoot).map(\.isExpanded), [true, true],
+                       "the folder it left stays open")
+        await vm.startGitWatching(project: project)
+        await vm.followGitRoot(vm.activeCodeRoot(project: project))
+        await vm.switchBranch("feature/x", project: project)
+        let switched = try XCTUnwrap(runner.invocations.last { $0.starts(with: ["workbench", "git", "switch"]) })
+        XCTAssertTrue(switched.contains("--workbench-folder") && switched.contains(String(hub)), "the switch runs in hub")
+
+        // A session on the page: its own root again until a file of another
+        // root is opened under it.
+        var layout = WorkspaceLayout.default
+        layout.primary = .session(session.id)
+        vm.setLayout(layout, projectID: bench)
+        XCTAssertEqual(vm.activeCodeRoot(project: project), project.mainCodeRoot, "a session switch drops the choice")
+        vm.selectFilesRoot(hubRoot, project: project)
+        XCTAssertEqual(vm.activeCodeRoot(project: project), hubRoot)
+        vm.selectFilesRoot(project.mainCodeRoot, project: project)
+        XCTAssertEqual(vm.activeCodeRoot(project: project), project.mainCodeRoot, "the session's own root clears it")
+        XCTAssertNil(vm.selectedFilesRoot[bench])
+        vm.stopGitWatching(projectID: bench)
+    }
+
     // MARK: - Git per folder
 
     func testEachRootPollsItsOwnStatus() async throws {
