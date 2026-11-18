@@ -492,14 +492,20 @@ func TestReadUsage_EscapedDescendantDoesNotHang(t *testing.T) {
 	dir := t.TempDir()
 	holderPid, ready := filepath.Join(dir, "holder"), filepath.Join(dir, "ready")
 	t.Cleanup(func() { reapHolder(t, holderPid) })
-	holder := `use POSIX; POSIX::setsid() or die; ` +
-		`open(my $p, ">", "` + holderPid + `.tmp") or die; print $p "$$\n"; close($p); ` +
-		`rename("` + holderPid + `.tmp", "` + holderPid + `") or die; ` +
-		`open(my $r, ">", "` + ready + `") or die; print $r "ok\n"; close($r); sleep 300`
+	// The pid is published before setsid, so cleanup can find the holder on
+	// every path; the paths come in as arguments, never as Perl source; the
+	// FIFO open is non-blocking and bounded, so a dead reader cannot wedge
+	// the holder.
+	holder := `use POSIX; use Fcntl; use Time::HiRes qw(usleep); my ($pidf, $ready) = @ARGV; ` +
+		`open(my $p, ">", "$pidf.tmp") or die; print $p "$$\n"; close($p) or die; ` +
+		`rename("$pidf.tmp", $pidf) or die; ` +
+		`POSIX::setsid() or die; ` +
+		`my $r; for (1..500) { last if sysopen($r, $ready, O_WRONLY|O_NONBLOCK); undef $r; usleep(10000) } ` +
+		`if ($r) { syswrite($r, "ok\n"); close($r) } sleep 300`
 	bin := writeUsageScript(t, strings.Join([]string{
 		`/usr/bin/mkfifo ` + shQuote(ready) + ` || exit 3`,
 		`IFS= read -r line`,
-		shQuote(perl) + ` -e ` + shQuote(holder) + ` &`,
+		shQuote(perl) + ` -e ` + shQuote(holder) + ` ` + shQuote(holderPid) + ` ` + shQuote(ready) + ` &`,
 		`IFS= read -r ok < ` + shQuote(ready),
 		`printf '%s\n' ` + shQuote(usageSuccess(usageOKPayload)),
 		`/bin/cat >/dev/null`,
@@ -555,12 +561,34 @@ func reapHolder(t *testing.T, pidFile string) {
 // Review fix: a relative bin resolves against the caller's cwd, not the
 // child's neutral folder.
 func TestReadUsage_RelativeBin(t *testing.T) {
-	bin := writeUsageScript(t, "IFS= read -r line\nprintf '%s\\n' "+shQuote(usageSuccess(usageOKPayload))+"\n/bin/cat >/dev/null")
-	t.Chdir(filepath.Dir(bin))
-	snap, err := ReadUsage(t.Context(), "./"+filepath.Base(bin), []string{"PATH=/usr/bin:/bin"})
-	if err != nil || len(snap.Windows) != 2 {
-		t.Fatalf("snap = %+v err = %v", snap, err)
-	}
+	script := "IFS= read -r line\nprintf '%s\\n' " + shQuote(usageSuccess(usageOKPayload)) + "\n/bin/cat >/dev/null"
+	t.Run("dot slash", func(t *testing.T) {
+		bin := writeUsageScript(t, script)
+		t.Chdir(filepath.Dir(bin))
+		snap, err := ReadUsage(t.Context(), "./"+filepath.Base(bin), []string{"PATH=/usr/bin:/bin"})
+		if err != nil || len(snap.Windows) != 2 {
+			t.Fatalf("snap = %+v err = %v", snap, err)
+		}
+	})
+	// link/../claude: the kernel resolves link first, so the path names
+	// <stub dir>/claude, while the lexically cleaned <cwd>/claude does not
+	// exist. Cleaning the path would run another file than LookPath checked.
+	t.Run("symlink then dot-dot", func(t *testing.T) {
+		bin := writeUsageScript(t, script)
+		inner := filepath.Join(filepath.Dir(bin), "inner")
+		if err := os.Mkdir(inner, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		cwd := t.TempDir()
+		if err := os.Symlink(inner, filepath.Join(cwd, "link")); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(cwd)
+		snap, err := ReadUsage(t.Context(), "link/../"+filepath.Base(bin), []string{"PATH=/usr/bin:/bin"})
+		if err != nil || len(snap.Windows) != 2 {
+			t.Fatalf("snap = %+v err = %v", snap, err)
+		}
+	})
 }
 
 // Review focus 5: a chatty stderr must not block the answer.
