@@ -1,0 +1,1510 @@
+[
+ {
+  "base": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "quote": "Intro text",
+     "prefix": "",
+     "suffix": "",
+     "heading": "Title",
+     "body": "margin"
+    }
+   ],
+   "note": "keep going",
+   "verdict": "changes"
+  },
+  "ledger": null,
+  "marks": {},
+  "name": "no_marks_leaves_base",
+  "result": {
+   "summary": "s",
+   "chapters": [
+    {
+     "key": "ch:0",
+     "heading": "Title",
+     "start": 0,
+     "end": 19
+    },
+    {
+     "key": "ch:1",
+     "heading": "Behaviour",
+     "start": 19,
+     "end": 68
+    }
+   ],
+   "agreements": [
+    {
+     "key": "ag:1",
+     "text": "Mute is per channel",
+     "status": "differs",
+     "chapter": "ch:1"
+    }
+   ],
+   "decided_alone": [
+    {
+     "key": "da:1",
+     "text": "Local db",
+     "chapter": "ch:0",
+     "where": {
+      "heading": "Title",
+      "quote": "Intro text"
+     }
+    }
+   ],
+   "blind_spots": [
+    {
+     "key": "bs:1",
+     "text": "No undo",
+     "why": "w",
+     "chapter": "ch:1",
+     "where": {
+      "heading": "## Behaviour",
+      "quote": "Muting lasts twenty-four hours"
+     }
+    }
+   ],
+   "checks": [
+    {
+     "key": "ck:1",
+     "chapter": "ch:1",
+     "question": "Is the mute reversible?",
+     "answer": "concern",
+     "note": "n"
+    }
+   ]
+  },
+  "snapshot": "# Title\nIntro text\n## Behaviour\nMuting lasts twenty-four hours\nMore\n",
+  "verdict": "",
+  "want": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "body": "margin",
+     "heading": "Title",
+     "prefix": "",
+     "quote": "Intro text",
+     "suffix": ""
+    }
+   ],
+   "note": "keep going",
+   "verdict": "changes"
+  }
+ },
+ {
+  "base": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "quote": "Intro text",
+     "prefix": "",
+     "suffix": "",
+     "heading": "Title",
+     "body": "margin"
+    }
+   ],
+   "note": "keep going",
+   "verdict": "changes"
+  },
+  "ledger": null,
+  "marks": {
+   "ck:1": {
+    "state": "comment",
+    "body": "",
+    "about": "Is the mute reversible?"
+   },
+   "bs:1": {
+    "state": "comment",
+    "body": "add one",
+    "about": ""
+   },
+   "da:1": {
+    "state": "comment",
+    "body": "ask first",
+    "about": ""
+   },
+   "ag:1": {
+    "state": "comment",
+    "body": "",
+    "about": ""
+   }
+  },
+  "name": "comment_marks_in_findings_order_with_margin_and_verdict",
+  "result": {
+   "summary": "s",
+   "chapters": [
+    {
+     "key": "ch:0",
+     "heading": "Title",
+     "start": 0,
+     "end": 19
+    },
+    {
+     "key": "ch:1",
+     "heading": "Behaviour",
+     "start": 19,
+     "end": 68
+    }
+   ],
+   "agreements": [
+    {
+     "key": "ag:1",
+     "text": "Mute is per channel",
+     "status": "differs",
+     "chapter": "ch:1"
+    }
+   ],
+   "decided_alone": [
+    {
+     "key": "da:1",
+     "text": "Local db",
+     "chapter": "ch:0",
+     "where": {
+      "heading": "Title",
+      "quote": "Intro text"
+     }
+    }
+   ],
+   "blind_spots": [
+    {
+     "key": "bs:1",
+     "text": "No undo",
+     "why": "w",
+     "chapter": "ch:1",
+     "where": {
+      "heading": "## Behaviour",
+      "quote": "Muting lasts twenty-four hours"
+     }
+    }
+   ],
+   "checks": [
+    {
+     "key": "ck:1",
+     "chapter": "ch:1",
+     "question": "Is the mute reversible?",
+     "answer": "concern",
+     "note": "n"
+    }
+   ]
+  },
+  "snapshot": "# Title\nIntro text\n## Behaviour\nMuting lasts twenty-four hours\nMore\n",
+  "verdict": "approved",
+  "want": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "body": "margin",
+     "heading": "Title",
+     "prefix": "",
+     "quote": "Intro text",
+     "suffix": ""
+    },
+    {
+     "body": "Mute is per channel",
+     "heading": "Behaviour",
+     "item_key": "ag:1",
+     "prefix": "Title\n\nIntro text\n\nBehaviour\n\n",
+     "quote": "Muting lasts twenty-four hours",
+     "suffix": " More\n\n"
+    },
+    {
+     "body": "Local db — ask first",
+     "heading": "Title",
+     "item_key": "da:1",
+     "prefix": "Title\n\n",
+     "quote": "Intro text",
+     "suffix": "\n\nBehaviour\n\nMuting lasts twenty-four hours More\n\n"
+    },
+    {
+     "body": "No undo — add one",
+     "heading": "Behaviour",
+     "item_key": "bs:1",
+     "prefix": "Title\n\nIntro text\n\nBehaviour\n\n",
+     "quote": "Muting lasts twenty-four hours",
+     "suffix": " More\n\n"
+    },
+    {
+     "body": "Is the mute reversible?",
+     "heading": "Behaviour",
+     "item_key": "ck:1",
+     "prefix": "Title\n\nIntro text\n\nBehaviour\n\n",
+     "quote": "Muting lasts twenty-four hours",
+     "suffix": " More\n\n"
+    }
+   ],
+   "note": "keep going",
+   "verdict": "approved"
+  }
+ },
+ {
+  "base": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "quote": "Intro text",
+     "prefix": "",
+     "suffix": "",
+     "heading": "Title",
+     "body": "margin"
+    }
+   ],
+   "note": "keep going",
+   "verdict": "changes"
+  },
+  "ledger": null,
+  "marks": {
+   "ag:1": {
+    "state": "ok",
+    "body": "",
+    "about": ""
+   },
+   "da:1": {
+    "state": "not_useful",
+    "body": "",
+    "about": ""
+   },
+   "bs:1": {
+    "state": "viewed",
+    "body": "",
+    "about": ""
+   },
+   "ch:1": {
+    "state": "viewed",
+    "body": "",
+    "about": ""
+   }
+  },
+  "name": "ok_and_not_useful_marks_send_nothing",
+  "result": {
+   "summary": "s",
+   "chapters": [
+    {
+     "key": "ch:0",
+     "heading": "Title",
+     "start": 0,
+     "end": 19
+    },
+    {
+     "key": "ch:1",
+     "heading": "Behaviour",
+     "start": 19,
+     "end": 68
+    }
+   ],
+   "agreements": [
+    {
+     "key": "ag:1",
+     "text": "Mute is per channel",
+     "status": "differs",
+     "chapter": "ch:1"
+    }
+   ],
+   "decided_alone": [
+    {
+     "key": "da:1",
+     "text": "Local db",
+     "chapter": "ch:0",
+     "where": {
+      "heading": "Title",
+      "quote": "Intro text"
+     }
+    }
+   ],
+   "blind_spots": [
+    {
+     "key": "bs:1",
+     "text": "No undo",
+     "why": "w",
+     "chapter": "ch:1",
+     "where": {
+      "heading": "## Behaviour",
+      "quote": "Muting lasts twenty-four hours"
+     }
+    }
+   ],
+   "checks": [
+    {
+     "key": "ck:1",
+     "chapter": "ch:1",
+     "question": "Is the mute reversible?",
+     "answer": "concern",
+     "note": "n"
+    }
+   ]
+  },
+  "snapshot": "# Title\nIntro text\n## Behaviour\nMuting lasts twenty-four hours\nMore\n",
+  "verdict": "",
+  "want": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "body": "margin",
+     "heading": "Title",
+     "prefix": "",
+     "quote": "Intro text",
+     "suffix": ""
+    }
+   ],
+   "note": "keep going",
+   "verdict": "changes"
+  }
+ },
+ {
+  "base": {
+   "answers": [],
+   "checklist": [],
+   "comments": [],
+   "note": "",
+   "verdict": ""
+  },
+  "ledger": null,
+  "marks": {
+   "b:2": {
+    "state": "comment",
+    "body": "words",
+    "about": "About b"
+   },
+   "a:1": {
+    "state": "comment",
+    "body": "only words",
+    "about": ""
+   },
+   "c:3": {
+    "state": "ok",
+    "body": "",
+    "about": ""
+   }
+  },
+  "name": "no_result_makes_every_comment_an_orphan",
+  "result": null,
+  "snapshot": "# Title\nIntro text\n## Behaviour\nMuting lasts twenty-four hours\nMore\n",
+  "verdict": "",
+  "want": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "body": "From the previous run: only words",
+     "heading": "Title",
+     "item_key": "a:1",
+     "prefix": "Title\n\n",
+     "quote": "Intro text",
+     "suffix": "\n\nBehaviour\n\nMuting lasts twenty-four hours More\n\n"
+    },
+    {
+     "body": "From the previous run: About b — words",
+     "heading": "Title",
+     "item_key": "b:2",
+     "prefix": "Title\n\n",
+     "quote": "Intro text",
+     "suffix": "\n\nBehaviour\n\nMuting lasts twenty-four hours More\n\n"
+    }
+   ],
+   "note": "",
+   "verdict": ""
+  }
+ },
+ {
+  "base": {
+   "answers": [],
+   "checklist": [],
+   "comments": [],
+   "note": "",
+   "verdict": ""
+  },
+  "ledger": null,
+  "marks": {
+   "ag:gone": {
+    "state": "comment",
+    "body": "",
+    "about": "Threads stay muted"
+   },
+   "ag:1": {
+    "state": "comment",
+    "body": "",
+    "about": ""
+   }
+  },
+  "name": "orphan_beside_findings",
+  "result": {
+   "summary": "s",
+   "chapters": [
+    {
+     "key": "ch:0",
+     "heading": "Title",
+     "start": 0,
+     "end": 19
+    },
+    {
+     "key": "ch:1",
+     "heading": "Behaviour",
+     "start": 19,
+     "end": 68
+    }
+   ],
+   "agreements": [
+    {
+     "key": "ag:1",
+     "text": "Mute is per channel",
+     "status": "differs",
+     "chapter": "ch:1"
+    }
+   ],
+   "decided_alone": [
+    {
+     "key": "da:1",
+     "text": "Local db",
+     "chapter": "ch:0",
+     "where": {
+      "heading": "Title",
+      "quote": "Intro text"
+     }
+    }
+   ],
+   "blind_spots": [
+    {
+     "key": "bs:1",
+     "text": "No undo",
+     "why": "w",
+     "chapter": "ch:1",
+     "where": {
+      "heading": "## Behaviour",
+      "quote": "Muting lasts twenty-four hours"
+     }
+    }
+   ],
+   "checks": [
+    {
+     "key": "ck:1",
+     "chapter": "ch:1",
+     "question": "Is the mute reversible?",
+     "answer": "concern",
+     "note": "n"
+    }
+   ]
+  },
+  "snapshot": "# Title\nIntro text\n## Behaviour\nMuting lasts twenty-four hours\nMore\n",
+  "verdict": "",
+  "want": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "body": "Mute is per channel",
+     "heading": "Behaviour",
+     "item_key": "ag:1",
+     "prefix": "Title\n\nIntro text\n\nBehaviour\n\n",
+     "quote": "Muting lasts twenty-four hours",
+     "suffix": " More\n\n"
+    },
+    {
+     "body": "From the previous run: Threads stay muted",
+     "heading": "Title",
+     "item_key": "ag:gone",
+     "prefix": "Title\n\n",
+     "quote": "Intro text",
+     "suffix": "\n\nBehaviour\n\nMuting lasts twenty-four hours More\n\n"
+    }
+   ],
+   "note": "",
+   "verdict": ""
+  }
+ },
+ {
+  "base": {
+   "answers": [],
+   "checklist": [],
+   "comments": [],
+   "note": "",
+   "verdict": ""
+  },
+  "ledger": null,
+  "marks": {
+   "ck:1": {
+    "state": "comment",
+    "body": "",
+    "about": ""
+   }
+  },
+  "name": "check_without_anchor_uses_its_chapter",
+  "result": {
+   "summary": "s",
+   "chapters": [
+    {
+     "key": "ch:0",
+     "heading": "Title",
+     "start": 0,
+     "end": 19
+    },
+    {
+     "key": "ch:1",
+     "heading": "Behaviour",
+     "start": 19,
+     "end": 68
+    }
+   ],
+   "agreements": [
+    {
+     "key": "ag:1",
+     "text": "Mute is per channel",
+     "status": "differs",
+     "chapter": "ch:1"
+    }
+   ],
+   "decided_alone": [
+    {
+     "key": "da:1",
+     "text": "Local db",
+     "chapter": "ch:0",
+     "where": {
+      "heading": "Title",
+      "quote": "Intro text"
+     }
+    }
+   ],
+   "blind_spots": [
+    {
+     "key": "bs:1",
+     "text": "No undo",
+     "why": "w",
+     "chapter": "ch:1",
+     "where": {
+      "heading": "## Behaviour",
+      "quote": "Muting lasts twenty-four hours"
+     }
+    }
+   ],
+   "checks": [
+    {
+     "key": "ck:1",
+     "chapter": "ch:1",
+     "question": "Is the mute reversible?",
+     "answer": "concern",
+     "note": "n"
+    }
+   ]
+  },
+  "snapshot": "# Title\nIntro text\n## Behaviour\nMuting lasts twenty-four hours\nMore\n",
+  "verdict": "",
+  "want": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "body": "Is the mute reversible?",
+     "heading": "Behaviour",
+     "item_key": "ck:1",
+     "prefix": "Title\n\nIntro text\n\nBehaviour\n\n",
+     "quote": "Muting lasts twenty-four hours",
+     "suffix": " More\n\n"
+    }
+   ],
+   "note": "",
+   "verdict": ""
+  }
+ },
+ {
+  "base": {
+   "answers": [],
+   "checklist": [],
+   "comments": [],
+   "note": "",
+   "verdict": ""
+  },
+  "ledger": null,
+  "marks": {
+   "ag:1": {
+    "state": "comment",
+    "body": "x",
+    "about": ""
+   }
+  },
+  "name": "unknown_chapter_falls_back_to_the_first_heading",
+  "result": {
+   "summary": "s",
+   "chapters": [],
+   "agreements": [
+    {
+     "key": "ag:1",
+     "text": "Mute is per channel",
+     "status": "differs",
+     "chapter": "ch:7"
+    }
+   ]
+  },
+  "snapshot": "# Title\nIntro text\n## Behaviour\nMuting lasts twenty-four hours\nMore\n",
+  "verdict": "",
+  "want": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "body": "Mute is per channel — x",
+     "heading": "Title",
+     "item_key": "ag:1",
+     "prefix": "Title\n\n",
+     "quote": "Intro text",
+     "suffix": "\n\nBehaviour\n\nMuting lasts twenty-four hours More\n\n"
+    }
+   ],
+   "note": "",
+   "verdict": ""
+  }
+ },
+ {
+  "base": {
+   "answers": [],
+   "checklist": [],
+   "comments": [],
+   "note": "",
+   "verdict": ""
+  },
+  "ledger": null,
+  "marks": {
+   "ag:1": {
+    "state": "comment",
+    "body": "",
+    "about": ""
+   }
+  },
+  "name": "chapter_with_a_bad_range_falls_back",
+  "result": {
+   "summary": "s",
+   "chapters": [
+    {
+     "key": "ch:1",
+     "heading": "Behaviour",
+     "start": 5,
+     "end": 99999
+    }
+   ],
+   "agreements": [
+    {
+     "key": "ag:1",
+     "text": "Mute is per channel",
+     "status": "differs",
+     "chapter": "ch:1"
+    }
+   ]
+  },
+  "snapshot": "# Title\nIntro text\n## Behaviour\nMuting lasts twenty-four hours\nMore\n",
+  "verdict": "",
+  "want": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "body": "Mute is per channel",
+     "heading": "Title",
+     "item_key": "ag:1",
+     "prefix": "Title\n\n",
+     "quote": "Intro text",
+     "suffix": "\n\nBehaviour\n\nMuting lasts twenty-four hours More\n\n"
+    }
+   ],
+   "note": "",
+   "verdict": ""
+  }
+ },
+ {
+  "base": {
+   "answers": [],
+   "checklist": [],
+   "comments": [],
+   "note": "",
+   "verdict": ""
+  },
+  "ledger": null,
+  "marks": {
+   "ag:1": {
+    "state": "comment",
+    "body": "",
+    "about": ""
+   }
+  },
+  "name": "snapshot_without_a_heading",
+  "result": {
+   "summary": "s",
+   "chapters": [],
+   "agreements": [
+    {
+     "key": "ag:1",
+     "text": "T",
+     "status": "differs",
+     "chapter": "ch:0"
+    }
+   ]
+  },
+  "snapshot": "Plain first line\nsecond\n",
+  "verdict": "",
+  "want": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "body": "T",
+     "heading": "",
+     "item_key": "ag:1",
+     "prefix": "",
+     "quote": "Plain first line",
+     "suffix": " second\n\n"
+    }
+   ],
+   "note": "",
+   "verdict": ""
+  }
+ },
+ {
+  "base": {
+   "answers": [],
+   "checklist": [],
+   "comments": [],
+   "note": "",
+   "verdict": ""
+  },
+  "ledger": null,
+  "marks": {
+   "bs:1": {
+    "state": "comment",
+    "body": "",
+    "about": "No rollback"
+   },
+   "bs:2": {
+    "state": "comment",
+    "body": "",
+    "about": ""
+   }
+  },
+  "name": "rendered_quotes_and_non_ascii",
+  "result": {
+   "summary": "s",
+   "chapters": [],
+   "blind_spots": [
+    {
+     "key": "bs:1",
+     "text": "No rollback",
+     "why": "w",
+     "chapter": "ch:9",
+     "where": {
+      "heading": "## Steps",
+      "quote": "Copy the **users** table"
+     }
+    },
+    {
+     "key": "bs:2",
+     "text": "Late opening",
+     "why": "w",
+     "chapter": "ch:9",
+     "where": {
+      "heading": "## Café notes",
+      "quote": "café opens at nine"
+     }
+    }
+   ]
+  },
+  "snapshot": "# Spec\n\n## Steps\n\n- Copy the **users** table\n- Drop the old one\n\n## Café notes\n\nThe café opens at nine.\n",
+  "verdict": "",
+  "want": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "body": "No rollback",
+     "heading": "Steps",
+     "item_key": "bs:1",
+     "prefix": "Spec\n\nSteps\n\n• ",
+     "quote": "Copy the users table",
+     "suffix": "\n• Drop the old one\n\nCafé notes\n\nThe café opens at nine.\n\n"
+    },
+    {
+     "body": "Late opening",
+     "heading": "Café notes",
+     "item_key": "bs:2",
+     "prefix": "eps\n\n• Copy the users table\n• Drop the old one\n\nCafé notes\n\nThe ",
+     "quote": "café opens at nine",
+     "suffix": ".\n\n"
+    }
+   ],
+   "note": "",
+   "verdict": ""
+  }
+ },
+ {
+  "base": {
+   "answers": [],
+   "checklist": [],
+   "comments": [],
+   "note": "",
+   "verdict": ""
+  },
+  "ledger": null,
+  "marks": {
+   "bs:1": {
+    "state": "comment",
+    "body": "",
+    "about": ""
+   }
+  },
+  "name": "quote_not_in_the_snapshot_keeps_the_reviewers_words",
+  "result": {
+   "summary": "s",
+   "chapters": [],
+   "blind_spots": [
+    {
+     "key": "bs:1",
+     "text": "Invented",
+     "why": "w",
+     "chapter": "ch:0",
+     "where": {
+      "heading": "## Gone",
+      "quote": "never written"
+     }
+    }
+   ]
+  },
+  "snapshot": "# Title\nIntro text\n## Behaviour\nMuting lasts twenty-four hours\nMore\n",
+  "verdict": "",
+  "want": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "body": "Invented",
+     "heading": "## Gone",
+     "item_key": "bs:1",
+     "prefix": "",
+     "quote": "never written",
+     "suffix": ""
+    }
+   ],
+   "note": "",
+   "verdict": ""
+  }
+ },
+ {
+  "base": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "quote": "Intro text",
+     "prefix": "",
+     "suffix": "",
+     "heading": "Title",
+     "body": "margin"
+    }
+   ],
+   "note": "keep going",
+   "verdict": "changes"
+  },
+  "ledger": [
+   {
+    "key": "bs:1",
+    "kind": "blind_spot",
+    "text": "No undo",
+    "note": "reviewer note",
+    "where": {
+     "heading": "## Behaviour",
+     "quote": "Muting lasts twenty-four hours"
+    },
+    "round": 1,
+    "reply": {
+     "key": "bs:1",
+     "reply": "disagree",
+     "note": "later"
+    },
+    "verdict": "disputed",
+    "verdict_note": "needed now",
+    "settled": 2
+   },
+   {
+    "key": "da:1",
+    "kind": "decided_alone",
+    "text": "Local db",
+    "note": "",
+    "round": 1,
+    "reply": {
+     "key": "da:1",
+     "reply": "fixed",
+     "note": "done"
+    },
+    "verdict": "resolved",
+    "verdict_note": "",
+    "settled": 2
+   },
+   {
+    "key": "ag:1",
+    "kind": "agreement",
+    "text": "Mute is per channel",
+    "note": "finding note",
+    "round": 1,
+    "reply": {
+     "key": "ag:1",
+     "reply": "disagree",
+     "note": "the author reason"
+    },
+    "verdict": "unsettled",
+    "verdict_note": "the author reason",
+    "settled": 3
+   },
+   {
+    "key": "ck:1",
+    "kind": "check",
+    "text": "Is the mute reversible?",
+    "note": "check note",
+    "round": 1,
+    "verdict": "unsettled",
+    "verdict_note": "The author did not answer",
+    "settled": 3
+   },
+   {
+    "key": "gone:1",
+    "kind": "blind_spot",
+    "text": "Ledger only",
+    "note": "x",
+    "round": 1,
+    "verdict": "unsettled",
+    "verdict_note": "",
+    "settled": 3
+   }
+  ],
+  "marks": {
+   "bs:1": {
+    "state": "comment",
+    "body": "owner words",
+    "about": ""
+   },
+   "da:1": {
+    "state": "comment",
+    "body": "",
+    "about": ""
+   },
+   "ag:1": {
+    "state": "comment",
+    "body": "",
+    "about": "Mute is per channel"
+   },
+   "ck:1": {
+    "state": "comment",
+    "body": "",
+    "about": ""
+   },
+   "gone:1": {
+    "state": "comment",
+    "body": "still open",
+    "about": ""
+   },
+   "ok:1": {
+    "state": "ok",
+    "body": "",
+    "about": ""
+   },
+   "orphan:9": {
+    "state": "comment",
+    "body": "",
+    "about": "Gone from the result"
+   }
+  },
+  "name": "loop_comments_first_then_the_rest",
+  "result": {
+   "summary": "s",
+   "chapters": [
+    {
+     "key": "ch:0",
+     "heading": "Title",
+     "start": 0,
+     "end": 19
+    },
+    {
+     "key": "ch:1",
+     "heading": "Behaviour",
+     "start": 19,
+     "end": 68
+    }
+   ],
+   "agreements": [
+    {
+     "key": "ag:1",
+     "text": "Mute is per channel",
+     "status": "differs",
+     "chapter": "ch:1"
+    }
+   ],
+   "decided_alone": [
+    {
+     "key": "da:1",
+     "text": "Local db",
+     "chapter": "ch:0",
+     "where": {
+      "heading": "Title",
+      "quote": "Intro text"
+     }
+    }
+   ],
+   "blind_spots": [
+    {
+     "key": "bs:1",
+     "text": "No undo",
+     "why": "w",
+     "chapter": "ch:1",
+     "where": {
+      "heading": "## Behaviour",
+      "quote": "Muting lasts twenty-four hours"
+     }
+    }
+   ],
+   "checks": [
+    {
+     "key": "ck:1",
+     "chapter": "ch:1",
+     "question": "Is the mute reversible?",
+     "answer": "concern",
+     "note": "n"
+    }
+   ]
+  },
+  "snapshot": "# Title\nIntro text\n## Behaviour\nMuting lasts twenty-four hours\nMore\n",
+  "verdict": "approved",
+  "want": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "body": "margin",
+     "heading": "Title",
+     "prefix": "",
+     "quote": "Intro text",
+     "suffix": ""
+    },
+    {
+     "body": "Reviewer is right: No undo — needed now\n\nowner words",
+     "heading": "Behaviour",
+     "item_key": "bs:1",
+     "prefix": "Title\n\nIntro text\n\nBehaviour\n\n",
+     "quote": "Muting lasts twenty-four hours",
+     "suffix": " More\n\n"
+    },
+    {
+     "body": "Reopened: Local db",
+     "heading": "Title",
+     "item_key": "da:1",
+     "prefix": "Title\n\n",
+     "quote": "Intro text",
+     "suffix": "\n\nBehaviour\n\nMuting lasts twenty-four hours More\n\n"
+    },
+    {
+     "body": "Reviewer is right: Mute is per channel — finding note",
+     "heading": "Behaviour",
+     "item_key": "ag:1",
+     "prefix": "Title\n\nIntro text\n\nBehaviour\n\n",
+     "quote": "Muting lasts twenty-four hours",
+     "suffix": " More\n\n"
+    },
+    {
+     "body": "Reviewer is right: Is the mute reversible? — check note",
+     "heading": "Behaviour",
+     "item_key": "ck:1",
+     "prefix": "Title\n\nIntro text\n\nBehaviour\n\n",
+     "quote": "Muting lasts twenty-four hours",
+     "suffix": " More\n\n"
+    },
+    {
+     "body": "Reviewer is right: Ledger only\n\nstill open",
+     "heading": "Title",
+     "item_key": "gone:1",
+     "prefix": "Title\n\n",
+     "quote": "Intro text",
+     "suffix": "\n\nBehaviour\n\nMuting lasts twenty-four hours More\n\n"
+    },
+    {
+     "body": "From the previous run: Gone from the result",
+     "heading": "Title",
+     "item_key": "orphan:9",
+     "prefix": "Title\n\n",
+     "quote": "Intro text",
+     "suffix": "\n\nBehaviour\n\nMuting lasts twenty-four hours More\n\n"
+    }
+   ],
+   "note": "keep going",
+   "verdict": "approved"
+  }
+ },
+ {
+  "base": {
+   "answers": [],
+   "checklist": [],
+   "comments": [],
+   "note": "",
+   "verdict": ""
+  },
+  "ledger": [
+   {
+    "key": "bs:1",
+    "kind": "blind_spot",
+    "text": "No undo",
+    "note": "reviewer note",
+    "where": {
+     "heading": "## Behaviour",
+     "quote": "Muting lasts twenty-four hours"
+    },
+    "round": 1,
+    "reply": {
+     "key": "bs:1",
+     "reply": "disagree",
+     "note": "later"
+    },
+    "verdict": "disputed",
+    "verdict_note": "needed now",
+    "settled": 2
+   },
+   {
+    "key": "da:1",
+    "kind": "decided_alone",
+    "text": "Local db",
+    "note": "",
+    "round": 1,
+    "reply": {
+     "key": "da:1",
+     "reply": "fixed",
+     "note": "done"
+    },
+    "verdict": "resolved",
+    "verdict_note": "",
+    "settled": 2
+   },
+   {
+    "key": "ag:1",
+    "kind": "agreement",
+    "text": "Mute is per channel",
+    "note": "finding note",
+    "round": 1,
+    "reply": {
+     "key": "ag:1",
+     "reply": "disagree",
+     "note": "the author reason"
+    },
+    "verdict": "unsettled",
+    "verdict_note": "the author reason",
+    "settled": 3
+   },
+   {
+    "key": "ck:1",
+    "kind": "check",
+    "text": "Is the mute reversible?",
+    "note": "check note",
+    "round": 1,
+    "verdict": "unsettled",
+    "verdict_note": "The author did not answer",
+    "settled": 3
+   },
+   {
+    "key": "gone:1",
+    "kind": "blind_spot",
+    "text": "Ledger only",
+    "note": "x",
+    "round": 1,
+    "verdict": "unsettled",
+    "verdict_note": "",
+    "settled": 3
+   }
+  ],
+  "marks": {
+   "bs:1": {
+    "state": "ok",
+    "body": "",
+    "about": ""
+   },
+   "da:1": {
+    "state": "viewed",
+    "body": "",
+    "about": ""
+   }
+  },
+  "name": "loop_ok_marks_and_unmarked_entries_send_nothing",
+  "result": {
+   "summary": "s",
+   "chapters": [
+    {
+     "key": "ch:0",
+     "heading": "Title",
+     "start": 0,
+     "end": 19
+    },
+    {
+     "key": "ch:1",
+     "heading": "Behaviour",
+     "start": 19,
+     "end": 68
+    }
+   ],
+   "agreements": [
+    {
+     "key": "ag:1",
+     "text": "Mute is per channel",
+     "status": "differs",
+     "chapter": "ch:1"
+    }
+   ],
+   "decided_alone": [
+    {
+     "key": "da:1",
+     "text": "Local db",
+     "chapter": "ch:0",
+     "where": {
+      "heading": "Title",
+      "quote": "Intro text"
+     }
+    }
+   ],
+   "blind_spots": [
+    {
+     "key": "bs:1",
+     "text": "No undo",
+     "why": "w",
+     "chapter": "ch:1",
+     "where": {
+      "heading": "## Behaviour",
+      "quote": "Muting lasts twenty-four hours"
+     }
+    }
+   ],
+   "checks": [
+    {
+     "key": "ck:1",
+     "chapter": "ch:1",
+     "question": "Is the mute reversible?",
+     "answer": "concern",
+     "note": "n"
+    }
+   ]
+  },
+  "snapshot": "# Title\nIntro text\n## Behaviour\nMuting lasts twenty-four hours\nMore\n",
+  "verdict": "",
+  "want": {
+   "answers": [],
+   "checklist": [],
+   "comments": [],
+   "note": "",
+   "verdict": ""
+  }
+ },
+ {
+  "base": {
+   "answers": [],
+   "checklist": [],
+   "comments": [],
+   "note": "",
+   "verdict": ""
+  },
+  "ledger": [],
+  "marks": {
+   "ag:1": {
+    "state": "comment",
+    "body": "x",
+    "about": ""
+   }
+  },
+  "name": "empty_loop_is_still_a_loop",
+  "result": {
+   "summary": "s",
+   "chapters": [
+    {
+     "key": "ch:0",
+     "heading": "Title",
+     "start": 0,
+     "end": 19
+    },
+    {
+     "key": "ch:1",
+     "heading": "Behaviour",
+     "start": 19,
+     "end": 68
+    }
+   ],
+   "agreements": [
+    {
+     "key": "ag:1",
+     "text": "Mute is per channel",
+     "status": "differs",
+     "chapter": "ch:1"
+    }
+   ],
+   "decided_alone": [
+    {
+     "key": "da:1",
+     "text": "Local db",
+     "chapter": "ch:0",
+     "where": {
+      "heading": "Title",
+      "quote": "Intro text"
+     }
+    }
+   ],
+   "blind_spots": [
+    {
+     "key": "bs:1",
+     "text": "No undo",
+     "why": "w",
+     "chapter": "ch:1",
+     "where": {
+      "heading": "## Behaviour",
+      "quote": "Muting lasts twenty-four hours"
+     }
+    }
+   ],
+   "checks": [
+    {
+     "key": "ck:1",
+     "chapter": "ch:1",
+     "question": "Is the mute reversible?",
+     "answer": "concern",
+     "note": "n"
+    }
+   ]
+  },
+  "snapshot": "# Title\nIntro text\n## Behaviour\nMuting lasts twenty-four hours\nMore\n",
+  "verdict": "",
+  "want": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "body": "Mute is per channel — x",
+     "heading": "Behaviour",
+     "item_key": "ag:1",
+     "prefix": "Title\n\nIntro text\n\nBehaviour\n\n",
+     "quote": "Muting lasts twenty-four hours",
+     "suffix": " More\n\n"
+    }
+   ],
+   "note": "",
+   "verdict": ""
+  }
+ },
+ {
+  "base": {
+   "answers": [],
+   "checklist": [],
+   "comments": [],
+   "note": "",
+   "verdict": ""
+  },
+  "ledger": [
+   {
+    "key": "bs:1",
+    "kind": "blind_spot",
+    "text": "No undo",
+    "note": "reviewer note",
+    "where": {
+     "heading": "## Behaviour",
+     "quote": "Muting lasts twenty-four hours"
+    },
+    "round": 1,
+    "reply": {
+     "key": "bs:1",
+     "reply": "disagree",
+     "note": "later"
+    },
+    "verdict": "disputed",
+    "verdict_note": "needed now",
+    "settled": 2
+   },
+   {
+    "key": "da:1",
+    "kind": "decided_alone",
+    "text": "Local db",
+    "note": "",
+    "round": 1,
+    "reply": {
+     "key": "da:1",
+     "reply": "fixed",
+     "note": "done"
+    },
+    "verdict": "resolved",
+    "verdict_note": "",
+    "settled": 2
+   },
+   {
+    "key": "ag:1",
+    "kind": "agreement",
+    "text": "Mute is per channel",
+    "note": "finding note",
+    "round": 1,
+    "reply": {
+     "key": "ag:1",
+     "reply": "disagree",
+     "note": "the author reason"
+    },
+    "verdict": "unsettled",
+    "verdict_note": "the author reason",
+    "settled": 3
+   },
+   {
+    "key": "ck:1",
+    "kind": "check",
+    "text": "Is the mute reversible?",
+    "note": "check note",
+    "round": 1,
+    "verdict": "unsettled",
+    "verdict_note": "The author did not answer",
+    "settled": 3
+   },
+   {
+    "key": "gone:1",
+    "kind": "blind_spot",
+    "text": "Ledger only",
+    "note": "x",
+    "round": 1,
+    "verdict": "unsettled",
+    "verdict_note": "",
+    "settled": 3
+   }
+  ],
+  "marks": {
+   "bs:1": {
+    "state": "comment",
+    "body": "",
+    "about": ""
+   },
+   "da:1": {
+    "state": "comment",
+    "body": "reopen",
+    "about": ""
+   }
+  },
+  "name": "loop_without_a_result",
+  "result": null,
+  "snapshot": "# Title\nIntro text\n## Behaviour\nMuting lasts twenty-four hours\nMore\n",
+  "verdict": "",
+  "want": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "body": "Reviewer is right: No undo — needed now",
+     "heading": "Behaviour",
+     "item_key": "bs:1",
+     "prefix": "Title\n\nIntro text\n\nBehaviour\n\n",
+     "quote": "Muting lasts twenty-four hours",
+     "suffix": " More\n\n"
+    },
+    {
+     "body": "Reopened: Local db\n\nreopen",
+     "heading": "Title",
+     "item_key": "da:1",
+     "prefix": "Title\n\n",
+     "quote": "Intro text",
+     "suffix": "\n\nBehaviour\n\nMuting lasts twenty-four hours More\n\n"
+    }
+   ],
+   "note": "",
+   "verdict": ""
+  }
+ }
+]
