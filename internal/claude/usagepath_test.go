@@ -12,7 +12,25 @@ import (
 	"syscall"
 	"testing"
 	"testing/synctest"
+	"time"
 )
+
+// testPathCache is a usagePathCache with no inherited or well-known PATH
+// and a fixed clock.
+func testPathCache(shell func(context.Context) (string, bool)) *usagePathCache {
+	now := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	return &usagePathCache{shell: shell, fallback: func() string { return "" },
+		inherited: func() string { return "" }, now: func() time.Time { return now }}
+}
+
+func writeCLI(t *testing.T, dir string) string {
+	t.Helper()
+	cli := filepath.Join(dir, "claude")
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return cli
+}
 
 func pathOf(t *testing.T, env []string) string {
 	t.Helper()
@@ -33,8 +51,8 @@ func TestUsageCommand_OverrideRunsNoShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	var calls atomic.Int32
-	c := &usagePathCache{fallback: func() string { return "/usr/bin:/bin" },
-		shell: func(context.Context) (string, bool) { calls.Add(1); return "", true }}
+	c := testPathCache(func(context.Context) (string, bool) { calls.Add(1); return "/x", true })
+	c.fallback = func() string { return "/usr/bin:/bin" }
 	bin, env := c.command(t.Context(), cli)
 	if bin != cli {
 		t.Fatalf("bin = %q, want %q", bin, cli)
@@ -52,8 +70,7 @@ func TestUsageCommand_OverrideRunsNoShell(t *testing.T) {
 func TestUsageCommand_HungShellIsBounded(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var calls atomic.Int32
-		c := &usagePathCache{fallback: func() string { return "" },
-			shell: func(ctx context.Context) (string, bool) { calls.Add(1); <-ctx.Done(); return "", false }}
+		c := testPathCache(func(ctx context.Context) (string, bool) { calls.Add(1); <-ctx.Done(); return "", false })
 		bin, _ := c.command(context.Background(), "")
 		if bin != "claude" {
 			t.Fatalf("bin = %q, want bare claude", bin)
@@ -76,8 +93,7 @@ func TestUsageCommand_HungShellIsBounded(t *testing.T) {
 func TestUsageCommand_FindsCLIInstalledLater(t *testing.T) {
 	dir := t.TempDir()
 	var calls atomic.Int32
-	c := &usagePathCache{fallback: func() string { return "" },
-		shell: func(context.Context) (string, bool) { calls.Add(1); return dir, true }}
+	c := testPathCache(func(context.Context) (string, bool) { calls.Add(1); return dir, true })
 	if bin, _ := c.command(t.Context(), ""); bin != "claude" {
 		t.Fatalf("bin = %q before install, want bare claude", bin)
 	}
@@ -93,7 +109,7 @@ func TestUsageCommand_FindsCLIInstalledLater(t *testing.T) {
 		t.Errorf("PATH = %q, want %q", pathOf(t, env), dir)
 	}
 	if calls.Load() != 1 {
-		t.Errorf("shell calls = %d, want 1 (an answer is cached)", calls.Load())
+		t.Errorf("shell calls = %d, want 1 (an answer is cached, a miss within usageShellRetry does not re-ask)", calls.Load())
 	}
 }
 
@@ -137,5 +153,101 @@ func TestLoginShellPATHUntil_CancelKillsGroup(t *testing.T) {
 	}
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Errorf("shell %d still there after return (kill err %v)", pid, err)
+	}
+}
+
+// The poll runs the claude the AI calls run: FindBinary's order, inherited
+// PATH first.
+func TestUsageCommand_InheritedPATHFirst(t *testing.T) {
+	inherited, login := t.TempDir(), t.TempDir()
+	want := writeCLI(t, inherited)
+	writeCLI(t, login)
+	c := testPathCache(func(context.Context) (string, bool) { return login, true })
+	c.inherited = func() string { return inherited }
+	if bin, _ := c.command(t.Context(), ""); bin != want {
+		t.Fatalf("bin = %q, want the inherited PATH's %q", bin, want)
+	}
+}
+
+// An installer that adds a new folder to the login profile is picked up: a
+// miss re-asks the shell, at most once per usageShellRetry.
+func TestUsageCommand_MissRefreshesLoginPATH(t *testing.T) {
+	old, added := t.TempDir(), t.TempDir()
+	var calls atomic.Int32
+	answer := old
+	c := testPathCache(func(context.Context) (string, bool) { calls.Add(1); return answer, true })
+	now := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	c.now = func() time.Time { return now }
+	if bin, _ := c.command(t.Context(), ""); bin != "claude" {
+		t.Fatalf("bin = %q, want bare claude", bin)
+	}
+	answer = old + ":" + added
+	want := writeCLI(t, added)
+	now = now.Add(time.Minute)
+	if bin, _ := c.command(t.Context(), ""); bin != "claude" {
+		t.Fatalf("bin = %q within the retry interval, want bare claude", bin)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("shell calls = %d within the retry interval, want 1", calls.Load())
+	}
+	now = now.Add(usageShellRetry)
+	bin, env := c.command(t.Context(), "")
+	if bin != want {
+		t.Fatalf("bin = %q after the retry interval, want %q", bin, want)
+	}
+	if pathOf(t, env) != old+":"+added {
+		t.Errorf("PATH = %q, want the refreshed login PATH", pathOf(t, env))
+	}
+	if calls.Load() != 2 {
+		t.Errorf("shell calls = %d, want 2", calls.Load())
+	}
+	// Found: no more shell runs.
+	now = now.Add(usageShellRetry)
+	c.command(t.Context(), "")
+	if calls.Load() != 2 {
+		t.Errorf("shell calls = %d after a hit, want 2", calls.Load())
+	}
+}
+
+// An empty answer is a miss, not a cached success.
+func TestUsageCommand_EmptyAnswerNotCached(t *testing.T) {
+	var calls atomic.Int32
+	c := testPathCache(func(context.Context) (string, bool) { calls.Add(1); return "", true })
+	c.command(t.Context(), "")
+	c.command(t.Context(), "")
+	if calls.Load() != 2 {
+		t.Fatalf("shell calls = %d, want 2", calls.Load())
+	}
+}
+
+func TestParseUsagePATH(t *testing.T) {
+	for name, tc := range map[string]struct {
+		out, want string
+		ok        bool
+	}{
+		"banner":    {"Welcome /opt/banner/bin\nlast login\n\n" + usagePATHMarker + "\n/a:/b\n", "/a:/b", true},
+		"no marker": {"/a:/b\n", "", false},
+		"empty":     {"\n" + usagePATHMarker + "\n\n", "", false},
+	} {
+		got, ok := parseUsagePATH([]byte(tc.out))
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("%s: got %q %v, want %q %v", name, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// A real shell whose profile prints a banner: only the marked PATH counts.
+func TestLoginShellPATHUntil_BannerIgnored(t *testing.T) {
+	dir := t.TempDir()
+	shell := filepath.Join(dir, "shell")
+	// Stands in for `$SHELL -l -c <cmd>`: prints a banner, then runs <cmd>.
+	script := "#!/bin/sh\necho 'Welcome /opt/banner/bin'\nexec /bin/sh -c \"$3\"\n"
+	if err := os.WriteFile(shell, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", "/usr/bin:/bin:/wt-test/bin")
+	got, ok := loginShellPATHUntil(t.Context(), shell)
+	if !ok || got != "/usr/bin:/bin:/wt-test/bin" {
+		t.Fatalf("got %q %v", got, ok)
 	}
 }
