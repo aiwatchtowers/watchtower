@@ -43,11 +43,13 @@ final class SlackAccountsViewModel {
     init(
         dbPool: DatabasePool,
         daemon: any DaemonRestarting = LiveDaemonRestarter(),
-        cliPath: @escaping () -> String? = Constants.findCLIPath
+        cliPath: @escaping () -> String? = Constants.findCLIPath,
+        readsAccountFlags: Bool = false
     ) {
         self.dbPool = dbPool
         self.daemon = daemon
         self.cliPath = cliPath
+        self.readsAccountFlags = readsAccountFlags
     }
 
     // MARK: - Refresh
@@ -69,13 +71,82 @@ final class SlackAccountsViewModel {
     /// detached `Task`.
     func refreshAsync() async {
         do {
-            let rows = try await dbPool.read { db in try SlackAccountQueries.fetchAll(db) }
+            let (rows, syncs) = try await dbPool.read { db in
+                (try SlackAccountQueries.fetchAll(db), try SlackAccountQueries.fetchLastSyncs(db))
+            }
             self.accounts = rows
+            lastSyncs = syncs
             readError = nil
             await onAccountsChanged?()
         } catch {
             self.error = "Failed to load accounts: \(error.localizedDescription)"
             readError = self.error
+        }
+        if readsAccountFlags { await refreshFlags() }
+    }
+
+    // MARK: - Flags from `slack accounts --json` (plan B Task 15)
+
+    /// Each account's newest successful channel sync, for the shared-app line.
+    private(set) var lastSyncs: [Int: Date] = [:]
+    /// The last `slack accounts --json` read that succeeded: Go's verdict on
+    /// the shared app, each account's Re-login route and whether the build
+    /// has its own Slack app. nil until one succeeds; a failed read keeps it.
+    private(set) var accountFlags: SlackAccountsDocument?
+    /// Every refresh also reads the flags; on in the app, off by default so a
+    /// test never runs a real CLI.
+    @ObservationIgnored var readsAccountFlags: Bool
+    /// Reads finish out of order: only a newer read's answer replaces the flags.
+    @ObservationIgnored private var flagReads = 0
+    @ObservationIgnored private var appliedFlagRead = 0
+
+    /// Accounts Go reports on the retired shared app (`shared_app`); empty
+    /// before the first successful read, so no banner on a failed one.
+    var sharedAppAccountIDs: Set<Int> {
+        Set(accountFlags?.accounts.filter(\.sharedApp).map { Int($0.id) } ?? [])
+    }
+
+    /// `builtin_app`: the build has a Slack app of its own. Before the first
+    /// successful read it counts as true, the build's behaviour before plan B
+    /// (Add Slack Workspace, the Add sheet in onboarding).
+    var builtinApp: Bool { accountFlags?.builtinApp ?? true }
+
+    /// Account `id`'s Re-login route ("builtin" | "connect" | "move"); nil
+    /// when not read.
+    func relogin(of id: Int) -> String? {
+        accountFlags?.accounts.first { $0.id == Int64(id) }?.relogin
+    }
+
+    /// Reads `slack accounts --json` and keeps its answer; a failure keeps
+    /// the last flags (logged, never shown: the pane works without them).
+    func refreshFlags() async {
+        flagReads += 1
+        let read = flagReads
+        switch await readAccountsDocument() {
+        case let .success(doc):
+            applyFlags(doc, read: read)
+        case let .failure(failure):
+            CLILog.warning(args: SlackAccountsDocument.args, stderr: failure.message)
+        }
+    }
+
+    private func applyFlags(_ doc: SlackAccountsDocument, read: Int) {
+        guard read > appliedFlagRead else { return }
+        appliedFlagRead = read
+        accountFlags = doc
+    }
+
+    private func readAccountsDocument() async -> Result<SlackAccountsDocument, RouteReadError> {
+        guard let cliPath = cliPath() else { return .failure(RouteReadError("Watchtower CLI not found")) }
+        let result = await Self.runCLI(path: cliPath, arguments: SlackAccountsDocument.args)
+        guard result.exitCode == 0 else {
+            return .failure(RouteReadError("Could not read the Slack accounts: "
+                + (result.stderr.isEmpty ? "exit \(result.exitCode)" : String(result.stderr.prefix(200)))))
+        }
+        do {
+            return .success(try JSONDecoder().decode(SlackAccountsDocument.self, from: Data(result.stdout.utf8)))
+        } catch {
+            return .failure(RouteReadError("Could not read the Slack accounts: \(error.localizedDescription)"))
         }
     }
 
@@ -102,12 +173,72 @@ final class SlackAccountsViewModel {
         ["slack", "login", "--account", String(account.id), "--app-return"]
     }
 
-    /// Re-consents `account` via `watchtower slack login --account <id>
-    /// --app-return` — same OAuth loopback-browser flow shape as `addAccount`,
-    /// used when an account's status is "error"/"revoked" and needs a fresh
-    /// grant.
-    func relogin(_ account: SlackAccount) async {
+    /// The connect flow on `AppState` (plan B #1709); nil under XCTest or
+    /// without the CLI, where Re-login keeps `slack login`.
+    @ObservationIgnored weak var connectFlow: SlackConnectFlowModel?
+
+    /// Re-consents `account` by its route in `slack accounts --json` (plan B
+    /// A7): the build's own app re-runs `watchtower slack login --account <id>
+    /// --app-return`; a workspace app goes through the connect flow on the
+    /// Desktop's running listener (a `slack login` would bind 18551, which
+    /// that listener holds); no app to sign in with opens the connect section.
+    /// Returns the route taken; nil when nothing started (`error` says why).
+    @discardableResult
+    func relogin(_ account: SlackAccount) async -> SlackReloginRoute? {
+        guard let flow = connectFlow else {
+            await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart)
+            return .builtin
+        }
+        let route: SlackReloginRoute
+        switch await reloginRoute(accountID: Int64(account.id)) {
+        case let .failure(failure):
+            error = failure.message
+            return nil
+        case let .success(found):
+            route = found
+        }
+        guard route == .builtin else {
+            guard flow.reconnect(route) else {
+                error = "Another connection is already in progress."
+                return nil
+            }
+            error = nil // handed off: an earlier failure no longer applies
+            return route
+        }
+        // One flow at a time: the built-in sign-in waits for the connect flow too.
+        guard !flow.isRunning else {
+            error = "Another connection is already in progress."
+            return nil
+        }
         await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart)
+        return route
+    }
+
+    /// The route of account `accountID` from `slack accounts --json`, or why
+    /// it could not be read. Shown as connecting while it reads, so no other
+    /// sign-in starts meanwhile; leaves `error` to the caller.
+    func reloginRoute(accountID: Int64) async -> Result<SlackReloginRoute, RouteReadError> {
+        guard !isConnecting else { return .failure(RouteReadError("Another connection is already in progress.")) }
+        isConnecting = true
+        flagReads += 1
+        let read = flagReads
+        let result = await readAccountsDocument()
+        isConnecting = false
+        // The route's read is the freshest answer: the row's button follows it.
+        if case let .success(doc) = result { applyFlags(doc, read: read) }
+        return result.map { SlackReloginRoute.route(accountID: accountID, in: $0) }
+    }
+
+    /// Why the Re-login route could not be read, in the owner's words.
+    struct RouteReadError: Error, Equatable {
+        let message: String
+        init(_ message: String) { self.message = message }
+    }
+
+    /// The connect flow wrote an account: reload and re-wire the daemon, as
+    /// a finished `slack login` does (onboarding defers the restart).
+    func connectFlowWroteAccount(daemonPolicy: DaemonRestartPolicy) {
+        applyResult((0, "", ""), failurePrefix: "", daemonPolicy: daemonPolicy)
     }
 
     func cancelConnect() {

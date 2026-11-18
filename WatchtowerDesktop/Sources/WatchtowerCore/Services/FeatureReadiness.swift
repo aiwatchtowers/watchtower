@@ -2,8 +2,8 @@ import Foundation
 
 /// Per-feature readiness, pure: every input (the clock included) comes in
 /// `ReadinessInputs`. Precedence is fixed: off > needsSource > ready >
-/// needsSource(.jiraBoards) > needsDigests > daemonStopped > preparing > error >
-/// waitingForSync > scheduled.
+/// needsSource(.jiraBoards) > needsDigests > backgroundAIPaused > daemonStopped >
+/// preparing > error > waitingForSync > scheduled.
 package enum FeatureReadiness {
     /// A `running` row older than this is a dead process's leftover
     /// (`reapStalePipelineRuns` only reaps it after 24 h), not a run.
@@ -46,7 +46,7 @@ package enum FeatureReadiness {
 
     private static func readiness(of feature: ReadinessFeature, _ inputs: ReadinessInputs) -> Readiness {
         if let id = feature.featureID, inputs.disabledFeatureIDs.contains(id) { return .off }
-        if !feature.source.isConnected(in: inputs.connected) { return .needsSource(feature.source) }
+        if !feature.source.isConnected(in: inputs.connected) { return missingSource(feature.source, inputs) }
         if inputs.contentPresent.contains(feature) { return .ready }
         // Jira with no board picked never syncs: say so instead of an ETA
         // (#572) — for Jira's features, and for Jira-or-mail ones while Jira
@@ -57,6 +57,9 @@ package enum FeatureReadiness {
         if feature.runsOnlyWithDigests, let digests = ReadinessFeature.digests.featureID,
            inputs.disabledFeatureIDs.contains(digests) {
             return .needsDigests
+        }
+        if feature.usesBackgroundAI, !inputs.backgroundAI.isAllowed {
+            return .backgroundAIPaused(managed: inputs.backgroundAI.reason == .organization)
         }
         if isDaemonDown(running: inputs.daemonRunning, since: inputs.daemonNotRunningSince, now: inputs.now) {
             return .daemonStopped
@@ -79,6 +82,13 @@ package enum FeatureReadiness {
             return .waitingForSync(detail: syncDetail)
         }
         return .scheduled(eta(of: feature, inputs, syncing: syncing))
+    }
+
+    /// What a feature with its source missing needs: with Slack Live only, a
+    /// Slack feature, and an any-source one (missing means nothing else is
+    /// connected either), needs the workspace's app (screens spec §2.1).
+    private static func missingSource(_ source: ReadinessSource, _ inputs: ReadinessInputs) -> Readiness {
+        inputs.slackLiveOnly && (source == .slack || source == .anySource) ? .needsFullSlack : .needsSource(source)
     }
 
     private static func waitsOnJiraBoards(_ feature: ReadinessFeature, _ connected: ConnectedSources) -> Bool {
@@ -202,9 +212,12 @@ package enum FeatureReadiness {
         switch readiness {
         case .off: "Off — Turn on"
         case .needsSource(.ownerIdentityPending(let name)): "Waiting for your \(name) identity…"
+        case .needsSource(.fullSlack): "Needs your workspace's Slack app. Live answers in Chats only."
         case .needsSource(let source): "\(source.actionTitle) to get this"
         // Every place that shows it follows it with a Turn on Slack Digests button.
         case .needsDigests: "Needs Slack Digests"
+        case .backgroundAIPaused(let managed):
+            managed ? BackgroundAIConsentCopy.readinessOrg : BackgroundAIConsentCopy.readinessPaused
         case .ready: "Ready — Open"
         case .daemonStopped: "Watchtower isn't running"
         case .preparing(let detail): withDetail("Preparing now", detail)

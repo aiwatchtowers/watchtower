@@ -17,6 +17,8 @@ package struct ManagedPolicy: Equatable, Sendable {
         case allowedAIProviders = "AllowedAIProviders"
         case allowClaudeAITools = "AllowClaudeAITools"
         case purgeRevokedData = "PurgeRevokedData"
+        case allowBackgroundAI = "AllowBackgroundAI"
+        case slackApps = "SlackApps"
         case companyBundle = "CompanyBundle"
         case allowAtlassianAPIToken = "AllowAtlassianAPIToken"
         case allowOwnGoogleProject = "AllowOwnGoogleProject"
@@ -34,6 +36,17 @@ package struct ManagedPolicy: Equatable, Sendable {
         package let problem: String
     }
 
+    /// One Slack app a company provisions: its workspace and OAuth client id.
+    package struct SlackApp: Equatable, Sendable {
+        package let teamID: String
+        package let clientID: String
+
+        package init(teamID: String, clientID: String) {
+            self.teamID = teamID
+            self.clientID = clientID
+        }
+    }
+
     package static let knownSources = ["slack", "google", "imap", "caldav", "jira", "linear"]
     package static let knownProviders = ["claude", "codex", "ollama"]
     package static let mobileModes = ["allowed", "workbench_only", "off"]
@@ -48,6 +61,9 @@ package struct ManagedPolicy: Equatable, Sendable {
     package var allowedAIProviders: [String]?
     package var allowClaudeAITools: Bool? // swiftlint:disable:this discouraged_optional_boolean
     package var purgeRevokedData: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    package var allowBackgroundAI: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// nil = the key is absent; entries are valid and unique by team id.
+    package var slackApps: [SlackApp]?
     /// The forced company bundle's wire form as delivered, kept only when
     /// `CompanyBundle.parse` accepts it for MDM.
     package var companyBundle: String?
@@ -93,30 +109,68 @@ package struct ManagedPolicy: Equatable, Sendable {
         if let v = raw[Key.allowedAIProviders.rawValue] {
             p.allowedAIProviders = p.list(.allowedAIProviders, v) { byteIn($0, knownProviders) ? nil : "unknown_value" }
         }
-        if let v = raw[Key.allowClaudeAITools.rawValue] {
-            p.allowClaudeAITools = p.boolean(.allowClaudeAITools, v, restrictive: false)
-        }
-        if let v = raw[Key.purgeRevokedData.rawValue] {
-            p.purgeRevokedData = p.boolean(.purgeRevokedData, v, restrictive: true)
+        p.normalizeTrailingBooleans(raw)
+        if let v = raw[Key.slackApps.rawValue] {
+            p.slackApps = p.slackApps(v)
         }
         p.normalizeCompanyKeys(raw)
+        p.normalizeReserved(raw)
+        return p
+    }
+
+    /// Lists the present reserved keys and reports a wrong type.
+    private mutating func normalizeReserved(_ raw: [String: Any]) {
         for key in Key.reserved {
             guard let v = raw[key.rawValue] else { continue }
-            p.reservedNotEnforced.append(key.rawValue)
+            reservedNotEnforced.append(key.rawValue)
             let typeOK: Bool
             switch key {
-            case .requireDatabaseEncryption: typeOK = isBool(v)
-            case .retentionDays: typeOK = isIntegral(v)
+            case .requireDatabaseEncryption: typeOK = Self.isBool(v)
+            case .retentionDays: typeOK = Self.isIntegral(v)
             default: typeOK = v is [String: Any]
             }
-            if !typeOK { p.report(key, "wrong_type") }
+            if !typeOK { report(key, "wrong_type") }
         }
-        return p
     }
 
     private mutating func report(_ key: Key, _ problem: String) {
         let pr = Problem(key: key.rawValue, problem: problem)
         if !problems.contains(pr) { problems.append(pr) }
+    }
+
+    /// An array of dictionaries: an entry that is not a dictionary, lacks a
+    /// field or fails the id patterns is dropped, and a repeated team id keeps
+    /// the first. Unknown dictionary keys are ignored.
+    private mutating func slackApps(_ v: Any) -> [SlackApp] {
+        guard let arr = v as? [Any] else {
+            report(.slackApps, "wrong_type")
+            return []
+        }
+        var out: [SlackApp] = []
+        for e in arr {
+            guard let m = e as? [String: Any],
+                  let team = m["team_id"] as? String, Self.isSlackTeamID(team),
+                  let client = m["client_id"] as? String, Self.isSlackClientID(client),
+                  !out.contains(where: { $0.teamID == team }) else {
+                report(.slackApps, "invalid_entry")
+                continue
+            }
+            out.append(SlackApp(teamID: team, clientID: client))
+        }
+        return out
+    }
+
+    /// `^[TE][A-Z0-9]{2,}$` over bytes (Go's regexp is ASCII here).
+    static func isSlackTeamID(_ s: String) -> Bool {
+        let b = Array(s.utf8)
+        return b.count >= 3 && (b[0] == 0x54 || b[0] == 0x45)
+            && b.dropFirst().allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) }
+    }
+
+    /// `^[0-9]+\.[0-9]+$`.
+    static func isSlackClientID(_ s: String) -> Bool {
+        let parts = Array(s.utf8).split(separator: 0x2E, omittingEmptySubsequences: false)
+        return parts.count == 2 && parts.allSatisfy { !$0.isEmpty && $0.allSatisfy { $0 >= 0x30 && $0 <= 0x39 } }
     }
 
     /// An array key: a non-array is a wrong type ([]); a non-string entry is
@@ -139,6 +193,19 @@ package struct ManagedPolicy: Equatable, Sendable {
             out.append(s)
         }
         return out
+    }
+
+    /// The boolean keys after AllowedAIProviders, in Go's validation order.
+    private mutating func normalizeTrailingBooleans(_ raw: [String: Any]) {
+        if let v = raw[Key.allowClaudeAITools.rawValue] {
+            allowClaudeAITools = boolean(.allowClaudeAITools, v, restrictive: false)
+        }
+        if let v = raw[Key.purgeRevokedData.rawValue] {
+            purgeRevokedData = boolean(.purgeRevokedData, v, restrictive: true)
+        }
+        if let v = raw[Key.allowBackgroundAI.rawValue] {
+            allowBackgroundAI = boolean(.allowBackgroundAI, v, restrictive: false)
+        }
     }
 
     /// Only a real boolean counts: an NSNumber 1 (`<integer>1</integer>`,
@@ -233,6 +300,8 @@ package struct ManagedPolicy: Equatable, Sendable {
         case .allowedAIProviders: allowedAIProviders != nil
         case .allowClaudeAITools: allowClaudeAITools != nil
         case .purgeRevokedData: purgeRevokedData != nil
+        case .allowBackgroundAI: allowBackgroundAI != nil
+        case .slackApps: slackApps != nil
         case .companyBundle: companyBundle != nil
         case .allowAtlassianAPIToken: allowAtlassianAPIToken != nil
         case .allowOwnGoogleProject: allowOwnGoogleProject != nil

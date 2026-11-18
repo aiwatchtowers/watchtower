@@ -1,3 +1,4 @@
+import Foundation
 import GRDB
 
 package enum SlackAccountQueries {
@@ -26,5 +27,24 @@ package enum SlackAccountQueries {
     package static func fetchTeamIDs(_ db: Database) throws -> [Int: String] {
         let rows = try Row.fetchAll(db, sql: "SELECT id, team_id FROM slack_accounts")
         return Dictionary(uniqueKeysWithValues: rows.map { ($0["id"] as Int, ($0["team_id"] as String?) ?? "") })
+    }
+
+    /// Each account's newest successful channel sync (`sync_state.last_sync_at`,
+    /// channel ids namespaced "<account id>:<raw id>", migration 00048);
+    /// accounts with none are absent. Unreadable stamps are skipped.
+    package static func fetchLastSyncs(_ db: Database) throws -> [Int: Date] {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT CAST(substr(channel_id, 1, instr(channel_id, ':') - 1) AS INTEGER) AS account,
+                   MAX(last_sync_at) AS last
+            FROM sync_state
+            WHERE instr(channel_id, ':') > 1 AND last_sync_at IS NOT NULL AND last_sync_at != ''
+            GROUP BY account
+            """)
+        var result: [Int: Date] = [:]
+        for row in rows {
+            guard let stamp = row["last"] as String?, let date = TimeFormatting.parseISO(stamp) else { continue }
+            result[row["account"] as Int] = date
+        }
+        return result
     }
 }

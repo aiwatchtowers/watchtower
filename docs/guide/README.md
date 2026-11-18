@@ -110,6 +110,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 
 ## Apps & integration
 
+- [Slack Full through your workspace's app](features/slack-full.md) — set up Watchtower's Slack app for your company once, connect from its About page, and move off the retiring shared app
 - [iPhone](features/iphone.md) — answer asks, edit the Workbench board, start sessions and record meetings from your phone, through your own iCloud
 - [iPhone: permission prompts and interrupts](features/iphone-agent-prompts.md) — allow or deny a Claude Code permission prompt and interrupt a working agent from your phone
 - [iPhone: AI chat](features/iphone-chat.md) — ask and read your AI chats from the phone; a turn started there is answered by your Mac. Needs Relay, which isn't in the current version of Watchtower for iPhone

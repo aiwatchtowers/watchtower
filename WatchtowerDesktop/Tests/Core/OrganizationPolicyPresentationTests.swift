@@ -60,6 +60,12 @@ struct OrganizationPolicyPresentationTests {
         #expect(text(["CompanyBundle": "not-a-bundle"]) == ["Profile problems: CompanyBundle (invalid entry)"])
     }
 
+    @Test("Background AI in plain words")
+    func backgroundAIInPlainWords() {
+        #expect(text(["AllowBackgroundAI": true]) == ["Background AI: Allowed by your organization"])
+        #expect(text(["AllowBackgroundAI": false]) == ["Background AI: Turned off by your organization"])
+    }
+
     @Test("reserved keys and profile problems are listed")
     func problemsAndReservedListed() {
         #expect(text(["RetentionDays": 30, "AllowAutomationShell": 1]) == [
@@ -75,5 +81,16 @@ struct OrganizationPolicyPresentationTests {
             "Sources you can connect: none",
             "AI providers: none — AI features cannot run"
         ])
+    }
+
+    @Test("SlackApps lists the workspaces it sets up")
+    func slackAppsListed() {
+        let apps: [[String: Any]] = [
+            ["team_id": "T0ACME", "client_id": "1111.2222"],
+            ["team_id": "T0BETA", "client_id": "3333.4444"]
+        ]
+        #expect(text(["SlackApps": apps])
+            == ["Slack workspaces set up for you: T0ACME, T0BETA"])
+        #expect(text(["SlackApps": [Any]()]) == ["Slack workspaces set up for you: none"])
     }
 }

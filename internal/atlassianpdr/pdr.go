@@ -43,7 +43,8 @@ type Reporter interface {
 	Profiles(ctx context.Context, ids []string) ([]db.AtlassianProfile, error)
 }
 
-// ClientReporter reports through a Jira account's OAuth client.
+// ClientReporter reports through a Jira account's OAuth client (an
+// API-token account uses LookupReporter).
 type ClientReporter struct{ Client *jira.Client }
 
 // Report implements Reporter.
@@ -79,10 +80,7 @@ func (r ClientReporter) Profiles(ctx context.Context, ids []string) ([]db.Atlass
 // Result is what one Run did.
 type Result struct {
 	// NotDue: the account reported less than Every ago; nothing was sent.
-	NotDue bool
-	// Skipped: an API-token account, which cannot call the report API (it
-	// needs an app's token).
-	Skipped  bool
+	NotDue   bool
 	Reported int
 	Closed   int
 	Updated  int
@@ -105,8 +103,9 @@ func parseTime(s string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// Run reports Jira account accountID's stored Atlassian ids when it is due,
-// in chunks of ChunkSize, and fetches the profiles answered "updated" — all
+// Run reports Jira account accountID's stored Atlassian ids when it is due
+// (an API-token account through a LookupReporter, D23), in chunks of
+// ChunkSize, and fetches the profiles answered "updated" — all
 // network before any write: any error (network, 401, 403, a missing scope)
 // erases nothing and stamps nothing, so a later cycle tries again. A refused
 // scope on a company's account leaves the pdr_scope_missing hint (status
@@ -118,9 +117,6 @@ func Run(ctx context.Context, d *db.DB, accountID int64, r Reporter, now time.Ti
 	acct, err := d.GetJiraAccount(accountID)
 	if err != nil {
 		return Result{}, err
-	}
-	if acct.AuthKind == "api_token" {
-		return Result{Skipped: true}, nil
 	}
 	if !Due(acct.LastPDRAt, now) {
 		return Result{NotDue: true}, nil

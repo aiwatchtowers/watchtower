@@ -84,9 +84,24 @@ final class ConfigService {
     /// config only at startup, so Settings restarts it after such a Save.
     private(set) var lastSaveChangedPurge = false
     var parseError: String?
+    /// `ai.background_runs`, the owner's background AI answer, raw as read
+    /// (nil when absent). Read only: its one writer is
+    /// `watchtower ai background allow|pause`, and `save()` never writes it.
+    private(set) var backgroundRuns: String?
+    /// config.yaml exists but could not be read or parsed at the last read of
+    /// `backgroundRuns`, so the answer is unknown (reads paused, as in Go).
+    private(set) var backgroundRunsUnreadable = false
+    /// `ai.provider` as on disk at the last read of the background AI answer
+    /// (load, save, `reloadBackgroundRuns`), never the unsaved edit: the
+    /// agent Settings → System → AI → Background AI names. An unreadable file keeps
+    /// the last one.
+    private(set) var savedAIProvider: String?
     let routingApplication: ProviderRoutingApplication
 
     private let configPath: String
+    /// The config write lock, the read inside it and the write
+    /// (`ConfigFileAccess.live`; a test records them).
+    @ObservationIgnored private let fileAccess: ConfigFileAccess
     /// Raw YAML dictionary — preserved for round-trip editing
     private var rawYAML: [String: Any] = [:]
     /// `calendar.enabled`/`gmail.enabled` as last read from or written to
@@ -114,9 +129,11 @@ final class ConfigService {
         configPath: String,
         routingRead: (() async throws -> ChatRoutingStatus)? = nil,
         connection: ProviderConnection? = nil,
-        catalog: AIModelCatalog = .shared
+        catalog: AIModelCatalog = .shared,
+        fileAccess: ConfigFileAccess = .live
     ) {
         self.catalog = catalog
+        self.fileAccess = fileAccess
         providerConnection = connection ?? ProviderConnection()
         routingApplication = ProviderRoutingApplication(read: routingRead ?? {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
@@ -127,120 +144,187 @@ final class ConfigService {
         reload()
     }
 
-    /// The config file's text, or nil when there is nothing to load. A
-    /// missing file keeps the defaults; one that is present but unreadable is
-    /// a third state, recorded in `parseError` (#740).
-    private func readConfigText() -> String? {
-        guard let data = FileManager.default.contents(atPath: configPath) else {
-            if FileManager.default.fileExists(atPath: configPath) {
-                parseError = "config.yaml can't be read"
-            }
-            return nil
+    /// One read of config.yaml, shared by `reload()` and
+    /// `reloadBackgroundRuns()` so "unreadable" means the same in both. Only a
+    /// confirmed file-not-found is `absent` (a missing file keeps the
+    /// defaults); a file that is present but cannot be read, decoded or
+    /// parsed — or a path that cannot be checked, such as one in a directory
+    /// this process cannot enter — is a third state (#740), as in Go.
+    enum ConfigRead {
+        case absent
+        /// A blank, comments-only or `null` document: an empty config, as the Go CLI reads it.
+        case empty
+        case mapping([String: Any])
+        case unreadable(reason: String)
+    }
+
+    static func readConfig(atPath path: String) -> ConfigRead {
+        let data: Data
+        do {
+            data = try Data(contentsOf: URL(fileURLWithPath: path))
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return .absent
+        } catch {
+            return .unreadable(reason: "config.yaml can't be read")
         }
         guard let str = String(data: data, encoding: .utf8) else {
-            parseError = "config.yaml is not UTF-8 text"
-            return nil
+            return .unreadable(reason: "config.yaml is not UTF-8 text")
         }
-        return str
+        let loaded: Any?
+        do { loaded = try Yams.load(yaml: str) } catch {
+            return .unreadable(reason: error.localizedDescription)
+        }
+        guard let loaded, !(loaded is NSNull) else { return .empty }
+        guard let yaml = loaded as? [String: Any] else {
+            return .unreadable(reason: "config.yaml is not a YAML mapping")
+        }
+        return .mapping(yaml)
     }
 
     func reload() {
         resetProviderOperations()
         routingApplication.configurationReloaded()
         defer { resetModelEditTracking() }
-        guard let str = readConfigText() else { return }
-
-        do {
-            let loaded = try Yams.load(yaml: str)
-            guard let yaml = loaded as? [String: Any] else {
-                // An empty document (blank, comments only, `null`) is an
-                // empty config, as the Go CLI reads it — not an error.
-                if let loaded, !(loaded is NSNull) {
-                    parseError = "config.yaml is not a YAML mapping"
-                }
-                return
-            }
-            adoptRawConfiguration(yaml)
-
-            if let sync = yaml["sync"] as? [String: Any] {
-                syncInterval = sync["poll_interval"] as? String
-                    ?? (sync["poll_interval"].flatMap { "\($0)" })
-                syncWorkers = sync["workers"] as? Int
-                syncThreads = (sync["sync_threads"] as? Bool) ?? true
-                initialHistoryDays = sync["initial_history_days"] as? Int
-                backfillDays = sync["backfill_days"] as? Int
-            }
-
-            if let digest = yaml["digest"] as? [String: Any] {
-                digestEnabled = (digest["enabled"] as? Bool) ?? false
-                digestMinMessages = digest["min_messages"] as? Int
-                digestLanguage = digest["language"] as? String
-            }
-
-            if let briefing = yaml["briefing"] as? [String: Any] {
-                briefingHour = (briefing["hour"] as? Int) ?? 8
-            }
-
-            if let ai = yaml["ai"] as? [String: Any] {
-                loadFallback(ai)
-                prepareProviderModels(ai)
-                aiModel = ai["model"] as? String
-                aiWorkers = ai["workers"] as? Int
-                aiProvider = ai["provider"] as? String
-                aiOllamaURL = ai["ollama_url"] as? String
-                if let models = ai["models"] as? [String: Any] {
-                    aiModelLight = models["light"] as? String
-                    aiModelStrong = models["strong"] as? String
-                }
-            }
-
-            loadProviderModels()
-            loadCLIPaths(yaml)
-
-            if let calendar = yaml["calendar"] as? [String: Any] {
-                calendarEnabled = (calendar["enabled"] as? Bool) ?? true
-                diskCalendarEnabled = calendarEnabled
-                calendarSyncDaysAhead = (calendar["sync_days_ahead"] as? Int) ?? Self.defaultCalendarSyncDaysAhead
-                calendarHistoryDays = (calendar["history_days"] as? Int) ?? 30
-            }
-
-            if let gmail = yaml["gmail"] as? [String: Any] {
-                gmailEnabled = (gmail["enabled"] as? Bool) ?? true
-                diskGmailEnabled = gmailEnabled
-            }
-
-            if let jira = yaml["jira"] as? [String: Any],
-               let features = jira["features"] as? [String: Bool] {
-                jiraFeatures = features
-            } else {
-                jiraFeatures = [:]
-            }
-
-            if let transcripts = yaml["transcripts"] as? [String: Any] {
-                transcriptAudioRetentionDays = (transcripts["audio_retention_days"] as? Int) ?? 30
-            }
-
-            if let ideas = yaml["ideas"] as? [String: Any] {
-                ideasEnabled = (ideas["enabled"] as? Bool) ?? true
-                ideasMineIntervalHours = (ideas["mine_interval_hours"] as? Int) ?? 6
-            }
-
-            if let dayPlan = yaml["day_plan"] as? [String: Any] {
-                dayPlanEnabled = (dayPlan["enabled"] as? Bool) ?? true
-                workingHoursStart = (dayPlan["working_hours_start"] as? String) ?? "09:00"
-                workingHoursEnd = (dayPlan["working_hours_end"] as? String) ?? "19:00"
-                maxTimeblocks = (dayPlan["max_timeblocks"] as? Int) ?? 3
-                minBacklog = (dayPlan["min_backlog"] as? Int) ?? 3
-                maxBacklog = (dayPlan["max_backlog"] as? Int) ?? 8
-            }
-
-            purgeRevokedData = (yaml["privacy"] as? [String: Any])?["purge_revoked_data"] as? Bool
-            diskPurgeRevokedData = purgeRevokedData
-
-            parseError = nil
-        } catch {
-            parseError = error.localizedDescription
+        let read = Self.readConfig(atPath: configPath)
+        adoptBackgroundRuns(read)
+        guard case .mapping(let yaml) = read else {
+            if case .unreadable(let reason) = read { parseError = reason }
+            return
         }
+        adoptRawConfiguration(yaml)
+
+        if let sync = yaml["sync"] as? [String: Any] {
+            syncInterval = sync["poll_interval"] as? String
+                ?? (sync["poll_interval"].flatMap { "\($0)" })
+            syncWorkers = sync["workers"] as? Int
+            syncThreads = (sync["sync_threads"] as? Bool) ?? true
+            initialHistoryDays = sync["initial_history_days"] as? Int
+            backfillDays = sync["backfill_days"] as? Int
+        }
+
+        if let digest = yaml["digest"] as? [String: Any] {
+            digestEnabled = (digest["enabled"] as? Bool) ?? false
+            digestMinMessages = digest["min_messages"] as? Int
+            digestLanguage = digest["language"] as? String
+        }
+
+        if let briefing = yaml["briefing"] as? [String: Any] {
+            briefingHour = (briefing["hour"] as? Int) ?? 8
+        }
+
+        if let ai = try? Self.aiSection(yaml) {
+            loadFallback(ai)
+            prepareProviderModels(ai)
+            aiModel = ai["model"] as? String
+            aiWorkers = ai["workers"] as? Int
+            aiProvider = ai["provider"] as? String
+            aiOllamaURL = ai["ollama_url"] as? String
+            if let models = ai["models"] as? [String: Any] {
+                aiModelLight = models["light"] as? String
+                aiModelStrong = models["strong"] as? String
+            }
+        }
+
+        loadProviderModels()
+        loadCLIPaths(yaml)
+
+        if let calendar = yaml["calendar"] as? [String: Any] {
+            calendarEnabled = (calendar["enabled"] as? Bool) ?? true
+            diskCalendarEnabled = calendarEnabled
+            calendarSyncDaysAhead = (calendar["sync_days_ahead"] as? Int) ?? Self.defaultCalendarSyncDaysAhead
+            calendarHistoryDays = (calendar["history_days"] as? Int) ?? 30
+        }
+
+        if let gmail = yaml["gmail"] as? [String: Any] {
+            gmailEnabled = (gmail["enabled"] as? Bool) ?? true
+            diskGmailEnabled = gmailEnabled
+        }
+
+        if let jira = yaml["jira"] as? [String: Any],
+           let features = jira["features"] as? [String: Bool] {
+            jiraFeatures = features
+        } else {
+            jiraFeatures = [:]
+        }
+
+        if let transcripts = yaml["transcripts"] as? [String: Any] {
+            transcriptAudioRetentionDays = (transcripts["audio_retention_days"] as? Int) ?? 30
+        }
+
+        if let ideas = yaml["ideas"] as? [String: Any] {
+            ideasEnabled = (ideas["enabled"] as? Bool) ?? true
+            ideasMineIntervalHours = (ideas["mine_interval_hours"] as? Int) ?? 6
+        }
+
+        loadDayPlan(yaml)
+
+        purgeRevokedData = (yaml["privacy"] as? [String: Any])?["purge_revoked_data"] as? Bool
+        diskPurgeRevokedData = purgeRevokedData
+
+        parseError = nil
+    }
+
+    private func loadDayPlan(_ yaml: [String: Any]) {
+        guard let dayPlan = yaml["day_plan"] as? [String: Any] else { return }
+        dayPlanEnabled = (dayPlan["enabled"] as? Bool) ?? true
+        workingHoursStart = (dayPlan["working_hours_start"] as? String) ?? "09:00"
+        workingHoursEnd = (dayPlan["working_hours_end"] as? String) ?? "19:00"
+        maxTimeblocks = (dayPlan["max_timeblocks"] as? Int) ?? 3
+        minBacklog = (dayPlan["min_backlog"] as? Int) ?? 3
+        maxBacklog = (dayPlan["max_backlog"] as? Int) ?? 8
+    }
+
+    /// Re-reads only `ai.background_runs` (plan Decision 12: on activation
+    /// and after the Desktop's own allow/pause call). Unsaved Settings edits
+    /// stay; `parseError` is left to `reload()`.
+    func reloadBackgroundRuns() {
+        adoptBackgroundRuns(Self.readConfig(atPath: configPath))
+    }
+
+    private func adoptBackgroundRuns(_ read: ConfigRead) {
+        switch read {
+        case .absent, .empty:
+            backgroundRuns = nil
+            backgroundRunsUnreadable = false
+            savedAIProvider = nil
+        case .mapping(let yaml):
+            do {
+                backgroundRuns = try Self.backgroundRuns(in: yaml)
+                backgroundRunsUnreadable = false
+                savedAIProvider = try Self.aiSection(yaml)?["provider"] as? String
+            } catch {
+                backgroundRuns = nil
+                backgroundRunsUnreadable = true
+            }
+        case .unreadable:
+            backgroundRuns = nil
+            backgroundRunsUnreadable = true
+        }
+    }
+
+    /// The key of `m` that matches `key` without regard to case, as viper
+    /// reads keys; nil when none does. More than one match (`AI` and `Ai`, or
+    /// `ai` and `AI`) is ambiguous and throws: Go and the Desktop could pick
+    /// different ones, so both fail closed. Twin of Go's `aiconsent.lookupFold`.
+    static func foldKey(_ m: [String: Any], _ key: String) throws -> String? {
+        let matches = m.keys.filter { $0.caseInsensitiveCompare(key) == .orderedSame }
+        guard matches.count <= 1 else {
+            throw ConfigUnreadableError(reason: "\(key) appears more than once (keys differing only in case)")
+        }
+        return matches.first
+    }
+
+    /// The `ai` section, found as Go finds it; nil when absent or not a mapping.
+    static func aiSection(_ yaml: [String: Any]) throws -> [String: Any]? {
+        try foldKey(yaml, "ai").flatMap { yaml[$0] as? [String: Any] }
+    }
+
+    /// `ai.background_runs` as a string, keys matched as Go's `lookupFold`
+    /// matches them; a non-string value reads as nil (absent). Throws when a
+    /// key is ambiguous.
+    private static func backgroundRuns(in yaml: [String: Any]) throws -> String? {
+        guard let ai = try aiSection(yaml), let key = try foldKey(ai, "background_runs") else { return nil }
+        return ai[key] as? String
     }
 
     private func adoptRawConfiguration(_ yaml: [String: Any]) {
@@ -452,8 +536,23 @@ final class ConfigService {
         }
     }
 
+    /// The AI section to update, under its existing key whatever its case
+    /// (`AI:` hand-edited): a second lowercase `ai` map would shadow the
+    /// owner's background_runs. A section that is ambiguous or not a mapping
+    /// throws, so save() refuses rather than overwrite it.
+    private static func aiSectionForWrite(_ yaml: [String: Any]) throws -> (key: String, section: [String: Any]) {
+        let key = try foldKey(yaml, "ai") ?? "ai"
+        let value = yaml[key]
+        if value == nil || value is NSNull { return (key, [:]) }
+        guard let section = value as? [String: Any] else {
+            throw ConfigUnreadableError(reason: "\(key) is not a mapping")
+        }
+        return (key, section)
+    }
+
     private func applyAISection(to yaml: inout [String: Any]) throws {
-        var ai = (yaml["ai"] as? [String: Any]) ?? [:]
+        let (aiKey, section) = try Self.aiSectionForWrite(yaml)
+        var ai = section
         var buckets = ai["providers"] as? [String: [String: Any]] ?? [:]
         let selected = aiProvider ?? "claude"
         applyFallback(to: &ai)
@@ -494,7 +593,7 @@ final class ConfigService {
             if let val = aiModelStrong, !val.isEmpty { aiModels["strong"] = val } else { aiModels.removeValue(forKey: "strong") }
             if !aiModels.isEmpty { ai["models"] = aiModels } else { ai.removeValue(forKey: "models") }
         }
-        if !ai.isEmpty { yaml["ai"] = ai } else { yaml.removeValue(forKey: "ai") }
+        if !ai.isEmpty { yaml[aiKey] = ai } else { yaml.removeValue(forKey: aiKey) }
     }
 
     /// `workbench.default_agent` straight from the file, off the main actor
@@ -539,20 +638,20 @@ final class ConfigService {
     /// Re-reads the file and writes just these keys, so nothing else this
     /// instance holds is written. Every value is checked before anything is.
     func saveBuiltinParameters(_ values: [String: String]) throws {
-        var yaml = currentYAMLOnDisk() ?? rawYAML
-        for (key, value) in values.sorted(by: { $0.key < $1.key }) {
-            let (section, field, stored) = try Self.builtinParameter(key: key, value: value)
-            var dict = (yaml[section] as? [String: Any]) ?? [:]
-            dict[field] = stored
-            yaml[section] = dict
+        let yaml = try writeLocked { yaml in
+            for (key, value) in values.sorted(by: { $0.key < $1.key }) {
+                let (section, field, stored) = try Self.builtinParameter(key: key, value: value)
+                var dict = (yaml[section] as? [String: Any]) ?? [:]
+                dict[field] = stored
+                yaml[section] = dict
+            }
+            // The backlog's at-least never above its at-most, as the file will hold them.
+            let planned = (yaml["day_plan"] as? [String: Any]) ?? [:]
+            // Absent keys read as Go's defaults (3 and 8), as `reload()` does.
+            if (planned["min_backlog"] as? Int ?? 3) > (planned["max_backlog"] as? Int ?? 8) {
+                throw BuiltinParameterError(key: BuiltinAutomationCardModel.minBacklogKey)
+            }
         }
-        // The backlog's at-least never above its at-most, as the file will hold them.
-        let planned = (yaml["day_plan"] as? [String: Any]) ?? [:]
-        // Absent keys read as Go's defaults (3 and 8), as `reload()` does.
-        if (planned["min_backlog"] as? Int ?? 3) > (planned["max_backlog"] as? Int ?? 8) {
-            throw BuiltinParameterError(key: BuiltinAutomationCardModel.minBacklogKey)
-        }
-        try write(yaml)
         rawYAML = yaml
         if let hour = (yaml["briefing"] as? [String: Any])?["hour"] as? Int { briefingHour = hour }
         let dayPlan = (yaml["day_plan"] as? [String: Any]) ?? [:]
@@ -589,27 +688,68 @@ final class ConfigService {
         }
     }
 
-    /// Writes the whole file, owner-only (it holds tokens).
-    private func write(_ yaml: [String: Any]) throws {
-        let output = try Yams.dump(object: yaml, allowUnicode: true)
-        let dir = (configPath as NSString).deletingLastPathComponent
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        try output.write(toFile: configPath, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
+    /// `yaml` without the background AI answer (`ai.background_runs`, any
+    /// key case): config.yaml gone means not answered, as Go reads it
+    /// (#1886), so a save from the last reload's snapshot never writes a
+    /// cached answer back. An ambiguous section is left whole; the write
+    /// then refuses it as it would the file.
+    static func withoutBackgroundRuns(_ yaml: [String: Any]) -> [String: Any] {
+        guard let aiKey = try? foldKey(yaml, "ai"), var ai = yaml[aiKey] as? [String: Any],
+              let key = try? foldKey(ai, "background_runs") else { return yaml }
+        var out = yaml
+        ai.removeValue(forKey: key)
+        out[aiKey] = ai
+        return out
+    }
+
+    /// Re-reads the file inside the config write lock (`ConfigFileLock`),
+    /// lets `change` edit it and writes the whole file through
+    /// `ConfigFileWriter` (owner-only: it holds tokens). Returns what was
+    /// written. Reading inside the lock, not the `rawYAML` snapshot of the
+    /// last reload(), keeps the sections another process wrote meanwhile
+    /// (`watchtower jira login`, `ai background allow`, …); `rawYAML` is the
+    /// fallback only when the file is gone, without `ai.background_runs`. A file that exists but cannot be
+    /// read or parsed throws `ConfigUnreadableError` and is not written: a
+    /// snapshot would drop the keys only the file holds.
+    private func writeLocked(_ change: (inout [String: Any]) throws -> Void) throws -> [String: Any] {
+        var written: [String: Any] = [:]
+        try fileAccess.withLock(configPath) { token in
+            var yaml = try lockedYAMLOnDisk() ?? Self.withoutBackgroundRuns(rawYAML)
+            try change(&yaml)
+            try fileAccess.writeConfigFile(try Yams.dump(object: yaml, allowUnicode: true), configPath, token)
+            written = yaml
+        }
+        return written
     }
 
     func save() throws {
         providerConnection.invalidate()
         providerHealth.invalidate()
-        // Re-read the config file right before writing instead of using the
-        // in-memory `rawYAML` snapshot captured at the last reload(). Between
-        // load and save, an external process (e.g. `watchtower jira login`,
-        // `watchtower calendar login`) may have written sections we don't
-        // own (jira, google token, etc). Merging onto a stale snapshot would
-        // silently discard those. Fall back to `rawYAML` only if the file is
-        // gone or unreadable.
-        var yaml = currentYAMLOnDisk() ?? rawYAML
+        var purgeChanged = false
+        let yaml = try writeLocked { yaml in
+            purgeChanged = try applySettings(to: &yaml)
+        }
+        routingApplication.saved()
 
+        rawYAML = yaml
+        loadFallback((try? Self.aiSection(yaml)) ?? [:])
+        adoptBackgroundRuns(.mapping(yaml))
+        lastSaveChangedPurge = purgeChanged
+        diskPurgeRevokedData = purgeRevokedData
+        // Adopt what is on disk now, so a switch the CLI turned on behind this
+        // instance also shows as on.
+        adoptGoogleSyncSwitches(from: yaml)
+        if let ai = try? Self.aiSection(yaml) {
+            providerBuckets = ai["providers"] as? [String: [String: Any]] ?? [:]
+            loadProviderModels()
+        }
+        resetModelEditTracking()
+    }
+
+    /// Writes this instance's settings into `yaml` (the file as re-read
+    /// inside the lock), only the keys Settings owns. Returns whether the
+    /// purge setting changed.
+    private func applySettings(to yaml: inout [String: Any]) throws -> Bool {
         // `active_workspace` is never written here: the CLI owns it (`auth
         // login`, `config set`) and no Settings control edits it, so the only
         // thing save() could write is the snapshot reload() took — stale after
@@ -676,22 +816,7 @@ final class ConfigService {
             privacy["purge_revoked_data"] = purgeRevokedData
             yaml["privacy"] = privacy
         }
-
-        try write(yaml)
-        routingApplication.saved()
-
-        rawYAML = yaml
-        loadFallback(yaml["ai"] as? [String: Any] ?? [:])
-        lastSaveChangedPurge = purgeChanged
-        diskPurgeRevokedData = purgeRevokedData
-        // Adopt what is on disk now, so a switch the CLI turned on behind this
-        // instance also shows as on.
-        adoptGoogleSyncSwitches(from: yaml)
-        if let ai = yaml["ai"] as? [String: Any] {
-            providerBuckets = ai["providers"] as? [String: [String: Any]] ?? [:]
-            loadProviderModels()
-        }
-        resetModelEditTracking()
+        return purgeChanged
     }
 
     /// An edit made here still waits for `save()`.
@@ -708,7 +833,8 @@ final class ConfigService {
 
     /// Bookkeeping, not settings: left out of the edit check.
     private static let nonEditableFields: Set<String> = [
-        "configPath", "routingApplication", "_rawYAML", "_parseError", "_lastSaveChangedPurge",
+        "configPath", "fileAccess", "routingApplication", "_rawYAML", "_parseError", "_lastSaveChangedPurge",
+        "_backgroundRuns", "_backgroundRunsUnreadable", "_savedAIProvider",
         "_diskCalendarEnabled", "_diskGmailEnabled", "_diskPurgeRevokedData", "loadedFields",
         "_providerBuckets", "_editedProviderBuckets", "editedModelTiers",
         "_providerConnection", "_providerHealth", "providerConnection", "providerHealth", "loadedFallbackEnabled", "loadedFallbackProvider"
@@ -760,13 +886,35 @@ final class ConfigService {
     }
 
     /// Load the current on-disk config as a raw YAML dictionary, without
-    /// touching any of the published `@Observable` properties. Used by
-    /// `save()` to merge onto the freshest state rather than a stale snapshot.
+    /// touching any of the published `@Observable` properties; nil when it
+    /// is missing or unreadable. (A write re-reads with `lockedYAMLOnDisk`.)
     private func currentYAMLOnDisk() -> [String: Any]? {
-        guard let data = FileManager.default.contents(atPath: configPath),
+        guard let data = try? fileAccess.read(configPath),
               let str = String(data: data, encoding: .utf8),
               let yaml = try? Yams.load(yaml: str) as? [String: Any] else {
             return nil
+        }
+        return yaml
+    }
+
+    /// The file as `writeLocked` re-reads it: nil when there is no file; an
+    /// unreadable or unparsable file throws.
+    private func lockedYAMLOnDisk() throws -> [String: Any]? {
+        let data: Data?
+        do { data = try fileAccess.read(configPath) } catch {
+            throw ConfigUnreadableError(reason: error.localizedDescription)
+        }
+        guard let data else { return nil }
+        guard let str = String(data: data, encoding: .utf8) else {
+            throw ConfigUnreadableError(reason: "not UTF-8 text")
+        }
+        let loaded: Any?
+        do { loaded = try Yams.load(yaml: str) } catch {
+            throw ConfigUnreadableError(reason: "invalid YAML")
+        }
+        guard let loaded else { return [:] }
+        guard let yaml = loaded as? [String: Any] else {
+            throw ConfigUnreadableError(reason: "not a YAML mapping")
         }
         return yaml
     }

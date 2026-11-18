@@ -113,6 +113,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "Last run:  %s\n", status)
 	}
 
+	fmt.Fprintln(out, backgroundAIStatusLine(readBackgroundConsent()))
+
 	// Summary line
 	watchedStr := ""
 	if stats.WatchedCount > 0 {

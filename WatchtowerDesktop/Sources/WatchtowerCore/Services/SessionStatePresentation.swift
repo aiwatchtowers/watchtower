@@ -15,7 +15,7 @@ package enum SessionStatePresentation {
 
     package static func color(for state: State) -> Tone {
         switch state.kind {
-        case .working, .running, .background: .green
+        case .working, .running, .background, .specReview: .green
         case .waitingOnAsk, .needsApproval: .orange
         case .readyToCheck: .purple
         case .finished: state.openAsks > 0 ? .orange : .blue
@@ -33,6 +33,7 @@ package enum SessionStatePresentation {
         case .background: state.openAsks > 0 ? askGlyph(state) : state.shellsOnly ? "hourglass" : "person.2.fill"
         case .waitingOnAsk: "questionmark"
         case .readyToCheck: "checklist"
+        case .specReview: "doc.text.magnifyingglass"
         case .needsApproval: "hand.raised.fill"
         case .finished: "checkmark"
         case .stopped: "pause.fill"
@@ -70,6 +71,8 @@ package enum SessionStatePresentation {
                 + askSuffix(state, oldestAskID: oldestAskID)
         case .needsApproval:
             "Needs approval"
+        case .specReview:
+            specReviewCaption(round: state.specReviewRound)
         case .finished:
             state.openAsks > 0 ? "Finished · \(asksOpen(state.openAsks))" : "Finished"
         case .stopped:
@@ -85,6 +88,12 @@ package enum SessionStatePresentation {
         case .notStarted:
             "Not running"
         }
+    }
+
+    /// "Spec review · round 2": the session's spec waits on the reviewer
+    /// or on its author (board #1945); the round alone when it is unknown.
+    package static func specReviewCaption(round: Int) -> String {
+        round > 0 ? "Spec review · round \(round)" : "Spec review"
     }
 
     /// "Working", or "Working · not watched" for a session the Mac cannot

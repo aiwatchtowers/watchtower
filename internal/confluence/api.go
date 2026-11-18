@@ -40,11 +40,11 @@ func mapErr(err error) error {
 	if err == nil {
 		return nil
 	}
-	// A rejected OAuth client (#1887) stops the account's sources like a
-	// revoked grant — the same "sign in again" — but only on the sources:
-	// the account row's status stays the Jira phase's to record (error,
-	// never revoked).
-	if errors.Is(err, jira.ErrAuthRevoked) || errors.Is(err, jira.ErrClientRejected) {
+	// A rejected OAuth client or a dead API token (#1887) stops the
+	// account's sources like a revoked grant — the same "sign in again" —
+	// but only on the sources: the account row's status stays the Jira
+	// phase's to record (error, never revoked).
+	if errors.Is(err, jira.ErrAuthRevoked) || errors.Is(err, jira.ErrClientRejected) || errors.Is(err, jira.ErrAPITokenDead) {
 		return fmt.Errorf("%w: %w", extsync.ErrAuthRevoked, err)
 	}
 	var he *jira.HTTPStatusError

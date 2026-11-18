@@ -70,12 +70,32 @@ final class SlackLiveStatusCenterErrorTests: XCTestCase {
         let center = SlackLiveStatusCenter(dbPool: pool, runner: runner, providers: ["claude"])
         center.checkAgain()
         await center.inFlight?.value
-        XCTAssertNotNil(center.lastError)
+        XCTAssertEqual(center.lastError?.kind, .probe)
+        XCTAssertEqual(center.lastError?.provider, "claude")
+        XCTAssertFalse(center.lastError?.message.isEmpty ?? true)
         XCTAssertTrue(center.statuses.isEmpty)
     }
 
-    /// A failed read is not "no rows": the rows shown stay, the error is kept.
-    func testReadErrorKeepsRows() async throws {
+    /// A probe failure of the first provider is not wiped by the next
+    /// provider's clean read; the next pass starts clean.
+    func testProbeFailureSurvivesThePass() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
+        let runner = FakeCLIRunner()
+        runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")
+        let center = SlackLiveStatusCenter(dbPool: pool, runner: runner)
+        center.checkAgain()
+        await center.inFlight?.value
+        XCTAssertEqual(center.lastError?.kind, .probe)
+        runner.shouldThrow = nil
+        center.checkAgain()
+        await center.inFlight?.value
+        XCTAssertNil(center.lastError)
+    }
+
+    /// A failed read is not "no rows": the rows shown stay, the error is kept
+    /// as a read error, and a clean read clears it.
+    func testReadFailureKeepsRows() async throws {
         let (pool, path) = try TestDatabase.createPool()
         addTeardownBlock { TestDatabase.cleanup(path: path) }
         try await pool.write { db in
@@ -86,11 +106,90 @@ final class SlackLiveStatusCenterErrorTests: XCTestCase {
         }
         let center = SlackLiveStatusCenter(dbPool: pool, runner: nil)
         await center.reload()
-        XCTAssertEqual(center.statuses.count, 1)
-        XCTAssertNil(center.lastError)
-        try await pool.write { try $0.execute(sql: "DROP TABLE slack_live_status") }
+        try await breakStatusTable(pool)
         await center.reload()
         XCTAssertEqual(center.statuses.count, 1, "the last rows stay")
-        XCTAssertNotNil(center.lastError)
+        XCTAssertEqual(center.lastError?.kind, .read)
+        XCTAssertTrue(center.hasRead)
+        try await restoreStatusTable(pool)
+        await center.reload()
+        XCTAssertNil(center.lastError)
+    }
+
+    /// Probe fails, then its read fails too: the read failure shows while the
+    /// rows are stale; once a read recovers, the probe failure shows.
+    func testProbeThenReadFailureKeepsBoth() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
+        let runner = FakeCLIRunner()
+        runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")
+        let center = SlackLiveStatusCenter(dbPool: pool, runner: runner, providers: ["claude"])
+        try await breakStatusTable(pool)
+        center.checkAgain()
+        await center.inFlight?.value
+        XCTAssertEqual(center.lastError?.kind, .read)
+        XCTAssertEqual(center.probeError?.provider, "claude")
+        try await restoreStatusTable(pool)
+        await center.reload()
+        XCTAssertEqual(center.lastError?.kind, .probe, "the probe failure is not lost")
+    }
+
+    /// A read fails first, then a pass whose probe fails reads cleanly: the
+    /// probe failure shows.
+    func testReadThenProbeFailureShowsProbe() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
+        let runner = FakeCLIRunner()
+        runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")
+        let center = SlackLiveStatusCenter(dbPool: pool, runner: runner, providers: ["claude"])
+        try await breakStatusTable(pool)
+        await center.reload()
+        XCTAssertEqual(center.lastError?.kind, .read)
+        try await restoreStatusTable(pool)
+        center.checkAgain()
+        await center.inFlight?.value
+        XCTAssertNil(center.readError)
+        XCTAssertEqual(center.lastError?.kind, .probe)
+    }
+
+    /// A status read that genuinely fails: the table is swapped for one
+    /// without the row's columns, so the SELECT errors. (A missing table is
+    /// a legitimate "no rows" for `SlackLiveStatusRow.fetchAll`, an older
+    /// database, so renaming it away no longer forces a failure.)
+    private func breakStatusTable(_ pool: DatabasePool) async throws {
+        try await pool.write { db in
+            try db.execute(sql: "ALTER TABLE slack_live_status RENAME TO slack_live_status_gone")
+            try db.execute(sql: "CREATE TABLE slack_live_status (unrelated TEXT)")
+        }
+    }
+
+    private func restoreStatusTable(_ pool: DatabasePool) async throws {
+        try await pool.write { db in
+            try db.execute(sql: "DROP TABLE slack_live_status")
+            try db.execute(sql: "ALTER TABLE slack_live_status_gone RENAME TO slack_live_status")
+        }
+    }
+
+    func testCheckAgainWhileRunningIsIgnored() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
+        let runner = FakeCLIRunner()
+        let center = SlackLiveStatusCenter(dbPool: pool, runner: runner)
+        center.checkAgain()
+        XCTAssertTrue(center.isRunning)
+        let first = center.inFlight
+        center.checkAgain()
+        XCTAssertTrue(center.inFlight == first, "no second pass starts")
+        await center.inFlight?.value
+        XCTAssertEqual(runner.invocations.count, 2, "one call per provider, once")
+    }
+
+    func testHasRead() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
+        let center = SlackLiveStatusCenter(dbPool: pool, runner: nil)
+        XCTAssertFalse(center.hasRead)
+        await center.reload()
+        XCTAssertTrue(center.hasRead)
     }
 }

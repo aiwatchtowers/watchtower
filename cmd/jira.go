@@ -22,7 +22,6 @@ import (
 	"watchtower/internal/oauthpage"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 var (
@@ -716,11 +715,14 @@ func accountUsesConfluenceWrite(workspaceDir string, accountID int64, warn io.Wr
 // enableJiraPhase flips the global jira.enabled daemon-phase switch on in
 // config.yaml (the per-account on/off lives on the jira_accounts row).
 func enableJiraPhase() error {
-	v := viper.New()
-	v.SetConfigFile(flagConfig)
-	_ = v.ReadInConfig()
-	v.Set("jira.enabled", true)
-	return writeConfigAtomic(v, flagConfig)
+	return config.WithWriteLock(flagConfig, func(lk *config.WriteLock) error {
+		v, err := readConfigForWrite(flagConfig)
+		if err != nil {
+			return err
+		}
+		v.Set("jira.enabled", true)
+		return writeConfigAtomic(lk, v, flagConfig)
+	})
 }
 
 // jiraLogin is jira.Login; a var so tests can script the OAuth outcome.
@@ -786,6 +788,9 @@ func runJiraAdd(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
+	if useAPIToken(cmd) {
+		return addJiraAPITokenAccount(cmd, cfg, database)
+	}
 	// The client comes first: an unknown company (or no client at all) fails
 	// here, before any row, seed or browser.
 	slug, _ := cmd.Flags().GetString("company")
@@ -977,6 +982,13 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
+	if useAPIToken(cmd) {
+		account, err := resolveJiraAccount(database, jiraFlagAccount)
+		if err != nil {
+			return err
+		}
+		return reauthJiraAPIToken(cmd, cfg, database, account)
+	}
 	accountID, isNewRow, err := resolveJiraAccountForLogin(cfg, database, jiraFlagAccount, jiraCmdLogger(cmd))
 	if err != nil {
 		return err
@@ -984,6 +996,11 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 	account, err := database.GetJiraAccount(accountID)
 	if err != nil {
 		return err
+	}
+	if account.AuthKind == jira.AuthKindAPIToken {
+		// An OAuth grant would overwrite the token file of an account that
+		// stays an API-token account.
+		return fmt.Errorf("jira account %d connects with an API token: paste a new one with 'watchtower jira login --account %d --api-token-stdin'", accountID, accountID)
 	}
 
 	jiraCfg, err := jiraLoginOAuthConfig(cfg.WorkspaceDir(), account)
@@ -1284,13 +1301,11 @@ func runJiraBoards(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Fetch boards from API and update DB.
-	jiraCfg, _, err := resolveJiraOAuthConfigForAccount(cfg.WorkspaceDir(), account)
+	client, err := newJiraClientForAccount(cfg, account)
 	if err != nil {
 		return err
 	}
 	if account.CloudID != "" {
-		client := jira.NewClient(account.CloudID, jiraCfg, store)
-		client.SetOAuthSource(jiraAccountRowOAuthSource(cfg.WorkspaceDir(), account))
 		boards, err := client.FetchAllBoards(cmd.Context())
 		if err != nil {
 			return fmt.Errorf("fetching boards: %w", err)
@@ -1542,12 +1557,10 @@ func runJiraSync(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("jira account %d not connected, run 'watchtower jira login --account %d' first", account.ID, account.ID)
 	}
 
-	jiraCfg, _, err := resolveJiraOAuthConfigForAccount(cfg.WorkspaceDir(), account)
+	client, err := newJiraClientForAccount(cfg, account)
 	if err != nil {
 		return err
 	}
-	client := jira.NewClient(account.CloudID, jiraCfg, store)
-	client.SetOAuthSource(jiraAccountRowOAuthSource(cfg.WorkspaceDir(), account))
 	mapper := jira.NewUserMapper(client, database)
 
 	// Get selected board IDs.
@@ -1827,14 +1840,17 @@ func runJiraFeaturesReset(cmd *cobra.Command, _ []string) error {
 	// One scalar key per toggle in a single write, for the reason setJiraFeatureToggle
 	// documents: the struct has no yaml tags, so writing it produces keys no
 	// reader can see.
-	v := viper.New()
-	v.SetConfigFile(flagConfig)
-	_ = v.ReadInConfig()
-	for _, name := range featureNames {
-		ptr, _ := featureToggleRef(&defaults, name)
-		v.Set("jira.features."+jiraFeatureConfigKeys[name], ptr != nil && *ptr)
-	}
-	if err := writeConfigAtomic(v, flagConfig); err != nil {
+	if err := config.WithWriteLock(flagConfig, func(lk *config.WriteLock) error {
+		v, err := readConfigForWrite(flagConfig)
+		if err != nil {
+			return err
+		}
+		for _, name := range featureNames {
+			ptr, _ := featureToggleRef(&defaults, name)
+			v.Set("jira.features."+jiraFeatureConfigKeys[name], ptr != nil && *ptr)
+		}
+		return writeConfigAtomic(lk, v, flagConfig)
+	}); err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}
 
@@ -1865,12 +1881,10 @@ func runJiraBoardsAnalyze(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("jira account %d not connected, run 'watchtower jira login --account %d' first", account.ID, account.ID)
 	}
 
-	jiraCfg, _, err := resolveJiraOAuthConfigForAccount(cfg.WorkspaceDir(), account)
+	client, err := newJiraClientForAccount(cfg, account)
 	if err != nil {
 		return err
 	}
-	client := jira.NewClient(account.CloudID, jiraCfg, store)
-	client.SetOAuthSource(jiraAccountRowOAuthSource(cfg.WorkspaceDir(), account))
 
 	applyProviderOverride(cfg)
 	aiProvider := newAIClient(cfg, cfg.DBPath())
@@ -2178,12 +2192,10 @@ func runJiraFieldsDiscover(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("jira account %d not connected, run 'watchtower jira login --account %d' first", account.ID, account.ID)
 	}
 
-	jiraCfg, _, err := resolveJiraOAuthConfigForAccount(cfg.WorkspaceDir(), account)
+	client, err := newJiraClientForAccount(cfg, account)
 	if err != nil {
 		return err
 	}
-	client := jira.NewClient(account.CloudID, jiraCfg, store)
-	client.SetOAuthSource(jiraAccountRowOAuthSource(cfg.WorkspaceDir(), account))
 
 	applyProviderOverride(cfg)
 	aiProvider := newAIClient(cfg, cfg.DBPath())
@@ -2248,12 +2260,10 @@ func runJiraFieldsMap(cmd *cobra.Command, args []string) error {
 	}
 
 	// Need to generate — create client + AI provider.
-	jiraCfg, _, err := resolveJiraOAuthConfigForAccount(cfg.WorkspaceDir(), account)
+	client, err := newJiraClientForAccount(cfg, account)
 	if err != nil {
 		return err
 	}
-	client := jira.NewClient(account.CloudID, jiraCfg, store)
-	client.SetOAuthSource(jiraAccountRowOAuthSource(cfg.WorkspaceDir(), account))
 
 	applyProviderOverride(cfg)
 	aiProvider := newAIClient(cfg, cfg.DBPath())

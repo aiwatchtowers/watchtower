@@ -14,6 +14,35 @@ struct OnboardingConnectStepView: View {
         AddSlackAccountView(daemonPolicy: daemonPolicy)
     }
 
+    /// A13: a build with no Slack app of its own (`builtin_app` false) opens
+    /// the connect section instead of the Add sheet, which would have no app
+    /// to sign in with. `flags` nil (never read, even after the card's own
+    /// read): the connect section, which works on every build. No connect
+    /// flow (its listener did not start) keeps the Add sheet.
+    static func slackOpensConnectSection(flags: SlackAccountsDocument?, hasConnectFlow: Bool) -> Bool {
+        hasConnectFlow && flags?.builtinApp != true
+    }
+
+    /// A clicked About link (or any flow step) opens the Slack sheet once no
+    /// sheet is up, so its confirm is seen on this step: at once, or when
+    /// another source's sheet closes.
+    static func sheet(_ current: Sheet?, flowShowsSheet: Bool) -> Sheet? {
+        current ?? (flowShowsSheet ? .slackConnect : nil)
+    }
+
+    /// The Slack sheet itself closed (swipe, Esc, Skip): its finished flow
+    /// is dismissed as **Done**/**Close** would, so the result does not
+    /// reopen. Any other sheet closing retries a queued link instead.
+    static func closingDismissesFlow(from old: Sheet?, to new: Sheet?) -> Bool {
+        old == .slackConnect && new == nil
+    }
+
+    /// The card's choice after its flags read: a sheet that opened meanwhile
+    /// (a link's confirm) stays.
+    static func sheet(_ current: Sheet?, afterFlagsRead chosen: Sheet) -> Sheet {
+        current ?? chosen
+    }
+
     /// Opens with Calendar and Gmail both checked, whatever the goals.
     static func googleSheet() -> AddGoogleAccountView {
         AddGoogleAccountView(daemonPolicy: daemonPolicy)
@@ -35,8 +64,9 @@ struct OnboardingConnectStepView: View {
     @State private var databaseError: String?
     @State private var isContinuing = false
 
-    private enum Sheet: Identifiable {
+    enum Sheet: Identifiable {
         case slack
+        case slackConnect
         case google
         case jira
         case linear
@@ -44,6 +74,7 @@ struct OnboardingConnectStepView: View {
         var id: String {
             switch self {
             case .slack: "slack"
+            case .slackConnect: "slackConnect"
             case .google: "google"
             case .jira: "jira"
             case .linear: "linear"
@@ -118,6 +149,7 @@ struct OnboardingConnectStepView: View {
         .sheet(item: $sheet) { sheet in
             switch sheet {
             case .slack: Self.slackSheet()
+            case .slackConnect: slackConnectSheet
             case .google: Self.googleSheet()
             case .jira: Self.jiraSheet()
             case .linear: Self.linearSheet()
@@ -126,6 +158,55 @@ struct OnboardingConnectStepView: View {
         .task {
             await openDatabase()
             appState.resumePeopleRosterIfNeeded()
+            showFlowSheetIfNeeded() // a link that arrived on an earlier step
+        }
+        .onChange(of: appState.slackConnectFlow?.showsSheet) { _, _ in showFlowSheetIfNeeded() }
+        .onChange(of: sheet) { old, new in
+            if Self.closingDismissesFlow(from: old, to: new) {
+                appState.slackConnectFlow?.dismiss() // only a connected or failed flow; a running one cannot close
+            } else {
+                showFlowSheetIfNeeded()
+            }
+        }
+    }
+
+    /// Reads the flags first when no read has succeeded yet, then picks the sheet.
+    private func openSlackSheet() async {
+        if let vm = appState.slackAccountsViewModel, vm.accountFlags == nil { await vm.refreshFlags() }
+        let chosen: Sheet = Self.slackOpensConnectSection(
+            flags: appState.slackAccountsViewModel?.accountFlags,
+            hasConnectFlow: appState.slackConnectFlow != nil) ? .slackConnect : .slack
+        sheet = Self.sheet(sheet, afterFlagsRead: chosen)
+    }
+
+    private func showFlowSheetIfNeeded() {
+        let next = Self.sheet(sheet, flowShowsSheet: appState.slackConnectFlow?.showsSheet ?? false)
+        if next != sheet { sheet = next }
+    }
+
+    /// The connect section in a sheet (A13); a written account reloads the
+    /// list through the flow's `onConnected` (deferred restart in onboarding).
+    @ViewBuilder private var slackConnectSheet: some View {
+        if let flow = appState.slackConnectFlow {
+            SlackOnboardingConnectSheet(
+                section: SlackModePresentation.ConnectSection(
+                    display: .off,
+                    portBusy: appState.slackConnectListener?.state == .portBusy,
+                    expanded: true,
+                    organizationApps: appState.managedPolicy.policy.slackApps,
+                    accounts: appState.slackAccountsViewModel?.accounts ?? [],
+                    builtinApp: false),
+                flow: flow,
+                setupPresented: appState.slackAppSetup.isPresented,
+                blocked: !appState.managedPolicy.policy.sourceAllowed("slack"),
+                setUpForCompany: { appState.slackAppSetup.present() },
+                close: { sheet = nil })
+                .frame(width: 520)
+                .interactiveDismissDisabled(flow.isRunning)
+                .onAppear { appState.slackConnectListener?.ensureRunning() } // A10: retry a busy port
+                .sheet(isPresented: Bindable(appState.slackAppSetup).isPresented) {
+                    SlackAppSetupSheet(model: appState.slackAppSetup).frame(width: 520)
+                }
         }
     }
 
@@ -146,7 +227,7 @@ struct OnboardingConnectStepView: View {
                 connected: activeSlackAccounts.first?.displayName,
                 available: appState.slackAccountsViewModel != nil,
                 error: appState.slackAccountsViewModel?.error,
-                connect: { sheet = .slack },
+                connect: { Task { await openSlackSheet() } },
                 remove: activeSlackAccounts.first.map { account in
                     { await appState.slackAccountsViewModel?.remove(account, daemonPolicy: Self.daemonPolicy) }
                 },

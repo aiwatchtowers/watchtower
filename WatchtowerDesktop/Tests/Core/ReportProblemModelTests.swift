@@ -1,5 +1,6 @@
 import XCTest
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// Report a Problem sheet state (#1527): the diagnostics run, the Open /
 /// Copy / Save rules and the clipboard rule, over a fake CLI, opener,

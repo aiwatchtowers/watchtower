@@ -8,6 +8,7 @@ import (
 	"log"
 	"time"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/automations"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -33,6 +34,9 @@ const (
 	// SkippedDisabled: the daemon stopped it after a run that would not end
 	// (disabled_reason, AUTO-08); it stays off until the owner turns it on.
 	SkippedDisabled = "disabled"
+	// SkippedPaused: background AI is paused and it calls a model
+	// (automations.AutomationUsesAI); nothing is written (BGAI-01).
+	SkippedPaused = "paused"
 )
 
 // ErrBuiltinStopped is RunNow's refusal of a built-in the daemon stopped
@@ -71,6 +75,8 @@ type Runner struct {
 	cfg    *config.Config
 	clock  automations.Clock
 	logger *log.Logger
+	// consent reads the background-AI state at each slot (SetConsent).
+	consent aiconsent.Reader
 }
 
 // NewRunner returns a runner over the slot executor exec; gates holds each
@@ -82,7 +88,26 @@ func NewRunner(d *db.DB, exec InlineExecutor, gates map[string]Gate, cfg *config
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Runner{db: d, exec: exec, gates: gates, cfg: cfg, clock: clock, logger: logger}
+	return &Runner{db: d, exec: exec, gates: gates, cfg: cfg, clock: clock, logger: logger, consent: aiconsent.Current}
+}
+
+// SetConsent sets the background-AI consent reader the slots read; nil
+// reads aiconsent.Current (the default), which fails closed.
+func (r *Runner) SetConsent(c aiconsent.Reader) {
+	if c == nil {
+		c = aiconsent.Current
+	}
+	r.consent = c
+}
+
+// pausedFor reports whether a's slot sync run is skipped: background AI is
+// paused and a calls a model (BGAI-01). Read after the queued manual run is
+// taken, so a Run Now still runs while paused (BGAI-02), and again after
+// the gate, before the row. The slot admits nothing: the executor reads
+// consent again when it claims the run, and only a claimed run's calls are
+// admitted (D12).
+func (r *Runner) pausedFor(a *db.Automation) bool {
+	return !r.consent().Allowed() && automations.AutomationUsesAI(a)
 }
 
 // RunSlot runs every built-in at slot, in card order. A built-in whose
@@ -91,8 +116,9 @@ func NewRunner(d *db.DB, exec InlineExecutor, gates map[string]Gate, cfg *config
 // turned off. One whose text is not confirmed, or that the daemon stopped
 // after a run that would not end (AUTO-08), cancels its queued manual runs
 // and is skipped. Otherwise a queued manual run (Run Now) is executed
-// without asking the gate; with none, the gate decides and only a due
-// built-in gets a sync run row, executed inline.
+// without asking the gate; with none, an AI built-in is skipped while
+// background AI is paused (SkippedPaused: no gate call, no row), else the
+// gate decides and only a due built-in gets a sync run row, executed inline.
 func (r *Runner) RunSlot(ctx context.Context, slot Slot) []SlotOutcome {
 	var out []SlotOutcome
 	for _, e := range AtSlot(slot) {
@@ -140,6 +166,10 @@ func (r *Runner) runEntry(ctx context.Context, e Entry) SlotOutcome {
 	if queued != nil {
 		return r.execute(ctx, o, queued.ID, false)
 	}
+	if r.pausedFor(a) {
+		o.Skipped = SkippedPaused
+		return o
+	}
 	gate := r.gates[e.ID]
 	if gate == nil {
 		r.logger.Printf("built-in %s: no gate, not run", e.ID)
@@ -149,6 +179,10 @@ func (r *Runner) runEntry(ctx context.Context, e Entry) SlotOutcome {
 	now := r.clock.Now()
 	if !gate.Due(ctx, e, now) {
 		o.Skipped = SkippedNotDue
+		return o
+	}
+	if r.pausedFor(a) { // paused while the gate read: still no row
+		o.Skipped = SkippedPaused
 		return o
 	}
 	runID, _, err := r.db.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerSync, Now: now})

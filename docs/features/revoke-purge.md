@@ -90,3 +90,5 @@ Times are RFC 3339 UTC, `""` when unset; `purges` is `[]`, never `null`; `accoun
 
 - #603 (encrypted database, key bound to the Mac): the lease can lock instead of delete, and a purge also drops the account's part of the key material.
 - #608 (MDM policy): feeds the `policy` seam in `internal/purge/enabled.go`; the Settings switch then shows "Set by your organisation" and is disabled. A policy may also mark IMAP accounts as corporate, which IMAP (no revocation signal) needs for a lease.
+
+**Atlassian API tokens (2026-11-18, #1887 Task 17, D22/D24).** A dead API token (401) puts its Jira account in `error` / `api_token_dead`, never `revoked`, so no 72-hour purge is scheduled; only the 30-day lease can purge it. An API-token account the organization's policy stops (`AllowAtlassianAPIToken = false`) holds its lease like a forbidden source: `purge.AccountRules` takes a per-account verdict (`Daemon.purgeRules` → `accountSyncAllowed`), and `ListPurgeAccounts` reads `jira_accounts.auth_kind` into `PurgeAccount.AuthKind`.

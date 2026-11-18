@@ -3,6 +3,7 @@ import XCTest
 
 final class AutomationRowSummaryTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
+    private let allowed = BackgroundAIConsent.State.allowedByOwner
 
     private func item(
         enabled: Bool = true,
@@ -77,17 +78,17 @@ final class AutomationRowSummaryTests: XCTestCase {
     }
 
     func testStatePrecedence() {
-        XCTAssertEqual(AutomationRowPresentation.state(item(confirmed: false, lastRun: .failed), now: now),
+        XCTAssertEqual(AutomationRowPresentation.state(item(confirmed: false, lastRun: .failed), now: now, consent: allowed),
                        .chip(.needsConfirmation))
-        XCTAssertEqual(AutomationRowPresentation.state(item(lastRun: .failed), now: now), .failed)
-        XCTAssertEqual(AutomationRowPresentation.state(item(enabled: false, lastRun: .succeeded), now: now), .off)
+        XCTAssertEqual(AutomationRowPresentation.state(item(lastRun: .failed), now: now, consent: allowed), .failed)
+        XCTAssertEqual(AutomationRowPresentation.state(item(enabled: false, lastRun: .succeeded), now: now, consent: allowed), .off)
         XCTAssertEqual(AutomationRowPresentation.state(item(lastRun: .succeeded, next: now.addingTimeInterval(60)),
-                                                       now: now), .lastRun(word: "ok", ago: "5 min ago"))
-        XCTAssertEqual(AutomationRowPresentation.state(item(lastRun: .cancelled), now: now),
+                                                       now: now, consent: allowed), .lastRun(word: "ok", ago: "5 min ago"))
+        XCTAssertEqual(AutomationRowPresentation.state(item(lastRun: .cancelled), now: now, consent: allowed),
                        .lastRun(word: "cancelled", ago: "5 min ago"))
-        XCTAssertEqual(AutomationRowPresentation.state(item(next: now.addingTimeInterval(120)), now: now),
+        XCTAssertEqual(AutomationRowPresentation.state(item(next: now.addingTimeInterval(120)), now: now, consent: allowed),
                        .next("in 2 min"))
-        XCTAssertEqual(AutomationRowPresentation.state(item(), now: now), .none)
+        XCTAssertEqual(AutomationRowPresentation.state(item(), now: now, consent: allowed), .none)
     }
 
     func testAttentionSuffix() {

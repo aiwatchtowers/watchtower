@@ -101,7 +101,7 @@ func TestLoad_MigratedInstallTakesDefaultsForDroppedArtifacts(t *testing.T) {
 
 	// A deliberate disable written after the repair — the shape
 	// `jira features disable` now produces — must survive the default.
-	require.NoError(t, patchConfigYAML(p, map[string]bool{"jira.features.my_issues_in_briefing": false}, nil))
+	require.NoError(t, patchConfigYAMLLocked(p, map[string]bool{"jira.features.my_issues_in_briefing": false}, nil))
 
 	cfg, err = Load(p)
 	require.NoError(t, err)

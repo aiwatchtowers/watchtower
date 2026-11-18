@@ -66,6 +66,18 @@ final class HomeWorkbenchBuilderTests: XCTestCase {
         XCTAssertEqual(blocks[1].asks.map(\.ask.title), ["Beta"])
     }
 
+    func testSpecReviewSessionIsListedAfterBackgroundBeforeWorking() {
+        let blocks = HomeWorkbenchBuilder.blocks(
+            sessions: [session(1, .working), session(2, .specReview), session(3, .background)],
+            asks: WorkbenchAskRows(rows: [], unreadableIDs: [])
+        )
+        XCTAssertEqual(blocks[0].sessions.map(\.sessionID), [3, 2, 1])
+        XCTAssertEqual(
+            HomeWorkbenchBuilder.link(for: session(7, workbench: 3, .specReview)),
+            .workbench(WorkbenchRoute(projectID: 3, pane: .terminal, subjectID: 7))
+        )
+    }
+
     func testWorkbenchWithOnlyAnAskShows() throws {
         let rows = try asks { d in
             let id = try TestDatabase.insertWorkbench(d, name: "acme")

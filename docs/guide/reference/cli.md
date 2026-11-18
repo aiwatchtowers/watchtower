@@ -22,7 +22,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 
 | Command | What it does |
 |---|---|
-| `watchtower slack`, `auth` | Slack workspaces (`slack add` connects another; `auth login` connects the first; `slack backfill --account N --from D --to D` fetches up to 31 past days of one account again, with digests for channel days that had none; on a day that already has a digest for a channel, the fetched messages are saved and searchable but not digested; `slack live probe [--provider claude\|codex] [--json]` checks that your Claude or ChatGPT Slack connector can read, for [Live Slack](../concepts/sources-and-accounts.md#live-slack-through-your-claude-or-chatgpt-account)) |
+| `watchtower slack`, `auth` | Slack workspaces (`slack add` connects another; `auth login` connects the first; `slack backfill --account N --from D --to D` fetches up to 31 past days of one account again, with digests for channel days that had none; on a day that already has a digest for a channel, the fetched messages are saved and searchable but not digested; `slack live probe [--provider claude\|codex] [--json]` checks that your Claude or ChatGPT Slack connector can read, for [Live Slack](../concepts/sources-and-accounts.md#live-slack-through-your-claude-or-chatgpt-account); `slack connect --code T…:1234.5678` connects through your workspace's app while the app is not running; `slack app create\|adopt\|link\|pending\|status` runs [the company setup](../features/slack-full.md#set-up-slack-for-your-company), the configuration token read from standard input) |
 | `watchtower google`, `gmail` | Google accounts and Gmail |
 | `watchtower imap`, `outlook` | Other mailboxes |
 | `watchtower calendar`, `caldav` | Calendar events and CalDAV/ICS feeds |
@@ -31,6 +31,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 | `watchtower policy show` | The organization policy forced on this Mac; `--json` for scripts. See [Organization policy](organization-policy.md) |
 | `watchtower policy keys` | Every key an organization can force, with type, default and effect; `--json` for scripts |
 | `watchtower connections` | [Quick Connections](../features/quick-connections.md); `connections import` brings in your codex and Claude Code MCP servers |
+| `watchtower jira add --api-token-stdin --email <email> --site <site>` | Connects a Jira Cloud site with your own Atlassian API token instead of signing in through an app. Pipe the token in on stdin; it is never an argument. Add `--with-confluence` for Confluence. When the token expires or is revoked, the site shows an error and keeps its data: paste a new one with `jira login --account <id> --api-token-stdin` |
 
 Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the others with `list`; `rename <id> <name>` exists on Slack, Jira, Google, IMAP, Outlook and CalDAV; `remove` exists on most (Outlook uses `logout`); `enable` / `disable` exist on Slack, Jira and Linear but not on Google, IMAP or CalDAV. Run `--help` on the group. See [Sources and accounts](../concepts/sources-and-accounts.md).
 
@@ -117,6 +118,9 @@ Commands for a [headless host](../features/headless-host.md): a Linux box or a M
 | Command | What it does |
 |---|---|
 | `watchtower ai models` | Models per provider and tier |
+| `watchtower ai background status [--json]` | Whether [background AI](../concepts/features-on-and-off.md#paused-is-not-off-background-ai) may run and who decided: you, nobody yet, or your organization (`effective`, `reason`, `answer`, `policy`) |
+| `watchtower ai background allow [--yes]` | Let Watchtower run AI on its own. On a terminal it shows what runs and asks **Allow background AI? [y/N]**; without a terminal it needs `--yes`. Refused when your organization turned background AI off. Wakes the running daemon |
+| `watchtower ai background pause` | Pause it; sync and everything you start yourself keep running |
 | `watchtower ai which --provider claude\|codex --json` | The claude or codex executable Watchtower would run (`provider`, `path`, `found`); the Desktop app asks it |
 | `watchtower usage plan` | Claude plan limits (5-hour, weekly) |
 | `watchtower usage plans --json [--now] [--provider all\|claude\|codex]` | Separate subscription snapshots; `--now` refreshes selected sources, with partial results on failure |
@@ -124,6 +128,8 @@ Commands for a [headless host](../features/headless-host.md): a Linux box or a M
 | `watchtower prompts`, `tune` | Prompt templates and feedback-based tuning |
 | `--provider claude\|codex\|ollama` | Per-command provider override |
 
-`terminal`, `dictate` and `chat` are helpers the Desktop app calls; `ai` is too, apart from `ai models`.
+`terminal`, `dictate` and `chat` are helpers the Desktop app calls; `ai` is too, apart from `ai models` and `ai background`.
+
+A daemon started without the app (a [headless host](../features/headless-host.md) included) keeps background AI paused until you run `watchtower ai background allow`; `watchtower status` prints a **Background AI:** line. `config set ai.background_runs` is refused: use `ai background`.
 
 For `usage plans`, `--provider` selects subscriptions, independently of the AI backend. Read-only calls return saved data without creating or migrating a database. Refresh exits 3 when **Subscription plan limits** is off; source/read failures exit 1 with partial JSON, and SIGINT/SIGTERM use 130/143 when a partial response can be written.

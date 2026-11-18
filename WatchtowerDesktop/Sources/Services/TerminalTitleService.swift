@@ -13,8 +13,18 @@ struct TerminalTitleResult: Decodable, Equatable {
 struct TerminalTitleService {
     let runner: any CLIRunnerProtocol
 
-    func title(sessionID: Int64) async throws -> TerminalTitleResult {
-        let data = try await runner.run(args: ["terminal", "title", String(sessionID), "--json"])
+    /// The origin follows the session, not the poll that asks: a title of
+    /// the owner's own session, or of a session a run the owner triggered
+    /// started (Run now, a button, a reply), is owner work (background AI
+    /// consent spec §2.2); one of a schedule, event, sync or catch-up run's
+    /// session is background (`TerminalSession.isBackgroundRunSession`).
+    static func origin(for session: TerminalSession) -> CLIOrigin {
+        session.isBackgroundRunSession ? .background : .owner
+    }
+
+    func title(session: TerminalSession) async throws -> TerminalTitleResult {
+        let args = ["terminal", "title", String(session.id), "--json"]
+        let data = try await runner.runModel(args: args, origin: Self.origin(for: session))
         return try JSONDecoder().decode(TerminalTitleResult.self, from: data)
     }
 }

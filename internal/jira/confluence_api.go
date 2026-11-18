@@ -85,8 +85,12 @@ func (c *Client) Confluence() *ConfluenceAPI {
 }
 
 // base is the Confluence Cloud REST API root for this client's site:
-// https://api.atlassian.com/ex/confluence/{cloudID}.
+// https://api.atlassian.com/ex/confluence/{cloudID} (an API token: its kind's
+// root, apiTokenBase).
 func (a *ConfluenceAPI) base() string {
+	if a.c.isAPIToken() {
+		return a.c.apiTokenRoot("confluence")
+	}
 	return a.c.apiRoot + "/ex/confluence/" + a.c.cloudID
 }
 

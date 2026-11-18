@@ -85,7 +85,7 @@ func runAuthLogin(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("oauth login: %w", err)
 	}
 
-	info, err := saveAuthResult(cmd, result)
+	info, err := saveAuthResult(cmd, result, oauthCfg.ClientID)
 	if err != nil {
 		return err
 	}
@@ -172,18 +172,11 @@ func runAuthLogout(cmd *cobra.Command, _ []string) error {
 
 // resolveOAuthConfig reads OAuth credentials from env or build-time defaults.
 func resolveOAuthConfig() (auth.OAuthConfig, error) {
-	clientID := os.Getenv("WATCHTOWER_OAUTH_CLIENT_ID")
-	clientSecret := os.Getenv("WATCHTOWER_OAUTH_CLIENT_SECRET")
-	if clientID == "" {
-		clientID = auth.DefaultClientID
-	}
-	if clientSecret == "" {
-		clientSecret = auth.DefaultClientSecret
-	}
-	if clientID == "" || clientSecret == "" {
+	cfg, ok := auth.BuiltinApp()
+	if !ok {
 		return auth.OAuthConfig{}, fmt.Errorf("OAuth credentials not configured. Set WATCHTOWER_OAUTH_CLIENT_ID and WATCHTOWER_OAUTH_CLIENT_SECRET environment variables, or use an official release build")
 	}
-	return auth.OAuthConfig{ClientID: clientID, ClientSecret: clientSecret}, nil
+	return cfg, nil
 }
 
 // authResultInfo holds the workspace info after saving config.
@@ -205,8 +198,9 @@ type authResultInfo struct {
 // Behaves as the legacy single-account alias: it seeds account #1 from any
 // pre-multi-account config token, then re-consents account #1 when one already
 // exists (like `slack login --account 1`) or creates it when none does (like
-// `slack add` with an empty label).
-func saveAuthResult(cmd *cobra.Command, result *auth.OAuthResult) (*authResultInfo, error) {
+// `slack add` with an empty label). clientID is the app the sign-in went
+// through (connectSlackAccount).
+func saveAuthResult(cmd *cobra.Command, result *auth.OAuthResult, clientID string) (*authResultInfo, error) {
 	if result.ExpiresIn > 0 {
 		fmt.Fprintf(os.Stderr, "Warning: token expires in %d seconds. Token rotation is not yet supported.\n", result.ExpiresIn)
 	}
@@ -257,7 +251,7 @@ func saveAuthResult(cmd *cobra.Command, result *auth.OAuthResult) (*authResultIn
 		isNewRow = true
 	}
 
-	if _, err := connectSlackAccount(cmd.Context(), cfg, database, id, result, isNewRow, cmd.ErrOrStderr()); err != nil {
+	if _, err := connectSlackAccount(cmd.Context(), cfg, database, id, result, isNewRow, clientID, cmd.ErrOrStderr()); err != nil {
 		return nil, err
 	}
 

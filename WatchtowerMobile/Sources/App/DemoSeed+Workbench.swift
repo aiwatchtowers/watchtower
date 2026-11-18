@@ -81,7 +81,7 @@ extension DemoSeed {
             JSON.workbench(websiteID, [
                 "name": "Acme Website", "folder_display": "~/Projects/acme-web", "branch": "feature/landing",
                 "open_targets": 1, "in_progress_targets": 1, "done_targets": 1,
-                "session_counts": JSON.counts(working: 1, stopped: 1),
+                "session_counts": JSON.counts(working: 2, stopped: 1),
                 "last_session_activity": JSON.stamp(ago(600))
             ]),
             JSON.workbench(notesID, ["name": "Notes", "folder_display": "~/Projects/notes", "branch": "main"])
@@ -142,6 +142,11 @@ extension DemoSeed {
             JSON.session(21, workbench: websiteID, [
                 "title": "Pricing table", "state_kind": "stopped", "state_caption": "Stopped", "state_tone": "secondary",
                 "state_glyph": "pause.fill", "live": false, "is_ring": true, "target_id": 501, "last_active_at": JSON.stamp(ago(5_400))
+            ]),
+            // Board #1945: a session whose spec is in the spec review author loop.
+            JSON.session(22, workbench: websiteID, [
+                "title": "Checkout spec", "state_kind": "spec_review", "state_caption": "Spec review · round 2",
+                "state_tone": "green", "state_glyph": "doc.text.magnifyingglass", "last_active_at": JSON.stamp(ago(900))
             ])
         ]
         return acme + website

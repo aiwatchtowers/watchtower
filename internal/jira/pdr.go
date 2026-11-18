@@ -53,12 +53,33 @@ type ReportedAccount struct {
 // report's chunk) from GET /rest/api/3/user/bulk — the refetch of accounts
 // a report answered "updated". An id Atlassian does not return is left out.
 func (c *Client) UsersBulk(ctx context.Context, ids []string) ([]User, error) {
+	return usersBulk[User](ctx, c, ids)
+}
+
+// BulkUser is a /user/bulk profile as the closed-account lookup reads it:
+// Active is nil when Atlassian sent no "active" field, so an absent field is
+// never read as an inactive account.
+type BulkUser struct {
+	AccountID   string `json:"accountId"`
+	DisplayName string `json:"displayName"`
+	AccountType string `json:"accountType"`
+	Active      *bool  `json:"active"`
+}
+
+// UsersBulkStatus is UsersBulk for the closed-account lookup of an API-token
+// account (#1887 D23).
+func (c *Client) UsersBulkStatus(ctx context.Context, ids []string) ([]BulkUser, error) {
+	return usersBulk[BulkUser](ctx, c, ids)
+}
+
+// usersBulk fetches GET /rest/api/3/user/bulk for ids, decoded as T.
+func usersBulk[T any](ctx context.Context, c *Client, ids []string) ([]T, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
 	params := url.Values{"accountId": ids, "maxResults": {strconv.Itoa(len(ids))}}
 	var page struct {
-		Values []User `json:"values"`
+		Values []T `json:"values"`
 	}
 	if err := c.getWithQuery(ctx, "/rest/api/3/user/bulk", params, &page); err != nil {
 		return nil, fmt.Errorf("fetching %d atlassian profiles: %w", len(ids), err)

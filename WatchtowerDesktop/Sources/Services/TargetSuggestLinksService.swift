@@ -18,7 +18,7 @@ struct TargetSuggestLinksService {
 
     func suggest(targetID: Int) async throws -> SuggestedLinksResult {
         let args = ["targets", "suggest-links", "\(targetID)", "--json"]
-        let data = try await runner.run(args: args)
+        let data = try await runner.runModel(args: args, origin: .owner)
         let decoded = try JSONDecoder().decode(CLISuggestLinksResponse.self, from: data)
         let links = (decoded.secondary_links ?? []).map { l in
             ProposedLink(

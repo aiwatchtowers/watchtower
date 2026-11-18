@@ -111,9 +111,9 @@ func runSlackLiveProbe(cmd *cobra.Command, _ []string) error {
 }
 
 // freshSlackLive returns the provider's newest verdict when it is younger
-// than maxAge, shaped as a skipped result. rows come newest first, the
-// team ” row (the verdict itself) first among a check's rows; teams are
-// the workspaces that check found ok (not the ones it recorded as absent).
+// than maxAge, shaped as a skipped result. The verdict is the provider's
+// newest probe batch (newestSlackLive); teams are the workspaces that check
+// found ok (not the ones it recorded as absent).
 func freshSlackLive(rows []db.SlackLiveStatus, provider string, now time.Time, maxAge time.Duration) (slackLiveJSON, bool) {
 	newest, ok := newestSlackLive(rows, provider)
 	if !ok || now.Sub(newest.CheckedAt) >= maxAge {
