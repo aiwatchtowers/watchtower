@@ -33,10 +33,16 @@ package enum ReadinessQueries {
         feature == .knowledgeIndex ? " WHERE source != 'guide'" : ""
     }
 
-    /// Tables `contentPresent` and `latestRuns` read, for the
-    /// ReadinessCenter's ValueObservation region.
+    /// Tables `contentPresent`, `latestRuns` and `slackLiveVerdicts` read,
+    /// for the ReadinessCenter's ValueObservation region.
     package static let observedTables: [String] =
-        ReadinessFeature.allCases.map(contentTable) + ["pipeline_runs", "jira_boards"]
+        ReadinessFeature.allCases.map(contentTable) + ["pipeline_runs", "jira_boards", "slack_live_status"]
+
+    /// The Live input of `SlackMode.derive`: each provider's newest probe
+    /// batch (SLACKMODE-01).
+    package static func slackLiveVerdicts(_ db: Database) throws -> [String] {
+        SlackModePresentation.liveVerdicts(try SlackLiveStatusRow.fetchAll(db))
+    }
 
     /// One SELECT of EXISTS subselects; a table missing from this DB (an
     /// install mid-migration) reads as absent.

@@ -82,7 +82,7 @@ enum SlackFullLiveShotFixtures {
             DesignShot(name: "slack-fl-needs-full-statistics", size: NSSize(width: 720, height: 360)) {
                 AnyView(NeedsFullSlackDigestsMock(tab: "statistics"))
             },
-            DesignShot(name: "slack-fl-needs-full-home-card", size: NSSize(width: 420, height: 0)) {
+            DesignShot(name: "slack-fl-needs-full-home-card", size: NSSize(width: 640, height: 0)) {
                 AnyView(NeedsFullSlackHomeCardMock())
             },
             DesignShot(name: "slack-fl-needs-full-knowledge", size: NSSize(width: 640, height: 0)) {
@@ -321,48 +321,42 @@ private enum SlackConnectShotFlow {
 
 // MARK: - needsFullSlack
 
-/// The real `FeatureEmptyState` of the Digests tab; the new readiness line
-/// and its button stand in `extra` until `Readiness.needsFullSlack` exists.
+/// The real `FeatureEmptyState` of a Slack tab under `Readiness.needsFullSlack`
+/// (screens spec §2.1): its line and its one Connect workspace app button.
 private struct NeedsFullSlackDigestsMock: View {
     var tab = "digests"
 
     var body: some View {
-        if let row = EmptyStateCopyTable.copy(for: tab, briefingHour: 8) {
-            // `needsFullSlack` replaces the tab's own action (as `needsSource` does today).
-            let copy = EmptyStateCopy(
-                icon: row.icon, title: row.title, landsHere: row.landsHere, feature: row.feature, primaryAction: nil)
+        if let copy = EmptyStateCopyTable.copy(for: tab, briefingHour: 8) {
             FeatureEmptyState(
-                copy: copy, readiness: nil, syncLine: nil, turnOnError: nil, isTurningOn: false,
-                onAction: { _ in },
-                extra: {
-                    Text(Copy.needsFullLine).font(.callout).multilineTextAlignment(.center)
-                    Button(Copy.needsFullAction) {}.buttonStyle(.kitPrimary)
-                }
-            )
+                copy: copy, readiness: .needsFullSlack, syncLine: nil, turnOnError: nil, isTurningOn: false
+            ) { _ in }
             .detailBackground()
         }
     }
 }
 
+/// The real Home → Getting ready zone with Slack Live only: one grouped row
+/// (owner, ask #1572).
 private struct NeedsFullSlackHomeCardMock: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            HStack(spacing: Spacing.regular) {
-                Image(systemName: "doc.text.magnifyingglass").foregroundStyle(.secondary)
-                Text("Digests").font(.headline)
-            }
-            Text(Copy.needsFullLine).font(.callout).fixedSize(horizontal: false, vertical: true)
-            Button(Copy.needsFullAction) {}.buttonStyle(.kitSecondary)
-        }
-        .controlSize(.small)
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
+        GettingReadyZoneView(
+            zone: .shown(cards: [], sourceRows: [
+                GettingReadySourceRow(
+                    source: .fullSlack, features: [.slackSync, .digests, .tracks, .peopleCards, .ideas, .inbox])
+            ]),
+            firstSync: nil,
+            onLink: { _ in },
+            onHide: {}
+        )
         .padding(Spacing.large)
         .detailBackground()
     }
 }
 
+/// No Knowledge search view exists in the Desktop yet (the knowledge index
+/// is read by the chats' `search_knowledge`): the note's string is
+/// `SlackModePresentation.knowledgeNote`, laid out as the mockup did.
 private struct NeedsFullSlackKnowledgeMock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
@@ -375,7 +369,7 @@ private struct NeedsFullSlackKnowledgeMock: View {
             .card()
             HStack(alignment: .top, spacing: Spacing.regular) {
                 Image(systemName: "info.circle").foregroundStyle(.secondary)
-                Text(Copy.knowledgeNote)
+                Text(SlackPaneModeFixture.presentation(.live).knowledgeNote ?? "")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

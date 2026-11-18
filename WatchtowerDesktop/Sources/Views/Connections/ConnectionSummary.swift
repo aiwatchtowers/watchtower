@@ -157,7 +157,7 @@ extension ConnectionService {
     /// nil, the overview, for one that names several or none.
     init?(readinessSource source: ReadinessSource) {
         switch source {
-        case .slack: self = .slack
+        case .slack, .fullSlack: self = .slack
         case .calendar: self = .calendar
         case .jira, .jiraBoards: self = .jira
         case .linear: self = .linear

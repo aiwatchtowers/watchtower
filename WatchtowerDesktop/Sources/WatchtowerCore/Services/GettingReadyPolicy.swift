@@ -44,11 +44,14 @@ package enum GettingReadyPolicy {
         // for the bare sources and Inbox — stays hidden.
         let sourcedCards = cards.contains { $0.feature.source != .none }
         let rowsUnlockFeatures = sourceRows.contains { $0.features.contains(where: isGoalSwitched) }
-        guard sourcedCards || rowsUnlockFeatures else { return hidden }
+        // Slack Live only keeps the zone open (ask #1572): nothing syncs
+        // until the workspace's app is connected.
+        let liveOnly = sourceRows.contains { $0.source == .fullSlack }
+        guard sourcedCards || rowsUnlockFeatures || liveOnly else { return hidden }
 
         var next = memory
         // A rows-only zone is never complete: it stays until a source connects.
-        if sourcedCards, cards.allSatisfy(\.isTerminal) {
+        if sourcedCards, !liveOnly, cards.allSatisfy(\.isTerminal) {
             // An install that was already ready at first look never was getting ready.
             next.completedAt = now
             return GettingReadyStep(zone: sawUnready ? .allReady : .hidden, memory: next, sawUnready: sawUnready)
@@ -93,7 +96,8 @@ package enum GettingReadyPolicy {
                 continue
             // Jira connected with no board picked (#572) stays a waiting
             // card: a row never holds the zone open, and nothing syncs until
-            // the owner picks boards.
+            // the owner picks boards. Slack Live only (`needsFullSlack`) is
+            // one grouped row (owner, ask #1572).
             case .needsSource(let source) where !source.isOwnerIdentity && source != .jiraBoards:
                 if let index = sourceRows.firstIndex(where: { $0.source == source }) {
                     sourceRows[index] = GettingReadySourceRow(
@@ -108,7 +112,32 @@ package enum GettingReadyPolicy {
                     readiness: state))
             }
         }
-        return (cards, sourceRows.filter { connectable($0.source, policy: policy) })
+        // A forbidden source's row goes; the Live-only row stays without
+        // its button: it is the only place that says why Slack features wait.
+        let rows = sourceRows.compactMap { row -> GettingReadySourceRow? in
+            if connectable(row.source, policy: policy) { return row }
+            guard row.source == .fullSlack else { return nil }
+            return GettingReadySourceRow(source: row.source, features: row.features, offersConnect: false)
+        }
+        return (cards, rows)
+    }
+
+    /// "Connect Jira to get Workload and Blockers"; the Live-only row:
+    /// "Connect your workspace's app to get Digests and Tracks — Live
+    /// answers in Chats only." `tabTitles` are the tabs the row's features
+    /// fill, each once (the view names them).
+    package static func connectLine(source: ReadinessSource, tabTitles: [String]) -> String {
+        let names = joinedNames(tabTitles)
+        if source == .fullSlack {
+            return "Connect your workspace's app to get \(names) — Live answers in Chats only."
+        }
+        return "\(source.actionTitle) to get \(names)"
+    }
+
+    /// "A", "A and B", "A, B and C".
+    private static func joinedNames(_ items: [String]) -> String {
+        guard let last = items.last, items.count > 1 else { return items.first ?? "" }
+        return items.dropLast().joined(separator: ", ") + " and " + last
     }
 
     /// Whether the policy lets at least one source behind a Connect row be
@@ -116,7 +145,7 @@ package enum GettingReadyPolicy {
     /// mail is Google or IMAP).
     static func connectable(_ source: ReadinessSource, policy: ManagedPolicy) -> Bool {
         let sources: [String] = switch source {
-        case .slack: ["slack"]
+        case .slack, .fullSlack: ["slack"]
         case .jira: ["jira"]
         case .calendar: ["google", "caldav"]
         case .jiraOrMail: ["jira", "google", "imap"]
