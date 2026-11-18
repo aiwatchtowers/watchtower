@@ -326,10 +326,16 @@ func bridgeBundle(companyName string, baked corpBaked, accts []bridgeAccount, sl
 		b.Linear = &companybundle.Linear{ClientID: id}
 	}
 	// The build list in the link policy's own normal form first (IDN,
-	// trailing dot), so every host it refuses today reaches the bundle.
+	// trailing dot), so every host it refuses today reaches the bundle. A
+	// host the policy refuses but a bundle cannot carry (one label, an IP
+	// literal) fails the run: the public build would fetch it.
 	for _, raw := range strings.Split(baked.denyHosts, ",") {
 		for n := range linkrule.NormalizeHostSet([]string{raw}) {
-			if h, ok := companybundle.DenyHost(n); ok && !slices.Contains(b.LinkDenyHosts, h) {
+			h, ok := companybundle.DenyHost(n)
+			if !ok {
+				return companybundle.Bundle{}, fmt.Errorf("build deny host %q cannot go into a company bundle", n)
+			}
+			if !slices.Contains(b.LinkDenyHosts, h) {
 				b.LinkDenyHosts = append(b.LinkDenyHosts, h)
 			}
 		}

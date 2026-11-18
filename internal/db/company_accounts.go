@@ -93,6 +93,7 @@ func (db *DB) RetieAccounts(refs []CompanyAccountRef, from, to string) error {
 		if err != nil {
 			return fmt.Errorf("retying accounts: %w", err)
 		}
+		// #nosec G202 -- table and filter are fixed SQL from companyAccountTables.
 		res, err := tx.ExecContext(ctx, `UPDATE `+t.table+` SET company_slug = ?
 			WHERE id = ? AND company_slug IN (?, ?)`+t.filter, to, r.ID, from, to)
 		if err != nil {

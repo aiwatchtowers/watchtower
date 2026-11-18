@@ -910,11 +910,20 @@ struct UpdateServiceRelaunchTests {
         #expect(message.contains("Team ID"))
         #expect(runs.items == ["bridge", "bridge"])
 
+        // A workspace without the marker by install time stops it too, even
+        // when the bridge itself succeeded.
+        svc.companyMigrated = { false }
+        svc.state = .readyToInstall(appPath: URL(fileURLWithPath: "/downloads/Watchtower.app"))
+        await svc.install()
+        #expect(svc.state == .error(UpdateService.bridgeFailedMessage))
+        #expect(runs.items == ["bridge", "bridge", "bridge"])
+        #expect(install.calls.isEmpty)
+
         // The public build never runs it.
         svc.buildFlavor = ""
         svc.state = .readyToInstall(appPath: URL(fileURLWithPath: "/downloads/Watchtower.app"))
         await svc.install()
-        #expect(runs.items == ["bridge", "bridge"])
+        #expect(runs.items == ["bridge", "bridge", "bridge"])
     }
 }
 

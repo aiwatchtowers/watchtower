@@ -387,6 +387,18 @@ func TestBridge_KeepsAStoredCompanyApp(t *testing.T) {
 	assert.Equal(t, clientSourceAccountFile, src)
 }
 
+// A build deny host the link policy refuses but a bundle cannot carry fails
+// the run (no marker): the public build would otherwise fetch it.
+func TestBridge_UnrepresentableDenyHostFails(t *testing.T) {
+	c := newCorpWorkspace(t)
+	media.BuildDenyHosts = "intranet.example.com,internal"
+	_, err := c.bridge(t)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"internal"`)
+	assert.NoFileExists(t, filepath.Join(c.ws, companyMigratedMarker))
+	assert.NoFileExists(t, filepath.Join(c.ws, "company", corpSlug+".json"))
+}
+
 func TestBridge_PublicBuildNoop(t *testing.T) {
 	setCorpBaked(t)
 	for _, tc := range []struct{ flavor, name, reason string }{

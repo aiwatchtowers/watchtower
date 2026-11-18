@@ -638,9 +638,12 @@ final class UpdateService {
         // A corp build leaving for the public one: the public build has no
         // bridge and no corp clients, so an account signed in since the
         // launch's bridge gets its client record and tie now, or nothing is
-        // installed (#1887 T11a).
-        if CompanyBridgeLaunch.applies(flavor: buildFlavor), channel == .publicGitHub {
-            guard await ProcessPipes.offPool(bridgeBeforeInstall) else {
+        // installed (#1887 T11a). Keyed on where the download came from (a
+        // public one carries no gated context), not on the channel now, and
+        // every workspace must still carry the marker after the run.
+        if CompanyBridgeLaunch.applies(flavor: buildFlavor), gatedDownload == nil {
+            let bridged = await ProcessPipes.offPool(bridgeBeforeInstall)
+            guard bridged, companyMigrated() else {
                 state = .error(Self.bridgeFailedMessage)
                 return
             }
