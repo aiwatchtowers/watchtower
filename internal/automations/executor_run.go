@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/db"
 )
 
@@ -31,6 +32,9 @@ type claimKind struct {
 	// waited with, which it gets back when the daemon stops again before
 	// its replay reached the wait.
 	resumeReason string
+	// owner: the inline caller's ctx serves the owner's gesture (D3), so the
+	// run is owner-started whatever its trigger.
+	owner bool
 }
 
 // runClaimed executes a run this executor claimed and finishes it. Every
@@ -51,6 +55,7 @@ func (e *Executor) runClaimed(ctx context.Context, runID int64, a *db.Automation
 		e.finish(ctx, runID, a, db.RunFinish{Status: db.RunFailed, ErrorKind: db.ErrKindBackend, Error: err.Error()}, nil, false)
 		return
 	}
+	ctx = runOrigin(ctx, run, how)
 	env, sb, end := e.prepare(ctx, run, a, how)
 	if end != nil {
 		e.finish(ctx, runID, a, db.RunFinish{Status: end.status, ErrorKind: end.kind, Error: end.msg}, nil, false)
@@ -65,6 +70,18 @@ func (e *Executor) runClaimed(ctx context.Context, runID int64, a *db.Automation
 	}
 	f, commit, abandoned := e.outcome(ctx, env, v, runErr, how.inline)
 	e.finish(ctx, runID, a, f, commit, abandoned)
+}
+
+// runOrigin marks the run's ctx for the per-call consent check (spec §4.3):
+// owner-started for an owner trigger (manual, button, dry_run, reply) or an
+// owner caller (how.owner); else admitted as unit "run:<id>", since the run
+// was claimed under consent and finishes even when the owner pauses
+// meanwhile (D12).
+func runOrigin(ctx context.Context, run *db.AutomationRun, how claimKind) context.Context {
+	if how.owner || !aiconsent.BackgroundTrigger(run.Trigger) {
+		return aiconsent.WithOwnerStarted(ctx)
+	}
+	return aiconsent.WithAdmitted(ctx, fmt.Sprintf("run:%d", run.ID))
 }
 
 // leftWaiting handles a run the daemon's stop leaves active: a wait that

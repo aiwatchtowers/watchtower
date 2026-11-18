@@ -741,6 +741,11 @@ The hub runs phone-started chat turns: `internal/chatstore` (the Go turn store) 
   15:20), 1 phone(s)` (local time, the date when not today; "never saved since the hub started" before the first
   save). `--json` already carried `relay.state`/`since`/`last_saved_at`; Settings → Mobile's Relay row already reads
   them ("Relay unavailable for <N> min.", "Connected · last change delivered … ago").
+- **Heartbeat `background_ai`** (optional string, #1886): `allowed`, `paused` (the owner's answer, or none yet) or
+  `organization` (paused by the AllowBackgroundAI policy). `runtime.go`'s `backgroundAIValue(aiconsent.Current())`
+  feeds `HeartbeatFacts.BackgroundAI` (nil or empty = absent); a change restamps the heartbeat at once, as `caps`
+  does. The Kit's `HeartbeatPayload.backgroundAI` is `BackgroundAIStatus?`; an absent key (an older hub) and an
+  unknown value read as nil.
 - **Heartbeat `stuck_since`** (optional Unix seconds): when the oldest kind whose last attempt did not go through
   whole first failed — a failed save or source read, or a record the cycle skipped (oversized, unsealable, refused by
   the transport). `Publisher.StuckSince` keeps it per kind (`slices/stuck.go`) until an attempt goes through whole; an

@@ -307,6 +307,12 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	configPath := flagConfig
 
 	lk := strings.ToLower(key) // viper keys are case-insensitive
+	// The owner's background AI answer has one writer, so a Settings save or
+	// a script can never answer for the owner. A parent path ("ai") would
+	// replace the whole map and erase the answer, so it is refused too.
+	if lk == backgroundRunsKey || strings.HasPrefix(backgroundRunsKey, lk+".") {
+		return fmt.Errorf("%s is set only by its own command: use \"watchtower ai background allow|pause\"; nothing was written", key)
+	}
 	if retiredConfigKeys[lk] {
 		return fmt.Errorf("%q is retired and has no effect; nothing was written", key)
 	}
