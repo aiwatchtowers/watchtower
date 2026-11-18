@@ -73,6 +73,8 @@ type repoState struct {
 	tipDates      map[string]string // sha -> committer date, RFC 3339 UTC (display only)
 	merged        map[string]bool   // sha in the default branch or origin's copy: every tip listed up front (true or false), others cached
 	mergedRefs    []string          // the existing default refs merged is read against
+	srcOnce       sync.Once         // includeSource
+	src           string
 }
 
 // readRepo inventories the repository holding folder; display reads the

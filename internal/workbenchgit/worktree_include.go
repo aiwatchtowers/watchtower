@@ -19,6 +19,23 @@ const includeFile = ".worktreeinclude"
 // paths every new session worktree gets a copy of.
 const IncludeFile = includeFile
 
+// IncludeSource is the checkout a session worktree made for the workbench
+// folder in o gets its .worktreeinclude copies from: the top level of the
+// checkout holding o.Folder (it may be a linked one), located by the same
+// probe CreateWorktree and EnsureWorktree read it with (readStatus).
+func IncludeSource(ctx context.Context, o Options) (string, error) {
+	r, p, _, note, err := probe(ctx, o)
+	switch {
+	case r == nil:
+		return "", errors.New(note)
+	case err != nil:
+		return "", err
+	case p.topLevel == "":
+		return "", errors.New("no top level for " + o.Folder)
+	}
+	return p.topLevel, nil
+}
+
 // IncludeListArgs is the `git ls-files` the include runs in the main work
 // tree under rule ("--exclude-from=<list>" for what the list matches,
 // "--exclude-standard" for what git ignores): untracked ignored paths,

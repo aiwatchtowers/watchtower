@@ -34,7 +34,7 @@ const topLevelBuild = "build"
 type ignoredJudge struct {
 	ctx         context.Context
 	root        string
-	mainRoot    string   // the main worktree, the .worktreeinclude source; "" = unknown
+	source      string   // the checkout .worktreeinclude copies come from; "" = unknown
 	bases       []string // the integration's folders: "" (the root) and the workbench folder's subfolder
 	workbenchID int64
 	git         gitCmd
@@ -79,13 +79,9 @@ func (b *builder) ignoredWork(ctx context.Context, root string, budget time.Dura
 func (b *builder) newIgnoredJudge(ctx context.Context, root string, budget time.Duration) *ignoredJudge {
 	j := &ignoredJudge{ctx: ctx, root: root, bases: []string{""}, workbenchID: b.req.WorkbenchID,
 		git: b.repo.git, skills: map[string]bool{}, deadline: time.Now().Add(budget), budget: budget}
-	for _, w := range b.repo.worktrees {
-		if w.Main {
-			j.mainRoot = w.Root
-		}
-	}
-	if j.mainRoot != "" {
-		if rel, err := filepath.Rel(j.mainRoot, b.repo.folder); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+	j.source = b.repo.includeSource(ctx)
+	if j.source != "" {
+		if rel, err := filepath.Rel(j.source, b.repo.folder); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
 			j.bases = append(j.bases, filepath.ToSlash(rel))
 		}
 	}
@@ -153,6 +149,19 @@ func (j *ignoredJudge) entry(rel string) (string, error) {
 		return "", fmt.Errorf("reading the ignored folder %s: %w", rel, err)
 	}
 	return "", nil
+}
+
+// includeSource is the checkout session worktrees of the workbench folder
+// get their .worktreeinclude copies from (workbenchgit.IncludeSource, the
+// same lookup worktree creation makes), symlink-resolved; "" when it cannot
+// be told, so no ignored file passes as a copy. Read once per evaluation.
+func (r *repoState) includeSource(ctx context.Context) string {
+	r.srcOnce.Do(func() {
+		if top, err := workbenchgit.IncludeSource(ctx, workbenchgit.Options{Folder: r.folder}); err == nil {
+			r.src = resolvePath(top)
+		}
+	})
+	return r.src
 }
 
 // errStopWalk ends a walk at the first unsaved file or failed judgement.
@@ -282,18 +291,20 @@ func (j *ignoredJudge) integration(rel string) (bool, error) {
 }
 
 // includedCopy: rel is a path .worktreeinclude copies (workbenchgit's own
-// matcher, run in the main worktree) and the main worktree holds a regular
-// file there with the same bytes — a copy nobody changed. Any other ignored
-// file, even one equal to main's, is work.
+// matcher, run in the source checkout — the one worktree creation copies
+// from, workbenchgit.IncludeSource) and the source holds a regular file
+// there with the same bytes: a copy nobody changed. Any other ignored file,
+// even one equal to another checkout's, is work; so is every one when the
+// source cannot be told.
 func (j *ignoredJudge) includedCopy(rel string, info fs.FileInfo) (bool, error) {
-	if j.mainRoot == "" || j.mainRoot == j.root {
+	if j.source == "" || j.source == j.root {
 		return false, nil
 	}
 	covered, err := j.includeCovers(rel)
 	if err != nil || !covered {
 		return false, err
 	}
-	src := filepath.Join(j.mainRoot, filepath.FromSlash(rel))
+	src := filepath.Join(j.source, filepath.FromSlash(rel))
 	sinfo, err := os.Lstat(src)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
@@ -310,7 +321,7 @@ func (j *ignoredJudge) includedCopy(rel string, info fs.FileInfo) (bool, error) 
 func (j *ignoredJudge) includeCovers(rel string) (bool, error) {
 	if !j.includeRead {
 		j.includeRead = true
-		list := filepath.Join(j.mainRoot, workbenchgit.IncludeFile)
+		list := filepath.Join(j.source, workbenchgit.IncludeFile)
 		if _, err := os.Lstat(list); err == nil {
 			matched, err := j.lsFiles("--exclude-from=" + list)
 			if err != nil {
@@ -329,7 +340,7 @@ func (j *ignoredJudge) includeCovers(rel string) (bool, error) {
 }
 
 func (j *ignoredJudge) lsFiles(rule string) ([]string, error) {
-	out, err := j.git.output(j.ctx, j.mainRoot, workbenchgit.IncludeListArgs(rule)...)
+	out, err := j.git.output(j.ctx, j.source, workbenchgit.IncludeListArgs(rule)...)
 	if err != nil {
 		return nil, fmt.Errorf("listing what %s copies: %w", workbenchgit.IncludeFile, err)
 	}

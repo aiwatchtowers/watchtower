@@ -161,16 +161,19 @@ func TestProj18_OwnersIntegrationEditsKeepTheWorktree(t *testing.T) {
 		}
 	}
 	for name, change := range map[string]func(t *testing.T, root string) (string, string){
-		"edited skill":       edited(".claude/skills/watchtower-workbench/SKILL.md", "my own version\n"),
-		"extra skill file":   edited(".claude/skills/watchtower-flow/notes.md", "notes\n"),
-		"legacy skill":       edited(".claude/skills/watchtower-project/SKILL.md", "---\nname: x\n---\nmine\n"),
-		"other skill":        edited(".agents/skills/watchtower-mine/SKILL.md", "an owner's skill\n"),
-		"extra hook":         settingsWith(`"hooks": {`, `"hooks": {"PreCompact": [{"hooks": [{"type": "command", "command": "./mine.sh"}]}], `),
-		"extra key":          settingsWith(`"hooks": {`, `"env": {"A": "1"}, "hooks": {`),
-		"permission setting": settingsWith(`"allow": [`, `"defaultMode": "plan", "allow": [`),
-		"unparseable":        edited(".claude/settings.local.json", "{not json\n"),
-		"codex hooks":        edited(".codex/hooks.json", "{}\n"),
-		"claude notes":       edited(".claude/notes.md", "mine\n"),
+		"edited skill":              edited(".claude/skills/watchtower-workbench/SKILL.md", "my own version\n"),
+		"extra skill file":          edited(".claude/skills/watchtower-flow/notes.md", "notes\n"),
+		"legacy skill":              edited(".claude/skills/watchtower-project/SKILL.md", "---\nname: x\n---\nmine\n"),
+		"other skill":               edited(".agents/skills/watchtower-mine/SKILL.md", "an owner's skill\n"),
+		"extra hook":                settingsWith(`"hooks": {`, `"hooks": {"PreCompact": [{"hooks": [{"type": "command", "command": "./mine.sh"}]}], `),
+		"owner command before ours": settingsWith(`"command": "'/opt/acme old/watchtower'`, `"command": "./mine.sh; '/opt/acme old/watchtower'`),
+		"changed matcher":           settingsWith(`"matcher": "`, `"matcher": "Bash|`),
+		"old prompt hook":           settingsWith(`"type": "command"`, `"type": "prompt", "prompt": "[watchtower-workbench ask-guard 1]"`),
+		"extra key":                 settingsWith(`"hooks": {`, `"env": {"A": "1"}, "hooks": {`),
+		"permission setting":        settingsWith(`"allow": [`, `"defaultMode": "plan", "allow": [`),
+		"unparseable":               edited(".claude/settings.local.json", "{not json\n"),
+		"codex hooks":               edited(".codex/hooks.json", "{}\n"),
+		"claude notes":              edited(".claude/notes.md", "mine\n"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -275,6 +278,29 @@ func TestProj18_WorktreeIncludeCopyGoesOnlyUnchanged(t *testing.T) {
 	if it.Detail != "ignored file: .env.local" {
 		t.Fatalf("detail = %q: a file the list does not name is work", it.Detail)
 	}
+}
+
+// The copies come from the checkout the workbench is registered in, which
+// may be a linked one: a session's .env equal to the main checkout's but not
+// to that source's is work; equal to the source's, it goes.
+func TestProj18_WorktreeIncludeComparesWithTheSourceCheckout(t *testing.T) {
+	t.Parallel()
+	f, root := ignoredFixture(t)
+	linked := f.worktree("linked", "feat/linked")
+	f.store.folders[testWorkbench] = linked
+	writeFile(t, filepath.Join(linked, ".worktreeinclude"), ".env\n")
+	writeFile(t, filepath.Join(linked, ".env"), "TOKEN=linked\n")
+	writeFile(t, filepath.Join(f.repo, ".worktreeinclude"), ".env\n")
+	writeFile(t, filepath.Join(f.repo, ".env"), "TOKEN=main\n")
+
+	writeFile(t, filepath.Join(root, ".env"), "TOKEN=main\n")
+	it := wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonIgnoredFiles)
+	if it.Detail != "ignored file: .env" {
+		t.Fatalf("detail = %q: equal to main's, not to the source's", it.Detail)
+	}
+
+	writeFile(t, filepath.Join(root, ".env"), "TOKEN=linked\n")
+	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionRemove, "")
 }
 
 // A symlink in an ignored folder is judged as an entry and never followed:

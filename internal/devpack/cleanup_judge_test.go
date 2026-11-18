@@ -28,6 +28,14 @@ func TestSettingsOnlyOurs(t *testing.T) {
 		"as installed":         {func(s string) string { return s }, true},
 		"claude code rules":    {edit(`"allow": [`, `"deny": ["Bash(rm:*)"], "allow": ["Bash(go test:*)", `), true},
 		"another workbench id": {edit(" --workbench 7", " --workbench 8"), false},
+		"another binary path": {func(s string) string {
+			return strings.ReplaceAll(s, "'/opt/a b/watchtower'", "/usr/local/bin/watchtower")
+		}, true},
+		"owner command before": {edit(`"command": "'/opt/a b/watchtower'`, `"command": "./mine.sh; '/opt/a b/watchtower'`), false},
+		"owner command after":  {edit(` --workbench 7"`, ` --workbench 7; ./mine.sh"`), false},
+		"changed matcher":      {edit(`"matcher": "`, `"matcher": "Bash|`), false},
+		"changed timeout":      {edit(`"timeout": `, `"timeout": 9`), false},
+		"prompt hook":          {edit(`"type": "command"`, `"type": "prompt", "prompt": "[watchtower-workbench ask-guard 7]\nedited"`), false},
 		"another program":      {edit("/opt/a b/watchtower", "/opt/a b/other"), false},
 		"extra hook field":     {edit(`"type": "command"`, `"type": "command", "statusMessage": "mine"`), false},
 		"extra key":            {edit(`"hooks": {`, `"model": "x", "hooks": {`), false},

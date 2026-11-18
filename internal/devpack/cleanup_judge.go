@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 )
 
 // The session cleanup's W10 (#1878, ask #1573) lets a git-ignored file of a
@@ -69,12 +71,13 @@ func WorkbenchSkillCopyUnedited(skillDir string) (bool, error) {
 
 // SettingsOnlyOurs reports whether file (a .claude/settings.local.json)
 // holds nothing but what the workbench install writes for workbenchID and
-// what Claude Code adds by itself: our hooks — any watchtower binary,
-// current or pre-rename spelling (looksLikeOurHook), and the old marker
-// prompt — and a permissions object with only allow and deny rule lists
-// (the cleanup allow rule and Claude Code's "don't ask again" rules; owner
-// ruling on #1878). Any other key, hook, hook field or permission setting,
-// or JSON that does not parse, is the owner's: false.
+// what Claude Code adds by itself: our hook entries, judged exactly
+// (onlyOurHooks: any watchtower binary path, nothing else on the command
+// line, the install's matcher, timeout and async), and a permissions object
+// with only allow and deny rule lists (the cleanup allow rule and Claude
+// Code's "don't ask again" rules; owner ruling on #1878). Any other key,
+// hook, hook field or permission setting, or JSON that does not parse, is
+// the owner's: false.
 func SettingsOnlyOurs(file string, workbenchID int64) (bool, error) {
 	settings, _, existed, err := readSettings(file)
 	switch {
@@ -121,10 +124,11 @@ func onlyRuleLists(v any) bool {
 	return true
 }
 
-// ourHookFields are the fields an install writes on a hook entry (and
-// carries from the old prompt hook): anything else is the owner's.
-var ourHookFields = []string{"type", "command", "timeout", "async", "prompt"}
-
+// onlyOurHooks reports whether every hook of every event is exactly an
+// entry the install writes for workbenchID (exactHookEntry), in a group
+// shaped as the install shapes it. Stricter than the install's own "ours"
+// test (looksLikeOurHook), which dedupes loosely on purpose; that one is
+// left as it is for installs.
 func onlyOurHooks(v any, workbenchID int64) bool {
 	events, ok := v.(map[string]any)
 	if !ok {
@@ -146,7 +150,9 @@ func onlyOurHooks(v any, workbenchID int64) bool {
 				}
 			}
 			for _, h := range hooks {
-				if !isOurEntry(h, event, workbenchID) {
+				if !slices.ContainsFunc(ownedHookSpecs, func(spec hookSpec) bool {
+					return spec.event == event && exactGroupMatcher(m, spec) && exactHookEntry(h, spec, workbenchID)
+				}) {
 					return false
 				}
 			}
@@ -155,21 +161,52 @@ func onlyOurHooks(v any, workbenchID int64) bool {
 	return true
 }
 
-func isOurEntry(h any, event string, workbenchID int64) bool {
+// exactGroupMatcher: the group's matcher is what the install writes for
+// spec — spec's matcher, or none.
+func exactGroupMatcher(m map[string]any, spec hookSpec) bool {
+	got, has := m["matcher"]
+	if spec.matcher == "" {
+		return !has || got == ""
+	}
+	return got == spec.matcher
+}
+
+// exactHookEntry: h is exactly newOurHookGroup's entry for spec — type
+// command, the install's timeout and async, and a command that is one
+// shell token naming a watchtower binary (any path, quoted as shellQuote
+// quotes it) followed by spec's suffix for workbenchID (or its pre-rename
+// spelling), nothing before or after. A prompt hook — the old ask guard,
+// replaced by the command since 2026-10-11 — is not judged ours here.
+func exactHookEntry(h any, spec hookSpec, workbenchID int64) bool {
 	m, ok := h.(map[string]any)
-	if !ok {
+	if !ok || m["type"] != "command" {
 		return false
 	}
 	for key := range m {
-		if !slices.Contains(ourHookFields, key) {
+		if key != "type" && key != "command" && key != "timeout" && key != "async" {
 			return false
 		}
 	}
-	if event == askGuardSpec.event && isOurMarkerPrompt(h, workbenchID) {
-		return true
+	if t, ok := m["timeout"]; !ok || fmt.Sprint(t) != strconv.Itoa(spec.timeoutSec) {
+		return false
 	}
-	for _, spec := range ownedHookSpecs {
-		if spec.event == event && isOurHook(h, spec, workbenchID) {
+	if a, has := m["async"]; spec.async != has || (has && a != true) {
+		return false
+	}
+	cmd, ok := m["command"].(string)
+	if !ok {
+		return false
+	}
+	for _, suffix := range []string{spec.suffix(workbenchID), spec.legacySuffix(workbenchID)} {
+		if suffix == "" {
+			continue
+		}
+		token, ok := strings.CutSuffix(cmd, suffix)
+		if !ok || token == "" {
+			continue
+		}
+		bin := unquoteShellSingle(token)
+		if shellQuote(bin) == token && filepath.Base(bin) == "watchtower" {
 			return true
 		}
 	}
