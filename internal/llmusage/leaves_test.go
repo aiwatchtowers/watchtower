@@ -34,6 +34,7 @@ var knownNonLLMExec = map[string]string{
 	"claude.loginShellPATH":              "login shell `echo $PATH`",
 	"claude.loginShellWhich":             "login shell `which claude`",
 	"claude.readLoginShellEnvUntil":      "login shell `env -0`",
+	"claude.usageProcess":                "claude -p get_usage control request: Claude Code's own usage read, no turn, no model call",
 	"claudesession.SystemProcs.Start":    "ps -o lstart",
 	"cmd.LaunchSpecReview":               "starts this binary's `workbench spec-review run`, whose reviewer call records in that process",
 	"cmd.execCommandRunner":              "claude mcp add/remove/get for the workbench install (MCP config, no model call)",

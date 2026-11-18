@@ -1,0 +1,11 @@
+{
+  "session": {"total_cost_usd": 0, "total_api_duration_ms": 0, "total_duration_ms": 12, "total_lines_added": 0, "total_lines_removed": 0, "model_usage": {}},
+  "subscription_type": "pro",
+  "rate_limits_available": true,
+  "rate_limits": {
+    "five_hour": {"utilization": null, "resets_at": null},
+    "seven_day": null,
+    "seven_day_opus": {"utilization": 3, "resets_at": null}
+  },
+  "behaviors": null
+}
