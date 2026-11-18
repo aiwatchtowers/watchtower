@@ -52,32 +52,38 @@ func DenyHosts(cfg *config.Config, companies []companybundle.Bundle) []string {
 	return out
 }
 
-// DenySource returns DenyHosts over cfg and the company bundles of
-// workspaceDir (company.Store.LoadAll, the forced MDM bundle forced() — nil
-// for none — winning over the stored file of the same company), read afresh
+// DenySource returns DenyHosts over cfg, every company bundle stored under
+// workspaceDir and the forced MDM bundle forced() (nil for none), read afresh
 // at each call so a company confirmed while the daemon runs applies at the
-// next read. A damaged company file, a refused forced bundle or an unreadable
-// company directory adds no host; the problem is logged when it first
-// appears, not again at every read while it stays.
+// next read. Deny hosts only add (D18): the forced bundle's list joins the
+// stored file's of the same company instead of replacing it, and the forced
+// bundle still counts when the company directory cannot be read. A damaged
+// company file, a refused forced bundle or an unreadable directory adds no
+// host of its own; the problem is logged when it first appears, not again at
+// every read while it stays.
 func DenySource(cfg *config.Config, workspaceDir string, forced func() string, logger *log.Logger) func() []string {
 	store := company.NewStore(workspaceDir)
-	if logger == nil {
-		logger = log.Default()
-	}
 	var mu sync.Mutex
 	var lastProblems string
 	return func() []string {
-		wire := ""
-		if forced != nil {
-			wire = forced()
-		}
-		entries, loadErrs, err := store.LoadAll(wire)
+		var bundles []companybundle.Bundle
 		var problems []string
+		entries, loadErrs, err := store.LoadAll("")
 		if err != nil {
 			problems = append(problems, err.Error())
 		}
 		for _, le := range loadErrs {
 			problems = append(problems, le.File+": "+le.Err)
+		}
+		for _, e := range entries {
+			bundles = append(bundles, e.Bundle)
+		}
+		if wire := forcedWire(forced); wire != "" {
+			if fb, err := companybundle.Parse(wire, companybundle.OriginMDM); err != nil {
+				problems = append(problems, "CompanyBundle (managed preference): "+err.Error())
+			} else {
+				bundles = append(bundles, fb)
+			}
 		}
 		mu.Lock()
 		if joined := strings.Join(problems, "\n"); joined != lastProblems {
@@ -87,12 +93,16 @@ func DenySource(cfg *config.Config, workspaceDir string, forced func() string, l
 			}
 		}
 		mu.Unlock()
-		bundles := make([]companybundle.Bundle, 0, len(entries))
-		for _, e := range entries {
-			bundles = append(bundles, e.Bundle)
-		}
 		return DenyHosts(cfg, bundles)
 	}
+}
+
+// forcedWire calls forced, trimmed; nil is no forced bundle.
+func forcedWire(forced func() string) string {
+	if forced == nil {
+		return ""
+	}
+	return strings.TrimSpace(forced())
 }
 
 // readDeny calls a deny source; nil is no deny list.

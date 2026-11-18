@@ -458,3 +458,22 @@ func TestConfluence_ImageAndLinkToSameURLDescribedOnce(t *testing.T) {
 	imgCalls, _ := c.gen.calls()
 	assert.Equal(t, 1, imgCalls, "one description")
 }
+
+// TestConfluenceRecorder_ReadsDenyListOncePerRefresh: the recorder runs in
+// the item's write transaction, so it reads the deny list (company files) once
+// per confluenceDenyRefresh, not once per document.
+func TestConfluenceRecorder_ReadsDenyListOncePerRefresh(t *testing.T) {
+	c := newConfEnv(t)
+	reads := 0
+	c.engine = extsync.New(c.d, extsync.Options{Media: ConfluenceRecorder(func() []string { reads++; return []string{"intra.example.org"} })})
+	c.engine.SetFetcher(c.src.JiraAccountID, c.f)
+	for _, id := range []string{"p1", "p2"} {
+		c.f.page(id, 1, confMod, "page body", extsync.MediaRef{Kind: "link", Locator: "url:https://example.com/" + id, URL: "https://example.com/" + id})
+	}
+	c.sync()
+
+	var n int
+	require.NoError(t, c.d.QueryRow(`SELECT COUNT(*) FROM media_items WHERE kind = 'link'`).Scan(&n))
+	assert.Equal(t, 2, n, "both documents recorded their link")
+	assert.Equal(t, 1, reads)
+}

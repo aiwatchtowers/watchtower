@@ -91,9 +91,9 @@ func TestRefusedHosts_IncludesForcedBundleHosts(t *testing.T) {
 		fetched      []string
 	}{
 		{"no forced bundle", "", []string{"https://stored.example.com/", "https://cfg.example/"}, []string{"https://forced.example.com/"}},
-		// The forced bundle is the company's current bundle: it wins over the
-		// stored file of the same company (company.Store.LoadAll).
-		{"forced same company", forcedAcme, []string{"https://forced.example.com/", "https://cfg.example/"}, []string{"https://stored.example.com/"}},
+		// Deny hosts only add: a forced bundle of the same company joins the
+		// stored file's list, it never takes a host off it.
+		{"forced same company", forcedAcme, []string{"https://forced.example.com/", "https://stored.example.com/", "https://cfg.example/"}, nil},
 		{"forced other company", forcedOther, []string{"https://globex.example.org/", "https://stored.example.com/", "https://cfg.example/"}, nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -109,6 +109,21 @@ func TestRefusedHosts_IncludesForcedBundleHosts(t *testing.T) {
 		})
 	}
 	assert.Empty(t, logs.String())
+}
+
+// TestDenyHosts_ForcedSurvivesUnreadableCompanyDir: a company directory that
+// cannot be read (here a file in its place) costs the stored bundles, never
+// the forced MDM bundle's deny hosts.
+func TestDenyHosts_ForcedSurvivesUnreadableCompanyDir(t *testing.T) {
+	ws := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(ws, "company"), []byte("x"), 0o600))
+	forced, err := companybundle.Encode(companybundle.Bundle{V: 1, Company: "Acme", LinkDenyHosts: []string{"forced.example.com"}})
+	require.NoError(t, err)
+	var logs bytes.Buffer
+	src := DenySource(nil, ws, func() string { return forced }, log.New(&logs, "", 0))
+
+	assert.Equal(t, []string{"forced.example.com"}, src())
+	assert.Contains(t, logs.String(), "company directory")
 }
 
 func TestDenySource_ReadsCompaniesAfresh(t *testing.T) {

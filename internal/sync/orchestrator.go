@@ -107,9 +107,8 @@ type Orchestrator struct {
 	planMu   gosync.Mutex
 	plan     *slackMediaPlan
 	planRead bool
-	// denyHosts is the link deny list each plan reads (media.DenySource);
-	// SetDenyHosts sets it, else the first plan builds one over the config
-	// and the stored company bundles (no forced MDM bundle).
+	// denyHosts is the link deny list each plan reads (media.DenySource, set
+	// by SetDenyHosts on every production path); nil = the config's alone.
 	denyHosts func() []string
 
 	// jiraKeyDetector, if set, links Jira issue keys found in synced messages
