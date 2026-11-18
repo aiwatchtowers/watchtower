@@ -620,3 +620,69 @@ func TestParkedBy_HiddenShapesStrictAndLenient(t *testing.T) {
 	add("GIT_DIR bash -c reset", bash("GIT_DIR=/x/.git bash -c 'git reset --hard HEAD~1'"), LimitResetShared)
 	expectParked(t, cases)
 }
+
+// Round 6: the commit/PR-body heredoc idiom is blanked for the guard's word
+// scan only when it is plain; rebase and rm of an outside path are limit
+// words; a shell on a pipe is parsed for -s and its options; a variable as
+// the program and a function definition are hidden shapes.
+func TestParkedBy_HeredocIdiomAndMoreHiddenShapes(t *testing.T) {
+	lenient := func(cmd string) PermissionAsk {
+		r := bash(cmd)
+		r.Lenient = true
+		return r
+	}
+	var cases []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}
+	add := func(name string, ask PermissionAsk, limit HardLimit) {
+		cases = append(cases, struct {
+			name  string
+			ask   PermissionAsk
+			limit HardLimit
+		}{name, ask, limit})
+	}
+	both := func(name, cmd string, lenientLimit HardLimit) {
+		add("strict "+name, bash(cmd), LimitUnreadable)
+		add("lenient "+name, lenient(cmd), lenientLimit)
+	}
+	// Blanked: a plain argument with a quoted delimiter.
+	both("commit heredoc", "git commit -m \"$(cat <<'EOF'\nrelease notes before merge\nEOF\n)\"", "")
+	both("pr create heredoc", "gh pr create --title \"Fix\" --body \"$(cat <<'EOF'\nreview the push and the tag\nEOF\n)\"", "")
+	both("backslash delimiter", "git commit -m \"$(cat <<\\EOF\nrelease it\nEOF\n)\"", "")
+	both("wrapped commit heredoc", "env GIT_AUTHOR_NAME=x git commit -m \"$(cat <<'EOF'\nrelease\nEOF\n)\"", "")
+	// Not blanked.
+	// "EOF" inside the double-quoted word closes the reader's quote: it
+	// cannot be told from an unquoted delimiter, so it stays scanned.
+	both("double-quoted delimiter", "git commit -m \"$(cat <<\"EOF\"\nrelease it\nEOF\n)\"", LimitUnreadable)
+	both("sh -c heredoc", "sh -c \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\"", LimitUnreadable)
+	both("bare heredoc", "$(cat <<'EOF'\ngit push origin feat\nEOF\n)", LimitUnreadable)
+	both("unquoted delimiter", "git commit -m \"$(cat <<EOF\n$(git push)\nEOF\n)\"", LimitUnreadable)
+	both("heredoc first word", "\"$(cat <<'EOF'\ngit push\nEOF\n)\" x", LimitUnreadable)
+	both("assignment heredoc", "MSG=\"$(cat <<'EOF'\nrelease\nEOF\n)\" git commit", LimitUnreadable)
+	both("eval heredoc", "eval \"$(cat <<'EOF'\ngit push origin feat\nEOF\n)\"", LimitUnreadable)
+	both("xargs heredoc", "xargs git commit -m \"$(cat <<'EOF'\nrelease\nEOF\n)\"", LimitUnreadable)
+	both("another hidden shape", "git commit -m \"$(cat <<'EOF'\nrelease\nEOF\n)\" $(git push origin feat)", LimitUnreadable)
+	both("heredoc then text", "git commit -m \"$(cat <<'EOF'\nx\nEOF\n) and release\"", LimitUnreadable)
+	add("single-quoted string is not dropped", lenient("echo 'git push' | sh"), LimitUnreadable)
+	add("strict single-quoted pipe", bash("echo 'git push' | sh"), LimitUnreadable)
+	// rebase and an outside rm are limit words.
+	both("rebase in a loop", "for b in a; do git rebase main; done", LimitUnreadable)
+	both("rm of an absolute path", "make x & rm /etc/hosts", LimitUnreadable)
+	both("rm of a parent path", "make x & rm ../other/file", LimitUnreadable)
+	both("rm of a home path", "make x & rm ~/notes", LimitUnreadable)
+	both("rm of a relative path", "make x & rm build.log", "")
+	// A shell on a pipe.
+	add("pipe into bash -s arg", bash("make gen | bash -s arg"), LimitUnreadable)
+	add("pipe into bash -o x script", bash("make gen | bash -o pipefail scripts/apply.sh"), "")
+	add("pipe into bash --rcfile only", bash("make gen | bash --rcfile x.rc"), LimitUnreadable)
+	add("pipe into bash -- script", bash("make gen | bash -- scripts/apply.sh"), "")
+	// A variable as the program, a function definition.
+	both("variable program", "$G push origin main", LimitUnreadable)
+	both("variable program, no limit word", "$CMD origin main", "")
+	both("braced variable program", "${GIT} status", "")
+	both("function definition", "f() { git push origin main; }; f", LimitUnreadable)
+	both("function keyword", "function f { make; }", "")
+	expectParked(t, cases)
+}

@@ -520,6 +520,13 @@ func TestWatchmanGuard_HiddenShapesNeedALimitWord(t *testing.T) {
 		{"(cd sub && make)", ""},
 		{`curl 'https://example.com/?a=1&b=2'`, ""},
 		{"gh pr view 1 # merge", ""},
+		// The commit/PR-body heredoc idiom, limit words in its body (round 6).
+		{"git commit -m \"$(cat <<'EOF'\nrelease notes before merge\nEOF\n)\"", ""},
+		{"gh pr create --title \"Fix\" --body \"$(cat <<'EOF'\nreview the push and the tag\nEOF\n)\"", ""},
+		{"sh -c \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
+		{"git commit -m \"$(cat <<EOF\n$(git push)\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
+		{"echo 'git push' | sh", "Parked for the owner: unreadable — continue with other work"},
+		{"$G push origin feat", "Parked for the owner: unreadable — continue with other work"},
 		{"x $(git push origin HEAD:main)", "Parked for the owner: unreadable — continue with other work"},
 		{"true & gh pr merge 1", "Parked for the owner: unreadable — continue with other work"},
 		{`echo "open`, "Parked for the owner: unreadable — continue with other work"},

@@ -393,7 +393,7 @@ func shellInner(words []string) (inner string, isShell, hidden bool) {
 
 // compoundStarts are the first words of shell syntax this reader does not
 // follow (subshells, groups, negation, the bodies of if/for/while).
-var compoundStarts = map[string]bool{"(": true, "{": true, "!": true, "then": true, "do": true, "else": true, "elif": true}
+var compoundStarts = map[string]bool{"(": true, "{": true, "!": true, "then": true, "do": true, "else": true, "elif": true, "function": true}
 
 // hiddenShape reports a command whose real command this reader cannot
 // see: a shell reading its commands from a pipe (a script operand is no
@@ -401,9 +401,7 @@ var compoundStarts = map[string]bool{"(": true, "{": true, "!": true, "then": tr
 // from a file. hiddenText covers the shell syntax.
 func hiddenShape(c shellCmd, sep string) bool {
 	if sep == "|" && shells[c.w[0]] {
-		if _, isShell, _ := shellInner(c.w); !isShell && !slices.ContainsFunc(c.w[1:], func(w string) bool {
-			return !strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "+")
-		}) {
+		if _, isShell, _ := shellInner(c.w); !isShell && readsStdin(c.w) {
 			return true
 		}
 	}
@@ -418,6 +416,27 @@ func hiddenShape(c shellCmd, sep string) bool {
 	return false
 }
 
+// readsStdin reports a shell call that takes its commands from stdin: no
+// script operand after its options (operands of -o, --rcfile... skipped),
+// or -s, which reads stdin whatever follows.
+func readsStdin(w []string) bool {
+	for i := 1; i < len(w); i++ {
+		a := w[i]
+		switch {
+		case a == "--":
+			return i+1 >= len(w)
+		case shellValued[a]:
+			i++
+		case strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a, "s"):
+			return true
+		case strings.HasPrefix(a, "-") || strings.HasPrefix(a, "+"):
+		default:
+			return false // a script operand
+		}
+	}
+	return true
+}
+
 // hiddenText reports shell syntax in one command's raw text (quotes kept)
 // that this reader does not follow: a compound start (a subshell, a group,
 // negation, an if/for/while body) as the first word, or — outside single
@@ -427,8 +446,9 @@ func hiddenShape(c shellCmd, sep string) bool {
 // any quotes). It reads the text before the wrappers are stripped, so an
 // assignment's substitution (x=$(...)) is seen too.
 func hiddenText(text string) bool {
-	if f := strings.Fields(text); len(f) > 0 && (compoundStarts[f[0]] || strings.HasPrefix(f[0], "(")) {
-		return true
+	if f := strings.Fields(text); len(f) > 0 && (compoundStarts[f[0]] || strings.HasPrefix(f[0], "(") ||
+		strings.Contains(f[0], "()") || (len(f) > 1 && strings.HasPrefix(f[1], "()"))) {
+		return true // a subshell, a group, a body, a function definition
 	}
 	var quote byte
 	for i := 0; i < len(text); i++ {
@@ -488,6 +508,9 @@ func commandsIn(summary, cwd string, depth int) ([]shellCmd, string) {
 		words = stripWrappers(words, &c)
 		if len(words) == 0 {
 			continue
+		}
+		if strings.HasPrefix(words[0], "$") { // the program is a variable's value
+			out = append(out, shellCmd{w: []string{hiddenMark}, cwd: cwd})
 		}
 		words[0] = path.Base(words[0])
 		c.w = words
@@ -704,7 +727,7 @@ func rebaseOnDefault(args []string) bool {
 // when its command text names a hard-limit action.
 func matchUnreadable(r PermissionAsk) bool {
 	return anyCmd(r, func(c shellCmd) bool {
-		return c.w[0] == unresolved || (c.w[0] == hiddenMark && (!r.Lenient || limitWords.MatchString(commandText(r.Summary))))
+		return c.w[0] == unresolved || (c.w[0] == hiddenMark && (!r.Lenient || limitWords.MatchString(lenientScanText(r.Summary))))
 	})
 }
 
@@ -712,7 +735,98 @@ func matchUnreadable(r PermissionAsk) bool {
 // merge, push, tag, release, send-pack, reset, forced branch move,
 // update-ref, rm -r/-f, an upload, a message or comment others see): a
 // hidden shape in the guard's mode parks only with one of them in sight.
-var limitWords = regexp.MustCompile(`(?i)(^|[^a-z0-9_])(merges?|mergepullrequest|automerge|push|tags?|release|send-pack|reset|update-ref|altool|testflight|itmstransporter|pilot|upload_to_testflight|mail|mailx|sendmail|mutt|comment|review)([^a-z0-9_]|$)|rm\s+-[a-z]*[rf]|(branch|checkout|switch)\s+-[a-z]*[fdmcb]`)
+var limitWords = regexp.MustCompile(`(?i)(^|[^a-z0-9_])(merges?|mergepullrequest|automerge|push|tags?|release|send-pack|reset|rebase|update-ref|altool|testflight|itmstransporter|pilot|upload_to_testflight|mail|mailx|sendmail|mutt|comment|review)([^a-z0-9_]|$)|rm\s+-[a-z]*[rf]|(^|[^a-z0-9_])rm(\s+-\S+)*\s+['"]?(/|\.\.|~)|(branch|checkout|switch)\s+-[a-z]*[fdmcb]`)
+
+// lenientScanText is what the guard's mode scans for limitWords: the
+// command text (commandText) with each commit-message idiom blanked — a
+// "$(cat <<'D' … D)" argument (quoted delimiter, so its body is literal
+// text) of a command that runs no string itself and has no other hidden
+// shape (heredocArgsBlanked).
+func lenientScanText(summary string) string {
+	parts := splitCommands(summary)
+	lines := make([]string, 0, len(parts))
+	for _, p := range parts {
+		lines = append(lines, heredocArgsBlanked(p))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// heredocArgsBlanked returns part's text with every quoted-heredoc
+// argument blanked to "" when all of it is plain: the argument is a whole
+// double-quoted word that is not the first, the command (wrappers
+// stripped) is no shell, eval, source, . or xargs, and nothing else in it
+// is a hidden shape. Otherwise the text as it is.
+func heredocArgsBlanked(part commandPart) string {
+	words, ok := splitWords(part.text)
+	if !ok {
+		return part.text
+	}
+	var c shellCmd
+	words = stripWrappers(words, &c)
+	if len(words) < 2 || c.xargs || strings.HasPrefix(words[0], "$") {
+		return part.text
+	}
+	switch prog := path.Base(words[0]); {
+	case shells[prog], prog == "eval", prog == "source", prog == ".", prog == "xargs", prog == unresolved:
+		return part.text
+	}
+	text, blanked := part.text, false
+	for _, w := range words[1:] {
+		if !isQuotedHeredocCat(w) {
+			continue
+		}
+		quoted := `"` + w + `"`
+		if !strings.Contains(text, quoted) {
+			return part.text
+		}
+		text, blanked = strings.Replace(text, quoted, `""`, 1), true
+	}
+	c.w = append([]string{path.Base(words[0])}, words[1:]...)
+	if !blanked || hiddenText(text) || hiddenShape(c, part.sep) {
+		return part.text
+	}
+	return text
+}
+
+// heredocDelim is a heredoc delimiter word.
+var heredocDelim = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
+// isQuotedHeredocCat reports a word that is exactly $(cat <<'D'\n…\nD\n)
+// with a quoted delimiter ('D', "D" or \D): its body is literal text.
+func isQuotedHeredocCat(w string) bool {
+	rest, ok := strings.CutPrefix(w, "$(cat <<")
+	if !ok {
+		return false
+	}
+	rest = strings.TrimLeft(rest, " ")
+	var delim string
+	switch {
+	case strings.HasPrefix(rest, "'") || strings.HasPrefix(rest, `"`):
+		end := strings.IndexByte(rest[1:], rest[0])
+		if end < 0 {
+			return false
+		}
+		delim, rest = rest[1:1+end], rest[2+end:]
+	case strings.HasPrefix(rest, `\`):
+		nl := strings.IndexByte(rest, '\n')
+		if nl < 0 {
+			return false
+		}
+		delim, rest = rest[1:nl], rest[nl:]
+	default:
+		return false
+	}
+	if !heredocDelim.MatchString(delim) || !strings.HasPrefix(rest, "\n") {
+		return false
+	}
+	lines := strings.Split(rest[1:], "\n")
+	for i, l := range lines {
+		if l == delim {
+			return strings.Join(lines[i+1:], "\n") == ")"
+		}
+	}
+	return false
+}
 
 // commandText is summary without its comments and description lines.
 func commandText(summary string) string {
