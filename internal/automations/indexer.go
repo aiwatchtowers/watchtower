@@ -148,7 +148,7 @@ func (ix *Indexer) RescanFolder(ctx context.Context, scope Scope, dir string) (R
 	}
 	scan := &folderScan{ix: ix, scope: scope, dir: canon, now: ix.clock.Now()}
 	if scope.Kind == ScopeWorkbench {
-		if scan.prefix, scan.others, err = ix.workbenchFolderSpace(ctx, scope.WorkbenchID, dir, canon); err != nil {
+		if scan.prefix, scan.others, scan.linkedSibling, err = ix.workbenchFolderSpace(ctx, scope.WorkbenchID, dir, canon); err != nil {
 			return RescanReport{}, fmt.Errorf("rescanning %s: %w", canon, err)
 		}
 	}
@@ -172,15 +172,20 @@ func (ix *Indexer) RescanFolder(ctx context.Context, scope Scope, dir string) (R
 // "<folder name>/" — the stored name a recipe of dir takes when another
 // folder of the bench already holds its slug — and others are the recipe
 // folders of the bench's other live folders, whose rows a rescan of dir
-// leaves alone. Folders are compared as stored (no filesystem call: another
-// folder may be privacy-protected). dir outside every live folder (a bench
-// without folder rows) has no prefix.
-func (ix *Indexer) workbenchFolderSpace(ctx context.Context, workbenchID int64, dir, canon string) (string, map[string]bool, error) {
+// leaves alone. Folders are compared as stored — a link is never followed
+// (it could lead into a privacy-protected folder) — so linkedSibling
+// reports another unprotected folder whose path, .watchtower or recipe
+// folder is a symlink (lstat only, workbenchPathPlain): its rows are keyed
+// by the resolved path, which the stored one does not show, so the scan
+// then leaves every row outside dir alone rather than retire that folder's
+// recipes. A protected folder is never looked at. dir outside every live
+// folder (a bench without folder rows) has no prefix.
+func (ix *Indexer) workbenchFolderSpace(ctx context.Context, workbenchID int64, dir, canon string) (string, map[string]bool, bool, error) {
 	folders, err := ix.db.WorkbenchFolders(ctx, workbenchID, false)
 	if err != nil {
-		return "", nil, err
+		return "", nil, false, err
 	}
-	prefix, others := "", map[string]bool{}
+	prefix, others, linked := "", map[string]bool{}, false
 	for _, f := range folders {
 		fdir := filepath.Clean(WorkbenchDir(f.FolderPath))
 		if fdir == canon || fdir == filepath.Clean(dir) {
@@ -188,8 +193,11 @@ func (ix *Indexer) workbenchFolderSpace(ctx context.Context, workbenchID int64, 
 			continue
 		}
 		others[fdir] = true
+		if !linked && !fsutil.PrivacyProtected(f.FolderPath) && !ix.workbenchPathPlain(f.FolderPath) {
+			linked = true
+		}
 	}
-	return prefix, others, nil
+	return prefix, others, linked, nil
 }
 
 // workbenchPathPlain reports whether the scheduler may rescan folder's
@@ -236,13 +244,17 @@ type folderScan struct {
 	report RescanReport
 	// prefix and others place a workbench folder among its bench's folders
 	// (workbenchFolderSpace); empty for the personal scope.
-	prefix string
-	others map[string]bool
+	prefix        string
+	others        map[string]bool
+	linkedSibling bool
 }
 
 // ofOtherFolder reports whether row a belongs to another live folder of the
 // bench: this scan neither re-indexes nor removes it.
-func (s *folderScan) ofOtherFolder(a db.Automation) bool { return s.others[filepath.Dir(a.Path)] }
+func (s *folderScan) ofOtherFolder(a db.Automation) bool {
+	d := filepath.Dir(a.Path)
+	return s.others[d] || (s.linkedSibling && d != s.dir)
+}
 
 func (s *folderScan) scopeName() string { return string(s.scope.Kind) }
 
