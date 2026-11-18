@@ -139,6 +139,9 @@ final class OwnerAsksViewModel {
     let reviewDocuments = OwnerAskReviewDocuments()
     /// Each workbench's open asks, oldest first, as last read.
     private(set) var openAsks: [Int64: [OwnerAsk]] = [:]
+    /// Each workbench's folders as the last read of its asks saw them: a
+    /// review's `doc_path` is relative to its `doc_folder_id` (#2003).
+    private(set) var benchFolders: [Int64: BenchFolders] = [:]
     /// The last answer's outcome per ask id, until dismissed.
     private(set) var answerNotices: [Int64: AnswerNotice] = [:]
     /// The asks answered (or found withdrawn) from a Quick ask's row, as
@@ -313,6 +316,7 @@ final class OwnerAsksViewModel {
         /// The drawer's ask when it is no longer open.
         let shown: OwnerAsk?
         let automationLabels: [Int64: String]
+        let folders: BenchFolders
     }
 
     func load(projectID: Int64) async {
@@ -333,11 +337,13 @@ final class OwnerAsksViewModel {
                     closedAutomationCount: try OwnerAskQueries.closedAutomationCount(db, projectID: projectID),
                     replacements: try OwnerAskQueries.replacements(db, projectID: projectID),
                     shown: shown,
-                    automationLabels: try AutomationQueries.askLabels(db, askIDs: automationAsks.map(\.id))
+                    automationLabels: try AutomationQueries.askLabels(db, askIDs: automationAsks.map(\.id)),
+                    folders: try WorkbenchFolderQueries.benchFolders(db, workbenchID: projectID)
                 )
             }
             noteDeletedSessions(projectID: projectID, reread: snapshot.open.asks)
             openAsks[projectID] = snapshot.open.asks
+            benchFolders[projectID] = snapshot.folders
             fingerprints[projectID] = snapshot.fingerprint
             closedCounts[projectID] = snapshot.closedCounts
             closedAutomationCounts[projectID] = snapshot.closedAutomationCount
@@ -568,7 +574,14 @@ final class OwnerAsksViewModel {
         let answered: String? = row[3]
         let delivered: String? = row[4]
         let unbound: Int? = row[5]
-        return "\(count)|\(maxID ?? 0)|\(open ?? 0)|\(answered ?? "")|\(delivered ?? "")|\(unbound ?? 0)"
+        // The bench's folders and its home (#2003): a review's `<folder>/<rel>`
+        // label follows a folder put on or taken off the bench.
+        let folders = try String.fetchOne(db, sql: """
+            SELECT COALESCE((SELECT group_concat(id || ':' || name || ':' || (removed_at IS NULL), ',')
+                             FROM (SELECT id, name, removed_at FROM workbench_folders WHERE workbench_id = ? ORDER BY id)), '')
+                   || '|' || COALESCE((SELECT folder_path FROM projects WHERE id = ?), '')
+            """, arguments: [projectID, projectID]) ?? ""
+        return "\(count)|\(maxID ?? 0)|\(open ?? 0)|\(answered ?? "")|\(delivered ?? "")|\(unbound ?? 0)|\(folders)"
     }
 
     // MARK: - Keyboard (board #412)

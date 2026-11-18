@@ -13,7 +13,8 @@ struct ReviewerPanel: View {
 
     var body: some View {
         if let context {
-            let id = ReviewerCenter.ThreadID(projectID: context.projectID, branch: context.branch)
+            let id = ReviewerCenter.ThreadID(projectID: context.projectID, folderID: context.folderID,
+                                             branch: context.branch)
             VStack(spacing: 0) {
                 Text(ReviewerSurface.mapLine(context, reader: center.currentReader()))
                     .font(.caption)
