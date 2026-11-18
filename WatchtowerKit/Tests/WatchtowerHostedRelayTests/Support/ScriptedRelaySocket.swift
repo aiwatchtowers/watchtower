@@ -30,8 +30,10 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
         var pings = 0
         var pingWaiters: [CheckedContinuation<Void, any Error>] = []
         var closedWith: Int?
-        /// Request writes held by `hangsRequests`, resumed (throwing) by the client's close.
-        var hungWrites: [CheckedContinuation<Void, any Error>] = []
+        /// Request writes held by `hangsRequests`, resumed (throwing) by the client's close or the writer's cancellation.
+        var hungWrites: [Int: CheckedContinuation<Void, any Error>] = [:]
+        var nextWrite = 0
+        var cancelledWrites = 0
     }
 
     private let hello: HelloReply
@@ -139,6 +141,7 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
 
     func send(_ data: Data) async throws {
         let frame = try Relay_V1_Frame(serializedBytes: data)
+        if hangsRequests, case .request = frame.kind { try await hang() }
         try state.withLock { state in
             guard state.closedWith == nil else { throw ClosedByClient() }
             state.sent.append(frame)
@@ -156,19 +159,49 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
                 break
             }
         case .request(let request):
-            if hangsRequests {
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                    let closed = state.withLock { state in
-                        if state.closedWith != nil { return true }
-                        state.hungWrites.append(continuation)
-                        return false
-                    }
-                    if closed { continuation.resume(throwing: ClosedByClient()) }
-                }
-            }
             answer(request)
         default:
             break
+        }
+    }
+
+    /// Request writes held now (`hangsRequests`).
+    var hangingWrites: Int {
+        state.withLock { $0.hungWrites.count }
+    }
+
+    /// Request writes given up because their writer was cancelled.
+    var cancelledWrites: Int {
+        state.withLock { $0.cancelledWrites }
+    }
+
+    /// A request write that never completes (nothing is written): it ends, throwing, when the client closes
+    /// the socket or cancels the writer.
+    private func hang() async throws {
+        let id = state.withLock { state in
+            state.nextWrite += 1
+            return state.nextWrite
+        }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                let refusal: (any Error)? = state.withLock { state in
+                    if Task.isCancelled {
+                        state.cancelledWrites += 1
+                        return CancellationError()
+                    }
+                    if state.closedWith != nil { return ClosedByClient() }
+                    state.hungWrites[id] = continuation
+                    return nil
+                }
+                if let refusal { continuation.resume(throwing: refusal) }
+            }
+        } onCancel: {
+            let waiter = state.withLock { state -> CheckedContinuation<Void, any Error>? in
+                guard let waiter = state.hungWrites.removeValue(forKey: id) else { return nil }
+                state.cancelledWrites += 1
+                return waiter
+            }
+            waiter?.resume(throwing: CancellationError())
         }
     }
 
@@ -203,9 +236,9 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
             defer {
                 state.receiver = nil
                 state.pingWaiters = []
-                state.hungWrites = []
+                state.hungWrites = [:]
             }
-            return (state.receiver, state.pingWaiters + state.hungWrites)
+            return (state.receiver, state.pingWaiters + Array(state.hungWrites.values))
         }
         receiver?.resume(throwing: ClosedByClient())
         for waiter in waiters { waiter.resume(throwing: ClosedByClient()) }

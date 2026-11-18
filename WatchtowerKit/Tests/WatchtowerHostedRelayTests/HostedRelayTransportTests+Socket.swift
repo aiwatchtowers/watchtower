@@ -79,19 +79,17 @@ extension HostedRelayTransportTests {
         XCTAssertEqual(count("delete", http), 1, "resent over HTTPS once")
     }
 
-    /// A read lost on the socket is resent over HTTPS once.
+    /// A read lost on the socket is resent over HTTPS once. `get_download`: no background pull reads it.
     func testAReadAfterSocketDropIsResent() async throws {
         let relay = try relay
         let (transport, _, http, mac) = try await liveTransport()
         let phone = await transport.client
-        let before = count("changes", http)
-        relay.cutSocketAfterNext("changes")
-        var changes = Relay_V1_Changes()
-        changes.zone = mailbox(mac, phone)
+        relay.cutSocketAfterNext("getDownload")
 
-        _ = try await (await transport.session).changes(changes)
+        _ = try? await (await transport.session).getDownload(missingDownload(mailbox(mac, phone)))
 
-        XCTAssertEqual(count("changes", http) - before, 1)
+        XCTAssertEqual(count("getDownload", http), 1)
+        XCTAssertEqual(relay.log.filter { HostedRelayClient.name($0) == "getDownload" }.count, 2, "the socket's, then HTTPS")
     }
 
     /// `UNAUTHENTICATED` on the socket: the op did not run, so it goes over HTTPS once.
@@ -99,14 +97,22 @@ extension HostedRelayTransportTests {
         let relay = try relay
         let (transport, _, http, mac) = try await liveTransport()
         let phone = await transport.client
-        let before = count("changes", http)
-        relay.failNext("changes", with: .unauthenticated)
-        var changes = Relay_V1_Changes()
-        changes.zone = mailbox(mac, phone)
+        relay.failNext("getDownload", with: .unauthenticated)
 
-        _ = try await (await transport.session).changes(changes)
+        do {
+            _ = try await (await transport.session).getDownload(missingDownload(mailbox(mac, phone)))
+        } catch {
+            XCTAssertNotEqual(error as? HostedRelayError, .server(code: .unauthenticated, retryAfter: nil))
+        }
 
-        XCTAssertEqual(count("changes", http) - before, 1)
+        XCTAssertEqual(count("getDownload", http), 1)
+    }
+
+    private func missingDownload(_ zone: String) -> Relay_V1_GetDownload {
+        var download = Relay_V1_GetDownload()
+        download.zone = zone
+        download.attachmentID = "missing"
+        return download
     }
 
     /// A plain (unconditional) save lost on the socket after its frame was written is not resent: it

@@ -92,7 +92,95 @@ final class HostedRelayRequestDeadlineTests: XCTestCase {
         await connection.close()
     }
 
+    /// A caller that sends again the moment its request timed out is refused before the write (`.notSent`,
+    /// so the session goes over HTTPS), never written to the retired socket.
+    func testASendRightAfterATimeoutIsNotSent() async throws {
+        let harness = try RelayClientHarness()
+        harness.sockets.script([.socket(ScriptedRelaySocket(requests: ["removeSlot": .silent]))])
+        let connection = await harness.client.connect(zones: [])
+        let events = EventProbe(connection)
+        let first = await events.next()
+        XCTAssertEqual(first, .connected)
+
+        let both = Task { () -> [HostedRelayConnection.SocketLoss?] in
+            try Task.checkCancellation()
+            var losses: [HostedRelayConnection.SocketLoss?] = []
+            for _ in 0..<2 {
+                do {
+                    _ = try await connection.request(RelayClientHarness.removeSlot)
+                    losses.append(nil)
+                } catch {
+                    losses.append(error as? HostedRelayConnection.SocketLoss)
+                }
+            }
+            return losses
+        }
+        await harness.clock.waitForSleeps(Self.timeout, count: 2)
+        harness.clock.manual.advance(by: Self.timeout)
+
+        let result = await finish(both)
+        XCTAssertEqual(result?.value, [.lost, .notSent])
+        await connection.close()
+    }
+
+    /// Retiring an older socket fails only its own requests: one written to the newer socket keeps waiting.
+    func testANewerSocketsRequestSurvivesAnOlderDetach() async throws {
+        let harness = try RelayClientHarness()
+        let old = ScriptedRelaySocket()
+        let newer = ScriptedRelaySocket(requests: ["removeSlot": .silent])
+        harness.sockets.script([.socket(old), .socket(newer)])
+        let connection = await harness.client.connect(zones: [])
+        let events = EventProbe(connection)
+        let connected = await events.next()
+        XCTAssertEqual(connected, .connected)
+        let oldGeneration = try XCTUnwrap(connection.liveGeneration)
+        old.closeFromServer(1006)
+        let delay = await harness.clock.waitForSleep { $0 < .seconds(10) }
+        harness.clock.manual.advance(by: delay)
+        await spin { connection.liveGeneration.map { $0 > oldGeneration } == true }
+
+        let request = Task { try await connection.request(RelayClientHarness.removeSlot) }
+        await spin { newer.sent.contains { if case .request = $0.kind { return true } else { return false } } }
+        connection.detach(oldGeneration)
+
+        let failedEarly = await finishes(request)
+        XCTAssertFalse(failedEarly, "the newer socket's request still waits")
+        await connection.close()
+    }
+
+    /// A caller cancelled while its frame's write is in flight cancels the write: nothing is written.
+    func testACancelledCallerDoesNotGetItsFrameWritten() async throws {
+        let harness = try RelayClientHarness()
+        let socket = ScriptedRelaySocket(hangsRequests: true)
+        harness.sockets.script([.socket(socket)])
+        let connection = await harness.client.connect(zones: [])
+        let events = EventProbe(connection)
+        let first = await events.next()
+        XCTAssertEqual(first, .connected)
+
+        let request = Task { try await connection.send(RelayClientHarness.removeSlot) }
+        await spin { socket.hangingWrites == 1 }
+        request.cancel()
+
+        let cancelled = await bounded { socket.cancelledWrites == 1 }
+        XCTAssertTrue(cancelled, "the write was cancelled with its caller")
+        XCTAssertFalse(socket.sent.contains { if case .request = $0.kind { return true } else { return false } }, "no frame written")
+        await connection.close()
+    }
+
     // MARK: - Helpers
+
+    /// Whether `task` ends within a bounded number of yields.
+    private func finishes<T: Sendable>(_ task: Task<T, any Error>) async -> Bool {
+        let done = OSAllocatedUnfairLock(initialState: false)
+        let watcher = Task {
+            _ = await task.result
+            done.withLock { $0 = true }
+        }
+        let ended = await bounded { done.withLock { $0 } }
+        if !ended { watcher.cancel() }
+        return ended
+    }
 
     /// A session on `harness` whose socket is `socket`, live and settled: the post-connect account read
     /// answered (its deadline gone) and only the ping's 30 s sleep waiting.

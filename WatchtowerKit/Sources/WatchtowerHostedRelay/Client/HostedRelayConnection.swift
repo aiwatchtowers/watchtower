@@ -51,12 +51,18 @@ public final class HostedRelayConnection: Sendable {
         let generation: Int
     }
 
+    /// A request waiting for its answer, on the socket generation it was written to.
+    private struct Waiter {
+        let continuation: CheckedContinuation<Relay_V1_Response, any Error>
+        let generation: Int
+    }
+
     private struct State {
         var zones: [String]
         var live: Live?
         var generation = 0
         var nextID: UInt64 = 0
-        var pending: [UInt64: CheckedContinuation<Relay_V1_Response, any Error>] = [:]
+        var pending: [UInt64: Waiter] = [:]
         var runner: Task<Void, Never>?
         var closed = false
     }
@@ -183,7 +189,7 @@ public final class HostedRelayConnection: Sendable {
             }
             return (state.runner, state.live, state.pending)
         }
-        for waiter in pending.values { waiter.resume(throwing: SocketLoss.lost) }
+        for waiter in pending.values { waiter.continuation.resume(throwing: SocketLoss.lost) }
         runner?.cancel()
         await live?.socket.close(code: Self.closeNormal)
         await runner?.value
@@ -524,31 +530,32 @@ public final class HostedRelayConnection: Sendable {
         frame.request.id = id
         frame.request.op = op
         let data = try frame.serializedData()
-        let deadline = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
-        defer { deadline.withLock { $0?.cancel() } }
+        // The request's deadline and its write, both cancelled once it is answered, failed or cancelled.
+        let tasks = OSAllocatedUnfairLock<[Task<Void, Never>]>(initialState: [])
+        defer { tasks.withLock { $0.forEach { $0.cancel() } } }
         let response: Relay_V1_Response = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let refusal: (any Error)? = state.withLock { state in
                     if Task.isCancelled { return CancellationError() }
                     guard state.live?.generation == generation else { return SocketLoss.notSent }
-                    state.pending[id] = continuation
+                    state.pending[id] = Waiter(continuation: continuation, generation: generation)
                     return nil
                 }
                 if let refusal { return continuation.resume(throwing: refusal) }
-                // Started before the write, so a write that never returns is covered too; cancelled once the
-                // request is answered or failed.
+                // Started before the write, so a write that never returns is covered too.
                 let timer = Task {
                     do { try await self.clock.sleep(for: Self.requestTimeout) } catch { return }
                     await self.expire(id, op: op, socket: socket, generation: generation)
                 }
-                deadline.withLock { $0 = timer }
-                Task {
+                let writer = Task {
+                    guard !Task.isCancelled else { return }
                     do {
                         try await socket.send(data)
                     } catch {
                         self.fail(id, with: SocketLoss.lost)
                     }
                 }
+                tasks.withLock { $0 += [timer, writer] }
             }
         } onCancel: {
             fail(id, with: CancellationError())
@@ -559,25 +566,31 @@ public final class HostedRelayConnection: Sendable {
 
     private func resolve(_ response: Relay_V1_Response) {
         let waiter = state.withLock { $0.pending.removeValue(forKey: response.id) }
-        waiter?.resume(returning: response)
+        waiter?.continuation.resume(returning: response)
     }
 
     /// Fails request `id`; false when it was already answered or failed.
     @discardableResult
     private func fail(_ id: UInt64, with error: any Error) -> Bool {
         guard let waiter = state.withLock({ $0.pending.removeValue(forKey: id) }) else { return false }
-        waiter.resume(throwing: error)
+        waiter.continuation.resume(throwing: error)
         return true
     }
 
     /// Request `id` got no answer within `requestTimeout`: it is lost (it may have run), and the socket is
     /// retired, since a relay that pongs but never answers would hold every later request for as long.
-    /// The connection redials; until then a request is refused before its write (`.notSent`).
+    /// The connection redials; until then a request is refused before its write (`.notSent`). The socket
+    /// stops being live in the same step that takes the requests of its generation, and is closed before any
+    /// of them is resumed, so a caller sending again at once is refused (`.notSent`) rather than written to it.
     private func expire(_ id: UInt64, op: Relay_V1_Request.OneOf_Op, socket: any RelaySocket, generation: Int) async {
-        guard fail(id, with: SocketLoss.lost) else { return }
+        let retired: [Waiter]? = state.withLock { state in
+            guard state.pending[id] != nil else { return nil }
+            return Self.retire(generation, in: &state)
+        }
+        guard let retired else { return }
         Self.logger.error("relay socket: \(HostedRelayClient.name(op), privacy: .public) got no answer in time, reconnecting")
-        detach(generation)
         await socket.close(code: Self.closeNormal)
+        for waiter in retired { waiter.continuation.resume(throwing: SocketLoss.lost) }
     }
 
     // MARK: - State
@@ -600,14 +613,23 @@ public final class HostedRelayConnection: Sendable {
         }
     }
 
-    /// Forgets the live socket and fails the requests waiting on it.
-    private func detach(_ generation: Int) {
-        let pending = state.withLock { state in
-            if state.live?.generation == generation { state.live = nil }
-            defer { state.pending = [:] }
-            return state.pending
-        }
-        for waiter in pending.values { waiter.resume(throwing: SocketLoss.lost) }
+    /// Forgets the socket of `generation` and fails the requests written to it; a newer socket's requests
+    /// stay. Internal for tests.
+    func detach(_ generation: Int) {
+        let retired = state.withLock { Self.retire(generation, in: &$0) }
+        for waiter in retired { waiter.continuation.resume(throwing: SocketLoss.lost) }
+    }
+
+    /// `generation` stops being live, and its waiters leave `pending` (lock held): the caller resumes them.
+    private static func retire(_ generation: Int, in state: inout State) -> [Waiter] {
+        if state.live?.generation == generation { state.live = nil }
+        let ids = state.pending.filter { $0.value.generation == generation }.map(\.key)
+        return ids.compactMap { state.pending.removeValue(forKey: $0) }
+    }
+
+    /// The live socket's generation, nil while disconnected. Internal for tests.
+    var liveGeneration: Int? {
+        state.withLock { $0.live?.generation }
     }
 
     /// `body`, or nil when `limit` passes on the clock first. Whenever `body` did not finish
