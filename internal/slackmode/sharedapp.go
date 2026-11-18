@@ -38,7 +38,7 @@ func SharedApp(a db.SlackAccount, retiredID string) bool {
 // ok, else "".
 func Relogin(a db.SlackAccount, retiredID, builtinID string) string {
 	switch {
-	case retiredID != "" && a.ClientID == retiredID:
+	case SharedApp(a, retiredID):
 		if builtinID == retiredID {
 			return ReloginBuiltin
 		}

@@ -11,9 +11,10 @@ package policy
 import (
 	"math"
 	"net/url"
-	"regexp"
 	"slices"
 	"strings"
+
+	"watchtower/internal/slackconnect"
 )
 
 // Domain is the preference domain an admin targets: the Desktop's bundle id.
@@ -207,11 +208,6 @@ func (n *normalizer) list(key string, v any, check entryCheck) []string {
 	return out
 }
 
-var (
-	slackTeamIDPattern   = regexp.MustCompile(`^[TE][A-Z0-9]{2,}$`)
-	slackClientIDPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
-)
-
 // slackApps reads an array of dictionaries. An entry that is not a dictionary,
 // lacks a field or fails the id patterns is dropped; a repeated team_id keeps
 // the first. Unknown dictionary keys are ignored.
@@ -231,7 +227,7 @@ func (n *normalizer) slackApps(v any) []SlackApp {
 		}
 		team, _ := m["team_id"].(string)
 		client, _ := m["client_id"].(string)
-		if !slackTeamIDPattern.MatchString(team) || !slackClientIDPattern.MatchString(client) || seen[team] {
+		if !slackconnect.TeamIDPattern.MatchString(team) || !slackconnect.ClientIDPattern.MatchString(client) || seen[team] {
 			n.report(KeySlackApps, ProblemInvalidEntry)
 			continue
 		}
@@ -446,7 +442,9 @@ func (p Policy) PurgeRevokedData() (on, set bool) {
 }
 
 // SlackApps returns the Slack apps the profile provisions; nil when the key
-// is absent.
+// is absent. No Go code acts on the key (the Desktop's connect section offers
+// the apps); it is the Go twin of Swift ManagedPolicy.slackApps, kept so the
+// policy tests pin how the key is read on this side too.
 func (p Policy) SlackApps() []SlackApp { return p.Keys.SlackApps }
 
 // AllowedList returns the effective list of an array key (nil when absent or
