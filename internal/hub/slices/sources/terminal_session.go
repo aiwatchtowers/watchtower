@@ -167,6 +167,14 @@ type sessionPayload struct {
 	// permission card and Interrupt by it. A record from a Mac older than
 	// the key has none, and the phone keeps that Mac's Claude-only rule.
 	Phone sessionagent.PhoneCaps `json:"phone"`
+	// Folder is the name of the bench folder the session was started in,
+	// only on a bench of more than one live folder (spec 2026-11-18 §6.14);
+	// absent otherwise, and from a Mac older than the key.
+	Folder *string `json:"folder,omitempty"`
+	// ParentSessionID is the session that started this one as a
+	// sub-session; absent for a top-level one. The phone lists
+	// sub-sessions flat, as "from #<id>".
+	ParentSessionID *int64 `json:"parent_session_id,omitempty"`
 }
 
 // publishedSession is one session of the window with its resolved state.
@@ -175,6 +183,8 @@ type publishedSession struct {
 	agent                   agentkind.Kind
 	title                   string
 	targetID                *int64
+	parentID                *int64
+	folder                  *string // the folder's name on a bench of several live folders
 	createdAt, lastActiveAt string
 	finishSummary           string
 	state                   sessionState
@@ -231,7 +241,8 @@ func (s *TerminalSessionSource) payload(p publishedSession, closedAsks int) sess
 		ClosedAsks:    closedAsks,
 		FinishSummary: finish, FinishSummaryClipped: finishClipped,
 		AgentError: agentErr, AgentErrorClipped: agentErrClipped,
-		Phone: sessionagent.CapsOf(string(p.agent)).Phone(),
+		Phone:  sessionagent.CapsOf(string(p.agent)).Phone(),
+		Folder: p.folder, ParentSessionID: p.parentID,
 	}
 	if st.notWatched() {
 		issue, help := st.watchIssue, watchHelp(st.watchIssue)
@@ -299,6 +310,10 @@ func (s *TerminalSessionSource) published(ctx context.Context, tx *sql.Tx) ([]pu
 	for _, r := range refs {
 		workbenches[r.id] = true
 	}
+	folders, err := readBenchFolders(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	live := s.o.Liveness()
 	hidden, over := s.o.View()
 	now := s.o.Now()
@@ -317,7 +332,7 @@ func (s *TerminalSessionSource) published(ctx context.Context, tx *sql.Tx) ([]pu
 	liveChildren := map[int64]int{}
 	err = scanRows(ctx, tx, `
 SELECT s.id, s.project_id, s.kind, s.title, s.target_id, s.created_at, s.last_active_at, s.parent_session_id,
-       s.agent_state, s.agent_state_at, s.finished_at, s.finish_summary, s.agent_failed_at, s.agent_error,
+       s.workbench_folder_id, s.agent_state, s.agent_state_at, s.finished_at, s.finish_summary, s.agent_failed_at, s.agent_error,
        s.agent_background, s.agent_background_at, s.agent_background_shells, COALESCE(s.agent_watch_issue, ''),
        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+`),
        (SELECT MIN(a.id) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+`),
@@ -333,10 +348,11 @@ ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 			p                            publishedSession
 			kind, agentError, watchIssue string
 			target, oldest, parent       sql.NullInt64
+			folderID                     sql.NullInt64
 			row                          sessionstate.Row
 		)
 		if err := r.Scan(&p.id, &p.workbenchID, &kind, &p.title, &target, &p.createdAt, &p.lastActiveAt, &parent,
-			&row.AgentState, &row.AgentStateAt, &row.FinishedAt, &p.finishSummary, &row.AgentFailedAt, &agentError,
+			&folderID, &row.AgentState, &row.AgentStateAt, &row.FinishedAt, &p.finishSummary, &row.AgentFailedAt, &agentError,
 			&row.AgentBackground, &row.AgentBackgroundAt, &row.AgentBackgroundShells, &watchIssue,
 			&row.OpenAsks, &oldest, &row.OpenQuestionAsks, &row.OpenReviewAsks, &row.SpecReviewRound); err != nil {
 			return err
@@ -355,6 +371,8 @@ ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 		}
 		p.agent, _ = agentkind.Parse(kind)
 		p.targetID = nullInt(target)
+		p.parentID = nullInt(parent)
+		p.folder = folders.label(p.workbenchID, folderID)
 		row.ID, row.Kind = p.id, kind
 		if so, ok := over[p.id]; ok {
 			row.DisplayOver = so.holds(start, isLive, row.AgentBackgroundAt)
@@ -378,6 +396,63 @@ ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// benchFolders is every bench's live folders: a session row names its
+// folder only on a bench of more than one (the Desktop's
+// SessionNestingPresentation.folderLabel).
+type benchFolders map[int64]struct {
+	names map[int64]string // live folder id -> name
+	home  string           // the home folder's name: a row with no folder is in it
+}
+
+func readBenchFolders(ctx context.Context, tx *sql.Tx) (benchFolders, error) {
+	out := benchFolders{}
+	// The home folder is the live row at the bench's folder_path; failing
+	// that the lowest position (db.HomeFolder, without a removed one).
+	err := scanRows(ctx, tx, `
+SELECT f.workbench_id, f.id, f.name, (f.folder_path = p.folder_path COLLATE NOCASE)
+FROM workbench_folders f JOIN projects p ON p.id = f.workbench_id
+WHERE f.removed_at IS NULL
+ORDER BY f.workbench_id, f.position, f.id`, nil, func(r *sql.Rows) error {
+		var wb, id int64
+		var name string
+		var isHome bool
+		if err := r.Scan(&wb, &id, &name, &isHome); err != nil {
+			return err
+		}
+		b := out[wb]
+		if b.names == nil {
+			b.names = map[int64]string{}
+		}
+		b.names[id] = name
+		if isHome || b.home == "" {
+			b.home = name
+		}
+		out[wb] = b
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reading the bench folders: %w", err)
+	}
+	return out, nil
+}
+
+// label is the folder name a session row of workbench wb shows; nil on a
+// bench of one folder, and for a folder the bench no longer holds.
+func (b benchFolders) label(wb int64, folder sql.NullInt64) *string {
+	f := b[wb]
+	if len(f.names) < 2 {
+		return nil
+	}
+	if !folder.Valid {
+		return &f.home
+	}
+	name, ok := f.names[folder.Int64]
+	if !ok {
+		return nil
+	}
+	return &name
 }
 
 // stateAt is TerminalSessionSlice.stateAt: the trusted hook stamp, else a
