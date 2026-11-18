@@ -81,7 +81,8 @@ type Latency interface {
 // mailbox's read → apply → token move holds that mailbox's lock (boxLock),
 // so two readers never read one mailbox at once and its token only moves
 // forward; mu is held only while a page's records are applied (the ledger,
-// the handlers, the queue steps), never across a mailbox read but one: the
+// the handlers, the queue steps), never across a mailbox write (a claim
+// lets go of it for its received echo's) nor a mailbox read but one: the
 // read back of held uploads a restart left (recoverHeld); a queue's flush
 // lock (flushLock) keeps that queue's writes in order, and another queue's
 // write goes on. Lock order: run, a mailbox's lock, mu, a queue's flush lock.
@@ -102,6 +103,9 @@ type Processor struct {
 	// queueWait, when set (tests), is called when a queue's flush lock is
 	// found held, before waiting for it.
 	queueWait func(queue string)
+	// muWait, when set (tests), is called when a pass finds mu held, before
+	// waiting for it.
+	muWait func()
 	// failLog keeps a mailbox read that fails every pass to one line per
 	// logreason.RepeatEvery per phone and reason (#1873).
 	failLog *logreason.Limiter
@@ -429,7 +433,7 @@ func (p *Processor) PassEvent(ctx context.Context, ev transport.Event) (PassRepo
 // (Processor.unread).
 func (p *Processor) readEvent(ctx context.Context, ep EventPuller, ev transport.Event, b mailbox, ps *pass) (own bool, readAt time.Time, err error) {
 	defer p.boxLock(b.zone)()
-	p.mu.Lock()
+	p.lockMu()
 	unread := p.unread[b.zone]
 	p.mu.Unlock()
 	if !unread && ep.OwnWrites(ev) {
@@ -519,15 +523,25 @@ func (p *Processor) readBox(ctx context.Context, b mailbox, ps *pass, read func(
 	if err == nil {
 		err = p.readMailboxWith(ctx, b, ps, read)
 	}
-	p.mu.Lock()
+	p.lockMu()
 	p.noteRead(b.zone, err)
 	p.mu.Unlock()
 	return err
 }
 
+// lockMu takes p.mu for a pass's apply.
+func (p *Processor) lockMu() {
+	if !p.mu.TryLock() {
+		if p.muWait != nil {
+			p.muWait()
+		}
+		p.mu.Lock()
+	}
+}
+
 // locked runs f under p.mu.
 func (p *Processor) locked(f func() error) error {
-	p.mu.Lock()
+	p.lockMu()
 	defer p.mu.Unlock()
 	return f()
 }
@@ -681,7 +695,7 @@ func (p *Processor) pull(ctx context.Context, zone string, apply func(transport.
 // records included) is read again next pass.
 func (p *Processor) readMailboxWith(ctx context.Context, b mailbox, ps *pass, read func(apply func(transport.Batch) error) error) error {
 	err := read(func(batch transport.Batch) error {
-		p.mu.Lock()
+		p.lockMu()
 		defer p.mu.Unlock()
 		for i, rec := range batch.Changed {
 			if ps.budget <= 0 {

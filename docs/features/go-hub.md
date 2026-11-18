@@ -696,8 +696,8 @@ and a burst of 8–10 actions/s ran into `rate_limited`. Now:
   so the processor's locks are split: a mailbox zone's read → apply → token move holds that zone's own lock
   (`boxLock`), so the lane and the backstop never read one mailbox together and its token only moves forward, while
   another mailbox's read goes on; `Processor.mu` is held only while a page's records (and the held actions) are
-  applied, never across a mailbox read but the read back of held recording uploads after a restart
-  (`recoverHeld`); each control queue's writes hold that queue's own flush lock (`flushLock`), so one mailbox's
+  applied, never across a mailbox write, nor across a read but the read back of held recording uploads after a
+  restart (`recoverHeld`); each control queue's writes hold that queue's own flush lock (`flushLock`), so one mailbox's
   write never waits for another's, and an event pass writes its own mailbox's queue only (the passes write the
   rest). `LateEcho` decides under `mu` and writes with `mu` released but `run` held shared, so `PauseFor` returns
   only after a late echo already past its pause check has written; that write is bounded by
@@ -706,8 +706,9 @@ and a burst of 8–10 actions/s ran into `rate_limited`. Now:
   `Hygiene` and `PauseFor`'s wait), a mailbox's lock, `mu`, a queue's flush lock. A pass nudges the slice kinds it
   applied (`PublishNow`) before it writes the queued echoes, so the slices' save starts ahead of the applied echo's.
   v1 limits: the daily `Hygiene` holds every pass, the lane's included, while it runs (on CloudKit, its RelayZone
-  sweep); CloudKit's shared `RelayZone` is read under one lock for every phone; a claim's `received` echo is written
-  under `mu`, so other mailboxes' applies wait for that one write (never for another mailbox's).
+  sweep); CloudKit's shared `RelayZone` is read under one lock for every phone. A claim's `received` echo is
+  written with `mu` released (the action is begun in the ledger and its mailbox's lock is held, so nothing else
+  decides it; the handler still runs after the write), so another mailbox's apply never waits for that write.
 - **No read when the event says it all** (`relay.Transport.PullEvent`; zone seqs grow by one per write, so the seqs
   between the stored token and the event's `seq` are exactly the writes not read yet). Already read (`seq` ≤ token):
   nothing. Every seq after the token is one the hub's own `Save` got (`OwnWrites`; kept per zone in memory, at most

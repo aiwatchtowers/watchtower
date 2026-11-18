@@ -102,7 +102,7 @@ func (p *Processor) passShared(ctx context.Context, g zoneGroup, ps *pass) []err
 		errs = p.passError(b, err, errs)
 	}
 	err := p.pull(ctx, g.zone, func(batch transport.Batch) error {
-		p.mu.Lock()
+		p.lockMu()
 		defer p.mu.Unlock()
 		heldBack := false
 		for i, rec := range batch.Changed {
