@@ -26,21 +26,31 @@ type LinearAccount struct {
 	OwnerEmail       string
 	OwnerDisplayName string
 	CreatedAt        string
+	// CompanySlug ties the account to a company bundle's OAuth client; '' =
+	// our shared client (migration 00198).
+	CompanySlug string
 }
 
 const linearAccountColumns = `id, org_id, url_key, org_name, label, status, error, enabled,
-        owner_user_id, owner_email, owner_display_name, created_at`
+        owner_user_id, owner_email, owner_display_name, created_at, company_slug`
 
 func scanLinearAccount(s interface{ Scan(dest ...any) error }) (LinearAccount, error) {
 	var a LinearAccount
 	err := s.Scan(&a.ID, &a.OrgID, &a.URLKey, &a.OrgName, &a.Label, &a.Status, &a.Error, &a.Enabled,
-		&a.OwnerUserID, &a.OwnerEmail, &a.OwnerDisplayName, &a.CreatedAt)
+		&a.OwnerUserID, &a.OwnerEmail, &a.OwnerDisplayName, &a.CreatedAt, &a.CompanySlug)
 	return a, err
 }
 
-// CreateLinearAccount inserts a new, not yet resolved Linear account.
+// CreateLinearAccount inserts a new, not yet resolved Linear account on our
+// shared client.
 func (db *DB) CreateLinearAccount(label string) (int64, error) {
-	res, err := db.Exec(`INSERT INTO linear_accounts (label) VALUES (?)`, strings.TrimSpace(label))
+	return db.CreateLinearAccountForCompany(label, "")
+}
+
+// CreateLinearAccountForCompany inserts a new, not yet resolved Linear account
+// tied to companySlug (” = our shared client).
+func (db *DB) CreateLinearAccountForCompany(label, companySlug string) (int64, error) {
+	res, err := db.Exec(`INSERT INTO linear_accounts (label, company_slug) VALUES (?, ?)`, strings.TrimSpace(label), companySlug)
 	if err != nil {
 		return 0, fmt.Errorf("creating linear account: %w", err)
 	}

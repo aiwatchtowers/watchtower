@@ -26,6 +26,9 @@ type EmailAccount struct {
 	UIDValidity  int64
 	CreatedAt    string
 	UpdatedAt    string
+	// CompanySlug ties an Outlook account to a company bundle's Microsoft
+	// client; '' = our shared client. Always '' for IMAP (migration 00198).
+	CompanySlug string
 }
 
 // ImapMessage is one row of imap_messages.
@@ -57,9 +60,9 @@ type ImapMessage struct {
 // empty a.Label gets the automatic label (MailAccountLabel).
 func (db *DB) CreateEmailAccount(a EmailAccount) (int64, error) {
 	res, err := db.Exec(`INSERT INTO email_accounts
-        (provider, email_address, host, port, security, folder, label)
-        VALUES (?,?,?,?,?,?,?)`,
-		a.Provider, a.EmailAddress, a.Host, a.Port, a.Security, a.Folder, a.Label)
+        (provider, email_address, host, port, security, folder, label, company_slug)
+        VALUES (?,?,?,?,?,?,?,?)`,
+		a.Provider, a.EmailAddress, a.Host, a.Port, a.Security, a.Folder, a.Label, a.CompanySlug)
 	if err != nil {
 		return 0, fmt.Errorf("creating email account: %w", err)
 	}
@@ -74,7 +77,7 @@ func (db *DB) CreateEmailAccount(a EmailAccount) (int64, error) {
 // ListEmailAccounts returns every connected mailbox (imap and outlook), oldest first.
 func (db *DB) ListEmailAccounts() ([]EmailAccount, error) {
 	rows, err := db.Query(`SELECT id, provider, email_address, host, port, security, folder,
-        label, status, error, last_uid, uidvalidity, created_at, updated_at
+        label, status, error, last_uid, uidvalidity, created_at, updated_at, company_slug
         FROM email_accounts ORDER BY id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("listing email accounts: %w", err)
@@ -85,7 +88,7 @@ func (db *DB) ListEmailAccounts() ([]EmailAccount, error) {
 		var a EmailAccount
 		if err := rows.Scan(&a.ID, &a.Provider, &a.EmailAddress, &a.Host, &a.Port, &a.Security,
 			&a.Folder, &a.Label, &a.Status, &a.Error, &a.LastUID, &a.UIDValidity,
-			&a.CreatedAt, &a.UpdatedAt); err != nil {
+			&a.CreatedAt, &a.UpdatedAt, &a.CompanySlug); err != nil {
 			return nil, fmt.Errorf("scanning email account: %w", err)
 		}
 		out = append(out, a)
@@ -97,11 +100,11 @@ func (db *DB) ListEmailAccounts() ([]EmailAccount, error) {
 func (db *DB) GetEmailAccount(id int64) (EmailAccount, error) {
 	var a EmailAccount
 	err := db.QueryRow(`SELECT id, provider, email_address, host, port, security, folder,
-        label, status, error, last_uid, uidvalidity, created_at, updated_at
+        label, status, error, last_uid, uidvalidity, created_at, updated_at, company_slug
         FROM email_accounts WHERE id = ?`, id).
 		Scan(&a.ID, &a.Provider, &a.EmailAddress, &a.Host, &a.Port, &a.Security,
 			&a.Folder, &a.Label, &a.Status, &a.Error, &a.LastUID, &a.UIDValidity,
-			&a.CreatedAt, &a.UpdatedAt)
+			&a.CreatedAt, &a.UpdatedAt, &a.CompanySlug)
 	if err != nil {
 		return EmailAccount{}, fmt.Errorf("getting email account %d: %w", id, err)
 	}

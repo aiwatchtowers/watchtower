@@ -21,6 +21,14 @@ package struct JiraAccount: FetchableRecord, Identifiable, Equatable {
     package let ownerEmail: String
     package let ownerDisplayName: String
 
+    /// The company bundle whose OAuth client this account signed in with
+    /// (`company_slug`, migration 00198); "" = our shared client. Go writes
+    /// it; the app only reads it.
+    package let companySlug: String
+    /// How the account signs in: "oauth" or "api_token" (`auth_kind`,
+    /// migration 00198).
+    package let authKind: String
+
     package init(row: Row) {
         id = row["id"]
         cloudID = row["cloud_id"] ?? ""
@@ -33,6 +41,8 @@ package struct JiraAccount: FetchableRecord, Identifiable, Equatable {
         ownerAccountID = row["owner_account_id"] ?? ""
         ownerEmail = row["owner_email"] ?? ""
         ownerDisplayName = row["owner_display_name"] ?? ""
+        companySlug = row["company_slug"] ?? ""
+        authKind = row["auth_kind"] ?? "oauth"
     }
 
     // MARK: - Status predicates

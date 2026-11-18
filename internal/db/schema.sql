@@ -903,7 +903,10 @@ CREATE TABLE IF NOT EXISTS jira_accounts (
     owner_email                   TEXT NOT NULL DEFAULT '',
     owner_display_name            TEXT NOT NULL DEFAULT '',
     access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
-    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
+    revoked_at        TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
+    company_slug      TEXT NOT NULL DEFAULT '',  -- company bundle (<workspace>/company/<slug>.json) whose OAuth client the account signed in with; '' = our shared client (see 00198)
+    auth_kind         TEXT NOT NULL DEFAULT 'oauth' CHECK (auth_kind IN ('oauth','api_token')),  -- OAuth token or Atlassian API token (see 00198)
+    last_pdr_at       TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC of the last whole-account Personal Data Reporting pass; '' = never (see 00198)
 );
 
 -- Jira boards
@@ -1074,7 +1077,8 @@ CREATE TABLE IF NOT EXISTS linear_accounts (
     moved_watermark          TEXT NOT NULL DEFAULT '',  -- moved-issue reconcile cursor; advances only on success
     created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
-    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
+    revoked_at        TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
+    company_slug      TEXT NOT NULL DEFAULT ''   -- company bundle (<workspace>/company/<slug>.json) whose OAuth client the account signed in with; '' = our shared client (see 00198)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_linear_accounts_org ON linear_accounts(org_id) WHERE org_id != '';
 
@@ -1570,7 +1574,8 @@ CREATE TABLE IF NOT EXISTS google_accounts (
     created_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
-    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
+    revoked_at        TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
+    company_slug      TEXT NOT NULL DEFAULT ''   -- company bundle (<workspace>/company/<slug>.json) whose OAuth client the account signed in with; '' = our shared client (see 00198)
 );
 
 -- Multi-account Slack source: one row per connected Slack workspace.
@@ -1594,7 +1599,8 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     roster_synced_at  TEXT NOT NULL DEFAULT '',  -- last full users.list roster fetch (sync and sync --users-only); '' = never
     deletion_sweep_day TEXT NOT NULL DEFAULT '',  -- last UTC day (YYYY-MM-DD) the Slack deletion sweep finished (see 00139)
     access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
-    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
+    revoked_at        TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
+    company_slug      TEXT NOT NULL DEFAULT ''   -- company bundle (<workspace>/company/<slug>.json) whose OAuth client the account signed in with; '' = our shared client (see 00198)
 );
 
 -- Multi-account IMAP/Outlook email source: one row per connected mailbox
@@ -1616,7 +1622,8 @@ CREATE TABLE IF NOT EXISTS email_accounts (
     uidvalidity    INTEGER NOT NULL DEFAULT 0,    -- IMAP UIDVALIDITY; a change means last_uid must reset
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    ideas_email_floor REAL NOT NULL DEFAULT 0     -- ideas registry floor: unix seconds of the newest imap_messages.internal_date the email pre-digest mined (see 00135)
+    ideas_email_floor REAL NOT NULL DEFAULT 0,    -- ideas registry floor: unix seconds of the newest imap_messages.internal_date the email pre-digest mined (see 00135)
+    company_slug   TEXT NOT NULL DEFAULT ''       -- Outlook only: company bundle whose Microsoft client the account signed in with; '' = our shared client (see 00198)
 );
 
 CREATE TABLE IF NOT EXISTS imap_messages (

@@ -14,10 +14,15 @@ package struct LinearAccount: Decodable, Equatable, Identifiable, Sendable {
     package let error: String
     /// "oauth" | "api_key" | "" (no token file) | "error" (unreadable token file)
     package let auth: String
+    /// The company bundle whose OAuth client this account signed in with
+    /// (`company_slug`, migration 00198); "" = our shared client. Go writes
+    /// it; the app only reads it.
+    package let companySlug: String
 
     enum CodingKeys: String, CodingKey {
         case id, label, url, status, enabled, error, auth
         case orgName = "org_name"
+        case companySlug = "company_slug"
     }
 
     package init(
@@ -28,7 +33,8 @@ package struct LinearAccount: Decodable, Equatable, Identifiable, Sendable {
         status: String = "ok",
         enabled: Bool = true,
         error: String = "",
-        auth: String = "oauth"
+        auth: String = "oauth",
+        companySlug: String = ""
     ) {
         self.id = id
         self.label = label
@@ -38,6 +44,22 @@ package struct LinearAccount: Decodable, Equatable, Identifiable, Sendable {
         self.enabled = enabled
         self.error = error
         self.auth = auth
+        self.companySlug = companySlug
+    }
+
+    /// `company_slug` is optional so a CLI older than migration 00198 still
+    /// decodes.
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int64.self, forKey: .id)
+        label = try c.decode(String.self, forKey: .label)
+        orgName = try c.decode(String.self, forKey: .orgName)
+        url = try c.decode(String.self, forKey: .url)
+        status = try c.decode(String.self, forKey: .status)
+        enabled = try c.decode(Bool.self, forKey: .enabled)
+        error = try c.decode(String.self, forKey: .error)
+        auth = try c.decode(String.self, forKey: .auth)
+        companySlug = try c.decodeIfPresent(String.self, forKey: .companySlug) ?? ""
     }
 
     package var displayName: String {

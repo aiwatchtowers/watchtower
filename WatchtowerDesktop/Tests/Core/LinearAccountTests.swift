@@ -25,6 +25,21 @@ final class LinearAccountTests: XCTestCase {
         XCTAssertEqual(accounts[1].authLabel, "Signed in with Linear")
     }
 
+    /// `company_slug` (migration 00198) decodes when present and defaults to
+    /// "" for a CLI that predates it.
+    func testDecodesCompanySlugAndToleratesItsAbsence() throws {
+        let json = """
+            [
+              {"id": 1, "label": "", "org_name": "Acme", "url": "", "status": "ok",
+               "enabled": true, "error": "", "auth": "oauth", "company_slug": "acme"},
+              {"id": 2, "label": "", "org_name": "Beta", "url": "", "status": "ok",
+               "enabled": true, "error": "", "auth": "oauth"}
+            ]
+            """
+        let accounts = try LinearAccount.decodeList(Data(json.utf8))
+        XCTAssertEqual(accounts.map(\.companySlug), ["acme", ""])
+    }
+
     /// The CLI prints `[]`, never `null`, for no accounts.
     func testEmptyListDecodes() throws {
         XCTAssertEqual(try LinearAccount.decodeList(Data("[]\n".utf8)), [])

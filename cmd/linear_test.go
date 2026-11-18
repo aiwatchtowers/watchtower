@@ -54,10 +54,10 @@ func TestPrintLinearAccountsJSON(t *testing.T) {
 	assert.Equal(t, "https://linear.app/acme", rows[0]["url"])
 	// The Desktop's Settings → Linear decodes every key, `auth` included
 	// (Swift `LinearAccount`).
-	for _, k := range []string{"id", "label", "org_name", "url", "status", "enabled", "error", "auth"} {
+	for _, k := range []string{"id", "label", "org_name", "url", "status", "enabled", "error", "auth", "company_slug"} {
 		assert.Contains(t, rows[0], k)
 	}
-	assert.Len(t, rows[0], 8, "a new key needs its Swift decoder field")
+	assert.Len(t, rows[0], 9, "a new key needs its Swift decoder field")
 }
 
 // The Desktop decodes `linear teams --json` (Swift `LinearTeam`): the keys
