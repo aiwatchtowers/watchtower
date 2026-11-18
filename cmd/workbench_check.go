@@ -130,19 +130,60 @@ func runWorkbenchCheck(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// checkWorkbench loads workbench id's board and checks it in the
-// workbench's folder; o.Folder is filled in here.
+// checkWorkbench loads workbench id's board and checks each target in its
+// folder; o.Folder (the home folder) and o.FolderOf are filled in here. A
+// home folder gone from disk is no failure: the check skips it (Report.Skipped)
+// and still checks the targets of the bench's other folders.
 func checkWorkbench(ctx context.Context, database *db.DB, id int64, o workbenchcheck.Options) (workbenchcheck.Report, error) {
-	p, err := workbenchWithFolder(database, id)
+	p, err := database.GetWorkbench(id)
 	if err != nil {
-		return workbenchcheck.Report{}, err
+		return workbenchcheck.Report{}, fmt.Errorf("workbench %d: %w", id, err)
 	}
 	board, err := database.GetWorkbenchBoard(p.ID)
 	if err != nil {
 		return workbenchcheck.Report{}, fmt.Errorf("loading board: %w", err)
 	}
 	o.Folder = p.FolderPath
+	if o.FolderOf, err = targetFolders(ctx, database, p.ID, board); err != nil {
+		return workbenchcheck.Report{}, err
+	}
 	return workbenchcheck.Check(ctx, p.ID, board, o), nil
+}
+
+// targetFolders is the drift check's FolderOf for workbench workbenchID's
+// board (PROJ-07, spec 2026-11-18 §6.10): a target's own folder row, live
+// or removed; a target with no folder (or one whose row is gone) is the
+// home folder, which Check reads as Options.Folder.
+func targetFolders(ctx context.Context, database *db.DB, workbenchID int64, board []db.BoardNode) (func(int64) (string, bool), error) {
+	folders, err := database.WorkbenchFolders(ctx, workbenchID, true)
+	if err != nil {
+		return nil, fmt.Errorf("loading the folders of workbench %d: %w", workbenchID, err)
+	}
+	byID := make(map[int64]db.WorkbenchFolder, len(folders))
+	for _, f := range folders {
+		byID[f.ID] = f
+	}
+	type place struct {
+		path    string
+		removed bool
+	}
+	of := map[int64]place{}
+	var walk func([]db.BoardNode)
+	walk = func(level []db.BoardNode) {
+		for _, n := range level {
+			if id := n.Target.WorkbenchFolderID; id.Valid {
+				if f, ok := byID[id.Int64]; ok {
+					of[int64(n.Target.ID)] = place{path: f.FolderPath, removed: f.RemovedAt.Valid}
+				}
+			}
+			walk(n.Children)
+		}
+	}
+	walk(board)
+	return func(targetID int64) (string, bool) {
+		p := of[targetID]
+		return p.path, p.removed
+	}, nil
 }
 
 // workbenchWithFolder loads workbench id and checks that its folder still
@@ -563,6 +604,8 @@ func stopHookDrift(ctx context.Context, stdout, stderr io.Writer, database *db.D
 		return false
 	case rep.Incomplete:
 		fmt.Fprintf(stderr, "watchtower: board drift check ran out of time after %s; only part of the board was checked\n", stopHookBudget)
+	case len(rep.Skipped) > 0:
+		fmt.Fprintf(stderr, "watchtower: board drift check skipped %s\n", skippedFolders(rep.Skipped))
 	}
 	findings := rep.BlockingFindings()
 	if len(findings) == 0 {
@@ -570,6 +613,16 @@ func stopHookDrift(ctx context.Context, stdout, stderr io.Writer, database *db.D
 	}
 	_ = json.NewEncoder(stdout).Encode(stopHookOutput{Decision: "block", Reason: stopHookReason(id, findings)})
 	return true
+}
+
+// skippedFolders lists the folders whose branch checks did not run, as
+// "in <folder> (<reason>); in <folder> (<reason>)".
+func skippedFolders(skipped []workbenchcheck.FolderSkip) string {
+	parts := make([]string, 0, len(skipped))
+	for _, s := range skipped {
+		parts = append(parts, "in "+s.Folder+" ("+s.Reason+")")
+	}
+	return strings.Join(parts, "; ")
 }
 
 // stopHookInvalidID reports a bad --workbench: the drift check it skips

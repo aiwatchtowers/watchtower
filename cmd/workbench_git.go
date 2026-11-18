@@ -13,6 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/db"
+	"watchtower/internal/workbenchfolders"
 	"watchtower/internal/workbenchgit"
 )
 
@@ -39,7 +41,9 @@ var workbenchGitCmd = &cobra.Command{
 		"workbench and its folder resolve; a refusal is in the output, not the exit code.\n" +
 		"--folder F runs the command in the worktree of the repository that holds F (a\n" +
 		"session's worktree); a folder outside the repository's worktrees is refused\n" +
-		"(`folder_not_a_worktree`) — `status` reports it and shows the workbench folder.",
+		"(`folder_not_a_worktree`) — `status` reports it and shows the workbench folder.\n" +
+		"On a bench with several folders --workbench-folder F (id, name or path) picks the\n" +
+		"folder whose repository is used; without it --folder's own folder is, else the home folder.",
 }
 
 var workbenchGitStatusCmd = &cobra.Command{
@@ -109,6 +113,7 @@ var (
 	workbenchGitFlagConfirmAgent bool
 	workbenchGitFlagName         string
 	workbenchGitFlagFolder       string
+	workbenchGitFlagBenchFolder  string
 	workbenchGitFlagUnattended   bool
 )
 
@@ -121,6 +126,8 @@ func init() {
 		c.Flags().BoolVar(&workbenchGitFlagJSON, "json", false, "output JSON")
 		c.Flags().StringVar(&workbenchGitFlagFolder, "folder", "",
 			"an absolute folder in one of the repository's worktrees (a session's); default the workbench folder")
+		c.Flags().StringVar(&workbenchGitFlagBenchFolder, "workbench-folder", "",
+			"the bench folder whose repository to use (id, name or path); default the folder holding --folder, else the home folder")
 		workbenchGitCmd.AddCommand(c)
 	}
 	for _, c := range []*cobra.Command{workbenchGitSwitchCmd, workbenchGitCheckoutCmd} {
@@ -155,12 +162,45 @@ func workbenchGitTarget(ctx context.Context) (
 		return 0, o, folder, nil, err
 	}
 	defer database.Close()
-	p, err := workbenchWithFolder(database, id)
+	bench, err := workbenchGitBench(ctx, database, id)
 	if err != nil {
 		return 0, o, folder, nil, err
 	}
-	folder, resolveErr = workbenchgit.ResolveFolder(ctx, workbenchgit.Options{Folder: p.FolderPath}, workbenchGitFlagFolder)
+	// No git runs in a missing folder (ResolveFolder only lists the
+	// worktrees of a repository); only the folder chosen must exist, so a
+	// moved home folder does not block the bench's other folders.
+	folder, resolveErr = workbenchgit.ResolveFolder(ctx, bench, workbenchGitFlagFolder)
+	if _, err := os.Stat(folder.FolderPath); err != nil {
+		return 0, o, folder, nil, fmt.Errorf("workbench %d: folder %s is missing (moved or deleted?)", id, folder.FolderPath)
+	}
 	return id, workbenchgit.Options{Folder: folder.Root}, folder, resolveErr, nil
+}
+
+// workbenchGitBench is the repository choice for ResolveFolder:
+// --workbench-folder's folder (id, name or path; a refusal such as
+// not_found or folder_removed exits non-zero), else the bench's folders
+// with the home folder first when --folder names a path (the folder
+// holding it is chosen), else the home folder.
+func workbenchGitBench(ctx context.Context, database *db.DB, id int64) (workbenchgit.Options, error) {
+	p, err := database.GetWorkbench(id)
+	if err != nil {
+		return workbenchgit.Options{}, fmt.Errorf("workbench %d: %w", id, err)
+	}
+	if ref := strings.TrimSpace(workbenchGitFlagBenchFolder); ref != "" {
+		f, err := workbenchfolders.Resolve(ctx, database, id, ref)
+		if err != nil {
+			return workbenchgit.Options{}, err //nolint:wrapcheck // a Refusal reads "<code>: <sentence>" (D42)
+		}
+		return workbenchgit.Options{Folder: f.FolderPath}, nil
+	}
+	if workbenchGitFlagFolder == "" {
+		return workbenchgit.Options{Folder: p.FolderPath}, nil
+	}
+	folders, err := workbenchfolders.GitFolders(ctx, database, p.ID, p.FolderPath)
+	if err != nil {
+		return workbenchgit.Options{}, err //nolint:wrapcheck // db's message names the workbench
+	}
+	return workbenchgit.Options{Folders: folders}, nil
 }
 
 // resolveErrText is resolveErr as the envelope reports it: the folder's

@@ -758,3 +758,326 @@ func TestCheck_BatchReadDeadlineIsIncomplete(t *testing.T) {
 		t.Fatalf("want incomplete with no findings, got incomplete=%v %+v", r.Incomplete, r.Findings)
 	}
 }
+
+// hubRepo is a second repository on main with a branch "hubonly" holding
+// one commit main lacks, and a branch "open" of its own; no other
+// repository has "hubonly".
+func hubRepo(t *testing.T) string {
+	t.Helper()
+	gitEnv(t)
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-q", "-b", "main")
+	commitFile(t, dir, "hub.md", "hub\n", "init")
+	gitRun(t, dir, "checkout", "-q", "-b", "hubonly")
+	commitFile(t, dir, "h.txt", "h\n", "h")
+	gitRun(t, dir, "checkout", "-q", "-b", "open", "main")
+	commitFile(t, dir, "o.txt", "o\n", "o")
+	gitRun(t, dir, "checkout", "-q", "main")
+	return dir
+}
+
+// countingRunner is ExecRunner counting the repository probes (rev-parse
+// --is-inside-work-tree) per folder; gh is never found.
+func countingRunner(probes map[string]int) Runner {
+	return func(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
+		if name == "gh" {
+			return nil, -1, exec.ErrNotFound
+		}
+		if slices.Equal(args, []string{"rev-parse", "--is-inside-work-tree"}) {
+			probes[dir]++
+		}
+		return ExecRunner(ctx, dir, stdin, name, args...)
+	}
+}
+
+// Spec 2026-11-18 §6.10: each target's branch is read in the repository of
+// its own folder, and each folder is probed once however many targets it
+// holds.
+func TestProj07_ChecksRunInTheTargetsFolder(t *testing.T) {
+	app, hub := newRepo(t), hubRepo(t)
+	board := []db.BoardNode{
+		node(1, "in_progress", "merged", time.Hour),  // app: merged into app's main
+		node(2, "in_progress", "hubonly", time.Hour), // hub: open work there
+		node(3, "in_progress", "hubonly", time.Hour), // app (no folder): app has no hubonly
+		node(4, "in_review", "hubonly", time.Hour),   // hub again: no second probe
+	}
+	folderOf := func(id int64) (string, bool) {
+		if id == 2 || id == 4 {
+			return hub, false
+		}
+		return "", false // the home folder
+	}
+	probes := map[string]int{}
+	r := Check(context.Background(), 1, board, Options{Folder: app, FolderOf: folderOf, Now: testNow, Run: countingRunner(probes)})
+	got := kinds(r)
+	if !slices.Equal(got[1], []string{KindMergedOpen}) {
+		t.Errorf("target 1 (app): %v, want merged_but_open", got[1])
+	}
+	if len(got[2]) != 0 || len(got[4]) != 0 {
+		t.Errorf("targets 2 and 4 (hub): %v / %v, want none: hubonly is open work in hub", got[2], got[4])
+	}
+	if !slices.Equal(got[3], []string{KindBranchMissing}) {
+		t.Errorf("target 3 (app): %v, want branch_missing", got[3])
+	}
+	if probes[app] != 1 || probes[hub] != 1 {
+		t.Errorf("probes per folder %v, want one each", probes)
+	}
+	if !r.Git || r.Base != "main" {
+		t.Errorf("the report's repository fields are the home folder's: git %v base %q", r.Git, r.Base)
+	}
+
+	// The same branch name in two folders is two pieces of work: open work
+	// on hub's "open" does not excuse a done target on app's "open".
+	board = []db.BoardNode{node(5, "done", "open", time.Hour), node(6, "in_progress", "open", time.Hour)}
+	r = Check(context.Background(), 1, board, Options{Folder: app, Now: testNow, Run: countingRunner(map[string]int{}),
+		FolderOf: func(id int64) (string, bool) {
+			if id == 6 {
+				return hub, false
+			}
+			return app, false
+		}})
+	got = kinds(r)
+	if !slices.Equal(got[5], []string{KindDoneUnmerged}) {
+		t.Errorf("target 5: %v, want done_but_unmerged (hub's open work is not app's)", got[5])
+	}
+	if len(got[6]) != 0 {
+		t.Errorf("target 6: %v, want none: hub's open is open work", got[6])
+	}
+}
+
+// Spec 2026-11-18 §6.3: a target whose folder left the bench reports
+// folder_removed for its branch/PR: never a git verdict, never a command
+// run in that folder, and never a finding the Stop hook blocks on.
+func TestProj07_RemovedFolderReportsFolderRemoved(t *testing.T) {
+	app := newRepo(t)
+	gone := filepath.Join(t.TempDir(), "hub")
+	pr := node(3, "in_progress", "", time.Hour)
+	pr.Target.PR = "#7"
+	board := []db.BoardNode{
+		node(1, "in_progress", "merged", time.Hour),
+		node(2, "in_progress", "nowhere", time.Hour),
+		pr,
+		node(4, "todo", "", time.Hour), // nothing to check: no finding
+	}
+	var dirs []string
+	probes := map[string]int{}
+	counting := countingRunner(probes)
+	run := func(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
+		dirs = append(dirs, dir)
+		return counting(ctx, dir, stdin, name, args...)
+	}
+	folderOf := func(id int64) (string, bool) {
+		if id == 1 {
+			return "", false
+		}
+		return gone, true
+	}
+	r := Check(context.Background(), 1, board, Options{Folder: app, FolderOf: folderOf, Now: testNow, Network: true, Run: run})
+	got := kinds(r)
+	if !slices.Equal(got[1], []string{KindMergedOpen}) {
+		t.Errorf("target 1 (home): %v", got[1])
+	}
+	for _, id := range []int{2, 3} {
+		if !slices.Equal(got[id], []string{KindFolderRemoved}) {
+			t.Errorf("target %d: %v, want only folder_removed", id, got[id])
+		}
+	}
+	if len(got[4]) != 0 {
+		t.Errorf("target 4 carries no branch or PR: %v", got[4])
+	}
+	lines := map[int]string{}
+	for _, f := range r.Findings {
+		if f.Kind != KindFolderRemoved {
+			continue
+		}
+		lines[f.TargetID] = f.Line()
+		if f.Blocking() {
+			t.Errorf("folder_removed must never block a turn: %+v", f)
+		}
+	}
+	if !strings.Contains(lines[2], "folder removed: "+gone) || !strings.Contains(lines[2], "branch nowhere") {
+		t.Errorf("line %q", lines[2])
+	}
+	if !strings.Contains(lines[3], "pull request #7") {
+		t.Errorf("the PR-only finding names the PR: %q", lines[3])
+	}
+	if b := r.BlockingFindings(); len(b) != 1 || b[0].TargetID != 1 {
+		t.Errorf("blocking: %+v, want only target 1's", b)
+	}
+	if slices.Contains(dirs, gone) {
+		t.Errorf("a command ran in the removed folder: %v", dirs)
+	}
+}
+
+// A folder whose branch checks cannot run — gone from disk, no repository —
+// is named in Report.Skipped, the home folder too when it is gone; the
+// other folders' targets are still checked.
+func TestProj07_SkippedFoldersAreReported(t *testing.T) {
+	app := newRepo(t)
+	plain := t.TempDir() // a folder on the bench that is no repository
+	gone := filepath.Join(t.TempDir(), "gone")
+	board := []db.BoardNode{
+		node(1, "in_progress", "merged", time.Hour),
+		node(2, "in_progress", "x", time.Hour),
+		node(3, "in_progress", "y", time.Hour),
+		node(4, "in_progress", "", time.Hour), // no branch: its folder is never probed
+	}
+	at := map[int64]string{2: plain, 3: gone, 4: filepath.Join(t.TempDir(), "never")}
+	var dirs []string
+	run := func(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
+		dirs = append(dirs, dir)
+		return ExecRunner(ctx, dir, stdin, name, args...)
+	}
+	r := Check(context.Background(), 1, board, Options{Folder: app, Now: testNow, Run: run,
+		FolderOf: func(id int64) (string, bool) { return at[id], false }})
+	if got := kinds(r); !slices.Equal(got[1], []string{KindMergedOpen}) || len(got[2]) != 0 || len(got[3]) != 0 {
+		t.Fatalf("findings %v", got)
+	}
+	want := []FolderSkip{
+		{Folder: plain, Reason: "the folder is not a git work tree; branch checks skipped"},
+		{Folder: gone, Reason: missingFolderNote},
+	}
+	if !slices.Equal(r.Skipped, want) {
+		t.Errorf("skipped %+v, want %+v", r.Skipped, want)
+	}
+	if slices.Contains(dirs, gone) {
+		t.Errorf("a command ran in the missing folder")
+	}
+
+	// The home folder gone: skipped, and another folder's target still gets
+	// its verdict.
+	at = map[int64]string{1: app}
+	board = []db.BoardNode{node(1, "in_progress", "merged", time.Hour), node(2, "in_progress", "z", time.Hour)}
+	r = Check(context.Background(), 1, board, Options{Folder: gone, Now: testNow,
+		FolderOf: func(id int64) (string, bool) { return at[id], false }})
+	if got := kinds(r); !slices.Equal(got[1], []string{KindMergedOpen}) || len(got[2]) != 0 {
+		t.Errorf("findings %v", got)
+	}
+	if !slices.Equal(r.Skipped, []FolderSkip{{Folder: gone, Reason: missingFolderNote}}) || r.Git {
+		t.Errorf("home gone: skipped %+v git %v", r.Skipped, r.Git)
+	}
+	if r.Skipped == nil {
+		t.Error("Skipped is never nil (JSON [])")
+	}
+}
+
+// One gh sign-in probe and one ghBudget serve every folder of a check; a
+// folder with no pull request target never runs gh.
+func TestCheck_OneGHSessionAcrossFolders(t *testing.T) {
+	gitEnv(t)
+	home, hub, plain := t.TempDir(), t.TempDir(), t.TempDir()
+	start := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	now := start
+	var auth int
+	ghDirs := map[string]int{}
+	run := func(_ context.Context, dir string, _ []byte, name string, args ...string) ([]byte, int, error) {
+		if name != "gh" {
+			return nil, 128, os.ErrNotExist
+		}
+		ghDirs[dir]++
+		if args[0] == "auth" {
+			auth++
+			return nil, 0, nil
+		}
+		now = now.Add(ghBudget + time.Second) // the first read spends the whole budget
+		return []byte(`{"state":"MERGED"}`), 0, nil
+	}
+	withPR := func(id int, ref string) db.BoardNode {
+		n := node(id, "in_progress", "", time.Hour)
+		n.Target.PR = ref
+		return n
+	}
+	board := []db.BoardNode{withPR(1, "#1"), withPR(2, "#2"), node(3, "in_progress", "feature/x", time.Hour)}
+	at := map[int64]string{2: hub, 3: plain}
+	r := Check(context.Background(), 1, board, Options{Folder: home, Now: testNow, Network: true, Run: run,
+		clock: func() time.Time { return now }, FolderOf: func(id int64) (string, bool) { return at[id], false }})
+	if auth != 1 {
+		t.Errorf("gh auth status ran %d times, want once", auth)
+	}
+	if ghDirs[plain] != 0 {
+		t.Errorf("gh ran in a folder with no pull request target: %v", ghDirs)
+	}
+	got := kinds(r)
+	if !slices.Equal(got[1], []string{KindMergedOpen}) {
+		t.Errorf("target 1: %v", got[1])
+	}
+	if len(got[2]) != 0 || ghDirs[hub] != 0 {
+		t.Errorf("target 2 read after the shared budget was spent: %v, gh in hub %d", got[2], ghDirs[hub])
+	}
+	if r.PRChecked || !strings.Contains(strings.Join(r.Notes, "\n"), hub+": the state of 1 pull request(s) could not be read (the gh time budget was spent)") {
+		t.Errorf("pr_checked %v notes %v", r.PRChecked, r.Notes)
+	}
+}
+
+// A missing home folder never reads as "gh not signed in": the sign-in
+// probe runs from a directory that exists, and the other folders' pull
+// requests are still read.
+func TestCheck_GHProbeRunsFromAnExistingDirectory(t *testing.T) {
+	gitEnv(t)
+	gone, hub := filepath.Join(t.TempDir(), "gone"), t.TempDir()
+	var authDir string
+	run := func(_ context.Context, dir string, _ []byte, name string, args ...string) ([]byte, int, error) {
+		if name != "gh" {
+			return nil, 128, os.ErrNotExist
+		}
+		if _, err := os.Stat(dir); err != nil {
+			return nil, -1, err // exec fails in a missing working directory
+		}
+		if args[0] == "auth" {
+			authDir = dir
+			return nil, 0, nil
+		}
+		return []byte(`{"state":"MERGED"}`), 0, nil
+	}
+	n := node(1, "in_progress", "", time.Hour)
+	n.Target.PR = "#5"
+	r := Check(context.Background(), 1, []db.BoardNode{n}, Options{Folder: gone, Now: testNow, Network: true, Run: run,
+		FolderOf: func(int64) (string, bool) { return hub, false }})
+	if authDir != os.TempDir() {
+		t.Errorf("auth probe ran in %q, want %q", authDir, os.TempDir())
+	}
+	if !r.PRChecked || !slices.Equal(kinds(r)[1], []string{KindMergedOpen}) {
+		t.Errorf("pr_checked %v findings %v notes %v", r.PRChecked, r.Findings, r.Notes)
+	}
+}
+
+// Each gh call's timeout is at most what is left of the shared budget, so
+// all the reads together never pass ghBudget.
+func TestCheck_GHCallTimeoutCappedByTheSharedBudget(t *testing.T) {
+	gitEnv(t)
+	home := t.TempDir()
+	start := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	now := start
+	var timeouts []time.Duration
+	run := func(ctx context.Context, _ string, _ []byte, name string, args ...string) ([]byte, int, error) {
+		if name != "gh" {
+			return nil, 128, os.ErrNotExist
+		}
+		if args[0] == "auth" {
+			return nil, 0, nil
+		}
+		dl, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("a gh call without a deadline")
+		}
+		timeouts = append(timeouts, time.Until(dl))
+		now = now.Add(ghBudget - 3*time.Second) // the first read leaves 3 s of the budget
+		return []byte(`{"state":"OPEN"}`), 0, nil
+	}
+	pr := func(id int, ref string) db.BoardNode {
+		n := node(id, "in_progress", "", time.Hour)
+		n.Target.PR = ref
+		return n
+	}
+	Check(context.Background(), 1, []db.BoardNode{pr(1, "#1"), pr(2, "#2")}, Options{Folder: home, Now: testNow, Network: true,
+		Run: run, clock: func() time.Time { return now }})
+	if len(timeouts) != 2 {
+		t.Fatalf("gh reads %d, want 2", len(timeouts))
+	}
+	if timeouts[0] <= 3*time.Second || timeouts[0] > ghCallTimeout {
+		t.Errorf("first call's timeout %v, want the full %v", timeouts[0], ghCallTimeout)
+	}
+	if timeouts[1] <= 0 || timeouts[1] > 3*time.Second {
+		t.Errorf("second call's timeout %v, want at most the 3 s left of the budget", timeouts[1])
+	}
+}
