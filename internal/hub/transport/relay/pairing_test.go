@@ -1,9 +1,12 @@
 package relay
 
 import (
+	"errors"
 	"slices"
 	"testing"
 
+	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/relay/client"
 	"watchtower/internal/hub/transport/relay/relayv1"
 )
 
@@ -86,5 +89,21 @@ func TestRelayTransport_SetLinkedReadersKeepsSlottedPhones(t *testing.T) {
 	}
 	if got := h.relay.Readers(); len(got) != 2 {
 		t.Fatalf("readers sent without an account state: %v", got)
+	}
+}
+
+// TestRelayTransport_WatchZoneWhileDisconnectedIsQueued: a subscription the
+// client only queued for its next connect (it is disconnected) reads as
+// transport.ErrWatchQueued, never as a confirmed one; the relay's own
+// refusal stays an error of its own.
+func TestRelayTransport_WatchZoneWhileDisconnectedIsQueued(t *testing.T) {
+	if err := watchResult(client.ErrDisconnected); !errors.Is(err, transport.ErrWatchQueued) {
+		t.Fatalf("disconnected: %v, want ErrWatchQueued", err)
+	}
+	if err := watchResult(nil); err != nil {
+		t.Fatalf("confirmed: %v", err)
+	}
+	if err := watchResult(errors.New("refused")); err == nil || errors.Is(err, transport.ErrWatchQueued) {
+		t.Fatalf("refused: %v", err)
 	}
 }

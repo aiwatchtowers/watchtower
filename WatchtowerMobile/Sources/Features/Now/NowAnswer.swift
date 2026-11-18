@@ -33,17 +33,31 @@ enum NowAnswer: Equatable {
 
     /// The ask's newest `ask_answer` row decides (`AskFormModel.status`'s rule): a pending one is on its way, a
     /// failed one (a refusal, Not delivered, the Mac's error) offers Retry. With none, an answer being written
-    /// (`writing`) reads as sending; else the quick answers, if any.
-    static func of(_ ask: OwnerAsk, pending: [PendingAction], flushStopped: Bool, macOnline: Bool, writing: Bool) -> Self {
+    /// (`writing`) or one the Mac applied whose ask the replica still shows open (`overlay`, live link R5) reads
+    /// as sending; else the quick answers, if any. A live overlay's caption names the answer it sends.
+    static func of(
+        _ ask: OwnerAsk,
+        pending: [PendingAction],
+        flushStopped: Bool,
+        macOnline: Bool,
+        writing: Bool,
+        overlay: PendingOverlay? = nil
+    ) -> Self {
         let entity = AskAnswerer.recordName(ask.id)
-        guard let row = pending.last(where: { $0.action.kind == .askAnswer && $0.entityRecordName == entity }) else {
-            if writing { return .sending(sendingText) }
+        let label = overlay?.answerLabel
+        let newest = pending.last { $0.action.kind == .askAnswer && $0.entityRecordName == entity }
+        // A live overlay newer than the newest row (a resend after a refusal, before its row exists) decides.
+        let row = newest.flatMap { row in
+            overlay.map { $0.actionID != row.id && $0.createdAt > row.action.createdAt } == true ? nil : row
+        }
+        guard let row else {
+            if writing || overlay != nil { return .sending(WorkbenchReplicaSnapshot.sendingCaption(sendingText, answer: label)) }
             return chipsOrForm(ask.quick?.options.map { InlineAskOption(id: $0.label, label: $0.label, isRecommended: $0.recommended) })
         }
         switch row.state {
         case .pending:
             if row.delivery == .queued, flushStopped { return .waitingToSend }
-            return .sending(macOnline ? sendingText : waitingForMacText)
+            return .sending(WorkbenchReplicaSnapshot.sendingCaption(macOnline ? sendingText : waitingForMacText, answer: label))
         case .failed:
             return .notDelivered(rowID: row.id)
         }

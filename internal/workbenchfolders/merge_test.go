@@ -377,9 +377,18 @@ func TestMergeReKeysTheChats(t *testing.T) {
 	home := chat("review_reviewer", bs+":main")
 	folder := chat("review_reviewer", bs+":f"+strconv.FormatInt(bHome, 10)+":wt/fix")
 	mine := chat("review_reviewer", as+":main")
+	for _, status := range []string{"pending", "approved", "applied", "rejected", "failed"} {
+		_, err := d.Exec(`INSERT INTO agent_actions (tool, args_json, context_type, context_id, status)
+			VALUES ('update_target', '{}', 'project', ?, ?)`, bs, status)
+		require.NoError(t, err)
+	}
 
 	_, err := Merge(ctx, d, b, a, nil)
 	require.NoError(t, err)
+	assert.Equal(t, 2, countRows(t, d, `SELECT COUNT(*) FROM agent_actions WHERE context_type = 'project' AND context_id = ?
+		AND status IN ('pending', 'approved')`, as), "B's open action proposals belong to A now")
+	assert.Equal(t, 3, countRows(t, d, `SELECT COUNT(*) FROM agent_actions WHERE context_type = 'project' AND context_id = ?`, bs),
+		"decided rows keep B's attribution: audit rows outlive their workbench")
 	key := func(id int64) string {
 		var k string
 		require.NoError(t, d.QueryRow(`SELECT context_id FROM chat_conversations WHERE id = ?`, id).Scan(&k))
@@ -402,6 +411,9 @@ func TestMergeIsAllOrNothing(t *testing.T) {
 	parent := insertTarget(t, d, b, "parent", "todo", 0, 0)
 	insertTarget(t, d, b, "child", "done", parent, 0)
 	insertColumn(t, d, b, "todo", "Later", 0)
+	bs := strconv.FormatInt(b, 10)
+	_, err := d.Exec(`INSERT INTO agent_actions (tool, args_json, context_type, context_id) VALUES ('update_target', '{}', 'project', ?)`, bs)
+	require.NoError(t, err)
 	t.Cleanup(func() { mergeStepHook = nil })
 	// The same bench is merged again and again, failing one table later
 	// each time: every earlier table had moved when it fails.
@@ -426,6 +438,7 @@ func TestMergeIsAllOrNothing(t *testing.T) {
 		assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM workbench_folders WHERE workbench_id = ?`, b), step)
 		assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM workbench_board_columns WHERE project_id = ?`, b), step)
 		assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?`, rollupTrigger), step)
+		assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM agent_actions WHERE context_type = 'project' AND context_id = ?`, bs), step)
 	}
 }
 

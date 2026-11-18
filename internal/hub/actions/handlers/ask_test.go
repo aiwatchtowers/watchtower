@@ -625,6 +625,24 @@ func TestAReviewWithoutAVerdictIsInvalidAnswer(t *testing.T) {
 	}
 }
 
+// A folder suggestion is listed on the phone but answered on the Mac only: a
+// bare note would close it with nothing put on the bench, quieted or declined.
+func TestAFolderAskIsAnsweredOnTheMac(t *testing.T) {
+	e := newEnv(t)
+	s := e.seedAsk(db.AskKindFolder, `{"path":"/code/app"}`)
+	e.port.start(s.session)
+
+	got := e.h.askAnswer(context.Background(), e.answerAction(s, map[string]any{"note": "yes"}))
+
+	wantOutcome(t, got, wire.StatusFailed, reasonInvalidAnswer)
+	if got.Message != "Answer this one on the Mac." {
+		t.Fatalf("message = %q", got.Message)
+	}
+	if st, _ := e.stored(s.ask); st != "open" || len(e.port.lines()) != 0 {
+		t.Fatal("nothing written or typed")
+	}
+}
+
 // F5: the phone's answer to a review ask carries the spec review's comment
 // marks, read from the database at answer time.
 func TestAReviewAnswerFromThePhoneCarriesTheSpecReviewMarks(t *testing.T) {

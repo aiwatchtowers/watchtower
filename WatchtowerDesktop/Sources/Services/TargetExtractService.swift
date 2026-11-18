@@ -22,7 +22,7 @@ struct TargetExtractService {
         if !sourceRef.isEmpty {
             args.append(contentsOf: ["--source-ref", sourceRef])
         }
-        let data = try await runner.run(args: args, stdin: Data(text.utf8))
+        let data = try await runner.runModel(args: args, origin: .owner, timeout: nil, stdin: Data(text.utf8))
         let decoded = try JSONDecoder().decode(CLIExtractResponse.self, from: data)
 
         let proposed = decoded.extracted.map { Self.proposedFrom($0) }

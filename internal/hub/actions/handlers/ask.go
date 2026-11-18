@@ -514,6 +514,12 @@ func nonNilAnswers(in []asks.QuestionAnswer) []asks.QuestionAnswer {
 // kind with p for (asks.ParseAnswer then asks.ValidateAnswer): an answer with
 // a problem is never written, or get_ask would fail on it for good.
 func answerProblem(kind string, p asks.Payload, a asks.Answer) error {
+	if kind == db.AskKindFolder {
+		// A folder suggestion's answer acts on the Mac (put the folder on
+		// the bench, quiet, decline); a bare note from the phone would close
+		// it with none of that done. The phone still lists it.
+		return errors.New("Answer this one on the Mac.") //nolint:staticcheck // ST1005: the owner-facing sentence, shown as is
+	}
 	encoded, err := encodeAnswer(a)
 	if err != nil {
 		return err

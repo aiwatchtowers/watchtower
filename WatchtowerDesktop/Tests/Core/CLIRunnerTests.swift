@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 @Suite("CLIRunner")
 struct CLIRunnerTests {
@@ -28,6 +29,79 @@ struct CLIRunnerTests {
         let err = CLIRunnerError.launchFailed(underlying: MyErr())
         #expect(err.errorDescription?.contains("Failed to launch") == true)
         #expect(err.errorDescription?.contains("no exec bit") == true)
+    }
+
+    /// A stub CLI that leaves `marker` behind when it runs and prints the
+    /// child's `WATCHTOWER_AI_ORIGIN`.
+    private func originStub(in dir: URL, marker: URL) throws -> URL {
+        let url = dir.appendingPathComponent("stub.sh")
+        let body = "#!/bin/sh\ntouch \"\(marker.path)\"\nprintf '%s' \"${WATCHTOWER_AI_ORIGIN-unset}\"\n"
+        try body.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        return url
+    }
+
+    private func tempDir() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cli-origin-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Every generic entry refuses a model command before it builds a
+    /// process, however the argv was put together (#1886 Task 18).
+    @Test("generic entries refuse a model command and launch nothing")
+    func testGenericRunRefusesModelCommand() async throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let marker = dir.appendingPathComponent("ran")
+        let runner = ProcessCLIRunner(binaryPath: try originStub(in: dir, marker: marker).path)
+        let env = ProcessInfo.processInfo.environment
+        let base = ["--config", "/x"]
+        let verb = String("generate".reversed().reversed()) // computed, not a literal
+        let argvs = [["--config", "/x", "digest", "generate"], base + ["digest"] + [verb]]
+        let calls: [([String]) async throws -> Void] = [
+            { _ = try await runner.run(args: $0) },
+            { _ = try await runner.run(args: $0, timeout: 5) },
+            { _ = try await runner.run(args: $0, stdin: Data()) },
+            { _ = try await runner.run(args: $0, environment: env) },
+            { _ = try await runner.capture(args: $0, timeout: 5) },
+            { _ = try await runner.capture(args: $0, environment: env, timeout: 5) }
+        ]
+        for argv in argvs {
+            for call in calls {
+                do {
+                    try await call(argv)
+                    Issue.record("expected modelCommandNeedsOrigin for \(argv)")
+                } catch let CLIRunnerError.modelCommandNeedsOrigin(path) {
+                    #expect(path == "digest generate")
+                }
+            }
+        }
+        #expect(!FileManager.default.fileExists(atPath: marker.path), "a refused call still launched the CLI")
+        #expect(CLIRunnerError.modelCommandNeedsOrigin("digest generate").errorDescription?
+            .contains("digest generate") == true)
+    }
+
+    @Test("runModel: background marks the child's environment, owner does not")
+    func testRunModelBackgroundSetsEnv() async throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let runner = ProcessCLIRunner(binaryPath: try originStub(in: dir, marker: dir.appendingPathComponent("ran")).path)
+        let background = try await runner.runModel(
+            args: ["digest", "generate"], origin: .background, timeout: nil, stdin: nil)
+        #expect(String(bytes: background, encoding: .utf8) == "background")
+        let owner = try await runner.runModel(args: ["digest", "generate"], origin: .owner, timeout: nil, stdin: nil)
+        #expect(String(bytes: owner, encoding: .utf8) == "unset")
+        // An inherited marker never reaches an owner launch.
+        #expect(CLIOrigin.owner.environment(["WATCHTOWER_AI_ORIGIN": "background", "A": "1"]) == ["A": "1"])
+        #expect(CLIOrigin.background.environment(["A": "1"]) == ["A": "1", "WATCHTOWER_AI_ORIGIN": "background"])
+    }
+
+    @Test("runModel feeds stdin like the generic entries")
+    func runModelFeedsStdin() async throws {
+        let runner = ProcessCLIRunner(binaryPath: "/bin/cat")
+        let data = try await runner.runModel(args: [], origin: .owner, timeout: 30, stdin: Data("hello".utf8))
+        #expect(String(bytes: data, encoding: .utf8) == "hello")
     }
 
     @Test("CLIRunnerError nonZeroExit shows stderr when present")

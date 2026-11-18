@@ -2,6 +2,7 @@ package workbenchfolders
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -269,7 +270,8 @@ func TestRemoveTrustsTheHostForRowsItAnswered(t *testing.T) {
 	hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner, nil)
 	require.NoError(t, err)
 	stale := seedSession(t, d, hub)
-	_, err = d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = '2026-11-01T00:00:00.000Z' WHERE id = ?`, stale)
+	_, err = d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = '2026-11-01T00:00:00.000Z',
+		last_active_at = '2026-11-01T00:00:00Z' WHERE id = ?`, stale)
 	require.NoError(t, err)
 
 	_, err = Remove(ctx, d, hub.ID, func(context.Context, int64) (int, error) { return 2, nil })
@@ -452,3 +454,70 @@ func isDir(p string) bool {
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// Removing the home folder pins the rows naming it by NULL to it before the
+// home moves: a target there keeps the removed folder (its card reads
+// "· folder removed", drift folder_removed), not the next home.
+func TestRemoveHomePinsNullFolderRows(t *testing.T) {
+	ctx := context.Background()
+	d := testDB(t)
+	a := bench(t, d, "acme", dir(t, "app"))
+	hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner, nil)
+	require.NoError(t, err)
+	home, err := d.HomeFolder(ctx, a)
+	require.NoError(t, err)
+	target := insertTarget(t, d, a, "ship", "todo", 0, 0)
+	res, err := d.Exec(`INSERT INTO owner_asks (project_id, kind, title, doc_path) VALUES (?, 'review', 'Review the spec', 'docs/spec.md')`, a)
+	require.NoError(t, err)
+	ask, err := res.LastInsertId()
+	require.NoError(t, err)
+	sess := seedSession(t, d, *home)
+	_, err = d.Exec(`UPDATE terminal_sessions SET workbench_folder_id = NULL, finished_at = '2026-11-18T00:00:00.000Z' WHERE id = ?`, sess)
+	require.NoError(t, err)
+
+	_, err = Remove(ctx, d, home.ID, nil)
+	require.NoError(t, err)
+	newHome, err := d.HomeFolder(ctx, a)
+	require.NoError(t, err)
+	require.Equal(t, hub.ID, newHome.ID)
+	for _, q := range []struct {
+		query string
+		id    int64
+	}{
+		{`SELECT workbench_folder_id FROM targets WHERE id = ?`, target},
+		{`SELECT doc_folder_id FROM owner_asks WHERE id = ?`, ask},
+		{`SELECT workbench_folder_id FROM terminal_sessions WHERE id = ?`, sess},
+	} {
+		var got sql.NullInt64
+		require.NoError(t, d.QueryRow(q.query, q.id).Scan(&got))
+		assert.Equal(t, sql.NullInt64{Int64: home.ID, Valid: true}, got, q.query)
+	}
+}
+
+// A resume keeps its row id and may keep finished_at until its first state
+// report; remove's recount still sees one between the snapshot and the
+// commit: every resume touches last_active_at.
+func TestRemoveRaceRecheckedForAResume(t *testing.T) {
+	ctx := context.Background()
+	d := testDB(t)
+	a := bench(t, d, "acme", dir(t, "app"))
+	hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner, nil)
+	require.NoError(t, err)
+	sess := seedSession(t, d, hub)
+	_, err = d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = '2026-01-01T00:00:00.000Z',
+		finished_at = '2026-01-01T00:00:00.000Z', last_active_at = '2026-01-01T00:00:00Z' WHERE id = ?`, sess)
+	require.NoError(t, err)
+	resume := func(context.Context, int64) (int, error) {
+		_, err := d.Exec(`UPDATE terminal_sessions SET last_active_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, sess)
+		require.NoError(t, err)
+		return 0, nil
+	}
+	_, err = Remove(ctx, d, hub.ID, resume)
+	assert.Equal(t, "1", refusal(t, err, CodeSessionsRunning).Detail)
+
+	// The same row, not resumed: the host's answer stands and the remove runs.
+	_, err = d.Exec(`UPDATE terminal_sessions SET last_active_at = '2026-01-01T00:00:00Z' WHERE id = ?`, sess)
+	require.NoError(t, err)
+	_, err = Remove(ctx, d, hub.ID, func(context.Context, int64) (int, error) { return 0, nil })
+	require.NoError(t, err)
+}

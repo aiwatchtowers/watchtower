@@ -172,9 +172,13 @@ func (ix *Indexer) RescanFolder(ctx context.Context, scope Scope, dir string) (R
 // "<folder name>/" — the stored name a recipe of dir takes when another
 // folder of the bench already holds its slug — and others are the recipe
 // folders of the bench's other live folders, whose rows a rescan of dir
-// leaves alone. Folders are compared as stored (no filesystem call: another
-// folder may be privacy-protected). dir outside every live folder (a bench
-// without folder rows) has no prefix.
+// leaves alone (a row in no live folder, a removed folder's, is retired).
+// Folders are compared as stored, with no filesystem call for a protected
+// one; an unprotected folder whose path, .watchtower or recipe folder is a
+// symlink (lstat only, workbenchPathPlain) has its rows keyed by the
+// resolved path, so its recipe folder's resolved form is added too — the
+// link is resolved for the comparison only, never scanned through. dir
+// outside every live folder (a bench without folder rows) has no prefix.
 func (ix *Indexer) workbenchFolderSpace(ctx context.Context, workbenchID int64, dir, canon string) (string, map[string]bool, error) {
 	folders, err := ix.db.WorkbenchFolders(ctx, workbenchID, false)
 	if err != nil {
@@ -188,6 +192,11 @@ func (ix *Indexer) workbenchFolderSpace(ctx context.Context, workbenchID int64, 
 			continue
 		}
 		others[fdir] = true
+		if !fsutil.PrivacyProtected(f.FolderPath) && !ix.workbenchPathPlain(f.FolderPath) {
+			if resolved, err := canonicalDir(fdir); err == nil {
+				others[resolved] = true
+			}
+		}
 	}
 	return prefix, others, nil
 }

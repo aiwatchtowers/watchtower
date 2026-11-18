@@ -1,13 +1,16 @@
 import Foundation
 import Observation
 
-/// Onboarding v2's steps: Goals → Connect → done. Persisted by raw string
+/// Onboarding v2's steps: Goals → Connect → Background AI → done. Persisted by raw string
 /// under its own key, so no value can be mistaken for the old flow's
 /// `onboarding_current_step` integer. The raw values ARE the persisted
 /// format: renaming a case sends everyone parked on it back to Goals.
 package enum OnboardingV2Step: String, CaseIterable, Sendable {
     case purpose
     case connect
+    /// The background AI consent (#1886, spec §5.2), run only while the
+    /// answer is still due.
+    case aiConsent
     case complete
 
     /// The raw value of the About you step, removed 2026-10-14 (#758): an
@@ -28,6 +31,7 @@ package enum OnboardingV2Step: String, CaseIterable, Sendable {
         switch self {
         case .purpose: "Goals"
         case .connect: "Connect"
+        case .aiConsent: "Background AI"
         case .complete: nil
         }
     }
@@ -44,16 +48,21 @@ package enum OnboardingV2Step: String, CaseIterable, Sendable {
 /// What decides which steps run, read when moving on.
 package struct OnboardingRoute: Equatable, Sendable {
     package var goals: Set<OnboardingGoal>
+    /// The background AI answer is still due (`BackgroundAIConsent.State.prompt`).
+    package var consentPrompt: Bool
 
-    package init(goals: Set<OnboardingGoal>) {
+    package init(goals: Set<OnboardingGoal>, consentPrompt: Bool = false) {
         self.goals = goals
+        self.consentPrompt = consentPrompt
     }
 
     /// Connect is skipped when no chosen goal needs a source (Development
-    /// alone, or nothing picked).
+    /// alone, or nothing picked); the consent step once it is answered or
+    /// decided by the organization.
     package func skips(_ step: OnboardingV2Step) -> Bool {
         switch step {
         case .connect: goals.isSubset(of: [.development])
+        case .aiConsent: !consentPrompt
         case .purpose, .complete: false
         }
     }
@@ -64,8 +73,8 @@ package struct OnboardingRoute: Equatable, Sendable {
         OnboardingV2Step.allCases.drop { $0 != step }.dropFirst().first { !skips($0) } ?? .complete
     }
 
-    /// The indicator: Goals · Connect, Connect left out when this route
-    /// skips it.
+    /// The indicator: Goals · Connect · Background AI, each step this
+    /// route skips left out.
     package var indicatorSteps: [OnboardingV2Step] {
         OnboardingV2Step.allCases.filter { $0 != .complete && !skips($0) }
     }

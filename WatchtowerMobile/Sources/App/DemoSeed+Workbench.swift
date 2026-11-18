@@ -247,10 +247,12 @@ extension DemoSeed {
             JSON.target(500, workbench: websiteID, ["text": "Landing page", "status": "in_progress", "progress": 0.6, "session_ids": [20]]),
             JSON.target(501, workbench: websiteID, ["text": "Pricing table", "status": "done", "progress": 1, "session_ids": [21]])
         ]
+        // `JSON.target` stamps both dates with the real clock; the demo's follow `now`, so the same `now` always
+        // gives the same records.
         return (acme + website).map { target in
             var target = target
-            target["created_at"] = target["created_at"] ?? JSON.stamp(ago(172_800))
-            target["updated_at"] = target["updated_at"] ?? JSON.stamp(ago(3_600))
+            target["created_at"] = JSON.stamp(ago(172_800))
+            target["updated_at"] = JSON.stamp(ago(3_600))
             return target
         }
     }

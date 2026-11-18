@@ -31,6 +31,7 @@ Per-feature notes — architecture, contracts, dual paths, v1 limits — live in
 - Revoked access wipes the account's data — `revoke-purge.md`
 - Images and web links become knowledge — `media-knowledge.md`
 - Corporate policy through managed preferences — `mdm-policy.md`
+- Background AI consent — `background-ai-consent.md`
 - Bulk-read limits + audit log — `bulk-read-limits.md`
 - Knowledge search — `knowledge-search.md`
 - Confluence knowledge connector — `confluence-knowledge-connector.md`
@@ -53,6 +54,7 @@ Per-feature notes — architecture, contracts, dual paths, v1 limits — live in
 - AI chat on the iPhone, over the relay — `iphone-chat.md`
 - Unified chat — one Go engine, `chat.sock`, shared ChatUI for the Mac and the iPhone — `unified-chat.md`
 - Go hub — `go-hub.md`
+- Live link — phone ↔ tower over one socket, optimistic apply — `live-link.md`
 - Code navigation in the workbench code viewer — `code-navigation.md`
 - Catch-Up — `catchup.md`
 - Meeting Transcriber — `meeting-transcriber.md`

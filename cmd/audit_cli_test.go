@@ -150,6 +150,9 @@ var cliNoContentCommands = map[string]bool{
 	"agents report":                   true,
 	"agents scan":                     true,
 	"agents stats":                    true,
+	"ai background allow":             true, // Config and policy only.
+	"ai background pause":             true,
+	"ai background status":            true,
 	"ai models":                       true,
 	"ai routing-status":               true, // Local provider health/revision metadata only.
 	"ai session":                      true,

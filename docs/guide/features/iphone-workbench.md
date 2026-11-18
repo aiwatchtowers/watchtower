@@ -34,7 +34,7 @@ since: 0.28.3
 
 The **Now** tab's badge counts what waits for you on the tower on screen; the app icon's, on all your towers.
 
-A workbench opens on its sessions: **Waiting for you** (an ask, a permission prompt, a check, a failed session to continue), **Working**, **Ended** (stopped, finished or failed in the last 24 hours), then **N older** folded. **N closed** at the end holds answered asks. The board's counts show on **Board**; a group there counts its sub-targets as **0/2 · 1 archived**: done of those on the board, then those in the archive, and **N more on the tower** for any the phone does not hold.
+A workbench opens on its sessions, split as on **Now** (checks count as waiting), then **N older** folded. **N closed** at the end holds answered asks. The board's counts show on **Board**; a group there counts its sub-targets as **0/2 · 1 archived**: done of those on the board, then those in the archive, and **N more on the tower** for any the phone does not hold.
 
 ### Follow a session
 <!-- learn
@@ -88,7 +88,7 @@ Type into **Message the session…** and send. Your line shows under it:
 
 ### Stop, finish or see the report
 
-The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interrupt**, **Report and timeline** and **Open board target**. A Codex session takes no **Interrupt** from the phone; stop it on the Mac. The report shows the targets' progress, the pull requests and the session's milestones. Tasks not done yet whose branch is already merged into the branch of the task above them are counted apart, as on the Mac: "1 / 3 targets · 1 merged".
+The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interrupt**, **Report and timeline** and **Open board target**. A Codex session takes no **Interrupt** from the phone; stop it on the Mac. Tasks not done yet whose branch is already merged into the branch of the task above them are counted apart, as on the Mac: "1 / 3 targets · 1 merged".
 
 ### Find a target on the board
 <!-- learn
@@ -102,6 +102,8 @@ since: 0.28.3
 -->
 
 The **Board** opens on **Waiting for me** (an ask or permission prompt on the target or its session), else **Sessions running**, else **All**. **High**, **Blocked**, **Done** and **Archive** sit beside them. Search by title, `#number` or branch covers the whole board, archive too. Lanes follow the Mac's columns. Under **All**, groups and the **Backlog** and **Done** lanes start folded; the phone remembers what you open.
+
+Your board changes and answers show at once. Until your tower confirms, they read **Sending…**, or **Waiting for your tower** while it is asleep; a refused one goes back with **Your tower could not make this change**.
 
 ### Run an automation
 

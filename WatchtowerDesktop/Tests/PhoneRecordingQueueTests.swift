@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// The Go hub's control socket as the queue sees it: every request
 /// recorded; a claim answers with the job's audio file unless the test

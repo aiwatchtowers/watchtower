@@ -135,9 +135,9 @@ func Merge(ctx context.Context, d *db.DB, from, into int64, live LiveBenchSessio
 	if live != nil {
 		// Taken before the host is asked: a start (a new row) or a resume
 		// (its row touched) after it is what the recount catches.
-		if err := d.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0), strftime('%Y-%m-%dT%H:%M:%SZ','now')
-			FROM terminal_sessions WHERE `+db.NotDeletingSQL).Scan(&snap.mark, &snap.at); err != nil {
-			return MergeReport{}, fmt.Errorf("reading the terminal sessions: %w", err)
+		var err error
+		if snap, err = takeLiveSnapshot(ctx, d); err != nil {
+			return MergeReport{}, err
 		}
 		if n, err := live(ctx, from); err == nil {
 			hostCount, asked = n, true
@@ -313,11 +313,8 @@ func moveTargets(ctx context.Context, tx *sql.Tx, m *merger) error {
 // is NULL — the merged bench's home folder — to that folder (where, when
 // set, narrows the rows the NULL means a folder for).
 func pinHomeThenMove(table, column, where string) func(ctx context.Context, tx *sql.Tx, m *merger) error {
-	//nolint:gosec // G202: table, column and where are mergeTables' constants; every value is a bound arg.
-	pin, move := `UPDATE `+table+` SET `+column+` = ? WHERE project_id = ? AND `+column+` IS NULL`, `UPDATE `+table+` SET project_id = ? WHERE project_id = ?`
-	if where != "" {
-		pin += ` AND ` + where
-	}
+	//nolint:gosec // G202: table is a mergeTables constant; every value is a bound arg.
+	pin, move := pinHomeSQL(table, column, where), `UPDATE `+table+` SET project_id = ? WHERE project_id = ?`
 	return func(ctx context.Context, tx *sql.Tx, m *merger) error {
 		if _, err := tx.ExecContext(ctx, pin, m.fromHome, m.from); err != nil {
 			return err //nolint:wrapcheck // Merge names the table
@@ -325,6 +322,37 @@ func pinHomeThenMove(table, column, where string) func(ctx context.Context, tx *
 		_, err := tx.ExecContext(ctx, move, m.into, m.from)
 		return err //nolint:wrapcheck // Merge names the table
 	}
+}
+
+// pinHomeSQL sets table's column to the first argument on the rows of the
+// bench in the second whose column is NULL — the rows naming that bench's
+// home folder by NULL (where, when set, narrows the rows the NULL means a
+// folder for).
+func pinHomeSQL(table, column, where string) string {
+	pin := `UPDATE ` + table + ` SET ` + column + ` = ? WHERE project_id = ? AND ` + column + ` IS NULL`
+	if where != "" {
+		pin += ` AND ` + where
+	}
+	return pin
+}
+
+// homePins is every column that names its bench's home folder by NULL;
+// Remove of the home folder pins those rows to it before the home moves.
+var homePins = []struct{ table, column, where string }{
+	{"targets", "workbench_folder_id", ""},
+	{"terminal_sessions", "workbench_folder_id", ""},
+	{"owner_asks", "doc_folder_id", "doc_path <> ''"},
+}
+
+// pinHomeRows pins every homePins row of workbench wb to its home folder
+// home, inside tx.
+func pinHomeRows(ctx context.Context, tx *sql.Tx, wb, home int64) error {
+	for _, p := range homePins {
+		if _, err := tx.ExecContext(ctx, pinHomeSQL(p.table, p.column, p.where), home, wb); err != nil {
+			return fmt.Errorf("pinning the %s of workbench %d to its home folder: %w", p.table, wb, err)
+		}
+	}
+	return nil
 }
 
 // moveAsks moves the merged bench's asks (a review ask naming B's home by a
@@ -357,9 +385,18 @@ const chatContextsStep = "chat_conversations"
 // its id — the conversations of its code questions (`<wb>:<path>:<line>`),
 // spec review threads (`<wb>:<root ask>:<key>`) and reviewer threads
 // (`<wb>:f<folder>:<branch>`, or `<wb>:<branch>` for its home folder,
-// which on the surviving bench needs its folder: B's home is not A's).
+// which on the surviving bench needs its folder: B's home is not A's) —
+// and its agent action proposals still waiting for a decision or an apply
+// (agent_actions context 'project' = tools.WorkbenchContextType, context_id
+// the bench id; status pending or approved). A decided, running or applied
+// row stays B's: audit rows outlive their workbench (inventory).
 func reKeyChats(ctx context.Context, tx *sql.Tx, m *merger) error {
 	from, into := strconv.FormatInt(m.from, 10)+":", strconv.FormatInt(m.into, 10)+":"
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_actions SET context_id = ?
+		WHERE context_type = 'project' AND context_id = ? AND status IN ('pending', 'approved')`,
+		strconv.FormatInt(m.into, 10), strconv.FormatInt(m.from, 10)); err != nil {
+		return err //nolint:wrapcheck // Merge names the step
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE chat_conversations SET context_id = ? || substr(context_id, length(?) + 1)
 		WHERE context_type IN ('code_question', ?) AND substr(context_id, 1, length(?)) = ?`,
 		into, from, db.SpecReviewThreadContextType, from, from); err != nil {
@@ -467,23 +504,41 @@ type liveSnapshot struct {
 	at   string
 }
 
-// countBenchLiveRows is countLiveRows for a whole bench: its agent rows that
-// may be running (F2). With asked (the host answered for what ran at the
-// snapshot), only the rows that may have started since count: newer than
-// its mark, never reported by a hook, or touched since its time — a resume
-// keeps its row id and may keep finished_at until its first state report,
-// but every resume (Go's reopen, the Desktop's) sets last_active_at first.
-// The time is to the second, so a row touched in the snapshot's own second
-// counts too (a refusal, never a missed run).
-func countBenchLiveRows(ctx context.Context, tx *sql.Tx, wb int64, asked bool, snap liveSnapshot) (int, error) {
-	q := `SELECT COUNT(*) FROM terminal_sessions WHERE project_id = ? AND kind <> 'shell' AND ` + db.NotDeletingSQL
-	args := []any{wb}
-	if asked {
-		q += ` AND ((finished_at IS NULL AND agent_failed_at IS NULL AND (id > ? OR agent_state IS NULL)) OR last_active_at >= ?)`
-		args = append(args, snap.mark, snap.at)
-	} else {
-		q += ` AND finished_at IS NULL AND agent_failed_at IS NULL`
+// takeLiveSnapshot reads the snapshot a recount compares against; it is
+// taken before the host is asked, so a start (a new row) or a resume (its
+// row touched) after it is what the recount catches.
+func takeLiveSnapshot(ctx context.Context, d *db.DB) (liveSnapshot, error) {
+	var snap liveSnapshot
+	if err := d.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0), strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		FROM terminal_sessions WHERE `+db.NotDeletingSQL).Scan(&snap.mark, &snap.at); err != nil {
+		return snap, fmt.Errorf("reading the terminal sessions: %w", err)
 	}
+	return snap, nil
+}
+
+// mayRunSQL is the " AND …" condition (with its arguments) picking the
+// session rows a recount counts. With asked (the host answered for what ran
+// at the snapshot), only the rows that may have started since count: newer
+// than its mark, never reported by a hook, or touched since its time — a
+// resume keeps its row id and may keep finished_at until its first state
+// report, but every resume (Go's reopen, the Desktop's) sets last_active_at
+// first. The time is to the second, so a row touched in the snapshot's own
+// second counts too (a refusal, never a missed run). Without asked, every
+// row not finished and not failed to launch counts.
+func (snap liveSnapshot) mayRunSQL(asked bool) (string, []any) {
+	if !asked {
+		return ` AND finished_at IS NULL AND agent_failed_at IS NULL`, nil
+	}
+	return ` AND ((finished_at IS NULL AND agent_failed_at IS NULL AND (id > ? OR agent_state IS NULL)) OR last_active_at >= ?)`,
+		[]any{snap.mark, snap.at}
+}
+
+// countBenchLiveRows is countLiveRows for a whole bench: its agent rows that
+// may be running (F2, liveSnapshot.mayRunSQL).
+func countBenchLiveRows(ctx context.Context, tx *sql.Tx, wb int64, asked bool, snap liveSnapshot) (int, error) {
+	cond, condArgs := snap.mayRunSQL(asked)
+	q := `SELECT COUNT(*) FROM terminal_sessions WHERE project_id = ? AND kind <> 'shell' AND ` + db.NotDeletingSQL + cond
+	args := append([]any{wb}, condArgs...)
 	var n int
 	if err := tx.QueryRowContext(ctx, q, args...).Scan(&n); err != nil {
 		return 0, fmt.Errorf("counting the sessions of workbench %d: %w", wb, err)

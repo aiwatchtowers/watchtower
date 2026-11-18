@@ -542,11 +542,32 @@ func toggleableFeatureIDs() []string {
 
 // setConfigKey is the typed-write core shared by `config set` and the
 // features CLI: read the existing yaml, set one key, write it back
-// atomically. Requires configPath to already exist (config init / an OAuth
-// login flow creates it) — the same constraint runConfigSet has always had.
+// atomically. The read and the write run inside the config write lock, so a
+// key another writer set before the lock was taken survives.
 func setConfigKey(configPath, key string, value any) error {
+	if setConfigKeyBeforeLock != nil {
+		setConfigKeyBeforeLock()
+	}
+	return config.WithWriteLock(configPath, func(lk *config.WriteLock) error {
+		return setConfigKeyUnderLock(lk, configPath, key, value)
+	})
+}
+
+// setConfigKeyBeforeLock is a test seam: it runs after setConfigKey was
+// called and before it takes the write lock.
+var setConfigKeyBeforeLock func()
+
+// setConfigKeyLocked is a test seam: it runs inside the lock, just before
+// setConfigKey re-reads the file.
+var setConfigKeyLocked func()
+
+func setConfigKeyUnderLock(lk *config.WriteLock, configPath, key string, value any) error {
+	if setConfigKeyLocked != nil {
+		setConfigKeyLocked()
+	}
 	v := viper.New()
 	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
 	// A Desktop-only install (no Slack OAuth flow yet) has no config.yaml, so
 	// the very first `features enable/disable` — including the onboarding
 	// feature splash's apply() — would fail here with nothing to write against.
@@ -562,5 +583,5 @@ func setConfigKey(configPath, key string, value any) error {
 		return fmt.Errorf("creating config dir: %w", err)
 	}
 	v.Set(key, value)
-	return writeConfigAtomic(v, configPath)
+	return writeConfigAtomic(lk, v, configPath)
 }

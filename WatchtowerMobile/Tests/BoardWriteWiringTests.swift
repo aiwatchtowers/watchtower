@@ -233,6 +233,42 @@ final class BoardWriteWiringTests: XCTestCase {
         XCTAssertEqual(thread.map(\.isReply), [false, true, true, false])
     }
 
+    /// Live link R5: each board write adds an overlay to the hub's book, and the outbox's applied echo reaches it
+    /// through the session's one observer (the echo keeps it until the replica shows the change).
+    func testEveryBoardWriteAddsAnOverlayAndTheAppliedEchoReachesIt() async throws {
+        let store = try TestPhone.replica()
+        let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
+        let book = OverlayBook(hubID: "hub")
+        let writer = BoardWriter.sending(through: outbox, store: store, overlays: book)
+        await outbox.setAppliedObserver(HubSession.appliedObserver(
+            askAnswerer: AskAnswerer.sending(through: outbox, store: store, drafts: AskDraftStore()),
+            sessionStarts: SessionStarter.sending(through: outbox, store: store),
+            boardWriter: writer, overlays: book
+        ))
+        try await writer.setStatus(.done, on: try target(415))
+        try await writer.setPriority(.low, on: try target(415))
+        _ = try await writer.addComment("Looks good.", on: try target(415))
+        _ = try await writer.reply("Thanks", toRoot: 80, workbenchID: DemoSeed.acmeID)
+        var draft = NewBoardTargetDraft(workbenchID: DemoSeed.acmeID)
+        draft.title = "Fix login timeout"
+        _ = try await writer.create(draft)
+        XCTAssertEqual(book.overlays.map(\.kind), [.status, .priority, .comment, .comment, .create])
+        XCTAssertEqual(book.overlays.map(\.actionID), try store.pendingActions().map(\.id))
+
+        // The moved card and the new one show at once, in place.
+        var replica = try snapshot(store)
+        replica = replica.applying(book.reconcile(with: replica, now: now))
+        let moved = try XCTUnwrap(replica.targets.first { $0.id == 415 })
+        XCTAssertEqual(moved.status, .done)
+        XCTAssertEqual(moved.priority, .low)
+
+        var echo = try XCTUnwrap(store.pendingActions().first).action
+        echo.status = .applied
+        try await outbox.applyEcho(echo)
+        try await poll { book.overlays.first?.echo != nil }
+        XCTAssertEqual(book.reconcile(with: try snapshot(store), now: now).count, 5, "the echo alone clears nothing")
+    }
+
     /// #1192: the applied echo drops the pending rows, but the comment and
     /// the reply stay in the thread as posted until the Mac's records
     /// arrive; then the records replace them.

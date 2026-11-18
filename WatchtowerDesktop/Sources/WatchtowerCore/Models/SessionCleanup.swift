@@ -293,6 +293,7 @@ package enum SessionCleanupReason: Equatable, Hashable, Sendable {
         case workbenchFolder = "workbench_folder"
         case locked
         case uncommittedChanges = "uncommitted_changes"
+        case ignoredFiles = "ignored_files"
         case processRunning = "process_running"
         case processUnknown = "process_unknown"
         case sessionInIt = "session_in_it"

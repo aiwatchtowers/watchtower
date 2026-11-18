@@ -361,7 +361,10 @@ enum AutomationShotFixtures {
                 vm.toggleSection(AutomationListSections.workbenchID(docsID))
             }
             let docs = AutomationScopeChoice.workbench(id: docsID, name: "acme-docs", folder: "/work/acme-docs")
-            return AnyView(AutomationsView(vm: vm, hooks: hooks(acmeID: acmeID, extra: [docs])))
+            return AnyView(AutomationsView(
+                vm: vm, hooks: hooks(acmeID: acmeID, extra: [docs]), backgroundAI: .allowedByOwner,
+                onAllowBackgroundAI: {}, policyBlocked: { _ in false }
+            ))
         } catch {
             return failure(error)
         }

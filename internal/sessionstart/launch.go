@@ -63,6 +63,11 @@ type Mode struct {
 	// AutomationRunID reaches every agent launch as AutomationRunEnv; 0 =
 	// none. A shell never carries it.
 	AutomationRunID int64
+	// OriginEnv is the background AI origin the agent's own `watchtower`
+	// calls carry (aiconsent.EnvOrigin/EnvAdmitted, spec §4.3): a session of
+	// a background run that was claimed under consent is admitted as that
+	// run. Empty for the owner's sessions; a shell never carries it.
+	OriginEnv []string
 }
 
 // Spec is one launch: the login shell, its argv after the executable, the
@@ -120,6 +125,7 @@ func Launch(m Mode, row int64, dir, shell string, codex *devpack.LaunchArgs, set
 	if m.AutomationRunID != 0 {
 		spec.Env = append(spec.Env, AutomationRunEnv+"="+strconv.FormatInt(m.AutomationRunID, 10))
 	}
+	spec.Env = append(spec.Env, m.OriginEnv...)
 	return spec, nil
 }
 

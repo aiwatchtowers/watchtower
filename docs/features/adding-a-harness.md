@@ -66,6 +66,9 @@ change beyond its capability row.
 ## An LLM transport
 
 1. **Register the provider** in `internal/providers`' `registry`.
+   A provider whose runs draw on the owner's own plan fills `Subscription`
+   (agent name, plan, usage limits): the background-AI consent text
+   (`watchtower ai background allow`) reads it; a model server leaves it nil.
 2. **Capabilities**: its row in `internal/providers/caps`.
 3. **Factory**: constructors in `internal/providers/transport`
    (`constructors`) and cmd's wiring in `cmd/transport_wiring.go`

@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/config"
@@ -560,8 +561,9 @@ func TestAgent_CodexChildBoundToRun(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(string(homeTOML), "[mcp_servers."), "no server of the owner's: %s", homeTOML)
 	assert.Contains(t, string(homeTOML), `"--surface", "automation", "--automation-run", "`+runID+`", "--automation-tools", "create_target,list_targets"`)
 	// codex starts MCP servers with a filtered environment: the run marker
-	// the server checks is passed through by name.
-	assert.Contains(t, string(homeTOML), `env_vars = ["`+automations.RunEnvMarker+`"]`)
+	// the server checks, and the run's AI origin (#1886), are passed through
+	// by name.
+	assert.Contains(t, string(homeTOML), `env_vars = ["`+automations.RunEnvMarker+`", "`+aiconsent.EnvOrigin+`", "`+aiconsent.EnvAdmitted+`"]`)
 	link, err := os.ReadFile(filepath.Join(stub.dir, "codex-auth-link"))
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(ownerHome, "auth.json"), strings.TrimSpace(string(link)))

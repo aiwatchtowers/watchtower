@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"watchtower/internal/aiconsent"
+	"watchtower/internal/aiconsent/aiconsenttest"
 	"watchtower/internal/auditlog"
 	"watchtower/internal/chat/listenstub"
 	"watchtower/internal/codex"
@@ -61,6 +63,8 @@ import (
 func TestMain(m *testing.M) {
 	// Read tests' audit lines stay out of the machine's unified log.
 	auditlog.SetSinkForTest(func(string) {})
+	// Background AI reads allowed unless a test injects a consent reader.
+	aiconsenttest.AllowByDefault()
 	// The `ai session --listen` stand-in (sync stop's chat tests).
 	if os.Getenv(listenstub.Env) == "1" {
 		listenstub.Main()
@@ -74,6 +78,11 @@ func TestMain(m *testing.M) {
 	// The test binary as the real CLI (os.Args[1:] are its arguments), for
 	// tests that need a process: signals, stdin EOF, exit codes.
 	if os.Getenv(runCLIEnv) == "1" {
+		// The consent end-to-end test's CLI reads ai.background_runs from
+		// its config.yaml, as the shipped binary does (test binary only).
+		if os.Getenv(realConsentEnv) == "1" {
+			aiconsent.SetCurrentOverrideForTest(nil)
+		}
 		// The owner-confirm argv test's listener is this test binary, not
 		// the signed app: its subprocess trusts the peer (test binary only).
 		if os.Getenv(trustTestPeerEnv) == "1" {

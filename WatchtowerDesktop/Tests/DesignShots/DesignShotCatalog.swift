@@ -625,12 +625,14 @@ enum DesignShotCatalog {
             + SlackAdaptiveSyncShotFixtures.shots // Adaptive Slack sync, Statistics → Channels (#1709).
             + SlackPolicyShotFixtures.shots // Slack Developer Policy hygiene (#1769): People frames real, the rest design only.
             + PlanLimitsNoTokenShotFixtures.shots // Plan limits without a token spec (#1885), design only.
+            + FilesSectionShotFixtures.shots // The workbench FILES tree polished to the multi-folder mockup (#2017).
             + IPhoneChatShotFixtures.shots // The iPhone chat's Mac side (#1791), mockup 4b.
             + UnifiedChatShotFixtures.shots // The unified chat's new states and baselines (#1822 T0).
             + ComposerShotFixtures.shots // The composer on every Mac surface, before and after ChatUI (#1822 T13).
             + ApprovalCardShotFixtures.shots // The approval card before and after its move to ChatUI (#1822 T15).
             + RoutingPillShotFixtures.shots // The routing pill and fallback card before and after ChatUI (#1822 T17).
             + MultiFolderShotFixtures.shots // The multi-folder workbench spec's mockups (#2003), design only.
+            + BackgroundAIConsentShotFixtures.shots // Background AI consent spec (#1886), design only.
     }
 }
 
@@ -658,6 +660,7 @@ enum DesignShotFixtures {
         if let poolPath { TestDatabase.cleanup(path: poolPath) }
         poolPath = nil
         ReviewShotFixtures.cleanUp()
+        FilesSectionShotFixtures.cleanUp()
         ReviewerShotFixtures.cleanUp()
         SpecReviewShotFixtures.cleanUp()
         InboxShotFixtures.cleanUp()
