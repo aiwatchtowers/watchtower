@@ -194,7 +194,7 @@ func TestSaveAuthResult_AfterWorkspaceInitReusesTheWorkspace(t *testing.T) {
 	require.NoError(t, err)
 
 	result := &auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"}
-	info, err := saveAuthResult(newSaveAuthResultCmd(), result)
+	info, err := saveAuthResult(newSaveAuthResultCmd(), result, "")
 	require.NoError(t, err)
 	assert.Equal(t, "default", info.Workspace)
 	assert.Equal(t, []string{"default"}, workspaceDirs(t), "a Slack login must not fork a second workspace")
@@ -211,7 +211,7 @@ func TestSaveAuthResult_AfterWorkspaceInitReusesTheWorkspace(t *testing.T) {
 	assert.Equal(t, "T123", accounts[0].TeamID)
 
 	// A re-login into the same team stays in the same workspace too.
-	info, err = saveAuthResult(newSaveAuthResultCmd(), result)
+	info, err = saveAuthResult(newSaveAuthResultCmd(), result, "")
 	require.NoError(t, err)
 	assert.Equal(t, "default", info.Workspace)
 	assert.Equal(t, []string{"default"}, workspaceDirs(t))
@@ -225,7 +225,7 @@ func connectAcme(t *testing.T, configPath string) {
 	require.NoError(t, err)
 	stubSlackIdentityServer(t, "U456", "T123", "Acme Corp", "acme")
 	_, err = saveAuthResult(newSaveAuthResultCmd(),
-		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"})
+		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"}, "")
 	require.NoError(t, err)
 }
 
@@ -244,7 +244,7 @@ func TestSaveAuthResult_DifferentTeamIsRefusedWithSlackAddHint(t *testing.T) {
 	require.NoError(t, err)
 
 	stubSlackIdentityServer(t, "U789", "T999", "Beta Inc", "beta")
-	_, err = saveAuthResult(newSaveAuthResultCmd(), betaLogin())
+	_, err = saveAuthResult(newSaveAuthResultCmd(), betaLogin(), "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "watchtower slack add")
 	assert.Contains(t, err.Error(), "Acme Corp")
@@ -276,7 +276,7 @@ func TestSaveAuthResult_DifferentTeamWithWorkspaceFlagKeepsOldBehaviour(t *testi
 	t.Cleanup(func() { flagWorkspace = old })
 
 	stubSlackIdentityServer(t, "U789", "T999", "Beta Inc", "beta")
-	info, err := saveAuthResult(newSaveAuthResultCmd(), betaLogin())
+	info, err := saveAuthResult(newSaveAuthResultCmd(), betaLogin(), "")
 	require.NoError(t, err)
 	assert.Equal(t, "beta-inc", info.Workspace)
 	assert.ElementsMatch(t, []string{"default", "beta-inc"}, workspaceDirs(t))
@@ -295,7 +295,7 @@ func TestSaveAuthResult_DifferentTeamOverRemovedAccountKeepsTeamNamedWorkspace(t
 	require.NoError(t, database.Close())
 
 	stubSlackIdentityServer(t, "U789", "T999", "Beta Inc", "beta")
-	info, err := saveAuthResult(newSaveAuthResultCmd(), betaLogin())
+	info, err := saveAuthResult(newSaveAuthResultCmd(), betaLogin(), "")
 	require.NoError(t, err)
 	assert.Equal(t, "beta-inc", info.Workspace)
 }
@@ -364,7 +364,7 @@ func TestSaveAuthResult_HonoursTheWorkspaceFlag(t *testing.T) {
 	t.Cleanup(func() { flagWorkspace = old })
 
 	info, err := saveAuthResult(newSaveAuthResultCmd(),
-		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"})
+		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"}, "")
 	require.NoError(t, err)
 	assert.Equal(t, "other", info.Workspace)
 	assert.ElementsMatch(t, []string{"default", "other"}, workspaceDirs(t))
@@ -379,7 +379,7 @@ func TestSaveAuthResult_AmbiguousWorkspaceFailsTheLogin(t *testing.T) {
 	seedWorkspaceDB(t, home, "zenith")
 
 	_, err := saveAuthResult(newSaveAuthResultCmd(),
-		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"})
+		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"}, "")
 	require.ErrorContains(t, err, "several workspaces hold a database")
 	assert.ElementsMatch(t, []string{"alpha", "zenith"}, workspaceDirs(t))
 }
@@ -399,7 +399,7 @@ func TestSaveAuthResult_UncheckableDatabaseFailsTheLogin(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 
 	_, err = saveAuthResult(newSaveAuthResultCmd(),
-		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"})
+		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"}, "")
 	require.ErrorContains(t, err, "checking database")
 }
 
@@ -418,7 +418,7 @@ func TestSaveAuthResult_LegacyAccountWithoutTeamIsReused(t *testing.T) {
 	require.NoError(t, database.Close())
 
 	info, err := saveAuthResult(newSaveAuthResultCmd(),
-		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"})
+		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"}, "")
 	require.NoError(t, err)
 	assert.Equal(t, "default", info.Workspace)
 	assert.Equal(t, []string{"default"}, workspaceDirs(t))
@@ -434,7 +434,7 @@ func TestSaveAuthResult_WorkspaceFlagWithoutDatabaseIsCreated(t *testing.T) {
 	t.Cleanup(func() { flagWorkspace = old })
 
 	info, err := saveAuthResult(newSaveAuthResultCmd(),
-		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"})
+		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"}, "")
 	require.NoError(t, err)
 	assert.Equal(t, "chosen", info.Workspace)
 	assert.Equal(t, []string{"chosen"}, workspaceDirs(t))

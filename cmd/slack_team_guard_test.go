@@ -53,7 +53,7 @@ func (e teamGuardEnv) connectWarnings(t *testing.T) (slackIdentity, string, erro
 	t.Helper()
 	var warn bytes.Buffer
 	identity, err := connectSlackAccount(context.Background(), e.cfg, e.db, e.id,
-		&auth.OAuthResult{AccessToken: "xoxp-new", Scope: "chat:write"}, false, &warn)
+		&auth.OAuthResult{AccessToken: "xoxp-new", Scope: "chat:write"}, false, "", &warn)
 	return identity, warn.String(), err
 }
 
@@ -120,7 +120,7 @@ func TestConnectSlackAccount_NoTeamYetAcceptsAnyTeam(t *testing.T) {
 	stubSlackIdentityServer(t, "U_OWNER", "T_ANY", "Any Team", "any")
 
 	_, err = connectSlackAccount(context.Background(), cfg, database, id,
-		&auth.OAuthResult{AccessToken: "xoxp-new"}, false, &bytes.Buffer{})
+		&auth.OAuthResult{AccessToken: "xoxp-new"}, false, "", &bytes.Buffer{})
 	require.NoError(t, err)
 	acct, err := database.GetSlackAccount(id)
 	require.NoError(t, err)
@@ -195,7 +195,7 @@ func TestConnectSlackAccount_NewRowRefusesATeamAlreadyConnected(t *testing.T) {
 	stubSlackIdentityServer(t, "U_OWNER", "T_HOME", "Acme", "acme")
 
 	_, err = connectSlackAccount(context.Background(), env.cfg, env.db, id,
-		&auth.OAuthResult{AccessToken: "xoxp-dup"}, true, &bytes.Buffer{})
+		&auth.OAuthResult{AccessToken: "xoxp-dup"}, true, "", &bytes.Buffer{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already connected")
 	added, err := env.db.GetSlackAccount(id)
@@ -257,7 +257,7 @@ func TestConnectSlackAccount_NewRowAllowsRemovedOrMovedTeams(t *testing.T) {
 		require.NoError(t, err)
 		stubSlackIdentityServer(t, "U_OWNER", team, "Team "+team, "t")
 		_, err = connectSlackAccount(context.Background(), env.cfg, env.db, id,
-			&auth.OAuthResult{AccessToken: "xoxp-" + team}, true, &bytes.Buffer{})
+			&auth.OAuthResult{AccessToken: "xoxp-" + team}, true, "", &bytes.Buffer{})
 		require.NoError(t, err, team)
 	}
 }

@@ -135,11 +135,15 @@ func resolveSlackIdentity(ctx context.Context, accessToken string) (slackIdentit
 // account — mirrors createEmailAccountWithCredentials. Returns the resolved
 // identity on success.
 //
+// clientID is the Slack app the sign-in went through; it goes into the token
+// file and onto the row (the token file first, A6). An empty one writes
+// nothing, so it never blanks a recorded id.
+//
 // A sign-in into another team than the one the account's data belongs to is
 // refused before anything is written (checkSlackLoginTeam, #915), and a
 // sign-in that brings a moved account back to its home team rewinds its
 // search watermark first (rewindMovedSlackAccount).
-func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB, id int64, grant *auth.OAuthResult, isNewRow bool, warnOut io.Writer) (slackIdentity, error) {
+func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB, id int64, grant *auth.OAuthResult, isNewRow bool, clientID string, warnOut io.Writer) (slackIdentity, error) {
 	accessToken := grant.AccessToken
 	identity, err := resolveSlackIdentity(ctx, accessToken)
 	if err != nil {
@@ -188,11 +192,18 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 		TeamName:    identity.TeamName,
 		UserID:      identity.UserID,
 		Scope:       grant.Scope,
+		ClientID:    clientID,
 	}); err != nil {
 		if isNewRow {
 			rollbackSlackAccount(database, id, warnOut)
 		}
 		return slackIdentity{}, fmt.Errorf("saving token: %w", err)
+	}
+	if err := recordSlackClientID(database, id, clientID); err != nil {
+		if isNewRow {
+			rollbackSlackAccount(database, id, warnOut)
+		}
+		return slackIdentity{}, err
 	}
 
 	if err := database.SetSlackAccountAuthState(id, "ok", ""); err != nil {
@@ -205,6 +216,27 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 			"workspace; the Slack app's user scopes (or the workspace admin) must allow it first\n", watchtowerslack.SendScope)
 	}
 	return identity, nil
+}
+
+// recordSlackClientID writes clientID onto account id's row. The row's App ID
+// is kept while the client id stays the same (this path does not learn it)
+// and dropped when the sign-in moved the account to another app.
+func recordSlackClientID(database *db.DB, id int64, clientID string) error {
+	if clientID == "" {
+		return nil
+	}
+	acct, err := database.GetSlackAccount(id)
+	if err != nil {
+		return fmt.Errorf("recording client id: %w", err)
+	}
+	appID := ""
+	if acct.ClientID == clientID {
+		appID = acct.AppID
+	}
+	if err := database.SetSlackAccountApp(id, clientID, appID); err != nil {
+		return fmt.Errorf("recording client id: %w", err)
+	}
+	return nil
 }
 
 // checkSlackLoginTeam decides whether a sign-in as identity may be recorded
@@ -356,7 +388,7 @@ func runSlackAdd(cmd *cobra.Command, _ []string) error {
 	noOpen, _ := cmd.Flags().GetBool("no-open")
 	appReturn, _ := cmd.Flags().GetBool("app-return")
 	out := cmd.OutOrStdout()
-	result, err := slackOAuthLogin(cmd, noOpen, appReturn)
+	result, clientID, err := slackOAuthLogin(cmd, noOpen, appReturn)
 	if err != nil {
 		return err
 	}
@@ -366,7 +398,7 @@ func runSlackAdd(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("creating account: %w", err)
 	}
 
-	identity, err := connectSlackAccount(cmd.Context(), cfg, database, id, result, true, cmd.ErrOrStderr())
+	identity, err := connectSlackAccount(cmd.Context(), cfg, database, id, result, true, clientID, cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}
@@ -402,7 +434,7 @@ func runSlackLogin(cmd *cobra.Command, _ []string) error {
 	noOpen, _ := cmd.Flags().GetBool("no-open")
 	appReturn, _ := cmd.Flags().GetBool("app-return")
 	out := cmd.OutOrStdout()
-	result, err := slackOAuthLogin(cmd, noOpen, appReturn)
+	result, clientID, err := slackOAuthLogin(cmd, noOpen, appReturn)
 	if err != nil {
 		if isNewRow {
 			rollbackSlackAccount(database, accountID, cmd.ErrOrStderr())
@@ -410,7 +442,7 @@ func runSlackLogin(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	identity, err := connectSlackAccount(cmd.Context(), cfg, database, accountID, result, isNewRow, cmd.ErrOrStderr())
+	identity, err := connectSlackAccount(cmd.Context(), cfg, database, accountID, result, isNewRow, clientID, cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}
@@ -601,18 +633,19 @@ func resolveSlackAccountOneForLogin(cmd *cobra.Command, cfg *config.Config, data
 	return id, true, nil
 }
 
-// slackOAuthLogin runs the browser-based OAuth flow and returns the result.
-func slackOAuthLogin(cmd *cobra.Command, noOpen, appReturn bool) (*auth.OAuthResult, error) {
+// slackOAuthLogin runs the built-in app's sign-in and returns the grant with
+// the client id it went through.
+func slackOAuthLogin(cmd *cobra.Command, noOpen, appReturn bool) (*auth.OAuthResult, string, error) {
 	oauthCfg, err := resolveOAuthConfig()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	result, err := auth.Login(cmd.Context(), oauthCfg, cmd.OutOrStdout(), auth.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn})
 	oauthpage.ReturnAfterLogin(appReturn, err, cmd.ErrOrStderr())
 	if err != nil {
-		return nil, fmt.Errorf("oauth login: %w", err)
+		return nil, "", fmt.Errorf("oauth login: %w", err)
 	}
-	return result, nil
+	return result, oauthCfg.ClientID, nil
 }
 
 func printSlackConnectionResult(out io.Writer, id int64, identity slackIdentity) {

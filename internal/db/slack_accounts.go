@@ -23,6 +23,14 @@ type SlackAccount struct {
 	Enabled        bool
 	SearchLastDate string
 	CreatedAt      string
+	// ClientID is the Slack app the token was issued through; "" = connected
+	// before migration 00196 and not yet backfilled (BackfillSlackClientIDs).
+	ClientID string
+	// AppID is the Slack App ID from oauth.v2.access; "" = unknown.
+	AppID string
+	// RefreshTokenExpiresAt is the RFC 3339 UTC expiry of a rotated token's
+	// refresh token; "" = no rotation.
+	RefreshTokenExpiresAt string
 }
 
 // FormatConnectedWorkspaces renders "<label1> (<domain1>), <label2> (<domain2>)"
@@ -49,14 +57,16 @@ func FormatConnectedWorkspaces(accounts []SlackAccount) string {
 // ListEnabledSlackAccounts, and GetSlackAccount — one place to keep the
 // SELECT list and scanSlackAccount's Scan targets in lockstep.
 const slackAccountColumns = `id, team_id, team_name, team_domain, label, current_user_id,
-        status, error, enabled, search_last_date, created_at`
+        status, error, enabled, search_last_date, created_at, client_id, app_id,
+        refresh_token_expires_at`
 
 // scanSlackAccount scans one slackAccountColumns row from either *sql.Row or
 // *sql.Rows (the jira.scanJiraIssue precedent).
 func scanSlackAccount(scanner interface{ Scan(dest ...any) error }) (SlackAccount, error) {
 	var a SlackAccount
 	err := scanner.Scan(&a.ID, &a.TeamID, &a.TeamName, &a.TeamDomain, &a.Label, &a.CurrentUserID,
-		&a.Status, &a.Error, &a.Enabled, &a.SearchLastDate, &a.CreatedAt)
+		&a.Status, &a.Error, &a.Enabled, &a.SearchLastDate, &a.CreatedAt, &a.ClientID, &a.AppID,
+		&a.RefreshTokenExpiresAt)
 	return a, err
 }
 
@@ -138,6 +148,51 @@ func (db *DB) UpdateSlackAccountConnection(id int64, teamID, teamName, teamDomai
 	}
 	db.fillAccountLabelBestEffort("slack_accounts", id, SlackAccountLabel(teamName, teamDomain))
 	return nil
+}
+
+// SetSlackAccountApp records the Slack app (client id and App ID) accountID's
+// token was issued through — written by every connect.
+func (db *DB) SetSlackAccountApp(id int64, clientID, appID string) error {
+	res, err := db.Exec(`UPDATE slack_accounts SET client_id = ?, app_id = ? WHERE id = ?`, clientID, appID, id)
+	if err != nil {
+		return fmt.Errorf("setting app for slack account %d: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting app: no slack_accounts row %d", id)
+	}
+	return nil
+}
+
+// SetSlackRefreshExpiry records when accountID's refresh token expires; the
+// zero time clears it (a token without rotation).
+func (db *DB) SetSlackRefreshExpiry(id int64, at time.Time) error {
+	stamp := ""
+	if !at.IsZero() {
+		stamp = at.UTC().Format(time.RFC3339)
+	}
+	res, err := db.Exec(`UPDATE slack_accounts SET refresh_token_expires_at = ? WHERE id = ?`, stamp, id)
+	if err != nil {
+		return fmt.Errorf("setting refresh expiry for slack account %d: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting refresh expiry: no slack_accounts row %d", id)
+	}
+	return nil
+}
+
+// BackfillSlackClientIDs gives every account without a client id (connected
+// before migration 00196) clientID and returns how many rows it filled. A set
+// id is never overwritten, so it is idempotent and needs no lock (A17).
+func (db *DB) BackfillSlackClientIDs(clientID string) (int64, error) {
+	res, err := db.Exec(`UPDATE slack_accounts SET client_id = ? WHERE client_id = ''`, clientID)
+	if err != nil {
+		return 0, fmt.Errorf("backfilling slack client ids: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("backfilling slack client ids: %w", err)
+	}
+	return n, nil
 }
 
 // SetSlackAccountEnabled toggles whether accountID is synced.
