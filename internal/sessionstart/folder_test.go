@@ -314,6 +314,18 @@ func TestFinishOfARunningSessionWritesNothing(t *testing.T) {
 	assert.Equal(t, hub.FolderPath, w.row(id).folder)
 }
 
+// Finish's running-check cannot reach the host: the error comes back and
+// the row is not written (a lost connection is no proof the agent exited).
+func TestFinishProbeErrorLeavesTheRow(t *testing.T) {
+	w := newWorld(t)
+	id := w.begin(handlers.StartRequest{Workbench: w.wb})
+	before := w.row(id)
+	d := w.deps()
+	d.Socket = droppingSocket(t)
+	require.ErrorContains(t, Finish(context.Background(), d, id, "auto", "", false), "the session host is not running")
+	assert.Equal(t, before, w.row(id))
+}
+
 // The bench's worktree_setup runs only in worktrees of the home folder (v1
 // ruling): a worktree of another folder is launched without it.
 func TestWorktreeSetupIsTheHomeFoldersOnly(t *testing.T) {
