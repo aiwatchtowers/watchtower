@@ -8,9 +8,9 @@ With several sessions running, the terminals say nothing until you open each one
 
 ## How it works
 
-A session runs the agent as your own terminal does: the same login, permissions and project memory. Click a workbench in the left panel to see its sessions; a filled dot is running. Sessions keep running when you switch sessions, workbenches or tabs.
+A session runs the agent as your own terminal does: the same login, permissions and project memory. Click a workbench in the left panel to see its sessions; a filled dot is running. Sessions keep running as you change sessions, workbenches or tabs.
 
-Copying in the terminal works as in your own: text that Claude Code, vim or tmux copies lands on your clipboard. The terminal does not answer clipboard-read requests hidden in program output, so a file or tool output cannot pull in what you copied. Programs you run can still read it (`pbpaste`). Paste with ⌘V.
+Copying in the terminal works as in your own: text that Claude Code, vim or tmux copies lands on your clipboard. The terminal does not answer clipboard-read requests hidden in program output, so a file or tool output cannot pull in what you copied. Programs you run can still read it (e.g. `pbpaste`). Paste with ⌘V.
 
 Updating never stops your sessions; quitting asks you. See [Updates and quitting](updates-and-quitting.md).
 
@@ -18,7 +18,7 @@ Updating never stops your sessions; quitting asks you. See [Updates and quitting
 <!-- learn
 id: sessions-states-spec-review
 title: Read a session's state at a glance
-text: The caption says if a session works, waits for you, is in **Spec review**, has finished or is **Idle**.
+text: The caption says if a session works, runs a background task, waits, is in **Spec review**, finished or **Idle**.
 area: development
 level: basics
 kind: tip
