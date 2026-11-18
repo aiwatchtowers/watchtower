@@ -353,6 +353,51 @@ func TestCompanyInspect_SiteChangeShownWhole(t *testing.T) {
 	assert.Equal(t, []companyChangeJSON{{Vendor: "atlassian", Field: "site", Old: "https://acme.atlassian.net", New: "https://acme2.atlassian.net"}}, res.Changes)
 }
 
+// TestCompanyInspect_ForcedCompanyIsSame pins inspect agreeing with confirm:
+// a link for the forced company changes nothing (the forced bundle wins), so
+// it is "same" with no changes, never "changed" with a Replace offered.
+func TestCompanyInspect_ForcedCompanyIsSame(t *testing.T) {
+	policytest.Set(t, nil)
+	store, d := company.NewStore(t.TempDir()), db.OpenTestDB(t)
+	forced := companyWire(t, companySample("Acme"))
+	in := companySample("Acme")
+	in.Atlassian.ClientID = "acmeClientId02"
+	link := companyWire(t, in)
+
+	for _, stored := range []bool{false, true} {
+		if stored {
+			require.NoError(t, store.Save("acme", companySample("Acme")))
+		}
+		res, err := inspectCompany(store, d, link, forced)
+		require.NoError(t, err)
+		assert.Equal(t, "same", res.State, "stored=%v", stored)
+		assert.True(t, res.Forced)
+		assert.Empty(t, res.Changes)
+
+		c, err := confirmCompany(store, d, link, companybundle.OriginLink, false, forced)
+		require.NoError(t, err)
+		assert.Equal(t, "unchanged", c.Result)
+	}
+
+	// The vendors shown are the forced bundle's, not the link's.
+	slackOnly := companybundle.Bundle{V: 1, Company: "Acme", Slack: companySample("Acme").Slack}
+	res, err := inspectCompany(store, d, companyWire(t, slackOnly), forced)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"slack", "google", "atlassian", "microsoft", "linear"}, res.Vendors)
+}
+
+// TestCompanyForcedBundle_ReadsPolicy pins the CLI's forced bundle to the
+// policy's CompanyBundle key; a refused one is no company.
+func TestCompanyForcedBundle_ReadsPolicy(t *testing.T) {
+	forced := companyWire(t, companySample("Acme"))
+	policytest.Set(t, map[string]any{"CompanyBundle": forced})
+	assert.Equal(t, forced, companyForcedBundle())
+	policytest.Set(t, map[string]any{"CompanyBundle": "not a bundle"})
+	assert.Empty(t, companyForcedBundle())
+	policytest.Set(t, nil)
+	assert.Empty(t, companyForcedBundle())
+}
+
 func TestCompanyInspect_OversizedStdinIsARefusal(t *testing.T) {
 	var out bytes.Buffer
 	c := companyInspectCmd

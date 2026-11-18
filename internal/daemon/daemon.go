@@ -576,6 +576,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.reapStalePipelineRuns()
 	d.sweepStaleTemp()
 	d.importLegacyDraftCache()
+	// Once per start, before anything syncs: a forced company bundle that
+	// changed an app marks its accounts Re-login (#1887).
+	d.applyForcedCompany()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 

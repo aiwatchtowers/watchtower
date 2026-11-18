@@ -38,6 +38,9 @@ const saveLockWait = 30 * time.Second
 // store's numeric clash suffix.
 var slugRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
+// clashSuffixRE is the store's numeric clash suffix (-2, -3…).
+var clashSuffixRE = regexp.MustCompile(`^-[0-9]+$`)
+
 // ErrStoredChanged is SaveIfUnchanged finding the file changed since the
 // caller read it (another confirm wrote first).
 var ErrStoredChanged = errors.New("company file changed since it was read")
@@ -86,11 +89,38 @@ type diskState struct {
 	entries []Entry         // readable files, by slug
 	errs    []LoadError     // damaged files
 	taken   map[string]bool // every stem in use, damaged ones included
+	// seen maps a forced company to the slug its .forced-<slug>.seen pins
+	// (ApplyForcedChanges); seenSlugs is every slug such a file holds.
+	seen      map[string]string
+	seenSlugs map[string]bool
+	// damagedSeen are the slugs of unreadable records, in name order.
+	damagedSeen []string
 }
+
+// damagedPin is the slug of an unreadable .seen record that company's name
+// slugs to (its base slug, or the base with a clash suffix) and that no file
+// holds: the record was most likely that company's, so its slug — the one
+// its accounts carry — stays put.
+func (st *diskState) damagedPin(company string) (string, bool) {
+	base := companybundle.Slug(company)
+	for _, slug := range st.damagedSeen {
+		if st.taken[slug] {
+			continue
+		}
+		if suffix, ok := strings.CutPrefix(slug, base); ok && (suffix == "" || clashSuffixRE.MatchString(suffix)) {
+			return slug, true
+		}
+	}
+	return "", false
+}
+
+// inUse reports whether slug is a file's, the draft's or a forced
+// company's pinned one.
+func (st *diskState) inUse(slug string) bool { return st.taken[slug] || st.seenSlugs[slug] }
 
 // read lists the company files. A missing directory is no company.
 func (s Store) read() (diskState, error) {
-	st := diskState{taken: map[string]bool{draftSlug: true}}
+	st := diskState{taken: map[string]bool{draftSlug: true}, seen: map[string]string{}, seenSlugs: map[string]bool{}}
 	des, err := os.ReadDir(s.Dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return st, nil
@@ -100,6 +130,10 @@ func (s Store) read() (diskState, error) {
 	}
 	for _, de := range des {
 		name := de.Name()
+		if slug, ok := seenSlug(name); ok {
+			st.addSeen(s.Dir, slug)
+			continue
+		}
 		slug, ok := strings.CutSuffix(name, ".json")
 		if !ok || slug == draftSlug || strings.HasPrefix(name, ".") {
 			continue
@@ -113,6 +147,22 @@ func (s Store) read() (diskState, error) {
 		st.entries = append(st.entries, Entry{Slug: slug, Bundle: b})
 	}
 	return st, nil
+}
+
+// addSeen records the forced company slug pins (the first file of a company,
+// in name order, wins). A damaged .seen is a LoadError and keeps its slug in
+// use; overlay still gives it to a forced company whose name slugs to it.
+func (st *diskState) addSeen(dir, slug string) {
+	st.seenSlugs[slug] = true
+	b, err := readSeen(dir, slug)
+	if err != nil {
+		st.errs = append(st.errs, LoadError{File: seenPrefix + slug + seenSuffix, Err: err.Error()})
+		st.damagedSeen = append(st.damagedSeen, slug)
+		return
+	}
+	if _, dup := st.seen[b.Company]; !dup {
+		st.seen[b.Company] = slug
+	}
 }
 
 // readFile reads and validates one stored bundle.
@@ -159,21 +209,31 @@ func overlay(st *diskState, forcedWire string) {
 	if matched {
 		return
 	}
-	// A forced company with no file of its own takes a free slug against
-	// today's files; Task 8's .forced-<slug>.seen pins what was seen.
-	slug := freeSlug(fb.Company, st.taken)
+	// A forced company with no file of its own keeps the slug its
+	// .forced-<slug>.seen pins (its accounts carry it), unless a file of
+	// another company holds it now; else it takes a free one.
+	slug, pinned := st.seen[fb.Company]
+	if pinned && st.taken[slug] {
+		pinned = false
+	}
+	if !pinned {
+		slug, pinned = st.damagedPin(fb.Company)
+	}
+	if !pinned {
+		slug = freeSlug(fb.Company, st.inUse)
+	}
 	st.taken[slug] = true
 	st.entries = append(st.entries, Entry{Slug: slug, Bundle: fb, Forced: true})
 }
 
 // freeSlug is companybundle.Slug(company), with -2, -3… while taken.
-func freeSlug(company string, taken map[string]bool) string {
+func freeSlug(company string, taken func(string) bool) string {
 	base := companybundle.Slug(company)
-	if !taken[base] {
+	if !taken(base) {
 		return base
 	}
 	for n := 2; ; n++ {
-		if s := fmt.Sprintf("%s-%d", base, n); !taken[s] {
+		if s := fmt.Sprintf("%s-%d", base, n); !taken(s) {
 			return s
 		}
 	}
@@ -214,8 +274,9 @@ func (s Store) Get(slug, forcedWire string) (Entry, bool, error) {
 }
 
 // SlugFor returns the slug of company: the one it is stored (or forced)
-// under, else a free one — never the slug of another company, of a damaged
-// file, or of the forced bundle of another company.
+// under, else the slug pinned when it was last forced, else a free one —
+// never the slug of another company, of a damaged file, or of the forced
+// bundle (pinned or current) of another company.
 func (s Store) SlugFor(company, forcedWire string) (string, error) {
 	st, err := s.read()
 	if err != nil {
@@ -227,7 +288,12 @@ func (s Store) SlugFor(company, forcedWire string) (string, error) {
 			return e.Slug, nil
 		}
 	}
-	return freeSlug(company, st.taken), nil
+	// A company forced before (no longer, or not yet stored) keeps its
+	// pinned slug: its accounts carry it.
+	if slug, ok := st.seen[company]; ok && !st.taken[slug] {
+		return slug, nil
+	}
+	return freeSlug(company, st.inUse), nil
 }
 
 // Save writes b as <slug>.json (0600, directory 0700) under the file's flock,

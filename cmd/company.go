@@ -15,23 +15,13 @@ import (
 	"watchtower/internal/policy"
 )
 
-// companyForcedBundle is the forced MDM CompanyBundle wire form ("" = none).
-// Task 8 rewires it to the policy accessor.
-var companyForcedBundle = func() string { return "" }
+// companyForcedBundle is the forced MDM CompanyBundle wire form ("" = none);
+// a var so tests set one without a profile.
+var companyForcedBundle = func() string { return policy.Current().CompanyBundle() }
 
 // companyStdinMax caps the bundle read from stdin; a wrapped code with its
 // line breaks stays far below it.
 const companyStdinMax = 64 << 10
-
-// companyChangedAppCode is the account error a Replace leaves on the changed
-// vendors' accounts of the company (Re-login needed).
-const companyChangedAppCode = "company_changed_app"
-
-// companyVendorAccountSource maps a bundle vendor to its account source in
-// db.MarkCompanyAccounts / AccountsByCompany.
-var companyVendorAccountSource = map[string]string{
-	"slack": "slack", "google": "google", "atlassian": "jira", "microsoft": "outlook", "linear": "linear",
-}
 
 // companyVendorPolicySource maps a bundle vendor to its policy source
 // (AllowedSources; Outlook is part of imap).
@@ -304,7 +294,9 @@ func matchCompany(store company.Store, wire string, origin companybundle.Origin,
 	if m.current, m.stored, err = store.Get(m.slug, forced); err != nil {
 		return companyMatch{}, err
 	}
-	if m.stored {
+	// A forced company changes only with the profile (the forced bundle
+	// wins): a link or code for it changes nothing.
+	if m.stored && !m.current.Forced {
 		// Parse refuses `personal` from a link, MDM or a code: a stored
 		// personal project keeps its mark.
 		m.bundle.Personal = m.current.Bundle.Personal
@@ -345,7 +337,11 @@ func inspectCompany(store company.Store, database *db.DB, wire, forced string) (
 	}
 	res := newCompanyInspectResult()
 	res.Company, res.Slug, res.State, res.Forced = m.bundle.Company, m.slug, "new", m.current.Forced
-	res.Vendors = append(res.Vendors, m.bundle.Vendors()...)
+	effective := m.bundle
+	if m.current.Forced { // the forced bundle wins over the incoming one
+		effective = m.current.Bundle
+	}
+	res.Vendors = append(res.Vendors, effective.Vendors()...)
 	if m.stored {
 		res.State = "same"
 		if len(m.changes) > 0 {
@@ -359,7 +355,7 @@ func inspectCompany(store company.Store, database *db.DB, wire, forced string) (
 			if r.Status != "ok" {
 				continue
 			}
-			for vendor, src := range companyVendorAccountSource {
+			for vendor, src := range company.VendorAccountSource {
 				if src == r.Source {
 					res.Connected[vendor] = true
 				}
@@ -431,7 +427,7 @@ func confirmCompany(store company.Store, database *db.DB, wire string, origin co
 		return companyConfirmResult{}, err
 	}
 	if len(m.changes) > 0 {
-		marked, err := database.MarkCompanyAccounts(m.slug, companyChangedSources(m.changes), companyChangedAppCode)
+		marked, err := database.MarkCompanyAccounts(m.slug, company.ChangedAccountSources(m.changes), company.ChangedAppCode)
 		if err != nil {
 			return companyConfirmResult{}, fmt.Errorf("stored %s, but marking its accounts for a new login failed: %w", m.slug, err)
 		}
@@ -441,17 +437,4 @@ func confirmCompany(store company.Store, database *db.DB, wire string, origin co
 	}
 	res.Result = "stored"
 	return res, nil
-}
-
-// companyChangedSources are the account sources of the changed vendors.
-func companyChangedSources(changes []company.Change) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, c := range changes {
-		if src := companyVendorAccountSource[c.Vendor]; !seen[src] {
-			seen[src] = true
-			out = append(out, src)
-		}
-	}
-	return out
 }
