@@ -57,8 +57,9 @@ var bgaiSpawnExempt = map[string]string{
 // bgaiSpawnUnwalked are packages background work reaches that this checker
 // does not walk, each with the reason their children are covered.
 var bgaiSpawnUnwalked = map[string]string{
-	"internal/sessionstart": "`AutomationRunEnv` marker: the origin is the run's trigger (§4.3); " +
-		"the hub's sessions are started by the owner from the phone, an owner gesture",
+	"internal/sessionstart": "spawns through the session host, no exec: a run's session carries the run's " +
+		"origin (Mode.OriginEnv: admitted run:<id> for a background trigger, pinned by " +
+		"TestBGAI01_RunSessionsCarryTheirOrigin there); the hub's sessions are the owner's, from the phone",
 }
 
 // TestBGAI01_EveryDaemonSpawnSetsOrigin fails when a process start under

@@ -21,6 +21,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/aiconsent"
+	"watchtower/internal/aiconsent/aiconsenttest"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/sessionfeed"
@@ -66,6 +68,7 @@ func newWorld(t *testing.T) *world {
 	writeScript(t, w.shell, "PATH='"+bin+":/usr/bin:/bin'; export PATH\nshift\nexec /bin/sh \"$@\"\n")
 	writeScript(t, filepath.Join(bin, "claude"), "out='"+w.stub+"'\nrow=\"$"+SessionRowEnv+"\"\n"+
 		"printf '%s\\n' \"$@\" > \"$out/argv.$row\"\npwd -P > \"$out/cwd.$row\"\n"+
+		"printf '%s\\n%s' \"$"+aiconsent.EnvOrigin+"\" \"$"+aiconsent.EnvAdmitted+"\" > \"$out/origin.$row\"\n"+
 		"printf '%s' \"$"+AutomationRunEnv+"\" > \"$out/run.$row\"\n"+
 		"stty raw -echo\nprintf '\\033[?2004h'\nexec cat >> \"$out/pty.$row\"\n")
 
@@ -495,4 +498,63 @@ func TestSessionStartTitleAndAutomationRunReachTheRowAndTheLaunch(t *testing.T) 
 	})
 	assert.Equal(t, strconv.FormatInt(run, 10), w.stubFile("run", begun.SessionID))
 	assert.Contains(t, w.stubFile("argv", begun.SessionID), "sweep the board")
+	assert.Empty(t, w.stubFile("origin", begun.SessionID), "an owner-triggered run's session carries no origin")
+}
+
+// BGAI-01 (#1886 §4.3): a session a background run started carries the
+// run's admission, so the agent's own `watchtower` calls in it run while
+// background AI is paused, as the run they belong to does (D12).
+func TestSessionOfABackgroundRunIsAdmittedAsItsRun(t *testing.T) {
+	w := newWorld(t)
+	res, err := w.db.Exec(`INSERT INTO automations (slug, scope, path) VALUES ('a', 'personal', '/p/a.md')`)
+	require.NoError(t, err)
+	aid, _ := res.LastInsertId()
+	res, err = w.db.Exec(`INSERT INTO automation_runs (automation_id, trigger, status) VALUES (?, 'schedule', 'running')`, aid)
+	require.NoError(t, err)
+	run, _ := res.LastInsertId()
+
+	begun, err := Begin(context.Background(), w.deps(), handlers.StartRequest{Workbench: w.wb, AutomationRunID: run})
+	require.NoError(t, err)
+	require.NoError(t, Finish(context.Background(), w.deps(), begun.SessionID, "folder", "sweep", false))
+	w.launched(begun.SessionID)
+	eventually(t, "the stub recorded its origin", func() bool {
+		_, err := os.Stat(filepath.Join(w.stub, "origin."+strconv.FormatInt(begun.SessionID, 10)))
+		return err == nil
+	})
+	unit := "run:" + strconv.FormatInt(run, 10)
+	assert.Equal(t, "background\n"+unit, w.stubFile("origin", begun.SessionID))
+
+	// A `watchtower` child started with that env, background AI paused.
+	aiconsenttest.Use(t, "", map[string]string{
+		aiconsent.EnvOrigin: "background", aiconsent.EnvAdmitted: unit,
+		AutomationRunEnv: strconv.FormatInt(run, 10),
+	}, false)
+	require.NoError(t, aiconsent.Check(context.Background()), "the run's session child is admitted while paused")
+}
+
+func TestOriginEnvFollowsTheRun(t *testing.T) {
+	d := db.OpenTestDB(t)
+	res, err := d.Exec(`INSERT INTO automations (slug, scope, path) VALUES ('a', 'personal', '/p/a.md')`)
+	require.NoError(t, err)
+	aid, _ := res.LastInsertId()
+	runOf := func(trigger string) int64 {
+		res, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status) VALUES (?, ?, 'running')`, aid, trigger)
+		require.NoError(t, err)
+		id, _ := res.LastInsertId()
+		return id
+	}
+	ctx := context.Background()
+	for _, trigger := range []string{"schedule", "catch_up", "event", "sync"} {
+		id := runOf(trigger)
+		assert.Equal(t, []string{aiconsent.EnvOrigin + "=background", aiconsent.EnvAdmitted + "=run:" + strconv.FormatInt(id, 10)},
+			originEnv(ctx, d, id), trigger)
+	}
+	for _, trigger := range []string{"manual", "button", "dry_run", "reply"} {
+		assert.Nil(t, originEnv(ctx, d, runOf(trigger)), trigger)
+	}
+	assert.Nil(t, originEnv(aiconsent.WithOwnerStarted(ctx), d, 0), "the owner's own session")
+	// A run that cannot be read: the starting process's own origin.
+	assert.Nil(t, originEnv(aiconsent.WithOwnerStarted(ctx), d, 999999))
+	assert.Equal(t, []string{aiconsent.EnvOrigin + "=background", aiconsent.EnvAdmitted + "=phase:x"},
+		originEnv(aiconsent.WithAdmitted(ctx, "phase:x"), d, 999999))
 }

@@ -18,6 +18,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 	"watchtower/internal/hub/actions/handlers"
@@ -607,7 +608,8 @@ func (s *newStart) finish(ctx context.Context) error {
 	if beforeLaunch != nil {
 		beforeLaunch(s.id)
 	}
-	m := Mode{Agent: string(s.agent), SessionID: s.claudeID, AutomationRunID: s.automationRun}
+	m := Mode{Agent: string(s.agent), SessionID: s.claudeID, AutomationRunID: s.automationRun,
+		OriginEnv: originEnv(ctx, s.d.DB, s.automationRun)}
 	if s.prompt != "" {
 		p := s.prompt
 		m.Prompt = &p
@@ -905,6 +907,27 @@ func launchFailure(err error) string {
 		return "launch refused: " + he.Message
 	}
 	return "the session host did not launch the session"
+}
+
+// originEnv is the background AI origin of a new session's agent (spec
+// §4.3). A session an automation run started is that run's: a background
+// trigger's run was claimed under consent, so its session is admitted as
+// unit "run:<id>" and finishes even when the owner pauses meanwhile (D12);
+// an owner-triggered run's session carries nothing (the run marker reads
+// owner). A run that cannot be read falls back to the starting process's
+// own origin, as does a session no run started.
+func originEnv(ctx context.Context, q *db.DB, runID int64) []string {
+	if runID != 0 {
+		run, err := q.GetAutomationRun(runID)
+		if err == nil {
+			if !aiconsent.BackgroundTrigger(run.Trigger) {
+				return nil
+			}
+			return aiconsent.ChildEnv(aiconsent.WithAdmitted(ctx, "run:"+strconv.FormatInt(runID, 10)))
+		}
+		log.Printf("sessionstart: automation run %d could not be read for its origin (%s)", runID, errClass(err))
+	}
+	return aiconsent.ChildEnv(ctx)
 }
 
 // baseEnv is a hosted launch's environment before its own entries, as the
