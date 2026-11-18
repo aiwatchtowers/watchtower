@@ -41,16 +41,9 @@ func TestChatengine_PortedProjectWriteCases(t *testing.T) {
 	_, err = g.r.ManageProject(ctx, ProjectRequest{Op: ProjectFileRemove, FileID: 51})
 	require.NoError(t, err)
 
-	var left []int64
-	rows, err := g.d.Query(`SELECT id FROM chat_attachments ORDER BY id`)
-	require.NoError(t, err)
-	for rows.Next() {
-		var id int64
-		require.NoError(t, rows.Scan(&id))
-		left = append(left, id)
-	}
-	require.NoError(t, rows.Close())
-	assert.Equal(t, []int64{52}, left)
+	var left string
+	require.NoError(t, g.d.QueryRow(`SELECT group_concat(id) FROM chat_attachments`).Scan(&left))
+	assert.Equal(t, "52", left, "only the chat's attachment is left")
 	var session *string
 	require.NoError(t, g.d.QueryRow(`SELECT session_id FROM chat_conversations WHERE id = 41`).Scan(&session))
 	assert.Nil(t, session, "the project's stored sessions are dropped")
