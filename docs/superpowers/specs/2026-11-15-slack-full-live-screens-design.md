@@ -436,9 +436,9 @@ All accepted in ask #1315; 2 and 19 explicitly chosen; 10 reversed by the owner 
 - **A4.** A member who cannot create apps gets the "ask your admin" state with a ready, copyable note and the guide link — review #1426, ask #1438 (A23) (§3.2 not allowed).
 - **A5.** Plan B Task 16 (adopt turns on `pkce_enabled`) ships before Task 18 retires the baked id, corp included — plan B Task 18's dependencies (§4.2).
 
-### Pending owner approval (ask #1575)
+### Approved by the owner (ask #1577, rounds #1575–#1576)
 
-Added by plan B Task 13 and its reviews; they become approved when the owner answers ask #1575.
+Added by plan B Task 13 and its reviews; approved by the owner in ask #1577 (2026-11-18).
 
 - **B1.** The new §3.2 states and their copy: another run (busy), create answer lost (pending create) with **Use this app** / **Start again** and the second confirming press, adopt App ID check (`confirm_app`) and App ID problem lines, the not-collaborator state, the unmocked lines listed under §3.2, and the §3.4 `pending_create` row.
 - **B2.** **Use this app** is two steps: the ids, then a fresh configuration token for the link (the pending form holds no token).
