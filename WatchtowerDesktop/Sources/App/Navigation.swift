@@ -361,13 +361,16 @@ struct MainNavigationView: View {
                     editor: appState.automationEditorCenter,
                     hooks: automationHooks(vm),
                     reactionDictionary: appState.reactionDictionaryViewModel,
-                    isApplyingFeatures: appState.featureManager.isApplying
-                ) { [appState] automation in
-                    AutomationPolicyBlock.isBlocked(
-                        automation, policy: appState.managedPolicy.policy,
-                        connections: appState.externalConnectionsViewModel?.connections
-                    )
-                }
+                    isApplyingFeatures: appState.featureManager.isApplying,
+                    backgroundAI: appState.backgroundAI,
+                    onAllowBackgroundAI: { appState.presentBackgroundAIConsent() },
+                    policyBlocked: { [appState] automation in
+                        AutomationPolicyBlock.isBlocked(
+                            automation, policy: appState.managedPolicy.policy,
+                            connections: appState.externalConnectionsViewModel?.connections
+                        )
+                    }
+                )
                 // The policy check needs the Quick Connections (#608).
                 .onAppear { appState.externalConnectionsViewModel?.refresh() }
             } else {

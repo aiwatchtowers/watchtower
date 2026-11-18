@@ -36,7 +36,7 @@ enum BackgroundAIConsentShotFixtures {
             DesignShot(name: "ai-consent-sheet-error", size: NSSize(width: 560, height: 0)) {
                 AnyView(ConsentSheetMock(error: "config.yaml: permission denied"))
             }
-        ] + liveShots + Settings.allCases.map { state in
+        ] + liveShots + automationsLiveShots + Settings.allCases.map { state in
             DesignShot(name: "ai-consent-settings-\(state.rawValue)", size: NSSize(width: 640, height: 0)) {
                 AnyView(SettingsSectionMock(state: state))
             }
