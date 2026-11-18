@@ -1483,9 +1483,9 @@ func wireJiraSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, 
 }
 
 // atlassianPDRAccounts lists the accounts that run Personal Data Reporting
-// (#1887 §6): every account with a client, the shared app's included
-// (atlassianpdr.Run skips an API-token account, which cannot call the
-// report API).
+// (#1887 §6): every account with a client, the shared app's included. An
+// API-token account cannot call the report API (it belongs to apps): it
+// looks its people up instead (atlassianpdr.LookupReporter, D23).
 func atlassianPDRAccounts(accounts []db.JiraAccount, clients map[int64]*jira.Client) []daemon.PDRAccount {
 	var out []daemon.PDRAccount
 	for _, acct := range accounts {
@@ -1493,7 +1493,11 @@ func atlassianPDRAccounts(accounts []db.JiraAccount, clients map[int64]*jira.Cli
 		if client == nil {
 			continue
 		}
-		out = append(out, daemon.PDRAccount{ID: acct.ID, Reporter: atlassianpdr.ClientReporter{Client: client}})
+		var r atlassianpdr.Reporter = atlassianpdr.ClientReporter{Client: client}
+		if acct.AuthKind == jira.AuthKindAPIToken {
+			r = atlassianpdr.LookupReporter{Users: client}
+		}
+		out = append(out, daemon.PDRAccount{ID: acct.ID, Reporter: r})
 	}
 	return out
 }
@@ -1511,6 +1515,12 @@ func buildAtlassianClients(cfg *config.Config, database *db.DB, logger *log.Logg
 		return nil, clients
 	}
 	for _, acct := range accounts {
+		if acct.AuthKind == jira.AuthKindAPIToken && apiTokenPolicyRefusal() != nil {
+			// Stopped by the organization's policy (D24, POLICY-03): not
+			// wired, its row and data left as they are.
+			logger.Printf("jira: account %d: API tokens are not allowed by your organization's policy; not syncing", acct.ID)
+			continue
+		}
 		store := jira.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
 		if acct.CloudID == "" || !store.Exists() {
 			if acct.Status == "ok" {
@@ -1520,31 +1530,54 @@ func buildAtlassianClients(cfg *config.Config, database *db.DB, logger *log.Logg
 			}
 			continue
 		}
-		jiraCfg, _, err := resolveJiraOAuthConfigForAccount(cfg.WorkspaceDir(), acct)
-		if err != nil {
-			logger.Printf("jira: account %d: %v", acct.ID, err)
-			// No client on any layer, or the company's app is not the one
-			// the grant was issued to: the token can never be refreshed —
-			// Re-login needed (#1887 §5, P5), never revoked. Any other failure
-			// (a damaged client file) is shown on the row as it is, so an
-			// account that cannot sync never stays green.
-			if acct.Status == "ok" {
-				code := err.Error()
-				if errors.Is(err, errNoOAuthClient) || errors.Is(err, errClientChanged) {
-					code = jira.ClientRejectedCode(acct.CompanySlug)
+		var client *jira.Client
+		if acct.AuthKind == jira.AuthKindAPIToken {
+			if _, err := store.LoadAPIToken(); err != nil {
+				// A damaged token file can never sync: shown on the row, never
+				// left green (the OAuth branch's rule).
+				logger.Printf("jira: account %d: %v", acct.ID, err)
+				if acct.Status == "ok" {
+					if dbErr := database.SetJiraAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
+						logger.Printf("jira: account %d: record auth state: %v", acct.ID, dbErr)
+					}
 				}
-				if dbErr := database.SetJiraAccountAuthState(acct.ID, "error", code); dbErr != nil {
-					logger.Printf("jira: account %d: record auth state: %v", acct.ID, dbErr)
-				}
+				continue
 			}
-			continue
+			client = jira.NewAPITokenClient(acct.CloudID, acct.SiteURL, store)
+			// Any consumer's 401 marks the account (D22: error, never revoked).
+			id := acct.ID
+			client.SetOnAPITokenDead(func() {
+				if err := database.SetJiraAccountAuthState(id, "error", jira.CodeAPITokenDead); err != nil {
+					logger.Printf("jira: account %d: record auth state: %v", id, err)
+				}
+			})
+		} else {
+			jiraCfg, _, err := resolveJiraOAuthConfigForAccount(cfg.WorkspaceDir(), acct)
+			if err != nil {
+				logger.Printf("jira: account %d: %v", acct.ID, err)
+				// No client on any layer, or the company's app is not the one
+				// the grant was issued to: the token can never be refreshed —
+				// Re-login needed (#1887 §5, P5), never revoked. Any other failure
+				// (a damaged client file) is shown on the row as it is, so an
+				// account that cannot sync never stays green.
+				if acct.Status == "ok" {
+					code := err.Error()
+					if errors.Is(err, errNoOAuthClient) || errors.Is(err, errClientChanged) {
+						code = jira.ClientRejectedCode(acct.CompanySlug)
+					}
+					if dbErr := database.SetJiraAccountAuthState(acct.ID, "error", code); dbErr != nil {
+						logger.Printf("jira: account %d: record auth state: %v", acct.ID, dbErr)
+					}
+				}
+				continue
+			}
+			client = jira.NewClient(acct.CloudID, jiraCfg, store)
+			// Resolved again at each refresh: a re-login through the company's
+			// new app while the daemon runs must not be refreshed through the
+			// client the daemon started with (#1887).
+			id := acct.ID
+			client.SetOAuthSource(jiraAccountOAuthSource(cfg.WorkspaceDir(), func() (db.JiraAccount, error) { return database.GetJiraAccount(id) }))
 		}
-		client := jira.NewClient(acct.CloudID, jiraCfg, store)
-		// Resolved again at each refresh: a re-login through the company's
-		// new app while the daemon runs must not be refreshed through the
-		// client the daemon started with (#1887).
-		id := acct.ID
-		client.SetOAuthSource(jiraAccountOAuthSource(cfg.WorkspaceDir(), func() (db.JiraAccount, error) { return database.GetJiraAccount(id) }))
 		client.SetLogger(subLogger(logger, "[jira] "))
 		clients[acct.ID] = client
 	}

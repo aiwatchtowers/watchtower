@@ -51,10 +51,18 @@ type Client struct {
 	// time (SetOAuthSource) instead of oauthCfg.
 	oauthSource func() (JiraOAuthConfig, error)
 	tokenStore  *TokenStore
-	httpClient  *http.Client
-	rateLimiter *RateLimiter
-	logger      *log.Logger
-	mu          sync.Mutex
+	// apiTokenCreds, set on an API-token account's client
+	// (NewAPITokenClient), gives the credentials of each request: Basic
+	// auth, no refresh. apiTokenSite is that account's site, the REST root
+	// of a classic token.
+	apiTokenCreds func() (APITokenCreds, error)
+	apiTokenSite  string
+	// onAPITokenDead, when set, is called on every ErrAPITokenDead.
+	onAPITokenDead func()
+	httpClient     *http.Client
+	rateLimiter    *RateLimiter
+	logger         *log.Logger
+	mu             sync.Mutex
 }
 
 // NewClient creates a Jira API client for the given cloud ID.
@@ -75,6 +83,9 @@ func NewClient(cloudID string, oauthCfg JiraOAuthConfig, tokenStore *TokenStore)
 func (c *Client) jiraBase() string {
 	if c.baseURL != "" {
 		return c.baseURL
+	}
+	if c.isAPIToken() {
+		return c.apiTokenRoot("jira")
 	}
 	return c.apiRoot + "/ex/jira/" + c.cloudID
 }
@@ -167,9 +178,9 @@ func (c *Client) doURLWith(ctx context.Context, hc *http.Client, method, fullURL
 			return nil, err
 		}
 
-		token, err := c.getAccessToken(ctx)
+		authz, token, used, err := c.authorization(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("getting access token: %w", err)
+			return nil, err
 		}
 
 		var rdr io.Reader
@@ -180,7 +191,7 @@ func (c *Client) doURLWith(ctx context.Context, hc *http.Client, method, fullURL
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Authorization", authz)
 		if accept != "" {
 			req.Header.Set("Accept", accept)
 		}
@@ -193,6 +204,10 @@ func (c *Client) doURLWith(ctx context.Context, hc *http.Client, method, fullURL
 			return nil, fmt.Errorf("request %s %s: %w", method, fullURL, err)
 		}
 
+		if resp.StatusCode == http.StatusUnauthorized && c.isAPIToken() {
+			// An API token never refreshes (D22).
+			return nil, c.apiTokenUnauthorized(ctx, resp, method, fullURL, used)
+		}
 		if resp.StatusCode == http.StatusUnauthorized {
 			immediateErr, shouldRefresh := unauthorizedOutcome(resp, method, fullURL, refreshAttempts)
 			if !shouldRefresh {
@@ -223,6 +238,22 @@ func (c *Client) doURLWith(ctx context.Context, hc *http.Client, method, fullURL
 
 		return resp, nil
 	}
+}
+
+// authorization returns the Authorization header of the next request: Basic
+// with the stored API token on an API-token client (used: its credentials),
+// else Bearer with the OAuth access token (token: that access token, for the
+// refresh guard), refreshed when expired.
+func (c *Client) authorization(ctx context.Context) (authz, token string, used APITokenCreds, err error) {
+	if c.isAPIToken() {
+		authz, used, err = c.apiTokenAuth()
+		return authz, "", used, err
+	}
+	token, err = c.getAccessToken(ctx)
+	if err != nil {
+		return "", "", APITokenCreds{}, fmt.Errorf("getting access token: %w", err)
+	}
+	return "Bearer " + token, token, APITokenCreds{}, nil
 }
 
 // unauthorizedOutcome classifies a 401 response and decides whether

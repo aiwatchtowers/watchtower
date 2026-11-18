@@ -29,19 +29,22 @@ type PurgeAccount struct {
 	Enabled    bool
 	AccessOKAt string
 	RevokedAt  string
+	// AuthKind is a Jira account's jira_accounts.auth_kind ("oauth",
+	// "api_token"); '' for the other sources.
+	AuthKind string
 }
 
 // listPurgeAccountsSQL reads every account of the four sources, every status
 // (removed accounts take part in the lease, ask #477). The label falls back
 // to the source's own name for the account.
 const listPurgeAccountsSQL = `
-SELECT 'slack', id, COALESCE(NULLIF(label, ''), NULLIF(team_name, ''), team_domain), status, enabled, access_ok_at, revoked_at FROM slack_accounts
+SELECT 'slack', id, COALESCE(NULLIF(label, ''), NULLIF(team_name, ''), team_domain), status, enabled, access_ok_at, revoked_at, '' FROM slack_accounts
 UNION ALL
-SELECT 'google', id, COALESCE(NULLIF(label, ''), email), status, (gmail_enabled OR calendar_enabled), access_ok_at, revoked_at FROM google_accounts
+SELECT 'google', id, COALESCE(NULLIF(label, ''), email), status, (gmail_enabled OR calendar_enabled), access_ok_at, revoked_at, '' FROM google_accounts
 UNION ALL
-SELECT 'jira', id, COALESCE(NULLIF(label, ''), NULLIF(site_name, ''), site_url), status, enabled, access_ok_at, revoked_at FROM jira_accounts
+SELECT 'jira', id, COALESCE(NULLIF(label, ''), NULLIF(site_name, ''), site_url), status, enabled, access_ok_at, revoked_at, auth_kind FROM jira_accounts
 UNION ALL
-SELECT 'linear', id, COALESCE(NULLIF(label, ''), NULLIF(org_name, ''), url_key), status, enabled, access_ok_at, revoked_at FROM linear_accounts
+SELECT 'linear', id, COALESCE(NULLIF(label, ''), NULLIF(org_name, ''), url_key), status, enabled, access_ok_at, revoked_at, '' FROM linear_accounts
 ORDER BY 1, 2`
 
 // ListPurgeAccounts returns every Slack, Google, Jira and Linear account with
@@ -55,7 +58,7 @@ func (db *DB) ListPurgeAccounts() ([]PurgeAccount, error) {
 	var out []PurgeAccount
 	for rows.Next() {
 		var a PurgeAccount
-		if err := rows.Scan(&a.Source, &a.ID, &a.Label, &a.Status, &a.Enabled, &a.AccessOKAt, &a.RevokedAt); err != nil {
+		if err := rows.Scan(&a.Source, &a.ID, &a.Label, &a.Status, &a.Enabled, &a.AccessOKAt, &a.RevokedAt, &a.AuthKind); err != nil {
 			return nil, fmt.Errorf("scanning purge account: %w", err)
 		}
 		out = append(out, a)

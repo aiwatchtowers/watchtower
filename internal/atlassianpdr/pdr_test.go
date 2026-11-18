@@ -341,18 +341,6 @@ func TestPDR_SharedAppAccountsRunToo(t *testing.T) {
 	assert.True(t, erased(t, d, shared))
 }
 
-func TestPDR_APITokenAccountsSkipped(t *testing.T) {
-	d := db.OpenTestDB(t)
-	acct, err := d.CreateJiraAccount(db.JiraAccount{CloudID: "c", SiteURL: "https://acme.atlassian.net", AuthKind: "api_token"})
-	require.NoError(t, err)
-	seedPeople(t, d, acct)
-	r := &fakeReporter{}
-	res, err := Run(context.Background(), d, acct, r, t0)
-	require.NoError(t, err)
-	assert.True(t, res.Skipped)
-	assert.Empty(t, r.calls)
-}
-
 // TestPDR_MemoryUntouched: memory people are keyed by Slack ids; the erase
 // never writes memory (P6, ask #1518).
 func TestPDR_MemoryUntouched(t *testing.T) {

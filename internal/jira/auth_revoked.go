@@ -95,10 +95,11 @@ func isClientRejected(body []byte) bool {
 }
 
 // accountLost reports an error that ends the account's pass: the grant is
-// revoked, or the client is rejected — every remaining request would fail
-// the same way.
+// revoked, the client is rejected, the API token is dead or stopped by the
+// policy — every remaining request would fail the same way.
 func accountLost(err error) bool {
-	return errors.Is(err, ErrAuthRevoked) || errors.Is(err, ErrClientRejected)
+	return errors.Is(err, ErrAuthRevoked) || errors.Is(err, ErrClientRejected) ||
+		errors.Is(err, ErrAPITokenDead) || errors.Is(err, ErrAPITokenForbidden)
 }
 
 // refreshTokenInvalid reports whether text carries Atlassian's "the refresh

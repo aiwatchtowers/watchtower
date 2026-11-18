@@ -31,6 +31,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 | `watchtower policy show` | The organization policy forced on this Mac; `--json` for scripts. See [Organization policy](organization-policy.md) |
 | `watchtower policy keys` | Every key an organization can force, with type, default and effect; `--json` for scripts |
 | `watchtower connections` | [Quick Connections](../features/quick-connections.md); `connections import` brings in your codex and Claude Code MCP servers |
+| `watchtower jira add --api-token-stdin --email <email> --site <site>` | Connects a Jira Cloud site with your own Atlassian API token instead of signing in through an app. Pipe the token in on stdin; it is never an argument. Add `--with-confluence` for Confluence. When the token expires or is revoked, the site shows an error and keeps its data: paste a new one with `jira login --account <id> --api-token-stdin` |
 
 Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the others with `list`; `rename <id> <name>` exists on Slack, Jira, Google, IMAP, Outlook and CalDAV; `remove` exists on most (Outlook uses `logout`); `enable` / `disable` exist on Slack, Jira and Linear but not on Google, IMAP or CalDAV. Run `--help` on the group. See [Sources and accounts](../concepts/sources-and-accounts.md).
 

@@ -90,11 +90,24 @@ const (
 //     ones RuleRevokedAndRemoved (the revoked rule still runs). nil allows
 //     every source.
 func Rules(on bool, origin Origin, sourceAllowed func(string) bool) func(db.PurgeAccount) Rule {
+	var allowed func(db.PurgeAccount) bool
+	if sourceAllowed != nil {
+		allowed = func(a db.PurgeAccount) bool { return sourceAllowed(a.Source) }
+	}
+	return AccountRules(on, origin, allowed)
+}
+
+// AccountRules is Rules over a per-account verdict: an account the policy
+// stops without forbidding its whole source — an Atlassian API-token account
+// under AllowAtlassianAPIToken = false (#1887 D24) — is not synced either,
+// so its leases are held the same way and its data kept (POLICY-03). nil
+// allows every account.
+func AccountRules(on bool, origin Origin, syncAllowed func(db.PurgeAccount) bool) func(db.PurgeAccount) Rule {
 	return func(a db.PurgeAccount) Rule {
 		switch {
 		case !on:
 			return RuleNone
-		case sourceAllowed != nil && !sourceAllowed(a.Source):
+		case syncAllowed != nil && !syncAllowed(a):
 			if a.Status == "removed" {
 				return RuleNone
 			}
