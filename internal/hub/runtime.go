@@ -981,6 +981,10 @@ func (h *hubRuntime) runPass(ctx context.Context, ev *transport.Event, worker bo
 			rep, err = h.processor().PassEvent(pctx, *ev)
 			if !narrow {
 				ev = nil // what the batch limit left: a full pass
+			} else {
+				// A repeat past the batch limit is the same event: its event_read
+				// sample was taken on the first pass (a zero ArrivedAt records none).
+				ev.ArrivedAt = time.Time{}
 			}
 		} else {
 			rep, err = h.processor().Pass(pctx)

@@ -134,7 +134,8 @@ func (p *Processor) retryUploads(ctx context.Context, b mailbox, ps *pass) error
 // echo; one the phone wrote again is left to the mailbox read. v1 limit:
 // the read back runs under p.mu, the one mailbox read that does (its
 // callers drain held actions under it, one of them inside a page's apply,
-// where letting go of p.mu would split a handle); it happens only after a
+// and this drain keeps p.mu to the end, unlike claim, which lets it go only
+// for its own received-echo write); it happens only after a
 // restart, while such uploads are due.
 func (p *Processor) recoverHeld(ctx context.Context, b mailbox, ps *pass) error {
 	rows, err := p.cfg.Store.HeldUploads()
