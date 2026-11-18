@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"sort"
 	"testing"
@@ -135,16 +137,21 @@ func TestSlackAccountsJSON_BuiltinApp(t *testing.T) {
 
 func TestSlackAccountsJSON_Relogin(t *testing.T) {
 	cases := []struct {
-		name     string
-		bakedID  string
-		clientID string
-		want     string
+		name      string
+		bakedID   string
+		retiredID string
+		clientID  string
+		want      string
 	}{
-		{"shared id while baked", jsonSharedID, jsonSharedID, "builtin"},
-		{"shared id after nothing is baked", "", jsonSharedID, "move"},
-		{"company app id", jsonCorpID, jsonSetupID, "connect"},
-		{"corp-baked id while baked", jsonCorpID, jsonCorpID, "builtin"},
-		{"corp-baked id after nothing is baked", "", jsonCorpID, "connect"},
+		{"shared id while baked", jsonSharedID, jsonSharedID, jsonSharedID, "builtin"},
+		{"shared id after nothing is baked", "", jsonSharedID, jsonSharedID, "move"},
+		{"company app id", jsonCorpID, jsonSharedID, jsonSetupID, "connect"},
+		{"corp-baked id while baked", jsonCorpID, jsonSharedID, jsonCorpID, "builtin"},
+		{"corp-baked id after nothing is baked", "", jsonSharedID, jsonCorpID, "connect"},
+		// Nothing baked and no retired id: the backfill has no source, the
+		// row stays empty and signs in again through the link or MDM (A17).
+		// (An empty row in a build with an app is backfilled before listing.)
+		{"empty id, no built-in app", "", "", "", "connect"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,10 +159,11 @@ func TestSlackAccountsJSON_Relogin(t *testing.T) {
 			if tc.bakedID != "" {
 				secret = "test-secret"
 			}
-			setSlackBuild(t, tc.bakedID, secret, jsonSharedID)
+			setSlackBuild(t, tc.bakedID, secret, tc.retiredID)
 			configPath, _ := slackAccountsWorkspace(t, tc.clientID)
 			accounts := jsonAccounts(t, runSlackAccountsJSON(t, configPath))
 			require.Len(t, accounts, 1)
+			assert.Equal(t, tc.clientID, accounts[0]["client_id"])
 			assert.Equal(t, tc.want, accounts[0]["relogin"])
 		})
 	}
@@ -217,4 +225,29 @@ func TestSyncStart_BackfillsSlackClientIDs(t *testing.T) {
 	a, err := database.GetSlackAccount(ids[0])
 	require.NoError(t, err)
 	assert.Equal(t, jsonCorpID, a.ClientID)
+}
+
+// Every connect runs the A17 backfill: an older row without a client id gets
+// the build's one, while the connected row keeps the id it signed in with.
+func TestConnectSlackAccount_BackfillsOtherRows(t *testing.T) {
+	setSlackBuild(t, jsonCorpID, "test-secret", jsonSharedID)
+	stubSlackIdentityServer(t, "U0OWNER", "T0TEAM", "Acme Corp", "acme")
+	t.Setenv("HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "test"}
+	database := db.OpenTestDB(t)
+	oldID, err := database.CreateSlackAccount(db.SlackAccount{TeamID: "T0OLD", TeamName: "acme-old"})
+	require.NoError(t, err)
+	id, err := database.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+
+	_, err = connectSlackAccount(context.Background(), cfg, database, id,
+		&auth.OAuthResult{AccessToken: "xoxp-new"}, true, jsonSetupID, &bytes.Buffer{})
+	require.NoError(t, err)
+
+	old, err := database.GetSlackAccount(oldID)
+	require.NoError(t, err)
+	assert.Equal(t, jsonCorpID, old.ClientID)
+	acct, err := database.GetSlackAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, jsonSetupID, acct.ClientID)
 }

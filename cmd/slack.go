@@ -214,6 +214,10 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 		}
 		return slackIdentity{}, err
 	}
+	// A17: other rows still without a client id get one at every connect.
+	if _, err := slackmode.BackfillClientIDs(database); err != nil {
+		fmt.Fprintf(warnOut, "warning: %v\n", err)
+	}
 
 	if err := database.SetSlackAccountAuthState(id, "ok", ""); err != nil {
 		fmt.Fprintf(warnOut, "warning: failed to record auth state: %v\n", err)

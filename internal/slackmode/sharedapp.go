@@ -31,9 +31,11 @@ func SharedApp(a db.SlackAccount, retiredID string) bool {
 // Relogin says how account a signs in again, first match wins (review
 // #1439): the retired shared id signs in through the build's app while the
 // build still has that app, else it moves (never connect: the retired app
-// has no loopback redirect, so PKCE would fail); an empty client id or the
-// build's own id signs in through the build's app; any other id connects.
-// builtinID is the client id of auth.BuiltinApp when it is ok, else "".
+// has no loopback redirect, so PKCE would fail); the build's own id, or an
+// empty client id while the build has an app, signs in through the build's
+// app; any other id, and an empty id with no built-in app (A17: link or
+// MDM), connects. builtinID is the client id of auth.BuiltinApp when it is
+// ok, else "".
 func Relogin(a db.SlackAccount, retiredID, builtinID string) string {
 	switch {
 	case retiredID != "" && a.ClientID == retiredID:
@@ -41,7 +43,7 @@ func Relogin(a db.SlackAccount, retiredID, builtinID string) string {
 			return ReloginBuiltin
 		}
 		return ReloginMove
-	case a.ClientID == "" || a.ClientID == builtinID:
+	case builtinID != "" && (a.ClientID == builtinID || a.ClientID == ""):
 		return ReloginBuiltin
 	default:
 		return ReloginConnect
@@ -50,7 +52,8 @@ func Relogin(a db.SlackAccount, retiredID, builtinID string) string {
 
 // BackfillSource is the client id that accounts without one (connected
 // before migration 00196) are given (A17): the build's baked or env client
-// id, else auth.RetiredSharedClientID, else "" (no backfill).
+// id — used even without a secret, since it names the app those rows were
+// connected through — else auth.RetiredSharedClientID, else "" (no backfill).
 func BackfillSource() string {
 	if cfg, _ := auth.BuiltinApp(); cfg.ClientID != "" {
 		return cfg.ClientID

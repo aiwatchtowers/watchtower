@@ -67,6 +67,7 @@ func TestSlackAccountRelogin_FirstMatchWins(t *testing.T) {
 		{"shared id after nothing is baked", sharedID, "", ReloginMove},
 		{"shared id while another app is baked", sharedID, corpID, ReloginMove},
 		{"empty client id", "", corpID, ReloginBuiltin},
+		{"empty client id, no built-in app", "", "", ReloginConnect},
 		{"corp-baked id while baked", corpID, corpID, ReloginBuiltin},
 		{"corp-baked id after nothing is baked", corpID, "", ReloginConnect},
 		{"company app", setupID, corpID, ReloginConnect},
