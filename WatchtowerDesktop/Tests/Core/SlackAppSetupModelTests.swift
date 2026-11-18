@@ -366,7 +366,7 @@ final class SlackAppSetupModelTests: XCTestCase {
 
     func testOtherResultsSayWhatHappened() async {
         let storage = await problem(#"{"result":"storage"}"#)
-        XCTAssertEqual(storage.notice?.body, Model.storageBody)
+        XCTAssertEqual(storage.notice?.body, Model.storageBody(rowAction: nil))
         let noApp = await problem(result("no_app"), form: adopt)
         XCTAssertEqual(noApp.notice?.body, "Watchtower's app is not connected in acme any more, so there is nothing to "
             + "update. Create the app instead.")
@@ -752,8 +752,20 @@ final class SlackAppSetupModelTests: XCTestCase {
 
     func testStorageSaysHowToGoOn() async {
         let model = await problem(#"{"result":"storage"}"#)
-        XCTAssertEqual(model.notice?.body, "Watchtower could not save the setup on this Mac, so it stopped. If Connections → "
-            + "Slack shows the setup, press Continue setup there; otherwise try again. The app is never created twice.")
+        XCTAssertEqual(model.notice?.body, "Watchtower could not save the setup on this Mac, so it stopped. Try again. "
+            + "The app is never created twice.")
+
+        // With a record row, the line names that row's own button, per stage.
+        for (stage, button) in [("install", "Continue setup"), ("link_missing", "Add the link to the app"),
+                                ("approval", "Check again"), ("pending_create", "Continue setup")] {
+            let status = #"{"setups":[\#(record(connected: stage == "link_missing", stage: stage))]}"#
+            let (named, _, _) = make([reply(#"{"result":"storage","team_id":"T0ACME"}"#), reply(status)])
+            named.startCreate(token: token)
+            await untilObserved { named.records.count == 1 && !named.isRunning }
+            XCTAssertEqual(named.notice?.body, "Watchtower could not save the setup on this Mac, so it stopped. "
+                + "Connections → Slack shows the setup: press \(button) on its row there. The app is never created twice.",
+                           stage)
+        }
     }
 
     func testLinkWithUnreadableStatusGoesOnToTheConnect() async {
@@ -775,12 +787,42 @@ final class SlackAppSetupModelTests: XCTestCase {
         newer.emit(#"{"setups":[\#(record(connected: false, stage: "install"))]}"#)
         newer.exit()
         let newerRead = await second
-        XCTAssertTrue(newerRead)
+        XCTAssertNotNil(newerRead)
         XCTAssertEqual(model.records.count, 1)
         older.emit(#"{"setups":[]}"#)
         older.exit()
         let olderRead = await first
-        XCTAssertTrue(olderRead)
+        XCTAssertNotNil(olderRead)
         XCTAssertEqual(model.records.count, 1, "the superseded read's answer is dropped")
+    }
+
+    func testLinkWithNoRecordInItsReadGoesOnToTheConnect() async {
+        // A stale cache says connected; this read has no record for the team.
+        let target = SlackSetupTarget(teamID: "T0ACME", teamName: "acme", appID: "A0ACME", clientID: "1111.2222")
+        let stale = [SlackSetupRecord(teamID: "T0ACME", teamName: "acme", appID: "A0ACME", clientID: "1111.2222",
+                                      connected: true, linkWritten: false, installRequested: false, stage: "link_missing")]
+        let fake = FakeCLILineStream(replies: [reply(result("ok")), noSetups, noSetups])
+        let connector = FakeSetupConnector()
+        let model = Model(streamer: fake, form: .addLink(target), records: stale)
+        model.connector = connector
+        model.startLink(team: "T0ACME", token: token)
+        await settled(model)
+        XCTAssertEqual(connector.calls, ["T0ACME:1111.2222"], "a missing record never means connected")
+    }
+
+    func testSupersededReadStillAnswersItsCaller() async {
+        let (model, fake, _) = make()
+        async let first = model.reloadRecords()
+        let older = await fake.session(number: 1)
+        async let second = model.reloadRecords()
+        let newer = await fake.session(number: 2)
+        newer.emit(#"{"setups":[]}"#)
+        newer.exit()
+        _ = await second
+        older.emit(#"{"setups":[\#(record(connected: true))]}"#)
+        older.exit()
+        let olderRead = await first
+        XCTAssertEqual(olderRead?.map(\.connected), [true], "the caller decides from its own snapshot")
+        XCTAssertTrue(model.records.isEmpty, "the cache keeps the newest read")
     }
 }

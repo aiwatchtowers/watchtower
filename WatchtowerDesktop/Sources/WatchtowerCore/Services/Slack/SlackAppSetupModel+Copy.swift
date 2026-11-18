@@ -231,8 +231,13 @@ extension SlackAppSetupModel {
     package static let clientIDFormatLine = "That is not a Client ID: two numbers joined by a dot."
 
     package static let busyBody = "Another setup is already running on this Mac. Try again once it has finished."
-    package static let storageBody = "Watchtower could not save the setup on this Mac, so it stopped. If Connections → "
-        + "Slack shows the setup, press Continue setup there; otherwise try again. The app is never created twice."
+    /// The storage line names the button the setup's record row shows; with
+    /// no row, the owner tries again.
+    package static func storageBody(rowAction: String?) -> String {
+        let next = rowAction.map { "Connections → Slack shows the setup: press \($0) on its row there." }
+            ?? "Try again."
+        return "Watchtower could not save the setup on this Mac, so it stopped. \(next) The app is never created twice."
+    }
 
     private var isAdopt: Bool {
         if case .adopt = form { return true }
@@ -254,7 +259,8 @@ extension SlackAppSetupModel {
         case let .refused(code):
             return changesNothingCreated ? "Slack refused the app: \(code). \(nothing)" : "Slack refused the change: \(code). \(nothing)"
         case .busy: return Self.busyBody
-        case .storage: return Self.storageBody
+        case let .storage(teamID):
+            return Self.storageBody(rowAction: recordRows.first { $0.record.teamID == teamID && !teamID.isEmpty }?.label)
         case let .wrongTeam(workspace):
             return "That token is for \(workspace), not this setup's workspace. Generate one in the right workspace."
         case let .noRecord(workspace):

@@ -149,7 +149,8 @@ package final class SlackAppSetupModel {
         case network(String)
         case refused(String)
         case busy
-        case storage
+        /// The local save failed; the setup's record row (if any) says how to go on.
+        case storage(teamID: String)
         case wrongTeam(workspace: String)
         case noRecord(workspace: String)
         case noApp(workspace: String)
@@ -356,22 +357,23 @@ package final class SlackAppSetupModel {
     /// A failed read keeps the last records.
     /// Reads may overlap (a run ends while the accounts change): a read that
     /// a later one has superseded drops its answer, so older records never
-    /// overwrite newer ones. Returns false when this read failed.
+    /// overwrite newer ones. Returns this read's own snapshot (also when
+    /// superseded, so a caller decides from what it read), nil when it failed.
     @discardableResult
-    package func reloadRecords() async -> Bool {
-        guard let streamer else { return false }
+    package func reloadRecords() async -> [SlackSetupRecord]? {
+        guard let streamer else { return nil }
         readGeneration += 1
         let generation = readGeneration
         var last: String?
         do {
             for try await line in streamer.lines(args: Self.statusArgs, stdin: nil) { last = line }
-            guard let last, let data = last.data(using: .utf8) else { return false }
+            guard let last, let data = last.data(using: .utf8) else { return nil }
             let read = try JSONDecoder().decode(StatusDocument.self, from: data).setups ?? []
             if generation == readGeneration { records = read }
-            return true
+            return read
         } catch {
             print("[SlackAppSetup] status read failed: \(error.localizedDescription)")
-            return false
+            return nil
         }
     }
 
@@ -531,17 +533,17 @@ package final class SlackAppSetupModel {
         if result.result == "ok" {
             var target = result.target(fallback: nil)
             target.linkWritten = true
-            // Done only when the records confirm the owner is connected; an
-            // unreadable status goes on to the connect (re-connecting re-binds
-            // the same account, so it is safe).
-            if await reloadRecords() {
-                let record = records.first { $0.teamID == target.teamID }
-                if record?.connected ?? true {
-                    phase = .finished(.linkDone)
-                    return
-                }
-                if let record { target = SlackSetupTarget(teamID: record.teamID, teamName: record.teamName,
-                                                          appID: record.appID, clientID: record.clientID, linkWritten: true) }
+            // Done only when this read's own snapshot shows the owner
+            // connected; an unreadable status or a missing record goes on to
+            // the connect (re-connecting re-binds the same account, so it is safe).
+            let record = await reloadRecords()?.first { $0.teamID == target.teamID }
+            if record?.connected == true {
+                phase = .finished(.linkDone)
+                return
+            }
+            if let record {
+                target = SlackSetupTarget(teamID: record.teamID, teamName: record.teamName,
+                                          appID: record.appID, clientID: record.clientID, linkWritten: true)
             }
             // A setup whose owner is not connected yet (an attached app): on to the connect.
             form = .create
@@ -576,7 +578,7 @@ package final class SlackAppSetupModel {
         case "network": .network(result.error ?? "")
         case "refused": .refused(result.code ?? "")
         case "busy": .busy
-        case "storage": .storage
+        case "storage": .storage(teamID: result.teamID ?? "")
         case "wrong_team": .wrongTeam(workspace: workspace)
         case "no_record": .noRecord(workspace: workspace)
         case "no_pending": .notPending(workspace: workspace)

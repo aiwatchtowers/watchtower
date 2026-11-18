@@ -95,6 +95,11 @@ final class SlackAppSetupSheetTests: XCTestCase {
         XCTAssertEqual(Model.confirmClearBody, Copy.confirmClear)
         XCTAssertEqual(Model.label(.confirmClear), Copy.confirmClearAction)
         XCTAssertEqual(SlackSetupShotFixture.model(.notAllowed).adminNotePreview, Copy.adminNote)
+        let notCollaborator = SlackSetupShotFixture.model(.adoptNotCollaborator)
+        XCTAssertEqual(notCollaborator.notice?.title, Copy.adoptTitle)
+        XCTAssertEqual(notCollaborator.notice?.body, Copy.notCollaborator)
+        XCTAssertEqual(notCollaborator.adminNotePreview, Copy.adminNote)
+        XCTAssertEqual(notCollaborator.actions.map(\.label), [Copy.cancel, Copy.copyAdminNote, Copy.tryAgain])
         XCTAssertEqual(SlackSetupShotFixture.rowsModel(.setupPending).recordRows.map(\.text), [Copy.recordPending])
     }
 }
