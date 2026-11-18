@@ -66,12 +66,25 @@ zone. A `PublishNow` arriving during a running cycle is taken between kinds inst
 ### R5. Optimistic apply on the phone
 
 At tap time the phone applies the action's expected effect to its replica as a **pending overlay** (a new target
-appears, a moved card moves, an answered ask leaves the list), marked pending. The overlay row is dropped when either
-(a) the tower's echo for that action arrives — then the slice record delivered with or after it shows the real
-value — or (b) the echo says refused / the action fails — then the overlay is removed and the existing error chip
-shows. Writers of what a screen shows: the overlay (phone) and the replica (hub's records); the replica wins as soon
-as the echo for the action is in. An overlay older than 10 min without an echo is dropped and the "Waiting for your
-Mac" chip stays (an offline tower).
+appears, a moved card moves, an answered ask shows its answer), marked pending. The echo (mailbox zone) and the
+slice records (data zone) are different zones and may arrive in either order, so the echo alone never clears an
+overlay:
+
+- echo `applied` → the overlay waits for the first slice record of the same entity (by entity id) that arrives after
+  the echo; that record replaces it. If none arrives within 30 s of the echo (the apply changed nothing visible), the
+  overlay is dropped and the replica shows as is.
+- echo refused / the action fails → the overlay is removed at once and the existing refusal line with Dismiss shows.
+- no echo while the tower's heartbeat is stale → the caption turns to "Waiting for your tower"; after 10 min the
+  overlay is dropped and today's pending row takes over (an offline tower).
+
+Writers of what a screen shows: the overlay (phone) and the replica (hub's records); the replica wins once a slice
+record for that entity newer than the echo is in.
+
+**How it looks** — [2026-11-18-live-link-mockups.html](2026-11-18-live-link-mockups.html), one frame per state: new
+task just tapped, card moved and waiting for its slice, confirmed, tower slow/offline, refused, ask answered. The
+change shows in place on the existing card; the captions are today's strings in `BoardWriteModel` ("Sending…",
+"Waiting for your tower", "Your tower could not make this change"), tones as today. No new strings; the overlay's
+caption choice lives in the model and is covered by its tests.
 
 Kinds covered in v1: board create / move / priority / status, ask answer (today's `AppliedAnswer` folds into it),
 comment. Other kinds keep today's chip.
@@ -108,7 +121,9 @@ towers keep replication as it is, plus R5 (optimistic apply works on any transpo
 | Event with inline records lost (socket died) | the next event or the wake read finds a gap and reads `changes` | gap after a lost event |
 | Event arrives before the save's answer | records applied by `seq`; the answer then only confirms | event-before-answer order |
 | Hub dies after reading the action, before apply | applied after restart from the mailbox (exactly-once ledger); the phone's overlay stays pending meanwhile | restart between read and apply |
-| Action refused by the hub | overlay removed, error chip shown | refused echo |
+| Action refused by the hub | overlay removed, refusal line shown | refused echo |
+| Echo arrives before the slice record | overlay kept until the entity's slice record; no flicker back to the old value | echo-then-slice and slice-then-echo orders |
+| Echo applied, no slice change | overlay dropped 30 s after the echo | no-op apply |
 | Tower offline for long | overlay dropped after 10 min, waiting chip stays; the action applies when the tower is back | 10-min expiry |
 | Save larger than the frame budget | split by record; an oversized record has no body, receiver reads it | 300 KiB save; one 300 KiB record |
 | Old relay (no capability) | single-record inline only, as today; everything still works | old-relay stub |
@@ -126,7 +141,7 @@ Replica/Relay), phone app (`HubSession` wake, overlays). Order: relay (R1, R2 al
 
 - Direct LAN connection (Bonjour) — revisit after R7's numbers.
 - Ephemeral (unstored) frames — nothing in v1 needs them.
-- Live terminal streams. Screen changes (beyond overlays on existing screens).
+- Live terminal streams. Screen changes beyond the overlays on existing screens (mockups linked in R5).
 
 ## What happens to the research plan's stages (ask #1527: "Да, так")
 
