@@ -107,4 +107,11 @@ final class BackgroundAIConsentCopyTests: XCTestCase {
         XCTAssertTrue(Copy.phonePaused.hasSuffix("Allow it in Watchtower on the Mac."))
         XCTAssertTrue(Copy.phoneOrg.contains("your organization"))
     }
+
+    /// Instead of the sheet while config.yaml cannot be read.
+    func testConfigUnreadableExplainsWhyNothingCanBeSaved() {
+        XCTAssertEqual(Copy.configUnreadableTitle, "Watchtower can't read config.yaml")
+        XCTAssertEqual(Copy.configUnreadable, "Your background AI choice can't be saved until the file is fixed.")
+        XCTAssertEqual(Copy.finishRetry, "Try again")
+    }
 }

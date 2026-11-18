@@ -242,6 +242,8 @@ struct MainNavigationView: View {
         }
         // After a connect in the Connections tab: the related-features offer.
         .modifier(FeatureSuggestionPresenter(appState: appState))
+        // Background AI consent: the upgrade sheet and the owner's re-entry (#1886).
+        .modifier(BackgroundAIConsentPresenter(appState: appState))
         .onAppear { applyFeatureFallback() }
         .onChange(of: appState.featureVisibility.disabledFeatureIDs) { _, _ in applyFeatureFallback() }
         .onChange(of: appState.featureVisibility.connectedSources) { _, _ in applyFeatureFallback() }
