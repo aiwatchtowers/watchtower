@@ -691,6 +691,25 @@ func TestParkedBy_HeredocIdiomAndMoreHiddenShapes(t *testing.T) {
 	add("lenient PR body says merge", lenient(prBody), "")
 	add("lenient gh pr merge", lenient("gh pr merge 1"), LimitMainRef)
 	add("lenient sh -c heredoc merge", lenient("sh -c \"$(cat <<'EOF'\ngh pr merge 1\nEOF\n)\""), LimitUnreadable)
+	// Round 7: a sibling part could run the blanked body, or the owner is
+	// no message taker — the body is scanned.
+	push := "\"$(cat <<'EOF'\ngit push origin main\nEOF\n)\""
+	both("echo heredoc into sh", "echo "+push+" | sh", LimitUnreadable)
+	both("printf heredoc into bash", "printf '%s\\n' "+push+" | bash", LimitUnreadable)
+	both("commit heredoc piped into sh", "git commit -m "+push+" | sh", LimitUnreadable)
+	both("cat redefined", "cat() { sh; }; git commit -m "+push, LimitUnreadable)
+	both("commit heredoc then eval", "git commit -m "+push+"; eval 'make'", LimitUnreadable)
+	both("commit heredoc then source", "git commit -m "+push+" && source env.sh", LimitUnreadable)
+	both("commit heredoc then sh -c", "git commit -m "+push+" && sh -c 'make'", LimitUnreadable)
+	both("commit heredoc then variable program", "git commit -m "+push+" && $RUN", LimitUnreadable)
+	both("echo is no message taker", "echo \"$(cat <<'EOF'\nrelease notes\nEOF\n)\"", LimitUnreadable)
+	both("git tag -a heredoc still a tag", "git tag -a v1 -m \"$(cat <<'EOF'\nfirst cut\nEOF\n)\"", LimitUnreadable)
+	both("gh issue create heredoc", "gh issue create --title x --body \"$(cat <<'EOF'\npush it before the release\nEOF\n)\"", "")
+	both("gh pr edit heredoc", "gh pr edit 3 --body \"$(cat <<'EOF'\nreview after the push\nEOF\n)\"", "")
+	both("commit heredoc then a plain command", "git commit -m \"$(cat <<'EOF'\nrelease notes\nEOF\n)\" && go test ./...", "")
+	// rm: .. is a parent only as a path segment.
+	both("rm of ..cache", "make x & rm ..cache", "")
+	both("rm of ..", "make x & rm ..", LimitUnreadable)
 	expectParked(t, cases)
 	// The strict backstop alone (the unreadable row comes first above).
 	r := bash(prBody)

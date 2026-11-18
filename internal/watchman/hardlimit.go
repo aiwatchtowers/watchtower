@@ -735,41 +735,101 @@ func matchUnreadable(r PermissionAsk) bool {
 // merge, push, tag, release, send-pack, reset, forced branch move,
 // update-ref, rm -r/-f, an upload, a message or comment others see): a
 // hidden shape in the guard's mode parks only with one of them in sight.
-var limitWords = regexp.MustCompile(`(?i)(^|[^a-z0-9_])(merges?|mergepullrequest|automerge|push|tags?|release|send-pack|reset|rebase|update-ref|altool|testflight|itmstransporter|pilot|upload_to_testflight|mail|mailx|sendmail|mutt|comment|review)([^a-z0-9_]|$)|rm\s+-[a-z]*[rf]|(^|[^a-z0-9_])rm(\s+-\S+)*\s+['"]?(/|\.\.|~)|(branch|checkout|switch)\s+-[a-z]*[fdmcb]`)
+var limitWords = regexp.MustCompile(`(?i)(^|[^a-z0-9_])(merges?|mergepullrequest|automerge|push|tags?|release|send-pack|reset|rebase|update-ref|altool|testflight|itmstransporter|pilot|upload_to_testflight|mail|mailx|sendmail|mutt|comment|review)([^a-z0-9_]|$)|rm\s+-[a-z]*[rf]|(^|[^a-z0-9_])rm(\s+-\S+)*\s+['"]?(/|\.\.([/\s'";|&)]|$)|~)|(branch|checkout|switch)\s+-[a-z]*[fdmcb]`)
 
-// lenientScanText is what the guard's mode scans for limitWords: the
-// command text (comments and description lines dropped by splitCommands)
-// with each commit-message idiom blanked — a
+// lenientScanText is what the guard's mode scans for limitWords and its
+// merge backstop: the command text (comments and description lines
+// dropped by splitCommands) with each commit-message idiom blanked — a
 // "$(cat <<'D' … D)" argument (quoted delimiter, so its body is literal
-// text) of a command that runs no string itself and has no other hidden
-// shape (heredocArgsBlanked).
+// text) of a message-taking command (heredocArgsBlanked) — but only when,
+// after blanking, nothing in the whole request could run that body
+// (blankedRequestPlain). Otherwise the text unblanked.
 func lenientScanText(summary string) string {
 	parts := splitCommands(summary)
-	lines := make([]string, 0, len(parts))
+	plain := make([]string, 0, len(parts))
+	blanked := make([]string, 0, len(parts))
+	rebuilt := ""
+	found := false
 	for _, p := range parts {
-		lines = append(lines, heredocArgsBlanked(p))
+		b, ok := heredocArgsBlanked(p)
+		found = found || ok
+		plain, blanked = append(plain, p.text), append(blanked, b)
+		rebuilt += p.sep + b
 	}
-	return strings.Join(lines, "\n")
+	if found && blankedRequestPlain(rebuilt) {
+		return strings.Join(blanked, "\n")
+	}
+	return strings.Join(plain, "\n")
+}
+
+// blankedRequestPlain reports a request (heredoc bodies blanked) in which
+// no part could run a blanked body: no hidden shape anywhere (a
+// substitution, a pipe into a shell, a variable as the program, a function
+// definition — one redefining cat included...), no unreadable part, and no
+// eval, source, . or shell call at all.
+func blankedRequestPlain(text string) bool {
+	for _, p := range splitCommands(text) {
+		if hiddenText(p.text) {
+			return false
+		}
+		words, ok := splitWords(p.text)
+		if !ok {
+			return false
+		}
+		var c shellCmd
+		if words = stripWrappers(words, &c); len(words) == 0 {
+			continue
+		}
+		switch prog := path.Base(words[0]); {
+		case shells[prog], prog == "eval", prog == "source", prog == ".", prog == unresolved,
+			strings.HasPrefix(words[0], "$"), c.xargs:
+			return false
+		}
+	}
+	for _, c := range commands(text) {
+		if c.w[0] == hiddenMark || c.w[0] == unresolved {
+			return false
+		}
+	}
+	return true
+}
+
+// messageTaker reports a command whose heredoc argument is a message: git
+// commit, an annotated git tag (-a/-m), gh pr|issue create|edit, gh release
+// create|edit. Their own rows (a tag, a release) still run on the command.
+func messageTaker(c shellCmd) bool {
+	if _, ok := c.sub("git", "commit"); ok {
+		return true
+	}
+	if args, ok := c.sub("git", "tag"); ok {
+		flags, _ := splitFlags(args)
+		return flags["-a"] || flags["-m"] || flags["--annotate"] || flags["--message"]
+	}
+	for _, group := range []string{"pr", "issue", "release"} {
+		if verb, ok := c.ghCmd(group); ok && (verb == "create" || verb == "edit") {
+			return true
+		}
+	}
+	return false
 }
 
 // heredocArgsBlanked returns part's text with every quoted-heredoc
-// argument blanked to "" when all of it is plain: the argument is a whole
-// double-quoted word that is not the first, the command (wrappers
-// stripped) is no shell, eval, source, . or xargs, and nothing else in it
-// is a hidden shape. Otherwise the text as it is.
-func heredocArgsBlanked(part commandPart) string {
+// argument of a message-taking command blanked to "" (ok true): the
+// argument is a whole double-quoted word that is not the first. Otherwise
+// the text as it is.
+func heredocArgsBlanked(part commandPart) (string, bool) {
 	words, ok := splitWords(part.text)
 	if !ok {
-		return part.text
+		return part.text, false
 	}
 	var c shellCmd
 	words = stripWrappers(words, &c)
 	if len(words) < 2 || c.xargs || strings.HasPrefix(words[0], "$") {
-		return part.text
+		return part.text, false
 	}
-	switch prog := path.Base(words[0]); {
-	case shells[prog], prog == "eval", prog == "source", prog == ".", prog == "xargs", prog == unresolved:
-		return part.text
+	c.w = append([]string{path.Base(words[0])}, words[1:]...)
+	if !messageTaker(c) {
+		return part.text, false
 	}
 	text, blanked := part.text, false
 	for _, w := range words[1:] {
@@ -778,15 +838,14 @@ func heredocArgsBlanked(part commandPart) string {
 		}
 		quoted := `"` + w + `"`
 		if !strings.Contains(text, quoted) {
-			return part.text
+			return part.text, false
 		}
 		text, blanked = strings.Replace(text, quoted, `""`, 1), true
 	}
-	c.w = append([]string{path.Base(words[0])}, words[1:]...)
 	if !blanked || hiddenText(text) || hiddenShape(c, part.sep) {
-		return part.text
+		return part.text, false
 	}
-	return text
+	return text, true
 }
 
 // heredocDelim is a heredoc delimiter word.
