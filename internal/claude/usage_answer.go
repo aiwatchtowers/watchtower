@@ -31,14 +31,9 @@ type usageAnswerWire struct {
 			usageWindowWire
 		} `json:"model_scoped"`
 		// Breakdown is not in the CLI's schema: it is the usage endpoint's
-		// surface split, passed through when the endpoint sends it.
-		Breakdown *struct {
-			Rows []struct {
-				Key         string  `json:"key"`
-				DisplayName string  `json:"display_name"`
-				Percent     float64 `json:"percent"`
-			} `json:"rows"`
-		} `json:"seven_day_breakdown"`
+		// surface split, passed through when the endpoint sends it. It is
+		// decoded on its own so a reshaped field costs only the breakdown.
+		Breakdown json.RawMessage `json:"seven_day_breakdown"`
 	} `json:"rate_limits"`
 }
 
@@ -84,12 +79,31 @@ func parseClaudeUsage(payload []byte) (snap UsageSnapshot, available bool, limit
 		add("weekly_scoped:opus", "Weekly · Opus", "weekly", rl.Opus)
 		add("weekly_scoped:sonnet", "Weekly · Sonnet", "weekly", rl.Sonnet)
 	}
-	if rl.Breakdown != nil {
-		for _, row := range rl.Breakdown.Rows {
-			snap.Breakdown = append(snap.Breakdown, BreakdownRow{Key: row.Key, Label: row.DisplayName, Percent: row.Percent})
-		}
-	}
+	snap.Breakdown = parseUsageBreakdown(rl.Breakdown)
 	return snap, true, false, nil
+}
+
+// parseUsageBreakdown reads the surface rows; absent, null or not in the
+// known shape is nil (the block hides), never an error for the windows.
+func parseUsageBreakdown(raw json.RawMessage) []BreakdownRow {
+	if len(raw) == 0 {
+		return nil
+	}
+	var b *struct {
+		Rows []struct {
+			Key         string  `json:"key"`
+			DisplayName string  `json:"display_name"`
+			Percent     float64 `json:"percent"`
+		} `json:"rows"`
+	}
+	if json.Unmarshal(raw, &b) != nil || b == nil {
+		return nil
+	}
+	var out []BreakdownRow
+	for _, row := range b.Rows {
+		out = append(out, BreakdownRow{Key: row.Key, Label: row.DisplayName, Percent: row.Percent})
+	}
+	return out
 }
 
 // usageSlug is the scoped key's suffix: lower case, trimmed, spaces → "-".

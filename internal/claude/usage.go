@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -53,6 +54,9 @@ const (
 	usageLineCap   = 1 << 20
 	usageTotalCap  = 4 << 20
 	usageRequestID = "wt-usage"
+	// usageWaitDelay bounds exec's Wait once the child has exited while a
+	// descendant outside its group still holds a pipe.
+	usageWaitDelay = 2 * time.Second
 )
 
 // usageArgs is the reader's argv: stream-json control traffic only, no
@@ -88,25 +92,33 @@ type usageLauncher func() (*usageChild, error)
 var errCLIMissing = errors.New("claude CLI missing")
 
 // usageProcess starts bin with usageArgs in the neutral temp folder, in its
-// own process group. Stderr is drained and dropped: it is never stored,
-// logged or returned. The reader owns killing, so no CommandContext.
+// own process group. Stderr goes to the null device (no pipe, so a
+// descendant holding it cannot stall Wait): it is never stored, logged or
+// returned. WaitDelay bounds Wait if an escaped descendant keeps a pipe open.
+// The reader owns killing, so no CommandContext.
 func usageProcess(bin string, env []string) usageLauncher {
 	return func() (*usageChild, error) {
 		path, err := exec.LookPath(bin)
 		if err != nil {
 			return nil, errCLIMissing
 		}
+		// A relative bin was found against our cwd; the child runs in Dir.
+		if path, err = filepath.Abs(path); err != nil {
+			return nil, err
+		}
 		cmd := exec.Command(path, usageArgs...)
 		cmd.Dir = os.TempDir()
 		cmd.Env = env
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		cmd.Stderr = io.Discard
+		cmd.Stderr = nil
+		cmd.WaitDelay = usageWaitDelay
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
 			return nil, err
 		}
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
+			_ = stdin.Close()
 			return nil, err
 		}
 		if err := cmd.Start(); err != nil {
@@ -173,10 +185,22 @@ func scanUsageAnswer(stdout io.Reader) usageScan {
 	}
 }
 
+// matchUsageAnswer reports whether line is the wt-usage control_response.
+// The match reads only type and request_id; an answer whose other fields do
+// not decode comes back with an empty subtype, which classifies as parse.
 func matchUsageAnswer(line []byte) (*usageEnvelope, bool) {
-	var env usageEnvelope
-	if json.Unmarshal(line, &env) != nil || env.Type != "control_response" || env.Response.RequestID != usageRequestID {
+	var head struct {
+		Type     string `json:"type"`
+		Response struct {
+			RequestID string `json:"request_id"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(line, &head) != nil || head.Type != "control_response" || head.Response.RequestID != usageRequestID {
 		return nil, false
+	}
+	var env usageEnvelope
+	if json.Unmarshal(line, &env) != nil {
+		return &usageEnvelope{}, true
 	}
 	return &env, true
 }

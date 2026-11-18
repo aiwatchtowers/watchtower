@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -46,7 +47,10 @@ type fakeUsageChild struct {
 	stdinW, stdoutW *io.PipeWriter
 	exit            chan int
 	killedCh        chan struct{}
-	killOnce        sync.Once
+	// holdStdout models a descendant outside the group that keeps stdout
+	// open: kill does not end the stdout stream.
+	holdStdout bool
+	killOnce   sync.Once
 
 	mu         sync.Mutex
 	killed     bool
@@ -80,8 +84,10 @@ func (f *fakeUsageChild) child() *usageChild {
 				f.killed, f.killedAt = true, time.Now()
 				f.mu.Unlock()
 				_ = f.stdinR.Close()
-				_ = f.stdoutW.Close()
-				_ = f.stdoutR.Close()
+				if !f.holdStdout {
+					_ = f.stdoutW.Close()
+					_ = f.stdoutR.Close()
+				}
 				close(f.killedCh)
 			})
 		},
@@ -271,6 +277,7 @@ func TestReadUsage_RateLimitsNull(t *testing.T) {
 		{"no windows", usageSuccess(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"seven_day":null}}`), "parse"},
 		{"undecodable", usageSuccess(`{"rate_limits_available":"yes"}`), "parse"},
 		{"odd subtype", `{"type":"control_response","response":{"subtype":"pending","request_id":"wt-usage"}}`, "parse"},
+		{"wrong-typed field", `{"type":"control_response","response":{"subtype":"success","request_id":"wt-usage","error_code":5}}`, "parse"},
 	} {
 		synctest.Test(t, func(t *testing.T) {
 			_, _, err := runFakeUsage(t.Context(), nil, answering(tc.line))
@@ -405,6 +412,30 @@ func TestReadUsage_ExitGraceThenKill(t *testing.T) {
 	})
 }
 
+// Review fix: a child that exits without answering while an escaped
+// descendant keeps stdout open ends at the budget, not later.
+func TestReadUsage_EscapedDescendantHoldsStdout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFakeUsageChild()
+		f.holdStdout = true
+		start := time.Now()
+		_, err := readUsage(t.Context(), func() (*usageChild, error) {
+			go func() {
+				_, _ = bufio.NewReader(f.stdinR).ReadString('\n')
+				f.exit <- 0 // exits; stdout stays open
+			}()
+			return f.child(), nil
+		}, nil)
+		if code := usageCode(t, err); code != "timeout" {
+			t.Fatalf("code = %q, want timeout", code)
+		}
+		if d := time.Since(start); d != usageBudget {
+			t.Errorf("returned after %v, want %v", d, usageBudget)
+		}
+		_ = f.stdoutW.Close() // the descendant finally goes away
+	})
+}
+
 // --- script tests: a real /bin/sh child -------------------------------------
 
 // writeUsageScript writes an executable /bin/sh fake claude whose first act
@@ -428,7 +459,9 @@ func writeUsageScript(t *testing.T, body string) string {
 		if err != nil || pid <= 0 {
 			return
 		}
-		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		// ESRCH: the group is gone. EPERM: darwin's answer for a group
+		// whose remaining members are exiting zombies.
+		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) && !errors.Is(err, syscall.EPERM) {
 			t.Errorf("kill group %d: %v", pid, err)
 		}
 	})
@@ -442,6 +475,46 @@ func TestReadUsage_FlagsRejected(t *testing.T) {
 	_, err := ReadUsage(t.Context(), bin, []string{"PATH=/usr/bin:/bin"})
 	if code := usageCode(t, err); code != "unsupported_cli" {
 		t.Fatalf("code = %q, want unsupported_cli", code)
+	}
+}
+
+// Review fix: a descendant that escapes the process group (setsid) and keeps
+// stdout and stderr open must not hold ReadUsage after the answer: stderr is
+// not a pipe and Wait is bounded.
+func TestReadUsage_EscapedDescendantDoesNotHang(t *testing.T) {
+	perl, err := exec.LookPath("perl")
+	if err != nil {
+		t.Skip("perl not installed")
+	}
+	holderPid := filepath.Join(t.TempDir(), "holder")
+	bin := writeUsageScript(t, strings.Join([]string{
+		`IFS= read -r line`,
+		shQuote(perl) + ` -e 'use POSIX; POSIX::setsid(); sleep 300' &`,
+		`echo $! > ` + shQuote(holderPid),
+		`printf '%s\n' ` + shQuote(usageSuccess(usageOKPayload)),
+		`/bin/cat >/dev/null`,
+	}, "\n"))
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(holderPid); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	snap, err := ReadUsage(t.Context(), bin, []string{"PATH=/usr/bin:/bin"})
+	if err != nil || len(snap.Windows) != 2 {
+		t.Fatalf("snap = %+v err = %v", snap, err)
+	}
+}
+
+// Review fix: a relative bin resolves against the caller's cwd, not the
+// child's neutral folder.
+func TestReadUsage_RelativeBin(t *testing.T) {
+	bin := writeUsageScript(t, "IFS= read -r line\nprintf '%s\\n' "+shQuote(usageSuccess(usageOKPayload))+"\n/bin/cat >/dev/null")
+	t.Chdir(filepath.Dir(bin))
+	snap, err := ReadUsage(t.Context(), "./"+filepath.Base(bin), []string{"PATH=/usr/bin:/bin"})
+	if err != nil || len(snap.Windows) != 2 {
+		t.Fatalf("snap = %+v err = %v", snap, err)
 	}
 }
 
@@ -500,7 +573,10 @@ func TestPlanUsage01_ReaderArgvAndHome(t *testing.T) {
 		}
 		return string(b)
 	}
-	if got, want := read(args), strings.Join(usageArgs, "\n")+"\n"; got != want {
+	// The plan's Global Constraints argv, verbatim; not usageArgs, so a flag
+	// dropped from the reader fails here.
+	pinned := "-p --input-format stream-json --output-format stream-json --verbose --setting-sources project --strict-mcp-config --no-session-persistence"
+	if got, want := read(args), strings.Join(strings.Fields(pinned), "\n")+"\n"; got != want {
 		t.Errorf("argv = %q, want %q", got, want)
 	}
 	wantDir, err := filepath.EvalSymlinks(os.TempDir())

@@ -159,3 +159,21 @@ func TestParseClaudeUsage_Malformed(t *testing.T) {
 		t.Errorf("rate_limits:null: available=%v limitsNull=%v err=%v", available, limitsNull, err)
 	}
 }
+
+// A reshaped pass-through breakdown costs only the breakdown, never the
+// windows.
+func TestParseClaudeUsage_MalformedBreakdownKeepsWindows(t *testing.T) {
+	for name, bd := range map[string]string{
+		"rows string":    `{"rows":"x"}`,
+		"percent string": `{"rows":[{"key":"a","display_name":"A","percent":"80"}]}`,
+		"array":          `[1,2]`,
+		"null":           `null`,
+	} {
+		payload := []byte(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{` +
+			`"five_hour":{"utilization":1,"resets_at":null},"seven_day_breakdown":` + bd + `}}`)
+		snap := mustParseUsage(t, payload)
+		if len(snap.Windows) != 1 || snap.Breakdown != nil {
+			t.Errorf("%s: windows=%v breakdown=%v", name, snap.Windows, snap.Breakdown)
+		}
+	}
+}
