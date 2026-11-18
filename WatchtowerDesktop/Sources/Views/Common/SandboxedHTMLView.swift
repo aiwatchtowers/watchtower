@@ -3,6 +3,7 @@ import os
 import SwiftUI
 import WatchtowerCore
 import WebKit
+import WatchtowerChatText
 
 private let htmlPreviewLog = Logger(subsystem: Constants.bundleID, category: "html-preview")
 
@@ -39,13 +40,6 @@ struct SandboxedHTMLView: NSViewRepresentable {
     /// Take keyboard focus after the first load, so the arrow keys reach the
     /// page (a deck's slides) without a click first.
     var focusOnLoad = false
-
-    /// Runs before any page script, in every frame.
-    static let removeWebRTC = """
-    (() => { for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel"]) {
-      try { Object.defineProperty(window, name, { value: undefined, writable: false, configurable: false }); } catch (e) {}
-    } })();
-    """
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -102,7 +96,7 @@ struct SandboxedHTMLView: NSViewRepresentable {
         config.preferences.isElementFullscreenEnabled = true
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         config.userContentController.addUserScript(
-            WKUserScript(source: Self.removeWebRTC, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+            WKUserScript(source: HTMLPreviewPolicy.removeWebRTC, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         )
         config.setURLSchemeHandler(coordinator.files, forURLScheme: HTMLPreviewPolicy.scheme)
         let webView = WKWebView(frame: frame, configuration: config)

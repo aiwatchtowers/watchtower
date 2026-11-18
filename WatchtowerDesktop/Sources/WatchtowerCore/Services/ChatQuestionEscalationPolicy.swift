@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// When the Desktop raises a recorded Chat question into an ask (spec
 /// 2026-10-10-owner-asks-v2 Part 5.2): the agent asked in the terminal while

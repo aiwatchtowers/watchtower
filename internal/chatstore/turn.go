@@ -103,6 +103,7 @@ type Turn struct {
 	done      bool
 	status    string
 	gone      bool
+	held      bool // HoldFlushes: no partial write until ReleaseFlushes
 }
 
 // Turn begins tracking st's turn (its assistant row already exists).
@@ -202,12 +203,26 @@ func (t *Turn) Apply(ev chat.Event) error {
 	return nil
 }
 
+// HoldFlushes stops partial writes until ReleaseFlushes: a turn rebuilt
+// from a replay (a reattached session) must never write a shorter text
+// over the row before the replay is whole. Its end is still written.
+func (t *Turn) HoldFlushes() { t.held = true }
+
+// ReleaseFlushes ends HoldFlushes and writes the text so far.
+func (t *Turn) ReleaseFlushes() error {
+	if !t.held {
+		return nil
+	}
+	t.held = false
+	return t.Flush()
+}
+
 // Flush writes the text so far as `partial`, with the usage held.
 func (t *Turn) Flush() error {
 	if t.gone {
 		return ErrConversationGone
 	}
-	if t.done {
+	if t.done || t.held {
 		return nil
 	}
 	t.lastFlush = t.s.now()

@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// What the ask views show (spec 2026-10-03 Part 8): the answer bar's
 /// buttons and when they act, the check summary, the drawer's "k of N", a

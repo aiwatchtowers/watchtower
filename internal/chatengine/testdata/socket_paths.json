@@ -1,0 +1,62 @@
+{
+  "comment": "Go chatengine.SocketPath/SessionSocketPath and Swift ChatSocketPaths: max is the longest socket path (darwin sun_path 104 with its NUL).",
+  "max": 103,
+  "cases": [
+    {
+      "name": "short workspace",
+      "workspace": "/Users/acme/.local/share/watchtower/acme",
+      "temp_dir": "/var/folders/ab/cd/T/",
+      "conversation": 42,
+      "chat_socket": "/Users/acme/.local/share/watchtower/acme/chat.sock",
+      "session_socket": "/Users/acme/.local/share/watchtower/acme/chatengine/sessions/42.sock"
+    },
+    {
+      "name": "long workspace falls back",
+      "workspace": "/Users/acme/Library/Application Support/Watchtower/workspaces/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "temp_dir": "/var/folders/ab/cd/T/",
+      "conversation": 42,
+      "chat_socket": "/var/folders/ab/cd/T/wtchat-9b24c641d5c1/chat.sock",
+      "session_socket": "/var/folders/ab/cd/T/wtchat-9b24c641d5c1/sessions/42.sock"
+    },
+    {
+      "name": "trailing slashes ignored",
+      "workspace": "/Users/acme/Library/Application Support/Watchtower/workspaces/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/",
+      "temp_dir": "/var/folders/ab/cd/T",
+      "conversation": 42,
+      "chat_socket": "/var/folders/ab/cd/T/wtchat-9b24c641d5c1/chat.sock",
+      "session_socket": "/var/folders/ab/cd/T/wtchat-9b24c641d5c1/sessions/42.sock"
+    },
+    {
+      "name": "chat fits, session falls back",
+      "workspace": "/Users/acme/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+      "temp_dir": "/tmp",
+      "conversation": 42,
+      "chat_socket": "/Users/acme/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm/chat.sock",
+      "session_socket": "/tmp/wtchat-c16ae256c9a5/sessions/42.sock"
+    },
+    {
+      "name": "chat path exactly 103",
+      "workspace": "/Users/acme/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "temp_dir": "/tmp",
+      "conversation": 7,
+      "chat_socket": "/Users/acme/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/chat.sock",
+      "session_socket": "/tmp/wtchat-d5c304879626/sessions/7.sock"
+    },
+    {
+      "name": "chat path 104 falls back",
+      "workspace": "/Users/acme/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "temp_dir": "/tmp",
+      "conversation": 7,
+      "chat_socket": "/tmp/wtchat-fe5e99c9b793/chat.sock",
+      "session_socket": "/tmp/wtchat-fe5e99c9b793/sessions/7.sock"
+    },
+    {
+      "name": "large conversation id",
+      "workspace": "/Users/acme/.local/share/watchtower/acme",
+      "temp_dir": "/tmp/",
+      "conversation": 9007199254740991,
+      "chat_socket": "/Users/acme/.local/share/watchtower/acme/chat.sock",
+      "session_socket": "/Users/acme/.local/share/watchtower/acme/chatengine/sessions/9007199254740991.sock"
+    }
+  ]
+}

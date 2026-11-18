@@ -20,4 +20,14 @@ final class WorkchatComposerTests: XCTestCase {
             "Codex takes your message when this turn ends."
         )
     }
+
+    /// C2: Esc in an empty field while the agent works stops it, once; with text in the field it does not.
+    func testEscapeInEmptyFieldWhileWorkingStops() {
+        var stops = 0
+        WorkchatComposer.escape(working: true, draft: "") { stops += 1 }
+        XCTAssertEqual(stops, 1)
+        WorkchatComposer.escape(working: true, draft: "wait") { stops += 1 }
+        WorkchatComposer.escape(working: false, draft: "") { stops += 1 }
+        XCTAssertEqual(stops, 1)
+    }
 }

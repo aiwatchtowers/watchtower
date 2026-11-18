@@ -8,7 +8,7 @@ import WatchtowerCore
 /// of the two is set for a window.
 @MainActor
 struct ChatsMenuContext {
-    let historyVM: ChatHistoryViewModel
+    let historyVM: ChatPanelModel
     /// The search sheet or the rename field has the keys.
     var keysTaken = false
     /// The Chats panel is shown: ⌘1…⌘9 and ⌘[ act on it only then (ask

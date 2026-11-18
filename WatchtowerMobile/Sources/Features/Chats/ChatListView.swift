@@ -1,3 +1,5 @@
+import ChatUI
+import ChatWire
 import SwiftUI
 import WatchtowerKit
 import WatchtowerSync
@@ -12,15 +14,26 @@ struct ChatsShot {
     var relayUnreachable = false
 }
 
-/// The Chats tab (iPhone chat spec §6.1–6.2, mockups 1a–1j): the gate's centred message, or the list with its
-/// search, row actions and Undo bar. Reads the hub on screen's `ChatsCenter`; every text comes from
-/// `ChatsGateModel`, `ChatListModel`, `ChatSearchModel` and `ChatRowActions`.
+/// The Chats tab (iPhone chat spec §6.1, unified chat spec §6.3): the gate's centred message, or the list. The rows,
+/// search and row actions are `ChatUI`'s (`ChatListModel` over the hub's `RelayChatClient`); the gate, the hub
+/// switcher and the navigation are the phone's shell.
 struct ChatsTabView: View {
+    static let navigationTitle = "Chats"
+    static let searchPrompt = "Search chats"
+    static let pinTitle = "Pin"
+    static let unpinTitle = "Unpin"
+    static let renameTitle = "Rename"
+    static let deleteTitle = "Delete"
+    static let renameSave = "Save"
+    static let renameCancel = "Cancel"
+    /// How long the search waits for typing to pause before it asks the hub.
+    static let searchPause: Duration = .milliseconds(300)
+
     @Environment(AppEnvironment.self) private var env
     @Environment(LinkingViewModel.self) private var linking
     private let shot: ChatsShot?
-    @State private var showsOlder = false
     @State private var renaming: ChatList.Conversation?
+    @State private var showsOlder = false
     @State private var renameText = ""
 
     init(shot: ChatsShot? = nil) {
@@ -36,7 +49,7 @@ struct ChatsTabView: View {
             TimelineView(.periodic(from: .now, by: 30)) { context in
                 screen(now: context.date)
             }
-            .navigationTitle(ChatListModel.navigationTitle)
+            .navigationTitle(Self.navigationTitle)
             .hubSwitcher()
             .navigationDestination(for: ChatRoute.self) { route in
                 ChatConversationView(route: route, center: center, shot: shot)
@@ -51,10 +64,9 @@ struct ChatsTabView: View {
     @ViewBuilder
     private func screen(now: Date) -> some View {
         let gate = ChatsGateModel(inputs(now: now))
-        let host = inputs(now: now).host
         Group {
-            if gate.showsList, let list = center.snapshot.list {
-                listScreen(list, gate: gate, host: host, now: now)
+            if gate.showsList, center.snapshot.list != nil {
+                listScreen(gate: gate, now: now)
             } else {
                 // Scrolls, so a long line at a large text size is read whole.
                 GeometryReader { proxy in
@@ -85,18 +97,17 @@ struct ChatsTabView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { act(.newChat) } label: { Image(systemName: "square.and.pencil") }
                         .disabled(!gate.canCreate)
-                        .accessibilityLabel(ChatListModel.newChatLabel)
+                        .accessibilityLabel(ChatsGateModel.newChatLabel)
                 }
             }
         }
-        .onChange(of: gate.online, initial: true) { center.setOnline(gate.online) }
+        .onChange(of: gate, initial: true) { center.setGate(gate, host: inputs(now: now).host) }
     }
 
-    private func listScreen(_ list: ChatList, gate: ChatsGateModel, host: TowerHost, now: Date) -> some View {
-        let search = center.search
-        let actions = center.rowActions
-        let model = ChatListModel(list: list, now: now, query: search.query, hidden: actions.hiddenIDs)
-        let status = search.status(in: center.snapshot.searches)
+    private func listScreen(gate: ChatsGateModel, now: Date) -> some View {
+        let model = center.listModel
+        let query = center.listQuery
+        let searching = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return List {
             switcher.macsListRow()
             if let banner = gate.banner {
@@ -105,49 +116,59 @@ struct ChatsTabView: View {
             if let notice = center.copyNotice {
                 lineRow(notice)
             }
-            if let failure = actions.failure {
-                lineRow(failure)
+            if let notice = model.notice {
+                lineRow(notice)
             }
-            ForEach(model.sections) { section in
+            // Pinned, Recent and the older fold; with a query the titles that have it, found here even with the hub away.
+            let sections = ChatListSections(model.conversations, now: now, query: query)
+            ForEach(sections.sections) { section in
                 Section {
-                    ForEach(section.rows) { chatRow($0, editable: gate.allowsRowActions) }
+                    ForEach(section.conversations) { chatRow($0, now: now, editable: gate.allowsRowActions) }
                 } header: {
                     SectionHeader(section.title).listRowInsets(Self.headerInsets)
                 }
             }
-            if search.query.isEmpty {
-                olderRows(model, editable: gate.allowsRowActions)
+            if searching {
+                messageRows(model, query: query, gate: gate, host: ChatsGateInputs.current(env, shot: shot, snapshot: center.snapshot, now: now).host)
             } else {
-                messageRows(status, hidden: actions.hiddenIDs, host: host, now: now)
+                olderRows(sections, now: now, editable: gate.allowsRowActions)
             }
         }
         .macsList()
         .listSectionSpacing(0)
         .environment(\.defaultMinListRowHeight, 0)
         .searchable(
-            text: Binding(get: { search.query }, set: { search.setQuery($0) }),
+            text: Binding(get: { center.listQuery }, set: { center.listQuery = $0 }),
             placement: .navigationBarDrawer(displayMode: .always),
-            prompt: ChatListModel.searchPrompt
+            prompt: Self.searchPrompt
         )
+        .task(id: query) {
+            // Search asks the hub only while it answers (the client refuses otherwise).
+            // The hits already shown for this query stay (the hub keeps a search's record a few minutes).
+            guard model.searchResult?.query != RelayChatClient.searchQuery(query) else { return }
+            do { try await Task.sleep(for: Self.searchPause) } catch { return }
+            await model.search(query)
+        }
         .refreshable { await env.refresh(.pull) }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if actions.pendingDelete != nil {
-                ChatUndoBar { actions.undo() }
+            if model.pendingDelete != nil {
+                ChatUndoBar { model.undo() }
             }
         }
-        .alert(ChatRowActions.renameSheetTitle, isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
-            TextField(ChatRowActions.renameSheetTitle, text: $renameText)
-            Button(ChatRowActions.renameSave) {
-                if let conversation = renaming { Task { await actions.rename(conversation, to: renameText) } }
+        .task { model.start() }
+        .alert(Self.renameTitle, isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField(Self.renameTitle, text: $renameText)
+            Button(Self.renameSave) {
+                if let conversation = renaming { Task { await model.rename(conversation.id, renameText) } }
                 renaming = nil
             }
-            Button(ChatRowActions.renameCancel, role: .cancel) { renaming = nil }
+            Button(Self.renameCancel, role: .cancel) { renaming = nil }
         }
     }
 
     @ViewBuilder
-    private func olderRows(_ model: ChatListModel, editable: Bool) -> some View {
-        if let label = model.olderLabel {
+    private func olderRows(_ sections: ChatListSections, now: Date, editable: Bool) -> some View {
+        if let label = sections.olderLabel {
             Button {
                 withAnimation { showsOlder.toggle() }
             } label: {
@@ -162,87 +183,72 @@ struct ChatsTabView: View {
             .buttonStyle(.plain)
             .macsListRow()
             if showsOlder {
-                ForEach(model.older) { chatRow($0, editable: editable) }
+                ForEach(sections.older) { chatRow($0, now: now, editable: editable) }
             }
         }
     }
 
+    /// "In messages": the hub's hits for exactly this query (each drawn by `ChatUI`'s search results view), or why
+    /// there are none yet — the hub away, the search running, nothing found.
     @ViewBuilder
-    private func messageRows(_ status: ChatSearchModel.Status, hidden: Set<Int64>, host: TowerHost, now: Date) -> some View {
-        switch status {
-        case .idle:
-            EmptyView()
-        case .offline:
-            lineRow(ChatText.searchNeedsHub(host))
-        case .searching:
-            lineRow(ChatText.searching(host))
-        case let .results(hits):
-            let rows = ChatHitRow.rows(hits, hidden: hidden, now: now)
-            if !rows.isEmpty {
+    private func messageRows(_ model: ChatListModel, query: String, gate: ChatsGateModel, host: TowerHost) -> some View {
+        let asked = RelayChatClient.searchQuery(query)
+        if let result = model.searchResult, result.query == asked {
+            if !result.hits.isEmpty {
                 Section {
-                    ForEach(rows) { hit in
-                        Button { env.navigation.chatsPath.append(hit.route) } label: {
-                            FlatRow(icon: .session(tone: .secondary, isRing: true), title: hit.title, titleLineLimit: 1, insets: EdgeInsets()) {
-                                Text(hit.attributedSnippet)
-                            } trailing: {
-                                Text(hit.age).font(TypeScale.time).foregroundStyle(.secondary)
-                            }
+                    ForEach(Array(result.hits.enumerated()), id: \.offset) { _, hit in
+                        ChatSearchResultsView(search: ChatSearch(query: result.query, hits: [hit])) { hit in
+                            env.navigation.chatsPath.append(ChatRoute(id: hit.conversationID, messageID: hit.messageID))
                         }
-                        .buttonStyle(.plain)
                         .macsListRow()
                     }
                 } header: {
-                    SectionHeader(ChatListModel.messagesTitle).listRowInsets(Self.headerInsets)
+                    SectionHeader(ChatListSections.messagesTitle).listRowInsets(Self.headerInsets)
                 }
             }
-        case .noAnswer:
-            VStack(spacing: Spacing.regular) {
-                Text(ChatText.noAnswer(host)).font(TypeScale.meta).foregroundStyle(.secondary)
-                Button(ChatsGateModel.retry) { center.search.retry() }
-                    .buttonStyle(SecondaryActionStyle())
-                    .frame(maxWidth: PhoneMetrics.gateButton)
-            }
-            .frame(maxWidth: .infinity)
-            .macsListRow()
+        } else if !gate.online {
+            lineRow(ChatText.searchNeedsHub(host))
+        } else {
+            lineRow(ChatText.searching(host))
         }
     }
 
-    /// One chat row; with `editable` (the hub answers) its swipe and long-press actions too.
+    /// One chat row (`ChatUI`'s); with `editable` (the hub answers) its swipe and long-press actions too.
     @ViewBuilder
-    private func chatRow(_ row: ChatListModel.Row, editable: Bool) -> some View {
-        let link = Button { env.navigation.chatsPath.append(ChatRoute(id: row.id)) } label: {
-            ChatRowView(row: row)
+    private func chatRow(_ conversation: ChatList.Conversation, now: Date, editable: Bool) -> some View {
+        let link = Button { env.navigation.chatsPath.append(ChatRoute(id: conversation.id)) } label: {
+            ChatListRow(content: ChatListRowContent(conversation, now: now))
         }
         .buttonStyle(.plain)
         .macsListRow()
         if editable {
-            rowActions(link, row.conversation)
+            rowActions(link, conversation)
         } else {
             link
         }
     }
 
     private func rowActions(_ link: some View, _ conversation: ChatList.Conversation) -> some View {
-        let actions = center.rowActions
-        let pinTitle = ChatRowActions.pinActionTitle(pinned: conversation.pinned)
+        let model = center.listModel
+        let pinTitle = conversation.pinned ? Self.unpinTitle : Self.pinTitle
         return link
             .swipeActions(edge: .leading) {
-                Button(pinTitle) { Task { await actions.togglePin(conversation) } }
+                Button(pinTitle) { Task { await model.pin(conversation.id) } }
                     .tint(PhoneTone.accent.color)
             }
             .swipeActions(edge: .trailing) {
-                Button(ChatRowActions.deleteTitle, role: .destructive) { actions.delete(conversation.id) }
-                Button(ChatRowActions.renameTitle) { startRename(conversation) }
+                Button(Self.deleteTitle, role: .destructive) { model.delete(conversation.id) }
+                Button(Self.renameTitle) { startRename(conversation) }
             }
             .contextMenu {
                 Button {
-                    Task { await actions.togglePin(conversation) }
+                    Task { await model.pin(conversation.id) }
                 } label: {
                     Label(pinTitle, systemImage: conversation.pinned ? "pin.slash" : "pin")
                 }
-                Button { startRename(conversation) } label: { Label(ChatRowActions.renameTitle, systemImage: "pencil") }
-                Button(role: .destructive) { actions.delete(conversation.id) } label: {
-                    Label(ChatRowActions.deleteTitle, systemImage: "trash")
+                Button { startRename(conversation) } label: { Label(Self.renameTitle, systemImage: "pencil") }
+                Button(role: .destructive) { model.delete(conversation.id) } label: {
+                    Label(Self.deleteTitle, systemImage: "trash")
                 }
             }
     }
@@ -277,11 +283,11 @@ struct ChatsTabView: View {
         }
     }
 
-    /// The share of the screen a centred message sits in, below the switcher (mockups 1b, 1e–1h).
-    private static let messageHeightShare: CGFloat = 0.8
-
     /// A section header's list insets: with its own 4 on the sides it lines up with the rows' 16.
     private static let headerInsets = EdgeInsets(top: 0, leading: Spacing.medium, bottom: 0, trailing: Spacing.medium)
+
+    /// The share of the screen a centred message sits in, below the switcher (mockups 1b, 1e–1h).
+    private static let messageHeightShare: CGFloat = 0.8
 
     /// The hub switcher chip, as on the other tabs (#1782).
     private var switcher: some View {
@@ -289,37 +295,15 @@ struct ChatsTabView: View {
     }
 }
 
-/// One chat row (mockup 1a): the state dot, the title, the project and the state or last line, and the age.
-struct ChatRowView: View {
-    let row: ChatListModel.Row
-
-    var body: some View {
-        FlatRow(icon: .session(tone: row.tone, isRing: row.isRing), title: row.title, titleLineLimit: 1, insets: EdgeInsets()) {
-            HStack(spacing: Spacing.small) {
-                if let project = row.project {
-                    Image(systemName: "folder").accessibilityHidden(true)
-                    Text(project)
-                    if !row.detail.isEmpty { Text("·") }
-                }
-                if !row.detail.isEmpty { Text(row.detail) }
-            }
-        } trailing: {
-            Text(row.age).font(TypeScale.time).foregroundStyle(.secondary)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(row.spokenLabel)
-    }
-}
-
-/// The bar after a Delete (mockup 1j): "Chat deleted · Undo" for `ChatRowActions.undoWindow`.
+/// The bar after a Delete (mockup 1j): "Chat deleted · Undo" for `ChatListModel.undoWindow`.
 struct ChatUndoBar: View {
     let undo: () -> Void
 
     var body: some View {
         HStack(spacing: Spacing.regular) {
-            Text(ChatRowActions.undoText).font(TypeScale.rowTitle)
+            Text(ChatListModel.deletedLine).font(TypeScale.rowTitle)
             Spacer(minLength: Spacing.regular)
-            Button(ChatRowActions.undoAction, action: undo).font(TypeScale.rowEmphasis)
+            Button(ChatListModel.undoLabel, action: undo).font(TypeScale.rowEmphasis)
         }
         .padding(.horizontal, Spacing.large)
         .frame(minHeight: PhoneMetrics.minTouch)

@@ -1,4 +1,4 @@
-import CryptoKit
+import ChatWire
 import Foundation
 import GRDB
 import os
@@ -161,7 +161,13 @@ package final class AgentActionFeed {
     /// owner's card edits (`actions approve --patch`, e.g. a Slack message's
     /// text); Go merges and approves them in one write.
     package func approve(_ id: Int64, shownArgs: String, patch: String? = nil) async {
-        let pin = ["--args-sha256", Self.argsSHA256(shownArgs)]
+        await approve(id, digest: Self.argsSHA256(shownArgs), patch: patch)
+    }
+
+    /// The approve of a card drawn from what it showed (`ChatAgentAction.approveDigest`): a row's stored args, or
+    /// the digest an approval payload carries while the row is not loaded yet.
+    package func approve(_ id: Int64, digest: String, patch: String? = nil) async {
+        let pin = ["--args-sha256", digest]
         await run("approve", id: id, extra: pin + (patch.map { ["--patch", $0] } ?? []))
         await startWatchingIfTrack(id)
     }
@@ -192,7 +198,7 @@ package final class AgentActionFeed {
     /// Hex sha256 of the args text's UTF-8 bytes — Go `tools.ArgsSHA256` over
     /// the stored `args_json`.
     package static func argsSHA256(_ argsJSON: String) -> String {
-        SHA256.hash(data: Data(argsJSON.utf8)).map { String(format: "%02x", $0) }.joined()
+        ChatAgentAction.digest(of: argsJSON)
     }
 
     package func reject(_ id: Int64) async {

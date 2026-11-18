@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 final class ChatEventTests: XCTestCase {
     func testParsesEveryV2Event() {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -65,14 +66,34 @@ func VerifyDesktop(ctx context.Context, pid int) error {
 	return nil
 }
 
-// desktopRequirement is the code requirement the Desktop must satisfy: the
-// identifier, and with a team the Apple-issued certificate of that team.
+// desktopRequirement is the code requirement the Desktop must satisfy, in
+// codesign's command-line form ("=" + appRequirement).
 func desktopRequirement(team string) string {
+	return "=" + appRequirement(team)
+}
+
+// CLIIdentifier is the watchtower CLI's code-signing identifier (the binary's
+// name; scripts/build-app.sh signs Contents/MacOS/watchtower without its
+// own --identifier).
+const CLIIdentifier = "watchtower"
+
+// appRequirement is the Watchtower app's code requirement: its identifier,
+// and with a team the Apple-issued certificate of that team.
+func appRequirement(team string) string {
 	if team == "" {
-		return fmt.Sprintf(`=identifier "%s"`, DesktopBundleID)
+		return fmt.Sprintf(`identifier "%s"`, DesktopBundleID)
 	}
-	return fmt.Sprintf(`=identifier "%s" and anchor apple generic and certificate leaf[subject.OU] = "%s"`,
+	return fmt.Sprintf(`identifier "%s" and anchor apple generic and certificate leaf[subject.OU] = "%s"`,
 		DesktopBundleID, team)
+}
+
+// cliRequirement is the watchtower CLI's code requirement for a team: its
+// identifier as well as the team, so neither the app nor any other binary
+// of the team passes as the CLI (and the CLI in the app bundle never passes
+// as the app: appRequirement names the app's identifier).
+func cliRequirement(team string) string {
+	return fmt.Sprintf(`identifier "%s" and anchor apple generic and certificate leaf[subject.OU] = "%s"`,
+		CLIIdentifier, team)
 }
 
 // teamOf is the Team ID in pid's code signature, "" when it has none
@@ -94,6 +115,75 @@ func teamOf(ctx context.Context, pid int) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// ErrNotSameCLI is VerifySameTeamCLI's error for a peer that is not this
+// CLI's build.
+var ErrNotSameCLI = errors.New("the process is not a watchtower binary of this build's team")
+
+// ErrNotDesktop is VerifyDesktopPeer's error for a peer that is not the
+// Watchtower app.
+var ErrNotDesktop = errors.New("the process is not the Watchtower app signed by this build's team")
+
+// VerifyDesktopPeer checks that the process image t names is the
+// Watchtower app signed by this CLI's team (the chat socket's client, D17).
+// Unlike VerifyDesktop the peer is named by its audit token, read when it
+// connected, not by its pid: a process that execs the signed app after it
+// connected no longer matches the token, so it is refused. A development
+// CLI keeps VerifyDesktop's rule (refused unless DevTrustUnsignedEnv is set,
+// and then the identifier is still checked).
+func VerifyDesktopPeer(ctx context.Context, t PeerToken) error {
+	team, err := teamOf(ctx, os.Getpid())
+	if err != nil {
+		return err
+	}
+	if team == "" && os.Getenv(DevTrustUnsignedEnv) != "1" {
+		return ErrDevBuild
+	}
+	if err := checkToken(t, appRequirement(team)); err != nil {
+		return fmt.Errorf("%w: %v", ErrNotDesktop, err)
+	}
+	return nil
+}
+
+// VerifySameTeamCLI checks, by the audit token like VerifyDesktopPeer, that
+// the process image t names is the watchtower CLI signed by this CLI's own
+// team (identifier and team). A development CLI (no Team ID) accepts only a
+// process running its own executable file, by the path of the code the
+// token names.
+func VerifySameTeamCLI(ctx context.Context, t PeerToken) error {
+	team, err := teamOf(ctx, os.Getpid())
+	if err != nil {
+		return err
+	}
+	if team != "" {
+		if err := checkToken(t, cliRequirement(team)); err != nil {
+			return fmt.Errorf("%w: %v", ErrNotSameCLI, err)
+		}
+		return nil
+	}
+	own, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("%w: this executable is unknown: %v", ErrNotSameCLI, err)
+	}
+	peer, err := tokenPath(t)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrNotSameCLI, err)
+	}
+	if !samePath(own, peer) {
+		return fmt.Errorf("%w: the peer runs another executable than this development build", ErrNotSameCLI)
+	}
+	return nil
+}
+
+// samePath compares two executables' paths with their symlinks resolved.
+func samePath(a, b string) bool {
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		return false
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	return err == nil && ra == rb
 }
 
 // codesign runs the tool and returns its combined output (it reports on

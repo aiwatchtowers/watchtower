@@ -25,9 +25,9 @@ final class AgentActionCardStuckTargetTests: XCTestCase {
     }
 
     private func card(_ action: AgentAction, inFlight: Bool = false, onRetry: @escaping () -> Void = {})
-        -> AgentActionCardView {
+        -> MacAgentActionCard {
         let facts = InboxTargetButtonFacts(proposal: .init(action), inFlight: inFlight)
-        return AgentActionCardView(
+        return MacAgentActionCard(
             action: action, inFlight: inFlight, onApprove: {}, onReject: {}, onRetry: onRetry,
             targetButtonState: TargetButtonStateResolver.state(facts, now: now))
     }
@@ -63,15 +63,15 @@ final class AgentActionCardStuckTargetTests: XCTestCase {
         for status in ["approved", "executing"] {
             let action = try row(status, decidedAgo: 600)
             var retried = 0
-            let sut = AgentActionCardView(
+            let sut = MacAgentActionCard(
                 action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: { retried += 1 },
                 targetButtonState: .failed(message: "database is locked"))
             try sut.inspect().find(ArtifactTargetStuckLine.self).find(button: "Try again").tap()
             XCTAssertEqual(retried, 1, status)
         }
         let failed = try row("failed", decidedAgo: 600)
-        let sut = AgentActionCardView(action: failed, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                      targetButtonState: .failed(message: "closed"))
+        let sut = MacAgentActionCard(action: failed, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                     targetButtonState: .failed(message: "closed"))
         XCTAssertThrowsError(try sut.inspect().find(ArtifactTargetStuckLine.self))
         XCTAssertNoThrow(try sut.inspect().find(button: "Retry"))
     }
@@ -79,7 +79,7 @@ final class AgentActionCardStuckTargetTests: XCTestCase {
     /// An older row of a button whose newest row is another one offers no Retry.
     func testSupersededRowOffersNoRetry() throws {
         let action = try row("failed", decidedAgo: 600)
-        let offered = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        let offered = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertNoThrow(try offered.inspect().find(button: "Retry"))
         var hidden = offered
         hidden.offersRetry = false
