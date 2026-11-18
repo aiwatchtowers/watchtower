@@ -1150,8 +1150,8 @@ final class HubSession {
         var remoteError: (any Error)?
         fetchesAwaitingRemote += 1
         if trigger == .foreground {
-            // The socket is checked (and redialled in parallel if silent) before the zones are read over it.
-            await wake?()
+            // The socket is checked first (at most the 300 ms ping; a silent one is dropped, the reads go over HTTPS).
+            if let wake { await Self.untilCancelled(wake) }
         }
         do {
             // The app left during the wake (`setActive(false)` cancelled this fetch): nothing is read.

@@ -56,8 +56,8 @@ public actor HostedRelaySession {
     private var reachabilityKnown = false
     /// The open connection's last `.connected` / `.disconnected`: nil before its first `connected`.
     private var socketState: HostedRelayClientEvent?
-    /// The wake in flight: every hub's return to the foreground joins it.
-    private var waking: Task<Void, Never>?
+    /// The wake in flight, fired when it ends: every hub's return to the foreground joins it.
+    private var waking: Latch?
 
     public init(client: HostedRelayClient) {
         self.init(client: client, mirror: nil)
@@ -181,17 +181,26 @@ public actor HostedRelaySession {
 
     // MARK: - Wake (live link R6)
 
-    /// The app became active (`HostedRelayConnection.wake`): the socket is pinged, and with no pong within
-    /// `HostedRelayConnection.wakePingDeadline` a second socket is dialled while the first may still pong; a
-    /// connection waiting out a reconnect backoff dials at once. Returns once the socket to read on is known; a
-    /// wake already in flight is joined. Nothing without a connection (nobody wants the socket).
+    /// The app became active (`HostedRelayConnection.wake`): the socket is pinged; with no pong within
+    /// `HostedRelayConnection.wakePingDeadline` it is dropped at once (the reads go over HTTPS) and a second socket is
+    /// dialled in the background; a connection waiting out a reconnect backoff dials at once. Returns at most the ping
+    /// deadline later; a wake already in flight is joined. Nothing without a connection (nobody wants the socket).
     public func wake() async {
-        if let waking { return await waking.value }
+        // Each caller's wait is cancellable on its own (the app left): the shared wake goes on for the others.
+        if let waking { return await waking.wait() }
         guard let connection else { return }
-        let task = Task { await connection.wake() }
-        waking = task
-        await task.value
-        waking = nil
+        let done = Latch()
+        waking = done
+        Task {
+            await connection.wake()
+            await self.wakeEnded(done)
+        }
+        await done.wait()
+    }
+
+    private func wakeEnded(_ done: Latch) {
+        if waking === done { waking = nil }
+        done.fire()
     }
 
     // MARK: - The socket

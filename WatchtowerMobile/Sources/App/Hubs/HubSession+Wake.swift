@@ -14,4 +14,15 @@ extension HubSession {
         store.recordWake(ms: ms, transport: transport, at: readAt)
         Self.logger.info("wake: all zones read in \(ms, privacy: .public) ms (\(transport.rawValue, privacy: .public))")
     }
+
+    /// Runs `work` in a task of its own and waits for it, the wait (not the work) ending as soon as the caller is
+    /// cancelled: a wake that does not stop on cancel never holds the app's leaving fetch.
+    nonisolated static func untilCancelled(_ work: @escaping @Sendable () async -> Void) async {
+        let (ended, end) = AsyncStream<Void>.makeStream()
+        Task {
+            await work()
+            end.finish()
+        }
+        for await _ in ended {}
+    }
 }

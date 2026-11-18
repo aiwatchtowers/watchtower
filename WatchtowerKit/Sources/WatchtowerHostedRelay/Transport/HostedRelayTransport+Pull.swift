@@ -1,5 +1,4 @@
 import Foundation
-import os
 import WatchtowerRelayProto
 import WatchtowerSync
 
@@ -16,6 +15,11 @@ import WatchtowerSync
 extension HostedRelayTransport {
     /// Pulls `zones`, joining the pull in flight (which then pulls them too before it ends).
     func pullZones(_ zones: Set<CloudZoneID>) async throws {
+        // A pull cancelled by its caller ends without reading what it owes, its catch path clearing the owed set:
+        // a new caller waits for it to end, then owes its zones to a fresh pull.
+        while let ending = pullTask, ending.isCancelled {
+            _ = await ending.result
+        }
         zonesToPull.formUnion(zones)
         let task = pullTask ?? Task { try await self.drainPulls() }
         pullTask = task
@@ -57,7 +61,7 @@ extension HostedRelayTransport {
     private func pullConcurrently(_ zones: [CloudZoneID]) async -> (buffered: Bool, failure: (any Error)?) {
         await withTaskGroup(of: Result<Bool, any Error>.self) { group in
             for zone in zones {
-                let started = StartSignal()
+                let started = Latch()
                 group.addTask {
                     defer { started.fire() }
                     do {
@@ -234,32 +238,6 @@ extension HostedRelayTransport {
             try await pullZones([zone])
         } catch {
             Self.logger.error("relay re-read after a refused write failed, \(Self.kind(zone), privacy: .public)")
-        }
-    }
-}
-
-/// Fires once; `wait` returns once it fired.
-private final class StartSignal: Sendable {
-    private let state = OSAllocatedUnfairLock<(fired: Bool, waiters: [CheckedContinuation<Void, Never>])>(
-        initialState: (false, []))
-
-    func fire() {
-        let waiters = state.withLock { state -> [CheckedContinuation<Void, Never>] in
-            guard !state.fired else { return [] }
-            state.fired = true
-            defer { state.waiters = [] }
-            return state.waiters
-        }
-        for waiter in waiters { waiter.resume() }
-    }
-
-    func wait() async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let fired = state.withLock { state in
-                if !state.fired { state.waiters.append(continuation) }
-                return state.fired
-            }
-            if fired { continuation.resume() }
         }
     }
 }

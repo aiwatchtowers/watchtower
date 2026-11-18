@@ -34,6 +34,8 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
         var hungWrites: [Int: CheckedContinuation<Void, any Error>] = [:]
         var nextWrite = 0
         var cancelledWrites = 0
+        /// Request writes held by `stuckWrites`: only `releaseStuck()` ends them.
+        var stuck: [CheckedContinuation<Void, Never>] = []
     }
 
     private let hello: HelloReply
@@ -41,6 +43,7 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
     private let subscribeAnswers: [String: Answer]
     private let requestAnswers: [String: Answer]
     private let hangsRequests: Bool
+    private let stuckWrites: Bool
     private let state = OSAllocatedUnfairLock(initialState: State())
 
     /// `subscribe`: the answer per zone (every other zone, and every other op, gets `Ok`). `requests`:
@@ -51,13 +54,15 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
         pongs: Bool = true,
         subscribe: [String: Answer] = [:],
         requests: [String: Answer] = [:],
-        hangsRequests: Bool = false
+        hangsRequests: Bool = false,
+        stuckWrites: Bool = false
     ) {
         self.hello = hello
         self.pongs = pongs
         self.subscribeAnswers = subscribe
         self.requestAnswers = requests
         self.hangsRequests = hangsRequests
+        self.stuckWrites = stuckWrites
     }
 
     // MARK: - What the test sees
@@ -151,6 +156,11 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
     func send(_ data: Data) async throws {
         let frame = try Relay_V1_Frame(serializedBytes: data)
         if hangsRequests, case .request = frame.kind { try await hang() }
+        if stuckWrites, case .request = frame.kind {
+            // A write that never returns, not on close and not on cancel (a stuck send).
+            await withCheckedContinuation { continuation in state.withLock { $0.stuck.append(continuation) } }
+            throw ClosedByClient()
+        }
         try state.withLock { state in
             guard state.closedWith == nil else { throw ClosedByClient() }
             state.sent.append(frame)
@@ -172,6 +182,20 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
         default:
             break
         }
+    }
+
+    /// Request writes stuck now (`stuckWrites`).
+    var stuckCount: Int {
+        state.withLock { $0.stuck.count }
+    }
+
+    /// Ends every stuck write (throwing, nothing written).
+    func releaseStuck() {
+        let all = state.withLock { state in
+            defer { state.stuck = [] }
+            return state.stuck
+        }
+        for continuation in all { continuation.resume() }
     }
 
     /// Request writes held now (`hangsRequests`).

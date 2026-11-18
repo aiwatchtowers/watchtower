@@ -128,32 +128,41 @@ final class FetchCadenceWiringTests: XCTestCase {
         XCTAssertEqual(sample.transport, .cloudKit)
     }
 
-    /// The app leaves again while the return's wake still runs: the fetch is cancelled, so nothing is read and no
-    /// `wake_ms` sample is recorded; the next return reads again.
+    /// The app leaves again while the return's wake still runs, and that wake does not stop on cancel: the fetch is
+    /// cancelled anyway, nothing is read and no `wake_ms` sample is recorded; the next return is not held behind it.
     func testLeavingDuringTheWakeCancelsTheReturnsFetch() async throws {
         let steps = StepLog()
-        let (hang, keep) = AsyncStream<Void>.makeStream()
-        defer { keep.finish() }
         let wired = try await makeWired {
-            await steps.append("wake")
-            // Waits until its task is cancelled (the stream never yields while `keep` lives).
-            for await _ in hang {}
-            await steps.append("wake ended")
+            // The first wake never returns until the test ends, whatever happens to its task.
+            if await steps.append("wake") == 1 { await steps.park() }
         }
+        defer { steps.unpark() }
         steps.fetches = { wired.remote.depths.count }
         wired.env.setActive(false)
         wired.clock.advance(SessionCadence.foregroundRefetchAfter(role: .active) + 1)
         let fetchesBefore = wired.remote.depths.count
 
         wired.env.setActive(true)
-        try await poll({ steps.all.count == 1 }, "the return did not wake")
+        try await poll({ steps.all.count == 1 && steps.parked }, "the return did not wake")
         wired.env.setActive(false)
-        try await poll({ steps.all.count == 2 }, "leaving did not cancel the wake")
+        // A push now queues behind the running fetch: it is answered only because leaving ended that fetch.
+        let push = Task { await wired.env.handlePush(inForeground: false) }
+        var answered = false
+        for _ in 0..<20_000 where !answered {
+            answered = wired.remote.depths.count > fetchesBefore
+            await Task.yield()
+        }
+        guard answered else {
+            steps.unpark()
+            return XCTFail("the push waited behind the cancelled fetch")
+        }
+        _ = await push.value
+        wired.clock.advance(SessionCadence.foregroundRefetchAfter(role: .active) + 1)
+        wired.env.setActive(true)
 
-        XCTAssertEqual(steps.all.last, "wake ended after \(fetchesBefore) fetches", "nothing was read")
-        for _ in 0..<100 { await Task.yield() }
-        XCTAssertEqual(wired.remote.depths.count, fetchesBefore)
-        XCTAssertEqual(try wired.env.store.wakeSamples(since: .distantPast), [])
+        try await poll({ ((try? wired.env.store.wakeSamples(since: .distantPast)) ?? []).count == 1 }, "the next return was held")
+        XCTAssertEqual(wired.remote.depths.count, fetchesBefore + 2, "the push's fetch and the return's: the cancelled one read nothing")
+        XCTAssertEqual(steps.all, ["wake after \(fetchesBefore) fetches", "wake after \(fetchesBefore + 1) fetches"])
     }
 
     // MARK: - Pushes
@@ -656,7 +665,24 @@ final class StepLog {
     /// How many fetches had begun, read at each step.
     var fetches: (() -> Int)?
 
-    func append(_ step: String) {
+    private var parkedWake: CheckedContinuation<Void, Never>?
+
+    /// Appends `step`; how many steps there are now.
+    @discardableResult
+    func append(_ step: String) -> Int {
         all.append("\(step) after \(fetches?() ?? -1) fetches")
+        return all.count
+    }
+
+    var parked: Bool { parkedWake != nil }
+
+    /// Waits until `unpark()`, cancelled or not.
+    func park() async {
+        await withCheckedContinuation { parkedWake = $0 }
+    }
+
+    func unpark() {
+        parkedWake?.resume()
+        parkedWake = nil
     }
 }

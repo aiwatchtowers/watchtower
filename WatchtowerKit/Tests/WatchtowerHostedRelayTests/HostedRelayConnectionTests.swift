@@ -458,50 +458,102 @@ final class HostedRelayConnectionTests: XCTestCase {
         await connection.close()
     }
 
-    /// No pong within 300 ms: a second socket is dialled while the old one may still pong. The new one is ready at
-    /// 400 ms, the old one would pong at 900 ms: the new one carries on (no `disconnected`, no backoff), the old one
-    /// is closed, and the next request goes over the new one.
+    /// No pong within 300 ms: the old socket is dropped at once and the wake returns, its dial still running (it
+    /// hangs for 5 s): a request is refused before the write (so it goes over HTTPS) without the clock moving. The
+    /// dial completing later takes over with no `disconnected` and no backoff; a late pong of the old socket changes
+    /// nothing.
     func testProbeSilentDialsInParallelAndFirstReadyWins() async throws {
         let harness = try RelayClientHarness()
         let old = ScriptedRelaySocket(pongs: false)
         let new = ScriptedRelaySocket()
-        harness.sockets.script([.socket(old), .delayed(.milliseconds(100), new)])
+        harness.sockets.script([.socket(old), .delayed(.seconds(5), new)])
         let connection = await harness.client.connect(zones: [])
         let events = EventProbe(connection)
         let first = await events.next()
         XCTAssertEqual(first, .connected)
 
-        let wake = Task { await connection.wake() }
+        let woke = OSAllocatedUnfairLock(initialState: false)
+        Task {
+            await connection.wake()
+            woke.withLock { $0 = true }
+        }
         await harness.clock.waitForSleep(.milliseconds(300))
         harness.clock.manual.advance(by: .milliseconds(300))
-        await harness.clock.waitForSleep(.milliseconds(100))
-        harness.clock.manual.advance(by: .milliseconds(100))
-        await wake.value
+        // The clock does not move again: the wake must return with its dial still out.
+        var returned = false
+        for _ in 0..<20_000 where !returned {
+            returned = woke.withLock { $0 }
+            await Task.yield()
+        }
+        guard returned else {
+            XCTFail("the wake waited for its dial")
+            harness.clock.manual.advance(by: .seconds(5))
+            return await connection.close()
+        }
 
-        XCTAssertEqual(old.closedWith, 1000, "the loser is closed")
-        XCTAssertNil(new.closedWith)
-        XCTAssertEqual(connection.liveGeneration, 2)
+        XCTAssertNil(connection.liveGeneration, "the silent socket is dropped at once")
+        do {
+            _ = try await connection.request(RelayClientHarness.removeSlot)
+            XCTFail("written to a dropped socket")
+        } catch {
+            XCTAssertEqual(error as? HostedRelayConnection.SocketLoss, .notSent, "refused before the write: HTTPS")
+        }
+        await old.waitUntilClosedByClient()
+        XCTAssertEqual(old.closedWith, 1000)
+
+        await harness.clock.waitForSleep(.seconds(5))
+        harness.clock.manual.advance(by: .seconds(5))
         let next = await events.next()
-        XCTAssertEqual(next, .connected, "the new socket carries on, with no disconnect in between")
-        harness.clock.manual.advance(by: .milliseconds(500))
+        XCTAssertEqual(next, .connected, "the new socket takes over, with no disconnect in between")
+        XCTAssertEqual(connection.liveGeneration, 2)
         old.pong()
         XCTAssertEqual(connection.liveGeneration, 2, "a late pong of the old socket changes nothing")
-
         _ = try await connection.send(RelayClientHarness.removeSlot)
         XCTAssertTrue(new.sent.contains { if case .removeSlot? = $0.request.op { true } else { false } })
-        XCTAssertFalse(old.sent.contains { if case .removeSlot? = $0.request.op { true } else { false } })
         XCTAssertEqual(harness.sockets.dials.count, 2, "no third dial")
         await connection.close()
         XCTAssertEqual(new.closedWith, 1000)
     }
 
-    /// The first probe's ping answers late (after 300 ms) but before the second socket's upgrade: the old socket
-    /// stays, the dial is abandoned before its upgrade, and no second ping was needed.
-    func testProbeSilentKeepsTheOldSocketWhenItPongsFirst() async throws {
+    /// The write chain is per socket: the new socket's subscribe goes out although the old socket's subscribe write
+    /// is stuck for good (not ended by the close or the cancel).
+    func testANewSocketsWritesAreNotHeldByAStuckOldWrite() async throws {
+        let harness = try RelayClientHarness()
+        let old = ScriptedRelaySocket(pongs: false, stuckWrites: true)
+        let new = ScriptedRelaySocket()
+        harness.sockets.script([.socket(old), .delayed(.milliseconds(100), new)])
+        let connection = await harness.client.connect(zones: ["acme/a"])
+        let events = EventProbe(connection)
+        _ = await events.next()
+        await spin { old.stuckCount == 1 }
+
+        let wake = Task { await connection.wake() }
+        await harness.clock.waitForSleep(.milliseconds(300))
+        harness.clock.manual.advance(by: .milliseconds(300))
+        await wake.value
+        await harness.clock.waitForSleep(.milliseconds(100))
+        harness.clock.manual.advance(by: .milliseconds(100))
+        let up = await events.next()
+        XCTAssertEqual(up, .connected)
+
+        var subscribed = false
+        for _ in 0..<50_000 where !subscribed {
+            subscribed = new.sent.contains { if case .subscribe? = $0.request.op { true } else { false } }
+            await Task.yield()
+        }
+        XCTAssertTrue(subscribed, "the new socket's subscribe waited on the old socket's stuck write")
+        old.releaseStuck()
+        await connection.close()
+    }
+
+    /// The second dial hangs past the handshake timeout: the loop stops waiting for it and dials again at once; the
+    /// socket the hung dial produces later is closed, never live.
+    func testAHungSecondDialIsGivenUpAfterTheHandshakeTimeout() async throws {
         let harness = try RelayClientHarness()
         let old = ScriptedRelaySocket(pongs: false)
-        let new = ScriptedRelaySocket()
-        harness.sockets.script([.socket(old), .delayed(.milliseconds(600), new)])
+        let late = ScriptedRelaySocket()
+        let third = ScriptedRelaySocket()
+        harness.sockets.script([.socket(old), .delayed(.seconds(60), late), .socket(third)])
         let connection = await harness.client.connect(zones: [])
         let events = EventProbe(connection)
         _ = await events.next()
@@ -509,15 +561,19 @@ final class HostedRelayConnectionTests: XCTestCase {
         let wake = Task { await connection.wake() }
         await harness.clock.waitForSleep(.milliseconds(300))
         harness.clock.manual.advance(by: .milliseconds(300))
-        await harness.clock.waitForSleep(.milliseconds(600))
-        harness.clock.manual.advance(by: .milliseconds(50))
-        old.pong()
         await wake.value
+        await harness.clock.waitForSleep(.seconds(60))
+        await harness.clock.waitForSleep(HostedRelayConnection.handshakeTimeout)
+        harness.clock.manual.advance(by: HostedRelayConnection.handshakeTimeout)
 
-        XCTAssertEqual(old.pings, 1, "the probe's own ping carried the race")
-        XCTAssertNil(old.closedWith)
-        XCTAssertEqual(connection.liveGeneration, 1)
-        XCTAssertTrue(new.sent.isEmpty, "the abandoned dial never said Hello")
+        let down = await events.next()
+        XCTAssertEqual(down, .disconnected)
+        let up = await events.next()
+        XCTAssertEqual(up, .connected, "dialled again with no backoff")
+        XCTAssertEqual(harness.sockets.dials.count, 3)
+        harness.clock.manual.advance(by: .seconds(60))
+        XCTAssertEqual(connection.liveGeneration, 2)
+        XCTAssertNil(third.closedWith)
         await connection.close()
     }
 
