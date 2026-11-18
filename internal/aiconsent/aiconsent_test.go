@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -357,5 +358,39 @@ func TestCurrent_RereadsOnModeChange(t *testing.T) {
 	Current()
 	if parses != 2 {
 		t.Fatalf("a mode change must re-read: %d parses, want 2", parses)
+	}
+}
+
+// Two keys that differ only in case leave the answer ambiguous: Go's map order
+// and the Desktop could pick different ones, so both read it as unreadable
+// (paused, even under a permissive profile) instead of picking (BGAI-03).
+func TestCurrent_AmbiguousKeyCaseIsPaused(t *testing.T) {
+	for name, cfg := range map[string]string{
+		"section, no exact key":   "AI: {background_runs: allowed}\nAi: {background_runs: paused}\n",
+		"section, with exact key": "ai: {background_runs: allowed}\nAI: {model: m}\n",
+		"answer key":              "ai: {Background_Runs: allowed, BACKGROUND_RUNS: paused}\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			resetForTest(t)
+			policytest.Set(t, orgAllows)
+			lines := captureLog(t)
+			SetConfigPath(writeConfig(t, cfg))
+			s := Current()
+			if s.Allowed() || s.Answer != AnswerNone {
+				t.Fatalf("got %+v, want paused with no answer", s)
+			}
+			if len(*lines) != 1 || !strings.Contains((*lines)[0], "more than once") {
+				t.Fatalf("logged %q, want one ambiguity line", *lines)
+			}
+		})
+	}
+}
+
+func TestCurrent_SingleCaseVariantReads(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, nil)
+	SetConfigPath(writeConfig(t, "AI: {Background_Runs: allowed}\n"))
+	if s := Current(); !s.Allowed() || s.Reason != ReasonOwner {
+		t.Fatalf("got %+v, want allowed by the owner", s)
 	}
 }

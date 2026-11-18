@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 	"watchtower/internal/ollama"
@@ -135,11 +136,20 @@ func NewClientWithOptions(model, baseURL string, reg *tools.Registry, b tools.Bi
 // follows (ai.StreamChunk's contract). With the chat events on, nothing is
 // dropped: a later message starts after a blank line, as on claude and
 // codex, and the turn's summed usage follows the answer. Write proposals
-// still surface through the Desktop's AgentActionFeed.
+// still surface through the Desktop's AgentActionFeed. An unadmitted
+// background call while background AI is paused (aiconsent.Check) gets
+// aiconsent.ErrPaused on errCh and reaches no model; so does QuerySync.
 func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
 	textCh := make(chan ai.StreamChunk, 8)
 	errCh := make(chan error, 1)
 	sidCh := make(chan string, 1)
+	if err := aiconsent.Check(ctx); err != nil {
+		errCh <- err
+		close(textCh)
+		close(errCh)
+		close(sidCh)
+		return textCh, errCh, sidCh
+	}
 	go func() {
 		defer close(textCh)
 		defer close(errCh)
@@ -171,6 +181,9 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 // QuerySync runs the loop and returns the final answer (no streaming, so no
 // boundary emission).
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ string) (string, *ai.Usage, error) {
+	if err := aiconsent.Check(ctx); err != nil {
+		return "", nil, err
+	}
 	return c.run(ctx, systemPrompt, userMessage, nil)
 }
 

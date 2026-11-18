@@ -18,6 +18,7 @@ import (
 
 	"encoding/json"
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
@@ -1161,8 +1162,10 @@ func startChatEngine(ctx context.Context, cfg *config.Config, logger *log.Logger
 		// The AI title after a chat's first complete answer, `watchtower chat
 		// title`'s code; the automatic routing's preferred provider is the
 		// config the Mac's automatic routing reads.
+		// The title serves the owner's chat, so it is an owner call even in
+		// this background process (Decision 3 of #1886).
 		Title: func(ctx context.Context, conv int64) error {
-			_, err := chat.GenerateTitle(ctx, write, cfg, chatTitleGeneratorFactory(cfg), conv)
+			_, err := chat.GenerateTitle(aiconsent.WithOwnerStarted(ctx), write, cfg, daemonChatTitleGenerator(cfg), conv)
 			return err
 		},
 		PreferredProvider: cfg.AI.ConfiguredProviderID()})

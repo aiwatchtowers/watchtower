@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/aiconsent"
+	"watchtower/internal/aiconsent/aiconsenttest"
 	"watchtower/internal/llmusage"
 	"watchtower/internal/ollama"
 	"watchtower/internal/tools"
@@ -99,4 +102,35 @@ func TestClient_QuerySyncSumsUsageAcrossRounds(t *testing.T) {
 	assert.Equal(t, "answer", text)
 	require.NotNil(t, usage)
 	assert.Equal(t, ai.Usage{Tokens: llmusage.Tokens{Input: 30, Output: 7}}, *usage)
+}
+
+// BGAI-02: in the daemon an unadmitted call while background AI is paused is
+// refused before any request reaches the model, on both surfaces; an
+// admitted one runs.
+func TestAgentloop_RefusesUnadmittedBackground(t *testing.T) {
+	aiconsenttest.Use(t, "daemon", nil, false)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_ = json.NewEncoder(w).Encode(finalResp("done"))
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient("m", srv.URL, nil, tools.Binding{Surface: "main"})
+	c.reg = &fakeReg{tools: map[string]*tools.Tool{}}
+
+	_, _, err := c.QuerySync(context.Background(), "", "hi", "")
+	require.ErrorIs(t, err, aiconsent.ErrPaused)
+	textCh, errCh, sidCh := c.Query(context.Background(), "", "hi", "")
+	for ch := range textCh {
+		t.Errorf("text chunk %+v on a refused call, want none", ch)
+	}
+	for range sidCh {
+	}
+	require.ErrorIs(t, <-errCh, aiconsent.ErrPaused)
+	assert.Equal(t, int32(0), calls.Load(), "no request reached the model")
+
+	text, _, err := c.QuerySync(aiconsent.WithAdmitted(context.Background(), "phase:digests"), "", "hi", "")
+	require.NoError(t, err)
+	assert.Equal(t, "done", text)
+	assert.Equal(t, int32(1), calls.Load())
 }

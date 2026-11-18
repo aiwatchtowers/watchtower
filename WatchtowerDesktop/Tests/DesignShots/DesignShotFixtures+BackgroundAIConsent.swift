@@ -7,7 +7,7 @@ import WatchtowerCore
 /// Design-only scenes for the background AI consent (#1886, spec
 /// `docs/superpowers/specs/2026-11-17-background-ai-consent-design.md`).
 /// Nothing here is wired into the app; the strings are
-/// `BackgroundAIConsentMockCopy`. Sample data only (`acme`).
+/// `BackgroundAIConsentCopy`. Sample data only (`acme`).
 @MainActor
 enum BackgroundAIConsentShotFixtures {
     /// The consent screen as onboarding's last step.
@@ -68,7 +68,7 @@ enum BackgroundAIConsentShotFixtures {
     }
 }
 
-private typealias Copy = BackgroundAIConsentMockCopy
+private typealias Copy = BackgroundAIConsentCopy
 
 // MARK: - The consent body (shared by the step and the sheet)
 
@@ -159,7 +159,7 @@ private struct ConsentStepMock: View {
     private var agent: Copy.Agent {
         switch step {
         case .codex: .codex
-        case .ollama: .other("Ollama")
+        case .ollama: .other(name: "Ollama")
         default: .claude
         }
     }
