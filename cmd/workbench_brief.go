@@ -213,7 +213,7 @@ func briefFromDB(database *db.DB, p *db.Workbench) string {
 	// verdict read in the wrong repository.
 	var drift workbenchcheck.Report
 	if folderOf, err := targetFolders(ctx, database, p.ID, board); err != nil {
-		drift = workbenchcheck.Report{WorkbenchID: p.ID, Git: true, Findings: []workbenchcheck.Finding{},
+		drift = workbenchcheck.Report{WorkbenchID: p.ID, Git: true, Findings: []workbenchcheck.Finding{}, Skipped: []workbenchcheck.FolderSkip{},
 			Notes: []string{workbenchcheck.ClipNote(err.Error())}}
 	} else {
 		drift = workbenchcheck.Check(ctx, p.ID, board, workbenchcheck.Options{Folder: p.FolderPath, FolderOf: folderOf, OpenOnly: true})
@@ -452,6 +452,8 @@ func briefDriftSection(drift workbenchcheck.Report, limit int) string {
 		caveat = "the drift check ran out of time, so only part of the board was checked"
 	case drift.Git && drift.Base == "":
 		caveat = "branch checks did not run: " + strings.Join(drift.Notes, "; ")
+	case len(drift.Skipped) > 0:
+		caveat = "branch checks did not run " + skippedFolders(drift.Skipped)
 	}
 	if len(drift.Findings) == 0 {
 		if caveat == "" {

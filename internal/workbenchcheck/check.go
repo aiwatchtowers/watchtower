@@ -8,6 +8,7 @@ package workbenchcheck
 import (
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -80,9 +81,11 @@ func (f Finding) Line() string {
 
 // Report is the outcome of one check.
 //
-// Git, Base and PRChecked describe Options.Folder (the home folder); a
-// target in another folder of the bench is checked in that folder's
-// repository, whose notes are prefixed with its path.
+// Git and Base describe Options.Folder (the home folder); a target in
+// another folder of the bench is checked in that folder's repository, whose
+// notes are prefixed with its path. Skipped names every folder whose branch
+// checks did not run: another folder that is missing, not a repository or
+// has no default branch, and a missing home folder.
 type Report struct {
 	WorkbenchID int64  `json:"project_id"`
 	Git         bool   `json:"git"`            // the home folder is a git work tree
@@ -90,9 +93,16 @@ type Report struct {
 	PRChecked   bool   `json:"pr_checked"`     // pull request states were read through gh
 	// Incomplete: the context ran out before every target was checked; the
 	// findings cover only the targets checked in time.
-	Incomplete bool      `json:"incomplete,omitempty"`
-	Findings   []Finding `json:"findings"`
-	Notes      []string  `json:"notes,omitempty"` // why a part of the check was skipped
+	Incomplete bool         `json:"incomplete,omitempty"`
+	Findings   []Finding    `json:"findings"`
+	Skipped    []FolderSkip `json:"skipped"`
+	Notes      []string     `json:"notes,omitempty"` // why a part of the check was skipped
+}
+
+// FolderSkip is a folder whose targets' branches were not checked, and why.
+type FolderSkip struct {
+	Folder string `json:"folder"`
+	Reason string `json:"reason"`
 }
 
 // BlockingFindings returns the findings the Stop hook acts on.
@@ -132,12 +142,13 @@ type Options struct {
 	// brief uses it too, so a session start never waits on the closed walk.
 	OpenOnly bool
 	Run      Runner // nil = ExecRunner
+	// clock reads the time for the gh budget; nil = time.Now (tests set it).
+	clock func() time.Time
 }
 
 // addRunNotes adds what the git and pull-request passes learned while
 // walking the board: a filter guard that skipped the squash checks, and a
-// pull-request lookup that did not complete (then PRChecked is false for
-// the home folder).
+// pull-request lookup that did not complete (then PRChecked is false).
 func addRunNotes(rep *Report, f *folderState) {
 	if f.g.guardNote != "" {
 		rep.Notes = append(rep.Notes, f.note(f.g.guardNote))
@@ -146,9 +157,7 @@ func addRunNotes(rep *Report, f *folderState) {
 		return
 	}
 	if note := f.pr.summary(); note != "" {
-		if f.home {
-			rep.PRChecked = false
-		}
+		rep.PRChecked = false
 		rep.Notes = append(rep.Notes, f.note(note))
 	}
 }
@@ -156,32 +165,46 @@ func addRunNotes(rep *Report, f *folderState) {
 // folderState is one folder's repository as the check reads it: probed
 // once, however many targets live there.
 type folderState struct {
-	path  string
-	home  bool
-	g     *gitState
-	pr    *prChecker
-	notes []string // what the probes said, prefixed for a non-home folder
+	path    string
+	home    bool
+	missing bool // the folder is gone from disk (moved or deleted)
+	g       *gitState
+	pr      *prChecker // made for the folder's first target with a PR
+	notes   []string   // what the probe said, prefixed for a non-home folder
 }
 
-// openFolder probes the repository at path (and gh there, with Network).
+// missingFolderNote: the folder is gone from disk, so nothing in it is read.
+const missingFolderNote = "the folder is missing (moved or deleted?); branch checks skipped"
+
+// openFolder probes the repository at path; a folder gone from disk runs
+// no git at all.
 func openFolder(ctx context.Context, o Options, path string, home bool) *folderState {
 	o.Folder = path
-	f := &folderState{path: path, home: home, g: newGitState(ctx, o)}
+	f := &folderState{path: path, home: home}
+	if _, err := os.Stat(path); err != nil {
+		f.missing = true
+		f.g = &gitState{o: o, notes: []string{missingFolderNote}}
+	} else {
+		f.g = newGitState(ctx, o)
+	}
 	for _, n := range f.g.notes {
 		f.notes = append(f.notes, f.note(n))
 	}
-	switch {
-	case o.Network && f.g.noGit:
-		// gh reads the repository by running git from its own PATH, which
-		// without the developer tools is the /usr/bin/git shim.
-		f.notes = append(f.notes, f.note(noGitPRNote))
-	case o.Network:
-		f.pr = newPRChecker(ctx, o)
-		for _, n := range f.pr.notes {
-			f.notes = append(f.notes, f.note(n))
-		}
-	}
 	return f
+}
+
+// skip is the folder's FolderSkip when its branch checks cannot run: a
+// missing folder always; another folder also when it is no repository or
+// has no default branch (the home folder's are Git/Base).
+func (f *folderState) skip() (FolderSkip, bool) {
+	if !f.missing && (f.home || f.g.ready()) {
+		return FolderSkip{}, false
+	}
+	reason := "branch checks skipped"
+	if len(f.g.notes) > 0 {
+		reason = f.g.notes[0]
+	}
+	return FolderSkip{Folder: f.path, Reason: reason}, true
 }
 
 // note is n as a report note: a non-home folder's names the folder.
@@ -207,13 +230,29 @@ func Check(ctx context.Context, workbenchID int64, board []db.BoardNode, o Optio
 	if o.Run == nil {
 		o.Run = ExecRunner
 	}
-	rep := Report{WorkbenchID: workbenchID, Findings: []Finding{}}
+	rep := Report{WorkbenchID: workbenchID, Findings: []Finding{}, Skipped: []FolderSkip{}}
 	home := openFolder(ctx, o, o.Folder, true)
 	rep.Git = home.g.workTree
 	rep.Base = home.g.baseName()
-	rep.PRChecked = home.pr != nil && home.pr.available
 	rep.Notes = append(rep.Notes, home.notes...)
+	if sk, ok := home.skip(); ok {
+		rep.Skipped = append(rep.Skipped, sk)
+	}
 	c := &checker{o: o, folders: map[string]*folderState{o.Folder: home}}
+	switch {
+	case o.Network && home.g.noGit:
+		// gh reads the repository by running git from its own PATH, which
+		// without the developer tools is the /usr/bin/git shim.
+		rep.Notes = append(rep.Notes, noGitPRNote)
+	case o.Network:
+		// One sign-in probe and one time budget for every folder's reads.
+		var note string
+		c.gh, note = newGHSession(ctx, o, o.Folder)
+		rep.PRChecked = c.gh.available
+		if note != "" {
+			rep.Notes = append(rep.Notes, note)
+		}
+	}
 	c.openRefs = c.openRefsOf(board)
 	// Open targets first: a check its deadline cuts short has then looked at
 	// the work the blocking kinds are about.
@@ -245,6 +284,7 @@ func Check(ctx context.Context, workbenchID int64, board []db.BoardNode, o Optio
 		// (no work tree, no default branch) are not trustworthy either.
 		rep.Incomplete = true
 		rep.Findings = []Finding{}
+		rep.Skipped = []FolderSkip{}
 		rep.Notes = []string{"time ran out; only part of the board was checked"}
 	}
 	return rep
@@ -289,6 +329,7 @@ type checker struct {
 	folders  map[string]*folderState // by path, the home folder's included
 	opened   []*folderState          // the other folders, in the order probed
 	openRefs map[string]bool
+	gh       *ghSession // nil without Network or without git
 }
 
 // folderOf is the path of the folder n's work is in and whether that
@@ -314,7 +355,22 @@ func (c *checker) folder(ctx context.Context, path string, rep *Report) *folderS
 	c.folders[path] = f
 	c.opened = append(c.opened, f)
 	rep.Notes = append(rep.Notes, f.notes...)
+	if sk, ok := f.skip(); ok {
+		rep.Skipped = append(rep.Skipped, sk)
+	}
 	return f
+}
+
+// prOf is f's pull request reader, made on first use; nil without gh, or
+// for a folder gone from disk (gh reads the repository there).
+func (c *checker) prOf(f *folderState) *prChecker {
+	if c.gh == nil || f.missing {
+		return nil
+	}
+	if f.pr == nil {
+		f.pr = &prChecker{folder: f.path, run: c.o.Run, gh: c.gh}
+	}
+	return f.pr
 }
 
 // targetCtx is one target as the rules see it.
@@ -347,8 +403,10 @@ func (c *checker) checkTarget(ctx context.Context, n db.BoardNode, rep *Report) 
 			tip = f.g.branchState(ctx, tc.branch)
 			out.add(branchFinding(tc, tip, f.g.baseName()))
 		}
-		if tc.prRef != "" && f.pr != nil {
-			out.add(f.pr.finding(ctx, tc))
+		if tc.prRef != "" {
+			if pr := c.prOf(f); pr != nil {
+				out.add(pr.finding(ctx, tc))
+			}
 		}
 	}
 	out.add(staleFinding(n, tip, c.o, tc.mk))

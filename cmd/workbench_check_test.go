@@ -268,6 +268,49 @@ func TestProj07_CheckRunsInTheTargetsFolder(t *testing.T) {
 	assert.Contains(t, loadWorkbenchBrief(pid, io.Discard), "branch merged is found neither locally nor on origin")
 }
 
+// A home folder gone from disk no longer stops the check: it is reported as
+// skipped, a target in a healthy second folder still gets its drift, and the
+// Stop hook blocks on that at most once (never a trapped turn).
+func TestProj07_MissingHomeFolderStillChecksTheOtherFolders(t *testing.T) {
+	database := writeActionsConfig(t)
+	home, hub := driftRepo(t), driftRepo(t)
+	pid, tid := driftWorkbench(t, database, home, "merged")
+	hubID := benchFolderAt(t, database, pid, hub, "hub")
+	_, err := database.Exec(`UPDATE targets SET workbench_folder_id = ? WHERE id = ?`, hubID, tid)
+	require.NoError(t, err)
+	require.NoError(t, os.RemoveAll(home))
+
+	rep := checkJSON(t, pid)
+	require.Len(t, rep.Findings, 1)
+	assert.Equal(t, workbenchcheck.KindMergedOpen, rep.Findings[0].Kind, "hub's verdict")
+	require.Len(t, rep.Skipped, 1)
+	assert.Equal(t, home, rep.Skipped[0].Folder)
+	assert.Contains(t, rep.Skipped[0].Reason, "missing")
+
+	out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), `{"stop_hook_active":false}`)
+	var got stopHookOutput
+	require.NoError(t, json.Unmarshal([]byte(out), &got), out)
+	assert.Equal(t, "block", got.Decision)
+	assert.Contains(t, errOut, "skipped in "+home, "the skipped home folder is one stderr line")
+	assert.Empty(t, stopHook(t, pid, `{"stop_hook_active":true}`), "never blocks the continued turn")
+}
+
+// The brief names every folder whose branch checks did not run.
+func TestProj07_BriefNamesTheSkippedFolders(t *testing.T) {
+	out := briefDriftSection(workbenchcheck.Report{Git: true, Base: "origin/main", Findings: []workbenchcheck.Finding{},
+		Skipped: []workbenchcheck.FolderSkip{
+			{Folder: "/code/hub", Reason: "the folder is not a git work tree; branch checks skipped"},
+			{Folder: "/code/old", Reason: "the folder is missing (moved or deleted?); branch checks skipped"},
+		}}, briefMaxChars)
+	assert.Equal(t, "Board drift: none found, but branch checks did not run in /code/hub (the folder is not a git work tree; "+
+		"branch checks skipped); in /code/old (the folder is missing (moved or deleted?); branch checks skipped).", out)
+
+	withFinding := briefDriftSection(workbenchcheck.Report{Git: true, Base: "origin/main",
+		Findings: []workbenchcheck.Finding{{TargetID: 1, Title: "t", Status: "in_progress", Kind: workbenchcheck.KindMergedOpen, Detail: "d", Fix: "f"}},
+		Skipped:  []workbenchcheck.FolderSkip{{Folder: "/code/hub", Reason: "no default branch"}}}, briefMaxChars)
+	assert.Contains(t, withFinding, "Board drift (branch checks did not run in /code/hub (no default branch))")
+}
+
 // Spec 2026-11-18 §6.3: a target whose folder left the bench reports
 // "folder removed" in the check and the brief, and the Stop hook never
 // stops a turn for it (PROJ-07: it never traps a turn).
