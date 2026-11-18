@@ -22,6 +22,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"watchtower/internal/aiconsent"
+	"watchtower/internal/aiconsent/aiconsenttest"
 	"watchtower/internal/config"
 	"watchtower/internal/policy"
 	"watchtower/internal/policy/policytest"
@@ -456,6 +457,7 @@ func TestModelCommands_JSONIsSorted(t *testing.T) {
 // root reads the consent answer from the --config file (cobra.OnInitialize),
 // so aiconsent.Current is not stuck at its fail-closed "no path" default.
 // The answer is "paused" so only a real read of this file gives reason owner.
+// Not parallel: it lifts the package-wide consent override for its run.
 func TestProcess_CLIRootSetsConsentConfigPath(t *testing.T) {
 	policytest.Set(t, nil)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
@@ -467,6 +469,11 @@ func TestProcess_CLIRootSetsConsentConfigPath(t *testing.T) {
 	})
 	backgroundConsentReader = nil
 	aiconsent.SetConfigPath("")
+	// TestMain allows background AI for the package (AllowByDefault); this
+	// test needs the real file read, so it drops that override for its own
+	// run and puts the package default back.
+	aiconsent.SetCurrentOverrideForTest(nil)
+	t.Cleanup(aiconsenttest.AllowByDefault)
 
 	out, _, err := runAIBackground(t, "status", "--json", "--config", configPath)
 	require.NoError(t, err)
