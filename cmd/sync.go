@@ -1042,12 +1042,15 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	})
 	// The twin worker: its own Answerer and session port, beside the hub's.
 	defer wireWatchmanTwin(d, cfg, database)()
-	d.SetWatchmanBacktestLaunch(func(workbenchID int64) error {
+	// The weekly backtest is background work: the child carries its origin
+	// (BGAI-01), as the spec review sweep's does.
+	d.SetWatchmanBacktestLaunch(func(ctx context.Context, workbenchID int64) error {
 		exe, err := watchmanBacktestExe()
 		if err != nil {
 			return fmt.Errorf("locating the watchtower binary: %w", err)
 		}
-		return LaunchWatchmanBacktest(exe, workbenchID, cfg.ActiveWorkspace, flagConfig, filepath.Join(cfg.WorkspaceDir(), "logs"))
+		return LaunchWatchmanBacktest(exe, workbenchID, cfg.ActiveWorkspace, flagConfig,
+			filepath.Join(cfg.WorkspaceDir(), "logs"), aiconsent.ChildEnv(ctx))
 	})
 	// Every pipeline is constructed unconditionally now (Task 3 demoted
 	// digest.enabled from a master switch to a per-phase gate) — each is a

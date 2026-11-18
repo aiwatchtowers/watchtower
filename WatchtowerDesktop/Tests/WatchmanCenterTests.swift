@@ -10,6 +10,7 @@ import WatchtowerTestSupport
 private final class ScriptedWatchmanRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var calls: [[String]] = []
+    private var origins: [CLIOrigin] = []
     private var waiters: [(verb: String, continuation: CheckedContinuation<Void, Never>)] = []
     private var statusJSON: String
     private var statusError: Error?
@@ -33,6 +34,8 @@ private final class ScriptedWatchmanRunner: CLIRunnerProtocol, @unchecked Sendab
     init(status: String) { statusJSON = status }
 
     var invocations: [[String]] { lock.withLock { calls } }
+    /// The origins `learn`/`backtest` named (model commands, `captureModel`).
+    var modelOrigins: [CLIOrigin] { lock.withLock { origins } }
     func setStatus(_ json: String) { lock.withLock { statusJSON = json; statusError = nil } }
     func failStatus(_ error: Error) { lock.withLock { statusError = error } }
     func setVerbResult(_ result: CLICapturedResult) { lock.withLock { verbResult = result } }
@@ -108,6 +111,11 @@ private final class ScriptedWatchmanRunner: CLIRunnerProtocol, @unchecked Sendab
         return Data(json.utf8)
     }
 
+    func captureModel(args: [String], origin: CLIOrigin, timeout: TimeInterval) async throws -> CLICapturedResult {
+        lock.withLock { origins.append(origin) }
+        return try await capture(args: args, timeout: timeout)
+    }
+
     func capture(args: [String], timeout: TimeInterval) async throws -> CLICapturedResult {
         record(args)
         let verb = args.dropFirst().first
@@ -170,6 +178,7 @@ final class WatchmanCenterTests: XCTestCase {
         runner.setStatus(Fixtures.results)
         runner.gate.release()
         await run.value
+        XCTAssertEqual(runner.modelOrigins, [.owner, .owner], "learn and backtest are the owner's model commands")
         XCTAssertEqual(center.state, .results(Fixtures.status(Fixtures.results)))
         XCTAssertNil(center.notices[1])
         XCTAssertFalse(center.needsPolling)

@@ -141,7 +141,7 @@ type Daemon struct {
 	planUsageDisable    func() error
 	specReviewLaunch    func(ctx context.Context, askID int64) error // nil = the spec review sweep is off
 	// watchmanBacktestLaunch starts a detached backtest child; nil = the weekly backtest is off.
-	watchmanBacktestLaunch func(workbenchID int64) error
+	watchmanBacktestLaunch func(ctx context.Context, workbenchID int64) error
 	pidPath                string
 	db                     *db.DB
 	agentLog               *agentlogdb.DB // nil = agentlog.db did not open; the analytics phase skips
@@ -738,13 +738,8 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// Before the index, so this cycle's descriptions are searchable now.
 	d.aiPhase(ctx, "media", d.phaseMediaDescribe)
 	d.phaseKnowledgeIndex(ctx)
-	// Watchman's learning: mechanical reads plus light-tier labels, its own
-	// 5-minute budget shared across workbenches.
-	d.phaseWatchmanLearn(ctx)
-	// Weekly: category profiles (strong tier) and the learned sleep window.
-	d.phaseWatchmanProfile(ctx)
-	// Weekly, after the profiles: launches a detached backtest child (never in-process).
-	d.phaseWatchmanBacktest(ctx)
+	// Watchman's learning, profiles and weekly backtest (background AI).
+	d.phaseWatchmanAI(ctx)
 	// After the knowledge index: the fill is mechanical (no AI) and needs no
 	// fresh sync — Slack sync's own writes already reach the new index
 	// through the triggers — so it runs once the cycle's sync is done.

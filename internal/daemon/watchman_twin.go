@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/askanswer"
 	"watchtower/internal/config"
 	"watchtower/internal/digest"
@@ -112,7 +113,18 @@ func (d *Daemon) phaseWatchmanTwin(ctx context.Context) {
 		d.logger.Printf("watchman twin: queued %d missed wait points", n)
 	}
 	d.watchmanTwin.DeliverHeld(ctx)
-	if n := d.watchmanTwin.RunOnce(ctx); n > 0 {
+	// Deciding is background AI (BGAI-01): while it is paused the items stay
+	// queued, as in Off or Away, and the next allowed pass takes them. The
+	// reader is called directly (not consentNow, whose log state belongs to
+	// the cycle goroutine).
+	read := d.consent
+	if read == nil {
+		read = aiconsent.Current
+	}
+	if !read().Allowed() {
+		return
+	}
+	if n := d.watchmanTwin.RunOnce(aiconsent.WithAdmitted(ctx, "phase:watchman-twin")); n > 0 {
 		d.logger.Printf("watchman twin: deciding %d items", n)
 	}
 }

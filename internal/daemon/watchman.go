@@ -191,10 +191,23 @@ func (d *Daemon) phaseWatchmanProfile(ctx context.Context) {
 // success stamp came back (the child failed or is still running).
 const watchmanBacktestRetryAfter = 24 * time.Hour
 
+// phaseWatchmanAI runs Watchman's AI phases in their order, each held whole
+// while background AI is paused (aiPhase, BGAI-01): the learning (mechanical
+// reads plus light-tier labels, its own 5-minute budget shared across
+// workbenches), the weekly category profiles (strong tier) and learned sleep
+// window, then the weekly backtest launch, whose detached child carries the
+// phase's origin.
+func (d *Daemon) phaseWatchmanAI(ctx context.Context) {
+	d.aiPhase(ctx, "watchman-learn", d.phaseWatchmanLearn)
+	d.aiPhase(ctx, "watchman-profile", d.phaseWatchmanProfile)
+	d.aiPhase(ctx, "watchman-backtest", d.phaseWatchmanBacktest)
+}
+
 // SetWatchmanBacktestLaunch wires the launcher of a detached
 // `watchtower watchman backtest --workbench N` child (cmd.LaunchWatchmanBacktest);
-// nil = the weekly backtest is off.
-func (d *Daemon) SetWatchmanBacktestLaunch(f func(workbenchID int64) error) {
+// nil = the weekly backtest is off. ctx is the phase's (admitted under
+// aiPhase): the child carries its origin (aiconsent.ChildEnv, BGAI-01).
+func (d *Daemon) SetWatchmanBacktestLaunch(f func(ctx context.Context, workbenchID int64) error) {
 	d.watchmanBacktestLaunch = f
 }
 
@@ -252,7 +265,7 @@ func (d *Daemon) phaseWatchmanBacktest(ctx context.Context) {
 		}
 		// Stamped either way: a launch that fails is tried (and logged) once a day.
 		d.writeWatchmanStamp(d.watchmanBacktestLaunchedPath(wb), now)
-		if err := d.watchmanBacktestLaunch(wb); err != nil {
+		if err := d.watchmanBacktestLaunch(ctx, wb); err != nil {
 			d.logger.Printf("watchman backtest: workbench %d: launching: %v", wb, err)
 			return
 		}

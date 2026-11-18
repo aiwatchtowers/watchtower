@@ -475,14 +475,14 @@ final class WatchmanArmingTests: XCTestCase {
     }
 
     /// The CLI's real `arm --session N --check --json` reply
-    /// (`cmd/testdata/watchman_arm_check_session.json`, written by
+    /// (`cmd/testdata/watchman_arm_check_session.golden.json`, written by
     /// `TestWatchmanArm_CheckFixture`).
     private static func goCheckReply() throws -> String {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // WatchtowerDesktop
             .deletingLastPathComponent() // repo root
-            .appendingPathComponent("cmd/testdata/watchman_arm_check_session.json")
+            .appendingPathComponent("cmd/testdata/watchman_arm_check_session.golden.json")
         return try String(contentsOf: url, encoding: .utf8)
     }
 

@@ -378,7 +378,7 @@ func TestWatchmanArm_AllRunningEmptySets(t *testing.T) {
 	assert.Empty(t, armingRows(t))
 }
 
-// TestWatchmanArm_CheckFixture writes testdata/watchman_arm_check_session.json
+// TestWatchmanArm_CheckFixture writes testdata/watchman_arm_check_session.golden.json
 // (with -update): a real `arm --session N --check --json` reply, which the
 // Desktop's WatchmanArmingTests replays on the strip's path.
 func TestWatchmanArm_CheckFixture(t *testing.T) {
@@ -389,7 +389,7 @@ func TestWatchmanArm_CheckFixture(t *testing.T) {
 	var reply map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &reply))
 	assert.Equal(t, []any{float64(s1)}, reply["sessions"])
-	path := filepath.Join("testdata", "watchman_arm_check_session.json")
+	path := filepath.Join("testdata", "watchman_arm_check_session.golden.json")
 	if *updateSessionReportGolden {
 		require.NoError(t, os.WriteFile(path, []byte(out), 0o600))
 	}

@@ -173,7 +173,7 @@ final class WatchmanCenter {
         notices[workbench] = nil
         apply()
         let args = ["watchman", "learn", "--workbench", String(workbench), "--start", "--json"]
-        let failure = await call(args, timeout: Self.learnTimeout).failure
+        let failure = await call(args, origin: .owner, timeout: Self.learnTimeout).failure
         learningHere.remove(workbench)
         if let failure { notices[workbench] = WatchmanSettingsCopy.learnFailed(failure) }
         await load()
@@ -186,7 +186,7 @@ final class WatchmanCenter {
         notices[workbench] = nil
         apply()
         let args = ["watchman", "backtest", "--workbench", String(workbench), "--json"]
-        let outcome = await call(args, timeout: Self.backtestTimeout)
+        let outcome = await call(args, origin: .owner, timeout: Self.backtestTimeout)
         backtestHere.remove(workbench)
         // A run that started and failed is a `failed` row the status shows
         // with its error; the notice is only for a call that never got that far.
@@ -556,10 +556,17 @@ final class WatchmanCenter {
     }
 
     /// Runs an owner verb: its stdout and, unless it succeeded, its error
-    /// line (`"busy"` when the Watchman lock is held).
-    private func call(_ args: [String], timeout: TimeInterval) async -> (failure: String?, stdout: Data) {
+    /// line (`"busy"` when the Watchman lock is held). A verb that calls a
+    /// model (`learn`, `backtest`: `ModelCommands`) names its origin.
+    private func call(
+        _ args: [String], origin: CLIOrigin? = nil, timeout: TimeInterval
+    ) async -> (failure: String?, stdout: Data) {
         do {
-            let result = try await runner.capture(args: args, timeout: timeout)
+            let result = if let origin {
+                try await runner.captureModel(args: args, origin: origin, timeout: timeout)
+            } else {
+                try await runner.capture(args: args, timeout: timeout)
+            }
             if let error = Self.replyError(result.stdout) { return (error, result.stdout) }
             guard result.exitCode != 0 else { return (nil, result.stdout) }
             let line = result.stderr.split(whereSeparator: \.isNewline).first.map(String.init)

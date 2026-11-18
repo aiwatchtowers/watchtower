@@ -106,3 +106,22 @@ func TestWatchmanTwinPhase_BindsRoutingEachPass(t *testing.T) {
 		require.Equal(t, int32(2), twin.gen.Load())
 	})
 }
+
+// Deciding is background AI (BGAI-01): while it is paused a pass still scans
+// and retries held lines, but leases nothing, so the items stay queued; the
+// first allowed pass decides them.
+func TestWatchmanTwinPhase_PausedLeavesItemsQueued(t *testing.T) {
+	d, _, _ := newBackfillDaemon(t)
+	twin := &fakeTwin{}
+	d.watchmanTwin = twin
+	fc := newFakeConsent(consentPausedByOwner)
+	d.SetConsent(fc.read)
+
+	d.phaseWatchmanTwin(context.Background())
+	require.Equal(t, int32(0), twin.runs.Load(), "nothing leased while paused")
+	require.Equal(t, int32(1), twin.held.Load(), "held lines are still retried")
+
+	fc.set(consentAllowed)
+	d.phaseWatchmanTwin(context.Background())
+	require.Equal(t, int32(1), twin.runs.Load())
+}

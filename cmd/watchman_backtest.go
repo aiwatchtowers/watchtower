@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/prompts"
 	"watchtower/internal/watchman"
 )
@@ -31,8 +32,10 @@ var watchmanBacktestExe = os.Executable
 // same database) as a detached child in its own session (the specreview
 // launcher's pattern: no agent markers, output appended to
 // <logDir>/watchman-backtest.log) and does not wait for it; it is reaped in
-// the background. Empty workspace or configPath leave the flag out.
-func LaunchWatchmanBacktest(exe string, workbenchID int64, workspace, configPath, logDir string) error {
+// the background. Empty workspace or configPath leave the flag out. originEnv
+// is the launching unit's AI origin (aiconsent.ChildEnv): the daemon's weekly
+// run is background work, gated like any (BGAI-01).
+func LaunchWatchmanBacktest(exe string, workbenchID int64, workspace, configPath, logDir string, originEnv []string) error {
 	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		return fmt.Errorf("creating log dir: %w", err)
 	}
@@ -43,7 +46,7 @@ func LaunchWatchmanBacktest(exe string, workbenchID int64, workspace, configPath
 	defer logFile.Close()
 	c := exec.Command(exe, watchmanBacktestArgs(workbenchID, workspace, configPath)...)
 	c.Stdout, c.Stderr = logFile, logFile
-	c.Env = envWithoutAgentMarkers(os.Environ())
+	c.Env = append(envWithoutAgentMarkers(aiconsent.OwnerEnv(os.Environ())), originEnv...)
 	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := c.Start(); err != nil {
 		return fmt.Errorf("starting the backtest: %w", err)
