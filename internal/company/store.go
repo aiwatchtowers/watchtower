@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -21,8 +22,8 @@ import (
 	"watchtower/internal/fsutil"
 )
 
-// ForcedSource is LoadError.File for a forced MDM bundle that fails to parse.
-const ForcedSource = "CompanyBundle (managed preference)"
+// forcedSource is LoadError.File for a forced MDM bundle that fails to parse.
+const forcedSource = "CompanyBundle (managed preference)"
 
 // draftSlug is the wizard draft's stem (draft.json), never a company.
 const draftSlug = "draft"
@@ -36,6 +37,10 @@ const saveLockWait = 30 * time.Second
 // slugRE is a stored file's stem: what companybundle.Slug makes, plus the
 // store's numeric clash suffix.
 var slugRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// ErrStoredChanged is SaveIfUnchanged finding the file changed since the
+// caller read it (another confirm wrote first).
+var ErrStoredChanged = errors.New("company file changed since it was read")
 
 // ErrSlugTaken is Save over a file that holds another company (or that is
 // damaged): the store never overwrites a company it cannot read as the same.
@@ -125,7 +130,7 @@ func readFile(path, slug string) (companybundle.Bundle, error) {
 	if fi.Size() > maxFileBytes {
 		return companybundle.Bundle{}, errors.New("file too large")
 	}
-	raw, err := os.ReadFile(path) //nolint:gosec // path is <company dir>/<slug>.json, slug checked above
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return companybundle.Bundle{}, err
 	}
@@ -141,15 +146,21 @@ func overlay(st *diskState, forcedWire string) {
 	}
 	fb, err := companybundle.Parse(forcedWire, companybundle.OriginMDM)
 	if err != nil {
-		st.errs = append(st.errs, LoadError{File: ForcedSource, Err: err.Error()})
+		st.errs = append(st.errs, LoadError{File: forcedSource, Err: err.Error()})
 		return
 	}
+	matched := false
 	for i := range st.entries {
 		if st.entries[i].Bundle.Company == fb.Company {
 			st.entries[i].Bundle, st.entries[i].Forced = fb, true
-			return
+			matched = true
 		}
 	}
+	if matched {
+		return
+	}
+	// A forced company with no file of its own takes a free slug against
+	// today's files; Task 8's .forced-<slug>.seen pins what was seen.
 	slug := freeSlug(fb.Company, st.taken)
 	st.taken[slug] = true
 	st.entries = append(st.entries, Entry{Slug: slug, Bundle: fb, Forced: true})
@@ -224,6 +235,21 @@ func (s Store) SlugFor(company, forcedWire string) (string, error) {
 // company or that it cannot read (ErrSlugTaken): the slug of a different
 // company comes from SlugFor.
 func (s Store) Save(slug string, b companybundle.Bundle) error {
+	return s.save(slug, b, nil, false)
+}
+
+// SaveIfUnchanged is Save that writes only while the file still holds prev
+// (absent when prev is nil), checked under the flock: a decision taken on a
+// read (needs Replace or not) never lands over a newer write. Otherwise it
+// returns ErrStoredChanged and writes nothing.
+func (s Store) SaveIfUnchanged(slug string, prev *companybundle.Bundle, b companybundle.Bundle) error {
+	return s.save(slug, b, prev, true)
+}
+
+// save validates b the way a stored file is read (Save is also the bridge's
+// and the wizard's writer, whose bundles do not all come out of Parse), so
+// nothing unreadable lands on disk.
+func (s Store) save(slug string, b companybundle.Bundle, prev *companybundle.Bundle, check bool) error {
 	if !slugRE.MatchString(slug) || slug == draftSlug {
 		return fmt.Errorf("invalid company slug %q", slug)
 	}
@@ -250,16 +276,22 @@ func (s Store) Save(slug string, b companybundle.Bundle) error {
 		return fmt.Errorf("locking company file %s: %w", slug, err)
 	}
 	defer unlock()
-	if _, err := os.Lstat(path); err == nil {
-		cur, err := readFile(path, slug)
-		if err != nil {
+	_, err = os.Lstat(path)
+	exists := err == nil
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("company file %s: %w", slug, err)
+	}
+	var cur companybundle.Bundle
+	if exists {
+		if cur, err = readFile(path, slug); err != nil {
 			return fmt.Errorf("%w: %s.json is unreadable (%v)", ErrSlugTaken, slug, err)
 		}
 		if cur.Company != n.Company {
 			return fmt.Errorf("%w: %s.json holds %q", ErrSlugTaken, slug, cur.Company)
 		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("company file %s: %w", slug, err)
+	}
+	if check && (exists != (prev != nil) || (exists && !reflect.DeepEqual(cur, *prev))) {
+		return fmt.Errorf("%w: %s.json", ErrStoredChanged, slug)
 	}
 	return fsutil.WriteFileAtomic(path, append(data, '\n'), 0o600)
 }

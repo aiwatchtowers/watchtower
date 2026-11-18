@@ -63,7 +63,7 @@ func TestCompanyStore_ModesAndRoundTrip(t *testing.T) {
 
 func TestCompanyStore_DirNarrowed(t *testing.T) {
 	s := newStore(t)
-	require.NoError(t, os.MkdirAll(s.Dir, 0o755)) //nolint:gosec // the test widens it on purpose
+	require.NoError(t, os.MkdirAll(s.Dir, 0o755))
 	require.NoError(t, s.Save("acme", sample("Acme")))
 	di, err := os.Stat(s.Dir)
 	require.NoError(t, err)
@@ -228,7 +228,7 @@ func TestCompanyStore_BadForcedIsLoadError(t *testing.T) {
 		require.Len(t, entries, 1)
 		assert.False(t, entries[0].Forced)
 		require.Len(t, errs, 1)
-		assert.Equal(t, ForcedSource, errs[0].File)
+		assert.Equal(t, forcedSource, errs[0].File)
 	}
 }
 
@@ -298,4 +298,38 @@ func TestCleanCode(t *testing.T) {
 	assert.Equal(t, w, CleanCode(wrapped))
 	_, err := companybundle.Parse(CleanCode(wrapped), companybundle.OriginCode)
 	assert.NoError(t, err)
+}
+
+func TestCompanyStore_SaveIfUnchanged(t *testing.T) {
+	s := newStore(t)
+	a := sample("Acme")
+	require.NoError(t, s.SaveIfUnchanged("acme", nil, a))
+	assert.True(t, errors.Is(s.SaveIfUnchanged("acme", nil, a), ErrStoredChanged), "file appeared since the read")
+
+	b := sample("Acme")
+	b.Atlassian.ClientID = "acmeClientId02"
+	require.NoError(t, s.SaveIfUnchanged("acme", &a, b))
+	c := sample("Acme")
+	c.Linear.ClientID = "acmelinear02"
+	assert.True(t, errors.Is(s.SaveIfUnchanged("acme", &a, c), ErrStoredChanged), "another write landed first")
+	got, _, err := s.Get("acme", "")
+	require.NoError(t, err)
+	assert.Equal(t, b, got.Bundle)
+}
+
+func TestCompanyStore_ForcedOverlaysEveryFileOfTheCompany(t *testing.T) {
+	s := newStore(t)
+	require.NoError(t, s.Save("acme", sample("Acme")))
+	raw, err := os.ReadFile(filepath.Join(s.Dir, "acme.json"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(s.Dir, "acme-copy.json"), raw, 0o600))
+	forced := sample("Acme")
+	forced.Linear.ClientID = "acmelinear02"
+	entries, _, err := s.LoadAll(wire(t, forced))
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+	for _, e := range entries {
+		assert.True(t, e.Forced, e.Slug)
+		assert.Equal(t, forced, e.Bundle, e.Slug)
+	}
 }

@@ -78,6 +78,11 @@ var companyInspectCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		wire, err := readCompanyWire(cmd.InOrStdin())
+		var pe *companybundle.ParseError
+		if errors.As(err, &pe) {
+			res := companyRefused(pe)
+			return writeCompanyResult(cmd, res, func(w io.Writer) { _, _ = fmt.Fprintf(w, "refused: %s\n", res.Refused) })
+		}
 		if err != nil {
 			return err
 		}
@@ -300,30 +305,47 @@ func matchCompany(store company.Store, wire string, origin companybundle.Origin,
 		return companyMatch{}, err
 	}
 	if m.stored {
-		m.changes = company.Changes(m.current.Bundle, b)
+		// Parse refuses `personal` from a link, MDM or a code: a stored
+		// personal project keeps its mark.
+		m.bundle.Personal = m.current.Bundle.Personal
+		m.changes = company.Changes(m.current.Bundle, m.bundle)
 	}
 	return m, nil
 }
 
+// newCompanyInspectResult has every list and map non-nil (JSON [] and {}).
+func newCompanyInspectResult() companyInspectResult {
+	return companyInspectResult{Vendors: []string{}, Connected: map[string]bool{}, Changes: []companyChangeJSON{}, Forbidden: []string{}}
+}
+
+func companyRefused(pe *companybundle.ParseError) companyInspectResult {
+	res := newCompanyInspectResult()
+	res.Refused = string(pe.Reason)
+	return res
+}
+
+// companyShortFields are the changed values shortened in the Replace warning
+// (A21); a site stays whole (two sites would shorten alike).
+var companyShortFields = map[string]bool{"client_id": true, "tenant_id": true}
+
 // inspectCompany reports what confirming wire would do. A refused bundle is
-// a result (Refused), not an error: the Desktop shows why.
+// a result (Refused), not an error: the Desktop shows why. State is "new" (no
+// such company), "changed" (a client changed: confirm needs --replace) or
+// "same" (no client changed; confirm may still store a new domain, vendor or
+// deny host). The origin only decides whether `personal` is refused, which
+// link, MDM and code all do, so inspect reads every wire as a code.
 func inspectCompany(store company.Store, database *db.DB, wire, forced string) (companyInspectResult, error) {
 	m, err := matchCompany(store, wire, companybundle.OriginCode, forced)
 	var pe *companybundle.ParseError
 	if errors.As(err, &pe) {
-		return companyInspectResult{Refused: string(pe.Reason), Vendors: []string{}, Connected: map[string]bool{},
-			Changes: []companyChangeJSON{}, Forbidden: []string{}}, nil
+		return companyRefused(pe), nil
 	}
 	if err != nil {
 		return companyInspectResult{}, err
 	}
-	res := companyInspectResult{
-		Company: m.bundle.Company, Slug: m.slug, State: "new", Forced: m.current.Forced,
-		Vendors: m.bundle.Vendors(), Connected: map[string]bool{}, Changes: []companyChangeJSON{}, Forbidden: []string{},
-	}
-	if res.Vendors == nil {
-		res.Vendors = []string{}
-	}
+	res := newCompanyInspectResult()
+	res.Company, res.Slug, res.State, res.Forced = m.bundle.Company, m.slug, "new", m.current.Forced
+	res.Vendors = append(res.Vendors, m.bundle.Vendors()...)
 	if m.stored {
 		res.State = "same"
 		if len(m.changes) > 0 {
@@ -345,9 +367,11 @@ func inspectCompany(store company.Store, database *db.DB, wire, forced string) (
 		}
 	}
 	for _, c := range m.changes {
-		res.Changes = append(res.Changes, companyChangeJSON{
-			Vendor: c.Vendor, Field: c.Field, Old: company.ShortID(c.Old), New: company.ShortID(c.New),
-		})
+		j := companyChangeJSON{Vendor: c.Vendor, Field: c.Field, Old: c.Old, New: c.New}
+		if companyShortFields[c.Field] {
+			j.Old, j.New = company.ShortID(c.Old), company.ShortID(c.New)
+		}
+		res.Changes = append(res.Changes, j)
 	}
 	for _, v := range res.Vendors {
 		if !policy.SourceAllowed(companyVendorPolicySource[v]) {
@@ -371,7 +395,10 @@ type companyConfirmResult struct {
 // confirmCompany stores wire after the owner's confirmation. A bundle that
 // changes a stored company's clients is stored only with replace, which
 // first marks the changed vendors' accounts Re-login (so a failed write is
-// retried by the next confirm, not lost). A forced MDM bundle is never
+// retried by the next confirm, not lost). The write lands only over the file
+// this decision read (SaveIfUnchanged): a concurrent confirm that wrote first
+// makes this one an error, and the accounts it marked need the login the
+// other write's Replace asks for anyway. A forced MDM bundle is never
 // written and always wins: confirming it (source mdm) only names its slug,
 // and a link or code for the same company changes nothing ("unchanged").
 func confirmCompany(store company.Store, database *db.DB, wire string, origin companybundle.Origin, replace bool, forced string) (companyConfirmResult, error) {
@@ -405,7 +432,11 @@ func confirmCompany(store company.Store, database *db.DB, wire string, origin co
 			res.Marked = append(res.Marked, companyMarkedJSON{Source: r.Source, ID: r.ID})
 		}
 	}
-	if err := store.Save(m.slug, m.bundle); err != nil {
+	var prev *companybundle.Bundle
+	if m.stored {
+		prev = &m.current.Bundle
+	}
+	if err := store.SaveIfUnchanged(m.slug, prev, m.bundle); err != nil {
 		return companyConfirmResult{}, err
 	}
 	res.Result = "stored"

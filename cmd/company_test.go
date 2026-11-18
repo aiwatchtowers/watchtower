@@ -326,3 +326,46 @@ func TestCompanyCommandsRegistered(t *testing.T) {
 	_, err := companyOrigin("mail")
 	assert.Error(t, err)
 }
+
+func TestCompanyConfirm_StoredPersonalKeepsItsMark(t *testing.T) {
+	store, d := company.NewStore(t.TempDir()), db.OpenTestDB(t)
+	p := companybundle.Bundle{V: 1, Company: "Acme", Personal: true, Google: companySample("Acme").Google}
+	require.NoError(t, store.Save("acme", p))
+	in := companybundle.Bundle{V: 1, Company: "Acme", Google: companySample("Acme").Google}
+	in.Google.Domain = "acme.example.com"
+	res, err := confirmCompany(store, d, companyWire(t, in), companybundle.OriginLink, false, "")
+	require.NoError(t, err)
+	assert.Equal(t, "stored", res.Result)
+	got, _, err := store.Get("acme", "")
+	require.NoError(t, err)
+	assert.True(t, got.Bundle.Personal)
+	assert.Equal(t, "acme.example.com", got.Bundle.Google.Domain)
+}
+
+func TestCompanyInspect_SiteChangeShownWhole(t *testing.T) {
+	policytest.Set(t, nil)
+	store, d := company.NewStore(t.TempDir()), db.OpenTestDB(t)
+	require.NoError(t, store.Save("acme", companySample("Acme")))
+	in := companySample("Acme")
+	in.Atlassian.Site = "https://acme2.atlassian.net"
+	res, err := inspectCompany(store, d, companyWire(t, in), "")
+	require.NoError(t, err)
+	assert.Equal(t, []companyChangeJSON{{Vendor: "atlassian", Field: "site", Old: "https://acme.atlassian.net", New: "https://acme2.atlassian.net"}}, res.Changes)
+}
+
+func TestCompanyInspect_OversizedStdinIsARefusal(t *testing.T) {
+	var out bytes.Buffer
+	c := companyInspectCmd
+	c.SetIn(bytes.NewReader(bytes.Repeat([]byte("A"), companyStdinMax+1)))
+	c.SetOut(&out)
+	require.NoError(t, c.Flags().Set("json", "true"))
+	t.Cleanup(func() {
+		c.SetIn(nil)
+		c.SetOut(nil)
+		_ = c.Flags().Set("json", "false")
+	})
+	require.NoError(t, c.RunE(c, nil))
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &got))
+	assert.Equal(t, "too_long", got["refused"])
+}
