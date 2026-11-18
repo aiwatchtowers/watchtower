@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"testing"
@@ -45,12 +46,40 @@ func TestJiraAdd_CompanyRequestsTheReportScope(t *testing.T) {
 	assert.False(t, h.loginOpts.WithPersonalDataReporting)
 }
 
-// TestJiraAddLogin_ReportScopeRefusalRetriesJiraOnly: a company app without
-// the report permission refuses the scope; the connect still succeeds.
-func TestJiraAddLogin_ReportScopeRefusalRetriesJiraOnly(t *testing.T) {
+// TestJiraAddLogin_ReportScopeRefusalKeepsConfluence: a company app without
+// the report permission refuses the scope; the retry drops only that scope,
+// so an app with the Confluence API still connects Confluence.
+func TestJiraAddLogin_ReportScopeRefusalKeepsConfluence(t *testing.T) {
 	calls := scriptLogin(t, errTestScopeRefused, nil)
-	_, err := jiraAddLogin(context.Background(), jira.JiraOAuthConfig{}, io.Discard, jira.LoginOptions{WithPersonalDataReporting: true})
+	_, err := jiraAddLogin(context.Background(), jira.JiraOAuthConfig{}, io.Discard, jira.LoginOptions{WithConfluence: true, WithPersonalDataReporting: true})
 	require.NoError(t, err)
 	require.Len(t, *calls, 2)
 	assert.False(t, (*calls)[1].WithPersonalDataReporting)
+	assert.True(t, (*calls)[1].WithConfluence)
+}
+
+// An app with neither permission ends Jira-only, as before.
+func TestJiraAddLogin_ReportAndConfluenceRefusedEndsJiraOnly(t *testing.T) {
+	calls := scriptLogin(t, errTestScopeRefused, errTestScopeRefused, nil)
+	var out bytes.Buffer
+	_, err := jiraAddLogin(context.Background(), jira.JiraOAuthConfig{}, &out, jira.LoginOptions{WithConfluence: true, WithPersonalDataReporting: true})
+	require.NoError(t, err)
+	require.Len(t, *calls, 3)
+	assert.False(t, (*calls)[2].WithConfluence)
+	assert.False(t, (*calls)[2].WithPersonalDataReporting)
+	assert.Contains(t, out.String(), jiraOnlyRetryMarker)
+}
+
+// A company account's Re-login uses the same report-scope fallback.
+func TestJiraLoginWithoutRefusedReport_RetriesOnlyThatScope(t *testing.T) {
+	calls := scriptLogin(t, errTestScopeRefused, nil)
+	_, err := jiraLoginWithoutRefusedReport(context.Background(), jira.JiraOAuthConfig{}, io.Discard, jira.LoginOptions{WithConfluence: true, WithPersonalDataReporting: true})
+	require.NoError(t, err)
+	require.Len(t, *calls, 2)
+	assert.Equal(t, jira.LoginOptions{WithConfluence: true}, (*calls)[1])
+
+	calls = scriptLogin(t, errTestScopeRefused)
+	_, err = jiraLoginWithoutRefusedReport(context.Background(), jira.JiraOAuthConfig{}, io.Discard, jira.LoginOptions{WithConfluence: true})
+	require.ErrorIs(t, err, jira.ErrScopeRefused)
+	assert.Len(t, *calls, 1, "nothing to drop without the report scope")
 }

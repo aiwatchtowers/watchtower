@@ -735,14 +735,27 @@ const jiraConfluenceNotEnabled = "Jira connected; Confluence isn't enabled for t
 // for Confluence never costs a Jira connect. The retry opens the browser a
 // second time; any other failure is returned as is.
 func jiraAddLogin(ctx context.Context, cfg jira.JiraOAuthConfig, out io.Writer, opts jira.LoginOptions) (*jira.OAuthToken, error) {
-	token, err := jiraLogin(ctx, cfg, out, opts)
-	if err == nil || (!opts.WithConfluence && !opts.WithPersonalDataReporting) || !errors.Is(err, jira.ErrScopeRefused) {
+	token, err := jiraLoginWithoutRefusedReport(ctx, cfg, out, opts)
+	if err == nil || !opts.WithConfluence || !errors.Is(err, jira.ErrScopeRefused) {
 		return token, err
 	}
-	// A company app without the report permission refuses that scope the
-	// same way; the account then connects and shows pdr_scope_missing.
-	fmt.Fprintln(out, jiraOnlyRetryMarker+" Atlassian refused the Confluence or personal data reporting access; connecting Jira only…")
+	fmt.Fprintln(out, jiraOnlyRetryMarker+" Atlassian refused the Confluence access; connecting Jira only…")
 	opts.WithConfluence, opts.WithConfluenceWrite, opts.WithPersonalDataReporting = false, false, false
+	return jiraLogin(ctx, cfg, out, opts)
+}
+
+// jiraLoginWithoutRefusedReport is jiraLogin that, when the report scope
+// (WithPersonalDataReporting, #1887 §6) is refused — a company app without
+// the report permission — signs in once more without it and with every
+// other option kept: the account connects and shows pdr_scope_missing
+// instead of failing its add or Re-login.
+func jiraLoginWithoutRefusedReport(ctx context.Context, cfg jira.JiraOAuthConfig, out io.Writer, opts jira.LoginOptions) (*jira.OAuthToken, error) {
+	token, err := jiraLogin(ctx, cfg, out, opts)
+	if err == nil || !opts.WithPersonalDataReporting || !errors.Is(err, jira.ErrScopeRefused) {
+		return token, err
+	}
+	fmt.Fprintln(out, "Atlassian refused the personal data reporting access; signing in without it…")
+	opts.WithPersonalDataReporting = false
 	return jiraLogin(ctx, cfg, out, opts)
 }
 
@@ -992,7 +1005,7 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 	// A company account's Re-login also finishes the setup: it requests the
 	// report scope its app has (pdr_scope_missing).
 	opts.WithPersonalDataReporting = account.CompanySlug != ""
-	token, err := jiraLogin(cmd.Context(), jiraCfg, out, opts)
+	token, err := jiraLoginWithoutRefusedReport(cmd.Context(), jiraCfg, out, opts)
 	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("jira login: %w", err)
