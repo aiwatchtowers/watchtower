@@ -195,6 +195,18 @@ struct ConfigServiceTests {
         #expect(fresh.parseError != nil)
     }
 
+    @Test("savedAIProvider follows the file, not the unsaved provider edit")
+    func testSavedAIProviderIgnoresEdits() throws {
+        let path = makeTempConfig("ai: {provider: claude}\n")
+        let service = ConfigService(configPath: path)
+        #expect(service.savedAIProvider == "claude")
+        service.aiProvider = "codex"
+        #expect(service.savedAIProvider == "claude", "an unsaved edit is not what runs")
+        try service.save()
+        #expect(service.savedAIProvider == "codex")
+        #expect(!service.hasUnsavedEdits, "the saved provider is bookkeeping, not a setting")
+    }
+
     @Test("reloadBackgroundRuns picks up an answer written behind the instance and keeps unsaved edits")
     func testReloadBackgroundRunsKeepsEdits() throws {
         let path = makeTempConfig("ai: {model: m}\n")

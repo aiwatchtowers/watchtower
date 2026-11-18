@@ -23,7 +23,8 @@ package final class BackgroundAIConsentModel {
     /// The answer is saved but the host's follow-up failed: only that
     /// follow-up is offered again, the answer is not re-written.
     package private(set) var needsFinishRetry = false
-    /// The last write failed (`BackgroundAIConsentCopy.saveFailed`); cleared
+    /// The last write failed (`BackgroundAIConsentCopy.saveFailed`, or
+    /// `pauseFailed` for Settings' `pause()`); cleared
     /// by the next answer.
     package private(set) var errorLine: String?
 
@@ -64,6 +65,12 @@ package final class BackgroundAIConsentModel {
         await write(["pause"])
     }
 
+    /// Settings' switch turned off: `ai background pause`, whose failure says
+    /// background AI is still on. True once it is saved.
+    package func pause() async -> Bool {
+        await write(["pause"], failure: BackgroundAIConsentCopy.pauseFailed)
+    }
+
     package enum Choice: Sendable {
         case allow, notNow
     }
@@ -89,7 +96,10 @@ package final class BackgroundAIConsentModel {
         needsFinishRetry = !(await finish())
     }
 
-    private func write(_ verb: [String]) async -> Bool {
+    private func write(
+        _ verb: [String],
+        failure: (String) -> String = BackgroundAIConsentCopy.saveFailed
+    ) async -> Bool {
         guard !isBusy else { return false }
         isSaving = true
         errorLine = nil
@@ -98,7 +108,7 @@ package final class BackgroundAIConsentModel {
             _ = try await runner.run(args: ["--config", configPath, "ai", "background"] + verb)
             return true
         } catch {
-            errorLine = BackgroundAIConsentCopy.saveFailed(Self.reason(error))
+            errorLine = failure(Self.reason(error))
             return false
         }
     }

@@ -12,19 +12,19 @@ final class BackgroundAISettingsPresentationTests: XCTestCase {
     }
 
     func testAllowedClaude() {
-        let shown = Presentation.make(state: state("allowed"), agent: .claude, isSaving: false, error: nil)
+        let shown = Presentation.make(state: state("allowed"), agent: .claude, isSaving: false, error: nil, configUnreadable: false)
         XCTAssertEqual(shown, Presentation(isOn: true, locked: false, caption: Copy.captionAllowed(.claude), captionIsError: false))
         XCTAssertEqual(
             shown.caption,
             "On. Digests, briefings, tracks, people cards, memory and your automations run on their own, "
                 + "using your Claude subscription."
         )
-        let codex = Presentation.make(state: state("allowed"), agent: .codex, isSaving: false, error: nil)
+        let codex = Presentation.make(state: state("allowed"), agent: .codex, isSaving: false, error: nil, configUnreadable: false)
         XCTAssertTrue(codex.caption.hasSuffix(", using your ChatGPT plan."))
     }
 
     func testAllowedOllamaHasNoPlanClause() {
-        let shown = Presentation.make(state: state("allowed"), agent: .other(name: "Ollama"), isSaving: false, error: nil)
+        let shown = Presentation.make(state: state("allowed"), agent: .other(name: "Ollama"), isSaving: false, error: nil, configUnreadable: false)
         XCTAssertTrue(shown.isOn)
         XCTAssertEqual(
             shown.caption,
@@ -34,7 +34,7 @@ final class BackgroundAISettingsPresentationTests: XCTestCase {
 
     func testPausedOwnerAndUnanswered() {
         for answer in ["paused", nil] {
-            let shown = Presentation.make(state: state(answer), agent: .claude, isSaving: false, error: nil)
+            let shown = Presentation.make(state: state(answer), agent: .claude, isSaving: false, error: nil, configUnreadable: false)
             XCTAssertEqual(shown, Presentation(isOn: false, locked: false, caption: Copy.captionPaused, captionIsError: false))
         }
         XCTAssertEqual(
@@ -42,14 +42,16 @@ final class BackgroundAISettingsPresentationTests: XCTestCase {
             "Paused. Slack, mail, calendar and Jira keep syncing; AI features and automations wait."
         )
         // The owner's own pause wins over a permissive profile.
-        let ownerOverOrg = Presentation.make(state: state("paused", policy: true), agent: .claude, isSaving: false, error: nil)
+        let ownerOverOrg = Presentation.make(
+            state: state("paused", policy: true), agent: .claude, isSaving: false, error: nil, configUnreadable: false
+        )
         XCTAssertFalse(ownerOverOrg.isOn)
         XCTAssertFalse(ownerOverOrg.locked)
     }
 
     func testOrgOffLocked() {
         for answer in ["allowed", "paused", nil] {
-            let shown = Presentation.make(state: state(answer, policy: false), agent: .claude, isSaving: false, error: nil)
+            let shown = Presentation.make(state: state(answer, policy: false), agent: .claude, isSaving: false, error: nil, configUnreadable: false)
             XCTAssertEqual(shown, Presentation(isOn: false, locked: true, caption: Copy.captionOrgOff, captionIsError: false))
         }
         XCTAssertEqual(
@@ -59,11 +61,11 @@ final class BackgroundAISettingsPresentationTests: XCTestCase {
     }
 
     func testOrgAllowedCaption() {
-        let shown = Presentation.make(state: state(nil, policy: true), agent: .claude, isSaving: false, error: nil)
+        let shown = Presentation.make(state: state(nil, policy: true), agent: .claude, isSaving: false, error: nil, configUnreadable: false)
         XCTAssertEqual(shown, Presentation(isOn: true, locked: false, caption: Copy.captionOrgAllowed, captionIsError: false))
         XCTAssertEqual(Copy.captionOrgAllowed, "Allowed by your organization. Turn it off to pause it for yourself.")
         // The owner's own yes under a permissive profile is the owner's.
-        let owner = Presentation.make(state: state("allowed", policy: true), agent: .claude, isSaving: false, error: nil)
+        let owner = Presentation.make(state: state("allowed", policy: true), agent: .claude, isSaving: false, error: nil, configUnreadable: false)
         XCTAssertEqual(owner.caption, Copy.captionAllowed(.claude))
     }
 
@@ -71,8 +73,8 @@ final class BackgroundAISettingsPresentationTests: XCTestCase {
     /// hides a previous error.
     func testSavingKeepsCaption() {
         for answer in ["allowed", "paused"] {
-            let idle = Presentation.make(state: state(answer), agent: .claude, isSaving: false, error: nil)
-            let saving = Presentation.make(state: state(answer), agent: .claude, isSaving: true, error: "stale")
+            let idle = Presentation.make(state: state(answer), agent: .claude, isSaving: false, error: nil, configUnreadable: false)
+            let saving = Presentation.make(state: state(answer), agent: .claude, isSaving: true, error: "stale", configUnreadable: false)
             XCTAssertEqual(saving, idle)
         }
     }
@@ -80,7 +82,7 @@ final class BackgroundAISettingsPresentationTests: XCTestCase {
     func testErrorFallsBackToStored() {
         let line = Copy.saveFailed("config.yaml: permission denied")
         for (answer, on) in [("allowed", true), ("paused", false)] {
-            let shown = Presentation.make(state: state(answer), agent: .claude, isSaving: false, error: line)
+            let shown = Presentation.make(state: state(answer), agent: .claude, isSaving: false, error: line, configUnreadable: false)
             XCTAssertEqual(shown, Presentation(isOn: on, locked: false, caption: line, captionIsError: true))
         }
     }

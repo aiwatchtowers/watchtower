@@ -69,6 +69,7 @@ final class BackgroundAIConsentCopyTests: XCTestCase {
             "Not now: Slack, mail, calendar and Jira keep syncing. AI features and automations wait until you allow them."
         )
         XCTAssertTrue(Copy.saveFailed("x").hasSuffix("Nothing runs in the background until it is saved."))
+        XCTAssertEqual(Copy.pauseFailed("disk full"), "Couldn't pause background AI: disk full. It is still on.")
     }
 
     /// The Settings caption per agent: no "using …" for a provider without a plan.

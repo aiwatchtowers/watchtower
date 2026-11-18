@@ -103,6 +103,12 @@ package enum BackgroundAIConsentCopy {
         "Couldn't save your choice: \(error). Nothing runs in the background until it is saved."
     }
 
+    /// Settings' switch turned off and the pause was not written: background
+    /// AI is still on (the stored answer stands).
+    package static func pauseFailed(_ error: String) -> String {
+        "Couldn't pause background AI: \(error). It is still on."
+    }
+
     /// Instead of the consent sheet while config.yaml cannot be read: the
     /// answer's writer refuses a file it cannot parse.
     package static let configUnreadableTitle = "Watchtower can't read config.yaml"

@@ -91,6 +91,9 @@ final class ConfigService {
     /// config.yaml exists but could not be read or parsed at the last read of
     /// `backgroundRuns`, so the answer is unknown (reads paused, as in Go).
     private(set) var backgroundRunsUnreadable = false
+    /// `ai.provider` as last loaded or saved, never the unsaved edit: the
+    /// agent Settings → AI → Background AI names.
+    private(set) var savedAIProvider: String?
     let routingApplication: ProviderRoutingApplication
 
     private let configPath: String
@@ -344,6 +347,7 @@ final class ConfigService {
         editedModelTiers = []
         editedProviderBuckets = [:]
         loadedFields = editableFields
+        savedAIProvider = aiProvider
     }
 
     private func modelTierEdited(_ tier: String) -> Bool {
@@ -813,7 +817,7 @@ final class ConfigService {
     /// Bookkeeping, not settings: left out of the edit check.
     private static let nonEditableFields: Set<String> = [
         "configPath", "fileAccess", "routingApplication", "_rawYAML", "_parseError", "_lastSaveChangedPurge",
-        "_backgroundRuns", "_backgroundRunsUnreadable",
+        "_backgroundRuns", "_backgroundRunsUnreadable", "_savedAIProvider",
         "_diskCalendarEnabled", "_diskGmailEnabled", "_diskPurgeRevokedData", "loadedFields",
         "_providerBuckets", "_editedProviderBuckets", "editedModelTiers",
         "_providerConnection", "_providerHealth", "providerConnection", "providerHealth", "loadedFallbackEnabled", "loadedFallbackProvider"

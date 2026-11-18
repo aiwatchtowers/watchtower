@@ -310,15 +310,16 @@ private struct SettingsSectionMock: View {
 
     private var isOn: Bool {
         switch state {
-        case .allowed, .orgAllowed: true
-        case .paused, .orgOff, .saving, .error: false
+        case .allowed, .orgAllowed, .error: true
+        case .paused, .orgOff, .saving: false
         }
     }
 
     private var caption: String {
         switch state {
         case .allowed: Copy.captionAllowed(.claude)
-        case .paused, .saving, .error: Copy.captionPaused
+        case .error: Copy.pauseFailed("config.yaml: permission denied")
+        case .paused, .saving: Copy.captionPaused
         case .orgOff: Copy.captionOrgOff
         case .orgAllowed: Copy.captionOrgAllowed
         }
@@ -327,17 +328,13 @@ private struct SettingsSectionMock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             SettingsSection(title: Copy.sectionTitle, footer: Copy.settingsFooter, isBusy: state == .saving) {
-                SettingRow(title: Copy.switchTitle, caption: caption) {
+                // A failed pause: the switch stays at the stored "on" and the
+                // caption is the pause-failed line (spec §6.1).
+                SettingRow(title: Copy.switchTitle, caption: caption, captionTone: state == .error ? Tone.error : nil) {
                     Toggle("", isOn: .constant(isOn))
                         .labelsHidden()
                         .disabled(state == .saving)
                         .managedByOrganization(state == .orgOff)
-                }
-                if state == .error {
-                    Text(Copy.saveFailed("config.yaml: permission denied"))
-                        .font(.caption)
-                        .foregroundStyle(Tone.error)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -351,7 +348,7 @@ private struct SettingsSectionMock: View {
 /// a config.yaml that cannot be read.
 extension BackgroundAIConsentShotFixtures {
     static var liveSettingsShots: [DesignShot] {
-        let failed = Copy.saveFailed("config.yaml: permission denied")
+        let failed = Copy.pauseFailed("config.yaml: permission denied")
         let paused = BackgroundAIConsent.resolve(answer: "paused", policy: nil)
         let unreadable = BackgroundAIConsent.resolve(answer: nil, readFailed: true, policy: nil)
         let frames: [(String, LiveSettingsFrame)] = [

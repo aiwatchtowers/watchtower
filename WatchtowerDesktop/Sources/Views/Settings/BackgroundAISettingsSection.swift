@@ -3,63 +3,55 @@ import WatchtowerCore
 
 /// Settings → AI → Background AI (#1886, spec §6.1). The switch follows the
 /// stored answer: turning it on opens the consent sheet (D9), turning it off
-/// writes `ai background pause` at once, with no confirmation. Renders
-/// nothing without an `AppState` in the environment (design shots of the
-/// provider form).
+/// writes `ai background pause` at once, with no confirmation. The caption
+/// names the provider as saved in config.yaml, never an unsaved edit.
+/// Renders nothing without an `AppState` in the environment (design shots of
+/// the provider form).
 struct BackgroundAISettingsSection: View {
     @Environment(AppState.self) private var appState: AppState?
     let config: ConfigService
     let catalog: AIModelCatalog
-    /// The pause writer and the saved agent the caption names, read from
-    /// config.yaml as saved; nil while the file cannot be read.
-    @State private var model: BackgroundAIConsentModel?
+    @State private var settings = BackgroundAISettingsModel()
 
     var body: some View {
         if let appState {
-            BackgroundAISettingsForm(
-                presentation: presentation(appState),
-                isSaving: model?.isSaving ?? false
-            ) { on in
-                if on { appState.presentBackgroundAIConsent() } else { pause(appState) }
+            BackgroundAISettingsForm(presentation: presentation(appState), isSaving: settings.isSaving) { on in
+                if on {
+                    appState.presentBackgroundAIConsent()
+                } else {
+                    Task {
+                        await settings.pause(
+                            make: { appState.makeBackgroundAIConsentModel() },
+                            reload: { appState.reloadBackgroundAI() }
+                        )
+                    }
+                }
             }
-            .task(id: refreshKey(appState)) {
-                guard model?.isBusy != true else { return }
-                model = appState.makeBackgroundAIConsentModel()
-            }
+            .onChange(of: storedKey(appState)) { _, _ in settings.storedStateChanged() }
         }
     }
 
-    /// A new answer, or a Settings save (the agent may have changed), reads
-    /// the saved file again.
-    private func refreshKey(_ appState: AppState) -> String {
-        "\(appState.backgroundAI.effective)-\(appState.backgroundAI.reason)-\(config.hasUnsavedEdits)"
-            + "-\(appState.backgroundAIConfigUnreadable)"
+    /// What a shown pause error is about: the stored answer and whether the
+    /// file can be read.
+    private func storedKey(_ appState: AppState) -> String {
+        "\(appState.backgroundAI.effective)-\(appState.backgroundAI.reason)-\(appState.backgroundAIConfigUnreadable)"
     }
 
     private func presentation(_ appState: AppState) -> BackgroundAISettingsPresentation {
-        let agent = model?.agent ?? BackgroundAIConsentCopy.Agent(
-            provider: config.aiProvider ?? "claude", displayName: catalog.displayName(config.aiProvider ?? "claude")
-        )
+        let provider = config.savedAIProvider.flatMap { $0.isEmpty ? nil : $0 } ?? "claude"
         return .make(
             state: appState.backgroundAI,
-            agent: agent,
-            isSaving: model?.isSaving ?? false,
-            error: model?.errorLine,
+            agent: BackgroundAIConsentCopy.Agent(provider: provider, displayName: catalog.displayName(provider)),
+            isSaving: settings.isSaving,
+            error: settings.errorLine,
             configUnreadable: appState.backgroundAIConfigUnreadable
         )
     }
-
-    private func pause(_ appState: AppState) {
-        guard let model, !model.isBusy else { return }
-        Task {
-            if await model.notNow() { appState.reloadBackgroundAI() }
-        }
-    }
 }
 
-/// The section's layout over its presentation: one switch row, a spinner
-/// beside the title while a call is in flight, an error caption in
-/// `Tone.error`. The live design shots render it directly.
+/// The section's layout over its presentation: one switch row whose caption
+/// turns `Tone.error` for a failure, a spinner beside the title while a call
+/// is in flight. The live design shots render it directly.
 struct BackgroundAISettingsForm: View {
     typealias Copy = BackgroundAIConsentCopy
 
@@ -69,18 +61,15 @@ struct BackgroundAISettingsForm: View {
 
     var body: some View {
         SettingsSection(title: Copy.sectionTitle, footer: Copy.settingsFooter, isBusy: isSaving) {
-            SettingRow(title: Copy.switchTitle, caption: presentation.captionIsError ? nil : presentation.caption) {
+            SettingRow(
+                title: Copy.switchTitle,
+                caption: presentation.caption,
+                captionTone: presentation.captionIsError ? Tone.error : nil
+            ) {
                 Toggle("", isOn: Binding(get: { presentation.isOn }, set: setOn))
                     .labelsHidden()
                     .disabled(isSaving)
                     .managedByOrganization(presentation.locked)
-            }
-            if presentation.captionIsError {
-                Text(presentation.caption)
-                    .font(.caption)
-                    .foregroundStyle(Tone.error)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
             }
         }
     }

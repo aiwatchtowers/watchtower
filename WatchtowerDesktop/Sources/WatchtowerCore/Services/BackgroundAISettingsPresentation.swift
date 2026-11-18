@@ -29,7 +29,7 @@ package struct BackgroundAISettingsPresentation: Equatable, Sendable {
         agent: BackgroundAIConsentCopy.Agent,
         isSaving: Bool,
         error: String?,
-        configUnreadable: Bool = false
+        configUnreadable: Bool
     ) -> Self {
         typealias Copy = BackgroundAIConsentCopy
         if !isSaving, let error {

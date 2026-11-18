@@ -218,6 +218,7 @@ The strings are `BackgroundAIConsentMockCopy` today and move to `BackgroundAICon
 - Buttons: "Allow background AI", "Not now", "Back". Saving: "Saving your choice…".
 - When the answer is saved but onboarding's finish fails: "Try again" (runs the finish only; the answer is not written again).
 - Instead of the sheet while config.yaml cannot be read (an alert): title "Watchtower can't read config.yaml", body "Your background AI choice can't be saved until the file is fixed."
+- Settings' switch turned off and the pause failed (§6.1): "Couldn't pause background AI: <error>. It is still on."
 - Under the buttons: "Not now: Slack, mail, calendar and Jira keep syncing. AI features and automations wait until you allow them."
 
 The rows list what *can* run (every AI feature), not only what is on now: the owner turns features on later without a second consent, and the list stays one fixed shape (D13 keeps one switch).
@@ -239,7 +240,7 @@ A `SettingsSection` "Background AI" in `ProviderSettings`, under the provider se
 | `ai-consent-settings-orgOff` | policy `false` | off, locked (`managedByOrganization`) | "Your organization turned background AI off. Chats and anything you start yourself still work." |
 | `ai-consent-settings-orgAllowed` | policy `true`, not answered | on | "Allowed by your organization. Turn it off to pause it for yourself." |
 | `ai-consent-settings-saving` | a call in flight | disabled, section spinner | unchanged |
-| `ai-consent-settings-error` | the call failed | back to the stored value | the save-failed line in `Tone.error` |
+| `ai-consent-settings-error` | the call failed | back to the stored value | the pause-failed line in `Tone.error` (§5.1) |
 
 Footer: "Turning it on shows what runs and asks you to confirm. Turning it off pauses at once; a model call already running finishes." Switching **on** opens the consent sheet (D9) and the switch follows the stored value; switching **off** runs `pause` directly.
 

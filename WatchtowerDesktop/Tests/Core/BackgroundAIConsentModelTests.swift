@@ -113,6 +113,20 @@ final class BackgroundAIConsentModelTests: XCTestCase {
         XCTAssertEqual(model.errorLine, BackgroundAIConsentCopy.saveFailed("disk full"))
     }
 
+    /// Settings' pause writes the same verb, but its failure says background
+    /// AI is still on rather than that nothing runs.
+    func testPauseFailureSaysStillOn() async {
+        let runner = ConsentRunner()
+        let model = makeModel(runner)
+        let ok = await model.pause()
+        XCTAssertTrue(ok)
+        XCTAssertEqual(runner.calls, [["--config", "/tmp/acme/config.yaml", "ai", "background", "pause"]])
+        runner.fail(with: "Error: disk full\n")
+        let failed = await model.pause()
+        XCTAssertFalse(failed)
+        XCTAssertEqual(model.errorLine, BackgroundAIConsentCopy.pauseFailed("disk full"))
+    }
+
     func testFailureWithoutStderrNamesTheExit() async {
         let runner = ConsentRunner()
         runner.fail(with: "")
