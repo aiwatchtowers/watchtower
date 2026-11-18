@@ -121,6 +121,8 @@ package enum HomeLink: Equatable, Sendable {
     case turnOn(featureID: String)
     /// The numbers' AI spend: Usage → Watchtower.
     case usageWatchtower
+    /// The Watchman row: the journal in the Inbox.
+    case watchmanJournal
 }
 
 /// The Workbench zone's read (`HomeQueries.workbench`): the open asks and the
@@ -184,6 +186,8 @@ package struct HomeSnapshot: Equatable, Sendable {
     package let linksFailed: Bool
     /// Today in numbers; nil until its own first read lands.
     package let numbers: HomeNumbers?
+    /// Last night's (or tonight's) Watchman counts; nil when it did nothing.
+    package let watchman: WatchmanNightCounts?
 
     package init(
         gettingReady: GettingReadyZone,
@@ -194,7 +198,8 @@ package struct HomeSnapshot: Equatable, Sendable {
         workbenchFailed: Bool = false,
         links: [HomeLinkRow] = [],
         linksFailed: Bool = false,
-        numbers: HomeNumbers? = nil
+        numbers: HomeNumbers? = nil,
+        watchman: WatchmanNightCounts? = nil
     ) {
         self.gettingReady = gettingReady
         self.firstSync = firstSync
@@ -205,6 +210,7 @@ package struct HomeSnapshot: Equatable, Sendable {
         self.links = links
         self.linksFailed = linksFailed
         self.numbers = numbers
+        self.watchman = watchman
     }
 
     /// The Workbench zone shows: a block, the coach row or its read error.

@@ -117,6 +117,12 @@ package enum EmptyStateCopyTable {
         "inboxApprovals": EmptyStateCopy(
             icon: "checkmark.circle", title: "Nothing waits for your approval", landsHere: "",
             feature: nil, primaryAction: nil),
+        // The Inbox's Watchman entry before its first night (C1, `WatchmanJournalCopy.emptyCopyKey`).
+        "inboxWatchman": EmptyStateCopy(
+            icon: "moon.stars", title: "No night yet",
+            landsHere: "When you hand a session to Watchman and leave, the decisions it takes for you land here: "
+                + "what was asked, what it chose, why, and how sure it was.",
+            feature: nil, primaryAction: nil),
         // The Inbox's Messages legacy list (`InboxLegacyList.emptyCopyKey`).
         "inboxMessages": EmptyStateCopy(
             icon: "bubble.left.and.bubble.right", title: "No messages waiting",

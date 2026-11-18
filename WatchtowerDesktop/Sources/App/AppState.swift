@@ -408,6 +408,8 @@ final class AppState {
     private(set) var coachCenter: CoachCenter?
     /// Settings → Profile → Watchman (#1823): status, Start Learning, the backtest.
     private(set) var watchmanCenter: WatchmanCenter?
+    /// The Inbox's Watchman entry: the morning journal over this database.
+    private(set) var watchmanJournal: WatchmanJournalViewModel?
     /// Which workbench session the owner is in (owner asks v2, Part 2),
     /// written for Go's Stop guard and read by the chat question escalation.
     private(set) var ownerPresenceCenter: OwnerPresenceCenter?
@@ -1582,6 +1584,7 @@ final class AppState {
         applyUIVisibility(uiVisibility.isOnScreen)
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         if watchmanCenter == nil { watchmanCenter = WatchmanCenter(runner: ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()) }
+        watchmanJournal = WatchmanJournalViewModel(pool: manager.dbPool)
         initAccountPurges(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         initSlackLive(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         startDigestWatcher(dbPool: manager.dbPool)

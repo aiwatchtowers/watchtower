@@ -174,4 +174,15 @@ final class WatchmanStatusDecodingTests: XCTestCase {
         XCTAssertEqual(plain.workbenches[0].learning?.relabelPending, 0)
         XCTAssertFalse(plain.workbenches[0].isRelabelling)
     }
+
+    /// The journal's daemon line reads `daemon_running`; a CLI that does
+    /// not print it leaves it unknown (no line).
+    func testDaemonRunningDecodesAndMissingIsUnknown() throws {
+        func decode(_ json: String) throws -> WatchmanStatus {
+            try JSONDecoder().decode(WatchmanStatus.self, from: Data(json.utf8))
+        }
+        XCTAssertEqual(try decode(#"{"ok":true,"workbenches":[],"daemon_running":false}"#).daemon, .stopped)
+        XCTAssertEqual(try decode(#"{"ok":true,"workbenches":[],"daemon_running":true}"#).daemon, .running)
+        XCTAssertEqual(try decode(#"{"ok":true,"workbenches":[]}"#).daemon, .unknown)
+    }
 }

@@ -95,6 +95,9 @@ enum WatchmanMockCopy {
     static let readFailed = "Couldn't read the journal. The decisions are stored; nothing was lost."
     static let retry = "Retry"
     static let deciding = "Deciding: #1826 'Store window per workbench?' …"
+    // Phase 2: `journal-not-running` (the last night kept below the line)
+    // and `journal-night-unsure` (every decision journalled unsure, D43).
+    static let daemonStopped = "Watchman is not running — the daemon is stopped"
 
     // MARK: Correct… sheet
 

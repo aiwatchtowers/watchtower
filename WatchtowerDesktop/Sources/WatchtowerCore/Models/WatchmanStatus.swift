@@ -7,12 +7,18 @@ import Foundation
 package struct WatchmanStatus: Decodable, Equatable, Sendable {
     package let ok: Bool
     package let workbenches: [WatchmanWorkbenchStatus]
+    /// `daemon_running` (phase 2); unknown from a CLI that does not print it.
+    package let daemon: WatchmanDaemonState
 
-    enum CodingKeys: String, CodingKey { case ok, workbenches }
+    enum CodingKeys: String, CodingKey {
+        case ok, workbenches
+        case daemonRunning = "daemon_running"
+    }
 
-    package init(ok: Bool = true, workbenches: [WatchmanWorkbenchStatus]) {
+    package init(ok: Bool = true, workbenches: [WatchmanWorkbenchStatus], daemon: WatchmanDaemonState = .unknown) {
         self.ok = ok
         self.workbenches = workbenches
+        self.daemon = daemon
     }
 
     package init(from decoder: Decoder) throws {
@@ -20,11 +26,21 @@ package struct WatchmanStatus: Decodable, Equatable, Sendable {
         ok = try container.decode(Bool.self, forKey: .ok)
         // A nil Go slice marshals to null: an empty list, not a decode failure.
         workbenches = try container.decodeIfPresent([WatchmanWorkbenchStatus].self, forKey: .workbenches) ?? []
+        switch try container.decodeIfPresent(Bool.self, forKey: .daemonRunning) {
+        case true?: daemon = .running
+        case false?: daemon = .stopped
+        case nil: daemon = .unknown
+        }
     }
 
     package func workbench(_ id: Int64) -> WatchmanWorkbenchStatus? {
         workbenches.first { $0.workbench == id }
     }
+}
+
+/// Whether the daemon runs, as `watchman status --json` last said.
+package enum WatchmanDaemonState: Equatable, Sendable {
+    case unknown, running, stopped
 }
 
 package struct WatchmanWorkbenchStatus: Decodable, Equatable, Sendable {

@@ -1,3 +1,4 @@
+import WatchtowerCore
 import XCTest
 
 /// Pins the Watchman spec's string table
@@ -20,6 +21,18 @@ final class WatchmanMockCopyTests: XCTestCase {
         XCTAssertEqual(Copy.deciding, "Deciding: #1826 'Store window per workbench?' …")
         // 2 unsure cards + 4 sure lines + 8 more = the summary's 14 (12 sure).
         XCTAssertEqual(2 + Copy.sureRows.count + 8, 14)
+    }
+
+    /// Phase 2's two journal frames: the daemon line is the journal's own.
+    func testPhase2JournalFrames() {
+        XCTAssertEqual(Copy.daemonStopped, "Watchman is not running — the daemon is stopped")
+        XCTAssertEqual(Copy.daemonStopped, WatchmanJournalCopy.daemonStopped)
+        XCTAssertEqual(Copy.unsureBadge, WatchmanJournalCopy.unsureBadge)
+        XCTAssertEqual(Copy.homeRow, WatchmanJournalCopy.homeRow(
+            WatchmanNightCounts(start: Date(timeIntervalSince1970: 0), decided: 14, unsure: 2, waiting: 2)))
+        let names = Set(WatchmanShotFixtures.shots.map(\.name))
+        XCTAssertTrue(names.contains("watchman-journal-not-running"))
+        XCTAssertTrue(names.contains("watchman-journal-night-unsure"))
     }
 
     func testEmptyAndErrorStatesNameTheWayOut() {
@@ -77,7 +90,7 @@ final class WatchmanMockCopyTests: XCTestCase {
                      "journal-narrow", "journal-correct-sheet", "home-row", "strip-armed", "strip-unarmed",
                      "arm-first-time", "settings-results", "settings-never-run", "settings-running",
                      "settings-failed", "tray-menu", "target-panel-armed", "target-panel-unarmed",
-                     "inbox-entry", "settings-not-learned"] {
+                     "inbox-entry", "settings-not-learned", "journal-not-running", "journal-night-unsure"] {
             XCTAssertTrue(names.contains("watchman-\(name)"), name)
         }
     }

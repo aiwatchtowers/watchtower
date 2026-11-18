@@ -44,6 +44,8 @@ package enum InboxFeedQueries {
         snapshot.messages = try emptyIfTableMissing { try InboxQueries.fetchOpenMessages(db, nowUTC: nowUTC) }
         // Tolerates a schema before `builtin_migrations` itself.
         snapshot.builtinNotices = try BuiltinUpgradeNotice.load(db)
+        // nil on a schema before Watchman's tables.
+        snapshot.watchman = try WatchmanJournalQueries.inboxSummary(db)
         return snapshot
     }
 
