@@ -227,6 +227,20 @@ else
 fi
 # END bridge-profile-check
 
+# BEGIN retired-slack-id-check (extracted verbatim by scripts/tests/test-build-app-retired-slack-id.sh)
+# The shared Slack app the public builds used to ship is retired (#1709). A public release (flavor empty or
+# "dev", not --dev, NOTARIZE_PROFILE set: the notarized path) must bake its client id into
+# auth.RetiredSharedClientID so the app recognises accounts still authorised through it. A corp release
+# bakes a company app and needs none. The flavor test lives only here, never in app code. Stops before
+# anything is built.
+RETIRED_SLACK_CLIENT_ID="${RETIRED_SLACK_CLIENT_ID:-}"
+if ! $DEV_MODE && [ -n "$NOTARIZE_PROFILE" ] && { [ -z "$FLAVOR" ] || [ "$FLAVOR" = "dev" ]; } \
+    && [ -z "$RETIRED_SLACK_CLIENT_ID" ]; then
+    echo "ERROR: a public release must set RETIRED_SLACK_CLIENT_ID (recognises accounts on the retired shared Slack app)" >&2
+    exit 1
+fi
+# END retired-slack-id-check
+
 # Without create-dmg the DMG silently degrades to a bare hdiutil image (no
 # window layout, opens like a plain folder), so surface that up front.
 if ! $DEV_MODE && ! command -v create-dmg &>/dev/null; then
@@ -327,7 +341,7 @@ LINK_FETCH_DENY_HOSTS="${WATCHTOWER_LINK_FETCH_DENY_HOSTS:-}"
 # docs/features/go-hub.md "Keychain check") failed: a newer build cannot
 # delete the items an older build created.
 GOARCH=arm64 CGO_ENABLED=1 go build -tags codegrammars \
-    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/linear.DefaultLinearClientID=${LINEAR_ID} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID} -X watchtower/internal/purge.BuildDefault=${PURGE_DEFAULT} -X watchtower/internal/media.BuildDenyHosts=${LINK_FETCH_DENY_HOSTS} -X watchtower/internal/hub.DefaultRelayOrigin=${RELAY_ORIGIN_DEFAULT} -X watchtower/internal/hub/identity.KeychainBuildFlag=false" \
+    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/auth.RetiredSharedClientID=${RETIRED_SLACK_CLIENT_ID} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/linear.DefaultLinearClientID=${LINEAR_ID} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID} -X watchtower/internal/purge.BuildDefault=${PURGE_DEFAULT} -X watchtower/internal/media.BuildDenyHosts=${LINK_FETCH_DENY_HOSTS} -X watchtower/internal/hub.DefaultRelayOrigin=${RELAY_ORIGIN_DEFAULT} -X watchtower/internal/hub/identity.KeychainBuildFlag=false" \
     -o "$STAGE_DIR/watchtower" .
 echo "    Go CLI built ($(du -h "$STAGE_DIR/watchtower" | cut -f1))"
 
