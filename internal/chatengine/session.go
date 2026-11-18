@@ -806,8 +806,9 @@ type execProcess struct {
 	exited chan struct{}
 }
 
-// newCmd builds a session child's command; tests capture it.
-var newCmd = exec.Command
+// startCmd starts a session child's command; tests capture the command
+// without starting it.
+var startCmd = (*exec.Cmd).Start
 
 // execStart spawns exe in its own process group, with the daemon's working
 // directory and environment less the background-AI origin (each spawn serves
@@ -818,7 +819,7 @@ func execStart(exe string) StartFunc {
 		if exe == "" {
 			return nil, errors.New("chatengine: no watchtower executable")
 		}
-		cmd := newCmd(exe, argv...)
+		cmd := exec.Command(exe, argv...)
 		cmd.Env = aiconsent.OwnerEnv(os.Environ())
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		pr, pw, err := os.Pipe()
@@ -831,7 +832,7 @@ func execStart(exe string) StartFunc {
 			_, _ = pr.Close(), pw.Close()
 			return nil, err
 		}
-		if err := cmd.Start(); err != nil {
+		if err := startCmd(cmd); err != nil {
 			_, _ = pr.Close(), pw.Close()
 			return nil, err
 		}

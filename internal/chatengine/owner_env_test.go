@@ -1,6 +1,7 @@
 package chatengine
 
 import (
+	"errors"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -9,19 +10,17 @@ import (
 	"watchtower/internal/aiconsent"
 )
 
-// captureCmd swaps newCmd for one that records the *exec.Cmd it builds and
-// points it at a program that does not exist, so nothing starts.
+// captureCmd swaps startCmd for one that records each command and starts
+// nothing.
 func captureCmd(t *testing.T) *[]*exec.Cmd {
 	t.Helper()
 	var built []*exec.Cmd
-	missing := filepath.Join(t.TempDir(), "no-such-watchtower")
-	orig := newCmd
-	newCmd = func(_ string, args ...string) *exec.Cmd {
-		c := exec.Command(missing, args...) //nolint:gosec // G204: a test path
+	orig := startCmd
+	startCmd = func(c *exec.Cmd) error {
 		built = append(built, c)
-		return c
+		return errors.New("not started in a test")
 	}
-	t.Cleanup(func() { newCmd = orig })
+	t.Cleanup(func() { startCmd = orig })
 	return &built
 }
 
@@ -34,11 +33,11 @@ func TestBGAI02_ChatEngineChildIsOwner(t *testing.T) {
 	built := captureCmd(t)
 
 	if _, err := execStart("watchtower")([]string{"ai", "session"}); err == nil {
-		t.Fatal("execStart started a program that does not exist")
+		t.Fatal("execStart reported a start")
 	}
 	e := &Engine{c: Config{Exe: "watchtower"}}
 	if _, err := e.listenStart([]string{"ai", "session", "--listen", filepath.Join(t.TempDir(), "s.sock")}); err == nil {
-		t.Fatal("listenStart started a program that does not exist")
+		t.Fatal("listenStart reported a start")
 	}
 
 	if len(*built) != 2 {

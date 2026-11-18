@@ -18,6 +18,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -322,10 +323,10 @@ func (e *Engine) listenStart(argv []string) (Process, error) {
 	if e.c.Exe == "" || path == "" {
 		return nil, errors.New("chatengine: no watchtower executable or session socket")
 	}
-	cmd := newCmd(e.c.Exe, argv...)
+	cmd := exec.Command(e.c.Exe, argv...)
 	cmd.Env = aiconsent.OwnerEnv(os.Environ())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
+	if err := startCmd(cmd); err != nil {
 		return nil, err //nolint:wrapcheck // classified by the caller's log
 	}
 	exited := make(chan struct{})
