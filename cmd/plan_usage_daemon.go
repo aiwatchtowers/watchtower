@@ -43,10 +43,12 @@ func newPlanUsagePoller(database *db.DB, logger *log.Logger) *planusage.Poller {
 		if err != nil {
 			return claude.UsageSnapshot{}, &planusage.OperationError{Code: "storage", Cause: err}
 		}
-		// The same environment as Watchtower's own Claude children, so the
-		// gauge describes the account Watchtower's AI calls use.
-		env := append(os.Environ(), "PATH="+claude.RichPATH())
-		return claude.ReadUsage(ctx, claude.FindBinary(latest.ClaudePath), env)
+		// The inherited environment with an enriched PATH, as Watchtower's own
+		// Claude children, so the gauge describes the account its AI calls
+		// use. Resolved on every poll and bounded by ctx: a configured CLI
+		// runs no login shell, and a CLI installed later is found.
+		bin, env := claude.UsageCommand(ctx, latest.ClaudePath)
+		return claude.ReadUsage(ctx, bin, env)
 	}}
 }
 

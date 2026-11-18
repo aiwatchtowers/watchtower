@@ -128,6 +128,10 @@ func TestPlanProviders_ClaudeReadsConfiguredCLI(t *testing.T) {
 			}
 		}
 	})
+	// A configured CLI must never run shell startup, which may hang.
+	loginShell := filepath.Join(home, "login-shell")
+	shellCall := filepath.Join(home, "shell-called")
+	require.NoError(t, os.WriteFile(loginShell, []byte("#!/bin/sh\nprintf called > '"+shellCall+"'\nexit 1\n"), 0700))
 	configDir := filepath.Join(home, ".config", "watchtower")
 	require.NoError(t, os.MkdirAll(configDir, 0700))
 	configPath := filepath.Join(configDir, "config.yaml")
@@ -138,7 +142,7 @@ func TestPlanProviders_ClaudeReadsConfiguredCLI(t *testing.T) {
 	defer cancel()
 	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestPlanProviders_ClaudeReadsConfiguredCLI$")
 	child.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "WT_PLAN_USAGE_CLAUDE_HELPER=1",
-		"HOME="+home, "WATCHTOWER_CONFIG_PATH="+configPath, "PATH=/usr/bin:/bin")
+		"HOME="+home, "SHELL="+loginShell, "WATCHTOWER_CONFIG_PATH="+configPath, "PATH=/usr/bin:/bin")
 	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	child.Cancel = func() error { return syscall.Kill(-child.Process.Pid, syscall.SIGKILL) }
 	t.Cleanup(func() {
@@ -148,4 +152,6 @@ func TestPlanProviders_ClaudeReadsConfiguredCLI(t *testing.T) {
 	})
 	output, err := child.CombinedOutput()
 	require.NoError(t, err, "%s", output)
+	_, shellErr := os.Stat(shellCall)
+	require.ErrorIs(t, shellErr, os.ErrNotExist, "plan usage read ran shell startup for a configured CLI")
 }

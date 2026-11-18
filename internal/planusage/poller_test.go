@@ -254,9 +254,9 @@ func TestPollOnce_StoresBreakdownOrEmpty(t *testing.T) {
 
 const childSecret = "CHILD-SECRET-41"
 
-// writeClaudeScript writes a fake claude that records its PID (= its process
-// group: the reader starts it with Setpgid), writes the secret to stderr and
-// as a malformed stdout line, then prints answer; cleanup kills the group.
+// writeClaudeScript writes a fake claude that appends its PID (= its process
+// group: the reader starts it with Setpgid) on every start, writes the secret to stderr and
+// as a malformed stdout line, then prints answer; cleanup kills every recorded group.
 func writeClaudeScript(t *testing.T, answer string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -264,7 +264,7 @@ func writeClaudeScript(t *testing.T, answer string) string {
 	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 	body := strings.Join([]string{
 		"#!/bin/sh",
-		"echo $$ > " + quote(pidFile),
+		"echo $$ >> " + quote(pidFile),
 		"IFS= read -r line",
 		"printf '%s\\n' " + quote(childSecret+" on stderr") + " >&2",
 		"printf '%s\\n' " + quote("{not json "+childSecret),
@@ -278,8 +278,10 @@ func writeClaudeScript(t *testing.T, answer string) string {
 		if err != nil {
 			return
 		}
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		for _, line := range strings.Fields(string(b)) {
+			if pid, err := strconv.Atoi(line); err == nil && pid > 0 {
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+			}
 		}
 	})
 	return script

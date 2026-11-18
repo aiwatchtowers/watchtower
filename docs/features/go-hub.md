@@ -190,7 +190,6 @@ checked against the code named).
 | `internal/workbenchgit` `.worktreeinclude` (`clone_other.go`) | `clonefile` | plain copy |
 | `internal/hub/platform` (`away_linux.go`, `awake_linux.go`) | console lock, input idle and display sleep; keep-awake | always away, no keep-awake (`Hold` does nothing) |
 | `internal/chat` sandbox (`NewChildSandbox`) | `sandbox-exec` profile | refused ("needs macOS"), so claude.ai mode stays off |
-| `internal/planusage` (`DefaultCredentialSource`) | Keychain, then `~/.claude/.credentials.json` | the credentials file only, no Keychain |
 | `internal/daemon` process identity (`procident_other.go`) | `kern.proc.pid` sysctl start time | `ps -o lstart=` under `LC_ALL=C` |
 | Phone line or ask answer the session cannot take (`internal/hub/actions/handlers`: `deps.go` `Clipboard`/`DesktopHost`, `session_input.go`, `ask.go`) | a line: copied to the clipboard (pbcopy) while the Desktop heartbeat is fresh, echo `failed(cannot_type)` saying so; an ask answer: saved, `failed(cannot_type)` | no Desktop heartbeat, so no clipboard: `failed(cannot_type)` with `CannotTypeMessage` (an ask answer still saved) |
 | `internal/sqlcipher` crypto (`wt_cgo.go`) | CommonCrypto | OpenSSL `libcrypto` (dynamic) |

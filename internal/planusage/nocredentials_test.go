@@ -23,23 +23,20 @@ var credentialMarkers = []string{
 	"find-generic-password",
 }
 
-// credentialMarkerHits reports "path: marker" for every non-test .go file and
-// every .swift file under root/dirs that contains a marker. Directories named
-// testdata, node_modules or vendor, or starting with ".", are skipped (nested
-// worktrees live under .claude/worktrees, build output under .build).
-func credentialMarkerHits(root string, dirs []string) ([]string, error) {
+// credentialMarkerHits reports "path: marker" for every non-test .go file
+// under root and every .swift file under root/swiftDirs that contains a
+// marker. Directories named testdata, node_modules or vendor, or starting with
+// ".", are skipped (nested worktrees live under .claude/worktrees, build
+// output under .build).
+func credentialMarkerHits(root string, swiftDirs []string) ([]string, error) {
 	fsRoot, err := os.OpenRoot(root)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = fsRoot.Close() }()
 	var hits []string
-	for _, dir := range dirs {
-		start := filepath.Join(root, dir)
-		if _, err := os.Stat(start); os.IsNotExist(err) {
-			continue
-		}
-		err := filepath.WalkDir(start, func(path string, d fs.DirEntry, err error) error {
+	scan := func(start string, want func(name string) bool) error {
+		return filepath.WalkDir(start, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
@@ -50,8 +47,7 @@ func credentialMarkerHits(root string, dirs []string) ([]string, error) {
 				}
 				return nil
 			}
-			goSource := strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go")
-			if !goSource && !strings.HasSuffix(name, ".swift") {
+			if !want(name) {
 				return nil
 			}
 			rel, err := filepath.Rel(root, path)
@@ -69,7 +65,13 @@ func credentialMarkerHits(root string, dirs []string) ([]string, error) {
 			}
 			return nil
 		})
-		if err != nil {
+	}
+	isGo := func(name string) bool { return strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") }
+	if err := scan(root, isGo); err != nil {
+		return nil, err
+	}
+	for _, dir := range swiftDirs {
+		if err := scan(filepath.Join(root, dir), func(name string) bool { return strings.HasSuffix(name, ".swift") }); err != nil {
 			return nil, err
 		}
 	}
@@ -98,27 +100,47 @@ func TestPlanUsage01_NoClaudeCredentialReader(t *testing.T) {
 	all := strings.Join(credentialMarkers, "\n")
 	for rel, body := range map[string]string{
 		"internal/a/a.go":                          "package a\n/*\n" + all + "\n*/\n",
+		"tools/t.go":                               "package tools // api/oauth/usage",
+		"WatchtowerDesktop/Sources/App/a.swift":    "// find-generic-password",
 		"internal/a/a_test.go":                     all,
 		"internal/a/testdata/x.go":                 all,
 		".claude/worktrees/w/internal/b.go":        all,
 		"internal/.hidden/c.go":                    all,
-		"WatchtowerDesktop/.build/x.swift":         all,
+		"node_modules/n/n.go":                      all,
+		"WatchtowerDesktop/Tests/t.swift":          all,
+		"WatchtowerDesktop/Sources/.build/x.swift": all,
 		"WatchtowerDesktop/Sources/vendor/v.swift": all,
+		"WatchtowerDesktop/Sources/App/notes.txt":  all,
 	} {
 		p := filepath.Join(synthetic, filepath.FromSlash(rel))
 		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o700))
 		require.NoError(t, os.WriteFile(p, []byte(body), 0o600))
 	}
-	hits, err := credentialMarkerHits(synthetic, []string{"."})
+	hits, err := credentialMarkerHits(synthetic, []string{"WatchtowerDesktop/Sources"})
 	require.NoError(t, err)
-	want := make([]string, 0, len(credentialMarkers))
+	want := []string{"WatchtowerDesktop/Sources/App/a.swift: find-generic-password", "tools/t.go: api/oauth/usage"}
 	for _, m := range credentialMarkers {
 		want = append(want, "internal/a/a.go: "+m)
 	}
 	sort.Strings(want)
-	require.Equal(t, want, hits, "the scan must see every marker in an ordinary package and nothing in skipped places")
+	require.Equal(t, want, hits, "the scan must see every marker in ordinary source and nothing in skipped places")
 
-	hits, err = credentialMarkerHits(moduleRoot(t), []string{"cmd", "internal", "WatchtowerDesktop/Sources", "WatchtowerKit/Sources", "WatchtowerMobile/Sources"})
+	root := moduleRoot(t)
+	for _, dir := range []string{"cmd", "internal"} {
+		info, err := os.Stat(filepath.Join(root, dir))
+		require.NoError(t, err, "the module must have %s/ — the scan would prove nothing", dir)
+		require.True(t, info.IsDir())
+	}
+	swiftDirs, err := filepath.Glob(filepath.Join(root, "*", "Sources"))
+	require.NoError(t, err)
+	for i, dir := range swiftDirs {
+		swiftDirs[i], err = filepath.Rel(root, dir)
+		require.NoError(t, err)
+	}
+	for _, dir := range []string{"WatchtowerDesktop/Sources", "WatchtowerKit/Sources", "WatchtowerMobile/Sources", "WatchtowerChat/Sources"} {
+		require.Contains(t, swiftDirs, filepath.FromSlash(dir))
+	}
+	hits, err = credentialMarkerHits(root, swiftDirs)
 	require.NoError(t, err)
 	assert.Empty(t, hits, "production source names a Claude credential store or the token usage endpoint")
 }
