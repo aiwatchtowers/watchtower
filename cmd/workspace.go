@@ -192,11 +192,18 @@ var writeConfigFile = writeConfigAtomic
 //
 // profile's keys are set whatever the file holds: workspace init --headless
 // passes the headless profile for a config it creates, nil elsewhere.
+//
+// The read and the write run inside the config write lock.
 func writeWorkspaceScaffold(configPath, workspace string, force bool, profile map[string]any) error {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
+	return config.WithWriteLock(configPath, func(lk *config.WriteLock) error {
+		return writeWorkspaceScaffoldLocked(lk, configPath, workspace, force, profile)
+	})
+}
 
+func writeWorkspaceScaffoldLocked(lk *config.WriteLock, configPath, workspace string, force bool, profile map[string]any) error {
 	v := viper.New()
 	v.SetConfigFile(configPath)
 	if err := v.ReadInConfig(); err != nil {
@@ -230,5 +237,5 @@ func writeWorkspaceScaffold(configPath, workspace string, force bool, profile ma
 		}
 	}
 
-	return writeConfigFile(v, configPath)
+	return writeConfigFile(lk, v, configPath)
 }

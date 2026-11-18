@@ -115,18 +115,21 @@ func blankLegacySlackConfigToken(cfg *config.Config, logger *log.Logger) {
 	if flagConfig == "" {
 		return
 	}
-	v := viper.New()
-	v.SetConfigFile(flagConfig)
-	if err := v.ReadInConfig(); err != nil {
-		logger.Printf("slack: failed to read config to blank legacy token: %v", err)
-		return
-	}
-	key := "workspaces." + cfg.ActiveWorkspace + ".slack_token"
-	if v.GetString(key) == "" {
-		return
-	}
-	v.Set(key, "")
-	if err := writeConfigAtomic(v, flagConfig); err != nil {
+	err := config.WithWriteLock(flagConfig, func(lk *config.WriteLock) error {
+		v := viper.New()
+		v.SetConfigFile(flagConfig)
+		if err := v.ReadInConfig(); err != nil {
+			logger.Printf("slack: failed to read config to blank legacy token: %v", err)
+			return nil
+		}
+		key := "workspaces." + cfg.ActiveWorkspace + ".slack_token"
+		if v.GetString(key) == "" {
+			return nil
+		}
+		v.Set(key, "")
+		return writeConfigAtomic(lk, v, flagConfig)
+	})
+	if err != nil {
 		logger.Printf("slack: failed to blank legacy config token: %v", err)
 	}
 }

@@ -387,13 +387,18 @@ func TestHubEnableOnAnUnwritableDataRootFails(t *testing.T) {
 	assert.Equal(t, before, hubTree(t, home), "a failed enable wrote something")
 }
 
-// hubTree is every path under root.
+// hubTree is every path under root, less the config write lock file
+// (<config.yaml>.lock): the root pre-run's schema-format bump creates it on
+// the CLI's first config write, whatever the hub command does.
 func hubTree(t *testing.T, root string) []string {
 	t.Helper()
 	var out []string
 	require.NoError(t, filepath.WalkDir(root, func(path string, _ fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if strings.HasSuffix(path, "config.yaml.lock") {
+			return nil
 		}
 		out = append(out, path)
 		return nil

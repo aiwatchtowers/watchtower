@@ -29,17 +29,24 @@ func LegacyAutomationsOff(configPath string) (bool, error) {
 // RemoveLegacyAutomationsKey removes LegacyAutomationsKey from configPath with
 // a YAML node edit (patchConfigYAML), so comments, key order and casing
 // elsewhere survive; the automations block goes with it when the key was its
-// only entry. An absent file or key writes nothing.
+// only entry. An absent file or key writes nothing. The file is re-read
+// inside the config write lock before the edit.
 func RemoveLegacyAutomationsKey(configPath string) error {
 	v, err := readConfigFile(configPath)
 	if err != nil || v == nil || !v.IsSet(LegacyAutomationsKey) {
 		return err
 	}
-	del := LegacyAutomationsKey
-	if block := v.GetStringMap("automations"); len(block) == 1 {
-		del = "automations"
-	}
-	return patchConfigYAML(configPath, nil, []string{del})
+	return WithWriteLock(configPath, func(lk *WriteLock) error {
+		v, err := readConfigFile(configPath)
+		if err != nil || v == nil || !v.IsSet(LegacyAutomationsKey) {
+			return err
+		}
+		del := LegacyAutomationsKey
+		if block := v.GetStringMap("automations"); len(block) == 1 {
+			del = "automations"
+		}
+		return patchConfigYAML(lk, configPath, nil, []string{del})
+	})
 }
 
 // readConfigFile reads configPath with a fresh viper and no defaults, so

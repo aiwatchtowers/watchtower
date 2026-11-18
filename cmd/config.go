@@ -184,7 +184,9 @@ func runConfigInit(cmd *cobra.Command, args []string) error {
 
 	// Write to a temp file with restricted permissions, then atomically rename
 	// to avoid a race window where secrets could be world-readable.
-	if err := writeConfigAtomic(v, configPath); err != nil {
+	if err := config.WithWriteLock(configPath, func(lk *config.WriteLock) error {
+		return writeConfigAtomic(lk, v, configPath)
+	}); err != nil {
 		return err
 	}
 
@@ -439,8 +441,13 @@ func maskValue(s string) string {
 
 // writeConfigAtomic writes viper config to a temp file with 0o600 permissions,
 // then atomically renames it into place to avoid a race window where secrets
-// could be briefly world-readable.
-func writeConfigAtomic(v *viper.Viper, configPath string) error {
+// could be briefly world-readable. lk is the config write lock the caller
+// holds (config.WithWriteLock), inside which it read v; a path lk does not
+// cover is refused.
+func writeConfigAtomic(lk *config.WriteLock, v *viper.Viper, configPath string) error {
+	if !lk.Covers(configPath) {
+		return fmt.Errorf("writing config %s: config write lock not held for this path", configPath)
+	}
 	dir := filepath.Dir(configPath)
 
 	// Set restrictive umask before creating the temp file so it's never
@@ -473,10 +480,17 @@ func writeConfigAtomic(v *viper.Viper, configPath string) error {
 }
 
 // setAIConfigKey stages migration and validation before the atomic replacement.
+// The read, the migration and the write all run inside the config write lock.
 func setAIConfigKey(path, key string, value any) error {
 	if !strings.HasPrefix(strings.ToLower(key), "ai.") {
 		return setConfigKey(path, key, value)
 	}
+	return config.WithWriteLock(path, func(lk *config.WriteLock) error {
+		return setAIConfigKeyLocked(lk, path, key, value)
+	})
+}
+
+func setAIConfigKeyLocked(lk *config.WriteLock, path, key string, value any) error {
 	v := viper.New()
 	v.SetConfigFile(path)
 	if err := v.ReadInConfig(); err != nil && !os.IsNotExist(err) {
@@ -536,8 +550,5 @@ func setAIConfigKey(path, key string, value any) error {
 			return err
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return writeConfigAtomic(v, path)
+	return writeConfigAtomic(lk, v, path)
 }
