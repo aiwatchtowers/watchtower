@@ -1371,6 +1371,9 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 	// is workspace-wide (issue_slack_links is deliberately not account-scoped)
 	// and its only mutable state is behind a mutex.
 	keyDetector := newIssueKeyDetector(cfg, database, logger)
+	// One deny source for every account too: a damaged company file is then
+	// logged once, not once per account.
+	deny := linkDenySource(cfg, logger)
 	var orchestrators []*sync.Orchestrator
 	for _, acct := range accounts {
 		store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
@@ -1389,7 +1392,7 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 		client.SetLogger(logger)
 		orch := sync.NewOrchestrator(database, client, cfg, acct.ID)
 		orch.SetLogger(logger)
-		orch.SetDenyHosts(linkDenySource(cfg, logger))
+		orch.SetDenyHosts(deny)
 		orch.SetTokenTeam(token.TeamID)
 		orch.SetTokenScope(token.Scope)
 		if keyDetector != nil {
