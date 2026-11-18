@@ -771,7 +771,7 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 		d.aiPhase(fetchCtx, "history-backfill", d.phaseHistoryBackfill)
 		d.setSection(sectionPipelines)
 	}
-	d.aiPhase(ctx, "coach", d.phaseCoach)
+	d.coachPhases(ctx)
 	d.phaseSpecReviewSweep(ctx)
 }
 
