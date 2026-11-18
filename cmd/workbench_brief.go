@@ -445,9 +445,9 @@ func renderSessionBrief(board []db.BoardNode, p *db.Workbench, comments []db.Wor
 // the check ran to the end and found nothing. A check cut short, or a
 // repository whose branch checks could not run (no default branch
 // resolves), says so, so it never reads as a clean board. Each folder whose
-// branch checks did not run (Report.Skipped) gets a line of its own, ahead
-// of the findings, so a clipped section counts it in its "… N more" line
-// instead of dropping it.
+// branch checks did not run (Report.Skipped) gets a line of its own after
+// the findings, so a clipped section keeps the findings and counts the
+// skipped folders it cannot show in its "… N more" line.
 func briefDriftSection(drift workbenchcheck.Report, limit int) string {
 	caveat := ""
 	switch {
@@ -482,10 +482,13 @@ func briefDriftSection(drift workbenchcheck.Report, limit int) string {
 	if len(skipped) > 0 {
 		what = "drift lines (watchtower workbench check)"
 	}
-	lines := skipped
+	// Findings first: they are what the agent acts on, so a long list of
+	// skipped folders is the part counted in "… N more" when clipped.
+	lines := make([]string, 0, len(drift.Findings)+len(skipped))
 	for _, f := range drift.Findings {
 		lines = append(lines, "- "+briefClip(f.Line(), briefLineChars))
 	}
+	lines = append(lines, skipped...)
 	section, _ := fitBriefSection(title, lines, limit, what)
 	return section
 }

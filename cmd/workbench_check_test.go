@@ -310,8 +310,8 @@ func TestProj07_BriefNamesTheSkippedFolders(t *testing.T) {
 		Findings: []workbenchcheck.Finding{{TargetID: 1, Title: "t", Status: "in_progress", Kind: workbenchcheck.KindMergedOpen, Detail: "d", Fix: "f"}},
 		Skipped:  []workbenchcheck.FolderSkip{{Folder: "/code/hub", Reason: "no default branch"}}}, briefMaxChars)
 	assert.Equal(t, "Board drift — fix it with update_target:\n"+
-		"- branch checks did not run in /code/hub: no default branch\n"+
-		`- #1 "t" [in_progress]: d — f`, withFinding)
+		`- #1 "t" [in_progress]: d — f`+"\n"+
+		"- branch checks did not run in /code/hub: no default branch", withFinding)
 
 	// Clipped: no folder silently drops — the rest are counted.
 	many := workbenchcheck.Report{Git: true, Base: "origin/main", Findings: []workbenchcheck.Finding{}}
@@ -323,6 +323,15 @@ func TestProj07_BriefNamesTheSkippedFolders(t *testing.T) {
 	shown := strings.Count(clipped, "\n- branch checks did not run in ")
 	require.Positive(t, shown)
 	assert.Contains(t, clipped, "\n… "+strconv.Itoa(20-shown)+" more skipped folders (watchtower workbench check)")
+
+	// Many skipped folders never push a finding out: findings come first,
+	// the skipped rows that do not fit are counted.
+	many.Findings = []workbenchcheck.Finding{{TargetID: 7, Title: "t", Status: "in_progress", Kind: workbenchcheck.KindMergedOpen, Detail: "d", Fix: "f"}}
+	clipped = briefDriftSection(many, 300)
+	assert.LessOrEqual(t, len([]rune(clipped)), 300)
+	assert.Contains(t, clipped, "Board drift — fix it with update_target:\n"+`- #7 "t" [in_progress]: d — f`)
+	shown = strings.Count(clipped, "\n- branch checks did not run in ")
+	assert.Contains(t, clipped, "\n… "+strconv.Itoa(20-shown)+" more drift lines (watchtower workbench check)")
 }
 
 // Spec 2026-11-18 §6.3: a target whose folder left the bench reports
