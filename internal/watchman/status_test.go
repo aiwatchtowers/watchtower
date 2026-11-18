@@ -191,6 +191,32 @@ func TestStatus_SleepWindow(t *testing.T) {
 	assert.True(t, s.SleepWindowPinned)
 }
 
+// The mode follows the arming alone (D47): sleep since the oldest arming
+// while anything is armed, off otherwise.
+func TestStatus_ModeFollowsArming(t *testing.T) {
+	d := openWatchmanDB(t)
+	addWorkbench(t, d, "/tmp/acme-app")
+	rep, err := Status(context.Background(), d, 0, StatusOptions{Git: noGit})
+	require.NoError(t, err)
+	assert.Equal(t, ModeOff, rep.Mode)
+	assert.Nil(t, rep.ModeSince)
+	assert.Equal(t, []ArmedEntry{}, rep.Armed)
+	assert.False(t, rep.DaemonRunning)
+
+	require.NoError(t, d.UpsertWatchmanArming(db.WatchmanArming{Scope: "session", RefID: 9, ArmedAt: learnT0.Add(time.Hour), ArmedBy: "cli"}))
+	require.NoError(t, d.UpsertWatchmanArming(db.WatchmanArming{Scope: "target", RefID: 2, ArmedAt: learnT0, ArmedBy: "desktop"}))
+	rep, err = Status(context.Background(), d, 0, StatusOptions{DaemonRunning: true, Git: noGit})
+	require.NoError(t, err)
+	assert.Equal(t, ModeSleep, rep.Mode)
+	require.NotNil(t, rep.ModeSince)
+	assert.Equal(t, learnT0.UTC().Format(time.RFC3339), *rep.ModeSince)
+	assert.Equal(t, []ArmedEntry{
+		{Scope: "target", ID: 2, ArmedAt: learnT0.UTC().Format(time.RFC3339)},
+		{Scope: "session", ID: 9, ArmedAt: learnT0.Add(time.Hour).UTC().Format(time.RFC3339)},
+	}, rep.Armed)
+	assert.True(t, rep.DaemonRunning)
+}
+
 func TestLocked(t *testing.T) {
 	path := LockPath(t.TempDir())
 	assert.False(t, Locked(path)) // no file
@@ -226,8 +252,11 @@ func TestStatus_Fixture(t *testing.T) {
 	require.NoError(t, err)
 	_ = off
 
+	require.NoError(t, d.UpsertWatchmanArming(db.WatchmanArming{Scope: "target", RefID: 4, ArmedAt: learnT0.Add(4 * time.Hour), ArmedBy: "cli"}))
+	require.NoError(t, d.UpsertWatchmanArming(db.WatchmanArming{Scope: "session", RefID: 7, ArmedAt: learnT0.Add(3 * time.Hour), ArmedBy: "cli"}))
+
 	git := func(context.Context, string, ...string) ([]byte, error) { return []byte("5\n"), nil }
-	rep, err := Status(context.Background(), d, 0, StatusOptions{Running: true, Git: git})
+	rep, err := Status(context.Background(), d, 0, StatusOptions{Running: true, DaemonRunning: true, Git: git})
 	require.NoError(t, err)
 	got, err := json.MarshalIndent(rep, "", "  ")
 	require.NoError(t, err)

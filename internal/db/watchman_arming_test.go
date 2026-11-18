@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 
@@ -41,6 +42,15 @@ func TestWatchmanArming_UpsertLastWriteWins(t *testing.T) {
 	ok, err = d.DeleteWatchmanArming("session", 7)
 	require.NoError(t, err)
 	require.False(t, ok)
+
+	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "session", RefID: 1, ArmedAt: t0, ArmedBy: "cli"}))
+	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "target", RefID: 1, ArmedAt: t0, ArmedBy: "cli"}))
+	n, err := d.ClearWatchmanArming()
+	require.NoError(t, err)
+	require.Equal(t, int64(2), n)
+	got, err = d.ListWatchmanArming()
+	require.NoError(t, err)
+	require.Empty(t, got)
 }
 
 func TestWatchmanArmedSessions_TargetSubtree(t *testing.T) {
@@ -100,4 +110,32 @@ func TestWatchmanArmedSessions_ExcludesShell(t *testing.T) {
 	a, err := d.WatchmanSessionArmed(20)
 	require.NoError(t, err)
 	require.False(t, a)
+}
+
+func TestWatchmanLiveSessions_AndTargetWorkbench(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	wmTarget(t, d, 1, nil)
+	_, err := d.Exec(`UPDATE targets SET project_id = 1 WHERE id = 1`)
+	require.NoError(t, err)
+	wmTarget(t, d, 2, nil)
+	wmSession(t, d, 10, 1, "claude", 1, false)
+	wmSession(t, d, 11, 1, "shell", nil, false)
+	wmSession(t, d, 12, 1, "codex", nil, true)
+	wmSession(t, d, 13, 1, "codex", nil, false)
+	got, err := d.WatchmanLiveSessions()
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.Equal(t, int64(10), got[0].SessionID)
+	require.Equal(t, int64(1), got[0].TargetID)
+	require.Equal(t, int64(13), got[1].SessionID)
+
+	wb, err := d.WatchmanTargetWorkbench(1)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), wb)
+	wb, err = d.WatchmanTargetWorkbench(2)
+	require.NoError(t, err)
+	require.Zero(t, wb)
+	_, err = d.WatchmanTargetWorkbench(99)
+	require.ErrorIs(t, err, sql.ErrNoRows)
 }
