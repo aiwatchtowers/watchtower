@@ -56,7 +56,9 @@ type slackConnectedEvent struct {
 
 // slackFailedEvent: a flow ended without a stored account. Reason is one of
 // team_mismatch, other_user, denied, cancelled, exchange, policy,
-// purge_running, other; flow is "" for a start refused before a flow began.
+// purge_running, other. Flow is "" for a start refused before a flow began
+// (policy, purge running, an unknown account, bad ids): such a failed
+// answers the most recent start command.
 type slackFailedEvent struct {
 	Event   string `json:"event"`
 	Flow    string `json:"flow"`
@@ -130,7 +132,7 @@ func serveSlackConnect(ctx context.Context, cfg *config.Config, database *db.DB,
 	events := make(chan slackconnect.Event)
 	shutdown := serveSlackConnectListener(ln, s.reg, events, make(chan struct{}))
 	// The app is gone (stdin EOF): nobody answers a page any more.
-	defer shutdown(false)
+	defer shutdown(true)
 	if err := s.emit(slackPortEvent{Event: "listening", Port: ln.Addr().(*net.TCPAddr).Port}); err != nil {
 		return err
 	}
@@ -215,7 +217,7 @@ func (s *slackConnectServer) start(c slackConnectCommand) error {
 		return s.failed("", string(slackconnect.OutcomeOther), "This is not a Watchtower Slack link or code.")
 	}
 	t.AccountID = c.AccountID
-	if err := s.refusal(t.AccountID); err != nil {
+	if err := s.refusal(t); err != nil {
 		return s.failed("", slackConnectReason(err), err.Error())
 	}
 	id, err := s.reg.Begin(t, false)
@@ -235,7 +237,7 @@ func (s *slackConnectServer) start(c slackConnectCommand) error {
 
 // confirm is the owner's Connect on a link flow.
 func (s *slackConnectServer) confirm(id slackconnect.FlowID) error {
-	if err := s.refusal(0); err != nil {
+	if err := s.refusal(slackconnect.Target{}); err != nil {
 		s.reg.Cancel(id)
 		return s.failed(id, slackConnectReason(err), err.Error())
 	}
@@ -252,15 +254,19 @@ func (s *slackConnectServer) openBrowser(id slackconnect.FlowID, authorizeURL st
 }
 
 // refusal is why a flow may not go to Slack now: the policy forbids the
-// slack source, or the account's purge is running.
-func (s *slackConnectServer) refusal(accountID int64) error {
+// slack source, or, for a start on an account, the account does not exist,
+// another live account holds its team, or its purge is running.
+func (s *slackConnectServer) refusal(t slackconnect.Target) error {
 	if err := sourceRefusal("slack"); err != nil {
 		return err
 	}
-	if accountID != 0 {
-		return refuseLoginDuringPurge(s.database, "slack", accountID)
+	if t.AccountID == 0 {
+		return nil
 	}
-	return nil
+	if _, err := slackConnectRow(s.database, t); err != nil {
+		return err
+	}
+	return refuseLoginDuringPurge(s.database, "slack", t.AccountID)
 }
 
 func (s *slackConnectServer) handleEvent(ev slackconnect.Event) error {
@@ -293,7 +299,7 @@ func (s *slackConnectServer) callback(ev slackconnect.Event) error {
 	default:
 		return s.failed(ev.Flow, string(res.Outcome), res.Message)
 	}
-	accountID, rebound, err := writeConnectedAccount(s.ctx, s.cfg, s.database, ev.Target, res.Grant)
+	accountID, rebound, err := writeConnectedAccount(s.ctx, s.cfg, s.database, ev.Target, res.Grant, s.logger.Writer())
 	ev.Reply <- err
 	if err != nil {
 		s.logger.Printf("storing the Slack connection of flow %s: %v", ev.Flow, err)

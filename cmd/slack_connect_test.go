@@ -2,14 +2,18 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -85,7 +89,7 @@ func (e connectEnv) account(t *testing.T, id int64) db.SlackAccount {
 }
 
 func (e connectEnv) write(t slackconnect.Target, g slackconnect.Grant) (int64, string, error) {
-	return writeConnectedAccount(context.Background(), e.cfg, e.db, t, g)
+	return writeConnectedAccount(context.Background(), e.cfg, e.db, t, g, io.Discard)
 }
 
 // tableCounts is the row count of every table.
@@ -175,23 +179,72 @@ func TestSlackLinkConnect_TeamMismatch(t *testing.T) {
 	_, _, err := env.write(connTarget(connNewID), connGrant(connNewID))
 	require.ErrorIs(t, err, errSlackTeamMismatch)
 	assert.Equal(t, "team_mismatch", slackConnectReason(err))
+	assert.Equal(t, before, env.tableCounts(t), "nothing stored: the new row is made only after the checks")
 
-	accounts, err := env.db.ListSlackAccounts()
-	require.NoError(t, err)
-	require.Len(t, accounts, 1, "the new row stays, rolled back")
-	assert.Equal(t, "removed", accounts[0].Status)
-	assert.False(t, accounts[0].Enabled)
-	assert.False(t, env.store(accounts[0].ID).Exists(), "nothing stored")
-	assert.Equal(t, before["slack_accounts"]+1, env.tableCounts(t)["slack_accounts"])
-
-	// A grant for another team never creates a row.
+	// A grant for another team never reaches Slack's identity check either.
 	g := connGrant(connNewID)
 	g.TeamID = connOtherTeam
 	_, _, err = env.write(connTarget(connNewID), g)
 	require.ErrorIs(t, err, errSlackTeamMismatch)
-	accounts, err = env.db.ListSlackAccounts()
+	assert.Equal(t, before, env.tableCounts(t))
+}
+
+// A new row whose write fails after it was created is rolled back
+// (rollbackSlackAccount) and keeps no token.
+func TestSlackLinkConnect_NewRowRolledBack(t *testing.T) {
+	env := newConnectEnv(t)
+	stubSlackIdentityServer(t, connUser, connTeam, "Acme", "acme")
+	_, err := env.db.Exec(`CREATE TRIGGER fail_app BEFORE UPDATE OF client_id ON slack_accounts
+        BEGIN SELECT RAISE(ABORT, 'row write failed'); END`)
 	require.NoError(t, err)
-	assert.Len(t, accounts, 1)
+
+	_, _, err = env.write(connTarget(connNewID), connGrant(connNewID))
+	require.Error(t, err)
+	accounts, err := env.db.ListSlackAccounts()
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	assert.Equal(t, "removed", accounts[0].Status)
+	assert.False(t, accounts[0].Enabled)
+	assert.False(t, env.store(accounts[0].ID).Exists(), "the rolled-back row keeps no token")
+}
+
+// PURGE-02: a purge that starts while the grant is being checked (after the
+// early check, before the lock) wins; nothing is written.
+func TestSlackLinkConnect_PurgeStartsDuringCheck(t *testing.T) {
+	env := newConnectEnv(t)
+	id := env.seedAccount(t, connTeam, connRetiredID)
+	oldFile := env.tokenBytes(t, id)
+	stub := stubSlackIdentity(t, connUser, connTeam)
+	stub.onAuth = func() { startRunningPurge(t, env.db, "slack", id) }
+
+	_, _, err := env.write(connTarget(connNewID), connGrant(connNewID))
+	require.ErrorIs(t, err, errLoginDuringPurge)
+	assert.Equal(t, oldFile, env.tokenBytes(t, id))
+	assert.Equal(t, connRetiredID, env.account(t, id).ClientID)
+}
+
+// An explicit target (a removed account) is refused while another live
+// account holds the team: the connect would leave two live rows.
+func TestSlackLinkConnect_ExplicitTargetWithLiveRowRefused(t *testing.T) {
+	env := newConnectEnv(t)
+	removed := env.seedAccount(t, connTeam, connRetiredID)
+	require.NoError(t, env.db.SetSlackAccountRemoved(removed))
+	live := env.seedAccount(t, connTeam, connNewID)
+	stubSlackIdentityServer(t, connUser, connTeam, "Acme", "acme")
+	before := env.tableCounts(t)
+
+	tgt := connTarget(connNewID)
+	tgt.AccountID = removed
+	_, _, err := env.write(tgt, connGrant(connNewID))
+	require.ErrorIs(t, err, errSlackTeamHasLiveRow)
+	assert.Contains(t, err.Error(), "account "+strconv.FormatInt(live, 10))
+	assert.Equal(t, "removed", env.account(t, removed).Status)
+	assert.Equal(t, before, env.tableCounts(t))
+
+	// Without an explicit target the live row is the one re-bound.
+	got, _, err := env.write(connTarget(connNewID), connGrant(connNewID))
+	require.NoError(t, err)
+	assert.Equal(t, live, got)
 }
 
 func TestSlackLinkConnect_ReconsentSameClient(t *testing.T) {
@@ -528,4 +581,89 @@ func TestSlackConnectReason_EveryOutcome(t *testing.T) {
 	err := slackOtherTeamError(slackIdentity{TeamID: connOtherTeam}, db.SlackHomeTeam{ID: connTeam, Name: "Acme"})
 	assert.Equal(t, "team_mismatch", slackConnectReason(err))
 	assert.True(t, strings.HasPrefix(err.Error(), `sign in to "Acme"`), "the refusal keeps its text")
+}
+
+// slack login without --account resolves account #1 and applies the same
+// re-login rule: a company-app account signs in through PKCE.
+func TestSlackLogin_ImplicitAccountUsesPKCE(t *testing.T) {
+	_, configPath := workspaceInitHome(t)
+	_, err := initWorkspace(configPath, "", "default", false)
+	require.NoError(t, err)
+	setSlackBuild(t, "", "", connRetiredID)
+	policytest.Set(t, nil)
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	id := connectEnv{cfg: cfg, db: database}.seedAccount(t, connTeam, connNewID)
+	require.NoError(t, database.Close())
+	stubSlackIdentityServer(t, connUser, connTeam, "Acme", "acme")
+	ln, err := slackconnect.Listen(0)
+	require.NoError(t, err)
+	opened := make(chan string, 1)
+	slackConnectTestDeps(t, ln, func(string, string) (slackconnect.Grant, error) { return connGrant(connNewID), nil }, opened)
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := runRootCmd(t, []*cobra.Command{slackCmd, slackLoginCmd}, "slack", "login", "--config", configPath)
+		done <- err
+	}()
+	u, err := url.Parse(<-opened)
+	require.NoError(t, err)
+	assert.Equal(t, connNewID, u.Query().Get("client_id"))
+	resp, err := http.Get("http://" + ln.Addr().String() + "/callback?state=" + url.QueryEscape(u.Query().Get("state")) + "&code=c")
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.NoError(t, <-done)
+	tok, err := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id).Load()
+	require.NoError(t, err)
+	assert.Equal(t, "xoxp-new", tok.AccessToken)
+}
+
+// identityStub answers auth.test and team.info with an identity the test
+// may change, and runs onAuth (when set) inside auth.test.
+type identityStub struct {
+	mu     sync.Mutex
+	user   string
+	team   string
+	onAuth func()
+}
+
+func (s *identityStub) set(user, team string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.user, s.team = user, team
+}
+
+func (s *identityStub) get() (string, string, func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.user, s.team, s.onAuth
+}
+
+func stubSlackIdentity(t *testing.T, user, team string) *identityStub {
+	t.Helper()
+	stub := &identityStub{user: user, team: team}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth.test", func(w http.ResponseWriter, _ *http.Request) {
+		u, tm, hook := stub.get()
+		if hook != nil {
+			hook()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "user_id": u, "user": "owner", "team_id": tm})
+	})
+	mux.HandleFunc("/team.info", func(w http.ResponseWriter, _ *http.Request) {
+		_, tm, _ := stub.get()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "team": map[string]any{"id": tm, "name": "Acme", "domain": "acme"}})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	orig := newSlackClientForToken
+	newSlackClientForToken = func(token string) *watchtowerslack.Client {
+		return watchtowerslack.NewClientWithAPIURLUnlimited(token, srv.URL+"/")
+	}
+	t.Cleanup(func() { newSlackClientForToken = orig })
+	return stub
 }

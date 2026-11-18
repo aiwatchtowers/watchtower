@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -132,17 +131,21 @@ func slackConnectReason(err error) string {
 
 // writeConnectedAccount stores a connect flow's grant: the one write path
 // of every PKCE connect (ask #1425, A6). The row is t.AccountID when set,
-// else the team's live account, else a new one. On an existing row the
-// home-team check and the same-user check (A18) run before any write. Under
-// the account's token lock it saves the token file first (atomic: a failure
+// else the team's live account, else a new one, created only after the
+// grant passed every check. On an existing row the home-team check and the
+// same-user check (A18) run before any write, and an explicit target is
+// refused while another live account holds the team. Under the account's
+// token lock the purge is checked once more (a purge that started meanwhile
+// wins, PURGE-02), then the token file is saved first (atomic: a failure
 // leaves the old file and the old token keeps syncing), then the row's
 // connection, app, refresh expiry and auth state; a crash between the two
 // is repaired by the next token read, which takes the file's client and app
 // id (the file is the truth). The old token is dropped, not revoked (A21).
 // The account id, its data and its sync position are never touched, and
 // nothing is soft-removed (SLACK-01). reboundFrom is the client id the row
-// had when this connect moved it to another app, else "".
-func writeConnectedAccount(ctx context.Context, cfg *config.Config, database *db.DB, t slackconnect.Target, g slackconnect.Grant) (accountID int64, reboundFrom string, err error) {
+// had when this connect moved it to another app, else "". Warnings go to
+// warn.
+func writeConnectedAccount(ctx context.Context, cfg *config.Config, database *db.DB, t slackconnect.Target, g slackconnect.Grant, warn io.Writer) (accountID int64, reboundFrom string, err error) {
 	if err := sourceRefusal("slack"); err != nil {
 		return 0, "", err
 	}
@@ -150,72 +153,124 @@ func writeConnectedAccount(ctx context.Context, cfg *config.Config, database *db
 		return 0, "", &slackTeamMismatchError{msg: fmt.Sprintf(
 			"Slack signed you in to workspace %s, not %s; nothing was connected", g.TeamID, t.TeamID)}
 	}
-	id, isNew, err := slackConnectRow(database, t)
+	id, err := slackConnectRow(database, t)
 	if err != nil {
 		return 0, "", err
 	}
-	if !isNew {
+	if id != 0 {
+		// Early, before the network; checked again under the lock.
 		if err := refuseLoginDuringPurge(database, "slack", id); err != nil {
 			return 0, "", err
 		}
 	}
-	reboundFrom, err = writeSlackGrant(ctx, cfg, database, id, isNew, t, g)
+	identity, err := resolveSlackIdentity(ctx, g.AccessToken)
 	if err != nil {
-		if isNew {
-			rollbackSlackAccount(database, id, os.Stderr)
-		}
+		return 0, "", fmt.Errorf("resolving slack identity: %w", err)
+	}
+	if identity.TeamID != t.TeamID {
+		return 0, "", &slackTeamMismatchError{msg: fmt.Sprintf(
+			"the Slack token is for workspace %s, not %s; nothing was connected", identity.TeamID, t.TeamID)}
+	}
+	if id == 0 {
+		return writeNewSlackAccount(ctx, cfg, database, identity, g, warn)
+	}
+	reboundFrom, err = writeSlackGrant(ctx, cfg, database, id, identity, g, warn)
+	if err != nil {
 		return 0, "", err
 	}
-	afterSlackConnect(database, t.TeamID)
+	afterSlackConnect(database, t.TeamID, warn)
 	return id, reboundFrom, nil
 }
 
-// slackConnectRow picks the account a connect writes: t.AccountID, else the
-// live account whose home team is t's (refuseDuplicateSlackTeam keeps it
-// single), else a new row (isNew).
-func slackConnectRow(database *db.DB, t slackconnect.Target) (id int64, isNew bool, err error) {
+// errSlackTeamHasLiveRow refuses an explicit target while another live
+// account already holds the team: the connect would leave two live rows.
+var errSlackTeamHasLiveRow = errors.New("another Slack account is already connected to this workspace")
+
+// slackConnectRow picks the account a connect writes: t.AccountID (refused
+// while another live account holds t's team), else the live account whose
+// home team is t's (refuseDuplicateSlackTeam keeps it single), else 0: a
+// new row, created by writeNewSlackAccount once the grant is checked.
+func slackConnectRow(database *db.DB, t slackconnect.Target) (int64, error) {
 	if t.AccountID != 0 {
 		if _, err := database.GetSlackAccount(t.AccountID); err != nil {
-			return 0, false, fmt.Errorf("account %d not found: %w", t.AccountID, err)
+			return 0, fmt.Errorf("account %d not found: %w", t.AccountID, err)
 		}
-		return t.AccountID, false, nil
 	}
+	live, err := liveSlackAccountForTeam(database, t.TeamID, t.AccountID)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case t.AccountID != 0 && live != 0:
+		return 0, fmt.Errorf("account %d is on this workspace already; use Reconnect on it: %w", live, errSlackTeamHasLiveRow)
+	case t.AccountID != 0:
+		return t.AccountID, nil
+	default:
+		return live, nil
+	}
+}
+
+// liveSlackAccountForTeam returns the live (not removed) account other than
+// except whose home team is team, or 0.
+func liveSlackAccountForTeam(database *db.DB, team string, except int64) (int64, error) {
 	accounts, err := database.ListSlackAccounts()
 	if err != nil {
-		return 0, false, err
+		return 0, err
 	}
 	for _, a := range accounts {
-		if a.Status == "removed" {
+		if a.ID == except || a.Status == "removed" {
 			continue
 		}
 		home, err := database.SlackAccountHomeTeam(a)
 		if err != nil {
-			return 0, false, err
+			return 0, err
 		}
-		if home.ID == t.TeamID {
-			return a.ID, false, nil
+		if home.ID == team {
+			return a.ID, nil
 		}
 	}
-	id, err = database.CreateSlackAccount(db.SlackAccount{})
-	if err != nil {
-		return 0, false, fmt.Errorf("creating account: %w", err)
-	}
-	return id, true, nil
+	return 0, nil
 }
 
-// writeSlackGrant checks the grant's identity against account id and, when
-// it may be stored, writes the token file and then the row under the
-// account's token lock.
-func writeSlackGrant(ctx context.Context, cfg *config.Config, database *db.DB, id int64, isNew bool, t slackconnect.Target, g slackconnect.Grant) (string, error) {
-	identity, err := resolveSlackIdentity(ctx, g.AccessToken)
+// writeNewSlackAccount creates the row for a checked grant and writes it; a
+// failure rolls the row back (and drops its token).
+func writeNewSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB, identity slackIdentity, g slackconnect.Grant, warn io.Writer) (int64, string, error) {
+	if err := refuseDuplicateSlackTeam(database, 0, identity); err != nil {
+		return 0, "", err
+	}
+	id, err := database.CreateSlackAccount(db.SlackAccount{})
 	if err != nil {
-		return "", fmt.Errorf("resolving slack identity: %w", err)
+		return 0, "", fmt.Errorf("creating account: %w", err)
 	}
-	if identity.TeamID != t.TeamID {
-		return "", &slackTeamMismatchError{msg: fmt.Sprintf(
-			"the Slack token is for workspace %s, not %s; nothing was connected", identity.TeamID, t.TeamID)}
+	store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id)
+	err = func() error {
+		unlock, err := store.Lock(ctx)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		tok := slackGrantToken(g, identity, time.Now())
+		if err := store.Save(tok); err != nil {
+			return fmt.Errorf("saving token: %w", err)
+		}
+		return writeSlackGrantRow(database, id, identity, watchtowerslack.Namespace(id, identity.UserID), tok)
+	}()
+	if err != nil {
+		rollbackSlackAccount(database, id, warn)
+		if delErr := store.Delete(); delErr != nil {
+			err = errors.Join(err, fmt.Errorf("removing the token of rolled-back slack account %d: %w", id, delErr))
+		}
+		return 0, "", err
 	}
-	moved, err := checkSlackLoginTeam(database, id, identity, isNew)
+	afterSlackConnect(database, identity.TeamID, warn)
+	return id, "", nil
+}
+
+// writeSlackGrant checks the grant's identity against existing account id
+// and, when it may be stored, writes the token file and then the row under
+// the account's token lock.
+func writeSlackGrant(ctx context.Context, cfg *config.Config, database *db.DB, id int64, identity slackIdentity, g slackconnect.Grant, warn io.Writer) (string, error) {
+	moved, err := checkSlackLoginTeam(database, id, identity, false)
 	if err != nil {
 		return "", err
 	}
@@ -224,13 +279,8 @@ func writeSlackGrant(ctx context.Context, cfg *config.Config, database *db.DB, i
 		return "", err
 	}
 	user := watchtowerslack.Namespace(id, identity.UserID)
-	if !isNew && acct.CurrentUserID != "" && acct.CurrentUserID != user {
+	if acct.CurrentUserID != "" && acct.CurrentUserID != user {
 		return "", errSlackOtherUser
-	}
-	if moved {
-		if err := rewindMovedSlackAccountOrWarn(database, id, os.Stderr); err != nil {
-			return "", err
-		}
 	}
 
 	store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id)
@@ -239,27 +289,32 @@ func writeSlackGrant(ctx context.Context, cfg *config.Config, database *db.DB, i
 		return "", err
 	}
 	defer unlock()
-	reboundFrom := ""
-	if !isNew {
-		reboundFrom = acct.ClientID
-		if old, _ := store.Load(); reboundFrom == "" && old != nil {
-			reboundFrom = old.ClientID
+	// Right before the first write: a purge that started while the grant
+	// was checked would delete what this writes (PURGE-02).
+	if err := refuseLoginDuringPurge(database, "slack", id); err != nil {
+		return "", err
+	}
+	if moved {
+		covered, err := rewindMovedSlackAccount(database, id)
+		if err != nil {
+			return "", fmt.Errorf("rewinding the search of slack account %d: %w", id, err)
 		}
-		if reboundFrom == g.ClientID {
-			reboundFrom = ""
+		if !covered {
+			fmt.Fprintf(warn, "warning: slack account %d is back on its workspace, but the next sync may not fetch the days it missed\n", id)
 		}
+	}
+	reboundFrom := acct.ClientID
+	if old, _ := store.Load(); reboundFrom == "" && old != nil {
+		reboundFrom = old.ClientID
+	}
+	if reboundFrom == g.ClientID {
+		reboundFrom = ""
 	}
 	tok := slackGrantToken(g, identity, time.Now())
 	if err := store.Save(tok); err != nil {
 		return "", fmt.Errorf("saving token: %w", err)
 	}
 	if err := writeSlackGrantRow(database, id, identity, user, tok); err != nil {
-		if isNew {
-			// The token was saved for a row that is rolled back.
-			if delErr := store.Delete(); delErr != nil {
-				err = errors.Join(err, fmt.Errorf("removing the token of rolled-back slack account %d: %w", id, delErr))
-			}
-		}
 		return "", err
 	}
 	return reboundFrom, nil
@@ -308,17 +363,18 @@ func writeSlackGrantRow(database *db.DB, id int64, identity slackIdentity, user 
 }
 
 // afterSlackConnect clears the team's setup approval request (the install
-// happened) and runs the client id backfill (A17); both best-effort.
-func afterSlackConnect(database *db.DB, team string) {
+// happened) and runs the client id backfill (A17); both best-effort, their
+// failures go to warn.
+func afterSlackConnect(database *db.DB, team string, warn io.Writer) {
 	if _, err := database.GetSlackAppSetup(team); err == nil {
 		if err := database.SetSlackAppSetupInstallRequested(team, time.Time{}); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+			fmt.Fprintf(warn, "warning: %v\n", err)
 		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		fmt.Fprintf(warn, "warning: %v\n", err)
 	}
 	if _, err := slackmode.BackfillClientIDs(database); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		fmt.Fprintf(warn, "warning: %v\n", err)
 	}
 }
 
@@ -397,26 +453,28 @@ func runSlackConnectOnce(cmd *cobra.Command, cfg *config.Config, database *db.DB
 		return fmt.Errorf("binding the Slack connect listener: %w", err)
 	}
 	reg := slackconnect.NewRegistry(deps.clock, deps.exchange)
-	events := make(chan slackconnect.Event)
-	stop := make(chan struct{})
-	shutdown := serveSlackConnectListener(ln, reg, events, stop)
-	defer shutdown(true)
-
+	// The flow takes the registry's one slot before the listener answers a
+	// request, so a link opened right after the bind cannot take it first.
 	id, err := reg.Begin(t, false)
 	if err != nil {
+		_ = ln.Close()
 		return err
 	}
 	authorizeURL, err := reg.BrowserURL(id)
 	if err != nil {
+		_ = ln.Close()
 		return err
 	}
+	events := make(chan slackconnect.Event)
+	shutdown := serveSlackConnectListener(ln, reg, events, make(chan struct{}))
+	defer shutdown(false)
 	if opts.noOpen {
 		fmt.Fprintf(errOut, "Open this URL to connect Slack:\n%s\n", authorizeURL)
 	} else {
 		fmt.Fprintln(errOut, "Opening Slack in your browser…")
 		deps.openBrowser(authorizeURL)
 	}
-	accountID, res, rebound, err := waitSlackConnectOnce(ctx, cfg, database, reg, id, events)
+	accountID, res, rebound, err := waitSlackConnectOnce(ctx, cfg, database, reg, id, events, errOut)
 	oauthpage.ReturnAfterLogin(opts.appReturn, err, errOut)
 	if opts.asJSON {
 		if encErr := writeSlackConnectResultJSON(out, accountID, res, rebound, err); encErr != nil {
@@ -441,7 +499,7 @@ func runSlackConnectOnce(cmd *cobra.Command, cfg *config.Config, database *db.DB
 
 // waitSlackConnectOnce waits for flow id's callback and writes its grant.
 func waitSlackConnectOnce(ctx context.Context, cfg *config.Config, database *db.DB, reg *slackconnect.Registry,
-	id slackconnect.FlowID, events <-chan slackconnect.Event) (int64, slackconnect.Result, string, error) {
+	id slackconnect.FlowID, events <-chan slackconnect.Event, warn io.Writer) (int64, slackconnect.Result, string, error) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -455,7 +513,7 @@ func waitSlackConnectOnce(ctx context.Context, cfg *config.Config, database *db.
 			if res.Outcome != slackconnect.OutcomeConnected {
 				return 0, res, "", &slackConnectFailure{reason: string(res.Outcome), msg: res.Message}
 			}
-			accountID, rebound, err := writeConnectedAccount(ctx, cfg, database, ev.Target, res.Grant)
+			accountID, rebound, err := writeConnectedAccount(ctx, cfg, database, ev.Target, res.Grant, warn)
 			ev.Reply <- err
 			if err != nil {
 				return 0, res, "", err
@@ -487,16 +545,19 @@ func writeSlackConnectResultJSON(out io.Writer, accountID int64, res slackconnec
 	return writeSlackConnectEvent(out, slackFailedEvent{Event: "failed", Flow: string(res.Flow), Reason: reason, Message: err.Error()})
 }
 
-// slackConnectDrain bounds how long the one-shot connect's shutdown lets
-// an answered callback finish its page.
+// slackConnectDrain bounds how long a shutdown waits for the listener's
+// requests in flight to write their pages.
 const slackConnectDrain = 2 * time.Second
 
 // serveSlackConnectListener serves the connect listener on ln until the
-// returned shutdown runs. A graceful shutdown first lets requests in flight
-// finish (the callback page the owner just answered), bounded by
-// slackConnectDrain; then stop is closed so no handler stays blocked on
-// events, and the server is closed and waited for.
-func serveSlackConnectListener(ln net.Listener, reg *slackconnect.Registry, events chan<- slackconnect.Event, stop chan struct{}) (shutdown func(graceful bool)) {
+// returned shutdown runs; it waits at most slackConnectDrain for requests in
+// flight to finish their pages, then closes the server and waits for it.
+// stopFirst (serve at stdin EOF: nobody reads events any more) closes stop
+// before the drain, so a handler blocked handing an event over gives up and
+// answers its page. Without it (the one-shot connect, whose owner already
+// answered its callback) the drain runs first, so the answered callback
+// writes its result page rather than "check the app"; stop is closed after.
+func serveSlackConnectListener(ln net.Listener, reg *slackconnect.Registry, events chan<- slackconnect.Event, stop chan struct{}) (shutdown func(stopFirst bool)) {
 	srv := &http.Server{
 		Handler:           slackconnect.Handler(reg, events, ln.Addr().String(), stop),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -506,13 +567,16 @@ func serveSlackConnectListener(ln net.Listener, reg *slackconnect.Registry, even
 		defer close(served)
 		_ = srv.Serve(ln)
 	}()
-	return func(graceful bool) {
-		if graceful {
-			ctx, cancel := context.WithTimeout(context.Background(), slackConnectDrain)
-			_ = srv.Shutdown(ctx)
-			cancel()
+	return func(stopFirst bool) {
+		if stopFirst {
+			close(stop)
 		}
-		close(stop)
+		ctx, cancel := context.WithTimeout(context.Background(), slackConnectDrain)
+		_ = srv.Shutdown(ctx)
+		cancel()
+		if !stopFirst {
+			close(stop)
+		}
 		_ = srv.Close()
 		<-served
 	}

@@ -436,20 +436,25 @@ func runSlackLogin(cmd *cobra.Command, _ []string) error {
 	var accountID int64
 	isNewRow := false
 	if accountFlag != 0 {
-		acct, err := database.GetSlackAccount(accountFlag)
-		if err != nil {
+		if _, err := database.GetSlackAccount(accountFlag); err != nil {
 			return fmt.Errorf("account %d not found: %w", accountFlag, err)
-		}
-		// An account on a company app signs in again through that app's
-		// connect flow (PKCE, no secret), never through the build's app.
-		if slackmode.Relogin(acct, auth.RetiredSharedClientID, slackBuiltinClientID()) == slackmode.ReloginConnect {
-			return slackLoginConnect(cmd, cfg, database, acct)
 		}
 		accountID = accountFlag
 	} else {
 		accountID, isNewRow, err = resolveSlackAccountOneForLogin(cmd, cfg, database, logger)
 		if err != nil {
 			return err
+		}
+	}
+	if !isNewRow {
+		acct, err := database.GetSlackAccount(accountID)
+		if err != nil {
+			return fmt.Errorf("account %d not found: %w", accountID, err)
+		}
+		// An account on a company app signs in again through that app's
+		// connect flow (PKCE, no secret), never through the build's app.
+		if slackmode.Relogin(acct, auth.RetiredSharedClientID, slackBuiltinClientID()) == slackmode.ReloginConnect {
+			return slackLoginConnect(cmd, cfg, database, acct)
 		}
 	}
 

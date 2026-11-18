@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/policy/policytest"
 	"watchtower/internal/slackconnect"
 )
 
@@ -45,12 +47,18 @@ func fixedGrant(g slackconnect.Grant) func(string) (slackconnect.Grant, error) {
 
 func startConnectServe(t *testing.T, env connectEnv, exchange func(code string) (slackconnect.Grant, error)) *serveHarness {
 	t.Helper()
+	return startConnectServeOn(t, env, exchange, slackconnect.Listen)
+}
+
+func startConnectServeOn(t *testing.T, env connectEnv, exchange func(code string) (slackconnect.Grant, error),
+	listen func(int) (net.Listener, error)) *serveHarness {
+	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	h := &serveHarness{stdin: inW, lines: make(chan string, 64), done: make(chan error, 1)}
 	deps := slackConnectDeps{
 		port:   0,
-		listen: slackconnect.Listen,
+		listen: listen,
 		exchange: func(_ context.Context, _, code, _, _ string) (slackconnect.Grant, error) {
 			return exchange(code)
 		},
@@ -127,11 +135,23 @@ func (h *serveHarness) link(t *testing.T, team, client string) (int, string) {
 // callback is Slack's redirect for the last opened sign-in.
 func (h *serveHarness) callback(t *testing.T, code string) (int, string) {
 	t.Helper()
+	return h.redirect(t, "code="+code)
+}
+
+// redirect is Slack's redirect for the last opened sign-in with query
+// (code=… or error=…).
+func (h *serveHarness) redirect(t *testing.T, query string) (int, string) {
+	t.Helper()
+	return h.get(t, h.redirectPath(t, query))
+}
+
+func (h *serveHarness) redirectPath(t *testing.T, query string) string {
+	t.Helper()
 	urls := h.browserURLs()
 	require.NotEmpty(t, urls, "no sign-in was opened")
 	u, err := url.Parse(urls[len(urls)-1])
 	require.NoError(t, err)
-	return h.get(t, "/callback?state="+url.QueryEscape(u.Query().Get("state"))+"&code="+code)
+	return "/callback?state=" + url.QueryEscape(u.Query().Get("state")) + "&" + query
 }
 
 // closeStdin is the app going away: serve closes the listener and exits 0.
@@ -307,26 +327,65 @@ func TestSlackConnectServe_OtherUserFails(t *testing.T) {
 }
 
 // TestSlackConnectServe_WireGolden runs one session through every event
-// kind and pins its stdout as the Desktop's decoder fixture (flow ids and
-// ports normalized). -update rewrites the fixture.
+// kind and every failure reason and pins its stdout as the Desktop's
+// decoder fixture (flow ids and ports normalized). -update rewrites it.
 func TestSlackConnectServe_WireGolden(t *testing.T) {
 	env := newConnectEnv(t)
 	env.seedAccount(t, connTeam, connRetiredID)
-	stubSlackIdentityServer(t, connUser, connTeam, "Acme", "acme")
-	h := startConnectServe(t, env, fixedGrant(connGrant(connNewID)))
+	purging := env.seedAccount(t, "T0BETA", connNewID)
+	startRunningPurge(t, env.db, "slack", purging)
+	stub := stubSlackIdentity(t, connUser, connTeam)
+	h := startConnectServe(t, env, func(code string) (slackconnect.Grant, error) {
+		switch code {
+		case "bad":
+			return slackconnect.Grant{}, errors.New("slack oauth.v2.access: invalid_code")
+		case "other-team":
+			g := connGrant(connNewID)
+			g.TeamID = connOtherTeam
+			return g, nil
+		}
+		return connGrant(connNewID), nil
+	})
+	start := `{"cmd":"start","team_id":"` + connTeam + `","client_id":"` + connNewID + `"}`
 
 	h.link(t, connTeam, connNewID)
 	flow := h.expect(t, "link")["flow"].(string)
-	h.send(t, `{"cmd":"start","team_id":"`+connTeam+`","client_id":"`+connNewID+`"}`)
+	h.send(t, start)
 	h.expect(t, "busy")
 	h.send(t, `{"cmd":"confirm","flow":"`+flow+`"}`)
 	h.expect(t, "browser")
 	h.callback(t, "code-1")
 	h.expect(t, "connected")
-	h.send(t, `{"cmd":"start","team_id":"`+connOtherTeam+`","client_id":"`+connNewID+`"}`)
+
+	for _, c := range []struct{ query, reason string }{
+		{"error=access_denied", "denied"},
+		{"code=bad", "exchange"},
+		{"code=other-team", "team_mismatch"},
+	} {
+		h.send(t, start)
+		h.expect(t, "browser")
+		h.redirect(t, c.query)
+		assert.Equal(t, c.reason, h.expect(t, "failed")["reason"])
+	}
+	stub.set(connOtherUser, connTeam)
+	h.send(t, start)
+	h.expect(t, "browser")
+	h.callback(t, "code-2")
+	assert.Equal(t, "other_user", h.expect(t, "failed")["reason"])
+
+	h.send(t, start)
 	second := h.expect(t, "browser")["flow"].(string)
 	h.send(t, `{"cmd":"cancel","flow":"`+second+`"}`)
-	h.expect(t, "failed")
+	assert.Equal(t, "cancelled", h.expect(t, "failed")["reason"])
+
+	// Starts refused before a flow begins: "flow":"".
+	h.send(t, `{"cmd":"start","team_id":"acme","client_id":"x"}`)
+	assert.Equal(t, "other", h.expect(t, "failed")["reason"])
+	h.send(t, `{"cmd":"start","team_id":"T0BETA","client_id":"`+connNewID+`","account_id":`+strconv.FormatInt(purging, 10)+`}`)
+	assert.Equal(t, "purge_running", h.expect(t, "failed")["reason"])
+	policytest.Set(t, map[string]any{"AllowedSources": []any{"google"}})
+	h.send(t, start)
+	assert.Equal(t, "policy", h.expect(t, "failed")["reason"])
 	h.closeStdin(t)
 
 	var busy strings.Builder
@@ -344,6 +403,89 @@ func TestSlackConnectServe_WireGolden(t *testing.T) {
 	want, err := os.ReadFile(serveGolden)
 	require.NoError(t, err, "run with -update to write the fixture")
 	assert.Equal(t, string(want), got)
+}
+
+func TestSlackConnectServe_StartUnknownAccountFails(t *testing.T) {
+	env := newConnectEnv(t)
+	h := startConnectServe(t, env, fixedGrant(connGrant(connNewID)))
+	h.send(t, `{"cmd":"start","team_id":"`+connTeam+`","client_id":"`+connNewID+`","account_id":42}`)
+	ev := h.expect(t, "failed")
+	assert.Equal(t, "other", ev["reason"])
+	assert.Equal(t, "", ev["flow"])
+	assert.Contains(t, ev["message"], "account 42 not found")
+	assert.Empty(t, h.browserURLs())
+}
+
+// acceptSignal wraps a listener and reports each accepted connection.
+type acceptSignal struct {
+	net.Listener
+	accepted chan struct{}
+}
+
+func (a acceptSignal) Accept() (net.Conn, error) {
+	c, err := a.Listener.Accept()
+	if err == nil {
+		a.accepted <- struct{}{}
+	}
+	return c, err
+}
+
+// Stdin closes while the loop is storing a grant (the callback waits for
+// the answer) and a link's handler is blocked handing its event over: both
+// browsers get a page and serve exits 0.
+func TestSlackConnectServe_EOFWhileRequestsWait(t *testing.T) {
+	env := newConnectEnv(t)
+	stub := stubSlackIdentity(t, connUser, connTeam)
+	inAuth, release := make(chan struct{}), make(chan struct{})
+	stub.onAuth = func() {
+		close(inAuth)
+		<-release
+	}
+	accepted := make(chan struct{}, 4)
+	h := startConnectServeOn(t, env, fixedGrant(connGrant(connNewID)), func(port int) (net.Listener, error) {
+		ln, err := slackconnect.Listen(port)
+		if err != nil {
+			return nil, err
+		}
+		return acceptSignal{Listener: ln, accepted: accepted}, nil
+	})
+	h.send(t, `{"cmd":"start","team_id":"`+connTeam+`","client_id":"`+connNewID+`"}`)
+	h.expect(t, "browser")
+
+	type page struct {
+		status int
+		err    error
+	}
+	fetch := func(path string) <-chan page {
+		ch := make(chan page, 1)
+		go func() {
+			resp, err := http.Get(h.base + path)
+			if err != nil {
+				ch <- page{err: err}
+				return
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			ch <- page{status: resp.StatusCode}
+		}()
+		return ch
+	}
+	callbackPage := fetch(h.redirectPath(t, "code=code-1"))
+	<-accepted
+	<-inAuth // the loop is inside the account write
+	linkPage := fetch("/slack/connect?team=" + connTeam + "&client=" + connNewID)
+	<-accepted
+	require.NoError(t, h.stdin.Close())
+	close(release)
+
+	cb := <-callbackPage
+	require.NoError(t, cb.err)
+	assert.Equal(t, http.StatusOK, cb.status)
+	lp := <-linkPage
+	require.NoError(t, lp.err, "the blocked link still gets a page")
+	assert.Contains(t, []int{http.StatusOK, http.StatusServiceUnavailable}, lp.status)
+	h.closed = true
+	require.NoError(t, <-h.done, "serve exits 0")
 }
 
 // normalizeServeWire replaces flow ids with flow-1, flow-2… in order of
