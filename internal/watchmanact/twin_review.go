@@ -788,9 +788,9 @@ func GHPRBase(run func(ctx context.Context, dir, name string, args ...string) ([
 }
 
 // ExecRun runs name args… in dir and returns its stdout (GHPRBase's
-// runner in the daemon).
+// runner in the daemon, and the twin's default Run).
 func ExecRun(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
-	c := exec.CommandContext(ctx, name, args...) // #nosec G204 -- fixed binary (gh), explicit args
+	c := exec.CommandContext(ctx, name, args...) // #nosec G204 -- fixed binaries (gh, git), explicit args
 	c.Dir = dir
 	return c.Output()
 }

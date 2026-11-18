@@ -4,8 +4,8 @@ import (
 	"cmp"
 	"encoding/json"
 	"path"
+	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 
 	"watchtower/internal/db"
@@ -39,9 +39,6 @@ type PermissionAsk struct {
 	// may be what a hard limit covers, so the request parks.
 	SummaryClipped bool
 	Worktrees      []string
-	// PRBase reports the base branch of a pull request; known=false when
-	// the base is not recorded. Nil means never known.
-	PRBase func(pr int) (base string, known bool)
 	// Branch is the session's branch when the request was read; nil = not
 	// recorded (stored rows).
 	Branch *BranchInfo
@@ -49,6 +46,13 @@ type PermissionAsk struct {
 	// rows). It places a shell command's relative paths only; it is no
 	// directory change (a cd or -C in the command is).
 	Cwd string
+	// Lenient is the guard hook's mode (it runs on every tool call of an
+	// armed session): a shape this reader cannot see into (a subshell, a
+	// command substitution, a loop body, a background job...) parks only
+	// when the command text also names a hard-limit action (limitWords),
+	// and the merge backstop reads the command without its comments. The
+	// twin and the backtest are strict (false): every hidden shape parks.
+	Lenient bool
 }
 
 // BranchInfo is the branch a session works on and the branches it shares
@@ -56,7 +60,8 @@ type PermissionAsk struct {
 type BranchInfo struct {
 	Current string
 	// Shared holds the default branches and the session's PR base/umbrella
-	// branch.
+	// branch; nil = not known (a read failed, or the caller does not read
+	// it), and then every destructive ref move parks (matchResetShared).
 	Shared []string
 }
 
@@ -110,6 +115,9 @@ type shellCmd struct {
 	// option (env -C, sudo -D) points the command at another repository
 	// or directory.
 	elsewhere bool
+	// chdir: a wrapper option (env -C, sudo -D) runs the command in another
+	// directory (a GIT_DIR-style assignment does not).
+	chdir bool
 }
 
 // gitDirVars are the environment variables that point git at another
@@ -136,13 +144,23 @@ var wrappers = map[string]map[string]bool{
 	"env":     {"-u": true, "-C": true, "-S": true, "--unset": true, "--chdir": true, "--split-string": true},
 	"exec":    {"-a": true},
 	"nice":    {"-n": true, "--adjustment": true},
-	"xcrun":   {"--sdk": true, "-sdk": true, "--toolchain": true, "-toolchain": true},
-	"xargs":   {"-n": true, "-L": true, "-I": true, "-P": true, "-s": true, "-d": true, "-E": true, "-a": true, "--max-args": true, "--max-lines": true, "--max-procs": true, "--max-chars": true, "--delimiter": true, "--arg-file": true, "--replace": true, "--eof": true},
+	// timeout's command follows a duration as well (stripWrappers).
+	"timeout":    {"-s": true, "-k": true, "--signal": true, "--kill-after": true},
+	"caffeinate": {"-t": true, "-w": true},
+	"doas":       {"-u": true, "-C": true},
+	"stdbuf":     {"-i": true, "-o": true, "-e": true, "--input": true, "--output": true, "--error": true},
+	"xcrun":      {"--sdk": true, "-sdk": true, "--toolchain": true, "-toolchain": true},
+	"xargs":      {"-n": true, "-L": true, "-I": true, "-P": true, "-s": true, "-d": true, "-E": true, "-a": true, "--max-args": true, "--max-lines": true, "--max-procs": true, "--max-chars": true, "--delimiter": true, "--arg-file": true, "--replace": true, "--eof": true},
 }
 
 // unresolved stands for a command that cannot be read (a wrapper around
 // nothing readable, an unterminated quote); it parks.
 const unresolved = "<unresolved>"
+
+// hiddenMark stands for a shape whose real command this reader cannot see
+// into (hiddenText, hiddenShape): it parks a strict request, and a lenient
+// one only with a hard-limit word in its command text (matchUnreadable).
+const hiddenMark = "<hidden>"
 
 // commandPart is one simple command of a line and the separator before it.
 type commandPart struct{ text, sep string }
@@ -288,10 +306,14 @@ func stripWrappers(words []string, c *shellCmd) []string {
 			opt := words[0]
 			words = words[1:]
 			name, _, _ := strings.Cut(opt, "=")
-			c.elsewhere = c.elsewhere || (valued[name] && chdirOpts[name])
+			moved := valued[name] && chdirOpts[name]
+			c.elsewhere, c.chdir = c.elsewhere || moved, c.chdir || moved
 			if valued[opt] && len(words) > 0 {
 				words = words[1:]
 			}
+		}
+		if path.Base(w) == "timeout" && len(words) > 0 { // the duration
+			words = words[1:]
 		}
 	}
 	if wrapped {
@@ -305,9 +327,170 @@ func stripWrappers(words []string, c *shellCmd) []string {
 // splitCommands drops with every other comment. Only a cd joined to the
 // next command by && carries its directory on; after any other separator
 // the directory is unknown.
+//
+// A shell that runs a string (bash/sh/zsh/dash/ksh -c, eval) is a wrapper:
+// its one literal inner string is parsed as commands in its place (an eval
+// carries a cd on); anything else — more words, a $ or a backtick in the
+// string, a source or . of a file, nesting past maxShellDepth — cannot be
+// read and parks.
 func commands(summary string) []shellCmd {
+	out, _ := commandsIn(summary, "", 0)
+	return out
+}
+
+// maxShellDepth bounds shells nested in shells.
+const maxShellDepth = 3
+
+// shells are the programs whose -c option runs a string.
+var shells = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true, "ksh": true}
+
+// shellValued are the shell options that take an operand.
+var shellValued = map[string]bool{"-o": true, "-O": true, "+o": true, "+O": true, "--rcfile": true, "--init-file": true}
+
+// isShellDashC reports a shell's -c option, alone or among short options.
+func isShellDashC(w string) bool {
+	return strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "--") && strings.Contains(w, "c")
+}
+
+// shellInner returns the string words run as commands: a shell's -c
+// string or eval's argument. isShell is false when words do not run a
+// string; inner is "" when they do but it cannot be read (always for
+// source and .). hidden marks the unreadable cases that are a hidden shape
+// (a file sourced, a $ or backtick in the string) rather than a malformed
+// call.
+func shellInner(words []string) (inner string, isShell, hidden bool) {
+	var rest []string
+	switch prog := words[0]; {
+	case prog == "eval":
+		rest = words[1:]
+	case prog == "source" || prog == ".":
+		return "", true, true
+	case shells[prog]:
+		i, dashC := 1, false
+		for ; i < len(words) && (strings.HasPrefix(words[i], "-") || strings.HasPrefix(words[i], "+")) && words[i] != "--"; i++ {
+			if shellValued[words[i]] {
+				i++ // the option's operand
+				continue
+			}
+			dashC = dashC || isShellDashC(words[i])
+		}
+		if !dashC {
+			// A -c the options above did not reach cannot be read.
+			return "", slices.ContainsFunc(words[1:], isShellDashC), false
+		}
+		rest = words[min(i, len(words)):]
+	default:
+		return "", false, false
+	}
+	switch {
+	case len(rest) != 1:
+		return "", true, false
+	case strings.ContainsAny(rest[0], "$`"):
+		return "", true, true
+	}
+	return rest[0], true, false
+}
+
+// compoundStarts are the first words of shell syntax this reader does not
+// follow (subshells, groups, negation, the bodies of if/for/while).
+var compoundStarts = map[string]bool{"(": true, "{": true, "!": true, "then": true, "do": true, "else": true, "elif": true, "function": true}
+
+// hiddenShape reports a command whose real command this reader cannot
+// see: a shell reading its commands from a pipe (a script operand is no
+// such thing), a gh alias definition, or a gh api call whose body comes
+// from a file. hiddenText covers the shell syntax.
+func hiddenShape(c shellCmd, sep string) bool {
+	if sep == "|" && shells[c.w[0]] {
+		if _, isShell, _ := shellInner(c.w); !isShell && readsStdin(c.w) {
+			return true
+		}
+	}
+	if verb, ok := c.ghCmd("alias"); ok && verb == "set" {
+		return true
+	}
+	if args, ok := c.sub("gh", "api"); ok {
+		return slices.ContainsFunc(args, func(a string) bool {
+			return strings.HasPrefix(a, "@") || strings.Contains(a, "=@") || a == "--input" || strings.HasPrefix(a, "--input=")
+		})
+	}
+	return false
+}
+
+// readsStdin reports a shell call that takes its commands from stdin: no
+// script operand after its options (operands of -o, --rcfile... skipped),
+// or -s, which reads stdin whatever follows.
+func readsStdin(w []string) bool {
+	for i := 1; i < len(w); i++ {
+		a := w[i]
+		switch {
+		case a == "--":
+			return i+1 >= len(w)
+		case shellValued[a]:
+			i++
+		case strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a, "s"):
+			return true
+		case strings.HasPrefix(a, "-") || strings.HasPrefix(a, "+"):
+		default:
+			return false // a script operand
+		}
+	}
+	return true
+}
+
+// hiddenText reports shell syntax in one command's raw text (quotes kept)
+// that this reader does not follow: a compound start (a subshell, a group,
+// negation, an if/for/while body) as the first word, or — outside single
+// quotes, where everything is literal — a command substitution ($( or a
+// backtick, also inside double quotes), a here-string <<< or a lone &
+// sending a job to the background (not &&, 2>&1, &> or >&2, and not inside
+// any quotes). It reads the text before the wrappers are stripped, so an
+// assignment's substitution (x=$(...)) is seen too.
+func hiddenText(text string) bool {
+	if f := strings.Fields(text); len(f) > 0 && (compoundStarts[f[0]] || strings.HasPrefix(f[0], "(") ||
+		strings.Contains(f[0], "()") || (len(f) > 1 && strings.HasPrefix(f[1], "()"))) {
+		return true // a subshell, a group, a body, a function definition
+	}
+	var quote byte
+	for i := 0; i < len(text); i++ {
+		ch := text[i]
+		switch {
+		case quote == '\'':
+			if ch == '\'' {
+				quote = 0
+			}
+			continue
+		case ch == '\\':
+			i++ // escaped: literal
+			continue
+		case ch == '`' || (ch == '$' && i+1 < len(text) && text[i+1] == '('):
+			return true
+		case quote == '"':
+			if ch == '"' {
+				quote = 0
+			}
+			continue
+		case ch == '\'' || ch == '"':
+			quote = ch
+			continue
+		case strings.HasPrefix(text[i:], "<<<"):
+			return true
+		case ch == '&':
+			switch {
+			case i+1 < len(text) && text[i+1] == '&':
+				i++
+			case i+1 < len(text) && text[i+1] == '>', i > 0 && (text[i-1] == '>' || text[i-1] == '<'):
+			default:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// commandsIn is commands for a string run from directory cwd at shell
+// nesting depth; it also returns the directory it ends in.
+func commandsIn(summary, cwd string, depth int) ([]shellCmd, string) {
 	var out []shellCmd
-	cwd := ""
 	for _, part := range splitCommands(summary) {
 		if part.sep != "&&" && part.sep != "" && cwd != "" {
 			cwd = cwdUnknown
@@ -317,13 +500,46 @@ func commands(summary string) []shellCmd {
 			out = append(out, shellCmd{w: []string{unresolved}, cwd: cwd})
 			continue
 		}
+		// A hidden shape is marked and the command still read as it stands.
+		if hiddenText(part.text) {
+			out = append(out, shellCmd{w: []string{hiddenMark}, cwd: cwd})
+		}
 		c := shellCmd{cwd: cwd}
 		words = stripWrappers(words, &c)
 		if len(words) == 0 {
 			continue
 		}
+		if strings.HasPrefix(words[0], "$") { // the program is a variable's value
+			out = append(out, shellCmd{w: []string{hiddenMark}, cwd: cwd})
+		}
 		words[0] = path.Base(words[0])
 		c.w = words
+		if hiddenShape(c, part.sep) {
+			out = append(out, shellCmd{w: []string{hiddenMark}, cwd: cwd})
+		}
+		if inner, isShell, hidden := shellInner(words); isShell {
+			if inner == "" || c.xargs || depth >= maxShellDepth {
+				mark := unresolved
+				if hidden && !c.xargs {
+					mark = hiddenMark
+				}
+				out = append(out, shellCmd{w: []string{mark}, cwd: cwd})
+				continue
+			}
+			innerCwd := cwd
+			if c.chdir { // env -C, sudo -D...: the string runs elsewhere
+				innerCwd = cwdUnknown
+			}
+			sub, subCwd := commandsIn(inner, innerCwd, depth+1)
+			for _, ic := range sub {
+				ic.elsewhere = ic.elsewhere || c.elsewhere
+				out = append(out, ic)
+			}
+			if words[0] == "eval" { // eval runs in this shell: its cd stays
+				cwd = subCwd
+			}
+			continue
+		}
 		if words[0] == "cd" {
 			switch {
 			case len(words) != 2:
@@ -339,7 +555,7 @@ func commands(summary string) []shellCmd {
 		}
 		out = append(out, c)
 	}
-	return out
+	return out, cwd
 }
 
 // gitValuedGlobals are git's global options that take an operand, attached
@@ -370,13 +586,54 @@ func gitGlobals(w []string) (sub int, elsewhere bool) {
 	return i, elsewhere
 }
 
+// ghValued are gh's options that take an operand when not attached; any
+// option may precede the command (cobra accepts inherited flags there).
+var ghValued = map[string]bool{"-R": true, "--repo": true, "--hostname": true}
+
+// ghGlobals skips the options before gh's command, with their operands, so
+// a flag's value is never read as the command; it returns the command's
+// index (1 when no option precedes it).
+func ghGlobals(w []string) int { return 1 + skipGhOptions(w[1:]) }
+
+// skipGhOptions returns the index of the first word of args that is no
+// gh option nor an option's operand.
+func skipGhOptions(args []string) int {
+	i := 0
+	for i < len(args) && strings.HasPrefix(args[i], "-") {
+		name, _, attached := strings.Cut(args[i], "=")
+		if !attached && ghValued[name] {
+			i++
+		}
+		i++
+	}
+	return i
+}
+
+// ghCmd returns the verb of `gh [options] <group> [options] <verb> ...`;
+// ok is false when c is not such a command.
+func (c shellCmd) ghCmd(group string) (verb string, ok bool) {
+	rest, ok := c.sub("gh", group)
+	if !ok {
+		return "", false
+	}
+	i := skipGhOptions(rest)
+	if i >= len(rest) {
+		return "", false
+	}
+	return rest[i], true
+}
+
 // sub returns the arguments after `<prog> <subcommand>` of c, skipping
-// git's global options; ok is false when c is not that command.
+// the program's global options (git's, or gh's); ok is false when c is not
+// that command.
 func (c shellCmd) sub(prog, subcommand string) (args []string, ok bool) {
 	if c.w[0] != prog {
 		return nil, false
 	}
 	i, _ := gitGlobals(c.w)
+	if prog == "gh" {
+		i = ghGlobals(c.w)
+	}
 	if i >= len(c.w) || c.w[i] != subcommand {
 		return nil, false
 	}
@@ -465,34 +722,360 @@ func rebaseOnDefault(args []string) bool {
 	return len(pos) > 0 && isDefaultBranch(stripRemote(pos[0]))
 }
 
-// prMergeNumber is the PR number of `gh pr merge` arguments; ok is false
-// when the PR is named by URL or branch, or not at all.
-func prMergeNumber(args []string) (int, bool) {
-	valued := map[string]bool{"--body": true, "-b": true, "--body-file": true, "-F": true, "--subject": true, "-t": true, "--match-head-commit": true, "--author-email": true, "-A": true, "--repo": true, "-R": true}
-	for i := 0; i < len(args); i++ {
-		switch a := args[i]; {
-		case valued[a]:
-			i++
-		case strings.HasPrefix(a, "-"):
-		default:
-			n, err := strconv.Atoi(a)
-			return n, err == nil
+// matchUnreadable: a command that cannot be read, so cannot be judged.
+// A hidden shape parks a strict request, and a lenient one (the guard) only
+// when its command text names a hard-limit action.
+func matchUnreadable(r PermissionAsk) bool {
+	return anyCmd(r, func(c shellCmd) bool {
+		return c.w[0] == unresolved || (c.w[0] == hiddenMark && (!r.Lenient || lenientLimitHit(r.Summary)))
+	})
+}
+
+// lenientLimitHit reports a hard-limit word in the guard's scan text, or
+// an rm of an outside path read with its quotes and escapes removed.
+func lenientLimitHit(summary string) bool {
+	text := lenientScanText(summary)
+	return limitWords.MatchString(text) || rmOutside(text)
+}
+
+// limitWords are the words of the actions the hard-limit table covers (a
+// merge, push, tag, release, send-pack, reset, forced branch move,
+// update-ref, rm -r/-f, an upload, a message or comment others see): a
+// hidden shape in the guard's mode parks only with one of them in sight.
+var limitWords = regexp.MustCompile(`(?i)(^|[^a-z0-9_])(merges?|mergepullrequest|automerge|push|tags?|release|send-pack|reset|rebase|update-ref|altool|testflight|itmstransporter|pilot|upload_to_testflight|mail|mailx|sendmail|mutt|comment|review)([^a-z0-9_]|$)|rm\s+-[a-z]*[rf]|(^|[^a-z0-9_])rm(\s+-\S+)*\s+['"]?(/|\.\.([/\s'";|&)]|$)|~)|(branch|checkout|switch)\s+-[a-z]*[fdmcb]`)
+
+// lenientScanText is what the guard's mode scans for limitWords and its
+// merge backstop: the command text (comments and description lines
+// dropped by splitCommands) with each commit-message idiom blanked — a
+// "$(cat <<'D' … D)" argument (quoted delimiter, so its body is literal
+// text) of a message-taking command (heredocArgsBlanked) — but only when
+// every part of the request is on the plain allowlist (plainPart), so
+// nothing in it can run the body. Otherwise the text unblanked.
+func lenientScanText(summary string) string {
+	parts := splitCommands(summary)
+	blanked := make([]string, len(parts))
+	found := false
+	for i, p := range parts {
+		var ok bool
+		blanked[i], ok = heredocArgsBlanked(p)
+		found = found || ok
+	}
+	useBlanked := found
+	for i := 0; useBlanked && i < len(parts); i++ {
+		useBlanked = plainPart(blanked[i])
+	}
+	var out strings.Builder
+	for i, p := range parts {
+		if i > 0 {
+			out.WriteByte('\n')
+		}
+		if useBlanked {
+			out.WriteString(blanked[i])
+		} else {
+			out.WriteString(p.text)
 		}
 	}
-	return 0, false
+	return out.String()
 }
 
-// matchUnreadable: a command that cannot be read, so cannot be judged.
-func matchUnreadable(r PermissionAsk) bool {
-	return anyCmd(r, func(c shellCmd) bool { return c.w[0] == unresolved })
+// plainPart reports one part (its heredoc bodies blanked) that cannot run
+// a blanked body: no hidden shape, no output redirect, no ( outside quotes
+// (a zsh glob qualifier *(e:…:) or (+fn) runs code), and the command —
+// written as is, no wrapper, assignment or path in front — is a plain
+// message taker (plainMessageTaker) or on the allowlist (plainCommand).
+func plainPart(text string) bool {
+	if strings.TrimSpace(text) == "" {
+		return true
+	}
+	if hiddenText(text) || unquotedAny(text, ">(") {
+		return false
+	}
+	words, ok := splitWords(text)
+	if !ok || len(words) == 0 {
+		return ok
+	}
+	return plainMessageTaker(words) || plainCommand(words)
 }
 
-// matchMainRef: a push to, a rebase onto, or a PR merge into the default
-// branch. A plain `git push` with no refspec is not matched: its
-// destination is unknown here, and parking every plain push would drop
-// most push decisions (the live pre-push hook covers it).
+// unquotedAny reports any byte of chars outside quotes (not escaped): a >
+// is an output redirect, a ( a glob qualifier or subshell.
+func unquotedAny(text, chars string) bool {
+	var quote byte
+	for i := 0; i < len(text); i++ {
+		ch := text[i]
+		switch {
+		case quote == '\'':
+			if ch == '\'' {
+				quote = 0
+			}
+		case ch == '\\':
+			i++
+		case quote == '"':
+			if ch == '"' {
+				quote = 0
+			}
+		case ch == '\'' || ch == '"':
+			quote = ch
+		case strings.IndexByte(chars, ch) >= 0:
+			return true
+		}
+	}
+	return false
+}
+
+// plainMessageTaker: git commit or an annotated git tag with no git global
+// option and no -c/-C/--exec-style option, or gh pr|issue|release
+// create|edit, each written directly.
+func plainMessageTaker(w []string) bool {
+	if len(w) < 2 {
+		return false
+	}
+	runsThings := func(a string) bool {
+		return a == "-c" || a == "-C" || strings.HasPrefix(a, "--exec") || strings.HasPrefix(a, "--template")
+	}
+	switch {
+	case w[0] == "git" && (w[1] == "commit" || w[1] == "tag"):
+		return !slices.ContainsFunc(w[2:], runsThings)
+	case w[0] == "gh" && len(w) > 2 && (w[1] == "pr" || w[1] == "issue" || w[1] == "release"):
+		return w[2] == "create" || w[2] == "edit"
+	}
+	return false
+}
+
+// plainCommand is the allowlist of commands that may stand beside a
+// blanked message: cd <dir>; git add|status|diff|log|show without
+// --output, --ext-diff, --textconv or -c; go test|build|vet without
+// -exec, -toolexec or -o; gofmt -l; make with targets only; swift
+// build|test; ls, pwd, true, echo. Each written directly.
+func plainCommand(w []string) bool {
+	args := w[1:]
+	noneOf := func(bad ...string) bool {
+		return !slices.ContainsFunc(args, func(a string) bool {
+			for _, b := range bad {
+				if a == b || strings.HasPrefix(a, b+"=") {
+					return true
+				}
+			}
+			return false
+		})
+	}
+	switch w[0] {
+	case "cd":
+		return len(args) == 1
+	case "ls", "pwd", "true", "echo":
+		return true
+	case "git":
+		return len(args) > 0 && slices.Contains([]string{"add", "status", "diff", "log", "show"}, args[0]) &&
+			noneOf("--output", "--ext-diff", "--textconv", "-c")
+	case "go":
+		for i, a := range args { // go takes --flag as -flag
+			if strings.HasPrefix(a, "--") {
+				args[i] = a[1:]
+			}
+		}
+		return len(args) > 0 && slices.Contains([]string{"test", "build", "vet"}, args[0]) &&
+			noneOf("-exec", "-toolexec", "-o", "-vettool")
+	case "gofmt":
+		return slices.Contains(args, "-l") && noneOf("-w")
+	case "make":
+		return !slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "-") || strings.Contains(a, "=") })
+	case "swift":
+		return len(args) > 0 && (args[0] == "build" || args[0] == "test")
+	}
+	return false
+}
+
+// rmOutside reports an rm anywhere in a part's words — at command
+// position or not (a then-body, a group, behind a background &, even an
+// echo's argument: that false park is accepted, it fails closed) — whose
+// following operand, quotes and escapes removed, is an absolute, home or
+// parent path (.. as a whole segment: ..cache is local). A & glued inside
+// a word (sleep 1&rm) splits it.
+func rmOutside(text string) bool {
+	for _, p := range splitCommands(text) {
+		raw, ok := splitWords(p.text)
+		if !ok {
+			continue
+		}
+		var words []string
+		for _, w := range raw {
+			for i, piece := range strings.Split(w, "&") {
+				if i > 0 {
+					words = append(words, "&")
+				}
+				if piece != "" {
+					words = append(words, piece)
+				}
+			}
+		}
+		for i, w := range words {
+			if path.Base(w) != "rm" {
+				continue
+			}
+			for _, a := range words[i+1:] {
+				if a == "&" || a == ";" || a == "|" {
+					break
+				}
+				if strings.HasPrefix(a, "/") || strings.HasPrefix(a, "~") || a == ".." || strings.HasPrefix(a, "../") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// messageTaker reports a command whose heredoc argument is a message: git
+// commit, an annotated git tag (-a/-m), gh pr|issue create|edit, gh release
+// create|edit. Their own rows (a tag, a release) still run on the command.
+func messageTaker(c shellCmd) bool {
+	if _, ok := c.sub("git", "commit"); ok {
+		return true
+	}
+	if args, ok := c.sub("git", "tag"); ok {
+		flags, _ := splitFlags(args)
+		return flags["-a"] || flags["-m"] || flags["--annotate"] || flags["--message"]
+	}
+	for _, group := range []string{"pr", "issue", "release"} {
+		if verb, ok := c.ghCmd(group); ok && (verb == "create" || verb == "edit") {
+			return true
+		}
+	}
+	return false
+}
+
+// heredocArgsBlanked returns part's text with every quoted-heredoc
+// argument of a message-taking command blanked to "" (ok true): the
+// argument is a whole double-quoted word that is not the first. Otherwise
+// the text as it is.
+func heredocArgsBlanked(part commandPart) (string, bool) {
+	words, ok := splitWords(part.text)
+	if !ok {
+		return part.text, false
+	}
+	var c shellCmd
+	words = stripWrappers(words, &c)
+	if len(words) < 2 || c.xargs || strings.HasPrefix(words[0], "$") {
+		return part.text, false
+	}
+	c.w = append([]string{path.Base(words[0])}, words[1:]...)
+	if !messageTaker(c) {
+		return part.text, false
+	}
+	text, blanked := part.text, false
+	for _, w := range words[1:] {
+		if !isQuotedHeredocCat(w) {
+			continue
+		}
+		quoted := `"` + w + `"`
+		if !strings.Contains(text, quoted) {
+			return part.text, false
+		}
+		text, blanked = strings.Replace(text, quoted, `""`, 1), true
+	}
+	if !blanked || hiddenText(text) || hiddenShape(c, part.sep) {
+		return part.text, false
+	}
+	return text, true
+}
+
+// heredocDelim is a heredoc delimiter word.
+var heredocDelim = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
+// isQuotedHeredocCat reports a word that is exactly $(cat <<'D'\n…\nD\n)
+// with a quoted delimiter ('D', "D" or \D): its body is literal text.
+func isQuotedHeredocCat(w string) bool {
+	rest, ok := strings.CutPrefix(w, "$(cat <<")
+	if !ok {
+		return false
+	}
+	rest = strings.TrimLeft(rest, " ")
+	var delim string
+	switch {
+	case strings.HasPrefix(rest, "'") || strings.HasPrefix(rest, `"`):
+		end := strings.IndexByte(rest[1:], rest[0])
+		if end < 0 {
+			return false
+		}
+		delim, rest = rest[1:1+end], rest[2+end:]
+	case strings.HasPrefix(rest, `\`):
+		nl := strings.IndexByte(rest, '\n')
+		if nl < 0 {
+			return false
+		}
+		delim, rest = rest[1:nl], rest[nl:]
+	default:
+		return false
+	}
+	if !heredocDelim.MatchString(delim) || !strings.HasPrefix(rest, "\n") {
+		return false
+	}
+	lines := strings.Split(rest[1:], "\n")
+	for i, l := range lines {
+		if l == delim {
+			return strings.Join(lines[i+1:], "\n") == ")"
+		}
+	}
+	return false
+}
+
+// mergeWords and mergeTools are the backstop's two halves: a merge word
+// (merge, merges, mergePullRequest, an auto-merge) and a tool that can
+// merge a pull request.
+var (
+	mergeWords = regexp.MustCompile(`(?i)(^|[^a-z])merges?([^a-z]|$)|mergepullrequest|automerge`)
+	mergeTools = regexp.MustCompile(`(?i)(^|[^a-z])(gh|hub|api|graphql|pulls|curl)([^a-z]|$)`)
+)
+
+// mergeBackstop is the coarse check after the parser (fail closed): a
+// shell request whose text has a merge word and a tool that can merge a
+// pull request parks, however the command is shaped. A strict request is
+// read whole, comments included; a lenient one (the guard) as its word
+// scan reads it (lenientScanText: no comments, a plain heredoc argument
+// blanked).
+func mergeBackstop(r PermissionAsk) bool {
+	if !isBash(r) {
+		return false
+	}
+	text := r.Summary
+	if r.Lenient { // comments dropped, the plain heredoc idiom blanked
+		text = lenientScanText(text)
+	}
+	return mergeWords.MatchString(text) && mergeTools.MatchString(text)
+}
+
+// prMergePath is a GitHub REST path that merges a pull request.
+var prMergePath = regexp.MustCompile(`(?i)/pulls/[^/\s]+/merge\b`)
+
+// isPRMerge reports a command that merges a pull request, in any form:
+// gh pr merge (options anywhere), hub merge, a call on a .../pulls/<n>/merge
+// path (gh api, curl...) or the GraphQL mergePullRequest mutation.
+func isPRMerge(c shellCmd) bool {
+	if verb, ok := c.ghCmd("pr"); ok && verb == "merge" {
+		return true
+	}
+	if _, ok := c.sub("hub", "merge"); ok {
+		return true
+	}
+	return slices.ContainsFunc(c.w, func(w string) bool {
+		return prMergePath.MatchString(w) || strings.Contains(w, "mergePullRequest")
+	})
+}
+
+// matchMainRef: a push to, a rebase onto the default branch, or any PR
+// merge — in phase 2 merging is the owner's whatever the base: a base read
+// can be pointed at another repository too many ways (-R, GH_REPO, a cd,
+// aliases) to be trusted. A plain `git push` with no refspec is not
+// matched: its destination is unknown here, and parking every plain push
+// would drop most push decisions (the live pre-push hook covers it).
 func matchMainRef(r PermissionAsk) bool {
+	if mergeBackstop(r) {
+		return true
+	}
 	return anyCmd(r, func(c shellCmd) bool {
+		if isPRMerge(c) {
+			return true
+		}
 		if _, pos, ok := pushArgs(c); ok {
 			for _, spec := range pos[min(1, len(pos)):] { // pos[0] is the remote
 				if isDefaultBranch(refDest(spec)) {
@@ -503,14 +1086,6 @@ func matchMainRef(r PermissionAsk) bool {
 		}
 		if args, ok := c.sub("git", "rebase"); ok {
 			return rebaseOnDefault(args)
-		}
-		if args, ok := c.sub("gh", "pr"); ok && len(args) > 0 && args[0] == "merge" {
-			pr, ok := prMergeNumber(args[1:])
-			if !ok || r.PRBase == nil {
-				return true
-			}
-			base, known := r.PRBase(pr)
-			return !known || isDefaultBranch(base)
 		}
 		return false
 	})
@@ -547,8 +1122,8 @@ func matchTag(r PermissionAsk) bool {
 
 func matchRelease(r PermissionAsk) bool {
 	return anyCmd(r, func(c shellCmd) bool {
-		args, ok := c.sub("gh", "release")
-		return ok && len(args) > 0 && args[0] != "list" && args[0] != "view" && args[0] != "download"
+		verb, ok := c.ghCmd("release")
+		return ok && verb != "list" && verb != "view" && verb != "download"
 	})
 }
 
@@ -585,6 +1160,24 @@ func matchForcePush(r PermissionAsk) bool {
 		}
 		for _, spec := range pos[min(1, len(pos)):] {
 			if strings.HasPrefix(spec, "+") {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// branchVerbs are the git commands whose hard-limit rows read the
+// session's branch or its shared branches.
+var branchVerbs = []string{"reset", "branch", "update-ref", "checkout", "switch", "push", "rebase"}
+
+// BranchDependent reports a shell request that can hit a row reading the
+// live branch, the shared branches or a PR's base (a ref-moving git
+// command or a push): only such a request needs those reads.
+func BranchDependent(r PermissionAsk) bool {
+	return anyCmd(r, func(c shellCmd) bool {
+		for _, v := range branchVerbs {
+			if _, ok := c.sub("git", v); ok {
 				return true
 			}
 		}
@@ -647,7 +1240,7 @@ func movesContext(c shellCmd) bool {
 	if c.w[0] == "export" && slices.ContainsFunc(c.w[1:], isGitDirAssignment) {
 		return true
 	}
-	if args, ok := c.sub("gh", "pr"); ok && len(args) > 0 && args[0] == "checkout" {
+	if verb, ok := c.ghCmd("pr"); ok && verb == "checkout" {
 		return true
 	}
 	return c.w[0] == "pushd" || c.w[0] == "popd"
@@ -721,8 +1314,15 @@ func forceCreateTarget(args []string) (branch string, ok bool) {
 // tells. A stored row
 // (Branch nil) with none of those parks only a reset --hard onto a remote
 // ref.
+//
+// A live request whose shared branches are not known (Branch.Shared nil)
+// fails closed: any forced branch move (checkout/switch -B, branch -f/-D/
+// -M/-C, update-ref) parks, and so does a reset --hard to an explicit
+// target other than HEAD; a reset --hard with no target (or HEAD) only
+// drops the working tree's changes and stays private.
 func matchResetShared(r PermissionAsk) bool {
 	recordedShared := r.Branch != nil && (r.Branch.Current == "" || r.isShared(r.Branch.Current))
+	sharedUnknown := r.Branch != nil && r.Branch.Shared == nil
 	moved := false
 	return anyCmd(r, func(c shellCmd) bool {
 		if movesContext(c) {
@@ -732,7 +1332,7 @@ func matchResetShared(r PermissionAsk) bool {
 		for _, sub := range []string{"checkout", "switch"} {
 			if args, ok := c.sub("git", sub); ok {
 				branch, forced := forceCreateTarget(args)
-				return forced && r.isShared(branch)
+				return forced && (sharedUnknown || r.isShared(branch))
 			}
 		}
 		if args, ok := c.sub("git", "branch"); ok {
@@ -743,14 +1343,17 @@ func matchResetShared(r PermissionAsk) bool {
 			if !forced {
 				return false
 			}
-			return slices.ContainsFunc(pos, r.isShared) || (rename && len(pos) == 1 && currentShared)
+			return sharedUnknown || slices.ContainsFunc(pos, r.isShared) || (rename && len(pos) == 1 && currentShared)
 		}
 		if args, ok := c.sub("git", "update-ref"); ok {
-			return updateRefShared(r, args, currentShared)
+			return sharedUnknown || updateRefShared(r, args, currentShared)
 		}
 		args, ok := c.sub("git", "reset")
 		if !ok || !slices.Contains(args, "--hard") {
 			return false
+		}
+		if _, pos := splitFlags(args); sharedUnknown && slices.ContainsFunc(pos, func(a string) bool { return a != "HEAD" && a != "@" }) {
+			return true
 		}
 		return currentShared || slices.ContainsFunc(args, func(a string) bool {
 			return strings.HasPrefix(a, "origin/") || strings.HasPrefix(a, "upstream/") || a == "@{u}" || a == "@{upstream}" || a == "FETCH_HEAD"
@@ -864,11 +1467,11 @@ func matchOutward(r PermissionAsk) bool {
 		case "mail", "mailx", "sendmail", "mutt":
 			return true
 		}
-		if args, ok := c.sub("gh", "pr"); ok && len(args) > 0 && (args[0] == "comment" || args[0] == "review") {
+		if verb, ok := c.ghCmd("pr"); ok && (verb == "comment" || verb == "review") {
 			return true
 		}
-		args, ok := c.sub("gh", "issue")
-		return ok && len(args) > 0 && args[0] == "comment"
+		verb, ok := c.ghCmd("issue")
+		return ok && verb == "comment"
 	})
 }
 

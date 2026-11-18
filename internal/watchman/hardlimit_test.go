@@ -11,14 +11,6 @@ func bash(cmd string) PermissionAsk {
 }
 
 func TestParkedBy(t *testing.T) {
-	prBase := func(m map[int]string) func(int) (string, bool) {
-		return func(n int) (string, bool) { b, ok := m[n]; return b, ok }
-	}
-	withPR := func(cmd string, m map[int]string) PermissionAsk {
-		r := bash(cmd)
-		r.PRBase = prBase(m)
-		return r
-	}
 	edit := func(tool, p string) PermissionAsk {
 		return PermissionAsk{Tool: tool, Summary: p, WorkbenchFolder: "/w", Worktrees: []string{"/w/a"}}
 	}
@@ -46,10 +38,52 @@ func TestParkedBy(t *testing.T) {
 		{"send-pack tag", bash("git send-pack origin refs/tags/v1:refs/tags/v1"), LimitSendPack},
 		{"send-pack force update", bash("git send-pack --force origin +feat:refs/heads/feat"), LimitSendPack},
 		{"send-pack behind git globals", bash("git -C ../acme send-pack origin feat"), LimitSendPack},
-		{"pr merge into main", withPR("gh pr merge 12 --squash", map[int]string{12: "main"}), LimitMainRef},
-		{"pr merge into feature", withPR("gh pr merge 12", map[int]string{12: "feature/watchman"}), ""},
-		{"pr merge unknown base", withPR("gh pr merge 12", nil), LimitMainRef},
+		{"pr merge into main", bash("gh pr merge 12 --squash"), LimitMainRef},
+		{"pr merge into feature", bash("gh pr merge 12"), LimitMainRef},
+		{"pr merge unknown base", bash("gh pr merge 12"), LimitMainRef},
 		{"pr merge no resolver", bash("gh pr merge 12"), LimitMainRef},
+		// The base is read in the session folder: a merge in another
+		// repository parks whatever that read says (Task 10 review).
+		{"pr merge --repo", bash("gh pr merge 12 --repo acme/other"), LimitMainRef},
+		{"pr merge --repo=", bash("gh pr merge 12 --repo=acme/other"), LimitMainRef},
+		{"pr merge -R", bash("gh pr merge -R acme/other 12"), LimitMainRef},
+		{"pr merge -Rrepo", bash("gh pr merge 12 -Racme/other"), LimitMainRef},
+		{"pr merge -sR", bash("gh pr merge 12 -sR acme/other"), LimitMainRef},
+		{"pr merge after cd", bash("cd ../other && gh pr merge 12"), LimitMainRef},
+		{"pr merge env -C", bash("env -C ../other gh pr merge 12"), LimitMainRef},
+		{"pr merge GH_REPO", bash("GH_REPO=acme/other gh pr merge 12"), LimitMainRef},
+		{"pr merge export GH_REPO", bash("export GH_REPO=acme/other; gh pr merge 12"), LimitMainRef},
+		{"pr merge GH_HOST", bash("GH_HOST=ghe.example.com gh pr merge 12"), LimitMainRef},
+		{"pr merge URL", bash("gh pr merge https://github.com/acme/other/pull/12"), LimitMainRef},
+		{"pr merge squash into feature", bash("gh pr merge 12 --squash --delete-branch"), LimitMainRef},
+		{"gh -R before pr", bash("gh -R acme/other pr merge 12"), LimitMainRef},
+		{"gh --repo before pr", bash("gh --repo acme/other pr merge 12"), LimitMainRef},
+		{"gh --repo= before pr", bash("gh --repo=acme/other pr merge 12"), LimitMainRef},
+		{"gh -Rx before pr", bash("gh -Racme/other pr merge 12"), LimitMainRef},
+		{"gh flag value named pr", bash("gh -R pr pr merge 12"), LimitMainRef}, //nolint:dupword // the flag value "pr" is the point
+		{"pushd then pr merge", bash("pushd ../other && gh pr merge 12"), LimitMainRef},
+		{"checkout then pr merge", bash("git checkout other && gh pr merge 12"), LimitMainRef},
+		{"gh pr checkout then pr merge", bash("gh pr checkout 7 && gh pr merge 12"), LimitMainRef},
+		{"env GH_REPO pr merge", bash("env GH_REPO=acme/other gh pr merge 12"), LimitMainRef},
+		{"export GH_HOST then pr merge", bash("export GH_HOST=ghe.example.com && gh pr merge 12"), LimitMainRef},
+		// Phase 2: every PR merge is the owner's, whatever its base or form
+		// (Task 10 review round 3).
+		{"gh pr -R merge", bash("gh pr -R acme/other merge 12"), LimitMainRef},
+		{"gh pr --repo= merge", bash("gh pr --repo=acme/other merge 12"), LimitMainRef},
+		{"gh pr --repo merge", bash("gh pr --repo acme/other merge 12"), LimitMainRef},
+		{"standalone GH_REPO line then merge", bash("GH_REPO=acme/other\ngh pr merge 12"), LimitMainRef},
+		{"gh api pulls merge", bash("gh api -X PUT repos/acme/x/pulls/12/merge"), LimitMainRef},
+		{"gh api pulls merge with braces", bash("gh api --method PUT repos/{owner}/{repo}/pulls/12/merge -f merge_method=squash"), LimitMainRef},
+		{"gh api graphql mergePullRequest", bash(`gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: "x"}) { clientMutationId } }'`), LimitMainRef},
+		{"curl pulls merge", bash("curl -X PUT https://api.github.com/repos/acme/x/pulls/12/merge"), LimitMainRef},
+		{"hub merge", bash("hub merge https://github.com/acme/x/pull/12"), LimitMainRef},
+		{"gh api pulls read", bash("gh api repos/acme/x/pulls/12"), ""},
+		{"gh pr view", bash("gh pr -R acme/x view 12"), ""},
+		{"gh pr -R comment", bash("gh pr -R acme/x comment 3 -b hi"), LimitOutward},
+		{"gh pr --repo= review", bash("gh pr --repo=acme/x review 3 --approve"), LimitOutward},
+		{"gh issue -R comment", bash("gh issue -R acme/x comment 3 -b hi"), LimitOutward},
+		{"gh release -R create", bash("gh release -R acme/x create v1"), LimitRelease},
+		{"gh -R before pr comment", bash("gh -R acme/other pr comment 3 -b hi"), LimitOutward},
 		{"tag and push", bash("git tag v1 && git push --tags"), LimitTag},
 		{"tag list", bash("git tag -l"), ""},
 		{"release create", bash("gh release create v1"), LimitRelease},
@@ -155,11 +189,11 @@ func TestParkedBy(t *testing.T) {
 		{"fastlane pilot", bash("fastlane pilot upload"), LimitTestFlight},
 		{"make testflight", bash("make mobile-testflight"), LimitTestFlight},
 		{"make test", bash("make test"), ""},
-		{"pr merge flag value", withPR("gh pr merge --body 5 12", map[int]string{12: "feature/x"}), ""},
-		{"pr merge flag value unknown", withPR("gh pr merge --body 5 12", map[int]string{5: "feature/x"}), LimitMainRef},
-		{"pr merge url", withPR("gh pr merge https://github.com/a/b/pull/12", map[int]string{12: "feature/x"}), LimitMainRef},
-		{"pr merge branch", withPR("gh pr merge feat", map[int]string{12: "feature/x"}), LimitMainRef},
-		{"pr merge bare", withPR("gh pr merge", map[int]string{12: "feature/x"}), LimitMainRef},
+		{"pr merge flag value", bash("gh pr merge --body 5 12"), LimitMainRef},
+		{"pr merge flag value unknown", bash("gh pr merge --body 5 12"), LimitMainRef},
+		{"pr merge url", bash("gh pr merge https://github.com/a/b/pull/12"), LimitMainRef},
+		{"pr merge branch", bash("gh pr merge feat"), LimitMainRef},
+		{"pr merge bare", bash("gh pr merge"), LimitMainRef},
 		{"edit in workbench folder", edit("Write", "/w/docs/x.md"), ""},
 		{"escaped quote hides no path", bash(`rm O\'Brien /tmp/obsolete`), LimitDeleteOutside},
 		{"escaped quote inside", bash(`rm -f O\'Brien /w/a/x`), ""},
@@ -285,12 +319,26 @@ func TestParkedBy_ResetHardOnSharedLocalBranch(t *testing.T) {
 		{"switch -fB main", bash("git switch -fB main"), LimitResetShared},
 		{"checkout -fC main", bash("git checkout -fC main origin/x"), LimitResetShared},
 		{"checkout -B feature from main", bash("git checkout -B feat main"), ""},
-		{"update-ref HEAD on feature", onBranch("git update-ref HEAD abc", &BranchInfo{Current: "feat"}), ""},
+		{"update-ref HEAD on feature", onBranch("git update-ref HEAD abc", &BranchInfo{Current: "feat", Shared: shared}), ""},
+		// Shared not known (nil): every destructive ref move parks; a
+		// reset --hard with no target or HEAD stays private (Task 10 review).
+		{"update-ref HEAD shared unknown", onBranch("git update-ref HEAD abc", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"update-ref feature shared unknown", onBranch("git update-ref refs/heads/feat abc", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"branch -f shared unknown", onBranch("git branch -f feat HEAD~2", &BranchInfo{Current: "wt/session-3"}), LimitResetShared},
+		{"branch -D shared unknown", onBranch("git branch -D feat", &BranchInfo{Current: "wt/session-3"}), LimitResetShared},
+		{"checkout -B shared unknown", onBranch("git checkout -B feat main", &BranchInfo{Current: "wt/session-3"}), LimitResetShared},
+		{"reset HEAD~3 shared unknown", onBranch("git reset --hard HEAD~3", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"reset sha shared unknown", onBranch("git reset --hard abc123", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"reset no target shared unknown", onBranch("git reset --hard", &BranchInfo{Current: "feat"}), ""},
+		{"reset HEAD shared unknown", onBranch("git reset --hard HEAD", &BranchInfo{Current: "feat"}), ""},
+		{"reset -q no target shared unknown", onBranch("git reset -q --hard", &BranchInfo{Current: "feat"}), ""},
+		{"branch -f feature shared known", onBranch("git branch -f feat HEAD~2", &BranchInfo{Current: "wt/session-3", Shared: shared}), ""},
 		{"git -c then -C reset", onBranch("git -c core.x=1 -C /other reset --hard HEAD~1", &BranchInfo{Current: "feat"}), LimitResetShared},
 		{"git -c then -C reset not recorded", bash("git -c core.x=1 -C /other reset --hard HEAD~1"), LimitResetShared},
 		{"git --git-dir separate reset", bash("git --git-dir /x reset --hard"), LimitResetShared},
 		{"git --work-tree= reset", bash("git --work-tree=/x reset --hard HEAD~1"), LimitResetShared},
-		{"git -c only reset on feature", onBranch("git -c core.x=1 reset --hard HEAD~1", &BranchInfo{Current: "feat"}), ""},
+		{"git -c only reset on feature", onBranch("git -c core.x=1 reset --hard HEAD~1", &BranchInfo{Current: "feat", Shared: shared}), ""},
+		{"git -c only reset shared unknown", onBranch("git -c core.x=1 reset --hard HEAD~1", &BranchInfo{Current: "feat"}), LimitResetShared},
 		{"git --namespace separate reset on main", onBranch("git --namespace ns reset --hard HEAD~1", &BranchInfo{Current: "main"}), LimitResetShared},
 		{"git --exec-path= reset on main", onBranch("git --exec-path=/x reset --hard HEAD~1", &BranchInfo{Current: "main"}), LimitResetShared},
 		{"git -c branch -f main", bash("git -c core.x=1 branch -f main HEAD~2"), LimitResetShared},
@@ -311,7 +359,7 @@ func TestParkedBy_ResetHardOnSharedLocalBranch(t *testing.T) {
 		{"env GIT_DIR reset", bash("env GIT_DIR=/other/.git git reset --hard HEAD~1"), LimitResetShared},
 		{"export GIT_DIR then reset", bash("export GIT_DIR=/other/.git && git reset --hard HEAD~1"), LimitResetShared},
 		{"env -C reset", onBranch("env -C /other git reset --hard HEAD~1", &BranchInfo{Current: "feat"}), LimitResetShared},
-		{"other env reset on feature", onBranch("GIT_TRACE=1 git reset --hard HEAD~1", &BranchInfo{Current: "feat"}), ""},
+		{"other env reset on feature", onBranch("GIT_TRACE=1 git reset --hard HEAD~1", &BranchInfo{Current: "feat", Shared: shared}), ""},
 		{"update-ref HEAD after checkout", onBranch("git checkout main; git update-ref HEAD abc", &BranchInfo{Current: "feat"}), LimitResetShared},
 	})
 }
@@ -384,7 +432,7 @@ func TestParkedBy_UnreadableIsItsOwnRow(t *testing.T) {
 func TestParkedBy_StartDirPlacesOnly(t *testing.T) {
 	ask := func(cmd string) PermissionAsk {
 		return PermissionAsk{Tool: "Bash", Summary: cmd, Worktrees: []string{"/wt"}, Cwd: "/elsewhere",
-			Branch: &BranchInfo{Current: "feature/x"}}
+			Branch: &BranchInfo{Current: "feature/x", Shared: []string{"main"}}}
 	}
 	_, parked := ParkedBy(ask("git reset --hard HEAD~1"))
 	require.False(t, parked)
@@ -399,4 +447,333 @@ func TestParkedBy_StartDirPlacesOnly(t *testing.T) {
 	l, parked = ParkedBy(ask("cd /tmp && git reset --hard HEAD~1"))
 	require.True(t, parked)
 	require.Equal(t, LimitResetShared, l)
+}
+
+func TestBranchDependent(t *testing.T) {
+	for cmd, want := range map[string]bool{
+		"go test ./...":                  false,
+		"git status && git diff":         false,
+		"rm -rf build":                   false,
+		"gh pr view 12":                  false,
+		"git reset --hard HEAD~1":        true,
+		"git -C ../x branch -f feat":     true,
+		"go vet && git push origin feat": true,
+		"git update-ref HEAD abc":        true,
+		"git checkout -B feat":           true,
+		"gh -R acme/x pr merge 12":       false,
+	} {
+		require.Equal(t, want, BranchDependent(bash(cmd)), cmd)
+	}
+	require.False(t, BranchDependent(PermissionAsk{Tool: "Edit", Summary: "git reset --hard"}))
+}
+
+// A shell running a string is a wrapper (Task 10 review round 3): its one
+// literal string is parsed in place; anything else cannot be read.
+func TestParkedBy_ShellStringsAreWrappers(t *testing.T) {
+	expectParked(t, []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}{
+		{"bash -c push main", bash(`bash -c 'git push origin main'`), LimitMainRef},
+		{"sh -c pr merge", bash(`sh -c "gh pr merge 12"`), LimitMainRef},
+		{"zsh -lc force push", bash(`zsh -lc 'go vet && git push -f origin feat'`), LimitForcePush},
+		{"eval release", bash(`eval 'gh release create v1'`), LimitRelease},
+		{"nested shells", bash(`bash -c "sh -c 'git push --tags'"`), LimitTag},
+		{"env -C bash -c reset", bash(`env -C /other bash -c 'git reset --hard HEAD~1'`), LimitResetShared},
+		{"eval cd carries on", bash(`eval 'cd /tmp' && rm -rf build`), LimitDeleteOutside},
+		{"bash -c harmless", bash(`bash -c 'go test ./...'`), ""},
+		{"eval harmless", bash(`eval 'go vet ./...'`), ""},
+		{"bash script file", bash(`bash scripts/check.sh`), ""},
+		{"bash -c with a variable", bash(`bash -c "$CMD"`), LimitUnreadable},
+		{"bash -c with a backtick", bash("bash -c 'git push origin `cat ref`'"), LimitUnreadable},
+		{"bash -c with extra args", bash(`bash -c 'git push "$0" main' origin`), LimitUnreadable},
+		{"eval of many words", bash(`eval git push origin main`), LimitUnreadable},
+		{"bash -c without a string", bash(`bash -c`), LimitUnreadable},
+		{"source a file", bash(`source scripts/env.sh && go test ./...`), LimitUnreadable},
+		{"dot a file", bash(`. ./env.sh`), LimitUnreadable},
+		{"xargs sh -c", bash(`echo x | xargs sh -c 'git push origin feat'`), LimitUnreadable},
+		{"too deep", bash(`bash -c "bash -c 'bash -c \"bash -c go\"'"`), LimitUnreadable},
+		// Shell options with operands before -c (round 4).
+		{"bash -o pipefail -c", bash(`bash -o pipefail -c 'git push origin main'`), LimitMainRef},
+		{"bash --rcfile -c", bash(`bash --rcfile x.rc -c 'gh release create v1'`), LimitRelease},
+		{"bash +O extglob -c harmless", bash(`bash +O extglob -c 'go test ./...'`), ""},
+		{"bash -c after a script", bash(`bash script.sh -c 'git push origin main'`), LimitUnreadable},
+		// A string run elsewhere has no known directory (round 4).
+		{"env -C bash -c relative delete", bash(`env -C /x bash -c 'rm -rf y'`), LimitDeleteOutside},
+		{"cd then bash -c relative delete", bash(`cd /tmp && bash -c 'rm -rf y'`), LimitDeleteOutside},
+		{"bash -c relative delete here", bash(`bash -c 'rm -rf y'`), ""},
+	})
+}
+
+// Round 4: shapes the parser does not follow park as unreadable, and a
+// coarse text backstop parks any merge-looking request with a tool that
+// can merge a pull request (main_ref), however the command is shaped.
+func TestParkedBy_HiddenShapesAndMergeBackstop(t *testing.T) {
+	expectParked(t, []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}{
+		{"subshell", bash("(gh pr merge 1)"), LimitUnreadable},
+		{"group", bash("{ gh pr merge 1; }"), LimitUnreadable},
+		{"command substitution", bash("echo $(gh pr merge 1)"), LimitUnreadable},
+		{"backtick substitution", bash("echo `git push origin main`"), LimitUnreadable},
+		{"background job", bash("true & gh pr merge 1"), LimitUnreadable},
+		{"if body", bash("if true; then gh pr merge 1; fi"), LimitUnreadable},
+		{"for body", bash("for b in a; do git push origin main; done"), LimitUnreadable},
+		{"negation", bash("! gh pr merge 1"), LimitUnreadable},
+		{"pipe into bash", bash("echo 'gh pr merge 1' | bash"), LimitUnreadable},
+		{"pipe into sh", bash("cat cmds.txt | sh"), LimitUnreadable},
+		{"here-string", bash("bash <<< 'gh pr merge 1'"), LimitUnreadable},
+		{"gh alias set", bash("gh alias set m 'pr merge'"), LimitUnreadable},
+		{"gh api body from a file", bash("gh api graphql -F query=@m.graphql"), LimitUnreadable},
+		{"gh api --input", bash("gh api repos/o/r/pulls --input body.json"), LimitUnreadable},
+		{"gh api merges endpoint", bash("gh api -X POST repos/o/r/merges -f base=main"), LimitMainRef},
+		{"curl merges endpoint", bash("curl -X POST https://api.github.com/repos/o/r/merges"), LimitMainRef},
+		{"auto-merge mutation", bash(`gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }'`), LimitMainRef},
+		{"auto-merge setting", bash("gh api -X PATCH repos/o/r -F allow_auto_merge=true"), LimitMainRef},
+		{"automerge word", bash("gh label create automerge"), LimitMainRef},
+		{"pr merge --auto", bash("gh pr merge 1 --auto --squash"), LimitMainRef},
+		{"merge word in the description", bash("gh pr view 1\n# check it before the merge"), LimitMainRef},
+		{"merge word and gh apart", bash("git log --grep merge && gh pr view 1"), LimitMainRef},
+		// What the backstop and the shapes leave alone.
+		{"go test -run Merge", bash("go test ./... -run Merge"), ""},
+		{"go test TestMergeRows", bash("go test ./internal/x -run TestMergeRows"), ""},
+		{"git merge without a PR tool", bash("git merge --no-ff feature/x"), ""},
+		{"gh without a merge word", bash("gh pr view 1 --json title"), ""},
+		{"stderr redirect", bash("go test ./... 2>&1 | tail -5"), ""},
+		{"both streams redirect", bash("make build &> build.log"), ""},
+		{"bash -c list", bash("bash -c 'go vet ./... && go test ./...'"), ""},
+		// Wrappers added in round 4.
+		{"timeout", bash("timeout 30 git push origin main"), LimitMainRef},
+		{"timeout with options", bash("timeout -k 5 -s KILL 1m git push --tags"), LimitTag},
+		{"caffeinate", bash("caffeinate -i git push -f origin feat"), LimitForcePush},
+		{"doas", bash("doas gh release create v1"), LimitRelease},
+		{"stdbuf attached", bash("stdbuf -oL git push origin main"), LimitMainRef},
+		{"stdbuf separate", bash("stdbuf -o L git push origin main"), LimitMainRef},
+		{"timeout harmless", bash("timeout 10m go test ./..."), ""},
+	})
+}
+
+// Round 5: hidden shapes are read on the raw text with quote context and
+// before the wrappers; the guard's lenient mode parks one only with a
+// hard-limit word in the command text, and its backstop skips comments.
+func TestParkedBy_HiddenShapesStrictAndLenient(t *testing.T) {
+	lenient := func(cmd string) PermissionAsk {
+		r := bash(cmd)
+		r.Lenient = true
+		return r
+	}
+	heredocCommit := "git commit -m \"$(cat <<'EOF'\nFix the export\n\nCo-Authored-By: someone\nEOF\n)\""
+	ordinary := []string{
+		heredocCommit,
+		`gh pr create --title "Fix" --body "$(cat body.md)"`,
+		"for f in *.go; do gofmt -l $f; done",
+		"while read -r l; do echo $l; done < list.txt",
+		"make build &",
+		"echo $(date)",
+		"(cd sub && make)",
+		"FOO=$(date) true",
+		"source venv/bin/activate && go test ./...",
+	}
+	var cases []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}
+	add := func(name string, ask PermissionAsk, limit HardLimit) {
+		cases = append(cases, struct {
+			name  string
+			ask   PermissionAsk
+			limit HardLimit
+		}{name, ask, limit})
+	}
+	for _, cmd := range ordinary {
+		add("strict "+cmd, bash(cmd), LimitUnreadable)
+		add("lenient "+cmd, lenient(cmd), "")
+	}
+	for _, cmd := range []string{"x $(git push origin HEAD:main)", "x=$(git push origin HEAD:main)", "true & gh pr merge 1", "(git push --force origin feat)"} {
+		add("strict "+cmd, bash(cmd), LimitUnreadable)
+		add("lenient "+cmd, lenient(cmd), LimitUnreadable)
+	}
+	// Quote context: single quotes are literal, & inside quotes is no job.
+	for _, cmd := range []string{
+		`echo '$(not run) and a backtick: ` + "`x`" + `'`,
+		`curl 'https://example.com/?a=1&b=2'`,
+		`git commit -m "fish & chips"`,
+		`echo 'a <<< b'`,
+	} {
+		add("strict quoted "+cmd, bash(cmd), "")
+	}
+	// The backstop reads comments only in strict mode.
+	add("strict comment merge", bash("gh pr view 1 # merge"), LimitMainRef)
+	add("lenient comment merge", lenient("gh pr view 1 # merge"), "")
+	add("lenient description merge", lenient("gh pr view 1\n# before the merge"), "")
+	add("lenient command merge", lenient("gh pr merge 1"), LimitMainRef)
+	// A script operand is no command on stdin.
+	add("pipe into bash script", bash("make gen | bash scripts/apply.sh"), "")
+	add("pipe into bash", bash("make gen | bash"), LimitUnreadable)
+	add("pipe into sh -s", bash("make gen | sh -s"), LimitUnreadable)
+	// GIT_DIR points git elsewhere but moves no directory.
+	add("GIT_DIR bash -c relative delete", bash("GIT_DIR=/x/.git bash -c 'rm -rf build'"), "")
+	add("GIT_DIR bash -c reset", bash("GIT_DIR=/x/.git bash -c 'git reset --hard HEAD~1'"), LimitResetShared)
+	expectParked(t, cases)
+}
+
+// Round 6: the commit/PR-body heredoc idiom is blanked for the guard's word
+// scan only when it is plain; rebase and rm of an outside path are limit
+// words; a shell on a pipe is parsed for -s and its options; a variable as
+// the program and a function definition are hidden shapes.
+func TestParkedBy_HeredocIdiomAndMoreHiddenShapes(t *testing.T) {
+	lenient := func(cmd string) PermissionAsk {
+		r := bash(cmd)
+		r.Lenient = true
+		return r
+	}
+	var cases []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}
+	add := func(name string, ask PermissionAsk, limit HardLimit) {
+		cases = append(cases, struct {
+			name  string
+			ask   PermissionAsk
+			limit HardLimit
+		}{name, ask, limit})
+	}
+	both := func(name, cmd string, lenientLimit HardLimit) {
+		add("strict "+name, bash(cmd), LimitUnreadable)
+		add("lenient "+name, lenient(cmd), lenientLimit)
+	}
+	// Blanked: a plain argument with a quoted delimiter.
+	both("commit heredoc", "git commit -m \"$(cat <<'EOF'\nrelease notes before merge\nEOF\n)\"", "")
+	both("pr create heredoc", "gh pr create --title \"Fix\" --body \"$(cat <<'EOF'\nreview the push and the tag\nEOF\n)\"", "")
+	both("backslash delimiter", "git commit -m \"$(cat <<\\EOF\nrelease it\nEOF\n)\"", "")
+	// Round 8: a wrapper in front is off the allowlist, so the body is scanned.
+	both("wrapped commit heredoc", "env GIT_AUTHOR_NAME=x git commit -m \"$(cat <<'EOF'\nrelease\nEOF\n)\"", LimitUnreadable)
+	// Not blanked.
+	// "EOF" inside the double-quoted word closes the reader's quote: it
+	// cannot be told from an unquoted delimiter, so it stays scanned.
+	both("double-quoted delimiter", "git commit -m \"$(cat <<\"EOF\"\nrelease it\nEOF\n)\"", LimitUnreadable)
+	both("sh -c heredoc", "sh -c \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\"", LimitUnreadable)
+	both("bare heredoc", "$(cat <<'EOF'\ngit push origin feat\nEOF\n)", LimitUnreadable)
+	both("unquoted delimiter", "git commit -m \"$(cat <<EOF\n$(git push)\nEOF\n)\"", LimitUnreadable)
+	both("heredoc first word", "\"$(cat <<'EOF'\ngit push\nEOF\n)\" x", LimitUnreadable)
+	both("assignment heredoc", "MSG=\"$(cat <<'EOF'\nrelease\nEOF\n)\" git commit", LimitUnreadable)
+	both("eval heredoc", "eval \"$(cat <<'EOF'\ngit push origin feat\nEOF\n)\"", LimitUnreadable)
+	both("xargs heredoc", "xargs git commit -m \"$(cat <<'EOF'\nrelease\nEOF\n)\"", LimitUnreadable)
+	both("another hidden shape", "git commit -m \"$(cat <<'EOF'\nrelease\nEOF\n)\" $(git push origin feat)", LimitUnreadable)
+	both("heredoc then text", "git commit -m \"$(cat <<'EOF'\nx\nEOF\n) and release\"", LimitUnreadable)
+	add("single-quoted string is not dropped", lenient("echo 'git push' | sh"), LimitUnreadable)
+	add("strict single-quoted pipe", bash("echo 'git push' | sh"), LimitUnreadable)
+	// rebase and an outside rm are limit words.
+	both("rebase in a loop", "for b in a; do git rebase main; done", LimitUnreadable)
+	both("rm of an absolute path", "make x & rm /etc/hosts", LimitUnreadable)
+	both("rm of a parent path", "make x & rm ../other/file", LimitUnreadable)
+	both("rm of a home path", "make x & rm ~/notes", LimitUnreadable)
+	both("rm of a relative path", "make x & rm build.log", "")
+	// A shell on a pipe.
+	add("pipe into bash -s arg", bash("make gen | bash -s arg"), LimitUnreadable)
+	add("pipe into bash -o x script", bash("make gen | bash -o pipefail scripts/apply.sh"), "")
+	add("pipe into bash --rcfile only", bash("make gen | bash --rcfile x.rc"), LimitUnreadable)
+	add("pipe into bash -- script", bash("make gen | bash -- scripts/apply.sh"), "")
+	// A variable as the program, a function definition.
+	both("variable program", "$G push origin main", LimitUnreadable)
+	both("variable program, no limit word", "$CMD origin main", "")
+	both("braced variable program", "${GIT} status", "")
+	both("function definition", "f() { git push origin main; }; f", LimitUnreadable)
+	both("function keyword", "function f { make; }", "")
+	// The guard's merge backstop reads the blanked text too; the twin's
+	// reads it whole.
+	prBody := "gh pr create --title \"Fix\" --body \"$(cat <<'EOF'\nmerge it into feature/x after the review\nEOF\n)\""
+	add("strict PR body says merge", bash(prBody), LimitUnreadable)
+	add("lenient PR body says merge", lenient(prBody), "")
+	add("lenient gh pr merge", lenient("gh pr merge 1"), LimitMainRef)
+	add("lenient sh -c heredoc merge", lenient("sh -c \"$(cat <<'EOF'\ngh pr merge 1\nEOF\n)\""), LimitUnreadable)
+	// Round 7: a sibling part could run the blanked body, or the owner is
+	// no message taker — the body is scanned.
+	push := "\"$(cat <<'EOF'\ngit push origin main\nEOF\n)\""
+	both("echo heredoc into sh", "echo "+push+" | sh", LimitUnreadable)
+	both("printf heredoc into bash", "printf '%s\\n' "+push+" | bash", LimitUnreadable)
+	both("commit heredoc piped into sh", "git commit -m "+push+" | sh", LimitUnreadable)
+	both("cat redefined", "cat() { sh; }; git commit -m "+push, LimitUnreadable)
+	both("commit heredoc then eval", "git commit -m "+push+"; eval 'make'", LimitUnreadable)
+	both("commit heredoc then source", "git commit -m "+push+" && source env.sh", LimitUnreadable)
+	both("commit heredoc then sh -c", "git commit -m "+push+" && sh -c 'make'", LimitUnreadable)
+	both("commit heredoc then variable program", "git commit -m "+push+" && $RUN", LimitUnreadable)
+	both("echo is no message taker", "echo \"$(cat <<'EOF'\nrelease notes\nEOF\n)\"", LimitUnreadable)
+	both("git tag -a heredoc still a tag", "git tag -a v1 -m \"$(cat <<'EOF'\nfirst cut\nEOF\n)\"", LimitUnreadable)
+	both("gh issue create heredoc", "gh issue create --title x --body \"$(cat <<'EOF'\npush it before the release\nEOF\n)\"", "")
+	both("gh pr edit heredoc", "gh pr edit 3 --body \"$(cat <<'EOF'\nreview after the push\nEOF\n)\"", "")
+	both("commit heredoc then a plain command", "git commit -m \"$(cat <<'EOF'\nrelease notes\nEOF\n)\" && go test ./...", "")
+	// rm: .. is a parent only as a path segment.
+	both("rm of ..cache", "make x & rm ..cache", "")
+	both("rm of ..", "make x & rm ..", LimitUnreadable)
+	// Round 8: the blanking needs every other part on the plain allowlist.
+	body := "\"$(cat <<'EOF'\ngit push origin main\nEOF\n)\""
+	msg := "\"$(cat <<'EOF'\nrelease notes, push after the review\nEOF\n)\""
+	for name, cmd := range map[string]string{
+		"hash -p":               "hash -p /bin/sh cat; git commit -m " + body,
+		"alias cat=sh":          "alias cat=sh\ngit commit -m " + body,
+		"ln, export PATH":       "ln -s /bin/sh cat; export PATH=.:$PATH; git commit -m " + body,
+		"message run as script": "git commit -m " + body + " && git log -1 --format=%B > x.sh && chmod +x x.sh && ./x.sh",
+		"PATH assignment":       "PATH=. git commit -m " + body,
+		"git -c before commit":  "git -c core.hooksPath=x commit -m " + body,
+		"commit -c":             "git commit -c HEAD -m " + body,
+		"commit redirected":     "git commit -m " + body + " > out.txt",
+		"go test -exec":         "go test -exec sh ./... && git commit -m " + body,
+		"make with a variable":  "make SHELL=sh x && git commit -m " + body,
+		"absolute program":      "/usr/bin/git commit -m " + body,
+		"command builtin":       "command -p true && git commit -m " + body,
+		"tee":                   "git commit -m " + body + " | tee x.sh",
+		"git diff --ext-diff":   "git diff --ext-diff && git commit -m " + body,
+	} {
+		both("probe "+name, cmd, LimitUnreadable)
+	}
+	for name, cmd := range map[string]string{
+		"add then commit":      "git add -A && git commit -m " + msg,
+		"commit then go test":  "git commit -m " + msg + " && go test ./...",
+		"cd then commit":       "cd /w/a && git commit -m " + msg,
+		"pr create":            "gh pr create --title \"Fix\" --body " + msg,
+		"status, diff, commit": "git status && git diff --stat && git commit -m " + msg,
+		"gofmt, vet, commit":   "gofmt -l . && go vet ./... && git commit -m " + msg,
+		"make target, commit":  "make lint && git commit -m " + msg,
+		"swift test, commit":   "swift test && git commit -m " + msg,
+		"echo, commit":         "echo done && git commit -m " + msg,
+	} {
+		both("idiom "+name, cmd, "")
+	}
+	// rm's operand is read with its quotes and escapes removed.
+	both("rm of ..\\/x", "make x & rm ..\\/x", LimitUnreadable)
+	both("rm of quoted .. then /x", "make x & rm \"..\"\\/x", LimitUnreadable)
+	both("rm of \\/etc", "make x & rm \\/etc/hosts", LimitUnreadable)
+	// Round 9: a zsh glob qualifier runs code, so ( outside quotes is no
+	// plain part; go's --flags are its -flags; rm counts only at command
+	// position.
+	both("ls glob qualifier", "git commit -m "+body+" && ls *(e:'git log -1 --format=%B|sh':)", LimitUnreadable)
+	both("git add glob qualifier", "git add *(+fn) && git commit -m "+body, LimitUnreadable)
+	both("ls glob, plain", "ls *.go && git commit -m "+msg, "")
+	both("go test --exec", "go test --exec sh ./... && git commit -m "+body, LimitUnreadable)
+	both("go test --toolexec=", "go test --toolexec=x ./... && git commit -m "+body, LimitUnreadable)
+	both("go vet --vettool=", "go vet --vettool=x ./... && git commit -m "+body, LimitUnreadable)
+	both("go build --o", "go build --o x . && git commit -m "+body, LimitUnreadable)
+	both("go test --count", "go test --count=1 ./... && git commit -m "+msg, "")
+	// rm counts in any position (round 9 item 3 reverted): an echo argument
+	// named rm parks too, which fails closed.
+	both("rm as an echo argument", `echo "$(pwd)" rm example /tmp`, LimitUnreadable)
+	both("rm in a then-body", `if true; then rm "/x"; fi`, LimitUnreadable)
+	both("rm in a group", `{ rm "/x"; }`, LimitUnreadable)
+	both("rm glued behind &", `sleep 1&rm "/x"`, LimitUnreadable)
+	both("rm after a glued &&", `a&& rm "/x" && echo $(date)`, LimitUnreadable)
+	both("sudo rm behind &", "make x & sudo rm /tmp/x", LimitUnreadable)
+	both("rm after a hidden part", "echo $(date) && rm \\/tmp/x", LimitUnreadable)
+	both("xargs rm behind &", "make x & xargs rm ~/y", LimitUnreadable)
+	expectParked(t, cases)
+	// The strict backstop alone (the unreadable row comes first above).
+	r := bash(prBody)
+	require.True(t, mergeBackstop(r), "the twin's backstop reads the body")
+	r.Lenient = true
+	require.False(t, mergeBackstop(r), "the guard's backstop skips the plain body")
 }

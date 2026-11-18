@@ -227,7 +227,9 @@ func runWatchmanGuard(stdin io.Reader, stdout, stderr io.Writer, agent agentkind
 		fmt.Fprintf(stderr, "watchtower: watchman guard: %s\n", w)
 	}
 
-	var ask watchman.PermissionAsk
+	// The guard sees every tool call of an armed session: a shape the table
+	// cannot see into denies only with a hard-limit word in sight.
+	ask := watchman.PermissionAsk{Lenient: true}
 	extra, unreadable := read.extra, read.extraErr != nil
 	if read.extraErr != nil {
 		fmt.Fprintf(stderr, "watchtower: watchman guard: the owner's limits: %v\n", read.extraErr)

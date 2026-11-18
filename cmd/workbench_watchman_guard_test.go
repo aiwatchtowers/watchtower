@@ -472,9 +472,9 @@ func TestWatchmanGuard_RelativePathsResolvedAgainstCwd(t *testing.T) {
 		{"Read", map[string]string{"file_path": "notes.txt"}, elsewhere, "outside_folder"},
 		{"Bash", map[string]string{"command": "rm -rf build"}, folder, ""},
 		{"Bash", map[string]string{"command": "rm -rf build"}, elsewhere, "delete_outside"},
-		// The start directory is no directory change: a local reset on the
-		// private branch from outside the worktrees is not reset_shared.
-		{"Bash", map[string]string{"command": "git reset --hard HEAD~1"}, elsewhere, ""},
+		// The start directory is no directory change: a local reset of the
+		// working tree from outside the worktrees is not reset_shared.
+		{"Bash", map[string]string{"command": "git reset --hard"}, elsewhere, ""},
 		{"Bash", map[string]string{"command": "cd /tmp && git reset --hard HEAD~1"}, folder, "reset_shared"},
 	} {
 		out, _ := runGuardHook(deps, guardInput(t, tc.tool, tc.input, tc.cwd))
@@ -483,6 +483,77 @@ func TestWatchmanGuard_RelativePathsResolvedAgainstCwd(t *testing.T) {
 			want = "Parked for the owner: " + tc.want + " — continue with other work"
 		}
 		assert.Equal(t, want, guardDenial(t, out), "%s %v in %s", tc.tool, tc.input, tc.cwd)
+	}
+}
+
+// The guard reads no shared branches (no network in the hook), so it fails
+// closed: a reset --hard to an explicit target parks, one with no target
+// (the working tree only) passes.
+func TestWatchmanGuard_SharedUnknownResetParks(t *testing.T) {
+	_, folder := guardSession(t, true)
+	var store *countingGuardStore
+	deps := guardDeps(t, &store)
+	for _, tc := range []struct{ command, want string }{
+		{"git reset --hard HEAD~3", "Parked for the owner: reset_shared — continue with other work"},
+		{"git branch -f feat HEAD~2", "Parked for the owner: reset_shared — continue with other work"},
+		{"git reset --hard", ""},
+		{"git reset --hard HEAD", ""},
+	} {
+		out, _ := runGuardHook(deps, guardInput(t, "Bash", map[string]string{"command": tc.command}, folder))
+		assert.Equal(t, tc.want, guardDenial(t, out), tc.command)
+	}
+}
+
+// The guard runs on every tool call of an armed session: ordinary shell
+// shapes the table cannot see into are allowed; one that names a
+// hard-limit action is still denied (round 5).
+func TestWatchmanGuard_HiddenShapesNeedALimitWord(t *testing.T) {
+	_, folder := guardSession(t, true)
+	var store *countingGuardStore
+	deps := guardDeps(t, &store)
+	for _, tc := range []struct{ command, want string }{
+		{"git commit -m \"$(cat <<'EOF'\nFix the export\nEOF\n)\"", ""},
+		{`gh pr create --title "Fix" --body "$(cat body.md)"`, ""},
+		{"for f in *.go; do gofmt -l $f; done", ""},
+		{"make build &", ""},
+		{"echo $(date)", ""},
+		{"(cd sub && make)", ""},
+		{`curl 'https://example.com/?a=1&b=2'`, ""},
+		{"gh pr view 1 # merge", ""},
+		// The commit/PR-body heredoc idiom, limit words in its body (round 6).
+		{"git commit -m \"$(cat <<'EOF'\nrelease notes before merge\nEOF\n)\"", ""},
+		{"gh pr create --title \"Fix\" --body \"$(cat <<'EOF'\nreview the push and the tag\nEOF\n)\"", ""},
+		{"sh -c \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
+		{"git commit -m \"$(cat <<EOF\n$(git push)\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
+		{"echo 'git push' | sh", "Parked for the owner: unreadable — continue with other work"},
+		{"$G push origin feat", "Parked for the owner: unreadable — continue with other work"},
+		// The merge backstop reads the blanked body too (round 6 ruling).
+		{"gh pr create --title \"Fix\" --body \"$(cat <<'EOF'\nmerge it into feature/x after the review\nEOF\n)\"", ""},
+		{"gh pr merge 1", "Parked for the owner: main_ref — continue with other work"},
+		{"sh -c \"$(cat <<'EOF'\ngh pr merge 1\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
+		// A sibling part could run a blanked body (round 7).
+		{"echo \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\" | sh", "Parked for the owner: unreadable — continue with other work"},
+		{"printf '%s\\n' \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\" | bash", "Parked for the owner: unreadable — continue with other work"},
+		{"cat() { sh; }; git commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
+		// Only a request of plain allowlisted commands blanks the body (round 8).
+		{"hash -p /bin/sh cat; git commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
+		{"alias cat=sh\ngit commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
+		{"ln -s /bin/sh cat; export PATH=.:$PATH; git commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
+		{"git commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\" && git log -1 --format=%B > x.sh && chmod +x x.sh && ./x.sh", "Parked for the owner: unreadable — continue with other work"},
+		{"git add -A && git commit -m \"$(cat <<'EOF'\nrelease notes, push after the review\nEOF\n)\" && go test ./...", ""},
+		{"cd /w && git commit -m \"$(cat <<'EOF'\nrelease notes\nEOF\n)\"", ""},
+		// Round 9: a zsh glob qualifier, go's --exec, rm only as a command.
+		{"git commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\" && ls *(e:'git log -1 --format=%B|sh':)", "Parked for the owner: unreadable — continue with other work"},
+		{"go test --exec sh ./... && git commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
+		{`echo "$(pwd)" rm example /tmp`, "Parked for the owner: unreadable — continue with other work"},
+		{`sleep 1&rm "/x"`, "Parked for the owner: unreadable — continue with other work"},
+		{"make x & sudo rm /tmp/x", "Parked for the owner: unreadable — continue with other work"},
+		{"x $(git push origin HEAD:main)", "Parked for the owner: unreadable — continue with other work"},
+		{"true & gh pr merge 1", "Parked for the owner: unreadable — continue with other work"},
+		{`echo "open`, "Parked for the owner: unreadable — continue with other work"},
+	} {
+		out, _ := runGuardHook(deps, guardInput(t, "Bash", map[string]string{"command": tc.command}, folder))
+		assert.Equal(t, tc.want, guardDenial(t, out), tc.command)
 	}
 }
 

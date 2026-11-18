@@ -70,14 +70,23 @@ const (
 	handoverBriefHead = "The previous session on this target handed its work over to a new session:\n\n"
 )
 
-// limitReasons are the park reasons of the ask-text hard limits.
+// limitReasons are the park reasons of the hard limits: the ask-text table's
+// and the permission table's (CheckLimits).
 var limitReasons = map[watchman.HardLimit]string{
-	watchman.LimitMainRef:    "a merge, push or rebase onto main",
-	watchman.LimitRelease:    "a release",
-	watchman.LimitTag:        "a tag",
-	watchman.LimitTestFlight: "a TestFlight upload",
-	watchman.LimitOutward:    "a message outside the workbench",
-	watchman.LimitInventory:  "approving an inventory contract or a guard test",
+	watchman.LimitMainRef:       "a merge, push or rebase onto main",
+	watchman.LimitRelease:       "a release",
+	watchman.LimitTag:           "a tag",
+	watchman.LimitTestFlight:    "a TestFlight upload",
+	watchman.LimitOutward:       "a message outside the workbench",
+	watchman.LimitInventory:     "approving an inventory contract or a guard test",
+	watchman.LimitUnreadable:    "a command that cannot be read",
+	watchman.LimitSendPack:      "a git send-pack",
+	watchman.LimitForcePush:     "a force push",
+	watchman.LimitResetShared:   "a forced move of a shared branch",
+	watchman.LimitDeleteOutside: "a delete outside the session's worktrees",
+	watchman.LimitStandingGrant: "an edit of the agent's own permissions",
+	watchman.LimitOutsideFolder: "a file outside the workbench folder and its worktrees",
+	watchman.LimitOwner:         "a limit the owner added",
 }
 
 func limitReason(l watchman.HardLimit) string {
@@ -93,6 +102,10 @@ func (t *Twin) handle(ctx context.Context, it db.WatchmanItem) {
 	j := &job{t: t, parent: ctx, it: it, lease: *it.LeaseUntil}
 	ctx, cancel := context.WithDeadline(ctx, j.lease)
 	defer cancel()
+	if it.Kind == "permission" {
+		j.permission(ctx)
+		return
+	}
 	ask, err := t.d.DB.GetOwnerAskByID(it.RefID)
 	switch {
 	case errors.Is(err, db.ErrAskNotFound):
@@ -314,14 +327,18 @@ func providerRefused(f *providers.Failure) bool {
 	return true // a category added later: treat it as a refusal
 }
 
-// park answers the ask "Parked for the owner: <reason>" and finishes the
-// item parked; an ask that takes no text answer (a review), or a diff
-// review with no ask, keeps waiting for the owner, the item finished parked
-// all the same.
+// park answers the ask "Parked for the owner: <reason>" (a permission
+// prompt: denies it, decided by watchman) and finishes the item parked; an
+// ask that takes no text answer (a review), or a diff review with no ask,
+// keeps waiting for the owner, the item finished parked all the same.
 func (j *job) park(ctx context.Context, reason string) {
 	o := j.outcome(OutcomeParked)
 	o.ParkReason = reason
 	j.parked = &o
+	if j.perm != nil {
+		j.closePermission(ctx, false, o)
+		return
+	}
 	if j.ask == nil { // a diff review: no ask to answer
 		j.finishAlone(o)
 		return
