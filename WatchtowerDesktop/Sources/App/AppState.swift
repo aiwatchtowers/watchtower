@@ -1584,7 +1584,7 @@ final class AppState {
         applyUIVisibility(uiVisibility.isOnScreen)
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         if watchmanCenter == nil { watchmanCenter = WatchmanCenter(runner: ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()) }
-        watchmanJournal = WatchmanJournalViewModel(pool: manager.dbPool)
+        watchmanJournal = WatchmanJournalViewModel(pool: manager.dbPool, actions: watchmanJournalActions())
         initAccountPurges(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         initSlackLive(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         startDigestWatcher(dbPool: manager.dbPool)

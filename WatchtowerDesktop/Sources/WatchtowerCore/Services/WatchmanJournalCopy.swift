@@ -166,6 +166,90 @@ package enum WatchmanJournalCopy {
         return line.isEmpty ? kindName(item.kind).capitalizedFirst : line
     }
 
+    // MARK: Feedback (OK, Correct…, Open session, check done)
+
+    package static let ok = "OK"
+    package static let correct = "Correct…"
+    package static let openSession = "Open session"
+    package static let markDone = "Mark done"
+    package static let okGiven = "You marked this OK — Watchman learns from it"
+    package static let sending = "Sending your correction…"
+
+    /// The card's line once the owner corrected it.
+    package static func corrected(_ text: String) -> String {
+        "You corrected: \(oneLine(text))"
+    }
+
+    /// Where the correction went (`SessionLineDelivery.Delivery`).
+    package static func sentToSession(_ sessionID: Int64) -> String {
+        "Sent to session \(sessionID)"
+    }
+
+    package static func typedIntoSession(_ sessionID: Int64) -> String {
+        "Typed into session \(sessionID) — press Return there to send it"
+    }
+
+    package static func copiedForSession(_ sessionID: Int64) -> String {
+        "On the clipboard — paste it into session \(sessionID)"
+    }
+
+    package static func heldForSession(_ sessionID: Int64) -> String {
+        "Waiting to go into session \(sessionID) — it is on a permission prompt"
+    }
+
+    package static func startedSession(_ sessionID: Int64) -> String {
+        "Started session \(sessionID) with your correction"
+    }
+
+    /// A stored correction found unsent on a fresh read.
+    package static let appQuit = "the app quit before it went"
+    /// Correct… lost to another judgement of the same decision.
+    package static let alreadyJudged = "This decision was already judged; your text is kept here."
+
+    /// A held correction's session stopped before it went.
+    package static let sessionStopped = "the session stopped before it went"
+
+    /// An OK, Mark done or correction the database refused.
+    package static func saveFailed(_ reason: String) -> String {
+        "Couldn't save: \(reason)"
+    }
+
+    /// A correction stored but not delivered; the card offers `retry`.
+    package static func notSent(_ reason: String) -> String {
+        "Not sent — \(reason)"
+    }
+
+    // MARK: The Correct… sheet
+
+    package static let correctTitle = "Correct this decision"
+    package static let correctQuestion = "What would you have decided?"
+    package static let cancel = "Cancel"
+    package static let sendCorrection = "Send Correction"
+    package static let teaches = "Your answer also teaches Watchman."
+
+    /// Where the correction goes: the live session, else a new one on the
+    /// item's target (or its workbench) — in the owner's name, not armed.
+    package static func correctNote(_ item: WatchmanItem, sessionAlive: Bool) -> String {
+        if sessionAlive, item.sessionID > 0 {
+            return "Your correction goes to session \(item.sessionID) as a typed line. \(teaches)"
+        }
+        let place = item.targetID > 0 ? "#\(item.targetID)" : (item.workbenchName.isEmpty ? "the workbench" : item.workbenchName)
+        let ended = item.sessionID > 0 ? "Session \(item.sessionID) has ended" : "No session is running"
+        return "\(ended), so a new session starts on \(place) with your correction. \(teaches)"
+    }
+
+    /// The line the session gets: what was decided, then the owner's words
+    /// (one line, as every delivered line).
+    package static func correctionLine(_ item: WatchmanItem, text: String) -> String {
+        let words = text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        var context = "Watchman decided \"\(question(item))\""
+        if !item.choice.isEmpty { context += " as \"\(oneLine(item.choice))\"" }
+        return "\(context) while I was away. My correction: \(words)"
+    }
+
     // MARK: - Private
 
     private static func oneLine(_ text: String) -> String {

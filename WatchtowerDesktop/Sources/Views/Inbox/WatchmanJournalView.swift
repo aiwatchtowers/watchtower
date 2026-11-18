@@ -10,6 +10,7 @@ struct WatchmanJournalView: View {
     var body: some View {
         WatchmanJournalContent(model: model, scrolls: true)
             .task { await model.watch() }
+            .sheet(item: $model.correcting) { _ in WatchmanCorrectSheet(model: model) }
     }
 }
 
@@ -155,6 +156,9 @@ struct WatchmanJournalContent: View {
             if let line = model.daemonLine {
                 WatchmanJournalNotice(icon: "exclamationmark.triangle.fill", tone: Tone.warning, text: line)
             }
+            if let error = model.actionError {
+                WatchmanJournalNotice(icon: "exclamationmark.triangle.fill", tone: Tone.warning, text: error)
+            }
             switch model.phase {
             case .loading:
                 VStack(spacing: Spacing.regular) {
@@ -213,12 +217,14 @@ private struct WatchmanNightPage: View {
             }
             if !page.waiting.isEmpty {
                 section(model.waitingTitle, count: page.waiting.count, trailing: nil) {
-                    ForEach(page.waiting) { WatchmanWaitingCard(card: $0) }
+                    ForEach(page.waiting) { card in
+                        WatchmanWaitingCard(card: card, model: model)
+                    }
                 }
             }
             if page.decidedCount > 0 || !page.ownerFirst.isEmpty {
                 section(model.decidedTitle, count: page.decidedCount, trailing: page.decidedSummary) {
-                    ForEach(page.decided) { WatchmanDecisionCard(card: $0, chose: model.choseLabel, leanedOn: model.leanedOn) }
+                    ForEach(page.decided) { WatchmanDecisionCard(card: $0, model: model) }
                     if !page.sureLines.isEmpty { lines(page.sureLines, icon: "checkmark.circle.fill", tone: Tone.success) }
                     if !page.ownerFirst.isEmpty { lines(page.ownerFirst, icon: "person.fill.checkmark", tone: .secondary) }
                 }
@@ -274,6 +280,11 @@ private struct WatchmanNightPage: View {
                         if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
                         Text(line.meta).font(.caption).foregroundStyle(.secondary)
                     }
+                    Spacer(minLength: Spacing.regular)
+                    if line.canMarkDone {
+                        Button(model.markDoneTitle) { Task { await model.markDone(line.id) } }
+                            .buttonStyle(.kitSecondary)
+                    }
                 }
             }
         }
@@ -286,6 +297,7 @@ private struct WatchmanNightPage: View {
 /// A parked or handed item: what the owner has to do.
 private struct WatchmanWaitingCard: View {
     let card: WatchmanJournalViewModel.Card
+    let model: WatchmanJournalViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.compact) {
@@ -295,7 +307,16 @@ private struct WatchmanWaitingCard: View {
                 Text(card.question).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
             }
             if let reason = card.reason { Text(reason).font(.callout).fixedSize(horizontal: false, vertical: true) }
-            Text(card.place).font(.caption).foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                Text(card.place).font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: Spacing.regular)
+                if card.canOpen {
+                    Button(model.openSessionTitle) { model.openSession(card.id) }.buttonStyle(.kitQuiet)
+                }
+                if card.canMarkDone {
+                    Button(model.markDoneTitle) { Task { await model.markDone(card.id) } }.buttonStyle(.kitSecondary)
+                }
+            }
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -306,8 +327,7 @@ private struct WatchmanWaitingCard: View {
 /// One decision Watchman took for the owner and was not sure about.
 private struct WatchmanDecisionCard: View {
     let card: WatchmanJournalViewModel.Card
-    let chose: String
-    let leanedOn: String
+    let model: WatchmanJournalViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
@@ -318,7 +338,7 @@ private struct WatchmanDecisionCard: View {
             Text(card.question).font(.headline).fixedSize(horizontal: false, vertical: true)
             if let choice = card.choice {
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                    Text(chose).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(model.choseLabel).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     Text(choice).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -327,7 +347,7 @@ private struct WatchmanDecisionCard: View {
             }
             if !card.precedents.isEmpty {
                 VStack(alignment: .leading, spacing: Spacing.small) {
-                    Text(leanedOn).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(model.leanedOn).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     ForEach(card.precedents, id: \.self) { precedent in
                         Label(precedent, systemImage: "arrow.turn.down.right").font(.caption)
                     }
@@ -337,10 +357,61 @@ private struct WatchmanDecisionCard: View {
             if let outcome = card.outcome {
                 Label(outcome, systemImage: "arrow.forward.circle").font(.caption).foregroundStyle(.secondary)
             }
+            if let feedback = card.feedbackLine {
+                Label(feedback, systemImage: "person.fill.checkmark").font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let send = card.sendLine {
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                    Label(send, systemImage: card.sendFailed ? "exclamationmark.triangle.fill" : "paperplane")
+                        .font(.caption)
+                        .foregroundStyle(card.sendFailed ? Tone.warning : .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if card.sendFailed {
+                        Button(model.retryTitle) { Task { await model.retrySend(card.id) } }.buttonStyle(.kitQuiet)
+                    }
+                }
+            }
+            actions
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
+    }
+}
+
+extension WatchmanDecisionCard {
+    /// OK and Correct… while the decision is not judged; Open session
+    /// whenever there is a session to open.
+    @ViewBuilder
+    fileprivate var actions: some View {
+        if card.canJudge || card.canOpen {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Spacing.regular) {
+                    judgeButtons
+                    Spacer(minLength: Spacing.regular)
+                    openButton
+                }
+                VStack(alignment: .leading, spacing: Spacing.small) {
+                    HStack(spacing: Spacing.regular) { judgeButtons }
+                    openButton
+                }
+            }
+            .padding(.top, Spacing.tight)
+        }
+    }
+
+    @ViewBuilder
+    private var judgeButtons: some View {
+        if card.canJudge {
+            Button(model.okTitle) { Task { await model.ok(card.id) } }.buttonStyle(.kitSecondary)
+            Button(model.correctTitle) { model.beginCorrect(card.id) }.buttonStyle(.kitSecondary)
+        }
+    }
+
+    @ViewBuilder
+    private var openButton: some View {
+        if card.canOpen { Button(model.openSessionTitle) { model.openSession(card.id) }.buttonStyle(.kitQuiet) }
     }
 }
 
@@ -363,4 +434,5 @@ private struct WatchmanJournalNotice: View {
 
 /// Watchman's own marks: the journal's moon, the busy line's fill.
 enum WatchmanJournalStyle {
-    static let tone = Tone.status("purple")}
+    static let tone = Tone.status("purple")
+}

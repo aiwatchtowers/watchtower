@@ -108,4 +108,26 @@ final class WatchmanJournalCopyTests: XCTestCase {
         XCTAssertTrue(copy.landsHere.hasPrefix("When you hand a session to Watchman and leave"))
         XCTAssertNil(copy.primaryAction)
     }
+
+    /// OK, Correct… and where a correction went (Task 17).
+    func testFeedbackLines() {
+        XCTAssertEqual([Copy.ok, Copy.correct, Copy.openSession, Copy.markDone],
+                       ["OK", "Correct…", "Open session", "Mark done"])
+        XCTAssertEqual(Copy.okGiven, "You marked this OK — Watchman learns from it")
+        XCTAssertEqual(Copy.corrected("Global.\nOne window."), "You corrected: Global.")
+        XCTAssertEqual(Copy.sending, "Sending your correction…")
+        XCTAssertEqual(Copy.sentToSession(3), "Sent to session 3")
+        XCTAssertEqual(Copy.typedIntoSession(3), "Typed into session 3 — press Return there to send it")
+        XCTAssertEqual(Copy.copiedForSession(3), "On the clipboard — paste it into session 3")
+        XCTAssertEqual(Copy.heldForSession(3), "Waiting to go into session 3 — it is on a permission prompt")
+        XCTAssertEqual(Copy.startedSession(42), "Started session 42 with your correction")
+        XCTAssertEqual(Copy.notSent("the workbench is gone"), "Not sent — the workbench is gone")
+        XCTAssertEqual(Copy.saveFailed("database is locked"), "Couldn't save: database is locked")
+        XCTAssertEqual([Copy.correctTitle, Copy.correctQuestion, Copy.cancel, Copy.sendCorrection],
+                       ["Correct this decision", "What would you have decided?", "Cancel", "Send Correction"])
+        let item = WatchmanItem(id: 9, workbenchName: "acme-api", sessionID: 0, targetID: 0, question: "Rename it?",
+                                createdAt: date("2026-11-17T02:00:00Z"))
+        XCTAssertEqual(Copy.correctionLine(item, text: " Keep it.\n\n Ship. "),
+                       "Watchman decided \"Rename it?\" while I was away. My correction: Keep it. Ship.")
+    }
 }

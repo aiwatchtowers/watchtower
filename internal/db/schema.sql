@@ -3997,6 +3997,8 @@ CREATE TABLE IF NOT EXISTS watchman_items (
     feedback_text TEXT NOT NULL DEFAULT '',
     feedback_at   TEXT,
     check_done_at TEXT,
+    owner_done_at TEXT,       -- the owner marked a waiting item done (Desktop only)
+    correction_sent_at TEXT,  -- the owner's correction reached a session (Desktop only)
     UNIQUE (ref_kind, ref_id, kind)
 );
 CREATE INDEX IF NOT EXISTS idx_watchman_items_queue ON watchman_items(state, not_before);

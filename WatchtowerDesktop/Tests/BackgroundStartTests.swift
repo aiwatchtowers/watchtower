@@ -210,6 +210,33 @@ final class BackgroundStartTests: XCTestCase {
         XCTAssertTrue(launches.isEmpty)
     }
 
+    /// Watchman's Correct… on an item with no target: a background session
+    /// in the workbench with the correction as its first instruction.
+    func testABackgroundWorkbenchSessionStartsWithItsPrompt() async throws {
+        let p = try await workbench()
+        let vm = makeVM()
+        let row = try await vm.startInBackground(projectID: p, title: "Correction", prompt: "My correction: Global.")
+        XCTAssertEqual(center.states[row.id], .running)
+        XCTAssertNil(row.targetID)
+        let env = try XCTUnwrap(launches.last?.environment)
+        XCTAssertTrue(env.contains("WATCHTOWER_FIRST_PROMPT=My correction: Global."), "\(env)")
+        XCTAssertNil(vm.sessionErrors[p])
+    }
+
+    /// Its launch is checked: one that did not run throws (the journal offers Retry).
+    func testABackgroundWorkbenchSessionWhoseLaunchIsRefusedThrows() async throws {
+        let p = try await workbench()
+        try FileManager.default.removeItem(atPath: acme)
+        let vm = makeVM()
+        do {
+            _ = try await vm.startInBackground(projectID: p, title: "Correction", prompt: "x")
+            XCTFail("expected a failure")
+        } catch let error as WorkbenchesViewModel.TargetStartError {
+            guard case .failed = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertTrue(launches.isEmpty)
+    }
+
     // MARK: - Bring forward
 
     /// `.keeping(.board)` is the Desktop's Work on it: the session is focused

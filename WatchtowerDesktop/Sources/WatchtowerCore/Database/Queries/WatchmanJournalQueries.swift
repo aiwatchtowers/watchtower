@@ -3,7 +3,7 @@ import GRDB
 
 /// The morning journal's reads over `watchman_items` and `watchman_gaps`
 /// (spec §10). Pure reads: the Desktop writes only the feedback columns,
-/// elsewhere (phase-2 Task 17).
+/// in `WatchmanFeedbackQueries`.
 package enum WatchmanJournalQueries {
     /// The tables a journal observation tracks.
     package static let observedTables = ["watchman_items", "watchman_gaps"]
@@ -11,7 +11,8 @@ package enum WatchmanJournalQueries {
     private static let itemColumns = """
         i.id, i.workbench_id, p.name AS workbench_name, i.session_id, i.target_id, i.kind, i.state, i.outcome,
         i.question, i.choice, i.rationale, i.precedent_ids, i.confidence, i.category, i.unsure, i.park_reason,
-        i.delivery, i.cost_usd, i.created_at, i.decided_at, i.feedback, i.check_done_at
+        i.delivery, i.cost_usd, i.created_at, i.decided_at, i.feedback, i.feedback_text, i.check_done_at,
+        i.owner_done_at, i.correction_sent_at
         """
 
     /// The newest `limit` nights that have an item, newest first. A night
@@ -90,7 +91,7 @@ package enum WatchmanJournalQueries {
         guard let updatedAt = latest?.items.last?.createdAt ?? AutomationDates.parse(enabledAt) else { return nil }
         let waiting = try Int.fetchOne(db, sql: """
             SELECT COUNT(*) FROM watchman_items
-            WHERE state = 'done' AND outcome IN ('parked', 'handed') AND feedback = ''
+            WHERE state = 'done' AND outcome IN ('parked', 'handed') AND feedback = '' AND owner_done_at IS NULL
             """) ?? 0
         return WatchmanInboxSummary(latest: latest.map(WatchmanNightCounts.init), waiting: waiting, updatedAt: updatedAt)
     }
@@ -138,6 +139,9 @@ package enum WatchmanJournalQueries {
                 night.pending.append(item)
             } else if item.waitsForOwner {
                 night.waiting.append(item)
+            } else if item.isWaitingKind, item.ownerDoneAt != nil {
+                // Marked done by the owner: no longer waiting, and not a decision.
+                continue
             } else if item.outcome == "owner_first" {
                 night.ownerFirst.append(item)
             } else if item.kind == "check" {
