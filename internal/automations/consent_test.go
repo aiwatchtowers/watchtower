@@ -79,6 +79,39 @@ func (g *consentGen) snapshot() (calls []originCall, denied int) {
 
 // --- UsesAI ---
 
+// TestManifest_UsesAIFixtureCoversEveryPrimitive: the shared fixture has a
+// builtin:<p> row for every PrimitiveUsesAI key with its answer, so the
+// Desktop's hand-kept twin (AutomationAIUse) is pinned to each one.
+func TestManifest_UsesAIFixtureCoversEveryPrimitive(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "uses_ai_cases.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []struct {
+		Permissions []string `json:"permissions"`
+		UsesAI      bool     `json:"uses_ai"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatal(err)
+	}
+	single := map[string]bool{}
+	for _, row := range rows {
+		if len(row.Permissions) == 1 {
+			single[row.Permissions[0]] = row.UsesAI
+		}
+	}
+	for name, ai := range automations.PrimitiveUsesAI {
+		got, ok := single["builtin:"+name]
+		if !ok {
+			t.Errorf("uses_ai_cases.json has no [\"builtin:%s\"] row", name)
+			continue
+		}
+		if got != ai {
+			t.Errorf("uses_ai_cases.json builtin:%s uses_ai = %v; PrimitiveUsesAI says %v", name, got, ai)
+		}
+	}
+}
+
 func TestManifest_UsesAISharedFixture(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("testdata", "uses_ai_cases.json"))
 	if err != nil {
