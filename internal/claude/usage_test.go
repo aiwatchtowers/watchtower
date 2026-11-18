@@ -480,31 +480,76 @@ func TestReadUsage_FlagsRejected(t *testing.T) {
 
 // Review fix: a descendant that escapes the process group (setsid) and keeps
 // stdout and stderr open must not hold ReadUsage after the answer: stderr is
-// not a pipe and Wait is bounded.
+// not a pipe and Wait does not wait for the descendant. The holder writes its
+// own pid file and signals readiness through a FIFO after setsid, so the
+// answer only goes out once it has escaped; it must still be alive when
+// ReadUsage returns.
 func TestReadUsage_EscapedDescendantDoesNotHang(t *testing.T) {
 	perl, err := exec.LookPath("perl")
 	if err != nil {
 		t.Skip("perl not installed")
 	}
-	holderPid := filepath.Join(t.TempDir(), "holder")
+	dir := t.TempDir()
+	holderPid, ready := filepath.Join(dir, "holder"), filepath.Join(dir, "ready")
+	t.Cleanup(func() { reapHolder(t, holderPid) })
+	holder := `use POSIX; POSIX::setsid() or die; ` +
+		`open(my $p, ">", "` + holderPid + `.tmp") or die; print $p "$$\n"; close($p); ` +
+		`rename("` + holderPid + `.tmp", "` + holderPid + `") or die; ` +
+		`open(my $r, ">", "` + ready + `") or die; print $r "ok\n"; close($r); sleep 300`
 	bin := writeUsageScript(t, strings.Join([]string{
+		`/usr/bin/mkfifo ` + shQuote(ready) + ` || exit 3`,
 		`IFS= read -r line`,
-		shQuote(perl) + ` -e 'use POSIX; POSIX::setsid(); sleep 300' &`,
-		`echo $! > ` + shQuote(holderPid),
+		shQuote(perl) + ` -e ` + shQuote(holder) + ` &`,
+		`IFS= read -r ok < ` + shQuote(ready),
 		`printf '%s\n' ` + shQuote(usageSuccess(usageOKPayload)),
 		`/bin/cat >/dev/null`,
 	}, "\n"))
-	t.Cleanup(func() {
-		if b, err := os.ReadFile(holderPid); err == nil {
-			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
-				_ = syscall.Kill(pid, syscall.SIGKILL)
-			}
-		}
-	})
 	snap, err := ReadUsage(t.Context(), bin, []string{"PATH=/usr/bin:/bin"})
 	if err != nil || len(snap.Windows) != 2 {
 		t.Fatalf("snap = %+v err = %v", snap, err)
 	}
+	pid := readPid(t, holderPid)
+	if pid <= 0 {
+		t.Fatal("the holder never escaped")
+	}
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatalf("holder %d gone before ReadUsage returned (%v): the test proved nothing", pid, err)
+	}
+}
+
+// readPid reads a pid file; 0 when it is missing.
+func readPid(t *testing.T, path string) int {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		t.Errorf("pid file %s: %v", filepath.Base(path), err)
+		return 0
+	}
+	return pid
+}
+
+// reapHolder kills the escaped holder (its own session and group, so the
+// script's group kill misses it) and waits until it is gone. It is not our
+// child, so the wait is a bounded existence check, not wait(2); init reaps it.
+func reapHolder(t *testing.T, pidFile string) {
+	pid := readPid(t, pidFile)
+	if pid <= 0 {
+		return
+	}
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+	for range 1000 {
+		if syscall.Kill(pid, 0) != nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("holder %d still alive after SIGKILL", pid)
 }
 
 // Review fix: a relative bin resolves against the caller's cwd, not the
