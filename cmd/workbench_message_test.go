@@ -178,6 +178,15 @@ func TestMessageDismissClearsOnlyANullFlag(t *testing.T) {
 	require.Error(t, err)
 	refused(out, "not_found")
 
+	// Only a delivered row left typed in a prompt has a flag to dismiss.
+	queued, err := database.InsertSessionMessage(ctx, db.SessionMessage{WorkbenchID: wb, FromSessionID: sql.NullInt64{Int64: a, Valid: true},
+		ToSessionID: sql.NullInt64{Int64: b, Valid: true}, Kind: sessionmsg.KindMessage, Text: "hi"})
+	require.NoError(t, err)
+	out, err = runMessage(t, "", "dismiss", "--id", strconv.FormatInt(queued, 10), "--json")
+	require.Error(t, err)
+	refused(out, "not_allowed")
+	assert.Empty(t, clearedAt(queued), "a queued row is never stamped")
+
 	again := typed()
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(a, 10))
 	out, err = runMessage(t, "", "dismiss", "--id", strconv.FormatInt(again, 10), "--json")

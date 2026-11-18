@@ -134,6 +134,22 @@ func TestSendRefusesEveryNonPeerTarget(t *testing.T) {
 			assert.True(t, strings.HasPrefix(err.Error(), c.code+": "), "D42 form: %q", err)
 		})
 	}
+	// The sender is checked too: a shell row or a standalone terminal is no
+	// agent of the bench, a gone row is no sender.
+	peer := b.session(t, b.wb, "codex", "Peer", 0)
+	live = liveSet(peer)
+	for _, c := range []struct {
+		name string
+		from int64
+		code string
+	}{
+		{"shell sender", shell, CodeNotSameWorkbench},
+		{"standalone sender", standalone, CodeNotSameWorkbench},
+		{"deleted sender", deleted, CodeNotFound},
+	} {
+		_, _, err := Send(t.Context(), b.d, live, c.from, peer, "hello")
+		assert.Equal(t, c.code, refusalCode(err), c.name)
+	}
 	assert.Zero(t, messageCount(t, b.d), "nothing is queued for a refused send")
 }
 

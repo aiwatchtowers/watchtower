@@ -58,7 +58,16 @@ const (
 	ReasonParentDeleted       = "parent_deleted"
 	ReasonCannotType          = "cannot_type"
 	ReasonDeliveryUnknown     = "delivery_unknown"
+	// ReasonNotAPeer: the row's receiver is not an agent session of the
+	// row's workbench (a shell, another bench); dropped, nobody told.
+	ReasonNotAPeer = "not_a_peer"
 )
+
+// DeliveryUnknownLine is the sender's line when its message was pasted but
+// the session stopped before it was known to land.
+func DeliveryUnknownLine(toID int64) string {
+	return FailureLine(toID, ReasonDeliveryUnknown+": the session stopped while the message was typed; it may not have arrived")
+}
 
 // DaemonNotRunningWarning is the warning send_to_session and finish_session
 // return when no daemon runs to deliver the row they queued.
@@ -178,8 +187,9 @@ func Send(ctx context.Context, d *db.DB, live LiveFunc, from, to int64, text str
 }
 
 // CheckTarget is Send's refusals of the pair (from, to) without the text:
-// the target must be another agent session of the sender's workbench that
-// is live. It returns the sender's row.
+// the sender must be an agent session of a workbench, the target another
+// agent session of the same workbench that is live. It returns the
+// sender's row.
 func CheckTarget(ctx context.Context, d *db.DB, live LiveFunc, from, to int64) (*db.TerminalSession, error) {
 	if from == to {
 		return nil, refuse(CodeSelf, "a session cannot message itself.")
@@ -188,8 +198,11 @@ func CheckTarget(ctx context.Context, d *db.DB, live LiveFunc, from, to int64) (
 	if err != nil {
 		return nil, err
 	}
-	if !ok || !sender.WorkbenchID.Valid {
-		return nil, refuse(CodeNotFound, "the sending session #%d is not a session of a workbench.", from)
+	if !ok {
+		return nil, refuse(CodeNotFound, "there is no sending session #%d.", from)
+	}
+	if _, agent := agentkind.Parse(sender.Kind); !agent || !sender.WorkbenchID.Valid {
+		return nil, refuse(CodeNotSameWorkbench, "the sending session #%d is not an agent session of a workbench.", from)
 	}
 	target, ok, err := LoadSession(ctx, d, to)
 	if err != nil {
@@ -198,7 +211,7 @@ func CheckTarget(ctx context.Context, d *db.DB, live LiveFunc, from, to int64) (
 	if !ok {
 		return nil, refuse(CodeNotFound, "there is no session #%d.", to)
 	}
-	if _, agent := agentkind.Parse(target.Kind); !agent || target.WorkbenchID != sender.WorkbenchID {
+	if !IsPeer(target, sender.WorkbenchID.Int64) {
 		return nil, refuse(CodeNotSameWorkbench, "session #%d is not an agent session of this workbench.", to)
 	}
 	running, err := live(ctx, to)
@@ -258,10 +271,17 @@ func parentOf(ctx context.Context, d *db.DB, child *db.TerminalSession) (*db.Ter
 		return nil, false, nil
 	}
 	parent, ok, err := LoadSession(ctx, d, child.ParentSessionID.Int64)
-	if err != nil || !ok || parent.WorkbenchID != child.WorkbenchID {
+	if err != nil || !ok || !IsPeer(parent, child.WorkbenchID.Int64) {
 		return nil, false, err
 	}
 	return parent, true, nil
+}
+
+// IsPeer reports whether s is an agent session (not a shell) of workbench
+// wb: the only kind of row a message is ever typed into.
+func IsPeer(s *db.TerminalSession, wb int64) bool {
+	_, agent := agentkind.Parse(s.Kind)
+	return agent && s.WorkbenchID.Valid && s.WorkbenchID.Int64 == wb
 }
 
 // LoadSession is session id's row; ok is false for a row that is gone or

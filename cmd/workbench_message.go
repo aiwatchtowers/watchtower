@@ -13,6 +13,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
+	"watchtower/internal/db"
 	"watchtower/internal/sessionmsg"
 	"watchtower/internal/sessionstart"
 	"watchtower/internal/tools"
@@ -170,12 +171,18 @@ func runWorkbenchMessageDismiss(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 	var wb int64
-	err = database.QueryRowContext(cmdContext(cmd), `SELECT workbench_id FROM session_messages WHERE id = ?`, messageFlagID).Scan(&wb)
+	var state, reason string
+	err = database.QueryRowContext(cmdContext(cmd), `SELECT workbench_id, state, reason FROM session_messages WHERE id = ?`,
+		messageFlagID).Scan(&wb, &state, &reason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return dismissRefused(cmd, dismissNotFound, fmt.Sprintf("there is no agent message #%d.", messageFlagID))
 	}
 	if err != nil {
 		return fmt.Errorf("reading session message %d: %w", messageFlagID, err)
+	}
+	if state != db.SessionMessageDelivered || reason != db.SessionMessageTypedNotSubmitted {
+		return dismissRefused(cmd, dismissNotAllowed,
+			fmt.Sprintf("agent message #%d was not left typed in a prompt; there is nothing to dismiss.", messageFlagID))
 	}
 	// Under an AI agent's marker with no session of its own: refused.
 	if err := checkSessionCaller(database, wb); err != nil {
