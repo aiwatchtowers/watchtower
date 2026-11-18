@@ -28,22 +28,22 @@ final class BackgroundAIConsentPromptTests: XCTestCase {
 
     func testUpgradeSheetOpensOncePerLaunch() {
         var sheet = BackgroundAIConsentSheet()
-        sheet.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesOpen: false)
+        sheet.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesPending: false)
         XCTAssertEqual(sheet.opened, .upgrade)
         sheet.close()
-        sheet.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesOpen: false)
+        sheet.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesPending: false)
         XCTAssertNil(sheet.opened, "once per launch")
     }
 
     func testUpgradeSheetWaitsForReleaseNotesAndAReadableConfig() {
         var sheet = BackgroundAIConsentSheet()
-        sheet.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesOpen: true)
+        sheet.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesPending: true)
         XCTAssertNil(sheet.opened, "never stacked on the release notes window")
-        sheet.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: true, releaseNotesOpen: false)
+        sheet.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: true, releaseNotesPending: false)
         XCTAssertNil(sheet.opened, "the writer refuses an unreadable config.yaml")
-        sheet.presentIfDue(onboardingDone: false, state: unanswered, configUnreadable: false, releaseNotesOpen: false)
+        sheet.presentIfDue(onboardingDone: false, state: unanswered, configUnreadable: false, releaseNotesPending: false)
         XCTAssertNil(sheet.opened, "onboarding asks in its own step")
-        sheet.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesOpen: false)
+        sheet.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesPending: false)
         XCTAssertEqual(sheet.opened, .upgrade, "presented once nothing holds it")
     }
 
@@ -56,11 +56,14 @@ final class BackgroundAIConsentPromptTests: XCTestCase {
         XCTAssertFalse(sheet.showsConfigError)
         sheet.present(configUnreadable: false)
         XCTAssertEqual(sheet.opened, .reEntry)
+        sheet.close()
+        sheet.reopen(.upgrade)
+        XCTAssertEqual(sheet.opened, .upgrade, "a re-asserted sheet keeps its kind")
     }
 
     func testFollowClosesPerDecision12() {
         var upgrade = BackgroundAIConsentSheet()
-        upgrade.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesOpen: false)
+        upgrade.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesPending: false)
         upgrade.follow(unanswered)
         XCTAssertEqual(upgrade.opened, .upgrade)
         upgrade.follow(ownerPaused)

@@ -4,8 +4,8 @@ import WatchtowerCore
 /// The background AI consent (#1886, spec §5): onboarding's last step or the
 /// sheet (after an upgrade, or opened from Settings, Home, an empty state or
 /// Automations). Allow and Not now write the answer through the CLI;
-/// `onAnswered` runs only once it is saved. A failed write keeps the screen
-/// with the error line under the buttons.
+/// `onAnswered` runs only once it is saved, with the buttons still off. A
+/// failed write keeps the screen with the error line under the buttons.
 struct BackgroundAIConsentView: View {
     enum Host {
         /// Onboarding's step: Back, and the step indicator above it (drawn by
@@ -17,7 +17,9 @@ struct BackgroundAIConsentView: View {
 
     let model: BackgroundAIConsentModel
     let host: Host
-    let onAnswered: () async -> Void
+    /// The host's follow-up once the answer is saved; false keeps the
+    /// screen with a retry of the follow-up only.
+    let onAnswered: @MainActor () async -> Bool
 
     private typealias Copy = BackgroundAIConsentCopy
     private static let sheetWidth: CGFloat = 560
@@ -80,26 +82,35 @@ struct BackgroundAIConsentView: View {
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.container, style: .continuous))
+        .card()
     }
 
     private var buttons: some View {
         VStack(alignment: .trailing, spacing: Spacing.regular) {
             HStack(spacing: Spacing.regular) {
                 if case .step(let onBack) = host {
-                    Button(Copy.back, action: onBack).buttonStyle(.kitQuiet).disabled(model.isSaving)
+                    Button(Copy.back, action: onBack)
+                        .buttonStyle(.kitQuiet)
+                        .disabled(model.isBusy || model.needsFinishRetry)
                 }
                 Spacer()
-                if model.isSaving {
+                if model.isBusy {
                     ProgressView().controlSize(.small)
                     Text(Copy.saving).font(.caption).foregroundStyle(.secondary)
                 }
-                Button(Copy.notNow) { answer(model.notNow) }
-                    .buttonStyle(.kitSecondary)
-                    .disabled(model.isSaving)
-                Button(Copy.allow) { answer(model.allow) }
-                    .buttonStyle(.kitPrimary)
-                    .disabled(model.isSaving)
+                if model.needsFinishRetry {
+                    // The answer is saved; only the follow-up runs again.
+                    Button(Copy.finishRetry) { Task { await model.retryFinish(onAnswered) } }
+                        .buttonStyle(.kitPrimary)
+                        .disabled(model.isBusy)
+                } else {
+                    Button(Copy.notNow) { Task { await model.answer(.notNow, finish: onAnswered) } }
+                        .buttonStyle(.kitSecondary)
+                        .disabled(model.isBusy)
+                    Button(Copy.allow) { Task { await model.answer(.allow, finish: onAnswered) } }
+                        .buttonStyle(.kitPrimary)
+                        .disabled(model.isBusy)
+                }
             }
             .controlSize(isStep ? .large : .regular)
             Text(model.errorLine ?? Copy.notNowNote)
@@ -109,19 +120,15 @@ struct BackgroundAIConsentView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
-
-    private func answer(_ write: @escaping @MainActor () async -> Bool) {
-        Task {
-            if await write() { await onAnswered() }
-        }
-    }
 }
 
 /// The consent screen with its own model, made once when it appears (one
 /// model per showing, so its saving and error state survive re-renders).
 struct BackgroundAIConsentHost: View {
     let host: BackgroundAIConsentView.Host
-    let onAnswered: () async -> Void
+    /// The host's follow-up once the answer is saved; false keeps the
+    /// screen with a retry of the follow-up only.
+    let onAnswered: @MainActor () async -> Bool
 
     @Environment(AppState.self) private var appState
     @State private var model: BackgroundAIConsentModel?

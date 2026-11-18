@@ -13,14 +13,15 @@ struct BackgroundAIConsentPresenter: ViewModifier {
     private struct Inputs: Equatable {
         let state: BackgroundAIConsent.State
         let configUnreadable: Bool
-        let releaseNotesOpen: Bool
+        let releaseNotesPending: Bool
     }
 
     private var inputs: Inputs {
         Inputs(
             state: appState.backgroundAI,
             configUnreadable: appState.backgroundAIConfigUnreadable,
-            releaseNotesOpen: appState.updateService.installedRelease != nil
+            releaseNotesPending: !appState.updateService.isWhatsNewSettled
+                || appState.updateService.installedRelease != nil
         )
     }
 

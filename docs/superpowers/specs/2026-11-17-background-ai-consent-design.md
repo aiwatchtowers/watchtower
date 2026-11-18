@@ -216,6 +216,8 @@ The strings are `BackgroundAIConsentMockCopy` today and move to `BackgroundAICon
 - "Chats, Catch-Up, Run now and anything else you start yourself always run, whatever you pick here."
 - "You can change this any time in Settings → AI → Background AI."
 - Buttons: "Allow background AI", "Not now", "Back". Saving: "Saving your choice…".
+- When the answer is saved but onboarding's finish fails: "Try again" (runs the finish only; the answer is not written again).
+- Instead of the sheet while config.yaml cannot be read (an alert): title "Watchtower can't read config.yaml", body "Your background AI choice can't be saved until the file is fixed."
 - Under the buttons: "Not now: Slack, mail, calendar and Jira keep syncing. AI features and automations wait until you allow them."
 
 The rows list what *can* run (every AI feature), not only what is on now: the owner turns features on later without a second consent, and the list stays one fixed shape (D13 keeps one switch).

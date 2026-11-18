@@ -59,6 +59,13 @@ extension AppState {
     /// the config error shows instead of the sheet.
     func presentBackgroundAIConsent() {
         bringMainWindowForward()
+        if let shown = backgroundAIConsentSheet.opened, !backgroundAIConfigUnreadable {
+            // Already marked open: re-assert it, in case another sheet held
+            // the window when it was set and SwiftUI never put it up.
+            backgroundAIConsentSheet.close()
+            Task { @MainActor [weak self] in self?.backgroundAIConsentSheet.reopen(shown) }
+            return
+        }
         backgroundAIConsentSheet.present(configUnreadable: backgroundAIConfigUnreadable)
     }
 
@@ -73,40 +80,41 @@ extension AppState {
             onboardingDone: onboarding.currentStep == .complete,
             state: backgroundAI,
             configUnreadable: backgroundAIConfigUnreadable,
-            releaseNotesOpen: updateService.installedRelease != nil
+            releaseNotesPending: !updateService.isWhatsNewSettled || updateService.installedRelease != nil
         )
         if !wasOpen, isBackgroundAIConsentPresented { bringMainWindowForward() }
     }
 
     /// The sheet's answer was saved: re-read it, then close.
-    func backgroundAIConsentSheetAnswered() {
+    func backgroundAIConsentSheetAnswered() -> Bool {
         reloadBackgroundAI()
         backgroundAIConsentSheet.close()
+        return true
     }
 
     /// Onboarding's consent step was answered: re-read it (so the route
-    /// skips the step), then finish onboarding.
-    func answerBackgroundAIConsentStep(onRetry: () -> Void) async {
+    /// skips the step), then finish onboarding. False when the finish
+    /// failed (`onboardingStepError` says why); calling it again retries the
+    /// finish only, the answer is already saved.
+    func answerBackgroundAIConsentStep(onRetry: () -> Void) async -> Bool {
         reloadBackgroundAI()
         await leaveOnboardingStep(.aiConsent, route: onboardingRoute, onRetry: onRetry)
+        return onboarding.currentStep == .complete
     }
 
-    /// A model for one showing of the screen: the configured agent and
-    /// reserve, the sync cadence for the "what runs" rows.
-    func makeBackgroundAIConsentModel() -> BackgroundAIConsentModel {
-        let config = sharedConfig
-        let provider = config.aiProvider ?? "claude"
-        let agent = { (id: String) in
-            BackgroundAIConsentCopy.Agent(provider: id, displayName: AIModelCatalog.shared.displayName(id))
-        }
-        let reserve = config.aiFallbackEnabled ? (config.aiFallbackProvider ?? config.reservePeer) : nil
-        return BackgroundAIConsentModel(
-            runner: ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner(),
-            configPath: config.connectionConfigPath,
-            agent: agent(provider),
-            reserve: reserve.map(agent),
-            pollMinutes: FeatureReadiness.parsePollInterval(config.syncInterval),
-            backfillDays: config.backfillDays ?? BackgroundAIConsentModel.defaultBackfillDays
+    /// A model for one showing of the screen. The agent, reserve and sync
+    /// cadence it discloses are read from config.yaml as saved, now: never
+    /// Settings' unsaved edits, and after Goals switched the provider.
+    func makeBackgroundAIConsentModel(
+        runner: any CLIRunnerProtocol = ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()
+    ) -> BackgroundAIConsentModel {
+        let path = sharedConfig.connectionConfigPath
+        var yaml: [String: Any] = [:]
+        if case .mapping(let read) = ConfigService.readConfig(atPath: path) { yaml = read }
+        let catalog = AIModelCatalog.shared
+        let setup = BackgroundAIConsentSetup.read(
+            yaml, displayName: catalog.displayName, reservePeer: catalog.reservePeer(of:)
         )
+        return BackgroundAIConsentModel(runner: runner, configPath: path, setup: setup)
     }
 }

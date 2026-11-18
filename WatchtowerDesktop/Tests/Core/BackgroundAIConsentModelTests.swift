@@ -12,6 +12,7 @@ private final class ConsentRunner: CLIRunnerProtocol, @unchecked Sendable {
     private var gate: CheckedContinuation<Void, Never>?
     private var startWaiter: CheckedContinuation<Void, Never>?
     private var isStarted = false
+    private var released = false
 
     var calls: [[String]] { lock.withLock { recorded } }
 
@@ -28,7 +29,13 @@ private final class ConsentRunner: CLIRunnerProtocol, @unchecked Sendable {
         waiter?.resume()
         if shouldHold {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                lock.withLock { gate = continuation }
+                // A release() that came first must not be lost.
+                let now = lock.withLock { () -> Bool in
+                    if released { return true }
+                    gate = continuation
+                    return false
+                }
+                if now { continuation.resume() }
             }
         }
         if let stderr = lock.withLock({ failure }) {
@@ -51,6 +58,7 @@ private final class ConsentRunner: CLIRunnerProtocol, @unchecked Sendable {
 
     func release() {
         let waiting = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            released = true
             defer { gate = nil }
             return gate
         }
@@ -123,6 +131,60 @@ final class BackgroundAIConsentModelTests: XCTestCase {
         let saved = await model.allow()
         XCTAssertTrue(saved)
         XCTAssertNil(model.errorLine, "a later success clears the error")
+    }
+
+    func testFinishRunsWithButtonsOffAndRetriesOnlyTheFinish() async {
+        let runner = ConsentRunner()
+        let model = makeModel(runner)
+        var busyDuringFinish = false
+        await model.answer(.allow) {
+            busyDuringFinish = model.isBusy
+            return false
+        }
+        XCTAssertTrue(busyDuringFinish, "the buttons stay off until the finish returns")
+        XCTAssertTrue(model.needsFinishRetry)
+        XCTAssertFalse(model.isBusy)
+
+        await model.answer(.notNow) { true }
+        XCTAssertEqual(runner.calls.count, 1, "no new answer while the finish waits for a retry")
+
+        await model.retryFinish { true }
+        XCTAssertFalse(model.needsFinishRetry)
+        XCTAssertEqual(runner.calls.count, 1, "a retry never writes the answer again")
+    }
+
+    func testFailedWriteSkipsTheFinish() async {
+        let runner = ConsentRunner()
+        runner.fail(with: "disk full")
+        let model = makeModel(runner)
+        var finished = false
+        await model.answer(.allow) {
+            finished = true
+            return true
+        }
+        XCTAssertFalse(finished)
+        XCTAssertFalse(model.needsFinishRetry)
+        XCTAssertNotNil(model.errorLine)
+    }
+
+    func testSetupReadsThePersistedConfig() {
+        let names = { (id: String) in id == "ollama" ? "Ollama / Local" : id }
+        let peer = { (id: String) -> String? in id == "claude" ? "codex" : id == "codex" ? "claude" : nil }
+        let empty = BackgroundAIConsentSetup.read([:], displayName: names, reservePeer: peer)
+        XCTAssertEqual(empty, BackgroundAIConsentSetup(agent: .claude, reserve: nil, pollMinutes: 15, backfillDays: 30))
+
+        let codex = BackgroundAIConsentSetup.read(
+            ["ai": ["provider": "codex", "fallback": ["enabled": true]], "sync": ["poll_interval": "5m", "backfill_days": 7]],
+            displayName: names, reservePeer: peer
+        )
+        XCTAssertEqual(codex, BackgroundAIConsentSetup(agent: .codex, reserve: .claude, pollMinutes: 5, backfillDays: 7))
+
+        let off = BackgroundAIConsentSetup.read(
+            ["ai": ["provider": "ollama", "fallback": ["enabled": false, "provider": "codex"]]],
+            displayName: names, reservePeer: peer
+        )
+        XCTAssertEqual(off.agent, .other(name: "Ollama / Local"))
+        XCTAssertNil(off.reserve, "no reserve line while the automatic reserve is off")
     }
 
     func testWhatRunsUsesTheConfiguredCadence() {

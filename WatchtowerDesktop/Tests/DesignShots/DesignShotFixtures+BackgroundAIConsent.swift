@@ -132,7 +132,7 @@ private struct LiveConsentStep: View {
     var body: some View {
         VStack(spacing: Spacing.page) {
             OnboardingStepIndicator(steps: [.purpose, .connect, .aiConsent], current: .aiConsent)
-            BackgroundAIConsentView(model: model, host: .step {}) {}
+            BackgroundAIConsentView(model: model, host: .step {}) { true }
         }
         .padding(Spacing.page)
         .frame(maxWidth: .infinity, alignment: .top)
@@ -144,7 +144,7 @@ private struct LiveConsentSheet: View {
     let model: BackgroundAIConsentModel
 
     var body: some View {
-        BackgroundAIConsentView(model: model, host: .sheet) {}
+        BackgroundAIConsentView(model: model, host: .sheet) { true }
             .background(Surface.window)
     }
 }

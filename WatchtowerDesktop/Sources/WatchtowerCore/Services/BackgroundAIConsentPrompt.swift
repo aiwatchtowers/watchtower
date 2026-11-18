@@ -38,14 +38,15 @@ package struct BackgroundAIConsentSheet: Equatable, Sendable {
     package init() {}
 
     /// The upgrade sheet, once per launch, when it is due, config.yaml is
-    /// readable, and the release notes window is not open (never stacked).
+    /// readable, and no release notes window is open or still to come
+    /// (`UpdateService.isWhatsNewSettled`), so the two never stack.
     package mutating func presentIfDue(
         onboardingDone: Bool,
         state: BackgroundAIConsent.State,
         configUnreadable: Bool,
-        releaseNotesOpen: Bool
+        releaseNotesPending: Bool
     ) {
-        guard !upgradeShown, opened == nil, !configUnreadable, !releaseNotesOpen,
+        guard !upgradeShown, opened == nil, !configUnreadable, !releaseNotesPending,
               BackgroundAIConsentPrompt.shouldPresent(onboardingDone: onboardingDone, state: state) else { return }
         upgradeShown = true
         opened = .upgrade
@@ -67,6 +68,14 @@ package struct BackgroundAIConsentSheet: Equatable, Sendable {
 
     package mutating func close() {
         opened = nil
+    }
+
+    /// Opens `kind` again after a `close()`: a re-entry while the sheet is
+    /// already marked open re-asserts it (close, then this a turn later),
+    /// since a sheet SwiftUI never put up (another sheet held the window)
+    /// would otherwise stay dead.
+    package mutating func reopen(_ kind: BackgroundAIConsentPrompt.Opened) {
+        opened = kind
     }
 
     package mutating func dismissConfigError() {

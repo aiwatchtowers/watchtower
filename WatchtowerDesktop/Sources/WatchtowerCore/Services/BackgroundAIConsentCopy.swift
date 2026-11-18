@@ -94,6 +94,9 @@ package enum BackgroundAIConsentCopy {
     package static let notNow = "Not now"
     package static let back = "Back"
     package static let saving = "Saving your choice…"
+    /// The answer is saved but what follows it (onboarding's finish) failed:
+    /// only that runs again.
+    package static let finishRetry = "Try again"
 
     package static func saveFailed(_ error: String) -> String {
         "Couldn't save your choice: \(error). Nothing runs in the background until it is saved."
@@ -102,8 +105,7 @@ package enum BackgroundAIConsentCopy {
     /// Instead of the consent sheet while config.yaml cannot be read: the
     /// answer's writer refuses a file it cannot parse.
     package static let configUnreadableTitle = "Watchtower can't read config.yaml"
-    package static let configUnreadable = "Your background AI choice can't be saved until the file is fixed. "
-        + "Settings shows what is wrong with it."
+    package static let configUnreadable = "Your background AI choice can't be saved until the file is fixed."
 
     // MARK: Settings → AI → Background AI
 
