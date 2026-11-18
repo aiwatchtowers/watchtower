@@ -160,7 +160,7 @@ func TestWatchmanArm_JSONKeysPinned(t *testing.T) {
 	s1, _ := armSession(t, wb, "claude", nil, false)
 	_, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--json")
 	require.NoError(t, err, out)
-	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
+	assert.Equal(t, []string{"analytics_turned_on", "armed", "dropped", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
 		"protection_warning", "sessions", "sidecar_error"}, jsonKeys(t, out))
 	var raw struct {
 		Armed []map[string]json.RawMessage `json:"armed"`
@@ -171,7 +171,7 @@ func TestWatchmanArm_JSONKeysPinned(t *testing.T) {
 
 	_, out, err = armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--check", "--json")
 	require.NoError(t, err, out)
-	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
+	assert.Equal(t, []string{"analytics_turned_on", "armed", "dropped", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
 		"protection_warning", "sessions", "sidecar_error"}, jsonKeys(t, out))
 
 	_, out, err = armCLI(t, "disarm", "--session", strconv.FormatInt(s1, 10), "--json")
@@ -181,7 +181,7 @@ func TestWatchmanArm_JSONKeysPinned(t *testing.T) {
 	// A refused arm still prints its JSON.
 	_, out, err = armCLI(t, "arm", "--session", "999", "--json")
 	require.Error(t, err)
-	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
+	assert.Equal(t, []string{"analytics_turned_on", "armed", "dropped", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
 		"protection_warning", "sessions", "sidecar_error"}, jsonKeys(t, out))
 }
 
@@ -344,9 +344,10 @@ func TestWatchmanArm_AllRunningOnlyArmsTheConfirmedSet(t *testing.T) {
 	require.NoError(t, err, out)
 	assert.Equal(t, []int64{s1}, r.Sessions)
 	s2, _ := armSession(t, wb, "claude", nil, false) // started while the sheet is open
-	r, out, err = armCLI(t, "arm", "--all-running", "--only", strconv.FormatInt(s1, 10), "--json")
+	r, out, err = armCLI(t, "arm", "--all-running", "--only", strconv.FormatInt(s1, 10)+",999", "--json")
 	require.NoError(t, err, out)
 	assert.Equal(t, []int64{s1}, r.Sessions)
+	assert.Equal(t, []int64{999}, r.Dropped, "a confirmed id no longer running is reported")
 	rows := armingRows(t)
 	require.Len(t, rows, 1)
 	assert.Equal(t, s1, rows[0].RefID)

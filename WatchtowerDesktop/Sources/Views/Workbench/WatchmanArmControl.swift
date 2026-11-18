@@ -67,6 +67,13 @@ struct WatchmanArmControl: View {
 
     /// The via-target tooltip: the covering target, and whether the session
     /// also has its own row.
+    /// The covering target of a session that also has its own arming row.
+    static func directUnderTarget(_ scope: WatchmanArmScope, in status: WatchmanStatus?) -> Int64? {
+        guard case let .session(id) = scope, let status, let entry = status.armedSessions[id], entry.target != 0,
+              status.armed.contains(where: { $0.scope == .session && $0.id == id }) else { return nil }
+        return entry.target
+    }
+
     static func viaTargetHelp(_ scope: WatchmanArmScope, in status: WatchmanStatus?) -> String {
         guard case let .session(id) = scope, let status, let entry = status.armedSessions[id] else { return "" }
         let direct = status.armed.contains { $0.scope == .session && $0.id == id }
@@ -111,6 +118,10 @@ struct WatchmanArmControl: View {
                 Chip(text: Copy.stripArmed(since: since, calendar: calendar), color: Self.tone, dot: true)
                     .fixedSize()
                     .help(viaTargetHelp)
+                // Also handed over itself: Take back removes that row only.
+                if let target = Self.directUnderTarget(scope, in: center.lastStatus) {
+                    takeBackButton.help(Copy.takeBackDirectHelp(target: target))
+                }
             case .unarmed:
                 handButton.help(Copy.handHelp)
             }

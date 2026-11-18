@@ -7,6 +7,8 @@ import WatchtowerCore
 /// git guard cannot go into). A short blocking flow, so a sheet.
 struct WatchmanArmSheet: View {
     let content: WatchmanArmSheetContent
+    /// The confirm checks again: Hand to Watchman waits.
+    var busy = false
     let onCancel: () -> Void
     let onConfirm: () -> Void
 
@@ -18,6 +20,12 @@ struct WatchmanArmSheet: View {
                     line(icon: "arrow.triangle.2.circlepath", tone: Tone.warning, text: notice)
                 }
                 Text(content.body).font(.callout).fixedSize(horizontal: false, vertical: true)
+            }
+            if !content.sessions.isEmpty {
+                VStack(alignment: .leading, spacing: Spacing.small) {
+                    Text(WatchmanArmingCopy.sessionsHeader(content.sessions.count)).font(.callout.weight(.semibold))
+                    ForEach(content.sessions, id: \.self) { Text($0).font(.callout).lineLimit(1) }
+                }
             }
             VStack(alignment: .leading, spacing: Spacing.medium) {
                 ForEach(content.lines, id: \.self) { line(icon: $0.icon, tone: .secondary, text: $0.text) }
@@ -39,6 +47,7 @@ struct WatchmanArmSheet: View {
                 Button(content.confirm, action: onConfirm)
                     .buttonStyle(.kitPrimary)
                     .keyboardShortcut(.defaultAction)
+                    .disabled(busy)
             }
         }
         .controlSize(.small)
@@ -63,6 +72,7 @@ struct WatchmanArmSheetHost: ViewModifier {
         content.sheet(item: Binding(get: { center?.sheet }, set: { if $0 == nil { center?.sheet = nil } })) { request in
             WatchmanArmSheet(
                 content: request.content,
+                busy: center?.confirming ?? false,
                 onCancel: { center?.sheet = nil },
                 onConfirm: { Task { await center?.confirmSheet() } }
             )

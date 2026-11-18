@@ -44,7 +44,10 @@ final class WatchmanArmingCopyTests: XCTestCase {
         XCTAssertTrue(Copy.handHelp.contains("Inbox → Watchman"))
         XCTAssertEqual(Copy.viaTargetHelp(target: 4, direct: false), "Handed over through #4 — take #4 back on its panel")
         XCTAssertEqual(Copy.viaTargetHelp(target: 4, direct: true),
-                       "Handed over through #4 and directly — take #4 back on its panel, then this session here")
+                       "Handed over through #4 and directly — Take back here removes the direct hand-over; "
+                           + "take #4 back on its panel")
+        XCTAssertEqual(Copy.nothingToHandOver, "Nothing to hand over: no agent session is running")
+        XCTAssertTrue(Copy.updateCLI.hasPrefix("Update Watchtower's command-line tool"))
         XCTAssertEqual(Copy.sessionsChanged, "The running sessions changed since this opened — this is the new set.")
         XCTAssertTrue(Copy.sidecarNote.hasPrefix("Handed to Watchman"))
     }

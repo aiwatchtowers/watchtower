@@ -14,6 +14,10 @@ private final class ArmingRunner: CLIRunnerProtocol, @unchecked Sendable {
     private var statusJSON: String
     private var replies: [String: CLICapturedResult] = [:]
     private var statusError: Error?
+    /// When set, the next `--check` waits on it; `checkEntered` opens once
+    /// that check is under way.
+    private var checkGate: AsyncGate?
+    let checkEntered = AsyncGate()
 
     init(status: String) { statusJSON = status }
 
@@ -22,6 +26,7 @@ private final class ArmingRunner: CLIRunnerProtocol, @unchecked Sendable {
     var verbs: [[String]] { invocations.filter { $0.dropFirst().first != "status" } }
     func setStatus(_ json: String) { lock.withLock { statusJSON = json; statusError = nil } }
     func failStatus(_ error: Error) { lock.withLock { statusError = error } }
+    func holdNextCheck(_ gate: AsyncGate) { lock.withLock { checkGate = gate } }
 
     /// `key`: "check", "arm" or "disarm".
     func reply(_ key: String, _ json: String, exitCode: Int32 = 0, stderr: String = "") {
@@ -37,7 +42,14 @@ private final class ArmingRunner: CLIRunnerProtocol, @unchecked Sendable {
     }
 
     func capture(args: [String], timeout: TimeInterval) async throws -> CLICapturedResult {
-        lock.withLock {
+        if args.contains("--check"), let gate = lock.withLock({ () -> AsyncGate? in
+            defer { checkGate = nil }
+            return checkGate
+        }) {
+            checkEntered.release()
+            await gate.wait()
+        }
+        return lock.withLock {
             calls.append(args)
             let key = args.contains("--check") ? "check" : args[1]
             return replies[key] ?? CLICapturedResult(stdout: Data(#"{"ok":true}"#.utf8), exitCode: 0)
@@ -58,7 +70,7 @@ final class WatchmanArmingTests: XCTestCase {
         """#
     private static let firstTimeCheck = #"""
         {"ok":true,"armed":[],"first_time":true,"analytics_turned_on":false,"learning_started":false,
-         "estimate":{"decisions":1850,"need_labels":1200,"tokens":1600000},"protection_warning":"","hooks_warning":"",
+         "estimate":{"decisions":1850,"need_labels":1200,"tokens":1600000},"sessions":[5],"protection_warning":"","hooks_warning":"",
          "sidecar_error":"","error":""}
         """#
 
@@ -196,19 +208,20 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertEqual(sheet.content.title, Copy.sheetTitleAllRunning)
         XCTAssertTrue(sheet.content.lines.map(\.text).contains(Copy.analyticsLine))
 
+        XCTAssertEqual(sheet.content.sessions, ["Session 5"], "no title known: the id")
         await center.confirmSheet()
-        XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--all-running", "--json"])
+        XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--all-running", "--only", "5", "--json"])
         XCTAssertEqual(runner.verbs.count, 3, "check, the check again on confirm, arm")
         XCTAssertEqual(center.armNotices[.allRunning], Copy.analyticsLine)
 
-        // Learned, no warning: no sheet, armed at once.
-        runner.reply("check", #"{"ok":true,"first_time":false}"#)
+        // Learned, no warning: no sheet, armed at once — as the checked set.
+        runner.reply("check", #"{"ok":true,"first_time":false,"sessions":[5]}"#)
         let again = await center.handAllRunning()
         XCTAssertFalse(again)
         XCTAssertNil(center.sheet)
         XCTAssertEqual(Array(runner.verbs.suffix(2)), [
             ["watchman", "arm", "--all-running", "--check", "--json"],
-            ["watchman", "arm", "--all-running", "--json"]
+            ["watchman", "arm", "--all-running", "--only", "5", "--json"]
         ])
 
         var fired = false
@@ -304,7 +317,7 @@ final class WatchmanArmingTests: XCTestCase {
     }
 
     /// A session under an armed target is the target's, even with its own
-    /// row: no Take back (it would not return it).
+    /// row; its Take back removes only that row (round 3).
     func testSessionWithDirectRowUnderArmedTargetIsViaTarget() async throws {
         let both = #"""
             {"ok":true,"workbenches":[],"mode":"sleep","mode_since":"2026-11-17T01:40:00Z",
@@ -315,7 +328,7 @@ final class WatchmanArmingTests: XCTestCase {
         let center = await center(ArmingRunner(status: both))
         XCTAssertEqual(WatchmanArmControl.arming(.session(9), in: center.lastStatus), .viaTarget)
         let control = WatchmanArmControl(center: center, scope: .session(9), workbench: "acme-api", style: .strip)
-        XCTAssertThrowsError(try control.inspect().find(button: Copy.takeBack))
+        XCTAssertNoThrow(try control.inspect().find(button: Copy.takeBack))
     }
 
     /// "Sleep since" is the session's own arming time when the status
@@ -382,5 +395,81 @@ final class WatchmanArmingTests: XCTestCase {
             """#)
         XCTAssertEqual(WatchmanArmControl.viaTargetHelp(.session(9), in: status), Copy.viaTargetHelp(target: 4, direct: true))
         XCTAssertEqual(WatchmanArmControl.viaTargetHelp(.session(8), in: status), Copy.viaTargetHelp(target: 4, direct: false))
+    }
+
+    /// Every running session is armed only as an explicit set: an empty
+    /// list says there is nothing to hand over, a CLI without the list is
+    /// refused, and `arm(.allRunning)` with no set never runs.
+    func testAllRunningNeverArmsUnrestricted() async {
+        let runner = ArmingRunner(status: Self.unarmed)
+        let center = await center(runner)
+        runner.reply("check", #"{"ok":true,"first_time":false,"sessions":[]}"#)
+        _ = await center.handAllRunning()
+        XCTAssertEqual(center.armNotices[.allRunning], Copy.nothingToHandOver)
+        runner.reply("check", #"{"ok":true,"first_time":true}"#)
+        let opened = await center.handAllRunning()
+        XCTAssertFalse(opened)
+        XCTAssertNil(center.sheet)
+        XCTAssertEqual(center.armNotices[.allRunning], Copy.updateCLI)
+        await center.arm(.allRunning)
+        XCTAssertEqual(center.armNotices[.allRunning], Copy.nothingToHandOver)
+        XCTAssertFalse(runner.verbs.contains { !$0.contains("--check") }, "never an unrestricted arm")
+    }
+
+    /// One confirm at a time (the button waits), and a sheet dismissed while
+    /// its confirm checks again arms nothing.
+    func testConfirmIsSingleAndADismissCancels() async throws {
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", #"{"ok":true,"first_time":true,"sessions":[5]}"#)
+        let center = await center(runner)
+        _ = await center.handAllRunning()
+        XCTAssertNotNil(center.sheet)
+
+        let gate = AsyncGate()
+        runner.holdNextCheck(gate)
+        let confirm = Task { await center.confirmSheet() }
+        await runner.checkEntered.wait()
+        XCTAssertTrue(center.confirming)
+        await center.confirmSheet() // a second press while checking: ignored
+        center.sheet = nil          // Not now meanwhile
+        gate.release()
+        await confirm.value
+        XCTAssertFalse(center.confirming)
+        XCTAssertEqual(runner.verbs.filter { $0.contains("--check") }.count, 2, "the first check and one recheck")
+        XCTAssertFalse(runner.verbs.contains { !$0.contains("--check") }, "nothing armed")
+    }
+
+    /// The sheet lists the sessions it hands over by title (ids without one),
+    /// and an `--only` id no longer running shows as a warning.
+    func testSheetListsSessionsAndDroppedIdsWarn() async throws {
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", #"{"ok":true,"first_time":true,"sessions":[5,6]}"#)
+        let center = await center(runner)
+        center.sessionTitle = { $0 == 5 ? "Fix the login redirect" : nil }
+        _ = await center.handAllRunning()
+        let sheet = try XCTUnwrap(center.sheet)
+        XCTAssertEqual(sheet.content.sessions, ["#5 Fix the login redirect", "Session 6"])
+        XCTAssertEqual(Copy.sessionsHeader(2), "Hands over 2 sessions:")
+
+        runner.reply("arm", #"{"ok":true,"sessions":[5],"dropped":[6]}"#)
+        await center.confirmSheet()
+        XCTAssertEqual(center.armNotices[.allRunning], Copy.droppedLine([6]))
+        XCTAssertEqual(Copy.droppedLine([6, 7]), "Not handed over (no longer running): #6, #7")
+    }
+
+    /// A session handed over itself and through its target keeps Take back,
+    /// which removes the direct row only; the tooltip says so.
+    func testDirectRowUnderTargetKeepsTakeBack() throws {
+        let status = try WatchmanStatusFixtures.decode(#"""
+            {"ok":true,"workbenches":[],"mode":"sleep",
+             "armed":[{"scope":"target","id":4},{"scope":"session","id":9}],
+             "armed_sessions":[{"id":9,"target":4},{"id":8,"target":4}]}
+            """#)
+        XCTAssertEqual(WatchmanArmControl.directUnderTarget(.session(9), in: status), 4)
+        XCTAssertNil(WatchmanArmControl.directUnderTarget(.session(8), in: status))
+        XCTAssertFalse(Copy.viaTargetHelp(target: 4, direct: true).contains("this session here"))
+        XCTAssertTrue(Copy.viaTargetHelp(target: 4, direct: true).contains("Take back here removes the direct hand-over"))
+        XCTAssertEqual(Copy.takeBackDirectHelp(target: 4),
+                       "Takes back only this session's own hand-over; #4 still hands it to Watchman")
     }
 }

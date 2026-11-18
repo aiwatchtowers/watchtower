@@ -45,6 +45,11 @@ final class WatchmanCenter {
     private(set) var armNotices: [WatchmanArmScope: String] = [:]
     /// The arm sheet on screen (the check said a first time or a warning).
     var sheet: WatchmanArmSheetRequest?
+    /// The sheet's confirm checks the running sessions again now.
+    private(set) var confirming = false
+    /// A session's title for the arm sheet's list; AppState wires the
+    /// workbench sessions. nil: "Session N".
+    @ObservationIgnored var sessionTitle: (Int64) -> String? = { _ in nil }
 
     @ObservationIgnored private let runner: any CLIRunnerProtocol
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
@@ -199,15 +204,18 @@ final class WatchmanCenter {
         case let .failed(message):
             armNotices[scope] = WatchmanArmingCopy.armFailed(message)
             return false
-        case let .reply(reply) where reply.needsSheet:
+        case let .reply(reply):
+            if let refusal = Self.allRunningRefusal(scope, reply) {
+                armNotices[scope] = refusal
+                return false
+            }
+            guard reply.needsSheet else {
+                await arm(scope, only: reply.sessions ?? [])
+                return false
+            }
             let title = workbench.map(WatchmanArmingCopy.sheetTitle(workbench:)) ?? WatchmanArmingCopy.sheetTitleAllRunning
-            sheet = WatchmanArmSheetRequest(
-                scope: scope, title: title, sessions: reply.sessions,
-                content: WatchmanArmSheetContent(title: title, reply: reply))
+            sheet = makeSheet(scope, title: title, reply: reply)
             return true
-        case .reply:
-            await arm(scope)
-            return false
         }
     }
 
@@ -221,27 +229,52 @@ final class WatchmanCenter {
     /// Every running session (the tray) is checked again first: when the
     /// running set changed since the sheet opened, the sheet shows the new
     /// set and asks again; otherwise exactly the confirmed sessions are armed
-    /// (`--only`), so a session started meanwhile is never armed unseen.
+    /// (`--only`), so a session started meanwhile is never armed unseen. One
+    /// confirm at a time; a sheet dismissed during the check arms nothing.
     func confirmSheet() async {
-        guard let request = sheet else { return }
+        guard !confirming, let request = sheet else { return }
         guard request.scope == .allRunning else {
             sheet = nil
             await arm(request.scope)
             return
         }
-        switch await check(.allRunning) {
+        confirming = true
+        let check = await check(.allRunning)
+        confirming = false
+        guard sheet == request else { return }
+        switch check {
         case let .failed(message):
             sheet = nil
             armNotices[.allRunning] = WatchmanArmingCopy.armFailed(message)
-        case let .reply(reply) where Set(reply.sessions) != Set(request.sessions):
-            sheet = WatchmanArmSheetRequest(
-                scope: .allRunning, title: request.title, sessions: reply.sessions,
-                content: WatchmanArmSheetContent(title: request.title, reply: reply,
-                                                 notice: WatchmanArmingCopy.sessionsChanged))
-        case .reply:
-            sheet = nil
-            await arm(.allRunning, only: request.sessions)
+        case let .reply(reply):
+            if let refusal = Self.allRunningRefusal(.allRunning, reply) {
+                sheet = nil
+                armNotices[.allRunning] = refusal
+            } else if Set(reply.sessions ?? []) != Set(request.sessions) {
+                sheet = makeSheet(.allRunning, title: request.title, reply: reply, notice: WatchmanArmingCopy.sessionsChanged)
+            } else {
+                sheet = nil
+                await arm(.allRunning, only: request.sessions)
+            }
         }
+    }
+
+    /// Every running session is armed only as an explicit set: a check that
+    /// lists none (nothing runs) or cannot list them (an older CLI) stops here.
+    private static func allRunningRefusal(_ scope: WatchmanArmScope, _ reply: WatchmanArmReply) -> String? {
+        guard scope == .allRunning else { return nil }
+        guard let sessions = reply.sessions else { return WatchmanArmingCopy.updateCLI }
+        return sessions.isEmpty ? WatchmanArmingCopy.nothingToHandOver : nil
+    }
+
+    private func makeSheet(
+        _ scope: WatchmanArmScope, title: String, reply: WatchmanArmReply, notice: String? = nil
+    ) -> WatchmanArmSheetRequest {
+        let sessions = reply.sessions ?? []
+        let names = sessions.map { id in sessionTitle(id).map { "#\(id) \($0)" } ?? WatchmanArmingCopy.sessionFallback(id) }
+        return WatchmanArmSheetRequest(
+            scope: scope, title: title, sessions: sessions,
+            content: WatchmanArmSheetContent(title: title, reply: reply, sessions: names, notice: notice))
     }
 
     /// `watchman arm --check`: writes nothing.
@@ -259,6 +292,11 @@ final class WatchmanCenter {
     /// sidecar note); an unreadable reply after exit 0 lets the status say.
     @discardableResult
     func arm(_ scope: WatchmanArmScope, only: [Int64] = []) async -> WatchmanArmReply? {
+        // Every running session only ever as an explicit set.
+        if scope == .allRunning, only.isEmpty {
+            armNotices[scope] = WatchmanArmingCopy.nothingToHandOver
+            return nil
+        }
         armingHere.insert(scope)
         armNotices[scope] = nil
         let onlyFlags = only.isEmpty ? [] : ["--only", only.map(String.init).joined(separator: ",")]

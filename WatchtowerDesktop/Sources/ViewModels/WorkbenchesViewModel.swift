@@ -139,6 +139,11 @@ final class WorkbenchesViewModel {
     /// Watchman (#1823): the session strip's Hand to Watchman / Take back.
     /// AppState wires its own; nil = a strip without it.
     @ObservationIgnored weak var watchman: WatchmanCenter?
+
+    /// A session's title on any workbench (the Watchman arm sheet's list).
+    func sessionTitle(_ id: Int64) -> String? {
+        terminalSessions.values.lazy.flatMap { $0 }.first { $0.id == id }?.title
+    }
     /// The Analytics pane's period per workbench (7 days until picked).
     var analyticsPeriod: [Int64: AgentAnalyticsCenter.Period] = [:]
     /// The Analytics pane's agent filter per workbench (All until picked;

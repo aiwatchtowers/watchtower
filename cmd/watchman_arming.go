@@ -83,7 +83,10 @@ type watchmanArmJSON struct {
 	// Sessions are the session ids this arm (or --check) covers by a
 	// session row; empty for --target. The Desktop confirms exactly these.
 	Sessions []int64 `json:"sessions"`
-	Error    string  `json:"error"`
+	// Dropped are the --only ids that were not armed: no longer running, or
+	// not a workbench agent session. A partial arm is visible this way.
+	Dropped []int64 `json:"dropped"`
+	Error   string  `json:"error"`
 	// SidecarError: the rows were written (ok stays true) but the sidecar
 	// rewrite failed; the daemon's upkeep rewrites it next cycle.
 	SidecarError string `json:"sidecar_error"`
@@ -235,7 +238,7 @@ func exactlyOne(set ...bool) bool {
 }
 
 func runWatchmanArm(cmd *cobra.Command, _ []string) error {
-	out := watchmanArmJSON{Armed: []watchman.ArmedEntry{}, Sessions: []int64{}}
+	out := watchmanArmJSON{Armed: []watchman.ArmedEntry{}, Sessions: []int64{}, Dropped: []int64{}}
 	err := watchmanArm(cmd, &out)
 	out.OK = err == nil
 	if err != nil {
@@ -322,6 +325,11 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 	for _, r := range rows {
 		if r.Scope == "session" {
 			out.Sessions = append(out.Sessions, r.RefID)
+		}
+	}
+	for _, id := range watchmanArmFlagOnly {
+		if !slices.Contains(out.Sessions, id) && !slices.Contains(out.Dropped, id) {
+			out.Dropped = append(out.Dropped, id)
 		}
 	}
 	var first []int64 // workbenches Watchman is not on for or has not learned

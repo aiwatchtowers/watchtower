@@ -194,8 +194,10 @@ package struct WatchmanArmReply: Decodable, Equatable, Sendable {
     /// The learning estimate (`--check` on a first time only).
     package let estimate: WatchmanEstimate?
     /// The session ids this arm (or check) covers by a session row; empty
-    /// for a target.
-    package let sessions: [Int64]
+    /// for a target; nil from a CLI that does not print the key.
+    package let sessions: [Int64]?
+    /// `--only` ids that were not armed (no longer running).
+    package let dropped: [Int64]
     /// The branch-protection check's line; empty when protected.
     package let protectionWarning: String
     /// One line per repository the git guard cannot be installed in.
@@ -205,7 +207,7 @@ package struct WatchmanArmReply: Decodable, Equatable, Sendable {
     package let sidecarError: String
 
     enum CodingKeys: String, CodingKey {
-        case ok, error, estimate, sessions
+        case ok, error, estimate, sessions, dropped
         case firstTime = "first_time"
         case analyticsTurnedOn = "analytics_turned_on"
         case learningStarted = "learning_started"
@@ -221,7 +223,8 @@ package struct WatchmanArmReply: Decodable, Equatable, Sendable {
         analyticsTurnedOn: Bool = false,
         learningStarted: Bool = false,
         estimate: WatchmanEstimate? = nil,
-        sessions: [Int64] = [],
+        sessions: [Int64]? = nil,
+        dropped: [Int64] = [],
         protectionWarning: String = "",
         hooksWarning: String = "",
         sidecarError: String = ""
@@ -233,6 +236,7 @@ package struct WatchmanArmReply: Decodable, Equatable, Sendable {
         self.learningStarted = learningStarted
         self.estimate = estimate
         self.sessions = sessions
+        self.dropped = dropped
         self.protectionWarning = protectionWarning
         self.hooksWarning = hooksWarning
         self.sidecarError = sidecarError
@@ -246,7 +250,8 @@ package struct WatchmanArmReply: Decodable, Equatable, Sendable {
         analyticsTurnedOn = try container.decodeIfPresent(Bool.self, forKey: .analyticsTurnedOn) ?? false
         learningStarted = try container.decodeIfPresent(Bool.self, forKey: .learningStarted) ?? false
         estimate = try container.decodeIfPresent(WatchmanEstimate.self, forKey: .estimate)
-        sessions = (try? container.decodeIfPresent([Int64].self, forKey: .sessions)) ?? []
+        sessions = (try? container.decodeIfPresent([Int64].self, forKey: .sessions)).flatMap { $0 }
+        dropped = (try? container.decodeIfPresent([Int64].self, forKey: .dropped)) ?? []
         protectionWarning = try container.decodeIfPresent(String.self, forKey: .protectionWarning) ?? ""
         hooksWarning = try container.decodeIfPresent(String.self, forKey: .hooksWarning) ?? ""
         sidecarError = try container.decodeIfPresent(String.self, forKey: .sidecarError) ?? ""
@@ -254,7 +259,8 @@ package struct WatchmanArmReply: Decodable, Equatable, Sendable {
 
     /// The warning lines the arm sheet shows, protection first.
     package var warnings: [String] {
-        ([protectionWarning] + hooksWarning.split(whereSeparator: \.isNewline).map(String.init))
+        ([protectionWarning] + hooksWarning.split(whereSeparator: \.isNewline).map(String.init)
+            + (dropped.isEmpty ? [] : [WatchmanArmingCopy.droppedLine(dropped)]))
             .filter { !$0.isEmpty }
     }
 

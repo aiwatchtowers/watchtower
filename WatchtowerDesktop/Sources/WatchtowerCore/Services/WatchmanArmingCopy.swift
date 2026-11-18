@@ -16,8 +16,14 @@ package enum WatchmanArmingCopy {
     /// source that keeps it Watchman's, and where each is taken back.
     package static func viaTargetHelp(target: Int64, direct: Bool) -> String {
         direct
-            ? "Handed over through #\(target) and directly — take #\(target) back on its panel, then this session here"
+            ? "Handed over through #\(target) and directly — Take back here removes the direct hand-over; "
+                + "take #\(target) back on its panel"
             : "Handed over through #\(target) — take #\(target) back on its panel"
+    }
+
+    /// Take back on a session also covered by its target.
+    package static func takeBackDirectHelp(target: Int64) -> String {
+        "Takes back only this session's own hand-over; #\(target) still hands it to Watchman"
     }
 
     /// "Sleep since 01:40"; just "Sleep" without a time.
@@ -116,6 +122,23 @@ package enum WatchmanArmingCopy {
 
     /// The tray's sheet: every running session, maybe on several workbenches.
     package static let sheetTitleAllRunning = "Hand all running sessions to Watchman?"
+    /// The tray found no running agent session.
+    package static let nothingToHandOver = "Nothing to hand over: no agent session is running"
+    /// The CLI did not list the running sessions, so the set cannot be confirmed.
+    package static let updateCLI = "Update Watchtower's command-line tool to hand every running session to Watchman"
+    /// `--only` ids that were not armed.
+    package static func droppedLine(_ ids: [Int64]) -> String {
+        "Not handed over (no longer running): " + ids.map { "#\($0)" }.joined(separator: ", ")
+    }
+
+    /// The sheet's list header: "Hands over 2 sessions:".
+    package static func sessionsHeader(_ count: Int) -> String {
+        count == 1 ? "Hands over 1 session:" : "Hands over \(count) sessions:"
+    }
+
+    /// A session the app has no title for.
+    package static func sessionFallback(_ id: Int64) -> String { "Session \(id)" }
+
     /// The tray's sheet after the running set changed while it was open.
     package static let sessionsChanged = "The running sessions changed since this opened — this is the new set."
 
@@ -145,6 +168,9 @@ package struct WatchmanArmSheetContent: Equatable, Sendable {
     package let lines: [Line]
     /// Above the body: why the sheet asks again.
     package let notice: String?
+    /// The sessions it hands over, by title ("#12 Fix login"); empty for a
+    /// target.
+    package let sessions: [String]
     /// Branch protection first, then one line per repository the git guard
     /// cannot be installed in.
     package let warnings: [String]
@@ -155,10 +181,11 @@ package struct WatchmanArmSheetContent: Equatable, Sendable {
         self.init(title: WatchmanArmingCopy.sheetTitle(workbench: workbench), reply: reply)
     }
 
-    package init(title: String, reply: WatchmanArmReply, notice: String? = nil) {
+    package init(title: String, reply: WatchmanArmReply, sessions: [String] = [], notice: String? = nil) {
         typealias Copy = WatchmanArmingCopy
         self.title = title
         self.notice = notice
+        self.sessions = sessions
         body = Copy.sheetBody
         var lines: [Line] = []
         if reply.firstTime {
