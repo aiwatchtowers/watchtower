@@ -276,8 +276,9 @@ func runREPL(cmd *cobra.Command, args []string) error {
 }
 
 // replAIProvider is the REPL's client. It lives for the whole session, so
-// it asks consent (BGAI-01) and the policy at every call, not only when
-// built: an owner or admitted ctx passes.
+// it is the long-lived checkedAIClient: consent (BGAI-01) and the policy are
+// asked at every call and nothing is refused once at build time — the call's
+// ctx and the current state decide (spec §4.3).
 func replAIProvider(cfg *config.Config) ai.Provider {
-	return policyCheckedProvider{inner: newAIClient(cfg, cfg.DBPath()), provider: cfg.AI.Provider}
+	return checkedAIClient(cfg, cfg.DBPath())
 }
