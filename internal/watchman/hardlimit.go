@@ -144,6 +144,13 @@ func splitCommands(line string) []commandPart {
 			i += nl // the comment's newline
 			ch = '\n'
 		}
+		// A backslash-newline outside quotes is a line continuation: it
+		// leaves wordStart as it was.
+		if quote == 0 && ch == '\\' && i+1 < len(line) && line[i+1] == '\n' {
+			cur.WriteString("\\\n")
+			i++
+			continue
+		}
 		wordStart = quote == 0 && strings.IndexByte(" \t\r\n;&|()", ch) >= 0
 		switch {
 		case quote == '\'':
@@ -534,97 +541,126 @@ func (r PermissionAsk) isShared(branch string) bool {
 	return isDefaultBranch(branch) || (r.Branch != nil && slices.Contains(r.Branch.Shared, branch))
 }
 
-// switchTarget is the branch a git checkout/switch moves to; forced is a
-// -B/-C that resets it. ok is false when the command switches nowhere
-// known to be a branch (a file checkout, a bare checkout); "-" (the
-// previous branch) is returned as is.
-func switchTarget(args []string) (branch string, forced, ok bool) {
-	var pos []string
-	for i := 0; i < len(args); i++ {
-		switch a := args[i]; {
-		case a == "--":
-			return "", false, false // paths follow: a file checkout
-		case (a == "-b" || a == "-c" || a == "--orphan") && i+1 < len(args):
-			return args[i+1], false, true
-		case (a == "-B" || a == "-C") && i+1 < len(args):
-			return args[i+1], true, true
-		case a != "-" && strings.HasPrefix(a, "-"):
-		default:
+// expandFlags splits combined short flags (-fD into -f -D); long flags and
+// positionals pass through.
+func expandFlags(args []string) []string {
+	var out []string
+	for _, a := range args {
+		if len(a) > 2 && a[0] == '-' && a[1] != '-' {
+			for _, f := range a[1:] {
+				out = append(out, "-"+string(f))
+			}
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// splitFlags splits expanded arguments into a set of flags and the
+// positional words.
+func splitFlags(args []string) (flags map[string]bool, pos []string) {
+	flags = map[string]bool{}
+	for _, a := range expandFlags(args) {
+		if strings.HasPrefix(a, "-") && a != "-" {
+			flags[a] = true
+		} else {
 			pos = append(pos, a)
 		}
 	}
-	if len(pos) != 1 { // none, or a tree-ish followed by paths
-		return "", false, false
-	}
-	return pos[0], false, true
+	return flags, pos
 }
 
-// matchResetShared: a forced move of a branch others build on — reset
-// --hard onto a remote ref; reset --hard while on a shared branch (the
-// recorded one unless a checkout/switch earlier in the line moved away; a
-// failed live read counts as shared; a stored row records none); git
-// checkout -B, git branch -f/-D/-M or git update-ref naming a shared
-// branch.
+// movesContext reports a command after which the branch or repository a
+// later git command works on is no longer the recorded one: any git
+// checkout/switch, gh pr checkout, pushd/popd. A cd shows as the command's
+// cwd, git -C/--git-dir/--work-tree via gitElsewhere.
+func movesContext(c shellCmd) bool {
+	if _, ok := c.sub("git", "checkout"); ok {
+		return true
+	}
+	if _, ok := c.sub("git", "switch"); ok {
+		return true
+	}
+	if args, ok := c.sub("gh", "pr"); ok && len(args) > 0 && args[0] == "checkout" {
+		return true
+	}
+	return c.w[0] == "pushd" || c.w[0] == "popd"
+}
+
+// gitElsewhere reports a git command pointed at another repository or work
+// tree by a global option.
+func gitElsewhere(c shellCmd) bool {
+	if c.w[0] != "git" {
+		return false
+	}
+	for _, a := range c.w[1:] {
+		if !strings.HasPrefix(a, "-") {
+			return false
+		}
+		if a == "-C" || a == "--git-dir" || a == "--work-tree" || strings.HasPrefix(a, "--git-dir=") || strings.HasPrefix(a, "--work-tree=") {
+			return true
+		}
+	}
+	return false
+}
+
+// matchResetShared: a forced move of a branch others build on.
+//
+// Named branches park by name: git checkout|switch -B/-C/--force-create of
+// a shared branch, a
+// forced git branch (-f, -D, -M, -C, or -m/-c with -f) naming a shared
+// branch, git update-ref of refs/heads/<shared> or from stdin.
+//
+// Commands that move the current branch (reset --hard, update-ref HEAD, a
+// forced git branch rename with one name) park when the current branch is
+// shared or unknown: the recorded Branch says it is shared or its read
+// failed, or the request has a checkout/switch, a cd or a git -C before or
+// in the command, so the recorded branch no longer tells. A stored row
+// (Branch nil) with none of those parks only a reset --hard onto a remote
+// ref.
 func matchResetShared(r PermissionAsk) bool {
-	onShared := r.Branch != nil && (r.Branch.Current == "" || r.isShared(r.Branch.Current))
+	recordedShared := r.Branch != nil && (r.Branch.Current == "" || r.isShared(r.Branch.Current))
+	moved := false
 	return anyCmd(r, func(c shellCmd) bool {
+		if movesContext(c) {
+			moved = true
+		}
+		currentShared := recordedShared || moved || c.cwd != "" || gitElsewhere(c)
 		for _, sub := range []string{"checkout", "switch"} {
 			if args, ok := c.sub("git", sub); ok {
-				branch, forced, ok := switchTarget(args)
-				if !ok {
-					return false
-				}
-				if forced && r.isShared(branch) {
-					return true
-				}
-				onShared = branch == "-" || r.isShared(branch) // "-" is unknown: fail closed
-				return false
+				flags, pos := splitFlags(args)
+				forced := flags["-B"] || flags["-C"] || flags["--force-create"]
+				return forced && len(pos) > 0 && r.isShared(pos[0]) // the branch it (re)creates
 			}
 		}
 		if args, ok := c.sub("git", "branch"); ok {
-			return branchForceShared(r, args)
+			flags, pos := splitFlags(args)
+			force := flags["-f"] || flags["--force"]
+			rename := flags["-M"] || ((flags["-m"] || flags["--move"]) && force)
+			forced := force || rename || flags["-D"] || flags["-C"]
+			if !forced {
+				return false
+			}
+			return slices.ContainsFunc(pos, r.isShared) || (rename && len(pos) == 1 && currentShared)
 		}
 		if args, ok := c.sub("git", "update-ref"); ok {
-			return updateRefShared(r, args, onShared)
+			return updateRefShared(r, args, currentShared)
 		}
 		args, ok := c.sub("git", "reset")
 		if !ok || !slices.Contains(args, "--hard") {
 			return false
 		}
-		return onShared || slices.ContainsFunc(args, func(a string) bool {
+		return currentShared || slices.ContainsFunc(args, func(a string) bool {
 			return strings.HasPrefix(a, "origin/") || strings.HasPrefix(a, "upstream/") || a == "@{u}" || a == "@{upstream}" || a == "FETCH_HEAD"
 		})
 	})
 }
 
-// branchForceShared reports a git branch -f (the branch it moves), -D or -M
-// (every branch named) on a shared branch.
-func branchForceShared(r PermissionAsk, args []string) bool {
-	var force, all bool
-	var pos []string
-	for _, a := range args {
-		switch {
-		case a == "-f" || a == "--force":
-			force = true
-		case a == "-D" || a == "-M":
-			force, all = true, true
-		case strings.HasPrefix(a, "-"):
-		default:
-			pos = append(pos, a)
-		}
-	}
-	if !force || len(pos) == 0 {
-		return false
-	}
-	if !all {
-		pos = pos[:1]
-	}
-	return slices.ContainsFunc(pos, r.isShared)
-}
-
 // updateRefShared reports a git update-ref of a shared branch, of HEAD
-// while on one, or from stdin (refs unknown).
-func updateRefShared(r PermissionAsk, args []string, onShared bool) bool {
+// while the current branch is shared or unknown, or from stdin (refs
+// unknown).
+func updateRefShared(r PermissionAsk, args []string, currentShared bool) bool {
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
 		case a == "--stdin":
@@ -633,7 +669,7 @@ func updateRefShared(r PermissionAsk, args []string, onShared bool) bool {
 			i++
 		case strings.HasPrefix(a, "-"):
 		default:
-			return (a == "HEAD" && onShared) || (strings.HasPrefix(a, "refs/heads/") && r.isShared(a))
+			return (a == "HEAD" && currentShared) || (strings.HasPrefix(a, "refs/heads/") && r.isShared(a))
 		}
 	}
 	return false
