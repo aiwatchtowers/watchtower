@@ -23,10 +23,6 @@ var companyForcedBundle = func() string { return policy.Current().CompanyBundle(
 // line breaks stays far below it.
 const companyStdinMax = 64 << 10
 
-// companyVendorAccountSource maps a bundle vendor to its account source in
-// db.MarkCompanyAccounts / AccountsByCompany.
-var companyVendorAccountSource = company.VendorAccountSource
-
 // companyVendorPolicySource maps a bundle vendor to its policy source
 // (AllowedSources; Outlook is part of imap).
 var companyVendorPolicySource = map[string]string{
@@ -355,7 +351,7 @@ func inspectCompany(store company.Store, database *db.DB, wire, forced string) (
 			if r.Status != "ok" {
 				continue
 			}
-			for vendor, src := range companyVendorAccountSource {
+			for vendor, src := range company.VendorAccountSource {
 				if src == r.Source {
 					res.Connected[vendor] = true
 				}

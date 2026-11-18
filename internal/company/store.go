@@ -38,6 +38,9 @@ const saveLockWait = 30 * time.Second
 // store's numeric clash suffix.
 var slugRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
+// clashSuffixRE is the store's numeric clash suffix (-2, -3…).
+var clashSuffixRE = regexp.MustCompile(`^-[0-9]+$`)
+
 // ErrStoredChanged is SaveIfUnchanged finding the file changed since the
 // caller read it (another confirm wrote first).
 var ErrStoredChanged = errors.New("company file changed since it was read")
@@ -90,6 +93,25 @@ type diskState struct {
 	// (ApplyForcedChanges); seenSlugs is every slug such a file holds.
 	seen      map[string]string
 	seenSlugs map[string]bool
+	// damagedSeen are the slugs of unreadable records, in name order.
+	damagedSeen []string
+}
+
+// damagedPin is the slug of an unreadable .seen record that company's name
+// slugs to (its base slug, or the base with a clash suffix) and that no file
+// holds: the record was most likely that company's, so its slug — the one
+// its accounts carry — stays put.
+func (st *diskState) damagedPin(company string) (string, bool) {
+	base := companybundle.Slug(company)
+	for _, slug := range st.damagedSeen {
+		if st.taken[slug] {
+			continue
+		}
+		if suffix, ok := strings.CutPrefix(slug, base); ok && (suffix == "" || clashSuffixRE.MatchString(suffix)) {
+			return slug, true
+		}
+	}
+	return "", false
 }
 
 // inUse reports whether slug is a file's, the draft's or a forced
@@ -128,12 +150,14 @@ func (s Store) read() (diskState, error) {
 }
 
 // addSeen records the forced company slug pins (the first file of a company,
-// in name order, wins). A damaged .seen pins nothing but keeps its slug in
-// use.
+// in name order, wins). A damaged .seen is a LoadError and keeps its slug in
+// use; overlay still gives it to a forced company whose name slugs to it.
 func (st *diskState) addSeen(dir, slug string) {
 	st.seenSlugs[slug] = true
 	b, err := readSeen(dir, slug)
 	if err != nil {
+		st.errs = append(st.errs, LoadError{File: seenPrefix + slug + seenSuffix, Err: err.Error()})
+		st.damagedSeen = append(st.damagedSeen, slug)
 		return
 	}
 	if _, dup := st.seen[b.Company]; !dup {
@@ -189,7 +213,13 @@ func overlay(st *diskState, forcedWire string) {
 	// .forced-<slug>.seen pins (its accounts carry it), unless a file of
 	// another company holds it now; else it takes a free one.
 	slug, pinned := st.seen[fb.Company]
-	if !pinned || st.taken[slug] {
+	if pinned && st.taken[slug] {
+		pinned = false
+	}
+	if !pinned {
+		slug, pinned = st.damagedPin(fb.Company)
+	}
+	if !pinned {
 		slug = freeSlug(fb.Company, st.inUse)
 	}
 	st.taken[slug] = true
@@ -261,6 +291,9 @@ func (s Store) SlugFor(company, forcedWire string) (string, error) {
 	// A company forced before (no longer, or not yet stored) keeps its
 	// pinned slug: its accounts carry it.
 	if slug, ok := st.seen[company]; ok && !st.taken[slug] {
+		return slug, nil
+	}
+	if slug, ok := st.damagedPin(company); ok {
 		return slug, nil
 	}
 	return freeSlug(company, st.inUse), nil

@@ -179,6 +179,49 @@ func TestForcedSlug_PinnedBySeen(t *testing.T) {
 	assert.Equal(t, "acme-inc", slug)
 }
 
+// TestForcedSlug_DamagedSeenKeepsSlug pins that an unreadable record never
+// moves a forced company to a new slug (its accounts carry the old one): it
+// is a LoadError, the company keeps the slug, and the record is rewritten.
+func TestForcedSlug_DamagedSeenKeepsSlug(t *testing.T) {
+	d := db.OpenTestDB(t)
+	s := newStore(t)
+	forced := wire(t, sample("Acme"))
+	_, err := ApplyForcedChanges(d, s, forced)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(seenFile(s, "acme"), []byte("garbage"), 0o600))
+
+	entries, errs, err := s.LoadAll(forced)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "acme", entries[0].Slug)
+	require.Len(t, errs, 1)
+	assert.Equal(t, ".forced-acme.seen", errs[0].File)
+	slug, err := s.SlugFor("Acme", "")
+	require.NoError(t, err)
+	assert.Equal(t, "acme", slug, "the profile removed, the company still keeps its slug")
+
+	_, err = ApplyForcedChanges(d, s, forced)
+	require.NoError(t, err)
+	got, err := readSeen(s.Dir, "acme")
+	require.NoError(t, err)
+	assert.Equal(t, sample("Acme"), got)
+	assert.NoFileExists(t, seenFile(s, "acme-2"))
+}
+
+// TestForcedSlug_OnePinPerCompany: when the forced company's slug follows a
+// stored file under another slug, its old record goes.
+func TestForcedSlug_OnePinPerCompany(t *testing.T) {
+	d := db.OpenTestDB(t)
+	s := newStore(t)
+	require.NoError(t, writeSeen(s.Dir, "acme-old", sample("Acme")))
+	require.NoError(t, s.Save("acme", sample("Acme")))
+
+	_, err := ApplyForcedChanges(d, s, wire(t, sample("Acme")))
+	require.NoError(t, err)
+	assert.FileExists(t, seenFile(s, "acme"))
+	assert.NoFileExists(t, seenFile(s, "acme-old"))
+}
+
 // TestForcedSlug_PinnedSlugNeverGivenAway pins that a pinned slug is never
 // handed to another company, even while its own file is gone.
 func TestForcedSlug_PinnedSlugNeverGivenAway(t *testing.T) {

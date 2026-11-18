@@ -156,7 +156,7 @@ func TestCompanyStore_DamagedFileIsLoadError(t *testing.T) {
 func TestCompanyStore_IgnoresDraftLocksAndTemps(t *testing.T) {
 	s := newStore(t)
 	require.NoError(t, s.Save("acme", sample("Acme")))
-	for _, name := range []string{"draft.json", "draft.json.bad-20261118T000000Z", "acme.json.tmp-123", ".forced-acme.seen"} {
+	for _, name := range []string{"draft.json", "draft.json.bad-20261118T000000Z", "acme.json.tmp-123"} { // a damaged .forced-*.seen is a LoadError: TestForcedSlug_DamagedSeenKeepsSlug
 		require.NoError(t, os.WriteFile(filepath.Join(s.Dir, name), []byte("x"), 0o600))
 	}
 	entries, errs, err := s.LoadAll("")

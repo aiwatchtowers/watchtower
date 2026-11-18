@@ -9,8 +9,8 @@ import (
 // changed forced MDM CompanyBundle replaced (company.ApplyForcedChanges).
 // Run calls it once per start, before automations and the first cycle, so a
 // sync never refreshes through the old client first. An error is logged and
-// the daemon carries on: those accounts' next refresh is refused and asks for
-// the login anyway (invalid_client).
+// the daemon carries on: an account whose client id or secret changed still
+// has its next refresh refused, which asks for the login (invalid_client).
 func (d *Daemon) applyForcedCompany() {
 	if d.db == nil {
 		return
@@ -25,6 +25,6 @@ func (d *Daemon) applyForcedCompany() {
 		return
 	}
 	if len(changes) > 0 {
-		d.logger.Printf("company: the forced bundle changed %d app value(s); their accounts need a new login", len(changes))
+		d.logger.Printf("company: the forced bundle changed %d app value(s); the changed vendors' accounts were marked for a new login", len(changes))
 	}
 }

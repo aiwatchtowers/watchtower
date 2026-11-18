@@ -99,7 +99,7 @@ func writeSeen(dir, slug string, b companybundle.Bundle) error {
 // a first sight marks nothing. The record is written last, so a crash before
 // it repeats the (idempotent) marking at the next start. The daemon calls it
 // once per start, before the first cycle; LoadAll stays a pure read.
-func ApplyForcedChanges(d *db.DB, s Store, forcedWire string) (marked []Change, err error) {
+func ApplyForcedChanges(d *db.DB, s Store, forcedWire string) ([]Change, error) {
 	if strings.TrimSpace(forcedWire) == "" {
 		return nil, nil
 	}
@@ -125,10 +125,12 @@ func ApplyForcedChanges(d *db.DB, s Store, forcedWire string) (marked []Change, 
 			slug = e.Slug
 		}
 	}
-	// The slug is this company's pin or one no record holds, so a readable
-	// record is this company's; a damaged one is compared as absent (the
-	// stored bundle, or none) and rewritten below.
-	if seen, err := readSeen(s.Dir, slug); err == nil && seen.Company == fb.Company {
+	// The slug is this company's pin (a damaged record under its own slug
+	// included, damagedPin) or one no record holds, so a readable record is
+	// this company's; a damaged one is compared as absent (the stored bundle,
+	// or none: that one change goes unmarked, and a changed client still
+	// fails its refresh) and rewritten below.
+	if seen, rerr := readSeen(s.Dir, slug); rerr == nil && seen.Company == fb.Company {
 		if reflect.DeepEqual(seen, fb) {
 			return nil, nil
 		}
@@ -145,6 +147,14 @@ func ApplyForcedChanges(d *db.DB, s Store, forcedWire string) (marked []Change, 
 	}
 	if err := writeSeen(s.Dir, slug, fb); err != nil {
 		return nil, fmt.Errorf("recording the forced bundle of %s: %w", slug, err)
+	}
+	// One pin per company: an older record of it under another slug goes.
+	for other := range st.seenSlugs {
+		if b, rerr := readSeen(s.Dir, other); other != slug && rerr == nil && b.Company == fb.Company {
+			if err := os.Remove(seenPath(s.Dir, other)); err != nil {
+				return nil, fmt.Errorf("removing the old forced-bundle record %s: %w", other, err)
+			}
+		}
 	}
 	return changes, nil
 }
