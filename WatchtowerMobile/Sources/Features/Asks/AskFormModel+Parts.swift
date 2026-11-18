@@ -150,11 +150,11 @@ extension AskFormModel {
             lines.append(ClosedLine(label: "Dismissed", value: "Closed on the tower without an answer"))
         }
         if let verdict = answer.verdict {
-            lines.append(ClosedLine(label: "Verdict", value: verdict == .approved ? "Approved" : "Changes requested"))
+            lines.append(ClosedLine(label: "Verdict", value: AskText.verdictLabel(verdict)))
         }
         let questions = Dictionary((ask.payload?.questions ?? []).map { ($0.id, $0.question) }) { first, _ in first }
         for item in answer.answers {
-            let picked = (item.labels + (item.other.isEmpty ? [] : ["Other: \(item.other)"])).joined(separator: ", ")
+            let picked = (item.labels + (item.other.isEmpty ? [] : [AskText.otherLabel(item.other)])).joined(separator: ", ")
             lines.append(ClosedLine(label: questions[item.id] ?? item.id, value: picked.isEmpty ? "No answer" : picked))
         }
         let checks = Dictionary((ask.payload?.checklist ?? []).map { ($0.id, $0.text) }) { first, _ in first }
