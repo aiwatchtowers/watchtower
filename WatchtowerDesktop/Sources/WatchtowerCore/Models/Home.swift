@@ -25,7 +25,7 @@ package struct GettingReadyCard: Equatable, Sendable {
         case .ready: .ready
         case .preparing: .preparing
         case .error: .error
-        case .off, .needsSource, .needsDigests, .daemonStopped, .waitingForSync, .scheduled, nil: .waiting
+        case .off, .needsSource, .needsDigests, .backgroundAIPaused, .daemonStopped, .waitingForSync, .scheduled, nil: .waiting
         }
     }
 
@@ -38,10 +38,15 @@ package struct GettingReadySourceRow: Equatable, Sendable {
     package let source: ReadinessSource
     /// Pipeline order.
     package let features: [ReadinessFeature]
+    /// The row shows its Connect button. False only for the Slack Live only
+    /// row while the organization's policy forbids Slack (#608): the line
+    /// still says why the features wait.
+    package let offersConnect: Bool
 
-    package init(source: ReadinessSource, features: [ReadinessFeature]) {
+    package init(source: ReadinessSource, features: [ReadinessFeature], offersConnect: Bool = true) {
         self.source = source
         self.features = features
+        self.offersConnect = offersConnect
     }
 }
 

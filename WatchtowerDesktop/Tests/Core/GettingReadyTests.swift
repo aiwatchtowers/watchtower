@@ -110,6 +110,43 @@ final class GettingReadyTests: XCTestCase {
         XCTAssertEqual(sourceRows(caldavOnly.zone).map(\.source), [.jiraOrMail, .calendar])
     }
 
+    /// Slack Live only is one grouped row (owner, ask #1572), not a card per
+    /// feature; a policy that forbids Slack (#608) keeps the row and its
+    /// line but drops its button.
+    func testNeedsFullSlackIsOneRow() {
+        let readiness = readinessMap([
+            .digests: .needsFullSlack, .tracks: .needsFullSlack, .inbox: .needsFullSlack, .slackSync: .needsFullSlack
+        ])
+        let open = step(readiness).zone
+        XCTAssertTrue(cards(open).isEmpty)
+        XCTAssertEqual(sourceRows(open), [
+            GettingReadySourceRow(source: .fullSlack, features: [.slackSync, .digests, .tracks, .inbox])
+        ])
+        XCTAssertEqual(sourceRows(step(readiness, policy: policy(allowing: ["slack"])).zone).map(\.offersConnect), [true])
+        let forbidden = sourceRows(step(readiness, policy: policy(allowing: ["jira"])).zone)
+        XCTAssertEqual(forbidden.map(\.source), [.fullSlack], "the line stays")
+        XCTAssertEqual(forbidden.map(\.offersConnect), [false], "no button")
+    }
+
+    /// The Live-only row opens the zone on its own (even for the always-on
+    /// Inbox alone) and never lets it complete while Slack stays Live only.
+    func testLiveOnlyRowKeepsTheZoneOpen() {
+        let inboxOnly = step(readinessMap([.inbox: .needsFullSlack]))
+        XCTAssertEqual(sourceRows(inboxOnly.zone).map(\.source), [.fullSlack])
+
+        let terminal = step(readinessMap([.calendar: .ready, .digests: .needsFullSlack]))
+        XCTAssertEqual(cards(terminal.zone).map(\.feature), [.calendar])
+        XCTAssertNil(terminal.memory.completedAt, "never complete while Live only")
+    }
+
+    func testConnectLine() {
+        XCTAssertEqual(GettingReadyPolicy.connectLine(source: .jira, tabTitles: ["Workload", "Blockers"]),
+                       "Connect Jira to get Workload and Blockers")
+        XCTAssertEqual(
+            GettingReadyPolicy.connectLine(source: .fullSlack, tabTitles: ["Digests", "Tracks", "People"]),
+            "Connect your workspace's app to get Digests, Tracks and People — Live answers in Chats only.")
+    }
+
     /// The forbidden rows were the only reason to open the zone: it stays hidden.
     /// `.digests` is goal-switched, so its Connect row alone opens the zone.
     func testOnlyForbiddenRowsKeepTheZoneHidden() {
@@ -294,6 +331,7 @@ final class GettingReadyTests: XCTestCase {
             (.waitingForSync(detail: nil), .waiting, false),
             (.scheduled(.inAboutADay), .waiting, false),
             (.needsDigests, .waiting, false),
+            (.backgroundAIPaused(managed: false), .waiting, false),
             // Not terminal: a zone of stopped cards must not complete and fold.
             (.daemonStopped, .waiting, false),
             (nil, .waiting, false)
@@ -322,5 +360,54 @@ final class GettingReadyTests: XCTestCase {
         XCTAssertEqual(sourceRows(second.zone), [])
         XCTAssertNil(second.memory.completedAt)
         XCTAssertFalse(try XCTUnwrap(cards(second.zone).last).isTerminal)
+    }
+
+    // MARK: - Background AI paused (#1886, spec §6.3)
+
+    /// Home's one paused card speaks for the AI features: their cards leave
+    /// the zone, which keeps its other cards, its Connect rows and its Hide.
+    func testPausedLeavesAIFeatureCardsOut() {
+        let readiness = readinessMap([
+            .slackSync: .preparing(detail: nil),
+            .digests: .backgroundAIPaused(managed: false),
+            .tracks: .backgroundAIPaused(managed: false),
+            .calendar: .needsSource(.calendar),
+            .jira: .needsSource(.jira)
+        ])
+        let result = step(readiness)
+        XCTAssertEqual(cards(result.zone).map(\.feature), [.slackSync])
+        XCTAssertEqual(sourceRows(result.zone).map(\.source), [.calendar, .jira])
+        XCTAssertEqual(step(readiness, memory: GettingReadyMemory(hiddenByOwner: true)).zone, .hidden)
+    }
+
+    /// The zone never completes while AI features wait on the answer: with
+    /// every other card ready it stays shown (cards, rows, Hide), and once it
+    /// is allowed their cards come back instead of a zone gone for good.
+    func testPausedHoldsCompletion() {
+        let first = step(readinessMap([
+            .slackSync: .preparing(detail: nil), .digests: .backgroundAIPaused(managed: true), .jira: .needsSource(.jira)
+        ]))
+        let second = step(
+            readinessMap([.slackSync: .ready, .digests: .backgroundAIPaused(managed: true), .jira: .needsSource(.jira)]),
+            memory: first.memory, sawUnready: first.sawUnready)
+        XCTAssertEqual(cards(second.zone).map(\.feature), [.slackSync])
+        XCTAssertEqual(sourceRows(second.zone).map(\.source), [.jira])
+        XCTAssertNil(second.memory.completedAt)
+
+        let allowed = step(
+            readinessMap([.slackSync: .ready, .digests: .scheduled(.nextCycle(minutes: 15))]),
+            memory: second.memory, sawUnready: second.sawUnready)
+        XCTAssertEqual(cards(allowed.zone).map(\.feature), [.slackSync, .digests])
+    }
+
+    /// Nothing left to show (every sourced feature paused, no Connect row):
+    /// hidden, and nothing persisted as complete.
+    func testPausedWithNothingLeftHidesWithoutCompleting() {
+        let result = step(readinessMap([
+            .digests: .backgroundAIPaused(managed: false), .briefing: .backgroundAIPaused(managed: false)
+        ]))
+        XCTAssertEqual(result.zone, .hidden)
+        XCTAssertNil(result.memory.completedAt)
+        XCTAssertNil(result.memory.firstShownAt)
     }
 }

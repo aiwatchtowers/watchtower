@@ -425,7 +425,7 @@ func TestDaemon_PeoplePruneRunsWithoutData(t *testing.T) {
 	card, err := database.GetLatestPeopleCard("1:UREADONLY")
 	require.NoError(t, err)
 	assert.Nil(t, card)
-	assert.True(t, d.peoplePruneDone)
+	assert.NotEmpty(t, peoplePruneStamp(t, database, 1))
 
 	_, err = database.UpsertPeopleCard(db.PeopleCard{UserID: "1:UREADONLY", PeriodFrom: 1, PeriodTo: 2, Summary: "later"})
 	require.NoError(t, err)
@@ -433,4 +433,51 @@ func TestDaemon_PeoplePruneRunsWithoutData(t *testing.T) {
 	card, err = database.GetLatestPeopleCard("1:UREADONLY")
 	require.NoError(t, err)
 	assert.NotNil(t, card, "the pass does not repeat")
+}
+
+func peoplePruneStamp(t *testing.T, database *db.DB, acct int64) string {
+	t.Helper()
+	var at string
+	require.NoError(t, database.QueryRow(`SELECT people_prune_done_at FROM slack_accounts WHERE id = ?`, acct).Scan(&at))
+	return at
+}
+
+// TestDaemon_PeoplePruneReconnectedAccount: account 2 is removed while the
+// first pass finishes account 1, then reconnected; the next cycle prunes its
+// non-partner cards with no daemon restart (#2019), and leaves account 1's
+// later card alone (stamped, not re-pruned).
+func TestDaemon_PeoplePruneReconnectedAccount(t *testing.T) {
+	d, database := firstRunTestSetup(t)
+	d.config.People.Enabled = false
+	_, err := database.Exec(`INSERT INTO slack_accounts (id, current_user_id) VALUES (1, '1:U1'), (2, '2:U1')`)
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE slack_accounts SET status = 'removed' WHERE id = 2`)
+	require.NoError(t, err)
+	for _, u := range []string{"1:UREADONLY", "2:UREADONLY"} {
+		_, err = database.UpsertPeopleCard(db.PeopleCard{UserID: u, PeriodFrom: 1, PeriodTo: 2, Summary: "old"})
+		require.NoError(t, err)
+	}
+
+	d.phasePeopleCards(context.Background())
+	card, err := database.GetLatestPeopleCard("1:UREADONLY")
+	require.NoError(t, err)
+	assert.Nil(t, card)
+	card, err = database.GetLatestPeopleCard("2:UREADONLY")
+	require.NoError(t, err)
+	assert.NotNil(t, card, "a removed account is skipped")
+	assert.Empty(t, peoplePruneStamp(t, database, 2))
+
+	_, err = database.Exec(`UPDATE slack_accounts SET status = 'ok' WHERE id = 2`)
+	require.NoError(t, err)
+	_, err = database.UpsertPeopleCard(db.PeopleCard{UserID: "1:UREADONLY", PeriodFrom: 1, PeriodTo: 2, Summary: "later"})
+	require.NoError(t, err)
+
+	d.phasePeopleCards(context.Background())
+	card, err = database.GetLatestPeopleCard("2:UREADONLY")
+	require.NoError(t, err)
+	assert.Nil(t, card, "the reconnected account is pruned in the next cycle")
+	assert.NotEmpty(t, peoplePruneStamp(t, database, 2))
+	card, err = database.GetLatestPeopleCard("1:UREADONLY")
+	require.NoError(t, err)
+	assert.NotNil(t, card, "a finished account is not re-pruned")
 }

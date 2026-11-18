@@ -52,7 +52,7 @@ func TestSlackLoginDuringPurge_Refused(t *testing.T) {
 	startRunningPurge(t, database, "slack", id)
 
 	_, err = connectSlackAccount(context.Background(), cfg, database, id,
-		&auth.OAuthResult{AccessToken: "xoxp-new"}, false, &bytes.Buffer{})
+		&auth.OAuthResult{AccessToken: "xoxp-new"}, false, "", &bytes.Buffer{})
 	require.ErrorIs(t, err, errLoginDuringPurge)
 	assert.Contains(t, err.Error(), "watchtower accounts purges")
 	assert.False(t, watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id).Exists())

@@ -20,14 +20,26 @@ enum HomeShotFixtures {
     private static let now = Date(timeIntervalSince1970: 1_792_406_400) // 2026-10-19 10:40 UTC
 
     /// `gettingReady`: a first run still preparing, as on a new install.
-    static func home(gettingReady: Bool = false, purges: [AccountPurge] = [], learn: LearnSelection? = nil) -> AnyView {
+    /// `backgroundAI`: the paused card (#1886), with the AI features' cards
+    /// left out of Getting ready as `GettingReadyPolicy` does.
+    static func home(
+        gettingReady: Bool = false,
+        purges: [AccountPurge] = [],
+        learn: LearnSelection? = nil,
+        backgroundAI: HomeBackgroundAICard? = nil
+    ) -> AnyView {
+        var zone = gettingReady ? Self.gettingReady : .hidden
+        if backgroundAI != nil, case let .shown(cards, rows) = zone {
+            zone = .shown(cards: cards.filter { !$0.feature.usesBackgroundAI }, sourceRows: rows)
+        }
         do {
             return AnyView(HomeContent(
-                snapshot: try snapshot(gettingReady: gettingReady ? Self.gettingReady : .hidden),
+                snapshot: try snapshot(gettingReady: zone),
                 today: now, calendar: calendar,
                 feedErrors: [.target(4): "The database is locked."],
                 onLink: { _ in }, onHideGettingReady: {}, purges: purges, learn: learn,
-                aiSpend: HomeAISpend(value: "≥ $6.40", tooltip: LLMUsagePresentation.homeAISpendTooltip)))
+                aiSpend: HomeAISpend(value: "≥ $6.40", tooltip: LLMUsagePresentation.homeAISpendTooltip),
+                backgroundAI: backgroundAI))
         } catch {
             XCTFail("home shot fixture failed: \(error)")
             return AnyView(Text("fixture failed: \(String(describing: error))").foregroundStyle(.red))

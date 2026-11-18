@@ -238,7 +238,7 @@ package struct TranscriptSaveService {
 
         let payload = try Self.stdinPayload(transcript: transcriptText, segmentsJSON: segmentsJSON,
                                             speakersJSON: speakersJSON)
-        let data = try await runner.run(args: args, stdin: payload)
+        let data = try await runner.runModel(args: args, origin: .owner, timeout: nil, stdin: payload)
         return try JSONDecoder().decode(TranscriptSaveResult.self, from: data)
     }
 
@@ -253,7 +253,7 @@ package struct TranscriptSaveService {
     /// already-saved transcript. Same envelope as `save`.
     package func retryRecap(transcriptID: Int64) async throws -> TranscriptSaveResult {
         let args = ["meeting-prep", "transcript", "recap", String(transcriptID)]
-        let data = try await runner.run(args: args)
+        let data = try await runner.runModel(args: args, origin: .owner)
         return try JSONDecoder().decode(TranscriptSaveResult.self, from: data)
     }
 
@@ -262,7 +262,7 @@ package struct TranscriptSaveService {
     /// is for immediate display.
     package func generateNotes(transcriptID: Int64) async throws -> TranscriptNotesResult {
         let args = ["meeting-prep", "transcript", "notes", String(transcriptID)]
-        let data = try await runner.run(args: args)
+        let data = try await runner.runModel(args: args, origin: .owner)
         return try JSONDecoder().decode(TranscriptNotesResult.self, from: data)
     }
 
@@ -270,7 +270,7 @@ package struct TranscriptSaveService {
     /// (requires persisted segments). The CLI persists chapters_json itself.
     package func generateChapters(transcriptID: Int64) async throws -> TranscriptChaptersResult {
         let args = ["meeting-prep", "transcript", "chapters", String(transcriptID)]
-        let data = try await runner.run(args: args)
+        let data = try await runner.runModel(args: args, origin: .owner)
         return try JSONDecoder().decode(TranscriptChaptersResult.self, from: data)
     }
 
@@ -282,7 +282,7 @@ package struct TranscriptSaveService {
         if let chapter {
             args += ["--chapter", String(chapter)]
         }
-        let data = try await runner.run(args: args)
+        let data = try await runner.runModel(args: args, origin: .owner)
         return try JSONDecoder().decode(TranscriptFollowupResult.self, from: data)
     }
 
@@ -290,7 +290,7 @@ package struct TranscriptSaveService {
     /// private (no AI reader sees it from then on, MEETPRIV-02/04) or not.
     package func setPrivate(transcriptID: Int64, _ isPrivate: Bool) async throws -> TranscriptPrivateResult {
         let args = ["meeting-prep", "transcript", "private", String(transcriptID), isPrivate ? "on" : "off"]
-        let data = try await runner.run(args: args)
+        let data = try await runner.runModel(args: args, origin: .owner)
         return try JSONDecoder().decode(TranscriptPrivateResult.self, from: data)
     }
 
@@ -299,7 +299,9 @@ package struct TranscriptSaveService {
     /// child into a folder TCC guards would be checked against Watchtower.app
     /// without the save panel's grant.
     package func export(transcriptID: Int64, format: TranscriptExportFormat) async throws -> Data {
-        try await runner.run(args: ["meeting-prep", "transcript", "export", String(transcriptID),
-                                    "--format", format.rawValue])
+        // Under `meeting-prep`, which the shared list marks model-running as a
+        // whole; the owner's Export, so the origin is the owner's either way.
+        try await runner.runModel(args: ["meeting-prep", "transcript", "export", String(transcriptID),
+                                         "--format", format.rawValue], origin: .owner)
     }
 }

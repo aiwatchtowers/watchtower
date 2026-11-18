@@ -206,6 +206,12 @@ func TestEveryStateKindPublishesTheMacsPresentation(t *testing.T) {
 		{"agents and a shell", true, func(id int64) {
 			r.setState(id, stateSeed{state: ptr("waiting"), background: ptr(1), shells: ptr(1)})
 		}, want{"working", "1 agent working", "person.2.fill", "green"}},
+		// #1945: an ask in the spec review author loop, turn over.
+		{"spec review", true, func(id int64) {
+			r.setState(id, stateSeed{state: ptr("waiting")})
+			hideInSpecLoop(t, r.d, project, id, 1)
+			hideInSpecLoop(t, r.d, project, id, 2)
+		}, want{"spec_review", "Spec review · round 2", "doc.text.magnifyingglass", "green"}},
 		// §3.5 (U6): a working codex row the Mac cannot watch.
 		{"working, not watched", true, func(id int64) {
 			r.setState(id, stateSeed{state: ptr("working")})
@@ -229,6 +235,11 @@ func TestEveryStateKindPublishesTheMacsPresentation(t *testing.T) {
 			p["state_glyph"] != c.want.glyph || p["state_tone"] != c.want.tone ||
 			p["live"] != c.live || p["is_ring"] != !c.live {
 			t.Errorf("%s: %v", c.name, p)
+		}
+		if c.name == "spec review" {
+			if _, ok := p["oldest_ask_id"]; ok || num(p["open_asks"]) != 0 {
+				t.Errorf("spec review shows its loop asks: %v", p)
+			}
 		}
 	}
 	if p := all[ids[8]]; p["agent_error"] != "rate_limit" {
@@ -592,5 +603,25 @@ func TestFailedCaptionTrimsSwiftWhitespace(t *testing.T) {
 		if got := (sessionState{kind: kindFailed, err: in}).caption(); got != want {
 			t.Errorf("caption(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// hideInSpecLoop files an open review ask of the session in the spec review
+// author loop at round.
+func hideInSpecLoop(t *testing.T, d *db.DB, project, session int64, round int) {
+	t.Helper()
+	ask := insertAsk(t, d, project, askSeed{session: &session, kind: "review"})
+	exec(t, d, `INSERT INTO spec_reviews (ask_id, status, queued_at, loop, round) VALUES (?, 'running', '2026-10-01T00:00:00Z', 'author', ?)`, ask, round)
+}
+
+// #1945: a session in the spec review loop counts as working.
+func TestSpecReviewCountsAsWorking(t *testing.T) {
+	r := newSessionRig(t)
+	project := insertWorkbench(t, r.d, "acme", "/tmp/acme")
+	id := insertSession(t, r.d, project, sessionSeed{})
+	r.setState(id, stateSeed{state: ptr("waiting")})
+	hideInSpecLoop(t, r.d, project, id, 1)
+	if got := countsOf(t, r.d, r.source([]int64{id}, time.Time{}, nil))[project]; got != (sessionCounts{Working: 1}) {
+		t.Errorf("counts = %+v", got)
 	}
 }

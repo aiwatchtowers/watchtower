@@ -18,6 +18,7 @@ import (
 
 	"encoding/json"
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/atlassianpdr"
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
@@ -52,6 +53,8 @@ import (
 	"watchtower/internal/providerrouting"
 	"watchtower/internal/skills"
 	watchtowerslack "watchtower/internal/slack"
+	"watchtower/internal/slackauth"
+	"watchtower/internal/slackmode"
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
 	"watchtower/internal/tracks"
@@ -685,9 +688,14 @@ func runSync(cmd *cobra.Command, args []string) error {
 		if _, err := ensureLegacySlackAccount(ctx, cfg, database, logger); err != nil {
 			logger.Printf("slack: failed to seed legacy account: %v", err)
 		}
+		// A17: rows connected before the client id was recorded get it once;
+		// a failure is retried at the next start.
+		if _, err := slackmode.BackfillClientIDs(database); err != nil {
+			logger.Printf("slack: %v", err)
+		}
 	}
 	// Wire one Slack sync orchestrator per connected, enabled slack_accounts row.
-	orchestrators := wireSlackSyncers(database, cfg, logger)
+	orchestrators := wireSlackSyncers(ctx, database, cfg, logger)
 
 	if syncFlagUsersOnly {
 		return runSyncUsersOnly(ctx, cmd.OutOrStdout(), cfg, database, orchestrators, syncFlagAccount)
@@ -1010,6 +1018,13 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 
 	d := daemon.New(cfg)
 	d.SetOrchestrators(orchestrators)
+	d.SetSlackTokenFreshener(func(ctx context.Context, accountID int64) (string, error) {
+		tok, err := loadSlackToken(ctx, cfg, database, accountID)
+		if err != nil || tok == nil {
+			return "", err
+		}
+		return tok.AccessToken, nil
+	})
 	d.SetLogger(logger)
 	d.SetDB(database)
 	// #880: no scheduled cycle starts in a Power Nap dark wake.
@@ -1019,12 +1034,14 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 		d.SetAgentLogDB(al, agentlogdb.PathFor(cfg.DBPath()))
 	}
 	d.SetPIDPath(pidFilePath(cfg))
-	d.SetSpecReviewLaunch(func(askID int64) error {
+	// The sweep's relaunch is background work: the reviewer carries its
+	// origin (D20 of #1886).
+	d.SetSpecReviewLaunch(func(ctx context.Context, askID int64) error {
 		exe, err := specReviewExe()
 		if err != nil {
 			return fmt.Errorf("locating the watchtower binary: %w", err)
 		}
-		return LaunchSpecReview(exe, askID, filepath.Join(cfg.WorkspaceDir(), "logs"))
+		return LaunchSpecReview(exe, askID, filepath.Join(cfg.WorkspaceDir(), "logs"), aiconsent.ChildEnv(ctx))
 	})
 	// Every pipeline is constructed unconditionally now (Task 3 demoted
 	// digest.enabled from a master switch to a per-phase gate) — each is a
@@ -1162,8 +1179,10 @@ func startChatEngine(ctx context.Context, cfg *config.Config, logger *log.Logger
 		// The AI title after a chat's first complete answer, `watchtower chat
 		// title`'s code; the automatic routing's preferred provider is the
 		// config the Mac's automatic routing reads.
+		// The title serves the owner's chat, so it is an owner call even in
+		// this background process (Decision 3 of #1886).
 		Title: func(ctx context.Context, conv int64) error {
-			_, err := chat.GenerateTitle(ctx, write, cfg, chatTitleGeneratorFactory(cfg), conv)
+			_, err := chat.GenerateTitle(aiconsent.WithOwnerStarted(ctx), write, cfg, daemonChatTitleGenerator(cfg), conv)
 			return err
 		},
 		PreferredProvider: cfg.AI.ConfiguredProviderID()})
@@ -1357,12 +1376,13 @@ func remeasureCoachBaselines(cfg *config.Config, database *db.DB, al *agentlogdb
 }
 
 // wireSlackSyncers builds one sync.Orchestrator per connected, enabled Slack
-// account (slack_accounts row) whose per-account token file exists. An account
+// account (slack_accounts row) whose per-account token file exists, read
+// through slackauth.LoadFresh (a rotated token is refreshed first). An account
 // with a missing or unreadable token is skipped and logged rather than
 // aborting the rest — the wireImapSyncers/wireGoogleSyncers fan-out pattern.
 // Returns an empty slice when no account is connected (Slack simply doesn't
 // sync; the other sources still run).
-func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) []*sync.Orchestrator {
+func wireSlackSyncers(ctx context.Context, database *db.DB, cfg *config.Config, logger *log.Logger) []*sync.Orchestrator {
 	accounts, err := database.ListEnabledSlackAccounts()
 	if err != nil {
 		logger.Printf("slack: failed to list accounts: %v", err)
@@ -1377,8 +1397,19 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 	deny := linkDenySource(cfg, logger)
 	var orchestrators []*sync.Orchestrator
 	for _, acct := range accounts {
-		store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
-		token, err := store.Load()
+		token, err := loadSlackToken(ctx, cfg, database, acct.ID)
+		if errors.Is(err, slackauth.ErrReloginNeeded) {
+			// LoadFresh marked the row for Re-login already.
+			logger.Printf("slack: account %d: %v", acct.ID, err)
+			continue
+		}
+		if err != nil {
+			// A refresh that failed for now (offline at start) must not
+			// unwire the account for the daemon's life: wire the stored
+			// token; the Slack phase reads it fresh again every cycle.
+			logger.Printf("slack: account %d: reading its token fresh: %v; using the stored one", acct.ID, err)
+			token, err = watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), acct.ID).Load()
+		}
 		if err != nil {
 			logger.Printf("slack: account %d: failed to load token: %v", acct.ID, err)
 			recordSlackWireError(database, logger, acct.ID, acct.Status, err)

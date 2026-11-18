@@ -1,0 +1,13 @@
+[
+  {"name": "running schedule run", "trigger": "schedule", "status": "running", "started": true, "error": "", "want": "admitted"},
+  {"name": "succeeded event run", "trigger": "event", "status": "succeeded", "started": true, "error": "", "want": "admitted"},
+  {"name": "failed sync run", "trigger": "sync", "status": "failed", "started": true, "error": "boom", "want": "admitted"},
+  {"name": "waiting catch_up run", "trigger": "catch_up", "status": "waiting", "started": true, "error": "", "want": "admitted"},
+  {"name": "queued schedule run", "trigger": "schedule", "status": "queued", "started": false, "error": "", "want": "background"},
+  {"name": "queued run with a start time", "trigger": "schedule", "status": "queued", "started": true, "error": "", "want": "background"},
+  {"name": "cancelled before start", "trigger": "event", "status": "cancelled", "started": false, "error": "", "want": "background"},
+  {"name": "cancelled while paused", "trigger": "schedule", "status": "cancelled", "started": false, "error": "Background AI is paused", "want": "background"},
+  {"name": "paused cancel with a start time", "trigger": "schedule", "status": "cancelled", "started": true, "error": "Background AI is paused", "want": "background"},
+  {"name": "manual run", "trigger": "manual", "status": "running", "started": true, "error": "", "want": "owner"},
+  {"name": "queued reply run", "trigger": "reply", "status": "queued", "started": false, "error": "", "want": "owner"}
+]

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -152,9 +153,154 @@ func TestDBAccountsReadsLabelAndStatusOnly(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	got, err := DBAccounts(d.DB)(context.Background())
+	got, err := DBAccounts(d)(context.Background())
 	want := []wire.HeartbeatAccount{{Kind: "slack", Label: "Acme", Status: "ok"}, {Kind: "google", Label: "Work", Status: "error"}}
 	if err != nil || !slices.Equal(got, want) {
 		t.Fatalf("accounts = %+v %v", got, err)
+	}
+}
+
+// With no listed Slack account and Live on (the newest probe batch of a
+// provider is ok), the phone gets one "live" Slack row; any listed Slack
+// account suppresses it, and an older ok under a newer failed check is not
+// Live (SLACKMODE-01, ask #1525). Screens spec §2.3.
+func TestDBAccounts_LiveOnlySlackRow(t *testing.T) {
+	at := time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)
+	live := wire.HeartbeatAccount{Kind: "slack", Label: "Slack", Status: "live"}
+	work := wire.HeartbeatAccount{Kind: "google", Label: "Work", Status: "ok"}
+	cases := []struct {
+		name     string
+		accounts []string
+		probes   []db.SlackLiveStatus
+		want     []wire.HeartbeatAccount
+	}{
+		{name: "nothing", want: []wire.HeartbeatAccount{}},
+		{
+			name:   "live only",
+			probes: []db.SlackLiveStatus{{TeamID: "T1", Provider: "claude", Status: "ok", CheckedAt: at}},
+			want:   []wire.HeartbeatAccount{live},
+		},
+		{
+			name:     "live row first, before other accounts",
+			accounts: []string{`INSERT INTO google_accounts (email, label, status) VALUES ('owner@example.com', 'Work', 'ok')`},
+			probes:   []db.SlackLiveStatus{{Provider: "codex", Status: "ok", CheckedAt: at}},
+			want:     []wire.HeartbeatAccount{live, work},
+		},
+		{
+			name:     "a listed Slack account suppresses it",
+			accounts: []string{`INSERT INTO slack_accounts (team_name, label, status, enabled) VALUES ('Acme', '', 'error', 0)`},
+			probes:   []db.SlackLiveStatus{{TeamID: "T1", Provider: "claude", Status: "ok", CheckedAt: at}},
+			want:     []wire.HeartbeatAccount{{Kind: "slack", Label: "Acme", Status: "error"}},
+		},
+		{
+			name:     "a removed Slack account does not",
+			accounts: []string{`INSERT INTO slack_accounts (team_name, label, status) VALUES ('Gone', '', 'removed')`},
+			probes:   []db.SlackLiveStatus{{TeamID: "T1", Provider: "claude", Status: "ok", CheckedAt: at}},
+			want:     []wire.HeartbeatAccount{live},
+		},
+		{
+			name: "an older ok under a newer failed check is off",
+			probes: []db.SlackLiveStatus{
+				{TeamID: "T1", Provider: "claude", Status: "ok", CheckedAt: at},
+				{TeamID: "", Provider: "claude", Status: "not_connected", CheckedAt: at.Add(time.Hour)},
+			},
+			want: []wire.HeartbeatAccount{},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := db.OpenTestDB(t)
+			for _, q := range c.accounts {
+				if _, err := d.Exec(q); err != nil {
+					t.Fatalf("%s: %v", q, err)
+				}
+			}
+			for _, p := range c.probes {
+				if err := d.UpsertSlackLiveStatus(p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := DBAccounts(d)(context.Background())
+			if err != nil || !slices.Equal(got, c.want) {
+				t.Fatalf("accounts = %+v %v, want %+v", got, err, c.want)
+			}
+		})
+	}
+}
+
+// The Live row never pushes the list past MaxHeartbeatAccounts.
+func TestDBAccounts_LiveOnlySlackRowKeepsTheCap(t *testing.T) {
+	d := db.OpenTestDB(t)
+	for i := range MaxHeartbeatAccounts {
+		if _, err := d.Exec(`INSERT INTO google_accounts (email, label, status) VALUES (?, '', 'ok')`,
+			fmt.Sprintf("a%d@example.com", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.UpsertSlackLiveStatus(db.SlackLiveStatus{Provider: "claude", Status: "ok", CheckedAt: time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DBAccounts(d)(context.Background())
+	if err != nil || len(got) != MaxHeartbeatAccounts || got[0].Status != "live" {
+		t.Fatalf("accounts = %d rows, first %+v, err %v", len(got), got[0], err)
+	}
+}
+
+// An unreadable probe row fails the accounts read (skipping it could drop a
+// newer failed check, SLACKMODE-01); the heartbeat then keeps the last
+// accounts it read.
+func TestDBAccounts_UnreadableProbeRowKeepsTheLastAccounts(t *testing.T) {
+	d := db.OpenTestDB(t)
+	if err := d.UpsertSlackLiveStatus(db.SlackLiveStatus{
+		TeamID: "T1", Provider: "claude", Status: "ok", CheckedAt: time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	src := HeartbeatSource(heartbeatFacts(func() time.Time { return time.Unix(1_800_000_100, 0) }, DBAccounts(d)))
+	live := []wire.HeartbeatAccount{{Kind: "slack", Label: "Slack", Status: "live"}}
+	accountsOf := func() []wire.HeartbeatAccount {
+		var hb wire.Heartbeat
+		if err := json.Unmarshal(onlyItem(t, src).Payload, &hb); err != nil {
+			t.Fatal(err)
+		}
+		return hb.Accounts
+	}
+	if got := accountsOf(); !slices.Equal(got, live) {
+		t.Fatalf("first read = %+v", got)
+	}
+
+	if _, err := d.Exec(`INSERT INTO slack_live_status (team_id, provider, status, error_class, connector_id, checked_at)
+VALUES ('', 'claude', 'not_connected', '', '', 'yesterday')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DBAccounts(d)(context.Background()); err == nil {
+		t.Fatal("an unreadable checked_at must fail the read")
+	}
+	if got := accountsOf(); !slices.Equal(got, live) {
+		t.Fatalf("after a failed read = %+v, want the last accounts", got)
+	}
+}
+
+func TestHeartbeat_CarriesBackgroundAI(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	clock := func() time.Time { return now }
+
+	bare := onlyItem(t, HeartbeatSource(heartbeatFacts(clock, nil)))
+	if bytes.Contains(bare.Payload, []byte("background_ai")) {
+		t.Fatalf("nil facts carry the key: %s", bare.Payload)
+	}
+
+	value := wire.BackgroundAIPaused
+	f := heartbeatFacts(clock, nil)
+	f.BackgroundAI = func() string { return value }
+	src := HeartbeatSource(f)
+	if got := onlyItem(t, src).Payload; !bytes.Contains(got, []byte(`"background_ai":"paused"`)) {
+		t.Fatalf("heartbeat = %s", got)
+	}
+	// A change restamps at once, well inside HeartbeatInterval.
+	value = wire.BackgroundAIAllowed
+	now = now.Add(time.Minute)
+	if got := onlyItem(t, src).Payload; !bytes.Contains(got, []byte(`"background_ai":"allowed"`)) {
+		t.Fatalf("a changed value did not restamp: %s", got)
 	}
 }

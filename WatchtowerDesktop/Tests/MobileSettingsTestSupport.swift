@@ -1,6 +1,7 @@
 import Foundation
 import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 /// A `watchtower` CLI that answers each argv with its scripted output or
 /// error (an unscripted call answers `{}`), and records every call.

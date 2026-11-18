@@ -92,8 +92,7 @@ struct ReviewChangesPaneView: View {
             .onChange(of: codeRoot) { old, _ in registerDestination(previous: old) }
             .task(id: codeRoot?.folder) { await readPathMap() }
             .onChange(of: agentStateKind) { old, new in
-                // Into a turn-over kind only: .finished → .stopped is the same turn's end.
-                if let new, Self.turnOver.contains(new), !(old.map(Self.turnOver.contains) ?? false) { autoRefresh() }
+                if Self.endsTurn(from: old, to: new) { autoRefresh() }
             }
             .sheet(item: $compose) { request in
                 ReviewNewCommentSheet(request: request)
@@ -103,10 +102,20 @@ struct ReviewChangesPaneView: View {
             }
     }
 
-    /// The kinds a turn ends in: the agent's edits are done for now.
+    /// The kinds a turn ends in: the agent's edits are done for now. A spec
+    /// review is a turn over too (#1945): before it, a turn ending with only
+    /// a loop ask read `.stopped`.
     static let turnOver: Set<SessionSwitcherPresentation.State.Kind> = [
-        .stopped, .finished, .failed, .waitingOnAsk, .background
+        .stopped, .finished, .failed, .waitingOnAsk, .background, .specReview
     ]
+
+    /// Whether `old` → `new` ends a turn: into a turn-over kind only, so
+    /// .finished → .stopped (the same turn's end) does not refresh again.
+    static func endsTurn(from old: SessionSwitcherPresentation.State.Kind?,
+                         to new: SessionSwitcherPresentation.State.Kind?) -> Bool {
+        guard let new, turnOver.contains(new) else { return false }
+        return !(old.map(turnOver.contains) ?? false)
+    }
 
     private var content: some View {
         VStack(spacing: 0) {

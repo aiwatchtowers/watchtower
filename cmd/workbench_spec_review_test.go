@@ -18,6 +18,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/aiconsent"
+	"watchtower/internal/aiconsent/aiconsenttest"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/providers"
@@ -181,6 +183,24 @@ func TestSpecReviewRun_StoresResultThroughTheAgent(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &m), out)
 	assert.Equal(t, "Looks right.", m.Result.Summary)
+}
+
+// D20 (#1886): a reviewer the daemon sweep relaunched (background origin,
+// not admitted) checks consent before it claims the row: paused, it exits
+// cleanly, the row stays queued for the sweep and no reviewer runs.
+func TestSpecReviewRun_BackgroundOriginPausedLeavesQueued(t *testing.T) {
+	database, id, _ := specReviewAsk(t)
+	agent := &fakeSpecReviewAgent{out: `{"summary":"x"}`}
+	useSpecReviewAgent(t, agent)
+	aiconsenttest.Use(t, "cli", map[string]string{aiconsent.EnvOrigin: "background"}, false)
+
+	_, err := runSpecReview(t, "run", "--ask", itoa(id))
+	require.NoError(t, err)
+	assert.Equal(t, 0, agent.calls)
+	row, err := database.GetSpecReview(id)
+	require.NoError(t, err)
+	assert.Equal(t, "queued", row.Status)
+	assert.Equal(t, 1, row.Attempt)
 }
 
 // Ruling 8: the claude reviewer mounts no MCP server and runs read-only in

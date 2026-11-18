@@ -152,11 +152,22 @@ func (db *DB) PrunePreUpgradePeopleCards(ctx context.Context) (pruned int64, don
 		if err != nil {
 			return pruned, false, err
 		}
-		if _, err := db.Exec(`UPDATE slack_accounts SET people_prune_done_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, acct); err != nil {
-			return pruned, false, fmt.Errorf("marking people prune done for account %d: %w", acct, err)
+		if err := db.stampPeoplePruneDone(acct); err != nil {
+			return pruned, false, err
 		}
 	}
 	return pruned, done, nil
+}
+
+// stampPeoplePruneDone records the finished pass, but only while the account
+// is live: one removed or purged mid-pass may have had its cards pruned only
+// partly, so it stays unstamped and is pruned afresh after a reconnect.
+func (db *DB) stampPeoplePruneDone(acct int64) error {
+	if _, err := db.Exec(`UPDATE slack_accounts SET people_prune_done_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE id = ? AND status NOT IN ('removed', 'purged')`, acct); err != nil {
+		return fmt.Errorf("marking people prune done for account %d: %w", acct, err)
+	}
+	return nil
 }
 
 // peoplePrunePending lists the live Slack accounts whose one-time people

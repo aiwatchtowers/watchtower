@@ -16,6 +16,9 @@ package struct SlackAccount: FetchableRecord, Identifiable, Equatable {
     package let status: String
     package let error: String
     package let enabled: Bool
+    /// The OAuth client id the account signed in with ('' before migration
+    /// backfill or for a not-yet-connected row; plan B Task 2).
+    package let clientID: String
 
     /// The company bundle whose OAuth client this account signed in with
     /// (`company_slug`, migration 00198); "" = our shared client. Go writes
@@ -32,6 +35,7 @@ package struct SlackAccount: FetchableRecord, Identifiable, Equatable {
         error = row["error"] ?? ""
         enabled = row["enabled"] ?? true
         companySlug = row["company_slug"] ?? ""
+        clientID = row["client_id"] ?? ""
     }
 
     // MARK: - Status predicates

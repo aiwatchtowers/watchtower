@@ -81,9 +81,30 @@ var squashedJiraFeatureKeys = map[string]string{
 // read or write failure returns (false, err) — nothing was repaired, and the
 // next call retries from the unstamped file. (A read failure also means
 // config.Load would have failed on the same file anyway.)
+//
+// The marker check runs once without the lock (the stamped file writes
+// nothing) and the whole read-decide-write again inside WithWriteLock.
 func MigrateJiraFeatureKeys(configPath string) (bool, error) {
+	v, err := readConfigFile(configPath)
+	if err != nil {
+		return false, err
+	}
+	if v == nil || v.IsSet(JiraFeaturesMigratedKey) {
+		return false, nil
+	}
+	var repaired bool
+	err = WithWriteLock(configPath, func(lk *WriteLock) error {
+		var lockedErr error
+		repaired, lockedErr = migrateJiraFeatureKeysLocked(lk, configPath)
+		return lockedErr
+	})
+	return repaired, err
+}
+
+func migrateJiraFeatureKeysLocked(lk *WriteLock, configPath string) (bool, error) {
 	v := viper.New()
 	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
 
 	if err := v.ReadInConfig(); err != nil {
 		var configNotFound viper.ConfigFileNotFoundError
@@ -111,7 +132,7 @@ func MigrateJiraFeatureKeys(configPath string) (bool, error) {
 		}
 	}
 
-	if err := patchConfigYAML(configPath, sets, deletes); err != nil {
+	if err := patchConfigYAML(lk, configPath, sets, deletes); err != nil {
 		return false, err
 	}
 	return len(deletes) > 0, nil

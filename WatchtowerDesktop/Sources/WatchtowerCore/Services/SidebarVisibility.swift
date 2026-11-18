@@ -11,6 +11,9 @@ package enum SidebarSource: Sendable {
     /// A Linear workspace: the tracker-neutral tabs (Blockers) read it next
     /// to Jira through the `tracker_*` views.
     case linear
+    /// Slack Live is on (screens spec §2.2): Catch-Up and Statistics stay
+    /// visible with Live alone and show `Readiness.needsFullSlack`.
+    case slackLive
 }
 
 /// Which sources are connected, read from the account tables.
@@ -20,18 +23,29 @@ package struct ConnectedSources: Equatable, Sendable {
     package var calendar: Bool
     package var jira: Bool
     package var linear: Bool
+    /// Slack Live is on: each provider's newest probe batch, any `ok`
+    /// (SLACKMODE-01). Not a messages source: nothing is synced.
+    package var slackLive: Bool
 
-    package init(slack: Bool = false, mail: Bool = false, calendar: Bool = false, jira: Bool = false, linear: Bool = false) {
+    package init(
+        slack: Bool = false,
+        mail: Bool = false,
+        calendar: Bool = false,
+        jira: Bool = false,
+        linear: Bool = false,
+        slackLive: Bool = false
+    ) {
         self.slack = slack
         self.mail = mail
         self.calendar = calendar
         self.jira = jira
         self.linear = linear
+        self.slackLive = slackLive
     }
 
     package static let none = Self()
     /// Fail-open default until the first read: every tab visible.
-    package static let all = Self(slack: true, mail: true, calendar: true, jira: true, linear: true)
+    package static let all = Self(slack: true, mail: true, calendar: true, jira: true, linear: true, slackLive: true)
 
     package func provides(_ source: SidebarSource) -> Bool {
         switch source {
@@ -39,6 +53,7 @@ package struct ConnectedSources: Equatable, Sendable {
         case .calendar: calendar
         case .jira: jira
         case .linear: linear
+        case .slackLive: slackLive
         }
     }
 
@@ -48,7 +63,7 @@ package struct ConnectedSources: Equatable, Sendable {
     /// account (`enabled = 0`, not removed) counts as connected on purpose:
     /// its synced data is still there to show — unlike
     /// `SlackAccountQueries.hasConnectedAccount`, which counts only enabled
-    /// accounts.
+    /// accounts. Slack Live reads `slack_live_status` (no table yet: off).
     package static func fetch(_ db: Database) throws -> Self {
         func any(_ sql: String) throws -> Bool {
             try Bool.fetchOne(db, sql: "SELECT EXISTS(\(sql))") ?? false
@@ -60,7 +75,8 @@ package struct ConnectedSources: Equatable, Sendable {
             calendar: try any("SELECT 1 FROM google_accounts WHERE calendar_enabled = 1")
                 || any("SELECT 1 FROM calendar_accounts"),
             jira: try any("SELECT 1 FROM jira_accounts WHERE status NOT IN ('removed', 'purged')"),
-            linear: try any("SELECT 1 FROM linear_accounts WHERE status NOT IN ('removed', 'purged')")
+            linear: try any("SELECT 1 FROM linear_accounts WHERE status NOT IN ('removed', 'purged')"),
+            slackLive: try ReadinessQueries.slackLiveVerdicts(db).contains("ok")
         )
     }
 }
