@@ -10,8 +10,20 @@ package struct ClaudeSessionAgent: SessionAgent {
         SubscriptionUsagePolicy(title: "Claude", signInApplication: "Claude Code",
                                 statusTable: "plan_usage_status", samplesTable: "plan_usage_samples",
                                 storage: .legacy, defaultQuotaBucket: nil, layout: .compact, tint: "purple", icon: "sparkle",
-                                suppliesSurfaceBreakdown: true, sendsNotifications: true)
+                                suppliesSurfaceBreakdown: true, sendsNotifications: true, messages: Self.usageMessages)
     }
+
+    /// Claude's plan-limit wording (#1885): never names a token, the Keychain
+    /// or an environment variable.
+    private static let usageMessages: SubscriptionUsageMessages = {
+        func cloud(_ name: String) -> String { "Claude Code is using \(name) here, so plan limits don't apply." }
+        return SubscriptionUsageMessages(
+            cliMissing: "Install Claude Code, then retry.",
+            unsupportedCLI: "Update Claude Code to read plan limits, then retry.",
+            noCredentials: "Sign in to Claude Code with your Claude plan, then retry.",
+            unsupportedAuth: "Claude Code is using an API key here, so plan limits don't apply.",
+            cloudProviders: ["cloud_bedrock": cloud("Bedrock"), "cloud_vertex": cloud("Vertex"), "cloud_foundry": cloud("Foundry")])
+    }()
 
     package var kind: AgentKind { .claude }
 

@@ -10,7 +10,13 @@ package struct CodexSessionAgent: SessionAgent {
         SubscriptionUsagePolicy(title: "Codex", signInApplication: "Codex",
                                 statusTable: "codex_plan_usage_status", samplesTable: "codex_plan_usage_samples",
                                 storage: .identityScoped, defaultQuotaBucket: "codex", layout: .grouped, tint: "teal", icon: "terminal",
-                                suppliesSurfaceBreakdown: false, sendsNotifications: false)
+                                suppliesSurfaceBreakdown: false, sendsNotifications: false,
+                                messages: SubscriptionUsageMessages(
+                                    cliMissing: "Install Codex, then retry.",
+                                    unsupportedCLI: "Update Codex to read subscription limits, then retry.",
+                                    noCredentials: "Open Codex and sign in, then retry.",
+                                    unsupportedAuth: "Sign in to Codex with a ChatGPT account, then retry.",
+                                    cloudProviders: [:]))
     }
 
     package var kind: AgentKind { .codex }
