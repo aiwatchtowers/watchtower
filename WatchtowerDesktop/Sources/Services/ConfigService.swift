@@ -600,11 +600,13 @@ final class ConfigService {
     /// written. Reading inside the lock, not the `rawYAML` snapshot of the
     /// last reload(), keeps the sections another process wrote meanwhile
     /// (`watchtower jira login`, `ai background allow`, …); `rawYAML` is the
-    /// fallback only when the file is gone or unreadable.
+    /// fallback only when the file is gone. A file that exists but cannot be
+    /// read or parsed throws `ConfigUnreadableError` and is not written: a
+    /// snapshot would drop the keys only the file holds.
     private func writeLocked(_ change: (inout [String: Any]) throws -> Void) throws -> [String: Any] {
         var written: [String: Any] = [:]
         try fileAccess.withLock(configPath) { token in
-            var yaml = currentYAMLOnDisk() ?? rawYAML
+            var yaml = try lockedYAMLOnDisk() ?? rawYAML
             try change(&yaml)
             try fileAccess.write(try Yams.dump(object: yaml, allowUnicode: true), configPath, token)
             written = yaml
@@ -774,13 +776,35 @@ final class ConfigService {
     }
 
     /// Load the current on-disk config as a raw YAML dictionary, without
-    /// touching any of the published `@Observable` properties. Used by
-    /// `save()` to merge onto the freshest state rather than a stale snapshot.
+    /// touching any of the published `@Observable` properties; nil when it
+    /// is missing or unreadable. (A write re-reads with `lockedYAMLOnDisk`.)
     private func currentYAMLOnDisk() -> [String: Any]? {
         guard let data = try? fileAccess.read(configPath),
               let str = String(data: data, encoding: .utf8),
               let yaml = try? Yams.load(yaml: str) as? [String: Any] else {
             return nil
+        }
+        return yaml
+    }
+
+    /// The file as `writeLocked` re-reads it: nil when there is no file; an
+    /// unreadable or unparsable file throws.
+    private func lockedYAMLOnDisk() throws -> [String: Any]? {
+        let data: Data?
+        do { data = try fileAccess.read(configPath) } catch {
+            throw ConfigUnreadableError(reason: error.localizedDescription)
+        }
+        guard let data else { return nil }
+        guard let str = String(data: data, encoding: .utf8) else {
+            throw ConfigUnreadableError(reason: "not UTF-8 text")
+        }
+        let loaded: Any?
+        do { loaded = try Yams.load(yaml: str) } catch {
+            throw ConfigUnreadableError(reason: "invalid YAML")
+        }
+        guard let loaded else { return [:] }
+        guard let yaml = loaded as? [String: Any] else {
+            throw ConfigUnreadableError(reason: "not a YAML mapping")
         }
         return yaml
     }

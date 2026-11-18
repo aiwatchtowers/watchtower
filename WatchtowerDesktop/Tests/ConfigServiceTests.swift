@@ -91,6 +91,17 @@ struct ConfigServiceTests {
         #expect((yaml["sync"] as? [String: Any])?["workers"] as? Int == 5)
     }
 
+    @Test("Save over a config that exists but does not parse throws and writes nothing")
+    func testSaveRefusesUnparsableConfig() throws {
+        let path = makeTempConfig("ai: {background_runs: allowed}\nsync: {workers: 2}\n")
+        let service = ConfigService(configPath: path)
+        let broken = "ai: {background_runs: allowed\nsync: [unclosed\n"
+        try broken.write(toFile: path, atomically: true, encoding: .utf8)
+        service.syncWorkers = 7
+        #expect(throws: ConfigUnreadableError.self) { try service.save() }
+        #expect(try String(contentsOfFile: path, encoding: .utf8) == broken)
+    }
+
     @Test("Reserve starts off and independent models survive switches and Saves", arguments: ["claude", "codex"])
     func reserveBuckets(provider: String) throws {
         let other = provider == "claude" ? "codex" : "claude"

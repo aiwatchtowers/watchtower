@@ -106,4 +106,74 @@ final class ConfigFileLockTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: other))
         XCTAssertFalse(FileManager.default.fileExists(atPath: configPath))
     }
+
+    // MARK: - Bounded wait (the Desktop never blocks in flock)
+
+    /// Holds the lock on `configPath` through a descriptor of its own, as
+    /// another process would; `release()` lets it go.
+    private final class OtherHolder: @unchecked Sendable {
+        private let fd: Int32
+        init(_ configPath: String) throws {
+            try FileManager.default.createDirectory(
+                atPath: (configPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true
+            )
+            fd = open(ConfigFileLock.lockPath(for: configPath), O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+            guard fd >= 0, flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw ConfigFileLock.LockError.system(errno) }
+        }
+        func release() { flock(fd, LOCK_UN) }
+        deinit { close(fd) }
+    }
+
+    private final class Sleeps: @unchecked Sendable {
+        private let lock = NSLock()
+        private var slept: [TimeInterval] = []
+        var onSleep: (() -> Void)?
+        var all: [TimeInterval] { lock.withLock { slept } }
+        func sleep(_ interval: TimeInterval) {
+            lock.withLock { slept.append(interval) }
+            onSleep?()
+        }
+    }
+
+    func testBusyLockThrowsRetryableErrorAfterBoundedWait() throws {
+        let configPath = tempConfigPath()
+        let holder = try OtherHolder(configPath)
+        defer { holder.release() }
+        let sleeps = Sleeps()
+        let wait = ConfigFileLock.Wait(attempts: 41, interval: 0.05) { sleeps.sleep($0) }
+
+        XCTAssertThrowsError(try ConfigFileLock.withLock(configPath: configPath, wait: wait) { _ in
+            XCTFail("the body must not run without the lock")
+        }) { error in
+            XCTAssertEqual(error as? ConfigFileLock.LockError, .busy)
+            XCTAssertEqual(error.localizedDescription, "Settings are being saved by another Watchtower process. Try again.")
+        }
+        XCTAssertEqual(sleeps.all.count, 40)
+        XCTAssertEqual(sleeps.all.reduce(0, +), 2.0, accuracy: 0.001, "about 2 s in all")
+        // The standard wait is the same bound.
+        XCTAssertEqual(Double(ConfigFileLock.Wait.standard.attempts - 1) * ConfigFileLock.Wait.standard.interval, 2.0, accuracy: 0.001)
+    }
+
+    func testLockFreedDuringTheWaitIsTaken() throws {
+        let configPath = tempConfigPath()
+        let holder = try OtherHolder(configPath)
+        let sleeps = Sleeps()
+        sleeps.onSleep = { holder.release() }
+        let wait = ConfigFileLock.Wait(attempts: 41, interval: 0.05) { sleeps.sleep($0) }
+
+        let ran = try ConfigFileLock.withLock(configPath: configPath, wait: wait) { token in token.covers(configPath) }
+        XCTAssertTrue(ran)
+        XCTAssertEqual(sleeps.all.count, 1)
+    }
+
+    func testCopiedTokenStopsCoveringAfterRelease() throws {
+        let configPath = tempConfigPath()
+        var copy: ConfigFileLock.Token?
+        try ConfigFileLock.withLock(configPath: configPath) { token in
+            let duplicate = token
+            copy = duplicate
+            XCTAssertTrue(duplicate.covers(configPath))
+        }
+        XCTAssertFalse(try XCTUnwrap(copy).covers(configPath))
+    }
 }

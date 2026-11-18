@@ -7,11 +7,13 @@ import (
 	"go/parser"
 	"go/printer"
 	"go/token"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -191,8 +193,18 @@ func TestSetConfigKey_RereadsInsideLock(t *testing.T) {
 		}))
 	}
 	t.Cleanup(func() { setConfigKeyBeforeLock = old })
+	// The re-read happens while the lock is held: another descriptor cannot
+	// take it at that moment.
+	lockedSeen := false
+	oldLocked := setConfigKeyLocked
+	setConfigKeyLocked = func() {
+		lockedSeen = true
+		assert.False(t, tryFlockOwnFD(t, cfgPath+".lock"), "setConfigKey re-reads inside the lock")
+	}
+	t.Cleanup(func() { setConfigKeyLocked = oldLocked })
 
 	require.NoError(t, setConfigKey(cfgPath, "digest.enabled", true))
+	require.True(t, lockedSeen)
 
 	v := viper.New()
 	v.SetConfigFile(cfgPath)
@@ -210,4 +222,69 @@ func TestSetConfigKey_NestedInsideHeldLockFailsFast(t *testing.T) {
 		return nil
 	}))
 	require.ErrorIs(t, nested, config.ErrWriteLockHeld)
+}
+
+// tryFlockOwnFD takes a non-blocking exclusive flock on path through its own
+// descriptor and reports whether it got it (releasing it at once).
+func tryFlockOwnFD(t *testing.T, path string) bool {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	require.NoError(t, err)
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		require.ErrorIs(t, err, syscall.EWOULDBLOCK)
+		return false
+	}
+	require.NoError(t, syscall.Flock(int(f.Fd()), syscall.LOCK_UN))
+	return true
+}
+
+func TestWriteInitConfig_KeepsKeysWrittenMeanwhile(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	// Written by other writers after the wizard started (its prompts and OAuth
+	// run outside the lock), before it saves.
+	require.NoError(t, os.WriteFile(cfgPath,
+		[]byte("ai:\n  background_runs: allowed\nclaude_path: /opt/claude\nsync:\n  workers: 9\n"), 0o600))
+
+	require.NoError(t, writeInitConfig(cfgPath, map[string]any{
+		"active_workspace":            "acme",
+		"workspaces.acme.slack_token": "xoxb-test", // leak-check:allow
+		"sync.workers":                config.DefaultSyncWorkers,
+	}))
+
+	v := viper.New()
+	v.SetConfigFile(cfgPath)
+	require.NoError(t, v.ReadInConfig())
+	assert.Equal(t, "allowed", v.GetString("ai.background_runs"))
+	assert.Equal(t, "/opt/claude", v.GetString("claude_path"))
+	assert.Equal(t, "acme", v.GetString("active_workspace"))
+	assert.Equal(t, config.DefaultSyncWorkers, v.GetInt("sync.workers"), "the wizard's own keys win")
+}
+
+func TestWriteInitConfig_LeavesUnparsableConfigAlone(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	broken := []byte("sync:\n\tworkers: 2\n")
+	require.NoError(t, os.WriteFile(cfgPath, broken, 0o600))
+	require.Error(t, writeInitConfig(cfgPath, map[string]any{"active_workspace": "acme"}))
+	got, err := os.ReadFile(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, broken, got)
+}
+
+func TestBlankLegacySlackConfigToken_NothingToBlankTakesNoLock(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("active_workspace: acme\n"), 0o600))
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	old := flagConfig
+	flagConfig = cfgPath
+	t.Cleanup(func() { flagConfig = old })
+
+	var logs bytes.Buffer
+	blankLegacySlackConfigToken(&config.Config{ActiveWorkspace: "acme"}, log.New(&logs, "", 0))
+
+	assert.Empty(t, logs.String(), "nothing to blank logs nothing")
+	_, err := os.Stat(cfgPath + ".lock")
+	assert.True(t, os.IsNotExist(err), "nothing to blank takes no lock")
 }

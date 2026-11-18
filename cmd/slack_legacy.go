@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"log"
 
 	"watchtower/internal/config"
@@ -115,14 +116,25 @@ func blankLegacySlackConfigToken(cfg *config.Config, logger *log.Logger) {
 	if flagConfig == "" {
 		return
 	}
+	key := "workspaces." + cfg.ActiveWorkspace + ".slack_token"
+	// Checked once without the lock, so a config with nothing to blank (the
+	// usual case, a read-only config dir included) takes no lock and logs
+	// nothing; checked again inside it before the write.
+	pre := viper.New()
+	pre.SetConfigFile(flagConfig)
+	if err := pre.ReadInConfig(); err != nil {
+		logger.Printf("slack: failed to read config to blank legacy token: %v", err)
+		return
+	}
+	if pre.GetString(key) == "" {
+		return
+	}
 	err := config.WithWriteLock(flagConfig, func(lk *config.WriteLock) error {
 		v := viper.New()
 		v.SetConfigFile(flagConfig)
 		if err := v.ReadInConfig(); err != nil {
-			logger.Printf("slack: failed to read config to blank legacy token: %v", err)
-			return nil
+			return fmt.Errorf("re-reading config: %w", err)
 		}
-		key := "workspaces." + cfg.ActiveWorkspace + ".slack_token"
 		if v.GetString(key) == "" {
 			return nil
 		}

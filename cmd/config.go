@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -160,32 +162,20 @@ func runConfigInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Ensure config directory exists
-	configDir := filepath.Dir(configPath)
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		return fmt.Errorf("creating config directory: %w", err)
-	}
-
-	// Write config file
-	v := viper.New()
-	v.Set("active_workspace", workspace)
-	v.Set("workspaces."+workspace+".slack_token", slackToken)
 	// OAuth credentials are sourced from env vars at runtime — never persisted to config.
 	// ai.model is deliberately not seeded: empty means "use the provider
 	// registry's tier defaults" (aliases that track new model releases).
-	v.Set("ai.context_budget", config.DefaultAIContextBudget)
-	v.Set("sync.workers", config.DefaultSyncWorkers)
-	v.Set("sync.initial_history_days", config.DefaultInitialHistDays)
-	v.Set("sync.poll_interval", config.DefaultPollInterval.String())
-	v.Set("sync.sync_threads", config.DefaultSyncThreads)
-	v.Set("sync.sync_on_wake", config.DefaultSyncOnWake)
-	v.Set("digest.enabled", config.DefaultDigestEnabled)
-	v.Set("digest.min_messages", config.DefaultDigestMinMsgs)
-
-	// Write to a temp file with restricted permissions, then atomically rename
-	// to avoid a race window where secrets could be world-readable.
-	if err := config.WithWriteLock(configPath, func(lk *config.WriteLock) error {
-		return writeConfigAtomic(lk, v, configPath)
+	if err := writeInitConfig(configPath, map[string]any{
+		"active_workspace":                         workspace,
+		"workspaces." + workspace + ".slack_token": slackToken,
+		"ai.context_budget":                        config.DefaultAIContextBudget,
+		"sync.workers":                             config.DefaultSyncWorkers,
+		"sync.initial_history_days":                config.DefaultInitialHistDays,
+		"sync.poll_interval":                       config.DefaultPollInterval.String(),
+		"sync.sync_threads":                        config.DefaultSyncThreads,
+		"sync.sync_on_wake":                        config.DefaultSyncOnWake,
+		"digest.enabled":                           config.DefaultDigestEnabled,
+		"digest.min_messages":                      config.DefaultDigestMinMsgs,
 	}); err != nil {
 		return err
 	}
@@ -437,6 +427,28 @@ func maskValue(s string) string {
 		return s[:5] + "****"
 	}
 	return "****"
+}
+
+// writeInitConfig writes the config wizard's keys. The prompts and the OAuth
+// login run before it, outside the lock; inside it the current file is
+// re-read and only the wizard's keys are set, so a key another writer saved
+// meanwhile (the Desktop's agent path, ai.background_runs) survives. A file
+// that exists but cannot be read or parsed is left alone with an error.
+func writeInitConfig(configPath string, keys map[string]any) error {
+	return config.WithWriteLock(configPath, func(lk *config.WriteLock) error {
+		v := viper.New()
+		v.SetConfigFile(configPath)
+		if err := v.ReadInConfig(); err != nil {
+			var notFound viper.ConfigFileNotFoundError
+			if !errors.As(err, &notFound) && !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("reading existing config %s (fix or remove it, then run config init again): %w", configPath, err)
+			}
+		}
+		for key, val := range keys {
+			v.Set(key, val)
+		}
+		return writeConfigAtomic(lk, v, configPath)
+	})
 }
 
 // writeConfigAtomic writes viper config to a temp file with 0o600 permissions,

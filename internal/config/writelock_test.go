@@ -47,6 +47,11 @@ func TestWithWriteLock_ExcludesSecondHolder(t *testing.T) {
 
 func TestWithWriteLock_NestedCallFailsFast(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	// In a synctest bubble so a nested call that queued on an in-process
+	// mutex or channel (rather than failing) would be reported as a deadlock.
+	// A nested call blocked in flock(2) itself would not be — that block is a
+	// syscall outside the bubble's view — so the assertion is that the nested
+	// call returns at all, with ErrWriteLockHeld.
 	synctest.Test(t, func(t *testing.T) {
 		var nested error
 		err := WithWriteLock(cfgPath, func(*WriteLock) error {
@@ -76,6 +81,17 @@ func TestWithWriteLock_TokenCoversOnlyItsPathWhileHeld(t *testing.T) {
 	var zero *WriteLock
 	require.False(t, zero.Covers(cfgPath))
 	require.False(t, (&WriteLock{}).Covers(cfgPath))
+}
+
+func TestWithWriteLock_CopiedTokenStopsCoveringAfterRelease(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	var copied WriteLock
+	require.NoError(t, WithWriteLock(cfgPath, func(lk *WriteLock) error {
+		copied = *lk
+		require.True(t, copied.Covers(cfgPath))
+		return nil
+	}))
+	require.False(t, copied.Covers(cfgPath), "a copy taken inside the callback covers nothing after it returns")
 }
 
 func TestWithWriteLock_CreatesMissingDirectory(t *testing.T) {

@@ -549,7 +549,7 @@ func setConfigKey(configPath, key string, value any) error {
 		setConfigKeyBeforeLock()
 	}
 	return config.WithWriteLock(configPath, func(lk *config.WriteLock) error {
-		return setConfigKeyLocked(lk, configPath, key, value)
+		return setConfigKeyUnderLock(lk, configPath, key, value)
 	})
 }
 
@@ -557,7 +557,14 @@ func setConfigKey(configPath, key string, value any) error {
 // called and before it takes the write lock.
 var setConfigKeyBeforeLock func()
 
-func setConfigKeyLocked(lk *config.WriteLock, configPath, key string, value any) error {
+// setConfigKeyLocked is a test seam: it runs inside the lock, just before
+// setConfigKey re-reads the file.
+var setConfigKeyLocked func()
+
+func setConfigKeyUnderLock(lk *config.WriteLock, configPath, key string, value any) error {
+	if setConfigKeyLocked != nil {
+		setConfigKeyLocked()
+	}
 	v := viper.New()
 	v.SetConfigFile(configPath)
 	// A Desktop-only install (no Slack OAuth flow yet) has no config.yaml, so

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -22,16 +23,16 @@ var errWriteNotLocked = errors.New("config write lock not held for this path")
 // constructor, and every low-level config.yaml writer (cmd's
 // writeConfigAtomic and writeConfigFile, this package's
 // writeFeatureMigrationConfigBytes) takes it as its first parameter, so a
-// write outside the lock does not compile. The token stops covering its path
-// once the callback returns.
+// write outside the lock does not compile. The token, and every copy of it
+// (they share held), stops covering its path once the callback returns.
 type WriteLock struct {
 	path string
-	f    *os.File
+	held *atomic.Bool
 }
 
 // Covers reports whether lk is a live lock on path.
 func (lk *WriteLock) Covers(path string) bool {
-	return lk != nil && lk.f != nil && lk.path == writeLockKey(path)
+	return lk != nil && lk.held != nil && lk.held.Load() && lk.path == writeLockKey(path)
 }
 
 var (
@@ -48,7 +49,10 @@ var (
 // atomic rename.
 //
 // A second call for the same path while this process holds it — nested, or
-// from another goroutine — returns ErrWriteLockHeld without waiting.
+// from another goroutine — returns ErrWriteLockHeld without waiting: the lock
+// is not re-entrant and does not queue in-process callers, so a future
+// in-process writer that can run concurrently with another must serialize
+// its own callers or retry on ErrWriteLockHeld.
 func WithWriteLock(configPath string, fn func(lk *WriteLock) error) error {
 	key := writeLockKey(configPath)
 	writeLocksMu.Lock()
@@ -77,8 +81,9 @@ func WithWriteLock(configPath string, fn func(lk *WriteLock) error) error {
 	}
 	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
 
-	lk := &WriteLock{path: key, f: f}
-	defer func() { lk.f = nil }()
+	lk := &WriteLock{path: key, held: new(atomic.Bool)}
+	lk.held.Store(true)
+	defer lk.held.Store(false)
 	return fn(lk)
 }
 
