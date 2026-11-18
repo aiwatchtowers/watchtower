@@ -290,6 +290,30 @@ func TestFinishFollowsALocatedFolder(t *testing.T) {
 	assert.Equal(t, realPath(t, moved), w.stubFile("cwd", id))
 }
 
+// A repeated Finish of a session the host already runs is refused as
+// already launched before it writes anything: its folder gone from disk
+// does not fail the live row, and a Locate does not rewrite its path.
+func TestFinishOfARunningSessionWritesNothing(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	hub := w.addFolder(true)
+	id := w.begin(handlers.StartRequest{Workbench: w.wb, FolderID: hub.ID})
+	require.NoError(t, Finish(ctx, w.deps(), id, "folder", "", false))
+	w.launched(id)
+	before := w.row(id)
+
+	moved := hub.FolderPath + "-moved"
+	require.NoError(t, os.Rename(hub.FolderPath, moved))
+	require.ErrorIs(t, Finish(ctx, w.deps(), id, "folder", "", false), ErrAlreadyLaunched, "folder gone")
+	assert.Equal(t, before, w.row(id), "the live row is not failed")
+
+	_, err := workbenchfolders.Locate(ctx, w.db, hub.ID, moved, nil)
+	require.NoError(t, err)
+	require.ErrorIs(t, Finish(ctx, w.deps(), id, "folder", "", false), ErrAlreadyLaunched, "folder relocated")
+	assert.Equal(t, before, w.row(id), "the live run's folder_path is kept")
+	assert.Equal(t, hub.FolderPath, w.row(id).folder)
+}
+
 // The bench's worktree_setup runs only in worktrees of the home folder (v1
 // ruling): a worktree of another folder is launched without it.
 func TestWorktreeSetupIsTheHomeFoldersOnly(t *testing.T) {

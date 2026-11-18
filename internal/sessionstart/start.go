@@ -461,6 +461,11 @@ func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, p
 		return fmt.Errorf("terminal session %d is not a workbench agent session", sessionID)
 	}
 	st := &newStart{d: d, agent: agent, choice: choice, claudeID: claudeID, id: sessionID, automationRun: runID.Int64}
+	// A row the host already runs is refused before anything below writes
+	// to it: its failure and its folder_path belong to the live run.
+	if err := st.refuseIfRunning(ctx); err != nil {
+		return err
+	}
 	if st.wb, err = loadWorkbench(ctx, d.DB, wbID.Int64, folderID.Int64); err != nil {
 		var refused *workbenchfolders.Refusal
 		if errors.As(err, &refused) {
@@ -495,6 +500,28 @@ func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, p
 	setStarting(sessionID, &startingRow{workbench: st.wb.id, benchFolder: st.wb.bench.ID, folder: st.wb.folder})
 	defer setStarting(sessionID, nil)
 	return st.finish(ctx)
+}
+
+// refuseIfRunning is ErrAlreadyLaunched when the host runs the row already,
+// read before Finish writes anything to it; a host that cannot be reached or
+// read fails the row as finish does (nothing runs it then). finish checks
+// again under the placement lock.
+func (s *newStart) refuseIfRunning(ctx context.Context) error {
+	c, done, err := s.d.lease(ctx)
+	if err != nil {
+		s.markFailed(ctx, hostDownReason(err))
+		return err
+	}
+	list, err := c.List(ctx)
+	done(err)
+	if err != nil {
+		s.markFailed(ctx, "the session host could not be read")
+		return fmt.Errorf("listing the session host: %w", err)
+	}
+	if info, ok := findRun(list, s.d.scope(), s.id); ok && !info.Exited {
+		return ErrAlreadyLaunched
+	}
+	return nil
 }
 
 func parseChoice(place string) (Choice, error) {
