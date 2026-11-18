@@ -23,6 +23,20 @@ package struct SlackLiveStatusRow: Equatable, Sendable {
         self.connectorID = connectorID
         self.checkedAt = checkedAt
     }
+
+    /// Every row, newest check first; none while the table does not exist
+    /// yet (a database mid-migration).
+    package static func fetchAll(_ db: Database) throws -> [Self] {
+        guard try db.tableExists("slack_live_status") else { return [] }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT team_id, provider, status, error_class, connector_id, checked_at
+            FROM slack_live_status ORDER BY checked_at DESC, team_id, provider
+            """)
+        return rows.map { row in
+            Self(teamID: row["team_id"], provider: row["provider"], status: row["status"],
+                 errorClass: row["error_class"], connectorID: row["connector_id"], checkedAt: row["checked_at"])
+        }
+    }
 }
 
 /// The center's last failure, kept as a value so the screen can name the
@@ -71,6 +85,10 @@ package final class SlackLiveStatusCenter {
     /// The pass in flight; tests await it.
     package private(set) var inFlight: Task<Void, Never>?
 
+    /// Called after a read changed `statuses`: the mode may have moved
+    /// Off ↔ Live, so the sidebar and the readiness re-read (screens spec §6;
+    /// the probe is another process, which no GRDB observation sees).
+    @ObservationIgnored package var onStatusesChange: (@MainActor () async -> Void)?
     @ObservationIgnored private var lastPass: Date?
     private let dbPool: DatabasePool
     private let runner: CLIRunnerProtocol?
@@ -106,18 +124,7 @@ package final class SlackLiveStatusCenter {
     package func reload() async {
         let rows: [SlackLiveStatusRow]
         do {
-            rows = try await dbPool.read { db -> [SlackLiveStatusRow] in
-                let fetched = try Row.fetchAll(db, sql: """
-                    SELECT team_id, provider, status, error_class, connector_id, checked_at
-                    FROM slack_live_status ORDER BY checked_at DESC, team_id, provider
-                    """)
-                return fetched.map { row in
-                    SlackLiveStatusRow(
-                        teamID: row["team_id"], provider: row["provider"], status: row["status"],
-                        errorClass: row["error_class"], connectorID: row["connector_id"],
-                        checkedAt: row["checked_at"])
-                }
-            }
+            rows = try await dbPool.read(SlackLiveStatusRow.fetchAll)
         } catch {
             Self.log.error("reading slack_live_status: \(error.localizedDescription, privacy: .public)")
             readError = SlackLiveError(provider: "", message: error.localizedDescription, kind: .read)
@@ -126,7 +133,9 @@ package final class SlackLiveStatusCenter {
         }
         readError = nil
         hasRead = true
-        if rows != statuses { statuses = rows }
+        guard rows != statuses else { return }
+        statuses = rows
+        await onStatusesChange?()
     }
 
     private func start(ifOlder: TimeInterval?) {

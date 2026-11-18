@@ -127,6 +127,17 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(SlackFullLiveShotFixtures.shots.filter { $0.name.hasPrefix("slack-fl-pane-") })
     }
 
+    /// `needsFullSlack` (screens spec §2): the Digests, Catch-Up and
+    /// Statistics shots draw the real `FeatureEmptyState`, the Home shot the
+    /// real Getting ready row; their strings are the approved mockups'.
+    func testSlackNeedsFullShotsRender() throws {
+        typealias Copy = SlackFullLiveMockCopy
+        XCTAssertEqual(FeatureReadiness.line(.needsFullSlack), Copy.needsFullLine)
+        XCTAssertEqual(ReadinessSource.fullSlack.actionTitle, Copy.needsFullAction)
+        XCTAssertEqual(SlackPaneModeFixture.presentation(.live).knowledgeNote, Copy.knowledgeNote)
+        try renderShots(SlackFullLiveShotFixtures.shots.filter { $0.name.hasPrefix("slack-fl-needs-full-") })
+    }
+
     /// The unified chat's new states and baselines (#1822 T0).
     /// The composer's shots and the existing shots that hold a composer (#1822 T13).
     func testComposerShotsRender() throws {
