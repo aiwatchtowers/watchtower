@@ -78,6 +78,7 @@ type sessionFeedEntryJSON struct {
 	Via          string                   `json:"via,omitempty"`
 	EventType    string                   `json:"event_type,omitempty"`
 	Subagent     *sessionfeed.SubagentRef `json:"subagent,omitempty"`
+	Peer         *sessionfeed.PeerRef     `json:"peer,omitempty"`
 }
 
 func toSessionFeedEntries(es []sessionfeed.Entry) []sessionFeedEntryJSON {
@@ -85,7 +86,7 @@ func toSessionFeedEntries(es []sessionfeed.Entry) []sessionFeedEntryJSON {
 	for _, e := range es {
 		out = append(out, sessionFeedEntryJSON{
 			ID: e.ID, Kind: e.Kind, At: e.At, Text: e.Text, Conversation: e.Conversation,
-			AskID: e.AskID, Title: e.Title, Via: e.Via, EventType: e.EventType, Subagent: e.Subagent,
+			AskID: e.AskID, Title: e.Title, Via: e.Via, EventType: e.EventType, Subagent: e.Subagent, Peer: e.Peer,
 		})
 	}
 	return out
@@ -138,12 +139,34 @@ func runWorkbenchSessionFeed(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	namePeers(ctx, database, out.Entries)
 	w := cmd.OutOrStdout()
 	if workbenchSessionFeedFlagJSON {
 		return writeJSON(w, out)
 	}
 	printSessionFeed(w, out.Entries)
 	return nil
+}
+
+// namePeers fills the title and folder of the outgoing peer entries that
+// carry only the receiver's id (a send_to_session call): the receiver's row
+// names them. A receiver that is gone, or a read that fails, leaves them
+// empty and the entry renders with the id.
+func namePeers(ctx context.Context, database *db.DB, entries []sessionFeedEntryJSON) {
+	for _, e := range entries {
+		p := e.Peer
+		if p == nil || p.Direction != sessionfeed.PeerOut || p.Kind != sessionfeed.PeerMessage || p.SessionID <= 0 {
+			continue
+		}
+		if s, err := sessionagent.LoadSession(database, p.SessionID); err == nil {
+			p.Title = s.Title
+		}
+		if fid, err := database.SessionFolderID(ctx, p.SessionID); err == nil {
+			if f, err := database.WorkbenchFolderByID(ctx, fid); err == nil {
+				p.Folder = f.Name
+			}
+		}
+	}
 }
 
 // requireAgentSession refuses sessions the feed cannot read: shells.
@@ -268,6 +291,13 @@ func printSessionFeed(w io.Writer, entries []sessionFeedEntryJSON) {
 			fmt.Fprintln(w, head)
 			if e.Text != "" {
 				fmt.Fprintln(w, indentFeedText(e.Text))
+			}
+		case sessionfeed.KindPeer:
+			if p := e.Peer; p != nil {
+				fmt.Fprintf(w, "%s  Peer %s %s #%d %s\n", at, p.Direction, p.Kind, p.SessionID, p.Title)
+				if e.Text != "" {
+					fmt.Fprintln(w, indentFeedText(e.Text))
+				}
 			}
 		case sessionfeed.KindEvent:
 			fmt.Fprintf(w, "· %s\n", e.Title)

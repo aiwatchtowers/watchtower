@@ -74,6 +74,7 @@ type state struct {
 	conv      string
 	byMsg     map[string]int // assistant message id -> index in res.Entries
 	markers   map[string]int // Agent tool_use id -> index in res.Entries
+	peerCalls map[string]int // start_session tool_use id -> index in res.Entries
 	sidechain bool           // reading a subagent file: its records are the feed
 	hasTask   bool
 	handback  string
@@ -94,7 +95,7 @@ func parse(r io.Reader, startOffset int64, conv string, limit int) (*Result, err
 func newState(conv string, startOffset int64, sidechain bool) *state {
 	return &state{
 		res:  &Result{Offset: startOffset, Unknown: map[string]int{}},
-		conv: conv, byMsg: map[string]int{}, markers: map[string]int{}, sidechain: sidechain,
+		conv: conv, byMsg: map[string]int{}, markers: map[string]int{}, peerCalls: map[string]int{}, sidechain: sidechain,
 	}
 }
 
@@ -157,6 +158,7 @@ func (st *state) handleUser(rec record, at time.Time) {
 		return
 	}
 	st.recordParentReport(rec)
+	st.recordPeerResult(rec)
 	if st.sidechain {
 		// only the first plain-string record is the task
 		var task string
@@ -246,6 +248,10 @@ func classifyUserText(uuid, text string) (Entry, bool) {
 		return noticeEntry(uuid, text), true
 	}
 	e := Entry{ID: uuid, Kind: KindOwner, Text: text}
+	if peer, body, ok := parsePeerLine(text); ok {
+		e.Kind, e.Peer, e.Text = KindPeer, peer, body
+		return e, true
+	}
 	switch {
 	case strings.HasPrefix(text, "<command-name>"):
 		name := firstGroup(cmdNameRe, text)
@@ -324,12 +330,15 @@ func (st *state) assistant(rec record, at time.Time) {
 	}
 	var parts []string
 	var calls []block
+	var peers []block
 	for _, b := range blocks {
 		switch {
 		case b.Type == "text" && strings.TrimSpace(b.Text) != "":
 			parts = append(parts, strings.TrimSpace(b.Text))
 		case b.Type == "tool_use" && b.Name == "Agent":
 			calls = append(calls, b)
+		case b.Type == "tool_use" && !st.sidechain && isPeerTool(b.Name):
+			peers = append(peers, b)
 		case b.Type == "tool_use" && b.Name == handbackTool && st.sidechain:
 			var in struct {
 				Message string `json:"message"`
@@ -354,6 +363,9 @@ func (st *state) assistant(rec record, at time.Time) {
 	}
 	for _, b := range calls {
 		st.marker(b, at)
+	}
+	for _, b := range peers {
+		st.peerCall(b, at)
 	}
 }
 

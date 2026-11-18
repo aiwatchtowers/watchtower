@@ -31,6 +31,8 @@ struct SessionChatView: View {
     @State private var earlierAnchor: Int64?
     /// An artifact card opened from the feed.
     @State private var artifact: ChatArtifactContent?
+    /// The messages this session sent to another session that still wait (`session_messages`, state `queued`).
+    @State private var waitingMessages: [SessionMessage] = []
 
     init(
         vm: WorkbenchesViewModel,
@@ -185,6 +187,10 @@ struct SessionChatView: View {
         // too, so a second prompt within one state poll is still read.
         .task(id: WorkchatModel.PermissionReadKey(vm.sessionStatuses[sessionID])) {
             await workchat?.refreshPermission()
+        }
+        .task(id: WaitingKey(entries: store.entries.count, statuses: vm.sessionStatuses.values.map { $0.at ?? "" }.sorted(),
+                             daemonDown: appState.readinessCenter.daemonDown)) {
+            await refreshWaiting()
         }
         // The feed shows a sent line: its bubble leaves.
         .onChange(of: store.entries) { _, entries in workchat?.reconcile(with: entries) }
@@ -363,10 +369,45 @@ struct SessionChatView: View {
                     .id("permission-\(permission.id)")
             }
         }
+        ForEach(waitingMessages) { message in
+            if let bubble = waitingBubble(message) {
+                PeerBubbleCard(bubble: bubble) { openReceiver(message) }
+                    .id("waiting-\(message.id)")
+            }
+        }
         ForEach(openAsks) { ask in
             WorkchatAskCard(ask: ask) { vm.asks.openDrawer(ask) }
                 .id("ask-\(ask.id)")
         }
+    }
+
+    /// The card of a queued message: the receiver's title and what holds it. A receiver that is gone has no card.
+    private func waitingBubble(_ message: SessionMessage) -> PeerBubblePresentation.Bubble? {
+        guard let toID = message.toSessionID, let receiver = vm.session(toID, projectID: projectID) else { return nil }
+        let state = vm.sessionState(receiver)
+        let hold = PeerBubblePresentation.Hold.of(
+            receiverNeedsApproval: state.kind == .needsApproval,
+            receiverWorking: state.kind == .working || state.kind == .background)
+        return PeerBubblePresentation.waiting(title: receiver.title, hold: hold,
+                                              daemonRunning: !appState.readinessCenter.daemonDown)
+    }
+
+    private func openReceiver(_ message: SessionMessage) {
+        guard let toID = message.toSessionID else { return }
+        Task { await vm.showSession(id: toID) }
+    }
+
+    /// Re-read the queued messages when the feed grows or any session's state moves (a delivery changes both).
+    private struct WaitingKey: Hashable {
+        let entries: Int
+        let statuses: [String]
+        let daemonDown: Bool
+    }
+
+    private func refreshWaiting() async {
+        guard let pool = appState.databaseManager?.dbPool else { return }
+        let id = sessionID
+        waitingMessages = (try? await pool.read { try SessionMessageQueries.queued($0, fromSessionID: id) }) ?? []
     }
 
     private func toggleEvent(_ id: String) {

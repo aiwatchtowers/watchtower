@@ -17,7 +17,32 @@ const (
 	KindSubagent   Kind = "subagent"
 	KindSeparator  Kind = "separator"
 	KindEvent      Kind = "event"
+	KindPeer       Kind = "peer"
 )
+
+// Peer directions and kinds (spec 2026-11-18 §6.6).
+const (
+	PeerIn  = "in"
+	PeerOut = "out"
+
+	PeerMessage  = "message"
+	PeerFinished = "finished"
+	PeerStarted  = "started"
+)
+
+// PeerRef is the payload of a KindPeer entry: another agent of the workbench
+// speaking to this session (in) or this session speaking to one (out).
+// Title and Folder of an outgoing message are filled by the reader that has
+// the database (the transcript carries only the receiver's id); Worktree is
+// set on a started sub-session once the start_session result names one.
+type PeerRef struct {
+	Direction string `json:"direction"`
+	Kind      string `json:"kind"`
+	SessionID int64  `json:"session_id"`
+	Title     string `json:"title"`
+	Folder    string `json:"folder"`
+	Worktree  string `json:"worktree"`
+}
 
 // EventType values for KindEvent entries: Claude Code notices written as user records.
 const (
@@ -53,6 +78,7 @@ type Entry struct {
 	Via          string       `json:"via,omitempty"`
 	EventType    string       `json:"event_type,omitempty"`
 	Subagent     *SubagentRef `json:"subagent,omitempty"`
+	Peer         *PeerRef     `json:"peer,omitempty"`
 	Conversation string       `json:"conversation,omitempty"`
 }
 
