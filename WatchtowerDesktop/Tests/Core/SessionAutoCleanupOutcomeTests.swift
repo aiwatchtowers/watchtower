@@ -1,0 +1,312 @@
+import XCTest
+@testable import WatchtowerCore
+
+/// The background cleanup's outcome after a session delete (spec
+/// 2026-11-10-auto-cleanup-on-session-delete §3): every Go reason code in a
+/// group, the clean notice and the Not fully cleaned mark, word for word.
+final class SessionAutoCleanupOutcomeTests: XCTestCase {
+    typealias Outcome = SessionAutoCleanupOutcome
+
+    static let goFixture = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent() // Core
+        .deletingLastPathComponent() // Tests
+        .deletingLastPathComponent() // WatchtowerDesktop
+        .deletingLastPathComponent() // repository root
+        .appendingPathComponent("internal/sessioncleanup/testdata/reason_codes.json")
+
+    // MARK: Helpers
+
+    private func worktree(
+        _ name: String,
+        bytes: Int64 = 0,
+        done: Bool = false,
+        reason: String? = nil,
+        error: String = ""
+    ) -> SessionCleanupItem {
+        SessionCleanupItem(
+            key: "worktree:/tmp/acme/\(name)", kind: .worktree, name: name,
+            bytes: bytes, bytesKnown: true, action: done || reason == nil ? .remove : .keep,
+            reason: reason.map(SessionCleanupReason.init(code:)), done: done, error: error
+        )
+    }
+
+    private func branch(_ name: String, done: Bool = false, reason: String? = nil) -> SessionCleanupItem {
+        SessionCleanupItem(
+            key: "branch:\(name)", kind: .branch, name: name,
+            action: done || reason == nil ? .remove : .keep,
+            reason: reason.map(SessionCleanupReason.init(code:)), done: done
+        )
+    }
+
+    private func result(_ items: [SessionCleanupItem]) -> SessionCleanupPlan {
+        let removed = items.filter { $0.done && $0.kind == .worktree }.reduce(Int64(0)) { $0 + $1.bytes }
+        return SessionCleanupPlan(mode: "apply", items: items, removedBytes: removed, removedBytesKnown: true)
+    }
+
+    private func keptItem(_ code: String) -> SessionCleanupItem {
+        SessionCleanupItem(key: "branch:x", kind: .branch, action: .keep, reason: SessionCleanupReason(code: code))
+    }
+
+    // MARK: Groups
+
+    /// Spec §3's table, literally.
+    private static let specTable: [String: CleanupItemGroup] = [
+        "uncommitted_changes": .keptOnPurpose,
+        "ignored_files": .keptOnPurpose,
+        "unpushed_commits": .keptOnPurpose,
+        "operation_in_progress": .keptOnPurpose,
+        "locked": .keptOnPurpose,
+        "contains_worktree": .keptOnPurpose,
+        "default_branch_unknown": .keptOnPurpose,
+        "not_this_session": .notOurs,
+        "existed_before_session": .notOurs,
+        "created_unknown": .notOurs,
+        "main_folder": .notOurs,
+        "workbench_folder": .notOurs,
+        "claude_home": .notOurs,
+        "default_branch": .notOurs,
+        "checked_out": .notOurs,
+        "git_refused": .couldNot,
+        "moved": .couldNot,
+        "process_running": .couldNot,
+        "process_unknown": .couldNot,
+        "session_in_it": .couldNot,
+        "check_failed": .couldNot,
+        "bundle_unreadable": .couldNot,
+        "not_attempted": .couldNot
+    ]
+
+    func testEveryGoReasonCodeIsPlaced() throws {
+        let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: Self.goFixture)) as? [String: Any]
+        let codes = try XCTUnwrap(raw?["reason_codes"] as? [String], "reason_codes.json has no reason_codes")
+        XCTAssertFalse(codes.isEmpty)
+        for code in codes {
+            guard case .known = SessionCleanupReason(code: code) else {
+                XCTFail("Go reason code \(code) is not in SessionCleanupReason.Code: add the case and place it "
+                    + "in SessionAutoCleanupOutcome.group(reason:)")
+                continue
+            }
+        }
+        for (code, group) in Self.specTable {
+            XCTAssertTrue(codes.contains(code), "spec code \(code) is not in Go's list")
+            XCTAssertEqual(Outcome.group(keptItem(code)), group, code)
+        }
+    }
+
+    func testUnknownReasonIsCouldNot() {
+        XCTAssertEqual(Outcome.group(keptItem("some_new_reason")), .couldNot)
+    }
+
+    func testItemStatesGroup() {
+        XCTAssertEqual(Outcome.group(worktree("a", done: true)), .removed)
+        XCTAssertEqual(Outcome.group(worktree("a", error: "git failed")), .couldNot)
+        // A removal an apply left pending did not happen.
+        XCTAssertEqual(Outcome.group(worktree("a")), .couldNot)
+        XCTAssertEqual(
+            Outcome.group(SessionCleanupItem(key: "branch:x", kind: .branch, action: .keep)), .couldNot)
+        XCTAssertEqual(
+            Outcome.group(SessionCleanupItem(key: "branch:x", kind: .branch, action: .unknown("later"))), .couldNot)
+    }
+
+    /// Go's `dropBranchConfig` sets an error on a done item (the branch
+    /// went, its config section stayed): spec §3 reads an item with `error`
+    /// as could not, so the row stays, Not fully cleaned.
+    func testDoneItemWithErrorIsCouldNot() {
+        let half = SessionCleanupItem(
+            key: "branch:feat/x", kind: .branch, name: "feat/x", action: .remove, done: true,
+            error: "branch deleted; its config section stays: exit status 5"
+        )
+        XCTAssertEqual(Outcome.group(half), .couldNot)
+        XCTAssertEqual(
+            Outcome.evaluate(result: result([worktree("a", done: true), half]), title: "T", runError: nil),
+            .notFullyCleaned(mark: "Not fully cleaned: 1 branch — could not be removed.")
+        )
+    }
+
+    // MARK: Clean notice
+
+    func testCleanNoticeCopy() {
+        let full = result(
+            [worktree("a", bytes: 700_000_000, done: true), worktree("b", bytes: 700_000_000, done: true),
+             worktree("c", bytes: 700_000_000, done: true)]
+                + (1...12).map { branch("b\($0)", done: true) }
+        )
+        XCTAssertEqual(
+            Outcome.evaluate(result: full, title: "T", runError: nil),
+            .clean(SessionCleanupNotice(lead: "Cleaned up", rest: " “T”: removed 3 worktrees and 12 branches (~2.1 GB)."))
+        )
+
+        let kept = result([
+            worktree("a", bytes: 700_000_000, done: true), worktree("b", bytes: 700_000_000, done: true),
+            branch("feat/x", reason: "unpushed_commits"),
+            branch("main", reason: "default_branch")
+        ])
+        XCTAssertEqual(
+            Outcome.evaluate(result: kept, title: "T", runError: nil),
+            .clean(SessionCleanupNotice(lead: "Cleaned up", rest: " “T”: removed 2 worktrees (~1.4 GB). Kept 1 branch — unpushed commits."))
+        )
+
+        let nothing = result([branch("main", reason: "default_branch")])
+        XCTAssertEqual(Outcome.evaluate(result: nothing, title: "T", runError: nil), .clean(nil))
+    }
+
+    /// Ask #1240: a branch kept because the default branch is unknown does
+    /// not keep the row; the notice names it, with nothing removed too.
+    func testDefaultBranchUnknownIsKeptAndNamed() {
+        let onlyKept = result([
+            branch("feat/a", reason: "default_branch_unknown"), branch("feat/b", reason: "default_branch_unknown")
+        ])
+        XCTAssertEqual(
+            Outcome.evaluate(result: onlyKept, title: "T", runError: nil),
+            .clean(SessionCleanupNotice(lead: "Cleaned up", rest: " “T”: kept 2 branches — default branch unknown."))
+        )
+        let mixed = result([
+            worktree("a", bytes: 700_000_000, done: true), branch("feat/a", reason: "default_branch_unknown")
+        ])
+        XCTAssertEqual(
+            Outcome.evaluate(result: mixed, title: "T", runError: nil),
+            .clean(SessionCleanupNotice(
+                lead: "Cleaned up", rest: " “T”: removed 1 worktree (~700 MB). Kept 1 branch — default branch unknown."
+            ))
+        )
+    }
+
+    func testJoinedNoticeCopy() {
+        let one = result([worktree("a", bytes: 1_000_000_000, done: true), branch("a", done: true)])
+        let two = result([worktree("b", bytes: 500_000_000, done: true), branch("b", reason: "unpushed_commits")])
+        let three = result([branch("c", done: true)])
+        let four = result([])
+        XCTAssertEqual(
+            SessionCleanupNotice.joined([("A", one), ("B", two), ("C", three), ("D", four)]),
+            SessionCleanupNotice(
+                lead: "Cleaned up 4 sessions",
+                rest: ": removed 2 worktrees and 2 branches (~1.5 GB). Kept 1 branch — unpushed commits."
+            )
+        )
+        XCTAssertEqual(
+            SessionCleanupNotice.joined([("A", one)]),
+            SessionCleanupNotice(lead: "Cleaned up", rest: " “A”: removed 1 worktree and 1 branch (~1.0 GB).")
+        )
+        XCTAssertNil(SessionCleanupNotice.joined([("D", four), ("E", four)]))
+        XCTAssertNil(SessionCleanupNotice.joined([]))
+    }
+
+    /// The emphasis is built with the text, never parsed back out of it:
+    /// a title with a colon keeps its lead.
+    func testNoticeLeadAndRest() {
+        let one = result([worktree("a", bytes: 1_000_000_000, done: true)])
+        let single = SessionCleanupNotice.single(title: "Fix: login: flow", result: one)
+        XCTAssertEqual(single?.lead, "Cleaned up")
+        XCTAssertEqual(single?.rest, " “Fix: login: flow”: removed 1 worktree (~1.0 GB).")
+        XCTAssertEqual(single?.text, "Cleaned up “Fix: login: flow”: removed 1 worktree (~1.0 GB).")
+        let joined = SessionCleanupNotice.joined([("A: x", one), ("B", one)])
+        XCTAssertEqual(joined?.lead, "Cleaned up 2 sessions")
+        XCTAssertEqual(joined?.rest, ": removed 2 worktrees (~2.0 GB).")
+    }
+
+    /// Spec §2a/§3, mockup state 6b: Claude Code's subagent records could
+    /// not be read — a second line, word for word, also when nothing was
+    /// removed; the row still goes.
+    func testSubagentRecordsNoteLine() {
+        let note = "Could not read the subagent records of “T” — check the Clean Up screen."
+        var removed = result([worktree("a", bytes: 600_000_000, done: true)])
+        removed.notes = [SessionCleanupPlan.subagentRecordsUnreadableNote]
+        let notice = SessionCleanupNotice(lead: "Cleaned up", rest: " “T”: removed 1 worktree (~600 MB).", note: note)
+        XCTAssertEqual(Outcome.evaluate(result: removed, title: "T", runError: nil), .clean(notice))
+        XCTAssertEqual(notice.text, "Cleaned up “T”: removed 1 worktree (~600 MB).\n" + note)
+
+        var nothing = result([branch("main", reason: "default_branch")])
+        nothing.notes = [SessionCleanupPlan.subagentRecordsUnreadableNote]
+        XCTAssertEqual(
+            Outcome.evaluate(result: nothing, title: "T", runError: nil),
+            .clean(SessionCleanupNotice(lead: "Cleaned up", rest: " “T”.", note: note))
+        )
+
+        var kept = result([branch("feat/a", reason: "unpushed_commits")])
+        kept.notes = [SessionCleanupPlan.subagentRecordsUnreadableNote]
+        XCTAssertEqual(
+            Outcome.evaluate(result: kept, title: "T", runError: nil),
+            .clean(SessionCleanupNotice(lead: "Cleaned up", rest: " “T”: kept 1 branch — unpushed commits.", note: note))
+        )
+
+        // An unknown note says nothing.
+        var other = result([branch("main", reason: "default_branch")])
+        other.notes = ["something_new"]
+        XCTAssertEqual(Outcome.evaluate(result: other, title: "T", runError: nil), .clean(nil))
+
+        // Joined: the sessions whose records could not be read, by title.
+        XCTAssertEqual(
+            SessionCleanupNotice.joined([("A", nothing), ("B", removed), ("C", result([]))])?.note,
+            "Could not read the subagent records of “A” and “B” — check the Clean Up screen."
+        )
+    }
+
+    func testNotesAbsentDecodesEmpty() throws {
+        let absent = try JSONDecoder().decode(SessionCleanupPlan.self, from: Data(#"{"mode":"apply","items":[]}"#.utf8))
+        XCTAssertEqual(absent.notes, [])
+        XCTAssertFalse(absent.subagentRecordsUnreadable)
+        let null = try JSONDecoder().decode(SessionCleanupPlan.self, from: Data(#"{"notes":null}"#.utf8))
+        XCTAssertEqual(null.notes, [])
+        let set = try JSONDecoder().decode(
+            SessionCleanupPlan.self, from: Data(#"{"notes":["subagent_records_unreadable"]}"#.utf8)
+        )
+        XCTAssertTrue(set.subagentRecordsUnreadable)
+    }
+
+    // MARK: Not fully cleaned
+
+    func testMarkCopy() {
+        let busy = result([
+            branch("a", done: true),
+            worktree("a", bytes: 1_000, reason: "process_running"),
+            branch("feat/x", reason: "unpushed_commits")
+        ])
+        XCTAssertEqual(
+            Outcome.evaluate(result: busy, title: "T", runError: nil),
+            .notFullyCleaned(mark: "Not fully cleaned: 1 worktree — a process is running in it.")
+        )
+
+        let mixed = result([
+            worktree("a", reason: "git_refused"), branch("b", reason: "moved"), branch("c", reason: "moved")
+        ])
+        XCTAssertEqual(
+            Outcome.evaluate(result: mixed, title: "T", runError: "watchtower exited with code 1"),
+            .notFullyCleaned(mark: "Not fully cleaned: 1 worktree, 2 branches — git refused, moved since the check.")
+        )
+
+        let failed = result([worktree("a", error: "permission denied")])
+        XCTAssertEqual(
+            Outcome.evaluate(result: failed, title: "T", runError: nil),
+            .notFullyCleaned(mark: "Not fully cleaned: 1 worktree — could not be removed.")
+        )
+    }
+
+    func testRunErrorMark() {
+        XCTAssertEqual(
+            Outcome.evaluate(result: nil, title: "T", runError: "watchtower exited with code 1"),
+            .notFullyCleaned(mark: "Not fully cleaned: the cleanup could not run — watchtower exited with code 1.")
+        )
+        // A run that failed as a whole fails even with a clean-looking result.
+        XCTAssertEqual(
+            Outcome.evaluate(result: result([]), title: "T", runError: "watchtower exited with code 1"),
+            .notFullyCleaned(mark: "Not fully cleaned: the cleanup could not run — watchtower exited with code 1.")
+        )
+        XCTAssertEqual(
+            Outcome.evaluate(result: nil, title: "T", runError: nil),
+            .notFullyCleaned(mark: "Not fully cleaned: the cleanup could not run — it printed no result.")
+        )
+    }
+
+    func testTimeoutMark() {
+        XCTAssertEqual(
+            Outcome.evaluate(result: nil, title: "T", runError: Outcome.timeoutRunError),
+            .notFullyCleaned(mark: "Not fully cleaned: the cleanup took longer than 10 minutes.")
+        )
+    }
+
+    /// The clean apply's row could not be deleted (board #1716 review).
+    func testDeleteFailedMark() {
+        XCTAssertEqual(SessionAutoCleanupOutcome.deleteFailedMark("database is locked."),
+                       "Not fully cleaned: the session could not be deleted — database is locked.")
+    }
+}

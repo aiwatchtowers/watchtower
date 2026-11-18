@@ -1,6 +1,8 @@
 import AppKit
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
+import ChatUI
 
 /// The popover's root, hosted in an `NSPopover` by the Files pane's editor:
 /// the code-answer environment, set once here and never re-applied while an
@@ -114,21 +116,10 @@ struct CodeQuestionPopover: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 8)
-            ChatModelPicker(
-                provider: session.choice.provider,
-                model: session.choice.model,
-                suggestions: questions.modelSuggestions(session.choice.provider),
-                onSelectProvider: { provider in
-                    Task { await questions.setModelChoice(session.choice.switching(to: provider), workbenchID: workbenchID) }
-                },
-                onSelectModel: { model in
-                    Task {
-                        await questions.setModelChoice(.init(provider: session.choice.provider, model: model),
-                                                       workbenchID: workbenchID)
-                    }
-                }
-            )
-            .disabled(busy)
+            CodeQuestionModelPill(choice: session.choice, suggestions: questions.modelSuggestions(session.choice.provider),
+                                  enabled: !busy) { choice in
+                Task { await questions.setModelChoice(choice, workbenchID: workbenchID) }
+            }
         }
         .padding(.horizontal, 12)
         .padding(.top, 10)

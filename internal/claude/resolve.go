@@ -77,25 +77,31 @@ func RichPATH() string {
 }
 
 // wellKnownBinary checks common install locations for a binary — the places
-// installers use, mirrored from fallbackPATH's extra dirs.
+// installers use, in wellKnownDirs' order.
 func wellKnownBinary(name string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	for _, dir := range []string{
-		filepath.Join(home, ".local", "bin"),
-		filepath.Join(home, ".claude", "bin"),
-		"/opt/homebrew/bin",
-		"/usr/local/bin",
-		filepath.Join(home, ".volta", "bin"),
-	} {
+	for _, dir := range wellKnownDirs() {
 		p := filepath.Join(dir, name)
 		if info, err := os.Stat(p); err == nil && !info.IsDir() {
 			return p
 		}
 	}
 	return ""
+}
+
+// wellKnownDirs are the install folders FindBinary and UsageCommand search
+// after the inherited and login-shell PATH, in this order.
+func wellKnownDirs() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, ".claude", "bin"),
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		filepath.Join(home, ".volta", "bin"),
+	}
 }
 
 // mergePATH joins PATH strings, deduplicating entries and dropping empties.
@@ -228,6 +234,12 @@ const loginEnvMarker = "__WATCHTOWER_ENV__"
 func readLoginShellEnv(shell string, timeout time.Duration) map[string]string {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	return readLoginShellEnvUntil(ctx, shell)
+}
+
+// readLoginShellEnvUntil is readLoginShellEnv bounded by ctx: when ctx ends
+// the shell's process group is killed and it yields nil.
+func readLoginShellEnvUntil(ctx context.Context, shell string) map[string]string {
 	cmd := exec.CommandContext(ctx, shell, "-l", "-c", "printf '\\n"+loginEnvMarker+"\\n'; env -0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }

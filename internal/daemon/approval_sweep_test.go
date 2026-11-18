@@ -100,9 +100,7 @@ func TestDaemon_RunInstallsInProcessApprovalHook(t *testing.T) {
 	d, database, exec, _, id := newApprovalTestDaemon(t)
 	wiring := false
 	database.SetApprovalHook(func(string) { wiring = true })
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	require.NoError(t, d.Run(ctx))
+	require.NoError(t, runDaemonCycles(t, d, 1)) // Run installs the hook before its first cycle
 
 	before := exec.wakes.Load()
 	_, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{}`})

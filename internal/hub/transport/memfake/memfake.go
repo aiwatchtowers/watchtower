@@ -547,6 +547,7 @@ func (f *Fake) nextTag() uint64 {
 // waits it goes straight into the channel; otherwise it joins pending (a zone
 // event already waiting for its zone absorbs it) and the pump delivers it.
 func (f *Fake) emit(e transport.Event) {
+	e.ArrivedAt = f.clock()
 	if !f.pumping {
 		select {
 		case f.events <- e:
@@ -583,6 +584,17 @@ func (f *Fake) pump() {
 		f.mu.Unlock()
 		f.events <- e
 	}
+}
+
+// DropZone deletes the zone name exactly as spelled (zone names are
+// case-sensitive) with its records and its feed: a zone deleted on the server.
+// It reports whether the zone existed.
+func (f *Fake) DropZone(name string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.zones[name]
+	delete(f.zones, name)
+	return ok
 }
 
 func (f *Fake) zone(name string) *zoneState {

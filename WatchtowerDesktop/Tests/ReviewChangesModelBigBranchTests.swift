@@ -17,16 +17,32 @@ final class FakeStreamClock: ReviewStreamClock, @unchecked Sendable {
     private var sleepers: [Sleeper] = []
 
     var now: Date { lock.withLock { current } }
+    private var deadlineWaiters: [(Date, CheckedContinuation<Void, Never>)] = []
+
+    /// Returns once a sleeper sleeps until `deadline` (at once when one does).
+    func untilSleeping(until deadline: Date) async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            let now = lock.withLock { () -> Bool in
+                if sleepers.contains(where: { $0.deadline == deadline }) { return true }
+                deadlineWaiters.append((deadline, c))
+                return false
+            }
+            if now { c.resume() }
+        }
+    }
 
     func sleep(until deadline: Date) async throws {
         let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-                let wakeNow = lock.withLock { () -> Bool in
-                    if deadline <= current { return true }
+                let (wakeNow, waiters) = lock.withLock { () -> (Bool, [CheckedContinuation<Void, Never>]) in
+                    if deadline <= current { return (true, []) }
                     sleepers.append(Sleeper(id: id, deadline: deadline, continuation: c))
-                    return false
+                    let waiters = deadlineWaiters.filter { $0.0 == deadline }.map(\.1)
+                    deadlineWaiters.removeAll { $0.0 == deadline }
+                    return (false, waiters)
                 }
+                waiters.forEach { $0.resume() }
                 if wakeNow { c.resume() }
             }
         } onCancel: {
@@ -87,12 +103,18 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         await h.model.mapTask?.value
     }
 
-    /// Waits (bounded) for `condition`, letting the model's tasks run.
-    private func eventually(_ what: String, _ condition: () -> Bool) async {
-        for _ in 0..<3000 where !condition() {
-            try? await Task.sleep(nanoseconds: 1_000_000)
-        }
+    /// Waits for `condition` on the model's observable state, re-checking on
+    /// every change of it — no deadline (a hang is the watchdog's).
+    private func eventually(_ what: String, _ condition: @escaping @MainActor () -> Bool) async {
+        await untilObserved(condition)
         XCTAssertTrue(condition(), "never: \(what)")
+    }
+
+    /// Waits for `process` to exit, then checks the model's stop ended it
+    /// (`stop` counts, then exits it with 143).
+    private func stopped(_ process: FakeOverviewProcess, _ what: String) async {
+        _ = await process.run.exit()
+        XCTAssertEqual(process.stopCount, 1, what)
     }
 
     private func process(_ h: ReviewModelHarness, _ index: Int) async throws -> FakeOverviewProcess {
@@ -493,7 +515,7 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         first.send(chapterLine("dir:cmd", "ok"))
         await eventually("dir:cmd ok") { h.model.chapterStates["dir:cmd"] == .ok }
         await h.model.refresh()
-        await eventually("SIGTERM to its own process group") { first.stopCount == 1 }
+        await stopped(first, "SIGTERM to its own process group")
         let second = try await process(h, 1)
         XCTAssertEqual(second.stopCount, 0)
         second.send(chapterLine("dir:cmd", "cached"))
@@ -559,7 +581,7 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         await eventually("dir:cmd ok") { h.model.chapterStates["dir:cmd"] == .ok }
         await h.model.refresh()
         await h.model.mapTask?.value
-        await eventually("stopped") { first.stopCount == 1 }
+        await stopped(first, "stopped")
         XCTAssertEqual(h.model.map, .failed)
         XCTAssertEqual(h.model.overview, .idle)
         XCTAssertEqual(h.model.chapterStates, ["dir:cmd": .ok, "dir:pkg": .notStarted])
@@ -576,7 +598,7 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         h.model.retrySummary()
         XCTAssertEqual(h.model.chapterStates["dir:pkg"], .queued)
         h.model.shutDown()
-        await eventually("stopped") { first.stopCount == 1 }
+        await stopped(first, "stopped")
         XCTAssertEqual(h.model.chapterStates["dir:pkg"], .notStarted)
         XCTAssertEqual(h.model.summaryState, .notStarted)
     }
@@ -609,7 +631,7 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         await eventually("cached while waiting") { h.model.chapterStates["dir:cmd"] == .cached }
         XCTAssertEqual(h.model.waitingFor, "agent", "a part another run cached does not end the wait")
         await h.model.refresh(regenerateOverview: false)
-        await eventually("its own waiting process stopped") { first.stopCount == 1 }
+        await stopped(first, "its own waiting process stopped")
         let second = try await process(h, 1)
         second.send(#"{"event":"waiting","by":"agent"}"#)
         await eventually("waiting again") { h.model.waitingFor == "agent" }
@@ -671,15 +693,17 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
             clock.advance(by: 30)
             run.send(lines[i % lines.count])
             let expected = clock.now
-            await eventually("line \(i) read") { h.model.lastStreamLine == expected }
+            await eventually("line \(i) read") { _ = h.model.streamLinesRead; return h.model.lastStreamLine == expected }
         }
         XCTAssertEqual(h.model.overview, .loading)
         XCTAssertEqual(run.stopCount, 0, "ten minutes of lines never trip it")
+        let lastLine = clock.now
         clock.advance(by: 299)
-        try? await Task.sleep(nanoseconds: 20_000_000)
+        // The timer saw 299 s of silence and went back to sleep until 300 s.
+        await clock.untilSleeping(until: lastLine.addingTimeInterval(ReviewChangesModel.streamSilenceLimit))
         XCTAssertEqual(run.stopCount, 0)
         clock.advance(by: 1)
-        await eventually("stopped") { run.stopCount == 1 }
+        await stopped(run, "stopped")
         await h.settle()
         XCTAssertEqual(h.model.overview, .failed(ReviewChangesModel.streamSilentMessage))
         XCTAssertEqual(h.model.chapterStates, ["dir:cmd": .notStarted, "dir:pkg": .notStarted])
@@ -735,7 +759,7 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         let run = try await process(h, 0)
         model.retry(chapter: "dir:pkg")
         vm.forgetProcessState(h.sessionID)
-        await eventually("stopped with the session") { run.stopCount == 1 }
+        await stopped(run, "stopped with the session")
         await model.overviewTask?.value
         XCTAssertEqual(h.cli.processes.count, 1, "nothing is followed up")
     }

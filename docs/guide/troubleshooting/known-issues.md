@@ -32,12 +32,6 @@ Workaround: use the **Daily** digest and [Tracks](../features/tracks.md). See [D
 
 Workaround: press **Regenerate with feedback…** and say how many blocks or backlog items you want. See [Day Plan](../features/day-plan.md).
 
-## People Connections shows no interaction scores
-
-**Known issue.** On **My Card**, the **Connections** tab has no interaction scores, because nothing computes them yet. **Edit Connections** still sets who your manager, reports and peers are.
-
-Workaround: none for the scores; the people cards and the briefing use the connections you set. See [People](../features/people.md).
-
 ## Related
 
 - [Troubleshooting index](README.md)

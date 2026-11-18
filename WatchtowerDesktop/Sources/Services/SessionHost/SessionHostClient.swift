@@ -27,6 +27,21 @@ enum SessionHostError: Error, Equatable {
     case unexpectedReply(UInt8)
 }
 
+extension SessionHostError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case let .host(message):
+            "The session host refused the request (\(message)). Try again; if it keeps failing, quit and reopen Watchtower."
+        case .disconnected:
+            "Watchtower could not reach the session host. Try again in a moment; if it keeps failing, quit and reopen Watchtower."
+        case .deliveryInterrupted:
+            "The connection to the session host ended before it answered, so the line may have been typed. Check the terminal."
+        case let .unexpectedReply(type):
+            "The session host gave an unexpected answer (frame \(type)). Try again; if it keeps failing, quit and reopen Watchtower."
+        }
+    }
+}
+
 /// Hello and Error payloads (Go `HelloMsg`/`ErrorMsg`, a dual path).
 struct SessionHostHello: Codable, Equatable {
     /// v2: `Deliver`, `PromptHint` and `Stop` (Go `ProtocolVersion`). A v2

@@ -32,7 +32,9 @@ type Client struct {
 	teamDomain  atomic.Pointer[string]
 	rateLimiter *RateLimiter
 	logger      *log.Logger
-	answered    atomic.Uint64 // AnsweredCalls
+	answered    atomic.Uint64             // AnsweredCalls
+	limited     atomic.Uint64             // rateLimitedCalls
+	deadline    atomic.Pointer[time.Time] // SetDeadline; nil or zero = no deadline
 }
 
 // Timeouts bounding every Slack API request. slack-go's default client has no
@@ -137,34 +139,91 @@ func (c *Client) logf(format string, args ...any) {
 	}
 }
 
+// ErrFetchDeadline is returned by a call that met a 429 whose hold would end
+// past the client's deadline (SetDeadline). It wraps the
+// *slack.RateLimitedError, so the error still reads as a rate limit.
+var ErrFetchDeadline = errors.New("slack: rate-limit hold runs past the fetch deadline")
+
+// Slack's largest page sizes: every paginated read asks for a full page, so
+// a window costs as few rate-limited calls as it can.
+const (
+	listPageLimit    = 1000 // users.list, conversations.list
+	historyPageLimit = 999  // conversations.history, conversations.replies
+)
+
+// maxRetriesNoDeadline caps the 429 retries of a call made without a deadline.
+const maxRetriesNoDeadline = 3
+
+// SetDeadline sets the time until which a call keeps retrying its 429s: the
+// retry chain goes on while each hold ends before t, with no fixed count.
+// The zero time restores the cap of maxRetriesNoDeadline retries. The run's
+// ctx still bounds every wait.
+func (c *Client) SetDeadline(t time.Time) {
+	c.deadline.Store(&t)
+}
+
+// DeadlinePassed reports whether the deadline SetDeadline set is reached.
+// A paginated read checks it before each page: only a 429 hold is cut at
+// the deadline, while the waits of the tier's own rate go on, so a long
+// read would otherwise run past it.
+func (c *Client) DeadlinePassed() bool {
+	d := c.deadline.Load()
+	return d != nil && !d.IsZero() && !time.Now().Before(*d)
+}
+
+// HoldUntil returns the end of the account's current Retry-After hold, which
+// every call waits for; zero when none is active.
+func (c *Client) HoldUntil() time.Time {
+	return c.rateLimiter.HoldUntil()
+}
+
 // doRequest acquires the gate, calls fn, handles errors, and releases the gate.
-// Rate limit (429) errors are retried automatically after the backoff period.
+// A rate limit (429) is retried after its hold: until the deadline when one is
+// set and Slack stated the hold (a hold ending past it — this call's or one
+// it waits on — returns ErrFetchDeadline), else up to maxRetriesNoDeadline
+// times. Only an answer
+// from Slack other than a 429 raises the tier's rate.
 func (c *Client) doRequest(ctx context.Context, tier int, fn func() error) error {
-	const maxRetries = 3
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if err := c.rateLimiter.Wait(ctx, tier); err != nil {
+	var deadline time.Time
+	if d := c.deadline.Load(); d != nil {
+		deadline = *d
+	}
+	for attempt := 0; ; attempt++ {
+		if err := c.rateLimiter.waitUntil(ctx, tier, deadline); err != nil {
 			return err
 		}
 		err := fn()
-		c.handleError(tier, err) // set backoff BEFORE releasing gate
-		c.rateLimiter.Done(tier)
-		if isSlackAnswer(err) {
+		limited := c.handleError(tier, err) // set the hold BEFORE releasing the gate
+		answered := isSlackAnswer(err)
+		if answered && !limited {
+			c.rateLimiter.Done(tier) // a success for the rate
+		} else {
+			c.rateLimiter.doneCountOnly(tier)
+		}
+		if answered {
 			c.answered.Add(1)
 		}
-
-		if err == nil {
-			return nil
+		if !limited {
+			return err
+		}
+		c.limited.Add(1)
+		if n, ok := ctx.Value(rateLimitCounterKey{}).(*atomic.Uint64); ok {
+			n.Add(1)
 		}
 
-		// Retry on rate limit errors; handleError already set the backoff.
-		var rlErr *slack.RateLimitedError
-		if errors.As(err, &rlErr) && attempt < maxRetries {
-			c.logf("rate limited, retrying (attempt %d/%d)", attempt+1, maxRetries)
+		if deadline.IsZero() || !statedHold(err) {
+			if attempt >= maxRetriesNoDeadline {
+				return err
+			}
+			c.logf("rate limited, retrying (attempt %d/%d)", attempt+1, maxRetriesNoDeadline)
 			continue
 		}
-		return err
+		if hold := c.rateLimiter.HoldUntil(); hold.After(deadline) {
+			c.logf("rate limited, the hold ends after the fetch deadline; giving up after %d attempts", attempt+1)
+			return fmt.Errorf("%w: %w", ErrFetchDeadline, err)
+		}
+		c.logf("rate limited, retrying (attempt %d, deadline in %s)", attempt+1, time.Until(deadline).Round(time.Second))
 	}
-	return nil // unreachable
 }
 
 // AuthTestResponse holds the result of an auth.test API call.
@@ -210,7 +269,7 @@ func (c *Client) GetTeamInfo(ctx context.Context) (*slack.TeamInfo, error) {
 func (c *Client) GetUsers(ctx context.Context, onPage ...func(fetched int)) ([]slack.User, error) {
 	var allUsers []slack.User
 
-	p := c.api.GetUsersPaginated(slack.GetUsersOptionLimit(200))
+	p := c.api.GetUsersPaginated(slack.GetUsersOptionLimit(listPageLimit))
 	for {
 		var done bool
 		err := c.doRequest(ctx, Tier2, func() error {
@@ -256,7 +315,7 @@ func (c *Client) GetChannels(ctx context.Context, types []string, onPage ...func
 			var err error
 			channels, nextCursor, err = c.api.GetConversationsContext(ctx, &slack.GetConversationsParameters{
 				Types:  types,
-				Limit:  200,
+				Limit:  listPageLimit,
 				Cursor: cursor,
 			})
 			return err
@@ -319,7 +378,7 @@ type HistoryResponse struct {
 func (c *Client) GetConversationHistory(ctx context.Context, opts HistoryOptions) (*HistoryResponse, error) {
 	limit := opts.Limit
 	if limit == 0 {
-		limit = 200
+		limit = historyPageLimit
 	}
 
 	var resp *slack.GetConversationHistoryResponse
@@ -364,7 +423,7 @@ func (c *Client) GetConversationReplies(ctx context.Context, channelID, threadTS
 				ChannelID: channelID,
 				Timestamp: threadTS,
 				Cursor:    cursor,
-				Limit:     200,
+				Limit:     historyPageLimit,
 			})
 			return err
 		})
@@ -480,6 +539,30 @@ func (c *Client) SearchMessages(ctx context.Context, query string, page int) (*S
 		Pages:    result.Messages.Paging.Pages,
 	}, nil
 }
+
+// RevokeToken calls auth.revoke: Slack invalidates the client's token, and so
+// every other place signed in with it. An already-invalid token comes back as
+// Slack's own error (invalid_auth, token_revoked); ok:true with revoked:false
+// is ErrTokenNotRevoked. (Tier 3)
+func (c *Client) RevokeToken(ctx context.Context) error {
+	return c.doRequest(ctx, Tier3, func() error {
+		c.logf("slack API: auth.revoke")
+		var resp struct {
+			slack.SlackResponse
+			Revoked bool `json:"revoked"`
+		}
+		if err := c.postAPI(ctx, "auth.revoke", url.Values{}, &resp); err != nil {
+			return err
+		}
+		if !resp.Revoked {
+			return ErrTokenNotRevoked
+		}
+		return nil
+	})
+}
+
+// ErrTokenNotRevoked is returned when auth.revoke answers ok but did not revoke the token.
+var ErrTokenNotRevoked = errors.New("slack: auth.revoke did not revoke the token")
 
 // postAPI posts a form to one Web API method with the token as a bearer
 // header and decodes the JSON answer into dst. A non-200 status is slack-go's
@@ -736,6 +819,34 @@ func (c *Client) AnsweredCalls() uint64 {
 	return c.answered.Load()
 }
 
+// statedHold reports whether a 429 said how long to wait (Retry-After of a
+// second or more). Only such holds feed the deadline's retry chain; a 429
+// without one keeps the maxRetriesNoDeadline cap.
+func statedHold(err error) bool {
+	var rlErr *slack.RateLimitedError
+	return errors.As(err, &rlErr) && rlErr.RetryAfter >= time.Second
+}
+
+// rateLimitedCalls counts the 429s Slack answered over the client's
+// lifetime, the ones a retry pushed through included. Like AnsweredCalls it
+// is never reset: a caller compares two readings to see whether the calls
+// in between met a rate limit.
+func (c *Client) rateLimitedCalls() uint64 {
+	return c.limited.Load()
+}
+
+type rateLimitCounterKey struct{}
+
+// CountRateLimits returns a context whose calls count their 429s (the ones a
+// retry pushed through included) and a reader of that count. Unlike
+// rateLimitedCalls it does not see a 429 another caller of the same client
+// met meanwhile (the chat, a media fetch), so a sync run reads only the rate
+// limits its own calls hit.
+func CountRateLimits(ctx context.Context) (context.Context, func() uint64) {
+	n := new(atomic.Uint64)
+	return context.WithValue(ctx, rateLimitCounterKey{}, n), n.Load
+}
+
 // isSlackAnswer reports whether a request ended with a complete answer from
 // Slack: no error, or one of the errors slack-go builds from a response it
 // read in full (an API error, a 429, a non-2xx status).
@@ -749,13 +860,14 @@ func isSlackAnswer(err error) bool {
 	return errors.As(err, &apiErr) || errors.As(err, &rateErr) || errors.As(err, &statusErr)
 }
 
-// handleError checks for rate limit errors and sets backoff accordingly.
-func (c *Client) handleError(tier int, err error) {
-	if err == nil {
-		return
-	}
+// handleError reports whether err is a rate limit (429) and, when it is,
+// records it on the rate limiter: the tier's rate halves and every call
+// holds for its Retry-After.
+func (c *Client) handleError(tier int, err error) (limited bool) {
 	var rlErr *slack.RateLimitedError
-	if errors.As(err, &rlErr) {
-		c.rateLimiter.HandleRateLimit(tier, rlErr.RetryAfter)
+	if !errors.As(err, &rlErr) {
+		return false
 	}
+	c.rateLimiter.HandleRateLimit(tier, rlErr.RetryAfter)
+	return true
 }

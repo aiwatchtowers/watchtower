@@ -51,9 +51,9 @@ enum MacsModel {
 
         var message: String {
             switch action {
-            case .unlink: "This phone forgets the Mac's data. Changes still waiting for the Mac are not sent."
+            case .unlink: "This phone forgets the tower's data. Changes still waiting for the tower are not sent."
             case .forget where removedByMac: "Its data on this iPhone is deleted."
-            case .forget: "This unlinks the Mac and deletes its data on this iPhone."
+            case .forget: "This unlinks the tower and deletes its data on this iPhone."
             }
         }
     }
@@ -80,7 +80,7 @@ enum MacsModel {
 
             var title: String {
                 switch self {
-                case .manageMacs: "Manage Macs"
+                case .manageMacs: "Manage towers"
                 case .tryAgain: "Try Again"
                 case .cancel: "Cancel"
                 }

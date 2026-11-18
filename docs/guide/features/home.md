@@ -46,9 +46,9 @@ Above a **NOW** line is everything that waits on you; below it, your meetings an
 
 ### Workbench
 
-The **Workbench** zone lists, per workbench, the agent sessions that need a look and their questions to you; **Open →** opens the Workbench tab. Finished and stopped sessions are left out; the rest show while waiting for approval, failed, ready to check or working. Then open questions and review requests, oldest first. Click a session for its terminal (and Branch review when ready to check), a question for its session.
+The **Workbench** zone lists, per workbench, the agent sessions that need a look and their questions to you; **Open →** opens the Workbench tab. Finished and idle sessions are left out. Then open questions and review requests, oldest first. Click a session for its terminal (and Branch review when ready to check), a question for its session.
 
-If you keep telling agents or the chat the same thing, the last row offers it as an instruction: **Add** or **Dismiss**.
+The last row may show **Coach suggests**, a change to your agent setup: **Accept**, **Decline** or **Open in Analytics** ([Agent coach](agent-coach.md)).
 
 ### Links
 
@@ -86,7 +86,7 @@ since: 0.25.0
 action: nav:home
 -->
 
-The last zone shows three cards about what Watchtower can do: this version's new ones first (marked **NEW**), then your setup areas. Each has a button to try it, **Read more** and **Ask about this**. Its button, **Got it** or using the feature marks it seen; **See all →** lists every card, with **Show again**.
+The last zone shows three cards about what Watchtower can do: this version's new ones first (marked **NEW IN** and the version), then your setup areas. Each has a button to try it, **Read more** and **Ask about this**. Its button, **Got it** or using the feature marks it seen; **See all →** lists every card, with **Show again**.
 
 ### Data scheduled for deletion
 

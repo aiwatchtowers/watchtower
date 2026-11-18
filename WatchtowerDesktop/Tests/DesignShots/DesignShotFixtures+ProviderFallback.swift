@@ -1,4 +1,6 @@
 import AppKit
+import ChatUI
+import ChatWire
 import DesignKit
 import SwiftUI
 import WatchtowerCore
@@ -105,6 +107,7 @@ private struct RuntimeProviderChatShot: View {
     let pair: ProviderFallbackPreview.Pair
     let state: ProviderFallbackPreview.State
     var actualReason = "quota_exhausted"
+    private let style = DesignKitChatStyle()
     private static func ignoreAutomatic() {}
 
     private var model: ChatRoutingPresentation {
@@ -118,7 +121,7 @@ private struct RuntimeProviderChatShot: View {
                                        actualProvider: state == .pinned ? pair.preferred.id : pair.reserve.id,
                                        actualModel: state == .pinned ? "sample-pinned-model" : "sample-model",
                                        reason: actualReason, health: health, busy: false,
-                                       capabilities: catalog.capabilities(for: actual))
+                                       capabilities: catalog.capabilities(for: actual).chatCaps)
     }
 
     private var preview: ProviderFallbackPreview? {
@@ -133,13 +136,17 @@ private struct RuntimeProviderChatShot: View {
             if state == .stopped {
                 stoppedRow
             } else if let preview {
-                ChatRoutingStatusView(preview: preview, nativeToolsNotice: model.nativeToolsNotice,
-                                      onAction: state == .pinned ? nil : Self.ignoreAutomatic)
+                // The shared card and notice, as the composer's routing accessory draws them.
+                VStack(alignment: .leading, spacing: Spacing.small) {
+                    if let notice = model.nativeToolsNotice { style.routingCaption(notice, warning: true) }
+                    style.routingStatusCard(preview.copy, actionEnabled: true,
+                                            onAction: state == .pinned ? nil : Self.ignoreAutomatic)
+                }
             }
-            ChatModelPicker(provider: AIProvider(rawValue: pair.preferred.id) ?? .claude,
-                            model: state == .pinned ? "sample-pinned-model" : "", suggestions: [],
-                            onSelectProvider: { _ in }, onSelectModel: { _ in },
-                            automatic: state != .pinned, onSelectAutomatic: Self.ignoreAutomatic)
+            ChatRoutingPill(label: ChatRoutingModel.label(automatic: state != .pinned, providerName: pair.preferred.name,
+                                                          model: state == .pinned ? "sample-pinned-model" : ""),
+                            menu: [], enabled: true) { _ in }
+                .environment(\.chatUIStyle, style)
         }
         .padding(Spacing.page)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -151,8 +158,11 @@ private struct RuntimeProviderChatShot: View {
                                         text: "The draft was saved before the limit was reached.", createdAt: 0,
                                         status: "partial", provider: pair.preferred.id, errorCode: "quota_exhausted")
         let item = ChatThreadItem(message: message, steps: [], siblingIndex: 1, siblingCount: 1)
-        return ChatMessageRow(item: item, isLast: true, isEditing: false,
-                              actions: ChatRowActions(regenerate: nil, retry: nil, reviewActions: { _ in }, continueStopped: nil))
+        var rowActions = ChatRowActions()
+        rowActions.allowsRegenerate = false
+        var partActions = ChatPartActions()
+        partActions.reviewActions = { _ in }
+        return ChatUIShotRow.row(item, rowActions: rowActions, partActions: partActions)
     }
 }
 

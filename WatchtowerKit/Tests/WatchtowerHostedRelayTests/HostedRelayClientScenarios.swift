@@ -89,7 +89,7 @@ class HostedRelayClientScenarios: HostedRelayScenarioCase {
                 XCTAssertEqual(zone, data)
                 XCTAssertEqual(error, .server(code: .forbidden, retryAfter: nil))
                 refused = true
-            case .zoneChanged(mailbox, 0) where refused:
+            case .zoneChanged(mailbox, 0, _) where refused:
                 resynced = true
             default:
                 break

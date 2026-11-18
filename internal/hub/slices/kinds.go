@@ -19,6 +19,10 @@ const (
 	KindHeartbeat   Kind = "heartbeat"
 	KindAskAlert    Kind = "ask_alert"
 	KindSessionChat Kind = "session_chat"
+	KindChatList    Kind = "chat_list"
+	KindChatFeed    Kind = "chat_feed"
+	KindChatPage    Kind = "chat_page"
+	KindChatSearch  Kind = "chat_search"
 )
 
 // AllKinds is the Kit's SliceKind.allCases, in its order. A new Kit kind is
@@ -28,32 +32,37 @@ var AllKinds = []Kind{
 	"situation", "meeting_transcript", "day_plan", "day_plan_item", "feature_state", "stream_digest",
 	"slack_account", "google_account", "jira_account", KindHeartbeat, KindDeviceGrant, "recording_job",
 	"workbench", "workbench_target", "workbench_comment", "terminal_session", "owner_ask", "session_report",
-	"session_timeline", KindAskAlert, "permission_request", KindSessionChat,
+	"session_timeline", KindAskAlert, "permission_request", KindSessionChat, KindChatList, KindChatFeed,
+	KindChatPage, KindChatSearch,
 }
 
 // UrgentKinds is what the owner waits for at once (the Swift hub's
 // urgentKinds): a cycle diffs them before every other kind.
-var UrgentKinds = []Kind{"owner_ask", KindAskAlert, KindDeviceGrant, "permission_request", KindSessionChat}
+var UrgentKinds = []Kind{"owner_ask", KindAskAlert, KindDeviceGrant, "permission_request", KindSessionChat, KindChatFeed}
 
 // UnlinkedKinds is all a cycle publishes while no phone is linked: the link
 // flow's answer.
 var UnlinkedKinds = []Kind{KindDeviceGrant}
 
+// nearLiveKinds are the urgent kinds a cycle diffs after the ask kinds: the
+// session chat and the AI chat's feed, which change while a turn runs.
+var nearLiveKinds = []Kind{KindSessionChat, KindChatFeed}
+
 // publishOrder is the order a cycle diffs kinds in (the Swift publishOrder):
-// the urgent kinds in AllKinds order with the near-live session chat after
-// the ask kinds, then the rest in AllKinds order.
+// the urgent kinds in AllKinds order with the near-live chats after the ask
+// kinds, then the rest in AllKinds order.
 var publishOrder = func() []Kind {
 	var urgent, rest []Kind
 	for _, k := range AllKinds {
 		switch {
-		case k == KindSessionChat:
+		case slices.Contains(nearLiveKinds, k):
 		case slices.Contains(UrgentKinds, k):
 			urgent = append(urgent, k)
 		default:
 			rest = append(rest, k)
 		}
 	}
-	return append(append(urgent, KindSessionChat), rest...)
+	return append(append(urgent, nearLiveKinds...), rest...)
 }()
 
 // recordName is the plain record name of kind's item id: "<kind>-<id>", and

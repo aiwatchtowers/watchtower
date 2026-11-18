@@ -48,7 +48,7 @@ func testSessionHost(t *testing.T) string {
 		for _, info := range list {
 			if info.Pid > 0 && !info.Exited {
 				_ = syscall.Kill(-info.Pid, syscall.SIGKILL)
-				for deadline := time.Now().Add(5 * time.Second); syscall.Kill(info.Pid, 0) == nil && time.Now().Before(deadline); {
+				for syscall.Kill(info.Pid, 0) == nil { // not our child: no wait to block on
 					time.Sleep(10 * time.Millisecond)
 				}
 			}
@@ -96,7 +96,7 @@ VALUES (?, 'claude', 'Session', '/tmp/hubtest-acme', '00000000-0000-4000-8000-00
 	if err := e.phone.Send(seq); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 15*time.Second, "session_stop applied", func() bool {
+	eventually(t, "session_stop applied", func() bool {
 		if _, err := e.phone.Sync(); err != nil {
 			t.Fatal(err)
 		}

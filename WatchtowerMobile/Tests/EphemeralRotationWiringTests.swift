@@ -184,16 +184,20 @@ final class EphemeralRotationWiringTests: XCTestCase {
         let bed = try await Bed.make(self, on: .relay)
         let first = try await bed.orderedSession()
         XCTAssertNotNil(try offer(bed))
-        let flaky = FollowerMergeFailsOnce(root: bed.root)
+        let flaky = FollowerMergeFails(root: bed.root)
         let follower = TransportFollower(hubID: hubID, outbox: first.outbox, host: flaky)
         first.transportSignals.onControl = { control in await follower.handle(control: control, on: .relay) }
 
         try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .relay)
         try await bed.fetch(first)
+        XCTAssertGreaterThan(flaky.refused, 0, "the pass tried the merge")
         XCTAssertEqual(try bed.row()?.link.transport, .cloudKit, "the move was written")
         XCTAssertEqual(try bed.keys.hubLink(hubID)?.epochs.map(\.epoch), [1], "the merge failed")
         XCTAssertNotNil(try offer(bed), "kept: the merge did not happen")
 
+        // Until now every pass failed its merge: the relay's own applies (a buffered page) may run one beside the
+        // test's fetch, and a second pass merging before the checks above raced them (#1795).
+        flaky.mergesFail = false
         _ = try await bed.fetchAndFollow(first)
         let link = try XCTUnwrap(try bed.keys.hubLink(hubID))
         XCTAssertEqual(link.epochs.map(\.epoch), [1, 2])
@@ -328,7 +332,7 @@ final class EphemeralRotationWiringTests: XCTestCase {
         let id = try await stuckRecording(session)
 
         await merge(bed, keybox(epoch: 2))
-        try await session.uploadKick?.value(within: 60, "session.uploadKick")
+        await session.uploadKick?.value
 
         let row = try XCTUnwrap(try session.store.phoneRecording(id: id))
         XCTAssertFalse(row.isUploadStuck, "re-armed and sent again")
@@ -343,7 +347,7 @@ final class EphemeralRotationWiringTests: XCTestCase {
         let id = try await stuckRecording(session)
 
         await merge(bed, keybox(epoch: 2))
-        try await session.uploadKick?.value(within: 60, "session.uploadKick")
+        await session.uploadKick?.value
 
         XCTAssertEqual(try session.store.phoneRecording(id: id)?.isUploadStuck, true, "still waits for the owner")
     }
@@ -403,7 +407,7 @@ final class EphemeralRotationWiringTests: XCTestCase {
         let sealed = try XCTUnwrap(batch.changed.first)
         try await bed.macSaveSealed(sealed, zone: "data/\(bed.mac.deviceID)")
         try await bed.fetch(session)
-        try await bed.root.linkChecks[hubID]?.value(within: 60, "linkChecks")
+        await bed.root.linkChecks[hubID]?.value
 
         XCTAssertEqual(try bed.row(), row, "the link row unchanged")
         XCTAssertEqual(bed.root.linking.links.first?.state, .linked)
@@ -460,7 +464,7 @@ final class EphemeralRotationWiringTests: XCTestCase {
 
     /// The ack the merge queued, written.
     private func settle(_ session: HubSession) async throws {
-        try await session.epochAckWork?.value(within: 60, "session.epochAckWork")
+        await session.epochAckWork?.value
         await session.outbox.drain()
     }
 
@@ -507,11 +511,14 @@ final class EphemeralRotationWiringTests: XCTestCase {
     }
 }
 
-/// The follower's host whose first switch-keybox merge fails (a Keychain write failure), forwarding everything else.
+/// The follower's host whose switch-keybox merges fail (a Keychain write failure) until the test lets them through,
+/// forwarding everything else.
 @MainActor
-private final class FollowerMergeFailsOnce: TransportFollowerHost {
+private final class FollowerMergeFails: TransportFollowerHost {
     private let root: AppRoot
-    private var merges = 0
+    var mergesFail = true
+    /// The merges refused so far.
+    private(set) var refused = 0
 
     init(root: AppRoot) {
         self.root = root
@@ -530,8 +537,9 @@ private final class FollowerMergeFailsOnce: TransportFollowerHost {
     func relayKeySourceBack(hubID: String) async { await root.relayKeySourceBack(hubID: hubID) }
 
     func mergeSwitchKeys(_ keybox: Keybox, hubID: String) async -> Bool {
-        merges += 1
-        return merges > 1 ? await root.mergeSwitchKeys(keybox, hubID: hubID) : false
+        guard mergesFail else { return await root.mergeSwitchKeys(keybox, hubID: hubID) }
+        refused += 1
+        return false
     }
 }
 

@@ -30,7 +30,7 @@ final class AutomationRunWiringTests: XCTestCase {
         let rows = model(try demoSnapshot(now: now)).rows
 
         XCTAssertEqual(rows.map(\.automation.name), ["Release notes", "Changelog check", "Nightly triage"])
-        XCTAssertEqual(rows.map(\.action), [.run, .running, .unavailable("Confirm on the Mac")])
+        XCTAssertEqual(rows.map(\.action), [.run, .running, .unavailable("Confirm on the tower")])
         XCTAssertEqual(rows[0].meta.map(\.text).prefix(2), ["Button", "asks first"])
         XCTAssertTrue(rows[0].meta.last?.text.hasPrefix("Succeeded") == true)
         XCTAssertEqual(rows[2].meta.last?.tone, .red)
@@ -39,7 +39,7 @@ final class AutomationRunWiringTests: XCTestCase {
     func testWithoutTheStartGrantNothingRuns() throws {
         let model = model(try demoSnapshot(now: now), startSessions: false)
 
-        XCTAssertEqual(model.notAllowed, AutomationRunText.notAllowed)
+        XCTAssertEqual(model.notAllowed, AutomationRunText.notAllowed(.mac))
         XCTAssertEqual(model.rows[0].action, .unavailable("Not allowed"))
     }
 
@@ -71,11 +71,11 @@ final class AutomationRunWiringTests: XCTestCase {
         var echo = row.action
         echo.status = .failed
         echo.reason = .conflict
-        echo.errorMessage = "Confirm this automation on the Mac first"
+        echo.errorMessage = "Confirm this automation on your tower first"
         try await outbox.applyEcho(echo)
         snapshot.pending = try store.pendingActions()
         let failed = try XCTUnwrap(model(snapshot).rows[0].failure)
-        XCTAssertEqual(failed.message, "Confirm this automation on the Mac first")
+        XCTAssertEqual(failed.message, "Confirm this automation on your tower first")
         XCTAssertEqual(model(snapshot).rows[0].action, .run, "a refused run can be sent again")
 
         try writer.dismissRun(failed)

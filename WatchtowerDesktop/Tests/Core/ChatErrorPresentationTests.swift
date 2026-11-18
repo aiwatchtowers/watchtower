@@ -1,3 +1,4 @@
+import ChatWire
 import XCTest
 @testable import WatchtowerCore
 
@@ -10,6 +11,11 @@ final class ChatErrorPresentationTests: XCTestCase {
         for code in ["rate_limit", "provider_unavailable", "internal", "session_lost", nil, "unknown"] {
             XCTAssertTrue(ChatErrorPresentation.isRetryable(code), "\(code ?? "nil")")
         }
+    }
+
+    /// The shared table's quota title is the Mac's stopped-turn title, word for word.
+    func testQuotaTitleIsTheStoppedPreviewTitle() {
+        XCTAssertEqual(ChatErrorPresentation.message(for: "quota_exhausted"), ProviderFallbackPreview(state: .stopped).copy.title)
     }
 
     func testMessages() {

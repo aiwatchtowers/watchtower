@@ -5,6 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,8 +15,10 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"watchtower/internal/claude"
 	"watchtower/internal/codex"
 	"watchtower/internal/db"
 	"watchtower/internal/fsutil"
@@ -99,7 +104,13 @@ func TestProviders_ClocksAndFailuresAreIndependent(t *testing.T) {
 	<-done
 }
 
+// In a synctest bubble: the lock wait and the budgets run out in the
+// bubble's time, never because the machine is slow.
 func TestProvider_LockBudgetsDisableAndStableInode(t *testing.T) {
+	synctest.Test(t, testProviderLockBudgets)
+}
+
+func testProviderLockBudgets(t *testing.T) {
 	var calls, disabled atomic.Int32
 	p := &Provider{Name: "codex", Workspace: t.TempDir(), LockWait: 35 * time.Millisecond, Budget: 10 * time.Second,
 		Poll:         func(context.Context) (time.Duration, error) { calls.Add(1); return pollInterval, nil },
@@ -117,8 +128,6 @@ func TestProvider_LockBudgetsDisableAndStableInode(t *testing.T) {
 	cancel()
 	require.Equal(t, "cancelled", ErrorCode(p.Refresh(ctx)))
 	unlock()
-	// The tiny budget above tests timeout only; unrelated off/disable operations
-	// need enough time even while the full suite saturates the machine.
 	p.Budget = 10 * time.Second
 	p.Enabled = func() (bool, error) { return false, nil }
 	require.Equal(t, "feature_disabled", ErrorCode(p.Refresh(context.Background())))
@@ -136,38 +145,44 @@ func TestProvider_LockBudgetsDisableAndStableInode(t *testing.T) {
 func TestCodexPoller_CancelAndDeadlineDoNotPublish(t *testing.T) {
 	for _, deadline := range []bool{false, true} {
 		t.Run(fmt.Sprint(deadline), func(t *testing.T) {
-			d, err := db.Open(":memory:")
-			require.NoError(t, err)
-			defer d.Close()
-			var ctx context.Context
-			var cancel context.CancelFunc
-			if deadline {
-				ctx, cancel = context.WithTimeout(context.Background(), time.Millisecond)
-			} else {
-				ctx, cancel = context.WithCancel(context.Background())
-			}
-			defer cancel()
-			p := &CodexPoller{Store: d, Now: time.Now, Read: func(ctx context.Context) (codex.UsageSnapshot, error) {
-				if !deadline {
-					cancel()
+			synctest.Test(t, func(t *testing.T) {
+				d, err := db.Open(":memory:")
+				require.NoError(t, err)
+				defer d.Close()
+				var ctx context.Context
+				var cancel context.CancelFunc
+				if deadline {
+					ctx, cancel = context.WithTimeout(context.Background(), time.Millisecond)
+				} else {
+					ctx, cancel = context.WithCancel(context.Background())
 				}
-				<-ctx.Done()
-				return codex.UsageSnapshot{}, ctx.Err()
-			}}
-			_, err = p.PollOnce(ctx)
-			require.Error(t, err)
-			st, err := d.GetCodexPlanUsageStatus()
-			require.NoError(t, err)
-			require.Nil(t, st)
-			require.Zero(t, p.failures)
+				defer cancel()
+				p := &CodexPoller{Store: d, Now: time.Now, Read: func(ctx context.Context) (codex.UsageSnapshot, error) {
+					if !deadline {
+						cancel()
+					}
+					<-ctx.Done()
+					return codex.UsageSnapshot{}, ctx.Err()
+				}}
+				_, err = p.PollOnce(ctx)
+				require.Error(t, err)
+				st, err := d.GetCodexPlanUsageStatus()
+				require.NoError(t, err)
+				require.Nil(t, st)
+				require.Zero(t, p.failures)
+			})
 		})
 	}
 }
 
+// noBudget leaves a cross-process lock test without a budget or lock wait:
+// the processes wait only for each other, and a hang is go test -timeout's.
+const noBudget = time.Duration(math.MaxInt64)
+
 // This subprocess exercises actual flock against other daemon/CLI processes.
 func runPlanLockHelper() {
 	dir, name, mode := os.Getenv("WATCHTOWER_TEST_PLAN_DIR"), os.Getenv("WATCHTOWER_TEST_PLAN_NAME"), os.Getenv("WATCHTOWER_TEST_PLAN_MODE")
-	p := &Provider{Name: "codex", Workspace: dir, Budget: 3 * time.Second, LockWait: 2 * time.Second, Poll: func(ctx context.Context) (time.Duration, error) {
+	p := &Provider{Name: "codex", Workspace: dir, Budget: noBudget, LockWait: noBudget, Poll: func(ctx context.Context) (time.Duration, error) {
 		f, err := os.OpenFile(filepath.Join(dir, "events"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 		if err != nil {
 			return 0, err
@@ -190,7 +205,7 @@ func runPlanLockHelper() {
 		}
 		defer unlock()
 		fmt.Println("ready")
-		<-time.After(time.Hour)
+		_, _ = io.Copy(io.Discard, os.Stdin) // until killed, or the test binary is gone
 	}
 	var err error
 	if mode == "daemon" {
@@ -211,6 +226,10 @@ func planLockProcess(t *testing.T, dir, name, mode string) (*exec.Cmd, *bufio.Sc
 	cmd := exec.Command(bin)
 	cmd.Env = append(os.Environ(), "WATCHTOWER_TEST_PLAN_LOCK=1", "WATCHTOWER_TEST_PLAN_DIR="+dir, "WATCHTOWER_TEST_PLAN_NAME="+name, "WATCHTOWER_TEST_PLAN_MODE="+mode)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Its stdin stays open while the test binary lives: a holder outlives
+	// neither a kill nor a run go test -timeout ends.
+	_, err = cmd.StdinPipe()
+	require.NoError(t, err)
 	stdout, err := cmd.StdoutPipe()
 	require.NoError(t, err)
 	require.NoError(t, cmd.Start())
@@ -247,13 +266,136 @@ func TestProvider_ProcessSerializationAndCrashRelease(t *testing.T) {
 	p := &Provider{Name: "codex", Workspace: dir, LockWait: 30 * time.Millisecond, Poll: func(context.Context) (time.Duration, error) { return pollInterval, nil }}
 	before, err := os.Stat(p.lockPath())
 	require.NoError(t, err)
-	require.Equal(t, "busy", ErrorCode(p.Refresh(context.Background())))
-	_, err = p.PollOnce(context.Background())
-	require.Equal(t, "busy", ErrorCode(err))
+	synctest.Test(t, func(t *testing.T) { // the lock wait runs out in the bubble's time
+		require.Equal(t, "busy", ErrorCode(p.Refresh(context.Background())))
+		_, err := p.PollOnce(context.Background())
+		require.Equal(t, "busy", ErrorCode(err))
+	})
 	require.NoError(t, syscall.Kill(-holder.Process.Pid, syscall.SIGKILL))
 	require.Error(t, holder.Wait())
 	require.NoError(t, p.Refresh(context.Background()))
 	after, err := os.Stat(p.lockPath())
 	require.NoError(t, err)
 	require.True(t, os.SameFile(before, after))
+}
+
+func TestProviderRun_QuietStatesLogOncePerChange(t *testing.T) {
+	op := func(code string) error { return &OperationError{Code: code} }
+	cases := []struct {
+		name  string
+		steps []error
+		want  []string
+	}{
+		{"changes", []error{op("cli_missing"), op("cli_missing"), op("cli_missing"), op("no_credentials"), op("no_credentials"), nil, op("no_credentials"), op("network"), op("network")},
+			[]string{"cli_missing", "no_credentials", "no_credentials", "network", "network"}},
+		{"busy between", []error{op("no_credentials"), op("busy"), op("no_credentials"), op("feature_disabled"), op("no_credentials")},
+			[]string{"no_credentials"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf strings.Builder
+			i := 0
+			ticks := make(chan time.Time)
+			requested := make(chan time.Duration, 1)
+			p := &Provider{Name: "claude", Workspace: t.TempDir(), Logger: log.New(&buf, "", 0),
+				Poll:  func(context.Context) (time.Duration, error) { err := tc.steps[i]; i++; return time.Minute, err },
+				After: func(d time.Duration) <-chan time.Time { requested <- d; return ticks }}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan struct{})
+			go func() { defer close(done); _ = p.Run(ctx) }()
+			<-requested
+			for range tc.steps {
+				ticks <- time.Time{}
+				<-requested
+			}
+			cancel()
+			<-done
+			var got []string
+			for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+				if f := strings.Fields(line); len(f) > 3 {
+					got = append(got, f[3])
+				}
+			}
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// runClaudeTicks drives a Provider over poller tick by tick, calling check
+// after each tick.
+func runClaudeTicks(t *testing.T, poller *Poller, steps int, check func(step int)) {
+	t.Helper()
+	requested := make(chan time.Duration, 1)
+	ticks := make(chan time.Time)
+	p := &Provider{Name: "claude", Workspace: t.TempDir(), Poll: poller.PollOnce,
+		After: func(d time.Duration) <-chan time.Time { requested <- d; return ticks }}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); _ = p.Run(ctx) }()
+	<-requested
+	for i := range steps {
+		ticks <- time.Time{}
+		<-requested
+		check(i)
+	}
+	cancel()
+	<-done
+}
+
+// Account-level codes clear the plan label and numbers; a later transient
+// failure must not bring them back. Samples stay (retention as usual).
+func testProviderRunClearsPlanLabel(t *testing.T, code string) {
+	read := okRead()
+	read.push(claude.UsageSnapshot{}, usageErr(code))
+	read.push(claude.UsageSnapshot{}, usageErr("network"))
+	poller, d := newPoller(t, read, at(10, 0))
+	runClaudeTicks(t, poller, 3, func(step int) {
+		st, err := d.GetPlanUsageStatus()
+		require.NoError(t, err)
+		var count int
+		require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM plan_usage_samples`).Scan(&count))
+		assert.Equal(t, 3, count, "samples of the ok tick are kept")
+		if step == 0 {
+			require.Equal(t, "ok", st.State)
+			require.Equal(t, "max", st.Plan)
+			return
+		}
+		want := []string{"", "unavailable", "error"}[step]
+		assert.Equal(t, want, st.State)
+		assert.Equal(t, []string{"", code, "network"}[step], st.Reason)
+		assert.Empty(t, st.Plan)
+		assert.Equal(t, "[]", st.LimitsJSON)
+		assert.Equal(t, "[]", st.BreakdownJSON)
+		assert.Equal(t, "{}", st.PlotJSON)
+		assert.Empty(t, st.PublicationProof)
+	})
+}
+
+func TestProviderRun_SignedOutClearsPlanLabel(t *testing.T) {
+	testProviderRunClearsPlanLabel(t, "no_credentials")
+}
+
+func TestProviderRun_APIKeyClearsPlanLabel(t *testing.T) {
+	testProviderRunClearsPlanLabel(t, "unsupported_auth")
+}
+
+func TestProviderRun_CloudProviderClearsPlanLabel(t *testing.T) {
+	testProviderRunClearsPlanLabel(t, "cloud_vertex")
+}
+
+// cli_missing says nothing about the account: the row keeps its data.
+func TestProviderRun_CLIMissingKeepsRow(t *testing.T) {
+	read := okRead()
+	read.push(claude.UsageSnapshot{}, usageErr("cli_missing"))
+	poller, d := newPoller(t, read, at(10, 0))
+	runClaudeTicks(t, poller, 2, func(step int) {
+		st, err := d.GetPlanUsageStatus()
+		require.NoError(t, err)
+		assert.Equal(t, []string{"ok", "unavailable"}[step], st.State)
+		assert.Equal(t, "max", st.Plan)
+		assert.Contains(t, st.LimitsJSON, "weekly_all")
+		assert.NotEqual(t, "{}", st.PlotJSON)
+	})
 }

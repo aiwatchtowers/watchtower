@@ -33,6 +33,28 @@ enum AgentAnalyticsFormat {
         session.agentKind?.displayName ?? session.agent
     }
 
+    /// An agent filter segment's title (#1517, spec §4.7): "All", else the
+    /// kind's product name.
+    static func agentTitle(_ agent: AgentAnalyticsCenter.Agent) -> String {
+        if case let .kind(kind) = agent { return kind.displayName }
+        return "All"
+    }
+
+    /// The agent filter's tooltip: a Codex session started elsewhere has no
+    /// terminal row and is never read (D57, ask #1144).
+    static let agentHelp = "Codex sessions count when they were started from a Watchtower workbench terminal"
+
+    /// The picker shows when both agents have sessions in the unfiltered
+    /// period, or a filter other than All is chosen (so it can be undone).
+    static func showsAgentPicker(_ overview: AgentReportOverview, filter: AgentAnalyticsCenter.Agent) -> Bool {
+        overview.agentFilter != nil || filter != .all
+    }
+
+    /// The filter the report was built with; an older CLI sends none (All).
+    static func agent(of overview: AgentReportOverview) -> AgentAnalyticsCenter.Agent {
+        overview.agent.flatMap(AgentKind.init(rawValue:)).map(AgentAnalyticsCenter.Agent.kind) ?? .all
+    }
+
     static func percent(_ part: Double, of whole: Double) -> String {
         guard whole > 0 else { return "0%" }
         return "\(Int((part / whole * 100).rounded()))%"
@@ -124,28 +146,6 @@ enum AgentAnalyticsFormat {
         if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }
         if count >= 1000 { return String(format: "%.1fk", Double(count) / 1000) }
         return "\(count)"
-    }
-
-    /// What Discuss in Chat puts in the composer: the period's figures and
-    /// its top three hints with their actions, as the report words them.
-    static func discussText(_ overview: AgentReportOverview) -> String {
-        let totals = overview.totals
-        var lines = [
-            "Help me act on the agent analytics of this workbench (\(periodLabel(overview))): "
-                + "\(totals.sessions) sessions, \(cost(totals.costUSD)), active \(duration(totals.activeMS)), "
-                + "cache hit \(cacheHit(totals.tokens))."
-        ]
-        let top = overview.hints.prefix(3)
-        if top.isEmpty {
-            lines.append("The report has no hints for this period.")
-        } else {
-            lines.append("What would save the most:")
-            for (index, hint) in top.enumerated() {
-                lines.append("\(index + 1). \(hint.finding)")
-                if let action = hint.action, !action.isEmpty { lines.append("   \(action)") }
-            }
-        }
-        return lines.joined(separator: "\n")
     }
 
     /// "Loading history — 1,234 files so far" until the import is done; nil

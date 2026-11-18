@@ -42,6 +42,12 @@ package enum ReportProblemCopy {
         "Could not collect diagnostics: \(reason.text). The report will carry the app and macOS versions only."
     }
 
+    /// The diagnostics block of a failed collection: the app's bundle version
+    /// and the macOS version from `ProcessInfo`.
+    package static func partialLines(appVersion: String, macOS: String) -> String {
+        "Watchtower app \(appVersion)\nmacOS \(macOS)"
+    }
+
     package static let publicNote = "GitHub issues are public. Check the text before you submit."
     package static let discussionsLink = "A question, not a problem? Ask in Discussions"
 

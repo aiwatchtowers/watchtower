@@ -55,11 +55,20 @@ change beyond its capability row.
    `display_name` and `wire_agent` match the fixture both ways. An older
    app that meets the new kind shows its sessions as not supported
    (`TerminalSession.Kind.unsupported`; the phone's `agentLabel`), never
-   as Claude Code or a shell.
+   as Claude Code or a shell. The adapter also fills its `AgentSetup`
+   (`SessionAgent.setup`: the onboarding tile's product name, install and
+   sign-in commands, the login help probe, the config key for a picked
+   executable, the installer's folders and the update per install kind),
+   so onboarding's AI agent section offers the kind without naming it
+   (LLMTRANSPORT-01); `AgentKindRegistryTests.testEveryKindHasSetup` fails
+   until it is filled.
 
 ## An LLM transport
 
 1. **Register the provider** in `internal/providers`' `registry`.
+   A provider whose runs draw on the owner's own plan fills `Subscription`
+   (agent name, plan, usage limits): the background-AI consent text
+   (`watchtower ai background allow`) reads it; a model server leaves it nil.
 2. **Capabilities**: its row in `internal/providers/caps`.
 3. **Factory**: constructors in `internal/providers/transport`
    (`constructors`) and cmd's wiring in `cmd/transport_wiring.go`

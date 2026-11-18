@@ -26,25 +26,12 @@ final class ReadinessCenterTests: XCTestCase {
         Calendar.current.date(bySettingHour: hour, minute: 0, second: 0, of: Date()) ?? .distantPast
     }
 
-    /// Waits (bounded) until `condition` holds for the center's readiness,
-    /// re-checking on every change of it — no sleeping.
+    /// Waits until `condition` holds for the center's readiness, re-checking
+    /// on every change of it — no deadline.
     private func waitUntil(
-        _ center: ReadinessCenter,
-        timeout: TimeInterval = 5,
-        _ condition: @escaping ([ReadinessFeature: Readiness]) -> Bool
+        _ center: ReadinessCenter, _ condition: @escaping ([ReadinessFeature: Readiness]) -> Bool
     ) async {
-        let met = expectation(description: "readiness condition")
-        func check() {
-            if condition(center.readiness) {
-                met.fulfill()
-                return
-            }
-            withObservationTracking { _ = center.readiness } onChange: {
-                Task { @MainActor in check() }
-            }
-        }
-        check()
-        await fulfillment(of: [met], timeout: timeout)
+        await untilObserved { condition(center.readiness) }
     }
 
     private func insertDigest(_ pool: DatabasePool) throws {
@@ -82,7 +69,9 @@ final class ReadinessCenterTests: XCTestCase {
     /// tick's re-read must pick its write up.
     func testTickPicksUpAnotherConnectionsWrite() async throws {
         let pool = try makePool()
-        let center = ReadinessCenter(environment: FakeReadinessEnvironment(), tickInterval: .milliseconds(100))
+        let ticks = HandOpenedSleeps()
+        let center = ReadinessCenter(environment: FakeReadinessEnvironment())
+        center.tickSleep = { _ in await ticks.sleep() }
         center.start(pool: pool)
         defer { center.stop() }
         await waitUntil(center) { !$0.isEmpty }
@@ -91,6 +80,7 @@ final class ReadinessCenterTests: XCTestCase {
         let daemonPool = try DatabasePool(path: try XCTUnwrap(poolPaths.last))
         try insertDigest(daemonPool)
         try daemonPool.close()
+        ticks.open()
         await waitUntil(center) { $0[.digests] == .ready }
     }
 
@@ -121,6 +111,40 @@ final class ReadinessCenterTests: XCTestCase {
         environment.now = today(9)
         center.refresh()
         XCTAssertEqual(center.readiness(for: .briefing), .scheduled(.nextCycle(minutes: 15)))
+    }
+
+    /// #1886: the consent state reaches the AI features' readiness.
+    func testBackgroundAIConsentWiring() async throws {
+        let environment = FakeReadinessEnvironment()
+        let center = ReadinessCenter(environment: environment)
+        center.start(pool: try makePool())
+        defer { center.stop() }
+        await waitUntil(center) { !$0.isEmpty }
+        XCTAssertNotEqual(center.readiness(for: .digests), .backgroundAIPaused(managed: false))
+
+        environment.consent = BackgroundAIConsent.resolve(answer: "paused", policy: nil)
+        center.refresh()
+        XCTAssertEqual(center.readiness(for: .digests), .backgroundAIPaused(managed: false))
+        XCTAssertNotEqual(center.readiness(for: .slackSync), .backgroundAIPaused(managed: false))
+    }
+
+    /// An answer or a profile change (observable, as `AppState.backgroundAI`
+    /// is) re-evaluates on its own, without a refresh.
+    func testObservedConsentChangeReevaluates() async throws {
+        let box = ConsentBox()
+        let environment = FakeReadinessEnvironment()
+        environment.consentRead = { box.state }
+        let center = ReadinessCenter(environment: environment)
+        // The 30 s poll is held shut: only the observation can re-evaluate.
+        let ticks = HandOpenedSleeps()
+        center.tickSleep = { _ in await ticks.sleep() }
+        center.start(pool: try makePool())
+        defer { center.stop() }
+        await waitUntil(center) { !$0.isEmpty }
+        XCTAssertNotEqual(center.readiness(for: .digests), .backgroundAIPaused(managed: true))
+
+        box.state = BackgroundAIConsent.resolve(answer: nil, policy: false)
+        await waitUntil(center) { $0[.digests] == .backgroundAIPaused(managed: true) }
     }
 
     /// F5 (#578): the backfill rows, memory's first run and the kill switch
@@ -169,8 +193,9 @@ final class ReadinessCenterTests: XCTestCase {
         try "briefing:\n  hour: 7\nsync:\n  poll_interval: 30m\n  backfill_days: 0\n".write(toFile: configPath, atomically: true, encoding: .utf8)
 
         let environment = LiveReadinessEnvironment(
-            daemon: DaemonManager(), visibility: FeatureVisibilityStore(), configPath: configPath
-        ) { dir }
+            daemon: DaemonManager(), visibility: FeatureVisibilityStore(), configPath: configPath,
+            backgroundAI: { .allowedByOwner }, workspaceDir: { dir }
+        )
         XCTAssertNil(environment.stamp("last_people.txt"))
         XCTAssertNil(environment.stamp("last_briefing.txt"))
         XCTAssertEqual(environment.stamp("last_ideas.txt"), Date(timeIntervalSince1970: 1_700_000_000))
@@ -179,8 +204,9 @@ final class ReadinessCenterTests: XCTestCase {
         XCTAssertEqual(environment.backfillDays, 0)
 
         let noWorkspace = LiveReadinessEnvironment(
-            daemon: DaemonManager(), visibility: FeatureVisibilityStore(), configPath: configPath
-        ) { nil }
+            daemon: DaemonManager(), visibility: FeatureVisibilityStore(), configPath: configPath,
+            backgroundAI: { .allowedByOwner }, workspaceDir: { nil }
+        )
         XCTAssertNil(noWorkspace.stamp("last_ideas.txt"))
         // The names read are the daemon's stamp files (Reset LLM data clears the same list).
         XCTAssertTrue(Set(ReadinessCenter.stampFiles).isSubset(of: DaemonStampFiles.names))
@@ -188,18 +214,29 @@ final class ReadinessCenterTests: XCTestCase {
 
     func testStopCancelsObservationAndTick() async throws {
         let pool = try makePool()
+        let ticks = HandOpenedSleeps()
         let center = ReadinessCenter(environment: FakeReadinessEnvironment())
+        center.tickSleep = { _ in await ticks.sleep() }
         center.start(pool: pool)
         await waitUntil(center) { !$0.isEmpty }
         center.stop()
+        await ticks.untilCancelled()
         let before = center.readiness
+        var changed = false
+        withObservationTracking { _ = center.readiness } onChange: { changed = true }
 
-        let changed = expectation(description: "no readiness change after stop")
-        changed.isInverted = true
-        withObservationTracking { _ = center.readiness } onChange: { changed.fulfill() }
+        // A witness observing before the write: the same commit notifies it and
+        // any observation the stop left behind.
+        let witness = ReadinessCenter(environment: FakeReadinessEnvironment())
+        witness.start(pool: pool)
+        defer { witness.stop() }
+        await waitUntil(witness) { !$0.isEmpty }
         try insertDigest(pool)
         center.refresh()
-        await fulfillment(of: [changed], timeout: 1)
+        await waitUntil(witness) { $0[.digests] == .ready }
+        // The stop dropped the snapshot: a refresh after the write evaluates nothing.
+        center.refresh()
+        XCTAssertFalse(changed, "no readiness change after stop")
         XCTAssertEqual(center.readiness, before)
     }
 
@@ -226,4 +263,10 @@ final class ReadinessCenterTests: XCTestCase {
         await waitUntil(appState.readinessCenter) { !$0.isEmpty }
         XCTAssertEqual(appState.readinessCenter.readiness.count, ReadinessFeature.allCases.count)
     }
+}
+
+@MainActor
+@Observable
+private final class ConsentBox {
+    var state = BackgroundAIConsent.State.allowedByOwner
 }

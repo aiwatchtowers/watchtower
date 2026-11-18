@@ -181,7 +181,7 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
         defer { removeSidecars(started) }
         // Stop awaits its job's save, which the runner holds.
         let stop = Task { await center.stopAndProcess(config: singleWindowConfig()) }
-        await waitUntil { runner.isHoldingASave }
+        await untilObserved { center.jobs.first?.phase == .summarizing }
         let job = try XCTUnwrap(center.jobs.first)
         XCTAssertEqual(job.phase, .summarizing)
         XCTAssertFalse(job.canChangePrivate)
@@ -192,17 +192,6 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
         runner.releaseAll()
         await stop.value
         XCTAssertTrue(center.jobs.isEmpty)
-    }
-
-    private func waitUntil(timeout: TimeInterval = 10, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
     }
 
     func testMeetPriv01_CrashRecoveryKeepsTheFlag() async throws {

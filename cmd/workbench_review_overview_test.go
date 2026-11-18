@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -174,23 +173,10 @@ func cancelWhileGenerating(t *testing.T, g *blockingReviewGen, cancelIt func(), 
 		out, err := run()
 		res <- result{out, err}
 	}()
-	select {
-	case <-g.started:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the model call never started")
-	}
+	<-g.started // the model call started
 	cancelIt()
-	select {
-	case <-g.done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the model call never saw its context end")
-	}
-	var r result
-	select {
-	case r = <-res:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the command did not return after the cancel")
-	}
+	<-g.done // the model call saw its context end
+	r := <-res
 	require.NoError(t, r.err)
 	var m map[string]any
 	require.NoError(t, json.Unmarshal([]byte(r.out), &m), r.out)

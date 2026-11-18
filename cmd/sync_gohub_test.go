@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,7 +36,7 @@ func TestSyncDaemon_GoHubStartsOnlyInATestWorkspace(t *testing.T) {
 	logger := log.New(&buf, "", 0)
 
 	t.Setenv(hub.EnvTestWorkspace, "acme")
-	startGoHub(context.Background(), &config.Config{ActiveWorkspace: "acme"}, nil, logger)()
+	startGoHub(context.Background(), &config.Config{ActiveWorkspace: "acme"}, nil, nil, logger)()
 	assert.Contains(t, buf.String(), "hub: off (not_test_workspace)")
 	_, err = os.Stat(dir)
 	assert.True(t, errors.Is(err, fs.ErrNotExist), "a refused hub creates nothing")
@@ -47,7 +46,7 @@ func TestSyncDaemon_GoHubStartsOnlyInATestWorkspace(t *testing.T) {
 	t.Setenv(hub.EnvHubDir, "")
 	t.Setenv("HOME", base)
 	setGoHubProbe(t, hostkind.Probe{GOOS: "linux", Stat: os.Stat, ReadFile: os.ReadFile})
-	startGoHub(context.Background(), &config.Config{ActiveWorkspace: "hubtest-a"}, nil, logger)()
+	startGoHub(context.Background(), &config.Config{ActiveWorkspace: "hubtest-a"}, nil, nil, logger)()
 	assert.Contains(t, buf.String(), "hub: off (disabled)")
 	live, err := hub.DefaultDir()
 	require.NoError(t, err)
@@ -57,18 +56,13 @@ func TestSyncDaemon_GoHubStartsOnlyInATestWorkspace(t *testing.T) {
 	buf.Reset()
 	t.Setenv(hub.EnvHubDir, dir)
 	t.Setenv(hub.EnvTestWorkspace, "hubtest-a")
-	stop := startGoHub(context.Background(), &config.Config{ActiveWorkspace: "hubtest-a"}, nil, logger)
+	stop := startGoHub(context.Background(), &config.Config{ActiveWorkspace: "hubtest-a"}, nil, nil, logger)
 	assert.Contains(t, buf.String(), "hub: started (test workspace)")
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	waitFor(t, "the hub reports off/disabled", func() bool {
 		s, err := hub.ReadStatus(dir)
 		require.NoError(t, err)
-		if s.State == hub.StateOff && s.Reason == hub.ReasonDisabled {
-			break
-		}
-		require.True(t, time.Now().Before(deadline), "the hub never reported off/disabled: %+v", s)
-		time.Sleep(20 * time.Millisecond)
-	}
+		return s.State == hub.StateOff && s.Reason == hub.ReasonDisabled
+	})
 	stop()
 	s, err := hub.ReadStatus(dir)
 	require.NoError(t, err)
@@ -117,18 +111,13 @@ func TestSyncDaemon_GoHubLiveHeadlessAndDesktopWaitsForAdoption(t *testing.T) {
 		}
 		return nil, fs.ErrNotExist
 	}})
-	stopDesktop := startGoHub(context.Background(), &config.Config{}, nil, logger)
+	stopDesktop := startGoHub(context.Background(), &config.Config{}, nil, nil, logger)
 	assert.Contains(t, buf.String(), "hub: held off (live, desktop, swift_beside_go)")
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	waitFor(t, "the desktop hub reports swift_beside_go", func() bool {
 		s, err := hub.ReadStatus(live)
 		require.NoError(t, err)
-		if s.State == hub.StateOff && s.Reason == hub.ReasonSwiftBesideGo && s.Host == string(hostkind.Desktop) {
-			break
-		}
-		require.True(t, time.Now().Before(deadline), "the desktop hub never reported swift_beside_go: %+v", s)
-		time.Sleep(20 * time.Millisecond)
-	}
+		return s.State == hub.StateOff && s.Reason == hub.ReasonSwiftBesideGo && s.Host == string(hostkind.Desktop)
+	})
 	lock, err := state.AcquireLock(live)
 	require.NoError(t, err, "the hub lock must be free beside the Swift hub's state")
 	require.NoError(t, lock.Release())
@@ -136,17 +125,12 @@ func TestSyncDaemon_GoHubLiveHeadlessAndDesktopWaitsForAdoption(t *testing.T) {
 	require.NoError(t, os.RemoveAll(mobile))
 	buf.Reset()
 	setGoHubProbe(t, hostkind.Probe{GOOS: "linux", Stat: os.Stat, ReadFile: os.ReadFile})
-	stop := startGoHub(context.Background(), &config.Config{}, nil, logger)
+	stop := startGoHub(context.Background(), &config.Config{}, nil, nil, logger)
 	assert.Contains(t, buf.String(), "hub: started (live, headless)")
-	deadline = time.Now().Add(10 * time.Second)
-	for {
+	waitFor(t, "the live hub reports starting", func() bool {
 		s, err := hub.ReadStatus(live)
 		require.NoError(t, err)
-		if s.State == hub.StateStarting && s.Mode == string(hub.ModeLive) && s.Host == string(hostkind.Headless) {
-			break
-		}
-		require.True(t, time.Now().Before(deadline), "the live hub never reported starting: %+v", s)
-		time.Sleep(20 * time.Millisecond)
-	}
+		return s.State == hub.StateStarting && s.Mode == string(hub.ModeLive) && s.Host == string(hostkind.Headless)
+	})
 	stop()
 }

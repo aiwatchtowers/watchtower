@@ -1,0 +1,12 @@
+{
+  "session": {"total_cost_usd": 0, "total_api_duration_ms": 0, "total_duration_ms": 12, "total_lines_added": 0, "total_lines_removed": 0, "model_usage": {}},
+  "subscription_type": "max",
+  "rate_limits_available": true,
+  "rate_limits": {
+    "five_hour": {"utilization": 12.5, "resets_at": "2026-11-18T15:30:00Z"},
+    "seven_day": {"utilization": 40, "resets_at": "2026-11-22T09:00:00Z"},
+    "seven_day_opus": {"utilization": 55, "resets_at": "2026-11-22T09:00:00Z"},
+    "seven_day_sonnet": null
+  },
+  "behaviors": null
+}

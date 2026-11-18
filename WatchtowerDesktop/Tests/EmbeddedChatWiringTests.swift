@@ -4,9 +4,10 @@ import WatchtowerCore
 @testable import WatchtowerDesktop
 import WatchtowerTestSupport
 
-/// Which embedded chats save a knowledge prefix: a spec review Discuss thread
-/// and a code question stay out of the ideas registry (spec 2026-11-08 §3,
-/// like Go's `ListChatTurnsForIdeas` filter); other chats save it.
+/// Which embedded chats save a knowledge prefix: a spec review Discuss thread,
+/// a code question, Branch review's reviewer thread and the tuning chat stay
+/// out of the ideas registry (spec 2026-11-08 §3, spec 2026-11-03 §4.1, like
+/// Go's `ListChatTurnsForIdeas` filter); other chats save it.
 @MainActor
 final class EmbeddedChatWiringTests: XCTestCase {
     private var pool: DatabasePool!
@@ -25,6 +26,7 @@ final class EmbeddedChatWiringTests: XCTestCase {
         XCTAssertFalse(EmbeddedChatEngineFactory.savesKnowledge(contextType: SpecReviewThreadKey.contextType))
         XCTAssertFalse(EmbeddedChatEngineFactory.savesKnowledge(contextType: CodeQuestionList.contextType))
         XCTAssertFalse(EmbeddedChatEngineFactory.savesKnowledge(contextType: ReviewerSurface.contextType))
+        XCTAssertFalse(EmbeddedChatEngineFactory.savesKnowledge(contextType: TuningChatSurface.contextType))
         XCTAssertTrue(EmbeddedChatEngineFactory.savesKnowledge(contextType: "target"))
     }
 

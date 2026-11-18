@@ -58,5 +58,9 @@ func (s *newStart) lockPlacement(ctx context.Context) (func(), error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, placementLockWait)
 	defer cancel()
-	return fsutil.LockFile(ctx, PlacementLockPath(s.d.DBPath, s.wb.id)) //nolint:wrapcheck // LockFile names the file
+	return lockPlacementFile(ctx, PlacementLockPath(s.d.DBPath, s.wb.id)) //nolint:wrapcheck // LockFile names the file
 }
+
+// lockPlacementFile takes a placement lock: fsutil.LockFile, a seam for the
+// tests that watch the wait.
+var lockPlacementFile = fsutil.LockFile

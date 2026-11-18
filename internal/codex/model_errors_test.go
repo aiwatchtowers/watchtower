@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"watchtower/internal/digest"
 	"watchtower/internal/logredact"
@@ -161,8 +160,7 @@ func TestRunError_RefusalIgnoresStderr(t *testing.T) {
 	tc := fixtureCase(t, "model not offered")
 	bin := fakeCodexRun(t, tc.JSONL, "error: connection reset by peer", 1)
 
-	_, _, _, err := digest.WithCallTimeout(NewCodexGenerator("gpt-5.4", "gpt-5.4", bin), time.Minute).
-		Generate(context.Background(), "sys", "msg", "")
+	err := generateBounded(t, NewCodexGenerator("gpt-5.4", "gpt-5.4", bin), "sys", "msg")
 	var refused *ModelUnavailableError
 	if !errors.As(err, &refused) || logredact.Full(err) != tc.Want || errors.Is(err, digest.ErrAICall) {
 		t.Fatalf("Generate error = %v, want exactly %q and no ErrAICall", err, tc.Want)
@@ -176,13 +174,11 @@ func TestTurnError_RateLimitStaysTransportFailure(t *testing.T) {
 	limited := fakeCodexRun(t, fixtureCase(t, "rate limit").JSONL, "", 1)
 	refused := fakeCodexRun(t, fixtureCase(t, "CLI too old").JSONL, "", 1)
 
-	_, _, _, err := digest.WithCallTimeout(NewCodexGenerator("gpt-5.6-sol", "gpt-5.6-sol", limited), time.Minute).
-		Generate(context.Background(), "sys", "msg", "")
+	err := generateBounded(t, NewCodexGenerator("gpt-5.6-sol", "gpt-5.6-sol", limited), "sys", "msg")
 	if !errors.Is(err, digest.ErrAICall) || !strings.Contains(logredact.Full(err), "rate_limit_error, status code 429") {
 		t.Errorf("rate-limited Generate error = %v, want an ErrAICall naming the rate limit", err)
 	}
-	_, _, _, err = digest.WithCallTimeout(NewCodexGenerator("gpt-6-astra", "gpt-6-astra", refused), time.Minute).
-		Generate(context.Background(), "sys", "msg", "")
+	err = generateBounded(t, NewCodexGenerator("gpt-6-astra", "gpt-6-astra", refused), "sys", "msg")
 	if err == nil || errors.Is(err, digest.ErrAICall) {
 		t.Errorf("refused Generate error = %v, want a reply error, not ErrAICall", err)
 	}

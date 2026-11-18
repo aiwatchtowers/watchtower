@@ -97,7 +97,7 @@ final class JiraAccountsViewModelTests: XCTestCase {
         let (vm, _, _) = try makeVM(cli: cli.path)
 
         let connect = Task { await vm.addAccountHoldingRestart(daemonPolicy: .deferred).connected }
-        for _ in 0..<500 where vm.siteChoices == nil { try await Task.sleep(for: .milliseconds(10)) }
+        await untilObserved { vm.siteChoices != nil }
         let sites = try XCTUnwrap(vm.siteChoices)
         XCTAssertEqual(sites.map(\.name), ["Alpha", "Beta"])
         vm.chooseSite(sites[1])
@@ -132,7 +132,7 @@ final class JiraAccountsViewModelTests: XCTestCase {
     }
 
     private func waitForSiteChoices(_ vm: JiraAccountsViewModel) async throws -> [JiraSiteChoice] {
-        for _ in 0..<500 where vm.siteChoices == nil { try await Task.sleep(for: .milliseconds(10)) }
+        await untilObserved { vm.siteChoices != nil }
         return try XCTUnwrap(vm.siteChoices)
     }
 
@@ -213,25 +213,25 @@ final class JiraAccountsViewModelTests: XCTestCase {
     // F2: closing the sheet while the consent is still in the browser
     // cancels the flow too.
     func testClosingTheSheetMidConsentCancels() async throws {
-        // `exec`: the terminate reaches sleep itself, nothing is left behind.
+        // `exec`: the terminate reaches the child itself, nothing is left
+        // behind. It never ends on its own: the connect returning at all
+        // proves the close stopped it (a child left running is a hang), even
+        // a Cancel that lands mid-launch (onLaunch).
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
         let cli = dir.appendingPathComponent("watchtower")
-        try "#!/bin/sh\nexec sleep 30\n".write(to: cli, atomically: true, encoding: .utf8)
+        try "#!/bin/sh\nexec tail -f /dev/null\n".write(to: cli, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
         let (vm, _, _) = try makeVM(cli: cli.path)
         let connect = Task { await vm.addAccountHoldingRestart(daemonPolicy: .deferred) }
-        for _ in 0..<500 where !vm.isConnecting { try await Task.sleep(for: .milliseconds(10)) }
+        await untilObserved { vm.isConnecting }
         XCTAssertTrue(vm.isConnecting)
-        let closed = ContinuousClock.now
         vm.abandonConnect()
         XCTAssertFalse(vm.isConnecting)
         let result = await connect.value
         XCTAssertFalse(result.connected)
         XCTAssertTrue(result.cancelled)
-        // Even a Cancel that lands mid-launch stops the child (onLaunch).
-        XCTAssertLessThan(closed.duration(to: .now), .seconds(10), "the CLI must not run on")
     }
 
     // MARK: - removeArgs (pure)
@@ -434,7 +434,7 @@ extension JiraAccountsViewModelTests {
         for (policy, expected) in [(DaemonRestartPolicy.restart, 1), (.deferred, 0)] {
             let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
             let connect = Task { await vm.addAccountHoldingRestart(daemonPolicy: policy).connected }
-            for _ in 0..<1000 where !vm.isConnecting { await Task.yield() }
+            await untilObserved { vm.isConnecting }
             XCTAssertTrue(vm.isConnecting, "\(policy)")
             vm.finishBoardStep()
             let connected = await connect.value

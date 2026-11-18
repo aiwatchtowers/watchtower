@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,10 +31,7 @@ printf '{"type":"result","subtype":"success","result":"done","session_id":"s1"}\
 		c.claudeCmd = writeMockClaude(t, script)
 		c.toolEvents = v2
 
-		// The bound turns a regression (a reader stuck before Wait) into a
-		// failure instead of a hang.
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		t.Cleanup(cancel)
+		ctx := context.Background()
 		textCh, errCh, _ := c.Query(ctx, "system", "hello", "")
 		var text strings.Builder
 		for chunk := range textCh {
@@ -56,8 +52,7 @@ printf '","usage":{"input_tokens":1,"output_tokens":1}}\n'
 	c := NewClient("test-model", "", "")
 	c.claudeCmd = writeMockClaude(t, script)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := context.Background()
 	text, _, err := c.QuerySync(ctx, "system", "hello", "")
 	require.NoError(t, err)
 	assert.Equal(t, strings.Repeat("b", 2<<20), text)

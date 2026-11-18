@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"watchtower/internal/oauthpage"
+	"watchtower/internal/oauthpage/oauthpagetest"
 )
 
 // syncBuffer is a mutex-guarded io.Writer, used where a goroutine writes
@@ -55,9 +57,19 @@ func captureAuthorizeURL(t *testing.T) <-chan string {
 // returns the loopback server's raw response.
 func hitCallback(t *testing.T, redirectURI string, params map[string]string) (status int, body string) {
 	t.Helper()
+	status, body, err := getCallback(redirectURI, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return status, body
+}
+
+// getCallback is hitCallback for a goroutine other than the test's: it
+// returns the error instead of failing the test.
+func getCallback(redirectURI string, params map[string]string) (status int, body string, err error) {
 	u, err := url.Parse(redirectURI)
 	if err != nil {
-		t.Fatalf("parsing redirect_uri %q: %v", redirectURI, err)
+		return 0, "", fmt.Errorf("parsing redirect_uri %q: %w", redirectURI, err)
 	}
 	q := u.Query()
 	for k, v := range params {
@@ -67,31 +79,14 @@ func hitCallback(t *testing.T, redirectURI string, params map[string]string) (st
 
 	resp, err := http.Get(u.String())
 	if err != nil {
-		t.Fatalf("GET %s: %v", u, err)
+		return 0, "", fmt.Errorf("GET %s: %w", u, err)
 	}
 	defer resp.Body.Close()
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("reading callback response body: %v", err)
+		return 0, "", fmt.Errorf("reading callback response body: %w", err)
 	}
-	return resp.StatusCode, string(b)
-}
-
-// waitForSubstring polls buf until it contains substr or the deadline
-// passes, failing the test on timeout — avoids a blind sleep racing
-// Login's goroutine.
-func waitForSubstring(t *testing.T, buf *syncBuffer, substr string) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		if strings.Contains(buf.String(), substr) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %q in output; got %q", substr, buf.String())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	return resp.StatusCode, string(b), nil
 }
 
 // startLogin runs Login in a background goroutine and returns a channel
@@ -232,11 +227,9 @@ func TestLogin_WrongStateCallbackIsIgnored(t *testing.T) {
 			t.Errorf("params %v: body = %q, want the out-of-date page", params, body)
 		}
 	}
-	select {
-	case res := <-resultCh:
-		t.Fatalf("Login ended on a wrong-state callback: %v", res.err)
-	case <-time.After(200 * time.Millisecond):
-	}
+	// Each stray request has been answered. Had one ended the login, the
+	// result below would carry its error instead of the matching callback's
+	// grant.
 
 	status, body := hitCallback(t, redirectURI, map[string]string{"code": as.AuthCode, "state": q.Get("state")})
 	if status != http.StatusOK || !strings.Contains(body, "Connected") {
@@ -388,25 +381,46 @@ func TestLogin_SecondCallbackHitIgnored(t *testing.T) {
 	redirectURI := q.Get("redirect_uri")
 	params := map[string]string{"code": as.AuthCode, "state": q.Get("state")}
 
-	status1, body1 := hitCallback(t, redirectURI, params)
-	if status1 != http.StatusOK {
-		t.Fatalf("first callback status = %d, want 200", status1)
+	// The first callback is held inside its code exchange, so the loopback
+	// server is certainly still up when the second one arrives.
+	exchanging, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	as.BeforeToken = func() {
+		once.Do(func() { close(exchanging) })
+		<-release
 	}
-	if !strings.Contains(body1, "Connected") {
-		t.Fatalf("first callback body = %q, want the success page", body1)
+	type hit struct {
+		status int
+		body   string
+		err    error
 	}
+	first := make(chan hit, 1)
+	go func() {
+		status, body, err := getCallback(redirectURI, params)
+		first <- hit{status, body, err}
+	}()
+	<-exchanging
 
-	// A second hit on the same callback (retry, stray local probe), fired
-	// right after the first while the loopback server is still up — Login
-	// itself won't return (and tear the server down) until its 500ms
-	// success-page grace period elapses, so this is well within that
-	// window — must not re-run the exchange or re-emit a page.
+	// A second hit on the same callback (retry, stray local probe) must not
+	// re-run the exchange or re-emit a page.
 	status2, body2 := hitCallback(t, redirectURI, params)
 	if status2 != http.StatusGone {
 		t.Errorf("second callback status = %d, want %d", status2, http.StatusGone)
 	}
 	if body2 != "" {
 		t.Errorf("second callback body = %q, want empty", body2)
+	}
+
+	close(release)
+	h1 := <-first
+	if h1.err != nil {
+		t.Fatal(h1.err)
+	}
+	if h1.status != http.StatusOK {
+		t.Fatalf("first callback status = %d, want 200", h1.status)
+	}
+	if !strings.Contains(h1.body, "Connected") {
+		t.Fatalf("first callback body = %q, want the success page", h1.body)
 	}
 
 	res := <-resultCh
@@ -448,24 +462,20 @@ func TestLogin_SkipBrowserOpenPrintsURL(t *testing.T) {
 	t.Cleanup(func() { OpenBrowser = old })
 
 	ctx, cancel := context.WithCancel(context.Background())
-	var out syncBuffer
+	out := &oauthpagetest.Output{}
 
 	resultCh := make(chan error, 1)
 	go func() {
-		_, err := Login(ctx, LoginConfig{ServerURL: as.server.URL}, &out, LoginOptions{SkipBrowserOpen: true})
+		_, err := Login(ctx, LoginConfig{ServerURL: as.server.URL}, out, LoginOptions{SkipBrowserOpen: true})
 		resultCh <- err
 	}()
 
-	waitForSubstring(t, &out, "Open this URL to sign in")
+	out.WaitFor("Open this URL to sign in")
 
 	// Nothing ever drives the callback in this test — unblock Login by
 	// cancelling instead of waiting out the 5-minute login timeout.
 	cancel()
-	select {
-	case <-resultCh:
-	case <-time.After(3 * time.Second):
-		t.Fatal("Login did not return after context cancellation")
-	}
+	<-resultCh
 
 	if called {
 		t.Error("Login: OpenBrowser should never be called when SkipBrowserOpen is set")
@@ -483,27 +493,23 @@ func TestLogin_ContextCancelled(t *testing.T) {
 	t.Cleanup(func() { OpenBrowser = old })
 
 	ctx, cancel := context.WithCancel(context.Background())
-	var out syncBuffer
+	out := &oauthpagetest.Output{}
 
 	resultCh := make(chan error, 1)
 	go func() {
-		_, err := Login(ctx, LoginConfig{ServerURL: as.server.URL}, &out, LoginOptions{})
+		_, err := Login(ctx, LoginConfig{ServerURL: as.server.URL}, out, LoginOptions{})
 		resultCh <- err
 	}()
 
-	waitForSubstring(t, &out, "Open this URL to sign in")
+	out.WaitFor("Open this URL to sign in")
 	cancel()
 
-	select {
-	case err := <-resultCh:
-		if err == nil {
-			t.Fatal("Login: want error after context cancellation, got nil")
-		}
-		if !errors.Is(err, oauthpage.ErrLoginTimedOut) {
-			t.Errorf("Login: err = %v, want it to wrap oauthpage.ErrLoginTimedOut", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("Login did not return after context cancellation")
+	err := <-resultCh
+	if err == nil {
+		t.Fatal("Login: want error after context cancellation, got nil")
+	}
+	if !errors.Is(err, oauthpage.ErrLoginTimedOut) {
+		t.Errorf("Login: err = %v, want it to wrap oauthpage.ErrLoginTimedOut", err)
 	}
 }
 
@@ -628,26 +634,18 @@ func TestLogin_DeadlineDuringExchangeIsNotErrLoginTimedOut(t *testing.T) {
 		}
 	}()
 
-	select {
-	case <-inToken:
-	case <-time.After(3 * time.Second):
-		t.Fatal("the exchange never reached /token")
-	}
+	<-inToken
 	cancel()
 
-	select {
-	case err := <-errCh:
-		if err == nil {
-			t.Fatal("Login: want an error when the context ends mid-exchange, got nil")
-		}
-		if errors.Is(err, oauthpage.ErrLoginTimedOut) {
-			t.Errorf("Login: err = %v, must not wrap ErrLoginTimedOut once the callback came", err)
-		}
-		// The handler's own outcome, the same one its error page shows.
-		if !strings.Contains(err.Error(), "exchanging code for token") {
-			t.Errorf("Login: err = %v, want the handler's exchange failure", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("Login did not return after the context ended")
+	err = <-errCh
+	if err == nil {
+		t.Fatal("Login: want an error when the context ends mid-exchange, got nil")
+	}
+	if errors.Is(err, oauthpage.ErrLoginTimedOut) {
+		t.Errorf("Login: err = %v, must not wrap ErrLoginTimedOut once the callback came", err)
+	}
+	// The handler's own outcome, the same one its error page shows.
+	if !strings.Contains(err.Error(), "exchanging code for token") {
+		t.Errorf("Login: err = %v, want the handler's exchange failure", err)
 	}
 }

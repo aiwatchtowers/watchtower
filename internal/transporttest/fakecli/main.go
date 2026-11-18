@@ -10,6 +10,9 @@
 //	                    is appended here: {"pid","pgid","argv"} /
 //	                    {"grandchild"} / {"fake_error"}
 //	WT_FAKECLI_VERSION  what `--version` prints (default "fakecli 0.0.0")
+//	WT_FAKECLI_HANG     set: a FIFO the fake writes "hang" to when it
+//	                    reaches a hang directive (the suite's deadline
+//	                    passes on it, not on a clock)
 //
 // A fixture is a script read top to bottom. A line starting with "#!" is a
 // directive, any other line starting with "#" a comment, an empty line is
@@ -54,6 +57,7 @@ const (
 	envLog        = "WT_FAKECLI_LOG"
 	envVersion    = "WT_FAKECLI_VERSION"
 	envGrandchild = "WT_FAKECLI_GRANDCHILD"
+	envHang       = "WT_FAKECLI_HANG"
 
 	exitArgv    = 97
 	exitStdin   = 98
@@ -187,6 +191,11 @@ func run(lines []string, argv []string) {
 			}
 			os.Exit(code)
 		case "hang":
+			if p := os.Getenv(envHang); p != "" {
+				if err := os.WriteFile(p, []byte("hang\n"), 0o600); err != nil {
+					fail(exitFixture, "fakecli: announcing the hang: %v", err)
+				}
+			}
 			sleepForever()
 		case "ignore-sigint":
 			signal.Ignore(syscall.SIGINT)

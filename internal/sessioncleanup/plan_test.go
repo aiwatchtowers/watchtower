@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -213,12 +214,30 @@ func TestProj18_SessionInTheWorktreeKeepsIt(t *testing.T) {
 		live       bool
 		caller     int64
 		wantReason string
+		deleting   bool // the activity row has delete_requested_at
+		// also are more rows in the worktree (AgentCwd "sub"), live when
+		// alsoLive.
+		also     []SessionActivity
+		alsoLive bool
 	}{
-		{"another live session", SessionActivity{ID: 9, AgentCwd: "sub"}, true, 0, ReasonSessionInIt},
-		{"another reported an hour ago", SessionActivity{ID: 9, AgentCwd: "sub", ReportedAt: time.Now().Add(-time.Hour)}, false, 0, ReasonSessionInIt},
-		{"another reported 25 h ago, not live", SessionActivity{ID: 9, AgentCwd: "sub", ReportedAt: time.Now().Add(-25 * time.Hour)}, false, 0, ""},
-		{"another finished, not live", SessionActivity{ID: 9, AgentCwd: "sub", ReportedAt: time.Now(), Finished: true}, false, 0, ""},
-		{"the caller itself", SessionActivity{ID: testSession, AgentCwd: "", ReportedAt: time.Now().Add(-48 * time.Hour)}, false, testSession, ReasonYouAreInIt},
+		{"another live session", SessionActivity{ID: 9, AgentCwd: "sub"}, true, 0, ReasonSessionInIt, false, nil, false},
+		{"another reported an hour ago", SessionActivity{ID: 9, AgentCwd: "sub", ReportedAt: time.Now().Add(-time.Hour)}, false, 0, ReasonSessionInIt, false, nil, false},
+		{"another reported 25 h ago, not live", SessionActivity{ID: 9, AgentCwd: "sub", ReportedAt: time.Now().Add(-25 * time.Hour)}, false, 0, "", false, nil, false},
+		{"another finished, not live", SessionActivity{ID: 9, AgentCwd: "sub", ReportedAt: time.Now(), Finished: true}, false, 0, "", false, nil, false},
+		{"the caller itself", SessionActivity{ID: testSession, AgentCwd: "", ReportedAt: time.Now().Add(-48 * time.Hour)}, false, testSession, ReasonYouAreInIt, false, nil, false},
+		{"the planned session itself, reported now, not live (a delete's background cleanup)", SessionActivity{ID: testSession, AgentCwd: "sub", ReportedAt: time.Now()}, false, 0, "", true, nil, false},
+		{"the planned session itself, reported now, not live, not being deleted (Clean Up screen, headless --session)", SessionActivity{ID: testSession, AgentCwd: "sub", ReportedAt: time.Now()}, false, 0, ReasonSessionInIt, false, nil, false},
+		{"the planned session itself, live", SessionActivity{ID: testSession, AgentCwd: "sub", ReportedAt: time.Now()}, true, 0, ReasonSessionInIt, false, nil, false},
+		{"the planned session itself, live, being deleted", SessionActivity{ID: testSession, AgentCwd: "sub", ReportedAt: time.Now()}, true, 0, ReasonSessionInIt, true, nil, false},
+		// Ask #1389: every deleting row with no live terminal is skipped.
+		{"another being deleted, reported now, not live", SessionActivity{ID: 9, AgentCwd: "sub", ReportedAt: time.Now()}, false, 0, "", true, nil, false},
+		{"another being deleted, live", SessionActivity{ID: 9, AgentCwd: "sub", ReportedAt: time.Now()}, true, 0, ReasonSessionInIt, true, nil, false},
+		{"two deleted rows, neither live, never keep each other", SessionActivity{ID: testSession, AgentCwd: "sub", ReportedAt: time.Now()}, false, 0, "", true,
+			[]SessionActivity{{ID: 9, AgentCwd: "sub", ReportedAt: time.Now(), DeleteRequested: true}}, false},
+		{"the deleted planned row beside another being deleted and live", SessionActivity{ID: testSession, AgentCwd: "sub", ReportedAt: time.Now()}, false, 0, ReasonSessionInIt, true,
+			[]SessionActivity{{ID: 9, AgentCwd: "sub", ReportedAt: time.Now(), DeleteRequested: true}}, true},
+		{"the deleted planned row beside another not deleted, reported now", SessionActivity{ID: testSession, AgentCwd: "sub", ReportedAt: time.Now()}, false, 0, ReasonSessionInIt, true,
+			[]SessionActivity{{ID: 9, AgentCwd: "sub", ReportedAt: time.Now()}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -228,10 +247,21 @@ func TestProj18_SessionInTheWorktreeKeepsIt(t *testing.T) {
 			f.record(root, "feat/x")
 			a := tc.activity
 			a.AgentCwd = filepath.Join(root, a.AgentCwd)
+			a.DeleteRequested = tc.deleting
 			f.store.activity = []SessionActivity{a}
+			if tc.deleting && a.ID == testSession {
+				f.store.session.Ended = time.Now().Add(-time.Minute)
+			}
 			r := Request{CallerSessionID: tc.caller}
 			if tc.live {
 				r.LiveSessions = []int64{a.ID}
+			}
+			for _, o := range tc.also {
+				o.AgentCwd = filepath.Join(root, o.AgentCwd)
+				f.store.activity = append(f.store.activity, o)
+				if tc.alsoLive {
+					r.LiveSessions = append(r.LiveSessions, o.ID)
+				}
 			}
 			action := ActionKeep
 			if tc.wantReason == "" {
@@ -510,7 +540,7 @@ func (s *barrierSizer) Size(ctx context.Context, root string, _ time.Duration) (
 	select {
 	case <-s.release:
 		return int64(len(root)), true
-	case <-time.After(time.Second):
+	case <-time.After(time.Second): // the bubble's clock: walks one at a time
 		return 0, false
 	case <-ctx.Done():
 		return 0, false
@@ -519,22 +549,26 @@ func (s *barrierSizer) Size(ctx context.Context, root string, _ time.Duration) (
 
 func TestPlan_SweepMeasuresWorktreesConcurrently(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	a := f.pushedWork("wt-a", "feat/a")
-	b := f.pushedWork("wt-b", "feat/b")
-	d := f.deps()
-	d.Sizer = &barrierSizer{want: 2, release: make(chan struct{})}
+	// On the bubble's clock: a worker's pause ends only once every other
+	// worker is parked too, however slow the machine.
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t)
+		a := f.pushedWork("wt-a", "feat/a")
+		b := f.pushedWork("wt-b", "feat/b")
+		d := f.deps()
+		d.Sizer = &barrierSizer{want: 2, release: make(chan struct{})}
 
-	res, err := PlanResult(context.Background(), d, Request{Sweep: true, WorkbenchID: testWorkbench})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, root := range []string{a, b} {
-		it := wantItem(t, res.Plan, "worktree:"+root, ActionRemove, "")
-		if !it.BytesKnown || it.Bytes != int64(len(root)) {
-			t.Fatalf("%s measured %+v: the sizes were not walked at the same time", root, it)
+		res, err := PlanResult(context.Background(), d, Request{Sweep: true, WorkbenchID: testWorkbench})
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
+		for _, root := range []string{a, b} {
+			it := wantItem(t, res.Plan, "worktree:"+root, ActionRemove, "")
+			if !it.BytesKnown || it.Bytes != int64(len(root)) {
+				t.Fatalf("%s measured %+v: the sizes were not walked at the same time", root, it)
+			}
+		}
+	})
 }
 
 // peakSizer records the most Size calls running at once.
@@ -557,20 +591,24 @@ func (s *peakSizer) Size(context.Context, string, time.Duration) (int64, bool) {
 
 func TestPlan_SweepMeasuresAtMostSizeWorkersAtOnce(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	for i := range sizeWorkers + 2 {
-		f.pushedWork(fmt.Sprintf("wt-%d", i), fmt.Sprintf("feat/%d", i))
-	}
-	d := f.deps()
-	sizer := &peakSizer{}
-	d.Sizer = sizer
+	// On the bubble's clock: a worker's pause ends only once every other
+	// worker is parked too, however slow the machine.
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t)
+		for i := range sizeWorkers + 2 {
+			f.pushedWork(fmt.Sprintf("wt-%d", i), fmt.Sprintf("feat/%d", i))
+		}
+		d := f.deps()
+		sizer := &peakSizer{}
+		d.Sizer = sizer
 
-	if _, err := PlanResult(context.Background(), d, Request{Sweep: true, WorkbenchID: testWorkbench}); err != nil {
-		t.Fatal(err)
-	}
-	if sizer.peak > sizeWorkers {
-		t.Fatalf("%d walks ran at once, want at most %d", sizer.peak, sizeWorkers)
-	}
+		if _, err := PlanResult(context.Background(), d, Request{Sweep: true, WorkbenchID: testWorkbench}); err != nil {
+			t.Fatal(err)
+		}
+		if sizer.peak != sizeWorkers {
+			t.Fatalf("%d walks ran at once, want exactly %d (the bubble parks every worker in its walk)", sizer.peak, sizeWorkers)
+		}
+	})
 }
 
 // rootedWorktree adds a worktree at an explicit path under the repository.
@@ -752,59 +790,63 @@ func (g slowStatusGit) RunGit(ctx context.Context, dir, bin string, args ...stri
 
 func TestWorktreeChecksKeepOrderInParallel(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	const n = 8
-	roots := make([]string, n)
-	delay := map[string]time.Duration{}
-	for i := range n {
-		roots[i] = f.pushedWork(fmt.Sprintf("wt-%d", i), fmt.Sprintf("feat/%d", i))
-		// The first listed finishes last.
-		delay[roots[i]] = time.Duration(n-i) * 30 * time.Millisecond
-		if i%2 == 1 {
-			writeFile(t, filepath.Join(roots[i], "notes.txt"), "new\n")
+	// On the bubble's clock: a worker's pause ends only once every other
+	// worker is parked too, however slow the machine.
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t)
+		const n = 8
+		roots := make([]string, n)
+		delay := map[string]time.Duration{}
+		for i := range n {
+			roots[i] = f.pushedWork(fmt.Sprintf("wt-%d", i), fmt.Sprintf("feat/%d", i))
+			// The first listed finishes last.
+			delay[roots[i]] = time.Duration(n-i) * 30 * time.Millisecond
+			if i%2 == 1 {
+				writeFile(t, filepath.Join(roots[i], "notes.txt"), "new\n")
+			}
 		}
-	}
-	var mu sync.Mutex
-	var running, peak int
-	f.git = slowStatusGit{delay: delay, mu: &mu, running: &running, peak: &peak}
-	rec := &recorder{}
-	p := f.planWith(Request{Sweep: true, Observer: rec}, nil)
-	if peak != checkWorkers {
-		t.Fatalf("%d git status ran at once, want %d", peak, checkWorkers)
-	}
+		var mu sync.Mutex
+		var running, peak int
+		f.git = slowStatusGit{delay: delay, mu: &mu, running: &running, peak: &peak}
+		rec := &recorder{}
+		p := f.planWith(Request{Sweep: true, Observer: rec}, nil)
+		if peak != checkWorkers {
+			t.Fatalf("%d git status ran at once, want %d", peak, checkWorkers)
+		}
 
-	var got []string
-	for _, it := range p.Plan.Items {
-		if it.Kind == KindWorktree {
-			got = append(got, it.Key)
+		var got []string
+		for _, it := range p.Plan.Items {
+			if it.Kind == KindWorktree {
+				got = append(got, it.Key)
+			}
 		}
-	}
-	listed := rec.of("listed")[0].items
-	var want []string
-	for _, it := range listed {
-		if it.Kind == KindWorktree {
-			want = append(want, it.Key)
+		listed := rec.of("listed")[0].items
+		var want []string
+		for _, it := range listed {
+			if it.Kind == KindWorktree {
+				want = append(want, it.Key)
+			}
 		}
-	}
-	if len(want) != n || !slices.Equal(got, want) {
-		t.Fatalf("items %v, want the listing order %v", got, want)
-	}
-	for i, root := range roots {
-		action, reason := ActionRemove, ""
-		if i%2 == 1 {
-			action, reason = ActionKeep, ReasonUncommittedChanges
+		if len(want) != n || !slices.Equal(got, want) {
+			t.Fatalf("items %v, want the listing order %v", got, want)
 		}
-		wantItem(t, p.Plan, "worktree:"+root, action, reason)
-	}
-	var checked []string
-	for _, e := range rec.of("checked") {
-		if strings.HasPrefix(e.key, "worktree:") {
-			checked = append(checked, e.key)
+		for i, root := range roots {
+			action, reason := ActionRemove, ""
+			if i%2 == 1 {
+				action, reason = ActionKeep, ReasonUncommittedChanges
+			}
+			wantItem(t, p.Plan, "worktree:"+root, action, reason)
 		}
-	}
-	if !slices.Equal(checked, want) {
-		t.Fatalf("Checked events %v, want the listing order %v", checked, want)
-	}
+		var checked []string
+		for _, e := range rec.of("checked") {
+			if strings.HasPrefix(e.key, "worktree:") {
+				checked = append(checked, e.key)
+			}
+		}
+		if !slices.Equal(checked, want) {
+			t.Fatalf("Checked events %v, want the listing order %v", checked, want)
+		}
+	})
 }
 
 // TestOrphanItemsNameTheirWorktree: a session-mode orphan carries its

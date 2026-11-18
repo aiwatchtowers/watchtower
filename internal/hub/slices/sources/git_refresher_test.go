@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/db"
@@ -248,24 +249,26 @@ func TestGitRefresherForgetsAWorkbenchThatLeftAndRestoresACutPass(t *testing.T) 
 }
 
 func TestGitRefresherWithoutAPhoneReadsNothing(t *testing.T) {
-	r := newGitRig(t)
-	insertWorkbench(t, r.d, "acme", "/tmp/acme")
-	g := NewGitRefresher(r.d, GitRefresherOptions{
-		Timing: GitTiming{Every: time.Minute, MinSpacing: time.Second, Timeout: time.Second, Idle: 5 * time.Millisecond},
-		Fetch: func(context.Context, int64) (workbenchgit.Status, error) {
-			r.mu.Lock()
-			r.calls = append(r.calls, 0)
-			r.mu.Unlock()
-			return okStatus("main", false, 0), nil
-		},
-		Active: func() bool { return false },
+	synctest.Test(t, func(t *testing.T) {
+		r := newGitRig(t)
+		insertWorkbench(t, r.d, "acme", "/tmp/acme")
+		g := NewGitRefresher(r.d, GitRefresherOptions{
+			Timing: GitTiming{Every: time.Minute, MinSpacing: time.Second, Timeout: time.Second, Idle: 5 * time.Millisecond},
+			Fetch: func(context.Context, int64) (workbenchgit.Status, error) {
+				r.mu.Lock()
+				r.calls = append(r.calls, 0)
+				r.mu.Unlock()
+				return okStatus("main", false, 0), nil
+			},
+			Active: func() bool { return false },
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond) // bubble time: twelve idle wakes
+		defer cancel()
+		_ = g.Run(ctx)
+		if r.callCount() != 0 {
+			t.Fatal("the refresher read git with no phone linked")
+		}
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
-	defer cancel()
-	_ = g.Run(ctx)
-	if r.callCount() != 0 {
-		t.Fatal("the refresher read git with no phone linked")
-	}
 }
 
 // The default fetch reads the folder's status in-process.

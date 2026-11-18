@@ -29,16 +29,32 @@ final class RelayTermWiringTests: XCTestCase {
 
     /// A relay-only link, the phone paying with the Mac in its slot, the account center wired.
     private func rig(
-        farewellLive: Bool = false, secondRelayHub: String? = nil, relayHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil
+        farewellLive: Bool = false,
+        secondRelayHub: String? = nil,
+        relayHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil,
+        relaySockets: ((any RelaySocketDialer) -> any RelaySocketDialer)? = nil
     ) async throws -> Rig {
         let bed = try await Bed.make(
-            self, on: .relay, hubTransports: ["relay"], relayHTTP: relayHTTP, farewellLive: farewellLive,
-            secondRelayHub: secondRelayHub)
+            self, on: .relay, hubTransports: ["relay"], relayHTTP: relayHTTP, relaySockets: relaySockets,
+            farewellLive: farewellLive, secondRelayHub: secondRelayHub)
         let session = try await bed.orderedSession()
         let store = FakeSubscriptionStore()
         bed.root.wireRelayAccount { store }
         bed.root.env.setActive(true) // the scene is in the foreground (review M2)
-        return Rig(bed: bed, session: session, store: store)
+        let rig = Rig(bed: bed, session: session, store: store)
+        // The socket's `.reachable(true)` is the center's first event, and its pass reads the account in the background:
+        // a test that writes the link or changes the entitlement before that pass ended races its answer (#1771).
+        try await handled(rig, after: 0)
+        return rig
+    }
+
+    /// Waits until the center's event loop finished handling the events after the first `count`, with everything each
+    /// one started and awaited (its read, its apply, the lapses): the counter moves only once a handling returned. The
+    /// lapse ends a paying answer starts unawaited (`endLapses`) are waited for too.
+    private func handled(_ rig: Rig, after count: Int) async throws {
+        let center = try rig.center
+        try await poll({ center.handledEvents > count }, "the center handled the relay's event")
+        await center.lapseEndsFinished()
     }
 
     /// A relaunch: the old center goes with the old root (a new process has one), then a new one is wired.
@@ -55,25 +71,36 @@ final class RelayTermWiringTests: XCTestCase {
     }
 
     /// The relay refused this phone's subscription: the term starts now, on the root's clock. The relay's
-    /// ENTITLEMENT_EXPIRED control is read by the center first, so no late read races the test.
+    /// ENTITLEMENT_EXPIRED control is handled by the center to its end first (its read, its apply and the lapse it
+    /// starts), so no late read or lapse races the test. A wait on the phase alone returned in the middle of `apply`,
+    /// with that lapse still to run (#1771).
     private func refused(_ rig: Rig) async throws -> RelayRefusedRecord {
+        let before = try rig.center.handledEvents
         try await entitlement(rig.bed, "expired")
-        let center = try rig.center
-        try await poll({ center.phase == .free(ended: true) }, "the center read the expiry")
+        try await handled(rig, after: before)
+        XCTAssertEqual(try rig.center.phase, .free(ended: true), "the center read the expiry")
         await rig.session.lapseRelay()
         return try XCTUnwrap(try rig.bed.row()?.link.relayRefused)
     }
 
-    /// The subscription is back and an answered read says so.
+    /// The subscription is back and an answered read says so; the lapse ends it started have run.
     private func renewed(_ rig: Rig) async throws {
         try await entitlement(rig.bed, "active")
         let center = try rig.center
         await center.refresh()
-        try await poll({ (try? rig.bed.row()?.link.relayRefused) == nil }, "the paying read cleared the mark")
+        await center.lapseEndsFinished()
+        XCTAssertNil(try rig.bed.row()?.link.relayRefused, "the paying read cleared the mark")
     }
 
+    /// The app comes to the foreground: the root's work, the center's pass it started (`foreground()` runs it
+    /// unawaited), then the lapse ends that pass started.
     private func foreground(_ rig: Rig) async {
-        await rig.bed.root.becameActive().value
+        let center = rig.bed.root.env.relayAccount
+        let work = rig.bed.root.becameActive()
+        let pass = center?.passTask
+        await work.value
+        await pass?.value
+        await center?.lapseEndsFinished()
     }
 
     /// Reads until one answers: the scripted failures left are used up.
@@ -115,7 +142,7 @@ final class RelayTermWiringTests: XCTestCase {
         await rig.session.relaySlotLost()
         XCTAssertEqual(try rig.bed.row()?.link.relayRefused?.cause, .slot)
         try await rig.center.refresh()
-        XCTAssertNil(try rig.bed.row()?.link.relayRefused, "paying, the Mac in a slot")
+        XCTAssertNil(try rig.bed.row()?.link.relayRefused, "paying, the tower in a slot")
     }
 
     /// Not paying, the Mac in a slot: still a lapse.
@@ -130,10 +157,11 @@ final class RelayTermWiringTests: XCTestCase {
         let rig = try await rig()
         await rig.session.relaySlotLost()
         let mark = try XCTUnwrap(try rig.bed.row()?.link.relayRefused)
+        let before = try rig.center.handledEvents
         try await entitlement(rig.bed, "expired")
+        // The relay's ENTITLEMENT_EXPIRED control runs its own read: its handling ends before the test's read.
+        try await handled(rig, after: before)
         try await rig.center.refresh()
-        // The relay's ENTITLEMENT_EXPIRED control runs its own read too: wait for the answered one.
-        try await poll({ (try? rig.bed.row()?.link.relayRefused?.cause) == .lapse }, "the read set the cause")
         let now = try XCTUnwrap(try rig.bed.row()?.link.relayRefused)
         XCTAssertEqual(now.cause, .lapse)
         XCTAssertEqual(now.since, mark.since, "since stays")
@@ -209,7 +237,7 @@ final class RelayTermWiringTests: XCTestCase {
         XCTAssertEqual(AppRoot.pendingActionCount(rig.session), 0)
         rig.bed.clock.advance(300)
         await foreground(rig)
-        XCTAssertNil(try rig.bed.row(), "the row leaves Settings → Macs")
+        XCTAssertNil(try rig.bed.row(), "the row leaves Settings → Towers")
         XCTAssertNil(try rig.bed.keys.hubLink(hubID), "every key goes")
         XCTAssertNil(rig.bed.root.env.session(hubID))
         XCTAssertEqual(rig.bed.root.linking.notice, .relayEnded(macName: "Work Mac", notSent: 0), "S60, with today's Not sent count")
@@ -409,7 +437,12 @@ final class RelayTermWiringTests: XCTestCase {
         await rig.bed.root.runRelayTerms()
         XCTAssertNotNil(try rig.bed.row(), "nothing ends in the background")
         XCTAssertEqual(try termReadAt(rig), first)
+        let before = try rig.center.handledEvents
         rig.bed.root.env.setActive(true)
+        // The return writes the device record (`touchIfStale`, never written on this bed): the relay refuses the phone's
+        // first save since the expiry, and the center's read on the `ENTITLEMENT_INACTIVE` it brings would supersede
+        // the term's read, which then waits (#1771). Its handling ends first.
+        try await handled(rig, after: before)
         await rig.bed.root.runRelayTerms()
         XCTAssertNil(try rig.bed.row(), "the next foreground ends it")
     }
@@ -431,13 +464,7 @@ final class RelayTermWiringTests: XCTestCase {
     /// read starts (it answered paying); the lapse's read lands first, overtaken, then the newer one. The phone's last
     /// read had failed, so no paying phase holds the lapse back: only the superseded guard does.
     func testASupersededLapseReadDoesNotLapse() async throws {
-        var made: SubmitGateHTTP?
-        let rig = try await rig { inner in
-            let gate = SubmitGateHTTP(inner: inner)
-            made = gate
-            return gate
-        }
-        let gate = try XCTUnwrap(made)
+        let (rig, gate) = try await gatedRig()
         let center = try rig.center
         let mac = rig.bed.mac.deviceID
         // The socket's `.reachable(true)` is the first event: its pass reads paying.
@@ -464,6 +491,44 @@ final class RelayTermWiringTests: XCTestCase {
         XCTAssertEqual(center.phase, .paying(grace: false, macs: [mac]))
         XCTAssertNil(try rig.bed.row()?.link.relayRefused, "no lapse marked a paying phone")
         XCTAssertTrue(rig.session.waitsForKeybox, "the key source stays")
+    }
+
+    /// Live link R2: the account read rides the socket, so a gate on HTTPS alone held nothing and a test waiting on it
+    /// never ended. The gate holds the socket's read; the wait is a bounded number of yields, a failure past it.
+    func testAGatedReadIsHeldOnTheSocket() async throws {
+        let (rig, gate) = try await gatedRig()
+        let center = try rig.center
+        let mac = rig.bed.mac.deviceID
+        let (overHTTP, overSocket) = (gate.readsOverHTTP, gate.readsOverSocket)
+
+        gate.holdReadAnswers()
+        let read = Task { await center.refresh() }
+        var yields = 0
+        while gate.heldReads == 0, yields < 50_000 {
+            await Task.yield()
+            yields += 1
+        }
+        XCTAssertEqual(gate.heldReads, 1, "the read waits at the gate")
+        gate.releaseReads()
+        await read.value
+        XCTAssertEqual(center.phase, .paying(grace: false, macs: [mac]))
+        XCTAssertEqual(gate.readsOverSocket, overSocket + 1, "the read rode the socket")
+        XCTAssertEqual(gate.readsOverHTTP, overHTTP, "none over HTTPS")
+    }
+
+    /// A rig whose account reads, over HTTPS and over the socket, pass a gate. Held reads are let go at teardown.
+    private func gatedRig() async throws -> (Rig, SubmitGateHTTP) {
+        var made: SubmitGateHTTP?
+        let rig = try await rig(
+            relayHTTP: { inner in
+                let gate = SubmitGateHTTP(inner: inner)
+                made = gate
+                return gate
+            },
+            relaySockets: { made?.sockets($0) ?? $0 })
+        let gate = try XCTUnwrap(made)
+        addTeardownBlock { gate.releaseReads() }
+        return (rig, gate)
     }
 
     /// Review M4: two relay-only Macs whose terms end in one foreground each get their notice, one at a time.

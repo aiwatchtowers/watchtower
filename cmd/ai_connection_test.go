@@ -12,10 +12,10 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/policy/policytest"
 )
 
@@ -129,7 +129,7 @@ func TestAIConnectionCodexChecksSystemPromptNonce(t *testing.T) {
 			cfg := filepath.Join(t.TempDir(), "config.yaml")
 			require.NoError(t, os.WriteFile(cfg, []byte("ai: {provider: codex}"), 0o600))
 			p := startCLI(t, "--config", cfg, "--provider", "codex", "ai", "test", "--model", "form-model", "--cli-path", bin)
-			line, ok := p.next(t, 10*time.Second)
+			line, ok := p.next()
 			require.True(t, ok)
 			require.NoError(t, p.wait())
 			var result map[string]any
@@ -164,11 +164,37 @@ func TestAIConnectionOllamaCompatibility(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(cfg, []byte("ai: {provider: ollama, ollama_url: '"+server.URL+"'}"), 0600))
 	p := startCLI(t, "--config", cfg, "--provider", "ollama", "ai", "test", "--model", "local-form-model")
-	line, ok := p.next(t, 10*time.Second)
+	line, ok := p.next()
 	require.True(t, ok)
 	require.NoError(t, p.wait())
 	require.Contains(t, line, `"ok":true`)
 	require.Equal(t, int32(1), calls.Load())
+}
+
+// BGAI-02: `ai test` started by a background unit is refused while
+// background AI is paused, before any model request; the owner's own test
+// (TestAIConnectionOllama… above) still runs.
+func TestAIConnectionBackgroundChildIsRefusedWhilePaused(t *testing.T) {
+	policytest.Set(t, nil)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfg, []byte("ai: {provider: ollama, ollama_url: '"+server.URL+"', background_runs: paused}"), 0600))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(aiconsent.EnvOrigin, "background")
+	t.Setenv(aiconsent.EnvAdmitted, "")
+	t.Setenv(realConsentEnv, "1")
+	p := startCLI(t, "--config", cfg, "--provider", "ollama", "ai", "test", "--model", "local-form-model")
+	line, ok := p.next()
+	require.True(t, ok)
+	require.NoError(t, p.wait())
+	require.Contains(t, line, `"ok":false`)
+	require.Contains(t, line, aiconsent.ErrPaused.Error())
+	require.Equal(t, int32(0), calls.Load())
 }
 
 func TestConnectionErrorNeverExposesRawChildData(t *testing.T) {
@@ -195,14 +221,14 @@ func TestAIConnectionCancellationKillsAndReapsCanonicalChild(t *testing.T) {
 					_ = syscall.Kill(-child, syscall.SIGKILL)
 				}
 			})
-			require.Eventually(t, func() bool {
+			waitFor(t, "the CLI child's pid", func() bool {
 				data, err := os.ReadFile(pidfile)
 				if err != nil {
 					return false
 				}
 				child, _ = strconv.Atoi(strings.TrimSpace(string(data)))
 				return child > 0
-			}, 10*time.Second, 10*time.Millisecond)
+			})
 			require.NoError(t, p.cmd.Process.Signal(syscall.SIGTERM))
 			var result string
 			for line := range p.lines {
@@ -232,7 +258,7 @@ func TestAIConnectionTypedAuthDoesNotLeakChildDetails(t *testing.T) {
 			require.NoError(t, os.WriteFile(bin, []byte(script), 0700))
 			require.NoError(t, os.WriteFile(cfg, []byte("ai: {provider: "+provider+"}"), 0600))
 			p := startCLI(t, "--config", cfg, "--provider", provider, "ai", "test", "--model", "form-model", "--cli-path", bin)
-			line, ok := p.next(t, 10*time.Second)
+			line, ok := p.next()
 			require.True(t, ok)
 			require.NoError(t, p.wait())
 			require.Contains(t, line, `"error_code":"auth"`)

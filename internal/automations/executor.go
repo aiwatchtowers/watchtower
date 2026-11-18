@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/db"
 )
 
@@ -49,6 +50,10 @@ type ExecutorOptions struct {
 	// Power Nap dark wake) Step claims no queued run and resumes no run kept
 	// for a resume. caps go into the dark/full log lines. nil = always awake.
 	FullWake func() (caps uint32, full bool)
+	// Consent reads the background-AI state before a background run of an
+	// AI recipe is claimed (heldForConsent); nil reads aiconsent.Current,
+	// which fails closed.
+	Consent aiconsent.Reader
 }
 
 // Executor claims queued runs and executes them (spec §7.3): it cancels a
@@ -71,6 +76,8 @@ type Executor struct {
 
 	// fullWake is ExecutorOptions.FullWake (always true when unset).
 	fullWake func() (caps uint32, full bool)
+	// consent is ExecutorOptions.Consent (aiconsent.Current when unset).
+	consent aiconsent.Reader
 
 	gated atomic.Bool // claims refused for abandoned goroutines (logged once per change)
 	dark  atomic.Bool // claims held for a dark wake (logged once per change)
@@ -95,7 +102,10 @@ func NewExecutor(d *db.DB, b Backends, opts ExecutorOptions) *Executor {
 	e := &Executor{
 		db: d, b: b, clock: b.Clock, maxConcurrent: opts.MaxConcurrent,
 		modules: opts.Modules, logger: opts.Logger, abandoned: AbandonedRuns, finishPause: finishRetryPause,
-		fullWake: opts.FullWake, wakeCh: make(chan struct{}, 1), nudge: make(chan struct{}),
+		fullWake: opts.FullWake, consent: opts.Consent, wakeCh: make(chan struct{}, 1), nudge: make(chan struct{}),
+	}
+	if e.consent == nil {
+		e.consent = aiconsent.Current
 	}
 	if e.fullWake == nil {
 		e.fullWake = alwaysFullWake
@@ -335,8 +345,15 @@ func (p *poll) consider(r db.AutomationRun) error {
 	if !a.Runnable() {
 		return p.e.cancelNotRunnable(r.ID, p.now)
 	}
+	// The daemon's poll serves no owner gesture: only the trigger decides.
+	if held, err := p.e.heldForConsent(false, &r, a, p.now); err != nil || held {
+		return err
+	}
 	if p.free <= 0 {
 		return nil
+	}
+	if limited, err := p.e.limitLiveSlack(&r, a, p.now); err != nil || limited {
+		return err
 	}
 	claimed, err := p.e.claim(r.ID, a, p.now, p.e.maxConcurrent)
 	if err != nil || !claimed {
@@ -407,6 +424,44 @@ func (p *poll) resume(r db.AutomationRun) error {
 	return nil
 }
 
+// heldForConsent ends queued run r unstarted (cancelled/cancelled,
+// BackgroundAIPausedMessage) when it is a background run (a schedule,
+// catch_up, event or sync trigger) of an AI recipe (AutomationUsesAI) while
+// background AI is not allowed, and reports whether it did (spec §4.2,
+// BGAI-01). owner = the caller serves the owner's gesture (an inline path
+// whose ctx is owner-started, D3): such a run is never held, whatever its
+// trigger (BGAI-02). A run claimed or ended meanwhile is left to its owner
+// (held, no error).
+func (e *Executor) heldForConsent(owner bool, r *db.AutomationRun, a *db.Automation, now time.Time) (bool, error) {
+	if owner || !aiconsent.BackgroundTrigger(r.Trigger) || !AutomationUsesAI(a) || e.consent().Allowed() {
+		return false, nil
+	}
+	if err := e.db.CancelQueuedBackgroundPaused(r.ID, now); err != nil && !errors.Is(err, db.ErrRunNotQueued) {
+		return false, err
+	}
+	return true, nil
+}
+
+// gateInline is an inline claim's checks before it claims run: the consent
+// hold (heldForConsent, owner = ctx serves the owner's gesture) and the
+// live-Slack limit (limitLiveSlack). ended = the run was ended unstarted
+// (or moved by another claimer meanwhile): the caller answers with its row.
+func (e *Executor) gateInline(ctx context.Context, run *db.AutomationRun, a *db.Automation, now time.Time) (owner, ended bool, err error) {
+	owner = ownerStarted(ctx)
+	if held, err := e.heldForConsent(owner, run, a, now); err != nil || held {
+		return owner, held, err
+	}
+	limited, err := e.limitLiveSlack(run, a, now)
+	return owner, limited, err
+}
+
+// ownerStarted reports whether ctx serves the owner's gesture: its own
+// origin mark, else the process default (aiconsent.OriginOf).
+func ownerStarted(ctx context.Context) bool {
+	o, _ := aiconsent.OriginOf(ctx)
+	return o == aiconsent.OriginOwner
+}
+
 // cancelNotRunnable ends a queued run of a non-runnable automation. A run
 // claimed or ended meanwhile (ErrRunNotQueued) is not an error: whoever
 // moved it owns it now.
@@ -466,6 +521,12 @@ func (e *Executor) ExecuteInlinePinned(ctx context.Context, runID int64, approva
 		}
 		return e.db.GetAutomationRun(runID)
 	}
+	owner, ended, err := e.gateInline(ctx, run, a, now)
+	if err != nil {
+		return nil, fmt.Errorf("automation run %d: %w", runID, err)
+	} else if ended {
+		return e.db.GetAutomationRun(runID)
+	}
 	claimed, err := e.claim(runID, a, now, 0)
 	if err != nil {
 		return nil, fmt.Errorf("automation run %d: %w", runID, err)
@@ -473,8 +534,24 @@ func (e *Executor) ExecuteInlinePinned(ctx context.Context, runID int64, approva
 	if !claimed {
 		return nil, fmt.Errorf("automation run %d: %w", runID, ErrRunNotClaimed)
 	}
-	e.runClaimed(ctx, runID, a, claimKind{inline: true})
+	e.runClaimed(ctx, runID, a, claimKind{inline: true, owner: owner})
 	return e.db.GetAutomationRun(runID)
+}
+
+// limitLiveSlack ends queued run r of a slack:live recipe unstarted
+// (cancelled, not_runnable, LiveSlackLimitedError) when it comes too soon
+// after the recipe's previous run (D15, liveSlackLimited; every trigger, dry
+// runs included) and reports whether it did. A run claimed or ended
+// meanwhile is left to its owner (limited, no error).
+func (e *Executor) limitLiveSlack(r *db.AutomationRun, a *db.Automation, now time.Time) (bool, error) {
+	limited, err := liveSlackLimited(e.db, a, r, now)
+	if err != nil || !limited {
+		return false, err
+	}
+	if err := e.db.LimitQueuedLiveSlackRun(r.ID, LiveSlackLimitedError, now); err != nil && !errors.Is(err, db.ErrRunNotQueued) {
+		return false, err
+	}
+	return true, nil
 }
 
 // ExecuteBuiltinInline claims a slot automation's run runID and executes it
@@ -501,6 +578,19 @@ func (e *Executor) ExecuteBuiltinInline(ctx context.Context, runID int64) (*db.A
 		}
 		return nil, fmt.Errorf("automation run %d of %q: %w", runID, a.Slug, ErrNotRunnable)
 	}
+	// The reaction-command dispatcher's sync runs come with an
+	// owner-started ctx (D3) and pass. A slot's sync run is checked here,
+	// at claim time, whatever the slot read before; once claimed, its calls
+	// are admitted as run:<id> (runOrigin) and finish after a pause (D12).
+	// Defensive on the live-Slack limit: a slot recipe cannot list
+	// slack:live (refused at parse with trigger.sync and in built-ins), but
+	// an index row that did would still be held to the hourly limit.
+	owner, ended, err := e.gateInline(ctx, run, a, now)
+	if err != nil {
+		return nil, fmt.Errorf("automation run %d: %w", runID, err)
+	} else if ended {
+		return e.db.GetAutomationRun(runID)
+	}
 	claimed, err := e.claim(runID, a, now, 0)
 	if err != nil {
 		return nil, fmt.Errorf("automation run %d: %w", runID, err)
@@ -508,6 +598,6 @@ func (e *Executor) ExecuteBuiltinInline(ctx context.Context, runID int64) (*db.A
 	if !claimed {
 		return nil, fmt.Errorf("automation run %d: %w", runID, ErrRunNotClaimed)
 	}
-	e.runClaimed(ctx, runID, a, claimKind{inline: true})
+	e.runClaimed(ctx, runID, a, claimKind{inline: true, owner: owner})
 	return e.db.GetAutomationRun(runID)
 }

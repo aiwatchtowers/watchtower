@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS messages (
     subtype      TEXT NOT NULL DEFAULT '',
     permalink    TEXT NOT NULL DEFAULT '',
     ts_unix      REAL GENERATED ALWAYS AS (CASE WHEN INSTR(ts, '.') > 0 THEN CAST(SUBSTR(ts, 1, INSTR(ts, '.') - 1) AS REAL) ELSE CAST(ts AS REAL) END) STORED,
-    raw_json     TEXT NOT NULL DEFAULT '{}',
+    raw_json     TEXT NOT NULL DEFAULT '{}', synced_at REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (channel_id, ts)
 );
 CREATE TABLE IF NOT EXISTS reactions (
@@ -408,7 +408,7 @@ CREATE TABLE IF NOT EXISTS channel_settings (
     is_muted_for_llm INTEGER NOT NULL DEFAULT 0,
     is_favorite      INTEGER NOT NULL DEFAULT 0,
     updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-);
+, sync_excluded INTEGER NOT NULL DEFAULT 0, excluded_at TEXT NOT NULL DEFAULT '', catchup_from REAL, catchup_to REAL, muted_by_exclusion INTEGER NOT NULL DEFAULT 0, muted_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS pipeline_runs (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     pipeline         TEXT NOT NULL,                          -- 'digests', 'tracks', 'people', 'briefing'
@@ -747,7 +747,7 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     enabled           INTEGER NOT NULL DEFAULT 1,
     search_last_date  TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '');
+, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '', first_cycle_at TEXT NOT NULL DEFAULT '', emoji_scope_missing INTEGER NOT NULL DEFAULT 0, people_prune_done_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS jira_accounts (
     id                            INTEGER PRIMARY KEY AUTOINCREMENT,
     cloud_id                      TEXT NOT NULL DEFAULT '',
@@ -1108,7 +1108,7 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
     created_at   REAL NOT NULL,
     updated_at   REAL NOT NULL
 , pinned INTEGER NOT NULL DEFAULT 0, archived_at REAL, title_source TEXT NOT NULL DEFAULT 'prefix'
-    CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER, read_at REAL, routing_mode TEXT NOT NULL DEFAULT 'preferred_reserve' CHECK(routing_mode IN ('pinned','preferred_reserve')), actual_provider TEXT NOT NULL DEFAULT '', actual_model TEXT NOT NULL DEFAULT '', routing_reason TEXT NOT NULL DEFAULT '');
+    CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER, read_at REAL, routing_mode TEXT NOT NULL DEFAULT 'preferred_reserve' CHECK(routing_mode IN ('pinned','preferred_reserve')), actual_provider TEXT NOT NULL DEFAULT '', actual_model TEXT NOT NULL DEFAULT '', routing_reason TEXT NOT NULL DEFAULT '', live_slack_since INTEGER);
 CREATE TABLE IF NOT EXISTS chat_messages (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
@@ -1117,7 +1117,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     created_at      REAL NOT NULL,
     turn_id         TEXT NOT NULL DEFAULT ''
 , status TEXT NOT NULL DEFAULT 'complete'
-    CHECK(status IN ('complete','partial','error')), provider TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, parent_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE, error_code TEXT, error_message TEXT);
+    CHECK(status IN ('complete','partial','error')), provider TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, parent_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE, error_code TEXT, error_message TEXT, client_key TEXT);
 CREATE TABLE IF NOT EXISTS chat_projects (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     name         TEXT NOT NULL,
@@ -1421,7 +1421,8 @@ CREATE TABLE IF NOT EXISTS "terminal_sessions" (
     chat_question_at  TEXT,
     agent_turns       TEXT,
     agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT, agent_watch_issue TEXT
-    CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT, start_notice TEXT,
+    CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT, start_notice TEXT, agent_background_shells INTEGER
+    CHECK (agent_background_shells IS NULL OR agent_background_shells >= 0), delete_requested_at TEXT,
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -2133,7 +2134,7 @@ CREATE TABLE IF NOT EXISTS "automation_runs" (
     resume_pending    INTEGER NOT NULL DEFAULT 0 CHECK (resume_pending IN (0, 1)),
     not_resumable     INTEGER NOT NULL DEFAULT 0 CHECK (not_resumable IN (0, 1)),
     random_seed       INTEGER NOT NULL DEFAULT 0
-);
+, live_slack INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS builtin_migrations (
     builtin_id TEXT PRIMARY KEY,
     status     TEXT NOT NULL CHECK (status IN ('done','failed')),
@@ -2296,30 +2297,6 @@ CREATE TABLE IF NOT EXISTS "spec_review_marks" (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (ask_id, item_key)
 );
-CREATE TABLE IF NOT EXISTS coach_proposals (
-    id            INTEGER PRIMARY KEY,
-    fingerprint   TEXT NOT NULL UNIQUE,
-    kind          TEXT NOT NULL CHECK (kind IN ('add','cut','replace')),
-    destination   TEXT NOT NULL CHECK (destination IN ('session','procedure','chat','prompt_addition','claude_settings_allow','claude_md_user')),
-    workbench_id  INTEGER REFERENCES projects(id) ON DELETE CASCADE, -- NULL = global
-    prompt_id     TEXT NOT NULL DEFAULT '',
-    title         TEXT NOT NULL,
-    why           TEXT NOT NULL,
-    metric        TEXT NOT NULL CHECK (metric IN ('corrections','task_cost','owner_loop','review_findings')),
-    before_text   TEXT NOT NULL DEFAULT '', -- the whole destination text before
-    after_text    TEXT NOT NULL DEFAULT '', -- the whole destination text after
-    evidence      TEXT NOT NULL DEFAULT '[]', -- JSON [{kind,ref}]
-    sources       INTEGER NOT NULL,         -- distinct sources, recomputed in Go
-    status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','accepted','declined','superseded','rolled_back')),
-    reverts_id    INTEGER REFERENCES coach_proposals(id) ON DELETE SET NULL, -- a cut of an earlier no-effect edit
-    created_at    TEXT NOT NULL,
-    decided_at    TEXT NOT NULL DEFAULT '',
-    baseline      REAL,
-    baseline_n    INTEGER NOT NULL DEFAULT 0,
-    verdict       TEXT NOT NULL DEFAULT '' CHECK (verdict IN ('','works','no_effect','too_little_data')),
-    verdict_value REAL,
-    verdict_at    TEXT NOT NULL DEFAULT ''
-);
 CREATE TABLE IF NOT EXISTS prompt_additions (
     id          INTEGER PRIMARY KEY,
     prompt_id   TEXT NOT NULL,
@@ -2455,6 +2432,70 @@ CREATE TABLE IF NOT EXISTS inbox_folder_state (
 CREATE TABLE IF NOT EXISTS inbox_folder_routes (
     automation_id INTEGER PRIMARY KEY REFERENCES automations(id) ON DELETE CASCADE,
     folder_id     INTEGER NOT NULL REFERENCES inbox_folders(id)
+);
+CREATE TABLE IF NOT EXISTS "coach_proposals" (
+    id            INTEGER PRIMARY KEY,
+    fingerprint   TEXT NOT NULL UNIQUE,
+    kind          TEXT NOT NULL CHECK (kind IN ('add','cut','replace')),
+    destination   TEXT NOT NULL CHECK (destination IN ('session','procedure','chat','prompt_addition','claude_settings_allow','claude_md_user',
+                  'claude_skill_user','codex_skill_user','pack_overlay','codex_agents_md_user','codex_rules_allow',
+                  'repo_claude_md','repo_agents_md','repo_claude_skill','repo_codex_skill','repo_workflow')),
+    workbench_id  INTEGER REFERENCES projects(id) ON DELETE CASCADE, -- NULL = global
+    prompt_id     TEXT NOT NULL DEFAULT '',
+    title         TEXT NOT NULL,
+    why           TEXT NOT NULL,
+    metric        TEXT NOT NULL CHECK (metric IN ('corrections','task_cost','owner_loop','review_findings')),
+    before_text   TEXT NOT NULL DEFAULT '', -- the whole destination text before
+    after_text    TEXT NOT NULL DEFAULT '', -- the whole destination text after
+    evidence      TEXT NOT NULL DEFAULT '[]', -- JSON [{kind,ref}]
+    sources       INTEGER NOT NULL,         -- distinct sources, recomputed in Go
+    status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','accepted','declined','superseded','rolled_back')),
+    reverts_id    INTEGER REFERENCES coach_proposals(id) ON DELETE SET NULL, -- a cut of an earlier no-effect edit
+    created_at    TEXT NOT NULL,
+    decided_at    TEXT NOT NULL DEFAULT '',
+    baseline      REAL,
+    baseline_n    INTEGER NOT NULL DEFAULT 0,
+    verdict       TEXT NOT NULL DEFAULT '' CHECK (verdict IN ('','works','no_effect','too_little_data')),
+    verdict_value REAL,
+    verdict_at    TEXT NOT NULL DEFAULT '',
+    origin          TEXT NOT NULL DEFAULT 'weekly' CHECK (origin IN ('weekly','chat')),
+    skill           TEXT NOT NULL DEFAULT '',
+    conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL,
+    written_branch  TEXT NOT NULL DEFAULT '',
+    measure_from    TEXT
+);
+CREATE TABLE IF NOT EXISTS skill_pack_overlays (
+    id          INTEGER PRIMARY KEY,
+    skill       TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    proposal_id INTEGER REFERENCES coach_proposals(id) ON DELETE SET NULL,
+    created_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS slack_live_status (
+  team_id TEXT NOT NULL,            -- '' = workspace not identified
+  provider TEXT NOT NULL CHECK (provider IN ('claude','codex')),
+  status TEXT NOT NULL CHECK (status IN ('ok','not_connected','needs_admin','no_plan','unavailable')),
+  error_class TEXT NOT NULL DEFAULT '',
+  connector_id TEXT NOT NULL DEFAULT '',
+  checked_at TEXT NOT NULL,
+  PRIMARY KEY (team_id, provider)
+);
+CREATE TABLE IF NOT EXISTS chat_turn_leases (
+  conversation_id        INTEGER PRIMARY KEY REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  owner                  TEXT NOT NULL CHECK (owner IN ('desktop','hub')),
+  owner_id               TEXT NOT NULL,
+  turn_id                TEXT NOT NULL,
+  started_at_ms          INTEGER NOT NULL,
+  heartbeat_at_ms        INTEGER NOT NULL,
+  cancel_requested_at_ms INTEGER
+);
+CREATE TABLE IF NOT EXISTS agent_session_tombstones (
+    agent_session_id TEXT PRIMARY KEY,
+    deleted_at       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS people_card_exclusions (
+    user_id    TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
@@ -2814,6 +2855,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_outputs_key ON automation_outpu
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_changed ON automation_outputs(kind, changed_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_folders_one_root ON inbox_folders(kind) WHERE kind IN ('root','approvals');
 CREATE INDEX IF NOT EXISTS idx_inbox_folders_parent ON inbox_folders(parent_id, position);
+CREATE INDEX IF NOT EXISTS coach_proposals_conversation ON coach_proposals(conversation_id);
+CREATE INDEX IF NOT EXISTS skill_pack_overlays_skill ON skill_pack_overlays(skill, id);
+CREATE INDEX IF NOT EXISTS idx_messages_synced_at ON messages(CASE WHEN synced_at = 0 THEN ts_unix ELSE synced_at END);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_messages_client_key ON chat_messages(conversation_id, client_key) WHERE client_key IS NOT NULL;
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;
@@ -3217,6 +3262,15 @@ END;
 CREATE TRIGGER IF NOT EXISTS review_reviewer_threads_ad AFTER DELETE ON review_reviewer_threads
 BEGIN
   DELETE FROM chat_conversations WHERE id = OLD.conversation_id AND context_type = 'review_reviewer';
+END;
+CREATE TRIGGER IF NOT EXISTS agent_session_tombstones_bd BEFORE DELETE ON terminal_sessions
+BEGIN
+    INSERT OR IGNORE INTO agent_session_tombstones (agent_session_id, deleted_at)
+    SELECT agent_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    FROM terminal_session_agent_sessions WHERE terminal_session_id = OLD.id;
+    INSERT OR IGNORE INTO agent_session_tombstones (agent_session_id, deleted_at)
+    SELECT OLD.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    WHERE OLD.claude_session_id IS NOT NULL;
 END;
 """#
 }

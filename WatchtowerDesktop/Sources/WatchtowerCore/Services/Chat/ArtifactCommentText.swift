@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// The text an artifact's comments anchor on, rendered the way the artifact
 /// reads (the panel shows this one rendering whether or not the owner is

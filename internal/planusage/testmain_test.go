@@ -16,10 +16,6 @@ func TestMain(m *testing.M) {
 		runPlanLockHelper()
 		return
 	}
-	if os.Getenv("WATCHTOWER_TEST_CODEX_USAGE") == "1" {
-		runFakeCodexUsageServer()
-		return
-	}
 	if err := db.InitTestTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)

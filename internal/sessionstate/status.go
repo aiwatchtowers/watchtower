@@ -34,10 +34,16 @@ type Row struct {
 	ChatQuestionAt    *string
 	AgentCwdAt        *string
 	AgentBackground   *int
+	// AgentBackgroundShells is agent_background_shells (board #1712).
+	AgentBackgroundShells *int
 	// Open asks of the session; the question and review ones are subsets.
 	OpenAsks         int
 	OpenQuestionAsks int
 	OpenReviewAsks   int
+	// SpecReviewRound is the highest round among the session's open asks
+	// hidden in the spec review's author loop (db.AskInSpecLoopSQL); 0 = none.
+	// Those asks are in none of the counts above.
+	SpecReviewRound int
 	// RunStartedAt is the start of the live process run in the agent-state
 	// stamp layout; "" = the session is not live. Load leaves it empty: only
 	// the host knows the run.
@@ -57,18 +63,25 @@ const (
 	StateRunning       State = "running"        // live, no hook state in this run
 	StateMarkedIdle    State = "marked_idle"    // live, the run's mark and no turn yet
 	StateWorking       State = "working"        //
-	StateAgentsWorking State = "agents_working" // main turn over, background agents run
+	StateAgentsWorking State = "agents_working" // main turn over, background agents or shells run
 	StateNeedsApproval State = "needs_approval"
 	StateError         State = "error"
 	StateStopped       State = "stopped"
 	StateWaitingForYou State = "waiting_for_you" // an open question ask
 	StateReadyToCheck  State = "ready_to_check"  // open asks, none a question
 	StateFinished      State = "finished"
+	StateSpecReview    State = "spec_review" // an ask in the spec review author loop, turn over
 )
 
 // backgroundGrace is how long a background count of zero still shows as
 // agents working (SessionBackgroundPolicy.grace).
 const backgroundGrace = 120 * time.Second
+
+// BackgroundShellCap is how long after their last report background shells
+// still show as working (SessionBackgroundPolicy.shellCap, board #1712): a
+// shell that never exits (a dev server) must not read as working forever,
+// and nothing tells it from a long CI watch.
+const BackgroundShellCap = 2 * time.Hour
 
 // Resolve is SessionAgentStatus.effective: the hook states count only for a
 // live session and only when written during the current run; finished and the
@@ -96,6 +109,8 @@ func Resolve(r Row, now time.Time) State {
 		return StateFinished
 	case r.OpenAsks > 0:
 		return StateWaitingForYou
+	case r.SpecReviewRound > 0:
+		return StateSpecReview
 	case hook == "waiting":
 		return StateStopped
 	case !live:
@@ -122,7 +137,7 @@ func TrustedHookAt(r Row) string {
 
 // IsIdle mirrors SessionControl.isIdle: the agent is idle for the current run
 // when the session is live and either a hook state of this run says its turn
-// ended (stopped, finished, waiting_for_you, ready_to_check, error) or the run
+// ended (stopped, finished, waiting_for_you, ready_to_check, spec_review, error) or the run
 // is marked and no turn began (marked_idle, whatever the asks say). Without a
 // hook state of this run, finished and the asks alone do not make it idle.
 // agents_working is not idle: it is in IsWorking only.
@@ -134,7 +149,7 @@ func IsIdle(r Row, s State) bool {
 		return runMarked(r)
 	}
 	switch s {
-	case StateStopped, StateFinished, StateWaitingForYou, StateReadyToCheck, StateError:
+	case StateStopped, StateFinished, StateWaitingForYou, StateReadyToCheck, StateSpecReview, StateError:
 		return true
 	case StateNotStarted, StateRunning, StateMarkedIdle, StateWorking, StateAgentsWorking, StateNeedsApproval:
 	}
@@ -180,31 +195,67 @@ func writtenThisRun(r Row) bool {
 // it vouches for nothing) and a stamp of this run.
 func runMarked(r Row) bool { return r.AgentState == nil && writtenThisRun(r) }
 
-// backgroundRuns is SessionBackgroundPolicy.verdict over the row's count.
+// backgroundRuns is SessionBackgroundPolicy.verdict over the row's agent
+// count, or its shellsRun over the row's shells.
 func backgroundRuns(r Row, now time.Time) bool {
-	if r.AgentBackground == nil || r.AgentBackgroundAt == nil {
+	return BackgroundAgentsRun(r, now) || BackgroundShells(r, now) > 0
+}
+
+// BackgroundAgentsRun is SessionBackgroundPolicy.verdict over the row's
+// agent count: above zero, or lowered to zero within backgroundGrace.
+func BackgroundAgentsRun(r Row, now time.Time) bool {
+	if r.AgentBackground == nil {
 		return false
+	}
+	reported, ok := backgroundReport(r, now)
+	return ok && (*r.AgentBackground > 0 || now.Sub(reported) < backgroundGrace)
+}
+
+// BackgroundShells is the row's background shell count while
+// SessionBackgroundPolicy.shellsRun says they run (reported under
+// BackgroundShellCap ago); 0 otherwise.
+func BackgroundShells(r Row, now time.Time) int {
+	// Shells never count without the Stop's agent count beside them (the
+	// Stop stores both), as SessionAgentStatus.backgroundWork.
+	if r.AgentBackground == nil || r.AgentBackgroundShells == nil || *r.AgentBackgroundShells <= 0 {
+		return 0
+	}
+	reported, ok := backgroundReport(r, now)
+	if !ok || now.Sub(reported) >= BackgroundShellCap {
+		return 0
+	}
+	return *r.AgentBackgroundShells
+}
+
+// backgroundReport is the row's agent_background_at; false when absent,
+// unreadable or in the future.
+func backgroundReport(r Row, now time.Time) (time.Time, bool) {
+	if r.AgentBackgroundAt == nil {
+		return time.Time{}, false
 	}
 	reported, ok := db.ParseAgentStateStamp(*r.AgentBackgroundAt)
 	if !ok || reported.After(now) {
-		return false
+		return time.Time{}, false
 	}
-	return *r.AgentBackground > 0 || now.Sub(reported) < backgroundGrace
+	return reported, true
 }
 
 // Load reads the session's row and its open asks. RunStartedAt stays empty.
+// A row being deleted (delete_requested_at, #1716) reads as missing:
+// sql.ErrNoRows, as for a row that is gone.
 func Load(ctx context.Context, q Querier, sessionID int64) (Row, error) {
 	r := Row{ID: sessionID}
 	err := q.QueryRowContext(ctx, `
 SELECT t.kind, t.agent_state, t.agent_state_at, t.finished_at, t.agent_failed_at,
-       t.agent_background, t.agent_background_at, t.chat_question_at, t.agent_cwd_at,
-       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open'),
-       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open' AND a.kind = 'question'),
-       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open' AND a.kind = 'review')
-FROM terminal_sessions t WHERE t.id = ?`, sessionID).Scan(
+       t.agent_background, t.agent_background_at, t.agent_background_shells, t.chat_question_at, t.agent_cwd_at,
+       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open' AND NOT `+db.AskInSpecLoopSQL("a")+`),
+       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open' AND NOT `+db.AskInSpecLoopSQL("a")+` AND a.kind = 'question'),
+       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open' AND NOT `+db.AskInSpecLoopSQL("a")+` AND a.kind = 'review'),
+       `+db.SpecLoopRoundSQL("t.id")+`
+FROM terminal_sessions t WHERE t.id = ? AND t.`+db.NotDeletingSQL, sessionID).Scan(
 		&r.Kind, &r.AgentState, &r.AgentStateAt, &r.FinishedAt, &r.AgentFailedAt,
-		&r.AgentBackground, &r.AgentBackgroundAt, &r.ChatQuestionAt, &r.AgentCwdAt,
-		&r.OpenAsks, &r.OpenQuestionAsks, &r.OpenReviewAsks)
+		&r.AgentBackground, &r.AgentBackgroundAt, &r.AgentBackgroundShells, &r.ChatQuestionAt, &r.AgentCwdAt,
+		&r.OpenAsks, &r.OpenQuestionAsks, &r.OpenReviewAsks, &r.SpecReviewRound)
 	if err != nil {
 		return Row{}, fmt.Errorf("load session %d state: %w", sessionID, err)
 	}

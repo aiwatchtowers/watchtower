@@ -49,12 +49,16 @@ type capabilitySpec struct {
 	// personalOnly capabilities are refused in a workbench recipe and in a
 	// built-in automation.
 	personalOnly bool
+	// unscopedVerbs take no @scope whatever the row's rule (slack:live).
+	unscopedVerbs []string
 }
 
 var readWrite = []string{"read", "write"}
 
 var capabilitySpecs = map[string]capabilitySpec{
-	"slack":       {verbs: readWrite, scope: scopeRequired},
+	// slack:live (#1709) admits the owner's own Slack connector (Live) in
+	// agent(): read tools only, unscoped, at most one run an hour (D15).
+	"slack":       {verbs: []string{"read", "write", VerbLive}, scope: scopeRequired, unscopedVerbs: []string{VerbLive}},
 	"gmail":       {verbs: readWrite, scope: scopeRequired},
 	"calendar":    {verbs: readWrite, scope: scopeRequired},
 	"jira":        {verbs: readWrite, scope: scopeRequired, upperScope: true},
@@ -84,6 +88,12 @@ var capabilitySpecs = map[string]capabilitySpec{
 	"track": {verbs: []string{"scan"}, personalOnly: true},
 }
 
+// VerbLive is slack:live's verb; EntrySlackLive the normalised entry.
+const (
+	VerbLive       = "live"
+	EntrySlackLive = "slack:live"
+)
+
 // BuiltinPrimitiveNames are the engine primitives a builtin: entry may name.
 var BuiltinPrimitiveNames = []string{"brief.compose", "plan.compose", "tracks.extract", "ideas.consolidate", "reaction.compose",
 	PrimitiveAttentionWaiting, PrimitiveApprovalsList}
@@ -95,6 +105,16 @@ const PrimitiveAttentionWaiting = "attention.waiting"
 // PrimitiveApprovalsList is Needs approval's read of the open approvals
 // (Inbox builder B).
 const PrimitiveApprovalsList = "approvals.list"
+
+// PrimitiveUsesAI declares, for every engine primitive, whether it calls a
+// model (spec §4.2): a builtin: entry of an AI primitive makes the manifest
+// grant AI, so its background runs hold while background AI is paused.
+// TestBuiltin_EveryPrimitiveDeclaresAI fails on a primitive missing here.
+var PrimitiveUsesAI = map[string]bool{
+	"brief.compose": true, "plan.compose": true, "tracks.extract": true, "ideas.consolidate": true,
+	"reaction.compose": true, "track.scan": true,
+	PrimitiveAttentionWaiting: false, PrimitiveApprovalsList: false,
+}
 
 // ReadPrimitiveNames are the built-in primitives that only read: they take
 // no argument (no prompt), call no model and are journalled as a tool step,
@@ -226,7 +246,11 @@ func parseCapabilityPermission(capability, rest string) (Permission, error) {
 	if !slices.Contains(spec.verbs, verb) {
 		return Permission{}, fmt.Errorf("capability %s has no verb %q (want %s)", capability, verb, strings.Join(spec.verbs, "|"))
 	}
-	scope, err := checkScope(capability, spec, scope, hasScope)
+	name := capability
+	if slices.Contains(spec.unscopedVerbs, verb) {
+		spec.scope, name = scopeNone, capability+":"+verb
+	}
+	scope, err := checkScope(name, spec, scope, hasScope)
 	if err != nil {
 		return Permission{}, err
 	}
@@ -333,6 +357,10 @@ func ParseManifest(entries []string, outputs []string, scope Scope) (*Manifest, 
 			return nil, &ManifestError{Field: "permissions", Index: i,
 				Msg: fmt.Sprintf("%q is allowed only in a built-in automation", e)}
 		}
+		if scope.IsBuiltin() && p.String() == EntrySlackLive {
+			return nil, &ManifestError{Field: "permissions", Index: i,
+				Msg: fmt.Sprintf("%q is not allowed in a built-in automation: its runs are not held to Live Slack's once an hour", e)}
+		}
 		if (scope.Kind != ScopePersonal || scope.IsBuiltin()) && capabilitySpecs[p.Capability].personalOnly {
 			return nil, &ManifestError{Field: "permissions", Index: i,
 				Msg: fmt.Sprintf("%q is allowed only in a personal automation", e)}
@@ -391,9 +419,64 @@ func (m *Manifest) FeedsSourcesToLLM() bool {
 		case kindTool, kindMCP, kindShell, "session":
 			return true
 		}
-		return p.Verb == "read"
+		return p.Verb == "read" || p.Verb == VerbLive
 	})
 }
+
+// BackgroundAIPausedMessage is the error a background run of an AI recipe
+// ends with when the executor holds it (aiconsent.ErrPaused's text).
+const BackgroundAIPausedMessage = "Background AI is paused"
+
+// UsesAI reports whether the manifest grants a model call: llm:, agent:run,
+// session:start[@kind], track:scan, or builtin:<p> of an AI primitive
+// (PrimitiveUsesAI). Its background runs hold while background AI is paused.
+func (m *Manifest) UsesAI() bool {
+	return m != nil && slices.ContainsFunc(m.entries, func(p Permission) bool { return entryUsesAI(p.Capability, p.Verb) })
+}
+
+// PermissionsUseAI is UsesAI over raw manifest entries, the rule the
+// Desktop mirrors (shared fixture testdata/uses_ai_cases.json). An entry is
+// read by its capability and verb alone, so one that does not parse counts
+// only when it names an AI capability.
+func PermissionsUseAI(entries []string) bool {
+	return slices.ContainsFunc(entries, func(e string) bool {
+		head, rest, _ := strings.Cut(strings.TrimSpace(e), ":")
+		verb, _, _ := strings.Cut(rest, "@")
+		return entryUsesAI(strings.ToLower(head), strings.ToLower(verb))
+	})
+}
+
+// entryUsesAI is the per-entry rule of UsesAI.
+func entryUsesAI(capability, verb string) bool {
+	switch capability {
+	case "llm":
+		return true
+	case "agent":
+		return verb == "run"
+	case "session":
+		return verb == "start"
+	case "track":
+		return verb == "scan"
+	case "builtin":
+		return PrimitiveUsesAI[verb]
+	}
+	return false
+}
+
+// AutomationUsesAI reports whether a's indexed manifest grants AI; a
+// permissions_json that does not decode reads as AI (fail closed).
+func AutomationUsesAI(a *db.Automation) bool {
+	var entries []string
+	if err := json.Unmarshal([]byte(a.PermissionsJSON), &entries); err != nil {
+		return true
+	}
+	return PermissionsUseAI(entries)
+}
+
+// SlackLive reports whether the manifest lists slack:live: agent() may see
+// the owner's Slack connector read tools, and the recipe runs at most once
+// an hour.
+func (m *Manifest) SlackLive() bool { return m != nil && m.has(EntrySlackLive) }
 
 // Outputs returns the declared output kinds, sorted and deduplicated.
 func (m *Manifest) Outputs() []string { return slices.Clone(m.outputs) }

@@ -96,6 +96,8 @@ type Phone struct {
 	LegacyEchoes map[string]wire.ActionRequest
 	// UploadEchoes is the last recording_upload echo read per upload id.
 	UploadEchoes map[string]map[string]any
+	// ChatUploadEchoes is the last chat_attachment echo read per upload id.
+	ChatUploadEchoes map[string]map[string]any
 	// Controls is every hub control read, in order; ControlEpochs the
 	// epoch each one's envelope was sealed in.
 	Controls      []wire.Control
@@ -448,6 +450,23 @@ func (p *Phone) WriteUpload(id string, payload []byte, asset *secure.AssetDescri
 	return name, err
 }
 
+// WriteChatAttachment writes a chat_attachment record chatupload-<id>
+// (payload is the upload's JSON) with its sealed asset attached (nil sealed:
+// none), whatever holds the name.
+func (p *Phone) WriteChatAttachment(id string, payload []byte, asset *secure.AssetDescriptor, sealed []byte) (string, error) {
+	name := secure.RecordName(p.cfg.MetaKey, secure.ZoneRelay, "chatupload", id)
+	env, err := p.seal(name, secure.InnerFrame{Kind: "chat_attachment", ID: "chatupload-" + id, Asset: asset, Payload: payload})
+	if err != nil {
+		return "", err
+	}
+	if sealed == nil {
+		_, err = p.cfg.Transport.Write(p.zone, name, env, transport.Expect{Mode: transport.ExpectNone})
+		return name, err
+	}
+	_, err = p.cfg.Transport.WriteWithAsset(p.zone, name, env, sealed, transport.Expect{Mode: transport.ExpectNone})
+	return name, err
+}
+
 // SendLegacy writes a as today's phones do: no action_seq, record
 // action-<id>. It returns the wire name.
 func (p *Phone) SendLegacy(a wire.ActionRequest) (string, error) {
@@ -521,6 +540,16 @@ func (p *Phone) Sync() (int, error) {
 				}
 				id, _ := m["id"].(string)
 				p.UploadEchoes[id] = m
+			case "chat_attachment":
+				var m map[string]any
+				if err := json.Unmarshal(f.Payload, &m); err != nil {
+					return n, fmt.Errorf("hubtest: unreadable chat attachment echo: %w", err)
+				}
+				if p.ChatUploadEchoes == nil {
+					p.ChatUploadEchoes = map[string]map[string]any{}
+				}
+				id, _ := m["upload_id"].(string)
+				p.ChatUploadEchoes[id] = m
 			case "control":
 				if err := p.onControl(rec, f); err != nil {
 					return n, err

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 	"watchtower/internal/digest"
 	"watchtower/internal/llmusage"
@@ -45,31 +46,33 @@ func TestQuotaOnlyBoundedBothDirections(t *testing.T) {
 	}
 }
 func TestPolicyCancellationAndSharedDeadline(t *testing.T) {
-	denied := errors.New("denied")
-	calls := 0
-	r := Router{Allowed: func(string) error { return denied }}
-	_, err := r.Run(context.Background(), Request{Preferred: "claude", Reserve: "codex", Mode: PreferredReserve, Retry: Isolated, Profile: providers.BatchText}, func(context.Context, Attempt) (Result, error) { calls++; return Result{}, nil })
-	if !errors.Is(err, denied) || calls != 0 {
-		t.Fatal(err, calls)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	var deadline time.Time
-	r.Allowed = func(string) error { return nil }
-	_, err = r.Run(ctx, Request{Preferred: "claude", Reserve: "codex", Mode: PreferredReserve, Retry: Isolated, Profile: providers.BatchText}, func(ctx context.Context, a Attempt) (Result, error) {
-		d, _ := ctx.Deadline()
-		if deadline.IsZero() {
-			deadline = d
-		} else if d != deadline {
-			t.Fatal("restarted deadline")
+	synctest.Test(t, func(t *testing.T) {
+		denied := errors.New("denied")
+		calls := 0
+		r := Router{Allowed: func(string) error { return denied }}
+		_, err := r.Run(context.Background(), Request{Preferred: "claude", Reserve: "codex", Mode: PreferredReserve, Retry: Isolated, Profile: providers.BatchText}, func(context.Context, Attempt) (Result, error) { calls++; return Result{}, nil })
+		if !errors.Is(err, denied) || calls != 0 {
+			t.Fatal(err, calls)
 		}
-		calls++
-		cancel()
-		return Result{}, providers.WithFailure(a.Provider, providers.Quota, errors.New("quota"))
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		var deadline time.Time
+		r.Allowed = func(string) error { return nil }
+		_, err = r.Run(ctx, Request{Preferred: "claude", Reserve: "codex", Mode: PreferredReserve, Retry: Isolated, Profile: providers.BatchText}, func(ctx context.Context, a Attempt) (Result, error) {
+			d, _ := ctx.Deadline()
+			if deadline.IsZero() {
+				deadline = d
+			} else if d != deadline {
+				t.Fatal("restarted deadline")
+			}
+			calls++
+			cancel()
+			return Result{}, providers.WithFailure(a.Provider, providers.Quota, errors.New("quota"))
+		})
+		if !errors.Is(err, context.Canceled) || calls != 1 {
+			t.Fatal(err, calls)
+		}
 	})
-	if !errors.Is(err, context.Canceled) || calls != 1 {
-		t.Fatal(err, calls)
-	}
 }
 
 type hook struct {
@@ -173,36 +176,38 @@ func TestTwoQuotaAndHookCompletionBeforeReserveAdmission(t *testing.T) {
 	}
 }
 func TestRealTotalDeadlineAndQueueTime(t *testing.T) {
-	req := request()
-	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
-	defer cancel()
-	var first time.Time
-	calls := 0
-	r := Router{Allowed: func(string) error { return nil }}
-	_, err := r.Run(ctx, req, func(ctx context.Context, a Attempt) (Result, error) {
-		calls++
-		deadline, _ := ctx.Deadline()
-		if first.IsZero() {
-			first = deadline
-		} else if !first.Equal(deadline) {
-			t.Fatal("reserve deadline restarted")
-		}
-		if calls == 1 {
-			timer := time.NewTimer(40 * time.Millisecond)
-			defer timer.Stop()
-			select {
-			case <-ctx.Done():
-				return Result{}, ctx.Err()
-			case <-timer.C:
+	synctest.Test(t, func(t *testing.T) {
+		req := request()
+		ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+		defer cancel()
+		var first time.Time
+		calls := 0
+		r := Router{Allowed: func(string) error { return nil }}
+		_, err := r.Run(ctx, req, func(ctx context.Context, a Attempt) (Result, error) {
+			calls++
+			deadline, _ := ctx.Deadline()
+			if first.IsZero() {
+				first = deadline
+			} else if !first.Equal(deadline) {
+				t.Fatal("reserve deadline restarted")
 			}
-			return Result{}, quota(a.Provider)
+			if calls == 1 {
+				timer := time.NewTimer(40 * time.Millisecond)
+				defer timer.Stop()
+				select {
+				case <-ctx.Done():
+					return Result{}, ctx.Err()
+				case <-timer.C:
+				}
+				return Result{}, quota(a.Provider)
+			}
+			<-ctx.Done()
+			return Result{}, ctx.Err()
+		})
+		if !errors.Is(err, context.DeadlineExceeded) || calls != 2 {
+			t.Fatal(err, calls)
 		}
-		<-ctx.Done()
-		return Result{}, ctx.Err()
 	})
-	if !errors.Is(err, context.DeadlineExceeded) || calls != 2 {
-		t.Fatal(err, calls)
-	}
 }
 func TestSharedHealthScopesRecoveryAndCancellation(t *testing.T) {
 	now := time.Now()

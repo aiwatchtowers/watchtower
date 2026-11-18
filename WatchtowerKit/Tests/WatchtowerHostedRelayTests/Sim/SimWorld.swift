@@ -159,7 +159,7 @@ final class SimWorld {
     }
 
     /// Waits until at least `count` server controls reached `owner`'s relay connection (held
-    /// or not; Go `waitHubControl`) and returns them, untaken. 5 s cap, pumping the clock.
+    /// or not; Go `waitHubControl`) and returns them, untaken, pumping the clock (no wall-clock cap).
     @discardableResult
     func controlsDelivered(
         to owner: String, count: Int = 1, file: StaticString = #filePath, line: UInt = #line
@@ -225,9 +225,9 @@ final class SimWorld {
         return wrapped
     }
 
-    /// Waits until every connected device has a live socket (5 s cap): on the fake as the
+    /// Waits until every connected device has a live socket: on the fake as the
     /// relay sees it (pumping the clock through reconnect waits), on the stand as each client
-    /// sees its own connection.
+    /// sees its own connection (5 s cap there: real sockets on a real stand, no clock drives them).
     private func socketsReady(file: StaticString = #filePath, line: UInt = #line) async {
         switch backend {
         case .fake(let relay):

@@ -123,6 +123,16 @@ final class ActionOutboxOrderedTests: XCTestCase {
 
     // MARK: - Legacy and enqueue
 
+    /// Live link R5: a caller that shows the action before it is queued chooses its id; both paths keep it.
+    func testEnqueueKeepsACallersID() async throws {
+        for ordered in [true, false] {
+            let phone = try await makePhone(ordered: ordered)
+            let id = try await phone.outbox.enqueue(kind: .boardTargetStatus, entityRecordName: "target-42", id: "tap-1")
+            XCTAssertEqual(id, "tap-1")
+            XCTAssertEqual(try phone.store.pendingActions().map(\.id), ["tap-1"], "ordered: \(ordered)")
+        }
+    }
+
     func testALegacyHubKeepsTodaysPath() async throws {
         let phone = try await makePhone(ordered: false)
         let id = try await phone.outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
@@ -921,6 +931,33 @@ final class ActionOutboxOrderedTests: XCTestCase {
         XCTAssertEqual(try pending(phone, one.id)?.undeliveredReason, .noAnswer)
     }
 
+    /// A chat send's give-up (iPhone chat spec §6.3): a row never written goes at once; a written one goes while its
+    /// record is still the phone's; one the hub answered stays to be settled by its echo.
+    func testWithdrawingOneActionTakesItBackOnlyWhileTheHubCannotHaveIt() async throws {
+        let phone = try await makePhone()
+        let queued = try await insert(phone)
+        let unwritten = try await phone.outbox.withdraw(actionID: queued.id)
+        XCTAssertEqual(unwritten, .withdrawn)
+        XCTAssertNil(try pending(phone, queued.id), "the overlay row goes with it")
+
+        let sent = try await insert(phone)
+        _ = try await phone.outbox.flush()
+        let wireName = try XCTUnwrap(row(phone, sent.id)).wireName
+        let written = try await phone.outbox.withdraw(actionID: sent.id)
+        XCTAssertEqual(written, .withdrawn)
+        let stored = try await current(phone, wireName)
+        XCTAssertNil(stored, "its record is deleted")
+
+        let answered = try await insert(phone)
+        _ = try await phone.outbox.flush()
+        try await hubWrites(phone, echo(answered.id, seq: answered.seq, status: .received))
+        let late = try await phone.outbox.withdraw(actionID: answered.id)
+        XCTAssertEqual(late, .onItsWay, "the hub took it: its echo settles it")
+        XCTAssertNotNil(try pending(phone, answered.id))
+        let gone = try await phone.outbox.withdraw(actionID: "unknown")
+        XCTAssertEqual(gone, .notWaiting)
+    }
+
     func testAWithdrawalThatMeetsAnEchoSettlesInstead() async throws {
         let phone = try await makePhone()
         let one = try await insert(phone)
@@ -1033,7 +1070,7 @@ final class ActionOutboxOrderedTests: XCTestCase {
         await phone.outbox.setRetryClaimedHook(nil)
         let second = try await phone.outbox.retry(id: one.id)
         gate.open()
-        let retried = try await [first.value(within: 60, "first retry"), second].compactMap { $0 }
+        let retried = try await [first.value, second].compactMap { $0 }
 
         XCTAssertEqual(retried.count, 1, "the second Retry is a no-op")
         XCTAssertNil(try pending(phone, one.id))

@@ -1,80 +1,61 @@
+import ChatUI
+import ChatWire
 import Foundation
 import WatchtowerCore
 
 extension AppState {
-    /// A new automatic context reads the current saved preference; a running
-    /// host keeps its existing snapshot until its turn finishes.
-    func makeMainChatViewModel(_ db: DatabaseManager) -> ChatViewModel {
+    /// The main chat's window shell over the engine's client. A new automatic
+    /// chat reads the current saved provider preference.
+    func makeMainChatViewModel(_ db: DatabaseManager, client: any ChatClient) -> ChatViewModel {
         let currentProvider = { AIProvider.fromConfig(Constants.aiProviderID()) }
-        return ChatViewModel(dbManager: db, pool: ensureChatSessionPool(db),
+        return ChatViewModel(client: client, dbPool: db.dbPool,
                              provider: AIProvider.fromConfig(ConfigService().aiProvider),
                              cliRunner: ProcessCLIRunner.makeDefault(), preferredProviderSource: currentProvider)
     }
 
-    /// The main chat's two view models: the history list follows the chat's
-    /// writes, the landing's first turn becomes the history selection, and
-    /// the panel's "Answering" state reads the chat's session pool.
-    static func wireChat(_ cvm: ChatViewModel, history hvm: ChatHistoryViewModel) {
-        cvm.onConversationsChanged = { [weak hvm] in hvm?.reloadRows() }
-        cvm.onLandingTurnStarted = { [weak hvm] id in hvm?.selectedConversationID = id }
-        hvm.isAnswering = { [weak cvm] id in cvm?.isAnswering(conversationID: id) ?? false }
-        // The panel's quick delete commits through the chat's own path (spec
-        // 2026-10-26 §5.3): the session retired, then the row deleted.
-        hvm.forgetConversation = { [weak cvm] id in cvm?.forget(conversationID: id) }
-        // The landing leaves a project the panel stops showing (spec §4).
-        hvm.onLevelChanged = { [weak cvm] level in cvm?.panelLevelChanged(to: level.projectID) }
+    /// The chat and its panel: the landing's first send becomes the panel's
+    /// selection, and the landing leaves a project the panel stops showing
+    /// (spec 2026-10-26 §4).
+    static func wireChat(_ cvm: ChatViewModel, panel: ChatPanelModel) {
+        cvm.onConversationCreated = { [weak panel] id in panel?.selectedConversationID = id }
+        panel.onLevelChanged = { [weak cvm] level in cvm?.panelLevelChanged(to: level.projectID) }
     }
 
-    /// The chat's two signals, each assigned only here (they are single
-    /// closures, spec 2026-10-26 §5.2). The Inbox strip re-reads when a chat
-    /// turn ends: a connector call it shows ran inside that turn, and the
-    /// card's live "the session holds it" turned false with it — a stale
-    /// `approved` row would read "not sent". It also re-reads when a turn
-    /// starts waiting on a connector call, so the call can be approved from
-    /// the strip while the chat waits.
-    func wireActionStripRefresh(_ cvm: ChatViewModel, history hvm: ChatHistoryViewModel) {
-        Self.wireChatRefresh(
-            cvm, history: hvm,
-            isChatOnScreen: { [weak self] in
-                guard let self else { return false }
-                return self.selectedDestination == .chat || self.isHelpChatShown
-            },
-            refreshActionStrip: { [weak self] in await self?.actionStripViewModel?.refresh() }
-        )
-        wireRemember(cvm)
-        followSetupProviderSwitch(cvm)
-    }
-
-    /// Setup's Codex fallback (`OnboardingCLIProbe`) rewrote `ai.provider`
-    /// after this chat snapshotted it: the chat follows, or its next turn
-    /// would start the CLI that is not installed.
-    func followSetupProviderSwitch(_ cvm: ChatViewModel) {
-        onboardingGoals.onProviderSwitched = { [weak cvm] provider in
-            cvm?.switchProvider(AIProvider.fromConfig(provider))
+    /// The Inbox strip re-reads when any chat starts or stops answering or
+    /// waiting: a connector call it shows runs inside that chat's turn, and a
+    /// call waiting for approval can be approved from the strip.
+    func followChatForActionStrip(_ client: any ChatClient) {
+        chatActionStripWatch?.cancel()
+        let updates = client.list()
+        chatActionStripWatch = Task { [weak self] in
+            var last: [Int64: ChatList.State] = [:]
+            for await update in updates {
+                guard case .snapshot(let list) = update else { continue }
+                self?.chatRunningTurns = Self.runningTurns(in: list)
+                let states = Dictionary(list.conversations.map { ($0.id, $0.state) }) { first, _ in first }
+                guard states != last else { continue }
+                last = states
+                await self?.actionStripViewModel?.refresh()
+            }
         }
     }
 
-    /// Beside the strip, the Chats panel re-reads its rows on both signals:
-    /// the pending proposal and the turn's end were written by the session's
-    /// MCP subprocess or by Go, which the panel's observation does not see.
-    /// A turn that ends on the chat on screen marks it read (the panel's
-    /// observation shows the mark); one that ends elsewhere leaves it unread.
-    static func wireChatRefresh(
-        _ cvm: ChatViewModel,
-        history hvm: ChatHistoryViewModel,
-        isChatOnScreen: @escaping @MainActor () -> Bool,
-        refreshActionStrip: @escaping @MainActor () async -> Void
-    ) {
-        cvm.onTurnFinished = { [weak cvm, weak hvm] id in
-            Task { await refreshActionStrip() }
-            guard let hvm else { return }
-            if isChatOnScreen(), cvm?.isShowing(conversationID: id) == true { hvm.markRead(id) }
-            hvm.reloadRows()
+    /// Each chat's running turn in the engine's list: a chat answering or waiting on an approval with its turn
+    /// still held (an older engine sends no turn id: none).
+    nonisolated static func runningTurns(in list: ChatList) -> [Int64: String] {
+        var out: [Int64: String] = [:]
+        for conv in list.conversations where conv.leaseOwner != nil {
+            if let turn = conv.turnID { out[conv.id] = turn }
         }
-        cvm.onActionAwaited = { [weak hvm] _ in
-            Task { await refreshActionStrip() }
-            hvm?.reloadRows()
-        }
+        return out
+    }
+
+    /// Whether the live chat session that proposed `action` still holds it (its chat runs that very turn): the
+    /// Inbox strip's Approve and its "session ended" line.
+    func chatHoldsSessionCall(_ action: AgentAction) -> Bool {
+        let running = chatViewModel?.runningTurnID(conversationID: action.conversationID)
+            ?? chatRunningTurns[action.conversationID]
+        return ConnectorCallProposal.sessionHolds(action, runningTurnID: running)
     }
 
     /// The claude.ai list is beside the database (Go: the db path's
@@ -86,7 +67,12 @@ extension AppState {
                 ?? Constants.activeWorkspaceDir()
             return dir.map { ($0 as NSString).appendingPathComponent(ClaudeAIConnectorsFile.fileName) }
         }
-        model.onSwitched = { [weak self] in self?.chatSessionPool?.retireIdleSessions() }
+        // The engine reads the list when it starts a session: every warm one
+        // is retired (a running turn finishes first), so none keeps the old tools.
+        model.onSwitched = { [weak self] in
+            guard let client = self?.chatClient else { return }
+            Task { _ = try? await client.send(.retireSessions) }
+        }
         return model
     }
 }

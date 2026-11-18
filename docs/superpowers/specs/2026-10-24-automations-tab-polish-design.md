@@ -178,7 +178,7 @@ Measurement in §5 showed the remaining scroll cost lives inside SwiftUI and App
 
 - **What changes.** A *finished* answer's runs of prose are drawn by one non-editable, selectable `NSTextView` (TextKit 2) per run, instead of one SwiftUI `Text` per block. A run is the stretch of paragraphs, headings, lists and block quotes between blocks that keep their own views (code blocks, tables, artifacts, step blocks, question and action cards).
 - **What stays.** A message that is still streaming keeps today's SwiftUI path, and switches when it completes. User bubbles, code blocks and cards are unchanged.
-- **Tables.** A table that fits the column width gets no horizontal scroll view. Only a table wider than the column keeps one.
+- **Tables.** A table that fits the column width gets no horizontal scroll view. Only a table wider than the column keeps one. *(Amended 2026-11-10, ask #1197, target #1714: no table has a scroll view; a wider one fills the column and its wide columns wrap — see §5c.)*
 - **Same look.** The fonts, sizes, colours (light and dark), list markers, heading weights, inline code, block-quote bar and spacing match the current rendering. The builder compares screenshots of the main chat before and after and records them in the PR.
 - **Same rules:**
   - Links go through `AllowedURLSchemes` exactly as today.
@@ -203,6 +203,7 @@ After §5b, most of the remaining scroll cost is selectable table cells. Each ce
   - a table that fits the column has no scroll view;
   - a wider table keeps one horizontal scroll view around the single text view;
   - the height comes from `sizeThatFits` without probe-width side effects, the same rule as runs.
+  - *Amended 2026-11-10 (ask #1197, target #1714):* a wider table no longer scrolls — the hidden scroll bar left text clipped. It fills the column: columns within their fair share keep their natural width on one line, the wide ones split the rest by natural width (never under their longest word, capped at 120 pt) and wrap at word boundaries (`MarkdownTableColumns` in WatchtowerCore, shared with the streaming table's `MarkdownTableGrid` layout). The finished table is an `NSTextTable` (one paragraph per cell, column-wide cell blocks, the header divider as the header cells' bottom border) in a TextKit 1 run view; a cell end reads as a tab and a row end as a newline in the plain text, so copy and "Ask about this" keep the TSV format. A size probe at another width lays the table out at that width and puts the frame's table back (the text is the same at every width, the selection is kept).
 - **VoiceOver:** reads the table, rows and cells in order.
 - **Acceptance:** on the benchmark, with the per-step run-loop pass timed, the ChatFeedView p90 approaches the non-selectable-cells experiment (about 20 ms). The streamed-delta guard still passes. The before/after numbers are recorded.
 

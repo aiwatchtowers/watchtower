@@ -12,7 +12,7 @@ Find what you see on the screen in the first column; the second column opens the
 | The **Calendar** tab is hidden, or a meeting you expect is not in the list | [Calendar events are missing](calendar-events-missing.md) |
 | **Record** does nothing, "Microphone access was denied", "No speech recognized", a failed pill | [Recording or transcript problems](recording-or-transcript-problems.md) |
 | An answer to an ask does not reach the agent, or a session shows only a green dot | [A Workbench session or ask is stuck](workbench-session-or-ask-stuck.md) |
-| The iPhone shows "Mac offline", never finds the Mac, or the code will not link | [The iPhone is not syncing](iphone-not-syncing.md) |
+| The iPhone shows "<tower> · offline", never finds the Mac, or the code will not link | [The iPhone is not syncing](iphone-not-syncing.md) |
 | "Claude plan limit", "rate-limiting requests", or the AI costs more than you expect | [Plan limits and high cost](plan-limits-or-high-cost.md) |
 | An automation run says "more than 2000 SDK calls", "already started 10 sessions", "journal is incomplete" or "could not be finished" | [An automation run stopped at a limit](automation-run-limits.md) |
 | The app opens with "Optimizing database" or "Updating search index", or says it "could not optimize its database" or "could not update its search index" | [Why the app says "Optimizing database" at launch](../concepts/how-watchtower-works.md#why-the-app-says-optimizing-database-at-launch) |

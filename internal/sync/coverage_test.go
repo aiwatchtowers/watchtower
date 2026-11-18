@@ -1,12 +1,15 @@
 package sync
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -110,6 +113,94 @@ func TestSyncEmojiErrorNonFatal(t *testing.T) {
 	// Should not fail even though emoji.list errors — emoji sync is non-fatal
 	err := ts.orch.Run(context.Background(), SyncOptions{})
 	require.NoError(t, err)
+}
+
+// emojiMux answers emoji.list with errCode ("" = ok with one emoji) and
+// counts the calls.
+func emojiMux(errCode string, calls *atomic.Int32) *http.ServeMux {
+	mux := baseMux()
+	mux.HandleFunc("/emoji.list", func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if errCode != "" {
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": errCode})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "emoji": map[string]string{"shipit": "https://example.com/shipit.png"}})
+	})
+	return mux
+}
+
+// restartOrch is a new orchestrator (a daemon restart) on ts's DB and fake
+// Slack, with tokenScope as the token file's recorded grant.
+func restartOrch(ts *testSetup, tokenScope string, logs *bytes.Buffer) *Orchestrator {
+	o := NewOrchestrator(ts.db, ts.orch.slackClient, ts.orch.config, ts.accountID)
+	o.SetLogger(log.New(logs, "", 0))
+	o.SetTokenScope(tokenScope)
+	return o
+}
+
+func TestSyncEmoji_RecordedGrantWithoutScopeSkips(t *testing.T) {
+	var calls atomic.Int32
+	ts := newTestSetup(t, emojiMux("", &calls))
+	var logs bytes.Buffer
+	o := restartOrch(ts, "channels:history,users:read", &logs)
+
+	require.NoError(t, o.syncEmoji(context.Background()))
+	assert.Zero(t, calls.Load(), "a recorded grant without emoji:read never calls emoji.list")
+
+	missing, err := ts.db.SlackEmojiScopeMissing(ts.accountID)
+	require.NoError(t, err)
+	assert.False(t, missing, "the grant decides; the legacy flag is not written")
+}
+
+func TestSyncEmoji_RecordedGrantWithScopeCalls(t *testing.T) {
+	var calls atomic.Int32
+	ts := newTestSetup(t, emojiMux("", &calls))
+	var logs bytes.Buffer
+	o := restartOrch(ts, "users:read,emoji:read", &logs)
+
+	require.NoError(t, o.syncEmoji(context.Background()))
+	assert.Equal(t, int32(1), calls.Load())
+	emojis, err := ts.db.GetCustomEmojis()
+	require.NoError(t, err)
+	assert.Len(t, emojis, 1)
+}
+
+func TestSyncEmoji_MissingScopeSkipsUntilLogin(t *testing.T) {
+	var calls atomic.Int32
+	ts := newTestSetup(t, emojiMux("missing_scope", &calls))
+	ctx := context.Background()
+
+	// First cycle: a legacy token (no recorded grant) is tried once.
+	var first bytes.Buffer
+	o := restartOrch(ts, "", &first)
+	require.NoError(t, o.syncEmoji(ctx), "a missing scope is no error state")
+	assert.Equal(t, int32(1), calls.Load())
+	missing, err := ts.db.SlackEmojiScopeMissing(ts.accountID)
+	require.NoError(t, err)
+	assert.True(t, missing, "emoji_scope_missing = 1")
+	assert.Equal(t, 1, bytes.Count(first.Bytes(), []byte("lacks emoji:read")), "one log line about it: %q", first.String())
+	assert.NotContains(t, first.String(), "warning", "no error state")
+
+	// Next cycle of the same process: skipped, silent.
+	first.Reset()
+	require.NoError(t, o.syncEmoji(ctx))
+	assert.Equal(t, int32(1), calls.Load())
+	assert.Empty(t, first.String())
+
+	// A restart on the same DB: no call, nothing logged.
+	var restarted bytes.Buffer
+	o2 := restartOrch(ts, "", &restarted)
+	require.NoError(t, o2.syncEmoji(ctx))
+	assert.Equal(t, int32(1), calls.Load(), "a restart does not call emoji.list again")
+	assert.Empty(t, restarted.String(), "a restart logs nothing")
+
+	// A re-login records a grant with emoji:read: called again whatever the flag says.
+	var relogin bytes.Buffer
+	o3 := restartOrch(ts, "users:read,emoji:read", &relogin)
+	_ = o3.syncEmoji(ctx)
+	assert.Equal(t, int32(2), calls.Load(), "a recorded grant with emoji:read decides alone")
 }
 
 // --- syncCurrentUser ---

@@ -5,11 +5,13 @@ package hub
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -135,19 +137,19 @@ func TestMeasure_RelayIndicatorAcrossAnOutage(t *testing.T) {
 		}
 		return s.Relay.State
 	}
-	eventually(t, stepWait, "relay.state connected", func() bool { return relayState() == RelayConnected })
+	eventuallyOnStand(t, stepWait, "relay.state connected", func() bool { return relayState() == RelayConnected })
 	logCLI(t, h.dir, "hub", "status", "--json")
 	if err := syscall.Kill(*relayCtlPID, syscall.SIGUSR1); err != nil {
 		t.Fatalf("signalling the interop script: %v", err)
 	}
 	down := time.Now()
-	eventually(t, 3*time.Minute, "relay.state unavailable", func() bool { return relayState() == RelayUnavailable })
+	eventuallyOnStand(t, 3*time.Minute, "relay.state unavailable", func() bool { return relayState() == RelayUnavailable })
 	t.Logf("measure: relay.state unavailable %s after the stop was asked", time.Since(down).Round(time.Second))
 	if since := time.Since(down); since < 60*time.Second {
 		t.Fatalf("unavailable after %s, before the 60 s threshold", since)
 	}
 	logCLI(t, h.dir, "hub", "status", "--json")
-	eventually(t, restartWait, "relay.state connected again", func() bool { return relayState() == RelayConnected })
+	eventuallyOnStand(t, restartWait, "relay.state connected again", func() bool { return relayState() == RelayConnected })
 	t.Logf("measure: relay.state connected again %s after the stop was asked", time.Since(down).Round(time.Second))
 	logCLI(t, h.dir, "hub", "status", "--json")
 }
@@ -182,9 +184,10 @@ func logCLI(t *testing.T, dir string, args ...string) {
 	}
 }
 
-// opCounter counts the hub's relay ops (POST /v1/op) by op name, and the
-// answers that carried a relay error by op and code: what an action costs
-// the hub on the relay (ask #976).
+// opCounter counts the hub's relay ops by op name — over HTTPS (POST /v1/op)
+// as "<op>", over the WebSocket as "ws:<op>" — and the answers that carried a
+// relay error by op and code: what an action costs the hub on the relay (ask
+// #976, live link R2).
 type opCounter struct {
 	base    http.RoundTripper
 	mu      sync.Mutex
@@ -204,6 +207,15 @@ func (c *opCounter) reset() {
 }
 
 func (c *opCounter) RoundTrip(r *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(r.URL.Path, "/v1/ws") {
+		res, err := c.base.RoundTrip(r)
+		if err == nil && res.StatusCode == http.StatusSwitchingProtocols {
+			if rwc, ok := res.Body.(io.ReadWriteCloser); ok {
+				res.Body = newWSTap(rwc, c)
+			}
+		}
+		return res, err
+	}
 	if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/v1/op") || r.Body == nil {
 		return c.base.RoundTrip(r)
 	}
@@ -260,5 +272,108 @@ func (c *opCounter) log(t *testing.T, actions int) {
 	sort.Strings(refused)
 	for _, k := range refused {
 		t.Logf("measure: refused op=%s count=%d", k, c.refused[k])
+	}
+}
+
+// wsTap watches one WebSocket's bytes both ways and counts its requests and
+// refused answers into an opCounter.
+type wsTap struct {
+	io.ReadWriteCloser
+	out, in wsFrames
+}
+
+func newWSTap(rwc io.ReadWriteCloser, c *opCounter) *wsTap {
+	sent := map[uint64]string{} // request id → op, under c.mu
+	w := &wsTap{ReadWriteCloser: rwc}
+	w.out.on = func(b []byte) {
+		var f relayv1.Frame
+		if proto.Unmarshal(b, &f) != nil || f.GetRequest() == nil {
+			return
+		}
+		op := "ws:" + relaytest.OpName(f.GetRequest())
+		c.mu.Lock()
+		c.n[op]++
+		sent[f.GetRequest().GetId()] = op
+		c.mu.Unlock()
+	}
+	w.in.on = func(b []byte) {
+		var f relayv1.Frame
+		if proto.Unmarshal(b, &f) != nil || f.GetResponse() == nil {
+			return
+		}
+		res := f.GetResponse()
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		op := sent[res.GetId()]
+		delete(sent, res.GetId())
+		if res.GetError() != nil {
+			c.refused[op+" "+res.GetError().GetCode().String()]++
+		}
+	}
+	return w
+}
+
+// Write counts before writing, so a fast answer finds its request's op.
+func (w *wsTap) Write(p []byte) (int, error) {
+	w.out.feed(p)
+	return w.ReadWriteCloser.Write(p)
+}
+
+func (w *wsTap) Read(p []byte) (int, error) {
+	n, err := w.ReadWriteCloser.Read(p)
+	w.in.feed(p[:n])
+	return n, err
+}
+
+// wsFrames reassembles the data messages of one direction of a WebSocket
+// byte stream (RFC 6455 frames, masked from the client, plain from the
+// server; control frames skipped) and hands each to on.
+type wsFrames struct {
+	buf, msg []byte
+	on       func([]byte)
+}
+
+func (f *wsFrames) feed(p []byte) {
+	f.buf = append(f.buf, p...)
+	for len(f.buf) >= 2 {
+		b0, b1 := f.buf[0], f.buf[1]
+		n, off := uint64(b1&0x7f), 2
+		switch n {
+		case 126:
+			if len(f.buf) < 4 {
+				return
+			}
+			n, off = uint64(binary.BigEndian.Uint16(f.buf[2:])), 4
+		case 127:
+			if len(f.buf) < 10 {
+				return
+			}
+			n, off = binary.BigEndian.Uint64(f.buf[2:]), 10
+		}
+		var key []byte
+		if b1&0x80 != 0 {
+			if len(f.buf) < off+4 {
+				return
+			}
+			key, off = f.buf[off:off+4], off+4
+		}
+		if uint64(len(f.buf)-off) < n {
+			return
+		}
+		payload := slices.Clone(f.buf[off : off+int(n)])
+		if key != nil {
+			for i := range payload {
+				payload[i] ^= key[i%4]
+			}
+		}
+		f.buf = f.buf[off+int(n):]
+		if b0&0x0f >= 8 { // close, ping, pong
+			continue
+		}
+		f.msg = append(f.msg, payload...)
+		if b0&0x80 != 0 { // FIN: the message is whole
+			f.on(f.msg)
+			f.msg = nil
+		}
 	}
 }

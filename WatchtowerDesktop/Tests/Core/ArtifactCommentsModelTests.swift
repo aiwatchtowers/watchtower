@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import WatchtowerTestSupport
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 @MainActor
 final class ArtifactCommentsModelTests: XCTestCase {
@@ -43,7 +44,7 @@ final class ArtifactCommentsModelTests: XCTestCase {
     }
 
     private func makePanel() -> ArtifactPanelModel {
-        ArtifactPanelModel(db: queue, conversationID: conversationID, key: "plan")
+        ArtifactPanelModel(db: queue, writer: DatabaseArtifactWriter(db: queue), conversationID: conversationID, key: "plan")
     }
 
     private func range(_ needle: String, in model: ArtifactCommentsModel) throws -> NSRange {

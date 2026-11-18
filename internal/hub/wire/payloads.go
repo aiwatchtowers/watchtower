@@ -47,6 +47,14 @@ const (
 	SharingUnavail   = "unavailable"
 )
 
+// Heartbeat hub kinds (#1783): what the phone calls the hub. "mac" is a hub
+// run beside the Watchtower app (the app's menus exist there); "server" is a
+// headless hub. An older hub sends no kind, which the phone reads as "mac".
+const (
+	HubKindMac    = "mac"
+	HubKindServer = "server"
+)
+
 // FlavorOf is the heartbeat flavor of a build flavor (the build profile's
 // BUILD_FLAVOR, Desktop's WTBuildFlavor; HubIdentity.flavor): none or "dev"
 // is the default build, any other is a corporate build.
@@ -149,16 +157,48 @@ type Heartbeat struct {
 	EnabledAt     Time               `json:"enabled_at"`
 	OwnerUser     string             `json:"owner_user"`
 	Sharing       string             `json:"sharing"`
+	// HubKind is HubKindMac or HubKindServer; absent from an older hub.
+	HubKind string `json:"hub_kind,omitempty"`
 	// Capabilities is the host's switches (protocol §9); absent from an
 	// older hub, which the phone reads as every capability on.
 	Capabilities *HeartbeatCapabilities `json:"capabilities,omitempty"`
+	// StuckSince is when the oldest kind still not going through whole
+	// (a failed save, a refused or oversized record) first failed; absent
+	// while every kind goes through and from an older hub (#1873).
+	StuckSince *Time `json:"stuck_since,omitempty"`
+	// BackgroundAI is whether background AI runs on the hub's Mac
+	// (BackgroundAI* values, #1886); absent from an older hub and when the
+	// hub reports none.
+	BackgroundAI string `json:"background_ai,omitempty"`
 }
 
+// The heartbeat's background_ai values: allowed runs; paused is the owner's
+// (or an unanswered) state; organization is a pause the organization forces.
+const (
+	BackgroundAIAllowed      = "allowed"
+	BackgroundAIPaused       = "paused"
+	BackgroundAIOrganization = "organization"
+)
+
 // HeartbeatCapabilities is the heartbeat's capabilities object. Recordings
-// is "on" or "off"; an unknown value reads as not off.
+// is "on" or "off"; an unknown value reads as not off. Chat is the AI chat
+// from the phone (iPhone chat §4.8): "on" only while the hub runs on the
+// relay with the daemon's chat engine; the phone shows chat only on an
+// explicit "on" (an absent key is an older hub). ChatReason says why it is
+// "off": not_relay, runner_down or policy (an older hub may still send
+// desktop_too_old, which the phone keeps reading).
 type HeartbeatCapabilities struct {
 	Recordings string `json:"recordings,omitempty"`
+	Chat       string `json:"chat,omitempty"`
+	ChatReason string `json:"chat_reason,omitempty"`
 }
+
+// The chat capability's off reasons.
+const (
+	ChatOffNotRelay   = "not_relay"
+	ChatOffRunnerDown = "runner_down"
+	ChatOffPolicy     = "policy"
+)
 
 // RecordingsCapability is the capabilities object for the switch: "on" or
 // "off". The phone offers recording unless it reads "off".

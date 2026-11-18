@@ -31,11 +31,19 @@ func Resolve(store *Store, id, role string) (tmpl string, version int, err error
 			err = fmt.Errorf("prompt %q: stored template is empty", id)
 		}
 	}
-	tmpl = Defaults[id]
+	return ResolveDefault(store, id), 0, err
+}
+
+// ResolveDefault is the built-in Defaults[id] with the owner's approved
+// additions appended — what Resolve returns when no stored row is used. A
+// caller that discards a stored template of the wrong shape (another
+// placeholder count) falls back to it, so the additions survive.
+func ResolveDefault(store *Store, id string) string {
+	tmpl := Defaults[id]
 	if store != nil && tmpl != "" {
 		tmpl = WithAdditions(tmpl, store.additionsFor(id))
 	}
-	return tmpl, 0, err
+	return tmpl
 }
 
 // WithRoleInstruction prepends the owner role's instruction block to a
@@ -70,4 +78,19 @@ var MovedToBuiltin = map[string]string{
 	TracksExtractBatch: "track-my-threads",
 	IdeasConsolidate:   "idea-finder",
 	ReactionCommand:    "reactions",
+}
+
+// TakesAdditions reports whether the owner's approved additions can reach the
+// prompt id: false for every MovedToBuiltin key (a built-in automation owns the
+// text) and for the three custom-track prompts, whose pipeline reads the stored
+// template directly and never goes through Resolve.
+func TakesAdditions(id string) bool {
+	if _, moved := MovedToBuiltin[id]; moved {
+		return false
+	}
+	switch id {
+	case TrackRun, TrackShortlist, TrackCompose:
+		return false
+	}
+	return true
 }

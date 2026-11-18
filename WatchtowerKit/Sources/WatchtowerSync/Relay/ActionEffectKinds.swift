@@ -7,6 +7,7 @@ import Foundation
 public enum ActionEffectKinds {
     private static let board = ["workbench", "workbench_target", "workbench_comment"]
     private static let session = ["terminal_session", "session_timeline"]
+    private static let chat = ["chat_feed", "chat_list"]
 
     static let table: [String: [String]] = [
         "ask_answer": ["owner_ask", "ask_alert"],
@@ -24,7 +25,20 @@ public enum ActionEffectKinds {
         "session_finish_request": session,
         "session_input_cancel": session,
         "session_start": session,
-        "session_stop": session
+        "session_stop": session,
+        "chat_new": ["chat_list"],
+        "chat_turn": chat,
+        "chat_cancel": chat,
+        "chat_feed_request": chat,
+        "chat_page": ["chat_page"],
+        "chat_search": ["chat_search"],
+        "chat_read": ["chat_list"],
+        "chat_branch_select": chat,
+        "chat_manage": chat,
+        "chat_action_answer": chat,
+        // Echo-only kinds (Go `handlers.EchoOnlyKinds`): the result is the echo, no slice follows, so no row opens.
+        "chat_entity_search": [],
+        "chat_skills_list": []
     ]
 
     public static func kinds(for actionKind: String) -> [String] {

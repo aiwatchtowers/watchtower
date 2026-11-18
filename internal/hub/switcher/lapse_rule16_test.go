@@ -108,7 +108,7 @@ func (w *world) unreadable(how string) {
 func TestAnAskedLapseWithAnUnreadableAccountMovesTheHubAtOnce(t *testing.T) {
 	for _, how := range []string{"failed", "not fresh", "hanging"} {
 		t.Run(how, func(t *testing.T) {
-			eachFlavour(t, func(t *testing.T, w *world) {
+			eachFlavourFor(t, how, func(t *testing.T, w *world) {
 				a, b := w.addPhone(true), w.addPhone(true)
 				w.moveTo(a, wire.TransportRelay, b)
 				w.unreadable(how)
@@ -153,7 +153,7 @@ func TestARelaySignalLapseWithAnUnreadableAccountStaysAndRetries(t *testing.T) {
 	for _, how := range []string{"failed", "not fresh", "hanging"} {
 		for _, then := range []string{"another phone pays", "nobody pays"} {
 			t.Run(how+"/"+then, func(t *testing.T) {
-				eachFlavour(t, func(t *testing.T, w *world) {
+				eachFlavourFor(t, how, func(t *testing.T, w *world) {
 					a, b := w.addPhone(true), w.addPhone(true)
 					w.moveTo(a, wire.TransportRelay, b)
 					w.unreadable(how)
@@ -271,7 +271,7 @@ func TestALapseAndTheNoPayerPollDoNotCollide(t *testing.T) {
 // the lapse only records (the pass never reads the relay), and the Step
 // carries out the accepted press before it spends a read on the lapse.
 func TestAPressBehindALapseIsActedOnWhileTheAccountReadHangs(t *testing.T) {
-	eachFlavour(t, func(t *testing.T, w *world) {
+	eachFlavourHung(t, func(t *testing.T, w *world) {
 		a, b := w.addPhone(true), w.addPhone(true)
 		w.moveTo(a, wire.TransportRelay, b)
 		w.mu.Lock()

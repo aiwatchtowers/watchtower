@@ -1,6 +1,7 @@
 import SwiftUI
 import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 /// Settings → Mobile → Diagnostics and its entry row (go hub plan 4 Task 9,
 /// mockup `docs/design/mockups/go-hub/index.html` §22–§23, coverage rows

@@ -148,7 +148,10 @@ package struct FuzzyMatcher {
 
     /// Every live slot whose tag is in `tags` that the query matches, with
     /// its score, in slot order. An empty query matches nothing here.
-    package func scanCorpus(_ corpus: FuzzyCorpus, tags: UInt8) -> [FuzzyHit] {
+    /// `work` grows by one per slot looked at and by the alignment's cells
+    /// (query units × slot units) per slot aligned: the keystroke's cost,
+    /// counted rather than timed (`WorkbenchCodeIndexTests`).
+    package func scanCorpus(_ corpus: FuzzyCorpus, tags: UInt8, work: inout Int) -> [FuzzyHit] {
         let m = needle.count
         guard m > 0 else { return [] }
         var hits: [FuzzyHit] = []
@@ -159,14 +162,19 @@ package struct FuzzyMatcher {
                 // Plain while loops: this is the per-keystroke loop, and a
                 // debug build runs generic ranges and iterators unspecialized.
                 var index = 0
+                var counted = 0
                 while index < slots.count {
                     let slot = slots[index]
-                    if slot.alive, slot.tag & tags != 0, slot.mask & mask == mask, slot.length >= m,
-                       let score = kernel.align(hay + slot.start, bonus + slot.start, n: slot.length, trace: false) {
-                        hits.append(FuzzyHit(slot: index, score: score))
+                    counted += 1
+                    if slot.alive, slot.tag & tags != 0, slot.mask & mask == mask, slot.length >= m {
+                        counted += m * slot.length
+                        if let score = kernel.align(hay + slot.start, bonus + slot.start, n: slot.length, trace: false) {
+                            hits.append(FuzzyHit(slot: index, score: score))
+                        }
                     }
                     index += 1
                 }
+                work += counted
             }
         }
         return hits

@@ -3,6 +3,10 @@
   "enabled": true,
   "since": "2026-10-01T00:00:00Z",
   "until": "2026-10-08T00:00:00Z",
+  "agent": "all",
+  "agents": [
+    "claude"
+  ],
   "totals": {
     "sessions": 2,
     "active_ms": 3030000,
@@ -162,6 +166,9 @@
   ],
   "context": {
     "lead": "Every session starts with 140 tokens; MCP instructions is 33%, the skill list 27%.",
+    "agents": [
+      "claude"
+    ],
     "facts_sessions": 1,
     "sessions": 2,
     "baseline": {
@@ -279,6 +286,9 @@
   },
   "skills": {
     "lead": "The skill list costs 9 tokens per session; 2 of 3 skills were not used in this period.",
+    "agents": [
+      "claude"
+    ],
     "facts_sessions": 1,
     "listed": 3,
     "used": 1,
@@ -309,6 +319,9 @@
   },
   "trouble": {
     "lead": "2 failed calls and 0 permission denials; most of them exit_code.",
+    "agents": [
+      "claude"
+    ],
     "classes": [
       {
         "class": "exit_code",

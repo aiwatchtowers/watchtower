@@ -113,6 +113,10 @@ final class HomeCenter {
     /// the row, because the re-read replaces or removes the row.
     private(set) var coachNote: String?
     @ObservationIgnored private var coachNoteTask: Task<Void, Never>?
+    /// The tick's wait between re-reads; tests replace it to tick by hand.
+    @ObservationIgnored var tickSleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    /// The coach note's wait before it clears; tests replace it to clear it by hand.
+    @ObservationIgnored var coachNoteSleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// The Workbench read; nil until the first read (the snapshot waits on it).
     @ObservationIgnored private var data: HomeWorkbenchData?
     /// The feed read, landed with `data`.
@@ -194,9 +198,10 @@ final class HomeCenter {
             await center.rereadNumbers(pool, generation: current)
         }
         let interval = tickInterval
+        let sleep = tickSleep
         tickTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: interval)
+                await sleep(interval)
                 guard !Task.isCancelled, let self, self.generation == current else { return }
                 await self.reread(pool, generation: current)
                 await self.rereadNumbers(pool, generation: current)
@@ -380,8 +385,9 @@ final class HomeCenter {
     func showCoachNote(_ text: String, seconds: Double = 5) {
         coachNoteTask?.cancel()
         coachNote = text
+        let sleep = coachNoteSleep
         coachNoteTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(seconds))
+            await sleep(.seconds(seconds))
             guard !Task.isCancelled else { return }
             self?.coachNote = nil
         }

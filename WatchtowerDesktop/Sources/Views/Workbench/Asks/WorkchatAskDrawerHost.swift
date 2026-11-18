@@ -16,8 +16,10 @@ struct WorkchatAskDrawerHost<Content: View>: View {
         let terminalShown = vm.layout(projectID: projectID).visiblePanes.contains(.session(sessionID))
         let drawerAsk = terminalShown ? nil
             : vm.asks.drawerAsk(projectID: projectID).flatMap { $0.sessionID == sessionID ? $0 : nil }
+        let closedList = terminalShown ? nil
+            : vm.asks.drawerClosedList(projectID: projectID).flatMap { $0.sessionID == sessionID ? $0 : nil }
         // Always hosted, so the Workchat keeps its identity when the drawer comes and goes.
-        OwnerAskDrawerHost(vm: vm, ask: drawerAsk, workspace: content)
+        OwnerAskDrawerHost(vm: vm, ask: drawerAsk, closedList: closedList, workspace: content)
             .onGeometryChange(for: Bool.self, of: {
                 OwnerAskDrawerLayout.fitsBeside(total: $0.size.width)
             }, action: { fits in

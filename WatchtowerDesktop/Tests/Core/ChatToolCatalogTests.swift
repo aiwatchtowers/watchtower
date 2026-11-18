@@ -12,6 +12,10 @@ final class ChatToolCatalogTests: XCTestCase {
         XCTAssertEqual(ChatToolCatalog.label(name: "get_automation_run", args: #"{"run_id":7}"#), "Opened a run")
         XCTAssertEqual(ChatToolCatalog.label(name: "list_automations", args: #"{"query":"digest"}"#), "Listed automations")
         XCTAssertEqual(ChatToolCatalog.label(name: "list_slack_channels", args: #"{"query":"acme"}"#), "Listed Slack channels")
+        XCTAssertEqual(ChatToolCatalog.label(name: "get_chat_history", args: #"{"query":"plan"}"#), "Read earlier messages: plan")
+        XCTAssertEqual(ChatToolCatalog.label(name: "get_chat_history", args: "{}"), "Read earlier messages of this chat")
+        XCTAssertEqual(ChatToolCatalog.label(name: "list_chat_artifacts", args: "{}"), "Listed this chat's artifacts")
+        XCTAssertEqual(ChatToolCatalog.label(name: "get_chat_artifact", args: #"{"key":"plan"}"#), "Opened an earlier artifact")
         XCTAssertEqual(ChatToolCatalog.label(name: "get_automation", args: #"{"automation":"digest"}"#), "Opened a recipe")
     }
 
@@ -26,6 +30,10 @@ final class ChatToolCatalogTests: XCTestCase {
         ]
         for (name, label) in expected { XCTAssertEqual(ChatToolCatalog.label(name: name, args: "{}"), label, name) }
         XCTAssertEqual(ChatToolCatalog.label(name: "list_emails", args: #"{"query":"invoice"}"#), "Searched email: invoice")
+    }
+
+    func testTuningToolsUseTuningLines() {
+        XCTAssertEqual(ChatToolCatalog.label(name: "get_prompt", args: #"{"prompt_id":"digest.channel"}"#), "Read prompt digest.channel")
     }
 
     func testWebSearchStep() {

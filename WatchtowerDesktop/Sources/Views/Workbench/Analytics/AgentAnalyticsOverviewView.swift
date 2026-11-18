@@ -7,6 +7,8 @@ import WatchtowerCore
 struct AgentAnalyticsOverviewView: View {
     let state: AgentAnalyticsPaneState
     @Binding var period: AgentAnalyticsCenter.Period
+    /// The agent filter (#1517); a pane hosted without one shows All.
+    var agent: Binding<AgentAnalyticsCenter.Agent> = .constant(.all)
     let actions: AgentAnalyticsActions
     /// The coach sections (nil: a pane hosted without the coach).
     var coach: CoachCenter?
@@ -15,8 +17,11 @@ struct AgentAnalyticsOverviewView: View {
     var openAsk: (Int64) -> Void = { _ in }
     /// A terminal session link of a proposal.
     var openTerminalSession: (Int64) -> Void = { _ in }
+    /// A section id to scroll to (`CoachSectionsView.acceptedID`); cleared
+    /// once scrolled.
+    var scrollRequest: Binding<String?> = .constant(nil)
 
-    private static let statisticsID = "statistics"
+    static let statisticsID = "statistics"
 
     var body: some View {
         switch state {
@@ -26,6 +31,7 @@ struct AgentAnalyticsOverviewView: View {
             VStack(spacing: Spacing.compact) {
                 Label("Could not load analytics", systemImage: "exclamationmark.triangle").font(.headline)
                 Text(error).foregroundStyle(.secondary)
+                Button("Retry", action: actions.retry).buttonStyle(.kitSecondary)
             }
             .padding(24)
         case let .off(enabling, error):
@@ -40,8 +46,16 @@ struct AgentAnalyticsOverviewView: View {
                     .padding(Spacing.large)
                     .frame(maxWidth: .infinity)
                 }
+                .onAppear { scroll(proxy) }
+                .onChange(of: scrollRequest.wrappedValue) { _, _ in scroll(proxy) }
             }
         }
+    }
+
+    private func scroll(_ proxy: ScrollViewProxy) {
+        guard let id = scrollRequest.wrappedValue else { return }
+        withAnimation(Motion.panel) { proxy.scrollTo(id, anchor: .top) }
+        scrollRequest.wrappedValue = nil
     }
 
     private func offView(enabling: Bool, error: String?) -> some View {
@@ -84,10 +98,13 @@ struct AgentAnalyticsOverviewView: View {
             }
             header(overview)
             if let staleError {
-                Label(staleError, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .help("The last refresh failed; these numbers are from an earlier run.")
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                    Label(staleError, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(Tone.warning)
+                        .help("The last refresh failed; these numbers are from an earlier run.")
+                    Button("Retry", action: actions.retry).buttonStyle(.kitSecondary).controlSize(.small)
+                }
             }
             if let coach {
                 CoachSectionsView(
@@ -161,30 +178,11 @@ struct AgentAnalyticsOverviewView: View {
     }
 
     private func header(_ overview: AgentReportOverview) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-            Text(AgentAnalyticsFormat.periodLabel(overview)).font(.headline)
-            if let previous = AgentAnalyticsFormat.previousPeriodLabel(overview) {
-                Text("against \(previous)").font(.caption).foregroundStyle(.secondary)
-            }
-            if AgentAnalyticsFormat.period(of: overview) != period {
-                Text("Updating…").font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: Spacing.regular)
-            KitSegmentedPicker(title: "Period", selection: $period, segments: [
-                KitSegment(value: AgentAnalyticsCenter.Period.day, title: "1 day"),
-                KitSegment(value: AgentAnalyticsCenter.Period.week, title: "7 days"),
-                KitSegment(value: AgentAnalyticsCenter.Period.month, title: "30 days")
-            ])
-            Circle()
-                .fill(Tone.success)
-                .frame(width: IconSize.stateDot, height: IconSize.stateDot)
-                .help("Agent analytics is on for this workbench")
-                .accessibilityLabel("Analytics on")
-            Button("Discuss in Chat") { actions.discuss(AgentAnalyticsFormat.discussText(overview)) }
-                .buttonStyle(.kitSecondary)
-                .help("Open the chat with this report's top findings in the composer")
-        }
-        .controlSize(.small)
+        AgentAnalyticsHeaderView(
+            overview: overview, period: $period, agent: agent, tuneOn: actions.tuneOn,
+            showsAgentPicker: AgentAnalyticsFormat.showsAgentPicker(overview, filter: agent.wrappedValue),
+            onTune: actions.tune
+        )
     }
 
     private func tiles(_ overview: AgentReportOverview) -> some View {

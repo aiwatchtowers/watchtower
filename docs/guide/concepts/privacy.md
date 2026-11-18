@@ -8,9 +8,9 @@ Watchtower has no account, no cloud service and no analytics of its own. Three t
 - **Sign-ins.** OAuth tokens for Slack, Google, Jira and Linear are stored as separate files in that folder, readable only by your user. Quick Connection secrets are the same.
 - **Meeting transcription.** Audio is captured and transcribed on the Mac. The speech models are downloaded once, on first use, then run locally. Recording audio is deleted after 30 days (**Settings → Meetings → Delete audio after N days**); transcript text is kept.
 - **Knowledge search.** The index is local; only its image descriptions and link summaries use AI (below).
-- **Mechanical features.** Attention detection and Claude plan limits make no AI calls.
+- **Mechanical features.** Attention detection and Subscription plan limits make no AI calls.
 
-Removing an account deletes its sign-in file. With **Delete an account's data when its access is revoked** on, a revoked account's synced data is deleted after a 72-hour notice, and so is a source's that Watchtower has not reached for 30 days: see [Revoked access deletes an account's data](revoked-access.md).
+Removing an account deletes its sign-in file. **Delete an account's data when its access ends** (**Settings → System**, under **Privacy**) is on by default: a revoked account's synced data is deleted after a 72-hour notice, and so is a removed Slack workspace's. Turned off, synced data stays on this Mac until you delete it with **Reset All Data…**. Either way, briefings, recaps, ideas, memory, chats and meeting transcripts are kept: they mix several sources. See [Revoked access deletes an account's data](revoked-access.md).
 
 In **Settings → System**, **Reset & Regenerate…** deletes the AI-generated data (raw Slack data, config and profile stay) and **Reset All Data…** removes the config, the database folder, preferences and caches, then quits.
 
@@ -46,7 +46,7 @@ Most of what Watchtower knows lives in the database; a few things are files besi
 
 - **Logs** name channels, people and meetings by id and record counts and errors, never message text, titles or AI answers. Log files from an earlier version may hold text until they rotate out.
 - **AI calls leave no session files.** Watchtower's own Claude and Codex calls write nothing to the agent's history folder; a chat picks up again from its saved messages. Workbench sessions are the agent's own and keep their history.
-- **Still files:** meeting recordings, chat attachments, target images, Memory's notes and sign-in files, readable only by your user. FileVault protects them at rest.
+- **Still files:** meeting recordings, chat attachments, target images, Memory's notes and sign-in files, readable only by your user. FileVault protects them at rest; when it is off, Settings → Privacy and Connections → Slack say so and open its settings.
 - **What you paste into a session's Workchat** is deleted when that session ends.
 
 ## What goes to your AI provider
@@ -57,10 +57,11 @@ Every AI feature sends the relevant text to the provider you chose in [AI provid
 - **Mail and Jira digests:** the text of new mail and changed issues and comments.
 - **Briefing, day plan, Catch Up:** your calendar, targets, digests and attention items.
 - **Meeting recaps and the meeting chat:** the transcript, unless the recording is [private](../features/meeting-recording-private-and-export.md).
-- **Chats:** your question plus whatever the assistant reads to answer it, such as messages, mail, tickets or memory notes. It reads them through Watchtower's local tools, and what a tool returns is sent to the provider.
+- **Chats:** your question plus whatever the assistant reads to answer it, such as messages, mail, tickets or memory notes. It reads them through Watchtower's local tools, and what a tool returns is sent to the provider. With [Live Slack](sources-and-accounts.md#live-slack-through-your-claude-or-chatgpt-account) on, the assistant can also read Slack through your Claude or ChatGPT account's own Slack connector; what it reads that way stays in that chat and is not kept anywhere else.
 - **Asking with ⌘/:** the same as Chats, plus a short note on the tab you are on, its empty-state status line and the selected item's title. The note is sent with that message only and is not stored.
 - **Automations:** a confirmed automation sends data to the provider on its own schedule whenever its recipe calls `llm()` or `agent()`.
 - **Knowledge search:** new images (strong model) and the text of public pages that synced Slack or Confluence links point to (light model). See [Images and links](../features/search-and-knowledge.md#images-and-links).
+- **Agent coach and tuning chat:** the numbers from a workbench's **Analytics**, your Watchtower prompts, skills, instruction files and allow rules, and for the coach your spec and code review findings and comments and the lines you sent to agents and chats. The tuning chat reads no Slack, mail, Jira, Linear or meeting text.
 - **Workbench sessions:** run by Claude Code or Codex in your folder, so they go to that agent's provider. Anything that agent reads or writes is its provider's concern.
 
 With **Ollama / Local** on a server on your own machine, the text never leaves it. Point it at a remote server and it goes there.
@@ -69,7 +70,7 @@ With **Ollama / Local** on a server on your own machine, the text never leaves i
 
 Slack is read-only. The assistant sends or edits something only after you approve it, unless you gave a confirmed automation an automatic grant for that action. A Quick Connection (an outside tool server you add) receives what the assistant sends it when you use it in chat, and what a confirmed automation sends it through `mcp()` on its schedule.
 
-Other network traffic: calls to each source's own service, Knowledge search opening public links like a browser visit (the site sees your Mac's address; a tracking link can tell its author), a version check against GitHub every 6 hours, and a read of your Claude plan limits from Anthropic using Claude Code's sign-in.
+Other network traffic: calls to each source's own service, Knowledge search opening public links like a browser visit (the site sees your Mac's address; a tracking link can tell its author), a version check against GitHub every 6 hours, a read of your Claude plan limits from Anthropic using Claude Code's sign-in, and a read of your Codex limits through the Codex tool's own sign-in.
 
 ## What goes to iCloud
 <!-- learn
@@ -92,7 +93,7 @@ Records are sealed with keys held only by your Mac and your paired phones, so iC
 
 **Diagnostics** in **Settings → Mobile** shows how long the Mac took to apply phone actions. Those timings hold no content, are kept for 7 days on the Mac and never leave it.
 
-A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** or **Forget** on the phone (Settings → Macs) deletes that Mac's data from the phone. Removing the phone on the Mac freezes it there: what it already synced stays readable until you tap **Forget**. Turning off **Mobile sync** deletes the records your Mac published and unlinks every phone; after you turn it back on, link each phone again. If the delete fails, **Settings → Mobile** says so and the Mac tries again while sync stays off. To unlink one phone only, remove it.
+A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** or **Forget** on the phone (Settings → Towers) deletes its data from the phone. Removing the phone on the Mac freezes it there: what it already synced stays readable until you tap **Forget**. Turning off **Mobile sync** deletes the records your Mac published and unlinks every phone; after you turn it back on, link each phone again. If the delete fails, **Settings → Mobile** says so and the Mac tries again while sync stays off. To unlink one phone only, remove it.
 
 ## How much an assistant can read in one session
 <!-- learn

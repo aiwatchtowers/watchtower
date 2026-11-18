@@ -40,6 +40,34 @@ type fakeWatchStore struct {
 	recordErrs int
 	// issueErrs is how many SetIssue calls fail before one lands.
 	issueErrs int
+	// written is closed by the next write or Close; nil until a waiter
+	// asks for it.
+	written chan struct{}
+}
+
+// wrote wakes the waiters; s.mu is held.
+func (s *fakeWatchStore) wrote() {
+	if s.written != nil {
+		close(s.written)
+		s.written = nil
+	}
+}
+
+// waitUntil returns once ok holds, checked under s.mu after each write.
+func (s *fakeWatchStore) waitUntil(ok func() bool) {
+	for {
+		s.mu.Lock()
+		if ok() {
+			s.mu.Unlock()
+			return
+		}
+		if s.written == nil {
+			s.written = make(chan struct{})
+		}
+		written := s.written
+		s.mu.Unlock()
+		<-written
+	}
 }
 
 func (s *fakeWatchStore) Row(int64) (db.CodexWatchRow, error) {
@@ -64,6 +92,7 @@ func (s *fakeWatchStore) RecordTurn(_ db.CodexWatchRow, turn sessionfeed.CodexTu
 		return fmt.Errorf("database is locked")
 	}
 	s.turns = append(s.turns, turn)
+	s.wrote()
 	if s.row.State == "working" && (s.row.StateAt.IsZero() || turn.At.After(s.row.StateAt)) {
 		s.row.State, s.row.StateAt, s.row.Failed = "waiting", turn.At, turn.Failed
 	}
@@ -83,6 +112,7 @@ func (s *fakeWatchStore) SetIssue(seen db.CodexWatchRow, issue string, _ time.Ti
 	}
 	s.row.WatchIssue = issue
 	s.issues = append(s.issues, issue)
+	s.wrote()
 	return true, nil
 }
 
@@ -90,6 +120,7 @@ func (s *fakeWatchStore) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
+	s.wrote()
 	return nil
 }
 
@@ -457,16 +488,7 @@ func TestCodexWatch_HostAdoptionRearms(t *testing.T) {
 	if err := os.WriteFile(rollout, []byte(wTurnStarted+"\n"+wTurnFailed+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(ioTimeout)
-	for {
-		if _, turns := store.snapshot(); len(turns) == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the watch never read the failure after the re-attach")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	store.waitUntil(func() bool { return len(store.turns) == 1 })
 	mu.Lock()
 	if len(opened) != 1 || opened[0] != "/work/watchtower.db" {
 		t.Fatalf("stores opened = %v; want one for the launch's database", opened)
@@ -474,19 +496,7 @@ func TestCodexWatch_HostAdoptionRearms(t *testing.T) {
 	mu.Unlock()
 
 	reap(t, info.Pid)
-	deadline = time.Now().Add(ioTimeout)
-	for {
-		store.mu.Lock()
-		closed := store.closed
-		store.mu.Unlock()
-		if closed {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the store was not closed after the session ended")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	store.waitUntil(func() bool { return store.closed })
 }
 
 // Only a launch whose Watch names a rollout-watched agent and a database is

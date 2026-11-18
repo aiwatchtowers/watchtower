@@ -2,7 +2,6 @@ package relaytest_test
 
 import (
 	"bytes"
-	"context"
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -16,7 +15,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/proto"
@@ -56,7 +54,7 @@ func newHub(t *testing.T, srv *relaytest.Server) *hub {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	c := relay.NewClient(srv.URL, key)
+	c := relay.NewClient(srv.URL, key, client.WithHTTPClient(srv.HTTPClient()))
 	if _, err := c.Register(t.Context()); err != nil { // a phone can vouch for it before it connects
 		t.Fatal(err)
 	}
@@ -87,7 +85,7 @@ func newPhone(t *testing.T, srv *relaytest.Server, h *hub) (*hubtest.Phone, *hub
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.C = hubtest.NewPhoneClient(srv.URL, p)
+	store.C = hubtest.NewPhoneClient(srv.URL, p, client.WithHTTPClient(srv.HTTPClient()))
 	if account, err := store.Register(t.Context()); err != nil || account == "" {
 		t.Fatalf("phone register: %q, %v", account, err)
 	}
@@ -95,18 +93,11 @@ func newPhone(t *testing.T, srv *relaytest.Server, h *hub) (*hubtest.Phone, *hub
 }
 
 // waitEvent waits for the first hub event match accepts, skipping others.
-func waitEvent(t *testing.T, tr *relay.Transport, what string, match func(transport.Event) bool) transport.Event {
+func waitEvent(t *testing.T, tr *relay.Transport, _ string, match func(transport.Event) bool) transport.Event {
 	t.Helper()
-	deadline := time.After(5 * time.Second)
 	for {
-		select {
-		case ev := <-tr.Events():
-			if match(ev) {
-				return ev
-			}
-		case <-deadline:
-			t.Fatalf("no %s", what)
-			return transport.Event{}
+		if ev := <-tr.Events(); match(ev) {
+			return ev
 		}
 	}
 }
@@ -115,10 +106,6 @@ func control(kind transport.ControlKind, detail string) func(transport.Event) bo
 	return func(ev transport.Event) bool {
 		return ev.Control != nil && ev.Control.Kind == kind && ev.Control.Detail == detail
 	}
-}
-
-func controlOf(kind transport.ControlKind) func(transport.Event) bool {
-	return func(ev transport.Event) bool { return ev.Control != nil && ev.Control.Kind == kind }
 }
 
 // addSlot vouches for h as the store's phone and puts it into the phone's
@@ -247,23 +234,17 @@ func TestSetPayingSendsEntitlementExpiredToTheHub(t *testing.T) {
 	if got := phonesOf(t, h); len(got) != 1 || got[0].GetPaying() || h.tr.Admitted() {
 		t.Fatalf("phones after SetPaying(false): %v", got)
 	}
+	sockets, parked := srv.EventsQueuedFor(h.relayID)
 	srv.SetPaying(p.RelayDeviceID(), false) // already off: no second control
 
 	srv.SetPaying(p.RelayDeviceID(), true)
 	if got := phonesOf(t, h); len(got) != 1 || !got[0].GetPaying() || !h.tr.Admitted() {
 		t.Fatalf("phones after SetPaying(true): %v", got)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
-	defer cancel()
-	for {
-		select {
-		case ev := <-h.tr.Events():
-			if controlOf(transport.EntitlementExpired)(ev) {
-				t.Fatal("a second ENTITLEMENT_EXPIRED")
-			}
-		case <-ctx.Done():
-			return
-		}
+	// The relay queued nothing more for the hub (the transport's only
+	// ENTITLEMENT_EXPIRED source is the relay's control).
+	if s2, p2 := srv.EventsQueuedFor(h.relayID); !slices.Equal(s2, sockets) || p2 != parked {
+		t.Fatalf("events for the hub went from %v (+%d parked) to %v (+%d): a second ENTITLEMENT_EXPIRED", sockets, parked, s2, p2)
 	}
 }
 
@@ -339,7 +320,15 @@ func TestRelaytestIsImportedOnlyByTests(t *testing.T) {
 
 func dialWS(t *testing.T, srv *relaytest.Server, device string) *websocket.Conn {
 	t.Helper()
-	ws, _, err := websocket.Dial(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/ws", nil)
+	ws, _ := dialWSHello(t, srv, device)
+	return ws
+}
+
+// dialWSHello is dialWS that also returns the relay's HelloOk.
+func dialWSHello(t *testing.T, srv *relaytest.Server, device string) (*websocket.Conn, *relayv1.HelloOk) {
+	t.Helper()
+	ws, _, err := websocket.Dial(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/ws",
+		&websocket.DialOptions{HTTPClient: srv.HTTPClient()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,10 +339,11 @@ func dialWS(t *testing.T, srv *relaytest.Server, device string) *websocket.Conn 
 	if err := ws.Write(t.Context(), websocket.MessageBinary, hello); err != nil {
 		t.Fatal(err)
 	}
-	if fr := readFrame(t, ws, time.Second); fr == nil || fr.GetHelloOk() == nil {
+	fr := readFrame(t, ws)
+	if fr == nil || fr.GetHelloOk() == nil {
 		t.Fatalf("no hello_ok: %v", fr)
 	}
-	return ws
+	return ws, fr.GetHelloOk()
 }
 
 // subscribeWS subscribes zones and waits for the answer.
@@ -365,17 +355,15 @@ func subscribeWS(t *testing.T, ws *websocket.Conn, zones ...string) {
 	if err := ws.Write(t.Context(), websocket.MessageBinary, b); err != nil {
 		t.Fatal(err)
 	}
-	if fr := readFrame(t, ws, time.Second); fr == nil || fr.GetResponse() == nil {
+	if fr := readFrame(t, ws); fr == nil || fr.GetResponse() == nil {
 		t.Fatalf("no subscribe answer: %v", fr)
 	}
 }
 
-// readFrame reads one frame, nil when none comes within wait.
-func readFrame(t *testing.T, ws *websocket.Conn, wait time.Duration) *relayv1.Frame {
+// readFrame reads one frame, nil when the socket ended.
+func readFrame(t *testing.T, ws *websocket.Conn) *relayv1.Frame {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), wait)
-	defer cancel()
-	_, b, err := ws.Read(ctx)
+	_, b, err := ws.Read(t.Context())
 	if err != nil {
 		return nil
 	}
@@ -387,9 +375,12 @@ func readFrame(t *testing.T, ws *websocket.Conn, wait time.Duration) *relayv1.Fr
 }
 
 // A control sent to a socket that just died is not lost: the device's next
-// socket gets it.
+// socket gets it. In memory: over TCP a write into a socket whose peer has
+// just closed can still succeed (the kernel takes the bytes, the peer answers
+// with a reset), so the fake could not know the control never arrived; a
+// pipe write fails once the peer closed, every time.
 func TestControlOnADeadSocketReachesTheNextOne(t *testing.T) {
-	srv := relaytest.Start(t)
+	srv := relaytest.StartInMemory(t)
 	h := newHub(t, srv)
 	_, store := newPhone(t, srv, h)
 	dead := dialWS(t, srv, h.relayID)
@@ -399,7 +390,7 @@ func TestControlOnADeadSocketReachesTheNextOne(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := dialWS(t, srv, h.relayID)
-	fr := readFrame(t, next, 5*time.Second)
+	fr := readFrame(t, next)
 	if c := fr.GetEvent().GetControl(); c.GetKind() != relayv1.ControlKind_CONTROL_KIND_PAIRING_OPENED || c.GetDetail() != slot {
 		t.Fatalf("the next socket got %v, want PAIRING_OPENED %s", fr, slot)
 	}
@@ -418,15 +409,16 @@ func TestNewSocketReplacesTheOldForControlsAndPush(t *testing.T) {
 	subscribeWS(t, cur, "z")
 
 	srv.SetPaying(p.RelayDeviceID(), false)
-	if c := readFrame(t, cur, 5*time.Second).GetEvent().GetControl(); c.GetKind() != relayv1.ControlKind_CONTROL_KIND_ENTITLEMENT_EXPIRED {
+	if c := readFrame(t, cur).GetEvent().GetControl(); c.GetKind() != relayv1.ControlKind_CONTROL_KIND_ENTITLEMENT_EXPIRED {
 		t.Fatalf("the current socket got control %v", c)
 	}
 	srv.Push(t, &relayv1.Event{Kind: &relayv1.Event_ZoneChanged{ZoneChanged: &relayv1.ZoneChanged{Zone: "z", Seq: 7}}})
-	if zc := readFrame(t, cur, 5*time.Second).GetEvent().GetZoneChanged(); zc.GetSeq() != 7 {
+	if zc := readFrame(t, cur).GetEvent().GetZoneChanged(); zc.GetSeq() != 7 {
 		t.Fatalf("the current socket got %v from Push", zc)
 	}
-	if fr := readFrame(t, old, 300*time.Millisecond); fr != nil {
-		t.Fatalf("the replaced socket got %v", fr)
+	// Two device sockets, oldest first: every event went to the newer one.
+	if got, parked := srv.EventsQueuedFor(h.relayID); !slices.Equal(got, []int{0, 2}) || parked != 0 {
+		t.Fatalf("events queued per socket %v (+%d parked); want [0 2]: the replaced socket got some", got, parked)
 	}
 }
 
@@ -460,7 +452,7 @@ func TestZoneEventsArriveInSeqOrderAcrossWriters(t *testing.T) {
 	}
 	var last uint64
 	for range writers * each {
-		zc := readFrame(t, ws, 5*time.Second).GetEvent().GetZoneChanged()
+		zc := readFrame(t, ws).GetEvent().GetZoneChanged()
 		if zc == nil || zc.GetSeq() <= last {
 			t.Fatalf("zone event %v after seq %d", zc, last)
 		}

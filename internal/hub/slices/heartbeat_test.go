@@ -158,3 +158,27 @@ func TestDBAccountsReadsLabelAndStatusOnly(t *testing.T) {
 		t.Fatalf("accounts = %+v %v", got, err)
 	}
 }
+
+func TestHeartbeat_CarriesBackgroundAI(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	clock := func() time.Time { return now }
+
+	bare := onlyItem(t, HeartbeatSource(heartbeatFacts(clock, nil)))
+	if bytes.Contains(bare.Payload, []byte("background_ai")) {
+		t.Fatalf("nil facts carry the key: %s", bare.Payload)
+	}
+
+	value := wire.BackgroundAIPaused
+	f := heartbeatFacts(clock, nil)
+	f.BackgroundAI = func() string { return value }
+	src := HeartbeatSource(f)
+	if got := onlyItem(t, src).Payload; !bytes.Contains(got, []byte(`"background_ai":"paused"`)) {
+		t.Fatalf("heartbeat = %s", got)
+	}
+	// A change restamps at once, well inside HeartbeatInterval.
+	value = wire.BackgroundAIAllowed
+	now = now.Add(time.Minute)
+	if got := onlyItem(t, src).Payload; !bytes.Contains(got, []byte(`"background_ai":"allowed"`)) {
+		t.Fatalf("a changed value did not restamp: %s", got)
+	}
+}

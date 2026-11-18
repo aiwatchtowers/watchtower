@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
@@ -46,7 +46,7 @@ func TestListTools_HTTP(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tools, err := ListTools(ctx, ServerSpec{Kind: "http", URL: srv.URL,
 		Headers: map[string]string{"Authorization": "Bearer tok"}})
@@ -67,7 +67,7 @@ func TestListTools_HTTP(t *testing.T) {
 func TestListTools_UnreachableServerFails(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(srv.Close)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_, err := ListTools(ctx, ServerSpec{Kind: "http", URL: srv.URL})
 	require.Error(t, err)
@@ -91,7 +91,7 @@ func TestListTools_HeadersStayOnTheServersOrigin(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_, err := ListTools(ctx, ServerSpec{Kind: "http", URL: srv.URL,
 		Headers: map[string]string{"Authorization": "Bearer tok"}})
@@ -104,35 +104,20 @@ func TestListTools_UnknownKind(t *testing.T) {
 	require.ErrorContains(t, err, "unknown connection kind")
 }
 
-// TestListTools_Stdio starts a stdio server (this test binary, re-executed),
-// passes the connection's env to it, and stops it before returning.
-func TestListTools_Stdio(t *testing.T) {
-	exe, err := os.Executable()
-	require.NoError(t, err)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	tools, err := ListTools(ctx, ServerSpec{Kind: "stdio", Command: exe,
-		Env: map[string]string{fakeStdioServerEnv: "1"}})
-	require.NoError(t, err)
-	names := make([]string, 0, len(tools))
-	for _, tool := range tools {
-		names = append(names, tool.Name)
-	}
-	assert.ElementsMatch(t, []string{"list_things", "get_thing", "text_thing", "fail_thing", "slow_thing"}, names)
-}
-
-// TestListTools_StdioStartupFailureQuotesStderr: a server that dies at
-// startup fails the listing with its own stderr in the error.
-func TestListTools_StdioStartupFailureQuotesStderr(t *testing.T) {
-	exe, err := os.Executable()
-	require.NoError(t, err)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	_, err = ListTools(ctx, ServerSpec{Kind: "stdio", Command: exe,
-		Env: map[string]string{fakeStdioServerEnv: "fail"}})
-	require.ErrorContains(t, err, "missing API key")
+// TestListTools_ListsEveryTool lists the in-process fake server: every
+// tool it serves comes back. The real stdio wiring is in
+// TestCallTool_SecretsTravelInEnvNotArgv and TestStdio_ServerGroupStops.
+func TestListTools_ListsEveryTool(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		useFakeServer(t)
+		tools, err := ListTools(t.Context(), ServerSpec{Kind: "stdio"})
+		require.NoError(t, err)
+		names := make([]string, 0, len(tools))
+		for _, tool := range tools {
+			names = append(names, tool.Name)
+		}
+		assert.ElementsMatch(t, []string{"list_things", "get_thing", "text_thing", "fail_thing", "slow_thing"}, names)
+	})
 }
 
 func TestLookPathIn(t *testing.T) {

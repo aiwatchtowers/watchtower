@@ -43,11 +43,14 @@ import (
 type Grant string
 
 // The owner's grants. Start sessions counts only with typing allowed and the
-// phone's own toggle on.
+// phone's own toggle on. Chat (the main AI chat from the phone, iPhone chat
+// D9) is on by default; approving the chat's actions also needs
+// permissions.
 const (
 	GrantTyping        Grant = "typing"
 	GrantPermissions   Grant = "permissions"
 	GrantStartSessions Grant = "start_sessions"
+	GrantChat          Grant = "chat"
 )
 
 // Linking bounds, the Swift hub's values (spec §12a).
@@ -169,10 +172,12 @@ type Center struct {
 	sweep     Sweep
 	ck        ckState
 	retired   retiredCode
-	// issueMu lets one IssueCloudKit run at a time: the only lock held
+	// issueSem lets one IssueCloudKit run at a time: the only lock held
 	// across a bridge call (the public link has its one writer, setLink);
-	// LinkUrgent and Sharing never take it.
-	issueMu sync.Mutex
+	// LinkUrgent and Sharing never take it. A one-slot channel rather than a
+	// mutex: a second issue waiting on it is a durable block, so the tests can
+	// see it waiting (synctest.Wait) instead of sleeping.
+	issueSem chan struct{}
 	// shareTimeout bounds every share call and a wait for the public-link
 	// writer: ShareTimeout (tests shorten it).
 	shareTimeout time.Duration
@@ -206,6 +211,7 @@ func NewCenter(c Config) *Center {
 		publish: c.Publish, events: make(chan PairEvent, eventBuffer),
 		sealer: secure.NewSealer(c.Keys), pairs: map[string]*pairSlot{},
 		container: c.Container, sweep: c.Sweep, shareTimeout: ShareTimeout, keysInZone: c.KeysInZone,
+		issueSem: make(chan struct{}, 1),
 	}
 }
 
@@ -366,6 +372,7 @@ var grantColumns = map[Grant]string{
 	GrantTyping:        "typing_allowed",
 	GrantPermissions:   "permissions_allowed",
 	GrantStartSessions: "start_sessions_granted",
+	GrantChat:          "chat_allowed",
 }
 
 // Allow sets or revokes one of a linked phone's grants and stamps decided_at.

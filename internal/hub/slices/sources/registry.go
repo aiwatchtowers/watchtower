@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/chatengine"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/platform"
@@ -59,6 +60,17 @@ type Config struct {
 	RunnerGap time.Duration
 	Now       func() time.Time
 	Location  *time.Location
+
+	// ChatWatches (nil = a new registry, returned in Set.ChatWatches) is
+	// what the chat handlers write and the chat sources publish; ChatEngine
+	// (nil = chat off: the chat sources publish nothing) is the daemon's
+	// chat engine they read; ChatModels (nil = RegistryChatModels) is the
+	// composer's model list; ChatRouting (nil = no `routing` on chat_list)
+	// reads the routing pill's catalog.
+	ChatWatches *ChatWatches
+	ChatEngine  ChatReader
+	ChatModels  func() []ChatModel
+	ChatRouting func(context.Context) *chatengine.RoutingCatalog
 }
 
 // Set is the hub's sources and what the runtime must start and tell.
@@ -83,6 +95,9 @@ type Set struct {
 	// Staged is the meeting_transcript source's staged-asset reset (nil
 	// unless the mode publishes transcripts).
 	Staged StagedAssets
+	// ChatWatches is the AI chat's request registry the handlers write
+	// (nil unless the mode publishes the chat).
+	ChatWatches *ChatWatches
 }
 
 // StagedAssets forgets what a source staged after the runtime removed its
@@ -99,8 +114,15 @@ var WorkbenchOnlyKinds = []slices.Kind{
 
 // ChangeTables maps each watchtower.db table a database-backed source reads
 // to the kinds it feeds (the hub's data_version watch, spec §9). The
-// runner-fed kinds (session_chat, session_report) and the sidecar-backed
-// recording_job are not here: their own loops and nudges publish them.
+// runner-fed kinds (session_chat, session_report), the sidecar-backed
+// recording_job and the request-fed chat_page and chat_search (built once
+// per request) are not here: their own loops and nudges publish them. No
+// chat_* table is here either (unified chat §6.4): every chat write goes
+// through the daemon's engine, whose OnChange publishes chat_list and
+// chat_feed; agent_actions stays, as a tool's proposal is written by the
+// session's MCP process, not the engine. spec_reviews feeds every kind whose
+// read hides the author loop's asks (askVisible) or reads the loop round
+// (db.SpecLoopRoundSQL): a queue or a reveal writes only that table (#1945).
 var ChangeTables = map[string][]slices.Kind{
 	"projects":                 {"workbench"},
 	"automations":              {"workbench"},
@@ -112,20 +134,22 @@ var ChangeTables = map[string][]slices.Kind{
 	"project_comments":         {"workbench_target", "workbench_comment"},
 	"terminal_sessions":        {"workbench", "workbench_target", "terminal_session", "session_timeline", "permission_request"},
 	"owner_asks":               {"workbench", "workbench_target", "terminal_session", "session_timeline", "owner_ask", slices.KindAskAlert},
-	"spec_reviews":             {"owner_ask", slices.KindAskAlert},
+	"spec_reviews":             {"workbench", "workbench_target", "terminal_session", "session_timeline", "owner_ask", slices.KindAskAlert},
 	"permission_requests":      {"permission_request", slices.KindAskAlert},
 	"calendar_events":          {"calendar_event"},
 	"meeting_prep_cache":       {"calendar_event"},
 	"meeting_transcripts":      {"calendar_event", "meeting_transcript"},
 	"meeting_recaps":           {"meeting_transcript"},
+	"agent_actions":            {slices.KindChatList, slices.KindChatFeed},
 }
 
 // All assembles the sources of a MobileSync scope (MDM POLICY-03, spec §9):
 //   - workbench_only: the workbench family (workbench, workbench_target,
 //     workbench_comment), terminal sessions, the timeline, asks, permission
 //     requests, alerts, the session chat and the report;
-//   - allowed: those plus calendar events, meeting transcripts and recording
-//     jobs;
+//   - allowed: those plus calendar events, meeting transcripts, recording
+//     jobs and the AI chat (chat_list, chat_feed, chat_page, chat_search:
+//     company data, so never under workbench_only);
 //   - any other mode (off, unknown): nothing; unknown modes fail closed on
 //     purpose, so a mistyped policy never widens what the phone sees.
 //
@@ -207,6 +231,15 @@ func All(c Config) (*Set, error) {
 		if st, ok := transcripts.(StagedAssets); ok {
 			set.Staged = st
 		}
+		watches := c.ChatWatches
+		if watches == nil {
+			watches = NewChatWatches()
+		}
+		feed := ChatFeedOptions{Watches: watches, Grant: c.Store.AnyChatPhone, Now: now}
+		set.ChatWatches = watches
+		set.Sources = append(set.Sources,
+			ChatList(c.ChatEngine, ChatListOptions{Grant: c.Store.AnyChatPhone, Models: c.ChatModels, Routing: c.ChatRouting}),
+			ChatFeed(c.ChatEngine, feed), ChatPage(c.ChatEngine, feed), ChatSearch(c.ChatEngine, feed))
 	}
 	return set, nil
 }

@@ -26,7 +26,8 @@ struct RecordingsListView: View {
                 unreadableCount: env.unreadableAudio.count
             ))
         }
-        .navigationTitle("Recordings")
+        .safeAreaInset(edge: .bottom, spacing: 0) { voiceNoteBar }
+        .navigationTitle(RecordingsListModel.screenTitle)
         .refreshable { await env.refresh(.pull) }
         .confirmationDialog(
             "Delete this recording?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
@@ -42,7 +43,7 @@ struct RecordingsListView: View {
                 }
             }
         } message: { _ in
-            Text("Its audio is removed from this iPhone. It was not received by a Mac.")
+            Text("Its audio is removed from this iPhone. It was not received by a tower.")
         }
         .alert("Couldn't delete", isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
             Button("OK", role: .cancel) {}
@@ -51,6 +52,24 @@ struct RecordingsListView: View {
         }
         .sheet(isPresented: $showingUnreadable) {
             UnreadableRecordingsView()
+        }
+    }
+
+    /// A voice note, not tied to an event (#1789: the Calendar's round mic
+    /// moved here). One microphone: off while any hub's capture runs.
+    private var voiceNoteBar: some View {
+        BottomActionBar {
+            Button {
+                Task { await env.recorder.recordVoiceNote() }
+            } label: {
+                Label(RecordingsListModel.voiceNoteTitle, systemImage: "mic.fill")
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(PhoneTone.red.color)
+            .controlSize(.large)
+            .disabled(!env.canStartCapture)
         }
     }
 
@@ -201,7 +220,7 @@ private struct UnreadableRecordingsView: View {
                         }
                     }
                     .card(padding: EdgeInsets())
-                    Text("Their details couldn't be read while this iPhone was setting a Mac's data aside, so they are not sent to any Mac.")
+                    Text("Their details couldn't be read while this iPhone was setting a tower's data aside, so they are not sent to any tower.")
                         .font(TypeScale.meta)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, Spacing.small)

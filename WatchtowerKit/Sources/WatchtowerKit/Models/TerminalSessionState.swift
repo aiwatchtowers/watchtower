@@ -28,9 +28,13 @@ public struct TerminalSessionState: SliceMirror, Identifiable {
         /// Every open ask is a check or a review (#534): the agent waits
         /// for the owner's verdict, not a decision.
         public static let readyToCheck = Self(rawValue: "ready_to_check")
+        /// The agent drafted a spec and the reviewer loop is working on it
+        /// (#1945): the caption carries the round.
+        public static let specReview = Self(rawValue: "spec_review")
         /// Wire order frozen: append only.
         public static let knownValues: [Self] = [
-            .working, .running, .waitingOnAsk, .needsApproval, .finished, .stopped, .failed, .notStarted, .readyToCheck
+            .working, .running, .waitingOnAsk, .needsApproval, .finished, .stopped, .failed, .notStarted, .readyToCheck,
+            .specReview
         ]
     }
 

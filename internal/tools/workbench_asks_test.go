@@ -478,19 +478,11 @@ func TestReadInsideFolder_RefusesAFIFOWithoutBlocking(t *testing.T) {
 	folder := t.TempDir()
 	require.NoError(t, syscall.Mkfifo(filepath.Join(folder, "spec.md"), 0o600))
 
-	done := make(chan error, 1)
-	go func() {
-		_, err := readInsideFolder(folder, "spec.md", 100)
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		require.ErrorIs(t, err, errNotRegularFile)
-	case <-time.After(5 * time.Second):
-		t.Fatal("reading a FIFO blocked")
-	}
+	// A blocking open would hang here: go test -timeout reports it.
+	_, err := readInsideFolder(folder, "spec.md", 100)
+	require.ErrorIs(t, err, errNotRegularFile)
 
-	_, _, err := readReviewDoc(folder, "spec.md")
+	_, _, err = readReviewDoc(folder, "spec.md")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "doc_path: ")
 }

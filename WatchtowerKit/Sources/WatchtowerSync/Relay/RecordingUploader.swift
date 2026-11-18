@@ -151,6 +151,8 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// send at once.
     private var runningPass: Task<Int, Error>?
     private var queuedPass: Task<Int, Error>?
+    /// A pass waits behind the running one (tests: B joined A's queue).
+    var hasQueuedPass: Bool { queuedPass != nil }
     private let logger = Logger(subsystem: "WatchtowerKit", category: "RecordingUploader")
 
     public init(

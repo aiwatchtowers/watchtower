@@ -29,7 +29,7 @@ extension HostedRelayTransport {
         var create = Relay_V1_CreateUpload()
         create.zone = zoneName(zone)
         create.size = size
-        let upload = try await call(zone) { try await self.client.createUpload(create) }
+        let upload = try await call(zone) { try await self.session.createUpload(create) }
         guard let url = URL(string: upload.url), Self.secureBlobURL(url, origin: client.origin) else {
             Self.logger.error("relay upload: the URL leaves HTTPS, \(Self.kind(zone), privacy: .public)")
             throw HostedRelayError.undecodable(status: 200)
@@ -103,7 +103,7 @@ extension HostedRelayTransport {
     /// `get_download`; nil when the relay answers `NOT_FOUND` (the attachment is gone).
     private func downloadURL(_ request: Relay_V1_GetDownload, zone: CloudZoneID) async throws -> Relay_V1_Download? {
         do {
-            return try await call(zone) { try await self.client.getDownload(request) }
+            return try await call(zone) { try await self.session.getDownload(request) }
         } catch HostedRelayError.server(code: .notFound, _) {
             Self.logger.info("relay download: the attachment is gone, \(Self.kind(zone), privacy: .public)")
             return nil

@@ -21,15 +21,16 @@ final class ReplicaWiringTests: XCTestCase {
         .heartbeat: 1,
         .deviceGrant: 1,
         .workbench: 3,
-        .terminalSession: 10,
+        .terminalSession: 11,
         .ownerAsk: 6,
-        .workbenchTarget: 13,
+        .workbenchTarget: 16,
         .workbenchComment: 3,
         .sessionReport: 3,
         .sessionTimeline: 5,
         .sessionChat: 2,
         .calendarEvent: 6,
-        .meetingTranscript: 1
+        .meetingTranscript: 1,
+        .chatList: 1
     ]
 
     /// A booted demo environment also has the job of the demo phone
@@ -153,14 +154,14 @@ final class ReplicaWiringTests: XCTestCase {
         XCTAssertFalse(root.showsOnboarding)
         XCTAssertEqual(env.session(DemoSeed.secondary.hubID)?.hubName, "Home Mac")
 
-        try await poll(timeout: 20, {
+        try await poll({
             env.sessions.values.allSatisfy { !$0.workbenchReplica.snapshot.workbenches.isEmpty }
-        }, "both Macs hydrated")
+        }, "both towers hydrated")
         XCTAssertEqual(env.workbenchReplica.snapshot.workbenches.map(\.name).sorted(), ["Acme", "Acme Website", "Notes"])
         let home = try XCTUnwrap(env.session(DemoSeed.secondary.hubID))
         XCTAssertEqual(home.workbenchReplica.snapshot.workbenches.map(\.name), ["Home Lab"])
-        XCTAssertEqual(home.workbenchReplica.openAskCount, 1)
-        XCTAssertEqual(env.openAskTotal, env.workbenchReplica.openAskCount + 1)
+        XCTAssertEqual(home.workbenchReplica.waitingCount, 1)
+        XCTAssertEqual(env.openAskTotal, env.workbenchReplica.waitingCount + 1)
 
         env.activate(DemoSeed.secondary.hubID)
         XCTAssertEqual(env.workbenchReplica.snapshot.workbenches.map(\.name), ["Home Lab"], "a switch shows the other Mac")

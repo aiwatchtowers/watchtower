@@ -145,8 +145,8 @@ final class CloudKitTransportPollTests: XCTestCase {
         engine.enqueueZonePage(
             .failure(CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 30.0])), zoneName: HubZones.testDataZoneName
         )
-        let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine, clock: clock) {
-            try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000))
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine, clock: clock) { _ in
+            await untilCancelled()
         }
         addTeardownBlock { await transport.retryTask?.cancel() }
 

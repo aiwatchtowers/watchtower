@@ -92,7 +92,8 @@ final class AgentSessionCapabilitiesTests: XCTestCase {
         let known: Set<String> = [
             "state_events", "failure_signal", "interrupt_signal", "idle_signal", "permission_wait", "midturn_input",
             "phone_input", "elicitation", "registry_probe", "compressed_transcript", "subagent_feed", "analytics",
-            "launch_hooks", "background_tasks", "app_session_id", "analytics_context"
+            "launch_hooks", "background_tasks", "app_session_id", "analytics_context",
+            "claude_session_files"
         ]
         for (kind, row) in agents {
             XCTAssertEqual(Set(row.keys), known, kind)

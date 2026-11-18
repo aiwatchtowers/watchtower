@@ -5,6 +5,8 @@ import ViewInspector
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
+import WatchtowerChatText
+@testable import ChatUI
 
 /// An ask's text and fields (#394): the agent's text renders as markdown
 /// with links that open (http(s) in the browser, a workbench path in
@@ -19,6 +21,12 @@ final class OwnerAskTextTests: XCTestCase {
             "id": 1, "project_id": 1, "level": "full", "origin": "agent", "kind": kind, "title": "Ask", "status": "open",
             "summary": summary, "payload": payload
         ]))
+    }
+
+    /// The drawer's draft card for these picks (no keys, no focus).
+    private static func draft(_ picks: Binding<[String: ChatQuestionAnswer.Entry]>, editable: Bool = true) -> ChatQuestionDraft {
+        OwnerAskDrawer.questionDraft(picks: picks, editable: editable, onKey: nil, fieldFocus: nil, stop: nil,
+                                     onLeaveField: nil)
     }
 
     private func attributedTexts(_ view: some View) throws -> [AttributedString] {
@@ -70,7 +78,7 @@ final class OwnerAskTextTests: XCTestCase {
                 ChatQuestionOption(label: "No")
             ])
         ])
-        let view = ChatQuestionCardView(card: card, answerText: nil, onAnswer: nil, draftPicks: .constant([:]))
+        let view = QuestionPartView(card: card, draft: Self.draft(.constant([:])))
         XCTAssertEqual(try links(view).map(\.absoluteString), ["https://example.com/flag", "https://example.com/rfc"])
         XCTAssertNoThrow(try view.inspect().find(button: "Yes"), "the label renders without its markup")
     }
@@ -78,6 +86,18 @@ final class OwnerAskTextTests: XCTestCase {
     /// Every link the text renders opens something: a file, or the
     /// system for an allowlisted scheme; any other scheme is stripped
     /// before it renders, so none looks clickable and does nothing.
+    /// The drawer's question keeps the Mac's Markdown view: blocks render, and a link whose scheme the app refuses
+    /// is stripped, not left live (review M2).
+    func testTheDrawersQuestionIsMarkdownWithRefusedLinksStripped() throws {
+        let card = ChatQuestionCard(questions: [
+            ChatQuestion(id: "q", question: "Keep [this](javascript:alert(1)) or [that](https://example.com/that)?",
+                         options: [ChatQuestionOption(label: "A", description: "See [x](javascript:alert(2))")])
+        ])
+        let view = QuestionPartView(card: card, draft: Self.draft(.constant([:])))
+        XCTAssertNoThrow(try view.inspect().find(MarkdownView.self))
+        XCTAssertEqual(try links(view).map(\.absoluteString), ["https://example.com/that"])
+    }
+
     func testDocumentFileLinksUseFilesInsteadOfTheSystem() throws {
         for (url, path) in [("file:///work/demo/shot%20dark.png", "/work/demo/shot dark.png"),
                             ("docs/shot.png", "docs/shot.png")] {
@@ -153,8 +173,8 @@ final class OwnerAskTextTests: XCTestCase {
         XCTAssertTrue(texts.contains("Step one"), "the agent's item keeps the soft break")
 
         let card = ChatQuestionCard(questions: [ChatQuestion(id: "q", question: "Which?", options: [ChatQuestionOption(label: "A")])])
-        let other = ChatQuestionCardView(card: card, answerText: nil, onAnswer: nil,
-                                         draftPicks: .constant(["q": ChatQuestionAnswer.Entry(other: "Neither\nB")]), editable: false)
+        let other = QuestionPartView(card: card, draft: Self.draft(.constant(["q": ChatQuestionAnswer.Entry(other: "Neither\nB")]),
+                                                                   editable: false))
         XCTAssertTrue(try attributedTexts(other).contains { String($0.characters) == "Other: Neither\nB" })
 
         let sent = OwnerAskMarginComments(
@@ -187,14 +207,14 @@ final class OwnerAskTextTests: XCTestCase {
         let card = ChatQuestionCard(questions: [ChatQuestion(id: "q", question: "Which?", options: [ChatQuestionOption(label: "A")])])
         var stored: [String: ChatQuestionAnswer.Entry] = [:]
         let picks = Binding(get: { stored }, set: { stored = $0 })
-        let onAsk = try ChatQuestionCardView(card: card, answerText: nil, onAnswer: nil, draftPicks: picks)
+        let onAsk = try QuestionPartView(card: card, draft: Self.draft(picks))
             .inspect().find(CommentTextEditor.self).actualView()
         XCTAssertEqual(onAsk.minHeight, CommentTextEditor.formMinHeight)
         onAsk.text = "Neither:\nB"
         XCTAssertEqual(stored["q"]?.other, "Neither:\nB")
 
         var sent: String?
-        let chat = ChatQuestionCardView(card: card, answerText: nil) { sent = $0 }
+        let chat = QuestionPartView(card: card, answerText: nil) { sent = $0 }.environment(\.chatUIStyle, DesignKitChatStyle())
         let field = try chat.inspect().find(CommentTextEditor.self).actualView()
         XCTAssertLessThan(field.minHeight, CommentTextEditor.formMinHeight, "one line in the chat, growing as typed")
         XCTAssertNil(field.onSubmit, "⌘↩ sends nothing while the card is incomplete")

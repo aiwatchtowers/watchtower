@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,30 +79,50 @@ func TestFinishWaitsForThePlacementLock(t *testing.T) {
 	id := w.begin(handlers.StartRequest{Workbench: w.wb})
 	unlock, err := fsutil.LockFile(context.Background(), PlacementLockPath(w.dbPath, w.wb))
 	require.NoError(t, err)
+	var released atomic.Bool
+	waiting := make(chan struct{})
+	stubPlacementLock(t, func(ctx context.Context, path string) (func(), error) {
+		close(waiting)
+		got, err := fsutil.LockFile(ctx, path)
+		if err == nil && !released.Load() {
+			t.Error("took the placement lock while another holder had it")
+		}
+		return got, err
+	})
 	done := make(chan error, 1)
 	go func() { done <- Finish(context.Background(), w.deps(), id, "auto", "", false) }()
-	select {
-	case err := <-done:
-		t.Fatalf("finished while the lock was held: %v", err)
-	case <-time.After(300 * time.Millisecond):
-	}
+	<-waiting // the finish is in the lock's wait, and the launch comes after it
 	_, live := findRun(w.list(), w.deps().scope(), id)
 	assert.False(t, live, "nothing launched under another holder's lock")
+	released.Store(true)
 	unlock()
 	require.NoError(t, <-done)
 	w.launched(id)
 }
 
-// A lock held past the wait fails the row with LockTimeoutReason.
+// stubPlacementLock replaces lockPlacementFile for one test.
+func stubPlacementLock(t *testing.T, lock func(context.Context, string) (func(), error)) {
+	t.Helper()
+	prev := lockPlacementFile
+	lockPlacementFile = lock
+	t.Cleanup(func() { lockPlacementFile = prev })
+}
+
+// A lock held past the wait fails the row with LockTimeoutReason. The wait
+// is bounded by placementLockWait; the stub runs it out at once.
 func TestFinishLockTimeoutFailsTheRow(t *testing.T) {
-	prev := placementLockWait
-	placementLockWait = 100 * time.Millisecond
-	t.Cleanup(func() { placementLockWait = prev })
 	w := newWorld(t)
 	id := w.begin(handlers.StartRequest{Workbench: w.wb})
 	unlock, err := fsutil.LockFile(context.Background(), PlacementLockPath(w.dbPath, w.wb))
 	require.NoError(t, err)
 	defer unlock()
+	stubPlacementLock(t, func(ctx context.Context, path string) (func(), error) {
+		_, ok := ctx.Deadline()
+		require.True(t, ok, "the wait is bounded (placementLockWait)")
+		expired, cancel := context.WithDeadline(ctx, time.Now())
+		defer cancel()
+		return fsutil.LockFile(expired, path)
+	})
 	require.Error(t, Finish(context.Background(), w.deps(), id, "auto", "", false))
 	r := w.row(id)
 	assert.True(t, r.failed)

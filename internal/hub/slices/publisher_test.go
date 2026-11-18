@@ -407,6 +407,20 @@ type fakeTime struct {
 	timers map[int]fakeTimer
 	nextID int
 	armed  int
+	// armedCh is closed (and replaced) on every arm: waitArmed blocks on it.
+	armedCh chan struct{}
+	// woken reports a wake already pending for the driven Run (nil: never).
+	// An arm made while one is pending is not counted: the pending wake
+	// makes Run's select return without sleeping (on the wake, or on a
+	// d<=0 timer with the wake still queued), so an uncounted arm is always
+	// followed by another arm, and only an arm with no wake pending is a
+	// settled sleep. Run pokes itself from inside its own cycle: a kind
+	// turning stuck or recovering marks the heartbeat dirty
+	// (noteKindOutcome, stuck.go), and the alerts re-signalled after a
+	// transport switch mark the ask alerts dirty (PublishSoon in
+	// publisher.go). A settle counting that arm let a step advance the
+	// clock while no timer was armed (#1918).
+	woken func() bool
 }
 
 type fakeTimer struct {
@@ -415,7 +429,7 @@ type fakeTimer struct {
 }
 
 func newFakeTime() *fakeTime {
-	return &fakeTime{now: time.Unix(1_800_000_000, 0).UTC(), timers: map[int]fakeTimer{}}
+	return &fakeTime{now: time.Unix(1_800_000_000, 0).UTC(), timers: map[int]fakeTimer{}, armedCh: make(chan struct{})}
 }
 
 func (f *fakeTime) Now() time.Time {
@@ -430,7 +444,11 @@ func (f *fakeTime) Timer(d time.Duration) (<-chan time.Time, func()) {
 	ch := make(chan time.Time, 1)
 	id := f.nextID
 	f.nextID++
-	f.armed++
+	if f.woken == nil || !f.woken() {
+		f.armed++
+		close(f.armedCh)
+		f.armedCh = make(chan struct{})
+	}
 	if d <= 0 {
 		ch <- f.now
 	} else {
@@ -443,10 +461,31 @@ func (f *fakeTime) Timer(d time.Duration) (<-chan time.Time, func()) {
 	}
 }
 
+// drive puts p's Run on f: its monotonic clock and timers, and a pending
+// wake keeps an arm from counting as settled. Called before Run starts.
+func (f *fakeTime) drive(p *Publisher) {
+	p.mono, p.timer = f.Now, f.Timer
+	f.woken = func() bool { return len(p.wake) > 0 }
+}
+
 func (f *fakeTime) armedCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.armed
+}
+
+// waitArmed blocks until more than n timers were armed with no wake pending
+// (an event wait: a hang is bounded by go test -timeout).
+func (f *fakeTime) waitArmed(n int) {
+	for {
+		f.mu.Lock()
+		armed, ch := f.armed, f.armedCh
+		f.mu.Unlock()
+		if armed > n {
+			return
+		}
+		<-ch
+	}
 }
 
 // advance moves the clock and fires the timers due; true when one fired.
@@ -477,7 +516,7 @@ func (r *rig) runFake(sources ...Source) *runner {
 	r.t.Helper()
 	ft := newFakeTime()
 	p := r.publisherWith(Config{Clock: ft.Now}, sources...)
-	p.mono, p.timer = ft.Now, ft.Timer
+	ft.drive(p)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()
@@ -492,16 +531,9 @@ func (r *rig) runFake(sources ...Source) *runner {
 	return ru
 }
 
-// settle waits (bounded) until Run armed more than n timers.
+// settle waits until Run armed more than n timers.
 func (ru *runner) settle(n int) {
-	ru.t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for ru.ft.armedCount() <= n {
-		if time.Now().After(deadline) {
-			ru.t.Fatal("Run never went back to sleep")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	ru.ft.waitArmed(n)
 }
 
 func (ru *runner) publishSoon(k Kind) {
@@ -591,6 +623,28 @@ func TestFailedSaveIsRetriedWithBackoff(t *testing.T) {
 	}
 }
 
+// An arm made while a wake is pending for the driven Publisher is no
+// settled sleep and is not counted; once the wake is drained, the next arm
+// counts (#1918).
+func TestFakeTimeSkipsArmWithWakePending(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	ft := newFakeTime()
+	p := r.publisher()
+	ft.drive(p)
+	p.poke()
+	_, stop := ft.Timer(time.Second)
+	stop()
+	if n := ft.armedCount(); n != 0 {
+		t.Fatalf("an arm with a wake pending counted: armed = %d", n)
+	}
+	<-p.wake
+	_, stop = ft.Timer(time.Second)
+	stop()
+	if n := ft.armedCount(); n != 1 {
+		t.Fatalf("an arm with no wake pending: armed = %d, want 1", n)
+	}
+}
+
 func TestFailedSourceIsRetried(t *testing.T) {
 	r := newRig(t, transport.KindRelay)
 	src := &fakeSource{kind: "permission_request"}
@@ -604,7 +658,8 @@ func TestFailedSourceIsRetried(t *testing.T) {
 	}
 }
 
-// A failed save leaves its kind and every kind after it unfinished.
+// An unavailable transport leaves the failing kind and every kind after it
+// unfinished (a refused record leaves only its kind: partial_cycle_test.go).
 func TestCycleReportsUnfinishedKinds(t *testing.T) {
 	r := newRig(t, transport.KindRelay)
 	ask, target := &fakeSource{kind: "owner_ask"}, &fakeSource{kind: "target"}

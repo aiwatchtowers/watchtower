@@ -85,11 +85,22 @@ final class EmbeddedChatReplayTests: XCTestCase {
             message("assistant", "d", turn: "t2")
         ]
         let block = try XCTUnwrap(EmbeddedChatReplay.block(messages: messages, before: "t3", prompt: "e", capCharacters: 50))
-        XCTAssertTrue(block.contains("[2 earlier messages omitted]\nOwner: c\nAssistant: d\n"), block)
+        XCTAssertTrue(block.contains("[2 earlier messages omitted]\nOwner: c\nAssistant: d\n"), "a draft-only chat names no tool: \(block)")
+        let withTools = try XCTUnwrap(EmbeddedChatReplay.block(
+            messages: messages, before: "t3", prompt: "e", capCharacters: 50, historyTools: true))
+        XCTAssertTrue(withTools.contains("[2 earlier messages omitted\(EmbeddedChatReplay.omittedHint)]\nOwner: c\n"), withTools)
         let long = try XCTUnwrap(EmbeddedChatReplay.block(
             messages: [message("user", "q", turn: "t1"), message("assistant", String(repeating: "x", count: 100), turn: "t1")],
             before: "t2", prompt: "next", capCharacters: 20))
         XCTAssertTrue(long.contains("[1 earlier messages omitted]\nAssistant: xxxxxxxx"), long)
         XCTAssertFalse(long.contains(String(repeating: "x", count: 20)), long)
+    }
+
+    /// Only the surfaces Go mounts the chat-history reads on (`chatHistorySurfaces`).
+    func testOnlyHistorySurfacesReadChatHistory() {
+        XCTAssertTrue(ChatSurfaceSpec.ToolAccess.actions(surface: "target").readsChatHistory)
+        XCTAssertTrue(ChatSurfaceSpec.ToolAccess.actionsWithoutContext(surface: "automation_editor").readsChatHistory)
+        XCTAssertFalse(ChatSurfaceSpec.ToolAccess.actions(surface: "tuning").readsChatHistory)
+        XCTAssertFalse(ChatSurfaceSpec.ToolAccess.draftOnly.readsChatHistory)
     }
 }

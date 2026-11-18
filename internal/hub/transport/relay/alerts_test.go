@@ -164,6 +164,10 @@ func TestSendAlertErrorMapping(t *testing.T) {
 		t.Errorf("push off: %v", err)
 	}
 	r.relay.SetPushOff(false)
+	r.relay.FailNextWith("send_alert", &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, Message: "internal error"})
+	if err := r.tr.SendAlert(t.Context(), r.phoneID, r.push); !errors.Is(err, ErrRelayInternal) || errors.Is(err, transport.ErrPushOff) {
+		t.Errorf("internal error: %v", err)
+	}
 	r.relay.FailNextWith("send_alert", rateLimited)
 	err := r.tr.SendAlert(t.Context(), r.phoneID, r.push)
 	if !errors.Is(err, transport.ErrRateLimited) || RetryAfter(err) != 7*time.Second {

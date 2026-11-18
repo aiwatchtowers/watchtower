@@ -1,7 +1,8 @@
 // Package relay is the hub's transport over the hosted relay (Go hub design
 // §6.1, RC §7 hub half): records, change feeds and attachments over the
 // pinned copy of the relay's Go client (client/, relayv1/, see VERSION and
-// `make relay-go`), live events from its WebSocket.
+// `make relay-go`), live events from its WebSocket. Once connected, ops go
+// over that WebSocket too (live link R2), HTTPS only without one (send).
 //
 // The client already does RC §7's connection rules — login, ping/pong, close
 // codes, backoff, UNAVAILABLE retries, resubscribing one zone at a time after
@@ -120,6 +121,9 @@ type Transport struct {
 	// at most ownCap): PullEvent skips them without a read.
 	own map[string][]uint64
 	wg  sync.WaitGroup
+	// recordCap and requestBudget are maxRecordBytes and saveRequestBudget
+	// (a test lowers them).
+	recordCap, requestBudget int
 }
 
 // ownCap bounds the own-write seqs kept per zone (a zone the hub writes but
@@ -151,6 +155,7 @@ func New(c *client.Client, o Options) *Transport {
 	hc.CheckRedirect = checkRedirect
 	return &Transport{
 		c: c, o: o, http: hc, events: make(chan transport.Event, eventBuffer), done: make(chan struct{}),
+		recordCap: maxRecordBytes, requestBudget: saveRequestBudget,
 	}
 }
 
@@ -243,6 +248,7 @@ func (t *Transport) Close() error {
 // emit hands an event to the consumer, waiting for room; it gives up only
 // when the transport is closed.
 func (t *Transport) emit(ev transport.Event) {
+	ev.ArrivedAt = t.o.Clock()
 	select {
 	case t.events <- ev:
 	case <-t.done:
@@ -376,7 +382,7 @@ func (t *Transport) readAccountNow() {
 // AccountState reads the hub's account state (the phones holding it in a
 // slot) and keeps it for Vouched and Admitted.
 func (t *Transport) AccountState(ctx context.Context) (*relayv1.AccountState, error) {
-	resp, err := t.c.Do(ctx, &relayv1.Request{Op: &relayv1.Request_GetAccountState{GetAccountState: &relayv1.GetAccountState{}}})
+	resp, err := t.send(ctx, &relayv1.Request{Op: &relayv1.Request_GetAccountState{GetAccountState: &relayv1.GetAccountState{}}})
 	if err != nil {
 		return nil, MapError(err)
 	}
@@ -461,20 +467,103 @@ func (t *Transport) observed() func(zone string, err error) {
 	return t.observe
 }
 
-// do runs one op over HTTPS and maps its error with MapError.
+// do runs one op (send) and maps its error with MapError.
 func (t *Transport) do(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
 	return t.doMapped(ctx, req, MapError)
 }
 
-// doMapped runs one op over HTTPS and maps its error with mapErr.
+// doMapped runs one op (send) and maps its error with mapErr.
 // HUB_NOT_VOUCHED means the hub is in no slot now, whatever the last account
 // state said.
 func (t *Transport) doMapped(ctx context.Context, req *relayv1.Request, mapErr func(error) error) (*relayv1.Response, error) {
-	resp, err := t.c.Do(ctx, req)
+	resp, err := t.send(ctx, req)
 	if err != nil {
 		return nil, t.noteError(mapErr(err))
 	}
 	return resp, nil
+}
+
+// socketOpTimeout bounds one op over the WebSocket, as the relay client's
+// HTTPS timeout bounds one over HTTPS.
+const socketOpTimeout = 30 * time.Second
+
+// send runs one op over the open WebSocket, or over HTTPS without one
+// (before Connect, after Close; the sign-in ops, which make the socket's
+// session, never come here). A request the socket refused before writing
+// any of it (client.ErrNotSent: no socket while it reconnects) or the relay
+// refused UNAUTHENTICATED (the socket's session expired; HTTPS signs in
+// again) goes over HTTPS whatever its op: the relay never ran it. A socket
+// lost after the frame went out, or no answer within socketOpTimeout, leaves
+// the outcome unknown: an op safe to run twice (resendable) is sent again
+// over HTTPS, any other returns client.ErrDisconnected —
+// transport.ErrUnavailable after MapError — and its caller's retry re-reads
+// before writing again. The caller's own ctx ending returns its error. A
+// resendable op of a caller with a deadline waits on the socket at most half
+// of what the caller has left (socketBound), so a socket that never answers
+// still leaves the HTTPS resend its turn.
+func (t *Transport) send(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
+	t.mu.Lock()
+	conn := t.conn
+	if t.closed {
+		conn = nil
+	}
+	t.mu.Unlock()
+	if conn == nil {
+		return t.c.Do(ctx, req)
+	}
+	sctx, cancel := context.WithTimeout(ctx, socketBound(ctx, req, time.Now()))
+	defer cancel()
+	resp, err := conn.Send(sctx, req)
+	unknown := errors.Is(err, client.ErrDisconnected) || (err != nil && sctx.Err() != nil)
+	switch {
+	case errors.Is(err, client.ErrNotSent), client.Code(err) == relayv1.ErrorCode_ERROR_CODE_UNAUTHENTICATED:
+		return t.c.Do(ctx, req)
+	case unknown && ctx.Err() != nil:
+		return nil, ctx.Err()
+	case unknown && resendable(req):
+		return t.c.Do(ctx, req)
+	case unknown:
+		// Not sctx's DeadlineExceeded: MapError passes a ctx error through
+		// as the caller's own, and this is a relay that did not answer.
+		return nil, fmt.Errorf("relay: no answer over the websocket: %w", client.ErrDisconnected)
+	}
+	return resp, err
+}
+
+// socketBound is how long req may wait for its answer over the socket:
+// socketOpTimeout, or for a resendable op half of what ctx's deadline
+// leaves at now when that is less — the other half is the HTTPS resend's.
+func socketBound(ctx context.Context, req *relayv1.Request, now time.Time) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok || !resendable(req) {
+		return socketOpTimeout
+	}
+	return min(socketOpTimeout, deadline.Sub(now)/2)
+}
+
+// resendable reports whether req is safe to run twice: a read, or a save or
+// delete whose every item is conditional (run again, an item that landed the
+// first time comes back as a conflict on the hub's own record).
+func resendable(req *relayv1.Request) bool {
+	switch op := req.GetOp().(type) {
+	case *relayv1.Request_Changes, *relayv1.Request_GetAccountState, *relayv1.Request_GetDownload:
+		return true
+	case *relayv1.Request_Save:
+		for _, it := range op.Save.GetItems() {
+			if it.GetExpect() == nil {
+				return false
+			}
+		}
+		return true
+	case *relayv1.Request_Delete:
+		for _, it := range op.Delete.GetItems() {
+			if it.ExpectedSeq == nil {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // noteError forgets the cached account state's slots on HUB_NOT_VOUCHED and
@@ -524,104 +613,6 @@ func wireExpect(item *relayv1.SaveItem, e transport.Expect) error {
 		return fmt.Errorf("relay: unknown expect mode %d", e.Mode)
 	}
 	return nil
-}
-
-// Save implements transport.Transport. Before any I/O it refuses the whole
-// call with secure.ErrUnsealed when a record did not come from the Sealer or
-// carries an asset file outside Options.AssetDir. An asset in a pairing zone
-// is refused per item with transport.ErrForbidden (the relay allows none
-// there). Each other asset is uploaded first (create_upload, then a PUT of the
-// sealed file to the opaque URL), then the records are saved with their
-// attachment ids. A refused save also emits a zone event per zone in it.
-func (t *Transport) Save(ctx context.Context, items []transport.SaveItem) ([]transport.Outcome, error) {
-	assets := make([]*os.File, len(items))
-	defer func() {
-		for _, f := range assets {
-			if f != nil {
-				_ = f.Close()
-			}
-		}
-	}()
-	out := make([]transport.Outcome, len(items))
-	wire := make([]*relayv1.SaveItem, 0, len(items))
-	index := make([]int, 0, len(items)) // wire position → item index
-	for i, it := range items {
-		r := it.Record
-		if !r.Sealed() {
-			return nil, fmt.Errorf("relay: save item %d: %w", i, secure.ErrUnsealed)
-		}
-		w := &relayv1.SaveItem{Record: &relayv1.Record{
-			Zone: r.Zone(), Name: r.WireName(), Envelope: r.Envelope(), ClientModifiedAtMs: t.o.Clock().UnixMilli(),
-		}}
-		if err := wireExpect(w, it.Expect); err != nil {
-			return nil, fmt.Errorf("relay: save item %d: %w", i, err)
-		}
-		if p := r.AssetPath(); p != "" {
-			if isPairZone(r.Zone()) {
-				out[i] = transport.Outcome{Refused: fmt.Errorf("relay: attachment in a pairing zone: %w", transport.ErrForbidden)}
-				continue
-			}
-			f, err := t.openAsset(p)
-			if err != nil {
-				return nil, fmt.Errorf("relay: save item %d: %w", i, err)
-			}
-			assets[i] = f
-		}
-		wire = append(wire, w)
-		index = append(index, i)
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if len(wire) == 0 {
-		return out, nil
-	}
-	for k, w := range wire {
-		if f := assets[index[k]]; f != nil {
-			id, err := t.upload(ctx, w.GetRecord().GetZone(), f)
-			if err != nil {
-				return nil, fmt.Errorf("relay: save item %d: upload: %w", index[k], err)
-			}
-			w.Record.AttachmentId = id
-		}
-	}
-	resp, err := t.do(ctx, &relayv1.Request{Op: &relayv1.Request_Save{Save: &relayv1.Save{Items: wire}}})
-	if err != nil {
-		zones := make([]string, len(wire))
-		for k, w := range wire {
-			zones[k] = w.GetRecord().GetZone()
-		}
-		t.rereadZones(zones)
-		if f := t.observed(); f != nil {
-			// A whole-call refusal names every zone of the batch; the hub's
-			// mailbox writes save one mailbox's queue per call
-			// (actions/control.go), so a mailbox quota is never put on another
-			// phone's mailbox.
-			for _, z := range zones {
-				f(z, err)
-			}
-		}
-		return nil, fmt.Errorf("relay: save: %w", err)
-	}
-	if err := saveOutcomes(resp.GetSave(), index, out); err != nil {
-		return nil, fmt.Errorf("relay: save: %w", err)
-	}
-	for i, it := range items {
-		if out[i].Saved {
-			t.noteOwn(it.Record.Zone(), out[i].RecordSeq)
-		}
-	}
-	if f := t.observed(); f != nil {
-		for i, it := range items {
-			switch o := out[i]; {
-			case o.Saved:
-				f(it.Record.Zone(), nil)
-			case o.Refused != nil:
-				f(it.Record.Zone(), o.Refused)
-			}
-		}
-	}
-	return out, nil
 }
 
 // saveOutcomes fills out from a save answer: saved records in request order,
@@ -799,12 +790,14 @@ func (t *Transport) Pull(ctx context.Context, zone string, apply func(transport.
 //   - every seq after the token up to ev.Seq is one the hub's own Save got:
 //     the token moves to ev.Seq, nothing is read (the relay tells the writer
 //     of its own writes too);
-//   - only ev.Seq is not the hub's own and the event carries its record
-//     inline: apply sees that one-record page, then the token moves to it.
+//   - the event carries its records inline (relay records_inline, or the
+//     old single record) and they cover every seq after the token up to
+//     ev.Seq that is not the hub's own: apply sees one page of those records
+//     (the own ones left out), then the token moves to ev.Seq.
 //
-// Anything else — a write by someone else in between, a record too large to
-// come inline, a delete, a resync marker (Seq 0), a zone never read (token
-// 0) — is Pull of that zone.
+// Anything else — a write the records do not cover (an event lost before
+// this one, a record too large to come inline), a delete, a resync marker
+// (Seq 0), a zone never read (token 0) — is Pull of that zone.
 //
 // Own seqs are noted when Save returns. An event can overtake that (a Save
 // from another goroutine whose event arrives first, a Save that failed as a
@@ -827,13 +820,49 @@ func (t *Transport) PullEvent(ctx context.Context, ev transport.Event, apply fun
 	switch next := t.firstForeign(zone, since, ev.Seq); {
 	case next > ev.Seq:
 		return t.setToken(zone, ev.Seq)
-	case next == ev.Seq && ev.Inline != nil && ev.Inline.NewSeq == ev.Seq:
-		if err := apply(*ev.Inline); err != nil {
-			return err
+	case ev.Inline != nil && ev.Inline.NewSeq == ev.Seq:
+		if page, ok := t.inlinePage(zone, since, next, ev.Inline); ok {
+			if err := apply(page); err != nil {
+				return err
+			}
+			return t.setToken(zone, ev.Seq)
 		}
-		return t.setToken(zone, ev.Seq)
 	}
 	return t.Pull(ctx, zone, apply)
+}
+
+// inlinePage is the page PullEvent applies from in, an event's inline
+// records, for zone read up to since whose first seq after since that is not
+// the hub's own is next: in's records after since that are not the hub's own
+// writes. ok only when in's records are contiguous, start at or before next
+// and end at in.NewSeq, so they cover every write after the token the hub did
+// not make.
+func (t *Transport) inlinePage(zone string, since, next uint64, in *transport.Batch) (transport.Batch, bool) {
+	n := len(in.Changed)
+	if n == 0 || len(in.Deleted) != 0 || in.Changed[n-1].RecordSeq != in.NewSeq {
+		return transport.Batch{}, false
+	}
+	first := in.Changed[0].RecordSeq
+	if first == 0 || first > next {
+		return transport.Batch{}, false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	own := t.own[zone]
+	page := transport.Batch{NewSeq: in.NewSeq}
+	for i, s := range in.Changed {
+		if s.RecordSeq != first+uint64(i) {
+			return transport.Batch{}, false
+		}
+		if s.RecordSeq <= since {
+			continue
+		}
+		if _, found := slices.BinarySearch(own, s.RecordSeq); found {
+			continue
+		}
+		page.Changed = append(page.Changed, s)
+	}
+	return page, true
 }
 
 // OwnWrites reports whether every seq after zone's stored token up to ev.Seq
@@ -900,23 +929,32 @@ func (t *Transport) firstForeign(zone string, since, upTo uint64) uint64 {
 	return next
 }
 
-// inlineOf is the record a ZoneChanged carries as a one-record page at the
-// event's seq; nil when it carries none, or one written at another seq.
+// inlineOf is the records a ZoneChanged carries — records (relay
+// records_inline), or the old single record of a relay before it — as one
+// page at the event's seq, oldest first, each with its RecordSeq; nil when it
+// carries none, a deletion, or records that are not contiguous up to the
+// event's seq (PullEvent then reads).
 func inlineOf(zc *relayv1.ZoneChanged) *transport.Batch {
-	r := zc.GetRecord()
-	if r == nil || zc.GetSeq() == 0 || r.GetRecordSeq() != zc.GetSeq() {
+	recs := zc.GetRecords()
+	if len(recs) == 0 && zc.GetRecord() != nil {
+		recs = []*relayv1.Record{zc.GetRecord()}
+	}
+	seq := zc.GetSeq()
+	if len(recs) == 0 || uint64(len(recs)) > seq {
 		return nil
 	}
-	b := &transport.Batch{NewSeq: zc.GetSeq()}
-	if r.GetDeleted() {
-		b.Deleted = []string{r.GetName()}
-		return b
+	first := seq - uint64(len(recs)) + 1
+	b := &transport.Batch{NewSeq: seq}
+	for i, r := range recs {
+		if r.GetDeleted() || r.GetRecordSeq() != first+uint64(i) {
+			return nil
+		}
+		s := stored(r)
+		if s.Zone == "" {
+			s.Zone = zc.GetZone()
+		}
+		b.Changed = append(b.Changed, *s)
 	}
-	s := stored(r)
-	if s.Zone == "" {
-		s.Zone = zc.GetZone()
-	}
-	b.Changed = []transport.Stored{*s}
 	return b
 }
 

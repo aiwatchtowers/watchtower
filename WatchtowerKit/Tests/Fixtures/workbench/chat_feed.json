@@ -1,0 +1,27 @@
+{
+  "actions": [
+    {"args_display": "{\n  \"text\": \"The rollout moved to Friday.\"\n}", "args_sha256": "5f1d0c0ffee5f1d0c0ffee5f1d0c0ffee5f1d0c0ffee5f1d0c0ffee5f1d0c0ff", "args_complete": true, "external": false, "id": 7, "reason": "Tell the team about the new date", "status": "pending", "title": "Send slack message", "tool": "send_slack_message", "turn_id": "turn-2"}
+  ],
+  "artifacts": [
+    {"content": "# Rollout plan\n\nFriday, 10:00.", "content_cut": false, "key": "rollout-plan", "kind": "document", "title": "Rollout plan", "version": 2},
+    {"content_cut": true, "key": "big-table", "kind": "table", "title": "All payments", "version": 1}
+  ],
+  "conversation": {
+    "actual_model": "opus",
+    "actual_provider": "claude",
+    "id": 3,
+    "lease": {"owner": "hub", "turn_id": "turn-2", "waiting_slot": false},
+    "live_slack_since": 11,
+    "project": {"id": 1, "name": "Acme launch"},
+    "routing": {"mode": "pinned", "model": "opus", "provider": "claude"},
+    "routing_reason": "",
+    "title": "Payments rollout"
+  },
+  "has_more": true,
+  "messages": [
+    {"attachments": [{"id": 5, "mime": "application/pdf", "name": "plan.pdf", "size": 2048}], "created_at": 1700000010, "id": 10, "role": "user", "siblings": {"count": 1, "index": 1}, "status": "complete", "steps": [], "text": "When does the payments rollout start?", "text_cut": false, "parts": [{"kind": "text", "payload": {"text": "When does the payments rollout start?", "text_cut": false}, "fallback": {"text": "When does the payments rollout start?", "actions": []}}]},
+    {"attachments": [], "created_at": 1700000020, "id": 11, "role": "assistant", "siblings": {"count": 2, "ids": [9, 11], "index": 2}, "status": "complete", "steps": [{"name": "search_knowledge", "ok": true, "sources": [{"kind": "slack", "ref": "msg-1", "title": "#payments", "url": "https://example.com/p1"}], "summary": "2 results"}, {"name": "list_messages", "sources": [], "summary": ""}], "text": "It slipped to Friday.", "text_cut": false},
+    {"attachments": [], "created_at": 1700000030, "id": 12, "role": "user", "siblings": {"count": 1, "index": 1}, "status": "complete", "steps": [], "text": "Tell the team.", "text_cut": false},
+    {"attachments": [], "created_at": 1700000040, "error_code": "session_lost", "error_message": "The session ended.", "id": 13, "role": "assistant", "siblings": {"count": 1, "index": 1}, "status": "partial", "steps": [], "text": "I will post it once you appr…", "text_cut": true}
+  ]
+}

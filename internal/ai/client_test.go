@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -388,16 +387,20 @@ func TestQuerySync_CleanExitIsErrorSurfacesEnvelopeMessage(t *testing.T) {
 }
 
 func TestQuerySync_ContextCancellation(t *testing.T) {
-	mockPath := writeMockClaude(t, `sleep 10; echo "too late"`)
-
+	g := newGroupFIFO(t)
 	c := NewClient("test-model", "", "")
-	c.claudeCmd = mockPath
+	c.claudeCmd = writeMockClaude(t, g.prefix()+`sleep 60; echo "too late"`)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	_, _, err := c.QuerySync(ctx, "system", "hello", "")
-	require.Error(t, err)
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := c.QuerySync(ctx, "system", "hello", "")
+		done <- err
+	}()
+	g.waitPID(t)
+	cancel()
+	require.Error(t, <-done)
 }
 
 func TestQuery_StreamingSuccess(t *testing.T) {
@@ -578,15 +581,16 @@ func TestQuery_StreamingExitErrorFallsBackWhenNoResultEvent(t *testing.T) {
 }
 
 func TestQuery_ContextCancellation(t *testing.T) {
-	mockPath := writeMockClaude(t, `sleep 10`)
-
+	g := newGroupFIFO(t)
 	c := NewClient("test-model", "", "")
-	c.claudeCmd = mockPath
+	c.claudeCmd = writeMockClaude(t, g.prefix()+`sleep 60`)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	textCh, errCh, _ := c.Query(ctx, "system", "hello", "")
+	g.waitPID(t)
+	cancel()
 
 	for range textCh {
 	}

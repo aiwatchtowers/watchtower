@@ -262,7 +262,7 @@ Record name `<kind>-<id>` (`heartbeat` alone has no id). Every published record 
 
 | Kind | Id | Window and caps | Payload (Kit mirror; fixture) | Urgent | Go hub |
 |---|---|---|---|---|---|
-| `heartbeat` | — | one record; restamped every 15 min and at once when accounts or `sharing` change; the phone calls a hub offline after 35 min | `updated_at, app_version, hub_id, mac_name ≤ 60, flavor (default\|corp), last_publish_at?, last_relay_at?, relay_backlog, accounts[≤ 20]{kind, label ≤ 80, status}, enabled_at, owner_user, sharing (available\|none\|unavailable)` | — | yes |
+| `heartbeat` | — | one record; restamped every 15 min and at once when accounts, `sharing` or `stuck_since` change; the phone calls a hub offline after 35 min | `updated_at, app_version, hub_id, mac_name ≤ 60, flavor (default\|corp), last_publish_at?, last_relay_at?, relay_backlog, accounts[≤ 20]{kind, label ≤ 80, status}, enabled_at, owner_user, sharing (available\|none\|unavailable), capabilities?, hub_kind? (mac\|server; absent = mac, #1783), stuck_since? (Unix s: the oldest kind not going through whole first failed; absent = all go, #1873)` | — | yes |
 | `device_grant` | device_id | §5.4; keybox class | `DeviceGrant` + keys; `hub_contract_cases.json` | yes | yes |
 | `workbench` | workbench id | ≤ 100 by latest session activity | `Workbench`; `workbench/workbench.json` (incl. `automations ≤ 50`) | — | yes |
 | `workbench_target` | target id | per workbench ≤ 2000 open + ≤ 500 archived within 90 days; `session_ids ≤ 20` | `WorkbenchTarget`; `workbench_target.json` | — | yes |
@@ -274,6 +274,10 @@ Record name `<kind>-<id>` (`heartbeat` alone has no id). Every published record 
 | `session_report` | session id | live or active within 7 days; lists capped, ≤ 128 KiB | `SessionReport`; `session_report.json` | — | not yet |
 | `session_timeline` | session id | same window; ≤ 100 milestones, `text` ≤ 200 | `session_timeline.json` | — | yes |
 | `session_chat` | `<session>` or `<session>-<agent>` | only while a phone watches (5 min after its last `session_chat_request`); 300 entries, text 4000, labels 200, 600 000 bytes | `SessionChat`; `session_chat*.json` (FEED-05) | yes | not yet |
+| `chat_list` | `main` | one record while a linked phone holds the `chat` grant; ≤ 200 non-archived conversations (`id, title ≤ 200, pinned, updated_at, project?, state waiting\|answering\|unread\|read, last_line ≤ 120, lease_owner?`) + `projects[]`, `models[]`, `error?`; ≤ 600 000 bytes | `ChatList`; `workbench/chat_list.json` | — | yes |
+| `chat_feed` | conversation id | only while a phone watches (`chat_feed_request` open: 5 min, repeated every 60 s; prefetch: once, deleted after 2 min); last 60 messages of the active branch + the latest version of each artifact + the turns' actions; ≤ 600 000 bytes | `ChatFeed`; `workbench/chat_feed.json` | yes | yes |
+| `chat_page` | `<conversation>-<before_message_id>` | 60 older messages, `has_more`; deleted 5 min after its request; ≤ 600 000 bytes | `ChatPage`; `workbench/chat_page.json` | — | yes |
+| `chat_search` | first 16 hex of sha256(query) | ≤ 50 hits (conversation id, title, snippet ≤ 200 with `\u{2}`/`\u{3}` match marks, message id, date); deleted 5 min after its request | `ChatSearch`; `workbench/chat_search.json` | — | yes |
 | `calendar_event` | event id | local today − 1 day … now + 14 days, ≤ 500 | `CalendarEvent` (inline literal in `CalendarMirrorFixtureTests`) | — | not yet |
 | `meeting_transcript` | transcript id | 30 days or in the calendar window, ≤ 200; body as sealed asset `segments.json` ≤ 20 MiB | `MeetingTranscript` (inline literal) | — | not yet |
 | `recording_job` | upload id | until 7 days after it ended, ≤ 100 | `{id, status, percent?, transcript_id?, error? ≤ 300, updated_at}` | — | not yet |
@@ -334,6 +338,19 @@ Age window: 7 days after `created_at`, 24 h for the session-request kinds (marke
 | `permission_answer` | session id | `{request_id, behavior: allow\|deny}` | permissions | NI | `device_not_allowed`, `not_found`, `not_pending`, `answer_on_mac`, `session_not_running`; applied `{status: allowed\|denied}` | yes |
 | `session_interrupt` | session id | `{}` | typing | NI | `device_not_allowed`, `not_found`, `session_not_running`, `not_working`, `expired` (> 120 s) | yes |
 | `automation_run` | automation id | `{workbench_id, confirmed}` | start | NI, 24 h | `device_not_allowed`, `not_found`, `not_on_board`, `conflict`; applied `{run_id, coalesced}` | yes |
+| `chat_new` | — | `{client_key, project_id?, routing {mode auto\|pinned, provider?, model?}}` | chat | NI | `not_found` (project), `invalid_params`; applied `{conversation_id}` | yes |
+| `chat_turn` | conversation id | `{mode send\|regenerate\|edit, message_id?, text ≤ 32 000 runes, attachment_ids[], routing?}` | chat | NI, R | `conversation_busy`, `attachment_missing`, `not_found`, `invalid_params`; applied `{user_message_id, assistant_message_id, turn_id}` once the start transaction committed | yes |
+| `chat_cancel` | conversation id | `{turn_id}` | chat | | `not_found` (no such running turn) | yes |
+| `chat_feed_request` | conversation id (0 = republish the list only) | `{purpose open\|prefetch}` | chat | | applied `{}` | yes |
+| `chat_read` | conversation id | `{message_id}` | chat | | `not_found`; never moves `read_at` backwards | yes |
+| `chat_branch_select` | message id | `{}` | chat | | `not_found`; allowed during a turn | yes |
+| `chat_page` | conversation id | `{before_message_id}` | chat | | `not_found` | yes |
+| `chat_search` | — | `{query ≤ 200}` | chat | | `invalid_params` | yes |
+| `chat_manage` | conversation id | `{op pin\|unpin\|rename\|delete, title?}` | chat | NI | `not_found`, `invalid_params` (empty title) | yes |
+| `chat_action_answer` | action id | `{decision approve\|reject, args_sha256}` | chat **and** permissions | NI | `device_not_allowed`, `not_pending` (`result.status` = the row's final state), `changed` ("The action changed — look again"), `not_found` | yes |
+| `chat_attachment` (upload frame, not an action; modelled on `recording_upload`) | upload id | descriptor `{upload_id, conversation_id, name, mime, size}` + the sealed asset | chat | | applied `{attachment_id}`; `not_found` (the file did not arrive), `invalid_params` with the Mac's limit text; a failed upload the phone writes again is tried again | yes |
+
+Every `chat_*` kind is refused `not_supported` when the heartbeat's `capabilities.chat` is not `on`, and `device_not_allowed` without the `chat` grant (`watchtower hub allow <device> chat [--revoke]`; on a server hub the message carries that line). Chat grant is **on by default** for linked and new phones (owner decision, ask #1340). New reasons: `conversation_busy`, `attachment_missing`, `changed`. Design: `docs/superpowers/specs/2026-11-15-iphone-chat-design.md` §4.5.
 | `target_done`, `target_snooze`, `task_create` | | | | | always `unsupported_in_poc` | yes |
 | any other kind, or a kind with no handler | | | | | `unsupported_in_poc` | yes |
 
@@ -487,6 +504,8 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 - Phone UI and its mockups: relay client spec.
 
 **Why the heartbeat, not `device_grant`.** Recording is a fact about the host, the same for every phone; the heartbeat is the hub's one self-description record (name, flavor, accounts, sharing), already republished at once when its facts change, and read by every linked phone. `device_grant` is per phone and carries this link's grants and keys: putting host facts there means re-sealing an HPKE keybox per phone for each change, up to 20 records. `transports` sits in `device_grant` because the phone needs it while linking, before it holds `K_data`; recording matters only after the link, when the heartbeat is readable.
+
+**The `chat` capability and the explicit-`on` rule (iPhone chat, 2026-11-15, ask #1340).** The heartbeat's `capabilities` gains `chat` (`"on"`/`"off"`) and, when it is `off`, `chat_reason`: `not_relay` (the hub is not on the relay), `runner_down` (no chat runner or no chat sources), `desktop_too_old` (a Desktop heartbeat at most 2 minutes old lacks the chat-lease flag) or `policy` (MDM `MobileSync` is `workbench_only`). Unlike `recordings`, **an absent `chat` key means off**: a hub that predates chat never offers it, and only the explicit value `"on"` shows the Chats tab (Kit `HeartbeatPayload.chatOffered`). An unknown `chat_reason` reads as "unavailable". The Desktop sets the flag by sending `chat_lease: 1` on its control-socket `desktop_heartbeat` (CLI twin `hub desktop heartbeat --chat-lease 0|1`). Chat sources publish only under MDM `MobileSync` `allowed`.
 
 **Old and new sides.**
 

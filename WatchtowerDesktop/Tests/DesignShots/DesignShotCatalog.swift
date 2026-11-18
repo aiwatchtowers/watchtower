@@ -1,4 +1,5 @@
 import AppKit
+import ChatWire
 import GRDB
 import SwiftUI
 import XCTest
@@ -53,6 +54,19 @@ enum DesignShotCatalog {
             DesignShot(name: "session-drag-preview-narrow-busy", size: NSSize(width: 190, height: 140)) {
                 DesignShotFixtures.sessionDragPreview(width: 166, busy: true)
             },
+            DesignShot(name: "session-rows-title", size: NSSize(width: 300, height: 0)) {
+                DesignShotFixtures.sessionRowsTitle(width: 276)
+            },
+            DesignShot(name: "session-rows-title-narrow", size: NSSize(width: 214, height: 0)) {
+                DesignShotFixtures.sessionRowsTitle(width: 190)
+            },
+            // Board #1945: Spec review beside Working, Ready for review, Idle.
+            DesignShot(name: "session-state-spec-review", size: NSSize(width: 300, height: 0)) {
+                SpecReviewStateShotFixtures.rows(width: 276)
+            },
+            DesignShot(name: "session-state-spec-review-narrow", size: NSSize(width: 214, height: 0)) {
+                SpecReviewStateShotFixtures.rows(width: 190)
+            },
             DesignShot(name: "chat-rows", size: NSSize(width: 560, height: 280)) {
                 AnyView(DesignShotFixtures.chatRows().padding(12).shotFrame().detailBackground())
             },
@@ -71,6 +85,17 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "chat-markdown-streaming-narrow", size: NSSize(width: 344, height: 0)) {
                 AnyView(ChatMarkdownShotFixtures.streaming(width: 320).shotFrame().detailBackground())
+            },
+            // A table wider than the column wraps its long column (ask #1197).
+            DesignShot(name: "chat-markdown-wide-table-finished", size: NSSize(width: 544, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.finished(width: 520, text: ChatMarkdownShotFixtures.wideTable)
+                    .shotFrame()
+                    .detailBackground())
+            },
+            DesignShot(name: "chat-markdown-wide-table-streaming", size: NSSize(width: 544, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.streaming(width: 520, text: ChatMarkdownShotFixtures.wideTable)
+                    .shotFrame()
+                    .detailBackground())
             },
             DesignShot(name: "chat-composer-ollama-capabilities", size: NSSize(width: 620, height: 0)) {
                 AnyView(ProviderCapabilitiesShotFixtures.ollamaComposer().shotFrame().detailBackground())
@@ -567,7 +592,10 @@ enum DesignShotCatalog {
             DesignShot(name: "mobileAdoptionFailed-narrow", size: NSSize(width: 320, height: 200)) {
                 HubAdoptionShotFixtures.screen(.failed(reason: "swift_schema"))
             }
-        ] + ProviderFallbackShotFixtures.shots + MobileSettingsShotFixtures.Frame.allCases.map { frame in
+        ] + ProviderFallbackShotFixtures.shots
+        + OnboardingAgentShotFixtures.shots
+        + OnboardingStepLiveShotFixtures.shots
+        + MobileSettingsShotFixtures.Frame.allCases.map { frame in
             // Settings → Mobile over `watchtower hub …` (go hub phase 3 Task 23), mockup §1–§9.
             DesignShot(name: frame.name, size: frame.size) { MobileSettingsShotFixtures.screen(frame) }
         } + MobileSettingsShotFixtures.Pairing.allCases.map { shot in
@@ -590,6 +618,20 @@ enum DesignShotCatalog {
                     .detailBackground())
             }
         } + ProviderFallbackShotFixtures.runtimeShots + InboxBuilderAShotFixtures.shots + InboxBuilderBShotFixtures.shots
+            + AutoCleanupShotFixtures.shots
+            + ClosedAsksShotFixtures.shots
+            + TuningChatShotFixtures.shots // The tuning chat over the Analytics pane (#1517).
+            + SlackFullLiveShotFixtures.shots // Slack Full / Live screens spec (#1779), design only.
+            + SlackAdaptiveSyncShotFixtures.shots // Adaptive Slack sync, Statistics → Channels (#1709).
+            + SlackPolicyShotFixtures.shots // Slack Developer Policy hygiene (#1769): People frames real, the rest design only.
+            + PlanLimitsNoTokenShotFixtures.shots // Plan limits without a token spec (#1885), design only.
+            + FilesSectionShotFixtures.shots // The workbench FILES tree polished to the multi-folder mockup (#2017).
+            + IPhoneChatShotFixtures.shots // The iPhone chat's Mac side (#1791), mockup 4b.
+            + UnifiedChatShotFixtures.shots // The unified chat's new states and baselines (#1822 T0).
+            + ComposerShotFixtures.shots // The composer on every Mac surface, before and after ChatUI (#1822 T13).
+            + ApprovalCardShotFixtures.shots // The approval card before and after its move to ChatUI (#1822 T15).
+            + RoutingPillShotFixtures.shots // The routing pill and fallback card before and after ChatUI (#1822 T17).
+            + BackgroundAIConsentShotFixtures.shots // Background AI consent spec (#1886), design only.
     }
 }
 
@@ -617,6 +659,7 @@ enum DesignShotFixtures {
         if let poolPath { TestDatabase.cleanup(path: poolPath) }
         poolPath = nil
         ReviewShotFixtures.cleanUp()
+        FilesSectionShotFixtures.cleanUp()
         ReviewerShotFixtures.cleanUp()
         SpecReviewShotFixtures.cleanUp()
         InboxShotFixtures.cleanUp()
@@ -624,12 +667,20 @@ enum DesignShotFixtures {
         AutomationShotFixtures.cleanUp()
         BuiltinShotFixtures.cleanUp()
         CleanupShotFixtures.cleanUp()
+        AutoCleanupShotFixtures.cleanUp()
         AgentSettingsShotFixtures.cleanUp()
         CoachShotFixtures.cleanUp()
         InboxFolderMenuShotFixtures.cleanUp()
         InboxFoldersShotFixtures.cleanUp()
         InboxApprovalsShotFixtures.cleanUp()
+        TuningChatShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
+        ClosedAsksShotFixtures.cleanUp()
+        IPhoneChatShotFixtures.cleanUp()
+        UnifiedChatShotFixtures.cleanUp()
+        ComposerShotFixtures.cleanUp()
+        ApprovalCardShotFixtures.cleanUp()
+        RoutingPillShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)
@@ -797,6 +848,36 @@ enum DesignShotFixtures {
             .panelBackground())
     }
 
+    /// Session rows with a title wider than the panel (#1088): a workbench
+    /// session with open asks and the ✕ (the title keeps the whole first
+    /// line), and a running standalone terminal, which stays one line.
+    static func sessionRowsTitle(width: CGFloat) -> AnyView {
+        func session(_ id: Int64, projectID: Int64?, kind: TerminalSession.Kind, title: String) -> TerminalSession {
+            TerminalSession(id: id, projectID: projectID, kind: kind, title: title, titleSource: .user,
+                            folderPath: "/tmp/acme", createdAt: "2026-10-01T12:00:00Z",
+                            lastActiveAt: "2026-10-01T12:00:00Z")
+        }
+        let actions = SessionRowActions(open: { _ in }, rename: { _ in }, delete: { _ in })
+        let agent = SessionSwitcherPresentation.Row(
+            session: session(42, projectID: 1, kind: .codex, title: "acme billing export and invoice reconciliation"),
+            state: .live(.working), caption: "Working", badge: nil, shortcut: nil
+        )
+        let shell = SessionSwitcherPresentation.Row(
+            session: session(43, projectID: nil, kind: .shell, title: "acme deploy logs on the staging host"),
+            state: .live(.running), caption: nil, badge: nil, shortcut: nil
+        )
+        return AnyView(VStack(alignment: .leading, spacing: Spacing.medium) {
+            TerminalSessionRow(row: agent, actions: actions, openAsks: 2, reportLine: "#42 · 3/5",
+                               reportProgress: 0.6, quickDelete: {}, showsDelete: true, opensIn: .terminal)
+                .panelTab(isSelected: true)
+            TerminalSessionRow(row: shell, actions: actions)
+        }
+        .frame(width: width)
+        .padding(Spacing.medium)
+        .shotFrame()
+        .panelBackground())
+    }
+
     // MARK: - Chat
 
     static func chatRows() -> AnyView {
@@ -814,8 +895,8 @@ enum DesignShotFixtures {
                 }
             }
             return AnyView(VStack(alignment: .leading, spacing: 12) {
-                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                    ChatMessageRow(item: item, isLast: index == items.count - 1, isEditing: false, actions: ChatRowActions())
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    ChatUIShotRow.row(item)
                 }
                 HStack {
                     Spacer()
@@ -836,7 +917,8 @@ enum DesignShotFixtures {
             (.undone, "decision"), (.failed("database is locked"), "decision")
         ]
         return AnyView(VStack(alignment: .trailing, spacing: 12) {
-            UserMessageBubble(text: "decided: release acme on Tuesdays from next week")
+            ChatUIShotRow.message(ChatFeed.Message(id: 1, role: "user", text: "decided: release acme on Tuesdays from next week",
+                                                   createdAt: .distantPast))
             ChatKnowledgeMarkLine(mark: .saved(kind: "decision", ideaID: 1), prefixKind: "decision",
                                   undo: {}, openInInbox: { _ in })
             ForEach(Array(marks.enumerated()), id: \.offset) { _, entry in

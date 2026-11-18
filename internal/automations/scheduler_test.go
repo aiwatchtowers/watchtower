@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/automations"
@@ -530,13 +531,7 @@ func (c *stepClock) After(d time.Duration) <-chan time.Time {
 
 func (c *stepClock) waitAfter(t *testing.T) time.Duration {
 	t.Helper()
-	select {
-	case d := <-c.calls:
-		return d
-	case <-time.After(5 * time.Second):
-		t.Fatal("scheduler did not wait on the clock")
-		return 0
-	}
+	return <-c.calls
 }
 
 func TestScheduler_RunTicksAtMinuteBoundaryAndOnWake(t *testing.T) {
@@ -563,13 +558,8 @@ func TestScheduler_RunTicksAtMinuteBoundaryAndOnWake(t *testing.T) {
 	s.Wake()
 	clock.waitAfter(t) // a wake ticks at once, then waits again
 	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("Run = %v, want nil after cancel", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not return after cancel")
+	if err := <-done; err != nil {
+		t.Errorf("Run = %v, want nil after cancel", err)
 	}
 }
 
@@ -712,26 +702,29 @@ func TestScheduler_ZoneNameFromLink(t *testing.T) {
 }
 
 func TestScheduler_WakeCoalesces(t *testing.T) {
-	f := newSchedFixture(t, time.Time{})
-	clock := &stepClock{now: f.at(14, 8, 0).Add(30 * time.Second), calls: make(chan time.Duration, 8), fire: make(chan time.Time)}
-	s := zoned(automations.NewScheduler(f.d, f.ix, clock, nil), f.loc)
-	// Three wakes before Run starts: one buffered, two coalesced into it.
-	s.Wake()
-	s.Wake()
-	s.Wake()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- s.Run(ctx) }()
-	clock.waitAfter(t) // the start tick
-	clock.waitAfter(t) // the one coalesced wake's tick
-	select {
-	case d := <-clock.calls:
-		t.Fatalf("a third tick ran (wait %s); wakes were not coalesced", d)
-	case <-time.After(200 * time.Millisecond):
-	}
-	cancel()
-	if err := <-done; err != nil {
-		t.Errorf("Run = %v, want nil", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		f := newSchedFixture(t, time.Time{})
+		clock := &stepClock{now: f.at(14, 8, 0).Add(30 * time.Second), calls: make(chan time.Duration, 8), fire: make(chan time.Time)}
+		s := zoned(automations.NewScheduler(f.d, f.ix, clock, nil), f.loc)
+		// Three wakes before Run starts: one buffered, two coalesced into it.
+		s.Wake()
+		s.Wake()
+		s.Wake()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { done <- s.Run(ctx) }()
+		clock.waitAfter(t) // the start tick
+		clock.waitAfter(t) // the one coalesced wake's tick
+		synctest.Wait()    // the scheduler is blocked on its clock: no tick is left to run
+		select {
+		case d := <-clock.calls:
+			t.Fatalf("a third tick ran (wait %s); wakes were not coalesced", d)
+		default:
+		}
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("Run = %v, want nil", err)
+		}
+	})
 }

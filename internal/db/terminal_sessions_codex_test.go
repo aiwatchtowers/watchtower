@@ -28,7 +28,7 @@ func writeClearState(d *DB, id, wb int64, sid string, _ time.Time) (bool, error)
 
 func writeLowerBackground(d *DB, id, wb int64, sid string, at time.Time) (bool, error) {
 	one := int64(1)
-	return d.LowerTerminalBackground(id, wb, sid, at, &one)
+	return d.LowerTerminalBackground(id, wb, sid, at, &one, nil)
 }
 
 func writeEndBackground(d *DB, id, wb int64, sid string, at time.Time) (bool, error) {

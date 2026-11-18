@@ -217,6 +217,35 @@ func (db *DB) SetSlackAccountSearchWatermark(id int64, date string) error {
 	return nil
 }
 
+// SetSlackFirstCycleAtOnce records at as accountID's first sync attempt
+// (slack_accounts.first_cycle_at) unless one is already recorded: first write
+// wins, so a retried first run keeps the original instant.
+func (db *DB) SetSlackFirstCycleAtOnce(id int64, at time.Time) error {
+	if _, err := db.Exec(`UPDATE slack_accounts SET first_cycle_at = ? WHERE id = ? AND first_cycle_at = ''`,
+		at.UTC().Format(time.RFC3339), id); err != nil {
+		return fmt.Errorf("setting first_cycle_at for slack account %d: %w", id, err)
+	}
+	return nil
+}
+
+// SlackFirstCycleAt returns accountID's first sync attempt; zero when none is
+// recorded or the row is missing.
+func (db *DB) SlackFirstCycleAt(id int64) (time.Time, error) {
+	var stamp string
+	err := db.QueryRow(`SELECT first_cycle_at FROM slack_accounts WHERE id = ?`, id).Scan(&stamp)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && stamp == "") {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("getting first_cycle_at for slack account %d: %w", id, err)
+	}
+	t, err := time.Parse(time.RFC3339, stamp)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parsing first_cycle_at %q for slack account %d: %w", stamp, id, err)
+	}
+	return t, nil
+}
+
 // ReactionCommandsSeeded reports whether accountID's pre-existing reaction
 // history has been recorded into the reaction_commands ledger (migration
 // 00073). A missing row reads as NOT seeded, never as an error: the caller's
@@ -265,6 +294,32 @@ func (db *DB) SlackRosterSyncedAt(id int64) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("parsing roster stamp for slack account %d: %w", id, err)
 	}
 	return t, nil
+}
+
+// SlackEmojiScopeMissing reports whether accountID's legacy token (no
+// recorded grant) answered emoji.list with missing_scope (migration 00195);
+// false for a missing row.
+func (db *DB) SlackEmojiScopeMissing(id int64) (bool, error) {
+	var missing bool
+	err := db.QueryRow(`SELECT emoji_scope_missing FROM slack_accounts WHERE id = ?`, id).Scan(&missing)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reading emoji scope flag for slack account %d: %w", id, err)
+	}
+	return missing, nil
+}
+
+// SetSlackEmojiScopeMissing marks accountID's legacy token as lacking
+// emoji:read, so the emoji sync skips it. Its only writer is the sync's
+// syncEmoji; nothing clears it — a re-login records the grant, which then
+// decides alone.
+func (db *DB) SetSlackEmojiScopeMissing(id int64) error {
+	if _, err := db.Exec(`UPDATE slack_accounts SET emoji_scope_missing = 1 WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("marking emoji scope missing for slack account %d: %w", id, err)
+	}
+	return nil
 }
 
 // SetSlackRosterSyncedAt stamps accountID's roster as fetched at at.

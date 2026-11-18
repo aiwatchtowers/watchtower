@@ -104,6 +104,8 @@ final class SpecReviewThreadCenterTests: XCTestCase {
     private var cli: FakeQuestionCLI!
     private var center: SpecReviewThreadCenter!
     private var ai: ScriptedAIService!
+    /// The AI services' call counts on Observation, for `waitUntil`.
+    private var aiCounters: [CallCountingAI] = []
     private var chats: EmbeddedChatCenter!
     private var project: Int64 = 0
     private var session: Int64 = 0
@@ -135,16 +137,20 @@ final class SpecReviewThreadCenterTests: XCTestCase {
     }
 
     private func makeCenter(delivery: (any SpecReviewQuestionDelivering)? = nil) -> SpecReviewThreadCenter {
-        // An hour between polls: the tests drive `poll()` themselves.
-        SpecReviewThreadCenter(dbPool: pool, cli: cli, delivery: delivery ?? self.delivery, pollInterval: .seconds(3600))
+        // The poll's clock never fires: the tests drive `poll()` themselves.
+        SpecReviewThreadCenter(dbPool: pool, cli: cli, delivery: delivery ?? self.delivery) { _ in
+            try await parkUntilTaskCancelled()
+        }
     }
 
     private func makeChats(_ ai: ScriptedAIService) -> EmbeddedChatCenter {
         let pool: DatabasePool = pool
+        let counter = CallCountingAI(ai)
+        aiCounters.append(counter)
         return EmbeddedChatCenter { spec, gate in
             guard case .database(let conversationID) = spec.persistence else { preconditionFailure("database chat") }
             return EmbeddedChatEngine(spec: spec, store: DatabaseEmbeddedChatStore(dbPool: pool, conversationID: conversationID),
-                                      aiService: ai, gate: gate)
+                                      aiService: counter, gate: gate)
         }
     }
 
@@ -169,14 +175,13 @@ final class SpecReviewThreadCenterTests: XCTestCase {
         }
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(5))
+    /// Waits until `condition` holds, re-checking on every change of the
+    /// observable state it reads and on every AI call — no deadline.
+    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
+        let counters = aiCounters
+        await untilObserved {
+            counters.forEach { _ = $0.count }
+            return condition()
         }
     }
 

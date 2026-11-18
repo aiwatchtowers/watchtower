@@ -10,7 +10,7 @@ text: **Usage → Plans** shows each subscription's usage history and forecast b
 area: setup
 level: next
 kind: feature
-since: next
+since: 0.28.0
 action: nav:usage
 requires: feature:claude-plan-limits
 replaces: [ai-plan-limits]
@@ -22,7 +22,7 @@ Watch your remaining allowance before starting a long session. Open the menu bar
 ## How it works
 <!-- learn: none -->
 
-Watchtower reads your existing Claude Code and Codex sign-ins independently every five minutes. Reading the limits makes no AI model call. Failures back off to at most thirty minutes; the app rereads saved snapshots every thirty seconds.
+Watchtower asks your installed Claude Code for its plan usage (the numbers `/usage` shows) and reads your Codex limits, independently every five minutes. It never reads your Claude sign-in. Reading the limits makes no AI model call. Failures back off to at most thirty minutes; the app rereads saved snapshots every thirty seconds.
 
 The solid chart is usage history; the dashed line is the forecast at your recent pace. A forecast needs at least fifteen minutes of observations in the same window. Old data, an expired prediction or an unconfirmed Codex account hides the forecast with an explanation.
 
@@ -32,7 +32,7 @@ The menu bar keeps Claude's five-hour and weekly counters. Codex shows one quota
 
 Stale Codex numbers disappear from the bar; the popup keeps the provider's status and retry action.
 
-Claude's existing system notifications warn once per limit and window. Their switch is **Claude plan limits** in **Settings → Features → Notifications**. Codex information stays on Plans and in the menu.
+Claude's system notifications warn once per limit and window: when the 5-hour or weekly limit is forecast to run out before it resets, and when any limit reaches 90%. Their switch is **Claude plan limits** in **Settings → Features → Notifications**. Codex information stays on Plans and in the menu.
 
 Follow a service restriction message even when a quota's forecast stays below its limit.
 
@@ -49,8 +49,10 @@ Follow a service restriction message even when a quota's forecast stays below it
 <!-- learn: none -->
 
 - **No plan data:** sign in to the corresponding installed command-line tool, then retry. Codex needs a ChatGPT subscription sign-in; an API key alone supplies no subscription quotas.
-- **Sign-in expired:** use Claude Code so it can refresh its own sign-in, then press **Refresh**. Watchtower does not refresh Claude credentials.
+- **Claude Code not signed in with a plan:** sign in to Claude Code with your Claude plan, then press **Refresh**. With an API key or Bedrock, Vertex or Foundry set for Watchtower, plan limits don't apply.
+- **Claude Code missing or too old:** install or update Claude Code, then retry.
 - **Unsupported Codex tool:** update Codex, then retry. Watchtower does not start a login flow for you.
+- **Codex installed with npm shows no numbers:** Watchtower looks for Node.js in the usual nvm, Volta, fnm, local-bin and Homebrew folders when it reads the limits, so the app needs no special launch. If your Node.js lives in another folder, link it into one of those folders.
 - **Collecting data:** leave the reader running for at least fifteen minutes. A changed reset window or account starts a new history.
 - **Forecast needs an update:** refresh; the previous predicted hit time has passed.
 - **Saved limits could not be read:** retry. One provider's error leaves the other provider usable.

@@ -30,21 +30,8 @@ struct OwnerAskDrawerHeader: View {
                 .buttonStyle(.borderless)
                 .help("Next ask (J); previous ask (K) — with no field focused, after a click in the drawer")
             }
-            Button {
-                // The terminal under an expanded drawer is hidden: it must
-                // not keep the keystrokes.
-                // Only the terminal's focus goes; the note field keeps its caret.
-                if !asks.drawerExpanded, TerminalHostAttachment.terminalHasFocus(in: NSApp.keyWindow) {
-                    NSApp.keyWindow?.makeFirstResponder(nil)
-                }
-                asks.drawerExpanded.toggle()
-            } label: {
-                Image(systemName: asks.drawerExpanded
-                      ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-            }
-            .buttonStyle(.borderless)
-            .help(asks.drawerExpanded ? "Back beside the terminal" : "Expand")
-            .accessibilityLabel(asks.drawerExpanded ? "Collapse" : "Expand")
+            OwnerAskDrawerExpandButton(asks: asks)
+                .buttonStyle(.borderless)
             Button {
                 asks.closeDrawer(projectID: ask.projectID)
             } label: {
@@ -66,5 +53,27 @@ struct OwnerAskDrawerHeader: View {
             TimeFormatting.shortAge(from: ask.createdAt, now: Date())
         ]
         return parts.compactMap(\.self).joined(separator: " · ")
+    }
+}
+
+/// The drawer's Expand / Collapse, for an ask and for a closed list
+/// (#1713). The terminal under an expanded drawer is hidden: it must not
+/// keep the keystrokes.
+struct OwnerAskDrawerExpandButton: View {
+    let asks: OwnerAsksViewModel
+
+    var body: some View {
+        Button {
+            // Only the terminal's focus goes; a note field keeps its caret.
+            if !asks.drawerExpanded, TerminalHostAttachment.terminalHasFocus(in: NSApp.keyWindow) {
+                NSApp.keyWindow?.makeFirstResponder(nil)
+            }
+            asks.drawerExpanded.toggle()
+        } label: {
+            Image(systemName: asks.drawerExpanded
+                  ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+        }
+        .help(asks.drawerExpanded ? "Back beside the terminal" : "Expand")
+        .accessibilityLabel(asks.drawerExpanded ? "Collapse" : "Expand")
     }
 }

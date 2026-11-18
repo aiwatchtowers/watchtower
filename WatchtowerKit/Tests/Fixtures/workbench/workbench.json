@@ -5,6 +5,7 @@
     {"asks_first": false, "id": 4, "kind": "scheduled", "name": "Nightly triage", "state": "needs_confirmation"}
   ],
   "blocked_targets": 1,
+  "board_columns": ["Backlog", "Todo", "Coding"],
   "branch": "feature/acme-export",
   "changes": 3,
   "default_agent": "codex_cli",

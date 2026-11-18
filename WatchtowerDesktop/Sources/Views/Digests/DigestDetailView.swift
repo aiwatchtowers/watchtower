@@ -7,9 +7,6 @@ struct DigestDetailView: View {
     let viewModel: DigestViewModel
     var onClose: (() -> Void)?
     @Environment(AppState.self) private var appState
-    @State private var markingRead = false
-    @State private var markedRead = false
-    @State private var markReadError: String?
     @State private var digestTopics: [DigestTopic] = []
     @State private var showCreateTask = false
     @State private var targetPrefill: TargetPrefill?
@@ -214,32 +211,6 @@ struct DigestDetailView: View {
 
     private var headerActionsRow: some View {
         HStack(spacing: 12) {
-            if !digest.channelID.isEmpty {
-                Button {
-                    markChannelRead()
-                } label: {
-                    if markingRead {
-                        ProgressView()
-                            .controlSize(.mini)
-                    } else {
-                        Label(
-                            markedRead ? "Marked read" : "Mark read in Slack",
-                            systemImage: markedRead ? "checkmark.circle.fill" : "eye"
-                        )
-                        .font(.caption)
-                        .foregroundStyle(markedRead ? .green : .accentColor)
-                    }
-                }
-                .buttonStyle(.borderless)
-                .disabled(markingRead || markedRead)
-            }
-
-            if let err = markReadError {
-                Text(err)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-            }
-
             Spacer()
 
             if let dbManager = appState.databaseManager {
@@ -619,20 +590,6 @@ struct DigestDetailView: View {
             } catch {
                 targetPrefillError = "Failed to prepare prefill: \(error.localizedDescription)"
             }
-        }
-    }
-
-    private func markChannelRead() {
-        markingRead = true
-        markReadError = nil
-        Task {
-            do {
-                try await SlackService.markRead(channelID: digest.channelID)
-                markedRead = true
-            } catch {
-                markReadError = error.localizedDescription
-            }
-            markingRead = false
         }
     }
 

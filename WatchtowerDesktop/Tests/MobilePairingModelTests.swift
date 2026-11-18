@@ -3,6 +3,7 @@ import Foundation
 import WatchtowerCore
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 /// The pairing sheet over `hub pair --json --stream` (go hub plan 3 Task
 /// 23). The behaviours of the deleted `MobileLinkSheetViewModelTests` that
@@ -18,12 +19,9 @@ final class MobilePairingModelTests: XCTestCase {
         init(_ now: Date) { self.now = now }
     }
 
-    private func waitUntil(_ what: String, _ condition: @MainActor () -> Bool) async {
-        for _ in 0..<500 {
-            if condition() { return }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail("timed out waiting for \(what)")
+    /// Waits, with no deadline, until the model's observable state meets `condition`.
+    private func waitUntil(_ what: String, _ condition: @escaping @MainActor () -> Bool) async {
+        await untilObserved(condition)
     }
 
     private func qrLine(expiresIn seconds: Int) -> String {
@@ -107,10 +105,11 @@ final class MobilePairingModelTests: XCTestCase {
         let model = makeModel(streamer, clock: Clock(start))
         await model.start()
         let session = try XCTUnwrap(streamer.sessions.first)
+        let reader = try XCTUnwrap(model.reader)
         model.cancel()
         XCTAssertTrue(session.stopped)
         session.push(qrLine(expiresIn: 600))
-        try? await Task.sleep(for: .milliseconds(50))
+        await reader.value // the stream's reader has ended
         XCTAssertEqual(model.step, .starting, "nothing shows after the sheet closed")
         await model.start()
         XCTAssertEqual(streamer.sessions.count, 1, "a closed sheet starts no stream")
@@ -144,12 +143,13 @@ final class MobilePairingModelTests: XCTestCase {
         let streamer = FakePairStreamer()
         let model = makeModel(streamer, clock: Clock(start))
         await model.start()
+        let oldReader = try XCTUnwrap(model.reader)
         await model.start()
         XCTAssertEqual(streamer.sessions.count, 2)
         XCTAssertTrue(streamer.sessions[0].stopped)
         XCTAssertFalse(streamer.sessions[1].stopped)
         streamer.sessions[0].push(qrLine(expiresIn: 600))
-        try? await Task.sleep(for: .milliseconds(50))
+        await oldReader.value // the old stream's reader has ended
         XCTAssertEqual(model.step, .starting, "the old stream's lines are dropped")
     }
 

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pressly/goose/v3"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -113,11 +114,7 @@ func startTestHubOn(t *testing.T, dir string, tr transport.Transport) {
 	go func() { done <- hub.Run(ctx, o) }()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("hub.Run did not return")
-		}
+		<-done
 	})
 	waitFor(t, "the control socket", func() bool {
 		_, err := os.Stat(filepath.Join(dir, hub.SocketName))
@@ -125,14 +122,13 @@ func startTestHubOn(t *testing.T, dir string, tr transport.Transport) {
 	})
 }
 
-func waitFor(t *testing.T, what string, cond func() bool) {
+// waitFor polls cond until it holds; the string names what is awaited for
+// the reader. It has no deadline of its own: a condition that never holds
+// hangs the run into go test's -timeout, which dumps every goroutine.
+func waitFor(t *testing.T, _ string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
 	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -392,13 +388,18 @@ func TestHubEnableOnAnUnwritableDataRootFails(t *testing.T) {
 	assert.Equal(t, before, hubTree(t, home), "a failed enable wrote something")
 }
 
-// hubTree is every path under root.
+// hubTree is every path under root, less the config write lock file
+// (<config.yaml>.lock): the root pre-run's schema-format bump creates it on
+// the CLI's first config write, whatever the hub command does.
 func hubTree(t *testing.T, root string) []string {
 	t.Helper()
 	var out []string
 	require.NoError(t, filepath.WalkDir(root, func(path string, _ fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if strings.HasSuffix(path, "config.yaml.lock") {
+			return nil
 		}
 		out = append(out, path)
 		return nil
@@ -421,8 +422,10 @@ func TestHubPhonesJSONKeys(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &list), out)
 	require.Len(t, list, 1)
 	assert.ElementsMatch(t, []string{"device_id", "name", "scope", "linked_at", "typing_allowed", "typing_requested",
-		"permissions_allowed", "permissions_requested", "start_sessions_allowed", "start_sessions_granted", "ordered",
-		"last_applied_action_seq", "transport", "paying", "undelivered", "mailbox_full", "alerts", "keys"}, hubKeysOf(list[0]))
+		"permissions_allowed", "permissions_requested", "start_sessions_allowed", "start_sessions_granted", "chat_allowed",
+		"ordered", "last_applied_action_seq", "transport", "paying", "undelivered", "mailbox_full", "alerts", "keys"},
+		hubKeysOf(list[0]))
+	assert.Equal(t, true, list[0]["chat_allowed"], "the chat grant is on by default")
 	assert.Equal(t, id, list[0]["device_id"])
 	// No hub runs: paying is null; nothing held, no flag, no alert yet.
 	assert.Nil(t, list[0]["paying"])
@@ -660,7 +663,7 @@ func TestHubDiagnosticsJSONKeys(t *testing.T) {
 	var readSaved map[string]any
 	for _, r := range rows {
 		row := r.(map[string]any)
-		assert.ElementsMatch(t, []string{"step", "transport", "p50_ms", "p90_ms", "samples"}, hubKeysOf(row))
+		assert.ElementsMatch(t, []string{"step", "transport", "kind", "p50_ms", "p90_ms", "samples"}, hubKeysOf(row))
 		if row["step"] == "read_saved" && row["transport"] == "relay" {
 			readSaved = row
 		}
@@ -680,6 +683,76 @@ func TestHubDiagnosticsJSONKeys(t *testing.T) {
 		_, err := runHub(t, "diagnostics", "--days", bad, "--json")
 		assert.Error(t, err, "--days %s", bad)
 	}
+}
+
+// TestHubDiagnostics_RowsByKind: a step on a transport is its all-kinds row
+// (kind "", first, so a reader of the old rows keeps its numbers) and then
+// one row per action kind, in the JSON (additive key kind) and in the text.
+func TestHubDiagnostics_RowsByKind(t *testing.T) {
+	dir := hubTestDir(t)
+	linkTestPhone(t, dir) // creates the sidecar
+	st, err := state.Open(dir)
+	require.NoError(t, err)
+	now := time.Now()
+	var xs []state.LatencySample
+	for _, k := range []string{"ask_answer", "board_target_create"} {
+		for _, step := range []string{state.StepReadApplied, state.StepNudgeSaved} {
+			xs = append(xs, state.LatencySample{At: now, Transport: "relay", Step: step, Kind: k, MS: 10})
+		}
+	}
+	require.NoError(t, st.AddLatencySamples(xs))
+	require.NoError(t, st.Close())
+
+	out, err := runHub(t, "diagnostics", "--json")
+	require.NoError(t, err)
+	rows, ok := decodeKeys(t, out)["rows"].([]any)
+	require.True(t, ok, "rows is a list")
+	perStep := map[string][]string{}
+	for _, r := range rows {
+		row := r.(map[string]any)
+		perStep[row["step"].(string)] = append(perStep[row["step"].(string)], row["kind"].(string))
+		if row["kind"] == "" {
+			assert.Equal(t, float64(2), row["samples"], "the all-kinds row of %v", row["step"])
+		}
+	}
+	want := []string{"", "ask_answer", "board_target_create"}
+	assert.Equal(t, map[string][]string{state.StepNudgeSaved: want, state.StepReadApplied: want}, perStep)
+
+	out, err = runHub(t, "diagnostics")
+	require.NoError(t, err)
+	assert.Contains(t, out, "nudge_saved on relay (board_target_create)")
+}
+
+// TestHubDiagnostics_SidecarBefore00018: a CLI newer than the sidecar (the
+// hub has not reopened it, and a read-only open never migrates) still prints
+// the all-kinds rows and the overflow count; there are no per-kind rows.
+func TestHubDiagnostics_SidecarBefore00018(t *testing.T) {
+	dir := hubTestDir(t)
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	raw, err := sql.Open("sqlite3", filepath.Join(dir, state.FileName))
+	require.NoError(t, err)
+	migrations, err := state.Migrations()
+	require.NoError(t, err)
+	p, err := goose.NewProvider(goose.DialectSQLite3, raw, migrations, goose.WithDisableGlobalRegistry(true))
+	require.NoError(t, err)
+	_, err = p.UpTo(context.Background(), 17)
+	require.NoError(t, err)
+	now := float64(time.Now().UnixNano()) / 1e9
+	_, err = raw.Exec(`INSERT INTO latency_samples (at, transport, step, ms) VALUES (?, 'relay', 'read_saved', 120), (?, 'relay', 'read_saved', 80)`, now, now)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	out, err := runHub(t, "diagnostics", "--json")
+	require.NoError(t, err)
+	m := decodeKeys(t, out)
+	rows, ok := m["rows"].([]any)
+	require.True(t, ok, "rows is a list")
+	require.Len(t, rows, 1)
+	row := rows[0].(map[string]any)
+	assert.Equal(t, "read_saved", row["step"])
+	assert.Equal(t, "", row["kind"])
+	assert.Equal(t, float64(2), row["samples"])
+	assert.Equal(t, float64(0), m["push_overflow_expired"])
 }
 
 func TestHubDiagnosticsWithoutSidecarIsEmpty(t *testing.T) {
@@ -707,6 +780,22 @@ func TestHubAllowJSONKeys(t *testing.T) {
 	out, err = runHub(t, "allow", id, "typing", "--revoke", "--json")
 	require.NoError(t, err)
 	assert.Equal(t, false, decodeKeys(t, out)["allowed"])
+
+	// The chat grant (iPhone chat D9): on by default, taken with --revoke,
+	// shown by `hub phones` (the Desktop's Settings → Mobile toggle).
+	out, err = runHub(t, "allow", id, "chat", "--revoke", "--json")
+	require.NoError(t, err)
+	m = decodeKeys(t, out)
+	assert.Equal(t, "chat", m["grant"])
+	assert.Equal(t, false, m["allowed"])
+	out, err = runHub(t, "phones", "--json")
+	require.NoError(t, err)
+	var phones []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &phones), out)
+	require.Len(t, phones, 1)
+	assert.Equal(t, false, phones[0]["chat_allowed"])
+	_, err = runHub(t, "allow", id, "chat", "--json")
+	require.NoError(t, err)
 
 	_, err = runHub(t, "allow", id, "admin")
 	assert.ErrorContains(t, err, "unknown grant")
@@ -868,13 +957,7 @@ func (p *pairRun) next(t *testing.T) map[string]any {
 
 func (p *pairRun) wait(t *testing.T) error {
 	t.Helper()
-	select {
-	case err := <-p.done:
-		return err
-	case <-time.After(10 * time.Second):
-		t.Fatal("hub pair did not finish")
-		return nil
-	}
+	return <-p.done
 }
 
 // pairPhone drives a pairing up to the sas line: the phone reads the QR's

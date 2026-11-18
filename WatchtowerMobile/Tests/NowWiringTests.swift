@@ -25,6 +25,25 @@ final class NowWiringTests: XCTestCase {
         NowModel(snapshot: snapshot, linked: linked, now: date ?? now)
     }
 
+    /// #1886: the line follows the heartbeat's key and has no button; an older hub shows nothing.
+    func testBackgroundAILineFollowsHeartbeat() {
+        func line(_ status: BackgroundAIStatus?) -> String? {
+            var beat = heartbeat(now)
+            beat = HeartbeatPayload(
+                updatedAt: beat.updatedAt, appVersion: beat.appVersion, hubID: beat.hubID, macName: beat.macName,
+                flavor: beat.flavor, lastPublishAt: beat.lastPublishAt, lastRelayAt: beat.lastRelayAt,
+                relayBacklog: beat.relayBacklog, accounts: [], enabledAt: beat.enabledAt, ownerUser: beat.ownerUser,
+                sharing: .none, backgroundAI: status
+            )
+            return BackgroundAIConsentCopy.phoneLine(beat.backgroundAI)
+        }
+        XCTAssertTrue(NowView.topBlocks.contains(.backgroundAI))
+        XCTAssertEqual(line(.paused)?.hasSuffix("Allow it in Watchtower on the Mac."), true)
+        XCTAssertEqual(line(.organization)?.contains("your organization"), true)
+        XCTAssertNil(line(.allowed))
+        XCTAssertNil(line(nil))
+    }
+
     func testNothingWaitingShowsNothingIsWaiting() throws {
         var snapshot = try demoSnapshot(now: now)
         snapshot.asks = snapshot.asks.filter { $0.status != .open }
@@ -34,12 +53,14 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(model.emptyText, "Nothing is waiting for you")
     }
 
+    /// #1785: Waiting for you holds only what waits for a decision — asks and permission requests.
     func testWaitingRunsAcrossWorkbenchesNewestFirst() throws {
-        let model = model(try demoSnapshot(now: now))
+        let snapshot = try demoSnapshot(now: now)
+        let model = model(snapshot)
         XCTAssertNil(model.emptyText)
-        XCTAssertEqual(model.waitingForYou.map(\.id), [
-            .ask(111), .ask(109), .ask(110), .session(21), .session(13), .session(15), .session(16)
-        ], "session 14 waits on ask #110: only the ask's row shows")
+        XCTAssertEqual(model.waitingForYou.map(\.id), [.ask(111), .ask(109), .ask(110)])
+        XCTAssertEqual(model.waitingCount, 3)
+        XCTAssertEqual(NowModel.waitingCount(in: snapshot), 3, "the badge's count without building the screen")
         let question = try XCTUnwrap(model.waitingForYou.first { $0.id == .ask(109) })
         XCTAssertEqual(question.title, "Which menu wording?")
         XCTAssertEqual(question.meta, "Acme · Archive closed targets · ask #109")
@@ -48,33 +69,182 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(question.destination, .ask(109))
     }
 
-    func testQuickAnswersRideOnTheAskRow() throws {
+    func testQuickAnswersRideOnTheAskRowAsChips() throws {
         let model = model(try demoSnapshot(now: now))
         let question = try XCTUnwrap(model.waitingForYou.first { $0.id == .ask(109) })
-        XCTAssertEqual(question.options, [
+        XCTAssertEqual(question.answer, .chips([
             InlineAskOption(id: "Archive Closed Targets Now", label: "Archive Closed Targets Now", isRecommended: true),
             InlineAskOption(id: "Archive Now", label: "Archive Now")
-        ])
-        XCTAssertEqual(model.waitingForYou.first { $0.id == .ask(111) }?.options, [], "a check opens its form")
+        ]))
+        XCTAssertNil(question.answer.statusText)
+        XCTAssertEqual(model.waitingForYou.first { $0.id == .ask(111) }?.answer, NowAnswer.none, "a check opens its form")
     }
 
-    func testStoppedFinishedAndFailedSessionsAreWaitingForYou() throws {
+    func testManyOrLongAnswersAreOneAnswerChip() {
+        func options(_ labels: [String]) -> [InlineAskOption] { labels.map { InlineAskOption(id: $0, label: $0) } }
+        XCTAssertEqual(NowAnswer.chipsOrForm(options(["A", "B", "C"])), .chips(options(["A", "B", "C"])))
+        XCTAssertEqual(NowAnswer.chipsOrForm(options(["A", "B", "C", "D"])), .openForm, "four answers")
+        let long = String(repeating: "x", count: NowAnswer.chipLabelLimit + 1)
+        XCTAssertEqual(NowAnswer.chipsOrForm(options(["Yes", long])), .openForm, "a label past the limit")
+        XCTAssertEqual(NowAnswer.chipsOrForm(options([String(repeating: "x", count: NowAnswer.chipLabelLimit)])),
+                       .chips(options([String(repeating: "x", count: NowAnswer.chipLabelLimit)])))
+        XCTAssertEqual(NowAnswer.chipsOrForm([]), NowAnswer.none)
+        XCTAssertEqual(NowAnswer.chipsOrForm(nil), NowAnswer.none)
+        XCTAssertEqual(NowAnswer.answerFormTitle, "Answer…")
+    }
+
+    // MARK: - An answer on its way (#1785)
+
+    private func answerRow(
+        _ id: String, ask: Int64, state: PendingAction.State, delivery: Delivery?, reason: UndeliveredReason? = nil
+    ) -> PendingAction {
+        PendingAction(
+            id: id,
+            action: ActionRequestPayload(
+                id: id, kind: .askAnswer, entityID: String(ask), params: [:], createdAt: now, deviceID: "phone", hubID: "hub"),
+            entityRecordName: AskAnswerer.recordName(ask), createdAt: now, state: state, errorMessage: nil, reason: nil,
+            result: nil, echoStatus: nil, actionSeq: delivery == nil ? nil : 1, epoch: nil, delivery: delivery,
+            undeliveredReason: reason)
+    }
+
+    private func answer(_ rows: [PendingAction], stopped: Bool = false, online: Bool = true, writing: Bool = false) throws -> NowAnswer {
+        let ask = try XCTUnwrap(try demoSnapshot(now: now).asks.first { $0.id == 109 })
+        return NowAnswer.of(ask, pending: rows, flushStopped: stopped, macOnline: online, writing: writing)
+    }
+
+    func testAnUndeliveredAnswerOffersRetryInsteadOfTheOptions() throws {
+        let undelivered = try answer([answerRow("a1", ask: 109, state: .failed, delivery: .undelivered, reason: .refused)])
+        XCTAssertEqual(undelivered, .notDelivered(rowID: "a1"))
+        XCTAssertEqual(undelivered.statusText, "Answer not delivered")
+        XCTAssertEqual(undelivered.statusTone, .red)
+        XCTAssertEqual(NowAnswer.retryTitle, "Retry")
+        XCTAssertEqual(try answer([answerRow("a2", ask: 109, state: .failed, delivery: nil)]), .notDelivered(rowID: "a2"),
+                       "a legacy failed answer retries too (`ActionOutbox.retry` takes it)")
+        XCTAssertEqual(try answer([
+            answerRow("old", ask: 109, state: .failed, delivery: .undelivered), answerRow("new", ask: 109, state: .pending, delivery: .sent)
+        ]), .sending(NowAnswer.sendingText), "the newest answer decides")
+        XCTAssertEqual(try answer([answerRow("x", ask: 110, state: .failed, delivery: .undelivered)]), .chips([
+            InlineAskOption(id: "Archive Closed Targets Now", label: "Archive Closed Targets Now", isRecommended: true),
+            InlineAskOption(id: "Archive Now", label: "Archive Now")
+        ]), "another ask's answer is not this one's")
+    }
+
+    func testAQueuedAnswerSaysWhereItStands() throws {
+        let queued = [answerRow("q", ask: 109, state: .pending, delivery: .queued)]
+        XCTAssertEqual(try answer(queued, stopped: true), .waitingToSend, "behind a stopped flush: nothing to retry")
+        XCTAssertEqual(NowAnswer.waitingToSend.statusText, "Answer waiting to send")
+        XCTAssertEqual(try answer(queued), .sending("Sending answer…"))
+        XCTAssertEqual(try answer(queued, online: false), .sending("Answer waits for your tower"))
+        XCTAssertEqual(try answer([], writing: true), .sending("Sending answer…"), "written to the outbox right now")
+    }
+
+    func testTheModelCarriesTheAnswerLineAndItsTones() throws {
+        var snapshot = try demoSnapshot(now: now)
+        snapshot.pending = [answerRow("a1", ask: 109, state: .failed, delivery: .undelivered, reason: .refused)]
+        let model = NowModel(snapshot: snapshot, linked: true, now: now) { $0 == 110 }
+        XCTAssertEqual(model.waitingForYou.first { $0.id == .ask(109) }?.answer, .notDelivered(rowID: "a1"))
+        XCTAssertEqual(model.waitingForYou.first { $0.id == .ask(110) }?.answer, .sending(NowAnswer.sendingText),
+                       "being written to the phone's own outbox: no Mac needed yet")
+        snapshot.pending.append(answerRow("a2", ask: 110, state: .pending, delivery: .sent))
+        XCTAssertEqual(NowModel(snapshot: snapshot, linked: true, now: now).waitingForYou.first { $0.id == .ask(110) }?.answer,
+                       .sending(NowAnswer.waitingForMacText), "written, and the demo Mac has no heartbeat: offline")
+        XCTAssertTrue(model.toneUses.contains { $0.element == "now answer ask(109) not delivered" && $0.tone == .red })
+    }
+
+    // MARK: - Ended (#1785)
+
+    func testStoppedFinishedAndFailedSessionsAreEnded() throws {
         let model = model(try demoSnapshot(now: now))
-        let failed = try XCTUnwrap(model.waitingForYou.first { $0.id == .session(16) })
+        XCTAssertEqual(model.ended.map(\.id), [.session(21), .session(13), .session(15), .session(16)],
+                       "newest first; session 14 waits on ask #110: only the ask's row shows")
+        XCTAssertFalse(model.waitingForYou.contains { if case .session = $0.id { true } else { false } }, "none of them waits")
+        XCTAssertEqual(NowModel.endedTitle, "Ended")
+        let failed = try XCTUnwrap(model.ended.first { $0.id == .session(16) })
         XCTAssertEqual(failed.title, "Undo archive — failed")
         XCTAssertEqual(failed.meta, "Acme · Error: rate limit")
         XCTAssertEqual(failed.glyph, "exclamationmark")
         XCTAssertEqual(failed.tone, .red)
         XCTAssertEqual(failed.destination, .session(16))
-        let stopped = try XCTUnwrap(model.waitingForYou.first { $0.id == .session(15) })
+        let stopped = try XCTUnwrap(model.ended.first { $0.id == .session(15) })
         XCTAssertEqual(stopped.title, "Lane totals — stopped")
         XCTAssertEqual(stopped.tone, .secondary)
-        let finished = try XCTUnwrap(model.waitingForYou.first { $0.id == .session(13) }, "a finished session waits for a look")
+        let finished = try XCTUnwrap(model.ended.first { $0.id == .session(13) })
         XCTAssertEqual(finished.title, "Per-lane fold — finished")
         XCTAssertEqual(finished.meta, "Acme · “Folded done targets per lane.”")
         XCTAssertEqual(finished.glyph, "checkmark")
         XCTAssertEqual(finished.tone, .blue)
-        XCTAssertFalse(model.waitingForYou.contains { $0.id == .session(17) }, "a session that never ran is not waiting")
+        XCTAssertFalse(model.ended.contains { $0.id == .session(17) }, "a session that never ran has not ended")
+        XCTAssertFalse(model.ended.contains { $0.id == .session(22) }, "a live spec review session has not ended")
+    }
+
+    func testAnEndedRowMarkedSeenLeavesUntilTheSessionEndsAgain() throws {
+        let snapshot = try demoSnapshot(now: now)
+        let row = try XCTUnwrap(model(snapshot).ended.first { $0.id == .session(13) })
+        let key = try XCTUnwrap(row.endedKey)
+        XCTAssertNil(model(snapshot).waitingForYou.first?.endedKey, "an ask has no seen mark")
+        let seen = NowModel(snapshot: snapshot, linked: true, now: now, seenEnded: [key])
+        XCTAssertFalse(seen.ended.contains { $0.id == .session(13) })
+        XCTAssertEqual(seen.ended.count, 3)
+
+        var later = snapshot
+        let index = try XCTUnwrap(later.sessions.firstIndex { $0.id == 13 })
+        later.sessions[index] = try mirror(TerminalSessionState.self, DemoSeed.JSON.session(13, workbench: DemoSeed.acmeID, [
+            "title": "Per-lane fold", "state_kind": "finished", "state_caption": "Finished", "state_tone": "blue", "live": false,
+            "state_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-60)), "last_active_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-60))
+        ]))
+        XCTAssertTrue(NowModel(snapshot: later, linked: true, now: now, seenEnded: [key]).ended.contains { $0.id == .session(13) },
+                      "ended again later: back")
+    }
+
+    @MainActor
+    func testTheSeenMarkSurvivesARelaunchPerHub() throws {
+        let defaults = try makeDefaults()
+        let key = NowEndedKey(sessionID: 13, at: now.addingTimeInterval(-7_200.5))
+        let store = NowEndedSeenStore(defaults: defaults)
+        XCTAssertTrue(store.seen(hubID: "hub-a").isEmpty)
+        store.markSeen(key, hubID: "hub-a", now: now)
+        XCTAssertEqual(store.seen(hubID: "hub-a"), [key])
+
+        let relaunched = NowEndedSeenStore(defaults: defaults)
+        XCTAssertEqual(relaunched.seen(hubID: "hub-a"), [key], "read back from UserDefaults")
+        XCTAssertTrue(relaunched.seen(hubID: "hub-b").isEmpty, "each tower keeps its own")
+    }
+
+    @MainActor
+    func testMarkSeenPrunesMarksOlderThanKeepFor() throws {
+        let defaults = try makeDefaults()
+        let store = NowEndedSeenStore(defaults: defaults)
+        let old = NowEndedKey(sessionID: 1, at: now.addingTimeInterval(-NowEndedSeenStore.keepFor - 60))
+        let edge = NowEndedKey(sessionID: 3, at: now.addingTimeInterval(-NowEndedSeenStore.keepFor))
+        store.markSeen([old, edge], hubID: "hub-a", now: now.addingTimeInterval(-3_600))
+        store.markSeen(NowEndedKey(sessionID: 9, at: now), hubID: "hub-b", now: now)
+        XCTAssertEqual(store.seen(hubID: "hub-a").map(\.sessionID).sorted(), [1, 3], "kept until the hub's next write")
+
+        store.markSeen(NowEndedKey(sessionID: 2, at: now), hubID: "hub-a", now: now)
+        XCTAssertEqual(store.seen(hubID: "hub-a").map(\.sessionID).sorted(), [2, 3], "past keepFor goes, the edge stays")
+        XCTAssertEqual(NowEndedSeenStore(defaults: defaults).seen(hubID: "hub-a").map(\.sessionID).sorted(), [2, 3], "and stays gone")
+    }
+
+    /// The Ended header's **Clear** marks exactly the rows shown — not a session an open ask represents, not one past
+    /// the 24 h window — and Ended empties.
+    @MainActor
+    func testClearMarksExactlyTheShownEndedRows() throws {
+        var snapshot = try demoSnapshot(now: now)
+        snapshot.sessions.append(try mirror(TerminalSessionState.self, DemoSeed.JSON.session(40, workbench: DemoSeed.acmeID, [
+            "title": "Old stop", "state_kind": "stopped", "state_caption": "Stopped", "state_tone": "secondary", "live": false,
+            "state_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-25 * 3_600)),
+            "last_active_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-25 * 3_600))
+        ])))
+        let model = NowModel(snapshot: snapshot, linked: true, now: now)
+        XCTAssertEqual(NowModel.clearTitle, "Clear")
+        XCTAssertEqual(model.endedKeys.map(\.sessionID), [21, 13, 15, 16])
+
+        let store = NowEndedSeenStore(defaults: try makeDefaults())
+        store.markSeen(model.endedKeys, hubID: "hub-a", now: now)
+        XCTAssertEqual(store.seen(hubID: "hub-a"), Set(model.endedKeys), "session 14 (open ask) and 40 (past 24 h) are not marked")
+        let cleared = NowModel(snapshot: snapshot, linked: true, now: now, seenEnded: store.seen(hubID: "hub-a"))
+        XCTAssertTrue(cleared.ended.isEmpty)
+        XCTAssertEqual(cleared.waitingForYou.map(\.id), model.waitingForYou.map(\.id), "Waiting for you is untouched")
     }
 
     /// Owner decision (ask #622): an ended session with an open ask is one waiting thing, shown as the ask.
@@ -92,8 +262,13 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(model.waitingForYou.map(\.id), [.ask(70)])
         XCTAssertEqual(model.waitingCount, 1)
 
+        XCTAssertTrue(model.ended.isEmpty)
+
         snapshot.asks = []
-        XCTAssertEqual(self.model(snapshot).waitingForYou.map(\.id), [.session(50)], "with the ask answered the session waits again")
+        let answered = self.model(snapshot)
+        XCTAssertTrue(answered.waitingForYou.isEmpty)
+        XCTAssertNil(answered.waitingCount)
+        XCTAssertEqual(answered.ended.map(\.id), [.session(50)], "with the ask answered the session shows under Ended")
     }
 
     func testAnEndedSessionLeavesNowAfterADay() throws {
@@ -108,7 +283,7 @@ final class NowWiringTests: XCTestCase {
             "is_ring": true, "state_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-23 * 3_600)),
             "last_active_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-23 * 3_600))
         ])))
-        let ids = model(snapshot).waitingForYou.map(\.id)
+        let ids = model(snapshot).ended.map(\.id)
         XCTAssertFalse(ids.contains(.session(40)), "a stop older than \(NowModel.endedSessionWindow) s is gone")
         XCTAssertTrue(ids.contains(.session(41)))
     }
@@ -150,7 +325,7 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(working.first?.time, "3:14")
 
         let asleep = model(snapshot, at: now.addingTimeInterval(2_160)).working
-        XCTAssertEqual(asleep.first?.time, "as of 36 min ago", "the Mac away stops the count")
+        XCTAssertEqual(asleep.first?.time, "as of 36 min ago", "the tower away stops the count")
     }
 
     func testMacReachabilityFollowsTheHeartbeat() {
@@ -163,8 +338,8 @@ final class NowWiringTests: XCTestCase {
 
     func testTheMacChipFollowsTheHeartbeat() throws {
         var snapshot = try demoSnapshot(now: now)
-        XCTAssertEqual(model(snapshot).chip.text, "Mac · offline")
-        XCTAssertEqual(model(snapshot, linked: false).chip.text, "No Mac linked")
+        XCTAssertEqual(model(snapshot).chip.text, "Tower · offline")
+        XCTAssertEqual(model(snapshot, linked: false).chip.text, "No tower linked")
         snapshot.heartbeat = heartbeat(now)
         XCTAssertEqual(model(snapshot, at: now.addingTimeInterval(12)).chip.text, "Acme Mac · online")
         XCTAssertEqual(model(snapshot, at: now.addingTimeInterval(12)).chip.tone, .green)
@@ -228,7 +403,7 @@ final class NowWiringTests: XCTestCase {
 
     // MARK: - The parked feed (relay client Phase 5 Task 16, S58)
 
-    private static let parkedTail = "If this lasts, open Watchtower on the Mac."
+    private static let parkedTail = "If this lasts, open Watchtower on the tower."
 
     /// A replica whose outbox holds `sent` written, unanswered actions, the feed parked when `parked`.
     private func replica(sent: Int, parked: Bool = true) async throws -> ReplicaStore {
@@ -260,7 +435,7 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(parked.title, "Waiting for new keys from Work Mac")
         XCTAssertEqual(
             parked.detail,
-            "2 actions have no answer yet. They finish once it sends them. If this lasts, open Watchtower on the Mac.")
+            "2 actions have no answer yet. They finish once it sends them. If this lasts, open Watchtower on the tower.")
     }
 
     func testOneSentActionReadsSingular() async throws {
@@ -274,7 +449,7 @@ final class NowWiringTests: XCTestCase {
         let parked = try XCTUnwrap(try model(store, macName: "Work Mac").outbox?.parked, "parked with nothing sent still shows")
         XCTAssertEqual(parked.title, "Waiting for new keys from Work Mac")
         XCTAssertEqual(parked.detail, Self.parkedTail)
-        XCTAssertEqual(NowParkedRow(macName: "", sent: 0).title, "Waiting for new keys from your Mac", "no name yet")
+        XCTAssertEqual(NowParkedRow(macName: "", sent: 0).title, "Waiting for new keys from your tower", "no name yet")
     }
 
     func testTwoMacsEachNameTheirOwn() async throws {
@@ -284,7 +459,7 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(try model(work, macName: "Work Mac").outbox?.parked?.title, "Waiting for new keys from Work Mac")
         XCTAssertEqual(try model(home, macName: "Home Mac").outbox?.parked?.title, "Waiting for new keys from Home Mac")
         XCTAssertEqual(try model(home, macName: "Home Mac").outbox?.parked?.detail.hasPrefix("1 action has"), true)
-        XCTAssertNil(try model(idle, macName: "Studio Mac").outbox, "a Mac whose feed reads shows nothing")
+        XCTAssertNil(try model(idle, macName: "Studio Mac").outbox, "a tower whose feed reads shows nothing")
     }
 
     @MainActor
@@ -355,7 +530,7 @@ final class NowWiringTests: XCTestCase {
     // MARK: - The Relay banner (relay client Phase 4 Task 10)
 
     func testTheBannerSitsAboveWaitingToSend() {
-        XCTAssertEqual(NowView.topBlocks, [.chip, .relayBanner, .outbox])
+        XCTAssertEqual(NowView.topBlocks, [.chip, .freshness, .relayBanner, .outbox, .backgroundAI])
     }
 
     @MainActor

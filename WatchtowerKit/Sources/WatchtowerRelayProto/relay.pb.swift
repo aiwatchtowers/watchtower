@@ -474,6 +474,10 @@ public nonisolated struct Relay_V1_HelloOk: Sendable {
 
   public var connectionID: String = String()
 
+  /// What this relay supports beyond the protocol version, so a client can rely on it:
+  /// "records_inline" — ZoneChanged.records carries the records of the writes up to its seq.
+  public var capabilities: [String] = []
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -1120,7 +1124,9 @@ public nonisolated struct Relay_V1_ZoneChanged: Sendable {
 
   public var seq: UInt64 = 0
 
-  /// Present when the record is at most 64 KiB.
+  /// Present when records holds exactly one record and its envelope is at most 64 KiB: the same
+  /// record, kept for clients without "records_inline". The event may stand for more writes than
+  /// that one record (a coalesced event), so a client applies it only when seq is its cursor + 1.
   public var record: Relay_V1_Record {
     get {_record ?? Relay_V1_Record()}
     set {_record = newValue}
@@ -1129,6 +1135,18 @@ public nonisolated struct Relay_V1_ZoneChanged: Sendable {
   public var hasRecord: Bool {self._record != nil}
   /// Clears the value of `record`. Subsequent reads from it will return its default value.
   public mutating func clearRecord() {self._record = nil}
+
+  /// The device whose write this was; empty when the event stands for several writes or no write
+  /// (a record-less catch-up). A device can skip its own writes by comparing it with its id.
+  public var writer: String = String()
+
+  /// The records of the writes up to seq, oldest first, when they fit the frame budget: the sum over
+  /// the records of envelope + name + zone + attachment id bytes + 32 is at most 256 KiB. A larger
+  /// save comes as several events, split by record. Empty when they do not fit, for a deletion, or
+  /// over a phone's traffic budget. The records are contiguous and the last one is at seq: a client
+  /// whose cursor is seq minus their count applies them without a `changes` read; any other client
+  /// reads `changes` as before.
+  public var records: [Relay_V1_Record] = []
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -1858,7 +1876,7 @@ nonisolated extension Relay_V1_Hello: SwiftProtobuf.Message, SwiftProtobuf._Mess
 
 nonisolated extension Relay_V1_HelloOk: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".HelloOk"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}connection_id\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}connection_id\0\u{1}capabilities\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1867,6 +1885,7 @@ nonisolated extension Relay_V1_HelloOk: SwiftProtobuf.Message, SwiftProtobuf._Me
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularStringField(value: &self.connectionID) }()
+      case 2: try { try decoder.decodeRepeatedStringField(value: &self.capabilities) }()
       default: break
       }
     }
@@ -1876,11 +1895,15 @@ nonisolated extension Relay_V1_HelloOk: SwiftProtobuf.Message, SwiftProtobuf._Me
     if !self.connectionID.isEmpty {
       try visitor.visitSingularStringField(value: self.connectionID, fieldNumber: 1)
     }
+    if !self.capabilities.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.capabilities, fieldNumber: 2)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Relay_V1_HelloOk, rhs: Relay_V1_HelloOk) -> Bool {
     if lhs.connectionID != rhs.connectionID {return false}
+    if lhs.capabilities != rhs.capabilities {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -3089,7 +3112,7 @@ nonisolated extension Relay_V1_Event: SwiftProtobuf.Message, SwiftProtobuf._Mess
 
 nonisolated extension Relay_V1_ZoneChanged: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ZoneChanged"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}zone\0\u{1}seq\0\u{1}record\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}zone\0\u{1}seq\0\u{1}record\0\u{1}writer\0\u{1}records\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -3100,6 +3123,8 @@ nonisolated extension Relay_V1_ZoneChanged: SwiftProtobuf.Message, SwiftProtobuf
       case 1: try { try decoder.decodeSingularStringField(value: &self.zone) }()
       case 2: try { try decoder.decodeSingularUInt64Field(value: &self.seq) }()
       case 3: try { try decoder.decodeSingularMessageField(value: &self._record) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.writer) }()
+      case 5: try { try decoder.decodeRepeatedMessageField(value: &self.records) }()
       default: break
       }
     }
@@ -3119,6 +3144,12 @@ nonisolated extension Relay_V1_ZoneChanged: SwiftProtobuf.Message, SwiftProtobuf
     try { if let v = self._record {
       try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
     } }()
+    if !self.writer.isEmpty {
+      try visitor.visitSingularStringField(value: self.writer, fieldNumber: 4)
+    }
+    if !self.records.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.records, fieldNumber: 5)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -3126,6 +3157,8 @@ nonisolated extension Relay_V1_ZoneChanged: SwiftProtobuf.Message, SwiftProtobuf
     if lhs.zone != rhs.zone {return false}
     if lhs.seq != rhs.seq {return false}
     if lhs._record != rhs._record {return false}
+    if lhs.writer != rhs.writer {return false}
+    if lhs.records != rhs.records {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

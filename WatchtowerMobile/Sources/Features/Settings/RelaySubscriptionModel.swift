@@ -38,7 +38,7 @@ struct RelaySubscriptionModel: Equatable {
 
     private static let leadLine = "Changes reach your phone in under a second instead of tens of seconds."
     private static let pitchBullets = [
-        "Up to \(HostedRelayLimits.maxMacSlots) Macs on this iPhone",
+        "Up to \(HostedRelayLimits.maxMacSlots) towers on this iPhone",
         "Encrypted end to end: our server can't read anything",
         "Switch back to iCloud at any time"
     ]
@@ -219,7 +219,7 @@ struct RelaySubscriptionModel: Equatable {
         case .updateRequired:
             return Frame(line: "Update Watchtower from the App Store to use Relay.")
         case .done:
-            return Frame(primary: Button(title: "Done", action: .done), line: "Relay is on. Choose it for each Mac in Macs.")
+            return Frame(primary: Button(title: "Done", action: .done), line: "Relay is on. Choose it for each tower in Towers.")
         default:
             return Frame()
         }

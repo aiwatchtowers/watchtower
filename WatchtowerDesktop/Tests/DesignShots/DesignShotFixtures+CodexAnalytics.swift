@@ -38,7 +38,7 @@ enum CodexAnalyticsShotFixtures {
 
     private static let actions = AgentAnalyticsActions(
         turnOn: {}, openSession: { _ in }, openTarget: { _ in }, openFile: { _ in },
-        openAsks: {}, discuss: { _ in }, asksWaiting: false
+        openAsks: {}, tune: {}, asksWaiting: false
     )
 
     /// The Statistics fixture with two Codex sessions added beside its

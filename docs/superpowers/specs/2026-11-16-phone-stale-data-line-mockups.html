@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stale Data Line</title>
+<style>
+/* iPhone frames of Now and the Workbench tab, one per state of the stale-data line (#1873). */
+:root {
+  --page: #eceef1; --ink: #1d2128; --muted: #6b7280; --phone: #ffffff; --card: #f4f5f7;
+  --line: #d9dce1; --green: #1f8a4c; --gray: #8e8e93; --red: #d70015; --orange: #c75300; --callout: #2f6fd6;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --page: #15171b; --ink: #e7e9ee; --muted: #9aa1ad; --phone: #000; --card: #1c1c1e; --line: #353941;
+  --green: #4cc782; --gray: #8e8e93; --red: #ff6961; --orange: #ffb340; --callout: #6ea2ff; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --page: #15171b; --ink: #e7e9ee; --muted: #9aa1ad; --phone: #000; --card: #1c1c1e; --line: #353941;
+  --green: #4cc782; --gray: #8e8e93; --red: #ff6961; --orange: #ffb340; --callout: #6ea2ff; color-scheme: dark }
+body { background: var(--page); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; margin: 0; }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.6rem; margin: 0 0 6px; }
+h2 { font-size: 1.15rem; margin: 40px 0 14px; }
+.lede { color: var(--muted); margin: 0 0 20px; max-width: 72ch; line-height: 1.5; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 28px; }
+figure { margin: 0; }
+figcaption { margin-top: 10px; line-height: 1.45; font-size: 14px; }
+figcaption b { display: block; }
+.phone { background: var(--phone); border: 1px solid var(--line); border-radius: 34px; padding: 18px 14px; height: 470px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.10); font-size: 13px; overflow: hidden; }
+.nav { font-size: 26px; font-weight: 700; margin: 26px 2px 10px; }
+.nav.inline { font-size: 16px; text-align: center; margin: 26px 0 12px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; background: var(--card); border-radius: 99px; padding: 6px 12px; color: var(--muted); font-size: 12px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+.dot.gray { background: var(--gray); }
+.fresh { display: flex; align-items: flex-start; gap: 6px; color: var(--red); font-size: 12px; margin: 8px 2px 0; line-height: 1.35; }
+.sec { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin: 16px 2px 8px; }
+.sec.wait { color: var(--orange); }
+.card { background: var(--card); border-radius: 14px; padding: 12px; margin-bottom: 10px; }
+.card b { display: block; margin-bottom: 4px; }
+.card span { color: var(--muted); font-size: 12px; }
+.seg { display: flex; background: var(--card); border-radius: 8px; padding: 2px; margin: 10px 0; font-size: 12px; }
+.seg span { flex: 1; text-align: center; padding: 5px 0; border-radius: 6px; }
+.seg span.on { background: var(--phone); font-weight: 600; }
+.empty { text-align: center; color: var(--muted); margin-top: 80px; line-height: 1.5; }
+.empty b { color: var(--ink); display: block; font-size: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>The phone says how old its data is</h1>
+  <p class="lede">One red line under the tower chip when the tower's updates stopped reaching the phone. Nothing while fresh. Orange stays for "waiting for you" only.</p>
+
+  <h2>Workbench tab, the list of workbenches</h2>
+  <div class="grid">
+    <figure>
+      <div class="phone">
+        <div class="nav">Workbenches</div>
+        <span class="chip"><span class="dot"></span>Acme Mac · online</span>
+        <div class="sec">2 folders on your tower</div>
+        <div class="card"><b>watchtower</b><span>2 working · 1 waiting</span></div>
+        <div class="card"><b>docs</b><span>idle</span></div>
+      </div>
+      <figcaption><b>1. Fresh</b>Heartbeat under 35 min old, Relay answers, nothing stuck: no line.</figcaption>
+    </figure>
+    <figure>
+      <div class="phone">
+        <div class="nav">Workbenches</div>
+        <span class="chip"><span class="dot"></span>Acme Mac · online</span>
+        <div class="fresh"><span>⟲!</span><span>Updated 08:26 · Acme Mac is not sending some updates</span></div>
+        <div class="sec">2 folders on your tower</div>
+        <div class="card"><b>watchtower</b><span>2 working · 1 waiting</span></div>
+        <div class="card"><b>docs</b><span>idle</span></div>
+      </div>
+      <figcaption><b>2. Stuck</b>The heartbeat's <code>stuck_since</code> is 10 min old or more; the time is <code>stuck_since</code>.</figcaption>
+    </figure>
+    <figure>
+      <div class="phone">
+        <div class="nav">Workbenches</div>
+        <span class="chip"><span class="dot gray"></span>Acme Mac · asleep · last seen 2 h ago</span>
+        <div class="fresh"><span>⟲!</span><span>Updated 14:00 · Acme Mac is not sending updates</span></div>
+        <div class="sec">2 folders on your tower</div>
+        <div class="card"><b>watchtower</b><span>2 working · 1 waiting</span></div>
+        <div class="card"><b>docs</b><span>idle</span></div>
+      </div>
+      <figcaption><b>3. Stale</b>Heartbeat 35 min old or more; the time is <code>last_publish_at</code>.</figcaption>
+    </figure>
+    <figure>
+      <div class="phone">
+        <div class="nav">Workbenches</div>
+        <span class="chip"><span class="dot"></span>Acme Mac · online</span>
+        <div class="fresh"><span>⟲!</span><span>Updated 15:20 · this iPhone can't reach Relay</span></div>
+        <div class="sec">2 folders on your tower</div>
+        <div class="card"><b>watchtower</b><span>2 working · 1 waiting</span></div>
+        <div class="card"><b>docs</b><span>idle</span></div>
+      </div>
+      <figcaption><b>4. Offline</b>Relay does not answer this iPhone; wins over stale and stuck.</figcaption>
+    </figure>
+    <figure>
+      <div class="phone">
+        <div class="nav">Workbenches</div>
+        <span class="chip"><span class="dot gray"></span>Your tower · offline</span>
+        <div class="empty"><b>No workbenches yet</b>Your tower's workbenches show up here.</div>
+      </div>
+      <figcaption><b>5. Loading / empty</b>No heartbeat yet or not linked: no line, the empty state stands.</figcaption>
+    </figure>
+  </div>
+
+  <h2>One workbench, and Now</h2>
+  <div class="grid">
+    <figure>
+      <div class="phone">
+        <div class="nav inline">watchtower ▾</div>
+        <div class="fresh"><span>⟲!</span><span>Updated 14:00 · Acme Mac is not sending updates</span></div>
+        <div class="seg"><span class="on">Sessions</span><span>Board</span></div>
+        <div class="sec">Working</div>
+        <div class="card"><b>Fix the relay log</b><span>Working · as of 2 h ago</span></div>
+      </div>
+      <figcaption><b>6. Workbench, stale</b>The first row, above the segments.</figcaption>
+    </figure>
+    <figure>
+      <div class="phone">
+        <div class="nav">Now</div>
+        <span class="chip"><span class="dot"></span>Acme Mac · online</span>
+        <div class="fresh"><span>⟲!</span><span>Updated 08:26 · Acme Mac is not sending some updates</span></div>
+        <div class="sec wait">Waiting for you · 1</div>
+        <div class="card"><b>Approve the migration?</b><span>watchtower · 5h</span></div>
+      </div>
+      <figcaption><b>7. Now, stuck</b>Under the chip, above the Relay banner.</figcaption>
+    </figure>
+  </div>
+</div>
+</body>
+</html>

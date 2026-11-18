@@ -45,9 +45,7 @@ func sessionHostForTest(t *testing.T) string {
 		for _, info := range list {
 			if info.Pid > 0 && !info.Exited {
 				_ = syscall.Kill(-info.Pid, syscall.SIGKILL)
-				for deadline := time.Now().Add(5 * time.Second); syscall.Kill(info.Pid, 0) == nil && time.Now().Before(deadline); {
-					time.Sleep(10 * time.Millisecond)
-				}
+				waitFor(t, "the stub session gone", func() bool { return syscall.Kill(info.Pid, 0) != nil })
 			}
 		}
 	})
@@ -56,9 +54,12 @@ func sessionHostForTest(t *testing.T) string {
 	// (WATCHTOWER_FIRST_PROMPT) in args.txt beside the socket, then sleeps.
 	shell := filepath.Join(dir, "loginshell")
 	require.NoError(t, os.WriteFile(shell, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" \"$WATCHTOWER_FIRST_PROMPT\" > \""+
+		filepath.Join(dir, "args.tmp")+"\" && mv \""+filepath.Join(dir, "args.tmp")+"\" \""+
 		filepath.Join(dir, "args.txt")+"\"\nexec /bin/sleep 30\n"), 0o700))
 	prev, prevWatch := workbenchSessionShell, finishLaunchWatch
-	workbenchSessionShell, finishLaunchWatch = shell, 300*time.Millisecond
+	// No launch watch: this test is about the brief, and a watch of a stub
+	// that keeps running would only wait the watch out.
+	workbenchSessionShell, finishLaunchWatch = shell, 0
 	t.Cleanup(func() { workbenchSessionShell, finishLaunchWatch = prev, prevWatch })
 	return socket
 }
@@ -250,7 +251,7 @@ func TestWorkbenchSessionFinishReadsTheBriefFromStdin(t *testing.T) {
 	require.Len(t, list, 1)
 	assert.Equal(t, sid, list[0].Row)
 	args := filepath.Join(filepath.Dir(socket), "args.txt")
-	require.Eventually(t, func() bool { _, err := os.Stat(args); return err == nil }, 5*time.Second, 20*time.Millisecond)
+	waitFor(t, "the stub's args", func() bool { _, err := os.Stat(args); return err == nil })
 	b, err := os.ReadFile(args)
 	require.NoError(t, err)
 	assert.Contains(t, string(b), "sweep the board", "the brief reached the launch")
@@ -286,7 +287,10 @@ func TestWorkbenchSessionFinishRecordsAMissingAgent(t *testing.T) {
 	missing := filepath.Join(filepath.Dir(socket), "exit127")
 	require.NoError(t, os.WriteFile(missing, []byte("#!/bin/sh\nexit 127\n"), 0o700))
 	workbenchSessionShell = missing // restored by sessionHostForTest's cleanup
-	finishLaunchWatch = 3 * time.Second
+	// The stub exits 127 at once, and the watch ends on that exit: it gets
+	// no window short enough for a loaded machine to miss it (a watch that
+	// never sees the exit hangs the run into go test's -timeout).
+	finishLaunchWatch = time.Hour
 	out, err := runSession(t, "start", "--workbench", strconv.FormatInt(wb, 10), "--agent", "claude", "--json")
 	require.NoError(t, err, out)
 	var m map[string]any

@@ -238,6 +238,23 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertTrue(escaped.contains(#"\"hi\""#) && escaped.contains(#"\\x"#))
     }
 
+    /// A question card's answers go as a line of their own: the owner's draft and its files stay (unified chat T12).
+    func testSendLineLeavesTheDraftAndFilesAlone() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        let file = folder.appendingPathComponent("a.png")
+        try Data([9]).write(to: file)
+        model.attach(files: [file])
+        model.draft = "half a thought"
+
+        await model.sendLine("Ship it?\r\n- Yes\n")
+
+        XCTAssertEqual(model.outgoing.first?.text, "Ship it?\n- Yes")
+        XCTAssertEqual(model.draft, "half a thought")
+        XCTAssertEqual(model.attachments.count, 1)
+    }
+
     func testPathWithLineBreakIsRefused() async throws {
         let model = try makeModel(try await liveSession())
         let file = folder.appendingPathComponent("two\nlines.png")

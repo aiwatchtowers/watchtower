@@ -47,6 +47,8 @@ type fixture struct {
 	UploadEcho        []contractCase `json:"upload_echo"`
 	TransportSwitched []contractCase `json:"transport_switched"`
 	SwitchRejected    []contractCase `json:"transport_switch_rejected"`
+	Action            []contractCase `json:"action"`
+	Control           []contractCase `json:"control"`
 	EpochAck          []contractCase `json:"epoch_ack"`
 	Keybox            []contractCase `json:"keybox"`
 	DevicePayload     []struct {
@@ -86,6 +88,12 @@ func names(cs []contractCase) []string {
 // values and unknown keys read as on.
 func recordingsOffered(hb wire.Heartbeat) bool {
 	return hb.Capabilities == nil || hb.Capabilities.Recordings != "off"
+}
+
+// isMac is the phone's reading of the hub kind (#1783): an older hub sends
+// none and is a Mac; "server" and an unknown kind are not.
+func isMac(hb wire.Heartbeat) bool {
+	return hb.HubKind == "" || hb.HubKind == wire.HubKindMac
 }
 
 func compact(t *testing.T, raw json.RawMessage) string {
@@ -235,7 +243,8 @@ func TestHubContractFixture_RecordingSwitch(t *testing.T) {
 	var f fixture
 	require.NoError(t, json.Unmarshal(raw, &f))
 	require.ElementsMatch(t, []string{"capabilities_on", "capabilities_off", "capabilities_absent",
-		"capabilities_unknown_value", "unknown_capability_key"}, names(f.Heartbeat))
+		"capabilities_unknown_value", "unknown_capability_key",
+		"hub_kind_mac", "hub_kind_server", "hub_kind_unknown_value", "chat_on", "chat_off_runner_down", "stuck_since", "background_ai_organization"}, names(f.Heartbeat))
 	require.ElementsMatch(t, []string{"failed_not_supported", "failed_expired", "received",
 		"failed_legacy_no_reason"}, names(f.UploadEcho))
 	for _, c := range f.Heartbeat {
@@ -246,6 +255,24 @@ func TestHubContractFixture_RecordingSwitch(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, compact(t, c.Expect), string(out), "Go writes the fixture's heartbeat bytes")
 			require.Equal(t, c.Kit["recordings_offered"], recordingsOffered(hb))
+			require.Equal(t, c.Kit["is_mac"], isMac(hb))
+			// #1873: stuck_since is absent unless a kind is stuck.
+			if want, ok := c.Kit["stuck_since"].(float64); ok {
+				require.NotNil(t, hb.StuckSince)
+				require.Equal(t, int64(want), hb.StuckSince.Unix())
+			} else {
+				require.Nil(t, hb.StuckSince)
+			}
+			// #1886: background_ai is optional and travels as the fixture wrote it.
+			bgAI, _ := c.Kit["background_ai"].(string)
+			require.Equal(t, bgAI, hb.BackgroundAI)
+			if want, ok := c.Kit["chat"]; ok {
+				// iPhone chat §4.8: the phone shows chat only on an explicit "on".
+				require.NotNil(t, hb.Capabilities)
+				require.Equal(t, want, hb.Capabilities.Chat)
+				reason, _ := c.Kit["chat_reason"].(string)
+				require.Equal(t, reason, hb.Capabilities.ChatReason)
+			}
 			if c.Name == "capabilities_on" || c.Name == "capabilities_off" {
 				// Go's own capabilities, built rather than decoded, are these bytes.
 				hb.Capabilities = wire.RecordingsCapability(c.Name == "capabilities_on")
@@ -524,6 +551,37 @@ func TestHubContractFixture_KeyboxRelayKX(t *testing.T) {
 			require.NotNil(t, kb.Keys)
 			pair(t, c.Kit["relay_kx"], kb.Keys.RelayKX)
 			pair(t, c.Kit["previous_relay_kx"], kb.Keys.PreviousRelayKX)
+		})
+	}
+}
+
+// TestHubContractFixture_ActionControl pins the action and control sections:
+// each case's json decodes, and Go's re-encoding is the case's expect bytes
+// (unknown keys dropped). The phone's reading (kit) is the Swift side's.
+func TestHubContractFixture_ActionControl(t *testing.T) {
+	raw, err := os.ReadFile("../../../WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json")
+	require.NoError(t, err)
+	var f fixture
+	require.NoError(t, json.Unmarshal(raw, &f))
+	require.Equal(t, []string{"ordered_pending", "legacy_pending", "ordered_echo_applied", "unknown_future_key"}, names(f.Action))
+	require.Equal(t, []string{"skip_to", "resend_from", "transport_switch_rejected",
+		"transport_switched_with_keybox", "unknown_kind"}, names(f.Control))
+	for _, c := range f.Action {
+		t.Run("action/"+c.Name, func(t *testing.T) {
+			var a wire.ActionRequest
+			require.NoError(t, json.Unmarshal(c.JSON, &a))
+			out, err := wire.Marshal(a)
+			require.NoError(t, err)
+			require.JSONEq(t, string(c.Expect), string(out))
+		})
+	}
+	for _, c := range f.Control {
+		t.Run("control/"+c.Name, func(t *testing.T) {
+			var ctl wire.Control
+			require.NoError(t, json.Unmarshal(c.JSON, &ctl))
+			out, err := wire.Marshal(ctl)
+			require.NoError(t, err)
+			require.JSONEq(t, string(c.Expect), string(out))
 		})
 	}
 }

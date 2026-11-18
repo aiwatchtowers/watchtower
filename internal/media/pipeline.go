@@ -39,6 +39,12 @@ var (
 	mediaWaitRetry = 30 * time.Minute
 )
 
+// pageTimer is what cuts a page fetch at linkFetchTimeout; a variable so a
+// test can fire it at the moment it chooses instead of waiting it out.
+var pageTimer = func(d time.Duration, f func()) interface{ Stop() bool } {
+	return time.AfterFunc(d, f)
+}
+
 const (
 	// maxMediaAttempts failed attempts end a row 'failed', never retried.
 	maxMediaAttempts = 3
@@ -378,8 +384,8 @@ func (r *run) link(ctx context.Context, it db.MediaItem) outcome {
 	fctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var pageExpired atomic.Bool
-	pageTimer := time.AfterFunc(linkFetchTimeout, func() { pageExpired.Store(true); cancel() })
-	defer pageTimer.Stop()
+	cut := pageTimer(linkFetchTimeout, func() { pageExpired.Store(true); cancel() })
+	defer cut.Stop()
 	pageErr := func(err error) error {
 		if pageExpired.Load() && ctx.Err() == nil {
 			return fmt.Errorf("%w: page fetch over %s", context.DeadlineExceeded, linkFetchTimeout)
@@ -392,7 +398,7 @@ func (r *run) link(ctx context.Context, it db.MediaItem) outcome {
 	}
 	defer resp.Body.Close()
 	if strings.HasPrefix(resp.MediaType, "image/") {
-		if !pageTimer.Stop() {
+		if !cut.Stop() {
 			return fetchOutcome(pageErr(context.Canceled)) // the timer fired as the headers came
 		}
 		// The parent already holds this URL as an image (a Confluence

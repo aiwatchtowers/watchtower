@@ -565,3 +565,23 @@ func TestBuildSystemPrompt_CarriesChatSlotBeforeProject(t *testing.T) {
 	assert.Less(t, slot, strings.Index(got, "=== PROJECT: Payments ==="))
 	assert.Greater(t, slot, strings.Index(got, "=== MEMORY"))
 }
+
+// The Slack Live paragraph is in the prompt iff the caller says the provider
+// reaches the connector, and promises the honest fallback.
+func TestBuildSystemPrompt_SlackLive(t *testing.T) {
+	d, cfg, o := promptFixture(t)
+	got, err := BuildSystemPrompt(context.Background(), d, cfg, o)
+	require.NoError(t, err)
+	assert.NotContains(t, got, "Live Slack")
+
+	o.SlackLive = true
+	got, err = BuildSystemPrompt(context.Background(), d, cfg, o)
+	require.NoError(t, err)
+	assert.Contains(t, got, "Slack: answer from the local Slack tools first.")
+	assert.Contains(t, got, "say plainly that Live Slack was unavailable")
+
+	o.Surface = "target"
+	got, err = BuildSystemPrompt(context.Background(), d, cfg, o)
+	require.NoError(t, err)
+	assert.NotContains(t, got, "Live Slack", "the main chat only")
+}

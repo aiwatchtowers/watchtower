@@ -703,11 +703,11 @@ output.briefing({ title: "<PROJECT> state", body: report });
 ```
 ````
 
-### Team performance report (personal, weekly)
+### Team week summary (personal, weekly)
 
 ````markdown
 ---
-name: Team performance report
+name: Team week summary
 trigger:
   schedule: "0 17 * * 5"
 permissions:
@@ -718,14 +718,15 @@ permissions:
 outputs: [report]
 budget: { tokens: 200000, minutes: 15 }
 ---
-Friday evening: a report on how the team's week went, from Jira and Slack.
+Friday evening: a summary of the team's week from Jira and Slack — what moved,
+where work is stuck, the decisions made.
 
 ```js
 const people = tool("list_people", { limit: 50 });
 const issues = tool("list_jira_issues", { limit: 200 });
 const talk = tool("list_messages", { limit: 100 });
 const report = llm(
-  "Write a fair, factual weekly team report. Cover delivery, blockers and collaboration. No rankings.",
+  "Write a factual weekly summary of the team's work: what moved, where work is stuck, the decisions made. Write about the work only; never judge a person.",
   { input: { people: people, issues: issues, messages: talk }, tier: "strong" }
 );
 output.report({ title: "Team week", body: report });

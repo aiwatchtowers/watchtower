@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"watchtower/internal/digest"
 	"watchtower/internal/logredact"
@@ -255,7 +254,7 @@ func TestQuotaStatus429RetainsHistoricalMarker(t *testing.T) {
 			}
 			leaf := NewCodexGenerator("m", "m", fakeCodexRun(t, string(event), "", 1))
 			leaf.SetIsolatedChild()
-			_, _, _, err = digest.WithCallTimeout(leaf, 5*time.Second).Generate(context.Background(), "", "request", "")
+			err = generateBounded(t, leaf, "", "request")
 			if !errors.Is(err, digest.ErrAICall) {
 				t.Errorf("lost historical unavailable marker: %v", err)
 			}
@@ -288,7 +287,7 @@ func TestQuotaEnvelopeRejectsNonErrorTypes(t *testing.T) {
 			}
 			leaf := NewCodexGenerator("m", "m", fakeCodexRun(t, string(event), "", 1))
 			leaf.SetIsolatedChild()
-			_, _, _, err = digest.WithCallTimeout(leaf, 5*time.Second).Generate(context.Background(), "", "request", "")
+			err = generateBounded(t, leaf, "", "request")
 			var failure *providers.Failure
 			if errors.As(err, &failure) && failure.Category == providers.Quota {
 				t.Fatalf("non-error payload established quota: %v", err)
@@ -348,10 +347,7 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"o
 		t.Fatal(err)
 	}
 	// Prove the fake catches shell_tool=false without independent snapshot flags.
-	// The deadline is only a hang guard over three short stub runs; a tight
-	// one fails a correct run on a loaded machine.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := context.Background()
 	cmd := exec.CommandContext(ctx, bin, "-c", "features.shell_tool=false")
 	digest.IsolateChild(cmd, nil)
 	if _, err := cmd.Output(); err != nil {

@@ -20,7 +20,7 @@ import (
 )
 
 // askTimeoutMessage is AskAnswerHandler.timeoutMessage, verbatim.
-const askTimeoutMessage = "The Mac did not finish this answer in time — check the ask on the Mac"
+const askTimeoutMessage = "Your tower did not finish this answer in time — check the ask there"
 
 // result.delivery values of an ask answer (mobile POC spec §5.2). An
 // automation's ask is never typed into a session: its answer goes to the
@@ -110,7 +110,7 @@ func (h *Handlers) applyAskAnswer(ctx context.Context, r actions.Request) action
 		return h.rerun(r, ask, payload, given)
 	}
 	if !h.beginAnswering(askID) {
-		return failed(reasonConflict, "Another answer to this ask is being saved on the Mac")
+		return failed(reasonConflict, "Another answer to this ask is being saved on your tower")
 	}
 	defer h.endAnswering(askID)
 
@@ -189,9 +189,10 @@ func (h *Handlers) storeAnswer(askID, workbenchID int64, a asks.Answer) (bool, e
 	at := h.d.Clock().UTC().Format("2006-01-02T15:04:05Z")
 	var n int64
 	err = h.d.DB.WithTx(func(tx *sql.Tx) error {
+		//nolint:gosec // G202: db.AskInSpecLoopSQL returns a constant predicate; every value is a bound arg.
 		res, err := tx.Exec(`UPDATE owner_asks SET status = 'answered', answer = ?, answered_at = ?
 			WHERE id = ? AND project_id = ? AND status = 'open'
-			  AND NOT EXISTS (SELECT 1 FROM spec_reviews sr WHERE sr.ask_id = owner_asks.id AND sr.loop = 'author')`,
+			  AND NOT `+db.AskInSpecLoopSQL("owner_asks"),
 			encoded, at, askID, workbenchID)
 		if err != nil {
 			return err

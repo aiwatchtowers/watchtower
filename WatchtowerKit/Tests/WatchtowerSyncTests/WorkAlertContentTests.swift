@@ -49,3 +49,29 @@ final class WorkAlertContentTests: XCTestCase {
         XCTAssertNil(content.userInfo["wt_session"])
     }
 }
+
+/// The `chat_answer` event (iPhone chat spec §4.7).
+final class WorkAlertChatAnswerTests: XCTestCase {
+    private let hubID = "11111111-2222-3333-4444-555555555555"
+
+    func testAChatAnswerDecodesWithoutAWorkbenchAndGroupsByConversation() throws {
+        let json = #"{"event":"chat_answer","key":"chat:T:answer","conversation_id":42,"title":"Rollout","body":"Answer ready","quick":false}"#
+        let payload = try JSONDecoder().decode(WorkAlertPayload.self, from: Data(json.utf8))
+        XCTAssertEqual(payload.event, .chatAnswer)
+        XCTAssertEqual(payload.conversationID, 42)
+        let content = WorkAlertContent(payload: payload, hubID: hubID)
+        XCTAssertEqual(content.threadID, "chat-42")
+        XCTAssertEqual(content.userInfo["wt_event"], "chat_answer")
+        XCTAssertEqual(content.userInfo["wt_conversation"], "42")
+        XCTAssertNil(content.userInfo["wt_session"])
+    }
+
+    func testOtherEventsCarryNoConversationKey() throws {
+        let json = #"{"event":"ask","key":"ask-5","workbench_id":7,"workbench_name":"Acme","ask_id":5,"title":"t","body":"b","quick":false}"#
+        let payload = try JSONDecoder().decode(WorkAlertPayload.self, from: Data(json.utf8))
+        XCTAssertNil(payload.conversationID)
+        XCTAssertNil(WorkAlertContent(payload: payload, hubID: hubID).userInfo["wt_conversation"])
+        let again = try JSONEncoder().encode(payload)
+        XCTAssertFalse(try XCTUnwrap(String(bytes: again, encoding: .utf8)).contains("conversation_id"))
+    }
+}

@@ -51,8 +51,8 @@ func TestMeterActiveDeadlineHasSubminutePrecision(t *testing.T) {
 
 type attemptClock struct{ now time.Time }
 
-func (c *attemptClock) Now() time.Time                       { return c.now }
-func (*attemptClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+func (c *attemptClock) Now() time.Time                     { return c.now }
+func (*attemptClock) After(time.Duration) <-chan time.Time { return nil } // never fires: the test reads Now only
 
 func TestReplayUsageMetadataLegacyAndStrictEnvelope(t *testing.T) {
 	legacy := `[1000,2000]`

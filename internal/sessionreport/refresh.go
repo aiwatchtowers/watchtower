@@ -41,6 +41,10 @@ const prFields = "state,title,additions,deletions,mergedAt"
 // run runs git and gh; a variable so a test can count the processes.
 var run workbenchcheck.Runner = workbenchcheck.ExecRunner
 
+// setWriteWait sets the handle's busy_timeout before a cache write; a
+// variable so a test can see each write's wait without waiting it out.
+var setWriteWait = (*db.DB).SetBusyTimeout
+
 // RefreshOptions configures one Refresh.
 type RefreshOptions struct {
 	// Network allows reading pull requests through the gh CLI; without it
@@ -273,7 +277,7 @@ func (r *refresher) noteUnsaved() {
 func (r *refresher) save(row db.PRState) error {
 	if r.opts.writeWait > 0 {
 		wait := max(min(r.opts.writeWait, r.deadline.Sub(r.opts.Now())), time.Millisecond)
-		if err := r.d.SetBusyTimeout(wait); err != nil {
+		if err := setWriteWait(r.d, wait); err != nil {
 			return err
 		}
 	}

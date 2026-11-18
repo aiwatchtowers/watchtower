@@ -299,11 +299,7 @@ final class CodeQuestionSurfaceTests: XCTestCase {
             let titles = try ChatConversationQueries.search(db, query: "zephyrquux").map(\.id)
             XCTAssertTrue(titles.contains(main))
             XCTAssertFalse(titles.contains(conv), "the main chat's title search")
-
-            let hits = try ChatSearchQueries.search(db, query: "zephyrquux")
-            XCTAssertTrue(hits.contains { $0.conversationID == main && $0.messageID != nil })
-            XCTAssertTrue(hits.contains { $0.conversationID == main && $0.messageID == nil })
-            XCTAssertFalse(hits.contains { $0.conversationID == conv }, "the main chat's search (titles and FTS)")
+            // The ⌘K search is the engine's (`db.SearchChats`, main chats only).
         }
     }
 }

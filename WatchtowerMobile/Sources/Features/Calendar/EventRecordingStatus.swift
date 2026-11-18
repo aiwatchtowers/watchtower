@@ -22,7 +22,7 @@ struct EventRecordingStatus: Equatable {
     let transcribingPercent: Int?
 
     static let notRecordedText =
-        "Not recorded yet. A recording here is attached to this event; the Mac transcribes it and writes the recap."
+        "Not recorded yet. A recording here is attached to this event; the tower transcribes it and writes the recap."
 
     init(event: CalendarEvent, snapshot: CalendarReplicaSnapshot, recordings: PhoneRecordingsSnapshot, now: Date) {
         // The newest phone recording made for this event (the ledger is

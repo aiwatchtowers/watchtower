@@ -494,7 +494,7 @@ final class TransportRequestWiringTests: XCTestCase {
         try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .cloudKit)
         try await bed.fetch(session)
 
-        XCTAssertNil(try bed.row()?.link.hubOnRelayAt, "the Mac is back on iCloud")
+        XCTAssertNil(try bed.row()?.link.hubOnRelayAt, "the tower is back on iCloud")
     }
 
     func testANewerEpochMarkerTowardCloudKitClearsHubOnRelayOnAnICloudPhone() async throws {
@@ -677,7 +677,7 @@ final class TransportRequestWiringTests: XCTestCase {
 
         XCTAssertNil(try bed.row()?.link.transportRequest)
         let onCloud = try await bed.cloudControls(.transportSwitch)
-        XCTAssertTrue(onCloud.isEmpty, "the Mac must not move now")
+        XCTAssertTrue(onCloud.isEmpty, "the tower must not move now")
         let queued = try await queuedRequests(session)
         XCTAssertTrue(queued.isEmpty)
 

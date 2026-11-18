@@ -45,22 +45,27 @@ struct WorkbenchListView: View {
     private var content: some View {
         let workbenches = replica.snapshot.orderedWorkbenches
         if workbenches.isEmpty {
-            ContentUnavailableView(
-                "No workbenches yet",
-                systemImage: "hammer",
-                description: Text("Your Mac's workbenches show up here.")
-            )
+            // The switcher stays reachable over an empty hub.
+            VStack(alignment: .leading, spacing: 0) {
+                switcher.padding(.horizontal, Spacing.large)
+                ContentUnavailableView(
+                    "No workbenches yet",
+                    systemImage: "hammer",
+                    description: Text("Your tower's workbenches show up here.")
+                )
+            }
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Spacing.regular) {
-                    SectionHeader(workbenches.count == 1 ? "1 folder on your Mac" : "\(workbenches.count) folders on your Mac")
+                    switcher
+                    SectionHeader(workbenches.count == 1 ? "1 folder on your tower" : "\(workbenches.count) folders on your tower")
                     ForEach(workbenches) { workbench in
                         NavigationLink(value: WorkbenchRoute(id: workbench.id)) {
                             WorkbenchCardView(card: WorkbenchCardModel(workbench))
                         }
                         .buttonStyle(.plain)
                     }
-                    Text("Workbenches are folders bound on the Mac. New ones are added there.")
+                    Text("Workbenches are folders bound on the tower. New ones are added there.")
                         .font(TypeScale.meta)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, Spacing.small)
@@ -70,6 +75,17 @@ struct WorkbenchListView: View {
             }
             .background(Color(.systemBackground))
             .refreshable { await env.refresh(.pull) }
+        }
+    }
+
+    /// The hub switcher chip, as on Now (#1782); asleep by the clock alone. Under it, how old the
+    /// data is when the tower's updates stopped (#1873).
+    private var switcher: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            VStack(alignment: .leading, spacing: 0) {
+                HubSwitcherChip(now: context.date)
+                ReplicaFreshnessLine(now: context.date)
+            }
         }
     }
 }

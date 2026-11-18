@@ -132,7 +132,7 @@ final class HubBootTests: XCTestCase {
                         now: { clock.now }, tickInterval: nil
                     )
                 },
-                sleep: { _ in try await Task.sleep(for: .seconds(3600)) }
+                sleep: { _ in try await sleepUntilCancelled() }
             )
             self?.sessions.append(session)
             self?.addTeardownBlock { @MainActor in session.stop() }

@@ -54,6 +54,7 @@ type stateSeed struct {
 	finished   bool
 	failed     *string // agent_error of a StopFailure
 	background *int
+	shells     *int // agent_background_shells (board #1712)
 	bgAt       *time.Duration
 }
 
@@ -82,8 +83,9 @@ func (r *sessionRig) setState(id int64, s stateSeed) {
 		bgAt = r.stamp(off)
 	}
 	exec(r.t, r.d, `UPDATE terminal_sessions SET agent_state = ?, agent_state_at = ?, finished_at = ?,
-    agent_failed_at = ?, agent_error = ?, agent_background = ?, agent_background_at = ? WHERE id = ?`,
-		s.state, stateAt, finished, failedAt, agentErr, s.background, bgAt, id)
+    agent_failed_at = ?, agent_error = ?, agent_background = ?, agent_background_at = ?,
+    agent_background_shells = ? WHERE id = ?`,
+		s.state, stateAt, finished, failedAt, agentErr, s.background, bgAt, s.shells, id)
 }
 
 func countsOf(t *testing.T, d *db.DB, s *TerminalSessionSource) map[int64]sessionCounts {
@@ -183,7 +185,7 @@ func TestEveryStateKindPublishesTheMacsPresentation(t *testing.T) {
 			insertAsk(t, r.d, project, askSeed{session: &id})
 		}, want{"finished", "Finished · 2 asks open", "checkmark", "orange"}},
 		{"stopped", true, func(id int64) { r.setState(id, stateSeed{state: ptr("waiting")}) },
-			want{"stopped", "Stopped", "pause.fill", "secondary"}},
+			want{"stopped", "Idle", "pause.fill", "secondary"}},
 		// #411: agents working has no wire kind; it goes out as working.
 		{"agents working", true, func(id int64) { r.setState(id, stateSeed{state: ptr("waiting"), background: ptr(2)}) },
 			want{"working", "2 agents working", "person.2.fill", "green"}},
@@ -193,6 +195,23 @@ func TestEveryStateKindPublishesTheMacsPresentation(t *testing.T) {
 			want{"failed", "Stopped on an error", "exclamationmark", "red"}},
 		// No age: the caption never ticks.
 		{"not started", false, func(int64) {}, want{"not_started", "Not running", "", "secondary"}},
+		// #1712: background shells alone go out as working too, with their
+		// own caption and glyph; agents win the caption beside them.
+		{"background shell", true, func(id int64) {
+			r.setState(id, stateSeed{state: ptr("waiting"), background: ptr(0), shells: ptr(1)})
+		}, want{"working", "Background task running", "hourglass", "green"}},
+		{"background shells", true, func(id int64) {
+			r.setState(id, stateSeed{state: ptr("waiting"), background: ptr(0), shells: ptr(2)})
+		}, want{"working", "2 background tasks running", "hourglass", "green"}},
+		{"agents and a shell", true, func(id int64) {
+			r.setState(id, stateSeed{state: ptr("waiting"), background: ptr(1), shells: ptr(1)})
+		}, want{"working", "1 agent working", "person.2.fill", "green"}},
+		// #1945: an ask in the spec review author loop, turn over.
+		{"spec review", true, func(id int64) {
+			r.setState(id, stateSeed{state: ptr("waiting")})
+			hideInSpecLoop(t, r.d, project, id, 1)
+			hideInSpecLoop(t, r.d, project, id, 2)
+		}, want{"spec_review", "Spec review · round 2", "doc.text.magnifyingglass", "green"}},
 		// §3.5 (U6): a working codex row the Mac cannot watch.
 		{"working, not watched", true, func(id int64) {
 			r.setState(id, stateSeed{state: ptr("working")})
@@ -216,6 +235,11 @@ func TestEveryStateKindPublishesTheMacsPresentation(t *testing.T) {
 			p["state_glyph"] != c.want.glyph || p["state_tone"] != c.want.tone ||
 			p["live"] != c.live || p["is_ring"] != !c.live {
 			t.Errorf("%s: %v", c.name, p)
+		}
+		if c.name == "spec review" {
+			if _, ok := p["oldest_ask_id"]; ok || num(p["open_asks"]) != 0 {
+				t.Errorf("spec review shows its loop asks: %v", p)
+			}
 		}
 	}
 	if p := all[ids[8]]; p["agent_error"] != "rate_limit" {
@@ -327,7 +351,7 @@ func TestDisplayOverCountReadsAsShownOver(t *testing.T) {
 		t.Errorf("not shown over = %v", p)
 	}
 	over = map[int64]ShownOver{id: {Run: r.started, ReportedAt: r.stamp(2 * time.Second)}}
-	if p := payloads(t, src)[id]; p["state_kind"] != "stopped" || p["state_caption"] != "Stopped" {
+	if p := payloads(t, src)[id]; p["state_kind"] != "stopped" || p["state_caption"] != "Idle" {
 		t.Errorf("shown over = %v", p)
 	}
 	over = map[int64]ShownOver{id: {Run: r.started, ReportedAt: r.stamp(time.Second)}}
@@ -579,5 +603,25 @@ func TestFailedCaptionTrimsSwiftWhitespace(t *testing.T) {
 		if got := (sessionState{kind: kindFailed, err: in}).caption(); got != want {
 			t.Errorf("caption(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// hideInSpecLoop files an open review ask of the session in the spec review
+// author loop at round.
+func hideInSpecLoop(t *testing.T, d *db.DB, project, session int64, round int) {
+	t.Helper()
+	ask := insertAsk(t, d, project, askSeed{session: &session, kind: "review"})
+	exec(t, d, `INSERT INTO spec_reviews (ask_id, status, queued_at, loop, round) VALUES (?, 'running', '2026-10-01T00:00:00Z', 'author', ?)`, ask, round)
+}
+
+// #1945: a session in the spec review loop counts as working.
+func TestSpecReviewCountsAsWorking(t *testing.T) {
+	r := newSessionRig(t)
+	project := insertWorkbench(t, r.d, "acme", "/tmp/acme")
+	id := insertSession(t, r.d, project, sessionSeed{})
+	r.setState(id, stateSeed{state: ptr("waiting")})
+	hideInSpecLoop(t, r.d, project, id, 1)
+	if got := countsOf(t, r.d, r.source([]int64{id}, time.Time{}, nil))[project]; got != (sessionCounts{Working: 1}) {
+		t.Errorf("counts = %+v", got)
 	}
 }

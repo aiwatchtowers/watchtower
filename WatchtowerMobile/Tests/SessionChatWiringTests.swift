@@ -14,12 +14,18 @@ final class SessionChatWiringTests: XCTestCase {
     private final class Spy {
         var sent: [String] = []
         var tick: AsyncStream<Void>.Continuation?
+        /// Yields once a tick stream ended: the requester's loop stopped listening.
+        let ended = AsyncStream.makeStream(of: Void.self)
     }
 
     private func requester(_ spy: Spy) -> SessionChatRequester {
         SessionChatRequester(
             ticks: {
-                AsyncStream { spy.tick = $0 }
+                AsyncStream { continuation in
+                    spy.tick = continuation
+                    let ended = spy.ended.continuation
+                    continuation.onTermination = { _ in ended.yield() }
+                }
             },
             send: { route in spy.sent.append("\(route.sessionID)/\(route.agentID ?? "-")/\(route.toolUseID ?? "-")") }
         )
@@ -61,13 +67,16 @@ final class SessionChatWiringTests: XCTestCase {
     func testARequestStillQueuedIsNotQueuedAgain() async throws {
         let store = try makePoolStore()
         let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
-        var ticker: AsyncStream<Void>.Continuation?
-        let requester = SessionChatRequester.sending(through: outbox, store: store) { AsyncStream { ticker = $0 } }
+        let ticks = PulledTicks()
+        let requester = SessionChatRequester.sending(through: outbox, store: store) {
+            AsyncStream { await ticks.pull() }
+        }
         requester.start(sessionID: 11, agentID: nil)
         try await poll({ ((try? store.pendingActions()) ?? []).count == 1 }, "no action queued")
-        ticker?.yield()
-        ticker?.yield()
-        try await Task.sleep(for: .milliseconds(150))
+        await ticks.tick()
+        await ticks.tick()
+        // The loop asks for its third tick only once both repeats ran.
+        await ticks.untilPulls(3)
         XCTAssertEqual(try store.pendingActions().count, 1, "the repeats found their request still waiting")
         requester.stop(sessionID: 11, agentID: nil)
     }
@@ -100,7 +109,7 @@ final class SessionChatWiringTests: XCTestCase {
         try await poll({ model.waitingTooLong }, "never waited too long")
         model.disappeared()
         model.appeared()
-        XCTAssertFalse(model.waitingTooLong, "back to Asking your Mac…")
+        XCTAssertFalse(model.waitingTooLong, "back to Asking your tower…")
         try await poll({ releases.count == 2 }, "the wait did not restart")
         model.disappeared()
         releases[1].resume()
@@ -112,8 +121,10 @@ final class SessionChatWiringTests: XCTestCase {
         model.appeared()
         try await poll({ spy.sent.count == 1 }, "no request on appear")
         model.disappeared()
-        spy.tick?.yield()
-        try await Task.sleep(for: .milliseconds(100))
+        for await _ in spy.ended.stream { break }
+        guard case .terminated = spy.tick?.yield() else {
+            return XCTFail("the requests still listen for ticks after disappear")
+        }
         XCTAssertEqual(spy.sent.count, 1, "a tick after disappear sends nothing")
     }
 
@@ -127,11 +138,11 @@ final class SessionChatWiringTests: XCTestCase {
         model.appeared()
         try await poll({ release != nil }, "the wait never began")
         XCTAssertNil(model.chat, "no record for session 17")
-        XCTAssertFalse(model.waitingTooLong, "Asking your Mac… until the limit")
-        XCTAssertEqual(SessionChatText.asking, "Asking your Mac…")
+        XCTAssertFalse(model.waitingTooLong, "Asking your tower… until the limit")
+        XCTAssertEqual(SessionChatText.asking, "Asking your tower…")
         release?.resume()
         try await poll({ model.waitingTooLong }, "never waited too long")
-        XCTAssertEqual(SessionChatText.tooLong, "Your Mac has not sent this chat yet. Is it awake?")
+        XCTAssertEqual(SessionChatText.tooLong, "Your tower has not sent this chat yet. Is it awake?")
         model.disappeared()
     }
 
@@ -173,10 +184,12 @@ final class SessionChatWiringTests: XCTestCase {
         let wireName = try await store.reader.read {
             try String.fetchOne($0, sql: "SELECT record_name FROM slice_records WHERE plain_name = 'session_chat-11'")
         }
+        // A wait begun before the chat arrived may be in the list already: the new timer is the one past it.
+        let waitsBefore = releases.count
         let batch = CloudChangeBatch(changed: [], deletedRecordNames: [try XCTUnwrap(wireName)], newToken: CloudChangeToken(value: Int.max / 2))
         XCTAssertTrue(try store.apply(batch))
         try await poll({ model.chat == nil }, "the chat stayed")
-        try await poll({ !releases.isEmpty }, "no patience timer after the chat went away")
+        try await poll({ releases.count > waitsBefore }, "no patience timer after the chat went away")
         releases.forEach { $0.resume() }
         try await poll({ model.waitingTooLong }, "never waited too long")
         model.disappeared()
@@ -213,8 +226,8 @@ final class SessionChatWiringTests: XCTestCase {
 
     func testEarlierMessagesLine() {
         XCTAssertNil(SessionChatViewModel.earlierText(0))
-        XCTAssertEqual(SessionChatViewModel.earlierText(12), "12 earlier messages — open on the Mac")
-        XCTAssertEqual(SessionChatViewModel.earlierText(1), "1 earlier message — open on the Mac")
+        XCTAssertEqual(SessionChatViewModel.earlierText(12), "12 earlier messages — open on the tower")
+        XCTAssertEqual(SessionChatViewModel.earlierText(1), "1 earlier message — open on the tower")
     }
 
     // MARK: - The composer follows the typing grant
@@ -244,5 +257,51 @@ final class SessionChatWiringTests: XCTestCase {
 
     private func demoChat() throws -> SessionChat {
         try mirror(SessionChat.self, DemoSeed.sessionChatPayload(now: now))
+    }
+}
+
+/// Ticks a test hands out one at a time, counting how often the consumer asked for the next one: the n-th ask means
+/// the consumer finished with the n-1 ticks before it.
+private actor PulledTicks {
+    private var pulls = 0
+    private var queued = 0
+    private var tickWaiter: CheckedContinuation<Void?, Never>?
+    private var pullWaiters: [(count: Int, waiter: CheckedContinuation<Void, Never>)] = []
+
+    /// The consumer's ask for the next tick; nil (the stream ends) when its task is cancelled.
+    func pull() async -> Void? {
+        pulls += 1
+        let reached = pullWaiters.filter { $0.count <= pulls }
+        pullWaiters.removeAll { $0.count <= pulls }
+        reached.forEach { $0.waiter.resume() }
+        if queued > 0 {
+            queued -= 1
+            return ()
+        }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { tickWaiter = $0 }
+        } onCancel: {
+            Task { await self.endWait() }
+        }
+    }
+
+    func tick() {
+        if let waiter = tickWaiter {
+            tickWaiter = nil
+            waiter.resume(returning: ())
+        } else {
+            queued += 1
+        }
+    }
+
+    /// Returns once the consumer asked for its `count`-th tick.
+    func untilPulls(_ count: Int) async {
+        guard pulls < count else { return }
+        await withCheckedContinuation { pullWaiters.append((count, $0)) }
+    }
+
+    private func endWait() {
+        tickWaiter?.resume(returning: nil)
+        tickWaiter = nil
     }
 }

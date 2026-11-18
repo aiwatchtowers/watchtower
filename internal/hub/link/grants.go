@@ -131,7 +131,7 @@ func (c *Center) newGrant(device string, answered map[string]bool) (wire.DeviceG
 	}
 	answered[id] = true
 	return wire.DeviceGrant{
-		DeviceID: id, HubID: c.keys.HubID().String(), StartSessionsAllowed: true, StartSessionsGranted: ptr(false),
+		DeviceID: id, HubID: c.keys.HubIDText(), StartSessionsAllowed: true, StartSessionsGranted: ptr(false),
 		OrderedActions: ptr(1), Transports: append([]string(nil), c.host.Transports...),
 		RelayDeviceID: c.host.RelayDeviceID, RelayAuthPub: c.host.RelayAuthPub,
 	}, true
@@ -141,7 +141,7 @@ func (c *Center) newGrant(device string, answered map[string]bool) (wire.DeviceG
 // carries a placeholder Keys the caller fills; keyed is true when any does.
 func (c *Center) linkedRows(tx *sql.Tx) ([]wire.Keybox, bool, error) {
 	rows, err := tx.Query(`SELECT device_id, name, scope, linked_at, decided_at, typing_allowed, start_sessions_allowed,
-		start_sessions_granted, permissions_allowed, agreement_key IS NOT NULL AND link_nonce IS NOT NULL
+		start_sessions_granted, permissions_allowed, chat_allowed, agreement_key IS NOT NULL AND link_nonce IS NOT NULL
 		FROM devices ORDER BY linked_at DESC, device_id DESC`)
 	if err != nil {
 		return nil, false, err
@@ -158,10 +158,10 @@ func (c *Center) linkedRows(tx *sql.Tx) ([]wire.Keybox, bool, error) {
 			linkedAt                           float64
 			decided                            sql.NullFloat64
 			typing, startAllowed, startGranted bool
-			permissions, keyed                 bool
+			permissions, chat, keyed           bool
 		)
 		if err := rows.Scan(&id, &name, &scope, &linkedAt, &decided, &typing, &startAllowed, &startGranted,
-			&permissions, &keyed); err != nil {
+			&permissions, &chat, &keyed); err != nil {
 			return nil, false, err
 		}
 		g, ok := c.newGrant(id, answered)
@@ -175,6 +175,7 @@ func (c *Center) linkedRows(tx *sql.Tx) ([]wire.Keybox, bool, error) {
 		if permissions {
 			g.PermissionsAllowed = ptr(true)
 		}
+		g.Chat = ptr(chat)
 		if decided.Valid {
 			g.DecidedAt = &wire.Time{Time: fromReal(decided.Float64)}
 		}

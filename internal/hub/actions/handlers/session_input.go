@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
+	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/sessionstate"
 )
@@ -50,17 +51,16 @@ const (
 
 // SessionInputHandlers' messages, verbatim.
 const (
-	inputTimeoutMessage    = "The Mac did not finish this in time — check the session on the Mac"
-	inputNotAllowedMessage = "This phone is not allowed to type into sessions — Allow it in Settings → Mobile on the Mac"
-	inputNotRunningMessage = "The session is not running on the Mac"
-	copiedMessage          = "The session can't take typed text — it is on the Mac's clipboard"
-	restartedTypingMessage = "Your Mac restarted while typing this — check the session on the Mac"
+	inputTimeoutMessage    = "Your tower did not finish this in time — check the session there"
+	inputNotRunningMessage = "The session is not running on your tower"
+	copiedMessage          = "The session can't take typed text — it is on your tower's clipboard"
+	restartedTypingMessage = "Your tower restarted while typing this — check the session there"
 	expiredMessage         = "Held for a day without the session getting idle"
 	cancelledMessage       = "Cancelled on the phone"
 	foreignCancelMessage   = "Only the phone that sent this message can cancel it"
 	// lostWhileTypingMessage: the host connection failed during a Deliver,
 	// so whether the line reached the prompt is not known.
-	lostWhileTypingMessage = "The Mac lost the session while typing this — check the session on the Mac"
+	lostWhileTypingMessage = "Your tower lost the session while typing this — check the session there"
 )
 
 // inputKinds are the phone line kinds (SessionInputHandlers.kinds).
@@ -163,7 +163,7 @@ func (h *Handlers) sessionInput(ctx context.Context, r actions.Request) actions.
 		defer func() {
 			if p := recover(); p != nil {
 				log.Printf("hub handlers: session_input panicked")
-				done <- failed(reasonWriteFailed, "The Mac hit an internal error applying this")
+				done <- failed(reasonWriteFailed, "Your tower hit an internal error applying this")
 			}
 		}()
 		done <- h.sendLine(context.WithoutCancel(ctx), r, commit)
@@ -205,7 +205,7 @@ func (h *Handlers) sendLine(ctx context.Context, r actions.Request, commit func(
 		}
 	}
 	if !h.mayType(r) {
-		return failed(reasonDeviceNotAllowed, inputNotAllowedMessage)
+		return failed(reasonDeviceNotAllowed, h.typingNotAllowed(r.Device))
 	}
 	agent, onBoard, err := h.boardSession(ctx, sessionID)
 	if err != nil {
@@ -235,7 +235,7 @@ func (h *Handlers) sendLine(ctx context.Context, r actions.Request, commit func(
 	if err != nil {
 		// Not kept for a restart, so not kept at all: a held line must be
 		// known to the next start.
-		return failed(reasonWriteFailed, "The Mac could not hold this message")
+		return failed(reasonWriteFailed, "Your tower could not hold this message")
 	}
 	return heldOutcome(res.held)
 }
@@ -247,7 +247,7 @@ func (h *Handlers) sendLine(ctx context.Context, r actions.Request, commit func(
 // for the next start), and only into the launch it was held in.
 func (h *Handlers) tryLine(ctx context.Context, l phoneLine, held *heldLine) tryResult {
 	if reason := h.standingFailure(l); reason != "" {
-		return finalResult(lineFailure(reason))
+		return finalResult(h.lineFailure(reason, l.req.Device))
 	}
 	if !h.lines.begin(l.sessionID) {
 		return tryResult{held: inputReasonAgentBusy}
@@ -259,12 +259,12 @@ func (h *Handlers) tryLine(ctx context.Context, l phoneLine, held *heldLine) try
 	}
 	launch := launchKey(live)
 	if !ok || live.Exited || (held != nil && held.launch != "" && (held.run != live.Run || held.launch != launch)) {
-		return finalResult(lineFailure(inputReasonNotRunning))
+		return finalResult(h.lineFailure(inputReasonNotRunning, l.req.Device))
 	}
 	res := tryResult{run: live.Run, launch: launch}
 	row, err := sessionstate.Load(ctx, h.d.DB, l.sessionID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return finalResult(lineFailure(inputReasonNotRunning))
+		return finalResult(h.lineFailure(inputReasonNotRunning, l.req.Device))
 	}
 	if err != nil {
 		res.held = inputReasonStateUnknown
@@ -366,7 +366,7 @@ func (h *Handlers) deliverPhoneLine(ctx context.Context, l phoneLine, live LiveR
 		}
 		return failed(reasonCannotType, CannotTypeMessage), ""
 	}
-	return lineFailure(inputReasonNotRunning), ""
+	return h.lineFailure(inputReasonNotRunning, l.req.Device), ""
 }
 
 // justSubmitted: a line went into the session within busyAfterSubmit and no
@@ -400,11 +400,13 @@ func (h *Handlers) mayType(r actions.Request) bool {
 }
 
 // boardSession is the session's agent when it is an agent session of a
-// workbench that exists (BoardSessionScope.fetchBoardSession).
+// workbench that exists (BoardSessionScope.fetchBoardSession). A row being
+// deleted (#1716) is not one: the phone's input and interrupt on it are
+// refused as for a missing row.
 func (h *Handlers) boardSession(ctx context.Context, sessionID int64) (agent agentkind.Kind, ok bool, err error) {
 	var kind string
 	err = h.d.DB.QueryRowContext(ctx, `SELECT t.kind FROM terminal_sessions t JOIN projects p ON p.id = t.project_id
-		WHERE t.id = ? AND t.kind IN `+agentkind.SQLKinds(), sessionID).Scan(&kind)
+		WHERE t.id = ? AND t.kind IN `+agentkind.SQLKinds()+` AND t.`+db.NotDeletingSQL, sessionID).Scan(&kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
@@ -431,12 +433,12 @@ func heldOutcome(reason string) actions.Outcome {
 }
 
 // lineFailure is the final outcome of a line ended by reason.
-func lineFailure(reason string) actions.Outcome {
+func (h *Handlers) lineFailure(reason string, device secure.ID) actions.Outcome {
 	switch reason {
 	case inputReasonExpired:
 		return actions.Outcome{Status: wire.StatusExpired, Reason: inputReasonExpired, Message: expiredMessage}
 	case inputReasonDeviceNotAllowed:
-		return failed(reason, inputNotAllowedMessage)
+		return failed(reason, h.typingNotAllowed(device))
 	case inputReasonNotRunning:
 		return failed(reason, inputNotRunningMessage)
 	}

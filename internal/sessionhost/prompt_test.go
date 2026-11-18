@@ -395,3 +395,99 @@ func TestBracketedPasteModeFollowsTheOutput(t *testing.T) {
 		t.Fatal("bracketed paste off in the output, on in the host")
 	}
 }
+
+// #1748 (asks #1256, #1261): a chunk that is exactly Shift+Tab (a mode
+// switch) puts no text into the prompt and takes none out, so it leaves the
+// draft state as it was — no draft over an empty prompt, still one over a
+// draft, and none during a line's pause — under both profiles. Twin of
+// TerminalCenterTests' testProj12_ShiftTabKeepsTheAnswersReturn (Codex:
+// TerminalCenterSubmitTests' testProj12_CodexShiftTabKeepsTheDraftState).
+func TestProj12_ShiftTabKeepsTheDraftState(t *testing.T) {
+	shiftTab := []byte("\x1b[Z")
+	for _, agent := range []string{"claude", "codex"} {
+		prof := ProfileFor(agent)
+		if !IsShiftTab(shiftTab) {
+			t.Fatalf("%s: ESC [ Z is not Shift+Tab", agent)
+		}
+		var p promptState
+		p.ownerInput(shiftTab, prof)
+		if p.holdsText() {
+			t.Errorf("%s: Shift+Tab alone left a draft", agent)
+		}
+
+		p = promptState{}
+		p.ownerInput([]byte("half"), prof)
+		p.ownerInput(shiftTab, prof)
+		if !p.draft {
+			t.Errorf("%s: Shift+Tab cleared the owner's draft", agent)
+		}
+
+		p = promptState{}
+		p.leaveTyped()
+		p.ownerInput(shiftTab, prof)
+		if !p.draft || !p.leftTyped {
+			t.Errorf("%s: Shift+Tab cleared a line left typed", agent)
+		}
+
+		// After `\` the key keeps the Return a line break, as
+		// EndsAfterBackslash reads it.
+		p = promptState{}
+		p.ownerInput([]byte("a\\"), prof)
+		p.ownerInput(shiftTab, prof)
+		if !p.backslash {
+			t.Errorf("%s: Shift+Tab after `\\` dropped the pending backslash", agent)
+		}
+		p.ownerInput([]byte{0x0D}, prof)
+		if !p.draft {
+			t.Errorf("%s: `\\`, Shift+Tab, Return read as a submit", agent)
+		}
+
+		// During a line's pause the line stays whole: no owner Return, no
+		// draft, so the line still gets its Return.
+		p = promptState{}
+		p.beginPause()
+		p.ownerInput(shiftTab, prof)
+		if p.endPause() || p.draft {
+			t.Errorf("%s: Shift+Tab during the pause changed the line's Return", agent)
+		}
+	}
+}
+
+// #1748 (asks #1256, #1261): Esc and Ctrl+C stay drafts. Claude Code's
+// cancel moves a queued follow-up message back into the prompt, so after
+// either key the prompt may hold the owner's text; an answer's Return must
+// not submit it. Option+key, cursor keys and Shift+Tab followed by text in
+// the same chunk stay drafts too, under both profiles and during a pause.
+func TestProj12_EscAndCtrlCStayDrafts(t *testing.T) {
+	drafts := []struct {
+		name string
+		b    []byte
+	}{
+		{"Esc (pops a queued message into the prompt)", []byte{0x1B}},
+		{"Ctrl+C (pops a queued message into the prompt)", []byte{0x03}},
+		{"two Escs in one chunk", []byte{0x1B, 0x1B}},
+		{"Option+a (ESC a)", []byte("\x1ba")},
+		{"Up arrow", []byte("\x1b[A")},
+		{"Shift+Tab, then text", []byte("\x1b[Za")},
+	}
+	for _, agent := range []string{"claude", "codex"} {
+		prof := ProfileFor(agent)
+		for _, d := range drafts {
+			if IsShiftTab(d.b) {
+				t.Errorf("%s: %s read as Shift+Tab", agent, d.name)
+			}
+			var p promptState
+			p.ownerInput(d.b, prof)
+			if !p.draft {
+				t.Errorf("%s: %s left no draft", agent, d.name)
+			}
+
+			p = promptState{}
+			p.beginPause()
+			p.ownerInput(d.b, prof)
+			if p.endPause() || !p.draft {
+				t.Errorf("%s: %s during the pause left no draft", agent, d.name)
+			}
+		}
+	}
+}

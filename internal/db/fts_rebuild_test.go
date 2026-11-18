@@ -8,11 +8,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/sqlcipher"
 )
 
 // The tests here mutate ftsRebuildChunkHook, ftsRebuildChunkGap and
@@ -590,19 +594,22 @@ func TestRebuildMessagesSearch_EditAboveCursorIndexedOnce(t *testing.T) {
 	assertIndexMatchesMessages(t, d)
 }
 
-// The pause between chunks ends early when ctx is cancelled.
+// The pause between chunks ends early when ctx is cancelled: on the
+// bubble's clock the hour-long gap never ran at all.
 func TestRebuildMessagesSearch_GapHonoursCancel(t *testing.T) {
-	d, _, _ := pendingFillDB(t)
-	ftsRebuildChunkGap = time.Hour // noChunkGap's cleanup restores it
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	setChunkHook(t, func(int) { cancel() })
+	synctest.Test(t, func(t *testing.T) {
+		d, _, _ := pendingFillDB(t)    // opened in the bubble, with its pool
+		ftsRebuildChunkGap = time.Hour // noChunkGap's cleanup restores it
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		setChunkHook(t, func(int) { cancel() })
 
-	start := time.Now()
-	res, err := d.RebuildMessagesSearch(ctx, FTSRebuildOptions{ChunkRows: 4})
-	require.ErrorIs(t, err, context.Canceled)
-	assert.Equal(t, 1, res.Chunks)
-	assert.Less(t, time.Since(start), time.Minute)
+		start := time.Now()
+		res, err := d.RebuildMessagesSearch(ctx, FTSRebuildOptions{ChunkRows: 4})
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, 1, res.Chunks)
+		assert.Zero(t, time.Since(start), "the gap waited instead of ending on the cancel")
+	})
 }
 
 // TestRebuildMessagesSearch_FileDoesNotGrow pins the order that lets the
@@ -726,18 +733,47 @@ func TestMessagesSearchPending_States(t *testing.T) {
 	assert.False(t, pending(d), "no db_maintenance table")
 }
 
+var interruptionDriverID atomic.Uint64
+
 func TestIsInterruption(t *testing.T) {
 	assert.True(t, isInterruption(context.Canceled))
 	assert.True(t, isInterruption(fmt.Errorf("chunk: %w", context.DeadlineExceeded)))
 	assert.False(t, isInterruption(errors.New("disk I/O error")))
 
-	// A statement the cancelled ctx interrupts.
-	d := openTestDB(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() { time.Sleep(20 * time.Millisecond); cancel() }()
-	_, err := d.ExecContext(ctx, `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT COUNT(*) FROM n`)
+	// The engine's own interrupt code.
+	assert.True(t, isInterruption(fmt.Errorf("chunk: %w", sqlcipher.Error{Code: sqlcipher.ErrInterrupt})))
+	assert.False(t, isInterruption(sqlcipher.Error{Code: sqlcipher.ErrBusy}))
+
+	// An endless statement the cancelled ctx interrupts, run as an Exec and
+	// as a Query (the engine's two interrupt paths): the statement cancels
+	// its context itself from its first row, so the interrupt always lands
+	// while it runs (an interrupt between statements is a no-op, and the
+	// endless statement would then never end).
+	var cancel atomic.Pointer[context.CancelFunc]
+	driverName := fmt.Sprintf("interruption-%d", interruptionDriverID.Add(1))
+	sql.Register(driverName, &sqlcipher.SQLiteDriver{ConnectHook: func(conn *sqlcipher.SQLiteConn) error {
+		return conn.RegisterFunc("cancel_now", func() int { (*cancel.Load())(); return 1 }, false)
+	}})
+	d, err := sql.Open(driverName, ":memory:")
+	require.NoError(t, err)
+	d.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = d.Close() })
+	const endless = `WITH RECURSIVE n(i) AS (SELECT cancel_now() UNION ALL SELECT i + 1 FROM n) SELECT COUNT(*) FROM n`
+	withCancel := func() context.Context {
+		ctx, c := context.WithCancel(context.Background())
+		t.Cleanup(c)
+		cancel.Store(&c)
+		return ctx
+	}
+
+	_, err = d.ExecContext(withCancel(), endless)
 	require.Error(t, err)
-	assert.True(t, isInterruption(err), "%v", err)
+	assert.True(t, isInterruption(err), "exec: %v", err)
+
+	var n int64
+	err = d.QueryRowContext(withCancel(), endless).Scan(&n)
+	require.Error(t, err)
+	assert.True(t, isInterruption(err), "query: %v", err)
 }
 
 // BenchmarkMessagesSearchFillChunk times default-size chunks — each one write

@@ -93,6 +93,13 @@ final class SessionAgentStateCenter {
     @ObservationIgnored private var readApplied = 0
     /// A read error is logged once per streak of failures.
     @ObservationIgnored private var failing = false
+    /// Every `refresh` read not yet ended (a test seam: `settled`).
+    @ObservationIgnored private var refreshes: [Int: Task<Void, Never>] = [:]
+    @ObservationIgnored private var refreshesStarted = 0
+    /// How the loop waits between reads (tests: a clock they tick by hand;
+    /// settable for a center `AppState.initWorkbenches` builds). Read when
+    /// the loop starts.
+    @ObservationIgnored var sleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
     init(
         dbPool: DatabasePool,
@@ -120,6 +127,20 @@ final class SessionAgentStateCenter {
 
     /// Whether the 1 s loop is running (a test seam).
     var isPolling: Bool { pollTask != nil }
+
+    /// Returns once no `refresh` read and no staleness probe is left, those
+    /// a settled probe starts included (a test seam).
+    func settled() async {
+        while true {
+            if let read = refreshes.values.first {
+                await read.value
+            } else if let probe = prober?.anyInFlight {
+                await probe.value
+            } else {
+                return
+            }
+        }
+    }
 
     /// Follows the terminal center's live `claude` sessions and app
     /// activation from now on. Banners a previous process left are removed:
@@ -156,7 +177,12 @@ final class SessionAgentStateCenter {
     /// One read now, live session or not: the Workbench tab appeared, or an
     /// ask was answered.
     func refresh() {
-        Task { await poll() }
+        refreshesStarted += 1
+        let id = refreshesStarted
+        refreshes[id] = Task {
+            await poll()
+            refreshes[id] = nil
+        }
     }
 
     /// One read of the stored states. Returns whether it succeeded — then
@@ -237,11 +263,11 @@ final class SessionAgentStateCenter {
             return
         }
         if pollTask == nil {
-            pollTask = Task { [weak self, interval] in
+            pollTask = Task { [weak self, interval, sleep] in
                 while !Task.isCancelled {
                     guard let self else { return }
                     await self.poll()
-                    try? await Task.sleep(for: interval)
+                    await sleep(interval)
                 }
             }
         }

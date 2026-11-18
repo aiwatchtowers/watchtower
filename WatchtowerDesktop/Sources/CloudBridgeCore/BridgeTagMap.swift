@@ -123,6 +123,14 @@ public final class BridgeTagMap: @unchecked Sendable {
         }
     }
 
+    /// The zone is gone: its records' tags and its cursors go (the name compared exactly, case included).
+    public func forget(zone: String) throws {
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM record_tags WHERE zone = ?", arguments: [zone])
+            try db.execute(sql: "DELETE FROM cursors WHERE zone = ?", arguments: [zone])
+        }
+    }
+
     /// The server change token `cursor` names: nil for 0 (from the start) and for a cursor stored without one.
     /// Throws `unknownCursor` for a cursor the map does not keep.
     public func token(zone: String, cursor: UInt64) throws -> Data? {

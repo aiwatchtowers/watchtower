@@ -1,6 +1,7 @@
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// A scripted `SessionCleanupStreaming` double: each call is a `Run` whose
 /// stdout lines and exit the test feeds by hand. `stop` is only recorded —
@@ -16,6 +17,9 @@ final class ScriptedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendabl
         private var exit: SessionCleanupStream.Exit?
         private var waiters: [CheckedContinuation<SessionCleanupStream.Exit, Never>] = []
         private var stops = 0
+        private var groupStops: [Duration] = []
+        private var exitAwaited = false
+        private var exitAwaitedWatchers: [CheckedContinuation<Void, Never>] = []
 
         /// `ignoresCancellation`: the lines go through a channel whose
         /// reads ignore the reader's cancellation, as a pipe read already
@@ -34,6 +38,9 @@ final class ScriptedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendabl
         }
 
         var stopCount: Int { lock.withLock { stops } }
+        /// The graces of the group stops (`stopWithin`: SIGTERM, then
+        /// SIGKILL after the grace); such a stop ends the run (exit 143).
+        var groupStopGraces: [Duration] { lock.withLock { groupStops } }
 
         func send(_ line: String) {
             continuation.yield(line)
@@ -56,17 +63,37 @@ final class ScriptedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendabl
             SessionCleanupStream(
                 lines: lines,
                 exit: { [self] in await waitForExit() },
-                stop: { [self] in lock.withLock { stops += 1 } }
+                stop: { [self] in lock.withLock { stops += 1 } },
+                stopWithin: { [self] grace in
+                    lock.withLock { groupStops.append(grace) }
+                    finish(status: 143, message: "terminated")
+                }
             )
+        }
+
+        /// Returns once the reader waits for the exit (it has read every
+        /// line it will act on): an event, not a wait on the clock.
+        func untilExitAwaited() async {
+            await withCheckedContinuation { watcher in
+                let now: Bool = lock.withLock {
+                    if exitAwaited { return true }
+                    exitAwaitedWatchers.append(watcher)
+                    return false
+                }
+                if now { watcher.resume() }
+            }
         }
 
         private func waitForExit() async -> SessionCleanupStream.Exit {
             await withCheckedContinuation { waiter in
-                let ready: SessionCleanupStream.Exit? = lock.withLock {
-                    if let exit { return exit }
+                let (ready, watchers): (SessionCleanupStream.Exit?, [CheckedContinuation<Void, Never>]) = lock.withLock {
+                    exitAwaited = true
+                    defer { exitAwaitedWatchers = [] }
+                    if let exit { return (exit, exitAwaitedWatchers) }
                     waiters.append(waiter)
-                    return nil
+                    return (nil, exitAwaitedWatchers)
                 }
+                watchers.forEach { $0.resume() }
                 if let ready { waiter.resume(returning: ready) }
             }
         }
@@ -181,20 +208,67 @@ enum CleanupStreamFixture {
     }
 }
 
+/// Waits until `condition` holds, yielding the main actor between checks.
+/// No deadline: the wait ends on the state, never on a clock; a wait that
+/// never ends is a hang the lane watchdog reports. Prefer `untilObserved`
+/// for `@Observable` state and a fake's own signal for its counters.
 @MainActor
 func waitUntil(
     _ what: String = "condition",
-    timeout: Duration = .seconds(3),
     file: StaticString = #filePath,
     line: UInt = #line,
     _ condition: @MainActor () -> Bool
 ) async {
-    let deadline = ContinuousClock.now + timeout
-    while !condition() {
-        guard ContinuousClock.now < deadline else {
-            return XCTFail("timed out waiting for \(what)", file: file, line: line)
+    while !condition() { await Task.yield() }
+}
+
+/// Counts events a fake sees and lets a test await the n-th one — no
+/// polling, no deadline.
+final class CallSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private var waiters: [(target: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    var value: Int { lock.withLock { count } }
+
+    func hit() {
+        let ready: [CheckedContinuation<Void, Never>] = lock.withLock {
+            count += 1
+            let due = waiters.filter { $0.target <= count }.map(\.continuation)
+            waiters.removeAll { $0.target <= count }
+            return due
         }
-        try? await Task.sleep(for: .milliseconds(5))
+        ready.forEach { $0.resume() }
+    }
+
+    /// Returns once `hit()` was called at least `target` times.
+    func until(_ target: Int) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now: Bool = lock.withLock {
+                if count >= target { return true }
+                waiters.append((target, continuation))
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+}
+
+/// A runner that signals each finished call of the runner it wraps.
+final class SignalingRunner: CLIRunnerProtocol, @unchecked Sendable {
+    let inner: any CLIRunnerProtocol
+    let calls = CallSignal()
+
+    init(_ inner: any CLIRunnerProtocol) { self.inner = inner }
+
+    func run(args: [String]) async throws -> Data {
+        defer { calls.hit() }
+        return try await inner.run(args: args)
+    }
+
+    func run(args: [String], stdin: Data) async throws -> Data {
+        defer { calls.hit() }
+        return try await inner.run(args: args, stdin: stdin)
     }
 }
 
@@ -214,7 +288,12 @@ final class RepliedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendable
     private let lock = NSLock()
     private var replies: [Result<Data, Error>]
     private var held: [CheckedContinuation<Void, Never>] = []
+    private var heldWatchers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
     private var tornDown = false
+    /// Runs started so far, and how many of them `release()` let go — a run
+    /// released before its answer reached the hold does not hold at all.
+    private var started = 0
+    private var released = 0
 
     init(replies: [Result<Data, Error>]) {
         self.replies = replies
@@ -227,8 +306,22 @@ final class RepliedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendable
     /// The runs the center stopped.
     var cancelledCount: Int { runs.filter { $0.stopCount > 0 }.count }
 
+    /// Returns once `count` runs are held (an event, not a wait on the
+    /// clock); at once when they already are.
+    func untilHeld(_ count: Int) async {
+        await withCheckedContinuation { watcher in
+            let now: Bool = lock.withLock {
+                if tornDown || held.count >= count { return true }
+                heldWatchers.append((count, watcher))
+                return false
+            }
+            if now { watcher.resume() }
+        }
+    }
+
     func release() {
         let waiting: [CheckedContinuation<Void, Never>] = lock.withLock {
+            released = started
             defer { held = [] }
             return held
         }
@@ -238,19 +331,24 @@ final class RepliedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendable
     func streamCleanup(args: [String], environment: [String: String]) throws -> SessionCleanupStream {
         let stream = try scripted.streamCleanup(args: args, environment: environment)
         guard let run = scripted.runs.last else { return stream }
-        let (reply, holds) = lock.withLock { () -> (Result<Data, Error>, Bool) in
+        let (reply, holds, index) = lock.withLock { () -> (Result<Data, Error>, Bool, Int) in
             let next = replies.count > 1 ? replies.removeFirst() : replies.first ?? .success(Data("{}".utf8))
-            return (next, holdsCalls)
+            started += 1
+            return (next, holdsCalls, started)
         }
         onCall?(run)
         Task.detached { [self] in
             if holds {
                 await withCheckedContinuation { continuation in
-                    let resume: Bool = lock.withLock {
-                        if tornDown { return true }
+                    let (resume, reached): (Bool, [CheckedContinuation<Void, Never>]) = lock.withLock {
+                        if tornDown || index <= released { return (true, []) }
                         held.append(continuation)
-                        return false
+                        let count = held.count
+                        let reached = heldWatchers.filter { $0.count <= count }.map(\.continuation)
+                        heldWatchers.removeAll { $0.count <= count }
+                        return (false, reached)
                     }
+                    reached.forEach { $0.resume() }
                     if resume { continuation.resume() }
                 }
             }
@@ -267,7 +365,12 @@ final class RepliedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendable
 
     /// Ends every run and every held answer (tearDown).
     func finishAll() {
-        lock.withLock { tornDown = true }
+        let watchers: [CheckedContinuation<Void, Never>] = lock.withLock {
+            tornDown = true
+            defer { heldWatchers = [] }
+            return heldWatchers.map(\.continuation)
+        }
+        watchers.forEach { $0.resume() }
         release()
         scripted.finishAll()
     }

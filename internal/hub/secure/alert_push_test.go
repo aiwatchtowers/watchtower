@@ -292,6 +292,33 @@ func TestAlertPushPayloadKeysMatchTheKit(t *testing.T) {
 	}
 }
 
+// A chat_answer push adds conversation_id and nothing else (spec §4.7).
+func TestAlertPushChatKeys(t *testing.T) {
+	ks := newKeySource(t)
+	f := WorkAlertFields{Event: "chat_answer", Key: "chat:t:answer", Title: "T", Body: "Answer ready", ConversationID: 5}
+	p, err := NewSealer(ks).AlertPush(f.Key, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, fr, err := openPush(t, ks, AlertPushWireName, p.Envelope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(fr.Payload, &m); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	want := []string{"body", "conversation_id", "event", "key", "quick", "title", "workbench_id", "workbench_name"}
+	if !slices.Equal(keys, want) {
+		t.Errorf("keys %v, want %v", keys, want)
+	}
+}
+
 func TestAlertPushRefusesAKeyThePayloadDoesNotCarry(t *testing.T) {
 	s := NewSealer(newKeySource(t))
 	if _, err := s.AlertPush("ask-43", pushFields("ask-42", "Acme", "Acme", "x")); !errors.Is(err, ErrNameMismatch) {
@@ -313,5 +340,5 @@ func pushEqual(a, b WorkAlertFields) bool {
 	ptr := func(x, y *int64) bool { return (x == nil) == (y == nil) && (x == nil || *x == *y) }
 	return a.Event == b.Event && a.Key == b.Key && a.WorkbenchID == b.WorkbenchID && a.WorkbenchName == b.WorkbenchName &&
 		ptr(a.SessionID, b.SessionID) && ptr(a.AskID, b.AskID) && ptr(a.RequestID, b.RequestID) &&
-		a.Title == b.Title && a.Body == b.Body && a.Quick == b.Quick
+		a.Title == b.Title && a.Body == b.Body && a.Quick == b.Quick && a.ConversationID == b.ConversationID
 }

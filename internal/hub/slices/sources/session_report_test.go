@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/hub/identity"
@@ -375,31 +376,31 @@ func TestSessionReportCacheIsSealed(t *testing.T) {
 // Runner.
 
 func TestSessionReportWithoutALinkedPhoneTheLoopRunsNothing(t *testing.T) {
-	r := newReportRig(t)
-	_, session := r.seed()
-	r.setLive(session, true)
-	r.active = false
-	run := r.runner(ReportTiming{Every: 120 * time.Second, StateSpacing: 5 * time.Second, RequestSpacing: time.Minute,
-		Timeout: 5 * time.Second, Idle: 10 * time.Millisecond, SummaryEvery: time.Minute, SummarySpacing: 5 * time.Second, SummaryTimeout: time.Second}, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- run.Run(ctx) }()
-	time.Sleep(60 * time.Millisecond)
-	if n := len(r.callList()); n != 0 {
-		t.Fatalf("%d runs without a phone", n)
-	}
-	r.mu.Lock()
-	r.active = true
-	r.mu.Unlock()
-	deadline := time.Now().Add(5 * time.Second)
-	for len(r.stored()) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("a linked phone never started the runs")
+	synctest.Test(t, func(t *testing.T) {
+		r := newReportRig(t)
+		_, session := r.seed()
+		r.setLive(session, true)
+		r.active = false
+		run := r.runner(ReportTiming{Every: 120 * time.Second, StateSpacing: 5 * time.Second, RequestSpacing: time.Minute,
+			Timeout: 5 * time.Second, Idle: 10 * time.Millisecond, SummaryEvery: time.Minute, SummarySpacing: 5 * time.Second, SummaryTimeout: time.Second}, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- run.Run(ctx) }()
+		time.Sleep(60 * time.Millisecond) // six idle wakes of bubble time
+		synctest.Wait()
+		if n := len(r.callList()); n != 0 {
+			t.Fatalf("%d runs without a phone", n)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	cancel()
-	<-done
+		r.mu.Lock()
+		r.active = true
+		r.mu.Unlock()
+		for len(r.stored()) == 0 { // bubble time: one idle wake per step
+			time.Sleep(10 * time.Millisecond)
+			synctest.Wait()
+		}
+		cancel()
+		<-done
+	})
 }
 
 func TestSessionReportThePeriodicRunIsOfflineEvery120Seconds(t *testing.T) {

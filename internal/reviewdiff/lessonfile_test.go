@@ -8,7 +8,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -79,14 +78,9 @@ func TestAppendLessonRule_RefusesUnsafe(t *testing.T) {
 		folder, file := lessonFolder(t, new(""))
 		require.NoError(t, os.Remove(file))
 		require.NoError(t, syscall.Mkfifo(file, 0o644))
-		done := make(chan error, 1)
-		go func() { done <- AppendLessonRule(folder, "Tests", "x") }()
-		select {
-		case err := <-done:
-			assert.Error(t, err)
-		case <-time.After(2 * time.Second):
-			t.Fatal("AppendLessonRule blocked on a FIFO")
-		}
+		// A FIFO with no writer would block an open for reading: a hang here
+		// is the failure (go test -timeout reports it).
+		assert.Error(t, AppendLessonRule(folder, "Tests", "x"))
 	})
 	t.Run("over 64 KB", func(t *testing.T) {
 		big := "## Tests\n- " + strings.Repeat("a", MaxLensFileBytes-20) + "\n"

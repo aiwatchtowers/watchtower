@@ -492,7 +492,7 @@ func TestG2NoPayingPhoneLeftMovesADesktopHostToCloudKit(t *testing.T) {
 func TestG2AnOutageOrATimeoutMovesNothing(t *testing.T) {
 	for _, how := range []string{"error", "timeout"} {
 		t.Run(how, func(t *testing.T) {
-			eachFlavour(t, func(t *testing.T, w *world) {
+			eachFlavourFor(t, hangingIf(how == "timeout"), func(t *testing.T, w *world) {
 				g2World(t, w)
 				w.pollAfterInterval() // count 1
 				w.mu.Lock()

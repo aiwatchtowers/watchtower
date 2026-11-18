@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 final class ArtifactPrintTests: XCTestCase {
     private func draft(_ kind: String, _ content: String, complete: Bool = true, title: String = "Q3 plan") -> ArtifactDraft {

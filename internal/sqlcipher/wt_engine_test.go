@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // testKey is a fixed test literal (x'00…01'), never a real key.
@@ -317,15 +316,20 @@ func TestEngine_ReadOnlyTxIsDeferred(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = rw.Rollback() }()
-	start := time.Now()
 	_, err = b.Exec(`INSERT INTO t VALUES (2)`)
 	if err == nil {
 		t.Error("a writer was not blocked by an IMMEDIATE transaction")
 	} else if se := (Error{}); !errors.As(err, &se) || se.Code != ErrBusy {
 		t.Errorf("writer err = %v, want SQLITE_BUSY", err)
 	}
-	if time.Since(start) > 2*time.Second {
-		t.Errorf("busy writer took %v with _busy_timeout=0", time.Since(start))
+	// The writer failed at once rather than after a busy wait: the
+	// connection's busy timeout is the DSN's 0 (read back, not timed).
+	var busyMS int
+	if err := b.QueryRow(`PRAGMA busy_timeout`).Scan(&busyMS); err != nil {
+		t.Fatal(err)
+	}
+	if busyMS != 0 {
+		t.Errorf("busy_timeout = %d ms with _busy_timeout=0", busyMS)
 	}
 }
 

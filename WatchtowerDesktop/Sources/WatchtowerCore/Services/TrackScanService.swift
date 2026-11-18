@@ -19,7 +19,7 @@ package struct TrackScanService {
         if let since, !since.isEmpty {
             args.append(contentsOf: ["--since", since])
         }
-        let data = try await runner.run(args: args)
+        let data = try await runner.runModel(args: args, origin: .owner)
         if data.isEmpty { return [] }
         // Malformed output must throw (callers surface it via errorMessage);
         // swallowing it would render a scan failure as "no new events".

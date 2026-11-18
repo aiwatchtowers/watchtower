@@ -71,7 +71,7 @@ package final class JiraBoardAnalysisCenter {
         tasks[key] = Task { [weak self] in
             var failure: String?
             do {
-                _ = try await runner.run(args: arguments)
+                _ = try await runner.runModel(args: arguments, origin: .owner)
             } catch {
                 failure = Self.message(for: error)
             }
@@ -99,6 +99,8 @@ package final class JiraBoardAnalysisCenter {
             return "Watchtower CLI not found"
         case .launchFailed:
             return "Failed to launch CLI"
+        case .modelCommandNeedsOrigin:
+            return "Analysis failed"
         case .nonZeroExit(_, let stderr):
             let trimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? "Analysis failed" : String(trimmed.prefix(200))

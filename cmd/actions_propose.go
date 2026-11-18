@@ -30,7 +30,7 @@ func runActionsPropose(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if actionsProposeFlagApprove {
-		return decideAndMaybeApply(cmd, strconv.FormatInt(id, 10), []string{"pending"}, "approved", true)
+		return decideAndMaybeApply(cmd, strconv.FormatInt(id, 10), "approved", true)
 	}
 	database, _, err := openActionsCmd()
 	if err != nil {

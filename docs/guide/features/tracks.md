@@ -29,7 +29,7 @@ text: Open **Track my threads** in the Inbox: requests, decisions and follow-ups
 area: communication
 level: next
 kind: feature
-since: next
+since: 0.28.0
 replaces: [tracks-follow]
 changed: Tracks moved from the Inbox's Tracks filter to its Track my threads entry.
 action: nav:tracks

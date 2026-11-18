@@ -81,11 +81,15 @@ func TestCleanupUnplacedOldWorktreeStillKept(t *testing.T) {
 }
 
 // Only the row's worktree_branch is owned by record: another branch
-// checked out in the placed worktree meets B3 as before (never observed).
+// checked out in the placed worktree meets B3 as before. One created there
+// is seen through the worktree's HEAD log (auto cleanup spec 2026-11-10
+// §2c) and kept by the birth rule; one only switched to is never observed.
 func TestCleanupPlacedRowOwnsOnlyItsOwnBranch(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	root := f.placedWork("b")
+	gitAt(t, f.repo, time.Now().Add(-10*time.Minute), "branch", "feat/elsewhere", "main")
+	gitIn(t, root, "switch", "-q", "feat/elsewhere")
 	gitIn(t, root, "switch", "-q", "-c", "feat/other")
 	gitIn(t, root, "push", "-q", "origin", "feat/other")
 	f.sessionCreated = time.Now().Add(time.Minute)
@@ -93,7 +97,8 @@ func TestCleanupPlacedRowOwnsOnlyItsOwnBranch(t *testing.T) {
 
 	p := f.plan(Request{})
 	wantItem(t, p, "worktree:"+root, ActionRemove, "")
-	wantItem(t, p, "branch:feat/other", ActionKeep, ReasonNotThisSession)
+	wantItem(t, p, "branch:feat/other", ActionKeep, ReasonExistedBeforeSession)
+	wantItem(t, p, "branch:feat/elsewhere", ActionKeep, ReasonNotThisSession)
 	wantItem(t, p, "branch:wt/b", ActionRemove, "")
 }
 

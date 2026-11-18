@@ -21,7 +21,7 @@ Recording needs two macOS permissions, microphone and system audio, and macOS 14
 1. **Permission denied:** open the System Settings page named in the message, switch Watchtower on, then start the recording again.
 2. **No call audio:** check which output device the call uses. Keep **Follow audio device changes** on in **Settings → Meetings** so the capture follows headphones. Audio already lost cannot be recovered; the transcript will hold only your side.
 3. **"No speech recognized":** the note says whether call audio was missing. Fix the device, then press **Retry** on the pill. The audio is kept.
-4. **Model download failed:** press **Retry** on the download pill once the network is back.
+4. **Model download failed:** press **Retry** on the download pill once the network is back. A model already downloaded needs no network.
 5. **"Waiting for the recording to stop":** nothing is wrong. That recording has to be transcribed from its audio, and transcription waits until the recording in progress stops. It then starts on its own.
 6. **No recap:** open the recording and use **Generate recap** on the **Recap** tab, or **Retry recap** under the transcript. A transcript under 200 characters gets no recap by design.
 7. **Wrong transcript:** **Re-transcribe** under the transcript runs it again while the audio file exists. Audio is deleted after 30 days (**Delete audio after N days** in **Settings → Meetings**).

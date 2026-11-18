@@ -3,6 +3,7 @@ import Darwin
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// Answers `workbench escalate-question` calls from a script, optionally
 /// holding each call open until the test releases it. No process is spawned.
@@ -12,6 +13,7 @@ private final class ScriptedEscalationRunner: CLIRunnerProtocol, @unchecked Send
     private var gates: [AsyncGate] = []
     private var holding = false
     private var answers: [String]
+    private let signal = StateSignal()
 
     /// Each call takes the next answer; the last one repeats.
     init(_ answers: String...) {
@@ -20,6 +22,12 @@ private final class ScriptedEscalationRunner: CLIRunnerProtocol, @unchecked Send
 
     var invocations: [[String]] { lock.withLock { calls } }
     var reasons: [String] { invocations.map { $0.last ?? "" } }
+
+    /// Returns once at least `count` calls were made — the runner's own
+    /// signal, no clock.
+    func untilCalls(_ count: Int) async {
+        await signal.until { [self] in invocations.count >= count }
+    }
 
     func hold() { lock.withLock { holding = true } }
 
@@ -33,6 +41,7 @@ private final class ScriptedEscalationRunner: CLIRunnerProtocol, @unchecked Send
             let answer = answers.count > 1 ? answers.removeFirst() : answers[0]
             return (holding, answer)
         }
+        signal.changed()
         if held { await gate.wait() }
         return Data(answer.utf8)
     }
@@ -192,16 +201,16 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         await settled(escalator)
     }
 
+    /// Waits for a real process's trace (a reaped pid): plain state nothing
+    /// signals, re-checked once per main-actor turn — no clock, no deadline.
+    /// `what` names the wait for a reader of a hang.
     private func eventually(_ what: String, _ condition: () -> Bool) async {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !condition() {
-            if ContinuousClock.now > deadline { return XCTFail("timed out: \(what)") }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
+        await untilTurn(condition)
     }
 
     private func settled(_ escalator: ChatQuestionEscalator) async {
-        await eventually("the runs settle") { !escalator.isEscalating(1) && !escalator.isEscalating(2) }
+        await escalator.runsSettled()
+        XCTAssertFalse(escalator.isEscalating(1) || escalator.isEscalating(2))
     }
 
     // MARK: - Settling and triggers
@@ -259,7 +268,7 @@ final class ChatQuestionEscalatorTests: XCTestCase {
 
         notifications.post(name: NSApplication.didResignActiveNotification, object: nil)
         timers.fireAll() // the 2 s flicker debounce: the loss is written
-        await eventually("the presence change evaluates") { runner.invocations.count == 1 }
+        await runner.untilCalls(1)
         XCTAssertEqual(runner.reasons, ["away"])
         await settled(escalator)
         await center.flushWrites()
@@ -346,11 +355,13 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         let escalator = makeEscalator(runner)
         now = asked.addingTimeInterval(600)
         escalator.evaluate()
-        await eventually("the run starts") { runner.invocations.count == 1 }
+        await runner.untilCalls(1)
         now = asked.addingTimeInterval(3600)
         escalator.evaluate()
         escalator.evaluate()
-        try? await Task.sleep(for: .milliseconds(30))
+        // Booked state: no second run was started (a started run's call is
+        // what `invocations` would show later).
+        XCTAssertEqual(escalator.runsStarted, 1)
         XCTAssertEqual(runner.invocations.count, 1)
         XCTAssertTrue(escalator.isEscalating(1))
         runner.release(0)
@@ -366,7 +377,7 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         let escalator = makeEscalator(runner)
         now = asked.addingTimeInterval(600)
         escalator.evaluate()
-        await eventually("both sessions run") { runner.invocations.count == 2 }
+        await runner.untilCalls(2)
         // Each run starts in its own Task, so their order is not fixed.
         XCTAssertEqual(Set(runner.invocations.map { $0[5] }), ["1", "2"])
         runner.release(0)
@@ -484,7 +495,7 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         let escalator = makeEscalator(runner)
         now = asked.addingTimeInterval(600)
         escalator.evaluate()
-        await eventually("the run starts") { runner.invocations.count == 1 }
+        await runner.untilCalls(1)
         var cleared = row()
         cleared.chatQuestion = nil
         cleared.chatQuestionAt = nil
@@ -537,14 +548,16 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         let stub = dir.appendingPathComponent("watchtower")
         try "#!/bin/sh\necho $$ > '\(pidFile.path)'\nexec sleep 30\n".write(to: stub, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+        // A FIFO: the read below blocks (off the main actor) until the stub writes its pid.
+        XCTAssertEqual(mkfifo(pidFile.path, 0o600), 0)
 
         let escalator = makeEscalator(ProcessCLIRunner(binaryPath: stub.path))
         now = asked.addingTimeInterval(600)
         escalator.evaluate()
-        await eventually("the stub starts") {
-            (try? String(contentsOf: pidFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        }
-        let pid = try XCTUnwrap(pid_t(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        let path = pidFile.path
+        let data = await Task.detached { FileHandle(forReadingAtPath: path)?.readDataToEndOfFile() }.value
+        let written = String(bytes: data ?? Data(), encoding: .utf8) ?? ""
+        let pid = try XCTUnwrap(pid_t(written.trimmingCharacters(in: .whitespacesAndNewlines)), "the stub starts")
         stubPID = pid
         XCTAssertTrue(escalator.isEscalating(1))
 

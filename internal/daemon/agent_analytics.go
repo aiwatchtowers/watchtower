@@ -80,6 +80,9 @@ func (d *Daemon) phaseAgentAnalytics(ctx context.Context) {
 			if res.FailedFiles > 0 {
 				d.logger.Printf("agent analytics: workbench %d: %d file(s) failed, retrying next cycle; first: %v", id, res.FailedFiles, res.FirstFailure)
 			}
+			if res.CodexUsageMismatch > 0 {
+				d.logger.Printf("agent analytics: workbench %d: %d codex token line(s) with negative fresh input", id, res.CodexUsageMismatch)
+			}
 			if res.Incomplete {
 				d.logger.Printf("agent analytics: workbench %d: cycle budget reached, continuing next cycle", id)
 			}

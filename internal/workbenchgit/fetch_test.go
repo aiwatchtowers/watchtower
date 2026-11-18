@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -258,10 +259,13 @@ func TestFetch_AuthenticationRunsNoHelperOrPrompt(t *testing.T) {
 	assertNotRan(t, askpassRan)
 }
 
-// A remote that never answers is cut off at the deadline as timed out.
+// A remote that never answers is cut off at the deadline as timed out. The
+// deadline passes once the remote has the request: no time to wait out.
 func TestFetch_TimeoutIsReported(t *testing.T) {
+	ctx := newExpiringCtx()
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		ctx.expire()
 		select {
 		case <-release:
 		case <-r.Context().Done():
@@ -272,12 +276,34 @@ func TestFetch_TimeoutIsReported(t *testing.T) {
 	dir := newRepo(t)
 	gitIn(t, dir, "remote", "add", "origin", srv.URL+"/repo.git")
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	start := time.Now()
+	// The whole process group is killed at the deadline; a git left running
+	// would hang Fetch until go test -timeout.
 	res := Fetch(ctx, Options{Folder: dir}, false)
-	assert.Less(t, time.Since(start), 5*time.Second, "the whole process group is killed at the deadline")
 	assert.True(t, res.TimedOut, "%+v", res)
 	assert.False(t, res.Fetched)
 	assert.Equal(t, "git fetch timed out", res.Error)
+}
+
+// expiringCtx is a context whose deadline the test passes by hand (expire):
+// Done closes and Err is context.DeadlineExceeded, as at a real deadline.
+type expiringCtx struct {
+	context.Context
+	once sync.Once
+	done chan struct{}
+}
+
+func newExpiringCtx() *expiringCtx {
+	return &expiringCtx{Context: context.Background(), done: make(chan struct{})}
+}
+
+func (c *expiringCtx) expire()                     { c.once.Do(func() { close(c.done) }) }
+func (c *expiringCtx) Done() <-chan struct{}       { return c.done }
+func (c *expiringCtx) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *expiringCtx) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
 }

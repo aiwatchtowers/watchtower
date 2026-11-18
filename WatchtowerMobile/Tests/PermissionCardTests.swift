@@ -63,22 +63,25 @@ final class PermissionCardTests: XCTestCase {
         XCTAssertTrue(card.offersAllow)
         XCTAssertTrue(card.canAnswer)
         XCTAssertNil(card.hint)
+        XCTAssertTrue(card.showsButtons, "the phone may answer: Allow once and Deny show")
 
         let none = try detail(try snapshot([]))
         XCTAssertNil(none.permission)
-        XCTAssertEqual(none.approvalNotice, "Needs approval on the Mac", "no request: the old notice")
+        XCTAssertEqual(none.approvalNotice, "Needs approval on the tower", "no request: the old notice")
     }
 
     func testWithoutTheGrantTheCardIsReadOnlyWithAHint() throws {
         let off = try XCTUnwrap(try detail(try snapshot(), grant: grant(), requested: false).permission)
         XCTAssertFalse(off.canAnswer)
         XCTAssertEqual(off.hint, .turnOn)
+        XCTAssertFalse(off.showsButtons, "answering off: the request only, no disabled buttons (#1784)")
 
         let waiting = try XCTUnwrap(try detail(try snapshot(), grant: grant(permissions: false), requested: true).permission)
         XCTAssertFalse(waiting.canAnswer)
-        XCTAssertEqual(waiting.hint, .waitingForMac)
+        XCTAssertEqual(waiting.hint, .waitingForMac(.mac))
+        XCTAssertFalse(waiting.showsButtons)
         XCTAssertEqual(
-            PermissionHint.waitingForMac.text,
+            PermissionHint.waitingForMac(.mac).text,
             "Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"
         )
 
@@ -91,7 +94,7 @@ final class PermissionCardTests: XCTestCase {
         let noGrant = try XCTUnwrap(PermissionCardModel.card(
             for: try XCTUnwrap(replica.session(12)), in: replica, access: PermissionAccess(grant: nil, requested: true), now: now
         ))
-        XCTAssertEqual(noGrant.hint, .waitingForMac)
+        XCTAssertEqual(noGrant.hint, .waitingForMac(.mac))
     }
 
     /// The bar's footer points at a card this phone may answer; with no
@@ -109,10 +112,10 @@ final class PermissionCardTests: XCTestCase {
         XCTAssertEqual(footer(PermissionAccess(grant: grant(), requested: true), in: replica), "Answer the request above")
         XCTAssertEqual(
             footer(PermissionAccess(grant: grant(permissions: false), requested: true), in: replica),
-            "Needs approval on the Mac", "a read-only card"
+            "Needs approval on the tower", "a read-only card"
         )
-        XCTAssertEqual(footer(PermissionAccess(grant: grant(), requested: false), in: replica), "Needs approval on the Mac")
-        XCTAssertEqual(footer(PermissionAccess(grant: grant(), requested: true), in: try snapshot([])), "Needs approval on the Mac", "no card")
+        XCTAssertEqual(footer(PermissionAccess(grant: grant(), requested: false), in: replica), "Needs approval on the tower")
+        XCTAssertEqual(footer(PermissionAccess(grant: grant(), requested: true), in: try snapshot([])), "Needs approval on the tower", "no card")
         XCTAssertFalse(
             SessionInputModel(
                 session: session, snapshot: replica, grant: grant(), typingRequested: true, delivered: nil, now: now,
@@ -142,7 +145,7 @@ final class PermissionCardTests: XCTestCase {
         XCTAssertEqual(clipped.allowBlock, .clipped)
         XCTAssertFalse(clipped.offersAllow, "Allow once is not on the card")
         XCTAssertTrue(clipped.canAnswer, "Deny still is")
-        XCTAssertEqual(clipped.allowBlock?.note, "Shortened — answer on the Mac to allow")
+        XCTAssertEqual(clipped.allowBlock?.note, "Shortened — answer on your tower to allow")
         XCTAssertEqual(PermissionHint.turnOn.text, "Turn on \"Answer permission prompts from this phone\" to answer here.")
     }
 
@@ -155,7 +158,7 @@ final class PermissionCardTests: XCTestCase {
         XCTAssertEqual(settings.allowBlock, .settingsPath)
         XCTAssertFalse(settings.offersAllow)
         XCTAssertTrue(settings.canAnswer)
-        XCTAssertEqual(settings.allowBlock?.note, "Changes Watchtower or shell settings — answer on the Mac to allow")
+        XCTAssertEqual(settings.allowBlock?.note, "Changes Watchtower or shell settings — answer on your tower to allow")
 
         let rc = try XCTUnwrap(try detail(try snapshot([
             permissionRequestJSON(10, session: 12, ["tool_name": "Edit", "summary": "/tmp/home/.zshrc"])
@@ -179,7 +182,7 @@ final class PermissionCardTests: XCTestCase {
         let codex = try detail(snapshot, session: 30)
 
         XCTAssertNil(codex.permission)
-        XCTAssertEqual(codex.approvalNotice, "Needs approval on the Mac")
+        XCTAssertEqual(codex.approvalNotice, "Needs approval on the tower")
     }
 
     /// The Mac's `phone` key decides the card, not the agent (U5): a Codex session the Mac takes no answer for
@@ -198,7 +201,7 @@ final class PermissionCardTests: XCTestCase {
         ]
 
         XCTAssertNil(try detail(snapshot, session: 30).permission)
-        XCTAssertEqual(try detail(snapshot, session: 30).approvalNotice, "Needs approval on the Mac")
+        XCTAssertEqual(try detail(snapshot, session: 30).approvalNotice, "Needs approval on the tower")
         XCTAssertNil(try detail(snapshot, session: 31).permission, "the key, not the agent")
         XCTAssertNotNil(try detail(snapshot, session: 32).permission)
     }
@@ -220,7 +223,7 @@ final class PermissionCardTests: XCTestCase {
 
         XCTAssertTrue(actions(working).canInterrupt)
         XCTAssertTrue(actions(working).hasActions)
-        XCTAssertFalse(actions(working, typing: false).canInterrupt, "the Mac has not allowed typing")
+        XCTAssertFalse(actions(working, typing: false).canInterrupt, "the tower has not allowed typing")
         XCTAssertFalse(actions(working, requested: false).canInterrupt, "the phone's typing toggle is off")
         for id: Int64 in [11, 12, 13, 20] {
             let session = try XCTUnwrap(replica.session(id))
@@ -233,7 +236,7 @@ final class PermissionCardTests: XCTestCase {
         let codexRow: [String: Any] = ["input": true, "input_while_working": false, "permission_answer": false, "interrupt": false]
         let workingJSON: [String: Any] = ["state_kind": "working", "state_caption": "Working", "state_tone": "green"]
         let macCodex = try acmeSession(31, workingJSON.merging(["agent": "codex_cli", "phone": codexRow]) { $1 })
-        XCTAssertFalse(actions(macCodex).canInterrupt, "the Mac takes no Esc for Codex (ask #523)")
+        XCTAssertFalse(actions(macCodex).canInterrupt, "the tower takes no Esc for Codex (ask #523)")
         let refusedClaude = try acmeSession(31, workingJSON.merging(["phone": codexRow]) { $1 })
         XCTAssertFalse(actions(refusedClaude).canInterrupt, "the key, not the agent")
         let atPrompt = try snapshot([permissionRequestJSON(7, session: 10)])

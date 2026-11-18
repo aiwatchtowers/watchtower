@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import WatchtowerTestSupport
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 @MainActor
 final class ArtifactPanelModelTests: XCTestCase {
@@ -38,7 +39,7 @@ final class ArtifactPanelModelTests: XCTestCase {
     func testShowsLatestAndSwitchesVersions() throws {
         try store("v1", message: m1)
         try store("v2", message: m2)
-        let model = ArtifactPanelModel(db: dbQueue, conversationID: conversationID, key: "q3")
+        let model = ArtifactPanelModel(db: dbQueue, writer: DatabaseArtifactWriter(db: dbQueue), conversationID: conversationID, key: "q3")
         XCTAssertEqual(model.versions.map(\.version), [1, 2])
         XCTAssertEqual(model.displayed?.content, "v2")
         model.selectedVersion = 1
@@ -46,7 +47,7 @@ final class ArtifactPanelModelTests: XCTestCase {
     }
 
     func testLiveDraftWinsWhileStreamingThenStoredVersionAfter() throws {
-        let model = ArtifactPanelModel(db: dbQueue, conversationID: conversationID, key: "q3")
+        let model = ArtifactPanelModel(db: dbQueue, writer: DatabaseArtifactWriter(db: dbQueue), conversationID: conversationID, key: "q3")
         XCTAssertNil(model.displayed)
         model.applyStreaming([doc("partial", complete: false)])
         XCTAssertEqual(model.displayed?.content, "partial")
@@ -60,7 +61,7 @@ final class ArtifactPanelModelTests: XCTestCase {
 
     func testEditSavesNewEditedVersion() async throws {
         try store("v1", message: m1)
-        let model = ArtifactPanelModel(db: dbQueue, conversationID: conversationID, key: "q3")
+        let model = ArtifactPanelModel(db: dbQueue, writer: DatabaseArtifactWriter(db: dbQueue), conversationID: conversationID, key: "q3")
         model.beginEdit()
         XCTAssertTrue(model.isEditing)
         XCTAssertEqual(model.editText, "v1")
@@ -75,7 +76,7 @@ final class ArtifactPanelModelTests: XCTestCase {
 
     func testUnchangedEditWritesNothingAndEditIsBlockedWhileWriting() async throws {
         try store("v1", message: m1)
-        let model = ArtifactPanelModel(db: dbQueue, conversationID: conversationID, key: "q3")
+        let model = ArtifactPanelModel(db: dbQueue, writer: DatabaseArtifactWriter(db: dbQueue), conversationID: conversationID, key: "q3")
         model.beginEdit()
         await model.saveEdit()
         XCTAssertEqual(model.versions.count, 1)
@@ -86,7 +87,7 @@ final class ArtifactPanelModelTests: XCTestCase {
 
     func testFailedSaveKeepsEditorOpen() async throws {
         try store("v1", message: m1)
-        let model = ArtifactPanelModel(db: dbQueue, conversationID: conversationID, key: "q3")
+        let model = ArtifactPanelModel(db: dbQueue, writer: DatabaseArtifactWriter(db: dbQueue), conversationID: conversationID, key: "q3")
         model.beginEdit()
         model.editText = "changed"
         try await dbQueue.write { try $0.execute(sql: "DROP TABLE chat_artifacts") }

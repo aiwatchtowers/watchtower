@@ -158,7 +158,7 @@ func (f *slotFixture) quiet(t *testing.T) {
 }
 
 func (f *slotFixture) tracksCycle() {
-	f.d.phaseTrackMyThreads(context.Background(), time.Now())
+	f.d.phaseTrackMyThreads(context.Background(), time.Now(), true)
 }
 
 // builtinRuns is built-in id's automation runs.

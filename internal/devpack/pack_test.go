@@ -65,3 +65,26 @@ func TestSkillsAreSortedAndStable(t *testing.T) {
 		}
 	}
 }
+
+// TestDevpackSkills_NoDroppedPeopleFields (#1769, A24): no embedded skill
+// names a people field the readers dropped, and who-to-ask tells the agent a
+// missing card may be one the owner stopped.
+func TestDevpackSkills_NoDroppedPeopleFields(t *testing.T) {
+	var whoToAsk string
+	for _, s := range Skills() {
+		for _, dropped := range []string{"active_hours", "ActiveHoursJSON", "RedFlags", "VolumeChangePct"} {
+			if strings.Contains(s.Content, dropped) {
+				t.Errorf("%s names the dropped field %q", s.Name, dropped)
+			}
+		}
+		if s.Name == "watchtower-who-to-ask" {
+			whoToAsk = s.Content
+		}
+	}
+	if !strings.Contains(whoToAsk, "the owner stopped it") {
+		t.Error("watchtower-who-to-ask does not say a missing card may be one the owner stopped")
+	}
+	if !strings.Contains(whoToAsk, "A person with no card may be one the owner stopped — don't guess.") {
+		t.Error("watchtower-who-to-ask lacks the stopped-card rule line")
+	}
+}

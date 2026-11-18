@@ -33,7 +33,7 @@ package struct MeetingTopicsExtractService {
         if !eventID.isEmpty {
             args.append(contentsOf: ["--event-id", eventID])
         }
-        let data = try await runner.run(args: args, stdin: Data(text.utf8))
+        let data = try await runner.runModel(args: args, origin: .owner, timeout: nil, stdin: Data(text.utf8))
         let decoded = try JSONDecoder().decode(CLIExtractTopicsResponse.self, from: data)
 
         let topics = decoded.topics.map {

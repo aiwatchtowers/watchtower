@@ -1,0 +1,322 @@
+{
+ "cases": [
+  {
+   "hits": [
+    {
+     "kind": "person",
+     "id": "1:U2",
+     "label": "Ivan Petrov",
+     "detail": "@ivan"
+    },
+    {
+     "kind": "channel",
+     "id": "1:C1",
+     "label": "#ivan-team",
+     "detail": "Slack channel"
+    },
+    {
+     "kind": "track",
+     "id": "2",
+     "label": "Ivan asked for a review",
+     "detail": "track · medium"
+    },
+    {
+     "kind": "person",
+     "id": "1:U1",
+     "label": "Anna Ivanova",
+     "detail": "@anna"
+    },
+    {
+     "kind": "jira",
+     "id": "PAY-12",
+     "label": "PAY-12",
+     "detail": "Ivan cleanup"
+    }
+   ],
+   "kinds": [],
+   "name": "mention: people and issues by word prefix",
+   "query": "iva"
+  },
+  {
+   "hits": [
+    {
+     "kind": "person",
+     "id": "1:U6",
+     "label": "Иван Сидоров",
+     "detail": "@petr"
+    }
+   ],
+   "kinds": [],
+   "name": "mention: Cyrillic lower-case finds a capitalized name",
+   "query": "ива"
+  },
+  {
+   "hits": [
+    {
+     "kind": "jira",
+     "id": "ENG-1",
+     "label": "ENG-1",
+     "detail": "Engine rewrite"
+    },
+    {
+     "kind": "channel",
+     "id": "1:C2",
+     "label": "#eng",
+     "detail": "Slack channel"
+    },
+    {
+     "kind": "channel",
+     "id": "1:C4",
+     "label": "#engage",
+     "detail": "Slack channel"
+    },
+    {
+     "kind": "track",
+     "id": "1",
+     "label": "Engineering sync notes",
+     "detail": "track · high"
+    },
+    {
+     "kind": "person",
+     "id": "1:U7",
+     "label": "Bob",
+     "detail": "@eng_bob"
+    },
+    {
+     "kind": "target",
+     "id": "1",
+     "label": "Ship engine v2",
+     "detail": "todo"
+    }
+   ],
+   "kinds": [],
+   "name": "mention: label-prefix hits first, capped at 8",
+   "query": "eng"
+  },
+  {
+   "hits": [
+    {
+     "kind": "jira",
+     "id": "PAY-12",
+     "label": "PAY-12",
+     "detail": "Ivan cleanup"
+    }
+   ],
+   "kinds": [],
+   "name": "mention: issue key prefix, any case",
+   "query": "pay-1"
+  },
+  {
+   "hits": [
+    {
+     "kind": "person",
+     "id": "1:U1",
+     "label": "Anna Ivanova",
+     "detail": "@anna"
+    },
+    {
+     "kind": "person",
+     "id": "1:U7",
+     "label": "Bob",
+     "detail": "@eng_bob"
+    },
+    {
+     "kind": "person",
+     "id": "1:U2",
+     "label": "Ivan Petrov",
+     "detail": "@ivan"
+    },
+    {
+     "kind": "person",
+     "id": "1:U6",
+     "label": "Иван Сидоров",
+     "detail": "@petr"
+    },
+    {
+     "kind": "jira",
+     "id": "PAY-12",
+     "label": "PAY-12",
+     "detail": "Ivan cleanup"
+    },
+    {
+     "kind": "jira",
+     "id": "PAY-3",
+     "label": "PAY-3",
+     "detail": "Fix login"
+    },
+    {
+     "kind": "jira",
+     "id": "ENG-1",
+     "label": "ENG-1",
+     "detail": "Engine rewrite"
+    },
+    {
+     "kind": "channel",
+     "id": "1:C2",
+     "label": "#eng",
+     "detail": "Slack channel"
+    }
+   ],
+   "kinds": [],
+   "name": "mention: empty query lists everything up to 8",
+   "query": ""
+  },
+  {
+   "hits": [],
+   "kinds": [],
+   "name": "mention: no match",
+   "query": "zzz"
+  },
+  {
+   "hits": [
+    {
+     "kind": "jira_project",
+     "id": "PAY",
+     "label": "PAY",
+     "detail": "2 issues"
+    }
+   ],
+   "kinds": [
+    "jira_project"
+   ],
+   "name": "picker: jira projects",
+   "query": "p"
+  },
+  {
+   "hits": [
+    {
+     "kind": "confluence_space",
+     "id": "ENG",
+     "label": "Engineering",
+     "detail": "Confluence space ENG"
+    }
+   ],
+   "kinds": [
+    "confluence_space"
+   ],
+   "name": "picker: confluence spaces by key or name",
+   "query": "eng"
+  },
+  {
+   "hits": [
+    {
+     "kind": "confluence_space",
+     "id": "ENG",
+     "label": "Engineering",
+     "detail": "Confluence space ENG"
+    },
+    {
+     "kind": "confluence_space",
+     "id": "PAY",
+     "label": "PAY",
+     "detail": "Confluence space PAY"
+    }
+   ],
+   "kinds": [
+    "confluence_space"
+   ],
+   "name": "picker: spaces with an empty query",
+   "query": ""
+  },
+  {
+   "hits": [
+    {
+     "kind": "channel",
+     "id": "1:C2",
+     "label": "#eng",
+     "detail": "Slack channel"
+    },
+    {
+     "kind": "channel",
+     "id": "1:C4",
+     "label": "#engage",
+     "detail": "Slack channel"
+    },
+    {
+     "kind": "target",
+     "id": "1",
+     "label": "Ship engine v2",
+     "detail": "todo"
+    }
+   ],
+   "kinds": [
+    "channel",
+    "target"
+   ],
+   "name": "picker: channels then targets",
+   "query": "eng"
+  },
+  {
+   "hits": [
+    {
+     "kind": "target",
+     "id": "3",
+     "label": "Investigate the very long target text that goes on and on p…",
+     "detail": "in_progress"
+    }
+   ],
+   "kinds": [
+    "target"
+   ],
+   "name": "picker: long target label is cut",
+   "query": "inv"
+  },
+  {
+   "hits": [
+    {
+     "kind": "track",
+     "id": "2",
+     "label": "Ivan asked for a review",
+     "detail": "track · medium"
+    },
+    {
+     "kind": "track",
+     "id": "1",
+     "label": "Engineering sync notes",
+     "detail": "track · high"
+    }
+   ],
+   "kinds": [
+    "track"
+   ],
+   "name": "picker: tracks",
+   "query": ""
+  },
+  {
+   "hits": [],
+   "kinds": [
+    "linear"
+   ],
+   "name": "picker: linear only",
+   "query": "pay"
+  }
+ ],
+ "seed": [
+  "INSERT INTO users (id, name, display_name, real_name) VALUES ('1:U1', 'anna', 'Anna Ivanova', '')",
+  "INSERT INTO users (id, name, display_name, real_name) VALUES ('1:U2', 'ivan', '', 'Ivan Petrov')",
+  "INSERT INTO users (id, name, display_name, is_bot) VALUES ('1:U3', 'ivanbot', 'Ivan Bot', 1)",
+  "INSERT INTO users (id, name, display_name, is_deleted) VALUES ('1:U4', 'ivanold', 'Ivan Old', 1)",
+  "INSERT INTO users (id, name, display_name, is_stub) VALUES ('1:U5', 'ivanstub', 'Ivan Stub', 1)",
+  "INSERT INTO users (id, name, display_name) VALUES ('1:U6', 'petr', 'Иван Сидоров')",
+  "INSERT INTO users (id, name, display_name) VALUES ('1:U7', 'eng_bob', 'Bob')",
+  "INSERT INTO channels (id, name, type, is_member) VALUES ('1:C1', 'ivan-team', 'public', 0)",
+  "INSERT INTO channels (id, name, type, is_member) VALUES ('1:C2', 'eng', 'public', 1)",
+  "INSERT INTO channels (id, name, type, is_archived) VALUES ('1:C3', 'eng-archive', 'public', 1)",
+  "INSERT INTO channels (id, name, type) VALUES ('1:C4', 'engage', 'private')",
+  "INSERT INTO channels (id, name, type) VALUES ('1:D1', 'eng-dm', 'dm')",
+  "INSERT INTO jira_accounts (id, site_url) VALUES (1, 'https://acme.example.com')",
+  "INSERT INTO jira_issues (account_id, key, project_key, summary, status, status_category, created_at, updated_at, synced_at) VALUES (1, 'PAY-12', 'PAY', 'Ivan cleanup', 'Open', 'todo', '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z')",
+  "INSERT INTO jira_issues (account_id, key, project_key, summary, status, status_category, created_at, updated_at, synced_at) VALUES (1, 'PAY-3', 'PAY', 'Fix login', 'Open', 'todo', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')",
+  "INSERT INTO jira_issues (account_id, key, project_key, summary, status, status_category, created_at, updated_at, synced_at) VALUES (1, 'ENG-1', 'ENG', 'Engine rewrite', 'Open', 'todo', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+  "INSERT INTO jira_issues (account_id, key, project_key, summary, status, status_category, created_at, updated_at, synced_at, is_deleted) VALUES (1, 'ENG-2', 'ENG', 'Engine gone', 'Open', 'todo', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z', 1)",
+  "INSERT INTO ext_sources (provider, jira_account_id, container_key, container_name) VALUES ('confluence', 1, 'eng', 'Engineering')",
+  "INSERT INTO ext_sources (provider, jira_account_id, container_key, container_name) VALUES ('confluence', 1, 'pay', '')",
+  "INSERT INTO ext_sources (provider, jira_account_id, container_key, container_name, enabled) VALUES ('confluence', 1, 'old', 'Engine archive', 0)",
+  "INSERT INTO targets (text, period_start, period_end, status, updated_at) VALUES ('Ship engine v2\nwith the new store', '2026-09-01', '2026-09-30', 'todo', '2026-09-03T00:00:00Z')",
+  "INSERT INTO targets (text, period_start, period_end, status, updated_at) VALUES ('Engine docs', '2026-09-01', '2026-09-30', 'done', '2026-09-04T00:00:00Z')",
+  "INSERT INTO targets (text, period_start, period_end, status, updated_at) VALUES ('Investigate the very long target text that goes on and on past sixty characters for sure', '2026-09-01', '2026-09-30', 'in_progress', '2026-09-05T00:00:00Z')",
+  "INSERT INTO tracks (text, priority, updated_at) VALUES ('Engineering sync notes', 'high', '2026-09-06T00:00:00Z')",
+  "INSERT INTO tracks (text, priority, updated_at) VALUES ('Ivan asked for a review', 'medium', '2026-09-07T00:00:00Z')",
+  "INSERT INTO tracks (text, priority, updated_at, dismissed_at) VALUES ('Engine dismissed', 'low', '2026-09-08T00:00:00Z', '2026-09-08T00:00:00Z')"
+ ]
+}

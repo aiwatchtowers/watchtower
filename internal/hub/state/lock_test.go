@@ -10,7 +10,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 )
 
 // lockHelperEnv makes the test binary a child that holds the hub lock of
@@ -93,18 +92,13 @@ func TestSecondLockRefused(t *testing.T) {
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("child exit: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		l3, err := AcquireLock(dir)
-		if err == nil {
-			_ = l3.Release()
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("lock not freed after the child exited: %v", err)
-		}
-		time.Sleep(20 * time.Millisecond)
+	// The child has exited (Wait returned): the kernel dropped its flock with
+	// its descriptors, so the lock is free now, with no wait.
+	l3, err := AcquireLock(dir)
+	if err != nil {
+		t.Fatalf("lock not freed after the child exited: %v", err)
 	}
+	_ = l3.Release()
 }
 
 func TestRelease_Twice(t *testing.T) {

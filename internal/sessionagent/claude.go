@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"watchtower/internal/config"
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/claudesession"
@@ -135,7 +136,7 @@ func (claudeAdapter) Caps() Caps {
 		FailureSignal: SignalHook, InterruptSignal: SignalHook,
 		IdleSignal: true, PermissionWait: true, MidturnInput: true, PhoneInput: true, Elicitation: true,
 		RegistryProbe: true, SubagentFeed: true, Analytics: true, BackgroundTasks: true,
-		AppSessionID: true, AnalyticsContext: true,
+		AppSessionID: true, AnalyticsContext: true, ClaudeSessionFiles: true,
 	}
 }
 
@@ -197,10 +198,19 @@ func (t claudeTranscript) ImportFile() (string, bool) {
 	return path, err == nil
 }
 
+// ChildImportFile: no child rollouts; Claude sub-agents are listed by folder.
+func (claudeTranscript) ChildImportFile(string, []string) (string, bool, error) {
+	return "", false, nil
+}
+
 func (claudeTranscript) Open(path string) (io.ReadCloser, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, false, err
 	}
 	return f, false, nil
+}
+
+func (claudeAdapter) Binary(cfg *config.Config, f Finders) (string, string) {
+	return resolveBinary(cfg.ClaudePath, func() (string, error) { return f.Claude(), nil }), "claude"
 }
