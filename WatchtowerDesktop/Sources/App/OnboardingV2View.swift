@@ -34,7 +34,9 @@ struct OnboardingV2View: View {
                 )
             case .aiConsent:
                 ScrollView {
-                    BackgroundAIConsentHost(host: .step { back(to: consentBackStep) }) {
+                    BackgroundAIConsentStep {
+                        back(to: consentBackStep)
+                    } onAnswered: {
                         await appState.answerBackgroundAIConsentStep(onRetry: onRetry)
                     }
                 }

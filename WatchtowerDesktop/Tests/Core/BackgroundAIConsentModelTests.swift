@@ -133,6 +133,27 @@ final class BackgroundAIConsentModelTests: XCTestCase {
         XCTAssertNil(model.errorLine, "a later success clears the error")
     }
 
+    /// A re-entry while the sheet is up and saving keeps that sheet and its
+    /// model: the answer is written once, never a second, conflicting time.
+    func testReEntryDuringHeldSaveKeepsTheModelAndWritesOnce() async {
+        let runner = ConsentRunner()
+        runner.hold()
+        var sheet = BackgroundAIConsentSheet()
+        _ = sheet.present(configUnreadable: false) { self.makeModel(runner) }
+        sheet.markMounted()
+        guard let shown = sheet.model else { return XCTFail("opened") }
+        let saving = Task { await shown.allow() }
+        await runner.waitForStart()
+
+        XCTAssertEqual(sheet.present(configUnreadable: false) { self.makeModel(runner) }, .alreadyVisible)
+        XCTAssertTrue(sheet.model === shown)
+        let second = await shown.notNow()
+        XCTAssertFalse(second, "a second answer is refused while saving")
+        runner.release()
+        _ = await saving.value
+        XCTAssertEqual(runner.calls.count, 1)
+    }
+
     func testFinishRunsWithButtonsOffAndRetriesOnlyTheFinish() async {
         let runner = ConsentRunner()
         let model = makeModel(runner)

@@ -65,10 +65,10 @@ final class AppStateBackgroundAITests: XCTestCase {
         let (state, path) = try appState(config: "ai: {provider: codex}\n")
         state.sharedConfig.aiProvider = "claude" // an unsaved edit
         let runner = FakeCLIRunner(stdout: Data())
-        XCTAssertEqual(state.makeBackgroundAIConsentModel(runner: runner).agent, .codex)
+        XCTAssertEqual(state.makeBackgroundAIConsentModel(runner: runner)?.agent, .codex)
 
         try write("ai: {provider: claude, fallback: {enabled: true, provider: codex}}\n", to: path)
-        let model = state.makeBackgroundAIConsentModel(runner: runner)
+        let model = try XCTUnwrap(state.makeBackgroundAIConsentModel(runner: runner))
         XCTAssertEqual(model.agent, .claude)
         XCTAssertEqual(model.reserve, .codex)
     }
@@ -96,5 +96,19 @@ final class AppStateBackgroundAITests: XCTestCase {
         XCTAssertNil(state.backgroundAIConsentSheet.opened, "closed for a moment")
         for _ in 0..<10 where state.backgroundAIConsentSheet.opened == nil { await Task.yield() }
         XCTAssertEqual(state.backgroundAIConsentSheet.opened, .upgrade)
+    }
+
+    /// A config.yaml that is there but unreadable gives no model (never
+    /// Claude and the default cadence): the re-entry shows the config error.
+    func testUnreadableConfigShowsTheErrorNotDefaults() throws {
+        let (state, _) = try appState(config: "ai: [unclosed\n")
+        XCTAssertNil(state.makeBackgroundAIConsentModel(runner: FakeCLIRunner(stdout: Data())))
+        state.presentBackgroundAIConsent()
+        XCTAssertNil(state.backgroundAIConsentSheet.opened)
+        XCTAssertTrue(state.backgroundAIConsentSheet.showsConfigError)
+
+        let (missing, _) = try appState(config: nil)
+        XCTAssertEqual(missing.makeBackgroundAIConsentModel(runner: FakeCLIRunner(stdout: Data()))?.agent, .claude,
+                       "a missing file reads as the defaults")
     }
 }

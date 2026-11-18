@@ -122,27 +122,41 @@ struct BackgroundAIConsentView: View {
     }
 }
 
-/// The consent screen with its own model, made once when it appears (one
-/// model per showing, so its saving and error state survive re-renders).
-struct BackgroundAIConsentHost: View {
-    let host: BackgroundAIConsentView.Host
-    /// The host's follow-up once the answer is saved; false keeps the
-    /// screen with a retry of the follow-up only.
+/// Onboarding's consent step with its own model, made once when it appears
+/// (so its saving and error state survive re-renders). While config.yaml
+/// cannot be read there is no model: the config error shows with Back.
+struct BackgroundAIConsentStep: View {
+    let onBack: () -> Void
+    /// Onboarding's finish once the answer is saved; false keeps the step
+    /// with a retry of the finish only.
     let onAnswered: @MainActor () async -> Bool
 
+    private enum Load {
+        case pending, ready(BackgroundAIConsentModel), unreadable
+    }
+
     @Environment(AppState.self) private var appState
-    @State private var model: BackgroundAIConsentModel?
+    @State private var load = Load.pending
 
     var body: some View {
         Group {
-            if let model {
-                BackgroundAIConsentView(model: model, host: host, onAnswered: onAnswered)
-            } else {
+            switch load {
+            case .pending:
                 Color.clear.frame(width: 1, height: 1)
+            case .ready(let model):
+                BackgroundAIConsentView(model: model, host: .step(onBack: onBack), onAnswered: onAnswered)
+            case .unreadable:
+                VStack(alignment: .leading, spacing: Spacing.medium) {
+                    Text(BackgroundAIConsentCopy.configUnreadableTitle).font(.title2.weight(.semibold))
+                    Text(BackgroundAIConsentCopy.configUnreadable).foregroundStyle(Tone.error)
+                    Button(BackgroundAIConsentCopy.back, action: onBack).buttonStyle(.kitQuiet)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .onAppear {
-            if model == nil { model = appState.makeBackgroundAIConsentModel() }
+            guard case .pending = load else { return }
+            load = appState.makeBackgroundAIConsentModel().map(Load.ready) ?? .unreadable
         }
     }
 }

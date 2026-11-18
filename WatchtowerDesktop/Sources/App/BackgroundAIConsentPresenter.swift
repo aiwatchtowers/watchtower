@@ -28,9 +28,13 @@ struct BackgroundAIConsentPresenter: ViewModifier {
     func body(content: Content) -> some View {
         content
             .sheet(isPresented: Binding(get: { appState.isBackgroundAIConsentPresented }, set: { _ in })) {
-                BackgroundAIConsentHost(host: .sheet) { appState.backgroundAIConsentSheetAnswered() }
-                    .environment(appState)
-                    .interactiveDismissDisabled()
+                // The one model the sheet state holds: a re-entry never
+                // swaps it while the sheet is up (it may be saving).
+                if let model = appState.backgroundAIConsentSheet.model {
+                    BackgroundAIConsentView(model: model, host: .sheet) { appState.backgroundAIConsentSheetAnswered() }
+                        .interactiveDismissDisabled()
+                        .onAppear { appState.backgroundAIConsentSheet.markMounted() }
+                }
             }
             .alert(
                 BackgroundAIConsentCopy.configUnreadableTitle,
