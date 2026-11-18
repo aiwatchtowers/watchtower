@@ -62,6 +62,12 @@ type OAuthToken struct {
 	ExpiresIn    int    `json:"expires_in"`
 	Scope        string `json:"scope"`
 	Expiry       string `json:"expiry,omitempty"` // ISO8601 calculated from ExpiresIn
+	// RequestedScope is the scope string the sign-in that issued the grant
+	// asked for (Login sets it; a refresh carries it over); "" for a token
+	// from before it was recorded. Atlassian may grant less than asked —
+	// report:personal-data is known to come back missing — so it tells
+	// whether a new sign-in could add a scope the grant lacks.
+	RequestedScope string `json:"requested_scope,omitempty"`
 }
 
 // IsExpired returns true if the token has expired (or will expire within 60 seconds).
@@ -385,6 +391,11 @@ type LoginOptions struct {
 	// Confluence pages is a stronger grant than the read-only sync, so it is
 	// never requested unless asked for.
 	WithConfluenceWrite bool
+	// WithPersonalDataReporting additionally requests PDRScope, which the
+	// Personal Data Reporting phase needs (#1887 §6). Set for a company's
+	// app, whose setup guide enables the permission; an app without it
+	// rejects the scope outright, so it is never requested otherwise.
+	WithPersonalDataReporting bool
 }
 
 // Login performs the Jira OAuth2 (3LO) flow via a local HTTP callback server.
@@ -415,6 +426,9 @@ func Login(ctx context.Context, cfg JiraOAuthConfig, out io.Writer, opts ...Logi
 	}
 	if opt.WithConfluenceWrite {
 		scope += " " + ConfluenceWriteScopes
+	}
+	if opt.WithPersonalDataReporting {
+		scope += " " + PDRScope
 	}
 	authorizeURL := buildAuthURL(cfg, redirectURI, state, scope)
 
@@ -462,7 +476,7 @@ func Login(ctx context.Context, cfg JiraOAuthConfig, out io.Writer, opts ...Logi
 	if err != nil {
 		return nil, fmt.Errorf("exchanging code for token: %w", err)
 	}
-
+	token.RequestedScope = scope
 	return token, nil
 }
 

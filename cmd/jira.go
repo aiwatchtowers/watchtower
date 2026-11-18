@@ -735,12 +735,27 @@ const jiraConfluenceNotEnabled = "Jira connected; Confluence isn't enabled for t
 // for Confluence never costs a Jira connect. The retry opens the browser a
 // second time; any other failure is returned as is.
 func jiraAddLogin(ctx context.Context, cfg jira.JiraOAuthConfig, out io.Writer, opts jira.LoginOptions) (*jira.OAuthToken, error) {
-	token, err := jiraLogin(ctx, cfg, out, opts)
+	token, err := jiraLoginWithoutRefusedReport(ctx, cfg, out, opts)
 	if err == nil || !opts.WithConfluence || !errors.Is(err, jira.ErrScopeRefused) {
 		return token, err
 	}
 	fmt.Fprintln(out, jiraOnlyRetryMarker+" Atlassian refused the Confluence access; connecting Jira only…")
-	opts.WithConfluence, opts.WithConfluenceWrite = false, false
+	opts.WithConfluence, opts.WithConfluenceWrite, opts.WithPersonalDataReporting = false, false, false
+	return jiraLogin(ctx, cfg, out, opts)
+}
+
+// jiraLoginWithoutRefusedReport is jiraLogin that, when the report scope
+// (WithPersonalDataReporting, #1887 §6) is refused — a company app without
+// the report permission — signs in once more without it and with every
+// other option kept: the account connects and shows pdr_scope_missing
+// instead of failing its add or Re-login.
+func jiraLoginWithoutRefusedReport(ctx context.Context, cfg jira.JiraOAuthConfig, out io.Writer, opts jira.LoginOptions) (*jira.OAuthToken, error) {
+	token, err := jiraLogin(ctx, cfg, out, opts)
+	if err == nil || !opts.WithPersonalDataReporting || !errors.Is(err, jira.ErrScopeRefused) {
+		return token, err
+	}
+	fmt.Fprintln(out, "Atlassian refused the personal data reporting access; signing in without it…")
+	opts.WithPersonalDataReporting = false
 	return jiraLogin(ctx, cfg, out, opts)
 }
 
@@ -874,6 +889,9 @@ func addJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB, tar
 	if target.Confluence {
 		opts.WithConfluence = true
 	}
+	// A company's app has the report permission (its setup guide enables
+	// it), so the grant carries the scope Personal Data Reporting needs.
+	opts.WithPersonalDataReporting = target.Slug != ""
 
 	// Seed the legacy single-account install first so the new row never
 	// collides with the implicit account #1 (the `slack add` precedent).
@@ -984,7 +1002,10 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 	if kept {
 		fmt.Fprintln(out, "This account uses Confluence; keeping its Confluence access in the new grant.")
 	}
-	token, err := jiraLogin(cmd.Context(), jiraCfg, out, opts)
+	// A company account's Re-login also finishes the setup: it requests the
+	// report scope its app has (pdr_scope_missing).
+	opts.WithPersonalDataReporting = account.CompanySlug != ""
+	token, err := jiraLoginWithoutRefusedReport(cmd.Context(), jiraCfg, out, opts)
 	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("jira login: %w", err)
