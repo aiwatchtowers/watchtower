@@ -449,3 +449,24 @@ func TestBGAI01_ErrPausedSpendsNoAttempt(t *testing.T) {
 		assert.Zero(t, d.dayPlanAttempts)
 	})
 }
+
+// BGAI-01 / §2.2: the legacy Morning brief's conflict phase (calendar
+// refresh and conflict detection on an existing plan) is mechanical: it
+// runs while paused, while the plan's generation spends nothing.
+func TestBGAI01_PausedLegacyMorningBriefKeepsConflictPhase(t *testing.T) {
+	d, database, _ := dayPlanBackoffTestSetup(t)
+	d.SetConsent(newFakeConsent(consentPausedUnanswered).read)
+	at := time.Date(2026, 4, 23, 10, 0, 0, 0, time.Local)
+	_, err := database.UpsertDayPlan(&db.DayPlan{UserID: "U001", PlanDate: at.Format("2006-01-02"),
+		Status: "active", GeneratedAt: at, FeedbackHistory: "[]"})
+	require.NoError(t, err)
+	fp := &fakeDayPlanRunner{alwaysFail: true}
+	d.SetDayPlanPipeline(fp)
+
+	d.phaseMorningBrief(context.Background(), at)
+
+	assert.Zero(t, fp.runCalls, "no plan generation while paused")
+	assert.Zero(t, d.dayPlanAttempts)
+	assert.Equal(t, 1, fp.syncCalls, "the calendar refresh still runs")
+	assert.Equal(t, 1, fp.detectCalls, "conflict detection still runs")
+}

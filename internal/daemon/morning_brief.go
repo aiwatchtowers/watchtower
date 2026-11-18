@@ -88,10 +88,21 @@ const briefingNoDataBackoff = time.Hour
 func (d *Daemon) phaseMorningBrief(ctx context.Context, now time.Time) {
 	if !d.builtinOn(morningBriefID) {
 		d.cancelQueuedBuiltinRuns(morningBriefID, now)
+		owner := db.Owner{}
+		if d.config.DayPlan.Enabled && d.dayPlanPipeline != nil && d.db != nil {
+			owner = d.dayPlanOwner(now)
+		}
+		// Only the briefing and the plan's generation call a model; the
+		// conflict phase (calendar refresh and conflict detection on an
+		// existing plan) is mechanical and runs while paused, as on the
+		// built-in path.
 		d.aiPhase(ctx, "morning-brief", func(ctx context.Context) {
 			d.phaseBriefingAt(ctx, now)
-			d.runDayPlanPhases(ctx, now)
+			if d.config.DayPlan.Enabled && d.dayPlanPipeline != nil && d.db != nil {
+				d.runDayPlanPhase(ctx, now, owner)
+			}
 		})
+		d.runDayPlanConflictPhase(ctx, now, owner)
 		return
 	}
 	d.ensureBuiltinsSwept() // the start's sweep failed: retried before the slot
