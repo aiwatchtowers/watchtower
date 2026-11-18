@@ -458,9 +458,14 @@ func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID
 // and rules the session's context block measures. A session with no
 // terminal row on the workbench reads the workbench folder.
 func sessionFolder(main *db.DB, workbenchID int64, s agentlogdb.AgentReportSession) (string, error) {
-	lookup := main.ClaudeTerminalSessionIDs
-	if s.Agent == string(agentkind.Codex) {
-		lookup = main.CodexTerminalSessionIDs
+	// The lookup is chosen by the agent's own key, not by a name check.
+	lookups := map[string]func([]string) (map[string]int64, error){
+		string(agentkind.Claude): main.ClaudeTerminalSessionIDs,
+		string(agentkind.Codex):  main.CodexTerminalSessionIDs,
+	}
+	lookup, known := lookups[s.Agent]
+	if !known {
+		lookup = main.ClaudeTerminalSessionIDs
 	}
 	ids, err := lookup([]string{s.SessionUUID})
 	if err != nil {

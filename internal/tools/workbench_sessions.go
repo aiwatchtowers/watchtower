@@ -273,7 +273,7 @@ func rootOf(ctx context.Context, d *db.DB, id int64) (root int64, depth int, err
 	root = id
 	for depth < maxChain {
 		var parent sql.NullInt64
-		err := d.QueryRowContext(ctx, `SELECT parent_session_id FROM terminal_sessions WHERE id = ?`, root).Scan(&parent)
+		err := d.QueryRowContext(ctx, `SELECT parent_session_id FROM terminal_sessions WHERE id = ? AND `+db.NotDeletingSQL, root).Scan(&parent)
 		if errors.Is(err, sql.ErrNoRows) {
 			break
 		}
