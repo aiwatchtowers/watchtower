@@ -108,11 +108,13 @@ extension WorkbenchesViewModel {
     /// a worktree that was read and still exists; the main folder for no
     /// session, a main, unknown, stale or removed place (never a worktree
     /// that cannot be proven). The worktree root is built only from Go's
-    /// `folder_root` spelling. Worked out again only when the place, the
-    /// workbench folder or the removed worktrees change.
+    /// `folder_root` spelling. On a bench of several folders (#2003) the
+    /// "main folder" is the session's own folder's root. Worked out again
+    /// only when the place, the folder or the removed worktrees change.
     func codeRoot(sessionID: Int64?, project: Workbench) -> CodeRoot {
         let place = sessionID.map(sessionPlaces.currentPlace(sessionID:)) ?? .unknown
         let inputs = CodeRootMemo.Inputs(
+            base: sessionID.flatMap { sessionFolderRoot(sessionID: $0, project: project) } ?? project.mainCodeRoot,
             place: place,
             stale: sessionID.map(sessionPlaces.isPlaceStale(sessionID:)) ?? false,
             folderPath: project.folderPath,
@@ -127,8 +129,8 @@ extension WorkbenchesViewModel {
     }
 
     private func provenCodeRoot(_ inputs: CodeRootMemo.Inputs, project: Workbench) -> CodeRoot {
-        guard !inputs.stale, case let .worktree(_, folder, _) = inputs.place else { return project.mainCodeRoot }
-        let root = CodeRootPolicy.root(workbench: project, worktreeFolder: folder)
+        guard !inputs.stale, case let .worktree(_, folder, _) = inputs.place else { return inputs.base }
+        let root = CodeRootPolicy.root(main: inputs.base, worktreeFolder: folder)
         if root.isMain {
             // The worktree is gone (also while hidden): its buffers are
             // locked now, not at their next save. Not while a view body
@@ -190,6 +192,9 @@ struct CodeRootMemoKey: Hashable {
 /// `WorkbenchesViewModel.codeRoot(sessionID:project:)`'s last answer.
 struct CodeRootMemo {
     struct Inputs: Equatable {
+        /// The session's bench folder's main root (#2003): home's for no
+        /// session or a session of the home folder.
+        let base: CodeRoot
         let place: SessionPlace
         let stale: Bool
         let folderPath: String

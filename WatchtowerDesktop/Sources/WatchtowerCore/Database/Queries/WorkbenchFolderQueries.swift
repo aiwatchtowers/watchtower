@@ -38,4 +38,18 @@ package enum WorkbenchFolderQueries {
         BenchFolders(folders: try folders(db, workbenchID: workbenchID, withRemoved: true),
                      homeID: try homeFolderID(db, workbenchID: workbenchID))
     }
+
+    /// `benchFolders` of every workbench that has folder rows, in one read.
+    package static func allBenchFolders(_ db: Database) throws -> [Int64: BenchFolders] {
+        let rows = try WorkbenchFolder.fetchAll(db, sql: """
+            SELECT id, workbench_id, folder_path, position, added_by, removed_at, name
+            FROM workbench_folders
+            ORDER BY workbench_id, position, id
+            """)
+        var benches: [Int64: BenchFolders] = [:]
+        for (id, folders) in Dictionary(grouping: rows, by: \.workbenchID) {
+            benches[id] = BenchFolders(folders: folders, homeID: try homeFolderID(db, workbenchID: id))
+        }
+        return benches
+    }
 }

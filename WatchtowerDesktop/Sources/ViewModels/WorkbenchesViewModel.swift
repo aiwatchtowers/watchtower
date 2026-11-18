@@ -608,9 +608,31 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var gitRefreshQueued: Set<GitRootKey> = []
     /// Workbench pages on screen that watch their refs.
     @ObservationIgnored var gitWatching: Set<Int64> = []
-    /// The worktree root a watching page's branch menu works on, watched
-    /// beside its main folder; none while the page shows the main folder.
+    /// The root a watching page's branch menu works on — a worktree, or a
+    /// bench folder other than home (#2003) — watched beside its main
+    /// folder; none while the page shows the home folder's main root.
     @ObservationIgnored var gitWatchedWorktree: [Int64: CodeRoot] = [:]
+    /// Each workbench's folder rows and home (#2003), read with the list;
+    /// FILES draws a root per live folder, Open Folder… matches any of them.
+    var benchFolders: [Int64: BenchFolders] = [:]
+    /// Live folders whose directory was gone at the last read (FILES says
+    /// `Folder not found`), per workbench.
+    var missingFolders: [Int64: Set<Int64>] = [:]
+    /// `workbench folder list`'s install flag per folder id, per workbench;
+    /// a folder not listed counts as installed (no icon before the read).
+    var folderInstalled: [Int64: [Int64: Bool]] = [:]
+    /// FILES roots the owner opened (folder ids), per workbench. The active
+    /// session's folder is open whatever this holds.
+    var expandedFolderRoots: [Int64: Set<Int64>] = [:]
+    /// The root Put on the Bench… pointed at (`already_here`, a new folder),
+    /// highlighted in FILES until another one is.
+    var highlightedFolderRoot: [Int64: Int64] = [:]
+    /// The last Put on the Bench… failure per workbench, under the FILES header.
+    var putOnBenchErrors: [Int64: String] = [:]
+    /// Workbenches with a Put on the Bench… add in flight.
+    var puttingOnBench: Set<Int64> = []
+    /// A seam for tests: whether a folder's directory exists.
+    @ObservationIgnored var folderExists: (String) -> Bool = { CodeRootPolicy.directoryExists(URL(fileURLWithPath: $0)) }
     @ObservationIgnored var gitWatchers: [GitRootKey: any GitRefsWatching] = [:]
     @ObservationIgnored var gitWatchedDirs: [GitRootKey: [String]] = [:]
     @ObservationIgnored var gitTimers: [Int64: Task<Void, Never>] = [:]
@@ -800,7 +822,11 @@ final class WorkbenchesViewModel {
         _ = currentDefaultAgent()
         let previousIDs = summaries.map(\.id)
         do {
-            summaries = try await dbPool.read { try WorkbenchQueries.summaries($0) }
+            let read = try await dbPool.read { db in
+                (try WorkbenchQueries.summaries(db), try WorkbenchFolderQueries.allBenchFolders(db))
+            }
+            summaries = read.0
+            applyBenchFolders(read.1)
         } catch {
             errorMessage = "Could not load workbenches: \(error.localizedDescription)"
             return false
@@ -826,7 +852,11 @@ final class WorkbenchesViewModel {
     /// read beside the error.
     func loadSwitcherSummaries() async {
         do {
-            switcherSummaries = try await dbPool.read { try WorkbenchQueries.switcherSummaries($0) }
+            let read = try await dbPool.read { db in
+                (try WorkbenchQueries.switcherSummaries(db), try WorkbenchFolderQueries.allBenchFolders(db))
+            }
+            switcherSummaries = read.0
+            applyBenchFolders(read.1)
             switcherError = nil
         } catch {
             switcherError = "Could not load workbenches: \(error.localizedDescription)"
@@ -1020,7 +1050,8 @@ final class WorkbenchesViewModel {
     }
 
     /// Open Folder… (board #778), decided on a fresh list: a folder some
-    /// workbench is already bound to opens that workbench, as the switcher's
+    /// workbench is already bound to — any of its folders, not only home
+    /// (#2003) — opens that workbench, as the switcher's
     /// pick does, with no location warning (owner decision #778) —
     /// `workbench create` would refuse it. Any other folder becomes a new
     /// workbench, after the owner confirms a TCC-sensitive location.
@@ -1058,8 +1089,11 @@ final class WorkbenchesViewModel {
     /// without the `/private` of /tmp and /var (`comparableFolder`).
     func workbenchID(boundTo folder: URL) -> Int64? {
         let path = Self.comparableFolder(folder.path)
-        return summaries.first {
-            Self.comparableFolder($0.project.folderPath).caseInsensitiveCompare(path) == .orderedSame
+        let same = { (other: String) in Self.comparableFolder(other).caseInsensitiveCompare(path) == .orderedSame }
+        if let home = summaries.first(where: { same($0.project.folderPath) }) { return home.id }
+        // Any folder on a bench, not only its home (#2003, spec §6.1).
+        return summaries.first { summary in
+            benchFolders[summary.id]?.live.contains { same($0.folderPath) } ?? false
         }?.id
     }
 

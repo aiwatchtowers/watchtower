@@ -8,19 +8,27 @@ import WatchtowerCore
 /// alone and its CLI argv never gains `--folder`.
 struct GitRootKey: Hashable, Sendable {
     let workbenchID: Int64
-    /// The worktree root (`CodeRoot.folder`'s path); nil = the main folder.
+    /// The bench folder (#2003) the root is, or is a worktree of; nil = the
+    /// home folder, whose argv never gains `--workbench-folder`.
+    let folderID: Int64?
+    /// The worktree root (`CodeRoot.folder`'s path); nil = the folder itself.
     let worktreeFolder: String?
 
     init(_ root: CodeRoot) {
         workbenchID = root.workbenchID
+        folderID = root.folderID
         worktreeFolder = root.isMain ? nil : root.folder.path
     }
 
-    /// The workbench's main folder.
-    static func mainFolder(_ workbenchID: Int64) -> Self { Self(workbenchID: workbenchID, worktreeFolder: nil) }
+    /// The workbench's main (home) folder.
+    static func mainFolder(_ workbenchID: Int64) -> Self { Self(workbenchID: workbenchID, folderID: nil, worktreeFolder: nil) }
 
-    private init(workbenchID: Int64, worktreeFolder: String?) {
+    /// The home folder's main root or the root of another bench folder.
+    var isFolderRoot: Bool { worktreeFolder == nil }
+
+    private init(workbenchID: Int64, folderID: Int64?, worktreeFolder: String?) {
         self.workbenchID = workbenchID
+        self.folderID = folderID
         self.worktreeFolder = worktreeFolder
     }
 }
