@@ -24,7 +24,9 @@ import (
 // reviewer's AI overview of its changes. Neither calls the model or writes the
 // database (the snapshot writes only git objects, as annotate_changes does);
 // both run with the workbench's finish check on, and a handover ask of this
-// session passes both.
+// session passes both. In an armed session a third gate follows them
+// (checkWatchmanGate, spec 2026-11-16-watchman-design §3): it writes the
+// twin's queued review item and waits for its Approve.
 
 // finishGateBudget bounds the gate's git work (snapshot, base, tree compare);
 // a var for tests.
@@ -114,9 +116,10 @@ func SnapshotReviewSession(ctx context.Context, d *db.DB, p *db.Workbench, sessi
 	return snap, nil
 }
 
-// checkFinishGates runs both gates for session on workbench p; a refusal is
-// a *ValidationError naming what is open and the next step.
-func checkFinishGates(ctx context.Context, d *db.DB, p *db.Workbench, session int64, a finishSessionArgs) error {
+// checkFinishGates runs both gates for session on workbench p, then the
+// Watchman gate; a refusal is a *ValidationError naming what is open and the
+// next step.
+func checkFinishGates(ctx context.Context, d *db.DB, p *db.Workbench, session int64, a finishSessionArgs, wake func()) error {
 	if !workbenchmethod.ResolveSession(d, p.ID, session).FinishOn() {
 		return nil // the owner turned the finish check off; a read failure resolves to on
 	}
@@ -137,10 +140,13 @@ func checkFinishGates(ctx context.Context, d *db.DB, p *db.Workbench, session in
 			return &ValidationError{Msg: openLeavesRefusal(ticket, leaves)}
 		}
 	}
-	if handover {
-		return nil // the owner reads what is left in the ask
+	// With a handover the owner reads what is left in the ask.
+	if !handover {
+		if err := checkOverviewGate(ctx, d, p, session); err != nil {
+			return err
+		}
 	}
-	return checkOverviewGate(ctx, d, p, session)
+	return checkWatchmanGate(ctx, d, p, session, ticket, a, wake)
 }
 
 // finishTicket is the session's launch target, else the call's target_id

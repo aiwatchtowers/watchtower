@@ -30,6 +30,22 @@ func TestParkedBy(t *testing.T) {
 		{"push main", bash("git push origin main"), LimitMainRef},
 		{"push HEAD:main", bash("git push origin HEAD:main"), LimitMainRef},
 		{"push feature", bash("git push origin feat"), ""},
+		// The pre-push hook's bypasses still name main here (Task 6 review).
+		{"push main without hooks", bash("git push --no-verify origin main"), LimitMainRef},
+		{"push main with another hooks path", bash("git -c core.hooksPath=/dev/null push origin main"), LimitMainRef},
+		{"push main with config from env", bash("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/x git push origin main"), LimitMainRef},
+		// The plumbing push no hook sees parks whatever it pushes.
+		{"send-pack to main", bash("git send-pack origin HEAD:refs/heads/main"), LimitSendPack},
+		{"git-send-pack to master", bash("/usr/libexec/git-core/git-send-pack ../acme.git master"), LimitSendPack},
+		{"send-pack all", bash("git send-pack --all origin"), LimitSendPack},
+		{"send-pack mirror", bash("git send-pack --mirror origin"), LimitSendPack},
+		{"send-pack refs from stdin", bash("echo x | git send-pack --stdin origin"), LimitSendPack},
+		{"send-pack no ref named", bash("git send-pack origin"), LimitSendPack},
+		{"send-pack HEAD", bash("git send-pack origin HEAD"), LimitSendPack},
+		{"send-pack feature", bash("git send-pack origin feat:refs/heads/feat"), LimitSendPack},
+		{"send-pack tag", bash("git send-pack origin refs/tags/v1:refs/tags/v1"), LimitSendPack},
+		{"send-pack force update", bash("git send-pack --force origin +feat:refs/heads/feat"), LimitSendPack},
+		{"send-pack behind git globals", bash("git -C ../acme send-pack origin feat"), LimitSendPack},
 		{"pr merge into main", withPR("gh pr merge 12 --squash", map[int]string{12: "main"}), LimitMainRef},
 		{"pr merge into feature", withPR("gh pr merge 12", map[int]string{12: "feature/watchman"}), ""},
 		{"pr merge unknown base", withPR("gh pr merge 12", nil), LimitMainRef},
@@ -360,4 +376,27 @@ func TestParkedBy_UnreadableIsItsOwnRow(t *testing.T) {
 		{"unterminated single quote", bash("echo 'open"), LimitUnreadable},
 		{"unreadable before push", bash("sudo; git push origin main"), LimitUnreadable},
 	})
+}
+
+// The call's start directory places a relative path but is no directory
+// change: a local reset on a private branch from outside the worktrees is
+// not reset_shared, while a relative delete there is outside.
+func TestParkedBy_StartDirPlacesOnly(t *testing.T) {
+	ask := func(cmd string) PermissionAsk {
+		return PermissionAsk{Tool: "Bash", Summary: cmd, Worktrees: []string{"/wt"}, Cwd: "/elsewhere",
+			Branch: &BranchInfo{Current: "feature/x"}}
+	}
+	_, parked := ParkedBy(ask("git reset --hard HEAD~1"))
+	require.False(t, parked)
+	l, parked := ParkedBy(ask("rm -rf build"))
+	require.True(t, parked)
+	require.Equal(t, LimitDeleteOutside, l)
+	inside := ask("rm -rf build")
+	inside.Cwd = "/wt/sub"
+	_, parked = ParkedBy(inside)
+	require.False(t, parked)
+	// A cd in the command itself still counts as a move.
+	l, parked = ParkedBy(ask("cd /tmp && git reset --hard HEAD~1"))
+	require.True(t, parked)
+	require.Equal(t, LimitResetShared, l)
 }

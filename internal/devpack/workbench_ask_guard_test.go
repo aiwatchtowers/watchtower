@@ -192,8 +192,10 @@ func assertAskToolBlockGroup(t *testing.T, pre []any, bin string) {
 	cmd := WorkbenchAskGuardHookCommand(bin, 7)
 	// Since board #988 the session state's "*" group sits beside it.
 	state := WorkbenchSessionStateHookCommand(bin, 7)
-	if len(pre) != 2 || countCommand(pre, cmd) != 1 || countCommand(pre, state) != 1 {
-		t.Fatalf("PreToolUse must hold one group running %q and the state group, got %#v", cmd, pre)
+	// Since Watchman phase 2 the Watchman guard's "*" group follows it.
+	if len(pre) != 3 || countCommand(pre, cmd) != 1 || countCommand(pre, state) != 1 ||
+		countCommand(pre[2:], watchmanGuardSpec.command(bin, 7)) != 1 {
+		t.Fatalf("PreToolUse must hold one group running %q, the state group and the Watchman guard's, got %#v", cmd, pre)
 	}
 	g := pre[1].(map[string]any)
 	if countCommand([]any{g}, cmd) != 1 || len(g["hooks"].([]any)) != 1 {
@@ -256,9 +258,11 @@ func TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks(t *testing.T) 
 	assertOurAskGuardEntryUpdatedInPlace(t, stop[3], o.Bin)
 	pre := eventGroups(t, after, "PreToolUse")
 	// Three since board #988 (ask #525): the owner's, the state hook's "*"
-	// group and the ask tool block's.
-	if len(pre) != 3 || !reflect.DeepEqual(pre[0], eventGroups(t, before, "PreToolUse")[0]) ||
-		countCommand(pre, WorkbenchSessionStateHookCommand(o.Bin, 7)) != 1 || countCommand(pre, WorkbenchAskGuardHookCommand(o.Bin, 7)) != 1 {
+	// group and the ask tool block's; four since Watchman phase 2, with the
+	// Watchman guard's "*" group.
+	if len(pre) != 4 || !reflect.DeepEqual(pre[0], eventGroups(t, before, "PreToolUse")[0]) ||
+		countCommand(pre, WorkbenchSessionStateHookCommand(o.Bin, 7)) != 1 || countCommand(pre, WorkbenchAskGuardHookCommand(o.Bin, 7)) != 1 ||
+		countCommand(pre, watchmanGuardSpec.command(o.Bin, 7)) != 1 {
 		t.Fatalf("PROJ-04: the owner's PreToolUse group must stay first and as it was, got %#v", pre)
 	}
 	assertOwnerNumberLiteralsKept(t, folder, `"x-owner": 1.50`, `"x-owner-stop": 4.50`, `"x-owner-pre": 2.50`, `"x-ours": 3.50`)
@@ -550,7 +554,8 @@ func TestAskToolBlock_InAnotherMatcherGroupIsRepaired(t *testing.T) {
 // owner's hook and ours sits in an AskUserQuestion group of its own after it.
 func assertAskToolBlockMovedOut(t *testing.T, pre []any, cmd string) {
 	t.Helper()
-	if len(pre) != 2 || countCommand(pre[:1], "echo owner-pre") != 1 || countCommand(pre[:1], cmd) != 0 {
+	// The Watchman guard's own group follows (installed with the ask guard).
+	if len(pre) != 3 || countCommand(pre[:1], "echo owner-pre") != 1 || countCommand(pre[:1], cmd) != 0 {
 		t.Fatalf("the owner's group must keep only the owner's hook, got %#v", pre)
 	}
 	if g := pre[1].(map[string]any); g["matcher"] != "AskUserQuestion" || countCommand(pre[1:], cmd) != 1 {
