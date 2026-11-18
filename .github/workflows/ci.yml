@@ -516,6 +516,33 @@ jobs:
         working-directory: WatchtowerChat
         run: swift test
 
+  # TEMPORARY (#1705): does a job on the Mac's runners reach a window server
+  # and boot a simulator now that the ci user logs in at the console?
+  window-probe:
+    name: Window server probe (${{ matrix.label }})
+    needs: gate
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        label: [wt-swift, wt-general]
+    runs-on: [self-hosted, "${{ matrix.label }}"]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Window probe
+        run: swift scripts/ci-runner/window-probe.swift
+      - name: Simulator probe
+        run: |
+          name="wt-probe-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${{ matrix.label }}"
+          udid=$(xcrun simctl create "$name" "iPhone 17 Pro")
+          rc=0
+          timeout 300 xcrun simctl bootstatus "$udid" -b || rc=$?
+          xcrun simctl shutdown "$udid" 2>/dev/null || true
+          xcrun simctl delete "$udid"
+          echo "bootstatus exit=$rc"
+          exit $rc
+
   swift-test:
     name: Swift Test
     needs: gate
