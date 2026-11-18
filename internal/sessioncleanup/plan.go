@@ -55,8 +55,8 @@ type Request struct {
 	// evaluates (sweepBuilders); "" = the workbench's home folder.
 	folder string
 	// keyFolder qualifies the part's branch keys (branchKey): a branch name
-	// is unique only within its repository. "" = the home folder's part,
-	// whose keys stay as they always were.
+	// is unique only within its repository. "" = a session's plan or the
+	// sweep of a one-folder bench, whose keys stay as they always were.
 	keyFolder string
 	// staleUnder are the part's other bench folders over the same
 	// repository: their stale LaunchServices entries are listed too.

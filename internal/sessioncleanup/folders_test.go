@@ -1,9 +1,13 @@
 package sessioncleanup
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+
+	"watchtower/internal/db"
 )
 
 // otherRepo adds a second repository beside the fixture's, on main and
@@ -69,11 +73,12 @@ func TestProj18_PlansEachSessionInItsFolderRepository(t *testing.T) {
 }
 
 // TestProj18_SweepCoversEveryFolder: the owner's sweep lists every live
-// folder's repository once, as one listing; a branch of a folder other than
-// home is keyed with its folder, so a name in two repositories is two
-// items, and an apply acts in the repository the key names. A folder in no
-// repository is skipped; a folder over the home repository (a linked
-// worktree on the bench) adds no second copy and is never a candidate.
+// folder's repository once, as one listing; on a bench of several folders
+// every branch is keyed with its folder, home included, so a name in two
+// repositories is two items, and an apply acts in the repository the key
+// names. A folder in no repository or missing is skipped with a note; a
+// folder over the home repository (a linked worktree on the bench) adds no
+// second copy and is never a candidate.
 func TestProj18_SweepCoversEveryFolder(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
@@ -83,25 +88,35 @@ func TestProj18_SweepCoversEveryFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	side := f.worktree("side", "side")
-	f.store.bench = []string{f.repo, hub, plain, side}
+	missing := filepath.Join(f.base, "moved-away")
+	f.store.bench = []string{f.repo, hub, plain, side, missing}
 	homeWork := f.pushedWork("home-wt", "feat/same")
 	hubWork := f.pushedWorkIn(hub, "hub-wt", "feat/same")
 	hubOnly := f.pushedWorkIn(hub, "hub-only", "feat/hub")
 	hubKey := "branch:" + hub + ":feat/same"
+	homeKey := "branch:" + f.repo + ":feat/same"
 
 	rec := &recorder{}
 	res := f.planWith(Request{Sweep: true, Observer: rec}, nil)
 	wantItem(t, res.Plan, "worktree:"+homeWork, ActionRemove, "")
 	wantItem(t, res.Plan, "worktree:"+hubWork, ActionRemove, "")
 	wantItem(t, res.Plan, "worktree:"+hubOnly, ActionRemove, "")
-	wantItem(t, res.Plan, "branch:feat/same", ActionRemove, "")
+	wantItem(t, res.Plan, homeKey, ActionRemove, "")
 	wantItem(t, res.Plan, hubKey, ActionRemove, "")
+	if hasItem(res.Plan, "branch:feat/same") {
+		t.Fatal("a branch of a several-folder bench carries an unbound key")
+	}
+	for _, note := range []string{plain + ": not a repository, not swept", missing + ": missing, not swept"} {
+		if !slices.Contains(res.Notes, note) {
+			t.Fatalf("notes = %q, want %q", res.Notes, note)
+		}
+	}
 	wantItem(t, res.Plan, "branch:"+hub+":feat/hub", ActionRemove, "")
 	if hasItem(res.Plan, "worktree:"+side) || hasItem(res.Plan, "branch:side") {
 		t.Fatal("a bench folder is a sweep candidate")
 	}
 	if hasItem(res.Plan, "branch:feat/hub") {
-		t.Fatal("a hub branch carries the home folder's key")
+		t.Fatal("a hub branch carries an unbound key")
 	}
 	seen := map[string]bool{}
 	for _, it := range res.Items {
@@ -205,16 +220,90 @@ func TestProj18_RemovedFolderKeepsAllButItsSessionsWorktrees(t *testing.T) {
 }
 
 // TestProj18_RemovedFolderIsNeverACandidate: every folder of every bench,
-// the ones that left it included, is a workbench folder (W1): the sweep
-// never lists it, and a session that recorded it keeps it.
+// the ones that left it included, is a workbench folder (W1), read through
+// the real DBStore: the sweep
+// never lists it.
 func TestProj18_RemovedFolderIsNeverACandidate(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	gone := f.pushedWork("gone-folder", "feat/gone")
-	f.store.extraFolders = []string{gone} // a folder that left its bench: still in WorkbenchFolders
-	f.record(gone, "feat/gone")
-	if p := f.plan(Request{Sweep: true}); hasItem(p, "worktree:"+gone) {
-		t.Fatalf("a removed bench folder is a sweep candidate: %+v", p.Items)
+	d := db.OpenTestDB(t)
+	wb, err := d.CreateWorkbench("acme", f.repo)
+	if err != nil {
+		t.Fatal(err)
 	}
-	wantItem(t, f.plan(Request{DeclaredWorktrees: []string{gone}}), "worktree:"+gone, ActionKeep, ReasonWorkbenchFolder)
+	store := DBStore{DB: d}
+	// A folder that was on the bench and left it: a removed row.
+	addFolderRow(t, store, wb, gone, 1, true)
+	deps := f.deps()
+	deps.DB = store
+	res, err := PlanResult(context.Background(), deps, Request{Sweep: true, WorkbenchID: wb})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasItem(res.Plan, "worktree:"+gone) {
+		t.Fatalf("a folder that left the bench is a sweep candidate: %+v", res.Items)
+	}
+}
+
+// TestProj18_SweepOfABenchWhoseHomeIsNoRepository: a bench whose home is a
+// plain folder is swept over its other folders; the home is noted.
+func TestProj18_SweepOfABenchWhoseHomeIsNoRepository(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	hub := f.otherRepo("hub")
+	plain := filepath.Join(f.base, "notes")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.store.bench = []string{plain, hub}
+	hubWork := f.pushedWorkIn(hub, "hub-wt", "feat/h")
+	p := f.plan(Request{Sweep: true})
+	wantItem(t, p, "worktree:"+hubWork, ActionRemove, "")
+	wantItem(t, p, "branch:"+hub+":feat/h", ActionRemove, "")
+	if !slices.Contains(p.Notes, plain+": not a repository, not swept") {
+		t.Fatalf("notes = %q", p.Notes)
+	}
+	// No repository left at all: the sweep fails.
+	f.store.bench = []string{plain, filepath.Join(f.base, "gone")}
+	if _, err := PlanResult(context.Background(), f.deps(), Request{Sweep: true, WorkbenchID: testWorkbench}); err == nil {
+		t.Fatal("a sweep with no repository planned something")
+	}
+}
+
+// TestProj18_SweepSelectionIsBoundToItsRepository: a selection from a plan
+// of a several-folder bench names its repository; after the home folder left
+// and another folder became home (a one-folder bench, plain keys again), it
+// matches nothing there and nothing is removed.
+func TestProj18_SweepSelectionIsBoundToItsRepository(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	hub := f.otherRepo("hub")
+	f.store.bench = []string{f.repo, hub}
+	f.pushedWork("home-wt", "feat/same")
+	hubWork := f.pushedWorkIn(hub, "hub-wt", "feat/same")
+	gitIn(t, hub, "worktree", "remove", hubWork) // the branch alone is left, removable
+	hubKey := "branch:" + hub + ":feat/same"
+	p := f.plan(Request{Sweep: true})
+	wantItem(t, p, hubKey, ActionRemove, "")
+	// The home repository's feat/same, by the key this plan gave it.
+	homeKey := ""
+	for _, it := range p.Items {
+		if it.Kind == KindBranch && it.Name == "feat/same" && it.Key != hubKey {
+			homeKey = it.Key
+		}
+	}
+	if homeKey == "" {
+		t.Fatalf("no home feat/same in %+v", p.Items)
+	}
+
+	// The home folder leaves the bench; hub is promoted to home.
+	f.store.folders[testWorkbench], f.store.bench = hub, []string{hub}
+	res := f.apply(Request{Sweep: true}, []string{homeKey, hubKey}, nil)
+	for _, key := range []string{homeKey, hubKey} {
+		wantResultItem(t, res, key, ActionKeep, ReasonNotInPlan, false)
+	}
+	if !branchIn(t, hub, "feat/same") || !f.branchExists("feat/same") {
+		t.Fatal("an older selection removed a branch after the home folder moved")
+	}
 }

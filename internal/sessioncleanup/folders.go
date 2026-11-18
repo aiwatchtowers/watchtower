@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"slices"
+	"strings"
 
 	"watchtower/internal/gitbin"
 )
@@ -29,12 +32,16 @@ func evaluationBuilders(ctx context.Context, d Deps, r Request) ([]*builder, err
 }
 
 // sweepBuilders are the owner's sweep over every live folder of the bench
-// (spec 2026-11-18 §6.9): the home folder's part first, with the keys it
-// always had, then one part per other repository, its branch keys carrying
-// its folder (branchKey). A folder over a repository already covered adds
-// only its stale LaunchServices entries to that part; a folder other than
-// home that is in no repository has nothing to clean up and is skipped.
-// Any other failure fails the sweep, as for one folder.
+// (spec 2026-11-18 §6.9): one part per repository, the home folder's first.
+// A bench of one folder keeps the keys it always had and fails as before
+// when that folder is in no repository. On a bench of several folders every
+// branch key carries its part's folder (branchKey), home included, so a key
+// is bound to one repository: a selection from an older plan never matches
+// a branch of another repository (the home moved, a folder left). There a
+// folder that is missing or in no repository is skipped with a plan note,
+// and the sweep fails only when no repository is left. A folder over a
+// repository already covered adds only its stale LaunchServices entries to
+// that part. Any other failure fails the sweep, as for one folder.
 func sweepBuilders(ctx context.Context, d Deps, r Request) ([]*builder, error) {
 	if r.WorkbenchID == 0 {
 		return nil, errors.New("session cleanup: a sweep needs a workbench")
@@ -43,18 +50,24 @@ func sweepBuilders(ctx context.Context, d Deps, r Request) ([]*builder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading workbench %d folders: %w", r.WorkbenchID, err)
 	}
+	if len(folders) <= 1 {
+		b, err := newBuilder(ctx, d, r)
+		if err != nil {
+			return nil, err
+		}
+		return []*builder{b}, nil
+	}
 	var parts []*builder
+	var notes []string
 	byRepo := map[string]*builder{}
-	for i, f := range folders {
+	for _, f := range folders {
 		folder := resolvePath(f)
-		if i > 0 && !gitbin.InsideRepository(folder) {
+		if note := unsweptNote(folder); note != "" {
+			notes = append(notes, note)
 			continue
 		}
 		sub := r
-		sub.folder = folder
-		if i > 0 {
-			sub.keyFolder = folder
-		}
+		sub.folder, sub.keyFolder = folder, folder
 		b, err := newBuilder(ctx, d, sub)
 		if err != nil {
 			return nil, err
@@ -70,9 +83,23 @@ func sweepBuilders(ctx context.Context, d Deps, r Request) ([]*builder, error) {
 		parts = append(parts, b)
 	}
 	if len(parts) == 0 {
-		return nil, fmt.Errorf("session cleanup: workbench %d has no folder", r.WorkbenchID)
+		return nil, fmt.Errorf("session cleanup: no folder of workbench %d is in a git repository: %s",
+			r.WorkbenchID, strings.Join(notes, "; "))
 	}
+	parts[0].notes = append(parts[0].notes, notes...)
 	return parts, nil
+}
+
+// unsweptNote is the plan note of a bench folder the sweep skips: missing
+// on disk, or in no git repository; "" when it is swept.
+func unsweptNote(folder string) string {
+	if _, err := os.Stat(folder); errors.Is(err, fs.ErrNotExist) {
+		return folder + ": missing, not swept"
+	}
+	if !gitbin.InsideRepository(folder) {
+		return folder + ": not a repository, not swept"
+	}
+	return ""
 }
 
 // reportListing reports the candidates of every part as one Listed: the
@@ -92,7 +119,7 @@ func reportListing(parts []*builder) {
 }
 
 // branchKey is a branch item's key: "branch:<name>", or in a sweep part of
-// a folder other than home "branch:<folder>:<name>" (a refname has no ':',
+// a bench of several folders "branch:<folder>:<name>" (a refname has no ':',
 // an absolute folder starts with '/', so the two never meet).
 func (b *builder) branchKey(name string) string {
 	if b.req.keyFolder == "" {
