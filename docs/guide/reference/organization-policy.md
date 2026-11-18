@@ -21,6 +21,7 @@ A full example with every key and placeholder values is in the repository at `do
 | `AllowedAIProviders` | array of `claude`, `codex`, `ollama` | The only providers any part of Watchtower may use. A configured provider outside the list fails each AI call with the policy error; it never switches to another provider by itself. |
 | `AllowClaudeAITools` | boolean | `false` turns off claude.ai publishing and connectors in the chat. |
 | `PurgeRevokedData` | boolean | Forces [deleting a revoked account's data](../concepts/revoked-access.md) on or off. |
+| `AllowBackgroundAI` | boolean | `true` is your organization's consent to AI that runs in the background, so people are not asked; each person can still pause it for themselves. `false` keeps background AI off, whatever a person chose, and locks the switch in Settings. |
 
 A key with the wrong type counts as its most restrictive value (for example an integer `1` where a boolean belongs counts as `false`), and the problem is listed in the policy.
 

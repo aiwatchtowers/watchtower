@@ -2,6 +2,7 @@ import Foundation
 import WatchtowerCore
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 // MARK: - Gates
 

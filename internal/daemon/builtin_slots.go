@@ -243,7 +243,7 @@ func (d *Daemon) phaseWatchSlot(ctx context.Context) {
 		return
 	}
 	if !d.builtinOn(customTracksID) {
-		d.phaseCustomTrackScan(ctx)
+		d.aiPhase(ctx, "custom-tracks", d.phaseCustomTrackScan)
 	}
 	if d.builtins == nil || d.customTracksPipe == nil {
 		return
@@ -257,8 +257,11 @@ func (d *Daemon) phaseWatchSlot(ctx context.Context) {
 // legacy tracks phase (and its queued Run Now cancelled: only the slot would
 // take it), otherwise the built-in's slot run. Then, whether or not
 // extraction was due, the active tracks go to the digest pipeline and the
-// rollups run, as before. now is the rollup budget's date.
-func (d *Daemon) phaseTrackMyThreads(ctx context.Context, now time.Time) {
+// rollups run, as before. now is the rollup budget's date. aiOK is the
+// group's one consent read (runSync): false skips the legacy tracks phase
+// and the rollups before any stamp, attempt or file write; the built-in's
+// slot still runs (it gates itself, and a queued Run Now still runs).
+func (d *Daemon) phaseTrackMyThreads(ctx context.Context, now time.Time, aiOK bool) {
 	if d.builtinOn(trackMyThreadsID) {
 		d.ensureBuiltinsSwept()
 		start := time.Now()
@@ -269,10 +272,14 @@ func (d *Daemon) phaseTrackMyThreads(ctx context.Context, now time.Time) {
 		}
 	} else {
 		d.cancelQueuedBuiltinRuns(trackMyThreadsID, now)
-		d.phaseTracks(ctx)
+		if aiOK {
+			d.phaseTracks(ctx)
+		}
 	}
 	d.injectTrackContext()
-	d.runRollupPhase(ctx, now)
+	if aiOK {
+		d.runRollupPhase(ctx, now)
+	}
 }
 
 // phaseIdeaFinder is the Idea finder slot, where phaseIdeas ran: with the
@@ -281,7 +288,7 @@ func (d *Daemon) phaseTrackMyThreads(ctx context.Context, now time.Time) {
 func (d *Daemon) phaseIdeaFinder(ctx context.Context) {
 	if !d.builtinOn(ideaFinderID) {
 		d.cancelQueuedBuiltinRuns(ideaFinderID, time.Now())
-		d.phaseIdeas(ctx)
+		d.aiPhase(ctx, "ideas", d.phaseIdeas)
 		return
 	}
 	d.ensureBuiltinsSwept()

@@ -166,7 +166,19 @@ type Heartbeat struct {
 	// (a failed save, a refused or oversized record) first failed; absent
 	// while every kind goes through and from an older hub (#1873).
 	StuckSince *Time `json:"stuck_since,omitempty"`
+	// BackgroundAI is whether background AI runs on the hub's Mac
+	// (BackgroundAI* values, #1886); absent from an older hub and when the
+	// hub reports none.
+	BackgroundAI string `json:"background_ai,omitempty"`
 }
+
+// The heartbeat's background_ai values: allowed runs; paused is the owner's
+// (or an unanswered) state; organization is a pause the organization forces.
+const (
+	BackgroundAIAllowed      = "allowed"
+	BackgroundAIPaused       = "paused"
+	BackgroundAIOrganization = "organization"
+)
 
 // HeartbeatCapabilities is the heartbeat's capabilities object. Recordings
 // is "on" or "off"; an unknown value reads as not off. Chat is the AI chat

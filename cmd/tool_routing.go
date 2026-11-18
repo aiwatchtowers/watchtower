@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/config"
 	"watchtower/internal/digest"
 	"watchtower/internal/providerhealth"
@@ -90,6 +91,9 @@ func (p *toolRouteProvider) request(sessionID string) providerrouting.Request {
 		}}
 }
 func (p *toolRouteProvider) run(ctx context.Context, sid string, call func(context.Context, ai.Provider, providerrouting.Attempt) (providerrouting.Result, error)) (providerrouting.Result, error) {
+	if err := aiconsent.Check(ctx); err != nil {
+		return providerrouting.Result{}, err // BGAI-01: no leaf built
+	}
 	if err := p.cfg.AI.Validate(); err != nil {
 		return providerrouting.Result{}, err
 	}

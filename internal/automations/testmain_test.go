@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"watchtower/internal/aiconsent/aiconsenttest"
 	"watchtower/internal/auditlog"
 	"watchtower/internal/db"
 )
@@ -17,6 +18,8 @@ import (
 func TestMain(m *testing.M) {
 	// Read tests' audit lines stay out of the machine's unified log.
 	auditlog.SetSinkForTest(func(string) {})
+	// Background AI reads allowed unless a test injects a consent reader.
+	aiconsenttest.AllowByDefault()
 	if err := db.InitTestFileTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
