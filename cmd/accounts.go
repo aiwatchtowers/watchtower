@@ -199,7 +199,7 @@ var sourceCommandGroups = map[string]string{
 // settings, and taking an account away (logout, remove, disable, purge).
 var sourceGuardExempt = map[string]bool{
 	"auth check-cert": true, "auth trust-cert": true, "auth logout": true, "reaction-commands list": true,
-	"slack accounts": true, "slack disable": true, "slack remove": true, "slack rename": true,
+	"slack accounts": true, "slack disable": true, "slack remove": true, "slack rename": true, "slack app status": true,
 	"google accounts": true, "google remove": true, "google rename": true,
 	"gmail logout": true, "gmail purge": true, "gmail status": true,
 	"calendar logout": true, "calendar status": true, "calendar list": true, "calendar events": true, "calendar select": true,

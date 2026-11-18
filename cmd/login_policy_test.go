@@ -28,6 +28,7 @@ func TestPolicyLogin_RefusedBeforeAnyWrite(t *testing.T) {
 		src  string
 	}{
 		{"auth login", "slack"}, {"reaction-commands poll", "slack"}, {"slack add", "slack"}, {"slack login", "slack"}, {"slack enable", "slack"},
+		{"slack app create", "slack"}, {"slack app adopt", "slack"}, {"slack app link", "slack"},
 		{"google login", "google"}, {"google add", "google"}, {"gmail login", "google"}, {"gmail sync", "google"},
 		{"calendar login", "google"}, {"calendar sync", "google"},
 		{"imap add", "imap"}, {"outlook login", "imap"},
