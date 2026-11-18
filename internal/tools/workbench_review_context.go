@@ -40,8 +40,13 @@ var (
 const maxPlanBytes = 1 << 20
 
 // ReviewContextItems lists the session's linked targets that belong to workbench p,
-// each with its plan task when the intent names one.
-func ReviewContextItems(_ context.Context, database *db.DB, p *db.Workbench, sessionID int64) ([]ReviewContextItem, error) {
+// each with its plan task when the intent names one, read in the session's
+// own bench folder (db.SessionFolderPath; spec §6.9).
+func ReviewContextItems(ctx context.Context, database *db.DB, p *db.Workbench, sessionID int64) ([]ReviewContextItem, error) {
+	folder, _, err := database.SessionFolderPath(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
 	ids, err := database.SessionLinkedTargets(sessionID)
 	if err != nil {
 		return nil, err
@@ -58,7 +63,7 @@ func ReviewContextItems(_ context.Context, database *db.DB, p *db.Workbench, ses
 		if t == nil || !t.WorkbenchID.Valid || t.WorkbenchID.Int64 != p.ID {
 			continue
 		}
-		items = append(items, contextItem(p.FolderPath, t))
+		items = append(items, contextItem(folder, t))
 	}
 	return items, nil
 }

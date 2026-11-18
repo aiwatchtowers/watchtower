@@ -738,7 +738,7 @@ func resolveReviewReadFolder(dbPath string, askID int64) (string, error) {
 	if t := specreview.DocType(ask.DocType); ask.Kind != "review" || (t != specreview.Spec && t != specreview.Plan) {
 		return "", usageError("--read-folder-ask %d: not a spec or plan review", askID)
 	}
-	dir, err := specreview.ReadFolder(database, ask)
+	dir, err := specreview.ReadFolder(context.Background(), database, ask)
 	if err != nil {
 		return "", usageError("--read-folder-ask %d: %v", askID, err)
 	}

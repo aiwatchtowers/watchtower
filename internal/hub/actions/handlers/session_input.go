@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionline"
 	"watchtower/internal/sessionstate"
 )
@@ -340,6 +341,11 @@ func (h *Handlers) deliverPhoneLine(ctx context.Context, l phoneLine, live LiveR
 	case DeliverTyped:
 		return actions.Outcome{Status: wire.StatusApplied, Delivery: deliveryTyped}, ""
 	case DeliverHeld:
+		if res.Reason == sessionhost.HeldDialog {
+			// A permission prompt opened after the gate read: the host
+			// wrote nothing; the phone sees it as the prompt it is.
+			return actions.Outcome{}, inputReasonNeedsApproval
+		}
 		if res.Reason != "" {
 			return actions.Outcome{}, res.Reason
 		}

@@ -600,7 +600,7 @@ func (b *builder) listing() []Item {
 			ofListed[w.Branch] = true
 		}
 		listedTrees = append(listedTrees, Item{Key: "worktree:" + w.Root, Kind: KindWorktree,
-			Name: filepath.Base(w.Root), Branch: w.Branch})
+			Name: filepath.Base(w.Root), Branch: w.Branch, BranchKey: b.worktreeBranchKey(w)})
 	}
 	items = append(items, listedTrees...)
 	for _, it := range b.undeclaredWorktrees(known) {
@@ -669,7 +669,7 @@ func (b *builder) undeclaredWorktrees(known map[string]bool) []Item {
 
 func (b *builder) evaluateWorktree(ctx context.Context, w worktree) Item {
 	it := Item{Key: "worktree:" + w.Root, Kind: KindWorktree, Name: filepath.Base(w.Root), Branch: w.Branch,
-		Action: ActionRemove}
+		BranchKey: b.worktreeBranchKey(w), Action: ActionRemove}
 	for _, c := range b.worktreeCatches(w) {
 		reason, detail, err := c(ctx, b, w)
 		if err != nil {

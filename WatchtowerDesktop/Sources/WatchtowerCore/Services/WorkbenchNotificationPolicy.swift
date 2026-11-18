@@ -75,7 +75,7 @@ package enum WorkbenchNotificationPolicy {
             switch kind {
             case .check: "Ready to check: \(title)"
             case .review: "Ready for review: \(title)"
-            case .question, nil: "Agent asks: \(title)"
+            case .question, .folder, nil: "Agent asks: \(title)"
             }
         }
     }

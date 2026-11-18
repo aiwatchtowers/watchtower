@@ -2,8 +2,12 @@ import Foundation
 import WatchtowerChatText
 import GRDB
 
+/// `folder` (00196): the agent suggests putting a folder on the bench
+/// (`suggest_workbench_folder`). A kind this build does not know makes the
+/// row unreadable — named beside the list (`OwnerAskRows`), never shown as
+/// another kind.
 package enum OwnerAskKind: String, Codable, CaseIterable, Sendable {
-    case review, check, question
+    case review, check, question, folder
 }
 
 /// `open` → `answered` is the Desktop's only write; Go writes the rest
@@ -119,6 +123,62 @@ package struct OwnerAskPayload: Equatable, Sendable {
     private struct Ignored: Decodable {}
 }
 
+/// A `folder` ask's payload (spec §4 item 4, §6.7): the folder the agent
+/// keeps working in, outside every folder of the bench.
+package struct FolderSuggestionPayload: Decodable, Equatable, Sendable {
+    /// The workbench the folder is on now, when it is another one's (the
+    /// card then offers the merge, §6.13).
+    package struct OtherBench: Decodable, Equatable, Sendable {
+        package let id: Int64
+        package let name: String
+
+        package init(id: Int64, name: String) {
+            self.id = id
+            self.name = name
+        }
+    }
+
+    /// The folder to put on the bench (absolute).
+    package let path: String
+    /// Its repository root, as the hook found it by walking up for `.git`.
+    package let repoRoot: String
+    /// How many tool calls touched it.
+    package let touches: Int
+    /// The agent's reason.
+    package let why: String
+    package let otherBench: OtherBench?
+
+    package init(path: String, repoRoot: String = "", touches: Int = 0, why: String = "", otherBench: OtherBench? = nil) {
+        self.path = path
+        self.repoRoot = repoRoot
+        self.touches = touches
+        self.why = why
+        self.otherBench = otherBench
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case path, touches, why
+        case repoRoot = "repo_root"
+        case otherBench = "other_bench"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decode(String.self, forKey: .path)
+        guard !path.isEmpty else {
+            throw DecodingError.dataCorruptedError(forKey: .path, in: c, debugDescription: "a folder ask names no path")
+        }
+        repoRoot = try c.decodeIfPresent(String.self, forKey: .repoRoot) ?? ""
+        touches = try c.decodeIfPresent(Int.self, forKey: .touches) ?? 0
+        why = try c.decodeIfPresent(String.self, forKey: .why) ?? ""
+        otherBench = try c.decodeIfPresent(OtherBench.self, forKey: .otherBench)
+    }
+
+    package static func decode(_ json: String) throws -> Self {
+        try JSONDecoder().decode(Self.self, from: Data(json.utf8))
+    }
+}
+
 /// An `owner_asks` row (migrations 00100, 00107): something the workbench
 /// agent asked the owner — a review of a document snapshot, a manual check
 /// or a question. Go writes it; the Desktop only answers it.
@@ -140,7 +200,13 @@ package struct OwnerAsk: FetchableRecord, Identifiable, Equatable, Sendable {
     /// A review re-round: what changed since `previousAskID`.
     package let changes: String
     package let payload: OwnerAskPayload
+    /// A `folder` ask's suggestion; nil for every other kind.
+    package let folderSuggestion: FolderSuggestionPayload?
+    /// Relative to `docFolderID`'s folder, always.
     package let docPath: String
+    /// The workbench folder `docPath` is relative to (00196); nil = the home
+    /// folder (every ask filed before multi-folder benches).
+    package let docFolderID: Int64?
     /// A review's document kind (00158): spec, plan or other; empty for
     /// other kinds and for asks filed before it. Only a spec or a plan
     /// gets a spec review.
@@ -191,8 +257,12 @@ package struct OwnerAsk: FetchableRecord, Identifiable, Equatable, Sendable {
         title = row["title"] ?? ""
         summary = row["summary"] ?? ""
         changes = row["changes"] ?? ""
-        payload = try OwnerAskPayload.decode(row["payload"] ?? "{}")
+        let payloadJSON: String = row["payload"] ?? "{}"
+        payload = try OwnerAskPayload.decode(payloadJSON)
+        // A folder ask without its folder is a broken row, not an empty card.
+        folderSuggestion = kind == .folder ? try FolderSuggestionPayload.decode(payloadJSON) : nil
         docPath = row["doc_path"] ?? ""
+        docFolderID = row["doc_folder_id"]
         docType = row["doc_type"] ?? ""
         docSnapshot = row["doc_snapshot"] ?? ""
         previousAskID = row["previous_ask_id"]

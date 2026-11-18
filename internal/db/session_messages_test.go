@@ -89,7 +89,7 @@ func TestSettleAndRequeueSessionMessage(t *testing.T) {
 	require.NoError(t, d.SettleSessionMessage(ctx, typed, "delivered", "typed_not_submitted", at))
 	var deliveredAt string
 	require.NoError(t, d.QueryRow(`SELECT delivered_at FROM session_messages WHERE id = ?`, typed).Scan(&deliveredAt))
-	assert.Equal(t, "2026-11-18T12:00:00Z", deliveredAt)
+	assert.Equal(t, "2026-11-18T12:00:00.000Z", deliveredAt, "millisecond precision")
 	assert.ErrorIs(t, d.SettleSessionMessage(ctx, typed, "failed", "x", at), ErrSessionMessageNotPending,
 		"a settled row stays settled")
 
@@ -100,6 +100,23 @@ func TestSettleAndRequeueSessionMessage(t *testing.T) {
 	assert.Equal(t, "not_running", reason)
 	assert.Error(t, d.SettleSessionMessage(ctx, newTestMessage(t, d, wb, a, b), "queued", "", at),
 		"settle only to delivered or failed")
+}
+
+func TestFailQueuedSessionMessage_NeverAClaimedRow(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	a, b := newTestSession(t, d, wb), newTestSession(t, d, wb)
+	queued, claimed := newTestMessage(t, d, wb, a, b), newTestMessage(t, d, wb, a, b)
+	_, err := d.ClaimSessionMessage(ctx, claimed)
+	require.NoError(t, err)
+
+	require.NoError(t, d.FailQueuedSessionMessage(ctx, queued, "not_running"))
+	state, reason := messageState(t, d, queued)
+	assert.Equal(t, []string{"failed", "not_running"}, []string{state, reason})
+	assert.ErrorIs(t, d.FailQueuedSessionMessage(ctx, claimed, "not_running"), ErrSessionMessageNotPending)
+	state, _ = messageState(t, d, claimed)
+	assert.Equal(t, "delivering", state)
 }
 
 func TestFailInFlightSessionMessages(t *testing.T) {
