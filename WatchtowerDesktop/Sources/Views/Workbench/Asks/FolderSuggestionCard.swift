@@ -8,6 +8,8 @@ struct FolderSuggestionActions {
     var never: () -> Void = {}
     /// `OK` under a failed add.
     var done: () -> Void = {}
+    /// `Retry` under a failed add whose answer was not saved.
+    var retry: () -> Void = {}
 }
 
 /// The agent's folder suggestion in "Waiting for you" (#2003, spec §6.7):
@@ -72,6 +74,8 @@ struct FolderSuggestionCard: View {
             }
         case .failed:
             Button(Copy.ok, action: actions.done).buttonStyle(.kitSecondary).controlSize(.small)
+        case .unsent:
+            Button(Copy.retry, action: actions.retry).buttonStyle(.kitSecondary).controlSize(.small).disabled(answering)
         }
     }
 }
@@ -92,12 +96,13 @@ struct FolderSuggestionAskCard: View {
                 phase: asks.folderPhases[ask.id] ?? .ready
             ),
             error: asks.answerErrors[ask.id],
-            answering: asks.isAnswering(ask.id),
+            answering: asks.isFolderCardWorking(ask.id),
             actions: FolderSuggestionActions(
                 putOnBench: putOnBench,
                 notNow: { Task { await asks.notNow(ask) } },
                 never: { Task { await asks.never(ask) } },
-                done: { asks.folderCardDone(ask.id) }
+                done: { asks.folderCardDone(ask.id) },
+                retry: { Task { await asks.retryFolderAnswer(ask) } }
             )
         )
         .sensitiveLocationAlert($sensitiveLocation, cancelLabel: FolderSuggestionPresentation.cancel) {

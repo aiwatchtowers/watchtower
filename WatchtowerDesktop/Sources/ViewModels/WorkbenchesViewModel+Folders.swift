@@ -155,6 +155,19 @@ extension WorkbenchesViewModel {
         }
     }
 
+    /// FILES draws a row per root with several folders, and also when a
+    /// folder is gone: its row carries `Folder not found` and Locate… (a
+    /// bench whose only folder moved must still reach it). One healthy
+    /// folder keeps today's tree.
+    static func showsRootRows(_ roots: [FilesRootItem]) -> Bool {
+        roots.count > 1 || roots.contains { $0.state == .notFound }
+    }
+
+    /// Remove from Bench… on a root: off for the bench's only folder.
+    func canRemoveFolder(projectID: Int64) -> Bool {
+        liveFolders(projectID: projectID).count > 1
+    }
+
     /// A root row's click: open or close its tree.
     func toggleFolderRoot(_ folderID: Int64, projectID: Int64) {
         var expanded = expandedFolderRoots[projectID] ?? []
