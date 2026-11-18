@@ -150,18 +150,20 @@ final class WatchmanJournalViewModelTests: XCTestCase {
         XCTAssertEqual(vm.page?.busyLine, "Deciding: Rename the Hold button?")
     }
 
-    /// Owner-first items are lines under Decided, never counted.
+    /// Owner-first and superseded items are lines under Decided, never counted.
     func testOwnerFirstLines() async throws {
         var owner = item(5, question: "Use a sheet?")
         owner.outcome = "owner_first"
-        let night = WatchmanNight(date: date("2026-11-16T12:00:00Z"), ownerFirst: [owner], decided: [item(1)])
+        var withdrawn = item(6, question: "Keep the old export?")
+        withdrawn.outcome = "superseded"
+        let night = WatchmanNight(date: date("2026-11-16T12:00:00Z"), ownerFirst: [owner, withdrawn], decided: [item(1)])
         let replies = Replies([.success(.init(nights: [night], deciding: []))])
         let vm = model(replies)
         await vm.load()
         let page = try XCTUnwrap(vm.page)
         XCTAssertEqual(page.decidedCount, 1)
-        XCTAssertEqual(page.ownerFirst.map(\.title), ["Use a sheet?"])
-        XCTAssertEqual(page.ownerFirst.first?.note, "the owner answered first")
+        XCTAssertEqual(page.ownerFirst.map(\.title), ["Use a sheet?", "Keep the old export?"])
+        XCTAssertEqual(page.ownerFirst.map(\.note), ["the owner answered first", "The ask was withdrawn before the answer"])
     }
 
     /// While on screen the journal rereads on every tick (the daemon writes

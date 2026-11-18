@@ -207,10 +207,11 @@ final class WatchmanJournalQueriesTests: XCTestCase {
             let wb = try TestDatabase.insertWorkbench(db)
             try item(db, workbench: wb, created: "2026-11-16T01:00:00Z", question: "decided")
             try item(db, workbench: wb, created: "2026-11-16T01:30:00Z", outcome: "owner_first", question: "owner")
+            try item(db, workbench: wb, created: "2026-11-16T01:40:00Z", outcome: "superseded", question: "withdrawn")
         }
         let night = try XCTUnwrap(nights(queue).first)
         XCTAssertEqual(night.decided.map(\.question), ["decided"])
-        XCTAssertEqual(night.ownerFirst.map(\.question), ["owner"])
+        XCTAssertEqual(night.ownerFirst.map(\.question), ["owner", "withdrawn"], "a superseded item is not a decision either")
         XCTAssertEqual(WatchmanNightCounts(night).decided, 1)
     }
 

@@ -17,7 +17,7 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
     package var kind: String
     /// `queued`, `deciding`, `done`.
     package var state: String
-    /// `''`, `answered`, `handed`, `parked`, `owner_first`, `approved`, `changes`.
+    /// `''`, `answered`, `handed`, `parked`, `owner_first`, `approved`, `changes`, `superseded`.
     package var outcome: String
     package var question: String
     package var choice: String
@@ -181,7 +181,8 @@ package struct WatchmanNight: Identifiable, Equatable, Sendable {
     package var waiting: [WatchmanItem]
     /// Checks Watchman passed on that nobody has run.
     package var checks: [WatchmanItem]
-    /// Items the owner answered before the twin (`owner_first`): not decisions.
+    /// Items the owner answered before the twin (`owner_first`), or whose ask
+    /// was withdrawn after the twin decided it (`superseded`): not decisions.
     package var ownerFirst: [WatchmanItem]
     /// The other finished items: the twin's decisions.
     package var decided: [WatchmanItem]

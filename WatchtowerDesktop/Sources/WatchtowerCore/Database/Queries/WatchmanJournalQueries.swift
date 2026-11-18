@@ -142,7 +142,7 @@ package enum WatchmanJournalQueries {
             } else if item.isWaitingKind, item.ownerDoneAt != nil {
                 // Marked done by the owner: no longer waiting, and not a decision.
                 continue
-            } else if item.outcome == "owner_first" {
+            } else if item.outcome == "owner_first" || item.outcome == "superseded" {
                 night.ownerFirst.append(item)
             } else if item.kind == "check" {
                 if item.isCheckNobodyRan { night.checks.append(item) }
