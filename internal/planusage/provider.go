@@ -174,12 +174,23 @@ func (p *Provider) Disable(ctx context.Context) error {
 	return nil
 }
 
+// quietCodes are steady states that persist until the user changes something;
+// Run logs each once per change instead of on every poll.
+var quietCodes = map[string]bool{"cli_missing": true, "unsupported_cli": true, "no_credentials": true, "unsupported_auth": true, "cloud_bedrock": true, "cloud_vertex": true, "cloud_foundry": true}
+
+func (p *Provider) logPoll(code string, next time.Duration) {
+	if p.Logger != nil {
+		p.Logger.Printf("%s plan usage: %s (next poll in %s)", p.Name, code, next)
+	}
+}
+
 func (p *Provider) Run(ctx context.Context) error {
 	after := p.After
 	if after == nil {
 		after = time.After
 	}
 	delay := firstPollDelay
+	lastQuiet := ""
 	for {
 		select {
 		case <-ctx.Done():
@@ -190,8 +201,20 @@ func (p *Provider) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil //nolint:nilerr // Cancellation ends the scheduler normally; source errors are logged below.
 		}
-		if err != nil && ErrorCode(err) != "busy" && ErrorCode(err) != "feature_disabled" && p.Logger != nil {
-			p.Logger.Printf("%s plan usage: %s (next poll in %s)", p.Name, ErrorCode(err), next)
+		code := ErrorCode(err)
+		switch {
+		case err == nil:
+			lastQuiet = ""
+		case code == "busy" || code == "feature_disabled":
+			// Unlogged and leaves the quiet state untouched.
+		case quietCodes[code]:
+			if code != lastQuiet {
+				lastQuiet = code
+				p.logPoll(code, next)
+			}
+		default:
+			lastQuiet = ""
+			p.logPoll(code, next)
 		}
 		delay = next
 	}

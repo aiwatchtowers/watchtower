@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"os"
 	"os/exec"
@@ -275,4 +276,47 @@ func TestProvider_ProcessSerializationAndCrashRelease(t *testing.T) {
 	after, err := os.Stat(p.lockPath())
 	require.NoError(t, err)
 	require.True(t, os.SameFile(before, after))
+}
+
+func TestProviderRun_QuietStatesLogOncePerChange(t *testing.T) {
+	op := func(code string) error { return &OperationError{Code: code} }
+	cases := []struct {
+		name  string
+		steps []error
+		want  []string
+	}{
+		{"changes", []error{op("cli_missing"), op("cli_missing"), op("cli_missing"), op("no_credentials"), op("no_credentials"), nil, op("no_credentials"), op("network"), op("network")},
+			[]string{"cli_missing", "no_credentials", "no_credentials", "network", "network"}},
+		{"busy between", []error{op("no_credentials"), op("busy"), op("no_credentials"), op("feature_disabled"), op("no_credentials")},
+			[]string{"no_credentials"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf strings.Builder
+			i := 0
+			ticks := make(chan time.Time)
+			requested := make(chan time.Duration, 1)
+			p := &Provider{Name: "claude", Workspace: t.TempDir(), Logger: log.New(&buf, "", 0),
+				Poll:  func(context.Context) (time.Duration, error) { err := tc.steps[i]; i++; return time.Minute, err },
+				After: func(d time.Duration) <-chan time.Time { requested <- d; return ticks }}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan struct{})
+			go func() { defer close(done); _ = p.Run(ctx) }()
+			<-requested
+			for range tc.steps {
+				ticks <- time.Time{}
+				<-requested
+			}
+			cancel()
+			<-done
+			var got []string
+			for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+				if f := strings.Fields(line); len(f) > 2 {
+					got = append(got, f[3])
+				}
+			}
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
