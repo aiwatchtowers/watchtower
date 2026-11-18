@@ -273,3 +273,35 @@ func TestStartAccountPurge_AccountMustStillQualify(t *testing.T) {
 		}
 	})
 }
+
+// #1769 final review: a remove cancels the account's scheduled rows (a live
+// lease row would otherwise keep its old due date and give less than the
+// 72 h notice); running rows and other accounts are left alone.
+func TestCancelScheduledAccountPurges_OnlyThatAccountsScheduledRows(t *testing.T) {
+	d := OpenTestDB(t)
+	for _, q := range []string{
+		`INSERT INTO account_purges (source, account_id, reason, due_at) VALUES ('slack', 1, 'lease', '2026-10-24T12:00:00Z')`,
+		`INSERT INTO account_purges (source, account_id, reason, due_at, state) VALUES ('slack', 2, 'lease', '2026-10-24T12:00:00Z', 'running')`,
+		`INSERT INTO account_purges (source, account_id, reason, due_at) VALUES ('jira', 1, 'lease', '2026-10-24T12:00:00Z')`,
+	} {
+		if _, err := d.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := d.CancelScheduledAccountPurges("slack", 1)
+	if err != nil || n != 1 {
+		t.Fatalf("cancel = %d, %v; want 1", n, err)
+	}
+	if n, err := d.CancelScheduledAccountPurges("slack", 2); err != nil || n != 0 {
+		t.Fatalf("a running row is not cancelled: %d, %v", n, err)
+	}
+	open, err := d.ListAccountPurges(true)
+	if err != nil || len(open) != 2 {
+		t.Fatalf("open rows = %+v, %v; want the running slack row and the jira row", open, err)
+	}
+	for _, r := range open {
+		if r.Source == "slack" && r.AccountID == 1 {
+			t.Fatalf("slack 1 still open: %+v", r)
+		}
+	}
+}

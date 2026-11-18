@@ -720,3 +720,37 @@ func TestPurgeRun_ParentKeptWhileKnowledgeLeftAcrossCycles(t *testing.T) {
 		t.Fatalf("row = %+v; want failed with kb_documents=1 and stream_digests=1", all[0])
 	}
 }
+
+// TestApply_RemoveAfterLiveLeaseGivesFullNotice (#1769 final review): a live
+// Slack workspace whose inactivity-lease row is already scheduled, then
+// removed. The remove (removeSlackAccount) cancels that row; the pass at its
+// old due date runs nothing and schedules a fresh row Grace from that pass,
+// so the removed workspace still gets the full 72 h notice.
+func TestApply_RemoveAfterLiveLeaseGivesFullNotice(t *testing.T) {
+	d := openPurgeDB(t)
+	execAll(t, d, `INSERT INTO slack_accounts (id, team_id, status, access_ok_at) VALUES (1, 'T1', 'ok', '`+ts(t0.Add(-40*24*time.Hour))+`')`)
+	got, err := Apply(d, setting(true), true, t0)
+	if err != nil || len(got.Schedule) != 1 || !got.Schedule[0].DueAt.Equal(t0.Add(Grace)) {
+		t.Fatalf("live lease: %+v, %v; want one row due t0+Grace", got, err)
+	}
+
+	// The remove, as removeSlackAccount does it, an hour before the old due.
+	if _, err := d.CancelScheduledAccountPurges("slack", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetSlackAccountRemoved(1); err != nil {
+		t.Fatal(err)
+	}
+
+	pass := t0.Add(Grace)
+	got, err = Apply(d, setting(true), true, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Due) != 0 {
+		t.Fatalf("nothing may run at the old due date, got %+v", got.Due)
+	}
+	if len(got.Schedule) != 1 || !got.Schedule[0].DueAt.Equal(pass.Add(Grace)) {
+		t.Fatalf("want a fresh row due Grace after the pass that sees the remove, got %+v", got.Schedule)
+	}
+}
