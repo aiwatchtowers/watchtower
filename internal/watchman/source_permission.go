@@ -40,10 +40,9 @@ func (s *permissionSource) Next(ctx context.Context, d *db.DB, workbenchID int64
 		flags := permissionFlags(PermissionAsk{
 			Tool: r.ToolName, Summary: r.Summary, WorkbenchFolder: r.WorkbenchFolder,
 			Worktrees: append([]string{r.SessionFolder}, r.Worktrees...),
-			PRBase: func(pr int) (string, bool) {
-				base, known, err := d.WatchmanPRBase(workbenchID, pr)
-				return base, known && err == nil
-			},
+			// PRBase stays nil: no row the writers produce maps a PR number to its
+			// base branch ('into:' rows carry no pr_number), so every `gh pr merge`
+			// is parked.
 		})
 		out = append(out, db.WatchmanPrecedent{
 			WorkbenchID: workbenchID, Source: SourcePermission, SourceKey: strconv.FormatInt(r.ID, 10),

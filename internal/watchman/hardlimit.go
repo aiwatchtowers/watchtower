@@ -1,6 +1,8 @@
 package watchman
 
 import (
+	"cmp"
+	"encoding/json"
 	"path"
 	"slices"
 	"strconv"
@@ -71,23 +73,74 @@ func permissionFlags(r PermissionAsk) db.WatchmanPrecedentFlags {
 	return db.WatchmanPrecedentFlags{IsDecision: &yes, Parked: &parked}
 }
 
-// shellCmd is one simple command of a shell line: its words, quotes removed.
-type shellCmd []string
+// shellCmd is one simple command of a shell line: its words with quotes
+// removed, wrappers (env assignments, sudo, xargs...) stripped and the
+// program reduced to its base name, plus the directory a preceding cd
+// moved to.
+type shellCmd struct {
+	w     []string
+	cwd   string // "" = never cd'd; cwdUnknown = a cd that cannot be resolved
+	xargs bool   // the arguments come from stdin as well
+}
 
-// commands splits a Bash summary on ; && || | and newlines.
+const cwdUnknown = "?"
+
+var wrappers = map[string]bool{"sudo": true, "command": true, "time": true, "nohup": true, "env": true, "exec": true, "nice": true, "xcrun": true, "xargs": true}
+
+// commands splits a Bash summary on ; && || | and newlines. The `# ` line
+// that carries the request's description is not a command.
 func commands(summary string) []shellCmd {
 	line := strings.NewReplacer("&&", "\n", "||", "\n", ";", "\n", "|", "\n").Replace(summary)
 	var out []shellCmd
+	cwd := ""
 	for _, part := range strings.Split(line, "\n") {
-		var c shellCmd
+		if strings.HasPrefix(strings.TrimSpace(part), "#") {
+			continue
+		}
+		var words []string
 		for _, w := range strings.Fields(part) {
 			if w = strings.Trim(w, `"'`); w != "" {
-				c = append(c, w)
+				words = append(words, w)
 			}
 		}
-		if len(c) > 0 {
-			out = append(out, c)
+		c := shellCmd{cwd: cwd}
+		// Strip leading env assignments and wrappers (with their flags).
+		for len(words) > 0 {
+			w := words[0]
+			if i := strings.Index(w, "="); i > 0 && !strings.ContainsAny(w[:i], "/-") {
+				words = words[1:]
+				continue
+			}
+			if !wrappers[path.Base(w)] {
+				break
+			}
+			if path.Base(w) == "xargs" {
+				c.xargs = true
+			}
+			words = words[1:]
+			for len(words) > 0 && strings.HasPrefix(words[0], "-") {
+				words = words[1:]
+			}
 		}
+		if len(words) == 0 {
+			continue
+		}
+		words[0] = path.Base(words[0])
+		c.w = words
+		if words[0] == "cd" {
+			switch {
+			case len(words) != 2:
+				cwd = cwdUnknown
+			case path.IsAbs(words[1]):
+				cwd = path.Clean(words[1])
+			case cwd != "" && cwd != cwdUnknown && !strings.HasPrefix(words[1], "~") && !strings.Contains(words[1], "$") && words[1] != "-":
+				cwd = path.Join(cwd, words[1])
+			default:
+				cwd = cwdUnknown
+			}
+			continue
+		}
+		out = append(out, c)
 	}
 	return out
 }
@@ -95,20 +148,20 @@ func commands(summary string) []shellCmd {
 // sub returns the arguments after `<prog> <subcommand>` of c, skipping
 // git's global options; ok is false when c is not that command.
 func (c shellCmd) sub(prog, subcommand string) (args []string, ok bool) {
-	if c[0] != prog {
+	if c.w[0] != prog {
 		return nil, false
 	}
 	i := 1
-	for i < len(c) && strings.HasPrefix(c[i], "-") {
-		if c[i] == "-C" || c[i] == "-c" {
+	for i < len(c.w) && strings.HasPrefix(c.w[i], "-") {
+		if c.w[i] == "-C" || c.w[i] == "-c" {
 			i++
 		}
 		i++
 	}
-	if i >= len(c) || c[i] != subcommand {
+	if i >= len(c.w) || c.w[i] != subcommand {
 		return nil, false
 	}
-	return c[i+1:], true
+	return c.w[i+1:], true
 }
 
 func isBash(r PermissionAsk) bool { return r.Tool == "Bash" }
@@ -153,6 +206,54 @@ func refDest(spec string) string {
 	return strings.TrimPrefix(spec, "refs/heads/")
 }
 
+// stripRemote reduces origin/main, refs/heads/main and main to main.
+func stripRemote(ref string) string {
+	ref = strings.TrimPrefix(ref, "refs/heads/")
+	for _, r := range []string{"origin/", "upstream/"} {
+		ref = strings.TrimPrefix(ref, r)
+	}
+	return ref
+}
+
+// rebaseOnDefault reports a git rebase whose upstream (or --onto) is the
+// default branch.
+func rebaseOnDefault(args []string) bool {
+	var pos []string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--onto" && i+1 < len(args):
+			return isDefaultBranch(stripRemote(args[i+1]))
+		case strings.HasPrefix(a, "--onto="):
+			return isDefaultBranch(stripRemote(strings.TrimPrefix(a, "--onto=")))
+		case strings.HasPrefix(a, "-"):
+		default:
+			pos = append(pos, a)
+		}
+	}
+	return len(pos) > 0 && isDefaultBranch(stripRemote(pos[0]))
+}
+
+// prMergeNumber is the PR number of `gh pr merge` arguments; ok is false
+// when the PR is named by URL or branch, or not at all.
+func prMergeNumber(args []string) (int, bool) {
+	valued := map[string]bool{"--body": true, "-b": true, "--body-file": true, "-F": true, "--subject": true, "-t": true, "--match-head-commit": true, "--author-email": true, "-A": true, "--repo": true, "-R": true}
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case valued[a]:
+			i++
+		case strings.HasPrefix(a, "-"):
+		default:
+			n, err := strconv.Atoi(a)
+			return n, err == nil
+		}
+	}
+	return 0, false
+}
+
+// matchMainRef: a push to, a rebase onto, or a PR merge into the default
+// branch. A plain `git push` with no refspec is not matched: its
+// destination is unknown here, and parking every plain push would drop
+// most push decisions (the live pre-push hook covers it).
 func matchMainRef(r PermissionAsk) bool {
 	return anyCmd(r, func(c shellCmd) bool {
 		if _, pos, ok := pushArgs(c); ok {
@@ -163,15 +264,12 @@ func matchMainRef(r PermissionAsk) bool {
 			}
 			return false
 		}
+		if args, ok := c.sub("git", "rebase"); ok {
+			return rebaseOnDefault(args)
+		}
 		if args, ok := c.sub("gh", "pr"); ok && len(args) > 0 && args[0] == "merge" {
-			pr := 0
-			for _, a := range args[1:] {
-				if n, err := strconv.Atoi(a); err == nil {
-					pr = n
-					break
-				}
-			}
-			if pr == 0 || r.PRBase == nil {
+			pr, ok := prMergeNumber(args[1:])
+			if !ok || r.PRBase == nil {
 				return true
 			}
 			base, known := r.PRBase(pr)
@@ -217,15 +315,18 @@ func matchRelease(r PermissionAsk) bool {
 	})
 }
 
+// matchTestFlight matches the commands that upload a build only.
 func matchTestFlight(r PermissionAsk) bool {
 	return anyCmd(r, func(c shellCmd) bool {
-		for _, w := range c {
-			switch {
-			case w == "altool" || w == "iTMSTransporter" || w == "testflight" || w == "upload-app" || w == "upload-to-testflight":
-				return true
-			case w == "fastlane" && len(c) > 1 && (c[1] == "pilot" || c[1] == "deliver" || c[1] == "beta"):
-				return true
-			}
+		switch prog := c.w[0]; prog {
+		case "altool":
+			return slices.ContainsFunc(c.w[1:], func(a string) bool { return strings.HasPrefix(a, "--upload") })
+		case "iTMSTransporter":
+			return true
+		case "fastlane":
+			return len(c.w) > 1 && (c.w[1] == "pilot" || c.w[1] == "upload_to_testflight")
+		case "make":
+			return slices.ContainsFunc(c.w[1:], func(a string) bool { return strings.Contains(strings.ToLower(a), "testflight") })
 		}
 		return false
 	})
@@ -309,23 +410,34 @@ func (r PermissionAsk) inside(p string, withWorkbench bool) bool {
 
 func matchDeleteOutside(r PermissionAsk) bool {
 	return anyCmd(r, func(c shellCmd) bool {
-		if c[0] != "rm" {
+		if c.w[0] != "rm" {
 			return false
 		}
-		for _, a := range c[1:] {
+		n := 0
+		for _, a := range c.w[1:] {
 			if strings.HasPrefix(a, "-") {
 				continue
+			}
+			n++
+			if !path.IsAbs(a) && c.cwd != "" {
+				if c.cwd == cwdUnknown {
+					return true
+				}
+				a = path.Join(c.cwd, a)
 			}
 			if !r.inside(a, false) {
 				return true
 			}
 		}
-		return false
+		return c.xargs && n == 0 // the paths come from stdin
 	})
 }
 
 // outwardTools are the MCP tools whose effect other people see.
 var outwardTools = []string{"send_slack_message", "slack_send_message", "slack_send_message_draft", "slack_schedule_message", "slack_add_reaction"}
+
+// mailTools are fragments of MCP mail-sending tool names.
+var mailTools = []string{"send_email", "send_mail", "email_send", "mail_send", "send_draft", "draft_send"}
 
 func matchOutward(r PermissionAsk) bool {
 	for _, t := range outwardTools {
@@ -333,44 +445,63 @@ func matchOutward(r PermissionAsk) bool {
 			return true
 		}
 	}
+	name := strings.ToLower(r.Tool[strings.LastIndex(r.Tool, "__")+1:])
+	if slices.ContainsFunc(mailTools, func(f string) bool { return strings.Contains(name, f) }) ||
+		(strings.Contains(strings.ToLower(r.Tool), "gmail") && strings.Contains(name, "send")) {
+		return true
+	}
 	return anyCmd(r, func(c shellCmd) bool {
-		for _, prog := range []string{"pr", "issue"} {
-			if args, ok := c.sub("gh", prog); ok && len(args) > 0 {
-				switch args[0] {
-				case "comment", "create", "review", "close", "reopen", "edit":
-					return true
-				}
-			}
+		switch c.w[0] {
+		case "mail", "mailx", "sendmail", "mutt":
+			return true
 		}
-		return false
+		if args, ok := c.sub("gh", "pr"); ok && len(args) > 0 && (args[0] == "comment" || args[0] == "review") {
+			return true
+		}
+		args, ok := c.sub("gh", "issue")
+		return ok && len(args) > 0 && args[0] == "comment"
 	})
 }
 
-var fileTools = map[string]bool{"Edit": true, "Write": true, "MultiEdit": true, "NotebookEdit": true}
+// plainPathTools show the file path alone as their summary; jsonPathTools
+// show the tool input as compact JSON (cmd.permissionSummary).
+var (
+	plainPathTools = map[string]bool{"Edit": true, "Write": true, "NotebookEdit": true}
+	jsonPathTools  = map[string]bool{"Read": true, "MultiEdit": true, "Glob": true, "Grep": true}
+)
 
-// filePath is the first path-looking word of a file tool's summary.
-func filePath(r PermissionAsk) (string, bool) {
-	if !fileTools[r.Tool] {
-		return "", false
-	}
-	for _, w := range strings.Fields(r.Summary) {
-		w = strings.Trim(w, `"'`)
-		if strings.ContainsAny(w, "/") || strings.HasPrefix(w, "~") {
-			return w, true
+// filePath is the path a file tool touches. isFileTool is false for any
+// other tool; placed is false when a file tool names no usable path.
+func filePath(r PermissionAsk) (p string, isFileTool, placed bool) {
+	switch {
+	case plainPathTools[r.Tool]:
+		p, _, _ = strings.Cut(r.Summary, "\n")
+		p = strings.TrimSpace(p)
+		return p, true, p != ""
+	case jsonPathTools[r.Tool]:
+		var in struct {
+			FilePath     string `json:"file_path"`
+			NotebookPath string `json:"notebook_path"`
+			Path         string `json:"path"`
 		}
+		if json.Unmarshal([]byte(r.Summary), &in) != nil {
+			return "", true, false
+		}
+		p = cmp.Or(in.FilePath, in.NotebookPath, in.Path)
+		return p, true, p != ""
 	}
-	return "", false
+	return "", false, false
 }
 
 func matchStandingGrant(r PermissionAsk) bool {
-	p, ok := filePath(r)
-	if !ok {
-		return false
-	}
-	return strings.Contains(p, ".claude/settings")
+	p, _, placed := filePath(r)
+	return placed && strings.Contains(p, ".claude/settings")
 }
 
+// matchOutsideFolder: a file tool whose path is outside the workbench
+// folder and worktrees, or cannot be placed. Bash is judged by the delete
+// row only: absolute paths in ordinary reads would over-park.
 func matchOutsideFolder(r PermissionAsk) bool {
-	p, ok := filePath(r)
-	return ok && !r.inside(p, true)
+	p, isFileTool, placed := filePath(r)
+	return isFileTool && (!placed || !r.inside(p, true))
 }

@@ -595,23 +595,3 @@ func (db *DB) WatchmanPermissionDecisions(workbenchID int64, from *WatchmanMark,
 	}
 	return out, rows.Err()
 }
-
-// WatchmanPRBase reports the base branch recorded for a pull request by a
-// merge verdict ('into:<base>:<branch>'); known is false when none is.
-func (db *DB) WatchmanPRBase(workbenchID int64, pr int) (base string, known bool, err error) {
-	var ref string
-	err = db.QueryRow(`SELECT ref FROM workbench_pr_states WHERE project_id = ? AND pr_number = ? AND ref LIKE 'into:%' ORDER BY checked_at DESC LIMIT 1`,
-		workbenchID, pr).Scan(&ref)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("reading the base of PR %d: %w", pr, err)
-	}
-	rest := strings.TrimPrefix(ref, "into:")
-	i := strings.Index(rest, ":")
-	if i <= 0 {
-		return "", false, nil
-	}
-	return rest[:i], true, nil
-}

@@ -556,3 +556,15 @@ func TestPermissionWait_ReadsThatKeepFailingExpireTheRequest(t *testing.T) {
 	require.NoError(t, database.QueryRow(`SELECT status FROM permission_requests`).Scan(&status))
 	assert.Equal(t, db.PermissionExpired, status)
 }
+
+// The Watchman hard-limit table (internal/watchman/hardlimit.go) reads these
+// summary shapes: a plain path for Edit and Write, compact JSON carrying
+// file_path or path for the other file tools.
+func TestPermissionSummary_ShapesWatchmanReads(t *testing.T) {
+	got, _ := permissionSummary("Edit", json.RawMessage(`{"file_path":"/w/a/my notes/x.md","old_string":"a"}`))
+	require.Equal(t, "/w/a/my notes/x.md", got)
+	got, _ = permissionSummary("Read", json.RawMessage(`{"file_path":"/w/a/x.go"}`))
+	require.JSONEq(t, `{"file_path":"/w/a/x.go"}`, got)
+	got, _ = permissionSummary("Grep", json.RawMessage(`{"pattern":"x","path":"/w/a"}`))
+	require.JSONEq(t, `{"pattern":"x","path":"/w/a"}`, got)
+}
