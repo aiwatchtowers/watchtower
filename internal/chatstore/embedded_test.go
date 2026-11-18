@@ -20,7 +20,7 @@ import (
 // the owner row and the reply's empty partial row.
 func TestEmbeddedTurn_BeginWritesOwnerAndPartialReply(t *testing.T) {
 	d, s, _ := newStore(t)
-	conv := newConversation(t, d)
+	conv := newEmbeddedConversation(t, d)
 	text := "q"
 	et, err := s.BeginEmbedded(context.Background(), conv, &text, "t1", "claude")
 	require.NoError(t, err)
@@ -31,6 +31,35 @@ func TestEmbeddedTurn_BeginWritesOwnerAndPartialReply(t *testing.T) {
 	reply, ok := message(t, d, et.MessageID)
 	require.True(t, ok)
 	assert.Equal(t, msgState{Role: "assistant", Text: "", Status: "partial", TurnID: "t1"}, reply)
+}
+
+// newEmbeddedConversation is a target's embedded chat (context_type set):
+// BeginEmbedded refuses a main chat.
+func newEmbeddedConversation(t *testing.T, d interface {
+	Exec(string, ...any) (sql.Result, error)
+}) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
+		VALUES ('', 'target', '7', 1, 1)`)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return id
+}
+
+// TestEmbeddedTurn_MainChatIsRefusedAndWritesNothing: `ai query --persist`
+// never writes a main chat (context_type NULL): its rows are the chat
+// engine's, under its turn lock. The start is refused with ErrNotEmbedded
+// and no row is written.
+func TestEmbeddedTurn_MainChatIsRefusedAndWritesNothing(t *testing.T) {
+	d, s, _ := newStore(t)
+	conv := newConversation(t, d)
+	text := "q"
+	_, err := s.BeginEmbedded(context.Background(), conv, &text, "t1", "")
+	require.ErrorIs(t, err, ErrNotEmbedded)
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_messages WHERE conversation_id = ?`, conv).Scan(&n))
+	assert.Zero(t, n)
 }
 
 // TestEmbeddedTurn_GoneConversationWritesNothing: a send into a deleted
@@ -50,7 +79,7 @@ func TestEmbeddedTurn_GoneConversationWritesNothing(t *testing.T) {
 // ones at most once per FlushInterval; a stop keeps the partial text.
 func TestEmbeddedTurn_FlushCadence(t *testing.T) {
 	d, s, clock := newStore(t)
-	conv := newConversation(t, d)
+	conv := newEmbeddedConversation(t, d)
 	text := "q"
 	et, err := s.BeginEmbedded(context.Background(), conv, &text, "t1", "")
 	require.NoError(t, err)
@@ -74,7 +103,7 @@ func TestEmbeddedTurn_FlushCadence(t *testing.T) {
 func TestEmbeddedTurn_QuotaErrorKeepsStreamedTextAsPartial(t *testing.T) {
 	for _, text := range []string{"", "Partial before quota"} {
 		d, s, _ := newStore(t)
-		conv := newConversation(t, d)
+		conv := newEmbeddedConversation(t, d)
 		owner := "q"
 		et, err := s.BeginEmbedded(context.Background(), conv, &owner, "t1", "")
 		require.NoError(t, err)
@@ -108,7 +137,7 @@ func TestEmbeddedTurn_QuotaErrorKeepsStreamedTextAsPartial(t *testing.T) {
 // provider (the error card's sign-in hint reads it).
 func TestEmbeddedTurn_ReplyRecordsItsProvider(t *testing.T) {
 	d, s, _ := newStore(t)
-	conv := newConversation(t, d)
+	conv := newEmbeddedConversation(t, d)
 	text := "hello"
 	et, err := s.BeginEmbedded(context.Background(), conv, &text, "t1", "codex")
 	require.NoError(t, err)
@@ -121,7 +150,7 @@ func TestEmbeddedTurn_ReplyRecordsItsProvider(t *testing.T) {
 // text) writes the reply alone.
 func TestEmbeddedTurn_FollowUpWritesNoOwnerRow(t *testing.T) {
 	d, s, _ := newStore(t)
-	conv := newConversation(t, d)
+	conv := newEmbeddedConversation(t, d)
 	et, err := s.BeginEmbedded(context.Background(), conv, nil, "t1", "")
 	require.NoError(t, err)
 	assert.Zero(t, et.OwnerID)
@@ -142,7 +171,7 @@ func TestEmbeddedTurn_FollowUpWritesNoOwnerRow(t *testing.T) {
 // reply with its text, status, code and message.
 func TestEmbeddedTurn_ErrorEndKeepsTheTextAndItsCode(t *testing.T) {
 	d, s, _ := newStore(t)
-	conv := newConversation(t, d)
+	conv := newEmbeddedConversation(t, d)
 	text := "q"
 	et, err := s.BeginEmbedded(context.Background(), conv, &text, "t", "")
 	require.NoError(t, err)
@@ -166,7 +195,7 @@ func TestEmbeddedTurn_ErrorEndKeepsTheTextAndItsCode(t *testing.T) {
 // linear thread.
 func TestEmbeddedTurn_RowsKeepTheTreeColumnsAtTheirDefaults(t *testing.T) {
 	d, s, _ := newStore(t)
-	conv := newConversation(t, d)
+	conv := newEmbeddedConversation(t, d)
 	text := "q"
 	et, err := s.BeginEmbedded(context.Background(), conv, &text, "t", "")
 	require.NoError(t, err)
@@ -185,7 +214,7 @@ func TestEmbeddedTurn_RowsKeepTheTreeColumnsAtTheirDefaults(t *testing.T) {
 // reply is not activity; a completed one moves updated_at.
 func TestEmbeddedTurn_OnlyACompletedReplyTouchesTheConversation(t *testing.T) {
 	d, s, clock := newStore(t)
-	conv := newConversation(t, d)
+	conv := newEmbeddedConversation(t, d)
 	_, err := d.Exec(`UPDATE chat_conversations SET updated_at = 1 WHERE id = ?`, conv)
 	require.NoError(t, err)
 	updatedAt := func() float64 {
@@ -209,7 +238,7 @@ func TestEmbeddedTurn_OnlyACompletedReplyTouchesTheConversation(t *testing.T) {
 // its turn runs: the next write says it is gone.
 func TestEmbeddedTurn_DeletedConversationMidTurnIsGone(t *testing.T) {
 	d, s, clock := newStore(t)
-	conv := newConversation(t, d)
+	conv := newEmbeddedConversation(t, d)
 	text := "q"
 	et, err := s.BeginEmbedded(context.Background(), conv, &text, "t", "")
 	require.NoError(t, err)

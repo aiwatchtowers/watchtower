@@ -115,3 +115,48 @@ ai:
 	require.NoError(t, d.QueryRow(`SELECT updated_at FROM chat_conversations WHERE id = ?`, conv).Scan(&updated))
 	assert.Greater(t, updated, 1.0, "a complete reply touches the conversation")
 }
+
+// TestQueryPersist_MainChatIsRefusedAndWritesNothing: `ai query --persist`
+// against a main chat (context_type NULL) fails its start with an error
+// line and writes no row — the main chat's rows are the chat engine's.
+func TestQueryPersist_MainChatIsRefusedAndWritesNothing(t *testing.T) {
+	policytest.Set(t, nil)
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "wt.db")
+	d, err := db.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { d.Close() })
+	res, err := d.Exec(`INSERT INTO chat_conversations (title, created_at, updated_at) VALUES ('Main', 1, 1)`)
+	require.NoError(t, err)
+	conv, err := res.LastInsertId()
+	require.NoError(t, err)
+	cfg := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(cfg, fmt.Appendf(nil, `active_workspace: test-ws
+workspaces:
+  test-ws:
+    slack_token: "xoxp-test-token"
+claude_path: %q
+ai:
+  provider: claude
+`, v2ClaudeStub(t)), 0o600))
+	p := startCLI(t, "ai", "query", "--config", cfg, "--db-path", dbPath, "--events", "v2", "--prompt-stdin",
+		"--persist", "--conversation", fmt.Sprint(conv), "--turn", "q1")
+	query, err := json.Marshal(map[string]any{"prompt": "hi", "owner_text": "hi"})
+	require.NoError(t, err)
+	_, err = p.stdin.Write(query)
+	require.NoError(t, err)
+	require.NoError(t, p.stdin.Close())
+	var types []string
+	for line := range p.lines {
+		var e map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &e), line)
+		if typ, ok := e["type"].(string); ok {
+			types = append(types, typ)
+		}
+	}
+	_ = p.wait()
+	assert.NotContains(t, types, chat.EventStarted, "a refused start answers no started")
+	assert.Contains(t, types, "error", "the refusal is an error line: %v", types)
+	assert.Empty(t, persistedRows(t, d, conv), "no row is written into a main chat")
+}

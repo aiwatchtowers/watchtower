@@ -70,10 +70,10 @@ func refuseMainChatTx(tx *sql.Tx, conv int64) error {
 	return nil
 }
 
-// errNotEmbedded: a chat.reply.finish / chat.message.append for a chat that
-// is not an embedded (context) chat — the main chat's rows are its
-// session's alone.
-var errNotEmbedded = errors.New("not an embedded chat")
+// ErrNotEmbedded: a write of an embedded chat (chat.reply.finish,
+// chat.message.append, `ai query --persist`'s BeginEmbedded) for a chat that
+// is not one — the main chat's rows are the chat engine's alone.
+var ErrNotEmbedded = errors.New("not an embedded chat")
 
 // embeddedOnly is what chat.reply.finish and chat.message.append accept: the
 // Mac (over its socket) writing an embedded chat's notice or reply end —
@@ -95,7 +95,7 @@ func requireEmbeddedTx(tx *sql.Tx, conv int64) error {
 	case err != nil:
 		return fmt.Errorf("reading chat conversation %d: %w", conv, err)
 	case !contextType.Valid:
-		return errNotEmbedded
+		return ErrNotEmbedded
 	}
 	return nil
 }
@@ -181,7 +181,7 @@ func refusal(err error, gone string) error {
 		return tower.Refuse(api.CodeNotFound, sentenceChatGone)
 	case errors.Is(err, ErrNotFound):
 		return tower.Refuse(api.CodeNotFound, sentenceMessageGone)
-	case errors.Is(err, errNotEmbedded):
+	case errors.Is(err, ErrNotEmbedded):
 		return tower.Refuse(api.CodeNotPermitted, sentenceEmbeddedOnly)
 	case errors.Is(err, errMainChat):
 		return tower.Refuse(api.CodeNotPermitted, sentenceMainChat)
