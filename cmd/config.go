@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -22,6 +24,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 var configCmd = &cobra.Command{
@@ -86,6 +89,11 @@ func runConfigInit(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(out, "Watchtower Configuration Wizard")
 	fmt.Fprintln(out, "================================")
 	fmt.Fprintln(out)
+
+	// A file init could not carry over is reported before any prompt.
+	if _, err := readInitConfig(configPath); err != nil {
+		return err
+	}
 
 	reader := bufio.NewReader(cmd.InOrStdin())
 	var workspace, slackToken string
@@ -431,24 +439,60 @@ func maskValue(s string) string {
 
 // writeInitConfig writes the config wizard's keys. The prompts and the OAuth
 // login run before it, outside the lock; inside it the current file is
-// re-read and only the wizard's keys are set, so a key another writer saved
-// meanwhile (the Desktop's agent path, ai.background_runs) survives. A file
-// that exists but cannot be read or parsed is left alone with an error.
+// re-read (readInitConfig) and only the wizard's keys are set, so a key
+// another writer saved meanwhile (the Desktop's agent path,
+// ai.background_runs) survives.
 func writeInitConfig(configPath string, keys map[string]any) error {
 	return config.WithWriteLock(configPath, func(lk *config.WriteLock) error {
-		v := viper.New()
-		v.SetConfigFile(configPath)
-		if err := v.ReadInConfig(); err != nil {
-			var notFound viper.ConfigFileNotFoundError
-			if !errors.As(err, &notFound) && !errors.Is(err, fs.ErrNotExist) {
-				return fmt.Errorf("reading existing config %s (fix or remove it, then run config init again): %w", configPath, err)
-			}
+		v, err := readInitConfig(configPath)
+		if err != nil {
+			return err
 		}
 		for key, val := range keys {
 			v.Set(key, val)
 		}
 		return writeConfigAtomic(lk, v, configPath)
 	})
+}
+
+// readInitConfig reads the config `config init` will rewrite, as YAML
+// whatever the path's extension. A missing file is an empty config. A file
+// that cannot be read, does not parse, or holds more than one YAML document
+// (the rewrite would keep only the first) is refused, so init never drops
+// what it cannot carry over. runConfigInit calls it once before the prompts,
+// so a broken file is reported before the owner types anything, and
+// writeInitConfig again inside the lock.
+func readInitConfig(configPath string) (*viper.Viper, error) {
+	v := viper.New()
+	v.SetConfigType("yaml")
+	raw, err := os.ReadFile(configPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return v, nil
+	}
+	refuse := func(err error) error {
+		return fmt.Errorf("existing config %s cannot be carried over (fix or remove it, then run config init again): %w", configPath, err)
+	}
+	if err != nil {
+		return nil, refuse(err)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	for docs := 0; ; docs++ {
+		var doc yaml.Node
+		err := dec.Decode(&doc)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, refuse(err)
+		}
+		if docs == 1 {
+			return nil, refuse(errors.New("more than one YAML document"))
+		}
+	}
+	if err := v.ReadConfig(bytes.NewReader(raw)); err != nil {
+		return nil, refuse(err)
+	}
+	return v, nil
 }
 
 // writeConfigAtomic writes viper config to a temp file with 0o600 permissions,

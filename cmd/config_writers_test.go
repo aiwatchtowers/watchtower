@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -287,4 +288,66 @@ func TestBlankLegacySlackConfigToken_NothingToBlankTakesNoLock(t *testing.T) {
 	assert.Empty(t, logs.String(), "nothing to blank logs nothing")
 	_, err := os.Stat(cfgPath + ".lock")
 	assert.True(t, os.IsNotExist(err), "nothing to blank takes no lock")
+}
+
+func TestWriteInitConfig_RefusesMoreThanOneDocument(t *testing.T) {
+	for name, body := range map[string]string{
+		"second document":           "sync:\n  workers: 2\n---\nai:\n  background_runs: allowed\n",
+		"malformed after separator": "sync:\n  workers: 2\n---\nai: [unclosed\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(cfgPath, []byte(body), 0o600))
+			require.Error(t, writeInitConfig(cfgPath, map[string]any{"active_workspace": "acme"}))
+			got, err := os.ReadFile(cfgPath)
+			require.NoError(t, err)
+			assert.Equal(t, body, string(got), "nothing is dropped")
+		})
+	}
+}
+
+func TestWriteInitConfig_EmptyFileIsAnEmptyConfig(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, nil, 0o600))
+	require.NoError(t, writeInitConfig(cfgPath, map[string]any{"active_workspace": "acme"}))
+	v := viper.New()
+	v.SetConfigFile(cfgPath)
+	require.NoError(t, v.ReadInConfig())
+	assert.Equal(t, "acme", v.GetString("active_workspace"))
+}
+
+func TestWriteInitConfig_NewPathWithoutExtension(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "watchtower-config")
+	require.NoError(t, writeInitConfig(cfgPath, map[string]any{"active_workspace": "acme"}))
+	v := viper.New()
+	v.SetConfigType("yaml")
+	raw, err := os.ReadFile(cfgPath)
+	require.NoError(t, err)
+	require.NoError(t, v.ReadConfig(bytes.NewReader(raw)))
+	assert.Equal(t, "acme", v.GetString("active_workspace"))
+
+	// An existing extensionless file is read as YAML and its keys kept.
+	require.NoError(t, writeInitConfig(cfgPath, map[string]any{"sync.workers": 3}))
+	raw, err = os.ReadFile(cfgPath)
+	require.NoError(t, err)
+	require.NoError(t, v.ReadConfig(bytes.NewReader(raw)))
+	assert.Equal(t, "acme", v.GetString("active_workspace"))
+	assert.Equal(t, 3, v.GetInt("sync.workers"))
+}
+
+func TestConfigInit_BrokenConfigFailsBeforeAnyPrompt(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("sync:\n\tworkers: 2\n"), 0o600))
+	old := flagConfig
+	flagConfig = cfgPath
+	t.Cleanup(func() { flagConfig = old })
+
+	var out bytes.Buffer
+	c := &cobra.Command{}
+	c.SetOut(&out)
+	c.SetIn(strings.NewReader("")) // no input: a prompt would fail differently
+	err := runConfigInit(c, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be carried over")
+	assert.NotContains(t, out.String(), "How do you want to authenticate?", "no prompt is shown")
 }
