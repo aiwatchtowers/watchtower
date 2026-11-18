@@ -73,15 +73,18 @@ package struct SlackModePresentation: Equatable, Sendable {
         let syncing = accounts.filter { $0.enabled && !$0.isGone }
         let shared = syncing.filter { sharedAppAccountIDs.contains($0.id) }
         let full = syncing.contains { $0.isOK && !sharedAppAccountIDs.contains($0.id) }
-        let mode = SlackMode.derive(full: full, liveStatuses: liveStatuses.map(\.status))
-        let liveOn = liveStatuses.contains { $0.status == "ok" }
+        // The chip reads the same verdicts as the Live block: each
+        // provider's newest check, so an older ok cannot say "Live".
+        let verdicts = Self.newestBatches(liveStatuses).map(\.verdict.status)
+        let mode = SlackMode.derive(full: full, liveStatuses: verdicts)
+        let liveOn = verdicts.contains("ok")
         display = switch mode {
         case .full: liveOn ? .fullLive : .full
         case .live, .off: shared.isEmpty ? (mode == .live ? .live : .off) : .sharedApp
         }
-        sharedLabel = shared.first?.displayName ?? ""
+        sharedLabel = shared.first.map(Self.label) ?? ""
 
-        let rows = Self.liveRows(liveStatuses, accounts: accounts, now: now)
+        let rows = Self.liveRows(Self.newestBatches(liveStatuses), accounts: accounts, now: now)
         liveRows = rows
         let readFailed = lastError?.kind == .read
         liveBlock = if !hasRead { .loading } else if !rows.isEmpty { .rows } else if readFailed { .readFailed } else { .empty }
@@ -136,7 +139,6 @@ package struct SlackModePresentation: Equatable, Sendable {
 
     // MARK: - §1.2 the Live block
 
-    /// Claude first, then ChatGPT (Codex), then any other provider by name.
     private static let providerOrder = ["claude", "codex"]
 
     package static func providerName(_ provider: String) -> String {
@@ -147,7 +149,18 @@ package struct SlackModePresentation: Equatable, Sendable {
         }
     }
 
-    private static func liveRows(_ statuses: [SlackLiveStatusRow], accounts: [SlackAccount], now: Date) -> [LiveRow] {
+    /// One provider's newest check: one probe writes a row per team (and
+    /// team "") at one instant, and that batch is the provider's verdict —
+    /// `ok` when any row in it is, else its first row by team.
+    private struct Batch {
+        let provider: String
+        let checkedAt: String
+        let okTeams: [String]
+        let verdict: SlackLiveStatusRow
+    }
+
+    /// Claude first, then ChatGPT (Codex), then any other provider by name.
+    private static func newestBatches(_ statuses: [SlackLiveStatusRow]) -> [Batch] {
         let byProvider = Dictionary(grouping: statuses, by: \.provider)
         let providers = byProvider.keys.sorted { lhs, rhs in
             let li = providerOrder.firstIndex(of: lhs) ?? providerOrder.count
@@ -156,23 +169,40 @@ package struct SlackModePresentation: Equatable, Sendable {
         }
         return providers.compactMap { provider in
             guard let rows = byProvider[provider], let newest = rows.map(\.checkedAt).max() else { return nil }
-            // One probe writes a row per team (and team "") at one instant;
-            // that newest batch is the provider's verdict.
-            let batch = rows.filter { $0.checkedAt == newest }
-            let okTeams = batch.filter { $0.status == "ok" }.map(\.teamID)
-            let age = TimeFormatting.parseISO(newest).map { Self.age(from: $0, now: now) }
-            if !okTeams.isEmpty { return okRow(provider: provider, teams: okTeams, accounts: accounts, age: age) }
-            guard let decider = batch.min(by: { $0.teamID < $1.teamID }) else { return nil }
-            let verdict = verdict(status: decider.status, errorClass: decider.errorClass, provider: provider)
-            return LiveRow(provider: providerName(provider), status: verdict.status, reason: verdict.reason,
+            let batch = rows.filter { $0.checkedAt == newest }.sorted { $0.teamID < $1.teamID }
+            let ok = batch.filter { $0.status == "ok" }
+            guard let verdict = ok.first ?? batch.first else { return nil }
+            return Batch(provider: provider, checkedAt: newest, okTeams: ok.map(\.teamID), verdict: verdict)
+        }
+    }
+
+    private static func liveRows(_ batches: [Batch], accounts: [SlackAccount], now: Date) -> [LiveRow] {
+        batches.map { batch in
+            let age = TimeFormatting.parseISO(batch.checkedAt).map { Self.age(from: $0, now: now) }
+            if !batch.okTeams.isEmpty {
+                return okRow(provider: batch.provider, teams: batch.okTeams, accounts: accounts, age: age)
+            }
+            let verdict = verdict(
+                status: batch.verdict.status, errorClass: batch.verdict.errorClass, provider: batch.provider)
+            return LiveRow(provider: providerName(batch.provider), status: verdict.status, reason: verdict.reason,
                            age: age, tone: verdict.tone)
         }
+    }
+
+    /// An account's name in a sentence: its label or team name, else the team
+    /// id, never blank.
+    private static func label(_ account: SlackAccount) -> String {
+        let name = account.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { return name }
+        let team = account.teamName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !team.isEmpty { return team }
+        return account.teamID.isEmpty ? "Slack account #\(account.id)" : account.teamID
     }
 
     private static func okRow(provider: String, teams: [String], accounts: [SlackAccount], age: String?) -> LiveRow {
         var seen = Set<String>()
         let names = teams.filter { !$0.isEmpty && seen.insert($0).inserted }.sorted().map { team in
-            accounts.first { $0.teamID == team && !$0.isGone }?.displayName ?? team
+            accounts.first { $0.teamID == team && !$0.isGone }.map(label) ?? team
         }
         if names.isEmpty {
             return LiveRow(provider: providerName(provider), status: "On · workspace not identified",

@@ -116,6 +116,42 @@ final class SlackLiveStatusCenterErrorTests: XCTestCase {
         XCTAssertNil(center.lastError)
     }
 
+    /// Probe fails, then its read fails too: the read failure shows while the
+    /// rows are stale; once a read recovers, the probe failure shows.
+    func testProbeThenReadFailureKeepsBoth() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
+        let runner = FakeCLIRunner()
+        runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")
+        let center = SlackLiveStatusCenter(dbPool: pool, runner: runner, providers: ["claude"])
+        try await pool.write { try $0.execute(sql: "ALTER TABLE slack_live_status RENAME TO slack_live_status_gone") }
+        center.checkAgain()
+        await center.inFlight?.value
+        XCTAssertEqual(center.lastError?.kind, .read)
+        XCTAssertEqual(center.probeError?.provider, "claude")
+        try await pool.write { try $0.execute(sql: "ALTER TABLE slack_live_status_gone RENAME TO slack_live_status") }
+        await center.reload()
+        XCTAssertEqual(center.lastError?.kind, .probe, "the probe failure is not lost")
+    }
+
+    /// A read fails first, then a pass whose probe fails reads cleanly: the
+    /// probe failure shows.
+    func testReadThenProbeFailureShowsProbe() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
+        let runner = FakeCLIRunner()
+        runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")
+        let center = SlackLiveStatusCenter(dbPool: pool, runner: runner, providers: ["claude"])
+        try await pool.write { try $0.execute(sql: "ALTER TABLE slack_live_status RENAME TO slack_live_status_gone") }
+        await center.reload()
+        XCTAssertEqual(center.lastError?.kind, .read)
+        try await pool.write { try $0.execute(sql: "ALTER TABLE slack_live_status_gone RENAME TO slack_live_status") }
+        center.checkAgain()
+        await center.inFlight?.value
+        XCTAssertNil(center.readError)
+        XCTAssertEqual(center.lastError?.kind, .probe)
+    }
+
     func testCheckAgainWhileRunningIsIgnored() async throws {
         let (pool, path) = try TestDatabase.createPool()
         addTeardownBlock { TestDatabase.cleanup(path: path) }

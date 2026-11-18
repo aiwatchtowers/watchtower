@@ -102,6 +102,10 @@ final class SlackModePresentationTests: XCTestCase {
         XCTAssertEqual(p.chip, "Shared app")
         XCTAssertEqual(p.chipTone, .warning)
         XCTAssertEqual(p.summary, "acme syncs through Watchtower's old shared Slack app until Slack turns it off.")
+        let blank = make(accounts: [account(id: 4, name: "", label: " ")], shared: [4])
+        XCTAssertEqual(blank.summary,
+                       "T0ACME syncs through Watchtower's old shared Slack app until Slack turns it off.",
+                       "a blank label falls back to the team")
         XCTAssertEqual(make(accounts: [account(id: 4, enabled: false)], shared: [4]).display, .off,
                        "a disabled shared-app account does not sync")
         XCTAssertEqual(make(accounts: [acme, account(id: 5, teamID: "T0OTHER")], shared: [4]).display, .full,
@@ -137,7 +141,10 @@ final class SlackModePresentationTests: XCTestCase {
     /// The provider's newest check decides; an older verdict does not linger.
     func testNewestRowDecides() {
         let rows = [row("claude", "not_connected", errorClass: "disabled", ago: 10), row("claude", "ok", team: "T0ACME", ago: 900)]
-        let live = make(rows: rows).liveRows
+        let p = make(rows: rows)
+        XCTAssertEqual(p.display, .off, "the chip reads the same verdict as the block")
+        XCTAssertEqual(make(accounts: [account()], rows: rows).display, .full, "not Full · Live on")
+        let live = p.liveRows
         XCTAssertEqual(live.count, 1)
         XCTAssertEqual(live[0].status, "Not connected")
         XCTAssertEqual(live[0].reason, "The Slack connector is switched off in Watchtower's chat settings.")

@@ -55,11 +55,15 @@ package final class SlackLiveStatusCenter {
     private static let log = Logger(subsystem: "com.watchtower.desktop", category: "slack-live")
 
     package private(set) var statuses: [SlackLiveStatusRow] = []
-    /// The last failure — a status read or a probe run — kept for display.
-    /// A failed read keeps the rows last shown (it is not "no rows"); a clean
-    /// read clears a read failure. A probe failure lasts until the next pass
-    /// starts, so the next provider's clean read does not hide it.
-    package private(set) var lastError: SlackLiveError?
+    /// The last failed status read; a clean read clears it. A failed read
+    /// keeps the rows last shown (it is not "no rows").
+    package private(set) var readError: SlackLiveError?
+    /// The last failed probe of the current pass; cleared when the next pass
+    /// starts, so neither the next provider's read nor a failed read loses it.
+    package private(set) var probeError: SlackLiveError?
+    /// What the screen shows: the read failure while the rows are stale,
+    /// else the probe failure.
+    package var lastError: SlackLiveError? { readError ?? probeError }
     /// The first `reload()` finished (read or failed): the block leaves its
     /// loading state.
     package private(set) var hasRead = false
@@ -116,11 +120,11 @@ package final class SlackLiveStatusCenter {
             }
         } catch {
             Self.log.error("reading slack_live_status: \(error.localizedDescription, privacy: .public)")
-            lastError = SlackLiveError(provider: "", message: error.localizedDescription, kind: .read)
+            readError = SlackLiveError(provider: "", message: error.localizedDescription, kind: .read)
             hasRead = true
             return
         }
-        if lastError?.kind == .read { lastError = nil }
+        readError = nil
         hasRead = true
         if rows != statuses { statuses = rows }
     }
@@ -128,7 +132,7 @@ package final class SlackLiveStatusCenter {
     private func start(ifOlder: TimeInterval?) {
         isRunning = true
         lastPass = now()
-        lastError = nil
+        probeError = nil
         inFlight = Task { [weak self] in
             guard let self else { return }
             await self.runPass(ifOlder: ifOlder)
@@ -141,16 +145,15 @@ package final class SlackLiveStatusCenter {
             guard !Task.isCancelled, let runner else { break }
             var args = ["slack", "live", "probe", "--provider", provider, "--json"]
             if let ifOlder { args += ["--if-older", "\(Int(ifOlder))s"] }
-            var probeError: SlackLiveError?
+            var failure: SlackLiveError?
             do {
                 _ = try await runner.run(args: args, timeout: 150)
             } catch {
                 Self.log.error("slack live probe \(provider, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                probeError = SlackLiveError(provider: provider, message: error.localizedDescription, kind: .probe)
+                failure = SlackLiveError(provider: provider, message: error.localizedDescription, kind: .probe)
             }
+            if let failure { probeError = failure }
             await reload()
-            // A read failure after the probe wins: the rows on screen are stale.
-            if let probeError, lastError?.kind != .read { lastError = probeError }
         }
         if runner == nil { await reload() }
     }
