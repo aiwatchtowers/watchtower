@@ -16,7 +16,7 @@ enum BackgroundAIConsentShotFixtures {
         case claude, codex, ollama, claudeReserve, saving, error
     }
 
-    /// Settings → AI → Background AI, one frame per state.
+    /// Settings → System → AI → Background AI, one frame per state.
     enum Settings: String, CaseIterable {
         case allowed, paused, orgOff, orgAllowed, saving, error
     }
@@ -337,7 +337,7 @@ private struct ConsentSheetMock: View {
     }
 }
 
-// MARK: - Settings → AI → Background AI
+// MARK: - Settings → System → AI → Background AI
 
 private struct SettingsSectionMock: View {
     let state: BackgroundAIConsentShotFixtures.Settings
@@ -402,7 +402,7 @@ extension BackgroundAIConsentShotFixtures {
     }
 }
 
-/// The real section's form for one state, as Settings → AI draws it.
+/// The real section's form for one state, as Settings → System → AI draws it.
 private struct LiveSettingsFrame: View {
     let state: BackgroundAIConsent.State
     var saving = false

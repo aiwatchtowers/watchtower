@@ -93,7 +93,7 @@ final class ConfigService {
     private(set) var backgroundRunsUnreadable = false
     /// `ai.provider` as on disk at the last read of the background AI answer
     /// (load, save, `reloadBackgroundRuns`), never the unsaved edit: the
-    /// agent Settings → AI → Background AI names. An unreadable file keeps
+    /// agent Settings → System → AI → Background AI names. An unreadable file keeps
     /// the last one.
     private(set) var savedAIProvider: String?
     let routingApplication: ProviderRoutingApplication

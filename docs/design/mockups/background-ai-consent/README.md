@@ -31,7 +31,7 @@ Saving, and a failed write:
 ![sheet dark](ai-consent-sheet-claude-dark.png)
 ![sheet error](ai-consent-sheet-error-light.png)
 
-## Settings → AI → Background AI (spec §6.1)
+## Settings → System → AI → Background AI (spec §6.1)
 
 ![allowed](ai-consent-settings-allowed-light.png)
 ![paused](ai-consent-settings-paused-light.png)

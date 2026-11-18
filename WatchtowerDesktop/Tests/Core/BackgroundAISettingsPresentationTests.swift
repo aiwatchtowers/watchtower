@@ -1,7 +1,7 @@
 import XCTest
 @testable import WatchtowerCore
 
-/// Settings → AI → Background AI (#1886, spec §6.1): one row per state of
+/// Settings → System → AI → Background AI (#1886, spec §6.1): one row per state of
 /// the table, the switch and its caption.
 final class BackgroundAISettingsPresentationTests: XCTestCase {
     private typealias Copy = BackgroundAIConsentCopy

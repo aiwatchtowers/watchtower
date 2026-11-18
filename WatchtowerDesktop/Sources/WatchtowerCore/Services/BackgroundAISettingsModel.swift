@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// Settings → AI → Background AI's pause (#1886, spec §6.1): one consent
+/// Settings → System → AI → Background AI's pause (#1886, spec §6.1): one consent
 /// model per pause, kept after a failure so its error line stays until the
 /// stored answer changes.
 @MainActor

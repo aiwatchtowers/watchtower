@@ -1,7 +1,7 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Settings → AI → Background AI (#1886, spec §6.1). The switch follows the
+/// Settings → System → AI → Background AI (#1886, spec §6.1). The switch follows the
 /// stored answer: turning it on opens the consent sheet (D9), turning it off
 /// writes `ai background pause` at once, with no confirmation. The caption
 /// names the provider as saved in config.yaml, never an unsaved edit.

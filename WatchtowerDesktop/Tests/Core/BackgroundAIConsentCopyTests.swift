@@ -59,7 +59,7 @@ final class BackgroundAIConsentCopyTests: XCTestCase {
         XCTAssertEqual(Copy.notNow, "Not now")
         XCTAssertEqual(Copy.back, "Back")
         XCTAssertEqual(Copy.saving, "Saving your choice…")
-        XCTAssertEqual(Copy.changeLater, "You can change this any time in Settings → AI → Background AI.")
+        XCTAssertEqual(Copy.changeLater, "You can change this any time in Settings → System → AI → Background AI.")
         XCTAssertEqual(
             Copy.userStarted,
             "Chats, Catch-Up, Run now and anything else you start yourself always run, whatever you pick here."

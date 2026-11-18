@@ -254,6 +254,6 @@ func consentText(agent, reserve string, pollMinutes, backfillDays int) string {
 		b.WriteString("  • " + row + "\n")
 	}
 	b.WriteString("\nChats, Catch-Up, Run now and anything else you start yourself always run, whatever you pick here.\n")
-	b.WriteString("You can change this any time in Settings → AI → Background AI.\n")
+	b.WriteString("You can change this any time in Settings → System → AI → Background AI.\n")
 	return b.String()
 }

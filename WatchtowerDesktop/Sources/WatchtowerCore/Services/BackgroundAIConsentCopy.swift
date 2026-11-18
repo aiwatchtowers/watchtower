@@ -89,7 +89,7 @@ package enum BackgroundAIConsentCopy {
         + "whatever you pick here."
     package static let notNowNote = "Not now: Slack, mail, calendar and Jira keep syncing. AI features and "
         + "automations wait until you allow them."
-    package static let changeLater = "You can change this any time in Settings → AI → Background AI."
+    package static let changeLater = "You can change this any time in Settings → System → AI → Background AI."
     package static let allow = "Allow background AI"
     package static let notNow = "Not now"
     package static let back = "Back"
@@ -114,7 +114,7 @@ package enum BackgroundAIConsentCopy {
     package static let configUnreadableTitle = "Watchtower can't read config.yaml"
     package static let configUnreadable = "Your background AI choice can't be saved until the file is fixed."
 
-    // MARK: Settings → AI → Background AI
+    // MARK: Settings → System → AI → Background AI
 
     package static let sectionTitle = "Background AI"
     package static let switchTitle = "Run AI in the background"

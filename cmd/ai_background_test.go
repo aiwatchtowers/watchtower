@@ -229,7 +229,7 @@ func TestAIBackground_ConsentText(t *testing.T) {
 		"After you connect a source: its last 30 days of history, a little at each sync",
 		"Your automations that use AI, at the times and on the events you set",
 		"Chats, Catch-Up, Run now and anything else you start yourself always run, whatever you pick here.",
-		"You can change this any time in Settings → AI → Background AI.",
+		"You can change this any time in Settings → System → AI → Background AI.",
 	} {
 		assert.Contains(t, claude, want)
 	}

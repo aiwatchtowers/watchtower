@@ -1,6 +1,6 @@
 import Foundation
 
-/// Settings → AI → Background AI (#1886, spec §6.1): the switch and its
+/// Settings → System → AI → Background AI (#1886, spec §6.1): the switch and its
 /// caption for one consent state. The switch always shows the stored value;
 /// turning it on only opens the consent sheet, and a failed pause leaves it
 /// where it was with the error as its caption.

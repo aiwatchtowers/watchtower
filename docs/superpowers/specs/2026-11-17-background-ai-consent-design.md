@@ -214,7 +214,7 @@ The strings are `BackgroundAIConsentMockCopy` today and move to `BackgroundAICon
   4. "After you connect a source: its last <backfill_days> days of history, a little at each sync"
   5. "Your automations that use AI, at the times and on the events you set"
 - "Chats, Catch-Up, Run now and anything else you start yourself always run, whatever you pick here."
-- "You can change this any time in Settings → AI → Background AI."
+- "You can change this any time in Settings → System → AI → Background AI."
 - Buttons: "Allow background AI", "Not now", "Back". Saving: "Saving your choice…".
 - When the answer is saved but onboarding's finish fails: "Try again" (runs the finish only; the answer is not written again).
 - Instead of the sheet while config.yaml cannot be read (an alert): title "Watchtower can't read config.yaml", body "Your background AI choice can't be saved until the file is fixed."
@@ -229,7 +229,7 @@ The rows list what *can* run (every AI feature), not only what is on now: the ow
 
 ## 6. Where the answer shows afterwards
 
-### 6.1 Settings → AI → Background AI
+### 6.1 Settings → System → AI → Background AI
 
 A `SettingsSection` "Background AI" in `ProviderSettings`, under the provider sections, one `SettingRow` "Run AI in the background" with a switch.
 
@@ -262,7 +262,7 @@ While background AI is paused or forbidden, Home shows **one card at the top of 
 | `ai-consent-home-paused` | "Background AI is paused" | "Digests, briefings, tracks, people cards, memory and automations wait. Slack, mail, calendar and Jira keep syncing." | "Allow background AI…" |
 | `ai-consent-home-org` | "Background AI is off" + Managed badge | "Your organization turned it off. Chats, Catch-Up and anything you start yourself still work." | none |
 
-**Re-entry after Not now (D10).** The Home card stays for as long as background AI is paused by the owner or not answered (above). Settings → AI keeps the switch, every AI empty state keeps its line and button, the Automations tab keeps its notice, and the phone keeps its line (§6.5). Each of these opens the one consent screen. That is enough to come back without being nagged: no sheet, notification or alert appears again by itself.
+**Re-entry after Not now (D10).** The Home card stays for as long as background AI is paused by the owner or not answered (above). Settings → System → AI keeps the switch, every AI empty state keeps its line and button, the Automations tab keeps its notice, and the phone keeps its line (§6.5). Each of these opens the one consent screen. That is enough to come back without being nagged: no sheet, notification or alert appears again by itself.
 
 ### 6.4 Automations
 
