@@ -61,7 +61,7 @@ type WhatHappenedItem struct {
 type TeamPulseItem struct {
 	Text       string `json:"text"`
 	UserID     string `json:"user_id,omitempty"` // omitted when blanked (Swift decodes a missing key as nil)
-	SignalType string `json:"signal_type"`       // volume_drop, volume_spike, new_red_flag, highlight, conflict
+	SignalType string `json:"signal_type"`       // highlight, conflict (volume_drop, volume_spike, new_red_flag only in briefings made before #1769)
 	Detail     string `json:"detail"`
 }
 
@@ -645,9 +645,6 @@ func (p *Pipeline) gatherPeopleCards() string {
 		}
 		p.shown.addPerson(c.UserID)
 		sb.WriteString(fmt.Sprintf("@%s: %s", c.UserID, c.Summary))
-		if c.RedFlags != "" && c.RedFlags != "[]" {
-			sb.WriteString(fmt.Sprintf(" [flags: %s]", c.RedFlags))
-		}
 		if c.Highlights != "" && c.Highlights != "[]" {
 			sb.WriteString(fmt.Sprintf(" [highlights: %s]", c.Highlights))
 		}
@@ -656,13 +653,14 @@ func (p *Pipeline) gatherPeopleCards() string {
 	return sb.String()
 }
 
-// gatherPeopleSummary loads the latest team summary.
+// gatherPeopleSummary loads the latest team summary: its summary and tips,
+// no attention list (#1769, A12).
 func (p *Pipeline) gatherPeopleSummary() string {
 	s, err := p.db.GetLatestPeopleCardSummary()
 	if err != nil || s == nil {
 		return ""
 	}
-	return fmt.Sprintf("Team summary: %s\nAttention: %s\nTips: %s\n", s.Summary, s.Attention, s.Tips)
+	return fmt.Sprintf("Team summary: %s\nTips: %s\n", s.Summary, s.Tips)
 }
 
 // gatherCalendar loads the briefing date's calendar events (date is the

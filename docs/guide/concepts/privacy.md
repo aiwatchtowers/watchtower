@@ -10,7 +10,7 @@ Watchtower has no account, no cloud service and no analytics of its own. Three t
 - **Knowledge search.** The index is local; only its image descriptions and link summaries use AI (below).
 - **Mechanical features.** Attention detection and Subscription plan limits make no AI calls.
 
-Removing an account deletes its sign-in file. With **Delete an account's data when its access is revoked** on, a revoked account's synced data is deleted after a 72-hour notice, and so is a source's that Watchtower has not reached for 30 days: see [Revoked access deletes an account's data](revoked-access.md).
+Removing an account deletes its sign-in file. **Delete an account's data when its access ends** (**Settings → System**, under **Privacy**) is on by default: a revoked account's synced data is deleted after a 72-hour notice, and so is a removed Slack workspace's. Turned off, synced data stays on this Mac until you delete it with **Reset All Data…**. Either way, briefings, recaps, ideas, memory, chats and meeting transcripts are kept: they mix several sources. See [Revoked access deletes an account's data](revoked-access.md).
 
 In **Settings → System**, **Reset & Regenerate…** deletes the AI-generated data (raw Slack data, config and profile stay) and **Reset All Data…** removes the config, the database folder, preferences and caches, then quits.
 
@@ -46,7 +46,7 @@ Most of what Watchtower knows lives in the database; a few things are files besi
 
 - **Logs** name channels, people and meetings by id and record counts and errors, never message text, titles or AI answers. Log files from an earlier version may hold text until they rotate out.
 - **AI calls leave no session files.** Watchtower's own Claude and Codex calls write nothing to the agent's history folder; a chat picks up again from its saved messages. Workbench sessions are the agent's own and keep their history.
-- **Still files:** meeting recordings, chat attachments, target images, Memory's notes and sign-in files, readable only by your user. FileVault protects them at rest.
+- **Still files:** meeting recordings, chat attachments, target images, Memory's notes and sign-in files, readable only by your user. FileVault protects them at rest; when it is off, Settings → Privacy and Connections → Slack say so and open its settings.
 - **What you paste into a session's Workchat** is deleted when that session ends.
 
 ## What goes to your AI provider

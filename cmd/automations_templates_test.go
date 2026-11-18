@@ -152,7 +152,7 @@ func TestInstallTemplate_FailedWriteRollsBack(t *testing.T) {
 
 func TestInstallTemplate_InstalledUnconfirmedAndDisabled(t *testing.T) {
 	c := newAutoCLI(t)
-	got := installTemplate(t, "team-performance-report")
+	got := installTemplate(t, "team-week-summary")
 	require.Len(t, got.Installed, 1)
 	assert.Empty(t, got.Installed[0].ParseError)
 
@@ -382,14 +382,14 @@ func renderTemplate(t *testing.T, args ...string) renderOut {
 
 func TestInstallTemplate_RenderWritesNothing(t *testing.T) {
 	c := newAutoCLI(t)
-	got := renderTemplate(t, "team-performance-report")
+	got := renderTemplate(t, "team-week-summary")
 	require.Len(t, got.Files, 1)
-	assert.Equal(t, "team-performance-report", got.Files[0].Slug)
+	assert.Equal(t, "team-week-summary", got.Files[0].Slug)
 	assert.True(t, got.Files[0].Validate.OK)
 	assert.NotEmpty(t, got.Files[0].Validate.ApprovalHash)
 	assert.NotEmpty(t, got.Files[0].Text)
-	assert.NoFileExists(t, filepath.Join(c.personal, "team-performance-report.md"))
-	_, err := c.d.GetAutomationBySlug("personal", 0, "team-performance-report")
+	assert.NoFileExists(t, filepath.Join(c.personal, "team-week-summary.md"))
+	_, err := c.d.GetAutomationBySlug("personal", 0, "team-week-summary")
 	assert.ErrorIs(t, err, db.ErrAutomationNotFound)
 }
 
@@ -402,7 +402,7 @@ func TestInstallTemplate_RenderHashMatchesInstall(t *testing.T) {
 		slugs []string
 		scope string
 	}{
-		{"team-performance-report", nil, []string{"team-performance-report"}, "personal"},
+		{"team-week-summary", nil, []string{"team-week-summary"}, "personal"},
 		{"release-buttons", []string{"--workbench", idArg(id)}, []string{"release", "deploy-test", "deploy-stage"}, "workbench"},
 	} {
 		args := append([]string{tc.name}, tc.args...)
@@ -423,14 +423,14 @@ func TestInstallTemplate_RenderHashMatchesInstall(t *testing.T) {
 
 func TestInstallTemplate_RenderJSONKeys(t *testing.T) {
 	newAutoCLI(t)
-	m := runAutomationsJSON(t, "install-template", "team-performance-report", "--render", "--json")
+	m := runAutomationsJSON(t, "install-template", "team-week-summary", "--render", "--json")
 	wantKeys(t, m, "name", "scope", "params", "files")
 	files, _ := m["files"].([]any)
 	require.Len(t, files, 1)
 	wantKeys(t, files[0].(map[string]any), "slug", "text", "validate")
 
 	newAutoCLI(t)
-	p := runAutomationsJSON(t, "install-template", "team-performance-report", "--json")
+	p := runAutomationsJSON(t, "install-template", "team-week-summary", "--json")
 	inst, _ := p["installed"].([]any)
 	require.Len(t, inst, 1)
 	wantKeys(t, inst[0].(map[string]any), "automation_id", "slug", "path", "parse_error", "approval_hash")

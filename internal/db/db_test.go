@@ -170,7 +170,7 @@ func TestAllTablesExist(t *testing.T) {
 	expectedTables := []string{
 		"workspace", "users", "channels", "messages",
 		"reactions", "files", "sync_state", "watch_list", "user_checkpoints",
-		"digests", "decision_reads", "user_analyses", "period_summaries",
+		"digests", "decision_reads", "user_analyses", "period_summaries", "people_card_exclusions",
 		"custom_emojis", "tracks", "track_retry_digests",
 		"feedback", "prompts", "prompt_history", "user_profile",
 		"track_events", "situations", "situation_signals",

@@ -1552,3 +1552,33 @@ func TestDeadlinePassed(t *testing.T) {
 	c.SetDeadline(time.Time{})
 	assert.False(t, c.DeadlinePassed(), "the zero time clears it")
 }
+
+func TestRevokeToken(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want error
+		any  bool
+	}{
+		"revoked":     {body: `{"ok":true,"revoked":true}`},
+		"not revoked": {body: `{"ok":true,"revoked":false}`, want: ErrTokenNotRevoked},
+		"slack error": {body: `{"ok":false,"error":"invalid_auth"}`, any: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/auth.revoke", func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "Bearer xoxp-test-token", r.Header.Get("Authorization"))
+				_, _ = w.Write([]byte(tc.body))
+			})
+			err := newTestClient(t, mux).RevokeToken(context.Background())
+			switch {
+			case tc.any:
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "invalid_auth")
+			case tc.want != nil:
+				assert.ErrorIs(t, err, tc.want)
+			default:
+				assert.NoError(t, err)
+			}
+		})
+	}
+}

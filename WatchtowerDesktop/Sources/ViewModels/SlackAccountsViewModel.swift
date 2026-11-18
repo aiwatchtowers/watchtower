@@ -20,6 +20,11 @@ final class SlackAccountsViewModel {
     /// an action's failure stays in `error` (the Connections tab's
     /// "Couldn't read accounts" reads this).
     private(set) var readError: String?
+    /// The last successful remove's warning that Slack did not confirm the
+    /// token revoke (`SlackRevokeNotice`, #1769); nil when it did. A
+    /// non-blocking notice, cleared by the next management command
+    /// (enable, disable, remove).
+    private(set) var revokeNotice: String?
 
     /// The restart the last successful account change kicked off under
     /// `.restart` (nil under `.deferred`) — held so tests can await it.
@@ -153,9 +158,10 @@ final class SlackAccountsViewModel {
         ["slack", "remove", String(account.id)]
     }
 
-    /// Removes `account` via `watchtower slack remove <id>`. Non-destructive:
-    /// the CLI deletes the token file and marks the row removed/disabled but
-    /// keeps already-synced messages, digests, and situations.
+    /// Removes `account` via `watchtower slack remove <id>`: the CLI revokes
+    /// the token at Slack, deletes the token file and marks the row
+    /// removed/disabled. The synced data stays for now; with account data
+    /// deletion on it is deleted 72 hours after Watchtower's next pass.
     func remove(_ account: SlackAccount, daemonPolicy: DaemonRestartPolicy = .restart) async {
         await runManagementCommand(
             args: Self.removeArgs(for: account),
@@ -217,9 +223,16 @@ final class SlackAccountsViewModel {
 
         isConnecting = true
         error = nil
+        revokeNotice = nil
 
         let result = await Self.runCLI(path: cliPath, arguments: args)
         isConnecting = false
+        if result.exitCode == 0 {
+            // A remove whose revoke Slack did not confirm still exits 0; the
+            // CLI logs the cause on stderr (`removeSlackAccount`).
+            revokeNotice = SlackRevokeNotice.notice(inCLIOutput: result.stdout)
+            CLILog.warning(args: args, stderr: result.stderr)
+        }
         applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
     }
 

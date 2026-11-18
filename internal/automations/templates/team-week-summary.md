@@ -1,5 +1,5 @@
 ---
-name: Team performance report
+name: Team week summary
 trigger:
   schedule: "0 17 * * 5"
 permissions:
@@ -10,11 +10,10 @@ permissions:
 outputs: [report]
 budget: {tokens: 150000}
 ---
-Every Friday at 17:00, writes a report on how the team's week went, from the
-locally synced Jira issues of every project, the latest people cards and the
-recent Slack messages of up to 15 of those people: what moved, where work is
-stuck, who may be overloaded or blocked, and what to raise in the next
-one-on-ones.
+Every Friday at 17:00, writes a summary of the team's week from the locally
+synced Jira issues of every project, the latest people cards and the recent
+Slack messages of up to 15 of those people: what moved, where work is stuck,
+and the decisions made. It speaks about the work, never about the people.
 
 It reads Jira and Slack across every account (`jira:read@*`,
 `slack:read@*`); narrow `jira:read@*` to one project key to report on one
@@ -36,8 +35,8 @@ for (const c of cards) {
   if (!c.UserID || seen.indexOf(c.UserID) >= 0) continue;
   seen.push(c.UserID);
   people.push({
-    user: c.UserID, messages: c.MessageCount, summary: clip(c.Summary, 400), style: c.CommunicationStyle,
-    role: c.DecisionRole, red_flags: clip(c.RedFlags, 300), highlights: clip(c.Highlights, 300),
+    user: c.UserID, summary: clip(c.Summary, 400), role: c.DecisionRole,
+    accomplishments: clip(c.Accomplishments, 300),
   });
 }
 
@@ -66,7 +65,7 @@ const base = {
     key: i.Key, project: i.ProjectKey, title: clip(i.Summary, 160), status: i.Status,
     assignee: i.AssigneeDisplayName || "", updated: i.UpdatedAt, resolved: i.ResolvedAt || "",
   })),
-  time_in_status: { note: time.note, totals: time.totals, per_assignee: time.per_assignee },
+  time_in_status: { note: time.note, totals: time.totals },
   people: people,
 };
 let input;
@@ -78,10 +77,10 @@ for (let perPerson = 12; ; perPerson = Math.floor(perPerson / 2)) {
 }
 
 const report = llm(
-  "You write a weekly team report for the team lead. From the Jira issues, the time they spent in each status this week, " +
+  "You write a weekly summary of the team's work. From the Jira issues, the time they spent in each status this week, " +
     "the people cards and the recent Slack messages, write Markdown with these sections: Summary (three sentences), " +
-    "What moved, Where work is stuck, People (who may be overloaded, blocked or quiet — with the evidence), " +
-    "For the next one-on-ones. Judge the work, not the person; say when the data is too thin to tell.",
+    "What moved, Where work is stuck (the issue or the dependency, with the evidence), Decisions (what was decided and by whom). " +
+    "Write about the work only: never judge a person, their pace, mood or health; say when the data is too thin to tell.",
   { input: input, tier: "strong" },
 );
 

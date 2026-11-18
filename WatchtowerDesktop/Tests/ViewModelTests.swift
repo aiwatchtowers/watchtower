@@ -331,20 +331,6 @@ final class PeopleViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testRedFlagCount() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertPeopleCard(db, userID: "U001", periodFrom: 100, periodTo: 200, redFlags: #"["Issue"]"#)
-            try TestDatabase.insertPeopleCard(db, userID: "U002", periodFrom: 100, periodTo: 200, redFlags: "[]")
-            try TestDatabase.insertPeopleCard(db, userID: "U003", periodFrom: 100, periodTo: 200, redFlags: #"["A","B"]"#)
-        }
-
-        let vm = PeopleViewModel(dbManager: dbManager)
-        vm.load()
-
-        XCTAssertEqual(vm.redFlagCount, 2)
-    }
-
-    @MainActor
     func testCardHistory() throws {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertPeopleCard(db, userID: "U001", periodFrom: 100, periodTo: 200, messageCount: 50)

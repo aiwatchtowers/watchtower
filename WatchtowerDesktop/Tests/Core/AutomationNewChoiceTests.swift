@@ -5,7 +5,7 @@ final class AutomationNewChoiceTests: XCTestCase {
     /// The five templates in `automations templates --json` order.
     private static let names: [(String, String)] = [
         ("new-mail-summary", "personal"), ("pr-review-rounds", "workbench"), ("jira-state-report", "personal"),
-        ("team-performance-report", "personal"), ("release-buttons", "workbench")
+        ("team-week-summary", "personal"), ("release-buttons", "workbench")
     ]
 
     private func templates() throws -> [AutomationTemplate] {
@@ -19,7 +19,7 @@ final class AutomationNewChoiceTests: XCTestCase {
         let all = try templates()
         XCTAssertEqual(AutomationNewChoice.starts(templates: all, scope: .personal),
                        [.words, .watch, .template("new-mail-summary"), .template("jira-state-report"),
-                        .template("team-performance-report")])
+                        .template("team-week-summary")])
         let workbench = AutomationScopeChoice.workbench(id: 3, name: "acme", folder: "/work/acme")
         XCTAssertEqual(AutomationNewChoice.starts(templates: all, scope: workbench),
                        [.words, .template("pr-review-rounds"), .template("release-buttons")])

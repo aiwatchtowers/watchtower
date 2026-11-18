@@ -186,6 +186,30 @@ extension SlackAccountsViewModelTests {
         XCTAssertEqual(reloads, 0)
     }
 
+    /// #1769: `slack remove` exits 0 when Slack did not confirm the revoke and
+    /// prints the warning; the VM shows it as a notice, not an error.
+    func testUnconfirmedRevokeBecomesANotice() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let stub = dir.appendingPathComponent("watchtower")
+        try "#!/bin/sh\necho '\(SlackRevokeNotice.cliWarning)'\necho 'Removed account 1. Its synced data was kept.'\n"
+            .write(to: stub, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+
+        let pool = try makePool()
+        var cli = stub.path
+        let vm = SlackAccountsViewModel(dbPool: pool, daemon: FakeDaemonRestarter()) { cli }
+        let account = try await insertAccount(pool)
+        await vm.remove(account, daemonPolicy: .deferred)
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(vm.revokeNotice, SlackRevokeNotice.cliWarning)
+
+        cli = "/usr/bin/true"
+        await vm.remove(account, daemonPolicy: .deferred)
+        XCTAssertNil(vm.revokeNotice, "a confirmed remove clears an earlier notice")
+    }
+
     func testFailedAddDoesNotRestartTheDaemon() async throws {
         let (vm, daemon, _) = try makeVM(cli: "/usr/bin/false")
         await vm.addAccount()
