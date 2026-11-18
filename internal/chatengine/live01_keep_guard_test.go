@@ -33,6 +33,7 @@ func TestKeepRefusedForLiveConversation(t *testing.T) {
 		require.NoError(t, err)
 		err = keep()
 		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrLiveSlack, "refused for Live Slack")
 		assert.Equal(t, "forbidden", ErrorCode(err), "refused as not permitted")
 		var kept int
 		require.NoError(t, g.d.QueryRow(`SELECT COUNT(*) FROM chat_knowledge_artifacts WHERE conversation_id = ?`, conv).Scan(&kept))

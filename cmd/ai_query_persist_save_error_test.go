@@ -46,8 +46,8 @@ func saveErrors(t *testing.T, out *bytes.Buffer) []chat.Event {
 }
 
 // An embedded chat's failed reply write (`ai query --persist`) is a
-// save_error, worded as `ai session --persist` words it, which the embedded
-// chat shows under the thread — not a stderr line only.
+// save_error ("Couldn't save the reply: …"), which the embedded chat shows
+// under the thread — not a stderr line only.
 func TestQueryPersist_FailedWritesEmitSaveError(t *testing.T) {
 	prevTurn := aiFlagTurn
 	aiFlagTurn = "t-embedded"

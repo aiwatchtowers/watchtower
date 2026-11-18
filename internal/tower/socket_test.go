@@ -465,3 +465,54 @@ func TestSocket_DesktopRechecksANewPeerPidAndNeverKeepsACancelledCheck(t *testin
 		t.Errorf("%d signature checks, want 3 (cancelled, 4242, 99)", n)
 	}
 }
+
+// TestSocket_DesktopRechecksANewTokenOfTheSamePid: the verdict is kept per
+// audit token, not per pid, so a peer whose pid is unchanged but whose
+// process image changed (it exec'd: another pidversion, word 7) is checked
+// again and refused when it is no longer the signed Desktop.
+func TestSocket_DesktopRechecksANewTokenOfTheSamePid(t *testing.T) {
+	signed := tokenFor(4242)
+	execd := tokenFor(4242)
+	binary.LittleEndian.PutUint32(execd[28:32], 7)
+	var current atomic.Value
+	current.Store(signed)
+	oldToken := peerToken
+	peerToken = func(net.Conn) (ownerconfirm.PeerToken, error) {
+		return current.Load().(ownerconfirm.PeerToken), nil
+	}
+	t.Cleanup(func() { peerToken = oldToken })
+	var checks atomic.Int64
+	f := newFixtureWith(t, func(r *Registry, o *Options) {
+		Register(r, "test.desktop", func(ctx context.Context, c *Ctx, _ struct{}) (desktopResult, error) {
+			return desktopResult{Desktop: c.Origin.Desktop(ctx) == nil}, nil
+		}, Spec{Read: true})
+		o.VerifyDesktop = func(_ context.Context, peer ownerconfirm.PeerToken) error {
+			checks.Add(1)
+			if peer != signed {
+				return errors.New("not the Desktop")
+			}
+			return nil
+		}
+	})
+	path := filepath.Join(shortDir(t), "t.sock")
+	serve(t, path, f)
+	c := dialTower(t, path)
+	desktop := func(id string) bool {
+		c.send(id, "test.desktop", nil)
+		var got desktopResult
+		if err := json.Unmarshal(c.response().Result, &got); err != nil {
+			t.Fatal(err)
+		}
+		return got.Desktop
+	}
+	if !desktop("1") {
+		t.Fatal("the signed Desktop is refused")
+	}
+	current.Store(execd)
+	if desktop("2") {
+		t.Error("a new token of the same pid passed on the old verdict")
+	}
+	if n := checks.Load(); n != 2 {
+		t.Errorf("%d signature checks, want 2 (one per token)", n)
+	}
+}

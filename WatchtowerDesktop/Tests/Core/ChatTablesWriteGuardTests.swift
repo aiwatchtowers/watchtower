@@ -1,8 +1,9 @@
 import XCTest
 
 /// Mobile Inbox spec §8 (stage 3): no Swift code writes a chat table any
-/// more — a turn's rows are written by `ai session --persist` / `ai query
-/// --persist`, every other chat write is a `chat.*` tower command. This
+/// more — the main chat's rows are the chat engine's (#1822, `chat.sock`),
+/// an embedded turn's are `ai query --persist`'s, and every other embedded
+/// chat or draft write is a `chat.*` tower command. This
 /// scans every Swift source of the Desktop for a SQL write to a `chat_*`
 /// table and for a GRDB record write on a chat record type.
 final class ChatTablesWriteGuardTests: XCTestCase {
