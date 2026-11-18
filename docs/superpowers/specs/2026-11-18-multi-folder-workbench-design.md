@@ -219,7 +219,13 @@ through session-host `Deliver` (`sessionstart.Port.Deliver`, the same client the
 becomes `delivered` with reason `typed_not_submitted`, is never pasted again, and the sender
 gets `[Message to #<id> was typed into the session but not submitted; it waits in its prompt.]`
 — the text sits in the receiver's prompt for its next submit, and a later message to that
-session is held by the prompt-text check until then. At daemon
+session is held by the prompt-text check until then. The owner sees it: while the session's
+newest `typed_not_submitted` message is newer than its last submitted prompt (the
+`UserPromptSubmit` hook), the session row's state line adds `· Agent message waiting in the
+prompt` (Tone warning) and the pane shows a notice `An agent's message is in the prompt. Press
+Return in the terminal to send it.` with `Show in Terminal`. Held `finished` messages never
+expire after 24 h — they wait while the parent row exists; held `message` rows still fail after
+24 h with reason `prompt_not_cleared`, which names the cause to the sender. At daemon
 start, a row left in `delivering` is never retried: it becomes `failed` with reason
 `unknown_after_restart` and the sender gets the failure line. A message may therefore be lost
 on a crash, never doubled.
@@ -527,6 +533,7 @@ Every string above lives in a presentation model with a test (owner rule).
 | D37 | After a merge every launch reinstalls when the installed id differs from the row's | decided by the agent |
 | D38 | PROJ-09 amended: a merge moves the merged bench's targets with their trees | ask #1548 |
 | D39 | A `typed` delivery is final (never re-pasted); the sender is told it waits in the prompt | decided by the agent |
+| D40 | A message left in a prompt is flagged on the row and pane; finish reports never expire while the parent exists | decided by the agent |
 
 ## Left to the builder
 Exact migration number; how `CodeRoot` encodes the folder id in its defaults key; the hub's
