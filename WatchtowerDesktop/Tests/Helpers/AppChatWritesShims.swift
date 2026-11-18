@@ -8,51 +8,6 @@ import WatchtowerTestSupport
 // moved to Go (`ChatWritesTestShims` holds the Core ones): each wires a
 // `FakeChatTower` over the test's own database.
 
-extension ChatViewModel {
-    convenience init(
-        dbManager: DatabaseManager,
-        pool: ChatSessionPool,
-        provider: AIProvider = .claude,
-        cliRunner: CLIRunnerProtocol? = nil,
-        preferredProviderSource: (() -> AIProvider)? = nil,
-        defaults: UserDefaults = .standard,
-        attachmentsRoot: URL? = ChatAttachmentStore.defaultRootDir(),
-        makeTurnID: @escaping () -> String = { UUID().uuidString },
-        leaseClock: @escaping () -> Date = Date.init
-    ) {
-        self.init(dbManager: dbManager, pool: pool, writes: .fake(dbManager.dbPool), provider: provider,
-                  cliRunner: cliRunner, preferredProviderSource: preferredProviderSource, defaults: defaults,
-                  attachmentsRoot: attachmentsRoot, makeTurnID: makeTurnID, leaseClock: leaseClock)
-    }
-}
-
-extension ChatHistoryViewModel {
-    /// `attachmentsRoot` is ignored: Go removes a deleted chat's files.
-    convenience init(dbManager: DatabaseManager, attachmentsRoot: URL? = nil, defaults: UserDefaults = .standard) {
-        self.init(dbManager: dbManager, writes: .fake(dbManager.dbPool), defaults: defaults)
-    }
-}
-
-extension ProjectDetailViewModel {
-    convenience init(
-        projectID: Int64,
-        dbPool: DatabasePool,
-        debounce: Duration = .milliseconds(500),
-        attachmentsRoot: URL? = nil,
-        importFile: @escaping (URL, Int64) async throws -> ChatAttachment,
-        onPromptChanged: @escaping (Int64) -> Void = { _ in }
-    ) {
-        self.init(projectID: projectID, dbPool: dbPool, writes: .fake(dbPool), debounce: debounce,
-                  importFile: importFile, onPromptChanged: onPromptChanged)
-    }
-}
-
-extension ProjectDetailViewModel {
-    static func storeImporter(dbPool: DatabasePool, rootDir: URL?) -> (URL, Int64) async throws -> ChatAttachment {
-        storeImporter(dbPool: dbPool, rootDir: rootDir, writes: .fake(dbPool))
-    }
-}
-
 extension TargetAssistantViewModel {
     convenience init(
         target: Target,

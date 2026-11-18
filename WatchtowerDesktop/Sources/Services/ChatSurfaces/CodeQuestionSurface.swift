@@ -73,7 +73,7 @@ enum CodeQuestionSurface {
         let provider = choice.provider.rawValue
         let model = choice.model.isEmpty ? nil : choice.model
         let created: ChatNewResponse = try await writes.perform(.chatNew) {
-            ChatNewRequest(requestID: $0, routing: ChatRouting(automatic: false, provider: provider, model: model),
+            ChatNewRequest(requestID: $0, routing: ChatModelPick(automatic: false, provider: provider, model: model),
                            context: ChatContext(type: contextType, id: contextID, title: title))
         }
         return created.conversationID
