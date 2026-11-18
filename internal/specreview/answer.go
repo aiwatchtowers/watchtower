@@ -158,7 +158,10 @@ type reviewSnapshot struct {
 
 func (s *reviewSnapshot) rendered() *plainDoc {
 	if s.doc == nil {
-		d := renderDocument(s.markdown)
+		// cmark (the Desktop's renderer) reads CRLF and CR as line feeds;
+		// goldmark keeps the CR in a fenced code line. Chapter offsets
+		// were cut from the original text, only the rendering is normalised.
+		d := renderDocument(strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(s.markdown))
 		s.doc = &d
 	}
 	return s.doc

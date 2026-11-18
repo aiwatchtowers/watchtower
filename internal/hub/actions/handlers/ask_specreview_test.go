@@ -50,19 +50,13 @@ func TestSpecReviewAnswerCarriesContextLikeDesktop(t *testing.T) {
 	}
 }
 
-// anchorFixtures is WatchtowerKit/Tests/Fixtures/asks/anchor-fixtures.json,
-// the review comment anchors Core's CommentAnchor and the Kit's port make.
+// anchorFixtures is the part of WatchtowerKit/Tests/Fixtures/asks/anchor-fixtures.json
+// this package's one case reads (internal/specreview pins the whole file).
 type anchorFixtures struct {
-	ContextLength int `json:"context_length"`
-	Cases         []struct {
+	Cases []struct {
 		Name     string `json:"name"`
 		Markdown string `json:"markdown"`
-		Text     string `json:"text"`
-		Headings []struct {
-			Offset int    `json:"offset"`
-			Title  string `json:"title"`
-		} `json:"headings"`
-		Anchor struct {
+		Anchor   struct {
 			Quote   string `json:"quote"`
 			Prefix  string `json:"prefix"`
 			Suffix  string `json:"suffix"`
@@ -80,9 +74,6 @@ func loadAnchorFixtures(t *testing.T) anchorFixtures {
 	var f anchorFixtures
 	if err := json.Unmarshal(raw, &f); err != nil {
 		t.Fatal(err)
-	}
-	if len(f.Cases) == 0 {
-		t.Fatal("no cases")
 	}
 	return f
 }

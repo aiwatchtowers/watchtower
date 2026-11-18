@@ -1395,6 +1395,71 @@
    "note": "",
    "verdict": ""
   },
+  "ledger": null,
+  "marks": {
+   "bs:1": {
+    "state": "comment",
+    "body": "add it",
+    "about": ""
+   },
+   "o:1": {
+    "state": "comment",
+    "body": "",
+    "about": "Gone"
+   }
+  },
+  "name": "crlf_snapshot_with_fenced_code",
+  "result": {
+   "summary": "s",
+   "chapters": [],
+   "blind_spots": [
+    {
+     "key": "bs:1",
+     "text": "No test step",
+     "why": "w",
+     "chapter": "ch:0",
+     "where": {
+      "heading": "## Steps",
+      "quote": "run make test"
+     }
+    }
+   ]
+  },
+  "snapshot": "# Spec\r\n\r\n## Steps\r\n\r\n```\r\nrun make test\r\n```\r\n\r\nAfter.\r\n",
+  "verdict": "",
+  "want": {
+   "answers": [],
+   "checklist": [],
+   "comments": [
+    {
+     "body": "No test step — add it",
+     "heading": "Steps",
+     "item_key": "bs:1",
+     "prefix": "Spec\n\nSteps\n\n",
+     "quote": "run make test",
+     "suffix": "\n\nAfter.\n\n"
+    },
+    {
+     "body": "From the previous run: Gone",
+     "heading": "Steps",
+     "item_key": "o:1",
+     "prefix": "Spec\n\nSteps\n\nrun make test\n\n",
+     "quote": "After.",
+     "suffix": "\n\n"
+    }
+   ],
+   "note": "",
+   "verdict": ""
+  }
+ },
+ {
+  "base": {
+   "answers": [],
+   "checklist": [],
+   "comments": [],
+   "note": "",
+   "verdict": ""
+  },
   "ledger": [
    {
     "key": "bs:1",

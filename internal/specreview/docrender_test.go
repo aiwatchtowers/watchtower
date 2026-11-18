@@ -277,6 +277,7 @@ func TestRenderPlainFollowsDocumentRendering(t *testing.T) {
 		t.Fatalf("headings = %+v", doc.headings)
 	}
 }
+
 // The first-heading fallback's quote (the first body line, markers rendered
 // away) is found again, under the rendered heading nearest before it.
 func TestSpecReviewFallbackAnchorIsRelocated(t *testing.T) {
