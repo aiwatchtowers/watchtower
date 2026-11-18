@@ -36,7 +36,7 @@ A second, smaller defect: Go `sessionstate.Load` (hub actions: session input, as
 | D8 | Wire: `state_kind` `spec_review` is appended to the Kit's `Kind.knownValues`; tone stays `green`, so no new tone | decided by the agent (wire detail) |
 | D9 | One caption for the whole loop, no "reviewer working" / "findings sent" split | ask #1497 |
 | D10 | Quick delete off (✕ asks first, like a session with an open ask); Home lists it among the active states, after Agents working, opening the terminal pane | ask #1497 |
-| D11 | Phone: the hub's `session_counts` counts it in `working` (green, like running and agents working); the Sessions tab groups it under Working; Now's ended list leaves it out (it filters on stopped/finished/failed) | decided by the agent (follows D2: green = in progress) |
+| D11 | Phone: no phone code change. A live session in Spec review lands under Working through the Sessions tab's existing default (live → working), the hub's `session_counts` counts it in `working` (green, like running and agents working), and Now's ended list leaves it out (it filters on stopped/finished/failed). A not-live one falls to the default's ended group, the same on old and new phones — the corner case the owner chose not to handle | follows D2 (ask #1492) and D4 (ask #1497) |
 | D12 | The "hidden by the author loop" predicate lives once in `internal/db` (`db.AskInSpecLoopSQL(alias)`); `OwnerAskFilter.ExcludeSpecLoop`, the hub's `askVisible`, `sessionstate.Load` and `handlers/ask.go` all use it | decided by the agent (refactor, no behaviour change) |
 
 ## 4. The rule
@@ -77,14 +77,14 @@ Hook-driven states keep winning: while the agent answers findings it is Working;
 ### 5.2 Go
 
 - `internal/sessionstate`: `Row.SpecReviewRound`; `StateSpecReview = "spec_review"`; `Resolve` as §4; `IsIdle` lists it with the turn-ended states; `Load` adds the shared predicate (D12) negated to its three counts and the round subquery (D5).
-- `internal/db`: `AskInSpecLoopSQL(alias string) string` — `EXISTS (SELECT 1 FROM spec_reviews r WHERE r.ask_id = <alias>.id AND r.loop = 'author')`; `sources.askVisible` becomes `"NOT " + db.AskInSpecLoopSQL("a")`, the `ExcludeSpecLoop` filter and `handlers/ask.go` call it too (`sessionstate` already imports `db`, so no import cycle). The Swift twin `OwnerAskQueries.notInSpecLoop` stays; a Go test pins the two strings' predicate against one fixture DB (a loop ask hidden, a revealed one visible).
+- `internal/db`: `AskInSpecLoopSQL(alias string) string` — `EXISTS (SELECT 1 FROM spec_reviews r WHERE r.ask_id = <alias>.id AND r.loop = 'author')`; `sources.askVisible` becomes `"NOT " + db.AskInSpecLoopSQL("a")`, the `ExcludeSpecLoop` filter and `handlers/ask.go` call it too (`sessionstate` already imports `db`, so no import cycle). The Swift twin `OwnerAskQueries.notInSpecLoop` stays; the two sides are pinned by one shared fixture, `internal/db/testdata/spec_loop_asks.json` (asks with their `spec_reviews.loop`: `author` hidden; `owner`, `''` and no row visible): Go's test runs `AskInSpecLoopSQL` over it, Swift's `OwnerAskQueriesSpecLoopFixtureTests` (Tests/Core) runs `notInSpecLoop` over the same rows in a temp GRDB database, both asserting the expected visible ids.
 - `internal/hub/slices/sources/terminal_session.go`: the read adds the round subquery; `resolveState` maps `StateSpecReview` → `kindSpecReview`; `caption()`, tone, glyph as §5.1; `counts` adds it to `Working` (D11); the payload is unchanged in shape (`state_kind` = `spec_review`).
 - The shared fixture `internal/sessionstate/testdata/status_cases.json` gains `spec_review_round` on every row (0) and the cases of §8; `SessionAgentStatusFixtureTests` reads it on the Swift side.
 
 ### 5.3 Kit and phone
 
 - `TerminalSessionState.Kind.specReview` (`"spec_review"`) appended to `knownValues` (D8). The phone draws caption, tone, glyph and ring as given (PROJ-11); an older phone decodes the open value and draws the same caption/tone/glyph.
-- The phone's own per-kind rules: `WorkbenchModels` session grouping gets an explicit `.specReview` → `.working` (today the `default` branch already gives working for a live session, ended for a not-live one; the explicit case makes a ring session Working too, matching the hub's count); `NowModel`'s ended list filters on stopped/finished/failed, so it leaves the state out with no change; `WorkchatStateCard` falls to its default (no card). Tests: `WorkbenchSessionsOrderTests` and `NowWiringTests` gain a spec-review case (Task 3).
+- The phone's own per-kind rules need no change (D11): `WorkbenchModels` session grouping's `default` gives working for a live session and ended for a not-live one; `NowModel`'s ended list filters on stopped/finished/failed; `WorkchatStateCard` falls to its default (no card). Tests pin the outcome: `WorkbenchSessionsOrderTests` and `NowWiringTests` gain a spec-review case (Task 3).
 - Demo seed: the website workbench gains session 22 "Checkout spec" in Spec review · round 2 (counts `working: 2`) for the screenshot tour.
 
 ## 6. Writers and races
@@ -121,7 +121,8 @@ The state is derived; nothing new is written.
 - Hub `counts`: a spec-review session counts in `working` (Task 1).
 - `db.AskInSpecLoopSQL`: on one fixture DB a loop ask is hidden and a revealed one visible through `ListOwnerAsks(ExcludeSpecLoop)`, the slice read and `sessionstate.Load` alike (Task 1).
 - Kit: `Kind.specReview` decodes, `knownValues` order appended (Task 3).
-- Phone: `WorkbenchSessionsOrderTests` — live and ring spec-review sessions group under Working; `NowWiringTests` — not in the ended list; `WorkbenchWiringTests` counts updated for the demo session (Task 3).
+- Shared fixture `spec_loop_asks.json`: Go `TestAskInSpecLoopSQLFixture` and Swift `OwnerAskQueriesSpecLoopFixtureTests` give the same visible ids (Tasks 1, 2).
+- Phone: `WorkbenchSessionsOrderTests` — a live spec-review session groups under Working, a ring one under Ended; `NowWiringTests` — not in the ended list; `WorkbenchWiringTests` counts updated for the demo session (Task 3).
 - Snapshot check of the Mac panel and the phone Sessions tab against the mockups (Tasks 2, 3).
 
 ## 9. Contracts touched (owner approved in ask #1492)
