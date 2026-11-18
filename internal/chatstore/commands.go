@@ -70,7 +70,7 @@ func refuseMainChatTx(tx *sql.Tx, conv int64) error {
 	return nil
 }
 
-// ErrNotEmbedded: a write of an embedded chat (chat.reply.finish,
+// ErrNotEmbedded refuses a write of an embedded chat (chat.reply.finish,
 // chat.message.append, `ai query --persist`'s BeginEmbedded) for a chat that
 // is not one — the main chat's rows are the chat engine's alone.
 var ErrNotEmbedded = errors.New("not an embedded chat")
