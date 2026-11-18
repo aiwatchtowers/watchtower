@@ -61,7 +61,7 @@ const (
 	publishReasonNoDraft         = "no_draft"
 	publishReasonDraftUnreadable = "draft_unreadable"
 	publishReasonNoCompany       = "no_company"
-	publishReasonRenamed         = "company_renamed" // a check stored the company under another name
+	publishReasonRenamed         = "company_renamed" // a check stored the company under another name, or the name is a personal project's
 	publishReasonSlackApp        = "slack_app_missing"
 	publishReasonTokenMissing    = "token_missing"
 	publishReasonBundle          = "invalid_bundle"
@@ -242,6 +242,9 @@ func publishCompany(ctx context.Context, deps companyPublishDeps, in companyPubl
 	stored, haveStored, err := deps.store.Get(slug, "")
 	if err != nil {
 		return companyPublishResult{}, fmt.Errorf("reading the stored company %s: %w", slug, err)
+	}
+	if haveStored && stored.Bundle.Personal {
+		return refusedPublish(publishReasonRenamed, fmt.Sprintf("%q is your own Google project's name on this Mac; publish under another name", name)), nil
 	}
 	if haveStored && stored.Bundle.Company != name {
 		return refusedPublish(publishReasonRenamed, fmt.Sprintf("this setup is stored as %q; publish it under that name", stored.Bundle.Company)), nil

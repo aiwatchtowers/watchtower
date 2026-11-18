@@ -352,6 +352,12 @@ func TestPublish_DeletesDraftOnlyOnOK(t *testing.T) {
 				panic(err)
 			}
 		}, companyPublishInput{Company: "Acme", ConfigToken: publishTestToken}, publishRefused, publishReasonIncomplete},
+		{"the name is a personal Google project's", func(h *publishHarness) {
+			if err := h.store.Save("acme", companybundle.Bundle{V: 1, Company: "Acme", Personal: true,
+				Google: &companybundle.Google{ClientID: "1234-abcd.apps.googleusercontent.com", ClientSecret: "s"}}); err != nil {
+				panic(err)
+			}
+		}, companyPublishInput{Company: "Acme", ConfigToken: publishTestToken}, publishRefused, publishReasonRenamed},
 		{"renamed after a check stored it", func(h *publishHarness) {
 			if err := h.store.Save("acme", companybundle.Bundle{V: 1, Company: "Acme"}); err != nil {
 				panic(err)
