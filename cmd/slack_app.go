@@ -278,6 +278,11 @@ func runSlackAppPending(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	if attach && !asJSON && res.Kind == slackapp.KindOK {
+		fmt.Fprintf(cmd.OutOrStdout(), "Recorded app %s (client id %s) for %s. Next: pipe a configuration token into 'watchtower slack app link' to write the connect link.\n",
+			res.AppID, res.ClientID, res.TeamID)
+		return nil
+	}
 	return finishSlackAppRun(cmd, enc, res, asJSON)
 }
 

@@ -321,3 +321,15 @@ func TestAppSetup_PendingCLI(t *testing.T) {
 	require.NoError(t, runSlackAppPending(pc, nil))
 	assert.Equal(t, "no_pending", jsonLines(t, out.String())[0]["result"])
 }
+
+func TestAppSetup_PendingAttachHumanNextStep(t *testing.T) {
+	setupSlackAppWorkspace(t)
+	fake := &fakeSlackAppServer{garbled: true}
+	fake.serve(t)
+	c, _, _ := slackAppTestCmd(slackAppTestToken+"\n", map[string]string{"json": "true"})
+	require.NoError(t, runSlackAppCreate(c, nil))
+	pc, out, _ := slackAppTestCmd("", map[string]string{"team": "T0ACME", "attach": "true", "app-id": "A0NEW", "client-id": "1111.2222"})
+	require.NoError(t, runSlackAppPending(pc, nil))
+	assert.Contains(t, out.String(), "slack app link")
+	assert.NotContains(t, out.String(), "ready")
+}

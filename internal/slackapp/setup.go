@@ -500,7 +500,7 @@ func (r *Runner) Adopt(ctx context.Context, cfgToken, appIDFlag, confirmAppID st
 // team has no pending record.
 func (r *Runner) ClearPending(team string) (Result, error) {
 	return r.locked(func() (Result, error) {
-		s, fail, err := r.pending(team)
+		s, fail, err := r.pending(team, false)
 		if fail != nil || err != nil {
 			return derefResult(fail), err
 		}
@@ -513,7 +513,9 @@ func (r *Runner) ClearPending(team string) (Result, error) {
 
 // AttachPending fills team's pending setup record with the app the owner
 // found on api.slack.com/apps (its App ID and Client ID, format-checked);
-// the setup then continues with `slack app link`.
+// the setup then continues with `slack app link`. Until the link is
+// written it may run again to correct a mistyped id; once the link is
+// written the record is no longer pending (KindNoPending).
 func (r *Runner) AttachPending(team, appID, clientID string) (Result, error) {
 	return r.locked(func() (Result, error) {
 		if !appIDPattern.MatchString(appID) {
@@ -524,7 +526,7 @@ func (r *Runner) AttachPending(team, appID, clientID string) (Result, error) {
 			return Result{Kind: KindBadIDs, Code: CodeClientIDFormat, TeamID: team,
 				Error: fmt.Sprintf("%q is not a Client ID (digits.digits; Basic Information page)", clientID)}, nil
 		}
-		s, fail, err := r.pending(team)
+		s, fail, err := r.pending(team, true)
 		if fail != nil || err != nil {
 			return derefResult(fail), err
 		}
@@ -536,13 +538,16 @@ func (r *Runner) AttachPending(team, appID, clientID string) (Result, error) {
 	})
 }
 
-// pending returns team's pending record, or KindNoPending.
-func (r *Runner) pending(team string) (db.SlackAppSetup, *Result, error) {
+// pending returns team's pending record, or KindNoPending. withIDs also
+// accepts a record with ids whose link is not written yet (attach's
+// correction); clear never does: a record with ids may be one create made,
+// and dropping it would let create make a second app.
+func (r *Runner) pending(team string, withIDs bool) (db.SlackAppSetup, *Result, error) {
 	s, ok, err := r.record(team)
 	if err != nil {
 		return db.SlackAppSetup{}, nil, err
 	}
-	if !ok || s.AppID != "" {
+	if !ok || (s.AppID != "" && (!withIDs || s.LinkWritten)) {
 		return db.SlackAppSetup{}, &Result{Kind: KindNoPending, TeamID: team}, nil
 	}
 	return s, nil, nil

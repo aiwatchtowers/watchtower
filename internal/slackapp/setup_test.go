@@ -674,19 +674,27 @@ func TestPending_Attach(t *testing.T) {
 		assert.Equal(t, KindBadIDs, res.Kind)
 		assert.Equal(t, tc.code, res.Code)
 	}
-	res, err := h.r.AttachPending("T0ACME", "A0NEW", "1111.2222")
+	res, err := h.r.AttachPending("T0ACME", "A0TYPO", "1111.9999")
 	require.NoError(t, err)
 	assert.Equal(t, KindOK, res.Kind)
+	res, err = h.r.ClearPending("T0ACME")
+	require.NoError(t, err)
+	assert.Equal(t, KindNoPending, res.Kind, "a record with ids is never cleared (it may be create's)")
+	res, err = h.r.AttachPending("T0ACME", "A0NEW", "1111.2222")
+	require.NoError(t, err)
+	assert.Equal(t, KindOK, res.Kind, "a mistyped attach is corrected before the link is written")
 	assert.Equal(t, "A0NEW", res.AppID)
+	assert.Equal(t, "1111.2222", h.setups(t)[0].ClientID)
 	assert.Equal(t, StageInstall, h.stage(t))
 
 	res, err = h.r.Link(context.Background(), cfgToken, "")
 	require.NoError(t, err)
 	assert.Equal(t, KindOK, res.Kind, "the setup continues with link")
 
-	res, err = h.r.AttachPending("T0ACME", "A0NEW", "1111.2222")
+	res, err = h.r.AttachPending("T0ACME", "A0OTHER", "1111.3333")
 	require.NoError(t, err)
-	assert.Equal(t, KindNoPending, res.Kind, "a filled record is not pending")
+	assert.Equal(t, KindNoPending, res.Kind, "once the link is written the ids stay")
+	assert.Equal(t, "A0NEW", h.setups(t)[0].AppID)
 	assert.Equal(t, 1, h.api.creates)
 }
 
