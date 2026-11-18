@@ -24,7 +24,7 @@
 **Why locked:** Background AI spends the owner's plan or money and sends their data to a model without a gesture. The owner's answer is the only thing that starts it; a gate missed anywhere (a new phase, a component built without a reader, a new spawn) would spend in the background while the app says "paused".
 
 **Test guards:**
-- `internal/daemon/bgai_cycle_test.go::TestBGAI01_PausedCycleMakesNoModelCall`, `::TestBGAI01_NilReaderFailsClosed`, `::TestBGAI01_RunStartedBeforePauseFinishes`
+- `internal/daemon/bgai_cycle_test.go::TestBGAI01_PausedCycleMakesNoModelCall`, `::TestBGAI01_PausedCycleSkipsMemory`, `::TestBGAI01_NilReaderFailsClosed`, `::TestBGAI01_RunStartedBeforePauseFinishes`
 - `internal/automations/bgai_default_test.go::TestBGAI01_NilReaderFailsClosed`
 - `internal/daemon/ai_consent_test.go::TestBGAI01_PauseMidCycleFinishesPhaseSkipsNext`, `::TestBGAI01_PauseMidCycleSkipsWithoutErrorRow`, `::TestBGAI01_PausedHoldsBackfillWhole`, `::TestBGAI01_PausedTrackGroupSkipsLegacyTracksAndRollups`, `::TestBGAI01_PausedLegacyMorningBriefSpendsNothing`, `::TestBGAI01_PausedLegacyIdeaFinderStampsNothing`, `::TestBGAI01_PausedLegacyCustomTrackScanWritesNothing`, `::TestBGAI01_ErrPausedSpendsNoAttempt`, `::TestBGAI01_PausedLegacyMorningBriefKeepsConflictPhase`, `::TestBGAI01_PausedSkipsActiveMorningBriefSlot`, `::TestDaemon_ConsentLogOncePerChange`
 - `internal/daemon/bgai_spawn_test.go::TestBGAI01_EveryDaemonSpawnSetsOrigin`, `::TestBGAI01_SpawnCheckerCatchesNewSpawn`

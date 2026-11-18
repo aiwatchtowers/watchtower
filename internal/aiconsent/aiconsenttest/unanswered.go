@@ -13,8 +13,8 @@ import (
 // aiconsent.Current reading a real config.yaml where the owner has not
 // answered (no ai.background_runs key) and no profile is installed: exactly
 // what a component left on its nil (default) reader reads in production
-// before the answer. At the end the config path is cleared and
-// AllowByDefault is back. Process-wide: never call it from a parallel test.
+// before the answer. At the end the previous config path and override are
+// back. Process-wide: never call it from a parallel test.
 func Unanswered(t testing.TB) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -22,11 +22,11 @@ func Unanswered(t testing.TB) {
 		t.Fatal(err)
 	}
 	policytest.Set(t, nil)
-	aiconsent.SetCurrentOverrideForTest(nil)
-	aiconsent.SetConfigPath(path)
+	prevOverride := aiconsent.SetCurrentOverrideForTest(nil)
+	prevPath := aiconsent.SetConfigPath(path)
 	t.Cleanup(func() {
-		aiconsent.SetConfigPath("")
-		AllowByDefault()
+		aiconsent.SetConfigPath(prevPath)
+		aiconsent.SetCurrentOverrideForTest(prevOverride)
 	})
 	if s := aiconsent.Current(); s.Allowed() || s.Reason != aiconsent.ReasonUnanswered {
 		t.Fatalf("unanswered config reads %+v; want paused, not answered", s)

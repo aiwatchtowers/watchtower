@@ -194,18 +194,18 @@ func confirmBackgroundAI(in io.Reader, out io.Writer, cfg *config.Config) (bool,
 	return false, nil
 }
 
-// subscriptionOf is the registry's plan facts of provider id; nil for an
-// unknown id or a provider with no plan of the owner's.
-func subscriptionOf(id string) *providers.Subscription {
-	if p, ok := providers.Lookup(id); ok {
-		return p.Subscription
+// subscriptionOf is the registry's plan facts of provider id; ok is false
+// for an unknown id or a provider with no plan of the owner's.
+func subscriptionOf(id string) (sub providers.Subscription, ok bool) {
+	if p, found := providers.Lookup(id); found && p.Subscription != (providers.Subscription{}) {
+		return p.Subscription, true
 	}
-	return nil
+	return providers.Subscription{}, false
 }
 
 // consentAgentName is the agent the consent text names (spec §5.1).
 func consentAgentName(id string) string {
-	if sub := subscriptionOf(id); sub != nil {
+	if sub, ok := subscriptionOf(id); ok {
 		return sub.AgentName
 	}
 	if name := providers.ByID(id).DisplayName; name != "" {
@@ -217,7 +217,7 @@ func consentAgentName(id string) string {
 // consentPlanName is the plan a subscription agent's runs draw on; "" for a
 // provider with none.
 func consentPlanName(id string) string {
-	if sub := subscriptionOf(id); sub != nil {
+	if sub, ok := subscriptionOf(id); ok {
 		return sub.Plan
 	}
 	return ""
@@ -233,13 +233,13 @@ func consentText(agent, reserve string, pollMinutes, backfillDays int) string {
 	b.WriteString("Watchtower uses " + name + " on this Mac to write your digests, briefings, tracks and people cards, " +
 		"and to run your automations. Most of this starts on its own, on a schedule or after each sync, " +
 		"without you asking each time.\n\n")
-	sub := subscriptionOf(agent)
-	if sub != nil {
+	sub, subscribed := subscriptionOf(agent)
+	if subscribed {
 		b.WriteString("These runs use " + sub.Usage + ". Watchtower never pays for, sees or shares your sign-in.\n")
 	} else {
 		b.WriteString("These runs use " + name + ", the model server set in Settings → AI.\n")
 	}
-	if plan := consentPlanName(reserve); plan != "" && sub != nil && reserve != agent {
+	if plan := consentPlanName(reserve); plan != "" && subscribed && reserve != agent {
 		b.WriteString("When " + sub.Limit + " usage limit is reached, runs switch to " + consentAgentName(reserve) +
 			" and use " + plan + ".\n")
 	}

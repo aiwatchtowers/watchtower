@@ -219,6 +219,11 @@ func TestBGAI01_PausedCycleMakesNoModelCall(t *testing.T) {
 	}
 	assert.Zero(t, countRows(t, database,
 		`SELECT COUNT(*) FROM automation_runs WHERE status IN ('running', 'succeeded')`), "paused: no started run")
+	for _, id := range []string{morningBriefID, trackMyThreadsID, ideaFinderID} {
+		a, err := database.GetBuiltinAutomation(id)
+		require.NoError(t, err)
+		assert.Empty(t, runsOf(*a), "paused: AI built-in %s gets no run row in any status", id)
+	}
 	assert.Empty(t, runsOf(sched), "paused: the due schedule recipe gets no run")
 	assert.Empty(t, runsOf(event), "paused: the matching event recipe gets no run")
 	assert.Positive(t, slackCalls.Load(), "Slack syncs while paused")
@@ -309,4 +314,31 @@ func (f generatorFunc) Generate(ctx context.Context, _, _, sessionID string) (st
 		return "", nil, sessionID, err
 	}
 	return "done", nil, sessionID, nil
+}
+
+// TestBGAI01_PausedCycleSkipsMemory (BGAI-01): with memory on, messages to
+// extract from and no history backfill to wait for, a paused cycle writes
+// no memory pipeline_runs row and makes no call; allowed, the same cycle
+// runs the memory phase.
+func TestBGAI01_PausedCycleSkipsMemory(t *testing.T) {
+	fc := newFakeConsent(consentPausedByOwner)
+	d, database, _, _ := newConsentCycleDaemon(t, fc)
+	quiet := log.New(io.Discard, "", 0)
+	d.SetLogger(quiet)
+	d.config.Memory.Enabled = true
+	seedThreeDigestChannels(t, database)
+	gen := &cycleGen{}
+	vault, err := memory.OpenVault(filepath.Join(d.config.WorkspaceDir(), "memory"))
+	require.NoError(t, err)
+	d.SetMemoryPipeline(memory.NewPipeline(database, vault, gen, d.config.Memory, quiet.Printf))
+
+	d.runSync(context.Background(), context.Background())
+	require.Empty(t, historyBackfillDump(t, database), "no backfill for memory to wait on")
+	assert.NotContains(t, pipelineRunNames(t, database), "memory", "paused: no memory run")
+	assert.Zero(t, gen.calls.Load(), "paused: no memory call")
+
+	fc.set(consentAllowed)
+	d.runSync(context.Background(), context.Background())
+	assert.Contains(t, pipelineRunNames(t, database), "memory", "allowed: the memory phase runs")
+	assert.Positive(t, gen.calls.Load(), "allowed: memory calls the model")
 }

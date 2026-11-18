@@ -44,10 +44,10 @@ type Provider struct {
 	ReportName   string `json:"-"`
 	ReportOption string `json:"-"`
 	// Subscription is set for a provider whose runs draw on the owner's own
-	// plan; nil for one with none (a model server). It feeds the background
+	// plan; the zero value for one with none (a model server). It feeds the background
 	// AI consent text of `watchtower ai background allow` (spec
 	// 2026-11-17-background-ai-consent-design.md §5.1).
-	Subscription *Subscription `json:"-"`
+	Subscription Subscription `json:"-"`
 }
 
 // Subscription is how the consent text names a provider that runs on the
@@ -76,7 +76,7 @@ var registry = []Provider{
 		KnownModels:   []string{"haiku", "sonnet", "opus"},
 		ReportName:    "Claude Code",
 		ReportOption:  "Claude Code",
-		Subscription: &Subscription{
+		Subscription: Subscription{
 			AgentName: "Claude Code",
 			Plan:      "your Claude subscription",
 			Usage: "your own Claude subscription and count toward its usage limits, " +
@@ -96,7 +96,7 @@ var registry = []Provider{
 		DefaultStrong: "gpt-5.6-sol",
 		ReportName:    "Codex",
 		ReportOption:  "Codex",
-		Subscription: &Subscription{
+		Subscription: Subscription{
 			AgentName: "Codex",
 			Plan:      "your ChatGPT plan",
 			Usage: "your own ChatGPT plan and count toward its Codex usage limits, " +

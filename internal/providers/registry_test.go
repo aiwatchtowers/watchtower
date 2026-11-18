@@ -162,14 +162,14 @@ func TestLookup_ExactIDOnly(t *testing.T) {
 func TestRegistry_SubscriptionRowsComplete(t *testing.T) {
 	for _, p := range All() {
 		s := p.Subscription
-		if s == nil {
+		if s == (Subscription{}) {
 			continue
 		}
 		if p.Kind != "cli" {
 			t.Errorf("%s: a subscription on a %s provider", p.ID, p.Kind)
 		}
 		if s.AgentName == "" || s.Plan == "" || s.Usage == "" || s.Limit == "" {
-			t.Errorf("%s: incomplete subscription %+v", p.ID, *s)
+			t.Errorf("%s: incomplete subscription %+v", p.ID, s)
 		}
 	}
 }
