@@ -1,0 +1,14 @@
+{"event":"listening","port":18551}
+{"event":"port_busy","port":18551}
+{"event":"link","flow":"f1","team_id":"T0ACME","client_id":"1111.2222"}
+{"event":"browser","flow":"f1"}
+{"event":"connected","flow":"f1","account_id":7,"team_id":"T0ACME","team_name":"Acme","rebound_from":"3333.4444"}
+{"event":"failed","flow":"f2","reason":"team_mismatch","message":"m"}
+{"event":"failed","flow":"f2","reason":"other_user","message":"m"}
+{"event":"failed","flow":"f2","reason":"denied","message":"m"}
+{"event":"failed","flow":"f2","reason":"cancelled","message":"m"}
+{"event":"failed","flow":"f2","reason":"exchange","message":"m"}
+{"event":"failed","flow":"f2","reason":"policy","message":"m"}
+{"event":"failed","flow":"f2","reason":"purge_running","message":"m"}
+{"event":"failed","flow":"f2","reason":"other","message":"m"}
+{"event":"busy","flow":"f1"}
