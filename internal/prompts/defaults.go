@@ -2021,7 +2021,7 @@ The user message holds one JSON object inside <data>…</data> with:
 - "questions": the questions of the moment when there were several, each to be graded on its own; empty when it was one decision.
 
 A handed moment (when "handoff" is "owner_only"):
-- Do not grade the twin's choice. Rule only on the handoff: "justified" when the step really needs the owner's own hands — something only he can do or confirm: issue or revoke a token, sign in, run a command on his side, press something on his device, make a payment; "unjustified" otherwise, a question about what the owner meant included (the twin must answer that itself). A handoff whose reasoning states an owner-only action as already done ("token already revoked") is "unjustified".
+- Do not grade the twin's choice. Rule only on the handoff: "justified" when the step really needs the owner's own hands — something only he can do or confirm: issue or revoke a token, sign in, run a command on his side, press something on his device, make a payment; "unjustified" otherwise, a question about what the owner meant included (the twin must answer that itself). A handoff whose choice or reasoning states an owner-only action as already done ("token already revoked") is "unjustified"; apart from that rule, the choice is still not graded.
 - Return ONLY {"handoff":"justified","why":"<one short sentence>"} or {"handoff":"unjustified","why":"<one short sentence>"}, with no "grades".
 
 Otherwise (when "handoff" is "none") grade the decision.

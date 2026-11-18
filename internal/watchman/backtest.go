@@ -56,12 +56,15 @@ func BacktestStampPath(workspaceDir string, workbenchID int64) string {
 	return filepath.Join(workspaceDir, "last_watchman_backtest_"+strconv.FormatInt(workbenchID, 10)+".txt")
 }
 
-// BacktestReportPath is the run report of backtest backtestID in the
-// workspace folder: one JSON line per hidden item with its grades and the
-// judge's reasons, no situation or answer fields; the judge's reasons are
-// redacted and clipped. Local workspace data.
-func BacktestReportPath(workspaceDir string, backtestID int64) string {
-	return filepath.Join(workspaceDir, "watchman", "backtest-"+strconv.FormatInt(backtestID, 10)+".jsonl")
+// BacktestReportPath is the run report of backtest backtestID, started at
+// startedAt, in the workspace folder: one JSON line per hidden item with its
+// grades and the judge's reasons, no situation or answer fields; the judge's
+// reasons are redacted and clipped. Local workspace data. The start stamp is
+// in the name because a backtest id can be reused (the table has no
+// AUTOINCREMENT, and a deleted workbench's reports stay).
+func BacktestReportPath(workspaceDir string, backtestID int64, startedAt time.Time) string {
+	return filepath.Join(workspaceDir, "watchman",
+		"backtest-"+strconv.FormatInt(backtestID, 10)+"-"+strconv.FormatInt(startedAt.Unix(), 10)+".jsonl")
 }
 
 // BacktestResult is a run's id and its report: ReportPath is the written
@@ -122,7 +125,7 @@ func Backtest(ctx context.Context, d *db.DB, gen digest.Generator, judge Judge, 
 	if err != nil {
 		return BacktestResult{}, err
 	}
-	report := openBacktestReport(workspaceDir, id)
+	report := openBacktestReport(workspaceDir, id, now)
 	err = backtestRun{ctx: ctx, d: d, gen: gen, judge: judge, store: store, wb: workbenchID, id: id, report: report}.run()
 	res := BacktestResult{ID: id}
 	res.ReportPath, res.ReportError = report.close()
@@ -641,11 +644,11 @@ type backtestReport struct {
 	err     error
 }
 
-func openBacktestReport(workspaceDir string, backtestID int64) *backtestReport {
+func openBacktestReport(workspaceDir string, backtestID int64, startedAt time.Time) *backtestReport {
 	if workspaceDir == "" {
 		return nil
 	}
-	r := &backtestReport{path: BacktestReportPath(workspaceDir, backtestID)}
+	r := &backtestReport{path: BacktestReportPath(workspaceDir, backtestID, startedAt)}
 	if err := os.MkdirAll(filepath.Dir(r.path), 0o700); err != nil {
 		r.abandon("making its folder", err)
 		return r

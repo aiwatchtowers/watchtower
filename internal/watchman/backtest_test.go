@@ -1041,8 +1041,9 @@ func TestBacktest_WritesReportWithJudgeReasons(t *testing.T) {
 	res, err := Backtest(context.Background(), d, gen, judge, nil, wb, ws, btT0.Add(100*time.Hour))
 	require.NoError(t, err)
 	require.Empty(t, res.ReportError)
-	require.Equal(t, BacktestReportPath(ws, res.ID), res.ReportPath)
-	require.Equal(t, filepath.Join(ws, "watchman", fmt.Sprintf("backtest-%d.jsonl", res.ID)), res.ReportPath)
+	start := btT0.Add(100 * time.Hour)
+	require.Equal(t, BacktestReportPath(ws, res.ID, start), res.ReportPath)
+	require.Equal(t, filepath.Join(ws, "watchman", fmt.Sprintf("backtest-%d-%d.jsonl", res.ID, start.Unix())), res.ReportPath)
 	raw, err := os.ReadFile(res.ReportPath)
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), "importer cache case", "no situation text")
@@ -1107,7 +1108,7 @@ func TestBacktest_ReportNeverRemovesWhatItDidNotCreate(t *testing.T) {
 	btAdd(t, d, wb, SourcePermission, CategoryPermission, 30, btT0, "allow")
 	ws := t.TempDir()
 	// The run's id is the first backtest id: 1.
-	occupied := BacktestReportPath(ws, 1)
+	occupied := BacktestReportPath(ws, 1, btT0.Add(100*time.Hour))
 	require.NoError(t, os.MkdirAll(occupied, 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(occupied, "keep"), []byte("x"), 0o600))
 	res, err := Backtest(context.Background(), d, &btGen{}, &btJudge{}, nil, wb, ws, btT0.Add(100*time.Hour))
@@ -1118,4 +1119,29 @@ func TestBacktest_ReportNeverRemovesWhatItDidNotCreate(t *testing.T) {
 	require.FileExists(t, filepath.Join(occupied, "keep"))
 	b, _ := btRows(t, d, wb)
 	require.Equal(t, "done", b.Status)
+}
+
+// TestBacktest_ReportNameSurvivesReusedID: a stale report left under the
+// same id (an old-style name, or another run's start) does not block the
+// new run's report.
+func TestBacktest_ReportNameSurvivesReusedID(t *testing.T) {
+	d, wb := btDB(t)
+	btAdd(t, d, wb, SourcePermission, CategoryPermission, 30, btT0, "allow")
+	ws := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(ws, "watchman"), 0o700))
+	stale := []string{filepath.Join(ws, "watchman", "backtest-1.jsonl"), BacktestReportPath(ws, 1, btT0)}
+	for _, p := range stale {
+		require.NoError(t, os.WriteFile(p, []byte("stale\n"), 0o600))
+	}
+	start := btT0.Add(100 * time.Hour)
+	res, err := Backtest(context.Background(), d, &btGen{}, &btJudge{}, nil, wb, ws, start)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), res.ID)
+	require.Empty(t, res.ReportError)
+	require.Equal(t, BacktestReportPath(ws, 1, start), res.ReportPath)
+	for _, p := range stale {
+		b, err := os.ReadFile(p)
+		require.NoError(t, err)
+		require.Equal(t, "stale\n", string(b), "a stale report is left alone")
+	}
 }

@@ -111,7 +111,11 @@ func TestWatchmanBacktest_JSONKeysPinned(t *testing.T) {
 	assert.Positive(t, r.BacktestID)
 	assert.Equal(t, "done", r.Status)
 	assert.Equal(t, "stop", r.Verdict, "one strong category is not go")
-	assert.Equal(t, watchman.BacktestReportPath(dir, r.BacktestID), r.ReportPath, "the run report lives in the workspace folder")
+	var dbPath string
+	b, _, err := openAgentsTestMain(t, &dbPath).WatchmanBacktestByID(wb, r.BacktestID)
+	require.NoError(t, err)
+	require.NotNil(t, b)
+	assert.Equal(t, watchman.BacktestReportPath(dir, r.BacktestID, b.StartedAt), r.ReportPath, "the run report lives in the workspace folder")
 	assert.Empty(t, r.ReportError)
 	assert.FileExists(t, r.ReportPath)
 	for _, c := range r.Categories {
@@ -133,8 +137,10 @@ func TestWatchmanBacktest_JSONKeysPinned(t *testing.T) {
 	assert.Contains(t, out, "Review approvals, hunk undos, merges and your own rewrites are not measured in phase 1")
 	assert.Contains(t, out, "review_code is measured on your review comments only")
 	assert.Contains(t, out, "Verdict: stop (cost ~$0.00, an estimate")
-	assert.True(t, strings.HasSuffix(strings.TrimSpace(out), "Report: "+watchman.BacktestReportPath(dir, r.BacktestID+1)),
-		"the text output ends with the report path: %q", out)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	last := lines[len(lines)-1]
+	assert.True(t, strings.HasPrefix(last, "Report: "+filepath.Join(dir, "watchman", fmt.Sprintf("backtest-%d-", r.BacktestID+1))) &&
+		strings.HasSuffix(last, ".jsonl"), "the text output ends with the report path: %q", out)
 }
 
 // TestWatchmanBacktest_ReportErrorShown: a report that cannot be written
