@@ -100,16 +100,14 @@ func (r *Runner) SetConsent(c aiconsent.Reader) {
 	r.consent = c
 }
 
-// slotCtx is the ctx a slot's sync run of a executes on, or skip when
-// background AI is paused and a calls a model (BGAI-01). Read after the
-// queued manual run is taken: a Run Now still runs while paused (BGAI-02).
-// A run started while allowed is admitted as unit, so a pause after this
-// check does not cancel it (D12); one that calls no model keeps ctx.
-func (r *Runner) slotCtx(ctx context.Context, a *db.Automation, unit string) (runCtx context.Context, skip bool) {
-	if r.consent().Allowed() {
-		return aiconsent.WithAdmitted(ctx, unit), false
-	}
-	return ctx, automations.AutomationUsesAI(a)
+// pausedFor reports whether a's slot sync run is skipped: background AI is
+// paused and a calls a model (BGAI-01). Read after the queued manual run is
+// taken, so a Run Now still runs while paused (BGAI-02), and again after
+// the gate, before the row. The slot admits nothing: the executor reads
+// consent again when it claims the run, and only a claimed run's calls are
+// admitted (D12).
+func (r *Runner) pausedFor(a *db.Automation) bool {
+	return !r.consent().Allowed() && automations.AutomationUsesAI(a)
 }
 
 // RunSlot runs every built-in at slot, in card order. A built-in whose
@@ -168,8 +166,7 @@ func (r *Runner) runEntry(ctx context.Context, e Entry) SlotOutcome {
 	if queued != nil {
 		return r.execute(ctx, o, queued.ID, false)
 	}
-	runCtx, paused := r.slotCtx(ctx, a, "slot:"+e.ID)
-	if paused {
+	if r.pausedFor(a) {
 		o.Skipped = SkippedPaused
 		return o
 	}
@@ -184,11 +181,15 @@ func (r *Runner) runEntry(ctx context.Context, e Entry) SlotOutcome {
 		o.Skipped = SkippedNotDue
 		return o
 	}
+	if r.pausedFor(a) { // paused while the gate read: still no row
+		o.Skipped = SkippedPaused
+		return o
+	}
 	runID, _, err := r.db.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerSync, Now: now})
 	if err != nil {
 		return fail("queueing its sync run", err)
 	}
-	return r.execute(runCtx, o, runID, true)
+	return r.execute(ctx, o, runID, true)
 }
 
 // execute runs runID inline. A sync run whose claim lost (another run of the

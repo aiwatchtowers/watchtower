@@ -353,19 +353,18 @@ func TestExecutor_BackgroundSyncRunHeldInline(t *testing.T) {
 	}
 }
 
-// A slot's sync run the builtin runner admitted after its own consent check
-// is not held by a pause meanwhile (D12); its model calls run admitted, not
-// as the owner.
-func TestExecutor_AdmittedSlotSyncRunPassesInline(t *testing.T) {
+// An admitted ctx that is not the run's own claim (a daemon phase's, a
+// slot's) does not pass the claim-time hold: the run is held while paused.
+func TestExecutor_AdmittedCallerSyncRunStillHeld(t *testing.T) {
 	daemonProcess(t)
 	f, prim, a := newOwnerPrimitiveFixture(t, newConsent(true))
 	id := f.enqueueReq(t, db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerSync})
-	run, err := f.e.ExecuteBuiltinInline(aiconsent.WithAdmitted(context.Background(), "slot:morning-brief"), id)
-	if err != nil || run.Status != db.RunSucceeded {
-		t.Fatalf("run = %+v, %v; want succeeded", run, err)
+	run, err := f.e.ExecuteBuiltinInline(aiconsent.WithAdmitted(context.Background(), "phase:tracks"), id)
+	if err != nil {
+		t.Fatalf("ExecuteBuiltinInline: %v", err)
 	}
-	if len(prim.origin) != 1 || prim.origin[0] != aiconsent.OriginBackground {
-		t.Fatalf("primitive origins = %v; want one background call", prim.origin)
+	if run.Status != db.RunCancelled || run.Error != automations.BackgroundAIPausedMessage || len(prim.origin) != 0 {
+		t.Fatalf("run = %s %q, %d calls; want held", run.Status, run.Error, len(prim.origin))
 	}
 }
 

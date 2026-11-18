@@ -318,12 +318,6 @@ func (e Entry) Enabled(cfg *config.Config) bool {
 	return false
 }
 
-// UsesAI reports whether any of e's primitives calls a model
-// (automations.PrimitiveUsesAI).
-func (e Entry) UsesAI() bool {
-	return slices.ContainsFunc(e.Primitives, func(p string) bool { return automations.PrimitiveUsesAI[p] })
-}
-
 // Trigger is the trigger e's recipe must keep (automations.IndexBuiltinRow):
 // `sync: <slot>` for a slot built-in, `event: approval` for one with no slot
 // (Needs approval, whose runs only the approval trigger queues).

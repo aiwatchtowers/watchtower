@@ -233,6 +233,8 @@ func (r *Runner) runWatch(ctx context.Context, g WatchGate, a db.Automation) Slo
 		o.Skipped = SkippedNoOwner
 		return o
 	}
+	// Ensured before the paused check: idempotent and mechanical, and a
+	// queued Run Now needs its track.
 	instruction, _ := watch.Instruction([]byte(a.RecipeText))
 	trackID, err := r.db.EnsureWatchTrack(a.ID, owner.ID, a.Name, instruction)
 	if err != nil {
@@ -245,8 +247,7 @@ func (r *Runner) runWatch(ctx context.Context, g WatchGate, a db.Automation) Slo
 	if queued != nil {
 		return r.execute(ctx, o, queued.ID, false)
 	}
-	runCtx, paused := r.slotCtx(ctx, &a, fmt.Sprintf("slot:%d", a.ID))
-	if paused {
+	if r.pausedFor(&a) {
 		o.Skipped = SkippedPaused
 		return o
 	}
@@ -259,11 +260,15 @@ func (r *Runner) runWatch(ctx context.Context, g WatchGate, a db.Automation) Slo
 		o.Skipped = SkippedNotDue
 		return o
 	}
+	if r.pausedFor(&a) { // paused while the gate read: still no row
+		o.Skipped = SkippedPaused
+		return o
+	}
 	runID, _, err := r.db.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerSync, Now: now})
 	if err != nil {
 		return fail("queueing its sync run", err)
 	}
-	return r.execute(runCtx, o, runID, true)
+	return r.execute(ctx, o, runID, true)
 }
 
 // CancelQueuedWatchRuns cancels the queued manual runs (Run Now, Scan from)

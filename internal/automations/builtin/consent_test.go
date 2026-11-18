@@ -8,6 +8,7 @@ import (
 
 	"watchtower/internal/aiconsent"
 	"watchtower/internal/aiconsent/aiconsenttest"
+	"watchtower/internal/automations"
 	"watchtower/internal/db"
 )
 
@@ -59,19 +60,23 @@ func (g flipGate) Due(context.Context, Entry, time.Time) bool {
 	return true
 }
 
-func TestEntry_UsesAI(t *testing.T) {
+// Which built-ins' indexed rows grant AI (automations.AutomationUsesAI),
+// the rule the slot's paused skip reads.
+func TestBuiltinRows_UseAI(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
 	want := map[string]bool{
 		mbID: true, "track-my-threads": true, "idea-finder": true, reactionsID: true,
 		waitingID: false, NeedsApprovalID: false,
 	}
-	for _, e := range All() {
-		w, ok := want[e.ID]
+	for _, id := range allIDs() {
+		w, ok := want[id]
 		if !ok {
-			t.Errorf("built-in %s: no expectation", e.ID)
+			t.Errorf("built-in %s: no expectation", id)
 			continue
 		}
-		if got := e.UsesAI(); got != w {
-			t.Errorf("%s.UsesAI() = %v, want %v", e.ID, got, w)
+		if got := automations.AutomationUsesAI(f.rowOf(t, id)); got != w {
+			t.Errorf("%s uses AI = %v, want %v", id, got, w)
 		}
 	}
 }
@@ -155,20 +160,40 @@ func TestRunner_PausedStillRunsQueuedRunNow(t *testing.T) {
 	}
 }
 
-// A sync run the slot started under consent is admitted: the owner's pause
-// after the slot's check does not cancel it (D12).
-func TestRunner_AdmittedSyncRunFinishesAfterPause(t *testing.T) {
+// A pause while the gate reads still writes no row: the slot checks again
+// before it queues the sync run.
+func TestRunner_PauseDuringGateWritesNoRun(t *testing.T) {
 	daemonProcess(t)
 	f := newFixture(t)
 	f.sync(t)
 	sw := pauseAI(t)
 	sw.paused.Store(false)
 	f.runner.gates[mbID] = flipGate{consent: sw}
+	if o := f.slotOnce(t); o.Skipped != SkippedPaused || o.RunID != 0 {
+		t.Fatalf("slot = %+v; want skipped paused", o)
+	}
+	if n := len(f.runs(t)); n != 0 || len(f.brief.snapshot()) != 0 {
+		t.Errorf("%d runs, %d brief calls; want none", n, len(f.brief.snapshot()))
+	}
+}
+
+// A sync run the executor claimed under consent finishes after a pause
+// (D12): its later model calls are admitted, not refused.
+func TestRunner_AdmittedSyncRunFinishesAfterPause(t *testing.T) {
+	daemonProcess(t)
+	f := newFixture(t)
+	f.sync(t)
+	sw := pauseAI(t)
+	sw.paused.Store(false)
+	f.brief.during = func() { sw.paused.Store(true) }
 	o := f.slotOnce(t)
 	if o.Status != db.RunSucceeded || o.Skipped != "" {
 		t.Fatalf("slot = %+v; want the sync run to finish", o)
 	}
-	if n := len(f.brief.snapshot()); n != 1 {
-		t.Errorf("brief calls = %d, want 1", n)
+	f.plan.mu.Lock()
+	checks := append([]error(nil), f.plan.checks...)
+	f.plan.mu.Unlock()
+	if len(checks) != 1 || checks[0] != nil {
+		t.Errorf("plan call consent checks after the pause = %v; want one admitted call", checks)
 	}
 }

@@ -47,17 +47,21 @@ type fakePrimitive struct {
 	calls []automations.PrimitiveCall
 	// origins is each call's ctx origin (aiconsent.OriginOf).
 	origins []aiconsent.Origin
-	res     automations.PrimitiveResult
-	err     error
+	// checks is aiconsent.Check(ctx) at each call: the per-call backstop.
+	checks []error
+	res    automations.PrimitiveResult
+	err    error
 	// during runs inside each call (a call made while the run is active).
 	during func()
 }
 
 func (p *fakePrimitive) fn(ctx context.Context, c automations.PrimitiveCall) (automations.PrimitiveResult, error) {
 	o, _ := aiconsent.OriginOf(ctx)
+	check := aiconsent.Check(ctx)
 	p.mu.Lock()
 	p.calls = append(p.calls, c)
 	p.origins = append(p.origins, o)
+	p.checks = append(p.checks, check)
 	during, res, err := p.during, p.res, p.err
 	p.mu.Unlock()
 	if during != nil {

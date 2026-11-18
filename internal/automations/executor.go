@@ -430,8 +430,7 @@ func (p *poll) resume(r db.AutomationRun) error {
 // background AI is not allowed, and reports whether it did (spec §4.2,
 // BGAI-01). owner = the caller serves the owner's gesture (an inline path
 // whose ctx is owner-started, D3): such a run is never held, whatever its
-// trigger (BGAI-02); ExecuteBuiltinInline passes an admitted caller the
-// same way. A run claimed or ended meanwhile is left to its owner
+// trigger (BGAI-02). A run claimed or ended meanwhile is left to its owner
 // (held, no error).
 func (e *Executor) heldForConsent(owner bool, r *db.AutomationRun, a *db.Automation, now time.Time) (bool, error) {
 	if owner || !aiconsent.BackgroundTrigger(r.Trigger) || !AutomationUsesAI(a) || e.consent().Allowed() {
@@ -572,12 +571,11 @@ func (e *Executor) ExecuteBuiltinInline(ctx context.Context, runID int64) (*db.A
 		return nil, fmt.Errorf("automation run %d of %q: %w", runID, a.Slug, ErrNotRunnable)
 	}
 	// The reaction-command dispatcher's sync runs come with an
-	// owner-started ctx (D3) and pass; so does a slot's run the runner
-	// admitted after its own consent check (aiconsent.WithAdmitted), which
-	// a pause meanwhile does not cancel (D12).
+	// owner-started ctx (D3) and pass. A slot's sync run is checked here,
+	// at claim time, whatever the slot read before; once claimed, its calls
+	// are admitted as run:<id> (runOrigin) and finish after a pause (D12).
 	owner := ownerStarted(ctx)
-	_, admitted := aiconsent.OriginOf(ctx)
-	if held, err := e.heldForConsent(owner || admitted, run, a, now); err != nil {
+	if held, err := e.heldForConsent(owner, run, a, now); err != nil {
 		return nil, fmt.Errorf("automation run %d: %w", runID, err)
 	} else if held {
 		return e.db.GetAutomationRun(runID)
