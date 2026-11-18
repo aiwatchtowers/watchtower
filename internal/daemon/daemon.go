@@ -16,6 +16,7 @@ import (
 	gosync "sync"
 	"sync/atomic"
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/builtin"
 	"watchtower/internal/briefing"
@@ -167,6 +168,13 @@ type Daemon struct {
 	externalSync     ExternalSyncRunner
 	mediaPipe        *media.Pipeline
 	dayPlanPipeline  DayPlanRunner
+
+	// consent reads the background-AI consent (SetConsent; nil =
+	// aiconsent.Current); consentLogged is the last state consentNow saw,
+	// for the once-per-change paused line. Read on the cycle's goroutine only.
+	consent       aiconsent.Reader
+	consentLogged aiconsent.State
+
 	// mbMu guards what the Morning brief's gate and primitives read and write
 	// (lastBriefing, the briefing/day-plan attempt counters, lastDayPlanDate,
 	// briefNoDataAt, mbOwner, mbNow): a primitive runs on the script's
@@ -701,12 +709,12 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 		d.logger.Printf("sync had errors, but running pipelines on existing data")
 	}
 
-	d.phaseChannelDigests(ctx)
+	d.aiPhase(ctx, "digests", d.phaseChannelDigests)
 	d.phaseUnsnooze()
 	d.phaseApprovalSweep(ctx)
 	d.phaseTranscriptAudioCleanup()
 	// Before the index, so this cycle's descriptions are searchable now.
-	d.phaseMediaDescribe(ctx)
+	d.aiPhase(ctx, "media", d.phaseMediaDescribe)
 	d.phaseKnowledgeIndex(ctx)
 	// After the knowledge index: the fill is mechanical (no AI) and needs no
 	// fresh sync — Slack sync's own writes already reach the new index
@@ -719,17 +727,20 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// Phases 2-4 run in parallel where possible:
 	//   Group A: Track my threads → inject track context → Rollups
 	//   Group B: People Cards (only depends on Phase 1 channel digests)
+	// The consent is read once, when the group starts. Paused, People cards
+	// are skipped; Track my threads still runs, its built-in gating itself
+	// at the slot.
+	tracksCtx, peopleCtx, peopleOn := ctx, ctx, false
+	if d.consentNow().Allowed() {
+		tracksCtx = aiconsent.WithAdmitted(ctx, "phase:tracks")
+		peopleCtx, peopleOn = aiconsent.WithAdmitted(ctx, "phase:people"), true
+	}
 	var phasesWg gosync.WaitGroup
-	phasesWg.Add(2)
 	rollupNow := time.Now()
-	go func() {
-		defer phasesWg.Done()
-		d.phaseTrackMyThreads(ctx, rollupNow)
-	}()
-	go func() {
-		defer phasesWg.Done()
-		d.phasePeopleCards(ctx)
-	}()
+	phasesWg.Go(func() { d.phaseTrackMyThreads(tracksCtx, rollupNow) })
+	if peopleOn {
+		phasesWg.Go(func() { d.phasePeopleCards(peopleCtx) })
+	}
 	phasesWg.Wait()
 
 	// Auto-mark digests and tracks as read based on Slack read cursors.
@@ -742,22 +753,23 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	}
 	d.phaseInbox(ctx)
 	d.phaseWaitingForMe(ctx)
-	d.phaseStreamDigests(ctx)
+	d.aiPhase(ctx, "stream-digests", d.phaseStreamDigests)
 	d.phaseIdeaFinder(ctx)
-	d.phaseMemory(ctx)
-	d.phaseNextStep(ctx)
+	d.aiPhase(ctx, "memory", d.phaseMemory)
+	d.aiPhase(ctx, "next-step", d.phaseNextStep)
 	d.phaseMorningBrief(ctx, time.Now())
 
 	// Last, and alone: it shares the digest pipeline and the ideas lock with
 	// the forward phases above, so it must stay out of any parallel group.
 	// It fetches, so it runs on fetchCtx: a sleep cancels it (or, detected
 	// during the pipelines, skips it), while a trigger waits for it.
+	// Paused, it holds whole (D12): no fetch, no row change, no strike.
 	if fetchCtx.Err() == nil {
 		d.setSection(sectionBackfill)
-		d.phaseHistoryBackfill(fetchCtx)
+		d.aiPhase(fetchCtx, "history-backfill", d.phaseHistoryBackfill)
 		d.setSection(sectionPipelines)
 	}
-	d.phaseCoach(ctx)
+	d.aiPhase(ctx, "coach", d.phaseCoach)
 	d.phaseSpecReviewSweep(ctx)
 }
 
@@ -800,7 +812,11 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 		return
 	}
 	errMsg := ""
-	if stats.err != nil {
+	switch {
+	case errors.Is(stats.err, aiconsent.ErrPaused):
+		// Refused by the backstop: a skip, not a failure.
+		d.logger.Printf("%s: skipped: background AI is paused", name)
+	case stats.err != nil:
 		errMsg = logredact.Full(stats.err)
 	}
 	if err := d.db.CompletePipelineRun(runID, stats.items, stats.inTok, stats.outTok, stats.cost, stats.totalAPI, stats.pFrom, stats.pTo, errMsg); err != nil {
@@ -2145,6 +2161,10 @@ func (d *Daemon) phaseStreamDigests(ctx context.Context) {
 // ledger, REACT-03), so an in-memory throttle is enough — a restart simply
 // re-polls and re-dispatches nothing already seen.
 func (d *Daemon) phaseReactionCommands(ctx context.Context) {
+	// A reaction from the owner's dictionary is the owner's gesture (D3):
+	// the poll and the runs it dispatches are owner-started, so they run
+	// while background AI is paused.
+	ctx = aiconsent.WithOwnerStarted(ctx)
 	if !d.config.ReactionCommands.Enabled {
 		// Nobody polls, so reactions placed now must not fire when the
 		// feature comes back: clear the event seed stamps (a no-op read when
