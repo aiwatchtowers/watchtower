@@ -315,6 +315,26 @@ final class ActionLatencyTests: XCTestCase {
         XCTAssertEqual(columns, ["at", "transport", "answer_ms", "result_ms"])
     }
 
+    // MARK: - Confirm (live link R7)
+
+    /// Tap → `applied` echo, one content-free row per confirmed action: when, which transport, the action kind and
+    /// the milliseconds; it is pruned like the samples.
+    func testAConfirmRowHoldsTransportKindAndMs() throws {
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener(store: try TestE2E.phoneStore()))
+        store.recordConfirm(kind: .boardTargetStatus, ms: 180, transport: .relay, at: base)
+        store.recordConfirm(kind: .askAnswer, ms: 90, transport: .cloudKit, at: base.addingTimeInterval(1))
+        XCTAssertEqual(try store.confirmSamples(since: .distantPast), [
+            ConfirmSample(at: base, transport: .relay, kind: "board_target_status", confirmMs: 180),
+            ConfirmSample(at: base.addingTimeInterval(1), transport: .cloudKit, kind: "ask_answer", confirmMs: 90)
+        ])
+        let columns = try store.reader.read { db in try db.columns(in: "latency_confirm").map(\.name) }
+        XCTAssertEqual(columns, ["at", "transport", "kind", "confirm_ms"])
+
+        let later = base.addingTimeInterval(ReplicaStore.latencyWindow + 10)
+        store.recordConfirm(kind: .boardTargetCreate, ms: 200, transport: .relay, at: later)
+        XCTAssertEqual(try store.confirmSamples(since: .distantPast).map(\.at), [later], "rows past the window go")
+    }
+
     func testAStampFailureDoesNotFailTheAction() async throws {
         let phone = try await makePhone()
         try await phone.store.reader.asWriter.write { db in try db.execute(sql: "DROP TABLE latency_pending") }
