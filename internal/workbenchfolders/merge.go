@@ -386,11 +386,14 @@ const chatContextsStep = "chat_conversations"
 // spec review threads (`<wb>:<root ask>:<key>`) and reviewer threads
 // (`<wb>:f<folder>:<branch>`, or `<wb>:<branch>` for its home folder,
 // which on the surviving bench needs its folder: B's home is not A's) —
-// and its agent action proposals (agent_actions context 'project' =
-// tools.WorkbenchContextType, context_id the bench id).
+// and its agent action proposals still waiting for a decision or an apply
+// (agent_actions context 'project' = tools.WorkbenchContextType, context_id
+// the bench id; status pending or approved). A decided, running or applied
+// row stays B's: audit rows outlive their workbench (inventory).
 func reKeyChats(ctx context.Context, tx *sql.Tx, m *merger) error {
 	from, into := strconv.FormatInt(m.from, 10)+":", strconv.FormatInt(m.into, 10)+":"
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_actions SET context_id = ? WHERE context_type = 'project' AND context_id = ?`,
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_actions SET context_id = ?
+		WHERE context_type = 'project' AND context_id = ? AND status IN ('pending', 'approved')`,
 		strconv.FormatInt(m.into, 10), strconv.FormatInt(m.from, 10)); err != nil {
 		return err //nolint:wrapcheck // Merge names the step
 	}
