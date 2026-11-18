@@ -15,9 +15,11 @@ Each shot `workbench-multifolder-<name>` is saved here as `<name>-light.png` and
 | Shot | What it shows | Spec |
 |---|---|---|
 | `panel-nested` | Sessions panel: a parent (`Working · 2 sub-sessions`) with two nested sub-sessions in hub and site, folder labels on every row, FILES with three roots (app expanded with its branch, hub, site) and the Put on the Bench… icon in the FILES header | §6.2, §6.5 |
+| `panel-parent-waiting` | The parent's own turn has ended while two sub-sessions work: its state line reads `Sub-sessions working · 2 sub-sessions` (hourglass glyph, secondary tone, as Agents working), children nested below (one Working, one Waiting for you) | §6.5 |
 | `panel-single` | One-folder bench: today's rows (no folder labels), the tree without a root row, and the quiet hint `Task touches another repo? Put on the Bench…` | §2 G1, §6.2 |
 | `files-root-errors` | FILES root states: `Folder not found` with `~/code/hub was moved or deleted.` + `Locate…` · `Remove`, `Git unavailable`, `Not a repository` (no branch) | §6.2 |
 | `switcher` | Workbench switcher popover: Put on the Bench… (`Add a folder to “acme”`) under Open Folder… | §6.1 |
+| `switcher-folders` | The same popover with the folders after the bench name, secondary and truncated at the tail (`acme · app, hub, site`), and a single-folder bench (`tools`) without a list | §6.14 |
 | `new-session-menu` | New Session (+) menu with `in <folder>` submenus (the `in hub` one open) and the placement submenus | §6.4 |
 | `suggest-card` | Waiting for you card `Put billing on the bench?` with Put on Bench / Not Now, and the quiet Never for This Folder on its own line (the panel is 220 pt wide by default) | §6.7 |
 | `suggest-card-busy` | The same card while the add runs: `Putting on the bench…` | §6.7 |

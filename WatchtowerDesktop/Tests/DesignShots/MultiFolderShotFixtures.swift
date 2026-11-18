@@ -16,6 +16,8 @@ enum MultiFolderShotFixtures {
             shot("panel-single", width: 300) { MultiFolderPanel(nested: false) },
             shot("files-root-errors", width: 300) { MultiFolderFilesRootErrors() },
             shot("switcher", width: 400) { MultiFolderSwitcher() },
+            shot("switcher-folders", width: 400) { MultiFolderSwitcher(showFolders: true) },
+            shot("panel-parent-waiting", width: 300) { MultiFolderPanel(nested: true, parentWaiting: true) },
             shot("new-session-menu", width: 520) { MultiFolderNewSessionMenu() },
             shot("suggest-card", width: 300) { MultiFolderSuggestCard(state: .ready) },
             shot("suggest-card-busy", width: 300) { MultiFolderSuggestCard(state: .busy) },
@@ -69,6 +71,8 @@ enum MultiFolderMockCopy {
     static let removeMessage = "Watchtower's install in this folder is removed. Your files and git are not touched."
     static let sessionsRunning = "2 sessions are running in hub. Finish them first."
     static let lastFolder = "A workbench needs at least one folder."
+    static let benchFolders = "app, hub, site"
+    static let parentWaiting = "Sub-sessions working · 2 sub-sessions"
     static let fromParent = "↖ from “Export reports to PDF”"
 }
 
@@ -243,6 +247,8 @@ private extension View {
 /// hint (`panel-single`).
 private struct MultiFolderPanel: View {
     let nested: Bool
+    /// The parent's own turn has ended while its sub-sessions work (§6.5).
+    var parentWaiting = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
@@ -261,8 +267,11 @@ private struct MultiFolderPanel: View {
 
     private var nestedSessions: some View {
         VStack(alignment: .leading, spacing: 0) {
-            MockSessionRow(title: "Export reports to PDF", state: .init(kind: .working, live: true),
-                           caption: "Working · 2 sub-sessions", report: ("#2010 · 1/3 · no PR yet", 0.33),
+            MockSessionRow(title: "Export reports to PDF",
+                           state: parentWaiting ? .init(kind: .background, live: true, backgroundShells: 1)
+                               : .init(kind: .working, live: true),
+                           caption: parentWaiting ? MultiFolderMockCopy.parentWaiting : "Working · 2 sub-sessions",
+                           report: ("#2010 · 1/3 · no PR yet", 0.33),
                            folder: "app", place: "⎇ feature/pdf-export", closed: "▸ 2 closed", selected: true)
             HStack(alignment: .top, spacing: 0) {
                 Rectangle().fill(.quaternary).frame(width: 1).padding(.leading, 22).padding(.vertical, Spacing.small)
@@ -343,16 +352,57 @@ private struct MultiFolderFilesRootErrors: View {
 
 // MARK: - 4. The workbench switcher
 
+/// A switcher row as §6.14 draws it: the folders after the bench name,
+/// secondary, truncated at the tail; a single-folder bench has no list.
+private struct FolderListRow: View {
+    let name: String
+    let folders: String?
+    let isCurrent: Bool
+    let segments: [SwitcherSegment]
+
+    var body: some View {
+        HStack(spacing: Spacing.compact) {
+            Image(systemName: "checkmark").font(.caption).opacity(isCurrent ? 1 : 0)
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                HStack(spacing: Spacing.small) {
+                    Text(name).font(.callout.weight(isCurrent ? .semibold : .regular)).layoutPriority(1)
+                    if let folders {
+                        Text("· \(folders)").font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+                .lineLimit(1)
+                .truncationMode(.tail)
+                HStack(spacing: Spacing.compact) { SwitcherStateSegments(segments: segments) }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Spacing.compact)
+        .frame(minHeight: 32)
+        .background(RoundedRectangle(cornerRadius: Radius.mark).fill(isCurrent ? Fill.selected : .clear))
+    }
+}
+
 private struct MultiFolderSwitcher: View {
+    /// `switcher-folders`: the bench row lists its folders after the name.
+    var showFolders = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.compact) {
             TextField("Find workbench", text: .constant("")).textFieldStyle(.kit)
             Text("RECENT").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-            SwitcherPopoverRow(name: MultiFolderMockCopy.bench, isCurrent: true, tooltip: "~/code/app",
-                               segments: [.init(text: "2 new comments", tone: .badge), .init(text: "1 blocked", tone: .warning),
-                                          .init(text: "3 working", tone: .secondary)]) {}
-            SwitcherPopoverRow(name: MultiFolderMockCopy.otherBench, isCurrent: false, tooltip: "~/code/tools",
-                               segments: [.init(text: "6d", tone: .secondary)]) {}
+            if showFolders {
+                FolderListRow(name: MultiFolderMockCopy.bench, folders: MultiFolderMockCopy.benchFolders, isCurrent: true,
+                              segments: [.init(text: "2 new comments", tone: .badge), .init(text: "1 blocked", tone: .warning),
+                                         .init(text: "3 working", tone: .secondary)])
+                FolderListRow(name: MultiFolderMockCopy.otherBench, folders: nil, isCurrent: false,
+                              segments: [.init(text: "6d", tone: .secondary)])
+            } else {
+                SwitcherPopoverRow(name: MultiFolderMockCopy.bench, isCurrent: true, tooltip: "~/code/app",
+                                   segments: [.init(text: "2 new comments", tone: .badge), .init(text: "1 blocked", tone: .warning),
+                                              .init(text: "3 working", tone: .secondary)]) {}
+                SwitcherPopoverRow(name: MultiFolderMockCopy.otherBench, isCurrent: false, tooltip: "~/code/tools",
+                                   segments: [.init(text: "6d", tone: .secondary)]) {}
+            }
             Divider()
             Button {} label: { Label("Open Folder…", systemImage: "folder.badge.plus") }.buttonStyle(.kitQuiet)
             Button {} label: {
