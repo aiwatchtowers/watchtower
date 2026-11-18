@@ -19,10 +19,15 @@ import (
 )
 
 // wiringTestConfig points the workspace (and so every per-account token and
-// credential file) at a fresh temp HOME.
+// credential file) at a fresh temp HOME, with a development Google,
+// Microsoft and Linear client for the accounts on no company (#1887: no client on any
+// layer is Re-login needed).
 func wiringTestConfig(t *testing.T) *config.Config {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WATCHTOWER_GOOGLE_CLIENT_ID", "dev-google-client")
+	t.Setenv("WATCHTOWER_MICROSOFT_CLIENT_ID", "dev-microsoft-client")
+	t.Setenv("WATCHTOWER_LINEAR_CLIENT_ID", "dev-linear-client")
 	return &config.Config{ActiveWorkspace: "test", Workspaces: map[string]*config.WorkspaceConfig{"test": {}}}
 }
 

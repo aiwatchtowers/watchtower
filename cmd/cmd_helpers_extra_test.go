@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"watchtower/internal/calendar"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 
@@ -42,51 +41,6 @@ func TestEmitError_WritesErrorAndDoneEvents(t *testing.T) {
 	assert.Equal(t, "error", ev1.Type)
 	assert.Equal(t, "boom", ev1.Error)
 	assert.Equal(t, "done", ev2.Type)
-}
-
-func TestResolveGoogleOAuthConfig_FromEnv(t *testing.T) {
-	t.Setenv("WATCHTOWER_GOOGLE_CLIENT_ID", "env-client-id")
-	t.Setenv("WATCHTOWER_GOOGLE_CLIENT_SECRET", "env-secret")
-
-	got := resolveGoogleOAuthConfig()
-	assert.Equal(t, "env-client-id", got.ClientID)
-	assert.Equal(t, "env-secret", got.ClientSecret)
-}
-
-func TestResolveGoogleOAuthConfig_FromBuildDefaults(t *testing.T) {
-	t.Setenv("WATCHTOWER_GOOGLE_CLIENT_ID", "")
-	t.Setenv("WATCHTOWER_GOOGLE_CLIENT_SECRET", "")
-
-	prevID, prevSecret := calendar.DefaultGoogleClientID, calendar.DefaultGoogleClientSecret
-	calendar.DefaultGoogleClientID = "build-id"
-	calendar.DefaultGoogleClientSecret = "build-secret"
-	defer func() {
-		calendar.DefaultGoogleClientID, calendar.DefaultGoogleClientSecret = prevID, prevSecret
-	}()
-
-	got := resolveGoogleOAuthConfig()
-	assert.Equal(t, "build-id", got.ClientID)
-	assert.Equal(t, "build-secret", got.ClientSecret)
-}
-
-func TestResolveGoogleOAuthConfigForAccount_CustomCredentialsWin(t *testing.T) {
-	dir := t.TempDir()
-	store := calendar.NewCredentialStore(dir, 7)
-	require.NoError(t, store.Save(&calendar.Credentials{ClientID: "acct-7-id", ClientSecret: "acct-7-secret"}))
-
-	got := resolveGoogleOAuthConfigForAccount(dir, 7)
-	assert.Equal(t, "acct-7-id", got.ClientID)
-	assert.Equal(t, "acct-7-secret", got.ClientSecret)
-}
-
-func TestResolveGoogleOAuthConfigForAccount_FallsBackWithoutCredentialFile(t *testing.T) {
-	t.Setenv("WATCHTOWER_GOOGLE_CLIENT_ID", "env-client-id")
-	t.Setenv("WATCHTOWER_GOOGLE_CLIENT_SECRET", "env-secret")
-	dir := t.TempDir()
-
-	got := resolveGoogleOAuthConfigForAccount(dir, 7)
-	assert.Equal(t, "env-client-id", got.ClientID)
-	assert.Equal(t, "env-secret", got.ClientSecret)
 }
 
 func TestPrintCalendarEvents_GroupsByDate(t *testing.T) {

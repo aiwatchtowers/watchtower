@@ -105,17 +105,12 @@ var googleAccountEmailFetcher = fetchGoogleAccountEmail
 
 // fetchGoogleAccountEmail opens a Gmail client with refreshToken and returns
 // the authenticated account's email address.
-func fetchGoogleAccountEmail(ctx context.Context, workspaceDir string, accountID int64, refreshToken string) (string, error) {
-	googleCfg := resolveGoogleOAuthConfigForAccount(workspaceDir, accountID)
-	client, err := gmail.NewClient(ctx, refreshToken, gmail.GoogleOAuthConfig{ClientID: googleCfg.ClientID, ClientSecret: googleCfg.ClientSecret})
+func fetchGoogleAccountEmail(ctx context.Context, workspaceDir string, account db.GoogleAccount, refreshToken string) (string, error) {
+	googleCfg, _, err := resolveGoogleOAuthConfigForAccount(workspaceDir, account)
 	if err != nil {
 		return "", err
 	}
-	profile, err := client.GetProfile(ctx)
-	if err != nil {
-		return "", err
-	}
-	return profile.EmailAddress, nil
+	return googleGrantEmail(ctx, googleCfg, refreshToken)
 }
 
 // fillLegacyAccountEmail best-effort fills accountID's email when it is
@@ -134,7 +129,7 @@ func fillLegacyAccountEmail(ctx context.Context, cfg *config.Config, database *d
 	if err != nil || token.RefreshToken == "" {
 		return
 	}
-	email, err := googleAccountEmailFetcher(ctx, cfg.WorkspaceDir(), id, token.RefreshToken)
+	email, err := googleAccountEmailFetcher(ctx, cfg.WorkspaceDir(), acct, token.RefreshToken)
 	if err != nil || email == "" {
 		if err != nil {
 			logger.Printf("google: account %d: failed to resolve email: %v", id, err)

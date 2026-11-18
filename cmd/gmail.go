@@ -172,7 +172,11 @@ func runGmailSync(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: failed to load token: %v\n", acct.ID, err)
 			continue
 		}
-		googleCfg := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), acct.ID)
+		googleCfg, _, err := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), acct)
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: %v\n", acct.ID, err)
+			continue
+		}
 		client, err := gmail.NewClient(cmd.Context(), token.RefreshToken,
 			gmail.GoogleOAuthConfig{ClientID: googleCfg.ClientID, ClientSecret: googleCfg.ClientSecret})
 		if err != nil {

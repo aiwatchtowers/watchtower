@@ -108,9 +108,9 @@ func TestExchangeMicrosoftCode_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	prev := microsoftTokenEndpoint
-	microsoftTokenEndpoint = srv.URL
-	defer func() { microsoftTokenEndpoint = prev }()
+	prev := microsoftLoginBase
+	microsoftLoginBase = srv.URL
+	defer func() { microsoftLoginBase = prev }()
 
 	tok, err := exchangeMicrosoftCode(context.Background(), MicrosoftOAuthConfig{ClientID: "cid"}, "code-123", "http://localhost/cb", "verifier-abc")
 	require.NoError(t, err)
@@ -124,9 +124,9 @@ func TestExchangeMicrosoftCode_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	prev := microsoftTokenEndpoint
-	microsoftTokenEndpoint = srv.URL
-	defer func() { microsoftTokenEndpoint = prev }()
+	prev := microsoftLoginBase
+	microsoftLoginBase = srv.URL
+	defer func() { microsoftLoginBase = prev }()
 
 	_, err := exchangeMicrosoftCode(context.Background(), MicrosoftOAuthConfig{}, "x", "http://localhost/cb", "v")
 	require.Error(t, err)
@@ -139,9 +139,9 @@ func TestExchangeMicrosoftCode_BadJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	prev := microsoftTokenEndpoint
-	microsoftTokenEndpoint = srv.URL
-	defer func() { microsoftTokenEndpoint = prev }()
+	prev := microsoftLoginBase
+	microsoftLoginBase = srv.URL
+	defer func() { microsoftLoginBase = prev }()
 
 	_, err := exchangeMicrosoftCode(context.Background(), MicrosoftOAuthConfig{}, "x", "http://localhost/cb", "v")
 	require.Error(t, err)
@@ -165,9 +165,9 @@ func TestRefreshAccessToken_RotatesRefreshToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	prev := microsoftTokenEndpoint
-	microsoftTokenEndpoint = srv.URL
-	defer func() { microsoftTokenEndpoint = prev }()
+	prev := microsoftLoginBase
+	microsoftLoginBase = srv.URL
+	defer func() { microsoftLoginBase = prev }()
 
 	accessToken, newRefreshToken, err := RefreshAccessToken(context.Background(), MicrosoftOAuthConfig{ClientID: "cid"}, "old-rt")
 	require.NoError(t, err)
@@ -185,9 +185,9 @@ func TestRefreshAccessToken_NoRotation(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	prev := microsoftTokenEndpoint
-	microsoftTokenEndpoint = srv.URL
-	defer func() { microsoftTokenEndpoint = prev }()
+	prev := microsoftLoginBase
+	microsoftLoginBase = srv.URL
+	defer func() { microsoftLoginBase = prev }()
 
 	accessToken, newRefreshToken, err := RefreshAccessToken(context.Background(), MicrosoftOAuthConfig{ClientID: "cid"}, "old-rt")
 	require.NoError(t, err)
@@ -201,9 +201,9 @@ func TestRefreshAccessToken_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	prev := microsoftTokenEndpoint
-	microsoftTokenEndpoint = srv.URL
-	defer func() { microsoftTokenEndpoint = prev }()
+	prev := microsoftLoginBase
+	microsoftLoginBase = srv.URL
+	defer func() { microsoftLoginBase = prev }()
 
 	_, _, err := RefreshAccessToken(context.Background(), MicrosoftOAuthConfig{}, "old-rt")
 	require.Error(t, err)
@@ -281,9 +281,9 @@ func TestLoginOutlook_SkipBrowserOpen_ResolvesEmail(t *testing.T) {
 	}))
 	defer tokenSrv.Close()
 
-	prev := microsoftTokenEndpoint
-	microsoftTokenEndpoint = tokenSrv.URL
-	defer func() { microsoftTokenEndpoint = prev }()
+	prev := microsoftLoginBase
+	microsoftLoginBase = tokenSrv.URL
+	defer func() { microsoftLoginBase = prev }()
 
 	type result struct {
 		tok   *MicrosoftOAuthToken
@@ -341,9 +341,9 @@ func TestLoginOutlook_WrongStateCallbackIsIgnored(t *testing.T) {
 	}))
 	defer tokenSrv.Close()
 
-	prev := microsoftTokenEndpoint
-	microsoftTokenEndpoint = tokenSrv.URL
-	defer func() { microsoftTokenEndpoint = prev }()
+	prev := microsoftLoginBase
+	microsoftLoginBase = tokenSrv.URL
+	defer func() { microsoftLoginBase = prev }()
 
 	errCh := make(chan error, 1)
 	out := &oauthpagetest.Output{}

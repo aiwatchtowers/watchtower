@@ -26,14 +26,14 @@ func quietTestLogger() *log.Logger {
 // for the duration of the test, so ensureLegacyGoogleAccount's best-effort
 // email fill never makes a live network call in tests that don't care about
 // it. Restored automatically via t.Cleanup.
-func stubGoogleAccountEmailFetcher(t *testing.T, fn func(ctx context.Context, workspaceDir string, accountID int64, refreshToken string) (string, error)) {
+func stubGoogleAccountEmailFetcher(t *testing.T, fn func(ctx context.Context, workspaceDir string, account db.GoogleAccount, refreshToken string) (string, error)) {
 	t.Helper()
 	original := googleAccountEmailFetcher
 	googleAccountEmailFetcher = fn
 	t.Cleanup(func() { googleAccountEmailFetcher = original })
 }
 
-func noEmailFetcher(context.Context, string, int64, string) (string, error) {
+func noEmailFetcher(context.Context, string, db.GoogleAccount, string) (string, error) {
 	return "", nil
 }
 
@@ -239,7 +239,8 @@ func TestEnsureLegacyGoogleAccount_GmailOnlyMigratesAndLeavesCalendarDisabled(t 
 
 func TestEnsureLegacyGoogleAccount_FillsEmailFromGmailProfileWhenMissing(t *testing.T) {
 	var gotAccountID int64
-	stubGoogleAccountEmailFetcher(t, func(_ context.Context, _ string, accountID int64, refreshToken string) (string, error) {
+	stubGoogleAccountEmailFetcher(t, func(_ context.Context, _ string, account db.GoogleAccount, refreshToken string) (string, error) {
+		accountID := account.ID
 		gotAccountID = accountID
 		assert.Equal(t, "gmail-only", refreshToken)
 		return "owner@example.com", nil
@@ -262,7 +263,7 @@ func TestEnsureLegacyGoogleAccount_FillsEmailFromGmailProfileWhenMissing(t *test
 }
 
 func TestEnsureLegacyGoogleAccount_EmailLookupFailureDoesNotFailSeed(t *testing.T) {
-	stubGoogleAccountEmailFetcher(t, func(context.Context, string, int64, string) (string, error) {
+	stubGoogleAccountEmailFetcher(t, func(context.Context, string, db.GoogleAccount, string) (string, error) {
 		return "", fmt.Errorf("network unavailable")
 	})
 	home := t.TempDir()
@@ -283,7 +284,7 @@ func TestEnsureLegacyGoogleAccount_EmailLookupFailureDoesNotFailSeed(t *testing.
 
 func TestEnsureLegacyGoogleAccount_ExistingRowAlreadyHasEmailSkipsLookup(t *testing.T) {
 	called := false
-	stubGoogleAccountEmailFetcher(t, func(context.Context, string, int64, string) (string, error) {
+	stubGoogleAccountEmailFetcher(t, func(context.Context, string, db.GoogleAccount, string) (string, error) {
 		called = true
 		return "should-not-be-used@example.com", nil
 	})

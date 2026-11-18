@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"watchtower/internal/auth"
+	"watchtower/internal/oauthclient"
 	"watchtower/internal/oauthpage"
 )
 
@@ -45,6 +46,14 @@ var tokenHTTPClient = &http.Client{Timeout: 30 * time.Second}
 // ErrAuthRevoked means the refresh token was rejected (invalid_grant): the
 // owner must sign in again.
 var ErrAuthRevoked = errors.New("linear auth revoked")
+
+// accountLost reports an error that ends the account's pass: the grant is
+// revoked (ErrAuthRevoked), or Linear refused the OAuth client
+// (oauthclient.ErrClientRejected) — every remaining request would fail the
+// same way.
+func accountLost(err error) bool {
+	return errors.Is(err, ErrAuthRevoked) || errors.Is(err, oauthclient.ErrClientRejected)
+}
 
 // OAuthConfig holds the public OAuth app credentials (PKCE, no client secret).
 type OAuthConfig struct{ ClientID string }
@@ -178,6 +187,10 @@ func postToken(ctx context.Context, endpoint string, form url.Values) (*Token, e
 	if resp.StatusCode != http.StatusOK {
 		if form.Get("grant_type") == "refresh_token" && strings.Contains(string(body), "invalid_grant") {
 			return nil, fmt.Errorf("%w: %s", ErrAuthRevoked, strings.TrimSpace(string(body)))
+		}
+		if form.Get("grant_type") == "refresh_token" && oauthclient.IsRejectedBody(body) {
+			// The client, not the grant: Re-login needed, never revoked (#1887 P5).
+			return nil, fmt.Errorf("%w (%d): %s", oauthclient.ErrClientRejected, resp.StatusCode, strings.TrimSpace(string(body)))
 		}
 		return nil, fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}

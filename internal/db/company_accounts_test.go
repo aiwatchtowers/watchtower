@@ -273,3 +273,49 @@ func TestCompanyAccountSources_CoverPurgeSources(t *testing.T) {
 	}
 	assert.Len(t, companyAccountTables, len(CompanyAccountSources))
 }
+
+// A rejected OAuth client is 'error' with the row's own code — invalid_client
+// when tied to a company, unknown_client when not — and never touches a
+// revoked (its purge clock), removed or purged row.
+func TestMarkAccountClientRejected(t *testing.T) {
+	d := openTestDB(t)
+	tied := companyFixture(t, d)
+	untied := companyFixture(t, d)
+	for _, source := range CompanyAccountSources {
+		require.NoError(t, d.SetAccountCompany(source, tied[source], "acme"))
+		ok, err := d.MarkAccountClientRejected(source, tied[source])
+		require.NoError(t, err)
+		assert.True(t, ok, source)
+		ok, err = d.MarkAccountClientRejected(source, untied[source])
+		require.NoError(t, err)
+		assert.True(t, ok, source)
+	}
+	refs, err := d.AccountsByCompany("acme")
+	require.NoError(t, err)
+	require.Len(t, refs, len(CompanyAccountSources))
+	for _, r := range refs {
+		assert.Equal(t, "error", r.Status, r.Source)
+		assert.Equal(t, "invalid_client", r.Error, r.Source)
+	}
+	g, err := d.GetGoogleAccount(untied["google"])
+	require.NoError(t, err)
+	assert.Equal(t, "error", g.Status)
+	assert.Equal(t, "unknown_client", g.Error)
+
+	require.NoError(t, d.SetLinearAccountAuthState(untied["linear"], "revoked", "invalid_grant"))
+	ok, err := d.MarkAccountClientRejected("linear", untied["linear"])
+	require.NoError(t, err)
+	assert.False(t, ok)
+	l, err := d.GetLinearAccount(untied["linear"])
+	require.NoError(t, err)
+	assert.Equal(t, "revoked", l.Status)
+
+	imapID, err := d.CreateEmailAccount(EmailAccount{Provider: "imap", EmailAddress: "b@example.com", Security: "ssl"})
+	require.NoError(t, err)
+	ok, err = d.MarkAccountClientRejected("outlook", imapID)
+	require.NoError(t, err)
+	assert.False(t, ok, "an IMAP mailbox is not an Outlook account")
+
+	_, err = d.MarkAccountClientRejected("teams", 1)
+	assert.Error(t, err)
+}

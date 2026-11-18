@@ -45,6 +45,7 @@ import (
 	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 	"watchtower/internal/media"
+	"watchtower/internal/oauthclient"
 	"watchtower/internal/platform"
 	"watchtower/internal/powerstate"
 	"watchtower/internal/prompts"
@@ -1671,13 +1672,23 @@ func wireGoogleSyncers(ctx context.Context, cfg *config.Config, database *db.DB,
 			recordGoogleTokenError(database, logger, acct, fmt.Sprintf("unreadable token file: %v", err))
 			continue
 		}
-		googleCfg := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), acct.ID)
+		// The client is resolved together with the refresh token the clients
+		// keep in memory, so the pair stays one grant's for the daemon's
+		// life; a re-login reaches the daemon at its next wiring.
+		googleCfg, _, err := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), acct)
+		if err != nil {
+			logger.Printf("google: account %d: %v", acct.ID, err)
+			recordGoogleClientError(database, logger, acct, err)
+			continue
+		}
 		if cfg.Calendar.Enabled && acct.CalendarEnabled {
 			calClient, err := newCalendarClient(ctx, token.RefreshToken, googleCfg)
 			if err != nil {
 				recordGoogleWireError(database, logger, acct.ID, "calendar", err, errors.Is(err, calendar.ErrAuthRevoked))
 			} else {
-				calSyncers = append(calSyncers, calendar.NewSyncer(calClient, database, cfg, logger, acct.ID))
+				s := calendar.NewSyncer(calClient, database, cfg, logger, acct.ID)
+				s.SetClientCheck(googleClientCheck(cfg.WorkspaceDir(), database, acct.ID))
+				calSyncers = append(calSyncers, s)
 			}
 		}
 		if cfg.Gmail.Enabled && acct.GmailEnabled {
@@ -1686,7 +1697,9 @@ func wireGoogleSyncers(ctx context.Context, cfg *config.Config, database *db.DB,
 			if err != nil {
 				recordGoogleWireError(database, logger, acct.ID, "gmail", err, errors.Is(err, gmail.ErrAuthRevoked))
 			} else {
-				gmSyncers = append(gmSyncers, gmail.NewSyncer(gmClient, database, cfg, logger, acct.ID))
+				s := gmail.NewSyncer(gmClient, database, cfg, logger, acct.ID)
+				s.SetClientCheck(googleClientCheck(cfg.WorkspaceDir(), database, acct.ID))
+				gmSyncers = append(gmSyncers, s)
 			}
 		}
 	}
@@ -1706,11 +1719,58 @@ func recordGoogleTokenError(database *db.DB, logger *log.Logger, acct db.GoogleA
 	}
 }
 
+// googleClientCheck is a Google syncer's per-pass client check: the
+// account's row and client as they stand now. A company app that is not the
+// one the grant was issued to (a Replace, a forced MDM change), or none at
+// all, is oauthclient.ErrClientRejected — the pass stops and the row says
+// Re-login needed instead of a pass on the old pair writing "ok" over it.
+func googleClientCheck(workspaceDir string, database *db.DB, id int64) func() error {
+	return func() error {
+		acct, err := database.GetGoogleAccount(id)
+		if err != nil {
+			return fmt.Errorf("google account %d: %w", id, err)
+		}
+		_, _, err = resolveGoogleOAuthConfigForAccount(workspaceDir, acct)
+		if needsCompanyRelogin(err) {
+			return fmt.Errorf("%w: %w", oauthclient.ErrClientRejected, err)
+		}
+		return err
+	}
+}
+
+// recordGoogleClientError flags an account whose OAuth client cannot be
+// resolved: no client on any layer, or a company app that is not the one its
+// grant was issued to, is Re-login needed (invalid_client / unknown_client,
+// never revoked — #1887 P5); any other failure (a damaged credentials file)
+// is shown on the row as it is, so an account that cannot sync never stays
+// green. Only an "ok" or "error" row is changed.
+func recordGoogleClientError(database *db.DB, logger *log.Logger, acct db.GoogleAccount, err error) {
+	if needsCompanyRelogin(err) {
+		markClientRejected(database, logger, "google", acct.ID)
+		return
+	}
+	recordGoogleTokenError(database, logger, acct, logredact.Full(err))
+}
+
+// markClientRejected records that source's account id needs a sign-in
+// through the right OAuth client: 'error' with invalid_client / unknown_client,
+// never revoked (db.MarkAccountClientRejected, #1887 P5).
+func markClientRejected(database *db.DB, logger *log.Logger, source string, id int64) {
+	if _, err := database.MarkAccountClientRejected(source, id); err != nil {
+		logger.Printf("%s: account %d: record auth state: %v", source, id, err)
+	}
+}
+
 // recordGoogleWireError logs a per-account client-creation failure and
-// records its auth-state (revoked vs plain error) so the Desktop UI shows
-// the problem instead of a silently-dead account.
+// records its auth-state (revoked vs plain error, or Re-login needed for a
+// client Google refused) so the Desktop UI shows the problem instead of a
+// silently-dead account.
 func recordGoogleWireError(database *db.DB, logger *log.Logger, accountID int64, svc string, err error, revoked bool) {
 	logger.Printf("%s: account %d: failed to create client: %v", svc, accountID, err)
+	if errors.Is(err, oauthclient.ErrClientRejected) {
+		markClientRejected(database, logger, "google", accountID)
+		return
+	}
 	status := "error"
 	if revoked {
 		status = "revoked"
@@ -1817,7 +1877,6 @@ func outlookAuthenticator(cfg *config.Config, database *db.DB, acct db.EmailAcco
 		return nil
 	}
 
-	msCfg := resolveMicrosoftOAuthConfig()
 	return imap.RefreshingXOAUTH2Auth{
 		Username: acct.EmailAddress,
 		RefreshFunc: func(ctx context.Context) (string, error) {
@@ -1825,21 +1884,55 @@ func outlookAuthenticator(cfg *config.Config, database *db.DB, acct db.EmailAcco
 			if err != nil {
 				return "", fmt.Errorf("loading outlook credentials for account %d: %w", acct.ID, err)
 			}
-			accessToken, newRefreshToken, err := refreshOutlookAccessToken(ctx, msCfg, creds.RefreshToken)
+			accessToken, newRefreshToken, err := refreshOutlookAccount(ctx, cfg, database, acct.ID, creds.RefreshToken)
 			if err != nil {
-				if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", logredact.Full(err)); dbErr != nil {
-					logger.Printf("imap: account %d: record auth state: %v", acct.ID, dbErr)
-				}
+				recordOutlookRefreshError(database, logger, acct.ID, err)
 				return "", fmt.Errorf("refreshing outlook token for account %d: %w", acct.ID, err)
 			}
-			if newRefreshToken != "" && newRefreshToken != creds.RefreshToken {
-				creds.RefreshToken = newRefreshToken
-				if err := store.Save(creds); err != nil {
-					logger.Printf("imap: account %d: failed to persist rotated refresh token: %v", acct.ID, err)
-				}
-			}
+			persistRotatedOutlookToken(store, creds, newRefreshToken, acct.ID, logger)
 			return accessToken, nil
 		},
+	}
+}
+
+// refreshOutlookAccount refreshes Outlook account id through its Microsoft
+// client resolved now, from the row as it is (#1887): a company app that
+// changed meanwhile, or no client at all, is oauthclient.ErrClientRejected
+// (Re-login needed) — never a refresh through the client the daemon started
+// with.
+func refreshOutlookAccount(ctx context.Context, cfg *config.Config, database *db.DB, id int64, refreshToken string) (accessToken, newRefreshToken string, err error) {
+	msCfg, _, err := resolveMicrosoftOAuthConfigForAccount(cfg, database, id)
+	if needsCompanyRelogin(err) {
+		return "", "", fmt.Errorf("%w: %w", oauthclient.ErrClientRejected, err)
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return refreshOutlookAccessToken(ctx, msCfg, refreshToken)
+}
+
+// persistRotatedOutlookToken saves the refresh token Microsoft rotated in, if
+// it did; a failed save is logged (the old one may still work once).
+func persistRotatedOutlookToken(store *imap.CredentialStore, creds *imap.Credentials, newRefreshToken string, id int64, logger *log.Logger) {
+	if newRefreshToken == "" || newRefreshToken == creds.RefreshToken {
+		return
+	}
+	creds.RefreshToken = newRefreshToken
+	if err := store.Save(creds); err != nil {
+		logger.Printf("imap: account %d: failed to persist rotated refresh token: %v", id, err)
+	}
+}
+
+// recordOutlookRefreshError records a failed Outlook refresh on the row: a
+// client Microsoft refused (or none to refresh with) is Re-login needed
+// (invalid_client / unknown_client, #1887 P5); anything else is the error.
+func recordOutlookRefreshError(database *db.DB, logger *log.Logger, id int64, err error) {
+	if errors.Is(err, oauthclient.ErrClientRejected) {
+		markClientRejected(database, logger, "outlook", id)
+		return
+	}
+	if dbErr := database.SetEmailAccountAuthState(id, "error", logredact.Full(err)); dbErr != nil {
+		logger.Printf("imap: account %d: record auth state: %v", id, dbErr)
 	}
 }
 
@@ -1984,7 +2077,6 @@ func buildLinearSyncers(cfg *config.Config, database *db.DB, logger *log.Logger)
 		logger.Printf("linear: failed to list accounts: %v", err)
 		return nil
 	}
-	oauthCfg := resolveLinearOAuthConfig()
 	var syncers []*linear.Syncer
 	for _, acct := range accounts {
 		store := linear.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
@@ -1996,13 +2088,50 @@ func buildLinearSyncers(cfg *config.Config, database *db.DB, logger *log.Logger)
 			}
 			continue
 		}
-		client := linear.NewClient(oauthCfg, store)
+		// A client that needs a company re-login, or a damaged client file,
+		// is shown on the row now (from "ok" only for the latter, the
+		// missing-token rule), never left green with no sync. A personal API
+		// key never refreshes, so it needs no client.
+		if !linearAPIKeyAccount(store) && linearClientProblem(cfg.WorkspaceDir(), database, acct, logger) {
+			continue
+		}
+		// The client is resolved again at each refresh, under the token
+		// lock, from the row as it is then (#1887): a re-login through a
+		// company's new app while the daemon runs is refreshed through it.
+		client := linear.NewClient(linear.OAuthConfig{}, store)
+		client.SetOAuthSource(linearAccountOAuthSource(cfg, database, acct.ID))
 		client.SetLogger(subLogger(logger, "[linear] "))
 		s := linear.NewSyncer(client, database, acct.ID, cfg.Linear.BackfillDays)
 		s.SetLogger(subLogger(logger, "[linear] "))
 		syncers = append(syncers, s)
 	}
 	return syncers
+}
+
+// linearAPIKeyAccount reports a token file holding a personal API key.
+func linearAPIKeyAccount(store *linear.TokenStore) bool {
+	tok, err := store.Load()
+	return err == nil && tok.IsAPIKey()
+}
+
+// linearClientProblem records on acct's row an OAuth client it cannot be
+// refreshed with — Re-login needed for a changed company app or none at all,
+// the error itself (from "ok" only) for a damaged client file — and reports
+// whether there was one.
+func linearClientProblem(workspaceDir string, database *db.DB, acct db.LinearAccount, logger *log.Logger) bool {
+	_, _, err := resolveLinearAccountClient(workspaceDir, acct)
+	if err == nil {
+		return false
+	}
+	logger.Printf("linear: account %d: %v", acct.ID, err)
+	if needsCompanyRelogin(err) {
+		markClientRejected(database, logger, "linear", acct.ID)
+	} else if acct.Status == "ok" {
+		if dbErr := database.SetLinearAccountAuthState(acct.ID, "error", logredact.Full(err)); dbErr != nil {
+			logger.Printf("linear: account %d: record auth state: %v", acct.ID, dbErr)
+		}
+	}
+	return true
 }
 
 // linkDenySource is the link deny list every media path reads afresh: the

@@ -84,7 +84,7 @@ func TestFinishOutlookLogin_ScopeRejectedNeverPersists(t *testing.T) {
 	defer database.Close()
 
 	token := &imap.MicrosoftOAuthToken{RefreshToken: "rt", Scope: "openid email offline_access"}
-	_, err = finishOutlookLogin(database, cfg.WorkspaceDir(), "me@outlook.com", token, "", &strings.Builder{})
+	_, err = finishOutlookLogin(database, cfg.WorkspaceDir(), "me@example.com", token, "", "", imap.MicrosoftOAuthConfig{}, &strings.Builder{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "IMAP")
 
@@ -107,12 +107,12 @@ func TestFinishOutlookLogin_GrantedScopePersists(t *testing.T) {
 	defer database.Close()
 
 	token := &imap.MicrosoftOAuthToken{RefreshToken: "rt", Scope: "openid email offline_access https://outlook.office.com/IMAP.AccessAsUser.All"}
-	id, err := finishOutlookLogin(database, cfg.WorkspaceDir(), "me@outlook.com", token, "", &strings.Builder{})
+	id, err := finishOutlookLogin(database, cfg.WorkspaceDir(), "me@example.com", token, "", "", imap.MicrosoftOAuthConfig{}, &strings.Builder{})
 	require.NoError(t, err)
 
 	acct, err := database.GetEmailAccount(id)
 	require.NoError(t, err)
-	assert.Equal(t, "me@outlook.com", acct.EmailAddress)
+	assert.Equal(t, "me@example.com", acct.EmailAddress)
 }
 
 func TestOutlookLogout_InvalidAccountID(t *testing.T) {

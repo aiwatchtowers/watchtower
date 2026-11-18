@@ -38,11 +38,14 @@ type Client struct {
 	endpoint string
 	tokenURL string // overrides the package tokenEndpoint when set (tests)
 	cfg      OAuthConfig
-	store    *TokenStore
-	http     *http.Client
-	mu       sync.Mutex // held across load-check-refresh-save
-	logger   *log.Logger
-	gate     rateGate
+	// oauthSource, when set, gives the client to refresh with at refresh
+	// time (SetOAuthSource) instead of cfg.
+	oauthSource func() (OAuthConfig, error)
+	store       *TokenStore
+	http        *http.Client
+	mu          sync.Mutex // held across load-check-refresh-save
+	logger      *log.Logger
+	gate        rateGate
 	// beforeTokenLock, when set (tests only), runs right before a refresh
 	// takes the cross-process token lock.
 	beforeTokenLock func()
@@ -64,6 +67,16 @@ func (c *Client) SetLogger(l *log.Logger) {
 	if l != nil {
 		c.logger = l
 	}
+}
+
+// SetOAuthSource makes every refresh ask source for the OAuth client, so a
+// long-lived client (the daemon's) follows a re-login through a company's
+// new app instead of the client it was built with. It runs under the token
+// lock, next to the token it refreshes. A source error refreshes nothing and
+// is returned as is (the source wraps oauthclient.ErrClientRejected when the
+// account needs a new sign-in).
+func (c *Client) SetOAuthSource(source func() (OAuthConfig, error)) {
+	c.oauthSource = source
 }
 
 func (c *Client) tokenEndpoint() string {
@@ -249,7 +262,14 @@ func (c *Client) refreshIfCurrent(ctx context.Context, usedToken string) error {
 }
 
 func (c *Client) refreshAndSave(ctx context.Context, old *Token) (string, error) {
-	nt, err := refreshToken(ctx, c.cfg, old.RefreshToken, c.tokenEndpoint())
+	cfg := c.cfg
+	if c.oauthSource != nil {
+		var err error
+		if cfg, err = c.oauthSource(); err != nil {
+			return "", fmt.Errorf("resolving the OAuth client: %w", err)
+		}
+	}
+	nt, err := refreshToken(ctx, cfg, old.RefreshToken, c.tokenEndpoint())
 	if err != nil {
 		return "", err
 	}

@@ -3,7 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
 	"watchtower/internal/calendar"
@@ -249,7 +248,11 @@ func runCalendarSync(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: failed to load token: %v\n", acct.ID, err)
 			continue
 		}
-		googleCfg := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), acct.ID)
+		googleCfg, _, err := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), acct)
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: %v\n", acct.ID, err)
+			continue
+		}
 		client, err := calendar.NewClient(cmd.Context(), token.RefreshToken, googleCfg)
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: failed to create client: %v\n", acct.ID, err)
@@ -450,37 +453,4 @@ func printCalendarEvents(cmd *cobra.Command, events []db.CalendarEvent) {
 		}
 		fmt.Fprintln(out)
 	}
-}
-
-// resolveGoogleOAuthConfig returns Google OAuth credentials.
-func resolveGoogleOAuthConfig() calendar.GoogleOAuthConfig {
-	clientID := os.Getenv("WATCHTOWER_GOOGLE_CLIENT_ID")
-	if clientID == "" {
-		clientID = calendar.DefaultGoogleClientID
-	}
-	clientSecret := os.Getenv("WATCHTOWER_GOOGLE_CLIENT_SECRET")
-	if clientSecret == "" {
-		clientSecret = calendar.DefaultGoogleClientSecret
-	}
-	return calendar.GoogleOAuthConfig{
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-	}
-}
-
-// resolveGoogleOAuthConfigForAccount returns accountID's own OAuth client
-// credentials (google_credentials_<id>.json) when the account brought its
-// own Google Cloud project, falling back to resolveGoogleOAuthConfig's
-// env/build defaults otherwise.
-func resolveGoogleOAuthConfigForAccount(workspaceDir string, accountID int64) calendar.GoogleOAuthConfig {
-	store := calendar.NewCredentialStore(workspaceDir, accountID)
-	if store.Exists() {
-		if creds, err := store.Load(); err == nil && creds.ClientID != "" {
-			return calendar.GoogleOAuthConfig{
-				ClientID:     creds.ClientID,
-				ClientSecret: creds.ClientSecret,
-			}
-		}
-	}
-	return resolveGoogleOAuthConfig()
 }

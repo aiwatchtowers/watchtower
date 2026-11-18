@@ -303,6 +303,28 @@ func resolveMicrosoftOAuthConfigForCompany(workspaceDir, slug string) (imap.Micr
 func resolveMicrosoftOAuthConfigForAccount(cfg *config.Config, database *db.DB, accountID int64) (imap.MicrosoftOAuthConfig, clientSource, error)
 func microsoftEndpoints(tenantID string) (authURL, tokenURL string)
 ```
+- **As built (Task 7b):**
+  ```go
+  // internal/oauthclient — the Google, Linear and Microsoft refreshers' shared error (Atlassian keeps jira.ErrClientRejected)
+  var ErrClientRejected = errors.New("the OAuth client was rejected")
+  const CodeInvalidClient, CodeUnknownClient = "invalid_client", "unknown_client"
+  func IsRejectedBody(body []byte) bool // {"error": invalid_client | unauthorized_client | deleted_client}
+  // internal/db
+  func (db *DB) MarkAccountClientRejected(source string, id int64) (bool, error) // one UPDATE; code from the row's own company_slug; ok/error rows only
+  func (db *DB) SetGoogleAccountClient(id int64, clientID, companySlug string) error
+  // cmd/oauth_resolve.go — one vendor-neutral resolver behind every …ForAccount (Jira's too)
+  type accountClient struct{ app, label, slug string; file, company, shared func… } ; func (a accountClient) resolve() (oauthclient.Client, clientSource, error)
+  type clientChangedError struct{ app string } // errors.Is(err, errClientChanged); text names the vendor's app
+  func needsCompanyRelogin(err error) bool      // errNoOAuthClient or errClientChanged
+  func resolveGoogleOAuthConfigForAccount(workspaceDir string, account db.GoogleAccount) (calendar.GoogleOAuthConfig, clientSource, error) // takes the row (no DB handle at most call sites), like Jira's
+  func resolveLinearAccountClient(workspaceDir string, account db.LinearAccount) (linear.OAuthConfig, clientSource, error) // ForAccount over a row in hand
+  func resolveOutlookAccountClient(workspaceDir string, account db.EmailAccount) (imap.MicrosoftOAuthConfig, clientSource, error)
+  func googleLoginOAuthConfig / linearLoginOAuthConfig(workspaceDir, account) // a tied account's re-login: its company's app as it stands
+  func linearAccountOAuthSource(cfg, database, accountID) func() (linear.OAuthConfig, error) // linear.Client.SetOAuthSource
+  // internal/linear: func (c *Client) SetOAuthSource(func() (OAuthConfig, error)) — asked under the token lock at each refresh
+  // internal/imap: MicrosoftOAuthConfig.TenantID; microsoftEndpoints lives in imap (unexported, base var microsoftLoginBase)
+  ```
+  Client records: `linear_client_<id>.json`, `outlook_client_<id>.json` (`oauthclient`, vendors `linear` and `outlook`); **Google keeps `google_credentials_<id>.json`** (P4) and `google_accounts.client_id`. A company add or a tied account's re-login writes the record: Linear under the token lock with the token (a failed token save puts the old record back; a sign-in through the shared app or an API key deletes it); Google credentials first, then the token (no lock: only a sign-in writes either, Google never rotates the refresh token); Outlook only ever adds new rows, so the record is written right after the row. `linear remove`, `outlook logout` and `imap remove` delete the record. Refresh-time resolution: Linear (`SetOAuthSource`) and Outlook (the `RefreshFunc` resolves per refresh) follow the row; Google's clients keep the refresh token they were built with, so the client is resolved together with it at wiring and stays one grant's pair for the daemon's life. A refused client marks the row through `MarkAccountClientRejected` — Gmail/Calendar syncers, `wireGoogleSyncers`, `phaseLinearSync` (`recordClientRejected`), the IMAP syncer and the Outlook refresher — never `revoked`. `google add --company` re-ties the row of the same Gmail address (case-insensitive; a Calendar-only grant has no address, so it gets a new row); `linear add --company` re-ties a connected account of the same workspace (the shared-app add still refuses it); `--company` refuses `--client-id` / `--api-key`. With no client on any layer a CLI sign-in now fails before the browser (Linear keeps its "not configured" message; `linear login` checks it once the account is known).
 - [ ] **Step 1: Failing tests:** `TestGoogleResolver_Order`, `TestLinearResolver_Order`, `TestMicrosoftResolver_Order`, `TestGoogleAdd_CompanyStoresSlugAndCredentials`, `TestGoogleAdd_CompanyRebindsSameUser` (Review Focus 5: an existing shared-client row with the same Google user → that row gets `company_slug` and the company client, no second row), `TestLinearAdd_CompanyClient`, `TestOutlookLogin_CompanyTenantEndpoint` (authorize URL host path `/<tenant>/oauth2/v2.0/authorize`), `TestMicrosoftEndpoints_EmptyTenantIsCommon`, `TestGoogleRefresh_InvalidClientIsError`, `TestLinearRefresh_InvalidClientIsError` (LINEAR-03: not revoked), `TestCompanyAdd_UnknownSlugFailsBeforeBrowser` (each vendor).
 - [ ] **Step 2:** `go test ./internal/imap ./internal/linear ./internal/gmail ./cmd -run 'Resolver|CompanyAdd|GoogleAdd|LinearAdd|OutlookLogin|InvalidClient|Endpoints'` → FAIL.
 - [ ] **Step 3: Implement.**

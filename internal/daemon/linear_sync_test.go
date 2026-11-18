@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/linear"
+	"watchtower/internal/oauthclient"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -166,4 +167,47 @@ func TestPhaseLinearSync_CancelledPassDoesNotStampTheInterval(t *testing.T) {
 	assert.Equal(t, 2, ran, "the pass after a cancelled one is not throttled")
 	d.phaseLinearSync(context.Background())
 	assert.Equal(t, 2, ran, "an uncancelled pass still is")
+}
+
+// TestLinearRefresh_InvalidClientIsError (#1887 P5, LINEAR-03): a refresh
+// Linear refuses for the OAuth client is the company's app changing, not the
+// grant being revoked: status 'error' with invalid_client (tied) or
+// unknown_client (untied), never 'revoked', so no purge is scheduled. A row
+// already revoked keeps its purge clock.
+func TestLinearRefresh_InvalidClientIsError(t *testing.T) {
+	d, database := newLinearTestDaemon(t)
+	setPurge(d, true)
+	tied, err := database.CreateLinearAccountForCompany("", "acme")
+	require.NoError(t, err)
+	untied, err := database.CreateLinearAccount("")
+	require.NoError(t, err)
+	revoked, err := database.CreateLinearAccountForCompany("", "acme")
+	require.NoError(t, err)
+	require.NoError(t, database.SetLinearAccountAuthState(revoked, "revoked", "grant revoked"))
+	rejected := fmt.Errorf("refresh: %w (401): {\"error\":\"invalid_client\"}", oauthclient.ErrClientRejected)
+	ran := 0
+	d.linearSyncers = []linearAccountSyncer{
+		fakeLinearSyncer{id: tied, err: rejected, ran: &ran},
+		fakeLinearSyncer{id: untied, err: rejected, ran: &ran},
+		fakeLinearSyncer{id: revoked, err: rejected, ran: &ran},
+	}
+	d.phaseLinearSync(context.Background())
+	d.phaseAccountPurge(context.Background())
+
+	for id, want := range map[int64][2]string{
+		tied:    {"error", oauthclient.CodeInvalidClient},
+		untied:  {"error", oauthclient.CodeUnknownClient},
+		revoked: {"revoked", "grant revoked"},
+	} {
+		acc, err := database.GetLinearAccount(id)
+		require.NoError(t, err)
+		assert.Equal(t, want[0], acc.Status, id)
+		assert.Equal(t, want[1], acc.Error, id)
+	}
+	purges, err := database.ListAccountPurges(false)
+	require.NoError(t, err)
+	for _, p := range purges {
+		assert.NotEqual(t, tied, p.AccountID)
+		assert.NotEqual(t, untied, p.AccountID)
+	}
 }

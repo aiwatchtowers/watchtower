@@ -12,6 +12,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/oauthclient"
 )
 
 // Syncer fetches calendar events and stores them in the database.
@@ -21,6 +22,10 @@ type Syncer struct {
 	cfg       *config.Config
 	logger    *log.Logger
 	accountID int64
+
+	// clientCheck, when set, vets the account's OAuth client before each
+	// pass (SetClientCheck).
+	clientCheck func() error
 }
 
 // NewSyncer creates a calendar syncer for the connected google_accounts row
@@ -42,9 +47,32 @@ func NewSyncer(client *Client, database *db.DB, cfg *config.Config, logger *log.
 // AccountID returns the google_accounts row this syncer pulls.
 func (s *Syncer) AccountID() int64 { return s.accountID }
 
+// SetClientCheck installs a check run at the start of every Sync: the
+// account's OAuth client as it stands now (#1887). The client keeps the
+// refresh token and OAuth client it was built with, so without it a pass
+// would keep syncing — and writing "ok" over a Re-login mark — after the
+// company changed its app. A check error ends the pass and is recorded as
+// the pass's auth result (oauthclient.ErrClientRejected: Re-login needed).
+func (s *Syncer) SetClientCheck(check func() error) { s.clientCheck = check }
+
+// checkClient runs the installed client check, recording a failure.
+func (s *Syncer) checkClient(ctx context.Context) error {
+	if s.clientCheck == nil {
+		return nil
+	}
+	if err := s.clientCheck(); err != nil {
+		s.recordAuthResult(ctx, err)
+		return err
+	}
+	return nil
+}
+
 // Sync fetches calendars and events, upserts them to DB, and cleans up stale data.
 // Returns the count of new/updated events.
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
+	if err := s.checkClient(ctx); err != nil {
+		return 0, err
+	}
 	now := time.Now().UTC()
 	syncedAt := now.Format(time.RFC3339)
 	timeMin := now.Add(-time.Duration(s.cfg.Calendar.EffectiveHistoryDays()) * 24 * time.Hour)
@@ -63,7 +91,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	var realPrimaryID string
 	if err != nil {
 		s.recordAuthResult(ctx, err)
-		if errors.Is(err, ErrAuthRevoked) {
+		if errors.Is(err, ErrAuthRevoked) || errors.Is(err, oauthclient.ErrClientRejected) {
 			return 0, err
 		}
 		s.logger.Printf("calendar: failed to fetch calendar list: %v", err)
@@ -240,6 +268,13 @@ func (s *Syncer) recordAuthResult(ctx context.Context, err error) {
 	}
 	if ctx.Err() != nil {
 		s.logger.Printf("calendar: sync cancelled, leaving auth state untouched: %v", err)
+		return
+	}
+	if errors.Is(err, oauthclient.ErrClientRejected) {
+		// Re-login needed, never revoked: no purge clock (PURGE-01, #1887).
+		if _, dbErr := s.db.MarkAccountClientRejected("google", s.accountID); dbErr != nil {
+			s.logger.Printf("calendar: record auth state: %v", dbErr)
+		}
 		return
 	}
 	status := "error"
