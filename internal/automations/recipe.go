@@ -181,6 +181,15 @@ func ValidSlug(s string) bool {
 	return slugPattern.MatchString(s)
 }
 
+// validFolderSlug reports whether s is a workbench recipe's slug stored with
+// its folder's name, <folder name>/<slug>: the indexer's name for a recipe
+// whose slug another folder of the same workbench already holds (multi-folder
+// workbench, spec §6.11).
+func validFolderSlug(s string) bool {
+	name, slug, ok := strings.Cut(s, "/")
+	return ok && name != "" && ValidSlug(slug)
+}
+
 var utf8BOM = []byte("\xef\xbb\xbf")
 
 // normaliseRecipeBytes strips a UTF-8 BOM and turns CRLF (and a lone CR) into
@@ -208,7 +217,7 @@ func validateScope(s Scope) error {
 // ParseRecipe parses a recipe file. slug is the file stem; scope is the folder
 // the file lives in. Every refusal is a *ParseError.
 func ParseRecipe(slug string, data []byte, scope Scope) (*Recipe, error) {
-	if !ValidSlug(slug) {
+	if !ValidSlug(slug) && (scope.Kind != ScopeWorkbench || !validFolderSlug(slug)) {
 		return nil, &ParseError{Msg: fmt.Sprintf("invalid slug %q: want %s", slug, slugPattern.String())}
 	}
 	if err := validateScope(scope); err != nil {

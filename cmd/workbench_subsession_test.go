@@ -2,14 +2,50 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/db"
 )
+
+// start_session's start in the home folder without Watchtower's install:
+// a sub-session (--parent) is refused not_installed and writes no row, while
+// an ordinary start there keeps starting (spec §6.5).
+func TestSubSessionStartRefusesAnUninstalledHome(t *testing.T) {
+	database := writeActionsConfig(t)
+	ctx := context.Background()
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	home, err := database.HomeFolder(ctx, wb)
+	require.NoError(t, err)
+	parent, err := database.CreateTerminalSession(ctx, db.NewTerminalSession{WorkbenchID: wb, Kind: "claude",
+		Title: "p", FolderPath: home.FolderPath, ClaudeSessionID: "uuid"})
+	require.NoError(t, err)
+	sessionHostForTest(t)
+	spawnedFinishes(t)
+
+	out, err := runSession(t, "start", "--workbench", strconv.FormatInt(wb, 10), "--agent", "claude",
+		"--folder", home.Name, "--parent", strconv.FormatInt(parent, 10), "--json")
+	var ec *exitCodeError
+	require.ErrorAs(t, err, &ec, out)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &m), out)
+	assert.Equal(t, map[string]any{"ok": false, "error_code": "not_installed",
+		"error": "not_installed: Install Watchtower in " + home.Name + " first"}, m)
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM terminal_sessions`).Scan(&n))
+	assert.Equal(t, 1, n, "only the parent")
+
+	out, err = runSession(t, "start", "--workbench", strconv.FormatInt(wb, 10), "--agent", "claude", "--json")
+	require.NoError(t, err, out)
+}
 
 // start_session's start (spec 2026-11-18 §6.5) is this binary's `workbench
 // session start` with the brief on stdin: stdout comes back as the answer,

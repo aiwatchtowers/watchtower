@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,8 +21,8 @@ import (
 )
 
 // A file set is a folder's files indexed as one document each, under one
-// container (a workbench). Each document is keyed
-// <prefix><container>:<rel path>, split at its #–### headings, anchored by
+// container (a workbench) and one of its folders. Each document is keyed
+// <prefix><container>:<folder>:<rel path>, split at its #–### headings, anchored by
 // {<container anchor>, rel_path, unreadable?, truncated?} and linked by a
 // file:// URL; its time is the file's mtime, which gates the daemon's
 // re-rendering (needsRender).
@@ -33,7 +34,7 @@ const fileSetMaxBytes = 2 << 20
 
 // fileSetKind is how one file-set source keys and anchors its documents.
 type fileSetKind struct {
-	prefix          string // a key is <prefix><container>:<rel path>
+	prefix          string // a key is <prefix><container>:<folder>:<rel path>
 	containerAnchor string // the anchor field holding the container id
 }
 
@@ -46,24 +47,42 @@ func (k fileSetKind) containerPrefix(container int64) string {
 	return k.prefix + strconv.FormatInt(container, 10) + ":"
 }
 
-// parseKey splits a key into its container and rel path.
-func (k fileSetKind) parseKey(key string) (int64, string, bool) {
-	rest, ok := splitRef(key, k.prefix)
-	if !ok {
-		return 0, "", false
-	}
-	idStr, rel, ok := strings.Cut(rest, ":")
-	if !ok || rel == "" {
-		return 0, "", false
-	}
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	return id, rel, err == nil
+// folderPrefix is the key prefix of every document of one folder of a
+// container.
+func (k fileSetKind) folderPrefix(container, folder int64) string {
+	return k.containerPrefix(container) + strconv.FormatInt(folder, 10) + ":"
 }
 
-// FileSet is files of one container to index.
+// parseKey splits a key into its container, folder and rel path.
+func (k fileSetKind) parseKey(key string) (container, folder int64, rel string, ok bool) {
+	rest, ok := splitRef(key, k.prefix)
+	if !ok {
+		return 0, 0, "", false
+	}
+	idStr, rest, ok := strings.Cut(rest, ":")
+	if !ok {
+		return 0, 0, "", false
+	}
+	folderStr, rel, ok := strings.Cut(rest, ":")
+	if !ok || rel == "" {
+		return 0, 0, "", false
+	}
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		return 0, 0, "", false
+	}
+	fid, err := strconv.ParseInt(folderStr, 10, 64)
+	if err != nil {
+		return 0, 0, "", false
+	}
+	return id, fid, rel, true
+}
+
+// FileSet is files of one folder of a container to index.
 type FileSet struct {
 	Source    string   // a file-set source: WorkbenchDocSource
 	Container int64    // the container's id (a workbench id)
+	Folder    int64    // the folder's id (a workbench_folders row)
 	Root      string   // the folder the files are in
 	Files     []string // slash-separated paths relative to Root
 }
@@ -76,30 +95,42 @@ type FileSet struct {
 // docs is how many files the set has, changed how many index entries were
 // written or removed.
 func IndexFileSet(ctx context.Context, d *db.DB, set FileSet) (docs, changed int, err error) {
-	return indexFileSet(ctx, d, set, false)
+	return indexFileSets(ctx, d, set.Source, set.Container, []FileSet{set}, false, nil)
 }
 
-// indexFileSet is IndexFileSet; prune also removes every entry of the
-// container whose file is not in the set (the set is the whole listing) —
-// found by its anchor, so entries keyed another way (attached documents
-// before 2026-10-03) go too.
-func indexFileSet(ctx context.Context, d *db.DB, set FileSet, prune bool) (docs, changed int, err error) {
-	kind, ok := fileSetKinds[set.Source]
+// indexFileSets is IndexFileSet over several folders of one container;
+// prune also removes every entry of the container whose file is in no set
+// (the sets are the container's whole listing) and whose key does not start
+// with one of keep (a folder whose listing failed) — found by its anchor, so
+// entries keyed another way (attached documents before 2026-10-03, a folder
+// that left the container) go too.
+func indexFileSets(ctx context.Context, d *db.DB, source string, container int64, sets []FileSet, prune bool, keep []string) (docs, changed int, err error) {
+	kind, ok := fileSetKinds[source]
 	if !ok {
-		return 0, 0, fmt.Errorf("kb: %q keeps no file set", set.Source)
+		return 0, 0, fmt.Errorf("kb: %q keeps no file set", source)
 	}
-	if err := checkSetPaths(set.Files); err != nil {
-		return 0, 0, err
+	for _, set := range sets {
+		if set.Source != source || set.Container != container {
+			return 0, 0, fmt.Errorf("kb: a file set of %s %d mixed into %s %d", set.Source, set.Container, source, container)
+		}
+		if err := checkSetPaths(set.Files); err != nil {
+			return 0, 0, err
+		}
 	}
 	var indexed []string
 	if prune {
 		indexed, err = queryStrings(ctx, d, `SELECT id FROM kb_documents WHERE source = ? AND json_extract(anchor_json, '$.'||?) = ?`,
-			set.Source, kind.containerAnchor, strconv.FormatInt(set.Container, 10))
+			source, kind.containerAnchor, strconv.FormatInt(container, 10))
 		if err != nil {
-			return 0, 0, fmt.Errorf("kb: listing indexed %s documents: %w", set.Source, err)
+			return 0, 0, fmt.Errorf("kb: listing indexed %s documents: %w", source, err)
 		}
 	}
-	live, keys, rendered := renderFileSet(kind, set) // before the write tx opens
+	live := map[string]bool{}
+	var keys []string
+	var rendered []*Doc
+	for _, set := range sets { // before the write tx opens
+		keys, rendered = renderFileSet(kind, set, live, keys, rendered)
+	}
 	prepared := prepareBatch(rendered)
 	err = withTx(ctx, d, func(tx *sql.Tx) error {
 		written, deleted, err := storeBatch(ctx, tx, keys, prepared)
@@ -110,7 +141,7 @@ func indexFileSet(ctx context.Context, d *db.DB, set FileSet, prune bool) (docs,
 		if !prune {
 			return nil
 		}
-		pruned, err := pruneUnlistedDocs(ctx, tx, indexed, live)
+		pruned, err := pruneUnlistedDocs(ctx, tx, indexed, live, keep)
 		changed += pruned
 		return err
 	})
@@ -131,28 +162,28 @@ func checkSetPaths(files []string) error {
 	return nil
 }
 
-// renderFileSet renders each distinct file of set once, returning the keys
-// it covers (live), in listing order (keys) with their renders (rendered).
-func renderFileSet(kind fileSetKind, set FileSet) (live map[string]bool, keys []string, rendered []*Doc) {
-	live = make(map[string]bool, len(set.Files))
+// renderFileSet renders each distinct file of set once, adding the keys it
+// covers to live and appending them, in listing order, to keys with their
+// renders to rendered.
+func renderFileSet(kind fileSetKind, set FileSet, live map[string]bool, keys []string, rendered []*Doc) ([]string, []*Doc) {
 	for _, rel := range set.Files {
-		key := kind.containerPrefix(set.Container) + rel
+		key := kind.folderPrefix(set.Container, set.Folder) + rel
 		if live[key] {
 			continue
 		}
 		live[key] = true
 		keys = append(keys, key)
-		rendered = append(rendered, renderFile(set.Source, kind, set.Container, set.Root, rel))
+		rendered = append(rendered, renderFile(set.Source, kind, set.Container, set.Folder, set.Root, rel))
 	}
-	return live, keys, rendered
+	return keys, rendered
 }
 
-// pruneUnlistedDocs deletes every indexed document not in live, returning
-// how many were removed.
-func pruneUnlistedDocs(ctx context.Context, tx *sql.Tx, indexed []string, live map[string]bool) (int, error) {
+// pruneUnlistedDocs deletes every indexed document neither in live nor
+// under one of the keep prefixes, returning how many were removed.
+func pruneUnlistedDocs(ctx context.Context, tx *sql.Tx, indexed []string, live map[string]bool, keep []string) (int, error) {
 	n := 0
 	for _, id := range indexed {
-		if live[id] {
+		if live[id] || slices.ContainsFunc(keep, func(p string) bool { return strings.HasPrefix(id, p) }) {
 			continue
 		}
 		removed, err := deleteDoc(ctx, tx, id)
@@ -207,9 +238,9 @@ func needsRender(root, rel string, indexed float64) bool {
 // renderFile renders root/rel, or nil when the file is gone. A file that
 // cannot be read is indexed by its path; the anchor says why the text is
 // missing, so an open does not read as an empty file.
-func renderFile(source string, kind fileSetKind, container int64, root, rel string) *Doc {
+func renderFile(source string, kind fileSetKind, container, folder int64, root, rel string) *Doc {
 	doc := &Doc{
-		ID:     kind.containerPrefix(container) + rel,
+		ID:     kind.folderPrefix(container, folder) + rel,
 		Source: source,
 		Title:  rel,
 		Link:   (&url.URL{Scheme: "file", Path: filepath.Join(root, filepath.FromSlash(rel))}).String(),

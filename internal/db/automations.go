@@ -359,6 +359,36 @@ func (db *DB) MarkAutomationsRemovedExcept(scope string, projectID int64, keepPa
 	return int(n), nil
 }
 
+// MarkAutomationsRemovedIn stamps removed_at on every live owner row of the
+// scope whose recipe file lies directly in one of dirs (as stored, compared
+// lexically — no filesystem call), returning how many it stamped. The
+// scheduler retires the recipes of a folder that left its workbench with it
+// (multi-folder workbench, spec §6.3), whatever folders it can read.
+func (db *DB) MarkAutomationsRemovedIn(scope string, projectID int64, dirs []string, now time.Time) (int, error) {
+	if len(dirs) == 0 {
+		return 0, nil
+	}
+	in, err := json.Marshal(dirs)
+	if err != nil {
+		return 0, fmt.Errorf("encoding recipe folders: %w", err)
+	}
+	stamp := formatAutomationTime(now)
+	res, err := db.Exec(`UPDATE automations SET removed_at = ?, updated_at = ?
+		WHERE scope = ? AND COALESCE(project_id, 0) = ? AND removed_at IS NULL AND origin = 'owner'
+		  AND EXISTS (SELECT 1 FROM json_each(?) j
+		              WHERE substr(automations.path, 1, length(j.value) + 1) = j.value || '/'
+		                AND instr(substr(automations.path, length(j.value) + 2), '/') = 0)`,
+		stamp, stamp, scope, projectID, string(in))
+	if err != nil {
+		return 0, fmt.Errorf("retiring automations of %s/%d: %w", scope, projectID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("retiring automations of %s/%d: %w", scope, projectID, err)
+	}
+	return int(n), nil
+}
+
 // SetAutomationEnabled turns automation id on or off. Turning a disabled row
 // on sets last_scheduled_for = now, so the scheduler never back-fills the
 // ticks it missed while off; enabling an enabled row keeps its schedule point.
