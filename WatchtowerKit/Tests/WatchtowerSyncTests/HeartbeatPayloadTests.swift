@@ -43,4 +43,15 @@ final class HeartbeatPayloadTests: XCTestCase {
         XCTAssertEqual(try decode(backgroundAI: "allowed").backgroundAI, .allowed)
         XCTAssertEqual(try decode(backgroundAI: "paused").backgroundAI, .paused)
     }
+
+    /// The chat's Retry and Dismiss (mobile Inbox spec §12.9): "retry_dismiss" from a hub that takes them, nil from an
+    /// older hub.
+    func testChatActionsCapabilityDecodes() throws {
+        let newer = try decode(#""capabilities":{"chat":"on","chat_actions":"retry_dismiss"},"#)
+        XCTAssertEqual(newer.capabilities?.chatActions, "retry_dismiss")
+        XCTAssertTrue(newer.capabilities?.chatRetryAndDismiss == true)
+        let older = try decode(#""capabilities":{"chat":"on"},"#)
+        XCTAssertNil(older.capabilities?.chatActions)
+        XCTAssertFalse(older.capabilities?.chatRetryAndDismiss == true)
+    }
 }

@@ -209,6 +209,8 @@ type OpenApproval struct {
 	Tool, ArgsJSON, Reason, Status, Error, ContextType, ContextID string
 	// ResultJSON is an action's stored result (what a brief_context echoed).
 	ResultJSON string
+	// External is an action's external flag.
+	External bool
 	// A reminder's.
 	Note, RemindAt, MessageRef string
 }
@@ -270,13 +272,13 @@ func (db *DB) ReadApprovalsView(ctx context.Context, automationID int64, now tim
 func openApprovalsQuery(actionClause string) string {
 	return `
 		SELECT k, id, created_at, changed_at, tool, args_json, reason, status, error, context_type, context_id,
-		       result_json, note, remind_at, message_ref FROM (
+		       result_json, note, remind_at, message_ref, external FROM (
 			SELECT 0 AS k, id, created_at, MAX(created_at, decided_at, applied_at) AS changed_at,
 			       tool, args_json, reason, status, error, context_type, context_id, result_json,
-			       '' AS note, '' AS remind_at, '' AS message_ref
+			       '' AS note, '' AS remind_at, '' AS message_ref, external
 			FROM agent_actions WHERE ` + actionClause + `
 			UNION ALL
-			SELECT 1, id, created_at, MAX(created_at, remind_at), '', '', '', status, '', '', '', '', note, remind_at, message_ref
+			SELECT 1, id, created_at, MAX(created_at, remind_at), '', '', '', status, '', '', '', '', note, remind_at, message_ref, 0
 			FROM reminders WHERE ` + openReminderClause + `)
 		ORDER BY created_at, k, id`
 }
@@ -302,7 +304,7 @@ func openApprovals(ctx context.Context, tx *sql.Tx, now, query string) ([]OpenAp
 		var a OpenApproval
 		var k int
 		if err := rows.Scan(&k, &a.ID, &a.CreatedAt, &a.ChangedAt, &a.Tool, &a.ArgsJSON, &a.Reason, &a.Status, &a.Error,
-			&a.ContextType, &a.ContextID, &a.ResultJSON, &a.Note, &a.RemindAt, &a.MessageRef); err != nil {
+			&a.ContextType, &a.ContextID, &a.ResultJSON, &a.Note, &a.RemindAt, &a.MessageRef, &a.External); err != nil {
 			return nil, fmt.Errorf("reading open approvals: %w", err)
 		}
 		a.Kind = ApprovalKindAction

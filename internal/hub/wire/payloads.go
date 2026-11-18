@@ -192,9 +192,14 @@ const (
 // InboxPolicyOff with InboxReason InboxOffPolicy under the organization's
 // workbench_only policy; an absent key is an older hub, as for chat.
 type HeartbeatCapabilities struct {
-	Recordings  string `json:"recordings,omitempty"`
-	Chat        string `json:"chat,omitempty"`
-	ChatReason  string `json:"chat_reason,omitempty"`
+	Recordings string `json:"recordings,omitempty"`
+	Chat       string `json:"chat,omitempty"`
+	ChatReason string `json:"chat_reason,omitempty"`
+	// ChatActions names the chat approval decisions beyond approve and
+	// reject that chat_action_answer takes (mobile Inbox spec §12.9):
+	// ChatActionsRetryDismiss while chat is on; absent from an older hub,
+	// whose phone then offers no Retry or Dismiss in the chat.
+	ChatActions string `json:"chat_actions,omitempty"`
 	Inbox       string `json:"inbox,omitempty"`
 	InboxReason string `json:"inbox_reason,omitempty"`
 }
@@ -205,6 +210,10 @@ const (
 	InboxPolicyOff = "policy_off"
 	InboxOffPolicy = "policy"
 )
+
+// ChatActionsRetryDismiss is the chat_actions capability of a hub whose
+// chat_action_answer takes retry and dismiss.
+const ChatActionsRetryDismiss = "retry_dismiss"
 
 // The chat capability's off reasons.
 const (

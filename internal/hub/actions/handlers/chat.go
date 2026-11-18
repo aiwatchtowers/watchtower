@@ -50,6 +50,7 @@ const (
 	chatBusyMessage         = "This chat is already answering. Wait for it or stop it."
 	chatAttachmentGone      = "A file of this message is no longer on your Mac. Attach it again."
 	chatChangedMessage      = "The action changed — look again"
+	chatSessionOnlyMessage  = "This runs only in its chat on the Mac"
 	chatActionGoneMessage   = "This action no longer exists on your Mac"
 	chatTurnEndedMessage    = "This answer has already ended"
 	chatTextTooLongMessage  = "This message is over 32,000 characters"

@@ -274,6 +274,22 @@ type Approval struct {
 	// RecipeClipped is set when FeedRequest.Clip cut RecipeText or Diff to
 	// ClipBytes.
 	RecipeClipped bool `json:"recipe_clipped"`
+	// ArgsDisplay is the proposal's args as the shared approval card draws
+	// them off the Mac (tools.ArgsDisplay: indented, cut at 4000
+	// characters), so the phone Inbox shows the same per-tool body as the
+	// phone chat (mobile Inbox spec §12.1). ArgsComplete is false when it
+	// was cut. The approve digest stays ArgsSHA256, over the stored bytes.
+	// Optional on the wire (omitempty): a record from an older hub has
+	// none, and the phone then draws the summary.
+	ArgsDisplay  string `json:"args_display,omitempty"`
+	ArgsComplete bool   `json:"args_complete,omitempty"`
+	// External is the tool's external flag (it writes outside Watchtower).
+	External bool `json:"external,omitempty"`
+	// NeedsWorkspace is set on a Slack send still waiting for the
+	// workspace to send from, decided from the whole stored args
+	// (tools.SlackSendNeedsWorkspace): the phone offers no Approve even
+	// when its display args were clipped. Additive and optional on the wire.
+	NeedsWorkspace bool `json:"needs_workspace,omitempty"`
 }
 
 // DiffKind is one diff line's kind.

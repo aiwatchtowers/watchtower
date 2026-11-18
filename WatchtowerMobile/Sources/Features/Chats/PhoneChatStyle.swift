@@ -55,6 +55,44 @@ struct PhoneChatStyle: ChatUIStyle {
     }
 }
 
+extension PhoneChatStyle {
+    /// The approval card's header on every phone surface (the chat and the Inbox, mobile Inbox spec §12.5): the
+    /// status beside the title while both fit on one line, under it otherwise, so a long title is never cut.
+    func approvalHeader(_ header: ChatApprovalHeader) -> AnyView {
+        let title = Text(header.title).font(.callout.weight(.semibold))
+        let status = Text(header.status)
+            .font(.caption)
+            .foregroundStyle(Self.headerTone(header.kind))
+            .accessibilityIdentifier("agentAction.status")
+        return AnyView(ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                title
+                Spacer(minLength: Spacing.regular)
+                status
+            }
+            VStack(alignment: .leading, spacing: Spacing.small) {
+                title.fixedSize(horizontal: false, vertical: true)
+                status.fixedSize(horizontal: false, vertical: true)
+            }
+        })
+    }
+
+    /// The header status's tone: orange only while the card waits for the owner.
+    static func headerTone(_ kind: ChatApprovalHeader.Kind) -> Color {
+        switch kind {
+        case .waiting: PhoneTone.waitingForYou.color
+        case .done: PhoneTone.green.color
+        case .failed: PhoneTone.red.color
+        case .neutral: PhoneTone.secondary.color
+        }
+    }
+
+    /// A failed proposal's retry note: secondary, never orange (orange means only "waiting for you" on the phone).
+    func approvalRetryNote(_ text: String) -> AnyView {
+        AnyView(Text(text).font(.caption).foregroundStyle(PhoneTone.secondary.color))
+    }
+}
+
 extension ChatHostText {
     /// The phone names the tower in the shared chat's lines (#1783): its name, "your tower" without one.
     static func phone(_ hubName: String) -> ChatHostText { ChatHostText(hostName: TowerText.name(hubName)) }

@@ -82,6 +82,28 @@ enum InboxPhoneText {
         "Run “\(name)” now"
     }
 
+    // The approval card (mobile Inbox spec §12.5). Retry and Dismiss without the `permissions` grant are
+    // `ChatText.retryElsewhere` / `dismissElsewhere` (the Mac or the tower).
+    static let retrying = "Retrying…"
+    static let dismissing = "Dismissing…"
+
+    /// An approval press queued while the hub is away.
+    static func waitingToSendLine(hub: String) -> String {
+        "Waiting to send — it applies when \(TowerText.name(hub)) wakes."
+    }
+
+    /// An approval press on its way: "Approving…", "Rejecting…", "Retrying…", "Dismissing…".
+    static func busyLine(for request: ActRequest) -> String? {
+        guard request.verb == .approval else { return InboxText.busyLabel(for: request) }
+        switch request.params.approvalVerb {
+        case .approve?: return InboxText.approving
+        case .reject?: return InboxText.rejecting
+        case .retry?: return retrying
+        case .dismiss?: return dismissing
+        default: return nil
+        }
+    }
+
     /// The outbox's Inbox line while presses wait (mockup §6 Mac away).
     static func waitingToSend(_ count: Int) -> String {
         "Waiting to send · \(count)"

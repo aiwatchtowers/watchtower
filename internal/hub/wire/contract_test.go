@@ -244,7 +244,7 @@ func TestHubContractFixture_RecordingSwitch(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &f))
 	require.ElementsMatch(t, []string{"capabilities_on", "capabilities_off", "capabilities_absent",
 		"capabilities_unknown_value", "unknown_capability_key",
-		"hub_kind_mac", "hub_kind_server", "hub_kind_unknown_value", "chat_on", "chat_off_runner_down",
+		"hub_kind_mac", "hub_kind_server", "hub_kind_unknown_value", "chat_on", "chat_actions_retry_dismiss", "chat_off_runner_down",
 		"inbox_on", "inbox_policy_off", "stuck_since", "background_ai_organization"}, names(f.Heartbeat))
 	require.ElementsMatch(t, []string{"failed_not_supported", "failed_expired", "received",
 		"failed_legacy_no_reason"}, names(f.UploadEcho))
@@ -273,6 +273,11 @@ func TestHubContractFixture_RecordingSwitch(t *testing.T) {
 				require.Equal(t, want, hb.Capabilities.Chat)
 				reason, _ := c.Kit["chat_reason"].(string)
 				require.Equal(t, reason, hb.Capabilities.ChatReason)
+			}
+			if want, ok := c.Kit["chat_actions"]; ok {
+				// Mobile Inbox §12.9: the chat's Retry and Dismiss.
+				require.NotNil(t, hb.Capabilities)
+				require.Equal(t, want, hb.Capabilities.ChatActions)
 			}
 			if want, ok := c.Kit["inbox"]; ok {
 				// Mobile Inbox §6: "on", or "policy_off" with the reason.

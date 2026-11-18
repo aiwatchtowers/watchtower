@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"watchtower/internal/tools"
 	"watchtower/internal/tower/api"
 )
 
@@ -261,5 +262,86 @@ func TestCardIDs_RoundTripAndNeverCollide(t *testing.T) {
 		if _, _, _, err := ParseCardID(bad); err == nil {
 			t.Errorf("ParseCardID(%q) accepted a malformed id", bad)
 		}
+	}
+}
+
+// TestBuild_ArgsDisplayOnlyOnTheClippedFeed (mobile Inbox spec §12.1): an
+// approval's display args go to the hub's clipped feed only, cut at
+// ArgsDisplayClipBytes with ArgsComplete cleared; the Mac's feed carries
+// none. The digest stays over the stored bytes.
+func TestBuild_ArgsDisplayOnlyOnTheClippedFeed(t *testing.T) {
+	wide := strings.Repeat("日本", 1900) // 3800 characters, 11 400 bytes
+	d := seeded(t, []string{
+		`INSERT INTO agent_actions (id, tool, args_json, reason, status, created_at)
+			VALUES (1, 'create_jira_issue', '{"summary":"` + wide + `"}', 'r', 'pending', '2026-11-16T09:00:00Z')`,
+		`INSERT INTO agent_actions (id, tool, args_json, reason, status, created_at)
+			VALUES (2, 'create_jira_issue', '{"summary":"x"}', 'r', 'pending', '2026-11-16T09:01:00Z')`,
+	})
+	approvalOf := func(f api.Feed, id string) *api.Approval {
+		for _, c := range f.Cards {
+			if c.ID == id {
+				return c.Approval
+			}
+		}
+		t.Fatalf("no card %s", id)
+		return nil
+	}
+	clipped, err := Build(context.Background(), d, Options{Clip: true, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	big, small := approvalOf(clipped, "a1"), approvalOf(clipped, "a2")
+	if len(big.ArgsDisplay) > ArgsDisplayClipBytes || big.ArgsComplete || !utf8.ValidString(big.ArgsDisplay) || big.ArgsDisplay == "" {
+		t.Fatalf("wide args: %d bytes, complete %v", len(big.ArgsDisplay), big.ArgsComplete)
+	}
+	if !small.ArgsComplete || !strings.Contains(small.ArgsDisplay, `"summary": "x"`) {
+		t.Fatalf("small args: %q complete %v", small.ArgsDisplay, small.ArgsComplete)
+	}
+	if big.ArgsSHA256 != tools.ArgsSHA256(`{"summary":"`+wide+`"}`) {
+		t.Fatal("the digest is not over the stored bytes")
+	}
+	mac, err := Build(context.Background(), d, Options{Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := approvalOf(mac, "a1"); a.ArgsDisplay != "" || a.ArgsComplete {
+		t.Fatalf("the Mac's feed carries display args: %d bytes", len(a.ArgsDisplay))
+	}
+}
+
+// TestBuild_ClippedSlackDraftStillNeedsItsWorkspace: a Slack draft with no
+// workspace chosen whose multibyte text runs past ArgsDisplayClipBytes keeps
+// needs_workspace, decided from the whole stored args, so the phone offers
+// no Approve the hub would refuse; a draft with its target pinned does not.
+func TestBuild_ClippedSlackDraftStillNeedsItsWorkspace(t *testing.T) {
+	text := strings.Repeat("日本語", 1300) // 3900 characters, 11 700 bytes
+	d := seeded(t, []string{
+		`INSERT INTO agent_actions (id, tool, args_json, reason, status, created_at)
+			VALUES (1, 'send_slack_message', '{"text":"` + text + `","candidates":[{"account_id":1,"workspace":"acme","label":"#eng"},` +
+			`{"account_id":2,"workspace":"example","label":"#eng"}]}', 'r', 'pending', '2026-11-16T09:00:00Z')`,
+		`INSERT INTO agent_actions (id, tool, args_json, reason, status, created_at)
+			VALUES (2, 'send_slack_message', '{"text":"hi","target":{"account_id":1,"workspace":"acme","label":"#eng"}}',
+			'r', 'pending', '2026-11-16T09:01:00Z')`,
+	})
+	feed, err := Build(context.Background(), d, Options{Clip: true, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]*api.Approval{}
+	for _, c := range feed.Cards {
+		byID[c.ID] = c.Approval
+	}
+	draft, pinned := byID["a1"], byID["a2"]
+	if draft == nil || pinned == nil {
+		t.Fatal("missing cards")
+	}
+	if draft.ArgsComplete || len(draft.ArgsDisplay) > ArgsDisplayClipBytes {
+		t.Fatalf("the draft's display args were not clipped: %d bytes", len(draft.ArgsDisplay))
+	}
+	if !draft.NeedsWorkspace {
+		t.Fatal("a clipped draft with no workspace lost needs_workspace")
+	}
+	if pinned.NeedsWorkspace {
+		t.Fatal("a pinned send needs no workspace")
 	}
 }
