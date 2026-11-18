@@ -266,28 +266,36 @@ func newRescanFolderJSON(scope automations.Scope, folder string, r automations.R
 	return j
 }
 
-// runAutomationsRescan indexes the personal folder and, with --workbench, that
-// workbench's folder too (spec §10: the Desktop runs it for folders the
-// daemon may not read).
+// runAutomationsRescan indexes the personal folder and, with --workbench, the
+// recipe folder of every live folder of that workbench too (spec §10: the
+// Desktop runs it for folders the daemon may not read; multi-folder
+// workbench §6.11).
 func runAutomationsRescan(cmd *cobra.Command, _ []string) error {
 	cfg, database, err := openAutomationsCmd()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
-	folders := []struct {
+	type scopeDir struct {
 		scope automations.Scope
 		dir   string
-	}{{automations.Scope{Kind: automations.ScopePersonal}, automations.PersonalDir(cfg.WorkspaceDir())}}
+	}
+	folders := []scopeDir{{automations.Scope{Kind: automations.ScopePersonal}, automations.PersonalDir(cfg.WorkspaceDir())}}
 	if autoFlags.Workbench != 0 {
 		scope, dir, err := workbenchScope(database, autoFlags.Workbench)
 		if err != nil {
 			return err
 		}
-		folders = append(folders, struct {
-			scope automations.Scope
-			dir   string
-		}{scope, dir})
+		live, err := database.WorkbenchFolders(cmd.Context(), scope.WorkbenchID, false)
+		if err != nil {
+			return err
+		}
+		if len(live) == 0 {
+			folders = append(folders, scopeDir{scope, dir}) // a bench without a live folder row
+		}
+		for _, f := range live {
+			folders = append(folders, scopeDir{scope, automations.WorkbenchDir(f.FolderPath)})
+		}
 	}
 	ix := automations.NewIndexer(database, cfg.WorkspaceDir(), automations.RealClock{})
 	out := make([]rescanFolderJSON, 0, len(folders))

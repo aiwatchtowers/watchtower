@@ -57,6 +57,9 @@ type Scheduler struct {
 	// the clock's time at its start. Only Run's goroutine touches them.
 	holding   bool
 	heldSince time.Time
+	// folderSets is each workbench's live folder paths at the last tick
+	// (rescanWorkbenches); only the tick's goroutine touches it.
+	folderSets map[int64]string
 }
 
 // NewScheduler returns a scheduler over d. ix rescans the personal and
@@ -184,15 +187,18 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) error {
 	return errors.Join(errs...)
 }
 
-// rescanWorkbenches rescans the recipe folder of every workbench whose folder
-// is not privacy-protected, when it changed. A protected folder is skipped
-// before any filesystem call — the daemon never stats, lists or reads it (a
-// background read there raises a macOS privacy prompt attributed to
-// Watchtower, a dead network mount can block it); its rows stay as the
-// Desktop indexed them. A workbench whose folder is gone, or whose folder,
+// rescanWorkbenches rescans the recipe folder of every live folder of every
+// workbench (multi-folder workbench, spec §6.11) that is not
+// privacy-protected, when it changed — or when the bench's folders changed
+// since the last tick, so a folder that left the bench has its recipes
+// marked removed by the next rescan of another one. A protected folder is
+// skipped before any filesystem call — the daemon never stats, lists or
+// reads it (a background read there raises a macOS privacy prompt
+// attributed to Watchtower, a dead network mount can block it); its rows
+// stay as the Desktop indexed them. A folder that is gone, or whose path,
 // .watchtower or automations folder is a symlink, is skipped the same way: a
 // link is never followed, since it could lead into a protected folder (the
-// Desktop's rescan indexes such a workbench).
+// Desktop's rescan indexes such a folder).
 func (s *Scheduler) rescanWorkbenches(ctx context.Context) []error {
 	wbs, err := s.db.ListWorkbenches()
 	if err != nil {
@@ -203,16 +209,36 @@ func (s *Scheduler) rescanWorkbenches(ctx context.Context) []error {
 		if ctx.Err() != nil {
 			break // the schedule loop reports ctx's end
 		}
-		if s.protected(wb.FolderPath) || !s.ix.workbenchPathPlain(wb.FolderPath) {
-			continue
-		}
-		dir := WorkbenchDir(wb.FolderPath)
-		if !s.ix.Changed(dir) {
-			continue
-		}
-		if _, err := s.ix.RescanFolder(ctx, Scope{Kind: ScopeWorkbench, WorkbenchID: wb.ID}, dir); err != nil {
+		folders, err := s.db.WorkbenchFolders(ctx, wb.ID, false)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("workbench %d: %w", wb.ID, err))
+			continue
 		}
+		paths := make([]string, 0, len(folders))
+		for _, f := range folders {
+			paths = append(paths, f.FolderPath)
+		}
+		if len(paths) == 0 {
+			paths = []string{wb.FolderPath} // a bench without a live folder row
+		}
+		set := strings.Join(paths, "\n")
+		moved := s.folderSets[wb.ID] != set
+		for _, folder := range paths {
+			if s.protected(folder) || !s.ix.workbenchPathPlain(folder) {
+				continue
+			}
+			dir := WorkbenchDir(folder)
+			if !moved && !s.ix.Changed(dir) {
+				continue
+			}
+			if _, err := s.ix.RescanFolder(ctx, Scope{Kind: ScopeWorkbench, WorkbenchID: wb.ID}, dir); err != nil {
+				errs = append(errs, fmt.Errorf("workbench %d: %w", wb.ID, err))
+			}
+		}
+		if s.folderSets == nil {
+			s.folderSets = map[int64]string{}
+		}
+		s.folderSets[wb.ID] = set
 	}
 	return errs
 }
