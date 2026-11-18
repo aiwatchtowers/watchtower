@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/sessionhost"
 	"watchtower/internal/workbenchfolders"
 )
 
@@ -314,16 +315,37 @@ func TestFinishOfARunningSessionWritesNothing(t *testing.T) {
 	assert.Equal(t, hub.FolderPath, w.row(id).folder)
 }
 
-// Finish's running-check cannot reach the host: the error comes back and
-// the row is not written (a lost connection is no proof the agent exited).
+// Finish's running-check is connected but cannot read the host's list: the
+// error comes back and the row is not written (a dropped connection is no
+// proof the agent exited, PROJ-20).
 func TestFinishProbeErrorLeavesTheRow(t *testing.T) {
 	w := newWorld(t)
 	id := w.begin(handlers.StartRequest{Workbench: w.wb})
 	before := w.row(id)
 	d := w.deps()
+	d.host = func(ctx context.Context) (*sessionhost.Client, func(error), error) {
+		c, err := sessionhost.Dial(ctx, w.socket)
+		if err != nil {
+			return nil, nil, err
+		}
+		_ = c.Close() // connected, then dropped: List fails
+		return c, func(error) {}, nil
+	}
+	require.ErrorContains(t, Finish(context.Background(), d, id, "auto", "", false), "listing the session host")
+	assert.Equal(t, before, w.row(id))
+}
+
+// A host that cannot be reached at all runs nothing: Finish fails the row
+// as it always did.
+func TestFinishWithTheHostDownFailsTheRow(t *testing.T) {
+	w := newWorld(t)
+	id := w.begin(handlers.StartRequest{Workbench: w.wb})
+	d := w.deps()
 	d.Socket = droppingSocket(t)
 	require.ErrorContains(t, Finish(context.Background(), d, id, "auto", "", false), "the session host is not running")
-	assert.Equal(t, before, w.row(id))
+	r := w.row(id)
+	assert.True(t, r.failed)
+	assert.Equal(t, "the session host is not running", r.agentError)
 }
 
 // The bench's worktree_setup runs only in worktrees of the home folder (v1

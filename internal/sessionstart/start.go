@@ -503,14 +503,16 @@ func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, p
 }
 
 // refuseIfRunning is ErrAlreadyLaunched when the host runs the row already,
-// read before Finish writes anything to it. A host that cannot be reached or
-// read is only an error here, never a row write: a lost connection is no
-// proof the agent exited (PROJ-20). finish checks again under the placement
-// lock.
+// read before Finish writes anything to it. A host that cannot be reached at
+// all runs nothing (every agent runs in the host): Finish goes on and
+// finish's own lease fails the row as it always did ("the session host is
+// not running"). A connected host whose list cannot be read is only an
+// error, never a row write: a dropped connection is no proof the agent
+// exited (PROJ-20). finish checks again under the placement lock.
 func (s *newStart) refuseIfRunning(ctx context.Context) error {
 	c, done, err := s.d.lease(ctx)
 	if err != nil {
-		return err
+		return nil //nolint:nilerr // unreachable: nothing runs the row; finish fails it
 	}
 	list, err := c.List(ctx)
 	done(err)
