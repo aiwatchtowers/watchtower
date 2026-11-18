@@ -120,7 +120,7 @@ Folder…'s; tooltip
 
 Go validates, in one `BEGIN IMMEDIATE`: the path resolves to a directory; it is not already a
 folder of this bench (→ `already_here`, the Desktop highlights that root); not a folder of
-another bench (→ `other_bench` with that bench's name); not inside or containing a folder of any
+another bench (→ `other_bench` with that bench's name; the Desktop then offers the merge, §6.13); not inside or containing a folder of any
 bench (→ `nested`, naming the folder). Benches that are already nested today are grandfathered:
 the rule applies to new adds only.
 
@@ -268,8 +268,8 @@ buttons `Put on Bench` (primary) · `Not Now` on one line and `Never for This Fo
 under them (the panel is too narrow for three).
 - Put on Bench → the Desktop runs §6.1 as the owner's action (TCC confirm if needed); the answer
   line to the agent: `<name> is on the bench now. Start a sub-session there with
-  start_session("<name>", …).` A failed add shows the reason on the card (`Already on the
-  “tools” bench · Open tools`, button `OK`) and answers the agent with it.
+  start_session("<name>", …).` A failed add shows the reason on the card (`Couldn’t put <name> on the bench: <reason>`, button
+`OK`) and answers the agent with it; a folder of another bench shows the merge variant (§6.13).
 - Not Now → answer line `The owner said not now.`; the hook stays quiet for that root for the
   rest of the session.
 - Never → a `workbench_folder_declines` row; answer line `The owner does not want <name> on this
@@ -300,7 +300,33 @@ against the caller session's folder; an absolute one must lie in a bench folder.
 read from every folder's `.watchtower/automations`; a duplicate recipe name is shown as
 `<folder>/<name>`.
 
-### 6.12 Elsewhere
+### 6.13 Merging benches (ask #1545)
+Putting on the bench a folder that belongs to another bench B (from Put on the Bench… or a
+suggestion card) offers to **merge B into this bench A** instead of refusing.
+
+Confirmation: title `Merge “<B>” into “<A>”?`, text `<B>'s board (<n> targets), asks and
+sessions move to <A>, and <B> leaves the workbench list. Folders that move: <list>.`, buttons
+`Cancel` · `Merge` (primary). Refused while B has a live session (title `Can’t merge “<B>” yet`,
+text `<n> sessions are running in <B>. Finish them first.` / singular, `OK`) — a running agent's
+MCP server and hooks carry B's id. A merge into itself cannot happen (the folder is already
+here).
+
+Go (`workbench merge --from B --into A --json`): one `BEGIN IMMEDIATE` re-checks the live
+sessions and moves every row that belongs to B — B's `workbench_folders` (positions after A's),
+targets, comments, owner asks, sessions and their child tables, review rows, automations rows,
+images, PR states, sources (deduplicated against A's) and every other table keyed by the
+workbench id (the plan enumerates them from `schema.sql`; a test fails when a table keyed by
+`project_id` is not covered) — then deletes B's `projects` row. B's board columns are dropped;
+its targets keep their status and land in A's first column for that status (PROJ-19). B's
+`workbench_folder_declines` are dropped. After the commit: reinstall the devpack in the moved
+folders with A's id (PROJ-04; B's install is replaced, the owner's content kept) and re-index
+their documents under A. A failed reinstall leaves the install icon with Retry; the data move is
+already whole.
+
+Suggestion card: when the suggested folder is on bench B, the card reads
+`<name> is on the “<B>” bench`, buttons `Merge Benches…` (opens the confirmation) · `Not Now`.
+
+### 6.14 Elsewhere
 - Delete workbench (PROJ-02): uninstalls from every folder and cleans up sessions across folders.
 - Re-run setup (`workbench resync`): every folder.
 - Phone: session rows gain the folder label; sub-sessions show flat with `from #<id>`. Kit model
@@ -328,7 +354,10 @@ read from every folder's `.watchtower/automations`; a duplicate recipe name is s
 | message | Mac quits mid-delivery | host keeps the run (PROJ-20); line resumes as queued; at-most-once: a line marked `delivered` only after Deliver's `submitted` | Go |
 | finish → parent | parent deleted | dropped, logged | Go |
 | parent waits | last child stops | parent leaves Sub-sessions working; its stored state shows | Swift presentation test |
-| suggestion | owner clicks Put on Bench while the folder became another bench's | card shows `other_bench`; agent told | Swift + Go |
+| suggestion | owner clicks Put on Bench while the folder became another bench's | card switches to the merge variant; agent told | Swift + Go |
+| merge | a session of B starts between the dialog and the merge | re-checked inside the merge transaction → `sessions_running`, nothing moved | Go race test |
+| merge | crash mid-move | one transaction: all of B or nothing | Go (tx failure injection) |
+| merge | reinstall in a moved folder fails | data already in A; install icon + Retry | Go + Swift |
 | hook | repo-root walk on a slow network path | walk capped at 64 levels and skips paths under `/Volumes` network mounts; hook budget unchanged | Go |
 
 **Writers and who wins**
@@ -364,6 +393,8 @@ To be approved by the owner in a separate ask before review:
 - **New PROJ-23 — agent messages:** a message reaches only a live session of the same workbench,
   through the shared line gate, never into a permission prompt or over the owner's draft, at most
   once, never launches a session, and its failure is reported to the sender.
+- **PROJ-09** (a target moves only within its own workbench): a merge moves every target of the
+  merged bench, with its tree intact, into the bench it merges into (asked separately).
 - **New PROJ-24 — folder membership:** a folder belongs to at most one workbench; removing it
   from the bench touches nothing but Watchtower's install.
 
@@ -377,9 +408,11 @@ To be approved by the owner in a separate ask before review:
 4. `switcher` — Put on the Bench… under Open Folder….
 5. `new-session-menu` — per-folder items.
 6. `suggest-card` — Put on Bench / Not Now / Never; busy (`Putting on the bench…`); error
-   (`Already on the “tools” bench`).
+   (`Couldn’t put billing on the bench: …`); the old `Already on the “tools” bench` shot is
+   replaced by `suggest-card-merge`.
 7. `remove-confirm` and `remove-refused` (sessions running; last folder).
 8. `feed-parent` — started / from / finished / waiting peer bubbles.
+8a. `merge-confirm`, `merge-refused`, and `suggest-card-merge` (§6.13).
 9. `strip-child` — `📁 hub › ⑂ export-api › ⎇ … ↖ from “…”`.
 10. `board-card-folder` — folder chip, drift `folder removed`.
 
@@ -411,7 +444,8 @@ Every string above lives in a presentation model with a test (owner rule).
 15. Desktop: suggestion card + answer actions; remove/locate flows.
 16. Desktop: Workchat peer bubbles (feed parse of the fixed prefixes).
 17. Board card folder chip; phone/Kit folder + parent fields.
-18. Docs: feature note, guide page, inventory amendments, skill rule for Codex.
+18. `workbench merge` (Go, table coverage test) + Desktop confirmation and card variant.
+19. Docs: feature note, guide page, inventory amendments, skill rule for Codex.
 
 ## Decisions
 
@@ -445,6 +479,9 @@ Every string above lives in a presentation model with a test (owner rule).
 | D26 | Docs key gains the folder id; 2 000 cap per folder | decided by the agent |
 | D27 | Removed folders are soft-removed (`removed_at`) so targets can show "folder removed" | decided by the agent |
 | D28 | Put on the Bench… icon `plus.rectangle.on.folder`; Open Folder… keeps `folder.badge.plus` | decided by the agent |
+| D29 | Contract changes PROJ-02/04/07/08/10/11/14/16/18 and new PROJ-23/24 approved | ask #1545 |
+| D30 | A folder of another bench merges that bench into this one | ask #1545 |
+| D31 | Merge refused while the other bench has live sessions; its columns dropped, statuses kept | decided by the agent |
 
 ## Left to the builder
 Exact migration number; how `CodeRoot` encodes the folder id in its defaults key; the hub's
