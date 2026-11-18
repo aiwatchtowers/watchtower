@@ -214,6 +214,34 @@ func TestSetTargetFolderTx(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotInWorkbench)
 }
 
+// create_targets / target add store the item's folder; a folder of another
+// bench fails the batch.
+func TestCreateWorkbenchTargetsTx_Folder(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	hub := addTestFolder(t, d, wb, "/tmp/code/hub", "hub", 1)
+	theirs := addTestFolder(t, d, other, "/tmp/code/theirs", "theirs", 1)
+
+	var ids []int64
+	require.NoError(t, d.WithTx(func(tx *sql.Tx) (err error) {
+		ids, err = d.CreateWorkbenchTargetsTx(tx, wb, ActorAgent, []WorkbenchTargetInput{{Title: "a", FolderID: nullID(hub)}, {Title: "b"}})
+		return err
+	}))
+	a, err := d.GetTargetByID(int(ids[0]))
+	require.NoError(t, err)
+	assert.Equal(t, nullID(hub), a.WorkbenchFolderID)
+	b, err := d.GetTargetByID(int(ids[1]))
+	require.NoError(t, err)
+	assert.False(t, b.WorkbenchFolderID.Valid, "no folder: the home folder")
+
+	err = d.WithTx(func(tx *sql.Tx) error {
+		_, err := d.CreateWorkbenchTargetsTx(tx, wb, ActorAgent, []WorkbenchTargetInput{{Title: "c", FolderID: nullID(theirs)}})
+		return err
+	})
+	assert.ErrorIs(t, err, ErrNotInWorkbench)
+}
+
 func TestCreateTerminalSession_FolderAndParent(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)

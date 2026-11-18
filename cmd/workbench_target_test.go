@@ -118,6 +118,25 @@ func TestWorkbenchTargetAdd_RefusesAnUnknownPriorityAndAMissingWorkbench(t *test
 	require.Error(t, err, "--workbench is required")
 }
 
+// Spec 2026-11-18 §6.10: --folder stores the bench folder the work is in,
+// named by its name or path; one not on the bench is refused.
+func TestWorkbenchTargetAdd_StoresTheNamedFolder(t *testing.T) {
+	database := writeActionsConfig(t)
+	pid, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	hub := benchFolderAt(t, database, pid, t.TempDir(), "hub")
+
+	out, err := runTargetAdd(t, "--workbench", strconv.FormatInt(pid, 10), "--title", "x", "--folder", "hub", "--json")
+	require.NoError(t, err)
+	tg, err := database.GetTargetByID(int(addedTargetID(t, out)))
+	require.NoError(t, err)
+	assert.Equal(t, sql.NullInt64{Int64: hub, Valid: true}, tg.WorkbenchFolderID)
+
+	_, err = runTargetAdd(t, "--workbench", strconv.FormatInt(pid, 10), "--title", "y", "--folder", "nowhere", "--json")
+	require.ErrorContains(t, err, "--folder: not_found: ")
+	assert.Equal(t, 1, workbenchTargetCount(t, database, pid))
+}
+
 func TestWorkbenchTargetAdd_UnderAParentRecomputesItsProgress(t *testing.T) {
 	database := writeActionsConfig(t)
 	pid, err := database.CreateWorkbench("acme", t.TempDir())

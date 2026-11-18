@@ -17,25 +17,34 @@ const (
 	ghBudget      = 30 * time.Second
 )
 
-// prChecker reads pull request states through the gh CLI, when it is
-// installed and signed in. Used only with Options.Network.
-type prChecker struct {
-	o         Options
+// ghSession is what every folder's pull request reads share in one check:
+// one `gh auth status` probe and one ghBudget, however many folders.
+type ghSession struct {
 	available bool
 	deadline  time.Time
-	notes     []string
-	skipped   int    // pull requests whose state could not be read
-	firstErr  string // why the first of them could not
+	now       func() time.Time
 }
 
-func newPRChecker(ctx context.Context, o Options) *prChecker {
-	p := &prChecker{o: o, deadline: time.Now().Add(ghBudget)}
-	if ok, note := GHStatus(ctx, o.Folder, o.Run); !ok {
-		p.notes = append(p.notes, note)
-		return p
+// newGHSession probes gh once, in folder; note says why it is unavailable.
+func newGHSession(ctx context.Context, o Options, folder string) (s *ghSession, note string) {
+	now := o.clock
+	if now == nil {
+		now = time.Now
 	}
-	p.available = true
-	return p
+	s = &ghSession{deadline: now().Add(ghBudget), now: now}
+	s.available, note = GHStatus(ctx, folder, o.Run)
+	return s, note
+}
+
+// prChecker reads one folder's pull request states through the gh CLI,
+// when it is installed and signed in (the shared ghSession). Used only with
+// Options.Network.
+type prChecker struct {
+	folder   string
+	run      Runner
+	gh       *ghSession
+	skipped  int    // pull requests whose state could not be read
+	firstErr string // why the first of them could not
 }
 
 // GHStatus probes the gh CLI with `gh auth status` run in folder: ok when it
@@ -75,22 +84,26 @@ func GHJSON(ctx context.Context, folder string, run Runner, v any, args ...strin
 // state returns OPEN, MERGED or CLOSED for ref (a number, #number or URL),
 // or "" when it cannot be read.
 func (p *prChecker) state(ctx context.Context, ref string) string {
-	if !p.available {
+	if !p.gh.available {
 		return ""
 	}
 	ref = strings.TrimPrefix(ref, "#")
 	switch {
 	case ref == "" || strings.HasPrefix(ref, "-"):
 		return p.skip("invalid reference " + ref)
-	case time.Now().After(p.deadline):
+	}
+	// Each call gets at most what is left of the shared budget, so all the
+	// folders' reads together never pass ghBudget.
+	left := p.gh.deadline.Sub(p.gh.now())
+	if left <= 0 {
 		return p.skip("the gh time budget was spent")
 	}
-	cctx, cancel := context.WithTimeout(ctx, ghCallTimeout)
+	cctx, cancel := context.WithTimeout(ctx, min(ghCallTimeout, left))
 	defer cancel()
 	var v struct {
 		State string `json:"state"`
 	}
-	if err := GHJSON(cctx, p.o.Folder, p.o.Run, &v, "pr", "view", ref, "--json", "state"); err != nil {
+	if err := GHJSON(cctx, p.folder, p.run, &v, "pr", "view", ref, "--json", "state"); err != nil {
 		return p.skip(err.Error())
 	}
 	if v.State == "" {
