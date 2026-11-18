@@ -377,6 +377,7 @@ var modelHelperFiles = map[string]string{
 	"generator.go":               "the generator and AI client constructors",
 	"provider_policy.go":         "the policy-checked generator wrapper",
 	"workbench_askguard_stop.go": "workbench ask-guard --stop: the Stop hook of the owner's own workbench session (owner origin); no launcher starts it",
+	"actions_registry.go":        "connect_jira_board's board analyzer in the tool registry (no command of its own; the long-lived checkedAIClient asks consent per call)",
 	"automations_registry.go":    "the authoring generator of automations preview and the MCP tool registry (no command of its own)",
 	"root.go":                    "the interactive REPL: the bare root command, a terminal only",
 	"sync.go":                    "the daemon's post-sync pipelines: sync --daemon is background by role; sync's other forms (--now, stop, --users-only) call no model",
@@ -405,7 +406,7 @@ func TestModelCommands_ExistInCLI(t *testing.T) {
 		assert.Equal(t, "watchtower "+key, c.CommandPath(), "%q is not a command", key)
 	}
 
-	gen := regexp.MustCompile(`cliPooledGenerator|cliGenerator|newAIClient|checkedGenerator|cliBoundedGenerator|cliBuiltinGenerator|legacyCLIGenerator|transport\.For`)
+	gen := regexp.MustCompile(`cliPooledGenerator|cliGenerator|newAIClient|checkedAIClient|checkedGenerator|cliBoundedGenerator|cliBuiltinGenerator|legacyCLIGenerator|transport\.For`)
 	files, err := filepath.Glob("*.go")
 	require.NoError(t, err)
 	var found []string
