@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 )
 
@@ -78,24 +80,59 @@ func worktreeMain(dir string) (string, bool) {
 	return gitdir[:i], true
 }
 
+// ProtectedDirs lists Watchtower's own state directories, which a bench
+// folder may neither be, sit inside, nor contain: every workspace's data, the
+// default config directory and the Desktop's Application Support. `workbench
+// create`, `folder add|locate` and suggest_workbench_folder share it.
+func ProtectedDirs() []string {
+	var dirs []string
+	if root, err := config.DataRoot(); err == nil {
+		dirs = append(dirs, root)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, ".config", "watchtower"),
+			filepath.Join(home, "Library", "Application Support", "Watchtower"))
+	}
+	return dirs
+}
+
 // Suggestable checks path as an agent's folder suggestion for workbench
 // workbenchID (spec §6.7): stored as Add would store it and refused as Add
 // would refuse it (not_found, already_here, nested, a folder no workbench
-// may have), except that a live folder of another bench is no refusal — it
-// comes back as other, so the card offers the merge (§6.13). Nothing is
-// written.
-func Suggestable(ctx context.Context, d *db.DB, workbenchID int64, path string) (folder string, other *db.Workbench, err error) {
-	folder, err = normalize(path, nil)
+// may have — ProtectedDirs), except that a live folder of another bench is
+// no refusal — it comes back as other, so the card offers the merge
+// (§6.13). root is the folder's repository root (RepoRoot; the folder itself
+// outside any repository); a linked worktree whose repository is a live
+// folder of this bench is already_here. Nothing is written.
+func Suggestable(ctx context.Context, d *db.DB, workbenchID int64, path string) (folder, root string, other *db.Workbench, err error) {
+	folder, err = normalize(path, ProtectedDirs())
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	err = checkFree(ctx, d, workbenchID, 0, folder)
 	var r *Refusal
 	if errors.As(err, &r) && r.Code == CodeOtherBench && r.OtherBench != nil {
-		return folder, r.OtherBench, nil
+		other, err = r.OtherBench, nil
 	}
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
-	return folder, nil, nil
+	root, ok := RepoRoot(folder)
+	if !ok {
+		root = folder
+	}
+	if strings.EqualFold(root, folder) {
+		return folder, root, other, nil
+	}
+	live, err := liveFolders(ctx, d, workbenchID, 0)
+	if err != nil {
+		return "", "", nil, err
+	}
+	for i := range live {
+		if f := &live[i]; strings.EqualFold(f.FolderPath, root) {
+			return "", "", nil, &Refusal{Code: CodeAlreadyHere, Folder: f,
+				Detail: fmt.Sprintf("%s is a worktree of %s, already on this bench as %s.", folder, root, f.Name)}
+		}
+	}
+	return folder, root, other, nil
 }

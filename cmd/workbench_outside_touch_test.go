@@ -221,18 +221,55 @@ func TestOutsideTouchWalkIsCapped(t *testing.T) {
 	below := func(levels int) string {
 		return filepath.Join(append([]string{repo}, strings.Split(strings.Repeat("d/", levels), "/")...)...)
 	}
-	root, ok := outsideRoot(below(63), nil, nil, local)
+	_, root, ok := outsideRoot(below(63), nil, local)
 	assert.True(t, ok, "63 levels below the root: found")
 	assert.Equal(t, repo, root)
-	_, ok = outsideRoot(below(64), nil, nil, local)
+	_, _, ok = outsideRoot(below(64), nil, local)
 	assert.False(t, ok, "64 levels below: past the cap")
 
+	// A spelled path on a non-local mount: refused at its first component on
+	// that mount, before anything there is probed.
+	share := filepath.Dir(repo)
 	var asked []string
-	_, ok = outsideRoot(filepath.Join(repo, "a.go"), nil, nil, func(p string) bool { asked = append(asked, p); return false })
+	onShare := func(p string) bool { asked = append(asked, p); return p != share && !pathWithin(p, share) }
+	_, _, ok = outsideRoot(filepath.Join(repo, "a.go"), nil, onShare)
 	assert.False(t, ok, "a non-local mount is never walked")
-	assert.Equal(t, []string{filepath.Join(repo, "a.go")}, asked)
+	assert.Equal(t, share, asked[len(asked)-1], "the walk stops at the share's mount point")
 
-	_, ok = outsideRoot("relative/a.go", nil, nil, local)
+	_, _, ok = outsideRoot("relative/a.go", nil, local)
+	assert.False(t, ok)
+}
+
+// A local-looking symlink onto a non-local mount is refused at the link: its
+// target's mount is checked before anything behind the link is probed. A
+// link onto a local repository resolves to it.
+func TestOutsideTouchSymlinkOntoANetworkMountIsNeverWalked(t *testing.T) {
+	repo := repoDir(t, "remote")
+	links := plainDir(t, "links")
+	link := filepath.Join(links, "work")
+	require.NoError(t, os.Symlink(repo, link))
+	share := repo
+	var asked []string
+	shareIsRemote := func(p string) bool {
+		asked = append(asked, p)
+		return p != share && !pathWithin(p, share)
+	}
+	_, _, ok := outsideRoot(filepath.Join(link, "src", "a.go"), nil, shareIsRemote)
+	assert.False(t, ok, "the link's target is on the share")
+	assert.Equal(t, repo, asked[len(asked)-1], "refused at the link's target, before any probe behind it")
+	for _, p := range asked {
+		assert.False(t, pathWithin(p, share), "nothing inside the share was asked about: %s", p)
+	}
+
+	resolved, root, ok := outsideRoot(filepath.Join(link, "src", "a.go"), nil, func(string) bool { return true })
+	assert.True(t, ok)
+	assert.Equal(t, repo, root)
+	assert.Equal(t, filepath.Join(repo, "src", "a.go"), resolved)
+
+	// A link loop ends at the hop limit.
+	loop := filepath.Join(links, "loop")
+	require.NoError(t, os.Symlink(loop, loop))
+	_, _, ok = outsideRoot(filepath.Join(loop, "a.go"), nil, func(string) bool { return true })
 	assert.False(t, ok)
 
 	mounts := []mountEntry{{"/", true}, {"/Volumes/share", false}}

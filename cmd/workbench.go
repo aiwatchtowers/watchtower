@@ -22,6 +22,7 @@ import (
 	"watchtower/internal/sessioncleanup"
 	"watchtower/internal/tools"
 	"watchtower/internal/workbenchfiles"
+	"watchtower/internal/workbenchfolders"
 )
 
 var workbenchCmd = &cobra.Command{
@@ -182,20 +183,9 @@ func parseWorkbenchID(arg string) (int64, error) {
 	return id, nil
 }
 
-// workbenchProtectedDirs lists Watchtower's own state directories, which a
-// project folder may neither be, sit inside, nor contain: every workspace's
-// data, the default config directory and the Desktop's Application Support.
-func workbenchProtectedDirs() []string {
-	var dirs []string
-	if root, err := config.DataRoot(); err == nil {
-		dirs = append(dirs, root)
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs, filepath.Join(home, ".config", "watchtower"),
-			filepath.Join(home, "Library", "Application Support", "Watchtower"))
-	}
-	return dirs
-}
+// workbenchProtectedDirs lists Watchtower's own state directories
+// (workbenchfolders.ProtectedDirs, shared with suggest_workbench_folder).
+func workbenchProtectedDirs() []string { return workbenchfolders.ProtectedDirs() }
 
 func runWorkbenchCreate(cmd *cobra.Command, _ []string) error {
 	if workbenchCreateFlagFolder == "" {

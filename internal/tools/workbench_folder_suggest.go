@@ -96,16 +96,12 @@ func checkSuggestion(ctx context.Context, d *db.DB, b Binding, path string) (sug
 	if err != nil {
 		return suggestion{}, err
 	}
-	folder, other, err := workbenchfolders.Suggestable(ctx, d, p.ID, path)
+	folder, root, other, err := workbenchfolders.Suggestable(ctx, d, p.ID, path)
 	if err != nil {
 		if errors.Is(err, db.ErrWorkbenchFolderNotAllowed) {
 			return suggestion{}, &ValidationError{Msg: "not_allowed: " + err.Error(), Err: err}
 		}
 		return suggestion{}, refusalAsValidation(err)
-	}
-	root, ok := workbenchfolders.RepoRoot(folder)
-	if !ok {
-		root = folder
 	}
 	for _, f := range []string{folder, root} {
 		declined, err := d.FolderDeclined(ctx, d, p.ID, f)
