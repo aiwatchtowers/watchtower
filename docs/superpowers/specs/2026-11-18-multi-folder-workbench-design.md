@@ -109,7 +109,10 @@ Kit's schema floor if it reads these tables.
 | CLI | `workbench folder add|remove|locate|list --workbench N [--folder P] --json`; `workbench session start … --folder F --parent S`; `workbench message send --to S` (agents use MCP; CLI for tests and the Desktop) |
 | MCP (workbench server) | `start_session(folder, brief, title?, target_id?, agent?)`, `send_to_session(session_id, text)`, `list_sessions()` (live sessions with folder, title, state, parent), `suggest_workbench_folder(path, why)`; `workbench_info` lists folders; `create_targets`/`update_target` take `folder` |
 | Hooks | PostToolUse (Claude) counts outside-bench touches (§6.7) |
-| Session host | new read-only request `PromptState {launch}` → `{holds_text}` (no write, no paste). A host that predates it answers `unknown_request`; the deliverer then falls back to `UserPromptSubmit` and the run's end, and the pane notice gets a `Dismiss` that sets `prompt_cleared_at` by hand. Hosts are adopted across updates (PROJ-20), so the fallback is needed until the old host restarts. |
+| Session host | new read-only request `PromptState {launch}` → `{holds_text}` (no write, no paste). The host's `ProtocolVersion` goes 2 → 3 for it (`frame.go`); the client sends `PromptState`
+only to a host whose `HelloOK` version is ≥ 3, and every call has a 2 s deadline (a timeout
+counts as "unknown", never as "empty"). A host below 3 (an adopted older host — it would drop
+an unknown frame silently and never answer) is never asked; the deliverer then falls back to `UserPromptSubmit` and the run's end, and the pane notice gets a `Dismiss` that sets `prompt_cleared_at` by hand. Hosts are adopted across updates (PROJ-20), so the fallback is needed until the old host restarts. |
 | Daemon | delivers `session_messages` (§6.6) |
 
 The pack version (DEV-06 tool count) goes up by four tools.
@@ -388,6 +391,8 @@ Suggestion card: when the suggested folder is on bench B, the card reads
 | folder missing at launch | moved/deleted | root `Folder not found`; start refused `folder_missing` | Swift presentation + Go |
 | sub-session start | host down / launch fails | existing start failure path; parent's tool result carries the error; no row left (existing) | Go |
 | message | target stops, is deleted, or 24 h pass | `failed` + failure line to the sender | Go daemon deliverer test with fake clock |
+| message flag | `PromptState` times out or the connection drops | treated as unknown: flag stays, next tick retries; never blocks the tick past 2 s | Go client test with a silent fake host |
+| message flag | host is protocol 2 | `PromptState` never sent; fallback + Dismiss | Go client test on a v2 hello |
 | message flag | session has no hooks (the reason it was typed) | cleared by the host's prompt-text read or the run's end, never waits on a hook | Go deliverer test with a fake host |
 | message | Deliver returns `typed` (Return withheld) | row final `delivered`/`typed_not_submitted`, never re-pasted; sender told; later lines held by the prompt-text check | Go deliverer test with a fake host |
 | message | daemon restarts with queued lines | resumed from `session_messages` | Go |
@@ -542,7 +547,7 @@ Every string above lives in a presentation model with a test (owner rule).
 | D38 | PROJ-09 amended: a merge moves the merged bench's targets with their trees | ask #1548 |
 | D39 | A `typed` delivery is final (never re-pasted); the sender is told it waits in the prompt | decided by the agent |
 | D40 | A message left in a prompt is flagged on the row and pane; finish reports never expire while the parent exists | decided by the agent |
-| D41 | New read-only session-host request `PromptState`; old hosts fall back to hook/run end + a manual Dismiss | decided by the agent |
+| D41 | New read-only session-host request `PromptState` (protocol 3, sent only to hosts ≥ 3, 2 s deadline); older hosts fall back to hook/run end + a manual Dismiss | decided by the agent |
 
 ## Left to the builder
 Exact migration number; how `CodeRoot` encodes the folder id in its defaults key; the hub's
