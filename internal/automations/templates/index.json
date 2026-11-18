@@ -28,12 +28,12 @@
     "params": [{"key": "PROJECT", "label": "Jira project key", "example": "PAY"}]
   },
   {
-    "name": "team-performance-report",
-    "title": "Team performance report",
-    "description": "Every Friday, a report on the team's week from Jira, the people cards and Slack: what moved, what is stuck, who may need help.",
+    "name": "team-week-summary",
+    "title": "Team week summary",
+    "description": "Every Friday, a summary of the team's week from Jira, the people cards and Slack: what moved, where work is stuck, the decisions made.",
     "scope": "personal",
     "trigger_text": "Fridays 17:00",
-    "files": ["team-performance-report"],
+    "files": ["team-week-summary"],
     "params": []
   },
   {

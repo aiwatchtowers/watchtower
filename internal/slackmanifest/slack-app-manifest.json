@@ -1,0 +1,48 @@
+{
+  "display_information": {
+    "name": "Watchtower",
+    "description": "Your Slack on your Mac, with the AI provider you choose",
+    "long_description": "Why Watchtower asks for each permission: read history and the channel list of public and private channels, DMs and group DMs, and search, to keep a local copy on your Mac; open a DM and post a message, only when you press Approve; read people's names and emails, to match them with your calendar, Jira and Linear; read files, to describe images you were sent; read your reactions, for reaction commands; read the workspace's name and custom emoji, to show them.\n\nWatchtower keeps its copy on each person's Mac and has no server. To write summaries and answer questions it sends message text to the AI provider each person chooses — Anthropic (Claude) or OpenAI (Codex) under that person's own account, or a local model (Ollama) — and nowhere else. AI output can be wrong. Privacy: https://aiwatchtowers.com/privacy/",
+    "background_color": "#1a1a2e"
+  },
+  "oauth_config": {
+    "redirect_urls": [
+      "https://127.0.0.1:18491/callback",
+      "https://127.0.0.1:18492/callback",
+      "https://127.0.0.1:18493/callback",
+      "https://127.0.0.1:18494/callback",
+      "https://127.0.0.1:18495/callback",
+      "https://127.0.0.1:18496/callback",
+      "https://127.0.0.1:18497/callback",
+      "https://127.0.0.1:18498/callback",
+      "https://127.0.0.1:18499/callback",
+      "https://127.0.0.1:18500/callback"
+    ],
+    "scopes": {
+      "user": [
+        "channels:history",
+        "groups:history",
+        "im:history",
+        "mpim:history",
+        "channels:read",
+        "groups:read",
+        "im:read",
+        "mpim:read",
+        "im:write",
+        "search:read",
+        "users:read",
+        "users:read.email",
+        "files:read",
+        "reactions:read",
+        "team:read",
+        "chat:write",
+        "emoji:read"
+      ]
+    }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}

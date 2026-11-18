@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"watchtower/internal/db"
-	"watchtower/internal/policy"
 )
 
 // Reasons a purge is scheduled for.
@@ -37,49 +37,48 @@ type accountKey struct {
 }
 
 // Plan decides, from the account rows and the open ledger rows only, which
-// purges to schedule, cancel and run (PURGE-01). It reads nothing else.
+// purges to schedule, cancel and run (PURGE-01). It reads nothing else; rules
+// (Rules) says per account what the purge may do.
 //
-//   - Off: every scheduled row is cancelled; nothing is scheduled or run but
-//     a running row, which always finishes.
-//   - Revoked: a revoked account is scheduled Grace after the pass that
-//     first sees it. It is cancelled once the account is no longer revoked
-//     or in error (a reconnect writes ok; a removed account falls under the
-//     removed lease), or once its access_ok_at is newer than its revoked_at
-//     (a clean Jira/Linear pass, which never writes ok — LINEAR-03); a due
-//     row runs only while the account is still revoked (error waits). An
-//     empty or unreadable access_ok_at is no proof of access: still revoked.
-//   - Lease (live accounts, status not removed/purged, disabled included):
-//     when every live account of a source has an access_ok_at and the newest
-//     is older than Lease − Grace, each live account is scheduled, due
-//     Grace later — newest + Lease on a daemon that runs every cycle.
+//   - RuleNone (the switch off, or a removed account of a source the policy
+//     forbids): every scheduled row of the account is cancelled; nothing is
+//     scheduled or run but a running row, which always finishes.
+//   - Revoked (any other rule): a revoked account is scheduled Grace after
+//     the pass that first sees it. It is cancelled once the account is no
+//     longer revoked or in error (a reconnect writes ok; a removed account
+//     falls under the removed lease), or once its access_ok_at is newer than
+//     its revoked_at (a clean Jira/Linear pass, which never writes ok —
+//     LINEAR-03); a due row runs only while the account is still revoked
+//     (error waits). An empty or unreadable access_ok_at is no proof of
+//     access: still revoked.
+//   - Lease (live accounts under RuleFull, status not removed/purged,
+//     disabled included): when every live account of a source has an
+//     access_ok_at and the newest is older than Lease − Grace, each live
+//     account is scheduled, due Grace later — newest + Lease on a daemon
+//     that runs every cycle. Under RuleRevokedAndRemoved a live account has
+//     no lease.
 //   - Lease (removed accounts, ask #477): a removed account whose own
-//     access_ok_at is older than Lease is scheduled Grace after now.
+//     access_ok_at is older than Lease is scheduled Grace after now; a
+//     removed Slack account has a zero lease (#1769, A2): it is scheduled by
+//     the first pass after the remove.
 //   - A lease row is cancelled when its account's lease deadline moves past
-//     the row's due_at (fresh access, or a removed account added back), and
-//     runs only once that deadline has passed.
+//     the row's due_at (fresh access, a removed account added back, or a rule
+//     that no longer gives it a lease), and runs only once that deadline has
+//     passed.
 //
 // Every due date is at least Grace after the pass that schedules it, so the
 // notice always shows for the full grace period — also when the purge is
 // turned on for an account revoked long ago, or the daemon did not run for
 // longer than the lease.
-// An empty or unreadable time is no evidence: it never schedules a lease.
-func Plan(accounts []db.PurgeAccount, open []db.AccountPurge, enabled bool, now time.Time) Actions {
-	return PlanWith(accounts, open, enabled, now, nil)
-}
-
-// PlanWith is Plan with leaseHeld: a source it reports (one the
-// organization's policy forbids, #608) has no lease deadline, so no lease
-// purge is scheduled for its accounts and an open lease row is cancelled —
-// a policy-forbidden source is not synced, and its data is kept (POLICY-03,
-// Q2). Revoked purges are unaffected. nil holds nothing.
-func PlanWith(accounts []db.PurgeAccount, open []db.AccountPurge, enabled bool, now time.Time,
-	leaseHeld func(source string) bool) Actions {
+// An empty or unreadable time is no evidence: it never schedules an
+// inactivity lease (a removed Slack account's zero lease needs none).
+func Plan(accounts []db.PurgeAccount, open []db.AccountPurge, rules func(db.PurgeAccount) Rule, now time.Time) Actions {
 	var out Actions
 	byKey := make(map[accountKey]db.PurgeAccount, len(accounts))
 	for _, a := range accounts {
 		byKey[accountKey{a.Source, a.ID}] = a
 	}
-	deadlines := leaseDeadlines(accounts, leaseHeld)
+	deadlines := leaseDeadlines(accounts, rules)
 	openFor := make(map[accountKey]bool, len(open))
 
 	for _, p := range open {
@@ -93,7 +92,7 @@ func PlanWith(accounts []db.PurgeAccount, open []db.AccountPurge, enabled bool, 
 			continue
 		}
 		a, ok := byKey[k]
-		if !enabled || !ok || a.Status == "purged" {
+		if !ok || a.Status == "purged" || rules(a) == RuleNone {
 			out.Cancel = append(out.Cancel, p.ID)
 			continue
 		}
@@ -122,7 +121,7 @@ func PlanWith(accounts []db.PurgeAccount, open []db.AccountPurge, enabled bool, 
 		case ReasonLease:
 			deadline, ok := deadlines[k]
 			switch {
-			case !ok || deadline.After(due):
+			case !ok || deadline.After(due) || (zeroLease(a, rules(a)) && accessSinceScheduled(a, p)):
 				out.Cancel = append(out.Cancel, p.ID)
 			case !now.Before(due) && !now.Before(deadline):
 				out.Due = append(out.Due, p)
@@ -131,14 +130,10 @@ func PlanWith(accounts []db.PurgeAccount, open []db.AccountPurge, enabled bool, 
 			out.Cancel = append(out.Cancel, p.ID)
 		}
 	}
-	if !enabled {
-		return out
-	}
-
 	floor := now.Add(Grace)
 	for _, a := range accounts {
 		k := accountKey{a.Source, a.ID}
-		if openFor[k] || a.Status == "purged" {
+		if openFor[k] || a.Status == "purged" || rules(a) == RuleNone {
 			continue
 		}
 		if a.Status == "revoked" {
@@ -168,10 +163,13 @@ func PlanWith(accounts []db.PurgeAccount, open []db.AccountPurge, enabled bool, 
 }
 
 // leaseDeadlines returns each account's lease deadline: for a live account
-// its source's newest access_ok_at + Lease (only when every live account of
-// the source has one), for a removed account its own access_ok_at + Lease.
-// Purged accounts, and those of a source leaseHeld reports, have none.
-func leaseDeadlines(accounts []db.PurgeAccount, leaseHeld func(string) bool) map[accountKey]time.Time {
+// under RuleFull its source's newest access_ok_at + Lease (only when every
+// live account of the source has one); for a removed account its own
+// access_ok_at + Lease, or — a removed Slack account, zero lease (A2) — its
+// access_ok_at itself (the zero time when it has none: the remove, not an
+// inactivity clock, is the evidence). Purged accounts, accounts under
+// RuleNone and live accounts under RuleRevokedAndRemoved have none.
+func leaseDeadlines(accounts []db.PurgeAccount, rules func(db.PurgeAccount) Rule) map[accountKey]time.Time {
 	type sourceClock struct {
 		newest  time.Time
 		unknown bool
@@ -197,22 +195,91 @@ func leaseDeadlines(accounts []db.PurgeAccount, leaseHeld func(string) bool) map
 	}
 	out := map[accountKey]time.Time{}
 	for _, a := range accounts {
-		if leaseHeld != nil && leaseHeld(a.Source) {
+		r := rules(a)
+		if r == RuleNone {
 			continue
 		}
 		k := accountKey{a.Source, a.ID}
 		switch {
+		case zeroLease(a, r):
+			t, _ := parseTime(a.AccessOKAt)
+			out[k] = t
 		case a.Status == "removed":
 			if t, ok := parseTime(a.AccessOKAt); ok {
 				out[k] = t.Add(Lease)
 			}
-		case isLive(a.Status):
+		case isLive(a.Status) && r == RuleFull:
 			if c := clocks[a.Source]; c != nil && !c.unknown {
 				out[k] = c.newest.Add(Lease)
 			}
 		}
 	}
 	return out
+}
+
+// accessSinceScheduled reports whether the account confirmed access after
+// the row was scheduled (#1769 fix round 1): a removed Slack account added
+// back and removed again before the next pass keeps its old zero-lease row,
+// whose due date then gives less than the full notice — the row is
+// cancelled and the next pass schedules a fresh one. An empty or unreadable
+// time on either side is no evidence: false.
+//
+// The clocks have second precision; a tie counts as access since.
+func accessSinceScheduled(a db.PurgeAccount, p db.AccountPurge) bool {
+	okAt, ok := parseTime(a.AccessOKAt)
+	if !ok {
+		return false
+	}
+	scheduledAt, ok := parseTime(p.ScheduledAt)
+	return ok && !okAt.Before(scheduledAt) // a same-second tie keeps the data
+}
+
+// VerifyHeld returns whether an account is held after a failed verify count
+// (#1769, spec §9 "the account stays held"): an account that does not sync
+// anyway (revoked or removed) whose newest ledger row is failed with rows
+// left (verifyLeftPrefix) and which has confirmed no access since that row
+// finished (a same-second tie releases). Such an account is not scheduled
+// again on its own — a leftover the steps cannot delete would otherwise give
+// a new notice every 72 h forever — and the sync phases skip it; the failed
+// row stays visible. A Re-login or adding a removed account back confirms
+// access and releases it. A live account is never held: a verify failure of
+// its lease purge releases it like a chunk failure (MaxChunkFailures) does,
+// and it is scheduled again with a new notice. The caller applies the hold
+// only with the purge on.
+func VerifyHeld(accounts []db.PurgeAccount, rows []db.AccountPurge) func(source string, id int64) bool {
+	newest := map[accountKey]db.AccountPurge{}
+	for _, r := range rows {
+		k := accountKey{r.Source, r.AccountID}
+		if cur, ok := newest[k]; !ok || r.ID > cur.ID {
+			newest[k] = r
+		}
+	}
+	held := map[accountKey]bool{}
+	for _, a := range accounts {
+		k := accountKey{a.Source, a.ID}
+		r, ok := newest[k]
+		if !ok || (a.Status != "revoked" && a.Status != "removed") ||
+			r.State != "failed" || !strings.HasPrefix(r.Error, verifyLeftPrefix) {
+			continue
+		}
+		okAt, hasAccess := parseTime(a.AccessOKAt)
+		finishedAt, hasFinish := parseTime(r.FinishedAt)
+		if hasAccess && hasFinish && !okAt.Before(finishedAt) {
+			continue
+		}
+		held[k] = true
+	}
+	return func(source string, id int64) bool { return held[accountKey{source, id}] }
+}
+
+// holdRules is rules with every account held reports at RuleNone.
+func holdRules(rules func(db.PurgeAccount) Rule, held func(string, int64) bool) func(db.PurgeAccount) Rule {
+	return func(a db.PurgeAccount) Rule {
+		if held(a.Source, a.ID) {
+			return RuleNone
+		}
+		return rules(a)
+	}
 }
 
 // accessAfterRevocation reports whether the account's last confirmed access
@@ -240,7 +307,9 @@ func parseTime(s string) (time.Time, bool) {
 	return t, true
 }
 
-// Apply reads the accounts and the open ledger rows, plans, and writes the
+// Apply reads the accounts and the ledger, plans the open rows with rules —
+// an account VerifyHeld reports at RuleNone — (built
+// by the caller from Enabled and policy.SourceAllowed), and writes the
 // cancels and schedules (each its own short statement). leases says whether
 // lease rows may be scheduled: the daemon's start-of-cycle pass says no, so
 // a Mac back from a long absence first lets this cycle's syncs prove access,
@@ -248,16 +317,22 @@ func parseTime(s string) (time.Time, bool) {
 // returned error and the other rows are still written. It returns what it
 // did — Schedule holds only the rows actually inserted, Cancel only the rows
 // actually cancelled — and the Due rows for Run.
-func Apply(d *db.DB, enabled, leases bool, now time.Time) (Actions, error) {
+func Apply(d *db.DB, rules func(db.PurgeAccount) Rule, leases bool, now time.Time) (Actions, error) {
 	accounts, err := d.ListPurgeAccounts()
 	if err != nil {
 		return Actions{}, err
 	}
-	open, err := d.ListAccountPurges(true)
+	ledger, err := d.ListAccountPurges(false)
 	if err != nil {
 		return Actions{}, err
 	}
-	plan := PlanWith(accounts, open, enabled, now, func(source string) bool { return !policy.SourceAllowed(source) })
+	var open []db.AccountPurge
+	for _, p := range ledger {
+		if p.State == "scheduled" || p.State == "running" {
+			open = append(open, p)
+		}
+	}
+	plan := Plan(accounts, open, holdRules(rules, VerifyHeld(accounts, ledger)), now)
 	done := Actions{Due: plan.Due}
 	var errs []error
 	for _, id := range plan.Cancel {
