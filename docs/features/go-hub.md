@@ -643,7 +643,10 @@ re-checked in its Task 0; the plan's Global Constraints, Decisions and Known lim
   action carries its kind (`latency_samples.kind`); `Recorder.NudgeCycleDone`, called by the publisher at a cycle's
   end for every kind it handled, written or not, writes `nudge_saved` (apply → that cycle's end) once per apply for
   the first such cycle whose read of the kind began after the apply; `Recorder.EventRead` writes `event_read`
-  (`transport.Event.ArrivedAt`, stamped by each transport's `emit`, → the mailbox read the runtime starts for it). An
+  (`transport.Event.ArrivedAt`, stamped by each transport's `emit`, → the start of the pass it triggers: the
+  processor's `PassEvent` stamps it after the own-echo check, so the hub's own echoes are not timed; for an inline
+  record the pass applies without a read). `hub diagnostics` reads both groupings in one read-only transaction; a
+  sidecar not yet at 00018 gives the all-kinds rows only. An
   apply stops waiting once it has both its save and its cycle end, or after `SaveWait`. Batched once a second, never
   inside a pass transaction; pruned once a minute to 7 days and 20 000 rows. Nothing leaves the device; the 500 ms
   line reads the relay p50 of `read_saved` (the all-kinds row).

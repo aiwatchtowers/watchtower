@@ -107,7 +107,7 @@ func TestLatencySamplesAreContentFreeAndBoundedPrune(t *testing.T) {
 }
 
 // TestLatencyStatsGroupsByKind: by kind, a step on a transport is one row per
-// action kind, the kind ” (event_read, rows from before 00018) a row of its
+// action kind, the kind "" (event_read, rows from before 00018) a row of its
 // own; LatencyStats keeps one row per step and transport over every kind.
 func TestLatencyStatsGroupsByKind(t *testing.T) {
 	s := openTest(t)
@@ -147,7 +147,7 @@ func TestLatencyStatsGroupsByKind(t *testing.T) {
 }
 
 // TestMigration00018_KeepsRowsAndAcceptsNewSteps: a file at 00017 with
-// samples keeps them (kind ”) through the rebuild, takes the two new steps
+// samples keeps them (kind "") through the rebuild, takes the two new steps
 // and still refuses a step outside the enum; the at index is back.
 func TestMigration00018_KeepsRowsAndAcceptsNewSteps(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "hub")

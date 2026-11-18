@@ -304,7 +304,7 @@ Carried over from main's Swift-hub text (asks #514/#519/#521/#523, boards #986/#
 
 ### Measurements
 
-`measure.Recorder` stamps, for an action applied on its first read, read → applied and, when a slice of its kind is saved within 60 s (`SaveWait`), applied → slice saved and read → slice saved, tagged with the active transport. Samples go to `latency_samples` (`00011`: `at`, `transport`, `step`, `ms`, nothing else), at most 20 000 rows and 7 days. They never leave the Mac; the phone keeps its own.
+`measure.Recorder` stamps, for an action applied on its first read, read → applied and, when a slice of its kind is saved within 60 s (`SaveWait`), applied → slice saved and read → slice saved, tagged with the active transport. Since #1992 (live link R7) it also stamps `nudge_saved` (applied → the end of the first cycle that handled a nudged kind, written or not) and `event_read` (a mailbox event for a phone's write: arrival → the start of the pass it triggers; the hub's own echoes are not timed), and every action sample carries the action's kind. Samples go to `latency_samples` (`00011`: `at`, `transport`, `step`, `ms`; `00018` added `kind`, the action kind name or '' — no id, no content), at most 20 000 rows and 7 days. They never leave the Mac; the phone keeps its own.
 
 ### `hub …` CLI (pinned `--json` keys)
 

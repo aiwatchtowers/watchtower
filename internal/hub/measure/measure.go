@@ -133,6 +133,11 @@ func (r *Recorder) NudgeCycleDone(transport, kind string, readAt, doneAt time.Ti
 
 // resolve runs stamp over each waiting apply still within SaveWait of
 // doneAt, then drops the ones too late and the ones both saved and nudged.
+// A saved apply keeps waiting for its cycle end: both stamps come from
+// slices.Publisher.Cycle (Saved as a kind's write lands, NudgeCycleDone in
+// the same cycle's deferred end), so it leaves within that cycle. A publish
+// path that stamped Saved without a cycle end would hold its slot until
+// SaveWait (or the maxWaiting cap).
 func (r *Recorder) resolve(doneAt time.Time, stamp func(w *waiting)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

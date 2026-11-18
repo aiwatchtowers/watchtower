@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"math"
@@ -22,7 +23,7 @@ const (
 
 // LatencySample is one content-free timing: when it was taken, the active
 // transport ("cloudkit" or "relay"), the step, its duration in ms and the
-// action kind it timed (” for event_read, which precedes any action).
+// action kind it timed ("" for event_read, which precedes any action).
 type LatencySample struct {
 	At        time.Time
 	Transport string
@@ -65,25 +66,56 @@ func (s *Store) AddLatencySamples(xs []LatencySample) error {
 }
 
 // LatencyStats is every (step, transport) with samples taken at or after
-// since, over all action kinds (Kind ”), sorted by step then transport, with
+// since, over all action kinds (Kind ""), sorted by step then transport, with
 // nearest-rank percentiles.
 func (s *Store) LatencyStats(since time.Time) ([]LatencyRow, error) {
-	return s.latencyStats(since, false)
+	return latencyStats(s.db, since, false)
 }
 
 // LatencyStatsByKind is LatencyStats per action kind: every (step,
-// transport, kind), sorted by step, transport then kind. Kind ” is
+// transport, kind), sorted by step, transport then kind. Kind "" is
 // event_read and the samples taken before 00018.
 func (s *Store) LatencyStatsByKind(since time.Time) ([]LatencyRow, error) {
-	return s.latencyStats(since, true)
+	return latencyStats(s.db, since, true)
 }
 
-func (s *Store) latencyStats(since time.Time, byKind bool) ([]LatencyRow, error) {
+// LatencyStatsWithKinds is LatencyStats and LatencyStatsByKind read in one
+// read-only transaction (one snapshot). A file not yet migrated to 00018
+// (a newer CLI reading it read-only before the hub reopened it) has no kind
+// column: byKind is then nil and all still comes back.
+func (s *Store) LatencyStatsWithKinds(since time.Time) (all, byKind []LatencyRow, err error) {
+	tx, err := s.db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading latency samples: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // read-only: nothing to commit
+	if all, err = latencyStats(tx, since, false); err != nil {
+		return nil, nil, err
+	}
+	var kinds int
+	if err := tx.QueryRow(`SELECT count(*) FROM pragma_table_info('latency_samples') WHERE name = 'kind'`).Scan(&kinds); err != nil {
+		return nil, nil, fmt.Errorf("reading latency samples: %w", err)
+	}
+	if kinds == 0 {
+		return all, nil, nil
+	}
+	if byKind, err = latencyStats(tx, since, true); err != nil {
+		return nil, nil, err
+	}
+	return all, byKind, nil
+}
+
+// latencyQuerier is a *sql.DB or a *sql.Tx.
+type latencyQuerier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+func latencyStats(db latencyQuerier, since time.Time, byKind bool) ([]LatencyRow, error) {
 	q := `SELECT step, transport, '', ms FROM latency_samples WHERE at >= ? ORDER BY step, transport, ms`
 	if byKind {
 		q = `SELECT step, transport, kind, ms FROM latency_samples WHERE at >= ? ORDER BY step, transport, kind, ms`
 	}
-	rows, err := s.db.Query(q, toReal(since))
+	rows, err := db.Query(q, toReal(since))
 	if err != nil {
 		return nil, fmt.Errorf("reading latency samples: %w", err)
 	}

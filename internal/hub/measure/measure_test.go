@@ -276,7 +276,7 @@ func TestRecorder_WrittenCycleGivesBothSavedAndNudgeSaved(t *testing.T) {
 	}
 }
 
-// TestRecorder_EventRead: event arrival → mailbox read, kind ” (no action
+// TestRecorder_EventRead: event arrival → mailbox read, kind "" (no action
 // is known yet); a zero arrival or an unmeasured transport records nothing.
 func TestRecorder_EventRead(t *testing.T) {
 	f := newFixture(t)

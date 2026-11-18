@@ -69,9 +69,11 @@ type Config struct {
 // Latency is the processor's side of the latency samples (measure.Recorder):
 // an action of kind action applied on its first read, with the time the
 // processor reached its record, the time its outcome committed, the
-// transport and the slice kinds it nudged.
+// transport and the slice kinds it nudged; and a mailbox event for a
+// phone's write, from its arrival to the start of the pass it triggers.
 type Latency interface {
 	Applied(transport, action string, readAt, appliedAt time.Time, kinds []string)
+	EventRead(transport string, arrivedAt, readAt time.Time)
 }
 
 // Processor reads the phones' mailboxes and applies their actions. Pass and
@@ -349,6 +351,9 @@ type EventPuller interface {
 func (p *Processor) PassEvent(ctx context.Context, ev transport.Event) (PassReport, error) {
 	ep, ok := p.cfg.Transport.(EventPuller)
 	if !ok || ev.Zone == "" {
+		if !p.paused.Load() {
+			p.eventRead(ev) // no own-write check here: every such event is read
+		}
 		return p.Pass(ctx)
 	}
 	p.mu.Lock()
@@ -363,6 +368,7 @@ func (p *Processor) PassEvent(ctx context.Context, ev transport.Event) (PassRepo
 	}
 	i := slices.IndexFunc(boxes, func(b mailbox) bool { return !b.shared && b.zone == ev.Zone })
 	if i < 0 {
+		p.eventRead(ev)
 		return p.passBoxes(ctx, boxes, ps)
 	}
 	b := boxes[i]
@@ -373,6 +379,7 @@ func (p *Processor) PassEvent(ctx context.Context, ev transport.Event) (PassRepo
 		ps.report.OwnEcho = true
 		return ps.report, nil
 	}
+	p.eventRead(ev) // a phone wrote: timed before its read (or inline apply)
 	err = p.drainHeldActive(ctx, b, ps)
 	if err == nil {
 		err = p.readMailboxWith(ctx, b, ps, func(apply func(transport.Batch) error) error {
@@ -388,6 +395,14 @@ func (p *Processor) PassEvent(ctx context.Context, ev transport.Event) (PassRepo
 	ps.report.ControlsWritten = written
 	p.nudge(ps)
 	return ps.report, errors.Join(append(errs, err)...)
+}
+
+// eventRead stamps ev's arrival → the start of the pass it triggers for a
+// phone's write (live link R7's event_read); never inside a transaction.
+func (p *Processor) eventRead(ev transport.Event) {
+	if p.cfg.Latency != nil {
+		p.cfg.Latency.EventRead(string(p.cfg.Transport.Kind()), ev.ArrivedAt, p.cfg.Clock())
+	}
 }
 
 // noteRead records how the read of mailbox zone ended (Processor.unread);

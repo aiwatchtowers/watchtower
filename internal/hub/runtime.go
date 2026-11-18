@@ -888,10 +888,6 @@ func (h *hubRuntime) runPass(ctx context.Context, ev *transport.Event) (ownEcho 
 	if ev == nil || !h.processor().ReadsEvents() {
 		h.lastPass = h.sup.o.Clock()
 	}
-	if ev != nil {
-		// event_read: the event's arrival → this mailbox read (live link R7).
-		h.lat.EventRead(string(h.tr.Kind()), ev.ArrivedAt, h.sup.o.Clock())
-	}
 	defer h.sweepShares(ctx)
 	for range 10 {
 		pctx, cancel := context.WithTimeout(ctx, opTimeout)

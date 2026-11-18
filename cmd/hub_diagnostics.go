@@ -27,7 +27,7 @@ type hubDiagnosticsJSON struct {
 }
 
 // hubDiagnosticsRowJSON is one step on one transport (pinned keys), over
-// every action kind (kind ”, the row as before kinds were recorded, listed
+// every action kind (kind "", the row as before kinds were recorded, listed
 // first) or for one action kind (kind additive, live link R7).
 type hubDiagnosticsRowJSON struct {
 	Step      string `json:"step"`
@@ -69,11 +69,10 @@ func runHubDiagnostics(cmd *cobra.Command, _ []string) error {
 		return err
 	default:
 		since := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
-		rows, err := st.LatencyStats(since)
-		byKind, kerr := st.LatencyStatsByKind(since)
+		rows, byKind, err := st.LatencyStatsWithKinds(since) // byKind nil before sidecar 00018
 		overflow, oerr := st.AlertPushOverflows(since)
 		_ = st.Close()
-		if err := errors.Join(err, kerr, oerr); err != nil {
+		if err := errors.Join(err, oerr); err != nil {
 			return err
 		}
 		for _, r := range rows {

@@ -906,8 +906,19 @@ type latencyCall struct {
 
 // fakeLatency records the stamps; probe (optional) runs inside each call.
 type fakeLatency struct {
-	calls []latencyCall
-	probe func()
+	calls  []latencyCall
+	events []eventReadCall
+	probe  func()
+}
+
+// eventReadCall is one Latency.EventRead stamp.
+type eventReadCall struct {
+	transport         string
+	arrivedAt, readAt time.Time
+}
+
+func (f *fakeLatency) EventRead(transport string, arrivedAt, readAt time.Time) {
+	f.events = append(f.events, eventReadCall{transport, arrivedAt, readAt})
 }
 
 func (f *fakeLatency) Applied(transport, action string, readAt, appliedAt time.Time, kinds []string) {
@@ -973,6 +984,36 @@ func TestProcessor_ReadAtPerRecord(t *testing.T) {
 	}
 	if second.readAt.Before(first.appliedAt) {
 		t.Fatalf("second read %v before the first applied %v: one read time per page", second.readAt, first.appliedAt)
+	}
+}
+
+// TestProcessor_EventReadOnlyForAForeignWrite: an event that stands only for
+// the hub's own writes reads nothing and records no event_read; an event for
+// a phone's write records arrival → the start of its read.
+func TestProcessor_EventReadOnlyForAForeignWrite(t *testing.T) {
+	w := newWorld(t, transport.KindRelay)
+	ep := &eventPuller{puller: &puller{Fake: w.fake, tokens: map[string]uint64{}}, own: true}
+	w.proc.cfg.Transport = ep
+	lat := &fakeLatency{}
+	w.proc.cfg.Latency = lat
+	arrived := w.clock()
+	w.mu.Lock()
+	w.now = w.now.Add(15 * time.Millisecond)
+	w.mu.Unlock()
+	w.act("test_noop")
+	if r, err := w.proc.PassEvent(w.ctx, transport.Event{Zone: w.phone.Zone(), ArrivedAt: arrived}); err != nil || !r.OwnEcho {
+		t.Fatalf("own-echo event pass %+v, %v", r, err)
+	}
+	if len(lat.events) != 0 {
+		t.Fatalf("an own-echo event was timed: %+v", lat.events)
+	}
+	ep.own = false
+	if _, err := w.proc.PassEvent(w.ctx, transport.Event{Zone: w.phone.Zone(), ArrivedAt: arrived}); err != nil {
+		t.Fatal(err)
+	}
+	want := []eventReadCall{{"relay", arrived, arrived.Add(15 * time.Millisecond)}}
+	if !slices.Equal(lat.events, want) {
+		t.Fatalf("event_read stamps %+v, want %+v", lat.events, want)
 	}
 }
 
