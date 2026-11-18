@@ -33,6 +33,9 @@ package enum OrganizationPolicyPresentation {
         if let b = p.purgeRevokedData {
             out.append(Line(label: "Delete a revoked account's data", value: b ? "on" : "off"))
         }
+        if let apps = p.slackApps {
+            out.append(Line(label: "Slack workspaces set up for you", value: list(apps.map(\.teamID))))
+        }
         if !p.reservedNotEnforced.isEmpty {
             out.append(Line(label: "Not enforced in this version", value: p.reservedNotEnforced.joined(separator: ", ")))
         }

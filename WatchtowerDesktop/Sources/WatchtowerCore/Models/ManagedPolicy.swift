@@ -36,6 +36,11 @@ package struct ManagedPolicy: Equatable, Sendable {
     package struct SlackApp: Equatable, Sendable {
         package let teamID: String
         package let clientID: String
+
+        package init(teamID: String, clientID: String) {
+            self.teamID = teamID
+            self.clientID = clientID
+        }
     }
 
     package static let knownSources = ["slack", "google", "imap", "caldav", "jira", "linear"]

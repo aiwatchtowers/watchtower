@@ -102,12 +102,62 @@ final class SlackAccountsViewModel {
         ["slack", "login", "--account", String(account.id), "--app-return"]
     }
 
-    /// Re-consents `account` via `watchtower slack login --account <id>
-    /// --app-return` — same OAuth loopback-browser flow shape as `addAccount`,
-    /// used when an account's status is "error"/"revoked" and needs a fresh
-    /// grant.
-    func relogin(_ account: SlackAccount) async {
+    /// The connect flow on `AppState` (plan B #1709); nil under XCTest or
+    /// without the CLI, where Re-login keeps `slack login`.
+    @ObservationIgnored weak var connectFlow: SlackConnectFlowModel?
+
+    /// Re-consents `account` by its route in `slack accounts --json` (plan B
+    /// A7): the build's own app re-runs `watchtower slack login --account <id>
+    /// --app-return`; a workspace app goes through the connect flow on the
+    /// Desktop's running listener (a `slack login` would bind 18551, which
+    /// that listener holds); no app to sign in with opens the connect section.
+    /// Returns the route taken; nil when the accounts could not be read.
+    @discardableResult
+    func relogin(_ account: SlackAccount) async -> SlackReloginRoute? {
+        guard let flow = connectFlow else {
+            await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart)
+            return .builtin
+        }
+        guard let route = await reloginRoute(accountID: Int64(account.id)) else { return nil }
+        guard route == .builtin else {
+            if !flow.reconnect(route) { error = "Another connection is already in progress." }
+            return route
+        }
         await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart)
+        return route
+    }
+
+    /// The route of account `accountID` from `slack accounts --json`; nil
+    /// (with `error` set) when the CLI cannot be run or its answer read.
+    func reloginRoute(accountID: Int64) async -> SlackReloginRoute? {
+        guard !isConnecting else {
+            error = "Another connection is already in progress."
+            return nil
+        }
+        guard let cliPath = cliPath() else {
+            error = "Watchtower CLI not found"
+            return nil
+        }
+        let result = await Self.runCLI(path: cliPath, arguments: SlackAccountsDocument.args)
+        guard result.exitCode == 0 else {
+            error = "Could not read the Slack accounts: "
+                + (result.stderr.isEmpty ? "exit \(result.exitCode)" : String(result.stderr.prefix(200)))
+            return nil
+        }
+        do {
+            let doc = try JSONDecoder().decode(SlackAccountsDocument.self, from: Data(result.stdout.utf8))
+            error = nil
+            return SlackReloginRoute.route(accountID: accountID, in: doc)
+        } catch {
+            self.error = "Could not read the Slack accounts: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// The connect flow wrote an account: reload and re-wire the daemon, as
+    /// a finished `slack login` does (onboarding defers the restart).
+    func connectFlowWroteAccount(daemonPolicy: DaemonRestartPolicy) {
+        applyResult((0, "", ""), failurePrefix: "", daemonPolicy: daemonPolicy)
     }
 
     func cancelConnect() {

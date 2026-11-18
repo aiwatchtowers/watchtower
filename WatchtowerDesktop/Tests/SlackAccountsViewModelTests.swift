@@ -218,3 +218,81 @@ extension SlackAccountsViewModelTests {
         XCTAssertEqual(daemon.restartCount, 0)
     }
 }
+
+// MARK: - Re-login routing (plan B A7)
+
+extension SlackAccountsViewModelTests {
+    /// A stand-in CLI that answers `slack accounts --json` with `doc`.
+    private func accountsCLI(_ doc: String) throws -> String {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let stub = dir.appendingPathComponent("watchtower")
+        try "#!/bin/sh\ncat <<'JSON'\n\(doc)\nJSON\n".write(to: stub, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+        return stub.path
+    }
+
+    private func connectFlow() async -> (SlackConnectFlowModel, FakeCLILineSession) {
+        let fake = FakeCLILineStream()
+        let host = SlackConnectListenerHost(streamer: fake)
+        let flow = SlackConnectFlowModel(host: host)
+        host.ensureRunning()
+        return (flow, await fake.session(number: 1))
+    }
+
+    /// A workspace-app account re-binds through the running listener, never
+    /// `slack login` (which would bind 18551, held by that listener).
+    func testReloginOfWorkspaceAppStartsTheConnectFlow() async throws {
+        let cli = try accountsCLI(#"{"builtin_app":false,"accounts":[{"id":1,"team_id":"T0ACME","client_id":"1111.2222","#
+            + #""shared_app":false,"relogin":"connect"}]}"#)
+        let (vm, daemon, pool) = try makeVM(cli: cli)
+        let (flow, child) = await connectFlow()
+        vm.connectFlow = flow
+        let account = try await insertAccount(pool)
+
+        let route = await vm.relogin(account)
+        XCTAssertEqual(route, .flow(SlackConnectTarget(teamID: "T0ACME", clientID: "1111.2222", accountID: Int64(account.id))))
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(child.writtenLines,
+                       [#"{"account_id":\#(account.id),"client_id":"1111.2222","cmd":"start","team_id":"T0ACME"}"#])
+        XCTAssertFalse(vm.isConnecting, "no `slack login` child")
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
+
+    func testReloginOnTheSharedAppOpensTheConnectSection() async throws {
+        let cli = try accountsCLI(#"{"builtin_app":false,"accounts":[{"id":1,"team_id":"T0ACME","client_id":"9.9","#
+            + #""shared_app":true,"relogin":"move"}]}"#)
+        let (vm, _, pool) = try makeVM(cli: cli)
+        let (flow, child) = await connectFlow()
+        vm.connectFlow = flow
+        let account = try await insertAccount(pool)
+
+        let route = await vm.relogin(account)
+        XCTAssertEqual(route, .connectSection)
+        XCTAssertEqual(child.writtenLines, [])
+        XCTAssertEqual(flow.connectSectionRequest, 1)
+    }
+
+    func testReloginWithUnreadableAccountsStartsNothing() async throws {
+        let (vm, daemon, pool) = try makeVM(cli: "/usr/bin/false")
+        let (flow, child) = await connectFlow()
+        vm.connectFlow = flow
+        let account = try await insertAccount(pool)
+
+        let route = await vm.relogin(account)
+        XCTAssertNil(route)
+        XCTAssertEqual(vm.error, "Could not read the Slack accounts: exit 1")
+        XCTAssertEqual(child.writtenLines, [])
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
+
+    func testConnectFlowWriteReloadsAndRestarts() async throws {
+        let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
+        vm.connectFlowWroteAccount(daemonPolicy: .restart)
+        await vm.daemonRestartTask?.value
+        XCTAssertEqual(daemon.restartCount, 1)
+        vm.connectFlowWroteAccount(daemonPolicy: .deferred)
+        XCTAssertEqual(daemon.restartCount, 1, "onboarding defers the restart")
+    }
+}

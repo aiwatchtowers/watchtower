@@ -98,8 +98,7 @@ final class AppState {
     var settingsAnchor: SettingsAnchor?
     /// The Connections tab's open service (nil: the overview), so a link opens a service.
     var selectedConnection: ConnectionService?
-    /// A Slack connect in flight survives leaving the Connections tab (`SlackAuthFlowState`).
-    @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState()
+    @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState() // a Slack connect survives leaving the tab
     @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
     /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
     @ObservationIgnored weak var observedProviderConnection: ProviderConnection?
@@ -382,6 +381,7 @@ final class AppState {
     let fileVault = FileVaultWatch() // `fdesetup status` at launch and on activation (#1769)
     var slackLiveStatusCenter: SlackLiveStatusCenter? // the Slack Live probe's verdicts (Connections → Slack)
     var slackConnectListener: SlackConnectListenerHost? // `slack connect serve` on 18551 (#1709); none under XCTest
+    var slackConnectFlow: SlackConnectFlowModel? // the connect flow on that listener (link, code, MDM, Reconnect)
     /// The live workbench sessions' agent states (board #312), polled while a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
     /// The Go hub over its control socket (heartbeat, view inputs, status; go hub plan 3 Task 14); none under XCTest.

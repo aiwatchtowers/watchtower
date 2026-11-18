@@ -39,8 +39,8 @@ extension AppState {
     }
 
     /// Re-consents one Slack account from a failed send's card ("sign in
-    /// again to grant send"): the same `slack login --account <id>` flow as
-    /// Connections → Slack → Reconnect. Returns why it failed (nil on success or
+    /// again to grant send"): the same route as Connections → Slack →
+    /// Reconnect (`slack login --account <id>`, or the connect flow, plan B A7). Returns why it failed (nil on success or
     /// a cancelled sign-in) so the card can say so.
     func reconnectSlack(accountID: Int64) async -> String? {
         guard let vm = slackAccountsViewModel else {
@@ -54,7 +54,12 @@ extension AppState {
         guard let account = vm.accounts.first(where: { $0.id == accountID }) else {
             return "Slack account #\(accountID) is no longer connected."
         }
-        await vm.relogin(account)
+        let route = await vm.relogin(account)
+        if vm.error == nil, route != nil, route != .builtin {
+            // The connect flow's sheet and the connect section live on the pane.
+            openConnections(.slack)
+            bringMainWindowForward()
+        }
         return vm.error
     }
 

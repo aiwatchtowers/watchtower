@@ -4,6 +4,7 @@ import GRDB
 import SwiftUI
 import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 /// Design-only scenes for the Slack Full / Live screens (#1779, spec
 /// `docs/superpowers/specs/2026-11-15-slack-full-live-screens-design.md`).
@@ -98,6 +99,7 @@ private typealias Copy = SlackFullLiveMockCopy
 
 private struct SlackPaneMock: View {
     let pane: SlackFullLiveShotFixtures.Pane
+    @FocusState private var fieldFocused: Bool
 
     private var hasAccount: Bool {
         [.full, .fullLive, .loading, .checking, .probeFailed, .readFailed, .sharedApp].contains(pane)
@@ -124,45 +126,18 @@ private struct SlackPaneMock: View {
         SlackModeSection(presentation: SlackPaneModeFixture.presentation(pane), checkAgain: {}, tryAgain: {})
     }
 
+    /// The real connect section (`SlackConnectSection`) on fixture data.
     private var connectSection: some View {
-        SettingsSection(title: Copy.connectTitle, caption: Copy.connectCaption) {
-            if pane == .organization {
-                VStack(alignment: .leading, spacing: Spacing.compact) {
-                    Text(Copy.orgTitle).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    HStack {
-                        Label(Copy.orgRow, systemImage: "building.2").font(.callout)
-                        Spacer(minLength: Spacing.medium)
-                        Button(Copy.connect) {}.buttonStyle(.kitPrimary)
-                    }
-                }
-            }
-            if pane == .portBusy {
-                HStack(alignment: .top, spacing: Spacing.regular) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Tone.warning)
-                    Text(Copy.portBusy).font(.caption).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            HStack(spacing: Spacing.regular) {
-                TextField(Copy.pastePlaceholder, text: .constant(pasteText)).textFieldStyle(.kit)
-                Button(Copy.connect) {}
-                    .buttonStyle(.kitSecondary)
-                    .disabled(pasteText.isEmpty)
-            }
-            if pane == .pasteInvalid {
-                Text(Copy.pasteInvalid)
-                    .font(.caption)
-                    .foregroundStyle(Tone.error)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            HStack(spacing: Spacing.regular) {
-                Text(Copy.noAppYet).font(.caption).foregroundStyle(.secondary)
-                Button(Copy.setUpForCompany) {}.buttonStyle(.kitQuiet)
-            }
-        }
-    }
-
-    private var pasteText: String {
-        pane == .pasteInvalid ? "https://acme.slack.com/apps/A0ACME" : ""
+        SlackConnectSection(
+            section: SlackModePresentation.ConnectSection(
+                display: SlackPaneModeFixture.presentation(pane).display,
+                portBusy: pane == .portBusy,
+                expanded: false,
+                organizationApps: pane == .organization ? [ManagedPolicy.SlackApp(teamID: "T0ACME", clientID: "1111.2222")] : nil,
+                accounts: []),
+            flow: SlackConnectShotFlow.make(paste: pane == .pasteInvalid ? "https://acme.slack.com/apps/A0ACME" : nil),
+            setUpForCompany: {},
+            fieldFocused: $fieldFocused)
     }
 
     private var record: (String, String, Bool)? {
@@ -463,63 +438,39 @@ private struct SlackOnboardingConnectMock: View {
 
 // MARK: - Connect from a link or code
 
+/// The real connect sheet (`SlackConnectSheet`) for one step of the flow.
 private struct SlackConnectSheetMock: View {
     let frame: SlackFullLiveShotFixtures.Connect
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.large) {
-            switch frame {
-            case .confirm:
-                Text(Copy.confirmTitle).font(.title3.weight(.semibold))
-                Text(Copy.confirmBody).font(.callout).fixedSize(horizontal: false, vertical: true)
-            case .browser:
-                HStack(alignment: .top, spacing: Spacing.regular) {
-                    ProgressView().controlSize(.small)
-                    VStack(alignment: .leading, spacing: Spacing.small) {
-                        Text(Copy.browserWait).font(.callout).fixedSize(horizontal: false, vertical: true)
-                        Text(Copy.browserNote)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            case .success:
-                notice("checkmark.circle.fill", Tone.success, Copy.connectedTitle, Copy.connectedBody)
-            case .teamMismatch:
-                notice("exclamationmark.triangle.fill", Tone.warning, nil, Copy.teamMismatch)
-            case .denied:
-                notice("xmark.circle", Tone.status("gray"), nil, Copy.denied)
-            }
-            HStack(spacing: Spacing.regular) {
-                Spacer()
-                switch frame {
-                case .confirm:
-                    Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                    Button(Copy.connect) {}.buttonStyle(.kitPrimary)
-                case .browser:
-                    Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                case .success:
-                    Button(Copy.done) {}.buttonStyle(.kitPrimary)
-                case .teamMismatch, .denied:
-                    Button(Copy.close) {}.buttonStyle(.kitSecondary)
-                    Button(Copy.startAgain) {}.buttonStyle(.kitPrimary)
-                }
-            }
+    private var step: SlackConnectFlowModel.Step {
+        let target = SlackConnectTarget(teamID: "T0ACME", clientID: "1111.2222")
+        return switch frame {
+        case .confirm: .confirming(flow: "f1", target: target)
+        case .browser: .browser(flow: "f1", target: target, since: SlackPaneModeFixture.now)
+        case .success: .connected(workspace: "acme")
+        case .teamMismatch: .failed(.teamMismatch, retry: target)
+        case .denied: .failed(.denied, retry: target)
         }
-        .controlSize(.small)
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
     }
 
-    private func notice(_ icon: String, _ tone: Color, _ title: String?, _ body: String) -> some View {
-        HStack(alignment: .top, spacing: Spacing.regular) {
-            Image(systemName: icon).foregroundStyle(tone)
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                if let title { Text(title).font(.headline) }
-                Text(body).font(.callout).fixedSize(horizontal: false, vertical: true)
-            }
+    var body: some View {
+        if let content = SlackConnectSheetContent(step: step) {
+            SlackConnectSheet(content: content) { _ in }
         }
+    }
+}
+
+/// A connect flow for the shots: its host runs no child (a fake streamer),
+/// so nothing starts; `paste` leaves that text refused in the field.
+@MainActor
+private enum SlackConnectShotFlow {
+    static func make(paste: String?) -> SlackConnectFlowModel {
+        let flow = SlackConnectFlowModel(host: SlackConnectListenerHost(streamer: FakeCLILineStream()))
+        if let paste {
+            flow.pasteText = paste
+            flow.connectPasted()
+        }
+        return flow
     }
 }
 

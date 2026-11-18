@@ -16,6 +16,9 @@ package struct SlackAccount: FetchableRecord, Identifiable, Equatable {
     package let status: String
     package let error: String
     package let enabled: Bool
+    /// The OAuth client id the account signed in with ('' before migration
+    /// backfill or for a not-yet-connected row; plan B Task 2).
+    package let clientID: String
 
     package init(row: Row) {
         id = row["id"]
@@ -26,6 +29,7 @@ package struct SlackAccount: FetchableRecord, Identifiable, Equatable {
         status = row["status"] ?? "ok"
         error = row["error"] ?? ""
         enabled = row["enabled"] ?? true
+        clientID = row["client_id"] ?? ""
     }
 
     // MARK: - Status predicates

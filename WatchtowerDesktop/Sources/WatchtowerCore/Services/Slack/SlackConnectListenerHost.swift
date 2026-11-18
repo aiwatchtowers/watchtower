@@ -24,10 +24,14 @@ package final class SlackConnectListenerHost {
     package private(set) var state: SlackConnectListenerState = .idle
     /// A child process is up (`send` reaches it), whatever the state says.
     package private(set) var isChildRunning = false
-    /// Every event the child writes, in order (one consumer: the connect flow).
-    @ObservationIgnored package let events: AsyncStream<SlackConnectEvent>
+    /// Every event the child writes, in order, on the main actor — set once at
+    /// creation by its one consumer (`SlackConnectFlowModel`). Nothing is
+    /// buffered: an event with no handler is dropped.
+    @ObservationIgnored package var onEvent: ((SlackConnectEvent) -> Void)?
+    /// A child ended (crash, port busy, stop), before any restart: a flow it
+    /// held is gone with it.
+    @ObservationIgnored package var onChildEnded: (() -> Void)?
 
-    @ObservationIgnored private let eventSink: AsyncStream<SlackConnectEvent>.Continuation
     @ObservationIgnored private let streamer: any CLILineStreaming
     @ObservationIgnored private let args: [String]
     @ObservationIgnored private var child: (any CLILineSession)?
@@ -44,7 +48,6 @@ package final class SlackConnectListenerHost {
     package init(streamer: any CLILineStreaming, args: [String] = SlackConnectListenerHost.serveArgs) {
         self.streamer = streamer
         self.args = args
-        (events, eventSink) = AsyncStream.makeStream(of: SlackConnectEvent.self)
     }
 
     /// Starts the child unless one runs; after `portBusy` or `stopped` this is
@@ -129,13 +132,14 @@ package final class SlackConnectListenerHost {
         case .portBusy: if !stopping { state = .portBusy }
         default: break
         }
-        eventSink.yield(event)
+        onEvent?(event)
     }
 
     private func childEnded(generation current: Int, error: Error?) {
         guard current == generation else { return }
         child = nil
         isChildRunning = false
+        onChildEnded?()
         if relaunchAfterExit {
             launch()
             return

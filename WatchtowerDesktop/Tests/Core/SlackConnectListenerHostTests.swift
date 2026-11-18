@@ -77,13 +77,13 @@ final class SlackConnectListenerHostTests: XCTestCase {
         let child = await fake.session(number: 1)
         XCTAssertEqual(child.args, ["slack", "connect", "serve"])
 
+        var events: [SlackConnectEvent] = []
+        host.onEvent = { events.append($0) }
         child.emit("not json")
         child.emit(listening)
         child.emit(#"{"event":"browser","flow":"f1"}"#)
-        var events = host.events.makeAsyncIterator()
-        let first = await events.next(), second = await events.next()
-        XCTAssertEqual(first, .listening(port: 18551))
-        XCTAssertEqual(second, .browser(flow: "f1"))
+        await untilTurn { events.count == 2 }
+        XCTAssertEqual(events, [.listening(port: 18551), .browser(flow: "f1")])
         XCTAssertEqual(host.state, .listening)
 
         host.ensureRunning() // already running: no second child
@@ -105,16 +105,19 @@ final class SlackConnectListenerHostTests: XCTestCase {
 
     func testPortBusyState() async {
         let (host, fake) = makeHost()
+        var events: [SlackConnectEvent] = []
+        var ended = 0
+        host.onEvent = { events.append($0) }
+        host.onChildEnded = { ended += 1 }
         host.ensureRunning()
         let child = await fake.session(number: 1)
         child.emit(portBusy)
         await untilObserved { host.state == .portBusy }
-        var events = host.events.makeAsyncIterator()
-        let event = await events.next()
-        XCTAssertEqual(event, .portBusy(port: 18551))
+        XCTAssertEqual(events, [.portBusy(port: 18551)])
 
         child.exit(code: 3)
         await untilObserved { !host.isChildRunning }
+        XCTAssertEqual(ended, 1, "the flow learns its child is gone")
         XCTAssertEqual(host.state, .portBusy, "exit 3 after port_busy is no crash: no restart")
         XCTAssertEqual(fake.sessions.count, 1)
     }
