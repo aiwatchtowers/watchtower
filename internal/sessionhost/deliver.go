@@ -21,7 +21,7 @@ const (
 	OutcomeSubmitted = "submitted"
 	// OutcomeTyped: pasted and left in the prompt without its Return.
 	OutcomeTyped = "typed"
-	// OutcomeHeld: nothing written (Reason HeldPromptHasText).
+	// OutcomeHeld: nothing written (Reason HeldPromptHasText or HeldDialog).
 	OutcomeHeld = "held"
 	// OutcomeNoSession: no running session of that row, run and launch, or
 	// the run changed during the pause.
@@ -38,6 +38,16 @@ const MaxSettle = CheckTimeout
 // HoldIfPromptText the prompt held the owner's draft, a line in its pause or
 // a line left typed.
 const HeldPromptHasText = "prompt_has_text"
+
+// HeldDialog: under HoldIfPromptText a permission dialog was up when the
+// line came: nothing is written, so the paste can never answer it (PROJ-16,
+// PROJ-23), however the dialog opened after the caller's own state read.
+const HeldDialog = "held_dialog"
+
+// LostAfterPaste is OutcomeNoSession's reason when the run ended or changed
+// during the pause, after the line was pasted: unlike a no_session before
+// the paste, the line may have reached the agent.
+const LostAfterPaste = "lost_after_paste"
 
 // Why a line was left typed (DeliveredMsg.Reason with OutcomeTyped), for the
 // caller's log: codes only, never text.
@@ -176,6 +186,11 @@ func (s *Server) runDelivery(c *conn, req DeliverReq, replies <-chan DeliverChec
 		sess.wmu.Unlock()
 		return DeliveredMsg{Outcome: OutcomeNoPasteMode}
 	}
+	if sess.prompt.dialog && req.HoldIfPromptText {
+		sess.mu.Unlock()
+		sess.wmu.Unlock()
+		return DeliveredMsg{Outcome: OutcomeHeld, Reason: HeldDialog}
+	}
 	besideText := sess.prompt.holdsText()
 	if besideText && req.HoldIfPromptText {
 		sess.mu.Unlock()
@@ -254,7 +269,7 @@ func (s *Server) afterPause(sess *session, req DeliverReq, reply DeliverCheckRep
 	ownerReturned := sess.prompt.endPause()
 	if cur != sess || sess.exited || sess.reaped {
 		sess.mu.Unlock()
-		return DeliveredMsg{Outcome: OutcomeNoSession}
+		return DeliveredMsg{Outcome: OutcomeNoSession, Reason: LostAfterPaste}
 	}
 	dialog := reply.AnswersDialog || sess.prompt.dialog
 	reason := ""

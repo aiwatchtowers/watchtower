@@ -108,6 +108,13 @@ func TestProj18_SweepCoversEveryFolder(t *testing.T) {
 	if hasItem(res.Plan, "branch:feat/same") {
 		t.Fatal("a branch of a several-folder bench carries an unbound key")
 	}
+	// Each worktree names its own repository's branch item: the Desktop
+	// pairs the two by this key, never by the shared name.
+	for tree, key := range map[string]string{homeWork: homeKey, hubWork: hubKey} {
+		if got := findItem(t, res.Plan, "worktree:"+tree).BranchKey; got != key {
+			t.Fatalf("worktree %s: branch_key %q, want %q", tree, got, key)
+		}
+	}
 	for _, note := range []string{plain + ": not a repository, not swept", missing + ": missing, not swept"} {
 		if !slices.Contains(res.Notes, note) {
 			t.Fatalf("notes = %q, want %q", res.Notes, note)

@@ -26,14 +26,14 @@ const maxBatchTargets = 100
 
 // WorkbenchTools returns every workbench tool (surface "project"), in the order
 // buildToolRegistry registers them. files stores the images attached to
-// targets.
-func WorkbenchTools(files workbenchfiles.Store, launch SpecReviewLauncher) []*Tool {
-	return workbenchTools(files, processTerminalSession, launch)
+// targets; msgs reaches the session host and the daemon for agent messages.
+func WorkbenchTools(files workbenchfiles.Store, launch SpecReviewLauncher, msgs MessageDeps) []*Tool {
+	return workbenchTools(files, processTerminalSession, launch, msgs)
 }
 
 // workbenchTools is WorkbenchTools with the terminal session env read through
 // sessionEnv — tests inject their own.
-func workbenchTools(files workbenchfiles.Store, sessionEnv func() string, launch SpecReviewLauncher) []*Tool {
+func workbenchTools(files workbenchfiles.Store, sessionEnv func() string, launch SpecReviewLauncher, msgs MessageDeps) []*Tool {
 	return []*Tool{
 		NewWorkbenchInfo(), NewWorkbenchBoard(), NewUpdateWorkbench(),
 		NewAddWorkbenchSource(), NewRemoveWorkbenchSource(),
@@ -42,7 +42,8 @@ func workbenchTools(files workbenchfiles.Store, sessionEnv func() string, launch
 		NewAskOwner(sessionEnv, launch), NewGetAsk(), NewGetReview(), NewGetSpecReview(),
 		NewAnnotateChanges(sessionEnv), NewReplyReviewComment(), NewAnswerReviewQuestion(sessionEnv),
 		NewListAsks(sessionEnv), NewWithdrawAsk(),
-		NewFinishSession(sessionEnv), NewSetSessionTarget(sessionEnv),
+		NewFinishSession(sessionEnv, msgs), NewSetSessionTarget(sessionEnv),
+		NewSendToSession(sessionEnv, msgs),
 	}
 }
 

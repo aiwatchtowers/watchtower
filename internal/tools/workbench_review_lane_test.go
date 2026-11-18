@@ -128,6 +128,28 @@ func TestReviewSourceUsesTheSessionsFolder(t *testing.T) {
 	assert.Equal(t, reviewFolder(t, fx.d, wb), src.Folder)
 }
 
+// TestSessionReviewFolderUsesTheHubsReviewMap (spec §6.9): a hub session's
+// review map reads the hub's .watchtower/review-map.md, a home session's
+// and a session-less round's the home folder's.
+func TestSessionReviewFolderUsesTheHubsReviewMap(t *testing.T) {
+	ctx := context.Background()
+	fx, wb, homeSession, _ := repoSession(t)
+	p, err := fx.d.GetWorkbench(wb)
+	require.NoError(t, err)
+	hub, dir, _ := hubFolder(t, fx.d, wb)
+	hubSession := folderSession(t, fx.d, wb, hub, dir, 0)
+	for folder, glob := range map[string]string{p.FolderPath: "home/**", dir: "hub/**"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(folder, ".watchtower"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(folder, ".watchtower", "review-map.md"),
+			[]byte("## Breaking\n- "+glob+"\n"), 0o600))
+	}
+	for session, want := range map[int64]string{hubSession: "hub/**", homeSession: "home/**", 0: "home/**"} {
+		folder, err := SessionReviewFolder(ctx, fx.d, p, session)
+		require.NoError(t, err)
+		assert.Equal(t, []string{want}, reviewmap.LoadPatterns(folder).Breaking, "session %d", session)
+	}
+}
+
 // TestReviewLockPathPerFolder (spec §6.9): the overview run lock is keyed
 // by the session's review folder, so two folders' runs never wait on each
 // other.

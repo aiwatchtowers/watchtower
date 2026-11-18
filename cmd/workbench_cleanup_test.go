@@ -767,7 +767,11 @@ func TestCleanupCmd_JSONItemKeys(t *testing.T) {
 	base := []string{"key", "kind", "name", "branch", "bytes", "bytes_known", "action", "reason", "detail",
 		"done", "error", "owner", "origin", "last_commit_at", "merged"}
 	sort.Strings(base)
-	assert.Equal(t, base, keysOf("worktree:"+root))
+	// A worktree with a branch names its branch item's key (the Desktop
+	// pairs the two by it, #2003).
+	withBranchKey := append(append([]string{}, base...), "branch_key")
+	sort.Strings(withBranchKey)
+	assert.Equal(t, withBranchKey, keysOf("worktree:"+root))
 	withWorktree := append(append([]string{}, base...), "worktree")
 	sort.Strings(withWorktree)
 	// The bundle item has no owner (omitempty) but names its worktree.

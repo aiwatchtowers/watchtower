@@ -51,6 +51,18 @@ func reviewSessionPlace(ctx context.Context, d *db.DB, p *db.Workbench, sessionI
 	return resolved.Root, missing, nil
 }
 
+// SessionReviewFolder is the bench folder whose review configuration
+// (.watchtower/review-map.md, the review lenses) a review of session
+// sessionID reads: the session's own folder (db.SessionFolderPath; spec
+// §6.9), or workbench p's folder for sessionID 0 (a round without a session).
+func SessionReviewFolder(ctx context.Context, d *db.DB, p *db.Workbench, sessionID int64) (string, error) {
+	if sessionID == 0 {
+		return p.FolderPath, nil
+	}
+	folder, _, err := d.SessionFolderPath(ctx, sessionID)
+	return folder, err
+}
+
 // ReviewSource is what a session's review round reads (board #1012, ask
 // #543: "the folder when it is on the task's branch, else the branch
 // itself" — the "else" scoped to the folder sitting on the default branch

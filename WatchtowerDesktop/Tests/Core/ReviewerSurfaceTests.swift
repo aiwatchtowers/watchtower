@@ -25,6 +25,30 @@ final class ReviewerSurfaceTests: XCTestCase {
         XCTAssertEqual(ReviewerSurface.Reader(.none), .none)
     }
 
+    // MARK: - Reviewed folder (#2003)
+
+    /// A folder round in a bench folder other than home has no branch of its
+    /// own: its thread keys by that folder's branch, never home's — and
+    /// stays closed until that folder's status is read.
+    func testAnotherFoldersRoundNeverKeysByHomesBranch() throws {
+        let home = WorkbenchGitStatus(branch: "main")
+        let hub = WorkbenchGitStatus(branch: "feature/hub")
+        XCTAssertEqual(ReviewerSurface.folderStatus(.home, homeStatus: home), home)
+        XCTAssertEqual(ReviewerSurface.folderStatus(.other(hub), homeStatus: home), hub)
+        XCTAssertNil(ReviewerSurface.folderStatus(.other(nil), homeStatus: home), "an unread folder never borrows home's")
+        XCTAssertNil(ReviewerSurface.folderStatus(nil, homeStatus: home), "an unknown folder never borrows home's")
+
+        let folderRound = try round()
+        let inHub = try XCTUnwrap(ReviewerSurface.context(
+            projectID: 4, sessionID: 9, folderID: 5, round: folderRound, place: .main,
+            mainStatus: ReviewerSurface.folderStatus(.other(hub), homeStatus: home)))
+        XCTAssertEqual(inHub.branch, "feature/hub")
+        XCTAssertEqual(inHub.folderID, 5)
+        XCTAssertNil(ReviewerSurface.context(
+            projectID: 4, sessionID: 9, folderID: 5, round: folderRound, place: .main,
+            mainStatus: ReviewerSurface.folderStatus(.other(nil), homeStatus: home)))
+    }
+
     // MARK: - Thread key
 
     func testThreadKeyIsTheRoundBranchWhenSet() throws {

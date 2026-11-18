@@ -123,6 +123,31 @@ type scope struct {
 	in       map[int64]bool
 	session  int64          // the session's own target; 0 = none
 	progress map[int64]bool // the leaves the progress counts; see newScope
+	// folder is the session's bench folder and home the workbench's home
+	// folder (spec §6.10, PROJ-14): only a target of the session's folder
+	// (a NULL target folder is home's) is looked up in that folder's PR
+	// cache — its PRs, branches and merge verdict. 0 = no folder rows:
+	// every target is the session's.
+	folder, home int64
+}
+
+// inFolder reports whether target e's work is in the session's folder, so
+// its PR, branch and merge verdict are read from that folder's cache.
+func (s scope) inFolder(e *boardEntry) bool {
+	if s.folder == 0 {
+		return true
+	}
+	f := s.home
+	if e.target.WorkbenchFolderID.Valid {
+		f = e.target.WorkbenchFolderID.Int64
+	}
+	return f == s.folder
+}
+
+// mergedLeaf is board.mergedLeaf for a leaf of the session's folder; a leaf
+// of another folder is never merged here — its verdict is that folder's.
+func (s scope) mergedLeaf(e *boardEntry, states map[string]db.PRState) bool {
+	return s.inFolder(e) && s.b.mergedLeaf(e, states)
 }
 
 // newScope builds the scope of session sessionID. in is the wide set (the
@@ -226,7 +251,7 @@ func (s scope) counts(states map[string]db.PRState) Progress {
 		switch {
 		case e.target.Status == "done":
 			p.Done++
-		case s.b.mergedLeaf(e, states):
+		case s.mergedLeaf(e, states):
 			p.Merged++
 		}
 	}
@@ -282,7 +307,7 @@ func (s scope) mergeRefs() []string {
 	var out []string
 	seen := map[string]bool{}
 	add := func(e *boardEntry) {
-		if e.target.Status == "done" {
+		if e.target.Status == "done" || !s.inFolder(e) {
 			return
 		}
 		if base, branch, ok := s.b.mergeBase(e); ok {
@@ -314,7 +339,7 @@ func (s scope) countedMergeRefs() []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, e := range s.leaves() {
-		if !s.progress[e.id()] || e.target.Status == "done" {
+		if !s.progress[e.id()] || e.target.Status == "done" || !s.inFolder(e) {
 			continue
 		}
 		if base, branch, ok := s.b.mergeBase(e); ok {
@@ -332,6 +357,9 @@ func (s scope) countedMergeRefs() []string {
 func (s scope) refs() []string {
 	var out []string
 	for _, e := range s.targets() {
+		if !s.inFolder(e) {
+			continue
+		}
 		if p := strings.TrimSpace(e.target.PR); p != "" {
 			if ref, _ := prRef(p); !slices.Contains(out, ref) {
 				out = append(out, ref)
@@ -396,7 +424,25 @@ func loadScope(ctx context.Context, d *db.DB, workbenchID, sessionID int64) (Ses
 	if err != nil {
 		return Session{}, scope{}, err
 	}
-	return sess, newScope(b, sessionID, target, linked, owners), nil
+	sc := newScope(b, sessionID, target, linked, owners)
+	if sc.folder, sc.home, err = scopeFolders(ctx, d, workbenchID, sessionID); err != nil {
+		return Session{}, scope{}, err
+	}
+	return sess, sc, nil
+}
+
+// scopeFolders is session sessionID's bench folder id and the workbench's
+// home folder id (both 0 when the bench has no folder row).
+func scopeFolders(ctx context.Context, d *db.DB, workbenchID, sessionID int64) (folder, home int64, err error) {
+	f, err := folderOf(ctx, d, workbenchID, sessionID)
+	if err != nil {
+		return 0, 0, err
+	}
+	h, err := homeFolder(ctx, d, workbenchID)
+	if err != nil {
+		return 0, 0, err
+	}
+	return f.id, h.id, nil
 }
 
 func loadSession(ctx context.Context, d *db.DB, workbenchID, sessionID int64) (Session, sql.NullInt64, error) {

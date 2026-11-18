@@ -34,7 +34,7 @@ func askRegistry(t *testing.T, d *db.DB, env string) *Registry {
 func askRegistryWith(t *testing.T, d *db.DB, env string, launch SpecReviewLauncher) *Registry {
 	t.Helper()
 	reg := New(d)
-	for _, tool := range append(workbenchTools(workbenchfiles.New(t.TempDir()), func() string { return env }, launch),
+	for _, tool := range append(workbenchTools(workbenchfiles.New(t.TempDir()), func() string { return env }, launch, MessageDeps{}),
 		NewListTargets(), NewGetTarget()) {
 		require.NoError(t, reg.Register(tool))
 	}
@@ -478,7 +478,7 @@ func TestWithdrawAsk(t *testing.T) {
 // withdraw_ask write (direct apply, audited), get_ask and list_asks read.
 func TestAskTools_AreWorkbenchTools(t *testing.T) {
 	access := map[string]Access{}
-	for _, tool := range WorkbenchTools(workbenchfiles.Store{}, nil) {
+	for _, tool := range WorkbenchTools(workbenchfiles.Store{}, nil, MessageDeps{}) {
 		access[tool.Name] = tool.Access
 		assert.Equal(t, workbenchSurfaces, tool.Surfaces, tool.Name)
 	}

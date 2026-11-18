@@ -17,14 +17,15 @@ import (
 // plus get_review since 2026-10-16: sixteen, plus annotate_changes and
 // reply_review_comment: eighteen, plus get_spec_review since 2026-10-26:
 // nineteen, plus set_session_target since 2026-10-31: twenty, plus
-// answer_review_question since 2026-11-08: twenty-one). The old names are only
+// answer_review_question since 2026-11-08: twenty-one, plus send_to_session since
+// 2026-11-18: twenty-two). The old names are only
 // resolved, never registered or served.
 func TestCanonicalToolName_MapsTheRenamedWorkbenchTools(t *testing.T) {
 	var names []string
-	for _, tool := range WorkbenchTools(workbenchfiles.Store{}, nil) {
+	for _, tool := range WorkbenchTools(workbenchfiles.Store{}, nil, MessageDeps{}) {
 		names = append(names, tool.Name)
 	}
-	require.Len(t, names, 21)
+	require.Len(t, names, 22)
 	require.Len(t, preRenameWorkbenchToolNames, 5)
 	for oldName, newName := range preRenameWorkbenchToolNames {
 		assert.Contains(t, names, newName)
