@@ -34,6 +34,20 @@ final class ReviewerThreadQueriesTests: XCTestCase {
         XCTAssertEqual(try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_conversations") }, 2)
     }
 
+    /// A legacy bench whose only folder row migration 00196 marked removed
+    /// (another spelling of an older bench's folder) still gets its threads.
+    func testALegacyBenchWithARemovedOnlyFolderGetsThreads() throws {
+        let db = try TestDatabase.create()
+        let project = try db.write { try TestDatabase.insertWorkbench($0) }
+        try db.write {
+            try $0.execute(sql: "UPDATE workbench_folders SET removed_at = '2026-11-18T00:00:00Z' WHERE workbench_id = ?",
+                           arguments: [project])
+        }
+        let first = try db.write { try ReviewerThreadQueries.ensure($0, projectID: project, branch: "feature/a") }
+        let again = try db.write { try ReviewerThreadQueries.ensure($0, projectID: project, branch: "feature/a") }
+        XCTAssertEqual(first, again)
+    }
+
     func testTheThreadGoesWithItsWorkbench() throws {
         let db = try TestDatabase.create()
         let (mine, other) = try db.write { db in

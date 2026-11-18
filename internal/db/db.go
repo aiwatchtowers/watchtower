@@ -35,6 +35,9 @@ type DB struct {
 	// value (tests reopen a handle in place) shares it and vet's copylocks
 	// stays quiet; nil on a handle not built by Open/OpenExisting*.
 	approvalHook *atomic.Pointer[func(ref string)]
+	// presentCols remembers the "table:cols" sets hasColumnsCached found
+	// (a pointer, shared by copies); nil = no caching.
+	presentCols *sync.Map
 }
 
 // pragmaConnector opens each pool connection through base — the engine
@@ -116,7 +119,7 @@ func openPoolWith(base driver.Connector) *DB {
 	c := &pragmaConnector{base: base}
 	sqlDB := sql.OpenDB(c)
 	sqlDB.SetMaxOpenConns(1)
-	return &DB{DB: sqlDB, connector: c, approvalHook: new(atomic.Pointer[func(ref string)])}
+	return &DB{DB: sqlDB, connector: c, approvalHook: new(atomic.Pointer[func(ref string)]), presentCols: new(sync.Map)}
 }
 
 // idleCloseAfter is how long a file handle's pool connection may sit idle
@@ -429,6 +432,24 @@ func (db *DB) HasColumns(table string, cols ...string) (bool, error) {
 		}
 	}
 	return true, nil
+}
+
+// hasColumnsCached is HasColumns for a hot path: a set found present is
+// remembered for the handle (a migration never drops a column the code
+// reads), so only a database not yet migrated pays the schema lookup on
+// every call.
+func (db *DB) hasColumnsCached(table string, cols ...string) (bool, error) {
+	key := table + ":" + strings.Join(cols, ",")
+	if db.presentCols != nil {
+		if _, ok := db.presentCols.Load(key); ok {
+			return true, nil
+		}
+	}
+	ok, err := db.HasColumns(table, cols...)
+	if ok && db.presentCols != nil {
+		db.presentCols.Store(key, struct{}{})
+	}
+	return ok, err
 }
 
 // tightenDBFilePerms restricts the database file and its WAL/SHM sidecars to

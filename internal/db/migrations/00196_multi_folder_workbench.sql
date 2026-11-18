@@ -18,16 +18,18 @@
 --    in their primary keys (backfilled with the home folder), so two folders
 --    with the same branch never share a thread or a PR state.
 -- 5. workbench_folder_declines, session_messages, session_outside_touches.
--- 6. The workbench document index rows (wbdoc:) go: their key gains the
---    folder, and the next index pass rebuilds them (derived data).
+-- 6. The workbench document index keys gain the folder, rekeyed in place
+--    (wbdoc:<project>:<rel> -> wbdoc:<project>:<home folder>:<rel>) in
+--    kb_documents, kb_chunks.doc_id and kb_dirty: entries indexed from a
+--    privacy-protected folder (an explicit trigger) are never rebuilt by the
+--    daemon, so they must survive. kb_fts is keyed by chunk rowid and the
+--    kb_chunks_au trigger rewrites it with the same text.
 --
 -- owner_asks is the parent of ON DELETE CASCADE / SET NULL children (spec
 -- reviews, marks, questions, thread findings, previous_ask_id), and
 -- review_reviewer_threads carries a delete trigger, so foreign keys are OFF
 -- around the rebuilds (a DROP fires no cascade; a DROP never fires a
--- trigger). With foreign keys off nothing cascades, so the kb_chunks of the
--- dropped documents are deleted explicitly (kb_chunks_ad keeps kb_fts in
--- step). The pragma cannot change inside a transaction; everything between
+-- trigger; kb_documents.id changes under its chunks). The pragma cannot change inside a transaction; everything between
 -- is one BEGIN IMMEDIATE … COMMIT in one goose statement, so a failure
 -- part-way leaves every table as it was (00150's pattern).
 PRAGMA foreign_keys = OFF;
@@ -179,8 +181,23 @@ CREATE TABLE session_outside_touches (
     PRIMARY KEY (session_id, repo_root)
 );
 
-DELETE FROM kb_chunks WHERE doc_id LIKE 'wbdoc:%';
-DELETE FROM kb_documents WHERE id LIKE 'wbdoc:%';
+-- wbdoc:<project>:<rel> -> wbdoc:<project>:<folder>:<rel>, the folder being
+-- the bench's only row (lowest position).
+CREATE TEMP TABLE wbdoc_rekey AS
+SELECT d.id AS old_id,
+       'wbdoc:' || f.workbench_id || ':' || f.id || ':' || substr(d.id, 7 + instr(substr(d.id, 7), ':')) AS new_id
+FROM kb_documents d JOIN workbench_folders f ON f.id = (
+    SELECT f2.id FROM workbench_folders f2
+    WHERE f2.workbench_id = CAST(substr(d.id, 7, instr(substr(d.id, 7), ':') - 1) AS INTEGER)
+    ORDER BY f2.position, f2.id LIMIT 1)
+WHERE d.id LIKE 'wbdoc:%' AND instr(substr(d.id, 7), ':') > 1;
+UPDATE kb_chunks SET doc_id = (SELECT new_id FROM wbdoc_rekey WHERE old_id = kb_chunks.doc_id)
+WHERE doc_id IN (SELECT old_id FROM wbdoc_rekey);
+UPDATE kb_documents SET id = (SELECT new_id FROM wbdoc_rekey WHERE old_id = kb_documents.id)
+WHERE id IN (SELECT old_id FROM wbdoc_rekey);
+UPDATE kb_dirty SET key = (SELECT new_id FROM wbdoc_rekey WHERE old_id = kb_dirty.key)
+WHERE source = 'project_doc' AND key IN (SELECT old_id FROM wbdoc_rekey);
+DROP TABLE wbdoc_rekey;
 
 COMMIT;
 -- +goose StatementEnd
@@ -189,26 +206,47 @@ PRAGMA foreign_keys = ON;
 -- +goose Down
 -- Rows the old shape cannot hold go first, with foreign keys on so their
 -- cascades and the thread trigger run: folder asks (their children and the
--- previous_ask_id links follow), and the reviewer threads and PR states of
--- any folder but a bench's home folder (their old keys would collide). Then
--- the rebuilds back, as in Up, in one transaction inside the pragmas.
+-- previous_ask_id links follow), and the reviewer threads, PR states and
+-- workbench documents of any folder but a bench's home folder (db.HomeFolder:
+-- the live row on projects.folder_path, else the lowest position), whose old
+-- keys would collide. Then the rebuilds back, as in Up, in one transaction
+-- inside the pragmas; the home folder's documents get their old keys back.
 -- +goose StatementBegin
 BEGIN IMMEDIATE;
 DELETE FROM owner_asks WHERE kind = 'folder';
-DELETE FROM review_reviewer_threads WHERE workbench_folder_id NOT IN (
-    SELECT f.id FROM workbench_folders f JOIN projects p ON p.id = f.workbench_id
-    WHERE f.removed_at IS NULL AND f.folder_path = p.folder_path COLLATE NOCASE);
-DELETE FROM workbench_pr_states WHERE workbench_folder_id NOT IN (
-    SELECT f.id FROM workbench_folders f JOIN projects p ON p.id = f.workbench_id
-    WHERE f.removed_at IS NULL AND f.folder_path = p.folder_path COLLATE NOCASE);
+DELETE FROM review_reviewer_threads WHERE workbench_folder_id IS NOT (SELECT f.id FROM workbench_folders f JOIN projects p ON p.id = f.workbench_id WHERE f.workbench_id = review_reviewer_threads.project_id
+    ORDER BY (f.removed_at IS NULL AND f.folder_path = p.folder_path COLLATE NOCASE) DESC, f.position, f.id LIMIT 1);
+DELETE FROM workbench_pr_states WHERE workbench_folder_id IS NOT (SELECT f.id FROM workbench_folders f JOIN projects p ON p.id = f.workbench_id WHERE f.workbench_id = workbench_pr_states.project_id
+    ORDER BY (f.removed_at IS NULL AND f.folder_path = p.folder_path COLLATE NOCASE) DESC, f.position, f.id LIMIT 1);
+CREATE TEMP TABLE wbdoc_unkey AS
+SELECT d.id AS new_id,
+       CAST(substr(d.id, 7, instr(substr(d.id, 7), ':') - 1) AS INTEGER) AS project_id,
+       substr(d.id, 7 + instr(substr(d.id, 7), ':')) AS folder_rel
+FROM kb_documents d WHERE d.id LIKE 'wbdoc:%' AND instr(substr(d.id, 7), ':') > 1;
+DELETE FROM kb_documents WHERE id IN (SELECT new_id FROM wbdoc_unkey u
+    WHERE CAST(substr(u.folder_rel, 1, instr(u.folder_rel, ':') - 1) AS INTEGER) IS NOT (SELECT f.id FROM workbench_folders f JOIN projects p ON p.id = f.workbench_id WHERE f.workbench_id = u.project_id
+    ORDER BY (f.removed_at IS NULL AND f.folder_path = p.folder_path COLLATE NOCASE) DESC, f.position, f.id LIMIT 1));
+DELETE FROM kb_dirty WHERE source = 'project_doc' AND key LIKE 'wbdoc:%' AND key NOT IN (SELECT id FROM kb_documents);
+DROP TABLE wbdoc_unkey;
 COMMIT;
 -- +goose StatementEnd
 PRAGMA foreign_keys = OFF;
 -- +goose StatementBegin
 BEGIN IMMEDIATE;
 
-DELETE FROM kb_chunks WHERE doc_id LIKE 'wbdoc:%';
-DELETE FROM kb_documents WHERE id LIKE 'wbdoc:%';
+-- wbdoc:<project>:<folder>:<rel> -> wbdoc:<project>:<rel>.
+CREATE TEMP TABLE wbdoc_rekey AS
+SELECT id AS old_id, 'wbdoc:' || pid || ':' || substr(rest, instr(rest, ':') + 1) AS new_id
+FROM (SELECT id, substr(id, 7, instr(substr(id, 7), ':') - 1) AS pid, substr(id, 7 + instr(substr(id, 7), ':')) AS rest
+      FROM kb_documents WHERE id LIKE 'wbdoc:%' AND instr(substr(id, 7), ':') > 1)
+WHERE instr(rest, ':') > 1;
+UPDATE kb_chunks SET doc_id = (SELECT new_id FROM wbdoc_rekey WHERE old_id = kb_chunks.doc_id)
+WHERE doc_id IN (SELECT old_id FROM wbdoc_rekey);
+UPDATE kb_documents SET id = (SELECT new_id FROM wbdoc_rekey WHERE old_id = kb_documents.id)
+WHERE id IN (SELECT old_id FROM wbdoc_rekey);
+UPDATE kb_dirty SET key = (SELECT new_id FROM wbdoc_rekey WHERE old_id = kb_dirty.key)
+WHERE source = 'project_doc' AND key IN (SELECT old_id FROM wbdoc_rekey);
+DROP TABLE wbdoc_rekey;
 
 DROP TABLE session_outside_touches;
 DROP TABLE session_messages;

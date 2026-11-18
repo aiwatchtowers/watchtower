@@ -89,11 +89,32 @@ const (
 	ownerAskHead = `a.id, a.project_id, a.session_id, a.target_id, a.kind, a.title, a.summary, a.changes,
 	a.payload, a.doc_path, `
 	ownerAskTail = `, a.previous_ask_id, a.status, a.withdrawn_reason, a.answer, a.created_at,
-	a.answered_at, a.delivered_at, a.level, a.origin, a.chat_asked_at, a.withdrawn_at, a.automation_run_id, a.doc_type, a.doc_folder_id`
-	ownerAskCols = ownerAskHead + `a.doc_snapshot` + ownerAskTail
+	a.answered_at, a.delivered_at, a.level, a.origin, a.chat_asked_at, a.withdrawn_at, a.automation_run_id, a.doc_type, `
 	// ownerAskListCols leaves doc_snapshot out: it holds up to 2 MiB a row.
-	ownerAskListCols = ownerAskHead + `''` + ownerAskTail
+	// Writes only (the database is migrated); readers use askCols.
+	ownerAskListCols = ownerAskHead + `''` + ownerAskTail + `a.doc_folder_id`
 )
+
+// askCols is the ask columns, doc_snapshot included when withSnapshot, for a reader
+// outside a transaction. doc_folder_id (00196) reads as NULL on a database
+// not yet migrated past it: `workbench asks` and the ask guard open the
+// database without migrating. A write path (the database is migrated) uses
+// the constants.
+func (db *DB) askCols(withSnapshot bool) (string, error) {
+	snapshot := `''`
+	if withSnapshot {
+		snapshot = `a.doc_snapshot`
+	}
+	folder := `a.doc_folder_id`
+	ok, err := db.hasColumnsCached("owner_asks", "doc_folder_id")
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		folder = `NULL`
+	}
+	return ownerAskHead + snapshot + ownerAskTail + folder, nil
+}
 
 // answeredForSessionPredicate (over alias a, s = the LEFT JOINed session):
 // the ask's session is the given one, none, or a row that is gone.
@@ -248,7 +269,11 @@ const askNowSQL = `strftime('%Y-%m-%dT%H:%M:%SZ','now')`
 // withdrawn before migration 00107 has no withdrawn_at and never matches.
 // DocSnapshot is left empty.
 func (db *DB) LastWithdrawnByTitle(workbenchID int64, kind, normTitle string, since time.Time) (*OwnerAsk, error) {
-	list, err := db.queryOwnerAsks(`SELECT `+ownerAskListCols+` FROM owner_asks a
+	cols, err := db.askCols(false)
+	if err != nil {
+		return nil, err
+	}
+	list, err := db.queryOwnerAsks(`SELECT `+cols+` FROM owner_asks a
 		WHERE a.project_id = ? AND a.kind = ? AND a.status = 'withdrawn' AND a.withdrawn_reason = ? AND a.withdrawn_at >= ?
 		AND `+notAutomationAsk+`
 		ORDER BY a.withdrawn_at DESC, a.id DESC`, workbenchID, kind, WithdrawnByAgent, since.UTC().Format(askCreatedAtLayout))
@@ -270,7 +295,11 @@ func (db *DB) LastWithdrawnByTitle(workbenchID int64, kind, normTitle string, si
 // it before filing the new ask, which would otherwise find itself.
 // DocSnapshot is left empty.
 func (db *DB) RecentOpenQuestionAsk(sessionID int64, since time.Time, excludeID int64) (*OwnerAsk, error) {
-	list, err := db.queryOwnerAsks(`SELECT `+ownerAskListCols+` FROM owner_asks a
+	cols, err := db.askCols(false)
+	if err != nil {
+		return nil, err
+	}
+	list, err := db.queryOwnerAsks(`SELECT `+cols+` FROM owner_asks a
 		WHERE a.session_id = ? AND a.status = 'open' AND a.kind = 'question' AND a.created_at >= ? AND a.id != ?
 		AND `+notAutomationAsk+`
 		ORDER BY a.id DESC LIMIT 1`, sessionID, since.UTC().Format(askCreatedAtLayout), excludeID)
@@ -283,13 +312,21 @@ func (db *DB) RecentOpenQuestionAsk(sessionID int64, since time.Time, excludeID 
 // GetOwnerAsk returns ask id of workbench workbenchID, snapshot included;
 // another workbench's ask is ErrAskNotFound.
 func (db *DB) GetOwnerAsk(workbenchID, id int64) (*OwnerAsk, error) {
-	return getOwnerAsk(db, ownerAskCols, workbenchID, id)
+	cols, err := db.askCols(true)
+	if err != nil {
+		return nil, err
+	}
+	return getOwnerAsk(db, cols, workbenchID, id)
 }
 
 // GetOwnerAskByID returns ask id of any workbench, snapshot included, or
 // ErrAskNotFound: for a caller that knows only the id (the spec reviewer).
 func (db *DB) GetOwnerAskByID(id int64) (*OwnerAsk, error) {
-	a, err := scanOwnerAsk(db.QueryRow(`SELECT `+ownerAskCols+` FROM owner_asks a WHERE a.id = ?`, id))
+	cols, err := db.askCols(true)
+	if err != nil {
+		return nil, err
+	}
+	a, err := scanOwnerAsk(db.QueryRow(`SELECT `+cols+` FROM owner_asks a WHERE a.id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("ask %d: %w", id, ErrAskNotFound)
 	}
@@ -332,7 +369,11 @@ func (db *DB) ListOwnerAsks(workbenchID int64, f OwnerAskFilter) ([]OwnerAsk, er
 	if len(statuses) == 0 {
 		statuses = []string{"answered", "open"}
 	}
-	q := `SELECT ` + ownerAskListCols + ` FROM owner_asks a WHERE a.project_id = ?
+	cols, err := db.askCols(false)
+	if err != nil {
+		return nil, err
+	}
+	q := `SELECT ` + cols + ` FROM owner_asks a WHERE a.project_id = ?
 		AND a.status IN (?` + strings.Repeat(", ?", len(statuses)-1) + `)`
 	args := []any{workbenchID}
 	for _, s := range statuses {
@@ -381,6 +422,10 @@ func (db *DB) WithdrawOwnerAsk(workbenchID, id int64, reason string) error {
 	if reason != WithdrawnByAgent && reason != WithdrawnSuperseded {
 		return fmt.Errorf("invalid withdrawn reason %q", reason)
 	}
+	cols, err := db.askCols(false) // before the transaction: the pool holds one connection
+	if err != nil {
+		return err
+	}
 	return db.WithTx(func(tx *sql.Tx) error {
 		res, err := tx.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = ?, withdrawn_at = `+askNowSQL+`
 			WHERE id = ? AND project_id = ? AND status = 'open'`, reason, id, workbenchID)
@@ -394,7 +439,7 @@ func (db *DB) WithdrawOwnerAsk(workbenchID, id int64, reason string) error {
 		if n == 1 {
 			return nil
 		}
-		a, err := getOwnerAsk(tx, ownerAskListCols, workbenchID, id)
+		a, err := getOwnerAsk(tx, cols, workbenchID, id)
 		if err != nil {
 			return err
 		}
@@ -427,7 +472,11 @@ func (db *DB) MarkOwnerAskDelivered(workbenchID, id int64) (bool, error) {
 func (db *DB) AnsweredAsksForBrief(workbenchID, sessionID int64) (list []OwnerAsk, others int, err error) {
 	const from = ` FROM owner_asks a LEFT JOIN terminal_sessions s ON s.id = a.session_id
 		WHERE a.project_id = ? AND a.status = 'answered' AND ` + notAutomationAsk + ` AND `
-	list, err = db.queryOwnerAsks(`SELECT `+ownerAskListCols+from+answeredForSessionPredicate+
+	cols, err := db.askCols(false)
+	if err != nil {
+		return nil, 0, err
+	}
+	list, err = db.queryOwnerAsks(`SELECT `+cols+from+answeredForSessionPredicate+
 		` ORDER BY a.answered_at, a.id`, workbenchID, sessionID)
 	if err != nil {
 		return nil, 0, err

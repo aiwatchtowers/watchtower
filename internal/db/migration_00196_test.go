@@ -1,10 +1,13 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -71,6 +74,7 @@ func seedMultiFolderV195(t *testing.T, raw *sql.DB) {
 		`INSERT INTO kb_documents (id, source, title) VALUES ('wbdoc:1:README.md', 'project_doc', 'readme'),
 			('jira:ACME-1', 'jira', 'issue')`,
 		`INSERT INTO kb_chunks (doc_id, idx, body) VALUES ('wbdoc:1:README.md', 0, 'hello'), ('jira:ACME-1', 0, 'issue body')`,
+		`INSERT INTO kb_dirty (source, key) VALUES ('project_doc', 'wbdoc:1:README.md')`,
 	} {
 		tcExec(t, raw, q)
 	}
@@ -202,20 +206,32 @@ func TestMigration00196_OldReviewThreadsAndPRStatesResolveForTheHomeFolder(t *te
 	assert.Equal(t, 1, mfCount(t, raw, `SELECT COUNT(*) FROM chat_conversations WHERE id = 50`))
 }
 
-func TestMigration00196_DropsWorkbenchDocIndexRows(t *testing.T) {
+// Entries indexed from a privacy-protected folder are never rebuilt by the
+// daemon: the migration rekeys every wbdoc row in place, searchable.
+func TestMigration00196_RekeysWorkbenchDocIndexRows(t *testing.T) {
 	t.Parallel()
 	raw := migratedMultiFolder(t)
-	assert.Equal(t, []string{"jira:ACME-1"}, mfDump(t, raw, `SELECT id FROM kb_documents ORDER BY id`))
-	assert.Equal(t, []string{"jira:ACME-1"}, mfDump(t, raw, `SELECT doc_id FROM kb_chunks ORDER BY doc_id`))
-	assert.Equal(t, 0, mfCount(t, raw, `SELECT COUNT(*) FROM kb_fts WHERE kb_fts MATCH 'hello'`))
+	app := mfCount(t, raw, `SELECT id FROM workbench_folders WHERE workbench_id = 1`)
+	key := fmt.Sprintf("wbdoc:1:%d:README.md", app)
+	assert.Equal(t, []string{"jira:ACME-1", key}, mfDump(t, raw, `SELECT id FROM kb_documents ORDER BY id`))
+	assert.Equal(t, []string{"jira:ACME-1", key}, mfDump(t, raw, `SELECT doc_id FROM kb_chunks ORDER BY doc_id`))
+	assert.Equal(t, []string{key}, mfDump(t, raw, `SELECT c.doc_id FROM kb_fts JOIN kb_chunks c ON c.id = kb_fts.rowid
+		WHERE kb_fts MATCH 'hello'`), "the rekeyed entry is still found by search")
 	assert.Equal(t, 1, mfCount(t, raw, `SELECT COUNT(*) FROM kb_fts WHERE kb_fts MATCH 'issue'`))
+	assert.Equal(t, []string{"project_doc " + key}, mfDump(t, raw, `SELECT source, key FROM kb_dirty WHERE source = 'project_doc'`))
 }
 
 func TestMigration00196_DownAndUpAgain(t *testing.T) {
 	t.Parallel()
 	raw := migratedMultiFolder(t)
 	tcExec(t, raw, `INSERT INTO owner_asks (project_id, kind, title) VALUES (1, 'folder', 'Add hub?')`)
+	tcExec(t, raw, `INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name)
+		VALUES (90, 1, '/tmp/code/site', 1, 'owner', 'site')`)
+	tcExec(t, raw, `INSERT INTO kb_documents (id, source, title) VALUES ('wbdoc:1:90:README.md', 'project_doc', 'site readme')`)
+	tcExec(t, raw, `INSERT INTO kb_chunks (doc_id, idx, body) VALUES ('wbdoc:1:90:README.md', 0, 'site text')`)
 	require.NoError(t, gooseDownTo(raw, "migrations", 195))
+	assert.Zero(t, mfCount(t, raw, `SELECT COUNT(*) FROM kb_fts WHERE kb_fts MATCH 'site'`),
+		"another folder's document, whose old key would collide, goes")
 	assertNoFKViolations(t, raw)
 	assert.False(t, tcObjectExists(t, raw, "table", "workbench_folders"))
 	assert.Zero(t, mfCount(t, raw, `SELECT COUNT(*) FROM owner_asks WHERE kind = 'folder'`))
@@ -224,6 +240,64 @@ func TestMigration00196_DownAndUpAgain(t *testing.T) {
 	assert.Equal(t, 2, mfCount(t, raw, `SELECT COUNT(*) FROM workbench_pr_states`))
 	assert.False(t, tcHasColumn(t, raw, "terminal_sessions", "workbench_folder_id"))
 	assert.False(t, tcHasColumn(t, raw, "targets", "workbench_folder_id"))
+	assert.Equal(t, []string{"jira:ACME-1", "wbdoc:1:README.md"}, mfDump(t, raw, `SELECT id FROM kb_documents ORDER BY id`),
+		"the home folder's documents get their old keys back")
+	assert.Equal(t, []string{"jira:ACME-1", "wbdoc:1:README.md"}, mfDump(t, raw, `SELECT doc_id FROM kb_chunks ORDER BY doc_id`))
 	applyNextMigration(t, raw)
 	assertNoFKViolations(t, raw)
+}
+
+// A legacy bench whose only folder 00196 marked removed (another spelling of
+// an older bench's folder) still has a home: its report and PR cache work.
+func TestMigration00196_LegacyDuplicateBenchKeepsAHome(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "w.db")
+	d, err := Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 195))
+	_, err = d.Exec(`INSERT INTO projects (id, name, folder_path) VALUES (1, 'a', '/tmp/Code/App'), (2, 'b', '/tmp/code/app')`)
+	require.NoError(t, err)
+	require.NoError(t, gooseUp(d.DB, "migrations"))
+
+	home, err := d.HomeFolder(ctx, 2)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), home.WorkbenchID)
+	assert.True(t, home.RemovedAt.Valid, "its only row, removed")
+	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: 2, FolderID: home.ID, Ref: "pr:1", State: "open",
+		CheckedAt: "2026-11-18T00:00:00Z"}))
+	got, err := d.PRStates(2, home.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "open", got["pr:1"].State)
+	live, err := d.HomeFolderID(ctx, 1)
+	require.NoError(t, err)
+	assert.NotEqual(t, home.ID, live)
+}
+
+// `workbench asks` and the ask guard open the database without migrating:
+// on a 00195 database the asks and the session row read with NULL folders.
+func TestMigration00196_UnmigratedReadersStillReadAsksAndSessions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "w.db")
+	d, err := Open(path)
+	require.NoError(t, err)
+	wb := newTestWorkbench(t, d)
+	sid := newTestSession(t, d, wb)
+	ask := mustInsertAsk(t, d, OwnerAsk{WorkbenchID: wb, SessionID: nullID(sid), Kind: AskKindQuestion, Title: "Which?"})
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 195))
+	require.NoError(t, d.Close())
+
+	old, err := OpenExisting(path, 100*time.Millisecond)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = old.Close() })
+	list, err := old.ListOwnerAsks(wb, OwnerAskFilter{Statuses: []string{"open"}})
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.False(t, list[0].DocFolderID.Valid)
+	got, err := old.GetOwnerAsk(wb, ask)
+	require.NoError(t, err)
+	assert.Equal(t, "Which?", got.Title)
+	s, err := old.GetTerminalSession(sid)
+	require.NoError(t, err)
+	assert.False(t, s.WorkbenchFolderID.Valid)
+	assert.False(t, s.ParentSessionID.Valid)
 }

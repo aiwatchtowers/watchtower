@@ -3,6 +3,7 @@ package sessionreport
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -48,8 +49,13 @@ func Summaries(ctx context.Context, d *db.DB, workbenchID int64) ([]Summary, err
 
 // homePRStates is the PR cache of workbench workbenchID's home folder: every
 // report reads it until a session's own folder is passed in (#2003 Task 6).
+// A workbench with no folder row has no cache: an empty map, never a failed
+// report.
 func homePRStates(ctx context.Context, d *db.DB, workbenchID int64) (map[string]db.PRState, error) {
 	folderID, err := d.HomeFolderID(ctx, workbenchID)
+	if errors.Is(err, db.ErrWorkbenchNotFound) {
+		return map[string]db.PRState{}, nil
+	}
 	if err != nil {
 		return nil, err
 	}

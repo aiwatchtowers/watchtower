@@ -5,12 +5,15 @@ import GRDB
 /// the only writer. Until a review names its session's own folder (#2003),
 /// every thread is the workbench's home folder's.
 package enum ReviewerThreadQueries {
-    /// The workbench's home folder row: its live folder whose path is
-    /// `projects.folder_path`. Bound to the project id.
+    /// The workbench's home folder row, as Go's `db.HomeFolder` reads it: its
+    /// live folder whose path is `projects.folder_path`, else its
+    /// lowest-position row (a legacy bench whose only row is marked removed).
+    /// Bound to the project id.
     private static let homeFolderSQL = """
         (SELECT f.id FROM workbench_folders f JOIN projects p ON p.id = f.workbench_id
-         WHERE f.workbench_id = ? AND f.removed_at IS NULL AND f.folder_path = p.folder_path COLLATE NOCASE
-         ORDER BY f.id LIMIT 1)
+         WHERE f.workbench_id = ?
+         ORDER BY (f.removed_at IS NULL AND f.folder_path = p.folder_path COLLATE NOCASE) DESC, f.position, f.id
+         LIMIT 1)
         """
 
     /// The thread's conversation, nil when the branch has none yet.

@@ -107,13 +107,17 @@ func (db *DB) LiveFolderByPath(ctx context.Context, q Querier, path string) (*Wo
 }
 
 // HomeFolder returns workbench workbenchID's home folder: its live row whose
-// path is projects.folder_path. ErrWorkbenchNotFound when there is none.
+// path is projects.folder_path; without one, its lowest-position row,
+// removed or not (a legacy bench whose only row 00196 had to mark removed,
+// as another spelling of an older bench's folder). ErrWorkbenchNotFound
+// when the bench has no folder row at all.
 func (db *DB) HomeFolder(ctx context.Context, workbenchID int64) (*WorkbenchFolder, error) {
 	return oneWorkbenchFolder(ctx, db, fmt.Sprintf("the home folder of workbench %d", workbenchID),
 		`SELECT f.id, f.workbench_id, f.folder_path, f.name, f.position, f.added_at, f.added_by, f.removed_at
 		FROM workbench_folders f JOIN projects p ON p.id = f.workbench_id
-		WHERE f.workbench_id = ? AND f.removed_at IS NULL AND f.folder_path = p.folder_path COLLATE NOCASE
-		ORDER BY f.id LIMIT 1`, workbenchID)
+		WHERE f.workbench_id = ?
+		ORDER BY (f.removed_at IS NULL AND f.folder_path = p.folder_path COLLATE NOCASE) DESC, f.position, f.id
+		LIMIT 1`, workbenchID)
 }
 
 // HomeFolderID is HomeFolder's row id.

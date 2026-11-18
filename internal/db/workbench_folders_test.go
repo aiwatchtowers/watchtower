@@ -265,3 +265,36 @@ func TestOwnerAsk_DocFolderID(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, AskKindFolder, got.Kind)
 }
+
+func TestOwnedFolderChecks_AsksAndPRStates(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	theirs := homeFolderID(t, d, other)
+
+	_, _, err := insertTestAsk(t, d, OwnerAsk{WorkbenchID: wb, Kind: AskKindReview, Title: "Spec", DocPath: "docs/spec.md",
+		DocFolderID: nullID(theirs)})
+	assert.ErrorIs(t, err, ErrNotInWorkbench, "a review ask on another bench's folder")
+
+	err = d.UpsertPRState(PRState{WorkbenchID: wb, FolderID: theirs, Ref: "pr:1", State: "open", CheckedAt: "2026-11-18T00:00:00Z"})
+	assert.ErrorIs(t, err, ErrNotInWorkbench, "a PR state on another bench's folder")
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM workbench_pr_states`).Scan(&n))
+	assert.Zero(t, n)
+}
+
+func TestHomeFolder_FallsBackToTheLowestPositionRow(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	home := homeFolderID(t, d, wb)
+	_, err := d.Exec(`UPDATE workbench_folders SET removed_at = '2026-11-18T00:00:00Z' WHERE id = ?`, home)
+	require.NoError(t, err)
+	got, err := d.HomeFolderID(ctx, wb)
+	require.NoError(t, err)
+	assert.Equal(t, home, got, "no live home row: the lowest-position row")
+	_, err = d.Exec(`DELETE FROM workbench_folders WHERE workbench_id = ?`, wb)
+	require.NoError(t, err)
+	_, err = d.HomeFolderID(ctx, wb)
+	assert.ErrorIs(t, err, ErrWorkbenchNotFound)
+}

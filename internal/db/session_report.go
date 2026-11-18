@@ -212,17 +212,26 @@ func (db *DB) FinishTerminalSession(sessionID int64, summary string, at time.Tim
 }
 
 // UpsertPRState stores s, replacing the cached row of the same workbench,
-// folder and ref.
+// folder and ref. A folder that is not the workbench's is ErrNotInWorkbench.
 func (db *DB) UpsertPRState(s PRState) error {
-	_, err := db.Exec(`INSERT INTO workbench_pr_states
+	res, err := db.Exec(`INSERT INTO workbench_pr_states
 		(project_id, workbench_folder_id, ref, state, pr_number, title, additions, deletions, merged_at, checked_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE EXISTS (SELECT 1 FROM workbench_folders WHERE id = ? AND workbench_id = ?)
 		ON CONFLICT (project_id, workbench_folder_id, ref) DO UPDATE SET state = excluded.state, pr_number = excluded.pr_number,
 			title = excluded.title, additions = excluded.additions, deletions = excluded.deletions,
 			merged_at = excluded.merged_at, checked_at = excluded.checked_at`,
-		s.WorkbenchID, s.FolderID, s.Ref, s.State, s.PRNumber, s.Title, s.Additions, s.Deletions, s.MergedAt, s.CheckedAt)
+		s.WorkbenchID, s.FolderID, s.Ref, s.State, s.PRNumber, s.Title, s.Additions, s.Deletions, s.MergedAt, s.CheckedAt,
+		s.FolderID, s.WorkbenchID)
 	if err != nil {
 		return fmt.Errorf("storing PR state %q of workbench %d: %w", s.Ref, s.WorkbenchID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("storing PR state %q of workbench %d: %w", s.Ref, s.WorkbenchID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("storing PR state %q: folder %d of workbench %d: %w", s.Ref, s.FolderID, s.WorkbenchID, ErrNotInWorkbench)
 	}
 	return nil
 }

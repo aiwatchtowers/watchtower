@@ -76,20 +76,20 @@ type TerminalSession struct {
 	ParentSessionID   sql.NullInt64
 }
 
-// terminalFolderLinks reads row id's workbench_folder_id and
-// parent_session_id (00196) on their own: the readers that open a database
-// without migrating it (`workbench asks`, the ask guard) read them as NULL
-// rather than failing the row.
-func (db *DB) terminalFolderLinks(id int64) (folder, parent sql.NullInt64, err error) {
-	ok, err := db.HasColumns("terminal_sessions", "workbench_folder_id", "parent_session_id")
-	if err != nil || !ok {
-		return folder, parent, err
+// terminalFolderLinkCols selects workbench_folder_id and parent_session_id
+// (00196), or two NULLs on a database not yet migrated past it: the readers
+// that open a database without migrating it (`workbench asks`, the ask
+// guard) read them as NULL rather than failing the row. The column check is
+// cached per handle once found (the hooks' hot path).
+func (db *DB) terminalFolderLinkCols() (string, error) {
+	ok, err := db.hasColumnsCached("terminal_sessions", "workbench_folder_id", "parent_session_id")
+	if err != nil {
+		return "", err
 	}
-	if err := db.QueryRow(`SELECT workbench_folder_id, parent_session_id FROM terminal_sessions WHERE id = ?`, id).
-		Scan(&folder, &parent); err != nil {
-		return folder, parent, fmt.Errorf("reading terminal session %d folder: %w", id, err)
+	if !ok {
+		return `NULL, NULL`, nil
 	}
-	return folder, parent, nil
+	return `workbench_folder_id, parent_session_id`, nil
 }
 
 // terminalBackgroundShells reads row id's agent_background_shells (00186)
@@ -122,15 +122,20 @@ func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 	var s TerminalSession
 	var stateAt, failedAt, backgroundAt sql.NullString
 	var agentError string
-	err := db.QueryRow(`SELECT id, project_id, kind, title, title_source, folder_path, claude_session_id,
+	links, err := db.terminalFolderLinkCols()
+	if err != nil {
+		return nil, err
+	}
+	err = db.QueryRow(`SELECT id, project_id, kind, title, title_source, folder_path, claude_session_id,
 		agent_state, agent_state_at, agent_failed_at, agent_error, finished_at IS NOT NULL,
 		agent_turn_end, agent_tool_run, agent_background, agent_background_at, worktree_branch,
 		CASE WHEN chat_question IS NULL THEN '' ELSE COALESCE(chat_question_at, '') END,
-		automation_run_id
+		automation_run_id, `+links+`
 		FROM terminal_sessions WHERE id = ?`, id).
 		Scan(&s.ID, &s.WorkbenchID, &s.Kind, &s.Title, &s.TitleSource, &s.FolderPath, &s.ClaudeSessionID,
 			&s.AgentState, &stateAt, &failedAt, &agentError, &s.Finished, &s.TurnEnd, &s.ToolRun,
-			&s.Background, &backgroundAt, &s.WorktreeBranch, &s.ChatQuestionAt, &s.AutomationRunID)
+			&s.Background, &backgroundAt, &s.WorktreeBranch, &s.ChatQuestionAt, &s.AutomationRunID,
+			&s.WorkbenchFolderID, &s.ParentSessionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrTerminalSessionNotFound
 	}
@@ -153,9 +158,6 @@ func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 	}
 	if failedAt.Valid {
 		s.AgentFailure = &AgentFailure{At: failedAt.String, Error: agentError}
-	}
-	if s.WorkbenchFolderID, s.ParentSessionID, err = db.terminalFolderLinks(id); err != nil {
-		return nil, err
 	}
 	return &s, nil
 }
