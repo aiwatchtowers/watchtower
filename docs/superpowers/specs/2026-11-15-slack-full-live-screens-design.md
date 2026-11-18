@@ -163,6 +163,12 @@ The phone has no digests, Inbox or briefing screens, so the state shows only in 
 | Error: other Slack refusal | (layout of `badToken`) | "Slack refused the app: <code>. Nothing was created." | **Cancel**, **Try again** |
 | Link not written | `slack-fl-setup-linkFailed` | "Watchtower's app is ready in <workspace>" / "The app works, but its About page has no connect link yet: the token expired before the link was written. Paste a fresh token to add it." | **Close**, **Add the link to the app** |
 | Waiting for approval | `slack-fl-setup-approval` | "Waiting for your admin's approval. Slack sent them a request to install Watchtower. Check again once they approve; this window can close." | **Close**, **Check again** |
+| Error: another run (plan B Task 13 review) | `slack-fl-setup-busy` | "Another setup is already running on this Mac. Try again once it has finished." | **Cancel**, **Try again** |
+| Create answer lost (`pending_create`, plan B Task 13 review) | `slack-fl-setup-pendingCreate` | "Slack did not answer when Watchtower asked it to create the app in <workspace>, so the app may exist. Look for “Watchtower” on api.slack.com/apps. If it is there, enter its App ID and Client ID from its Basic Information page; if not, start again." + quiet **Open Slack's app page**, fields "App ID" and "Client ID". **Start again** clears the pending record (`slack app pending --clear`); **Use this app** records the ids (`--attach`) and opens §3.3 | **Cancel**, **Start again**, **Use this app** |
+| Adopt: check the App ID (`confirm_app`, plan B Task 13 review) | `slack-fl-setup-adoptConfirm` | the adopt title, then "App <app id> is called “<name>”. Update it only if it is your workspace's Watchtower app." (an App ID typed in the field is confirmed by its name before anything changes) | **Cancel**, **Update the app** |
+| Adopt: App ID not taken (plan B Task 13 review) | `slack-fl-setup-adoptAppIdProblem` | under the App ID field: "That is not an App ID: it starts with A." (also "That App ID is not the app this workspace connects through.", "Slack has no app with that App ID in this workspace.") | **Cancel**, **Update the app** |
+
+Unmocked lines that reuse a mocked layout (plan B Task 13 review): "That token is for <workspace>, not this setup's workspace. Generate one in the right workspace." (adopt or link with another workspace's token: nothing is changed), "Slack refused the change: <code>. Nothing was changed." (adopt, link), "Slack did its part, but Watchtower could not save the setup on this Mac. Connections → Slack shows where it got to; the app is never created twice.", "Watchtower could not save this on this Mac. Nothing changed on Slack's side; try again." (pending), "The setup for <workspace> no longer waits for Slack's answer. Connections → Slack shows where it stands." (**Done**), "This Mac has no unfinished setup for <workspace>, so there is nothing to add the link to.", "Watchtower's app is not connected in <workspace> any more, so there is nothing to update. Create the app instead.", "That is not a Client ID: two numbers joined by a dot, on the app's Basic Information page." / "That is not an App ID: it starts with A, on the app's Basic Information page." (pending), "The setup stopped before it finished: <error>. Connections → Slack shows where it got to; the app is never created twice." (the CLI ended without an answer). Adopt steps: "Checking the token", "Reading the app" (App ID from the field only), "Updating the app". The pasted token field empties when a run starts; the token lives in the model for that run only.
 
 Nothing asks for the workspace, the app name or the redirect: the token names the workspace, the manifest is ours, the name is "Watchtower". The workspace's label in the success line comes from Slack's answer.
 
@@ -170,7 +176,7 @@ The token is passed to the CLI on stdin, never in argv (as `slack_token_<id>.jso
 
 ### 3.3 Add the link to the app
 
-The same sheet in its link mode, opened from the setup's "Link not written" state or from the setup-record row (§3.4). Title "Add the connect link to the app", intro "Writes the connect link and code into the About page of Watchtower's app in <workspace>. Needs a fresh configuration token." Shots: `slack-fl-setup-addLinkEmpty`, `-addLinkBusy` ("Writing the link…"), `-addLinkError` (the bad-token line + **Try again**), `-addLinkDone` ("The connect link is on the app's About page." + **Done**). Buttons: **Cancel**, **Add the link**.
+The same sheet in its link mode, opened from the setup's "Link not written" state or from the setup-record row (§3.4). Title "Add the connect link to the app", intro "Writes the connect link and code into the About page of Watchtower's app in <workspace>. Needs a fresh configuration token." Shots: `slack-fl-setup-addLinkEmpty`, `-addLinkBusy` ("Writing the link…"), `-addLinkError` (the bad-token line + **Try again**), `-addLinkDone` ("The connect link is on the app's About page." + **Done**). Buttons: **Cancel**, **Add the link**; while the link is being written, **Close** (closing the sheet does not stop the run) and **Add the link** disabled (plan B Task 13). When the setup's owner is not connected yet (an app attached after a lost create), a written link goes on to the connect (step 4 of §3.2).
 
 ### 3.4 The unfinished setup on Connections → Slack
 
@@ -181,6 +187,7 @@ The setup keeps a record (team, app id, client id, stage, whether the link is wr
 | app created, owner not connected | "Setup is not finished: Watchtower's app exists in <workspace>, but you have not connected yet." | **Continue setup** (re-runs from the install step; never a second create) | `slack-fl-pane-setupInstall` |
 | install requested, approval pending | "Waiting for your admin's approval in <workspace>. Check again once they approve." | **Check again** | `slack-fl-pane-setupApproval` |
 | connected, link not written | "The app's About page has no connect link yet, so colleagues cannot connect." | **Add the link to the app** | `slack-fl-pane-linkMissing` |
+| create answer lost (`pending_create`, plan B Task 13 review) | "Setup is not finished: Slack did not confirm Watchtower's app in <workspace>. Check api.slack.com/apps before going on." | **Continue setup** (opens the lost-create state of §3.2) | `slack-fl-pane-setupPending` |
 
 Whether Slack tells the loopback callback that an install request is pending (rather than sending nothing) is not known yet (T1 spike). Without such an answer the approval case shows as "Setup is not finished", which is still true; the approval row appears only when Slack says so.
 
@@ -295,6 +302,7 @@ Design-only SwiftUI scenes in `DesignShotCatalog` (`SlackFullLiveShotFixtures`, 
 | [`slack-fl-pane-setupInstall`](../../design/mockups/slack-full-live/slack-fl-pane-setupInstall-light.png) | admin's setup not finished: **Continue setup** |
 | [`slack-fl-pane-setupApproval`](../../design/mockups/slack-full-live/slack-fl-pane-setupApproval-light.png) | admin's setup waits for approval |
 | [`slack-fl-pane-linkMissing`](../../design/mockups/slack-full-live/slack-fl-pane-linkMissing-light.png) | **Add the link to the app** |
+| [`slack-fl-pane-setupPending`](../../design/mockups/slack-full-live/slack-fl-pane-setupPending-light.png) | the create's answer was lost: **Continue setup** (plan B Task 13 review) |
 | [`slack-fl-pane-sharedApp`](../../design/mockups/slack-full-live/slack-fl-pane-sharedApp-light.png) | shared-app banner, chip and tag |
 | [`slack-fl-pane-sharedApp-narrow`](../../design/mockups/slack-full-live/slack-fl-pane-sharedApp-narrow-light.png) | the same at 360 pt |
 | [`slack-fl-setup-empty`](../../design/mockups/slack-full-live/slack-fl-setup-empty-light.png) | setup sheet, nothing pasted |
@@ -306,6 +314,10 @@ Design-only SwiftUI scenes in `DesignShotCatalog` (`SlackFullLiveShotFixtures`, 
 | [`slack-fl-setup-notAllowed`](../../design/mockups/slack-full-live/slack-fl-setup-notAllowed-light.png) | the workspace forbids creating apps |
 | [`slack-fl-setup-linkFailed`](../../design/mockups/slack-full-live/slack-fl-setup-linkFailed-light.png) | app works, link not written |
 | [`slack-fl-setup-approval`](../../design/mockups/slack-full-live/slack-fl-setup-approval-light.png) | waiting for the admin's approval |
+| [`slack-fl-setup-busy`](../../design/mockups/slack-full-live/slack-fl-setup-busy-light.png) | another setup runs (a problem body; plan B Task 13 review) |
+| [`slack-fl-setup-pendingCreate`](../../design/mockups/slack-full-live/slack-fl-setup-pendingCreate-light.png) | the create's answer was lost: find the app or start again |
+| [`slack-fl-setup-adoptConfirm`](../../design/mockups/slack-full-live/slack-fl-setup-adoptConfirm-light.png) | adopt: the typed App ID's name to check |
+| [`slack-fl-setup-adoptAppIdProblem`](../../design/mockups/slack-full-live/slack-fl-setup-adoptAppIdProblem-light.png) | adopt: the App ID was not taken |
 | [`slack-fl-setup-addLinkEmpty`](../../design/mockups/slack-full-live/slack-fl-setup-addLinkEmpty-light.png) | Add the link: empty |
 | [`slack-fl-setup-addLinkBusy`](../../design/mockups/slack-full-live/slack-fl-setup-addLinkBusy-light.png) | Add the link: busy |
 | [`slack-fl-setup-addLinkError`](../../design/mockups/slack-full-live/slack-fl-setup-addLinkError-light.png) | Add the link: error with **Try again** |

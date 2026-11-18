@@ -77,6 +77,7 @@ struct SlackConnectionDetail: View {
         // connected" after the last account is removed).
         .onChange(of: appState.slackAccountsViewModel?.accounts) { _, _ in
             Task { await slackAuth.refreshStatus() }
+            appState.slackAppSetup.accountsChanged() // a setup's stage derives from the accounts
         }
         // A refresh can take the disconnect target away while the confirm
         // dialog is open; there is then nothing left to confirm.

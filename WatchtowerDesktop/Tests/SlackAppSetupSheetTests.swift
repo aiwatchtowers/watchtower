@@ -80,4 +80,18 @@ final class SlackAppSetupSheetTests: XCTestCase {
         XCTAssertEqual(SlackSetupShotFixture.rowsModel(.linkMissing).recordRows.map(\.text), [Copy.recordLinkMissing])
         XCTAssertTrue(SlackSetupShotFixture.rowsModel(.full).recordRows.isEmpty)
     }
+
+    /// The states added after review (pending create, App ID check, a refusal)
+    /// say what their mockups say.
+    func testReviewStatesMatchTheMockups() {
+        let pending = SlackSetupShotFixture.model(.pendingCreate)
+        XCTAssertEqual(pending.notice?.body, Copy.pendingBody)
+        XCTAssertEqual(pending.actions.map(\.label), [Copy.cancel, Copy.pendingStartAgain, Copy.pendingUseApp])
+        XCTAssertEqual(Model.clientIDLabel, Copy.clientIDLabel)
+        XCTAssertEqual(Model.openAppsPage, Copy.openAppsPage)
+        XCTAssertEqual(SlackSetupShotFixture.model(.adoptConfirm).notice?.body, Copy.adoptConfirm)
+        XCTAssertEqual(SlackSetupShotFixture.model(.adoptAppIdProblem).appIDProblemLine, Copy.appIDFormat)
+        XCTAssertEqual(SlackSetupShotFixture.model(.busy).notice?.body, Copy.busy)
+        XCTAssertEqual(SlackSetupShotFixture.rowsModel(.setupPending).recordRows.map(\.text), [Copy.recordPending])
+    }
 }

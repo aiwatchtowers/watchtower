@@ -52,7 +52,8 @@ enum SlackPolicyShotFixtures {
         case .removeOn, .removeOff:
             RemoveDialogMock(purgeOn: frame == .removeOn)
         case .setupDisclosure:
-            SetupDisclosureMock()
+            // The real sheet (plan B Task 13): the disclosure above the token field.
+            SlackAppSetupSheet(model: SlackAppSetupModel(streamer: nil))
         case .connectDisclosure:
             ConnectDisclosureMock()
         case .personCard, .personStopConfirm, .personStopped, .peopleList, .peopleListStopped, .teamSummary,
@@ -174,56 +175,6 @@ private struct RemoveDialogMock: View {
 }
 
 // MARK: - Disclosure
-
-private struct DisclosureBlock: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            Text(Copy.disclosureTitle).font(.subheadline.weight(.semibold))
-            ForEach(Copy.disclosureLines, id: \.self) { line in
-                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                    Text("•").foregroundStyle(.secondary)
-                    Text(line).font(.callout).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Button(Copy.privacyLink) {}.buttonStyle(.kitQuiet)
-        }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-    }
-}
-
-/// The Set up for my company sheet's first step with the disclosure above
-/// the token paste (screens spec frame `slack-fl-setup-empty`).
-private struct SetupDisclosureMock: View {
-    private typealias Setup = SlackFullLiveMockCopy
-
-    var body: some View {
-        Page {
-            Text(Setup.setupTitle).font(.title3.weight(.semibold))
-            Text(Setup.setupIntro).font(.callout).fixedSize(horizontal: false, vertical: true)
-            DisclosureBlock()
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Setup.setupStep1).font(.subheadline.weight(.semibold))
-                Text(Setup.setupStep1Help)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button(Setup.openTokenPage) {}.buttonStyle(.kitSecondary)
-            }
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Setup.setupStep2).font(.subheadline.weight(.semibold))
-                TextField(Setup.tokenPlaceholder, text: .constant("")).textFieldStyle(.kit)
-                Text(Setup.tokenNote).font(.caption).foregroundStyle(.secondary)
-            }
-            HStack(spacing: Spacing.regular) {
-                Spacer()
-                Button(Setup.cancel) {}.buttonStyle(.kitSecondary)
-                Button(Setup.createApp) {}.buttonStyle(.kitPrimary).disabled(true)
-            }
-        }
-    }
-}
 
 /// The connect confirm (screens spec frame `slack-fl-connect-confirm`) with
 /// the one-line disclosure.

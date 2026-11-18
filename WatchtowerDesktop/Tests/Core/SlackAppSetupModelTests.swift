@@ -248,12 +248,22 @@ final class SlackAppSetupModelTests: XCTestCase {
         XCTAssertEqual(model.busyLine, "Writing the link…")
         XCTAssertFalse(model.showsProgress)
         XCTAssertFalse(model.isEnabled(.addLink, token: token), "no second run while busy")
+        let opened = fake.sessions.count
         child.emit(result("ok"))
         child.exit()
+        // The records say the owner is connected: the link sheet is done.
+        let status = await fake.session(number: opened + 1)
+        status.emit(#"{"setups":[\#(record(connected: true))]}"#)
+        status.exit()
         await finished(model)
         XCTAssertEqual(model.notice?.body, "The connect link is on the app's About page.")
         XCTAssertEqual(labels(model), ["Done"])
         XCTAssertTrue(fake.invocations.contains { $0.args == ["slack", "app", "link", "--json", "--team", "T0ACME"] })
+    }
+
+    private func record(connected: Bool, stage: String = "done") -> String {
+        #"{"team_id":"T0ACME","team_name":"acme","app_id":"A0ACME","client_id":"1111.2222","connected":\#(connected),"#
+            + #""link_written":true,"install_requested":false,"stage":"\#(stage)"}"#
     }
 
     private func startLink(_ model: Model, _ fake: FakeCLILineStream) async -> FakeCLILineSession {
@@ -480,7 +490,7 @@ final class SlackAppSetupModelTests: XCTestCase {
                                     form: adopt)
         model.startAdopt(token: token, appID: nil)
         await settled(model)
-        XCTAssertEqual(fake.invocations[0].args, ["slack", "app", "adopt", "--json"])
+        XCTAssertEqual(fake.invocations[0].args, ["slack", "app", "adopt", "--json", "--team", "T0ACME"])
         XCTAssertTrue(model.showsAppIDField)
         XCTAssertEqual(Model.appIDLabel, "App ID")
         XCTAssertEqual(Model.appIDHelp, "Find it on the app's Basic Information page at api.slack.com/apps.")
@@ -501,7 +511,7 @@ final class SlackAppSetupModelTests: XCTestCase {
         fake.enqueue(noSetups)
         model.startAdopt(token: token, appID: " A0ACME ")
         await settled(model)
-        XCTAssertEqual(fake.invocations.dropLast().last?.args, ["slack", "app", "adopt", "--json", "--app-id", "A0ACME"])
+        XCTAssertEqual(fake.invocations.dropLast().last?.args, ["slack", "app", "adopt", "--json", "--team", "T0ACME", "--app-id", "A0ACME"])
         XCTAssertEqual(model.notice?.body, "App A0ACME is called “Watchtower”. Update it only if it is your workspace's "
             + "Watchtower app.")
         XCTAssertNil(model.appIDProblemLine)
@@ -511,7 +521,7 @@ final class SlackAppSetupModelTests: XCTestCase {
         model.startAdopt(token: token, appID: "A0ACME")
         await settled(model)
         XCTAssertEqual(fake.invocations.dropLast().last?.args,
-                       ["slack", "app", "adopt", "--json", "--app-id", "A0ACME", "--confirm-app-id", "A0ACME"])
+                       ["slack", "app", "adopt", "--json", "--team", "T0ACME", "--app-id", "A0ACME", "--confirm-app-id", "A0ACME"])
         guard case .finished(.success) = model.phase else { return XCTFail("\(model.phase)") }
     }
 
@@ -594,5 +604,130 @@ final class SlackAppSetupModelTests: XCTestCase {
         XCTAssertEqual(model.recordRows.map(\.label), ["Continue setup"])
         model.open(model.records[0])
         XCTAssertTrue(model.showsPendingFields)
+    }
+    // MARK: - Fix round 1
+
+    func testAdoptPassesTheShownTeamAndRefusesAnother() async {
+        let other = #"{"result":"wrong_team","team_id":"T0OTHER","team_name":"other"}"#
+        let model = await problem(other, form: adopt)
+        XCTAssertEqual(model.notice?.body, "That token is for other, not this setup's workspace. Generate one in the right "
+            + "workspace.")
+        XCTAssertEqual(labels(model), ["Cancel", "Try again"])
+    }
+
+    func testSubmitClearsTheTokenField() async {
+        let (model, fake, _) = make()
+        var fields = Model.Fields(token: token)
+        XCTAssertNil(model.perform(.create, fields: &fields))
+        XCTAssertEqual(fields.token, "", "the field is emptied; the token lives in the model for the run")
+        XCTAssertTrue(model.holdsToken)
+        let child = await fake.session(number: 1)
+        XCTAssertEqual(fake.invocations[0].stdin, Data((token + "\n").utf8))
+        child.emit(#"{"result":"bad_token"}"#)
+        child.exit()
+        await finished(model)
+
+        // A disabled action changes nothing, the field included.
+        var empty = Model.Fields(token: "")
+        XCTAssertNil(model.perform(.tryAgain, fields: &empty))
+        var kept = Model.Fields(token: token)
+        let (busy, busyFake, _) = make()
+        busy.startCreate(token: token)
+        _ = await busyFake.session(number: 1)
+        XCTAssertNil(busy.perform(.create, fields: &kept))
+        XCTAssertEqual(kept.token, token)
+        XCTAssertEqual(busyFake.invocations.count, 1)
+    }
+
+    func testCopyCodeOnlyWithACode() async {
+        let success = Model(streamer: nil, phase: .finished(.success(SlackSetupTarget(teamID: "T0ACME", teamName: "acme"))))
+        XCTAssertNil(success.connectCode)
+        XCTAssertFalse(success.isEnabled(.copyCode, token: ""))
+        let code = SlackSetupTarget(teamID: "T0ACME", teamName: "acme", clientID: "1111.2222")
+        let full = Model(streamer: nil, phase: .finished(.success(code)))
+        var fields = Model.Fields()
+        XCTAssertEqual(full.perform(.copyCode, fields: &fields), "T0ACME:1111.2222")
+    }
+
+    func testAccountsChangedReloadsTheRecords() async {
+        let (model, fake, _) = make([reply(#"{"setups":[\#(record(connected: false, stage: "install"))]}"#)])
+        model.accountsChanged()
+        await untilObserved { !model.records.isEmpty }
+        XCTAssertEqual(fake.invocations.map(\.args), [["slack", "app", "status", "--json"]])
+    }
+
+    func testConnectorIsHeldStrongly() async {
+        let fake = FakeCLILineStream(replies: [reply(result("ok")), noSetups])
+        let model = Model(streamer: fake)
+        var calls = 0
+        do {
+            final class Counting: SlackSetupConnectStarting {
+                let onCall: () -> Void
+                init(_ onCall: @escaping () -> Void) { self.onCall = onCall }
+                func connectForSetup(teamID: String, clientID: String) async -> SlackSetupConnectOutcome {
+                    onCall()
+                    return .connected
+                }
+            }
+            model.connector = Counting { calls += 1 }
+        }
+        model.startCreate(token: token)
+        await settled(model)
+        XCTAssertEqual(calls, 1)
+    }
+
+    func testCLIPathResolvedPerRun() async {
+        // No CLI at the first run; installed before the second.
+        var made = 0
+        let fake = FakeCLILineStream(replies: [noSetups, reply(#"{"result":"busy"}"#), noSetups])
+        let model = Model {
+            made += 1
+            return made == 1 ? nil : fake
+        }
+        XCTAssertEqual(made, 0, "nothing resolved before a run")
+        model.startCreate(token: token)
+        await settled(model)
+        guard case .finished(.problem(.stopped)) = model.phase else { return XCTFail("\(model.phase)") }
+        model.tryAgain()
+        model.startCreate(token: token)
+        await settled(model)
+        guard case .finished(.problem(.busy)) = model.phase else { return XCTFail("\(model.phase)") }
+    }
+
+    func testClearPendingAnsweredNoPendingSaysSo() async {
+        let target = SlackSetupTarget(teamID: "T0ACME", teamName: "acme")
+        let (model, _, _) = make([reply(#"{"result":"no_pending","team_id":"T0ACME"}"#), noSetups], form: .pending(target))
+        model.clearPending()
+        await finished(model)
+        XCTAssertEqual(model.notice?.body, "The setup for acme no longer waits for Slack's answer. Connections → Slack "
+            + "shows where it stands.")
+        XCTAssertEqual(labels(model), ["Done"])
+
+        let (attach, _, _) = make([reply(#"{"result":"storage","team_id":"T0ACME"}"#), noSetups], form: .pending(target))
+        attach.attachPending(appID: "A0ACME", clientID: "1111.2222")
+        await finished(attach)
+        XCTAssertEqual(attach.notice?.body, "Watchtower could not save this on this Mac. Nothing changed on Slack's side; "
+            + "try again.")
+    }
+
+    func testAttachedAppLinkThenConnects() async {
+        let target = SlackSetupTarget(teamID: "T0ACME", teamName: "acme", appID: "A0ACME", clientID: "1111.2222")
+        let notConnected = reply(#"{"setups":[\#(record(connected: false, stage: "install"))]}"#)
+        let (model, _, connector) = make([reply(result("ok")), notConnected, noSetups], form: .addLink(target))
+        model.startLink(team: "T0ACME", token: token)
+        await settled(model)
+        XCTAssertEqual(connector.calls, ["T0ACME:1111.2222"], "a link on an attached app goes on to the connect")
+        guard case let .finished(.success(done)) = model.phase else { return XCTFail("\(model.phase)") }
+        XCTAssertTrue(done.linkWritten)
+        XCTAssertEqual(model.steps.map(\.mark), [.done, .done, .done, .done])
+    }
+
+    func testNotCollaboratorFromLinkHasNoAdoptTitle() async {
+        let target = SlackSetupTarget(teamID: "T0ACME", teamName: "acme", appID: "A0ACME", clientID: "1111.2222")
+        let (model, _, _) = make([reply(result("not_collaborator")), noSetups], form: .addLink(target))
+        model.startLink(team: "T0ACME", token: token)
+        await settled(model)
+        XCTAssertNil(model.notice?.title)
+        XCTAssertEqual(model.notice?.body, Model.notCollaboratorBody)
     }
 }

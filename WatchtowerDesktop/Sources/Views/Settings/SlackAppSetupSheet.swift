@@ -155,7 +155,7 @@ struct SlackAppSetupSheet: View {
 
     private var pendingFields: some View {
         VStack(alignment: .leading, spacing: Spacing.small) {
-            Button(Model.openTokenPage) { openURL(Model.slackAppsURL) }.buttonStyle(.kitQuiet)
+            Button(Model.openAppsPage) { openURL(Model.slackAppsURL) }.buttonStyle(.kitQuiet)
             TextField(Model.appIDLabel, text: $appID).textFieldStyle(.kit)
             TextField(Model.clientIDLabel, text: $clientID).textFieldStyle(.kit)
         }
@@ -180,24 +180,9 @@ struct SlackAppSetupSheet: View {
     }
 
     private func perform(_ action: Model.Action) {
-        switch action {
-        case .cancel, .close, .done: model.close()
-        case .create: model.startCreate(token: token)
-        case .tryAgain: model.tryAgain()
-        case .copyAdminNote: copy(model.copyAdminNote())
-        case .updateApp: model.startAdopt(token: token, appID: model.showsAppIDField ? appID : nil)
-        case .copyCode: if let code = model.connectCode { copy(code) }
-        case .showAddLink: model.showAddLink()
-        case .addLink: startLink()
-        case .continueSetup, .checkAgain: model.checkAgain()
-        case .clearPending: model.clearPending()
-        case .attachPending: model.attachPending(appID: appID, clientID: clientID)
-        }
-    }
-
-    private func startLink() {
-        guard case let .addLink(target) = model.form else { return }
-        model.startLink(team: target.teamID, token: token)
+        var fields = Model.Fields(token: token, appID: appID, clientID: clientID)
+        if let text = model.perform(action, fields: &fields) { copy(text) }
+        token = fields.token
     }
 
     private func copy(_ text: String) {
@@ -228,11 +213,8 @@ struct SlackSetupRecordRows: View {
         }
     }
 
-    @ViewBuilder private func button(_ row: SlackAppSetupModel.RecordRow) -> some View {
-        if row.waiting {
-            Button(row.label) { model.open(row.record) }.buttonStyle(.kitSecondary)
-        } else {
-            Button(row.label) { model.open(row.record) }.buttonStyle(.kitPrimary)
-        }
+    private func button(_ row: SlackAppSetupModel.RecordRow) -> some View {
+        // The row's one prominent action, the approval's Check again too (§3.4).
+        Button(row.label) { model.open(row.record) }.buttonStyle(.kitPrimary)
     }
 }

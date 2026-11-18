@@ -154,6 +154,10 @@ package final class SlackAppSetupModel {
         case noRecord(workspace: String)
         case noApp(workspace: String)
         case idsRejected(clientID: Bool)
+        /// `pending`: the setup no longer waits on a lost create.
+        case notPending(workspace: String)
+        /// `pending`: the local save failed.
+        case saveFailed
         /// The CLI ended without a result line (crashed, killed, refused to start).
         case stopped(String)
     }
@@ -176,19 +180,33 @@ package final class SlackAppSetupModel {
     /// The admin note was copied (A23): the sheet says so.
     package private(set) var adminNoteCopied = false
 
-    @ObservationIgnored package weak var connector: (any SlackSetupConnectStarting)?
-    @ObservationIgnored private let streamer: (any CLILineStreaming)?
+    /// Strong: the connect flow lives on `AppState` beside this model and
+    /// never holds the model, so there is no cycle to break.
+    @ObservationIgnored package var connector: (any SlackSetupConnectStarting)?
+    /// Resolved per run, so a CLI installed (or moved) after launch is found.
+    @ObservationIgnored private let makeStreamer: @MainActor () -> (any CLILineStreaming)?
+    private var streamer: (any CLILineStreaming)? { makeStreamer() }
     /// The configuration token of the running run; nil once it ends.
     private var heldToken: String?
 
-    package init(
+    package convenience init(
         streamer: (any CLILineStreaming)?,
         form: Form = .create,
         phase: Phase = .editing,
         steps: [StepLine] = [],
         records: [SlackSetupRecord] = []
     ) {
-        self.streamer = streamer
+        self.init(makeStreamer: { streamer }, form: form, phase: phase, steps: steps, records: records)
+    }
+
+    package init(
+        makeStreamer: @escaping @MainActor () -> (any CLILineStreaming)?,
+        form: Form = .create,
+        phase: Phase = .editing,
+        steps: [StepLine] = [],
+        records: [SlackSetupRecord] = []
+    ) {
+        self.makeStreamer = makeStreamer
         self.form = form
         self.phase = phase
         self.steps = steps
@@ -293,10 +311,10 @@ package final class SlackAppSetupModel {
         Task { [self] in
             let result = await stream(Self.pendingArgs(team: target.teamID) + ["--clear"], token: nil)
             if let result {
-                if result.result == "ok" || result.result == "no_pending" {
+                if result.result == "ok" {
                     reset(.create)
                 } else {
-                    finishWithProblem(result, workspace: target.workspace)
+                    finishPendingProblem(result, workspace: target.workspace)
                 }
             }
             await reloadRecords()
@@ -316,7 +334,7 @@ package final class SlackAppSetupModel {
                 if result.result == "ok" {
                     reset(.addLink(result.target(fallback: target)))
                 } else {
-                    finishWithProblem(result, workspace: target.workspace)
+                    finishPendingProblem(result, workspace: target.workspace)
                 }
             }
             await reloadRecords()
@@ -335,6 +353,12 @@ package final class SlackAppSetupModel {
         } catch {
             print("[SlackAppSetup] status read failed: \(error.localizedDescription)")
         }
+    }
+
+    /// The Workspaces list changed (an account connected, removed, re-bound):
+    /// `connected` and the stage of each setup are derived from it.
+    package func accountsChanged() {
+        Task { await reloadRecords() }
     }
 
     /// Copies nothing itself: the note for a workspace admin (A23); the
@@ -360,18 +384,23 @@ package final class SlackAppSetupModel {
 
     private func continueSetup(_ target: SlackSetupTarget) {
         guard !isRunning else { return }
-        steps = Self.createSteps.map { line in
-            var line = line
-            if line.id == "check_token" || line.id == "create_app" || (line.id == "write_link" && target.linkWritten) {
-                line.mark = .done
-            }
-            return line
-        }
+        steps = Self.continueSteps(linkWritten: target.linkWritten)
         phase = .running
         adminNoteCopied = false
         Task { [self] in
             await finishSetup(target)
             await reloadRecords()
+        }
+    }
+
+    /// The create's steps when it resumes at the connect.
+    private static func continueSteps(linkWritten: Bool) -> [StepLine] {
+        createSteps.map { line in
+            var line = line
+            if line.id == "check_token" || line.id == "create_app" || (line.id == "write_link" && linkWritten) {
+                line.mark = .done
+            }
+            return line
         }
     }
 
@@ -426,6 +455,8 @@ package final class SlackAppSetupModel {
     private func runAdopt(token: String, appID: String) async {
         guard case let .adopt(adopt) = form else { return }
         var args = ["slack", "app", "adopt", "--json"]
+        // The workspace the sheet names: a token of another one changes nothing (wrong_team).
+        if !adopt.target.teamID.isEmpty { args += ["--team", adopt.target.teamID] }
         if !appID.isEmpty {
             args += ["--app-id", appID]
             if adopt.confirm?.appID == appID { args += ["--confirm-app-id", appID] }
@@ -478,7 +509,18 @@ package final class SlackAppSetupModel {
         if !team.isEmpty { args += ["--team", team] }
         guard let result = await stream(args, token: token) else { return }
         if result.result == "ok" {
-            phase = .finished(.linkDone)
+            await reloadRecords()
+            let written = result.target(fallback: nil)
+            guard let record = records.first(where: { $0.teamID == written.teamID }), !record.connected else {
+                phase = .finished(.linkDone)
+                return
+            }
+            // A setup whose owner is not connected yet (an attached app): on to the connect.
+            form = .create
+            steps = Self.continueSteps(linkWritten: true)
+            var target = record.target
+            target.linkWritten = true
+            await finishSetup(target)
         } else if result.result == "pending_create" {
             reset(.pending(result.target(fallback: nil)))
         } else {
@@ -488,6 +530,16 @@ package final class SlackAppSetupModel {
 
     private func finishWithProblem(_ result: ResultLine, workspace: String) {
         phase = .finished(.problem(Self.problem(for: result, workspace: workspace)))
+    }
+
+    /// `pending --clear/--attach` answers: nothing pending any more, or the
+    /// local save failed (Slack had no part in it).
+    private func finishPendingProblem(_ result: ResultLine, workspace: String) {
+        switch result.result {
+        case "no_pending": phase = .finished(.problem(.notPending(workspace: workspace)))
+        case "storage": phase = .finished(.problem(.saveFailed))
+        default: finishWithProblem(result, workspace: workspace)
+        }
     }
 
     private static func problem(for result: ResultLine, workspace: String) -> Problem {
@@ -500,7 +552,8 @@ package final class SlackAppSetupModel {
         case "busy": .busy
         case "storage": .storage
         case "wrong_team": .wrongTeam(workspace: workspace)
-        case "no_record", "no_pending": .noRecord(workspace: workspace)
+        case "no_record": .noRecord(workspace: workspace)
+        case "no_pending": .notPending(workspace: workspace)
         case "no_app": .noApp(workspace: workspace)
         case "bad_ids": .idsRejected(clientID: result.code == "client_id_format")
         default: .stopped(result.error ?? result.result)

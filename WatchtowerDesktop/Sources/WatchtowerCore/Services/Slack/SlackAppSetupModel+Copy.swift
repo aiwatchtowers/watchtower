@@ -13,6 +13,7 @@ extension SlackAppSetupModel {
     package static let step1Help = "On Slack's app page, under Your App Configuration Tokens, press Generate Token "
         + "for your workspace and copy the access token."
     package static let openTokenPage = "Open Slack's token page"
+    package static let openAppsPage = "Open Slack's app page"
     package static let slackAppsURL = URL(string: "https://api.slack.com/apps")!
     package static let step2Title = "2. Paste it here"
     package static let tokenPlaceholder = "Configuration token"
@@ -203,7 +204,7 @@ extension SlackAppSetupModel {
         case .linkDone:
             Notice(icon: "checkmark.circle.fill", tone: .success, title: nil, body: Self.linkDoneBody)
         case let .problem(.notCollaborator(workspace)):
-            Notice(icon: "exclamationmark.triangle.fill", tone: .warning, title: Self.adoptTitle(workspace),
+            Notice(icon: "exclamationmark.triangle.fill", tone: .warning, title: isAdopt ? Self.adoptTitle(workspace) : nil,
                    body: Self.notCollaboratorBody)
         case let .problem(problem):
             Notice(icon: "exclamationmark.triangle.fill", tone: .warning, title: nil, body: problemLine(problem))
@@ -215,9 +216,20 @@ extension SlackAppSetupModel {
     package static let notAllowedBody = "Your workspace does not let you create apps. Ask a workspace admin to run this setup."
     package static let notCollaboratorBody = "Your token cannot change this app. Ask one of its collaborators "
         + "(listed on its Collaborators page) to run this setup."
+    package static let saveFailedBody = "Watchtower could not save this on this Mac. Nothing changed on Slack's side; try again."
+
+    package static func notPendingLine(_ workspace: String) -> String {
+        "The setup for \(workspace) no longer waits for Slack's answer. Connections → Slack shows where it stands."
+    }
+
     package static let busyBody = "Another setup is already running on this Mac. Try again once it has finished."
     package static let storageBody = "Slack did its part, but Watchtower could not save the setup on this Mac. "
         + "Connections → Slack shows where it got to; the app is never created twice."
+
+    private var isAdopt: Bool {
+        if case .adopt = form { return true }
+        return false
+    }
 
     private var changesNothingCreated: Bool {
         if case .create = form { return true }
@@ -246,6 +258,10 @@ extension SlackAppSetupModel {
             return clientID
                 ? "That is not a Client ID: two numbers joined by a dot, on the app's Basic Information page."
                 : "That is not an App ID: it starts with A, on the app's Basic Information page."
+        case let .notPending(workspace):
+            return Self.notPendingLine(workspace)
+        case .saveFailed:
+            return Self.saveFailedBody
         case let .stopped(detail):
             return "The setup stopped before it finished: \(detail). Connections → Slack shows where it got to; "
                 + "the app is never created twice."
@@ -294,7 +310,7 @@ extension SlackAppSetupModel {
         case .notConnected: [button(.close), button(.continueSetup, prominent: true)]
         case .approval: [button(.close), button(.checkAgain, prominent: true)]
         case .linkFailed: [button(.close), button(.showAddLink, prominent: true)]
-        case .linkDone: [button(.done, prominent: true)]
+        case .linkDone, .problem(.notPending): [button(.done, prominent: true)]
         case .problem(.notAllowed), .problem(.notCollaborator):
             [button(.cancel), button(.copyAdminNote), button(.tryAgain, prominent: true)]
         case .problem: [button(.cancel), button(.tryAgain, prominent: true)]
@@ -337,9 +353,48 @@ extension SlackAppSetupModel {
                 && !clientID.trimmingCharacters(in: .whitespaces).isEmpty
         case .clearPending:
             return !isRunning
+        case .copyCode:
+            return connectCode != nil
         default:
             return true
         }
+    }
+
+    /// What the sheet's fields hold; a run takes the token and the field is emptied.
+    package struct Fields: Equatable, Sendable {
+        package var token = ""
+        package var appID = ""
+        package var clientID = ""
+
+        package init(token: String = "", appID: String = "", clientID: String = "") {
+            self.token = token
+            self.appID = appID
+            self.clientID = clientID
+        }
+    }
+
+    /// A sheet button. A run that takes the token clears the field, so the
+    /// token lives only here for that run. Returns text to put on the
+    /// pasteboard (the connect code, the admin note).
+    package func perform(_ action: Action, fields: inout Fields) -> String? {
+        guard isEnabled(action, token: fields.token, appID: fields.appID, clientID: fields.clientID) else { return nil }
+        switch action {
+        case .cancel, .close, .done: close()
+        case .create: startCreate(token: fields.token)
+        case .updateApp: startAdopt(token: fields.token, appID: showsAppIDField ? fields.appID : nil)
+        case .addLink:
+            guard case let .addLink(target) = form else { return nil }
+            startLink(team: target.teamID, token: fields.token)
+        case .tryAgain: tryAgain()
+        case .copyAdminNote: return copyAdminNote()
+        case .copyCode: return connectCode
+        case .showAddLink: showAddLink()
+        case .continueSetup, .checkAgain: checkAgain()
+        case .clearPending: clearPending()
+        case .attachPending: attachPending(appID: fields.appID, clientID: fields.clientID)
+        }
+        if [.create, .updateApp, .addLink].contains(action) { fields.token = "" }
+        return nil
     }
 
     /// The connect code of a finished setup (`<team id>:<client id>`).

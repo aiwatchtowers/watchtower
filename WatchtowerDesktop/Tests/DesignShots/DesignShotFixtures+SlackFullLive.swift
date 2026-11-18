@@ -15,6 +15,7 @@ enum SlackFullLiveShotFixtures {
     enum Pane: String, CaseIterable {
         case full, fullLive, live, off, loading, checking, probeFailed, readFailed, liveProblems
         case sharedApp, portBusy, pasteInvalid, organization, setupInstall, setupApproval, linkMissing
+        case setupPending
     }
 
     /// The Set up for my company sheet and the Add the link sheet.
@@ -22,6 +23,7 @@ enum SlackFullLiveShotFixtures {
         case empty, ready, progress, success, badToken, notAllowed, linkFailed, approval
         case addLinkEmpty, addLinkBusy, addLinkError, addLinkDone
         case adopt, adoptAppId, adoptNotCollaborator
+        case pendingCreate, adoptConfirm, adoptAppIdProblem, busy
     }
 
     /// Connecting from a link or a pasted code.
@@ -236,6 +238,21 @@ enum SlackSetupShotFixture {
         case .adoptAppId: Model(streamer: nil, form: .adopt(needsID))
         case .adoptNotCollaborator:
             Model(streamer: nil, form: .adopt(adopt), phase: .finished(.problem(.notCollaborator(workspace: "acme"))))
+        case .pendingCreate, .adoptConfirm, .adoptAppIdProblem, .busy: reviewModel(frame, adopt: needsID)
+        }
+    }
+
+    /// The states added after the plan B Task 13 review.
+    private static func reviewModel(_ frame: SlackFullLiveShotFixtures.Setup, adopt: Model.Adopt) -> Model {
+        var confirm = adopt
+        confirm.confirm = ("A0ACME", "Watchtower")
+        var problem = adopt
+        problem.appIDProblem = .format
+        return switch frame {
+        case .pendingCreate: Model(streamer: nil, form: .pending(SlackSetupTarget(teamID: "T0ACME", teamName: "acme")))
+        case .adoptConfirm: Model(streamer: nil, form: .adopt(confirm))
+        case .adoptAppIdProblem: Model(streamer: nil, form: .adopt(problem))
+        default: Model(streamer: nil, phase: .finished(.problem(.busy)))
         }
     }
 
@@ -254,6 +271,7 @@ enum SlackSetupShotFixture {
         case .setupInstall: "install"
         case .setupApproval: "approval"
         case .linkMissing: "link_missing"
+        case .setupPending: "pending_create"
         default: nil
         }
         let records = stage.map { stage in

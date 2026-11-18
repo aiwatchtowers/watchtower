@@ -99,7 +99,7 @@ final class AppState {
     /// The Connections tab's open service (nil: the overview), so a link opens a service.
     var selectedConnection: ConnectionService?
     @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState() // a connect survives leaving the tab
-    @ObservationIgnored private(set) lazy var slackAppSetup = SlackAppSetupModel(streamer: ProcessCLILineStream.makeDefault()) // #1709 S3
+    @ObservationIgnored private(set) lazy var slackAppSetup = SlackAppSetupModel { ProcessCLILineStream.makeDefault() } // #1709 S3
     @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
     /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
     @ObservationIgnored weak var observedProviderConnection: ProviderConnection?
