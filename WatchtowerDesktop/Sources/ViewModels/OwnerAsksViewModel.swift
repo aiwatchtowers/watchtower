@@ -139,6 +139,9 @@ final class OwnerAsksViewModel {
     let reviewDocuments = OwnerAskReviewDocuments()
     /// Each workbench's open asks, oldest first, as last read.
     private(set) var openAsks: [Int64: [OwnerAsk]] = [:]
+    /// Each workbench's folders as the last read of its asks saw them: a
+    /// review's `doc_path` is relative to its `doc_folder_id` (#2003).
+    private(set) var benchFolders: [Int64: BenchFolders] = [:]
     /// The last answer's outcome per ask id, until dismissed.
     private(set) var answerNotices: [Int64: AnswerNotice] = [:]
     /// The asks answered (or found withdrawn) from a Quick ask's row, as
@@ -313,6 +316,7 @@ final class OwnerAsksViewModel {
         /// The drawer's ask when it is no longer open.
         let shown: OwnerAsk?
         let automationLabels: [Int64: String]
+        let folders: BenchFolders
     }
 
     func load(projectID: Int64) async {
@@ -333,11 +337,13 @@ final class OwnerAsksViewModel {
                     closedAutomationCount: try OwnerAskQueries.closedAutomationCount(db, projectID: projectID),
                     replacements: try OwnerAskQueries.replacements(db, projectID: projectID),
                     shown: shown,
-                    automationLabels: try AutomationQueries.askLabels(db, askIDs: automationAsks.map(\.id))
+                    automationLabels: try AutomationQueries.askLabels(db, askIDs: automationAsks.map(\.id)),
+                    folders: try WorkbenchFolderQueries.benchFolders(db, workbenchID: projectID)
                 )
             }
             noteDeletedSessions(projectID: projectID, reread: snapshot.open.asks)
             openAsks[projectID] = snapshot.open.asks
+            benchFolders[projectID] = snapshot.folders
             fingerprints[projectID] = snapshot.fingerprint
             closedCounts[projectID] = snapshot.closedCounts
             closedAutomationCounts[projectID] = snapshot.closedAutomationCount

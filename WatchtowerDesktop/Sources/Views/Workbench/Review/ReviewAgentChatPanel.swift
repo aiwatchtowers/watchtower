@@ -86,7 +86,9 @@ struct ReviewAgentChatPanel: View {
                 Divider()
                 if side == .reviewer {
                     ReviewerPanel(center: reviewer, model: model, context: ReviewerSurface.context(
-                        projectID: chat.projectID, sessionID: chat.sessionID, round: model.round,
+                        projectID: chat.projectID, sessionID: chat.sessionID,
+                        folderID: chat.vm.session(chat.sessionID, projectID: chat.projectID)?.workbenchFolderID,
+                        round: model.round,
                         place: identity.place, mainStatus: identity.mainStatus
                     ))
                 } else {

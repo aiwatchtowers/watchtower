@@ -165,6 +165,9 @@ package enum ClosedAskListModel {
         case .check:
             let marks = Dictionary(answer.checklist.map { ($0.id, $0.state) }) { _, last in last }
             return OwnerAskPresentation.checkSummary(ask.payload.checklist, marks: marks)
+        case .folder:
+            // The answer line the agent got (Put on Bench, Not Now, Never).
+            return oneLine(answer.note)
         }
     }
 

@@ -81,7 +81,7 @@ enum ReviewerShotFixtures {
         vm.reviewer = center
 
         let context = try XCTUnwrap(ReviewerSurface.context(
-            projectID: fixture.projectID, sessionID: fixture.session.id, round: fixture.model.round,
+            projectID: fixture.projectID, sessionID: fixture.session.id, folderID: nil, round: fixture.model.round,
             place: identity.place, mainStatus: nil))
         let id = ReviewerCenter.ThreadID(projectID: context.projectID, branch: context.branch)
         var opened = false

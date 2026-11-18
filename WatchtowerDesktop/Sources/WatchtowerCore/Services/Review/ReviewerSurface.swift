@@ -19,8 +19,12 @@ import Foundation
 package enum ReviewerSurface {
     package static let contextType = "review_reviewer"
 
-    package static func contextID(projectID: Int64, branch: String) -> String {
-        "\(projectID):\(branch)"
+    /// The thread's chat context: `<project>:<branch>` for a session row
+    /// without a folder (the home folder's, as before 00196),
+    /// `<project>:f<folder>:<branch>` for a session's folder.
+    package static func contextID(projectID: Int64, folderID: Int64? = nil, branch: String) -> String {
+        guard let folderID else { return "\(projectID):\(branch)" }
+        return "\(projectID):f\(folderID):\(branch)"
     }
 
     /// How the configured provider reads the folder: Claude through its
@@ -43,6 +47,9 @@ package enum ReviewerSurface {
     /// branch as the owner reads it and the round whose folder it reads.
     package struct Context: Equatable, Sendable {
         package let projectID: Int64
+        /// The reviewed session's workbench folder, part of the thread key;
+        /// nil = the home folder.
+        package let folderID: Int64?
         /// The thread key (`threadBranch`).
         package let branch: String
         /// The branch's name for the panel's line; "" for a detached HEAD.
@@ -60,6 +67,7 @@ package enum ReviewerSurface {
 
         package init(
             projectID: Int64,
+            folderID: Int64? = nil,
             branch: String,
             branchLabel: String,
             roundID: Int64,
@@ -67,6 +75,7 @@ package enum ReviewerSurface {
             tipTree: String? = nil
         ) {
             self.projectID = projectID
+            self.folderID = folderID
             self.branch = branch
             self.branchLabel = branchLabel
             self.roundID = roundID
@@ -83,6 +92,7 @@ package enum ReviewerSurface {
     package static func context(
         projectID: Int64,
         sessionID: Int64,
+        folderID: Int64?,
         round: ReviewRoundInfo?,
         place: SessionPlace,
         mainStatus: WorkbenchGitStatus?
@@ -92,7 +102,7 @@ package enum ReviewerSurface {
         guard let branch = threadBranch(round: round, folderStatus: status, sessionID: sessionID) else { return nil }
         var inWorktree = false
         if case .worktree = place { inWorktree = true }
-        return Context(projectID: projectID, branch: branch,
+        return Context(projectID: projectID, folderID: folderID, branch: branch,
                        branchLabel: branch.hasPrefix(sessionKeyPrefix) ? "" : branch,
                        roundID: round.id, inWorktree: inWorktree,
                        tipTree: round.isBranchTip ? round.treeSha : nil)
@@ -147,7 +157,8 @@ package enum ReviewerSurface {
         }
         return ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: contextType,
-                                 contextID: contextID(projectID: context.projectID, branch: context.branch),
+                                 contextID: contextID(projectID: context.projectID, folderID: context.folderID,
+                                                      branch: context.branch),
                                  conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: .draftOnly,
