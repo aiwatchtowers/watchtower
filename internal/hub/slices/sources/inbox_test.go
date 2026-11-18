@@ -126,6 +126,21 @@ func TestInboxSource_RecordsMatchTheGoGolden(t *testing.T) {
 					}
 					card.Blocks = doc
 				}
+				if card.Approval != nil {
+					// The clipped feed alone carries an approval's display args
+					// (mobile Inbox spec §12.1); the Mac's golden has none. Each
+					// record must carry them whole (these args are small).
+					var rec api.Card
+					if err := json.Unmarshal(cards[card.ID], &rec); err != nil || rec.Approval == nil {
+						t.Fatalf("card %s: %v", card.ID, err)
+					}
+					if rec.Approval.ArgsDisplay == "" || !rec.Approval.ArgsComplete {
+						t.Errorf("card %s: display args %q complete %v", card.ID, rec.Approval.ArgsDisplay, rec.Approval.ArgsComplete)
+					}
+					ap := *card.Approval
+					ap.ArgsDisplay, ap.ArgsComplete = rec.Approval.ArgsDisplay, rec.Approval.ArgsComplete
+					card.Approval = &ap
+				}
 				if got, want := cards[card.ID], marshalWire(t, card); string(got) != string(want) {
 					t.Errorf("card %s:\n got %s\nwant %s", card.ID, got, want)
 				}
