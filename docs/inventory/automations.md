@@ -611,11 +611,12 @@ scheduler read, so a crash, a restart or a concurrent writer never repeats
 it. No catch-up ever covers a window in which the automation could not run: a
 first index, an enable, a confirm that changes the confirmed hash and a rescan
 that makes the row runnable again all restart the schedule from now. Nor
-does it cover a window in which background AI was paused: while it is paused,
+does it cover a due time the scheduler sees while background AI is paused: such
 a due time of a recipe whose manifest grants AI (`automations.AutomationUsesAI`)
 inserts no run and advances `last_scheduled_for` to that due time with the
 same compare-and-set as `missed: skip`, so allowing again never produces a
-`catch_up` for the paused window. A clock stepped back waits for the clock to
+`catch_up` for it. (A due time no tick saw — daemon stopped or asleep across the
+whole pause — follows the ordinary missed policy once allowed.) A clock stepped back waits for the clock to
 pass `last_scheduled_for` (no duplicate); one more than a day behind it
 restarts from now.
 
