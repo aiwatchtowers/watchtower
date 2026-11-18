@@ -513,25 +513,30 @@ func AboutText(company, link, code string) string
 ```go
 const ChunkSize = 90; const Every = 7 * 24 * time.Hour
 type Status string // "closed", "updated", "ok"
-type Reporter interface{ Report(ctx context.Context, ids []string, updatedAt map[string]time.Time) (map[string]Status, error) }
+type Reporter interface {
+	Report(ctx context.Context, ids []string, updatedAt map[string]time.Time) (map[string]Status, error)
+	Profiles(ctx context.Context, ids []string) ([]db.AtlassianProfile, error) // refetch of "updated"
+}
 type ClientReporter struct{ Client *jira.Client } // the production Reporter
 func Due(lastPDRAt string, now time.Time) bool
-func Run(ctx context.Context, d *db.DB, accountID int64, r Reporter, now time.Time) (Result, error) // api_token accounts → Result{Skipped}
+func Run(ctx context.Context, d *db.DB, accountID int64, r Reporter, now time.Time) (Result, error) // every network call before any write; api_token → Result{Skipped}
 func EraseClosed(ctx context.Context, d *db.DB, accountID int64, ids []string) error // plan read first, then one write tx per account
 // internal/jira
 const ReportAccountsPath = "/app/report-accounts/" // under the API root: https://api.atlassian.com/app/report-accounts/
 const PDRScope = "report:personal-data"; var ErrReportScopeMissing error // 403, or 401 naming a scope
 func (c *Client) ReportAccounts(ctx context.Context, accounts []ReportedAccount) (map[string]string, error)
+func (c *Client) UsersBulk(ctx context.Context, ids []string) ([]User, error) // GET /rest/api/3/user/bulk
+LoginOptions.WithPersonalDataReporting // requests PDRScope; set by `jira add --company` and a company account's Re-login
 // internal/db
-func (db *DB) AtlassianPeople(ctx context.Context, accountID int64) ([]AtlassianPerson, error) // id + newest fetch time; site rows, owner, Confluence authors, jira_user_map, ext_users
-func (db *DB) PlanAtlassianErase(ctx context.Context, accountID int64, ids []string) (AtlassianErasePlan, error) // read-only: payloads to blank, kb docs to mark
+func (db *DB) AtlassianPeople(ctx context.Context, accountID int64) ([]AtlassianPerson, error) // id + OLDEST fetch time; site rows, owner, Confluence authors, jira_user_map, ext_users
+func (db *DB) PlanAtlassianErase(ctx context.Context, accountID int64, ids []string) (AtlassianErasePlan, error) // read-only: payloads, names, kb docs
 func (db *DB) EraseAtlassianPeople(ctx context.Context, tx *sql.Tx, accountID int64, ids []string, plan AtlassianErasePlan) error
-func (db *DB) MarkAtlassianPeopleStale(ctx context.Context, ids []string) error // "updated": ext_users.fetched_at = ''
-func (db *DB) SetJiraPDRScopeHint(id int64, missing bool) error                  // error='pdr_scope_missing', status untouched
+func (db *DB) RefreshAtlassianProfiles(ctx context.Context, profiles []AtlassianProfile, fetchedAt time.Time) error // jira_user_map + ext_users
+func (db *DB) SetJiraPDRScopeHint(id int64, missing bool) error // error='pdr_scope_missing', status untouched
 // internal/daemon
-type PDRAccount struct{ ID int64; Reporter atlassianpdr.Reporter }; func (d *Daemon) SetAtlassianPDR([]PDRAccount)
+type PDRAccount struct{ ID int64; Reporter atlassianpdr.Reporter }; func (d *Daemon) SetAtlassianPDR([]PDRAccount) // a failed account waits 6 h (in memory)
 ```
-*As built (Task 16):* the report URL lives in `internal/jira` (`apiRoot + ReportAccountsPath`, so tests point it at httptest) instead of `atlassianpdr.ReportURL`; `AtlassianPersonIDs` became `AtlassianPeople` (Atlassian wants an `updatedAt` per id); the erase takes a read-only plan so the payload/Confluence-body scans run outside the write transaction. `updated` → `ext_users.fetched_at = ''` (the Confluence sync's user cache refetches it), and the Jira sync's `ensureUserMap` now refreshes a stored name/email that differs from the issue payload. The erase also blanks `jira_issues.raw_json` naming the id, the assignee names in `jira_issue_changelog.from_string/to_string`, and `jira_accounts.owner_email/owner_display_name`; `jira_issues.custom_fields_json` is kept (user-picker values carry no account id; the next issue sync rewrites them).
+*As built (Task 16):* the report URL lives in `internal/jira` (`apiRoot + ReportAccountsPath`, so tests point it at httptest) instead of `atlassianpdr.ReportURL`; `AtlassianPersonIDs` became `AtlassianPeople` (Atlassian wants an `updatedAt` per id: the oldest known fetch, an unknown age dated by the last report or the account's creation); the erase takes a read-only plan so the payload/Confluence-body scans run outside the write transaction. `updated` → the profiles are refetched (`/rest/api/3/user/bulk`) before any write and written into `jira_user_map` and `ext_users`; the Jira sync's `ensureUserMap` also refreshes a stored name/email that differs from an issue payload. The erase also blanks `jira_issues.raw_json` naming the id, removes the person's stored names from those issues' `custom_fields_json` (user pickers keep names only), clears the assignee names in `jira_issue_changelog.from_string/to_string` and `jira_accounts.owner_email/owner_display_name`, and marks every Confluence source's pages naming the id (the deleted `ext_users` row is shared). The report scope was not requested by any login: `jira add --company` and a company account's Re-login now ask for it (a refusal retries Jira-only, like Confluence); `pdr_scope_missing` is set only on company accounts, since a shared-app Re-login cannot fix it. The global caches (`jira_user_map`, `ext_users`) are reported through every account so a removed site's rows are still reported.
 - Erase: `jira_user_map` row deleted (email, display name, `slack_user_id`); `ext_users` row deleted; every Jira/Confluence person column for that id (`*_display_name`, `*_email`, `*_slack_id` paired with an `*_account_id` column) set to `''` (the UI shows "Former user" for a bare id); `kb_dirty` rows for the account's Jira and Confluence docs so the next KB pass re-renders. Memory and free-text derived texts untouched (P6, ask #1518; D17).
 - A missing `report:personal-data` scope (403) → `error='pdr_scope_missing'`, `status` unchanged (Swift shows "Re-login to finish the setup" for that code); a later successful report clears it.
 

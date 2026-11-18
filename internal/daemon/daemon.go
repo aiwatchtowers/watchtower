@@ -164,8 +164,9 @@ type Daemon struct {
 	gmailSyncers     []mailSyncer
 	imapSyncers      []mailSyncer
 	jiraSyncers      []jiraAccountSyncer
-	pdrAccounts      []PDRAccount     // Atlassian Personal Data Reporting (atlassian_pdr.go)
-	pdrNow           func() time.Time // its clock, nil = time.Now; a seam for tests
+	pdrAccounts      []PDRAccount        // Atlassian Personal Data Reporting (atlassian_pdr.go)
+	pdrNow           func() time.Time    // its clock, nil = time.Now; a seam for tests
+	pdrRetryAt       map[int64]time.Time // a failed account's next try, in memory
 	externalSync     ExternalSyncRunner
 	mediaPipe        *media.Pipeline
 	dayPlanPipeline  DayPlanRunner

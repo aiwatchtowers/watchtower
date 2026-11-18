@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,6 +30,23 @@ var ErrReportScopeMissing = errors.New("atlassian: the grant lacks the " + PDRSc
 type ReportedAccount struct {
 	AccountID string
 	UpdatedAt time.Time
+}
+
+// UsersBulk fetches the current profiles of ids (at most 90 per call, the
+// report's chunk) from GET /rest/api/3/user/bulk — the refetch of accounts
+// a report answered "updated". An id Atlassian does not return is left out.
+func (c *Client) UsersBulk(ctx context.Context, ids []string) ([]User, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	params := url.Values{"accountId": ids, "maxResults": {strconv.Itoa(len(ids))}}
+	var page struct {
+		Values []User `json:"values"`
+	}
+	if err := c.getWithQuery(ctx, "/rest/api/3/user/bulk", params, &page); err != nil {
+		return nil, fmt.Errorf("fetching %d atlassian profiles: %w", len(ids), err)
+	}
+	return page.Values, nil
 }
 
 type reportAccountJSON struct {

@@ -385,6 +385,11 @@ type LoginOptions struct {
 	// Confluence pages is a stronger grant than the read-only sync, so it is
 	// never requested unless asked for.
 	WithConfluenceWrite bool
+	// WithPersonalDataReporting additionally requests PDRScope, which the
+	// Personal Data Reporting phase needs (#1887 §6). Set for a company's
+	// app, whose setup guide enables the permission; an app without it
+	// rejects the scope outright, so it is never requested otherwise.
+	WithPersonalDataReporting bool
 }
 
 // Login performs the Jira OAuth2 (3LO) flow via a local HTTP callback server.
@@ -415,6 +420,9 @@ func Login(ctx context.Context, cfg JiraOAuthConfig, out io.Writer, opts ...Logi
 	}
 	if opt.WithConfluenceWrite {
 		scope += " " + ConfluenceWriteScopes
+	}
+	if opt.WithPersonalDataReporting {
+		scope += " " + PDRScope
 	}
 	authorizeURL := buildAuthURL(cfg, redirectURI, state, scope)
 

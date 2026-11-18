@@ -32,12 +32,15 @@ const (
 	StatusOK Status = "ok"
 )
 
-// Reporter posts one chunk of account ids (each with the time its stored
-// data was fetched) and returns the status of each id that needs an action;
-// an id it leaves out is StatusOK. An error wrapping
-// jira.ErrReportScopeMissing means the grant lacks the report scope.
+// Reporter is an Atlassian account's side of Personal Data Reporting.
 type Reporter interface {
+	// Report posts one chunk of account ids (each with the time its stored
+	// data was fetched) and returns the status of each id that needs an
+	// action; an id it leaves out is StatusOK. An error wrapping
+	// jira.ErrReportScopeMissing means the grant lacks the report scope.
 	Report(ctx context.Context, ids []string, updatedAt map[string]time.Time) (map[string]Status, error)
+	// Profiles fetches the current profiles of ids (an "updated" answer).
+	Profiles(ctx context.Context, ids []string) ([]db.AtlassianProfile, error)
 }
 
 // ClientReporter reports through a Jira account's OAuth client.
@@ -60,11 +63,25 @@ func (r ClientReporter) Report(ctx context.Context, ids []string, updatedAt map[
 	return out, nil
 }
 
+// Profiles implements Reporter.
+func (r ClientReporter) Profiles(ctx context.Context, ids []string) ([]db.AtlassianProfile, error) {
+	users, err := r.Client.UsersBulk(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]db.AtlassianProfile, len(users))
+	for i, u := range users {
+		out[i] = db.AtlassianProfile{ID: u.AccountID, DisplayName: u.DisplayName, Email: u.EmailAddress}
+	}
+	return out, nil
+}
+
 // Result is what one Run did.
 type Result struct {
 	// NotDue: the account reported less than Every ago; nothing was sent.
 	NotDue bool
-	// Skipped: the account cannot report (an API-token account, Task 17).
+	// Skipped: an API-token account, which cannot call the report API (it
+	// needs an app's token).
 	Skipped  bool
 	Reported int
 	Closed   int
@@ -74,30 +91,36 @@ type Result struct {
 // Due reports whether an account last reported at lastPDRAt (RFC 3339, ""
 // = never) must report at now.
 func Due(lastPDRAt string, now time.Time) bool {
-	if lastPDRAt == "" {
-		return true
+	last, ok := parseTime(lastPDRAt)
+	return !ok || !now.Before(last.Add(Every))
+}
+
+// parseTime reads an RFC 3339 time or SQLite's "YYYY-MM-DD HH:MM:SS".
+func parseTime(s string) (time.Time, bool) {
+	for _, layout := range []string{time.RFC3339Nano, time.DateTime} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC(), true
+		}
 	}
-	last, err := time.Parse(time.RFC3339, lastPDRAt)
-	if err != nil {
-		return true
-	}
-	return !now.Before(last.Add(Every))
+	return time.Time{}, false
 }
 
 // Run reports Jira account accountID's stored Atlassian ids when it is due,
-// in chunks of ChunkSize, all before acting: any error (network, 401, 403, a
-// missing scope) erases nothing and stamps nothing, so the next cycle tries
-// again. A refused scope leaves the pdr_scope_missing hint on the account
-// (status unchanged); a whole-account success clears it, erases the closed
-// ids in one write transaction (EraseClosed), marks the updated ones stale
-// and stamps last_pdr_at.
+// in chunks of ChunkSize, and fetches the profiles answered "updated" — all
+// network before any write: any error (network, 401, 403, a missing scope)
+// erases nothing and stamps nothing, so a later cycle tries again. A refused
+// scope on a company's account leaves the pdr_scope_missing hint (status
+// unchanged; "Re-login to finish the setup" requests the scope); a
+// whole-account success clears it, erases the closed ids in one write
+// transaction (EraseClosed), writes the refetched profiles and stamps
+// last_pdr_at.
 func Run(ctx context.Context, d *db.DB, accountID int64, r Reporter, now time.Time) (Result, error) {
 	acct, err := d.GetJiraAccount(accountID)
 	if err != nil {
 		return Result{}, err
 	}
 	if acct.AuthKind == "api_token" {
-		return Result{Skipped: true}, nil // the report API needs an app's token
+		return Result{Skipped: true}, nil
 	}
 	if !Due(acct.LastPDRAt, now) {
 		return Result{NotDue: true}, nil
@@ -105,6 +128,15 @@ func Run(ctx context.Context, d *db.DB, accountID int64, r Reporter, now time.Ti
 	people, err := d.AtlassianPeople(ctx, accountID)
 	if err != nil {
 		return Result{}, err
+	}
+	// An id with no fetch time on record is dated as old as can be known —
+	// the last report, else the account's creation — so a profile change
+	// since then is still answered "updated".
+	unknownAge, ok := parseTime(acct.LastPDRAt)
+	if !ok {
+		if unknownAge, ok = parseTime(acct.CreatedAt); !ok {
+			unknownAge = now.UTC()
+		}
 	}
 	var res Result
 	var closed, updated []string
@@ -114,16 +146,14 @@ func Run(ctx context.Context, d *db.DB, accountID int64, r Reporter, now time.Ti
 		at := make(map[string]time.Time, len(chunk))
 		for i, p := range chunk {
 			ids[i] = p.ID
-			// Atlassian wants a time per id; with no fetch time on record the
-			// data is as fresh as this report.
 			at[p.ID] = p.UpdatedAt
 			if p.UpdatedAt.IsZero() {
-				at[p.ID] = now.UTC()
+				at[p.ID] = unknownAge
 			}
 		}
 		statuses, err := r.Report(ctx, ids, at)
 		if err != nil {
-			if errors.Is(err, jira.ErrReportScopeMissing) {
+			if errors.Is(err, jira.ErrReportScopeMissing) && acct.CompanySlug != "" {
 				if hintErr := d.SetJiraPDRScopeHint(accountID, true); hintErr != nil {
 					err = errors.Join(err, hintErr)
 				}
@@ -142,17 +172,23 @@ func Run(ctx context.Context, d *db.DB, accountID int64, r Reporter, now time.Ti
 		}
 		res.Reported += len(ids)
 	}
+	var profiles []db.AtlassianProfile
+	for start := 0; start < len(updated); start += ChunkSize {
+		got, err := r.Profiles(ctx, updated[start:min(start+ChunkSize, len(updated))])
+		if err != nil {
+			return Result{}, fmt.Errorf("refetching updated atlassian profiles: %w", err)
+		}
+		profiles = append(profiles, got...)
+	}
 	if err := EraseClosed(ctx, d, accountID, closed); err != nil {
 		return Result{}, err
 	}
-	if err := d.MarkAtlassianPeopleStale(ctx, updated); err != nil {
+	if err := d.RefreshAtlassianProfiles(ctx, profiles, now); err != nil {
 		return Result{}, err
 	}
 	res.Closed, res.Updated = len(closed), len(updated)
-	if len(people) > 0 {
-		if err := d.SetJiraPDRScopeHint(accountID, false); err != nil {
-			return res, err
-		}
+	if err := d.SetJiraPDRScopeHint(accountID, false); err != nil {
+		return res, err
 	}
 	if err := d.SetJiraLastPDR(accountID, now.UTC().Format(time.RFC3339)); err != nil {
 		return res, err

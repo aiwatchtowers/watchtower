@@ -2,6 +2,7 @@ package atlassianpdr
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"watchtower/internal/db"
@@ -20,16 +21,8 @@ func EraseClosed(ctx context.Context, d *db.DB, accountID int64, ids []string) e
 	if err != nil {
 		return err
 	}
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("erasing closed atlassian accounts: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := d.EraseAtlassianPeople(ctx, tx, accountID, ids, plan); err != nil {
+	if err := d.WithTx(func(tx *sql.Tx) error { return d.EraseAtlassianPeople(ctx, tx, accountID, ids, plan) }); err != nil {
 		return fmt.Errorf("erasing closed atlassian accounts of jira account %d: %w", accountID, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("erasing closed atlassian accounts: %w", err)
 	}
 	return nil
 }

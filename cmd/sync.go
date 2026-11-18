@@ -1451,14 +1451,14 @@ func wireJiraSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, 
 }
 
 // atlassianPDRAccounts lists the accounts that run Personal Data Reporting
-// (#1887 §6): every account with an OAuth client, the shared app's included.
-// An API-token account cannot call the report API (it needs an app's token);
-// its own lookup is separate.
+// (#1887 §6): every account with a client, the shared app's included
+// (atlassianpdr.Run skips an API-token account, which cannot call the
+// report API).
 func atlassianPDRAccounts(accounts []db.JiraAccount, clients map[int64]*jira.Client) []daemon.PDRAccount {
 	var out []daemon.PDRAccount
 	for _, acct := range accounts {
 		client := clients[acct.ID]
-		if client == nil || acct.AuthKind == "api_token" {
+		if client == nil {
 			continue
 		}
 		out = append(out, daemon.PDRAccount{ID: acct.ID, Reporter: atlassianpdr.ClientReporter{Client: client}})

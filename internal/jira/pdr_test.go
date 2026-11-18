@@ -7,6 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,6 +84,36 @@ func TestReportAccounts_ServerErrorIsAnError(t *testing.T) {
 	_, err := c.ReportAccounts(context.Background(), []ReportedAccount{{AccountID: "a1"}})
 	require.Error(t, err)
 	assert.False(t, errors.Is(err, ErrReportScopeMissing))
+}
+
+// TestLogin_PDRScopeIsOptIn: the report scope is requested only when asked
+// (a company's app enables it; another app would refuse the whole grant).
+func TestLogin_PDRScopeIsOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		opts LoginOptions
+		want bool
+	}{{LoginOptions{}, false}, {LoginOptions{WithConfluence: true}, false}, {LoginOptions{WithPersonalDataReporting: true}, true}} {
+		authorizeURL, _ := runLoginCapture(t, tc.opts)
+		parsed, err := url.Parse(authorizeURL)
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, slices.Contains(strings.Fields(parsed.Query().Get("scope")), PDRScope), "%+v", tc.opts)
+	}
+}
+
+func TestUsersBulk_AsksForEveryID(t *testing.T) {
+	var got url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/3/user/bulk", r.URL.Path)
+		got = r.URL.Query()
+		_, _ = w.Write([]byte(`{"isLast":true,"values":[{"accountId":"a1","displayName":"New","emailAddress":"n@example.com"}]}`))
+	}))
+	defer srv.Close()
+	users, err := makeTestClient(t, srv.URL).UsersBulk(context.Background(), []string{"a1", "a2"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a1", "a2"}, got["accountId"])
+	assert.Equal(t, "2", got.Get("maxResults"))
+	require.Len(t, users, 1)
+	assert.Equal(t, User{AccountID: "a1", DisplayName: "New", EmailAddress: "n@example.com"}, users[0])
 }
 
 // TestEnsureUserMap_RefreshesAChangedProfile: an "updated" report is acted

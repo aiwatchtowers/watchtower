@@ -132,7 +132,9 @@ func TestPDR_ClosedErasesEveryColumn(t *testing.T) {
 	acct := SeedTestJiraAccount(t, d)
 	other := SeedTestJiraAccount(t, d)
 	srcID := seedAtlassianPeople(t, d, acct)
-	seedAtlassianPeople(t, d, other)
+	otherSrc := seedAtlassianPeople(t, d, other)
+	_, err := d.Exec(`UPDATE jira_issues SET custom_fields_json = '{"cf_reviewer":"Person","cf_team":"Platform"}' WHERE account_id = ?`, acct)
+	require.NoError(t, err)
 
 	eraseAtlassian(t, d, acct, []string{closedID})
 
@@ -156,11 +158,20 @@ func TestPDR_ClosedErasesEveryColumn(t *testing.T) {
 	assert.Equal(t, 1, pdrCount(t, d, `SELECT count(*) FROM jira_issues WHERE account_id = ? AND instr(raw_json, ?) > 0`, acct, keptID))
 	assert.Equal(t, 1, pdrCount(t, d, `SELECT count(*) FROM jira_issues WHERE account_id = ? AND assignee_account_id = ?`, acct, closedID), "the bare id stays (Former user)")
 
+	assert.Equal(t, []string{`{"cf_reviewer":"","cf_team":"Platform"}`, `{"cf_reviewer":"Person","cf_team":"Platform"}`},
+		queryStrings(t, d, `SELECT custom_fields_json FROM jira_issues WHERE account_id = ? ORDER BY key`, acct),
+		"a user-picker name is removed from the issues naming the closed account only")
+
+	// The shared ext_users row is gone, so every source's pages that render
+	// the name are re-rendered, not only this account's.
 	marks := queryStrings(t, d, `SELECT source || '|' || key FROM kb_dirty ORDER BY 1`)
 	assert.Equal(t, []string{
 		fmt.Sprintf("confluence|confluence:%d:p1", srcID),
 		fmt.Sprintf("confluence|confluence:%d:p2", srcID),
 		fmt.Sprintf("confluence|confluence:%d:p3", srcID),
+		fmt.Sprintf("confluence|confluence:%d:p1", otherSrc),
+		fmt.Sprintf("confluence|confluence:%d:p2", otherSrc),
+		fmt.Sprintf("confluence|confluence:%d:p3", otherSrc),
 		fmt.Sprintf("jira|jira:%d:ACME-1", acct),
 	}, marks)
 }
@@ -195,7 +206,8 @@ func TestAtlassianPeople_ListsEveryStoredID(t *testing.T) {
 		ids[i] = p.ID
 	}
 	assert.Equal(t, []string{closedID, keptID, "acme-map-only"}, ids)
-	assert.Equal(t, time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC), people[0].UpdatedAt, "the newest fetch of a row naming the id")
+	assert.Equal(t, time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), people[0].UpdatedAt,
+		"the oldest fetch of a row naming the id: a fresher copy must not hide a stale one")
 	assert.True(t, people[2].UpdatedAt.IsZero())
 }
 
@@ -217,4 +229,24 @@ func TestSetJiraPDRScopeHint_LeavesStatusAndRealErrors(t *testing.T) {
 	require.NoError(t, d.SetJiraPDRScopeHint(acct, false))
 	a, _ = d.GetJiraAccount(acct)
 	assert.Equal(t, "invalid_client", a.Error, "the hint never overwrites or clears a real error")
+}
+
+func TestRefreshAtlassianProfiles_UpdatesTheCaches(t *testing.T) {
+	d := openTestDB(t)
+	acct := SeedTestJiraAccount(t, d)
+	seedAtlassianPeople(t, d, acct)
+	at := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+
+	require.NoError(t, d.RefreshAtlassianProfiles(context.Background(), []AtlassianProfile{
+		{ID: keptID, DisplayName: "New Name"},
+		{ID: "acme-unknown", DisplayName: "Nobody"},
+	}, at))
+
+	var name, email, slack string
+	require.NoError(t, d.QueryRow(`SELECT display_name, email, slack_user_id FROM jira_user_map WHERE jira_account_id = ?`, keptID).Scan(&name, &email, &slack))
+	assert.Equal(t, []string{"New Name", "p@example.com", "1:U0000001"}, []string{name, email, slack}, "a hidden email keeps the stored one; the Slack mapping stays")
+	var fetched string
+	require.NoError(t, d.QueryRow(`SELECT display_name, fetched_at FROM ext_users WHERE ext_user_id = ?`, keptID).Scan(&name, &fetched))
+	assert.Equal(t, []string{"New Name", "2026-11-18T10:00:00Z"}, []string{name, fetched})
+	assert.Zero(t, pdrCount(t, d, `SELECT count(*) FROM jira_user_map WHERE jira_account_id = 'acme-unknown'`), "no row is created")
 }

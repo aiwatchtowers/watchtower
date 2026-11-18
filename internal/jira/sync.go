@@ -938,7 +938,9 @@ func (s *Syncer) ensureUserMap(u *User) {
 			fresh.Email = u.EmailAddress
 		}
 		if fresh != *existing {
-			_ = s.db.UpsertJiraUserMap(fresh)
+			if err := s.db.UpsertJiraUserMap(fresh); err != nil {
+				s.logger.Printf("refreshing user map for %s: %v", u.AccountID, err)
+			}
 		}
 		return
 	}

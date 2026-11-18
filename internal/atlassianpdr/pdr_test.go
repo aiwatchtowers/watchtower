@@ -39,6 +39,24 @@ type fakeReporter struct {
 	failOn   int
 	calls    [][]string
 	at       []map[string]time.Time
+	// profiles answers Profiles; profilesErr fails it.
+	profiles    map[string]db.AtlassianProfile
+	profilesErr error
+	asked       []string
+}
+
+func (f *fakeReporter) Profiles(_ context.Context, ids []string) ([]db.AtlassianProfile, error) {
+	f.asked = append(f.asked, ids...)
+	if f.profilesErr != nil {
+		return nil, f.profilesErr
+	}
+	var out []db.AtlassianProfile
+	for _, id := range ids {
+		if p, ok := f.profiles[id]; ok {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeReporter) Report(_ context.Context, ids []string, at map[string]time.Time) (map[string]Status, error) {
@@ -117,9 +135,19 @@ func TestPDR_ChunksOf90(t *testing.T) {
 	assert.Len(t, r.calls[1], 90)
 	assert.Len(t, r.calls[2], 1)
 	assert.Equal(t, 181, res.Reported)
+	a, err := d.GetJiraAccount(acct)
+	require.NoError(t, err)
+	created, ok := parseTime(a.CreatedAt)
+	require.True(t, ok, a.CreatedAt)
 	for _, at := range r.at[0] {
-		assert.Equal(t, t0, at, "an id with no fetch time on record is reported as fresh as the report")
+		assert.Equal(t, created, at, "an id with no fetch time on record is dated by the account's creation, never by now")
 	}
+
+	// The next report dates them by the last one.
+	r = &fakeReporter{}
+	_, err = Run(context.Background(), d, acct, r, t0.Add(Every))
+	require.NoError(t, err)
+	assert.Equal(t, t0, r.at[0]["acme-000"])
 }
 
 func TestPDR_RunsEvery7Days(t *testing.T) {
@@ -170,16 +198,39 @@ func TestPDR_UpdatedRefetchesNextSync(t *testing.T) {
 	d := db.OpenTestDB(t)
 	acct := newAccount(t, d, "acme")
 	seedPeople(t, d, acct)
-	r := &fakeReporter{statuses: map[string]Status{liveID: StatusUpdated}}
+	r := &fakeReporter{statuses: map[string]Status{liveID: StatusUpdated},
+		profiles: map[string]db.AtlassianProfile{liveID: {ID: liveID, DisplayName: "Renamed", Email: "renamed@example.com"}}}
 
 	res, err := Run(context.Background(), d, acct, r, t0)
 	require.NoError(t, err)
 	assert.Equal(t, 1, res.Updated)
-	// An empty fetched_at is stale to the Confluence sync's user cache
-	// (extsync.staleUsers): the next run that meets the id fetches it again.
-	assert.Equal(t, 1, count(t, d, `SELECT count(*) FROM ext_users WHERE ext_user_id = ? AND fetched_at = ''`, liveID))
-	assert.Equal(t, 1, count(t, d, `SELECT count(*) FROM ext_users WHERE ext_user_id = ? AND fetched_at != ''`, closedID))
-	assert.Equal(t, 1, count(t, d, `SELECT count(*) FROM jira_user_map WHERE jira_account_id = ?`, liveID), "an updated person is not erased")
+	assert.Equal(t, []string{liveID}, r.asked, "only the updated profile is refetched")
+	assert.Equal(t, 1, count(t, d, `SELECT count(*) FROM jira_user_map WHERE jira_account_id = ? AND display_name = 'Renamed' AND email = 'renamed@example.com'`, liveID))
+	assert.Equal(t, 1, count(t, d, `SELECT count(*) FROM ext_users WHERE ext_user_id = ? AND display_name = 'Renamed' AND fetched_at = ?`, liveID, t0.Format(time.RFC3339)))
+	assert.Equal(t, 1, count(t, d, `SELECT count(*) FROM jira_user_map WHERE jira_account_id = ? AND display_name = 'Person'`, closedID), "an ok person is untouched")
+}
+
+func TestPDR_ProfileRefetchErrorWritesNothing(t *testing.T) {
+	d := db.OpenTestDB(t)
+	acct := newAccount(t, d, "acme")
+	seedPeople(t, d, acct)
+	r := &fakeReporter{statuses: map[string]Status{closedID: StatusClosed, liveID: StatusUpdated}, profilesErr: errors.New("network down")}
+
+	_, err := Run(context.Background(), d, acct, r, t0)
+	require.Error(t, err)
+	assert.False(t, erased(t, d, acct), "every network call comes before any write")
+	assert.Empty(t, lastPDR(t, d, acct))
+}
+
+func TestPDR_ScopeMissingOnTheSharedAppLeavesNoHint(t *testing.T) {
+	d := db.OpenTestDB(t)
+	acct := newAccount(t, d, "") // a re-login through the shared app cannot request the scope
+	seedPeople(t, d, acct)
+	_, err := Run(context.Background(), d, acct, &fakeReporter{err: fmt.Errorf("%w: status 403", jira.ErrReportScopeMissing)}, t0)
+	require.Error(t, err)
+	a, err := d.GetJiraAccount(acct)
+	require.NoError(t, err)
+	assert.Empty(t, a.Error)
 }
 
 func TestPDR_ErrorErasesNothing(t *testing.T) {
