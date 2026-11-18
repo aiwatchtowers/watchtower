@@ -181,3 +181,47 @@ func TestWatchmanExtraLimitsAndGaps(t *testing.T) {
 	t0 := time.Date(2026, 11, 1, 1, 0, 0, 0, time.UTC)
 	require.NoError(t, d.AddWatchmanGap(t0, t0.Add(time.Hour)))
 }
+
+func TestLeaseWatchmanItem_PagesPastIneligibleOlderRows(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	old := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	for i := int64(1); i <= watchmanLeaseScanMax+1; i++ {
+		_, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "ask", RefKind: "ask", RefID: i, CreatedAt: old})
+		require.NoError(t, err)
+	}
+	_, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "check", RefKind: "session", RefID: 1, CreatedAt: old.Add(time.Hour)})
+	require.NoError(t, err)
+	it, err := d.LeaseWatchmanItem(time.Now(), time.Minute, func(it WatchmanItem) bool { return it.Kind == "check" })
+	require.NoError(t, err)
+	require.NotNil(t, it)
+	require.Equal(t, "check", it.Kind)
+}
+
+func TestLeaseWatchmanItem_KindChangedAfterReadIsNotLeased(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	wmQueueAsk(t, d, 5)
+	it, err := d.LeaseWatchmanItem(time.Now(), time.Minute, func(WatchmanItem) bool {
+		ok, err := d.SetWatchmanItemKind("ask", 5, "ask", "check")
+		require.NoError(t, err)
+		require.True(t, ok)
+		return true
+	})
+	require.NoError(t, err)
+	require.Nil(t, it, "the row changed after it was read")
+	var state string
+	require.NoError(t, d.QueryRow(`SELECT state FROM watchman_items WHERE ref_id = 5`).Scan(&state))
+	require.Equal(t, "queued", state)
+}
+
+func TestSetWatchmanItemKind_CollisionIsSentinel(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	wmQueueAsk(t, d, 5)
+	_, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "check", RefKind: "ask", RefID: 5})
+	require.NoError(t, err)
+	ok, err := d.SetWatchmanItemKind("ask", 5, "ask", "check")
+	require.False(t, ok)
+	require.ErrorIs(t, err, ErrWatchmanItemExists)
+}

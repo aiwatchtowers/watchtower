@@ -3,13 +3,18 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
 // The twin's work items (00198, spec §6): one row per wait point, queued by
 // the writers of the wait, leased by the twin worker, finished in the same
 // transaction as the answer. Go never writes the feedback columns (Desktop only).
+
+// ErrWatchmanItemExists reports that the wait point already has an item of the target kind.
+var ErrWatchmanItemExists = errors.New("watchman item of that kind already exists")
 
 // WatchmanItem is one wait point and the twin's handling of it.
 type WatchmanItem struct {
@@ -159,36 +164,47 @@ func (db *DB) QueueWatchmanItem(it WatchmanItem) (id int64, inserted bool, err e
 // move is a compare-and-set, so two workers never get the same item.
 func (db *DB) LeaseWatchmanItem(now time.Time, lease time.Duration, eligible func(WatchmanItem) bool) (*WatchmanItem, error) {
 	nowS := wmTime(now)
-	cands, err := db.watchmanLeaseCandidates(nowS)
-	if err != nil {
-		return nil, err
-	}
 	until := now.Add(lease)
-	for _, c := range cands {
-		if eligible != nil && !eligible(*c) {
-			continue
-		}
-		res, err := db.Exec(`UPDATE watchman_items SET state = 'deciding', attempts = attempts + 1, lease_until = ?
-			WHERE id = ? AND ((state = 'queued' AND (not_before IS NULL OR not_before <= ?)) OR (state = 'deciding' AND lease_until < ?))`,
-			wmTime(until), c.ID, nowS, nowS)
+	afterCreated, afterID := "", int64(0)
+	for {
+		cands, err := db.watchmanLeaseCandidates(nowS, afterCreated, afterID)
 		if err != nil {
-			return nil, fmt.Errorf("leasing watchman item %d: %w", c.ID, err)
+			return nil, err
 		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			continue // another worker took it
+		for _, c := range cands {
+			if eligible != nil && !eligible(*c) {
+				continue
+			}
+			res, err := db.Exec(`UPDATE watchman_items SET state = 'deciding', attempts = attempts + 1, lease_until = ?
+				WHERE id = ? AND kind = ? AND attempts = ?
+				  AND ((state = 'queued' AND (not_before IS NULL OR not_before <= ?)) OR (state = 'deciding' AND lease_until < ?))`,
+				wmTime(until), c.ID, c.Kind, c.Attempts, nowS, nowS)
+			if err != nil {
+				return nil, fmt.Errorf("leasing watchman item %d: %w", c.ID, err)
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				continue // another worker took it, or its kind changed
+			}
+			c.State, c.Attempts = "deciding", c.Attempts+1
+			u := until.UTC().Truncate(time.Second)
+			c.LeaseUntil = &u
+			return c, nil
 		}
-		c.State, c.Attempts = "deciding", c.Attempts+1
-		u := until.UTC().Truncate(time.Second)
-		c.LeaseUntil = &u
-		return c, nil
+		if len(cands) < watchmanLeaseScanMax {
+			return nil, nil
+		}
+		last := cands[len(cands)-1]
+		afterCreated, afterID = wmTime(last.CreatedAt), last.ID
 	}
-	return nil, nil
 }
 
-func (db *DB) watchmanLeaseCandidates(nowS string) ([]*WatchmanItem, error) {
+// watchmanLeaseCandidates returns one page of leasable items after the
+// (created_at, id) cursor, oldest first.
+func (db *DB) watchmanLeaseCandidates(nowS, afterCreated string, afterID int64) ([]*WatchmanItem, error) {
 	rows, err := db.Query(`SELECT `+watchmanItemCols+` FROM watchman_items
-		WHERE (state = 'queued' AND (not_before IS NULL OR not_before <= ?)) OR (state = 'deciding' AND lease_until < ?)
-		ORDER BY created_at, id LIMIT ?`, nowS, nowS, watchmanLeaseScanMax)
+		WHERE ((state = 'queued' AND (not_before IS NULL OR not_before <= ?)) OR (state = 'deciding' AND lease_until < ?))
+		  AND (created_at > ? OR (created_at = ? AND id > ?))
+		ORDER BY created_at, id LIMIT ?`, nowS, nowS, afterCreated, afterCreated, afterID, watchmanLeaseScanMax)
 	if err != nil {
 		return nil, fmt.Errorf("scanning watchman items: %w", err)
 	}
@@ -260,6 +276,9 @@ func (db *DB) SetWatchmanItemKind(refKind string, refID int64, from, to string) 
 	res, err := db.Exec(`UPDATE watchman_items SET kind = ? WHERE ref_kind = ? AND ref_id = ? AND kind = ? AND state = 'queued'`,
 		to, refKind, refID, from)
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return false, fmt.Errorf("changing watchman item kind %s/%d to %s: %w", refKind, refID, to, ErrWatchmanItemExists)
+		}
 		return false, fmt.Errorf("changing watchman item kind %s/%d: %w", refKind, refID, err)
 	}
 	n, err := res.RowsAffected()

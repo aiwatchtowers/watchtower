@@ -7,14 +7,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func wmSession(t *testing.T, d *DB, id, projectID int64, target any, finished bool) {
+func wmSession(t *testing.T, d *DB, id, projectID int64, kind string, target any, finished bool) {
 	t.Helper()
+	csid := "sid-" + time.Duration(id).String()
 	var fin any
 	if finished {
 		fin = "2026-11-01T10:00:00.000Z"
 	}
-	_, err := d.Exec(`INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_path, finished_at)
-		VALUES (?, ?, 'shell', 'acme', ?, '/tmp/acme-s', ?)`, id, projectID, target, fin)
+	_, err := d.Exec(`INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_path, finished_at, claude_session_id)
+		VALUES (?, ?, ?, 'acme', ?, '/tmp/acme-s', ?, ?)`, id, projectID, kind, target, fin, csid)
 	require.NoError(t, err)
 }
 
@@ -48,9 +49,9 @@ func TestWatchmanArmedSessions_TargetSubtree(t *testing.T) {
 	wmTarget(t, d, 1, nil)
 	wmTarget(t, d, 2, 1)
 	wmTarget(t, d, 3, nil)
-	wmSession(t, d, 10, 1, 2, false) // A: under target 1
-	wmSession(t, d, 11, 1, 3, false) // B: unrelated target
-	wmSession(t, d, 12, 1, 2, true)  // C: finished
+	wmSession(t, d, 10, 1, "claude", 2, false) // A: under target 1
+	wmSession(t, d, 11, 1, "claude", 3, false) // B: unrelated target
+	wmSession(t, d, 12, 1, "claude", 2, true)  // C: finished
 	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "target", RefID: 1, ArmedAt: time.Now(), ArmedBy: "cli"}))
 	got, err := d.WatchmanArmedSessions()
 	require.NoError(t, err)
@@ -68,4 +69,35 @@ func TestWatchmanArmedSessions_TargetSubtree(t *testing.T) {
 	a, err := d.WatchmanSessionArmed(11)
 	require.NoError(t, err)
 	require.True(t, a)
+}
+
+func TestWatchmanArming_ListOrdersWithinOneSecond(t *testing.T) {
+	d := openTestDB(t)
+	t0 := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	// .05 s sorts after .005 s as a time, but a trimmed fraction would sort it before.
+	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "session", RefID: 1, ArmedAt: t0.Add(50 * time.Millisecond), ArmedBy: "cli"}))
+	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "session", RefID: 2, ArmedAt: t0.Add(5 * time.Millisecond), ArmedBy: "cli"}))
+	got, err := d.ListWatchmanArming()
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.Equal(t, int64(2), got[0].RefID)
+	require.Equal(t, int64(1), got[1].RefID)
+	require.True(t, got[0].ArmedAt.Equal(t0.Add(5*time.Millisecond)))
+}
+
+func TestWatchmanArmedSessions_ExcludesShell(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	wmSession(t, d, 20, 1, "shell", nil, false)
+	wmSession(t, d, 21, 1, "claude", nil, false)
+	for _, id := range []int64{20, 21} {
+		require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "session", RefID: id, ArmedAt: time.Now(), ArmedBy: "cli"}))
+	}
+	got, err := d.WatchmanArmedSessions()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, int64(21), got[0].SessionID)
+	a, err := d.WatchmanSessionArmed(20)
+	require.NoError(t, err)
+	require.False(t, a)
 }

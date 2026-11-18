@@ -24,8 +24,8 @@ type ArmedSession struct {
 	TargetID                int64 // the session's ticket; 0 = none
 }
 
-// wmArmTime keeps nanoseconds so two presses in one second stay distinct.
-func wmArmTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+// wmArmTime keeps nanoseconds in a fixed width, so two presses in one second stay distinct and sort in time order.
+func wmArmTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000000000Z") }
 
 // UpsertWatchmanArming writes the whole row; a second write of the same
 // (scope, ref_id) replaces the first's armed_at and armed_by.
@@ -81,7 +81,7 @@ const armedSessionsFrom = `
 	)
 	SELECT ts.id, ts.project_id, ts.folder_path, p.folder_path, COALESCE(ts.target_id, 0)
 	FROM terminal_sessions ts JOIN projects p ON p.id = ts.project_id
-	WHERE ts.finished_at IS NULL AND ts.delete_requested_at IS NULL
+	WHERE ts.finished_at IS NULL AND ts.delete_requested_at IS NULL AND ts.kind <> 'shell'
 	  AND (EXISTS (SELECT 1 FROM watchman_arming a WHERE a.scope = 'session' AND a.ref_id = ts.id)
 	       OR ts.target_id IN (SELECT id FROM sub))`
 
