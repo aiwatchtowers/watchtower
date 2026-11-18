@@ -40,7 +40,7 @@ enum BackgroundAIConsentShotFixtures {
             DesignShot(name: "ai-consent-settings-\(state.rawValue)", size: NSSize(width: 640, height: 0)) {
                 AnyView(SettingsSectionMock(state: state))
             }
-        } + [
+        } + liveSettingsShots + [
             DesignShot(name: "ai-consent-home-paused", size: NSSize(width: 420, height: 0)) {
                 AnyView(HomeColumnMock(organization: false))
             },
@@ -344,6 +344,48 @@ private struct SettingsSectionMock: View {
         .padding(Spacing.page)
         .frame(maxWidth: .infinity, alignment: .leading)
         .detailBackground()
+    }
+}
+
+/// The real section (Task 14) beside its mockups, one frame per state plus
+/// a config.yaml that cannot be read.
+extension BackgroundAIConsentShotFixtures {
+    static var liveSettingsShots: [DesignShot] {
+        let failed = Copy.saveFailed("config.yaml: permission denied")
+        let paused = BackgroundAIConsent.resolve(answer: "paused", policy: nil)
+        let unreadable = BackgroundAIConsent.resolve(answer: nil, readFailed: true, policy: nil)
+        let frames: [(String, LiveSettingsFrame)] = [
+            ("allowed", LiveSettingsFrame(state: .allowedByOwner)),
+            ("paused", LiveSettingsFrame(state: paused)),
+            ("orgOff", LiveSettingsFrame(state: BackgroundAIConsent.resolve(answer: nil, policy: false))),
+            ("orgAllowed", LiveSettingsFrame(state: BackgroundAIConsent.resolve(answer: nil, policy: true))),
+            ("saving", LiveSettingsFrame(state: .allowedByOwner, saving: true)),
+            ("error", LiveSettingsFrame(state: .allowedByOwner, error: failed)),
+            ("unreadable", LiveSettingsFrame(state: unreadable, unreadable: true))
+        ]
+        return frames.map { name, frame in
+            DesignShot(name: "ai-consent-settings-live-\(name)", size: NSSize(width: 640, height: 0)) {
+                AnyView(frame)
+            }
+        }
+    }
+}
+
+/// The real section's form for one state, as Settings → AI draws it.
+private struct LiveSettingsFrame: View {
+    let state: BackgroundAIConsent.State
+    var saving = false
+    var error: String?
+    var unreadable = false
+
+    var body: some View {
+        BackgroundAISettingsForm(
+            presentation: .make(state: state, agent: .claude, isSaving: saving, error: error, configUnreadable: unreadable),
+            isSaving: saving
+        ) { _ in }
+            .padding(Spacing.page)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .detailBackground()
     }
 }
 
