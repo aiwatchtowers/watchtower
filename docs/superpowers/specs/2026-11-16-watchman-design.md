@@ -35,6 +35,8 @@ What makes it a twin rather than an autopilot: it learns from the owner's own hi
 | **Sleep** | Armed and the owner is asleep | Never asks anyone. Decides everything not behind a hard limit (§5). When unsure on an important decision, picks, marks "unsure", and continues (ask #1367). |
 | **Away** | Armed, the owner is away but reachable over the relay | Tries itself. Sends a question to the phone only when it is unsure in a category where it is weak; if no answer within the wait, decides as in Sleep. Relay only — not CloudKit (ask #1369). |
 
+**Phase 2 (D47, ask #1583).** Arming is the delegation: an armed session or target is decided by the twin under Sleep rules whatever the owner's presence, away state or sleep window, and **Take back** (disarm) returns it; an answer the owner gives himself still wins any race (§6). **Going to sleep** and the presence, away and sleep-test rules below apply from phase 3.
+
 **Arming.** The owner arms Watchman on a session or on a target (the whole subtree's sessions): **Hand to Watchman** on the session strip and on the target panel, and a tray item **Hand all running sessions to Watchman**. Arming is explicit — the twin never arms itself. Disarm: the same control, or simply coming back (see below).
 
 **Arming is stored, mode is computed.** Arming rows live in `watchman_arming` (session id or target id, armed_at, armed_by); the Desktop and the CLI (`watchtower watchman arm|disarm|sleep`) write them — one writer kind, last write wins, every write is a whole-row upsert. The mode is never stored: Go `watchman.Mode(now, inputs)` — pure, one implementation, Go only — is computed by whoever needs it (the twin worker, the guard hook, `watchman status --json` that the Desktop reads for its labels). Inputs:
@@ -64,7 +66,7 @@ Agents work exactly as now. The twin sits where the owner sits — at the points
 |---|---|---|
 | `ask_owner` — question | Desktop `OwnerAskQueries.answer` (GRDB) + typed line; phone via the Swift `MobileHub` (`AskAnswerHandler`) | Twin picks options (or "Other" text); the daemon's `Answerer` writes and delivers it (below) |
 | `ask_owner` — review of a spec/plan | Spec review loop, then the owner's verdict; the Desktop builds marks through `SpecReviewAnswer` | Waits for the reviewer/author loop to end (it already runs without the owner), then writes a verdict + comments answer **and its `spec_review_marks` rows in the same transaction**, through a Go builder `specreview.AnswerMarks` that is the dual path of the Desktop's `SpecReviewAnswer` (shared JSON fixture, both sides' tests read it). `spec_review_marks` gets a second writer: the Desktop for answers given at the Mac, the `Answerer` for the twin's — never both for one ask, because only the winner of the answer CAS writes marks |
-| `ask_owner` — review of another doc, `check` | Owner reads / runs | Review as above. A `check` the twin cannot run (it cannot press buttons on the owner's phone or look at his screen): it answers "the owner is away — verify what you can yourself (tests, screenshots, `make desktop-shots`) and continue"; the item goes to the journal's **Checks nobody ran** list, which stays on top until the owner marks each done or runs it |
+| `ask_owner` — review of another doc, `check` | Owner reads / runs | Review as above. A `check` the twin cannot run (it cannot press buttons on the owner's phone or look at his screen): it answers "the owner handed this session to Watchman — verify what you can yourself (tests, screenshots, `make desktop-shots`) and continue"; the item goes to the journal's **Checks nobody ran** list, which stays on top until the owner marks each done or runs it |
 | Handover ask from `finish_session` | Owner decides what is left | Twin decides: continue in a new session, park for the morning, or accept as done |
 | `permission_requests` | Mac `SessionControl.answerPermission` (sets `decided_by`), phone CAS | Twin allows/denies through `db.ClosePermissionRequest`, which gains a `decidedBy` parameter (today it does not write `decided_by`); value `'watchman'` |
 | Diff review round (Changes pane, `review send|approve`) | Owner starts a round when he wants | No session blocks on it today, so Watchman adds one wait point: in an armed session, `finish_session` queues a `review_code` item; the twin runs a round on the session's diff — comments (`review send`) or **Approve** (`review approve`) — and the finish gate passes on Approve |
@@ -294,7 +296,7 @@ After implementation the real screens are rendered with the same names and compa
 - **Go hub** (`docs/features/go-hub.md`, PROJ-12/21 on the hub): the answer core moves to `internal/askanswer`; the hub's phone behaviour is unchanged (its tests move with the code).
 - **C1 Inbox**: one more Inbox entry, **Watchman**, with its own empty-state copy key.
 - **Pinned CLI JSON** (phase 1b): `watchman status --json` learning gains `relabel_pending` (rows the relabel pass has not flagged yet; the Desktop disables **Run backtest now** and shows the relabelling line while it is above 0, the daemon's weekly run waits for 0); `watchman backtest --json` gains `report_path` (the run's per-item report with the judge's reasons, a local workspace file); `watchman backtest --json` and `watchman status --json` category rows gain `handed` (`TestWatchmanBacktest_JSONKeysPinned`, `internal/watchman/testdata/status.json`); the Desktop decodes it tolerantly (missing → 0). `docs/inventory/watchman.md` gets a changelog line; WATCHMAN-03 and WATCHMAN-06 are unchanged (labels and handoff never act).
-- **New module `docs/inventory/watchman.md`** with guard tests: WATCHMAN-01 the hard-limit table is never decided by the twin and the guard layers deny it while armed; WATCHMAN-02 a twin write never overwrites an owner answer (CAS); WATCHMAN-03 twin decisions become precedents only after the owner's OK; WATCHMAN-04 nothing acts while `platform.Away` says present or cannot be read; WATCHMAN-05 a new `workbench watchman-guard` hook is installed only through `integrate claude-code|codex` with the other hooks.
+- **New module `docs/inventory/watchman.md`** with guard tests: WATCHMAN-01 the hard-limit table is never decided by the twin and the guard layers deny it while armed; WATCHMAN-02 a twin write never overwrites an owner answer (CAS); WATCHMAN-03 twin decisions become precedents only after the owner's OK; WATCHMAN-04 nothing acts while `platform.Away` says present or cannot be read (phase 2, D47: nothing acts on a session that is not armed); WATCHMAN-05 a new `workbench watchman-guard` hook is installed only through `integrate claude-code|codex` with the other hooks.
 
 ## 14. Decisions
 
@@ -306,7 +308,7 @@ After implementation the real screens are rendered with the same names and compa
 | D4 | Learns from workbench only: sessions with the agent, own commits/reviews/merges; no communication sources | ask #1369 |
 | D5 | Two modes: Sleep (no questions) and Away (asks only if needed); Away only over the relay | ask #1369 |
 | D6 | Approach A: twin answers at the owner's wait points; agents unchanged | ask #1370 |
-| D7 | Away without a relay phone follows Sleep rules | ask #1373 |
+| D7 | Away without a relay phone follows Sleep rules (phase 2: superseded by D47 — arming alone delegates) | ask #1373 |
 | D8 | Arming is explicit; mode is computed | decided by the agent |
 | D9 | Sleep test = button or ≥ 20 min away inside the learned window | decided by the agent |
 | D10 | Hard limits as a Go table; owner can only add | decided by the agent |
@@ -346,6 +348,7 @@ After implementation the real screens are rendered with the same names and compa
 | D44 | Weekly backtest only in phase 2; the rerun after each morning's feedback is deferred (cost) | decided by the agent |
 | D45 | Three twin diff-review rounds on one session without an Approve park the review item for the owner, and the finish gate then passes | decided by the agent |
 | D46 | Twin never approves a spec/plan that may change a contract (Go check, fail closed: each line (list item, table row, prose line) naming a contract id parks unless it names exactly one id and says that contract is not changed; a line naming two or more ids always parks — "unchanged", "not changed", "no change", "does not change", "untouched", "stays as is"; inventory paths and guard-test names always park) | decided by the agent (plan review), §5 |
+| D47 | Phase 2: arming is the delegation — an armed session is decided by the twin whatever the owner's presence; Take back/disarm returns it | ask #1583 |
 
 ## 15. Left to the builder
 
