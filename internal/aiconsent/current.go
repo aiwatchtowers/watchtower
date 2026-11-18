@@ -35,21 +35,27 @@ var cur struct {
 	lastFail string
 }
 
-// SetConfigPath points Current at config.yaml and drops the cache. With no
-// path set, Current reads paused (fail closed).
-func SetConfigPath(path string) {
+// SetConfigPath points Current at config.yaml and drops the cache; it
+// returns the previous path. With no path set, Current reads paused (fail
+// closed).
+func SetConfigPath(path string) (prev string) {
 	cur.mu.Lock()
 	defer cur.mu.Unlock()
+	prev = cur.path
 	cur.path, cur.info, cur.answer = path, nil, AnswerNone
+	return prev
 }
 
 // SetCurrentOverrideForTest is for tests only: while r is non-nil, Current
 // returns r() instead of reading the config. Production code never calls it
-// (TestOverrideHookOnlyInTests); test packages use aiconsenttest.
-func SetCurrentOverrideForTest(r Reader) {
+// (TestOverrideHookOnlyInTests); test packages use aiconsenttest. It
+// returns the previous override.
+func SetCurrentOverrideForTest(r Reader) (prev Reader) {
 	cur.mu.Lock()
 	defer cur.mu.Unlock()
+	prev = cur.override
 	cur.override = r
+	return prev
 }
 
 // Current resolves the owner's answer in config.yaml with the forced policy.
