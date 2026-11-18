@@ -326,8 +326,9 @@ func (s *folderScan) indexEntry(name string) error {
 }
 
 // storedSlug is the slug the recipe at path is indexed under: its file stem;
-// <folder name>/<stem> when another live folder of the bench holds the stem
-// (spec §6.11), or when its row already has that name. ok is false (the file
+// <folder name>/<stem> when another folder's row holds the stem — a live
+// folder's, or one that left the bench (spec §6.11) — or when its row
+// already has that name. ok is false (the file
 // skipped with a note) when the slug is taken in the scope otherwise.
 func (s *folderScan) storedSlug(slug, path string) (string, bool) {
 	if prev, ok := s.byPath[path]; ok && s.prefix != "" && prev.Slug == s.prefix+slug {
@@ -337,7 +338,10 @@ func (s *folderScan) storedSlug(slug, path string) (string, bool) {
 	if !taken || other.Path == path {
 		return slug, true
 	}
-	if s.prefix == "" || !s.ofOtherFolder(other) {
+	// The fallback name applies when the stem's holder is another live
+	// folder's recipe, or a row outside every live folder of the bench (its
+	// folder left the bench): never against a row of this folder.
+	if s.prefix == "" || filepath.Dir(other.Path) == s.dir {
 		s.skip(path, slugTakenReason(slug, other))
 		return "", false
 	}

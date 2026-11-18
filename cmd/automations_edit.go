@@ -514,11 +514,16 @@ func resolveSaveTarget(cfg *config.Config, database *db.DB, file, target string)
 			target, automations.PersonalDir(cfg.WorkspaceDir()))
 	}
 	if scope.Kind == automations.ScopeWorkbench {
-		w, err := database.GetWorkbench(scope.WorkbenchID)
+		given, err := filepath.Abs(filepath.Dir(target))
+		if err != nil {
+			return saveTarget{}, fmt.Errorf("resolving %s: %w", target, err)
+		}
+		// The bench folder the target lies in (recipeFolderOf matched it).
+		_, recipeDir, err := workbenchSpellingRecipeDir(context.Background(), database, given, dir)
 		if err != nil {
 			return saveTarget{}, err
 		}
-		if err := automations.RefuseLinkedRecipeDir(automations.WorkbenchDir(w.FolderPath)); err != nil {
+		if err := automations.RefuseLinkedRecipeDir(recipeDir); err != nil {
 			return saveTarget{}, fmt.Errorf("cannot save to %s: %w", target, err)
 		}
 	}
@@ -736,13 +741,28 @@ func runAutomationsDelete(cmd *cobra.Command, args []string) error {
 // recipeFileRemovable reports whether delete may remove a's recipe file: a
 // regular file at a's path inside a's own recipe folder. Anything else — no
 // file, a symlink or special file put in its place, a path no longer inside
-// its recipe folder, a workbench that is gone — is left alone and the row is
-// still deleted. Only a's own recipe folder is touched (never another
-// workbench's: it may sit under a TCC-protected location).
+// its recipe folder, a workbench that is gone, a folder that left its bench —
+// is left alone and the row is still deleted. Only a's own recipe folder is
+// touched (never another workbench's or another bench folder's: it may sit
+// under a TCC-protected location): among the bench's live folders it is the
+// one whose stored recipe folder spells a's folder (the only one, on a
+// one-folder bench).
 func recipeFileRemovable(cfg *config.Config, database *db.DB, a *db.Automation) (bool, error) {
-	folder, ok, err := scopeRecipeDir(cfg, database, automationScopeOf(a))
+	folders, ok, err := scopeRecipeDirs(context.Background(), cfg, database, automationScopeOf(a))
 	if err != nil || !ok {
 		return false, err
+	}
+	var folder string
+	for _, f := range folders {
+		if filepath.Clean(f) == filepath.Dir(a.Path) {
+			folder = f
+		}
+	}
+	if folder == "" && len(folders) == 1 {
+		folder = folders[0] // the personal folder, or a one-folder bench spelled another way
+	}
+	if folder == "" {
+		return false, nil
 	}
 	want, err := automationsCanonicalDir(folder)
 	if err != nil {

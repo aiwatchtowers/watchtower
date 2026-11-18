@@ -257,8 +257,10 @@ func TestDuplicateRecipeNameGetsTheFolderPrefix(t *testing.T) {
 }
 
 // TestRemovedFolderRecipesAreDropped (spec §6.3, Review Focus 3): a folder
-// that leaves the bench has its recipes marked removed at the next tick,
-// though no recipe folder changed; the other folders' recipes stay.
+// that leaves the bench has its recipes marked removed at the next tick by
+// folder membership alone — though no recipe folder changed and every
+// remaining folder is privacy-protected (never read); the other folders'
+// recipes stay.
 func TestRemovedFolderRecipesAreDropped(t *testing.T) {
 	f := newSchedFixture(t, exStart)
 	wb, home := newWorkbench(t, f.d)
@@ -272,15 +274,57 @@ func TestRemovedFolderRecipesAreDropped(t *testing.T) {
 		t.Fatal("fixture: the hub recipe is not live")
 	}
 
+	var touched []string
+	automations.SetIndexerProbe(f.ix, func(path string) { touched = append(touched, path) })
+	automations.SetSchedulerProtected(f.s, func(folder string) bool { return folder == home })
 	if _, err := f.d.Exec(`UPDATE workbench_folders SET removed_at = '2026-11-18T00:00:00Z' WHERE id = ?`, hubID); err != nil {
 		t.Fatal(err)
 	}
 	f.tick(t, exStart.Add(2*time.Minute))
+	for _, p := range touched {
+		if strings.HasPrefix(p, home) || strings.HasPrefix(p, hub) {
+			t.Fatalf("the retirement touched a folder: %s", p)
+		}
+	}
 	if a := workbenchRow(t, f.d, wb, "deploy"); a.RemovedAt == nil {
 		t.Fatal("the removed folder's recipe is still live")
 	}
 	if a := workbenchRow(t, f.d, wb, "release"); a.RemovedAt != nil {
 		t.Fatal("the home folder's recipe was marked removed")
+	}
+}
+
+// TestRemovedFolderRecipeNameIsFreeForAnotherFolder (spec §6.11): a recipe
+// of a folder that left the bench keeps its retired row (and name), but a
+// same-name recipe in a live folder is still indexed — under
+// <folder name>/<name> — instead of being skipped as "slug taken".
+func TestRemovedFolderRecipeNameIsFreeForAnotherFolder(t *testing.T) {
+	f := newSchedFixture(t, exStart)
+	wb, home := newWorkbench(t, f.d)
+	hub, hubID := putFolderOnBench(t, f.d, wb, "hub")
+	text := wbRecipeText("Drafts release notes.", `log("v1")`)
+	writeWorkbenchRecipe(t, hub, "release", text)
+	f.tick(t, exStart)
+	if a := workbenchRow(t, f.d, wb, "release"); a.Path != filepath.Join(automations.WorkbenchDir(hub), "release.md") {
+		t.Fatalf("fixture: release is %s", a.Path)
+	}
+	if _, err := f.d.Exec(`UPDATE workbench_folders SET removed_at = '2026-11-18T00:00:00Z' WHERE id = ?`, hubID); err != nil {
+		t.Fatal(err)
+	}
+	f.tick(t, exStart.Add(time.Minute))
+
+	writeWorkbenchRecipe(t, home, "release", text)
+	rep := rescanWorkbench(t, f.ix, wb, home)
+	if len(rep.Skipped) != 0 {
+		t.Fatalf("the home recipe was skipped: %+v", rep.Skipped)
+	}
+	homeFolder, err := f.d.HomeFolder(context.Background(), wb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := workbenchRow(t, f.d, wb, homeFolder.Name+"/release")
+	if a.RemovedAt != nil || a.Path != filepath.Join(automations.WorkbenchDir(home), "release.md") {
+		t.Fatalf("home's release row = %+v", a)
 	}
 }
 
