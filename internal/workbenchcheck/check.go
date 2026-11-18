@@ -33,6 +33,9 @@ const (
 	// KindStale: an in-progress leaf target with no status change, no edit
 	// and no commit on its branch for longer than Options.StaleAfter.
 	KindStale = "stale"
+	// KindFolderRemoved: the target's folder left the bench, so its branch
+	// and pull request are not checked (spec 2026-11-18 §6.3).
+	KindFolderRemoved = "folder_removed"
 )
 
 // DoneRecentWindow limits the done-but-unmerged rule to targets closed in
@@ -64,7 +67,11 @@ type Finding struct {
 // (the local origin/<default> may predate a merge made on GitHub, and a
 // merge style the patch-id match cannot see reads as unmerged): both are
 // shown in the brief and by `workbench check`, never forced on a turn.
-func (f Finding) Blocking() bool { return f.Kind != KindStale && f.Kind != KindDoneUnmerged }
+// KindFolderRemoved is no git verdict at all, and the agent may not be able
+// to act on it (the owner removed the folder): shown, never forced.
+func (f Finding) Blocking() bool {
+	return f.Kind != KindStale && f.Kind != KindDoneUnmerged && f.Kind != KindFolderRemoved
+}
 
 // Line renders the finding as one line for the brief, the CLI and the hook.
 func (f Finding) Line() string {
@@ -72,10 +79,14 @@ func (f Finding) Line() string {
 }
 
 // Report is the outcome of one check.
+//
+// Git, Base and PRChecked describe Options.Folder (the home folder); a
+// target in another folder of the bench is checked in that folder's
+// repository, whose notes are prefixed with its path.
 type Report struct {
 	WorkbenchID int64  `json:"project_id"`
-	Git         bool   `json:"git"`            // the folder is a git work tree
-	Base        string `json:"base,omitempty"` // the default branch compared against, e.g. origin/main
+	Git         bool   `json:"git"`            // the home folder is a git work tree
+	Base        string `json:"base,omitempty"` // the home folder's default branch compared against, e.g. origin/main
 	PRChecked   bool   `json:"pr_checked"`     // pull request states were read through gh
 	// Incomplete: the context ran out before every target was checked; the
 	// findings cover only the targets checked in time.
@@ -103,7 +114,14 @@ type Runner func(ctx context.Context, dir string, stdin []byte, name string, arg
 
 // Options configures one check.
 type Options struct {
-	Folder     string
+	// Folder is the home folder: the repository of every target FolderOf
+	// does not place elsewhere.
+	Folder string
+	// FolderOf names the folder a target's work is in (PROJ-07, spec
+	// 2026-11-18 §6.10): its path, and removed when the folder left the
+	// bench (the target then gets KindFolderRemoved instead of a git
+	// verdict). nil, or a "" path, is Folder.
+	FolderOf   func(targetID int64) (path string, removed bool)
 	StaleAfter time.Duration // 0 = DefaultStaleAfter
 	Now        time.Time     // zero = time.Now()
 	// Network allows reading pull request states through the gh CLI. Off
@@ -118,22 +136,67 @@ type Options struct {
 
 // addRunNotes adds what the git and pull-request passes learned while
 // walking the board: a filter guard that skipped the squash checks, and a
-// pull-request lookup that did not complete (then PRChecked is false).
-func addRunNotes(rep *Report, g *gitState, pr *prChecker) {
-	if g.guardNote != "" {
-		rep.Notes = append(rep.Notes, g.guardNote)
+// pull-request lookup that did not complete (then PRChecked is false for
+// the home folder).
+func addRunNotes(rep *Report, f *folderState) {
+	if f.g.guardNote != "" {
+		rep.Notes = append(rep.Notes, f.note(f.g.guardNote))
 	}
-	if pr == nil {
+	if f.pr == nil {
 		return
 	}
-	if note := pr.summary(); note != "" {
-		rep.PRChecked = false
-		rep.Notes = append(rep.Notes, note)
+	if note := f.pr.summary(); note != "" {
+		if f.home {
+			rep.PRChecked = false
+		}
+		rep.Notes = append(rep.Notes, f.note(note))
 	}
 }
 
-// Check inspects every target of board against the folder's git state. It
-// never fails: a part it cannot check is skipped and named in Notes.
+// folderState is one folder's repository as the check reads it: probed
+// once, however many targets live there.
+type folderState struct {
+	path  string
+	home  bool
+	g     *gitState
+	pr    *prChecker
+	notes []string // what the probes said, prefixed for a non-home folder
+}
+
+// openFolder probes the repository at path (and gh there, with Network).
+func openFolder(ctx context.Context, o Options, path string, home bool) *folderState {
+	o.Folder = path
+	f := &folderState{path: path, home: home, g: newGitState(ctx, o)}
+	for _, n := range f.g.notes {
+		f.notes = append(f.notes, f.note(n))
+	}
+	switch {
+	case o.Network && f.g.noGit:
+		// gh reads the repository by running git from its own PATH, which
+		// without the developer tools is the /usr/bin/git shim.
+		f.notes = append(f.notes, f.note(noGitPRNote))
+	case o.Network:
+		f.pr = newPRChecker(ctx, o)
+		for _, n := range f.pr.notes {
+			f.notes = append(f.notes, f.note(n))
+		}
+	}
+	return f
+}
+
+// note is n as a report note: a non-home folder's names the folder.
+func (f *folderState) note(n string) string {
+	if f.home {
+		return n
+	}
+	return f.path + ": " + n
+}
+
+// Check inspects every target of board against the git state of the folder
+// its work is in (Options.FolderOf; the home folder otherwise). The home
+// folder is probed up front, another folder once, when its first target with
+// a branch or pull request is checked. It never fails: a part it cannot
+// check is skipped and named in Notes.
 func Check(ctx context.Context, workbenchID int64, board []db.BoardNode, o Options) Report {
 	if o.StaleAfter <= 0 {
 		o.StaleAfter = DefaultStaleAfter
@@ -145,22 +208,13 @@ func Check(ctx context.Context, workbenchID int64, board []db.BoardNode, o Optio
 		o.Run = ExecRunner
 	}
 	rep := Report{WorkbenchID: workbenchID, Findings: []Finding{}}
-	g := newGitState(ctx, o)
-	rep.Git = g.workTree
-	rep.Base = g.baseName()
-	rep.Notes = append(rep.Notes, g.notes...)
-	var pr *prChecker
-	switch {
-	case o.Network && g.noGit:
-		// gh reads the repository by running git from its own PATH, which
-		// without the developer tools is the /usr/bin/git shim.
-		rep.Notes = append(rep.Notes, noGitPRNote)
-	case o.Network:
-		pr = newPRChecker(ctx, o)
-		rep.PRChecked = pr.available
-		rep.Notes = append(rep.Notes, pr.notes...)
-	}
-	c := checker{g: g, pr: pr, o: o, openRefs: openRefs(board)}
+	home := openFolder(ctx, o, o.Folder, true)
+	rep.Git = home.g.workTree
+	rep.Base = home.g.baseName()
+	rep.PRChecked = home.pr != nil && home.pr.available
+	rep.Notes = append(rep.Notes, home.notes...)
+	c := &checker{o: o, folders: map[string]*folderState{o.Folder: home}}
+	c.openRefs = c.openRefsOf(board)
 	// Open targets first: a check its deadline cuts short has then looked at
 	// the work the blocking kinds are about.
 	for _, open := range []bool{true, false} {
@@ -171,7 +225,7 @@ func Check(ctx context.Context, workbenchID int64, board []db.BoardNode, o Optio
 			if rep.Incomplete || isClosed(n.Target.Status) == open {
 				return
 			}
-			found := c.checkTarget(ctx, n)
+			found := c.checkTarget(ctx, n, &rep)
 			// A git call cut short by the deadline reads as "not found" or "not
 			// merged": never report what a cut-short target seemed to show.
 			if ctx.Err() != nil {
@@ -182,7 +236,10 @@ func Check(ctx context.Context, workbenchID int64, board []db.BoardNode, o Optio
 			rep.Findings = append(rep.Findings, found...)
 		})
 	}
-	addRunNotes(&rep, g, pr)
+	addRunNotes(&rep, home)
+	for _, f := range c.opened {
+		addRunNotes(&rep, f)
+	}
 	if ctx.Err() != nil && !rep.Incomplete {
 		// The deadline hit during the repository probe: its conclusions
 		// (no work tree, no default branch) are not trustworthy either.
@@ -202,31 +259,62 @@ func walkBoard(level []db.BoardNode, fn func(db.BoardNode)) {
 
 func isClosed(status string) bool { return status == "done" || status == "dismissed" }
 
-// openRefs collects every branch and pull request an open target carries:
-// a done target sharing one with open work (the feature target, the plan's
-// remaining tasks) is a finished step of unfinished work, not drift.
-func openRefs(board []db.BoardNode) map[string]bool {
+// openRefsOf collects every branch and pull request an open target carries,
+// per folder: a done target sharing one with open work in the same folder
+// (the feature target, the plan's remaining tasks) is a finished step of
+// unfinished work, not drift. Another folder's branch of the same name is
+// other work.
+func (c *checker) openRefsOf(board []db.BoardNode) map[string]bool {
 	refs := map[string]bool{}
 	walkBoard(board, func(n db.BoardNode) {
 		if isClosed(n.Target.Status) {
 			return
 		}
+		folder, _ := c.folderOf(n)
 		if b := strings.TrimSpace(n.Target.Branch); b != "" {
-			refs["branch:"+b] = true
+			refs[refKey(folder, "branch", b)] = true
 		}
 		if p := strings.TrimSpace(n.Target.PR); p != "" {
-			refs["pr:"+strings.TrimPrefix(p, "#")] = true
+			refs[refKey(folder, "pr", strings.TrimPrefix(p, "#"))] = true
 		}
 	})
 	return refs
 }
 
+func refKey(folder, kind, ref string) string { return folder + "\x00" + kind + ":" + ref }
+
 // checker holds what every target's check shares.
 type checker struct {
-	g        *gitState
-	pr       *prChecker
 	o        Options
+	folders  map[string]*folderState // by path, the home folder's included
+	opened   []*folderState          // the other folders, in the order probed
 	openRefs map[string]bool
+}
+
+// folderOf is the path of the folder n's work is in and whether that
+// folder left the bench.
+func (c *checker) folderOf(n db.BoardNode) (string, bool) {
+	if c.o.FolderOf == nil {
+		return c.o.Folder, false
+	}
+	path, removed := c.o.FolderOf(int64(n.Target.ID))
+	if path == "" {
+		return c.o.Folder, removed
+	}
+	return path, removed
+}
+
+// folder is path's repository state, probed on first use; the probe's notes
+// join rep then.
+func (c *checker) folder(ctx context.Context, path string, rep *Report) *folderState {
+	if f, ok := c.folders[path]; ok {
+		return f
+	}
+	f := openFolder(ctx, c.o, path, false)
+	c.folders[path] = f
+	c.opened = append(c.opened, f)
+	rep.Notes = append(rep.Notes, f.notes...)
+	return f
 }
 
 // targetCtx is one target as the rules see it.
@@ -239,23 +327,50 @@ type targetCtx struct {
 	mk        findingMaker
 }
 
-// checkTarget runs every rule on one target; at most one finding per kind.
-func (c checker) checkTarget(ctx context.Context, n db.BoardNode) []Finding {
+// checkTarget runs every rule on one target in its folder's repository; at
+// most one finding per kind. A target whose folder left the bench gets
+// KindFolderRemoved for its branch/PR instead of a git verdict.
+func (c *checker) checkTarget(ctx context.Context, n db.BoardNode, rep *Report) []Finding {
 	if skipped(n, c.o.Now) {
 		return nil
 	}
-	tc := c.contextOf(n)
+	path, removed := c.folderOf(n)
+	tc := c.contextOf(n, path)
 	var out findingSet
 	var tip branchTip
-	if tc.branch != "" && c.g.ready() && tc.branch != c.g.defaultName {
-		tip = c.g.branchState(ctx, tc.branch)
-		out.add(branchFinding(tc, tip, c.g.baseName()))
-	}
-	if tc.prRef != "" && c.pr != nil {
-		out.add(c.pr.finding(ctx, tc))
+	switch {
+	case removed:
+		out.add(folderRemovedFinding(tc, path))
+	case tc.branch != "" || tc.prRef != "":
+		f := c.folder(ctx, path, rep)
+		if tc.branch != "" && f.g.ready() && tc.branch != f.g.defaultName {
+			tip = f.g.branchState(ctx, tc.branch)
+			out.add(branchFinding(tc, tip, f.g.baseName()))
+		}
+		if tc.prRef != "" && f.pr != nil {
+			out.add(f.pr.finding(ctx, tc))
+		}
 	}
 	out.add(staleFinding(n, tip, c.o, tc.mk))
 	return out.list
+}
+
+// folderRemovedFinding: the target carries a branch or a pull request, but
+// its folder is off the bench, so neither can be checked.
+func folderRemovedFinding(tc targetCtx, path string) (Finding, bool) {
+	var what string
+	switch {
+	case tc.branch != "" && tc.prRef != "":
+		what = fmt.Sprintf("branch %s and pull request %s are", tc.branch, tc.prRef)
+	case tc.branch != "":
+		what = fmt.Sprintf("branch %s is", tc.branch)
+	case tc.prRef != "":
+		what = fmt.Sprintf("pull request %s is", tc.prRef)
+	default:
+		return Finding{}, false
+	}
+	return tc.mk(KindFolderRemoved, fmt.Sprintf("folder removed: %s is no longer on the bench, so its %s not checked", path, what),
+		fixFolderRemoved), true
 }
 
 // skipped: a dismissed target, or one done long ago, is history.
@@ -264,12 +379,13 @@ func skipped(n db.BoardNode, now time.Time) bool {
 	return st == "dismissed" || (st == "done" && !recentlyMoved(n, now, DoneRecentWindow))
 }
 
-func (c checker) contextOf(n db.BoardNode) targetCtx {
+func (c *checker) contextOf(n db.BoardNode, folder string) targetCtx {
 	t := n.Target
 	branch, prRef := strings.TrimSpace(t.Branch), strings.TrimSpace(t.PR)
 	return targetCtx{
 		status: t.Status, branch: branch, prRef: prRef, parent: len(n.Children) > 0,
-		sharedRef: (branch != "" && c.openRefs["branch:"+branch]) || (prRef != "" && c.openRefs["pr:"+strings.TrimPrefix(prRef, "#")]),
+		sharedRef: (branch != "" && c.openRefs[refKey(folder, "branch", branch)]) ||
+			(prRef != "" && c.openRefs[refKey(folder, "pr", strings.TrimPrefix(prRef, "#"))]),
 		mk: func(kind, detail, fix string) Finding {
 			return Finding{TargetID: t.ID, Title: t.Text, Status: t.Status, Branch: branch, PR: prRef, Kind: kind, Detail: detail, Fix: fix}
 		},
@@ -298,8 +414,10 @@ const (
 		"back to in_review until it is merged; if the work landed another way, clear its branch (update_target branch \"\")"
 	fixBranchMissing = "if it was merged and deleted, set the target done; if the branch has another name, set it " +
 		"(update_target branch); if the work has not started, set the target back to todo"
-	fixPRClosed = "the pull request was closed without a merge: reopen or replace it (update_target pr), or move the target to blocked/dismissed"
-	fixStale    = "if it is finished, move it on (in_review / done); if it waits on someone, set it blocked and say why in add_comment"
+	fixPRClosed      = "the pull request was closed without a merge: reopen or replace it (update_target pr), or move the target to blocked/dismissed"
+	fixFolderRemoved = "its folder was removed from the bench: if the work moved to another folder of the bench, " +
+		"set it (update_target folder); if the work is gone, clear its branch/pr (update_target branch \"\", pr \"\")"
+	fixStale = "if it is finished, move it on (in_review / done); if it waits on someone, set it blocked and say why in add_comment"
 )
 
 // branchFinding applies the git rules. An unknown answer (a failed git call)

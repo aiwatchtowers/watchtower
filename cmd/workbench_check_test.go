@@ -222,6 +222,73 @@ func TestProjectBrief_DriftChecksOpenTargetsOnly(t *testing.T) {
 	assert.NotContains(t, loadWorkbenchBrief(pid, io.Discard), "Board drift")
 }
 
+// benchFolderAt puts folder on workbench pid as its second folder and
+// returns the row id.
+func benchFolderAt(t *testing.T, database *db.DB, pid int64, folder, name string) int64 {
+	t.Helper()
+	res, err := database.Exec(`INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
+		VALUES (?, ?, 1, 'owner', ?)`, pid, folder, name)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return id
+}
+
+func checkJSON(t *testing.T, pid int64) workbenchcheck.Report {
+	t.Helper()
+	stdout, _, err := runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--workbench", strconv.FormatInt(pid, 10), "--json", "--no-network")
+	require.NoError(t, err)
+	var rep workbenchcheck.Report
+	require.NoError(t, json.Unmarshal([]byte(stdout), &rep), stdout)
+	return rep
+}
+
+// Spec 2026-11-18 §6.10: `workbench check`, the Stop hook and the brief read
+// a target's branch in its own folder's repository.
+func TestProj07_CheckRunsInTheTargetsFolder(t *testing.T) {
+	database := writeActionsConfig(t)
+	app, hub := driftRepo(t), driftRepo(t)
+	c := exec.Command("git", "branch", "-q", "-D", "merged")
+	c.Dir = hub
+	out, err := c.CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	pid, tid := driftWorkbench(t, database, app, "merged")
+
+	rep := checkJSON(t, pid)
+	require.Len(t, rep.Findings, 1)
+	assert.Equal(t, workbenchcheck.KindMergedOpen, rep.Findings[0].Kind, "in the home folder: merged into app's main")
+	assert.NotEmpty(t, stopHook(t, pid, `{"stop_hook_active":false}`))
+
+	hubID := benchFolderAt(t, database, pid, hub, "hub")
+	_, err = database.Exec(`UPDATE targets SET workbench_folder_id = ? WHERE id = ?`, hubID, tid)
+	require.NoError(t, err)
+	rep = checkJSON(t, pid)
+	require.Len(t, rep.Findings, 1)
+	assert.Equal(t, workbenchcheck.KindBranchMissing, rep.Findings[0].Kind, "in hub: hub has no branch merged")
+	assert.Contains(t, loadWorkbenchBrief(pid, io.Discard), "branch merged is found neither locally nor on origin")
+}
+
+// Spec 2026-11-18 §6.3: a target whose folder left the bench reports
+// "folder removed" in the check and the brief, and the Stop hook never
+// stops a turn for it (PROJ-07: it never traps a turn).
+func TestProj07_RemovedFolderInTheBriefAndTheStopHook(t *testing.T) {
+	database := writeActionsConfig(t)
+	app := driftRepo(t)
+	gone := filepath.Join(t.TempDir(), "hub")
+	pid, tid := driftWorkbench(t, database, app, "merged")
+	hubID := benchFolderAt(t, database, pid, gone, "hub")
+	_, err := database.Exec(`UPDATE workbench_folders SET removed_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, hubID)
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE targets SET workbench_folder_id = ? WHERE id = ?`, hubID, tid)
+	require.NoError(t, err)
+
+	rep := checkJSON(t, pid)
+	require.Len(t, rep.Findings, 1)
+	assert.Equal(t, workbenchcheck.KindFolderRemoved, rep.Findings[0].Kind, "no git verdict from app for hub's target")
+	assert.Contains(t, loadWorkbenchBrief(pid, io.Discard), "folder removed: "+gone)
+	assert.Empty(t, stopHook(t, pid, `{"stop_hook_active":false}`), "folder removed never stops a turn")
+}
+
 // PROJ-02/PROJ-04: nothing of a deleted project remains in the folder's
 // settings — neither hook — while the owner's own settings survive.
 func TestProj02_ProjectDeleteLeavesNoHookOfTheProject(t *testing.T) {

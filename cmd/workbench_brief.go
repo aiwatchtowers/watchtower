@@ -208,7 +208,16 @@ func briefFromDB(database *db.DB, p *db.Workbench) string {
 	// Open targets only: the hook blocks the session start, and the closed
 	// targets' walk (done_but_unmerged) tripled it; the board banner and
 	// `workbench check` still show every kind.
-	drift := workbenchcheck.Check(ctx, p.ID, board, workbenchcheck.Options{Folder: p.FolderPath, OpenOnly: true})
+	// Each target is checked in its own folder (PROJ-07); without the folder
+	// rows the branch checks are skipped and the brief says so, never a
+	// verdict read in the wrong repository.
+	var drift workbenchcheck.Report
+	if folderOf, err := targetFolders(ctx, database, p.ID, board); err != nil {
+		drift = workbenchcheck.Report{WorkbenchID: p.ID, Git: true, Findings: []workbenchcheck.Finding{},
+			Notes: []string{workbenchcheck.ClipNote(err.Error())}}
+	} else {
+		drift = workbenchcheck.Check(ctx, p.ID, board, workbenchcheck.Options{Folder: p.FolderPath, FolderOf: folderOf, OpenOnly: true})
+	}
 	now := time.Now()
 	// The mismatch check reads the workbench folder, which resync updates; a
 	// session worktree's own copy follows on its next worktree install.

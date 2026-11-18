@@ -142,7 +142,46 @@ func checkWorkbench(ctx context.Context, database *db.DB, id int64, o workbenchc
 		return workbenchcheck.Report{}, fmt.Errorf("loading board: %w", err)
 	}
 	o.Folder = p.FolderPath
+	if o.FolderOf, err = targetFolders(ctx, database, p.ID, board); err != nil {
+		return workbenchcheck.Report{}, err
+	}
 	return workbenchcheck.Check(ctx, p.ID, board, o), nil
+}
+
+// targetFolders is the drift check's FolderOf for workbench workbenchID's
+// board (PROJ-07, spec 2026-11-18 §6.10): a target's own folder row, live
+// or removed; a target with no folder (or one whose row is gone) is the
+// home folder, which Check reads as Options.Folder.
+func targetFolders(ctx context.Context, database *db.DB, workbenchID int64, board []db.BoardNode) (func(int64) (string, bool), error) {
+	folders, err := database.WorkbenchFolders(ctx, workbenchID, true)
+	if err != nil {
+		return nil, fmt.Errorf("loading the folders of workbench %d: %w", workbenchID, err)
+	}
+	byID := make(map[int64]db.WorkbenchFolder, len(folders))
+	for _, f := range folders {
+		byID[f.ID] = f
+	}
+	type place struct {
+		path    string
+		removed bool
+	}
+	of := map[int64]place{}
+	var walk func([]db.BoardNode)
+	walk = func(level []db.BoardNode) {
+		for _, n := range level {
+			if id := n.Target.WorkbenchFolderID; id.Valid {
+				if f, ok := byID[id.Int64]; ok {
+					of[int64(n.Target.ID)] = place{path: f.FolderPath, removed: f.RemovedAt.Valid}
+				}
+			}
+			walk(n.Children)
+		}
+	}
+	walk(board)
+	return func(targetID int64) (string, bool) {
+		p := of[targetID]
+		return p.path, p.removed
+	}, nil
 }
 
 // workbenchWithFolder loads workbench id and checks that its folder still

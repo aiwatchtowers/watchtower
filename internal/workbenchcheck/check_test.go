@@ -758,3 +758,153 @@ func TestCheck_BatchReadDeadlineIsIncomplete(t *testing.T) {
 		t.Fatalf("want incomplete with no findings, got incomplete=%v %+v", r.Incomplete, r.Findings)
 	}
 }
+
+// hubRepo is a second repository on main with a branch "hubonly" holding
+// one commit main lacks, and a branch "open" of its own; no other
+// repository has "hubonly".
+func hubRepo(t *testing.T) string {
+	t.Helper()
+	gitEnv(t)
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-q", "-b", "main")
+	commitFile(t, dir, "hub.md", "hub\n", "init")
+	gitRun(t, dir, "checkout", "-q", "-b", "hubonly")
+	commitFile(t, dir, "h.txt", "h\n", "h")
+	gitRun(t, dir, "checkout", "-q", "-b", "open", "main")
+	commitFile(t, dir, "o.txt", "o\n", "o")
+	gitRun(t, dir, "checkout", "-q", "main")
+	return dir
+}
+
+// countingRunner is ExecRunner counting the repository probes (rev-parse
+// --is-inside-work-tree) per folder; gh is never found.
+func countingRunner(probes map[string]int) Runner {
+	return func(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
+		if name == "gh" {
+			return nil, -1, exec.ErrNotFound
+		}
+		if slices.Equal(args, []string{"rev-parse", "--is-inside-work-tree"}) {
+			probes[dir]++
+		}
+		return ExecRunner(ctx, dir, stdin, name, args...)
+	}
+}
+
+// Spec 2026-11-18 §6.10: each target's branch is read in the repository of
+// its own folder, and each folder is probed once however many targets it
+// holds.
+func TestProj07_ChecksRunInTheTargetsFolder(t *testing.T) {
+	app, hub := newRepo(t), hubRepo(t)
+	board := []db.BoardNode{
+		node(1, "in_progress", "merged", time.Hour),  // app: merged into app's main
+		node(2, "in_progress", "hubonly", time.Hour), // hub: open work there
+		node(3, "in_progress", "hubonly", time.Hour), // app (no folder): app has no hubonly
+		node(4, "in_review", "hubonly", time.Hour),   // hub again: no second probe
+	}
+	folderOf := func(id int64) (string, bool) {
+		if id == 2 || id == 4 {
+			return hub, false
+		}
+		return "", false // the home folder
+	}
+	probes := map[string]int{}
+	r := Check(context.Background(), 1, board, Options{Folder: app, FolderOf: folderOf, Now: testNow, Run: countingRunner(probes)})
+	got := kinds(r)
+	if !slices.Equal(got[1], []string{KindMergedOpen}) {
+		t.Errorf("target 1 (app): %v, want merged_but_open", got[1])
+	}
+	if len(got[2]) != 0 || len(got[4]) != 0 {
+		t.Errorf("targets 2 and 4 (hub): %v / %v, want none: hubonly is open work in hub", got[2], got[4])
+	}
+	if !slices.Equal(got[3], []string{KindBranchMissing}) {
+		t.Errorf("target 3 (app): %v, want branch_missing", got[3])
+	}
+	if probes[app] != 1 || probes[hub] != 1 {
+		t.Errorf("probes per folder %v, want one each", probes)
+	}
+	if !r.Git || r.Base != "main" {
+		t.Errorf("the report's repository fields are the home folder's: git %v base %q", r.Git, r.Base)
+	}
+
+	// The same branch name in two folders is two pieces of work: open work
+	// on hub's "open" does not excuse a done target on app's "open".
+	board = []db.BoardNode{node(5, "done", "open", time.Hour), node(6, "in_progress", "open", time.Hour)}
+	r = Check(context.Background(), 1, board, Options{Folder: app, Now: testNow, Run: countingRunner(map[string]int{}),
+		FolderOf: func(id int64) (string, bool) {
+			if id == 6 {
+				return hub, false
+			}
+			return app, false
+		}})
+	got = kinds(r)
+	if !slices.Equal(got[5], []string{KindDoneUnmerged}) {
+		t.Errorf("target 5: %v, want done_but_unmerged (hub's open work is not app's)", got[5])
+	}
+	if len(got[6]) != 0 {
+		t.Errorf("target 6: %v, want none: hub's open is open work", got[6])
+	}
+}
+
+// Spec 2026-11-18 §6.3: a target whose folder left the bench reports
+// folder_removed for its branch/PR: never a git verdict, never a command
+// run in that folder, and never a finding the Stop hook blocks on.
+func TestProj07_RemovedFolderReportsFolderRemoved(t *testing.T) {
+	app := newRepo(t)
+	gone := filepath.Join(t.TempDir(), "hub")
+	pr := node(3, "in_progress", "", time.Hour)
+	pr.Target.PR = "#7"
+	board := []db.BoardNode{
+		node(1, "in_progress", "merged", time.Hour),
+		node(2, "in_progress", "nowhere", time.Hour),
+		pr,
+		node(4, "todo", "", time.Hour), // nothing to check: no finding
+	}
+	var dirs []string
+	probes := map[string]int{}
+	counting := countingRunner(probes)
+	run := func(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
+		dirs = append(dirs, dir)
+		return counting(ctx, dir, stdin, name, args...)
+	}
+	folderOf := func(id int64) (string, bool) {
+		if id == 1 {
+			return "", false
+		}
+		return gone, true
+	}
+	r := Check(context.Background(), 1, board, Options{Folder: app, FolderOf: folderOf, Now: testNow, Network: true, Run: run})
+	got := kinds(r)
+	if !slices.Equal(got[1], []string{KindMergedOpen}) {
+		t.Errorf("target 1 (home): %v", got[1])
+	}
+	for _, id := range []int{2, 3} {
+		if !slices.Equal(got[id], []string{KindFolderRemoved}) {
+			t.Errorf("target %d: %v, want only folder_removed", id, got[id])
+		}
+	}
+	if len(got[4]) != 0 {
+		t.Errorf("target 4 carries no branch or PR: %v", got[4])
+	}
+	lines := map[int]string{}
+	for _, f := range r.Findings {
+		if f.Kind != KindFolderRemoved {
+			continue
+		}
+		lines[f.TargetID] = f.Line()
+		if f.Blocking() {
+			t.Errorf("folder_removed must never block a turn: %+v", f)
+		}
+	}
+	if !strings.Contains(lines[2], "folder removed: "+gone) || !strings.Contains(lines[2], "branch nowhere") {
+		t.Errorf("line %q", lines[2])
+	}
+	if !strings.Contains(lines[3], "pull request #7") {
+		t.Errorf("the PR-only finding names the PR: %q", lines[3])
+	}
+	if b := r.BlockingFindings(); len(b) != 1 || b[0].TargetID != 1 {
+		t.Errorf("blocking: %+v, want only target 1's", b)
+	}
+	if slices.Contains(dirs, gone) {
+		t.Errorf("a command ran in the removed folder: %v", dirs)
+	}
+}
