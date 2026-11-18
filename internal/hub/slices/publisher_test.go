@@ -409,6 +409,13 @@ type fakeTime struct {
 	armed  int
 	// armedCh is closed (and replaced) on every arm: waitArmed blocks on it.
 	armedCh chan struct{}
+	// woken reports a wake already pending for the driven Run (nil: never).
+	// An arm made while one is pending is not counted: Run's select takes
+	// the wake at once and arms again, so that arm is no settled sleep.
+	// (A failed kind's cycle marks the heartbeat dirty, which pokes Run
+	// from inside its own cycle; a settle counting that arm let a step
+	// advance the clock while no timer was armed, #1918.)
+	woken func() bool
 }
 
 type fakeTimer struct {
@@ -432,9 +439,11 @@ func (f *fakeTime) Timer(d time.Duration) (<-chan time.Time, func()) {
 	ch := make(chan time.Time, 1)
 	id := f.nextID
 	f.nextID++
-	f.armed++
-	close(f.armedCh)
-	f.armedCh = make(chan struct{})
+	if f.woken == nil || !f.woken() {
+		f.armed++
+		close(f.armedCh)
+		f.armedCh = make(chan struct{})
+	}
 	if d <= 0 {
 		ch <- f.now
 	} else {
@@ -447,14 +456,21 @@ func (f *fakeTime) Timer(d time.Duration) (<-chan time.Time, func()) {
 	}
 }
 
+// drive puts p's Run on f: its monotonic clock and timers, and a pending
+// wake keeps an arm from counting as settled. Called before Run starts.
+func (f *fakeTime) drive(p *Publisher) {
+	p.mono, p.timer = f.Now, f.Timer
+	f.woken = func() bool { return len(p.wake) > 0 }
+}
+
 func (f *fakeTime) armedCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.armed
 }
 
-// waitArmed blocks until more than n timers were armed (an event wait: a
-// hang is bounded by go test -timeout).
+// waitArmed blocks until more than n timers were armed with no wake pending
+// (an event wait: a hang is bounded by go test -timeout).
 func (f *fakeTime) waitArmed(n int) {
 	for {
 		f.mu.Lock()
@@ -495,7 +511,7 @@ func (r *rig) runFake(sources ...Source) *runner {
 	r.t.Helper()
 	ft := newFakeTime()
 	p := r.publisherWith(Config{Clock: ft.Now}, sources...)
-	p.mono, p.timer = ft.Now, ft.Timer
+	ft.drive(p)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()
