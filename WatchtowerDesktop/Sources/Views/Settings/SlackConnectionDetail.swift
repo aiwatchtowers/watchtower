@@ -1,6 +1,7 @@
 import os
 import SwiftUI
 import WatchtowerCore
+import DesignKit
 
 /// In-flight Slack auth/reconnect/disconnect state, hoisted out of
 /// `SlackConnectionDetail` and owned by `AppState` (`slackAuthFlow`). The
@@ -136,6 +137,10 @@ struct SlackConnectionDetail: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
+
+            if let notice = slackAuth.revokeNotice {
+                SlackRevokeNoticeLine(text: notice)
+            }
         }
         .confirmationDialog(
             "Disconnect \(disconnectName)?",
@@ -151,12 +156,12 @@ struct SlackConnectionDetail: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(
-                "Removes the \(disconnectName) connection and stops syncing it. Other connected Slack "
-                    + "workspaces keep syncing. Already-synced messages and the AI products built on them "
-                    + "(digests, tracks, people cards, inbox items, situations) are kept and stay queryable. "
-                    + "Gmail, Calendar, and Jira data are unaffected."
-            )
+            // `auth logout` is `slack remove` of account #1 (revoke, token
+            // delete, row removed), so it says what the Remove dialog says.
+            Text(AccountPurgeStatus.removeDialogMessage(
+                slackAccount: disconnectName,
+                status: appState.accountPurgeCenter?.status
+            ))
         }
     }
 
@@ -170,8 +175,8 @@ struct SlackConnectionDetail: View {
         Task {
             // Stop the daemon first so it isn't mid-sync when the token is
             // removed, then restart it — without a token it skips the Slack
-            // phase. Synced data is kept (non-destructive, matches `slack
-            // remove` / `auth logout` semantics).
+            // phase. Same semantics as `slack remove` (revoke at Slack, data
+            // kept for now, deleted 72 h later with the purge on).
             // Stop, disconnect and start as one item on the app's start queue.
             let daemon = flow.daemonManager
             let disconnected = await appState.disconnectSlackOnQueue(
@@ -193,12 +198,12 @@ struct SlackConnectionDetail: View {
     /// access via its own OAuth consent and carrying its own namespaced
     /// identity.
     ///
-    /// The removal confirmation copy explicitly states data is KEPT — unlike
-    /// Google's removal, `slack remove` is non-destructive: it drops the token
-    /// and marks the row removed/disabled but leaves already-synced messages,
-    /// digests, and situations in place. The legacy single-account Slack
-    /// "Disconnect" in `workspaceSection` now shares the same non-destructive
-    /// semantics (`auth logout` → `removeSlackAccount`).
+    /// The removal confirmation says what `slack remove` does: it revokes the
+    /// token at Slack, drops the token file and marks the row removed/disabled;
+    /// the synced data stays for now and, with the purge on, is deleted 72 h
+    /// later (`AccountPurgeStatus.removeDialogMessage`). The legacy
+    /// single-account Slack "Disconnect" in `workspaceSection` runs the same
+    /// remove (`auth logout` → `removeSlackAccount`) and shows the same text.
     private var slackAccountsSection: some View {
         Section("Slack Workspaces") {
             if let vm = appState.slackAccountsViewModel {
@@ -269,17 +274,7 @@ struct SlackConnectionDetail: View {
                     }
                 }
 
-                if let err = vm.error {
-                    Text(err)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-
-                Button("Add Slack Workspace") {
-                    showAddSlackAccountSheet = true
-                }
-                .managedByOrganization(sourceBlocked)
-                .disabled(vm.isConnecting)
+                accountsFooter(vm)
             } else {
                 Text("Loading...")
                     .font(.caption)
@@ -317,6 +312,27 @@ struct SlackConnectionDetail: View {
                 status: appState.accountPurgeCenter?.status
             ))
         }
+    }
+
+    /// Under the Workspaces list: the last command's error, an unconfirmed
+    /// revoke's notice, and Add.
+    @ViewBuilder
+    private func accountsFooter(_ vm: SlackAccountsViewModel) -> some View {
+        if let err = vm.error {
+            Text(err)
+                .font(.caption)
+                .foregroundStyle(.red)
+        }
+
+        if let notice = vm.revokeNotice {
+            SlackRevokeNoticeLine(text: notice)
+        }
+
+        Button("Add Slack Workspace") {
+            showAddSlackAccountSheet = true
+        }
+        .managedByOrganization(sourceBlocked)
+        .disabled(vm.isConnecting)
     }
 
     /// The dictionary editor lives only on the Reactions built-in's card (ask #366, C3).
