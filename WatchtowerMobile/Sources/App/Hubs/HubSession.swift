@@ -178,6 +178,8 @@ final class HubSession {
     let chatRequests: SessionChatRequester
     /// The phone's board writes (status, priority, comments, new targets).
     let boardWriter: BoardWriter
+    /// This hub's optimistic overlays (live link R5): the board writes and ask answers shown at tap time.
+    let overlays: OverlayBook
     /// The owner's unsent ask answers, per ask: they survive navigation.
     let askDrafts = AskDraftStore()
     /// The phone's ask answers and what the Mac did with them.
@@ -561,8 +563,7 @@ final class HubSession {
         self.outbox = outbox
         reportRequests = SessionReportRequester.sending(through: outbox)
         chatRequests = SessionChatRequester.sending(through: outbox, store: store)
-        boardWriter = BoardWriter.sending(through: outbox, store: store)
-        askAnswerer = AskAnswerer.sending(through: outbox, store: store, drafts: askDrafts)
+        (overlays, boardWriter, askAnswerer) = Self.makeWriters(outbox: outbox, store: store, drafts: askDrafts, hubID: hubID, route: route)
         sessionStarts = SessionStarter.sending(through: outbox, store: store)
         sessionInputs = SessionInputSender.sending(through: outbox, store: store)
         (chats, chatUploads) = Self.makeChats(outbox: outbox, secure: secure, hubID: hubID, copyPath: chatCopyPath)
@@ -598,7 +599,7 @@ final class HubSession {
         sharedAlerts = Self.makeSharedAlerts(
             hubID: hubID, route: route, link: link, keys: sealed.hasDeviceKeys ? keys : nil, store: store, defaults: defaults,
             posting: alertPosting)
-        workbenchReplica.start(store: store) { [weak self] in self?.typingState ?? (nil, false) }
+        workbenchReplica.start(store: store, overlays: overlays) { [weak self] in self?.typingState ?? (nil, false) }
         calendarReplica.start(store: store)
         chats.start(store: store)
         phoneRecordings.start(store: store)
@@ -872,7 +873,7 @@ final class HubSession {
         await outbox.setAppliedObserver(
             Self.appliedObserver(
                 askAnswerer: askAnswerer, sessionStarts: sessionStarts, sessionInputs: sessionInputs, boardWriter: boardWriter,
-                chats: chats
+                chats: chats, overlays: overlays
             )
         )
         // The chats' prefetch asks this session whether the hub answers, never a screen.
@@ -977,22 +978,26 @@ final class HubSession {
     }
 
     /// The outbox's one applied observer, shared by the app and the tests:
-    /// every applied echo goes to both consumers on the main actor, and
-    /// each keeps only its own kind.
+    /// every applied echo goes to every consumer on the main actor, and
+    /// each keeps only its own kind. `overlays` takes it as it arrives: its
+    /// `confirm_ms` is tap → this echo.
     nonisolated static func appliedObserver(
         askAnswerer: AskAnswerer,
         sessionStarts: SessionStarter,
         sessionInputs: SessionInputSender? = nil,
         boardWriter: BoardWriter? = nil,
-        chats: ChatsCenter? = nil
+        chats: ChatsCenter? = nil,
+        overlays: OverlayBook? = nil
     ) -> @Sendable (ActionRequestPayload) -> Void {
-        { [weak askAnswerer, weak sessionStarts, weak sessionInputs, weak boardWriter, weak chats] action in
+        { [weak askAnswerer, weak sessionStarts, weak sessionInputs, weak boardWriter, weak chats, weak overlays] action in
+            let arrived = Date()
             Task { @MainActor in
                 askAnswerer?.receiveApplied(action)
                 sessionStarts?.receiveApplied(action)
                 sessionInputs?.receiveApplied(action)
                 boardWriter?.receiveApplied(action)
                 chats?.receiveApplied(action)
+                overlays?.receiveEcho(action, now: arrived)
             }
         }
     }

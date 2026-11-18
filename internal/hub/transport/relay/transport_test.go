@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/hub/identity"
@@ -78,10 +79,17 @@ type harness struct {
 	key      ed25519.PrivateKey
 	assetDir string
 	tr       *Transport
-	data     string // the hub's data zone
+	data     string          // the hub's data zone
+	opts     []client.Option // the relay client's options
 }
 
 func newHarness(t *testing.T) *harness {
+	t.Helper()
+	return newHarnessOn(t, relaytest.Start(t))
+}
+
+// newHarnessOn is newHarness over srv, the relay client built with opts.
+func newHarnessOn(t *testing.T, srv *relaytest.Server, opts ...client.Option) *harness {
 	t.Helper()
 	_, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -92,7 +100,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	h := &harness{relay: relaytest.Start(t), store: st, sealer: secure.NewSealer(newTestKeys(t)), key: key, assetDir: t.TempDir()}
+	h := &harness{relay: srv, store: st, sealer: secure.NewSealer(newTestKeys(t)), key: key, assetDir: t.TempDir(), opts: opts}
 	h.tr = h.newTransport(t)
 	h.data = transport.DataZone(h.tr.c.DeviceID())
 	return h
@@ -101,7 +109,7 @@ func newHarness(t *testing.T) *harness {
 // newTransport builds another transport of the same hub (same key, store).
 func (h *harness) newTransport(t *testing.T) *Transport {
 	t.Helper()
-	c := NewClient(h.relay.URL, h.key)
+	c := NewClient(h.relay.URL, h.key, h.opts...)
 	tr := New(c, Options{
 		Origin: h.relay.URL, HubRelayID: c.DeviceID(), Store: h.store, AssetDir: h.assetDir,
 		Clock: func() time.Time { return time.UnixMilli(1_700_000_000_000) },
@@ -741,6 +749,311 @@ func TestCodeClass(t *testing.T) {
 	for _, c := range cases {
 		if got := CodeClass(c.err); got != c.want {
 			t.Errorf("CodeClass(%v) = %q, want %q", c.err, got, c.want)
+		}
+	}
+}
+
+// connectVouched vouches the hub (a phone holds it) and connects its
+// transport to the data zone, past the initial pull.
+func (h *harness) connectVouched(t *testing.T) {
+	t.Helper()
+	h.relay.SetAccountState(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: "phone1", Paying: true}}})
+	if err := h.tr.Connect(t.Context(), []string{h.data}); err != nil {
+		t.Fatal(err)
+	}
+	waitZoneEvent(t, h.tr, h.data)
+}
+
+// opsSince is the ops the relay saw after the first n, by name ("ws:save"
+// for one over the WebSocket, "save" over HTTPS) → count.
+func opsSince(srv *relaytest.Server, n int) map[string]int {
+	out := map[string]int{}
+	for _, op := range srv.Ops()[n:] {
+		out[op]++
+	}
+	return out
+}
+
+// TestTransport_OpsGoOverTheSocketWhenOpen: once connected, the hub's ops go
+// over its WebSocket; none goes over HTTPS.
+func TestTransport_OpsGoOverTheSocketWhenOpen(t *testing.T) {
+	h := newHarness(t)
+	h.connectVouched(t)
+	ctx := t.Context()
+	mark := len(h.relay.Ops())
+	a := h.seal(t, "target-1", `{"a":1}`)
+	if out, err := h.tr.Save(ctx, []transport.SaveItem{{Record: a}}); err != nil || !out[0].Saved {
+		t.Fatalf("save: %+v, %v", out, err)
+	}
+	if b, err := h.tr.Changes(ctx, h.data, 0); err != nil || len(b.Changed) != 1 {
+		t.Fatalf("changes: %+v, %v", b, err)
+	}
+	if _, err := h.tr.Delete(ctx, h.data, []transport.DeleteItem{{Name: a.WireName()}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tr.AccountState(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := opsSince(h.relay, mark)
+	for _, op := range []string{"save", "changes", "delete", "get_account_state"} {
+		if got["ws:"+op] != 1 || got[op] != 0 {
+			t.Fatalf("%s: %v, want once over the socket and never over HTTPS", op, got)
+		}
+	}
+}
+
+// TestTransport_FallsBackToHTTPSWhenDisconnected: while the socket is down
+// ops go over HTTPS, back over the socket once it reconnects, and over HTTPS
+// again after Close.
+func TestTransport_FallsBackToHTTPSWhenDisconnected(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv := relaytest.StartInMemory(t)
+		h := newHarnessOn(t, srv, client.WithHTTPClient(srv.HTTPClient()))
+		h.connectVouched(t)
+		ctx := t.Context()
+		changes := func(want string) {
+			t.Helper()
+			mark := len(srv.Ops())
+			if _, err := h.tr.Changes(ctx, h.data, 0); err != nil {
+				t.Fatal(err)
+			}
+			if got := opsSince(srv, mark); got[want] != 1 {
+				t.Fatalf("changes went %v, want %s", got, want)
+			}
+		}
+		srv.SetWebSocketDown(true)
+		synctest.Wait() // the client noticed and waits to reconnect
+		if h.tr.Connected() {
+			t.Fatal("connected with the socket down")
+		}
+		changes("changes")
+		srv.SetWebSocketDown(false)
+		for !h.tr.Connected() {
+			time.Sleep(time.Second) // the bubble's clock: the reconnect backoff
+		}
+		changes("ws:changes")
+		_ = h.tr.Close()
+		changes("changes")
+	})
+}
+
+// TestTransport_SaveResentAfterSocketDropIsIdempotent: a conditional save
+// whose socket drops after its frame went out (the relay wrote it) is sent
+// again over HTTPS, meets its own record and settles; the zone holds one
+// record. A conditional delete is resent the same way.
+func TestTransport_SaveResentAfterSocketDropIsIdempotent(t *testing.T) {
+	t.Run("save", func(t *testing.T) {
+		h := newHarness(t)
+		h.connectVouched(t)
+		ctx := t.Context()
+		a := h.seal(t, "target-1", `{"a":1}`)
+		mark := len(h.relay.Ops())
+		h.relay.DropAfterNext("save")
+		out, err := h.tr.Save(ctx, []transport.SaveItem{{Record: a, Expect: transport.Expect{Mode: transport.ExpectAbsent}}})
+		if err != nil || len(out) != 1 || out[0].Conflict == nil || !bytes.Equal(out[0].Conflict.Envelope, a.Envelope()) {
+			t.Fatalf("save: %+v, %v; want a conflict on its own record", out, err)
+		}
+		if got := opsSince(h.relay, mark); got["ws:save"] != 1 || got["save"] != 1 {
+			t.Fatalf("ops %v, want the socket's save and one HTTPS resend", got)
+		}
+		if b, err := h.tr.Changes(ctx, h.data, 0); err != nil || len(b.Changed) != 1 {
+			t.Fatalf("zone: %+v, %v; want one record", b, err)
+		}
+	})
+	t.Run("delete", func(t *testing.T) {
+		h := newHarness(t)
+		h.connectVouched(t)
+		ctx := t.Context()
+		seq := h.relay.Put(h.data, "target-1", []byte{1})
+		mark := len(h.relay.Ops())
+		h.relay.DropAfterNext("delete")
+		out, err := h.tr.Delete(ctx, h.data, []transport.DeleteItem{{Name: "target-1", Expect: transport.Expect{Mode: transport.ExpectSeq, Seq: seq}}})
+		// The resend meets the record already gone: a conflict with no
+		// current record, as a caller's own retry got before.
+		if err != nil || len(out) != 1 || out[0].Saved || out[0].Conflict != nil {
+			t.Fatalf("delete: %+v, %v; want a conflict on the gone record", out, err)
+		}
+		if got := opsSince(h.relay, mark); got["ws:delete"] != 1 || got["delete"] != 1 {
+			t.Fatalf("ops %v, want the socket's delete and one HTTPS resend", got)
+		}
+		if b, err := h.tr.Changes(ctx, h.data, 0); err != nil || len(b.Changed) != 0 || len(b.Deleted) != 1 {
+			t.Fatalf("zone: %+v, %v; want the record deleted once", b, err)
+		}
+	})
+}
+
+// TestTransport_UnconditionalWriteNotResentAfterSocketDrop: an unconditional
+// save or delete whose socket drops after its frame went out is not sent
+// again; the caller gets transport.ErrUnavailable.
+func TestTransport_UnconditionalWriteNotResentAfterSocketDrop(t *testing.T) {
+	for _, op := range []string{"save", "delete"} {
+		t.Run(op, func(t *testing.T) {
+			h := newHarness(t)
+			h.connectVouched(t)
+			ctx := t.Context()
+			a := h.seal(t, "target-1", `{"a":1}`)
+			if op == "delete" {
+				h.relay.Put(h.data, a.WireName(), a.Envelope())
+			}
+			mark := len(h.relay.Ops())
+			h.relay.DropAfterNext(op)
+			var err error
+			if op == "save" {
+				_, err = h.tr.Save(ctx, []transport.SaveItem{{Record: a}})
+			} else {
+				_, err = h.tr.Delete(ctx, h.data, []transport.DeleteItem{{Name: a.WireName()}})
+			}
+			if !errors.Is(err, transport.ErrUnavailable) {
+				t.Fatalf("%s: %v, want ErrUnavailable", op, err)
+			}
+			if got := opsSince(h.relay, mark); got["ws:"+op] != 1 || got[op] != 0 {
+				t.Fatalf("ops %v, want the socket's %s alone", got, op)
+			}
+		})
+	}
+}
+
+// TestTransport_RefusedBeforeSendFallsBackForAnyOp: with no socket the
+// request is never written, so even an unconditional write goes over HTTPS.
+func TestTransport_RefusedBeforeSendFallsBackForAnyOp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv := relaytest.StartInMemory(t)
+		h := newHarnessOn(t, srv, client.WithHTTPClient(srv.HTTPClient()))
+		h.connectVouched(t)
+		ctx := t.Context()
+		srv.SetWebSocketDown(true)
+		synctest.Wait()
+		mark := len(srv.Ops())
+		a := h.seal(t, "target-1", `{"a":1}`)
+		if out, err := h.tr.Save(ctx, []transport.SaveItem{{Record: a}}); err != nil || !out[0].Saved {
+			t.Fatalf("save: %+v, %v", out, err)
+		}
+		if _, err := h.tr.Delete(ctx, h.data, []transport.DeleteItem{{Name: a.WireName()}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.tr.SetHubReaders(ctx, []string{"phone1"}); err != nil {
+			t.Fatal(err)
+		}
+		got := opsSince(srv, mark)
+		for _, op := range []string{"save", "delete", "set_hub_readers"} {
+			if got[op] != 1 || got["ws:"+op] != 0 {
+				t.Fatalf("%s: %v, want once over HTTPS", op, got)
+			}
+		}
+	})
+}
+
+// TestTransport_LargeSaveGoesOverTheSocket: a save far over a WebSocket
+// library's default 32 KiB message limit goes over the socket as is.
+func TestTransport_LargeSaveGoesOverTheSocket(t *testing.T) {
+	h := newHarness(t)
+	h.connectVouched(t)
+	mark := len(h.relay.Ops())
+	big := h.seal(t, "target-1", `{"pad":"`+strings.Repeat("x", 200<<10)+`"}`)
+	if out, err := h.tr.Save(t.Context(), []transport.SaveItem{{Record: big}}); err != nil || !out[0].Saved {
+		t.Fatalf("save: %+v, %v", out, err)
+	}
+	if got := opsSince(h.relay, mark); got["ws:save"] != 1 || got["save"] != 0 {
+		t.Fatalf("ops %v, want the save once over the socket", got)
+	}
+}
+
+// TestTransport_UnansweredSocketRequestTimesOut: a request the relay never
+// answers on a live socket ends after socketOpTimeout (the HTTPS client's
+// timeout) as an unknown outcome: a read is sent again over HTTPS, an
+// unconditional write returns ErrUnavailable.
+func TestTransport_UnansweredSocketRequestTimesOut(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv := relaytest.StartInMemory(t)
+		h := newHarnessOn(t, srv, client.WithHTTPClient(srv.HTTPClient()))
+		h.connectVouched(t)
+		ctx := t.Context()
+		mark, start := len(srv.Ops()), time.Now()
+		srv.MuteNext("changes")
+		if _, err := h.tr.Changes(ctx, h.data, 0); err != nil {
+			t.Fatalf("changes: %v", err)
+		}
+		if waited := time.Since(start); waited != socketOpTimeout {
+			t.Fatalf("waited %s, want %s", waited, socketOpTimeout)
+		}
+		if got := opsSince(srv, mark); got["ws:changes"] != 1 || got["changes"] != 1 {
+			t.Fatalf("ops %v, want the muted socket read and one HTTPS read", got)
+		}
+		mark = len(srv.Ops())
+		srv.MuteNext("save")
+		if _, err := h.tr.Save(ctx, []transport.SaveItem{{Record: h.seal(t, "target-1", `{}`)}}); !errors.Is(err, transport.ErrUnavailable) {
+			t.Fatalf("save: %v, want ErrUnavailable", err)
+		}
+		if got := opsSince(srv, mark); got["ws:save"] != 1 || got["save"] != 0 {
+			t.Fatalf("ops %v, want the socket's save alone", got)
+		}
+	})
+}
+
+// TestTransport_CancelAfterWriteIsNotResent: the caller's ctx ending while a
+// written request waits for its answer returns ctx's error, nothing resent.
+func TestTransport_CancelAfterWriteIsNotResent(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv := relaytest.StartInMemory(t)
+		h := newHarnessOn(t, srv, client.WithHTTPClient(srv.HTTPClient()))
+		h.connectVouched(t)
+		mark := len(srv.Ops())
+		srv.MuteNext("changes")
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() {
+			_, err := h.tr.Changes(ctx, h.data, 0)
+			done <- err
+		}()
+		synctest.Wait() // written, waiting for the answer
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("changes: %v, want context.Canceled", err)
+		}
+		if got := opsSince(srv, mark); got["ws:changes"] != 1 || got["changes"] != 0 {
+			t.Fatalf("ops %v, want the socket read alone", got)
+		}
+	})
+}
+
+// TestTransport_SocketUnauthenticatedFallsBackToHTTPS: an op the socket's
+// session no longer covers goes over HTTPS, which signs in again.
+func TestTransport_SocketUnauthenticatedFallsBackToHTTPS(t *testing.T) {
+	h := newHarness(t)
+	h.connectVouched(t)
+	mark := len(h.relay.Ops())
+	h.relay.FailNext("save", relayv1.ErrorCode_ERROR_CODE_UNAUTHENTICATED)
+	if out, err := h.tr.Save(t.Context(), []transport.SaveItem{{Record: h.seal(t, "target-1", `{}`)}}); err != nil || !out[0].Saved {
+		t.Fatalf("save: %+v, %v", out, err)
+	}
+	if got := opsSince(h.relay, mark); got["ws:save"] != 1 || got["save"] != 1 {
+		t.Fatalf("ops %v, want the refused socket save and one over HTTPS", got)
+	}
+}
+
+func TestResendable(t *testing.T) {
+	seq := uint64(3)
+	cond := &relayv1.SaveItem{Expect: &relayv1.SaveItem_ExpectedSeq{ExpectedSeq: 3}}
+	absent := &relayv1.SaveItem{Expect: &relayv1.SaveItem_MustNotExist{MustNotExist: true}}
+	plain := &relayv1.SaveItem{}
+	for _, c := range []struct {
+		name string
+		req  *relayv1.Request
+		want bool
+	}{
+		{"changes", &relayv1.Request{Op: &relayv1.Request_Changes{Changes: &relayv1.Changes{}}}, true},
+		{"get_account_state", &relayv1.Request{Op: &relayv1.Request_GetAccountState{GetAccountState: &relayv1.GetAccountState{}}}, true},
+		{"get_download", &relayv1.Request{Op: &relayv1.Request_GetDownload{GetDownload: &relayv1.GetDownload{}}}, true},
+		{"conditional save", &relayv1.Request{Op: &relayv1.Request_Save{Save: &relayv1.Save{Items: []*relayv1.SaveItem{cond, absent}}}}, true},
+		{"mixed save", &relayv1.Request{Op: &relayv1.Request_Save{Save: &relayv1.Save{Items: []*relayv1.SaveItem{cond, plain}}}}, false},
+		{"conditional delete", &relayv1.Request{Op: &relayv1.Request_Delete{Delete: &relayv1.Delete{Items: []*relayv1.DeleteItem{{ExpectedSeq: &seq}}}}}, true},
+		{"mixed delete", &relayv1.Request{Op: &relayv1.Request_Delete{Delete: &relayv1.Delete{Items: []*relayv1.DeleteItem{{ExpectedSeq: &seq}, {}}}}}, false},
+		{"send_alert", &relayv1.Request{Op: &relayv1.Request_SendAlert{SendAlert: &relayv1.SendAlert{}}}, false},
+		{"set_hub_readers", &relayv1.Request{Op: &relayv1.Request_SetHubReaders{SetHubReaders: &relayv1.SetHubReaders{}}}, false},
+		{"create_upload", &relayv1.Request{Op: &relayv1.Request_CreateUpload{CreateUpload: &relayv1.CreateUpload{}}}, false},
+	} {
+		if got := resendable(c.req); got != c.want {
+			t.Errorf("%s: resendable %v, want %v", c.name, got, c.want)
 		}
 	}
 }

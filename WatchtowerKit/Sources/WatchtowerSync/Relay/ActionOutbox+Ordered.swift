@@ -66,11 +66,15 @@ extension ActionOutbox {
     /// reseals under the new next seq (at most `sealAttempts` seals, then `busy`). Then asks for a flush without
     /// awaiting it: a refused flush never fails the enqueue, the row waits in the queue.
     func enqueueOrdered(
-        kind: ActionKind, entityRecordName: String?, params: [String: JSONValue], deviceID: String
+        kind: ActionKind,
+        entityRecordName: String?,
+        params: [String: JSONValue],
+        deviceID: String,
+        id: String = UUID().uuidString
     ) async throws -> String {
         guard let device = UUID(uuidString: deviceID) else { throw ActionOutboxError.notLinked }
         let action = ActionRequestPayload(
-            id: UUID().uuidString,
+            id: id,
             kind: kind,
             entityID: Self.entityID(from: entityRecordName),
             params: params,
