@@ -158,8 +158,10 @@ var displayOnlyReaders = map[string]string{
 // never into the bare-name list above; a key whose function the scan no
 // longer sees fails the test.
 var displayOnlyReadersAt = map[string]string{
-	"tools/chat_history.go:boundConversation":  "reads the bound conversation's context_type to refuse isolated threads; no text. The chat-history tools hand a chat its own rows for its next answer, like ActiveChatPath",
-	"db/chat_lease.go:MarkChatTurnSessionLost": "writes the error code of a dead hub turn's reply; reads no text",
+	"workbenchfolders/merge.go:reKeyChats":       "a bench merge rewrites the moved chats' context_id prefix; reads no text",
+	"workbenchfolders/merge.go:chatContextsStep": "the merge step that runs reKeyChats; reads no text",
+	"tools/chat_history.go:boundConversation":    "reads the bound conversation's context_type to refuse isolated threads; no text. The chat-history tools hand a chat its own rows for its next answer, like ActiveChatPath",
+	"db/chat_lease.go:MarkChatTurnSessionLost":   "writes the error code of a dead hub turn's reply; reads no text",
 	// internal/hub chat_answer push: ids, status and the conversation title only.
 	"hub/chat_turn_watch.go:send":           "the chat_answer push reads a conversation title, never message text into a store",
 	"hub/chat_turn_watch.go:pendingActions": "the chat_answer push: pending action ids of main chats, no text",
