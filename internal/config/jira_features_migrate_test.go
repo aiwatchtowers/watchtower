@@ -268,7 +268,7 @@ func TestPatchConfigYAML_DeleteWinsOverSet(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(p, []byte("active_workspace: test\n"), 0o600))
 
-	require.NoError(t, patchConfigYAML(p,
+	require.NoError(t, patchConfigYAMLLocked(p,
 		map[string]bool{"jira.features.team_workload": true},
 		[]string{"jira.features.team_workload"}))
 
@@ -285,7 +285,7 @@ func TestDeleteYAMLPath_AbsentKeyIsNoOp(t *testing.T) {
 	original := "active_workspace: test\njira:\n  enabled: true\n"
 	require.NoError(t, os.WriteFile(p, []byte(original), 0o600))
 
-	require.NoError(t, patchConfigYAML(p, nil, []string{
+	require.NoError(t, patchConfigYAMLLocked(p, nil, []string{
 		"nosuchsection.nosuchkey",
 		"jira.nosuchkey",
 		"jira.enabled.deeper",

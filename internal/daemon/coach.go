@@ -136,8 +136,30 @@ func (d *Daemon) markCoachFailed(now time.Time) {
 	}
 }
 
-// phaseCoach checks the accepted workbench repository edits for their commit
-// once a day (coachCommitCheck), and runs the agent coach once a week: fold
+// coachPhases is the cycle's coach step: the daily commit check calls no
+// model, so it runs whatever the background AI answer (#1886: only the
+// proposing pass is gated); the weekly pass runs as the admitted AI phase
+// "coach".
+func (d *Daemon) coachPhases(ctx context.Context) {
+	d.phaseCoachCommits(ctx)
+	d.aiPhase(ctx, "coach", d.phaseCoach)
+}
+
+// phaseCoachCommits checks the accepted workbench repository edits for their
+// commit once a day (coachCommitCheck). Git and the database only, no model.
+func (d *Daemon) phaseCoachCommits(ctx context.Context) {
+	if d.db == nil || ctx.Err() != nil {
+		return
+	}
+	now := time.Now()
+	if d.lastCoachCommits.IsZero() || now.Sub(d.lastCoachCommits) >= coachCommitsEvery {
+		if d.coachCommitCheck(ctx, now) {
+			d.lastCoachCommits = now
+		}
+	}
+}
+
+// phaseCoach runs the agent coach once a week: fold
 // the old instruction suggestions in (once ever, ImportSuggestions), judge the accepted proposals
 // that are old enough, collect the signals, ask for new proposals. The fold
 // runs under the lock, before proposing, so it and `coach run` never race on
@@ -154,11 +176,6 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 		return
 	}
 	now := time.Now()
-	if d.lastCoachCommits.IsZero() || now.Sub(d.lastCoachCommits) >= coachCommitsEvery {
-		if d.coachCommitCheck(ctx, now) {
-			d.lastCoachCommits = now
-		}
-	}
 	if !d.lastCoach.IsZero() && now.Sub(d.lastCoach) < coachInterval {
 		return
 	}

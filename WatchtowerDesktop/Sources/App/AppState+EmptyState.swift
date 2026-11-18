@@ -39,6 +39,8 @@ extension AppState {
             openSettingsWindow?()
         case .openBuiltin(let id, _):
             openBuiltinAutomation(id)
+        case .allowBackgroundAI:
+            presentBackgroundAIConsent()
         case .tabAction:
             break
         }

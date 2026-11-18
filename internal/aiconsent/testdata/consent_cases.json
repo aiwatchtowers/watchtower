@@ -1,0 +1,18 @@
+[
+  {"name": "not answered, no profile", "answer": null,
+   "want": {"effective": "paused", "reason": "unanswered", "prompt": true, "locked": false}},
+  {"name": "allowed, no profile", "answer": "allowed",
+   "want": {"effective": "allowed", "reason": "owner", "prompt": false, "locked": false}},
+  {"name": "paused, no profile", "answer": "paused",
+   "want": {"effective": "paused", "reason": "owner", "prompt": false, "locked": false}},
+  {"name": "not answered, organization allows", "answer": null, "policy_raw": true,
+   "want": {"effective": "allowed", "reason": "organization", "prompt": false, "locked": false}},
+  {"name": "allowed, organization allows", "answer": "allowed", "policy_raw": true,
+   "want": {"effective": "allowed", "reason": "owner", "prompt": false, "locked": false}},
+  {"name": "paused, organization allows", "answer": "paused", "policy_raw": true,
+   "want": {"effective": "paused", "reason": "owner", "prompt": false, "locked": false}},
+  {"name": "any answer, organization forbids", "answer": "allowed", "policy_raw": false,
+   "want": {"effective": "paused", "reason": "organization", "prompt": false, "locked": true}},
+  {"name": "any answer, profile value of the wrong type", "answer": "bogus", "policy_raw": "yes",
+   "want": {"effective": "paused", "reason": "organization", "prompt": false, "locked": true}}
+]

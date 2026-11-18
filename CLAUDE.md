@@ -31,6 +31,7 @@ Per-feature notes — architecture, contracts, dual paths, v1 limits — live in
 - Revoked access wipes the account's data — `revoke-purge.md`
 - Images and web links become knowledge — `media-knowledge.md`
 - Corporate policy through managed preferences — `mdm-policy.md`
+- Background AI consent — `background-ai-consent.md`
 - Bulk-read limits + audit log — `bulk-read-limits.md`
 - Knowledge search — `knowledge-search.md`
 - Confluence knowledge connector — `confluence-knowledge-connector.md`
