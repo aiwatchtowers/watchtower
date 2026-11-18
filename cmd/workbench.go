@@ -215,6 +215,9 @@ func runWorkbenchCreate(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 	id, err := database.CreateWorkbench(name, folder)
+	if errors.Is(err, db.ErrWorkbenchFolderTaken) {
+		return folderTakenError(database, folder, err)
+	}
 	if err != nil {
 		return err
 	}
@@ -224,6 +227,18 @@ func runWorkbenchCreate(cmd *cobra.Command, _ []string) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Created workbench %d %q at %s\n", id, name, folder)
 	return nil
+}
+
+// folderTakenError is create's refusal of a folder already on a bench, home
+// or not (multi-folder workbench, spec 2026-11-18 §6.1, D25): it keeps
+// db.ErrWorkbenchFolderTaken (the Desktop matches its text) and names the
+// bench, `(workbench <id> "<name>")`, so Open Folder… opens that bench.
+func folderTakenError(database *db.DB, folder string, err error) error {
+	p, lerr := database.WorkbenchByFolder(folder)
+	if lerr != nil {
+		return err
+	}
+	return fmt.Errorf("%w (workbench %d %q)", err, p.ID, p.Name)
 }
 
 // workbenchCreateJSON is `workbench create --json`'s envelope. The search
@@ -482,15 +497,11 @@ func runWorkbenchDelete(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	kept := cleanPlacedWorktrees(cmd.Context(), cmd.ErrOrStderr(), database, id)
-	rerr := workbenchRemoveInstall(cmd.Context(), cfg, p)
+	rerr := removeEveryFolderInstall(cmd.Context(), cmd.ErrOrStderr(), cfg, database, p)
 	// A file or directory linked outside the folder is never written through
 	// (PROJ-04), so what Watchtower put there stays: name it and what to
 	// remove by hand (PROJ-02's exception, ask #118).
 	hints := devpack.OutsideFolderHints(rerr)
-	if rerr != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing Watchtower's install from %s failed: %v (the workbench is deleted anyway)\n",
-			p.FolderPath, rerr)
-	}
 	for _, h := range hints {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", h)
 	}
@@ -518,6 +529,32 @@ func runWorkbenchDelete(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Deleted workbench %d %q.\n", id, p.Name)
 	return nil
+}
+
+// removeEveryFolderInstall runs the folder removal in every live folder of
+// the workbench (PROJ-02 extends to every folder; a removed folder's install
+// went with its Remove) and joins the failures, each warned on stderr. A
+// folder list that cannot be read falls back to the home folder alone.
+func removeEveryFolderInstall(ctx context.Context, stderr io.Writer, cfg *config.Config, database *db.DB, p *db.Workbench) error {
+	paths := []string{p.FolderPath}
+	if folders, err := database.WorkbenchFolders(ctx, p.ID, false); err != nil {
+		fmt.Fprintf(stderr, "warning: listing the workbench's folders failed: %v (only %s is cleaned)\n", err, p.FolderPath)
+	} else if len(folders) > 0 {
+		paths = paths[:0]
+		for _, f := range folders {
+			paths = append(paths, f.FolderPath)
+		}
+	}
+	var errs []error
+	for _, path := range paths {
+		in := *p
+		in.FolderPath = path
+		if err := workbenchRemoveInstall(ctx, cfg, &in); err != nil {
+			fmt.Fprintf(stderr, "warning: removing Watchtower's install from %s failed: %v (the workbench is deleted anyway)\n", path, err)
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // discardTargetImages removes the stored copies of images (rows of a target

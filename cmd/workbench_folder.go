@@ -1,0 +1,450 @@
+package cmd
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"watchtower/internal/config"
+	"watchtower/internal/db"
+	"watchtower/internal/devpack"
+	"watchtower/internal/sessionhost"
+	"watchtower/internal/workbenchfolders"
+)
+
+// `workbench folder add|remove|locate|list` (multi-folder workbench, spec
+// 2026-11-18 §5, §6.1, §6.3): the only writer of workbench_folders besides
+// `workbench create`. The Desktop runs them; an agent never does (it
+// suggests a folder through MCP instead), so the writes refuse an agent
+// caller (checkFolderWriter).
+var workbenchFolderCmd = &cobra.Command{
+	Use:   "folder",
+	Short: "Put folders on a workbench, take them off, re-point a moved one, list them",
+}
+
+var workbenchFolderAddCmd = &cobra.Command{
+	Use:   "add",
+	Short: "Put a folder on the workbench (Put on the Bench…), then install Watchtower in it",
+	Long: "Refuses a missing folder (not_found), one already on this bench (already_here), one\n" +
+		"on another bench (other_bench) and one inside or containing a bench folder (nested).\n" +
+		"The install runs after the folder is on the bench; a failed install keeps the folder.",
+	Args: cobra.NoArgs,
+	RunE: runWorkbenchFolderAdd,
+}
+
+var workbenchFolderRemoveCmd = &cobra.Command{
+	Use:   "remove",
+	Short: "Take a folder off the workbench and remove Watchtower's install from it; your files and git are not touched",
+	Args:  cobra.NoArgs,
+	RunE:  runWorkbenchFolderRemove,
+}
+
+var workbenchFolderLocateCmd = &cobra.Command{
+	Use:   "locate",
+	Short: "Re-point a moved or deleted folder of the workbench to its new path, then reinstall",
+	Args:  cobra.NoArgs,
+	RunE:  runWorkbenchFolderLocate,
+}
+
+var workbenchFolderListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List the workbench's folders in position order",
+	Args:  cobra.NoArgs,
+	RunE:  runWorkbenchFolderList,
+}
+
+var (
+	folderFlagWorkbench   int64
+	folderFlagFolder      string
+	folderFlagTo          string
+	folderFlagAddedBy     string
+	folderFlagWithRemoved bool
+	folderFlagJSON        bool
+)
+
+func init() {
+	for _, c := range []*cobra.Command{workbenchFolderAddCmd, workbenchFolderRemoveCmd, workbenchFolderLocateCmd, workbenchFolderListCmd} {
+		c.Flags().Int64Var(&folderFlagWorkbench, workbenchFlag, 0, "workbench id (required)")
+		c.Flags().BoolVar(&folderFlagJSON, "json", false, "output JSON")
+	}
+	workbenchFolderAddCmd.Flags().StringVar(&folderFlagFolder, "folder", "", "the folder's path (required; symlinks are resolved)")
+	workbenchFolderAddCmd.Flags().StringVar(&folderFlagAddedBy, "added-by", workbenchfolders.AddedByOwner,
+		"who put it on the bench: owner, or agent_suggestion (the owner accepted an agent's suggestion)")
+	for _, c := range []*cobra.Command{workbenchFolderRemoveCmd, workbenchFolderLocateCmd} {
+		c.Flags().StringVar(&folderFlagFolder, "folder", "", "the folder: its id, name or path (required)")
+	}
+	workbenchFolderLocateCmd.Flags().StringVar(&folderFlagTo, "to", "", "the folder's new path (required)")
+	workbenchFolderListCmd.Flags().BoolVar(&folderFlagWithRemoved, "with-removed", false, "also list the folders taken off the bench")
+	workbenchFolderCmd.AddCommand(workbenchFolderAddCmd, workbenchFolderRemoveCmd, workbenchFolderLocateCmd, workbenchFolderListCmd)
+	workbenchCmd.AddCommand(workbenchFolderCmd)
+}
+
+// folderJSON is one folder in every `workbench folder` result.
+type folderJSON struct {
+	ID        int64  `json:"id"`
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	Position  int    `json:"position"`
+	Home      bool   `json:"home"`      // it is projects.folder_path
+	Installed bool   `json:"installed"` // Watchtower's hooks for this workbench are in it
+	Removed   bool   `json:"removed"`   // taken off the bench
+}
+
+type folderBenchJSON struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// folderStepJSON is the install (add, locate) or uninstall (remove) that
+// runs after the write: its failure never undoes the write.
+type folderStepJSON struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error"`
+}
+
+// folderResultJSON is `workbench folder add|remove|locate --json`. A refusal
+// is ok:false with its code (exit 0, the escalate precedent); error reads
+// "<code>: <sentence>" (spec D42).
+type folderResultJSON struct {
+	OK         bool             `json:"ok"`
+	ErrorCode  string           `json:"error_code"`
+	Error      string           `json:"error"`
+	Folder     *folderJSON      `json:"folder,omitempty"`
+	OtherBench *folderBenchJSON `json:"other_bench,omitempty"`
+	Install    *folderStepJSON  `json:"install,omitempty"`
+}
+
+// folderListJSON is `workbench folder list --json`; folders is never null.
+type folderListJSON struct {
+	Folders []folderJSON `json:"folders"`
+}
+
+// checkFolderWriter refuses a folder write under any agent marker, a
+// terminal session's included: only the owner and the Desktop put folders on
+// a bench or take them off (spec §7 Writers); an agent suggests one instead.
+func checkFolderWriter() error {
+	for _, name := range agentEnvMarkers {
+		if os.Getenv(name) != "" {
+			return usageError("refusing to change a workbench's folders under an AI agent (%s is set): only the owner and the Desktop do", name)
+		}
+	}
+	return nil
+}
+
+// folderInstall installs Watchtower in folder p.FolderPath for workbench
+// p.ID: the Claude Code part and, when codex is found or already set up
+// there, the codex part (`workbench resync`'s steps, PROJ-04 rules). A var
+// for tests.
+var folderInstall = func(ctx context.Context, p *db.Workbench) error {
+	var res workbenchResyncJSON
+	return errors.Join(resyncIntegration(ctx, p, &res), resyncCodex(ctx, p, &res))
+}
+
+// folderLiveSessions counts the session host's live runs of the folder's
+// session rows (advisory, workbenchfolders.Remove). No host answering on
+// the socket means none run. A var for tests.
+var folderLiveSessions = func(cfg *config.Config, database *db.DB) workbenchfolders.LiveSessions {
+	return func(ctx context.Context, folderID int64) (int, error) {
+		socket, err := sessionhost.DefaultSocket()
+		if err != nil {
+			return 0, err //nolint:wrapcheck // advisory: any error falls back to the database count
+		}
+		if _, err := os.Stat(socket); errors.Is(err, fs.ErrNotExist) {
+			return 0, nil
+		}
+		c, err := sessionhost.Dial(ctx, socket)
+		if err != nil {
+			return 0, err //nolint:wrapcheck // advisory, as above
+		}
+		defer func() { _ = c.Close() }()
+		list, err := c.List(ctx)
+		if err != nil {
+			return 0, err //nolint:wrapcheck // advisory, as above
+		}
+		f, err := database.WorkbenchFolderByID(ctx, folderID)
+		if err != nil {
+			return 0, err //nolint:wrapcheck // advisory, as above
+		}
+		home, err := database.HomeFolderID(ctx, f.WorkbenchID)
+		if err != nil {
+			return 0, err //nolint:wrapcheck // advisory, as above
+		}
+		rows, err := database.QueryContext(ctx, `SELECT id FROM terminal_sessions WHERE kind <> 'shell' AND `+db.NotDeletingSQL+`
+			AND (workbench_folder_id = ? OR (workbench_folder_id IS NULL AND project_id = ? AND ? = ?))`, f.ID, f.WorkbenchID, f.ID, home)
+		if err != nil {
+			return 0, err //nolint:wrapcheck // advisory, as above
+		}
+		defer rows.Close()
+		ofFolder := map[int64]bool{}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return 0, err //nolint:wrapcheck // advisory, as above
+			}
+			ofFolder[id] = true
+		}
+		if err := rows.Err(); err != nil {
+			return 0, err //nolint:wrapcheck // advisory, as above
+		}
+		scope, n := sessionhost.Scope(cfg.DBPath()), 0
+		for _, info := range list {
+			if info.Scope == scope && !info.Exited && ofFolder[info.Row] {
+				n++
+			}
+		}
+		return n, nil
+	}
+}
+
+// openFolderCmd checks the flags shared by every verb and opens the
+// database; the bench must exist.
+func openFolderCmd(write bool) (*config.Config, *db.DB, *db.Workbench, error) {
+	if write {
+		if err := checkFolderWriter(); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	if folderFlagWorkbench <= 0 {
+		return nil, nil, nil, usageError("--%s takes a positive workbench id", workbenchFlag)
+	}
+	cfg, database, err := openJiraCmdDB()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	p, err := database.GetWorkbench(folderFlagWorkbench)
+	if err != nil {
+		_ = database.Close()
+		return nil, nil, nil, err
+	}
+	return cfg, database, p, nil
+}
+
+func runWorkbenchFolderAdd(cmd *cobra.Command, _ []string) error {
+	if strings.TrimSpace(folderFlagFolder) == "" {
+		return usageError("--folder is required")
+	}
+	cfg, database, p, err := openFolderCmd(true)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	ctx := cmdContext(cmd)
+	path := folderFlagFolder
+	// Watchtower's own data is never a bench folder (workbench create's rule);
+	// a missing path is left to Add, whose refusal names it.
+	if resolved, rerr := db.ResolveWorkbenchFolder(path, workbenchProtectedDirs()); errors.Is(rerr, db.ErrWorkbenchFolderNotAllowed) {
+		return rerr
+	} else if rerr == nil {
+		path = resolved
+	}
+	f, err := workbenchfolders.Add(ctx, database, p.ID, path, folderFlagAddedBy)
+	if err != nil {
+		return folderRefused(cmd, database, err)
+	}
+	// After the commit (spec §6.1): the install, then the docs index.
+	step := folderStep(folderInstall(ctx, folderBench(p, f)))
+	if !step.OK {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: installing Watchtower in %s failed: %s (the folder stays on the bench; retry: watchtower workbench resync %d)\n",
+			f.FolderPath, step.Error, p.ID)
+	}
+	indexWorkbenchDocs(cmd, cfg.Knowledge.Enabled, database, p.ID)
+	return folderDone(cmd, database, f, step, fmt.Sprintf("Put %s on workbench %d as %s.", f.FolderPath, p.ID, f.Name))
+}
+
+func runWorkbenchFolderRemove(cmd *cobra.Command, _ []string) error {
+	if strings.TrimSpace(folderFlagFolder) == "" {
+		return usageError("--folder is required")
+	}
+	cfg, database, p, err := openFolderCmd(true)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	ctx := cmdContext(cmd)
+	f, err := workbenchfolders.Resolve(ctx, database, p.ID, folderFlagFolder)
+	if err != nil {
+		return folderRefused(cmd, database, err)
+	}
+	wasHome := strings.EqualFold(p.FolderPath, f.FolderPath)
+	f, err = workbenchfolders.Remove(ctx, database, f.ID, folderLiveSessions(cfg, database))
+	if err != nil {
+		return folderRefused(cmd, database, err)
+	}
+	// After the commit (spec §6.3): Watchtower's install out of the folder
+	// (PROJ-02 for that folder; files and git untouched, PROJ-24), then its
+	// documents out of the index.
+	rerr := workbenchRemoveInstall(ctx, cfg, folderBench(p, f))
+	step := folderStep(rerr)
+	if rerr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing Watchtower's install from %s failed: %v (the folder is off the bench anyway)\n", f.FolderPath, rerr)
+	}
+	for _, h := range devpack.OutsideFolderHints(rerr) {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", h)
+	}
+	if wasHome {
+		// The index is keyed by the workbench and read from its home folder
+		// until the key gains the folder (PROJ-08): re-reading the new home
+		// drops what only the old one listed.
+		indexWorkbenchDocs(cmd, cfg.Knowledge.Enabled, database, p.ID)
+	}
+	return folderDone(cmd, database, f, step, fmt.Sprintf("Removed %s from workbench %d.", f.Name, p.ID))
+}
+
+func runWorkbenchFolderLocate(cmd *cobra.Command, _ []string) error {
+	if strings.TrimSpace(folderFlagFolder) == "" || strings.TrimSpace(folderFlagTo) == "" {
+		return usageError("--folder and --to are required")
+	}
+	cfg, database, p, err := openFolderCmd(true)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	ctx := cmdContext(cmd)
+	f, err := workbenchfolders.Resolve(ctx, database, p.ID, folderFlagFolder)
+	if err != nil {
+		return folderRefused(cmd, database, err)
+	}
+	to := folderFlagTo
+	if resolved, rerr := db.ResolveWorkbenchFolder(to, workbenchProtectedDirs()); errors.Is(rerr, db.ErrWorkbenchFolderNotAllowed) {
+		return rerr
+	} else if rerr == nil {
+		to = resolved
+	}
+	wasHome := strings.EqualFold(p.FolderPath, f.FolderPath)
+	f, err = workbenchfolders.Locate(ctx, database, f.ID, to)
+	if err != nil {
+		return folderRefused(cmd, database, err)
+	}
+	step := folderStep(folderInstall(ctx, folderBench(p, f)))
+	if !step.OK {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: installing Watchtower in %s failed: %s (retry: watchtower workbench resync %d)\n",
+			f.FolderPath, step.Error, p.ID)
+	}
+	if wasHome {
+		indexWorkbenchDocs(cmd, cfg.Knowledge.Enabled, database, p.ID)
+	}
+	return folderDone(cmd, database, f, step, fmt.Sprintf("Workbench %d's folder %s is now at %s.", p.ID, f.Name, f.FolderPath))
+}
+
+func runWorkbenchFolderList(cmd *cobra.Command, _ []string) error {
+	_, database, p, err := openFolderCmd(false)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	folders, err := database.WorkbenchFolders(cmdContext(cmd), p.ID, folderFlagWithRemoved)
+	if err != nil {
+		return err
+	}
+	out := folderListJSON{Folders: []folderJSON{}}
+	for _, f := range folders {
+		out.Folders = append(out.Folders, toFolderJSON(p, f))
+	}
+	if folderFlagJSON {
+		return writeJSON(cmd.OutOrStdout(), out)
+	}
+	printFolderList(cmd.OutOrStdout(), out.Folders)
+	return nil
+}
+
+func printFolderList(w io.Writer, folders []folderJSON) {
+	for _, f := range folders {
+		var marks []string
+		if f.Home {
+			marks = append(marks, "home")
+		}
+		if !f.Installed && !f.Removed {
+			marks = append(marks, "not installed")
+		}
+		if f.Removed {
+			marks = append(marks, "removed")
+		}
+		line := fmt.Sprintf("%d  %s  %s", f.ID, f.Name, f.Path)
+		if len(marks) > 0 {
+			line += "  (" + strings.Join(marks, ", ") + ")"
+		}
+		fmt.Fprintln(w, line)
+	}
+}
+
+// folderBench is p bound to folder f: what the install, the uninstall and
+// the status take (the workbench id with that folder).
+func folderBench(p *db.Workbench, f db.WorkbenchFolder) *db.Workbench {
+	in := *p
+	in.FolderPath = f.FolderPath
+	return &in
+}
+
+func folderStep(err error) *folderStepJSON {
+	if err != nil {
+		return &folderStepJSON{Error: err.Error()}
+	}
+	return &folderStepJSON{OK: true}
+}
+
+func toFolderJSON(p *db.Workbench, f db.WorkbenchFolder) folderJSON {
+	removed := f.RemovedAt.Valid
+	installed := false
+	if !removed {
+		installed, _ = devpack.HasCoreStateHooks(f.FolderPath, p.ID) // unreadable settings: not installed
+	}
+	return folderJSON{ID: f.ID, Path: f.FolderPath, Name: f.Name, Position: f.Position,
+		Home: !removed && strings.EqualFold(p.FolderPath, f.FolderPath), Installed: installed, Removed: removed}
+}
+
+// folderDone prints a write's result. The workbench is re-read: a remove or
+// locate may have moved its home folder.
+func folderDone(cmd *cobra.Command, database *db.DB, f db.WorkbenchFolder, step *folderStepJSON, text string) error {
+	p, err := database.GetWorkbench(f.WorkbenchID)
+	if err != nil {
+		return err
+	}
+	if folderFlagJSON {
+		fj := toFolderJSON(p, f)
+		return writeJSON(cmd.OutOrStdout(), folderResultJSON{OK: true, Folder: &fj, Install: step})
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), text)
+	return nil
+}
+
+// folderRefused reports a refusal: with --json as an ok:false result (exit
+// 0), otherwise as the command's error. Any other error is returned as is.
+func folderRefused(cmd *cobra.Command, database *db.DB, err error) error {
+	var r *workbenchfolders.Refusal
+	if !errors.As(err, &r) {
+		return err
+	}
+	msg := refusalMessage(r)
+	if !folderFlagJSON {
+		return errors.New(msg)
+	}
+	out := folderResultJSON{ErrorCode: r.Code, Error: msg}
+	if r.Folder != nil {
+		if p, gerr := database.GetWorkbench(r.Folder.WorkbenchID); gerr == nil {
+			fj := toFolderJSON(p, *r.Folder)
+			out.Folder = &fj
+		}
+	}
+	if r.OtherBench != nil {
+		out.OtherBench = &folderBenchJSON{ID: r.OtherBench.ID, Name: r.OtherBench.Name}
+	}
+	return writeJSON(cmd.OutOrStdout(), out)
+}
+
+// refusalMessage is "<code>: <sentence>" (spec D42); sessions_running's
+// Detail is the bare count, so its sentence is built here (spec §6.3).
+func refusalMessage(r *workbenchfolders.Refusal) string {
+	if r.Code != workbenchfolders.CodeSessionsRunning || r.Folder == nil {
+		return r.Error()
+	}
+	if r.Detail == "1" {
+		return fmt.Sprintf("%s: 1 session is running in %s. Finish it first.", r.Code, r.Folder.Name)
+	}
+	return fmt.Sprintf("%s: %s sessions are running in %s. Finish them first.", r.Code, r.Detail, r.Folder.Name)
+}

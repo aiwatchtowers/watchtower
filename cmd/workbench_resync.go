@@ -88,6 +88,12 @@ type workbenchResyncJSON struct {
 	// otherwise.
 	Codex *resyncCodexJSON `json:"codex,omitempty"`
 
+	// Folders is the install in each other live folder of the workbench
+	// (multi-folder workbench, spec 2026-11-18 §6.14); the fields above are
+	// the home folder's. A failure here also fails integration_ok, its
+	// integration_error naming the folder. Never null. Additive.
+	Folders []resyncFolderJSON `json:"folders"`
+
 	install    devpack.WorkbenchInstallReport // for the text report
 	installErr error
 	codex      devpack.CodexStatus
@@ -105,6 +111,15 @@ type resyncCodexJSON struct {
 	Flow              string `json:"flow"`
 	HooksTrusted      *bool  `json:"hooks_trusted"`
 	DuplicatesRemoved bool   `json:"duplicates_removed"`
+}
+
+// resyncFolderJSON is one other folder's install outcome.
+type resyncFolderJSON struct {
+	ID    int64  `json:"id"`
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error"`
 }
 
 func (r workbenchResyncJSON) failed() bool {
@@ -141,7 +156,7 @@ func runWorkbenchResync(cmd *cobra.Command, args []string) error {
 // the suggestions; the error joins every failure (each also recorded in the
 // result).
 func resyncWorkbench(ctx context.Context, database *db.DB, p *db.Workbench, knowledgeEnabled bool) (workbenchResyncJSON, error) {
-	res := workbenchResyncJSON{ID: p.ID, Excluded: []string{}}
+	res := workbenchResyncJSON{ID: p.ID, Excluded: []string{}, Folders: []resyncFolderJSON{}}
 	var errs []error
 
 	if err := resyncIntegration(ctx, p, &res); err != nil {
@@ -152,6 +167,9 @@ func resyncWorkbench(ctx context.Context, database *db.DB, p *db.Workbench, know
 	}
 	if err := resyncCodex(ctx, p, &res); err != nil {
 		errs = append(errs, fmt.Errorf("installing the codex integration: %w", err))
+	}
+	if err := resyncOtherFolders(ctx, database, p, &res); err != nil {
+		errs = append(errs, err)
 	}
 
 	// The folder's files are searchable at once rather than after the daemon's
@@ -178,6 +196,43 @@ func resyncWorkbench(ctx context.Context, database *db.DB, p *db.Workbench, know
 		errs = append(errs, fmt.Errorf("working out suggestions: %w", err))
 	}
 	return res, errors.Join(errs...)
+}
+
+// resyncOtherFolders installs in every live folder but the home one (the
+// same steps, PROJ-04 rules) and records each outcome in res.Folders; a
+// failure fails integration_ok with the folder named in integration_error.
+func resyncOtherFolders(ctx context.Context, database *db.DB, p *db.Workbench, res *workbenchResyncJSON) error {
+	folders, err := database.WorkbenchFolders(ctx, p.ID, false)
+	if err != nil {
+		return failIntegration(res, fmt.Errorf("listing the workbench's folders: %w", err))
+	}
+	var errs []error
+	for _, f := range folders {
+		if strings.EqualFold(f.FolderPath, p.FolderPath) {
+			continue
+		}
+		out := resyncFolderJSON{ID: f.ID, Name: f.Name, Path: f.FolderPath, OK: true}
+		if ferr := folderInstall(ctx, folderBench(p, f)); ferr != nil {
+			out.OK, out.Error = false, ferr.Error()
+			errs = append(errs, fmt.Errorf("installing in %s: %w", f.Name, ferr))
+		}
+		res.Folders = append(res.Folders, out)
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return failIntegration(res, errors.Join(errs...))
+}
+
+// failIntegration marks res's integration failed with err, after any home
+// folder failure already recorded, and returns err.
+func failIntegration(res *workbenchResyncJSON, err error) error {
+	res.IntegrationOK = false
+	if res.IntegrationError != "" {
+		res.IntegrationError += "; "
+	}
+	res.IntegrationError += err.Error()
+	return err
 }
 
 func resyncIntegration(ctx context.Context, p *db.Workbench, res *workbenchResyncJSON) error {
@@ -299,6 +354,16 @@ func printResyncReport(w io.Writer, p *db.Workbench, res workbenchResyncJSON) {
 	}
 	if !res.IntegrationOK {
 		fmt.Fprintf(w, "  FAILED — %s\n", res.IntegrationError)
+	}
+	if len(res.Folders) > 0 {
+		fmt.Fprintln(w, "Other folders:")
+		for _, f := range res.Folders {
+			if f.OK {
+				fmt.Fprintf(w, "  %s (%s): set up\n", f.Name, f.Path)
+			} else {
+				fmt.Fprintf(w, "  %s (%s): FAILED — %s\n", f.Name, f.Path, f.Error)
+			}
+		}
 	}
 	if res.Codex != nil {
 		fmt.Fprintln(w, "Codex integration:")
