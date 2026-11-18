@@ -495,6 +495,20 @@ func readInitConfig(configPath string) (*viper.Viper, error) {
 	return v, nil
 }
 
+// readConfigForWrite reads the config a writer is about to change, inside
+// the write lock. A missing file is an empty config; any other read or parse
+// error is returned, so a file that cannot be read is never overwritten with
+// only the writer's own keys.
+func readConfigForWrite(configPath string) (*viper.Viper, error) {
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
+	if err := v.ReadInConfig(); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("reading config %s: %w", configPath, err)
+	}
+	return v, nil
+}
+
 // writeConfigAtomic writes viper config to a temp file with 0o600 permissions,
 // then atomically renames it into place to avoid a race window where secrets
 // could be briefly world-readable. lk is the config write lock the caller

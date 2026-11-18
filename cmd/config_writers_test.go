@@ -395,3 +395,56 @@ func TestConfigInit_BrokenConfigFailsBeforeAnyPrompt(t *testing.T) {
 	assert.Contains(t, err.Error(), "cannot be carried over")
 	assert.NotContains(t, out.String(), "How do you want to authenticate?", "no prompt is shown")
 }
+
+// TestConfigWriters_UnparsableConfigIsNeverOverwritten: a writer that cannot
+// parse config.yaml under the lock aborts, leaving the file byte-identical,
+// instead of writing a file that holds only its own keys.
+func TestConfigWriters_UnparsableConfigIsNeverOverwritten(t *testing.T) {
+	writers := map[string]func(path string) error{
+		"enableJiraPhase":   func(string) error { return enableJiraPhase() },
+		"enableLinearPhase": func(string) error { return enableLinearPhase() },
+		"setConfigKey":      func(p string) error { return setConfigKey(p, "digest.enabled", true) },
+		"setAIConfigKey":    func(p string) error { return setAIConfigKey(p, "ai.fallback.enabled", true) },
+		"writeWorkspaceScaffold": func(p string) error {
+			return writeWorkspaceScaffold(p, "acme", true, nil)
+		},
+		"writeInitConfig": func(p string) error {
+			return writeInitConfig(p, map[string]any{"active_workspace": "acme"})
+		},
+	}
+	for name, write := range writers {
+		t.Run(name, func(t *testing.T) {
+			cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+			broken := []byte("ai:\n  background_runs: allowed\nsync: [unclosed\n")
+			require.NoError(t, os.WriteFile(cfgPath, broken, 0o600))
+			old := flagConfig
+			flagConfig = cfgPath
+			t.Cleanup(func() { flagConfig = old })
+
+			require.Error(t, write(cfgPath))
+			got, err := os.ReadFile(cfgPath)
+			require.NoError(t, err)
+			assert.Equal(t, broken, got, "the file is byte-identical")
+		})
+	}
+}
+
+func TestEnablePhase_MissingConfigStartsEmpty(t *testing.T) {
+	for name, enable := range map[string]func() error{"jira": enableJiraPhase, "linear": enableLinearPhase} {
+		t.Run(name, func(t *testing.T) {
+			cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+			old := flagConfig
+			flagConfig = cfgPath
+			t.Cleanup(func() { flagConfig = old })
+
+			require.NoError(t, enable())
+			cfg, err := config.Load(cfgPath)
+			require.NoError(t, err)
+			if name == "jira" {
+				assert.True(t, cfg.Jira.Enabled)
+			} else {
+				assert.True(t, cfg.Linear.Enabled)
+			}
+		})
+	}
+}

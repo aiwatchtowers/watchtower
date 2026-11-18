@@ -22,7 +22,6 @@ import (
 	"watchtower/internal/oauthpage"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 var (
@@ -705,10 +704,10 @@ func accountUsesConfluenceWrite(workspaceDir string, accountID int64, warn io.Wr
 // config.yaml (the per-account on/off lives on the jira_accounts row).
 func enableJiraPhase() error {
 	return config.WithWriteLock(flagConfig, func(lk *config.WriteLock) error {
-		v := viper.New()
-		v.SetConfigFile(flagConfig)
-		v.SetConfigType("yaml")
-		_ = v.ReadInConfig()
+		v, err := readConfigForWrite(flagConfig)
+		if err != nil {
+			return err
+		}
 		v.Set("jira.enabled", true)
 		return writeConfigAtomic(lk, v, flagConfig)
 	})
@@ -1687,10 +1686,10 @@ func runJiraFeaturesReset(cmd *cobra.Command, _ []string) error {
 	// documents: the struct has no yaml tags, so writing it produces keys no
 	// reader can see.
 	if err := config.WithWriteLock(flagConfig, func(lk *config.WriteLock) error {
-		v := viper.New()
-		v.SetConfigFile(flagConfig)
-		v.SetConfigType("yaml")
-		_ = v.ReadInConfig()
+		v, err := readConfigForWrite(flagConfig)
+		if err != nil {
+			return err
+		}
 		for _, name := range featureNames {
 			ptr, _ := featureToggleRef(&defaults, name)
 			v.Set("jira.features."+jiraFeatureConfigKeys[name], ptr != nil && *ptr)

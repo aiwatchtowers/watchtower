@@ -489,6 +489,9 @@ type WorkbenchConfig struct {
 }
 
 // Load reads config from the given path, binds env vars, and returns the config.
+// The file is always read as YAML, whatever the path's extension: a --config
+// path naming a .json/.toml file (or none) is parsed as YAML too, as every
+// other config.yaml reader and writer does.
 func Load(configPath string) (*Config, error) {
 	v := viper.New()
 
