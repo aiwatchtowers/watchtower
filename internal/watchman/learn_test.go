@@ -580,18 +580,21 @@ func TestRelabel_PermissionRowsByTable(t *testing.T) {
 	at := srcT0
 	push := seedPermission(t, d, s, 1, "Bash", "git push origin main", "allowed", &at)
 	test := seedPermission(t, d, s, 1, "Bash", "go test ./...", "allowed", &at)
-	rows := listRows(1, SourcePermission, 3, CategoryPermission)
+	clipped := seedPermission(t, d, s, 1, "Bash", "go test ./...", "allowed", &at)
+	clipPermission(t, d, clipped)
+	rows := listRows(1, SourcePermission, 4, CategoryPermission)
 	rows[0].SourceKey = strconv.FormatInt(push, 10)
 	rows[1].SourceKey = strconv.FormatInt(test, 10)
 	rows[2].SourceKey = "999999" // its request row is gone
+	rows[3].SourceKey = strconv.FormatInt(clipped, 10)
 	seedUnflagged(t, d, rows)
 	lab := &fakeLabeler{}
 
 	st, err := Learn(context.Background(), d, 1, LearnOptions{Now: fixedNow, Labeler: lab})
 	require.NoError(t, err)
-	assert.Equal(t, 3, st.Relabelled)
+	assert.Equal(t, 4, st.Relabelled)
 	assert.Empty(t, lab.calls, "no labeller call for permission rows")
-	for key, parked := range map[string]bool{rows[0].SourceKey: true, rows[1].SourceKey: false, "999999": true} {
+	for key, parked := range map[string]bool{rows[0].SourceKey: true, rows[1].SourceKey: false, "999999": true, rows[3].SourceKey: true} {
 		f := flagsOf(t, d, 1, SourcePermission, key)
 		assert.Equal(t, wmBool(true), f.Decision, key)
 		assert.Equal(t, wmBool(parked), f.Parked, key)
@@ -679,6 +682,25 @@ func TestLabel_StoredV1TemplateIsAnError(t *testing.T) {
 	assert.Zero(t, precedentCount(t, d, wb)-2, "the new ask is not stored")
 	assert.Equal(t, 2, pendingOf(t, d, wb), "nothing marked tried")
 	assert.Empty(t, g.calls)
+}
+
+// A template stored as v2 (or later) that still answers in the v1 shape:
+// the source fails before any progress — no cursor move, nothing stored,
+// nothing marked tried.
+func TestLearn_V1ReplyShapeWritesNothing(t *testing.T) {
+	d, wb := learnDB(t)
+	g := &labelGen{reply: func(int) string { return `["scope"]` }}
+	lab := NewLLMLabeler(g, nil)
+	seedUnflagged(t, d, listRows(wb, "turn", 2, CategoryScope))
+	src := &listSource{name: SourceAsk, rows: listRows(wb, SourceAsk, 1, "")}
+
+	_, err := Learn(context.Background(), d, wb, LearnOptions{Now: fixedNow, Sources: []Source{src}, Labeler: lab})
+	require.Error(t, err)
+	assert.Equal(t, 2, precedentCount(t, d, wb), "the new ask is not stored")
+	assert.Equal(t, 2, pendingOf(t, d, wb), "nothing marked tried")
+	cur, err := d.WatchmanCursor(wb, SourceAsk)
+	require.NoError(t, err)
+	assert.Empty(t, cur, "the cursor did not move")
 }
 
 // Cancelled during the relabel pass: the sources' errors come back with the

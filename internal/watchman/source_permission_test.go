@@ -25,6 +25,13 @@ func seedPermission(t *testing.T, d *db.DB, session, wb int64, tool, summary, st
 	return id
 }
 
+// clipPermission marks a seeded request's summary as cut short.
+func clipPermission(t *testing.T, d *db.DB, id int64) {
+	t.Helper()
+	_, err := d.Exec(`UPDATE permission_requests SET summary_clipped = 1 WHERE id = ?`, id)
+	require.NoError(t, err)
+}
+
 func TestPermissionSource_MapsRows(t *testing.T) {
 	d := openSourceDB(t)
 	s := seedSession(t, d, 1, nil)
@@ -107,4 +114,18 @@ func TestPermissionSource_SetsParkedFromTable(t *testing.T) {
 	}
 	require.True(t, *byKey[strconv.FormatInt(push, 10)].Parked)
 	require.False(t, *byKey[strconv.FormatInt(test, 10)].Parked)
+}
+
+func TestPermissionSource_ClippedSummaryParks(t *testing.T) {
+	d := openSourceDB(t)
+	s := seedSession(t, d, 1, nil)
+	at := srcT0
+	id := seedPermission(t, d, s, 1, "Bash", "go test ./...", "allowed", &at)
+	clipPermission(t, d, id)
+
+	ps, _, _, err := (&permissionSource{}).Next(context.Background(), d, 1, "", 10)
+	require.NoError(t, err)
+	require.Len(t, ps, 1)
+	require.NotNil(t, ps[0].Parked)
+	require.True(t, *ps[0].Parked, "the clipped tail may be what parks it")
 }

@@ -33,7 +33,10 @@ const (
 // every path-dependent row then parks.
 type PermissionAsk struct {
 	Tool, Summary, WorkbenchFolder string
-	Worktrees                      []string
+	// SummaryClipped says the stored summary was cut short: its hidden tail
+	// may be what a hard limit covers, so the request parks.
+	SummaryClipped bool
+	Worktrees      []string
 	// PRBase reports the base branch of a pull request; known=false when
 	// the base is not recorded. Nil means never known.
 	PRBase func(pr int) (base string, known bool)
@@ -66,9 +69,11 @@ func ParkedBy(r PermissionAsk) (HardLimit, bool) {
 }
 
 // permissionFlags marks a permission request as a decision, parked when a
-// hard limit covers it. The caller fills ID.
+// hard limit covers it or its summary was clipped (the hidden tail cannot be
+// judged). The caller fills ID.
 func permissionFlags(r PermissionAsk) db.WatchmanPrecedentFlags {
 	_, parked := ParkedBy(r)
+	parked = parked || r.SummaryClipped
 	yes := true
 	return db.WatchmanPrecedentFlags{IsDecision: &yes, Parked: &parked}
 }
@@ -547,7 +552,8 @@ func (r PermissionAsk) roots(withWorkbench bool) []string {
 }
 
 // inside reports whether p lies in a known root. A relative path counts as
-// inside only when a root is known and it does not climb out with "..".
+// inside only when a root is known and, cleaned, it does not climb out with
+// ".." (subdir/.. is inside, subdir/../.. is not).
 func (r PermissionAsk) inside(p string, withWorkbench bool) bool {
 	roots := r.roots(withWorkbench)
 	if len(roots) == 0 {
@@ -556,10 +562,10 @@ func (r PermissionAsk) inside(p string, withWorkbench bool) bool {
 	if strings.HasPrefix(p, "~") || strings.Contains(p, "$") {
 		return false
 	}
-	if !path.IsAbs(p) {
-		return p != ".." && !strings.HasPrefix(p, "../") && !strings.Contains(p, "/../")
-	}
 	p = path.Clean(p)
+	if !path.IsAbs(p) {
+		return p != ".." && !strings.HasPrefix(p, "../")
+	}
 	for _, root := range roots {
 		if p == root || strings.HasPrefix(p, strings.TrimSuffix(root, "/")+"/") {
 			return true
@@ -657,9 +663,24 @@ func filePath(r PermissionAsk) (p string, isFileTool, placed bool) {
 	return "", false, false
 }
 
+// writeTools are the file tools that change a file. Bash writes stay out of
+// the standing-grant row (a read-mostly shell line would over-park).
+var writeTools = map[string]bool{"Write": true, "Edit": true, "MultiEdit": true, "NotebookEdit": true}
+
+// matchStandingGrant: a file write to the agent's own settings, Claude's
+// .claude/settings*.json or Codex's .codex/config.toml. A read is not one.
 func matchStandingGrant(r PermissionAsk) bool {
+	if !writeTools[r.Tool] {
+		return false
+	}
 	p, _, placed := filePath(r)
-	return placed && strings.Contains(p, ".claude/settings")
+	if !placed {
+		return false
+	}
+	p = path.Clean(p)
+	dir, base := path.Base(path.Dir(p)), path.Base(p)
+	settings, _ := path.Match("settings*.json", base)
+	return (dir == ".claude" && settings) || (dir == ".codex" && base == "config.toml")
 }
 
 // matchOutsideFolder: a file tool whose path is outside the workbench

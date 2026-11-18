@@ -28,11 +28,11 @@ func TestLabel_MissingFlagsAreNil(t *testing.T) {
 	assert.Equal(t, []Label{{Category: CategoryDesign}}, got)
 }
 
-// The v1 reply shape (an array of strings) cannot carry the flags: the
-// batch comes back unlabelled, as any wrong-shaped reply.
-func TestLabel_OldArrayOfStringsIsUnlabelled(t *testing.T) {
-	g := &labelGen{reply: func(int) string { return `["scope", "design"]` }}
-	got, err := NewLLMLabeler(g, nil).Label(context.Background(), []LabelItem{{Situation: "a", NeedCategory: true}, {Situation: "b", NeedCategory: true}})
-	require.NoError(t, err)
-	assert.Equal(t, []Label{{}, {}}, got)
+// The v1 reply shape (an array of strings) cannot carry the flags: it is an
+// error whatever version the stored template claims, so nothing is written.
+func TestLabel_OldArrayOfStringsIsAnError(t *testing.T) {
+	g := &labelGen{reply: func(int) string { return `["scope"]` }}
+	got, err := NewLLMLabeler(g, nil).Label(context.Background(), []LabelItem{{Situation: "a", NeedCategory: true}})
+	require.ErrorContains(t, err, "v1 shape")
+	assert.Nil(t, got)
 }

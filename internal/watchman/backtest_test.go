@@ -701,6 +701,9 @@ func TestLLMJudge_ParsesReply(t *testing.T) {
 		_, usage, err = NewLLMJudge(gen, nil).Grade(context.Background(), in)
 		require.Error(t, err, bad)
 		require.NotNil(t, usage)
+		for _, modelText := range []string{"close", "'s'", "same\""} {
+			require.NotContains(t, err.Error(), modelText, "no model text in a judge error")
+		}
 	}
 }
 
@@ -734,7 +737,32 @@ func TestJudge_HandoffReplyWithoutVerdictIsError(t *testing.T) {
 func TestJudge_GradeHandedIsUnknown(t *testing.T) {
 	gen := &decideGen{out: `{"grades":[{"grade":"handed"}]}`}
 	_, _, err := NewLLMJudge(gen, nil).Grade(context.Background(), JudgeInput{Situation: "s", Owner: "o", Twin: "t"})
-	require.ErrorContains(t, err, `unknown grade "handed"`)
+	require.ErrorContains(t, err, "unknown grade")
+	require.NotContains(t, err.Error(), "handed", "the raw model value is never echoed")
+}
+
+// A customised pre-handoff decide or judge template refuses the run before
+// any call, row or report: its replies would fail every handed item.
+func TestBacktest_RefusesPreHandoffTemplates(t *testing.T) {
+	for _, c := range []struct{ id, tmpl string }{
+		{prompts.WatchmanJudge, "Grade the twin's decision as same, acceptable or bad. Return {\"grades\":[...]}."},
+		{prompts.WatchmanDecide, "Decide the item the way the owner would. Return JSON with choice and confidence."},
+	} {
+		t.Run(c.id, func(t *testing.T) {
+			d, wb := btDB(t)
+			require.NoError(t, d.UpsertPrompt(db.Prompt{ID: c.id, Template: c.tmpl, Version: 2}))
+			btAdd(t, d, wb, SourcePermission, CategoryPermission, 30, btT0, "allow")
+			gen, judge := &btGen{d: d, wb: wb}, &btJudge{}
+			res, err := Backtest(context.Background(), d, gen, judge, prompts.New(d, nil), wb, t.TempDir(), btT0.Add(100*time.Hour))
+			require.ErrorContains(t, err, "Settings → Prompts")
+			require.ErrorContains(t, err, c.id)
+			require.Zero(t, res.ID, "no run row")
+			require.Empty(t, gen.progress, "no model call")
+			var runs int
+			require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM watchman_backtests`).Scan(&runs))
+			require.Zero(t, runs)
+		})
+	}
 }
 
 // btAddReview stores review_code precedents of the review source with the

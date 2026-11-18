@@ -413,7 +413,7 @@ const (
 			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL
 			AND (s.id IS NULL OR s.` + NotDeletingSQL + `)
 			AND m.state IN ('ok','comment','not_useful')`
-	wmPermissionSQL = `SELECT COALESCE(strftime(` + wmAtFormat + `, r.decided_at), '') AS wm_at, r.id AS wm_id, '' AS wm_sub, r.tool_name, r.summary, r.status,
+	wmPermissionSQL = `SELECT COALESCE(strftime(` + wmAtFormat + `, r.decided_at), '') AS wm_at, r.id AS wm_id, '' AS wm_sub, r.tool_name, r.summary, r.summary_clipped, r.status,
 			s.folder_path, COALESCE(p.folder_path, ''),
 			(SELECT COALESCE(json_group_array(w.root), '[]') FROM terminal_session_worktrees w WHERE w.session_id = r.terminal_session_id)
 		FROM permission_requests r
@@ -562,6 +562,7 @@ type WatchmanPermissionRow struct {
 	Mark                      WatchmanMark
 	ID                        int64
 	ToolName, Summary, Status string
+	SummaryClipped            bool     // the summary was cut short
 	SessionFolder             string   // terminal_sessions.folder_path
 	WorkbenchFolder           string   // the workbench's project folder; '' = unknown
 	Worktrees                 []string // terminal_session_worktrees roots of the session
@@ -614,7 +615,7 @@ func scanWatchmanPermissionRows(rows *sql.Rows) ([]WatchmanPermissionRow, error)
 	for rows.Next() {
 		var r WatchmanPermissionRow
 		var worktrees string
-		if err := rows.Scan(&r.Mark.At, &r.Mark.ID, &r.Mark.Sub, &r.ToolName, &r.Summary, &r.Status,
+		if err := rows.Scan(&r.Mark.At, &r.Mark.ID, &r.Mark.Sub, &r.ToolName, &r.Summary, &r.SummaryClipped, &r.Status,
 			&r.SessionFolder, &r.WorkbenchFolder, &worktrees); err != nil {
 			return nil, fmt.Errorf("scanning permission decision: %w", err)
 		}

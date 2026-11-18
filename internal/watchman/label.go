@@ -108,13 +108,23 @@ func (l llmLabeler) labelBatch(ctx context.Context, items []LabelItem) ([]Label,
 	if err != nil {
 		return nil, fmt.Errorf("watchman label: generating: %w", err)
 	}
+	reply := []byte(trimJSONFence(strings.TrimSpace(raw)))
+	var legacy []string
+	if json.Unmarshal(reply, &legacy) == nil && len(legacy) > 0 {
+		// The v1 reply shape (an array of category names), whatever version
+		// the stored template claims: the template answering is a v1 one.
+		// An error, not an unlabelled batch: nothing is marked tried and no
+		// cursor moves until the owner resets the prompt.
+		return nil, fmt.Errorf("watchman label: the %s reply is the v1 shape (an array of category names), without the decision flags: reset the prompt in Settings → Prompts",
+			prompts.WatchmanLabel)
+	}
 	out := make([]Label, len(items))
 	var labels []labelReplyItem
-	if err := json.Unmarshal([]byte(trimJSONFence(strings.TrimSpace(raw))), &labels); err != nil {
-		// A reply that is not a JSON array of objects (the v1 array of
-		// strings included) is the model's answer, not an outage: like a
-		// wrong length, the batch comes back unlabelled so the source moves
-		// on instead of re-paying it every cycle. The reply may quote an
+	if err := json.Unmarshal(reply, &labels); err != nil {
+		// A reply that is not a JSON array of objects is the model's
+		// answer, not an outage: like a wrong length, the batch comes back
+		// unlabelled so the source moves on instead of re-paying it every
+		// cycle. The reply may quote an
 		// item: only its fingerprint is logged.
 		log.Printf("watchman label: %v", logredact.Errorf("the reply is not a JSON array of objects, %d items left unlabelled: %s",
 			len(items), logredact.Text(err.Error())))

@@ -64,7 +64,15 @@ func TestParkedBy(t *testing.T) {
 		{"grep no path unplaced", edit("Grep", `{"pattern":"x"}`), LimitOutsideFolder},
 		{"read clipped json unplaced", edit("Read", `{"file_path":"/w/a/x`), LimitOutsideFolder},
 		{"edit empty summary", edit("Edit", ""), LimitOutsideFolder},
-		{"read settings", edit("Read", `{"file_path":"/w/a/.claude/settings.local.json"}`), LimitStandingGrant},
+		{"read settings", edit("Read", `{"file_path":"/w/a/.claude/settings.local.json"}`), ""},
+		{"read settings plain", edit("Read", `{"file_path":"/w/a/.claude/settings.json"}`), ""},
+		{"write settings local", edit("Write", "/w/a/.claude/settings.local.json"), LimitStandingGrant},
+		{"multiedit settings", edit("MultiEdit", `{"file_path":"/w/a/.claude/settings.json"}`), LimitStandingGrant},
+		{"notebook settings", edit("NotebookEdit", ".claude/settings.json"), LimitStandingGrant},
+		{"edit codex config", edit("Edit", "/w/a/.codex/config.toml"), LimitStandingGrant},
+		{"read codex config", edit("Read", `{"file_path":"/w/a/.codex/config.toml"}`), ""},
+		{"edit settings lookalike", edit("Edit", "/w/a/docs/claude-settings.json"), ""},
+		{"bash cat settings", bash("cat .claude/settings.json"), ""},
 		{"bash abs path not outside", bash("cat /etc/hosts"), ""},
 		{"push no refspec", bash("git push"), ""},
 		{"push remote only", bash("git push origin"), ""},
@@ -88,6 +96,11 @@ func TestParkedBy(t *testing.T) {
 		{"cd worktree rm", bash("cd /w/a/sub && rm -rf build"), ""},
 		{"cd unknown rm", bash("cd ~/x && rm -rf build"), LimitDeleteOutside},
 		{"rm relative no cd", bash("rm -rf build"), ""},
+		{"rm relative subdir up", bash("rm -rf build/.."), ""},
+		{"rm relative climbs out", bash("rm -rf build/../.."), LimitDeleteOutside},
+		{"rm dot climbs out", bash("rm -rf ./.."), LimitDeleteOutside},
+		{"edit relative climbs out", edit("Edit", "docs/../../x.go"), LimitOutsideFolder},
+		{"edit relative stays in", edit("Edit", "docs/../x.go"), ""},
 		{"rm in described command", bash("rm -rf build\n# git push origin main"), ""},
 		{"description names push", bash("go test ./...\n# git push origin main"), ""},
 		{"sudo -u push", bash("sudo -u build git push origin main"), LimitMainRef},
@@ -170,4 +183,9 @@ func TestPermissionFlags(t *testing.T) {
 	f = permissionFlags(bash("go test ./..."))
 	require.True(t, *f.IsDecision)
 	require.False(t, *f.Parked)
+	clipped := bash("go test ./...")
+	clipped.SummaryClipped = true
+	f = permissionFlags(clipped)
+	require.True(t, *f.IsDecision)
+	require.True(t, *f.Parked, "a clipped summary hides its tail: it parks")
 }

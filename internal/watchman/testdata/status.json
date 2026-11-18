@@ -74,8 +74,8 @@
         "categories": [
           {
             "category": "permission",
-            "total": 30,
-            "agree": 26,
+            "total": 28,
+            "agree": 24,
             "acceptable": 3,
             "bad": 1,
             "wrong_high": 0,

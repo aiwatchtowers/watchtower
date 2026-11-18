@@ -112,6 +112,9 @@ var backtestClock = time.Now
 // backtestReport).
 func Backtest(ctx context.Context, d *db.DB, gen digest.Generator, judge Judge, store *prompts.Store, workbenchID int64,
 	workspaceDir string, now time.Time) (BacktestResult, error) {
+	if err := checkBacktestPrompts(store); err != nil {
+		return BacktestResult{}, err
+	}
 	unlock, err := lockBacktest(d)
 	if err != nil {
 		return BacktestResult{}, err
@@ -130,6 +133,29 @@ func Backtest(ctx context.Context, d *db.DB, gen digest.Generator, judge Judge, 
 	res := BacktestResult{ID: id}
 	res.ReportPath, res.ReportError = report.close()
 	return res, err
+}
+
+// backtestPromptMarkers is text every phase-1b-compatible template carries:
+// the decide prompt's owner_only handoff value and the judge prompt's
+// justified verdict. A customised older template (Seed does not upgrade a
+// customised row) lacks it: its replies would fail every handed item.
+var backtestPromptMarkers = []struct{ id, marker string }{
+	{prompts.WatchmanDecide, "owner_only"},
+	{prompts.WatchmanJudge, `"justified"`},
+}
+
+// checkBacktestPrompts refuses a run, before it spends anything, when a
+// resolved decide or judge template predates the handoff (spec §9.1).
+func checkBacktestPrompts(store *prompts.Store) error {
+	for _, p := range backtestPromptMarkers {
+		// Known-safe ignore: on a failed or empty store read Resolve still
+		// hands back the built-in template (the Decide precedent).
+		tmpl, _, _ := prompts.Resolve(store, p.id, "")
+		if !strings.Contains(tmpl, p.marker) {
+			return fmt.Errorf("watchman backtest: the stored %s prompt predates handing a decision back to you: reset it in Settings → Prompts, then run the backtest again", p.id)
+		}
+	}
+	return nil
 }
 
 // run measures every category and finishes the run's row.

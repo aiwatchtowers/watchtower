@@ -111,8 +111,9 @@ func (j llmJudge) Grade(ctx context.Context, in JudgeInput) (JudgeResult, *diges
 		Handoff string `json:"handoff"`
 		Why     string `json:"why"`
 	}
-	if err := json.Unmarshal([]byte(trimJSONFence(strings.TrimSpace(raw))), &r); err != nil {
-		return JudgeResult{}, usage, fmt.Errorf("watchman judge: the reply is not a JSON object: %w", err)
+	if json.Unmarshal([]byte(trimJSONFence(strings.TrimSpace(raw))), &r) != nil {
+		// A decode error quotes the reply: no model text in a judge error.
+		return JudgeResult{}, usage, errors.New("watchman judge: the reply is not a JSON object")
 	}
 	if in.Handoff {
 		switch r.Handoff {
@@ -123,7 +124,7 @@ func (j llmJudge) Grade(ctx context.Context, in JudgeInput) (JudgeResult, *diges
 		return JudgeResult{}, usage, errors.New("watchman judge: the reply has no known handoff verdict")
 	}
 	if len(r.Grades) == 0 {
-		return JudgeResult{}, usage, fmt.Errorf("watchman judge: the reply has no \"grades\"")
+		return JudgeResult{}, usage, errors.New(`watchman judge: the reply has no "grades"`)
 	}
 	out := JudgeResult{Grades: make([]string, 0, len(r.Grades)), Why: make([]string, 0, len(r.Grades))}
 	for _, g := range r.Grades {
@@ -132,7 +133,8 @@ func (j llmJudge) Grade(ctx context.Context, in JudgeInput) (JudgeResult, *diges
 			out.Grades = append(out.Grades, g.Grade)
 			out.Why = append(out.Why, strings.TrimSpace(g.Why))
 		default:
-			return JudgeResult{}, usage, fmt.Errorf("watchman judge: unknown grade %q", g.Grade)
+			// The raw value is model text: never echoed into the error.
+			return JudgeResult{}, usage, errors.New("watchman judge: the reply has an unknown grade")
 		}
 	}
 	return out, usage, nil

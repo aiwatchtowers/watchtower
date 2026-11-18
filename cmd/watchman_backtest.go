@@ -79,7 +79,7 @@ func init() {
 	}
 	backtest.Flags().Int64Var(&watchmanBacktestFlagWorkbench, "workbench", 0, "workbench id")
 	backtest.Flags().BoolVar(&watchmanBacktestFlagJSON, "json", false, "print JSON")
-	backtest.Flags().BoolVar(&watchmanBacktestFlagForce, "force", false, "run before Watchman has finished learning the workbench's history")
+	backtest.Flags().BoolVar(&watchmanBacktestFlagForce, "force", false, "run before Watchman has finished learning the workbench's history or relabelling its earlier decisions")
 	_ = backtest.MarkFlagRequired("workbench")
 	watchmanCmd.AddCommand(backtest)
 }

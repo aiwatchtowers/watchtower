@@ -243,3 +243,13 @@ func TestWatchmanBacktest_RefusesWhileRelabelPending(t *testing.T) {
 	assert.Contains(t, out, `"status": "done"`)
 	assert.Positive(t, gen.calls)
 }
+
+// --force overrides both refusals, so its help names both.
+func TestWatchmanBacktest_ForceHelpNamesBothOverrides(t *testing.T) {
+	c, _, err := rootCmd.Find([]string{"watchman", "backtest"})
+	require.NoError(t, err)
+	f := c.Flags().Lookup("force")
+	require.NotNil(t, f)
+	assert.Contains(t, f.Usage, "learning")
+	assert.Contains(t, f.Usage, "relabelling")
+}

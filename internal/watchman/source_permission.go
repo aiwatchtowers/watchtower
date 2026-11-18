@@ -52,7 +52,7 @@ func (s *permissionSource) Next(ctx context.Context, d *db.DB, workbenchID int64
 // request: its session folder and worktrees are the places it may touch.
 func permissionAskOf(r db.WatchmanPermissionRow) PermissionAsk {
 	return PermissionAsk{
-		Tool: r.ToolName, Summary: r.Summary, WorkbenchFolder: r.WorkbenchFolder,
+		Tool: r.ToolName, Summary: r.Summary, SummaryClipped: r.SummaryClipped, WorkbenchFolder: r.WorkbenchFolder,
 		Worktrees: append([]string{r.SessionFolder}, r.Worktrees...),
 		// PRBase stays nil: no row the writers produce maps a PR number to its
 		// base branch ('into:' rows carry no pr_number), so every `gh pr merge`
