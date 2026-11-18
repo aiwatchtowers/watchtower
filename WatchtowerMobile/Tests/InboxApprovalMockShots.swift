@@ -46,15 +46,13 @@ private enum InboxApprovalMocks {
                 card(jira(id: 42), label: "Without the grant", override: .approveNote("Approve on the Mac"))
             )),
             ("inbox-approval-failed", page(
-                card(jira(status: "failed", error: "jira: 503 Service Unavailable"), label: "Failed — Retry", retry: true),
-                card(jira(id: 42, status: "failed", error: "jira: 503 Service Unavailable"),
-                     label: "Failed, without the grant", override: .note("Retry on the Mac"))
+                card(failedJira(), label: "Failed — Retry", override: .retry),
+                card(failedJira(id: 42), label: "Failed, without the grant", override: .note("Retry on the Mac", retryNote: true))
             )),
             ("inbox-approval-sending", page(
                 card(jira(), label: "Approve on its way",
                      state: ChatApprovalState(showsButtons: true, canAnswer: false, line: "Approving…", inFlight: true)),
-                card(jira(id: 42, status: "failed", error: "jira: 503 Service Unavailable"), label: "Retry on its way",
-                     override: .busy("Retrying…")),
+                card(failedJira(id: 42), label: "Retry on its way", override: .busy("Retrying…", retryNote: true)),
                 card(jira(id: 43), label: "Waiting to send (the Mac is away)",
                      state: ChatApprovalState(showsButtons: true, canAnswer: false,
                                               line: "Waiting to send — it applies when \(hub) wakes."))
@@ -78,8 +76,8 @@ private enum InboxApprovalMocks {
             )),
             ("inbox-approval-dismiss", page(
                 card(connector(), label: "Outcome unknown — Dismiss", dismiss: true),
-                card(connector(id: 52), label: "Dismiss on its way", override: .busy("Dismissing…")),
-                card(connector(id: 54), label: "Outcome unknown, without the grant", override: .note("Dismiss on the Mac"))
+                card(connector(id: 52), label: "Dismiss on its way", override: .busy("Dismissing…", retryNote: false)),
+                card(connector(id: 54), label: "Outcome unknown, without the grant", override: .note("Dismiss on the Mac", retryNote: false))
             )),
             ("inbox-approval-mac-only", page(
                 card(ChatAgentAction(id: 61, tool: "save_automation", argsJSON: #"{"name": "Weekly mail roundup"}"#,
@@ -103,6 +101,17 @@ private enum InboxApprovalMocks {
             argsJSON: #"{"project_key": "ACME", "issue_type": "Task", "summary": "Pin the rollout window", "labels": ["release"]}"#,
             argsStored: false, argsSHA256: "b2", argsComplete: true, reason: "From the release thread",
             status: status, resultJSON: result, error: error
+        )
+    }
+
+    /// A failed external proposal. The card's own retry note is orange today; on the phone it is drawn in the secondary
+    /// tone (§12.4, orange only waits for you), so the mock leaves `external` off, which hides the card's note, and
+    /// `MockRow` draws the note in the secondary tone. The phone's header never shows `external`.
+    static func failedJira(id: Int64 = 41) -> ChatAgentAction {
+        let failed = jira(id: id, status: "failed", error: "jira: 503 Service Unavailable")
+        return ChatAgentAction(
+            id: failed.id, tool: failed.tool, external: false, argsJSON: failed.argsJSON, argsStored: false,
+            argsSHA256: failed.argsSHA256, argsComplete: true, reason: failed.reason, status: failed.status, error: failed.error
         )
     }
 
@@ -135,7 +144,6 @@ private enum InboxApprovalMocks {
         _ action: ChatAgentAction,
         label: String,
         state: ChatApprovalState? = nil,
-        retry: Bool = false,
         dismiss: Bool = false,
         override: MockRow.Kind? = nil,
         title: String? = nil,
@@ -143,7 +151,6 @@ private enum InboxApprovalMocks {
     ) -> AnyView {
         let services = ChatApprovalServices(
             state: { _ in state },
-            retry: retry ? { _ in } : nil,
             dismiss: dismiss ? { _ in } : nil,
             title: { _ in title },
             details: { _ in summary.map { AnyView(Text($0).font(.callout).fixedSize(horizontal: false, vertical: true)) } },
@@ -161,10 +168,12 @@ private struct MockRow: View {
     enum Kind {
         /// Approve is not offered here: its note in its place, Reject stays live.
         case approveNote(String)
-        /// No button: the line says where to act.
-        case note(String)
+        /// No button: the line says where to act (after the retry note, on a failed external proposal).
+        case note(String, retryNote: Bool)
         /// The press on its way: its busy title with a spinner, the rest off.
-        case busy(String)
+        case busy(String, retryNote: Bool)
+        /// A failed external proposal: the retry note in the secondary tone, and Retry.
+        case retry
         /// Not delivered: the line in red and the press's named Retry, the row's one action.
         case resend(line: String, title: String)
         /// An Inbox button's stuck task: Didn't finish and Try again.
@@ -172,6 +181,10 @@ private struct MockRow: View {
     }
 
     let kind: Kind
+
+    static var retryNoteText: some View {
+        Text("Retrying re-sends the request — check Jira for a duplicate first.").font(.caption).foregroundStyle(.secondary)
+    }
     @Environment(\.chatUIStyle) private var style
 
     var body: some View {
@@ -181,12 +194,23 @@ private struct MockRow: View {
                 Text(note).font(.caption).foregroundStyle(.secondary)
                 style.approvalButton("Reject", prominent: false) {}
             }
-        case let .note(line):
-            Text(line).font(.caption).foregroundStyle(.secondary)
-        case let .busy(title):
-            HStack(spacing: Spacing.regular) {
-                ProgressView().controlSize(.small)
-                Text(title).font(.caption).foregroundStyle(.secondary)
+        case let .note(line, retryNote):
+            VStack(alignment: .leading, spacing: Spacing.regular) {
+                if retryNote { Self.retryNoteText }
+                Text(line).font(.caption).foregroundStyle(.secondary)
+            }
+        case let .busy(title, retryNote):
+            VStack(alignment: .leading, spacing: Spacing.regular) {
+                if retryNote { Self.retryNoteText }
+                HStack(spacing: Spacing.regular) {
+                    ProgressView().controlSize(.small)
+                    Text(title).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        case .retry:
+            VStack(alignment: .leading, spacing: Spacing.regular) {
+                Self.retryNoteText
+                Button("Retry") {}
             }
         case let .resend(line, title):
             VStack(alignment: .leading, spacing: Spacing.regular) {

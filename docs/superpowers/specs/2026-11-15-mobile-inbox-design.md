@@ -448,7 +448,7 @@ Mockups: `docs/design/mockups/mobile-inbox/approval-card/` has seven frames, eac
 - **Before.** A Needs approval entry `a…` is `InboxApprovalCard`, over `InboxApprovalModel` from `WatchtowerInterface`. A due reminder `r…` uses the same view with Done and Snooze 1h.
 - **After.** A Needs approval entry `a…` is `ChatUI.AgentActionCard` in `PhoneChatStyle`, with the card's `ChatApprovalServices` wired to `InboxCenter`.
   - The card's context line is the entry's source line ("ϟ Release notes · run #4").
-  - The body is the card's per-tool body, as in the phone chat. For that, the feed's `Approval` gains `args_display`, `args_complete` and `external`. Go fills them from the chat engine's `argsDisplay`, which clips at 4000 characters and is applied under `FeedRequest.Clip`. A `ChatAgentAction(inboxApproval:)` builds the action with `argsStored: false` and the feed's `args_sha256`. An older hub sends no `args_display`; the body is then the feed's `summary`, quoted, through `details`, as today.
+  - The body is the card's per-tool body, as in the phone chat. For that, the feed's `Approval` gains `args_display`, `args_complete` and `external` (per ask #1549). Go fills them from the chat engine's `argsDisplay`, which clips at 4000 characters and is applied under `FeedRequest.Clip`. A `ChatAgentAction(inboxApproval:)` builds the action with `argsStored: false` and the feed's `args_sha256`. An older hub sends no `args_display`; the body is then the feed's `summary`, quoted, through `details`, as today.
   - `save_automation` takes its title and its summary through `title` and `details`, as the Mac does. Without them the card shows the raw tool id and raw JSON (seen in the first mock render).
   - A reminder is not a proposal. It keeps a phone view of its own, the reminder part of today's card, renamed `InboxReminderCard`.
 - **Removed.** `InboxApprovalCard`'s approval half and, if nothing else uses it, `InboxApprovalModel`. Their tests go only where an equivalent ChatUI or phone test replaces them.
@@ -458,12 +458,12 @@ Mockups: `docs/design/mockups/mobile-inbox/approval-card/` has seven frames, eac
 The card's own rules decide, with no phone-only rule (`AgentActionCard.settledOffer` / `shownSettledOffer`):
 
 - **Retry.** Shown on a `failed` (or stuck `approved`) row that is not a session call and not superseded (`offersRetry` is false on an older Inbox-button row, AGENT-05).
-- **Dismiss.** Shown only on a session call whose outcome is unknown (`ConnectorCallProposal.awaitsDismissal`), next to its note "Check the connector to see whether the call ran, then dismiss this card." That is the only row Go's `approval dismiss` takes (`Registry.DismissSessionCall`). On any other row Go refuses with `changed`.
-- **Today's phone card offers Dismiss on every failed row.** Go refuses each of those presses with "Couldn't dismiss it: this card changed — look again." Following the card's rule fixes that. Whether a plain failed row should become dismissable is open question Q1 below.
+- **Dismiss** (per ask #1549, Q1). Shown only on a session call whose outcome is unknown (`ConnectorCallProposal.awaitsDismissal`), next to its note "Check the connector to see whether the call ran, then dismiss this card." That is the only row Go's `approval dismiss` takes (`Registry.DismissSessionCall`). On any other row Go refuses with `changed`.
+- **Today's phone Dismiss on an ordinary failed row does not work: Go refuses it.** The shipped phone card offers Dismiss on every failed row (`InboxApprovalModel.canDismiss = failed && mayDecide`), and Go answers every such press `changed`, shown as "Couldn't dismiss it: this card changed — look again." Following the card's rule removes that button (per ask #1549, Q1 in §12.8). Whether an ordinary failed row should become dismissable is Q1.
 - **Which surfaces show them:**
   - **The phone Inbox** gains both. `services.retry` and `services.dismiss` send `inbox.act`.
   - **The Mac** (Inbox, chat, target chat, automation editor) already shows both through `MacAgentActionCard`. The model additions below default to today's behaviour, so the Mac does not change visibly; the existing `approval-*` DesignShots must stay the same.
-  - **The phone chat** stays as it is, with no Retry or Dismiss. Its answer goes through `chat_action_answer`, which carries only approve and reject. Adding the two verbs would mean a new hub verb, and the owner did not ask for it.
+  - **The phone chat** stays as it is, with no Retry or Dismiss (per ask #1549, Q3). The relay's chat approval answer (`chat_action_answer`) carries only `approve` and `reject`. Retry and Dismiss there would need a new hub verb, which is a separate target.
 
 #### 12.3 Verbs and grants
 
@@ -490,6 +490,7 @@ Every addition defaults to today's behaviour. The strings live in the phone's te
 - `ChatApprovalState.settledNote: String?`: Retry and Dismiss are not offered on this device, and the note stands in their place.
 - `ChatApprovalState.line` is drawn on a settled row with an offer too, not only on a pending one. `inFlight` disables the settled buttons and shows the spinner, as it does for the pending ones. The Mac and the phone chat pass no line there, so they do not change.
 - `ChatApprovalState.undelivered: (line, retryTitle)?` with `ChatApprovalServices.resend`: on a Not delivered row, the line shows in red and the press's named Retry ("Retry Approve") becomes the row's only button. It re-sends the same outbox action (§7).
+- On the phone, the external retry note on a failed row ("Retrying re-sends the request — check Jira for a duplicate first.") is drawn in the secondary tone through a new `ChatUIStyle` hook. The phone's rule is that orange means only "waiting for you". The Mac's style keeps its orange, so the Mac does not change.
 - The Inbox-button stuck row ("Didn't finish" with **Try again**, or progress while creating) is drawn by the phone through `decisionOverride`, as the Mac does. It comes from `InboxApprovalModel.targetRow`'s rule, which moves with it.
 
 #### 12.5 Every state (frame names in brackets)
@@ -498,9 +499,9 @@ Every addition defaults to today's behaviour. The strings live in the phone's te
 |---|---|
 | Pending, with the grant [`pending`] | Approve, Reject |
 | Pending, without the grant [`pending`] | "Approve on the Mac", Reject |
-| Failed [`failed`] | Header "Failed" in red, the row's error, the external retry note, **Retry** |
+| Failed [`failed`] | Header "Failed" in red, the row's error, the external retry note in the secondary tone (orange is only for what waits on you), **Retry** |
 | Failed, without the grant [`failed`] | The same with "Retry on the Mac" and no button |
-| Sending: Approve, Reject, Retry or Dismiss on its way [`sending`, `dismiss`] | Buttons off with a spinner, and the line "Approving…", "Rejecting…", "Retrying…" or "Dismissing…" |
+| Sending: Approve, Reject, Retry or Dismiss on its way [`sending`, `dismiss`] (per ask #1549, Q2) | Buttons off with a spinner, and the line "Approving…", "Rejecting…", "Retrying…" or "Dismissing…" |
 | Waiting to send, while the hub is away (`busy` while `MacReachability` is not online) [`sending`] | Buttons off, and the line "Waiting to send — it applies when <hub name> wakes." |
 | Refused [`refused`] | The tower's sentence in red (`gestureError`), for example "This proposal changed on the Mac — look again before approving." The buttons are live again; a new press is a new request. `args_changed` redraws the card from the next publish. |
 | Not delivered [`refused`] | "Not delivered — <hub name> didn't get it." in red, and **Retry Approve** alone |
@@ -528,7 +529,21 @@ Every addition defaults to today's behaviour. The strings live in the phone's te
 
 #### 12.7 Shots
 
-After the build, `make mobile-shots SHOTS_ONLY=inbox-approval` renders these names from the real card (the `MockRow`s are gone) and they are compared by eye with this folder. The Mac's `approval-*` DesignShots are rendered before and after and must match. `ScreenshotTourTests`' `inbox-*` §3 frame is updated to the new card.
+After the build, `make mobile-shots SHOTS_ONLY=inbox-approval` renders these names from the real card (the `MockRow`s are gone) and they are compared by eye with this folder. The Mac's `approval-*` DesignShots are rendered before and after and must match. `ScreenshotTourTests`' `inbox-*` §3 frame is updated to the new card. Mockup §3 in `docs/design/mockups/mobile-inbox/index.html` now shows these frames, so they are the one source of truth for the approval card.
+
+#### 12.8 Open questions (ask #1549)
+
+The design above follows the recommended option of each question. Every line that depends on one says "per ask #1549".
+
+- **Q1. Dismiss on an ordinary failed proposal.** Today's phone Dismiss on such a row is refused by Go.
+  - A (recommended): offer Dismiss only where Go accepts it, on a session call whose outcome is unknown, as on the Mac. Ordinary failed rows get Retry only.
+  - B: make any failed row dismissable. This changes Go's `approval dismiss`, the Needs approval and badge rule (`AwaitingOwnerClause`, APPROVAL-01) and the Mac card, which would gain Dismiss on failed rows.
+- **Q2. What a press on its way looks like.**
+  - A (recommended): the chat card's look, with the buttons disabled and a line under them ("Approving…").
+  - B: today's phone look, where only the pressed button stays, with its busy title (#1170 T15: `InboxApprovalCard.busyVerb`, `testApprovingShowsOnlyTheBusyButton`). A reverses that T15 fix.
+- **Q3. Retry and Dismiss in the phone chat.**
+  - A (recommended): keep the phone chat as it is. The relay's chat approval answer carries only `approve` and `reject`.
+  - B: extend the phone chat too, with a new hub verb. That is a separate target.
 
 ## Promises → tasks → tests
 
@@ -560,6 +575,13 @@ After the build, `make mobile-shots SHOTS_ONLY=inbox-approval` renders these nam
 | A send survives a crash; a dead session is cleaned up | 3 / `--persist`, `chat.recover` | CHAT-01 guard; kill tests; sweep test |
 | Chat contracts kept | 3 / chat switch | CHAT-01/02/03/05 and LIVE-01 guards, moved with their names |
 | Shots match the mockup | 1 and 2 | DesignShot `inbox-feed-*`; `ScreenshotTourTests` `inbox-*` |
+| The phone Inbox draws ChatUI's approval card (§12.1) | 2 / #2018 | `InboxTabWiringTests.testNeedsApprovalDrawsTheSharedCard`; `ChatAgentActionInboxTests` (the action built from the feed's `Approval`) |
+| Retry is offered on a failed, unsuperseded row and sends `approval retry` (§12.2–12.3) | 2 / #2018 | ChatUI `AgentActionCardDecisionTests` (`settledOffer`, `offersRetry`); `InboxApprovalServicesTests.testRetrySendsApprovalRetry` |
+| Dismiss only where Go accepts it, per ask #1549 Q1 (§12.2) | 2 / #2018 | `AgentActionCardDecisionTests.testDismissOnlyOnUnknownOutcome`; `InboxApprovalServicesTests.testNoDismissOnAnOrdinaryFailedRow` |
+| Grants: Approve, Retry and Dismiss need `permissions`; Reject does not (§12.3) | 2 / #2018 | `InboxApprovalStateTests` (approveNote, settledNote, Reject live); Go `ActGrant` tests (existing) |
+| Feed fields `args_display`, `args_complete`, `external`, with the older-hub summary fallback (§12.1) | 2 / #2018 | Go `inboxfeed` approval-card golden (`inbox_feed_cases.json`); `GoldenRoundTripTests`; `ChatAgentActionInboxTests.testNoArgsDisplayFallsBackToTheSummary` |
+| Refusal, busy, waiting, not delivered, didn't confirm and settled states (§12.5) | 2 / #2018 | `InboxApprovalStateTests` (one case per state); ChatUI `ChatApprovalStateTests` (new fields default off); `make mobile-shots SHOTS_ONLY=inbox-approval` against the mockups |
+| The Mac and the phone chat do not change (§12.2) | 2 / #2018 | DesignShot `approval-*` before and after; `ScreenshotTourTests` `iphone-chat-approval-*` |
 
 ## Decisions
 
@@ -603,11 +625,12 @@ After the build, `make mobile-shots SHOTS_ONLY=inbox-approval` renders these nam
 - Legacy entries are typed sections for the Mac and block projections for the phone.
 - CatchUp, digests, chat-made ideas and `targets.status` writes move with the rest, because they write the same rows — ask #1362 ("everyone who writes the same rows").
 - The phone gets at most 300 cards, with Needs approval and Waiting for me first.
-- §12: Retry and Dismiss follow the card's own rule (`settledOffer`). Dismiss is offered only where Go's `approval dismiss` accepts it (a session call with an unknown outcome), pending Q1 of board #2018.
-- §12: The phone chat keeps approve and reject only (`chat_action_answer`), and the Mac does not change; every model addition defaults to today's behaviour.
-- §12: The Inbox feed's `Approval` carries `args_display`, `args_complete` and `external`, so the phone Inbox draws the same per-tool body as the phone chat. An older hub falls back to the summary.
+- §12: Retry and Dismiss follow the card's own rule (`settledOffer`). Dismiss is offered only where Go's `approval dismiss` accepts it (a session call with an unknown outcome) — pending ask #1549 (Q1).
+- §12: The phone chat keeps approve and reject only, because the relay's chat approval answer carries no other verb — pending ask #1549 (Q3). The Mac does not change; every model addition defaults to today's behaviour.
+- §12: The Inbox feed's `Approval` carries `args_display`, `args_complete` and `external`, so the phone Inbox draws the same per-tool body as the phone chat. An older hub falls back to the summary — pending ask #1549.
 - §12: Reject from the phone needs no grant (`ActGrant`), so without `permissions` Approve becomes a note and Reject stays live. The phone chat keeps its own no-grant look (no buttons).
-- §12: Busy, Waiting to send and Didn't confirm are lines under disabled buttons, the chat's look. The press's own busy button from mockup §3 is not kept.
+- §12: Busy, Waiting to send and Didn't confirm are lines under disabled buttons, the chat's look — pending ask #1549 (Q2). This reverses the #1170 T15 phone fix (only the pressed button stays, `testApprovingShowsOnlyTheBusyButton`).
+- §12: On the phone the external retry note uses the secondary tone, not orange, because orange means only "waiting for you" there. The Mac keeps orange.
 
 ## Left to the builder
 
