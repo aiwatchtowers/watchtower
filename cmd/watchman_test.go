@@ -122,7 +122,7 @@ func TestWatchmanLearn_JSONKeysPinned(t *testing.T) {
 	var r watchmanLearnJSON
 	require.NoError(t, json.Unmarshal([]byte(out), &r))
 	assert.Equal(t, watchmanLearnJSON{OK: true, Workbench: wb, Written: 1,
-		BySource: map[string]int{"ask": 1, "review": 0, "spec": 0, "permission": 0, "turn": 0, "git": 0}, AnalyticsTurnedOn: true}, r)
+		BySource: map[string]int{"ask": 1, "review": 0, "spec": 0, "permission": 0, "journal": 0, "turn": 0, "git": 0}, AnalyticsTurnedOn: true}, r)
 	assert.Equal(t, 1, gen.calls)
 	enabled, precedents, analytics := watchmanState(t, wb)
 	assert.True(t, enabled)
