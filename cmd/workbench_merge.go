@@ -242,28 +242,9 @@ func mergeReinstall(ctx context.Context, cfg *config.Config, from, into *db.Work
 // the surviving bench already has is shared.
 func moveTargetImages(ctx context.Context, cfg *config.Config, database *db.DB, from, into int64) error {
 	store := workbenchfiles.New(cfg.WorkspaceDir())
-	old := store.Dir(from) + string(filepath.Separator)
-	rows, err := database.QueryContext(ctx, `SELECT id, path FROM project_target_images WHERE project_id = ?`, into)
+	moving, err := storedImagesUnder(ctx, database, into, store.Dir(from)+string(filepath.Separator))
 	if err != nil {
-		return fmt.Errorf("reading the target images: %w", err)
-	}
-	type image struct {
-		id   int64
-		path string
-	}
-	var moving []image
-	for rows.Next() {
-		var im image
-		if err := rows.Scan(&im.id, &im.path); err != nil {
-			_ = rows.Close()
-			return fmt.Errorf("reading the target images: %w", err)
-		}
-		if strings.HasPrefix(im.path, old) {
-			moving = append(moving, im)
-		}
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return fmt.Errorf("reading the target images: %w", err)
+		return err
 	}
 	if len(moving) > 0 {
 		if err := os.MkdirAll(store.Dir(into), 0o700); err != nil {
@@ -282,6 +263,36 @@ func moveTargetImages(ctx context.Context, cfg *config.Config, database *db.DB, 
 		}
 	}
 	return store.RemoveWorkbench(from) //nolint:wrapcheck // the store names the directory
+}
+
+// storedImage is one project_target_images row's id and stored copy.
+type storedImage struct {
+	id   int64
+	path string
+}
+
+// storedImagesUnder is workbench wb's target images whose stored copy lies
+// under dir (a path ending in the separator).
+func storedImagesUnder(ctx context.Context, database *db.DB, wb int64, dir string) ([]storedImage, error) {
+	rows, err := database.QueryContext(ctx, `SELECT id, path FROM project_target_images WHERE project_id = ?`, wb)
+	if err != nil {
+		return nil, fmt.Errorf("reading the target images: %w", err)
+	}
+	defer rows.Close()
+	var out []storedImage
+	for rows.Next() {
+		var im storedImage
+		if err := rows.Scan(&im.id, &im.path); err != nil {
+			return nil, fmt.Errorf("reading the target images: %w", err)
+		}
+		if strings.HasPrefix(im.path, dir) {
+			out = append(out, im)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the target images: %w", err)
+	}
+	return out, nil
 }
 
 // mergeRefused reports a refusal: with --json as an ok:false result (exit

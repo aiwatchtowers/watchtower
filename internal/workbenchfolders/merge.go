@@ -193,21 +193,25 @@ func Merge(ctx context.Context, d *db.DB, from, into int64, live LiveBenchSessio
 
 // run applies t to the merged bench's rows.
 func (t mergeTable) run(ctx context.Context, tx *sql.Tx, m *merger) error {
-	switch t.op {
-	case opCustom:
+	if t.op == opCustom {
 		return t.apply(ctx, tx, m)
+	}
+	//nolint:gosec // G202: table and column names are mergeTables' constants; every value is a bound arg.
+	rekey, drop := `UPDATE `+t.table+` SET `+t.column+` = ? WHERE `+t.column+` = ?`, `DELETE FROM `+t.table+` WHERE `+t.column+` = ?`
+	switch t.op {
 	case opDrop:
-		_, err := tx.ExecContext(ctx, `DELETE FROM `+t.table+` WHERE `+t.column+` = ?`, m.from)
+		_, err := tx.ExecContext(ctx, drop, m.from)
 		return err //nolint:wrapcheck // Merge names the table
 	case opDedupe:
-		if _, err := tx.ExecContext(ctx, `UPDATE OR IGNORE `+t.table+` SET `+t.column+` = ? WHERE `+t.column+` = ?`, m.into, m.from); err != nil {
+		ignoring := strings.Replace(rekey, "UPDATE ", "UPDATE OR IGNORE ", 1)
+		if _, err := tx.ExecContext(ctx, ignoring, m.into, m.from); err != nil {
 			return err //nolint:wrapcheck // Merge names the table
 		}
 		// What is left clashed with a row the surviving bench already had.
-		_, err := tx.ExecContext(ctx, `DELETE FROM `+t.table+` WHERE `+t.column+` = ?`, m.from)
+		_, err := tx.ExecContext(ctx, drop, m.from)
 		return err //nolint:wrapcheck // Merge names the table
 	default:
-		_, err := tx.ExecContext(ctx, `UPDATE `+t.table+` SET `+t.column+` = ? WHERE `+t.column+` = ?`, m.into, m.from)
+		_, err := tx.ExecContext(ctx, rekey, m.into, m.from)
 		return err //nolint:wrapcheck // Merge names the table
 	}
 }
@@ -292,15 +296,16 @@ func moveTargets(ctx context.Context, tx *sql.Tx, m *merger) error {
 // is NULL — the merged bench's home folder — to that folder (where, when
 // set, narrows the rows the NULL means a folder for).
 func pinHomeThenMove(table, column, where string) func(ctx context.Context, tx *sql.Tx, m *merger) error {
+	//nolint:gosec // G202: table, column and where are mergeTables' constants; every value is a bound arg.
+	pin, move := `UPDATE `+table+` SET `+column+` = ? WHERE project_id = ? AND `+column+` IS NULL`, `UPDATE `+table+` SET project_id = ? WHERE project_id = ?`
+	if where != "" {
+		pin += ` AND ` + where
+	}
 	return func(ctx context.Context, tx *sql.Tx, m *merger) error {
-		q := `UPDATE ` + table + ` SET ` + column + ` = ? WHERE project_id = ? AND ` + column + ` IS NULL`
-		if where != "" {
-			q += ` AND ` + where
-		}
-		if _, err := tx.ExecContext(ctx, q, m.fromHome, m.from); err != nil {
+		if _, err := tx.ExecContext(ctx, pin, m.fromHome, m.from); err != nil {
 			return err //nolint:wrapcheck // Merge names the table
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE `+table+` SET project_id = ? WHERE project_id = ?`, m.into, m.from)
+		_, err := tx.ExecContext(ctx, move, m.into, m.from)
 		return err //nolint:wrapcheck // Merge names the table
 	}
 }
@@ -310,41 +315,17 @@ func pinHomeThenMove(table, column, where string) func(ctx context.Context, tx *
 // for such a recipe, spec §6.11), its folder being the moved folder the
 // recipe lies in.
 func moveAutomations(ctx context.Context, tx *sql.Tx, m *merger) error {
+	held, err := benchRecipes(ctx, tx, m.into)
+	if err != nil {
+		return err
+	}
 	taken := map[string]bool{}
-	held, err := tx.QueryContext(ctx, `SELECT slug FROM automations WHERE project_id = ?`, m.into)
+	for _, r := range held {
+		taken[r.slug] = true
+	}
+	moving, err := benchRecipes(ctx, tx, m.from)
 	if err != nil {
-		return err //nolint:wrapcheck // Merge names the table
-	}
-	for held.Next() {
-		var s string
-		if err := held.Scan(&s); err != nil {
-			_ = held.Close()
-			return err //nolint:wrapcheck // Merge names the table
-		}
-		taken[s] = true
-	}
-	if err := errors.Join(held.Err(), held.Close()); err != nil {
-		return err //nolint:wrapcheck // Merge names the table
-	}
-	type recipe struct {
-		id         int64
-		slug, path string
-	}
-	var moving []recipe
-	rows, err := tx.QueryContext(ctx, `SELECT id, slug, path FROM automations WHERE project_id = ? ORDER BY id`, m.from)
-	if err != nil {
-		return err //nolint:wrapcheck // Merge names the table
-	}
-	for rows.Next() {
-		var r recipe
-		if err := rows.Scan(&r.id, &r.slug, &r.path); err != nil {
-			_ = rows.Close()
-			return err //nolint:wrapcheck // Merge names the table
-		}
-		moving = append(moving, r)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err //nolint:wrapcheck // Merge names the table
+		return err
 	}
 	for _, r := range moving {
 		slug := r.slug
@@ -357,6 +338,33 @@ func moveAutomations(ctx context.Context, tx *sql.Tx, m *merger) error {
 		}
 	}
 	return nil
+}
+
+// recipe is one automations row of a bench.
+type recipe struct {
+	id         int64
+	slug, path string
+}
+
+// benchRecipes is workbench wb's automations rows, by id.
+func benchRecipes(ctx context.Context, tx *sql.Tx, wb int64) ([]recipe, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id, slug, path FROM automations WHERE project_id = ? ORDER BY id`, wb)
+	if err != nil {
+		return nil, fmt.Errorf("reading the automations of workbench %d: %w", wb, err)
+	}
+	defer rows.Close()
+	var out []recipe
+	for rows.Next() {
+		var r recipe
+		if err := rows.Scan(&r.id, &r.slug, &r.path); err != nil {
+			return nil, fmt.Errorf("reading the automations of workbench %d: %w", wb, err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the automations of workbench %d: %w", wb, err)
+	}
+	return out, nil
 }
 
 // recipeSlug is <folder name>/<stem> for the recipe at path whose slug is

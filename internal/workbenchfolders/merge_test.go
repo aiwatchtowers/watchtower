@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,44 +28,21 @@ var mergeKeyAllowlist = map[string]string{
 // workbench_id.
 func workbenchKeyedColumns(t *testing.T, d *db.DB) []string {
 	t.Helper()
-	rows, err := d.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'projects'`)
+	rows, err := d.Query(`SELECT m.name || '.' || c.name FROM sqlite_master m JOIN pragma_table_info(m.name) c
+		WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> 'projects' AND c.name IN ('project_id', 'workbench_id')
+		UNION
+		SELECT m.name || '.' || f."from" FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) f
+		WHERE m.type = 'table' AND f."table" = 'projects'
+		ORDER BY 1`)
 	require.NoError(t, err)
-	var tables []string
+	defer rows.Close()
+	var out []string
 	for rows.Next() {
-		var n string
-		require.NoError(t, rows.Scan(&n))
-		tables = append(tables, n)
-	}
-	require.NoError(t, rows.Err())
-	require.NoError(t, rows.Close())
-	keyed := map[string]bool{}
-	for _, tbl := range tables {
-		cols, err := d.Query(`SELECT name FROM pragma_table_info(?)`, tbl)
-		require.NoError(t, err)
-		for cols.Next() {
-			var c string
-			require.NoError(t, cols.Scan(&c))
-			if c == "project_id" || c == "workbench_id" {
-				keyed[tbl+"."+c] = true
-			}
-		}
-		require.NoError(t, cols.Close())
-		fks, err := d.Query(`SELECT "table", "from" FROM pragma_foreign_key_list(?)`, tbl)
-		require.NoError(t, err)
-		for fks.Next() {
-			var parent, from string
-			require.NoError(t, fks.Scan(&parent, &from))
-			if parent == "projects" {
-				keyed[tbl+"."+from] = true
-			}
-		}
-		require.NoError(t, fks.Close())
-	}
-	out := make([]string, 0, len(keyed))
-	for k := range keyed {
+		var k string
+		require.NoError(t, rows.Scan(&k))
 		out = append(out, k)
 	}
-	sort.Strings(out)
+	require.NoError(t, rows.Err())
 	return out
 }
 
