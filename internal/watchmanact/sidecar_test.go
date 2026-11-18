@@ -109,3 +109,79 @@ func TestRefreshSidecar_LaterStateWins(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, Sidecar{Sessions: []int64{s1, s2}, Worktrees: []string{f1, f2}}, got)
 }
+
+func TestSidecar_CarriesTheOwnersLimits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "watchman.armed")
+	limits := []db.WatchmanExtraLimit{
+		{ID: 4, Kind: "command", Pattern: "terraform apply"},
+		{ID: 5, Kind: "tool", Pattern: "create_jira_issue"},
+	}
+	require.NoError(t, WriteSidecar(path, []db.ArmedSession{{SessionID: 7, Folder: "/tmp/acme"}}, false, limits...))
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "session 7\nworktree /tmp/acme\nlimit command terraform apply\nlimit tool create_jira_issue\n", string(raw))
+	got, err := ReadSidecar(path)
+	require.NoError(t, err)
+	assert.Equal(t, []db.WatchmanExtraLimit{{Kind: "command", Pattern: "terraform apply"}, {Kind: "tool", Pattern: "create_jira_issue"}}, got.Limits)
+	assert.False(t, got.LimitsUnavailable)
+
+	// A limit that cannot be a line is not dropped silently: the marker.
+	limits = append(limits, db.WatchmanExtraLimit{ID: 6, Kind: "command", Pattern: "two\nlines"})
+	require.NoError(t, WriteSidecar(path, nil, false, limits...))
+	got, err = ReadSidecar(path)
+	require.NoError(t, err)
+	assert.True(t, got.LimitsUnavailable)
+	assert.Len(t, got.Limits, 2)
+
+	// A file from before the limit lines reads as no owner's limits.
+	require.NoError(t, os.WriteFile(path, []byte("session 7\ntargets-armed\n"), 0o600))
+	got, err = ReadSidecar(path)
+	require.NoError(t, err)
+	assert.Equal(t, Sidecar{Sessions: []int64{7}, TargetsArmed: true}, got)
+}
+
+func TestRefreshSidecar_WritesTheOwnersLimits(t *testing.T) {
+	ws := t.TempDir()
+	d := db.OpenTestDB(t)
+	_, err := d.AddWatchmanExtraLimit("command", "terraform apply")
+	require.NoError(t, err)
+	_, err = RefreshSidecar(context.Background(), ws, d)
+	require.NoError(t, err)
+	got, err := ReadSidecar(SidecarPath(ws))
+	require.NoError(t, err)
+	assert.Equal(t, []db.WatchmanExtraLimit{{Kind: "command", Pattern: "terraform apply"}}, got.Limits)
+}
+
+// A limit row the CLI would refuse (a line break) came in some other way:
+// the refresh writes the marker, not a silent gap.
+func TestRefreshSidecar_UnwritableLimitRowMarksUnavailable(t *testing.T) {
+	ws := t.TempDir()
+	d := db.OpenTestDB(t)
+	_, err := d.Exec(`INSERT INTO watchman_extra_limits (kind, pattern, created_at) VALUES ('command', 'make' || char(10) || 'deploy', '2026-11-18T00:00:00Z')`)
+	require.NoError(t, err)
+	_, err = RefreshSidecar(context.Background(), ws, d)
+	require.NoError(t, err)
+	got, err := ReadSidecar(SidecarPath(ws))
+	require.NoError(t, err)
+	assert.True(t, got.LimitsUnavailable)
+	assert.Empty(t, got.Limits)
+}
+
+// The owner's limits unreadable after the arming was read: the arming is
+// still written, with the marker, and the error is returned.
+func TestRefreshSidecar_LimitsReadFailureWritesArmingAndMarker(t *testing.T) {
+	ws := t.TempDir()
+	d := db.OpenTestDB(t)
+	_, err := d.Exec(`INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme')`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO terminal_sessions (id, project_id, kind, title, folder_path, claude_session_id) VALUES (7, 1, 'claude', 'acme', '/tmp/acme/wt', 'sid-7')`)
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertWatchmanArming(db.WatchmanArming{Scope: "session", RefID: 7, ArmedAt: time.Now(), ArmedBy: "cli"}))
+	_, err = d.Exec(`DROP TABLE watchman_extra_limits`)
+	require.NoError(t, err)
+	_, err = RefreshSidecar(context.Background(), ws, d)
+	require.Error(t, err)
+	got, err := ReadSidecar(SidecarPath(ws))
+	require.NoError(t, err)
+	assert.Equal(t, Sidecar{Sessions: []int64{7}, Worktrees: []string{"/tmp/acme/wt"}, LimitsUnavailable: true}, got)
+}

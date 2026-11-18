@@ -182,6 +182,11 @@ var (
 	// askToolBlockSpec: the PreToolUse hook denying AskUserQuestion, so a
 	// question to the owner goes through ask_owner (§6.3).
 	askToolBlockSpec = claudeHookSpec("PreToolUse", "workbench ask-guard --workbench")
+	// watchmanGuardSpec: the PreToolUse hook denying hard-limit actions while
+	// the session is handed to Watchman (WATCHMAN-01/05), every tool (matcher
+	// "*", its own group). Installed and removed with the ask guard hooks,
+	// so only an integrate install puts it in a folder.
+	watchmanGuardSpec = claudeHookSpec("PreToolUse", "workbench watchman-guard --workbench")
 	// permissionWaitSpec: the synchronous PermissionRequest hook that holds a
 	// permission dialog open for an answer from the phone (#517). Claude only.
 	// Installed and removed with the state hooks but not one of them, so it
@@ -191,7 +196,7 @@ var (
 	// ownedHookSpecs is every event the workbench install owns an entry in.
 	// installedStateSpecs: what InstallStateHooks writes and RemoveStateHooks takes out.
 	installedStateSpecs = append([]hookSpec{permissionWaitSpec}, stateHookSpecs...)
-	ownedHookSpecs      = append([]hookSpec{sessionStartSpec, stopSpec, askGuardSpec, askToolBlockSpec}, installedStateSpecs...)
+	ownedHookSpecs      = append([]hookSpec{sessionStartSpec, stopSpec, askGuardSpec, askToolBlockSpec, watchmanGuardSpec}, installedStateSpecs...)
 )
 
 // claudeHookSpec is the claude session adapter's install row of event with
@@ -292,15 +297,20 @@ func InstallStateHooks(dir, bin string, workbenchID int64) (bool, error) {
 // InstallAskGuardHooks installs the ask guard for workbenchID under the
 // PROJ-04 rules: the Stop command hook, which replaces every Stop prompt
 // hook carrying workbenchID's marker (v1–v3 or an owner's edit), and the
-// PreToolUse command hook denying AskUserQuestion, both running bin. A
-// malformed file is reported once and neither is attempted.
+// PreToolUse command hook denying AskUserQuestion, both running bin — and
+// in their company the Watchman guard's PreToolUse hook (WATCHMAN-05). A
+// malformed file is reported once and none is attempted.
 func InstallAskGuardHooks(dir, bin string, workbenchID int64) (bool, error) {
 	guarded, err := installHook(dir, askGuardSpec, askGuardSpec.command(bin, workbenchID), workbenchID)
 	if err != nil {
 		return guarded, err
 	}
 	blocked, err := installHook(dir, askToolBlockSpec, askToolBlockSpec.command(bin, workbenchID), workbenchID)
-	return guarded || blocked, err
+	if err != nil {
+		return guarded || blocked, err
+	}
+	watched, err := installHook(dir, watchmanGuardSpec, watchmanGuardSpec.command(bin, workbenchID), workbenchID)
+	return guarded || blocked || watched, err
 }
 
 // installHook sets spec's entry for workbenchID to command, replacing the
@@ -371,16 +381,20 @@ func RemoveStateHooks(dir string, workbenchID int64) (bool, error) {
 	return changed, nil
 }
 
-// RemoveAskGuardHooks removes both ask guard entries of workbenchID and any
-// leftover marker prompt of it (PROJ-02/04); the owner's own Stop and
-// PreToolUse entries stay.
+// RemoveAskGuardHooks removes both ask guard entries of workbenchID, any
+// leftover marker prompt of it (PROJ-02/04) and the Watchman guard's entry;
+// the owner's own Stop and PreToolUse entries stay.
 func RemoveAskGuardHooks(dir string, workbenchID int64) (bool, error) {
 	guarded, err := removeHook(dir, askGuardSpec, workbenchID)
 	if err != nil {
 		return guarded, err
 	}
 	blocked, err := removeHook(dir, askToolBlockSpec, workbenchID)
-	return guarded || blocked, err
+	if err != nil {
+		return guarded || blocked, err
+	}
+	watched, err := removeHook(dir, watchmanGuardSpec, workbenchID)
+	return guarded || blocked || watched, err
 }
 
 func removeHook(dir string, spec hookSpec, workbenchID int64) (bool, error) {
@@ -481,6 +495,12 @@ func HasAskGuardHook(dir string, workbenchID int64) (bool, error) {
 // AskUserQuestion is installed.
 func HasAskToolBlockHook(dir string, workbenchID int64) (bool, error) {
 	return hasHook(dir, askToolBlockSpec, workbenchID)
+}
+
+// HasWatchmanGuardHook reports whether workbenchID's Watchman guard
+// PreToolUse hook is installed.
+func HasWatchmanGuardHook(dir string, workbenchID int64) (bool, error) {
+	return hasHook(dir, watchmanGuardSpec, workbenchID)
 }
 
 // HasPermissionWaitHook reports whether workbenchID's PermissionRequest

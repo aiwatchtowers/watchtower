@@ -262,13 +262,23 @@ func expirePermissionRequest(database *db.DB, id int64) error {
 	return err
 }
 
-// permissionSummary is what a permission request shows the owner, at most
-// permissionSummaryRunes runes, and whether it was cut short (clipped): a
-// Bash command (and its description below it, every line a `# ` comment,
-// so no line of it reads as part of the command), the file an Edit, Write or
-// NotebookEdit touches, the URL a WebFetch reads, otherwise the tool input
-// as compact JSON.
+// permissionSummary is what a permission request shows the owner,
+// permissionSummaryText cut to at most permissionSummaryRunes runes, and
+// whether it was cut short (clipped).
 func permissionSummary(toolName string, toolInput json.RawMessage) (summary string, clipped bool) {
+	s := permissionSummaryText(toolName, toolInput)
+	if utf8.RuneCountInString(s) <= permissionSummaryRunes {
+		return s, false
+	}
+	return clipRunes(s, permissionSummaryRunes), true
+}
+
+// permissionSummaryText is a tool call as the hard-limit table reads it,
+// whole: a Bash command (and its description below it, every line a `# `
+// comment, so no line of it reads as part of the command), the file an
+// Edit, Write or NotebookEdit touches, the URL a WebFetch reads, otherwise
+// the tool input as compact JSON.
+func permissionSummaryText(toolName string, toolInput json.RawMessage) string {
 	var fields map[string]json.RawMessage
 	_ = json.Unmarshal(toolInput, &fields)
 	str := func(key string) string {
@@ -303,8 +313,5 @@ func permissionSummary(toolName string, toolInput json.RawMessage) (summary stri
 			s = strings.TrimSpace(string(toolInput))
 		}
 	}
-	if utf8.RuneCountInString(s) <= permissionSummaryRunes {
-		return s, false
-	}
-	return clipRunes(s, permissionSummaryRunes), true
+	return s
 }

@@ -54,6 +54,12 @@ var claudeHookSpecs = []HookSpec{
 	// own DB wait well under this timeout and always exits 0.
 	{Event: "PreToolUse", Subcommand: "workbench ask-guard --workbench",
 		Flags: " --pre-tool-use", TimeoutSec: 5, Matcher: "AskUserQuestion"},
+	// The Watchman guard (spec 2026-11-16-watchman-design §5 item 3,
+	// WATCHMAN-05): every tool call of a session handed to Watchman is
+	// checked against the hard limits. Its own group with matcher "*", beside
+	// the ask tool block and the state hook. `workbench watchman-guard`
+	// bounds its own DB wait well under this timeout and always exits 0.
+	{Event: "PreToolUse", Subcommand: "workbench watchman-guard --workbench", TimeoutSec: 5, Matcher: "*"},
 	// The synchronous PermissionRequest hook that holds a permission dialog
 	// open for an answer from the phone (#517). 86400 s holds past the 600 s
 	// default (probe on Claude Code 2.1.302).
