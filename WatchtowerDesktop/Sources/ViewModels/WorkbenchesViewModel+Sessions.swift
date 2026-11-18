@@ -389,6 +389,19 @@ extension WorkbenchesViewModel {
         }
     }
 
+    /// A new default-agent session of workbench `projectID` with no target,
+    /// started in the background with `prompt` as its first instruction (the
+    /// morning journal's Correct… for an item with no target, Watchman spec
+    /// D26). The launch is checked: one that did not run throws, so the
+    /// caller can offer Retry.
+    func startInBackground(projectID: Int64, title: String, prompt: String) async throws -> TerminalSession {
+        let agent = currentDefaultAgent()
+        return try await startInWorkbench(projectID, prompt: prompt, placement: .background, ticket: nil) { project in
+            .init(projectID: project.id, kind: TerminalSession.Kind(agent), title: title,
+                  folderPath: project.folderPath, claudeSessionID: Self.newSessionID(for: agent))
+        }
+    }
+
     /// A new session of workbench `projectID` with no target, in the folder
     /// or its own worktree (`.auto`): the row `makeRow` builds from the
     /// workbench read here, started with `prompt`. Every failure — no

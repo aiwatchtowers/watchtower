@@ -2617,7 +2617,7 @@ CREATE TABLE IF NOT EXISTS "watchman_items" (
     feedback      TEXT NOT NULL DEFAULT '' CHECK (feedback IN ('','ok','corrected')),  -- written by the Desktop only
     feedback_text TEXT NOT NULL DEFAULT '',
     feedback_at   TEXT,
-    check_done_at TEXT,
+    check_done_at TEXT, owner_done_at TEXT, correction_sent_at TEXT,
     UNIQUE (ref_kind, ref_id, kind)
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
