@@ -43,10 +43,22 @@ var (
 //
 //	-X watchtower/internal/jira.DefaultJiraClientID=...
 //	-X watchtower/internal/jira.DefaultJiraClientSecret=...
+//
+// A public release bakes neither (#1887 D4, scripts/build-app.sh refuses
+// one that would): our shared Atlassian app is retired, and a sign-in goes
+// through a company's own app. WATCHTOWER_JIRA_CLIENT_ID/SECRET stay for
+// development.
 var (
 	DefaultJiraClientID     string
 	DefaultJiraClientSecret string
 )
+
+// SharedAppCutoff is the day (YYYY-MM-DD, UTC) Atlassian sharing on our
+// shared app is turned off: 30 days after the release that ships company
+// setup (#1887 D15). The release that ships it sets the date; "" = not known
+// yet. `jira accounts --json` passes it on, and the shared-Atlassian banner
+// counts the days to it.
+var SharedAppCutoff = ""
 
 // JiraOAuthConfig holds credentials for the Jira Cloud OAuth 2.0 (3LO) flow.
 type JiraOAuthConfig struct {

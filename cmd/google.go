@@ -79,6 +79,7 @@ func init() {
 
 	googleCmd.AddCommand(googleLoginCmd)
 	googleCmd.AddCommand(googleAddCmd)
+	googleAccountsCmd.Flags().Bool("json", false, "print JSON (with each account's company and shared-client flags)")
 	googleCmd.AddCommand(googleAccountsCmd)
 	googleCmd.AddCommand(googleRemoveCmd)
 	rootCmd.AddCommand(googleCmd)
@@ -240,6 +241,9 @@ func runGoogleAccounts(cmd *cobra.Command, _ []string) error {
 	}
 
 	out := cmd.OutOrStdout()
+	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+		return writeGoogleAccountsJSON(out, cfg.WorkspaceDir(), accounts)
+	}
 	if len(accounts) == 0 {
 		fmt.Fprintln(out, "No Google accounts connected.")
 		fmt.Fprintln(out, "Run 'watchtower google add' to connect one.")
@@ -370,20 +374,6 @@ func resolveAccountOneForLogin(cmd *cobra.Command, cfg *config.Config, database 
 		return 0, false, fmt.Errorf("creating account: %w", err)
 	}
 	return id, true, nil
-}
-
-// buildGoogleOAuthScopes returns the OAuth scopes to request for the
-// selected services, calendar before gmail — the order Google's consent
-// screen lists the per-service checkboxes in.
-func buildGoogleOAuthScopes(wantCalendar, wantGmail bool) []string {
-	var scopes []string
-	if wantCalendar {
-		scopes = append(scopes, calendar.ScopeCalendarReadonly)
-	}
-	if wantGmail {
-		scopes = append(scopes, gmail.ScopeGmailReadonly)
-	}
-	return scopes
 }
 
 // googleOAuthLogin is calendar.Login; a var so tests can script the grant.
@@ -544,15 +534,21 @@ func connectGoogleAccount(cmd *cobra.Command, cfg *config.Config, database *db.D
 	if err != nil {
 		return fmt.Errorf("loading account %d: %w", accountID, err)
 	}
-	googleCfg, err := googleLoginOAuthConfig(cfg.WorkspaceDir(), acct)
+	googleCfg, src, err := googleLoginOAuthConfig(cfg.WorkspaceDir(), acct)
 	if err != nil {
 		if isNewRow {
 			rollbackGoogleAccount(database, cfg.WorkspaceDir(), accountID, cmd.ErrOrStderr())
 		}
 		return fmt.Errorf("%w: open your company's Watchtower link, or set WATCHTOWER_GOOGLE_CLIENT_ID for development", err)
 	}
+	scopes, err := googleScopesFor(src, googleCfg.ClientID, wantCalendar, wantGmail)
+	if err != nil {
+		if isNewRow {
+			rollbackGoogleAccount(database, cfg.WorkspaceDir(), accountID, cmd.ErrOrStderr())
+		}
+		return err
+	}
 	tied := acct.CompanySlug != ""
-	scopes := buildGoogleOAuthScopes(wantCalendar, wantGmail)
 	token, err := loginAndSaveGoogleToken(cmd, cfg, database, accountID, googleCfg, tied, scopes, noOpen, appReturn, isNewRow)
 	if err != nil {
 		return err
@@ -583,7 +579,11 @@ func addGoogleAccountForCompany(cmd *cobra.Command, cfg *config.Config, database
 	appReturn, _ := cmd.Flags().GetBool("app-return")
 	googleCfg := calendar.GoogleOAuthConfig{ClientID: g.ClientID, ClientSecret: g.ClientSecret}
 
-	token, err := runGoogleConsent(cmd, googleCfg, buildGoogleOAuthScopes(wantCalendar, wantGmail), noOpen, appReturn)
+	scopes, err := googleScopesFor(clientSourceCompany, googleCfg.ClientID, wantCalendar, wantGmail)
+	if err != nil {
+		return err
+	}
+	token, err := runGoogleConsent(cmd, googleCfg, scopes, noOpen, appReturn)
 	if err != nil {
 		return err
 	}
