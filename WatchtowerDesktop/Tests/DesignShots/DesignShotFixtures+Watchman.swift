@@ -38,6 +38,8 @@ enum WatchmanShotFixtures {
         case settingsRelabelling = "settings-relabelling"
         case journalNotRunning = "journal-not-running"
         case journalNightUnsure = "journal-night-unsure"
+        case settingsAddLimit = "settings-add-limit"
+        case settingsProfileEdit = "settings-profile-edit"
 
         /// A zero height means "as tall as the content".
         var size: NSSize {
@@ -49,7 +51,8 @@ enum WatchmanShotFixtures {
             case .homeRow: NSSize(width: 420, height: 0)
             case .stripArmed, .stripUnarmed: NSSize(width: 760, height: 0)
             case .armFirstTime: NSSize(width: 460, height: 0)
-            case .settingsResults, .settingsNeverRun, .settingsRunning, .settingsFailed, .settingsRelabelling: NSSize(width: 640, height: 0)
+            case .settingsResults, .settingsNeverRun, .settingsRunning, .settingsFailed, .settingsRelabelling,
+                 .settingsAddLimit, .settingsProfileEdit: NSSize(width: 640, height: 0)
             case .trayMenu: NSSize(width: 340, height: 0)
             case .targetPanelArmed, .targetPanelUnarmed: NSSize(width: 380, height: 0)
             case .inboxEntry: NSSize(width: 420, height: 300)
@@ -80,7 +83,17 @@ enum WatchmanShotFixtures {
             case .stripArmed: SessionStripMock(armed: true)
             case .stripUnarmed: SessionStripMock(armed: false)
             case .armFirstTime: ArmSheetMock()
-            case .settingsResults: WatchmanSettingsShot(json: WatchmanStatusFixtures.results)
+            case .settingsResults:
+                WatchmanSettingsShot(json: WatchmanStatusFixtures.results, editing: WatchmanStatusFixtures.editing())
+            case .settingsAddLimit:
+                WatchmanSettingsShot(
+                    json: WatchmanStatusFixtures.results,
+                    editing: WatchmanStatusFixtures.editing(errors: [.limits: WatchmanShotFixtures.addLimitError]),
+                    draft: .limit(kind: .tool, pattern: "create jira issue"))
+            case .settingsProfileEdit:
+                WatchmanSettingsShot(
+                    json: WatchmanStatusFixtures.results, editing: WatchmanStatusFixtures.editing(),
+                    draft: .entry(workbench: 1, key: "ux_text", text: WatchmanShotFixtures.profileDraft))
             case .settingsNeverRun: WatchmanSettingsShot(json: WatchmanStatusFixtures.neverRun)
             case .settingsRunning: WatchmanSettingsShot(json: WatchmanStatusFixtures.running)
             case .settingsFailed: WatchmanSettingsShot(json: WatchmanStatusFixtures.failed)
@@ -93,6 +106,13 @@ enum WatchmanShotFixtures {
             }
         }
     }
+
+    /// The add-limit frame's line: a tool name with blanks, refused before the CLI.
+    static let addLimitError = WatchmanSettingsCopy.limitToolBlanks
+    /// The profile-edit frame's draft: ux_text's learned lines and one more.
+    static let profileDraft = "Shipped button titles stay unless the guide page changes too.\n"
+        + "Say what happened and what to do; no apologies, no exclamation marks.\n"
+        + "Name the button after what it does."
 
     static var shots: [DesignShot] {
         Frame.allCases.map { frame in
@@ -389,9 +409,11 @@ private struct ArmSheetMock: View {
 /// on a `watchman status --json` fixture per state.
 private struct WatchmanSettingsShot: View {
     let json: String
+    var editing = WatchmanEditingData()
+    var draft: WatchmanSettingsDraft?
 
     var body: some View {
-        WatchmanSettingsContent(state: .of(WatchmanStatusFixtures.status(json)))
+        WatchmanSettingsContent(state: .of(WatchmanStatusFixtures.status(json)), editing: editing, draft: draft)
             .padding(Spacing.page)
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .detailBackground()

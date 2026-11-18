@@ -135,4 +135,78 @@ final class WatchmanSettingsCopyTests: XCTestCase {
                                              status: "not_measured")
         XCTAssertNil(Copy.handedNote(plain))
     }
+
+    // MARK: - Editing (phase 2)
+
+    func testEditingCopy() {
+        XCTAssertEqual([Copy.edit, Copy.unpin, Copy.save, Copy.cancel, Copy.remove, Copy.add],
+                       ["Edit", "Unpin", "Save", "Cancel", "Remove", "Add"])
+        XCTAssertEqual(Copy.bullet, "•")
+        XCTAssertEqual(Copy.saveFailed("x"), "Couldn't save: x")
+        XCTAssertEqual(Copy.unpinFailed("x"), "Couldn't unpin: x")
+        XCTAssertEqual(Copy.addFailed("x"), "Couldn't add the limit: x")
+        XCTAssertEqual(Copy.removeFailed("x"), "Couldn't remove the limit: x")
+    }
+
+    func testSleepEditCopy() {
+        XCTAssertEqual(Copy.sleepPlaceholder, "00:30-07:45")
+        XCTAssertEqual(Copy.sleepPinnedNote, "Saving pins the window: the weekly recompute leaves it until you unpin it.")
+        XCTAssertEqual(Copy.sleepBadFormat, "Write the window as HH:MM-HH:MM on a 24-hour clock, e.g. 00:30-07:45.")
+    }
+
+    func testProfileCopy() {
+        XCTAssertEqual(Copy.profileTitle, "What Watchman learned")
+        XCTAssertEqual(Copy.profileTitle(name: "acme-web", several: true), "What Watchman learned · acme-web")
+        XCTAssertEqual(Copy.profileTitle(name: "acme-web", several: false), "What Watchman learned")
+        XCTAssertEqual(Copy.profileCaption, "Your rules per category, distilled weekly from your decisions. "
+            + "An edit pins the text until you unpin it.")
+        XCTAssertEqual(Copy.profileEmpty, "No rules yet: a category needs at least 5 learned decisions. "
+            + "They are rebuilt weekly.")
+        XCTAssertEqual(Copy.profilePinned, "Pinned by you")
+        XCTAssertEqual(Copy.profilePinnedNote, "Saving pins this text: the weekly rebuild leaves it until you unpin it.")
+        XCTAssertEqual(Copy.profileEmptyText, "Write at least one rule line.")
+        XCTAssertEqual(Copy.profileTooLong(lines: 23), "At most 20 lines; this text has 23.")
+        XCTAssertEqual(Copy.profileReadFailed("x"), "Couldn't read what Watchman learned: x")
+        XCTAssertEqual(Copy.profileLearned("2026-11-14T03:00:00Z", timeZone: .gmt), "Learned 14 Nov")
+        XCTAssertEqual(Copy.profileLearned("", timeZone: .gmt), "Learned")
+    }
+
+    func testLimitsCopy() {
+        XCTAssertEqual(Copy.limitsTitle, "Your hard limits")
+        XCTAssertEqual(Copy.limitsCaption, "Watchman parks these for you in every mode. "
+            + "The built-in ones can't be removed; you can add your own.")
+        XCTAssertEqual(Copy.builtinTag, "Built in")
+        XCTAssertEqual(Copy.addLimit, "Add a Limit…")
+        XCTAssertEqual(Copy.limitKindTitle, "Kind")
+        XCTAssertEqual(Copy.limitEmptyPattern, "Write the command's first words or the tool's name.")
+        XCTAssertEqual(Copy.limitOneLine, "The pattern must be one line.")
+        XCTAssertEqual(Copy.limitToolBlanks, "A tool name has no spaces.")
+        XCTAssertEqual(Copy.limitsReadFailed("x"), "Couldn't read the limits: x")
+        XCTAssertEqual(WatchmanLimitKind.allCases.map(Copy.limitKind), ["Command", "Tool"])
+        XCTAssertEqual(WatchmanLimitKind.allCases.map(Copy.limitPlaceholder), ["terraform apply", "create_jira_issue"])
+        XCTAssertEqual(WatchmanLimitKind.allCases.map(Copy.limitHint), [
+            "Parks every shell command that starts with these words.",
+            "Parks the tool of this name, also as an MCP tool."
+        ])
+    }
+
+    /// Every built-in row the CLI lists has its own line; a name a newer CLI
+    /// adds shows as it is.
+    func testEveryBuiltinLimitHasALine() {
+        XCTAssertEqual(WatchmanStatusFixtures.builtinLimits.map(Copy.builtinLimit), [
+            "A command that cannot be read",
+            "A plumbing push (git send-pack)",
+            "Push to or merge into the default branch",
+            "Create, delete or push a tag",
+            "A GitHub release",
+            "An App Store Connect or TestFlight upload",
+            "A forced push",
+            "A forced move of a shared branch",
+            "Delete outside the session's worktrees",
+            "A message or comment other people see",
+            "Change the agent's own permission settings",
+            "Edit a file outside the workbench folder and its worktrees"
+        ])
+        XCTAssertEqual(Copy.builtinLimit("new_row"), "new_row")
+    }
 }

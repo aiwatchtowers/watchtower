@@ -11,7 +11,10 @@ import WatchtowerCore
 ///
 /// Both owner verbs block until the CLI finishes (a backtest takes minutes);
 /// meanwhile `watch()` rereads the status every `pollInterval` for the
-/// progress line. Nothing here writes the database.
+/// progress line. Phase 2 adds editing (`editing`): each learned workbench's
+/// `profile --json` with `profile set|unpin` (category texts and the sleep
+/// window) and `limits list|add|remove`. Every write goes through the CLI;
+/// nothing here writes the database.
 @MainActor
 @Observable
 final class WatchmanCenter {
@@ -20,6 +23,8 @@ final class WatchmanCenter {
     nonisolated static let backtestTimeout: TimeInterval = 6 * 3600
     /// The first learning pass runs under its own budget in the CLI.
     nonisolated static let learnTimeout: TimeInterval = 2 * 3600
+    /// `profile set|unpin`, `limits add|remove`: one row write each.
+    nonisolated static let editTimeout: TimeInterval = 60
 
     private(set) var state: WatchmanSettingsState = .loading
     /// Workbenches whose `learn --start` this app runs now.
@@ -31,6 +36,8 @@ final class WatchmanCenter {
     /// A reread that failed while a status is on screen: the screen keeps
     /// the last status and shows this line.
     private(set) var readError: String?
+    /// Profiles, limits and the lines of their failed reads and edits.
+    private(set) var editing = WatchmanEditingData()
 
     @ObservationIgnored private let runner: any CLIRunnerProtocol
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
@@ -102,6 +109,7 @@ final class WatchmanCenter {
     /// The view restarts it whenever `needsPolling` changes.
     func watch() async {
         await load()
+        await loadEditing()
         while needsPolling, !Task.isCancelled {
             do { try await sleep(Self.pollInterval) } catch { return }
             guard !Task.isCancelled else { return }
@@ -137,6 +145,170 @@ final class WatchmanCenter {
             notices[workbench] = failure == "busy" ? WatchmanSettingsCopy.busy : failure
         }
         await load()
+    }
+
+    // MARK: - Editing (phase 2)
+
+    /// Reads the limits and the profile of every learned workbench. A failed
+    /// read keeps what was read before and shows its line.
+    func loadEditing() async {
+        await loadLimits()
+        for row in lastStatus?.workbenches ?? [] where row.isLearned {
+            await loadProfile(workbench: row.workbench)
+        }
+    }
+
+    private func loadLimits() async {
+        do {
+            let data = try await runner.run(args: ["watchman", "limits", "list", "--json"])
+            editing.limits = try JSONDecoder().decode(WatchmanLimits.self, from: data)
+            editing.limitsReadError = nil
+        } catch {
+            guard !(error is CancellationError) else { return }
+            editing.limitsReadError = Self.message(error)
+        }
+    }
+
+    private func loadProfile(workbench: Int64) async {
+        do {
+            let data = try await runner.run(args: ["watchman", "profile", "--workbench", String(workbench), "--json"])
+            editing.profiles[workbench] = try JSONDecoder().decode(WatchmanProfile.self, from: data)
+            editing.profileReadErrors[workbench] = nil
+        } catch {
+            guard !(error is CancellationError) else { return }
+            editing.profileReadErrors[workbench] = Self.message(error)
+        }
+    }
+
+    /// Saves and pins a category's text or, under `sleep_window`, the sleep
+    /// window: checked here first (the window's `HH:MM-HH:MM`, a text's 1–20
+    /// lines), then written to a temporary file for `profile set
+    /// --text-file`. True once saved, so the editor closes; otherwise the
+    /// entry's line says why.
+    @discardableResult
+    func saveProfile(workbench: Int64, key: String, text: String) async -> Bool {
+        let slot = WatchmanEditSlot.profile(workbench: workbench, key: key)
+        let checked = key == WatchmanProfileEntry.sleepWindowKey ? Self.sleepWindow(text) : Self.profileText(text)
+        let value: String
+        switch checked {
+        case let .success(text): value = text
+        case let .failure(problem):
+            editing.errors[slot] = problem.line
+            return false
+        }
+        guard editing.saving.insert(slot).inserted else { return false }
+        defer { editing.saving.remove(slot) }
+        editing.errors[slot] = nil
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("watchman-profile-\(UUID().uuidString).txt")
+        do {
+            try Data(value.utf8).write(to: file, options: .atomic)
+        } catch {
+            editing.errors[slot] = WatchmanSettingsCopy.saveFailed(SessionReportCenter.errorLine(error))
+            return false
+        }
+        // The CLI has read it by the time it exits; a leftover file in the temporary directory is harmless.
+        defer { try? FileManager.default.removeItem(at: file) }
+        let args = ["watchman", "profile", "set", "--workbench", String(workbench), "--key", key,
+                    "--text-file", file.path]
+        if let failure = await call(args, timeout: Self.editTimeout).failure {
+            editing.errors[slot] = WatchmanSettingsCopy.saveFailed(failure)
+            return false
+        }
+        await reloadAfterProfileChange(workbench: workbench, key: key)
+        return true
+    }
+
+    /// Unpins an entry: the next weekly rebuild replaces it.
+    func unpin(workbench: Int64, key: String) async {
+        let slot = WatchmanEditSlot.profile(workbench: workbench, key: key)
+        guard editing.saving.insert(slot).inserted else { return }
+        defer { editing.saving.remove(slot) }
+        editing.errors[slot] = nil
+        let args = ["watchman", "profile", "unpin", "--workbench", String(workbench), "--key", key]
+        if let failure = await call(args, timeout: Self.editTimeout).failure {
+            editing.errors[slot] = WatchmanSettingsCopy.unpinFailed(failure)
+            return
+        }
+        await reloadAfterProfileChange(workbench: workbench, key: key)
+    }
+
+    /// Adds an owner's limit after the same checks the CLI makes
+    /// (`ValidateLimitPattern`; an unclosed quote is left to the CLI, whose
+    /// error shows). True once added, so the form closes.
+    @discardableResult
+    func addLimit(kind: WatchmanLimitKind, pattern: String) async -> Bool {
+        let pattern = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let problem = Self.limitProblem(kind: kind, pattern: pattern) {
+            editing.errors[.limits] = problem
+            return false
+        }
+        guard editing.saving.insert(.limits).inserted else { return false }
+        defer { editing.saving.remove(.limits) }
+        editing.errors[.limits] = nil
+        // `=` keeps a pattern that starts with "-" a value, not a flag.
+        let args = ["watchman", "limits", "add", "--kind=\(kind.rawValue)", "--pattern=\(pattern)"]
+        if let failure = await call(args, timeout: Self.editTimeout).failure {
+            editing.errors[.limits] = WatchmanSettingsCopy.addFailed(failure)
+            return false
+        }
+        await loadLimits()
+        return true
+    }
+
+    /// Removes an owner's limit; a built-in row has no id to pass.
+    func removeLimit(id: Int64) async {
+        guard editing.saving.insert(.limits).inserted else { return }
+        defer { editing.saving.remove(.limits) }
+        editing.errors[.limits] = nil
+        if let failure = await call(["watchman", "limits", "remove", "--id", String(id)], timeout: Self.editTimeout).failure {
+            editing.errors[.limits] = WatchmanSettingsCopy.removeFailed(failure)
+            return
+        }
+        await loadLimits()
+    }
+
+    /// Drops an edit's line (the owner cancelled or opened the editor again).
+    func clearError(_ slot: WatchmanEditSlot) {
+        editing.errors[slot] = nil
+    }
+
+    private func reloadAfterProfileChange(workbench: Int64, key: String) async {
+        await loadProfile(workbench: workbench)
+        // The sleep section reads the window and its pin from the status.
+        if key == WatchmanProfileEntry.sleepWindowKey { await load() }
+    }
+
+    struct EditProblem: Error, Equatable {
+        let line: String
+    }
+
+    /// `"00:30-07:45"` as the CLI stores it; an en dash (as the screen shows
+    /// it) and blanks are accepted.
+    static func sleepWindow(_ text: String) -> Result<String, EditProblem> {
+        let compact = text.replacingOccurrences(of: "–", with: "-").filter { !$0.isWhitespace }
+        guard compact.wholeMatch(of: #/([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d/#) != nil else {
+            return .failure(EditProblem(line: WatchmanSettingsCopy.sleepBadFormat))
+        }
+        return .success(compact)
+    }
+
+    /// A category text: its non-blank lines, 1 to 20 of them.
+    static func profileText(_ text: String) -> Result<String, EditProblem> {
+        let lines = WatchmanProfileEntry(key: "", text: text, pinned: false, updatedAt: "").lines
+        if lines.isEmpty { return .failure(EditProblem(line: WatchmanSettingsCopy.profileEmptyText)) }
+        if lines.count > WatchmanProfileEntry.maxLines {
+            return .failure(EditProblem(line: WatchmanSettingsCopy.profileTooLong(lines: lines.count)))
+        }
+        return .success(lines.joined(separator: "\n"))
+    }
+
+    /// The form's line for a pattern the CLI would refuse; nil when it may go.
+    static func limitProblem(kind: WatchmanLimitKind, pattern: String) -> String? {
+        if pattern.isEmpty { return WatchmanSettingsCopy.limitEmptyPattern }
+        if pattern.contains(where: \.isNewline) { return WatchmanSettingsCopy.limitOneLine }
+        if kind == .tool, pattern.contains(where: \.isWhitespace) { return WatchmanSettingsCopy.limitToolBlanks }
+        return nil
     }
 
     // MARK: - Private

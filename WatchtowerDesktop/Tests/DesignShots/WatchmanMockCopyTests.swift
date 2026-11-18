@@ -79,6 +79,17 @@ final class WatchmanMockCopyTests: XCTestCase {
         XCTAssertEqual(Copy.nightCost, "Cost tonight $3.40")
     }
 
+    /// Phase 2's Settings editing frames draw the real view on the
+    /// status/profile/limits fixtures; their strings are pinned by
+    /// `WatchmanSettingsCopyTests`.
+    func testSettingsEditingFrames() {
+        let names = Set(WatchmanShotFixtures.shots.map(\.name))
+        for name in ["watchman-settings-results", "watchman-settings-add-limit", "watchman-settings-profile-edit"] {
+            XCTAssertTrue(names.contains(name), name)
+        }
+        XCTAssertEqual(WatchmanShotFixtures.addLimitError, WatchmanSettingsCopy.limitToolBlanks)
+    }
+
     func testEveryFrameHasAShot() {
         let names = Set(WatchmanShotFixtures.shots.map(\.name))
         XCTAssertEqual(names.count, WatchmanShotFixtures.Frame.allCases.count)

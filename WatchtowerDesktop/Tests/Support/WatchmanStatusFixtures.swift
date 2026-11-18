@@ -56,6 +56,61 @@ package enum WatchmanStatusFixtures {
                 relabelPending: 340, backtest: lastDone, lastDone: lastDone)
     ])
 
+    // MARK: - Editing (phase 2)
+
+    /// `watchman profile --workbench 1 --json`: design pinned by the owner,
+    /// ux_text learned on 14 Nov, the learned sleep window.
+    package static let profile = profileJSON([
+        ("design", [
+            "Settings that differ by folder are per workbench; the rest stay global.",
+            "Prefer the simpler flow; never ask for a field the app can derive.",
+            "A new screen reuses the design kit; no new component for one use."
+        ], true, "2026-11-15T09:00:00Z"),
+        ("sleep_window", ["00:30-07:45"], false, "2026-11-14T03:00:00Z"),
+        ("ux_text", [
+            "Shipped button titles stay unless the guide page changes too.",
+            "Say what happened and what to do; no apologies, no exclamation marks."
+        ], false, "2026-11-14T03:00:00Z")
+    ])
+
+    /// The same workbench with nothing learned yet (the CLI's empty shape).
+    package static let profileEmpty = #"{"ok": true, "workbench": 1, "profiles": [], "sleep_window": ""}"#
+
+    private static func profileJSON(_ entries: [(key: String, lines: [String], pinned: Bool, updated: String)]) -> String {
+        let rows = entries.map { entry in
+            #"{"key": "\#(entry.key)", "text": "\#(entry.lines.joined(separator: "\\n"))", "#
+                + #""pinned": \#(entry.pinned), "version": 2, "updated_at": "\#(entry.updated)"}"#
+        }
+        let sleep = entries.first { $0.key == "sleep_window" }?.lines.first ?? ""
+        return #"{"ok": true, "workbench": 1, "sleep_window": "\#(sleep)", "profiles": [\#(rows.joined(separator: ", "))]}"#
+    }
+
+    /// The built-in table, in `watchman.BuiltinLimits()` order.
+    package static let builtinLimits = ["unreadable", "send_pack", "main_ref", "tag", "release", "testflight",
+                                        "force_push", "reset_shared", "delete_outside", "outward",
+                                        "standing_grant", "outside_folder"]
+
+    /// `watchman limits list --json` with the owner's `owner` rows.
+    package static func limits(_ owner: [(id: Int, kind: String, pattern: String)]) -> String {
+        let builtin = builtinLimits.map { "\"\($0)\"" }.joined(separator: ", ")
+        let rows = owner.map { #"{"id": \#($0.id), "kind": "\#($0.kind)", "pattern": "\#($0.pattern)"}"# }
+        return #"{"ok": true, "builtin": [\#(builtin)], "owner": [\#(rows.joined(separator: ", "))]}"#
+    }
+
+    /// Two limits of the owner's: a command and a tool.
+    package static let ownerLimits = limits([(4, "command", "terraform apply"), (7, "tool", "create_jira_issue")])
+
+    /// What the center holds after reading `profile` and `ownerLimits` for
+    /// workbench 1, for the shots.
+    package static func editing(errors: [WatchmanEditSlot: String] = [:]) -> WatchmanEditingData {
+        let decoder = JSONDecoder()
+        // swiftlint:disable force_try
+        let profile = try! decoder.decode(WatchmanProfile.self, from: Data(profile.utf8))
+        let limits = try! decoder.decode(WatchmanLimits.self, from: Data(ownerLimits.utf8))
+        // swiftlint:enable force_try
+        return WatchmanEditingData(profiles: [1: profile], limits: limits, errors: errors)
+    }
+
     // MARK: - Builders
 
     private static let lastDone = backtest(
