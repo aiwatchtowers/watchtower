@@ -15,6 +15,34 @@ import (
 
 const includeFile = ".worktreeinclude"
 
+// IncludeFile names the list, at the repository's top level, of ignored
+// paths every new session worktree gets a copy of.
+const IncludeFile = includeFile
+
+// IncludeListArgs is the `git ls-files` the include runs in the main work
+// tree under rule ("--exclude-from=<list>" for what the list matches,
+// "--exclude-standard" for what git ignores): untracked ignored paths,
+// directories collapsed ("node_modules/"), NUL-separated.
+func IncludeListArgs(rule string) []string {
+	return []string{"ls-files", "-z", "--others", "--ignored", "--directory", rule}
+}
+
+// IncludedPaths is what the include copies, given the two listings: the
+// matched paths git ignores (intersectCovered). The session cleanup's W10
+// reads it to tell an unchanged copy from the agent's work (#1878).
+func IncludedPaths(matched, ignored []string) []string { return intersectCovered(matched, ignored) }
+
+// IncludeCovers reports whether rel (slash-separated, from the top level)
+// is one of paths or inside one of its directories.
+func IncludeCovers(paths []string, rel string) bool {
+	for _, p := range paths {
+		if rel == p || (strings.HasSuffix(p, "/") && strings.HasPrefix(rel, p)) {
+			return true
+		}
+	}
+	return false
+}
+
 var errCloneUnsupported = errors.New("the volume does not support clones")
 
 // cloneFile and copyFallbackLimit are package vars so tests can force the
@@ -76,7 +104,7 @@ func includeInto(ctx context.Context, r *repo, p paths, dest string) (included, 
 // lsIgnored lists untracked ignored paths under the given exclude rule,
 // directories collapsed ("node_modules/").
 func (r *repo) lsIgnored(ctx context.Context, rule string) ([]string, error) {
-	out, err := r.git(ctx, "ls-files", "-z", "--others", "--ignored", "--directory", rule)
+	out, err := r.git(ctx, IncludeListArgs(rule)...)
 	if err != nil {
 		return nil, err
 	}

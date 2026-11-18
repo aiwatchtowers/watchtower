@@ -12,6 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"watchtower/internal/devpack"
+	"watchtower/internal/workbenchgit"
 )
 
 // topLevelBuild is a build output folder that counts as a cache only at the
@@ -20,30 +23,36 @@ import (
 const topLevelBuild = "build"
 
 // ignoredJudge tells, for one worktree, the git-ignored paths a removal
-// would lose (W10, #1878) from the ones it loses nothing of: the caches W9
-// skips too (regenerableCaches) at any depth, `build` at a root, a
-// .DS_Store, Watchtower's integration files whose bytes are what the
-// install writes there now, and a file .worktreeinclude copied in that is
-// still byte-identical to its source in the main worktree. Nothing is
-// judged by its name alone that can hold the owner's words.
+// would lose (W10, #1878) from the ones it loses nothing of: what is inside
+// a real cache folder (W9's regenerableCaches at any depth, `build` at a
+// root), a regular .DS_Store, the workbench install's own files as the
+// install itself judges them (devpack: an un-edited skill copy of any pack
+// version; a settings file holding only our hooks, for any watchtower
+// binary, and permission rule lists), and a file .worktreeinclude copied in
+// that is still byte-identical to its source in the main worktree. Nothing
+// is judged by its name alone.
 type ignoredJudge struct {
-	ctx      context.Context
-	root     string
-	mainRoot string   // the main worktree, the .worktreeinclude source; "" = unknown
-	bases    []string // where the integration lives: "" (the root) and the workbench folder's subfolder
-	render   func(folder string) (map[string][]byte, error)
-	rendered map[string]map[string][]byte // base -> rendered files
-	deadline time.Time
-	budget   time.Duration
-	seen     int
+	ctx         context.Context
+	root        string
+	mainRoot    string   // the main worktree, the .worktreeinclude source; "" = unknown
+	bases       []string // the integration's folders: "" (the root) and the workbench folder's subfolder
+	workbenchID int64
+	git         gitCmd
+	included    []string // what .worktreeinclude copies, read once when needed
+	includeRead bool
+	skills      map[string]bool // skill folder (rel) -> un-edited copy
+	deadline    time.Time
+	budget      time.Duration
+	seen        int
 }
 
 // ignoredWork is the first git-ignored path in the worktree at root that a
 // removal would lose, "" when there is none. git lists an ignored folder as
 // one entry ("dir/"); such a folder is walked without following symlinks.
-// The walk shares W9's budget and clock; over it, or on any git or read
-// failure, the result is an error, so the catch keeps the worktree
-// (check_failed).
+// The judgement runs under W9's budget (checked per listing entry, per
+// 64 KiB compared and every nestedClockEvery walked entries); over it, or on
+// any git or read failure, the result is an error, so the catch keeps the
+// worktree (check_failed).
 func (b *builder) ignoredWork(ctx context.Context, root string, budget time.Duration) (string, error) {
 	out, err := b.repo.git.output(ctx, root, "status", "--porcelain", "-z", "--ignored=matching",
 		"--untracked-files=all", "--ignore-submodules=all")
@@ -56,6 +65,9 @@ func (b *builder) ignoredWork(ctx context.Context, root string, budget time.Dura
 		if !ok || len(entry) == 0 {
 			continue
 		}
+		if err := j.check(); err != nil {
+			return "", err
+		}
 		found, err := j.entry(string(entry))
 		if err != nil || found != "" {
 			return found, err
@@ -65,8 +77,8 @@ func (b *builder) ignoredWork(ctx context.Context, root string, budget time.Dura
 }
 
 func (b *builder) newIgnoredJudge(ctx context.Context, root string, budget time.Duration) *ignoredJudge {
-	j := &ignoredJudge{ctx: ctx, root: root, bases: []string{""}, rendered: map[string]map[string][]byte{},
-		deadline: time.Now().Add(budget), budget: budget}
+	j := &ignoredJudge{ctx: ctx, root: root, bases: []string{""}, workbenchID: b.req.WorkbenchID,
+		git: b.repo.git, skills: map[string]bool{}, deadline: time.Now().Add(budget), budget: budget}
 	for _, w := range b.repo.worktrees {
 		if w.Main {
 			j.mainRoot = w.Root
@@ -77,11 +89,19 @@ func (b *builder) newIgnoredJudge(ctx context.Context, root string, budget time.
 			j.bases = append(j.bases, filepath.ToSlash(rel))
 		}
 	}
-	if render := b.deps.Integration; render != nil {
-		id := b.req.WorkbenchID
-		j.render = func(folder string) (map[string][]byte, error) { return render(ctx, id, folder) }
-	}
 	return j
+}
+
+// check is the budget and the context, now.
+func (j *ignoredJudge) check() error { return nestedWalkLimit(j.ctx, j.deadline, j.budget) }
+
+// tick counts a walked entry and checks every nestedClockEvery, as W9 does.
+func (j *ignoredJudge) tick() error {
+	j.seen++
+	if j.seen%nestedClockEvery == 0 {
+		return j.check()
+	}
+	return nil
 }
 
 // entry judges one line of git's listing.
@@ -90,12 +110,20 @@ func (j *ignoredJudge) entry(rel string) (string, error) {
 		return j.file(rel)
 	}
 	rel = strings.TrimSuffix(rel, "/")
-	if j.cacheDir(rel) {
-		return "", nil
+	info, err := os.Lstat(j.abs(rel))
+	if err != nil {
+		return "", fmt.Errorf("reading the ignored folder %s: %w", rel, err)
+	}
+	if !info.IsDir() {
+		return j.file(rel)
+	}
+	cached, err := j.cached(rel, true)
+	if err != nil || cached {
+		return "", err
 	}
 	var found string
 	var fileErr error
-	err := filepath.WalkDir(filepath.Join(j.root, filepath.FromSlash(rel)), func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(j.abs(rel), func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -108,7 +136,7 @@ func (j *ignoredJudge) entry(rel string) (string, error) {
 		}
 		r = filepath.ToSlash(r)
 		if d.IsDir() {
-			if j.cacheDir(r) {
+			if j.cacheName(r) {
 				return fs.SkipDir
 			}
 			return nil
@@ -127,106 +155,143 @@ func (j *ignoredJudge) entry(rel string) (string, error) {
 	return "", nil
 }
 
-// errStopWalk ends a walk at the first unsaved file (or a failed judgement,
-// which file already returned).
+// errStopWalk ends a walk at the first unsaved file or failed judgement.
 var errStopWalk = errors.New("stop")
 
-// tick counts a visited entry and checks the clock every nestedClockEvery
-// entries, as W9 does.
-func (j *ignoredJudge) tick() error {
-	j.seen++
-	if j.seen%nestedClockEvery == 0 {
-		return nestedWalkLimit(j.ctx, j.deadline, j.budget)
-	}
-	return nil
-}
+func (j *ignoredJudge) abs(rel string) string { return filepath.Join(j.root, filepath.FromSlash(rel)) }
 
-// cacheDir: a cache folder at any depth, or `build` at a root.
-func (j *ignoredJudge) cacheDir(rel string) bool {
-	for _, part := range strings.Split(rel, "/") {
-		if regenerableCaches[part] {
-			return true
-		}
+// cacheAt reports whether parts[i] names a cache: one of W9's at any depth,
+// or `build` directly at a root.
+func (j *ignoredJudge) cacheAt(parts []string, i int) bool {
+	if regenerableCaches[parts[i]] {
+		return true
 	}
+	if parts[i] != topLevelBuild {
+		return false
+	}
+	parent := strings.Join(parts[:i], "/")
 	for _, base := range j.bases {
-		if r, ok := under(base, rel); ok && (r == topLevelBuild || strings.HasPrefix(r, topLevelBuild+"/")) {
+		if parent == base {
 			return true
 		}
 	}
 	return false
 }
 
-// file returns rel when the ignored file (or symlink, or special file) at
-// rel is unsaved work, "" when a removal loses nothing of it.
-func (j *ignoredJudge) file(rel string) (string, error) {
-	if j.cacheDir(rel) || path.Base(rel) == ".DS_Store" {
-		return "", nil
+// cacheName: some component of rel names a cache (the walk only meets real
+// folders, so a name is enough there).
+func (j *ignoredJudge) cacheName(rel string) bool {
+	parts := strings.Split(rel, "/")
+	for i := range parts {
+		if j.cacheAt(parts, i) {
+			return true
+		}
 	}
-	p := filepath.Join(j.root, filepath.FromSlash(rel))
-	info, err := os.Lstat(p)
-	if err != nil {
-		return "", fmt.Errorf("reading the ignored file %s: %w", rel, err)
-	}
-	if !info.Mode().IsRegular() {
-		return rel, nil
-	}
-	ok, err := j.integration(rel, p)
-	if err != nil || ok {
-		return "", err
-	}
-	if ok, err = j.includedCopy(rel, p, info); err != nil || ok {
-		return "", err
-	}
-	return rel, nil
+	return false
 }
 
-// integration: rel is a file Watchtower's install writes at a base, and its
-// bytes are what the install writes there now.
-func (j *ignoredJudge) integration(rel, p string) (bool, error) {
-	if j.render == nil {
-		return false, nil
-	}
-	for _, base := range j.bases {
-		r, ok := under(base, rel)
-		if !ok || !(strings.HasPrefix(r, ".claude/") || strings.HasPrefix(r, ".agents/")) {
+// cached reports whether rel lies in a real cache folder: a component that
+// names a cache is a directory, not a symlink or a file (an ancestor checked
+// by Lstat; rel itself by selfIsDir, its own Lstat).
+func (j *ignoredJudge) cached(rel string, selfIsDir bool) (bool, error) {
+	parts := strings.Split(rel, "/")
+	for i := range parts {
+		if !j.cacheAt(parts, i) {
 			continue
 		}
-		files, err := j.renderAt(base)
-		if err != nil {
-			return false, err
+		if i == len(parts)-1 {
+			return selfIsDir, nil
 		}
-		want, ok := files[r]
-		if !ok {
-			continue
-		}
-		got, err := os.ReadFile(p)
+		info, err := os.Lstat(j.abs(strings.Join(parts[:i+1], "/")))
 		if err != nil {
 			return false, fmt.Errorf("reading %s: %w", rel, err)
 		}
-		if bytes.Equal(got, want) {
+		if info.IsDir() {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-func (j *ignoredJudge) renderAt(base string) (map[string][]byte, error) {
-	if files, ok := j.rendered[base]; ok {
-		return files, nil
-	}
-	files, err := j.render(filepath.Join(j.root, filepath.FromSlash(base)))
+// file returns rel when the ignored entry at rel (not a real folder) is
+// unsaved work, "" when a removal loses nothing of it. Only a regular file
+// can be ours; a symlink or special file always counts.
+func (j *ignoredJudge) file(rel string) (string, error) {
+	info, err := os.Lstat(j.abs(rel))
 	if err != nil {
-		return nil, fmt.Errorf("rendering Watchtower's integration files: %w", err)
+		return "", fmt.Errorf("reading the ignored file %s: %w", rel, err)
 	}
-	j.rendered[base] = files
-	return files, nil
+	if cached, err := j.cached(rel, false); err != nil || cached {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return rel, nil
+	}
+	if path.Base(rel) == ".DS_Store" {
+		return "", nil
+	}
+	if ok, err := j.integration(rel); err != nil || ok {
+		return "", err
+	}
+	if ok, err := j.includedCopy(rel, info); err != nil || ok {
+		return "", err
+	}
+	return rel, nil
 }
 
-// includedCopy: the main worktree holds a regular file at the same path
-// with the same bytes — a .worktreeinclude copy nobody changed.
-func (j *ignoredJudge) includedCopy(rel, p string, info fs.FileInfo) (bool, error) {
+// integration: rel is one of the workbench install's files at a base, as
+// the install judges it — a skill folder of an exact workbench skill name
+// holding an un-edited copy, or a settings.local.json holding only our
+// hooks and permission rule lists.
+func (j *ignoredJudge) integration(rel string) (bool, error) {
+	for _, base := range j.bases {
+		r, ok := under(base, rel)
+		if !ok {
+			continue
+		}
+		if r == ".claude/settings.local.json" {
+			ours, err := devpack.SettingsOnlyOurs(j.abs(rel), j.workbenchID)
+			if err != nil {
+				return false, fmt.Errorf("reading %s: %w", rel, err)
+			}
+			if ours {
+				return true, nil
+			}
+			continue
+		}
+		for _, skills := range []string{".claude/skills/", ".agents/skills/"} {
+			name, file, ok := strings.Cut(strings.TrimPrefix(r, skills), "/")
+			if !strings.HasPrefix(r, skills) || !ok || strings.Contains(file, "/") || !devpack.IsWorkbenchSkillName(name) {
+				continue
+			}
+			dir := strings.TrimSuffix(rel, "/"+file)
+			unedited, seen := j.skills[dir]
+			if !seen {
+				var err error
+				if unedited, err = devpack.WorkbenchSkillCopyUnedited(j.abs(dir)); err != nil {
+					return false, err
+				}
+				j.skills[dir] = unedited
+			}
+			if unedited {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// includedCopy: rel is a path .worktreeinclude copies (workbenchgit's own
+// matcher, run in the main worktree) and the main worktree holds a regular
+// file there with the same bytes — a copy nobody changed. Any other ignored
+// file, even one equal to main's, is work.
+func (j *ignoredJudge) includedCopy(rel string, info fs.FileInfo) (bool, error) {
 	if j.mainRoot == "" || j.mainRoot == j.root {
 		return false, nil
+	}
+	covered, err := j.includeCovers(rel)
+	if err != nil || !covered {
+		return false, err
 	}
 	src := filepath.Join(j.mainRoot, filepath.FromSlash(rel))
 	sinfo, err := os.Lstat(src)
@@ -239,10 +304,47 @@ func (j *ignoredJudge) includedCopy(rel, p string, info fs.FileInfo) (bool, erro
 	if !sinfo.Mode().IsRegular() || sinfo.Size() != info.Size() {
 		return false, nil
 	}
-	return sameBytes(p, src)
+	return j.sameBytes(j.abs(rel), src)
 }
 
-func sameBytes(a, b string) (bool, error) {
+func (j *ignoredJudge) includeCovers(rel string) (bool, error) {
+	if !j.includeRead {
+		j.includeRead = true
+		list := filepath.Join(j.mainRoot, workbenchgit.IncludeFile)
+		if _, err := os.Lstat(list); err == nil {
+			matched, err := j.lsFiles("--exclude-from=" + list)
+			if err != nil {
+				return false, err
+			}
+			ignored, err := j.lsFiles("--exclude-standard")
+			if err != nil {
+				return false, err
+			}
+			j.included = workbenchgit.IncludedPaths(matched, ignored)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return false, fmt.Errorf("reading %s: %w", workbenchgit.IncludeFile, err)
+		}
+	}
+	return workbenchgit.IncludeCovers(j.included, rel), nil
+}
+
+func (j *ignoredJudge) lsFiles(rule string) ([]string, error) {
+	out, err := j.git.output(j.ctx, j.mainRoot, workbenchgit.IncludeListArgs(rule)...)
+	if err != nil {
+		return nil, fmt.Errorf("listing what %s copies: %w", workbenchgit.IncludeFile, err)
+	}
+	var paths []string
+	for _, p := range bytes.Split(out, []byte{0}) {
+		if len(p) > 0 {
+			paths = append(paths, string(p))
+		}
+	}
+	return paths, nil
+}
+
+// sameBytes compares two files 64 KiB at a time, checking the budget
+// before each chunk.
+func (j *ignoredJudge) sameBytes(a, b string) (bool, error) {
 	fa, err := os.Open(a)
 	if err != nil {
 		return false, err
@@ -255,6 +357,9 @@ func sameBytes(a, b string) (bool, error) {
 	defer func() { _ = fb.Close() }()
 	ba, bb := make([]byte, 64<<10), make([]byte, 64<<10)
 	for {
+		if err := j.check(); err != nil {
+			return false, err
+		}
 		na, ea := io.ReadFull(fa, ba)
 		nb, eb := io.ReadFull(fb, bb)
 		if na != nb || !bytes.Equal(ba[:na], bb[:nb]) {

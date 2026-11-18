@@ -31,9 +31,6 @@ type fixture struct {
 	// projects is the Claude Code projects directory the plan reads: an
 	// empty one under base, never the developer's.
 	projects string
-	// integration renders Watchtower's install files (Deps.Integration);
-	// nil = none.
-	integration func(ctx context.Context, workbenchID int64, folder string) (map[string][]byte, error)
 }
 
 // stampBirth stands in for the filesystem birth time: a fixture's admin dir
@@ -142,7 +139,7 @@ func (f *fixture) deps() Deps {
 	}
 	projects := f.projects
 	return Deps{Git: g, DB: f.store, Procs: f.procs, Home: f.home, WorktreeBirth: birth,
-		ClaudeProjects: func() string { return projects }, Integration: f.integration}
+		ClaudeProjects: func() string { return projects }}
 }
 
 func (f *fixture) plan(r Request) Plan {
