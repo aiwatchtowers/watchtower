@@ -41,7 +41,8 @@ each other**, for Claude Code and Codex alike.
 - Messages between workbenches.
 
 **Anti-goals** (failure even if it technically works)
-- A one-folder workbench that looks or behaves differently from today.
+- A one-folder workbench that behaves differently from today (its only visible changes: the
+  FILES root row from #2017, the Put on the Bench… icon and the hint, §6.2).
 - A folder silently shared by two workbenches (hooks would report to the wrong board).
 - Removing a folder from the bench deleting anything in it except Watchtower's own install.
 - An agent message typed into a permission prompt or over the owner's draft.
@@ -70,14 +71,17 @@ One migration (next free number at implementation time; SQL, goose):
 1. `workbench_folders`
    `id`, `workbench_id` (FK `projects` ON DELETE CASCADE), `folder_path` TEXT NOT NULL
    (symlink-resolved, as `projects.folder_path`), `position` INTEGER, `added_at`, `added_by`
-   CHECK IN (`owner`,`agent_suggestion`). Unique index on `folder_path COLLATE NOCASE` — one
-   folder, one workbench, globally. Backfill: one row per workbench from `projects.folder_path`,
+   CHECK IN (`owner`,`agent_suggestion`), `removed_at` (NULL while on the bench). Partial unique
+   index on `folder_path COLLATE NOCASE WHERE removed_at IS NULL` — one folder, one workbench,
+   globally. Removing a folder sets `removed_at` (the row stays, so targets and sessions keep
+   pointing at it and can say "folder removed"); putting the same path back on the same bench
+   clears it. Backfill: one row per workbench from `projects.folder_path`,
    position 0.
 2. `terminal_sessions.workbench_folder_id` (FK ON DELETE SET NULL; NULL for standalone terminals)
    and `parent_session_id` (FK `terminal_sessions` ON DELETE SET NULL). Backfill: the workbench's
    only folder.
 3. `targets.workbench_folder_id` (FK ON DELETE SET NULL). NULL = the home folder (today's
-   behaviour). Set by `create_targets`/`update_target` (§6.10).
+   behaviour); a removed folder is told apart by its row's `removed_at`. Set by `create_targets`/`update_target` (§6.10).
 4. `owner_asks.kind` gains `folder` (table rebuild per the `add-migration` skill and
    `00150_builtin_automations.sql`, one transaction). Payload: `{"path", "repo_root", "touches",
    "why"}`.
@@ -109,7 +113,8 @@ The pack version (DEV-06 tool count) goes up by four tools.
 
 ### 6.1 Put on the Bench (owner)
 Entry points: the switcher popover item **Put on the Bench…** (subtitle `Add a folder to
-“<bench>”`) under **Open Folder…**; the FILES header icon button (folder with a plus, tooltip
+“<bench>”`) under **Open Folder…**; the FILES header icon button (`plus.rectangle.on.folder` — `folder.badge.plus` stays Open
+Folder…'s; tooltip
 `Put on the Bench…`). Both run the existing folder panel (`runFolderPanel`, title
 `Put on the Bench`, prompt `Put on Bench`) and then `workbench folder add`.
 
@@ -133,10 +138,11 @@ start there until installed, `Install Watchtower in <name> first`).
 ### 6.2 FILES
 FILES shows one root per folder, in position order (`CodeRoot` gains the folder id). A root row:
 folder icon, name (last path component; a duplicate name gets its parent dir as a caption),
-right-aligned `⎇ branch ● ↑N ↓N` from that folder's git status. With an open session, its
+right-aligned `⎇ branch ● ↑N ↓N` from that folder's git status (the root row lands first in
+#2017 for the one-folder case). With an open session, its
 folder's root is expanded and shows the session's worktree when placed in one
-(`FILES — ⑂ name` caption stays). With one folder there is no change except the quiet hint
-`Task touches another repo? Put on the Bench…` under the tree.
+(`FILES — ⑂ name` caption stays). With one folder FILES shows its single root row, the Put on the Bench… header icon and the
+quiet hint `Task touches another repo? Put on the Bench…` under the tree.
 
 Root states: normal; `Folder not found` (`<path> was moved or deleted.` + `Locate…` ·
 `Remove`); `Git unavailable`; `Not a repository` (no branch on the right); install missing
@@ -144,15 +150,19 @@ Root states: normal; `Folder not found` (`<path> was moved or deleted.` + `Locat
 `Remove from Bench…`.
 
 ### 6.3 Remove from Bench / Locate
-Remove is refused while a live session runs in the folder (`<n> sessions are running in <name>.
-Finish them first.`) and for the last folder (`A workbench needs at least one folder.`).
-Otherwise a confirmation (`Remove <name> from the bench?` / `Watchtower's install in this folder
-is removed. Your files and git are not touched.`), then in one transaction: delete the row,
+Remove is refused while a live session runs in the folder (title `Can’t remove <name> from the
+bench`, text `1 session is running in <name>. Finish it first.` /
+`<n> sessions are running in <name>. Finish them first.`, button `OK`) and for the last folder
+(same title, `A workbench needs at least one folder.`, `OK`). Otherwise a confirmation (title
+`Remove <name> from the bench?`, text `Watchtower's install in this folder is removed. Your files
+and git are not touched.`, buttons `Cancel` · `Remove` (destructive)), then in one transaction:
+set the row's `removed_at`,
 move `projects.folder_path` if it was the home folder; then uninstall the devpack from the folder
 (PROJ-02's "leaves nothing", for that folder) and drop its docs from the index. Finished
 sessions of the folder keep their history; their worktrees go through the existing cleanup
-(PROJ-18). Targets keep `workbench_folder_id` = NULL and the drift check reports `folder removed`
-for a branch it can no longer check.
+(PROJ-18). Targets keep their `workbench_folder_id`; the drift check reports `folder removed` for a
+branch it can no longer check, and the card shows `· folder removed` (Tone warning) instead of
+the folder chip.
 
 Locate… re-points a missing folder to a new path (same validation as add) and reinstalls.
 
@@ -160,8 +170,10 @@ Locate… re-points a missing folder to a new path (same validation as add) and 
 `session start --folder F` (id or path; default the home folder, so every existing caller is
 unchanged). The Desktop passes the folder of the context: the FILES root the owner chose, the
 current session's folder for ⌘T, the target's folder for Work on It. The New Session (+) menu
-lists `in <folder>` items when there is more than one folder; `In Its Own Worktree ▸` and
-`In the Folder ▸` become per-folder submenus.
+keeps its top items for the context folder and, when there is more than one folder, adds an
+`in <folder> ▸` submenu per other folder, each with the same agent items
+(`New Claude Code session`, `New Codex session`); the existing `In This Folder ▸` and
+`In Its Own Worktree ▸` placement submenus list the folders.
 
 Placement is unchanged but **per folder**: `occupied` counts only live agent rows of the same
 folder, and the worktree is made in that folder's repository. `unavailableReason` reads that
@@ -181,7 +193,8 @@ worktree}`.
 
 The panel nests children under their parent (one level of indent per depth); a child of a
 deleted parent shows at top level. The parent row's state line adds `· <n> sub-sessions`. The
-session strip of a child ends with `↖ from “<parent title>”` (click opens the parent).
+session strip of a child shows `📁 <folder> › ⑂ <worktree> › ⎇ <branch> ●` and, at its
+trailing edge, `↖ from “<parent title>”` (click opens the parent).
 
 ### 6.6 Messages
 `send_to_session(session_id, text)`: the target must be a live session of the same workbench
@@ -227,10 +240,14 @@ its own target is gated (gate 1) on that target's subtree only, never on its par
 started without a target skips gate 1 (its summary goes to the parent, and the parent's gate
 covers the ticket). Gate 2 (review overview) runs in the sub-session's own folder.
 
-Feed (Workchat): the receiver's feed shows these lines as a peer bubble (`↘ From “<title>” ·
-<folder>`, `✓ Sub-session “<title>” finished`) by their fixed prefix; the sender's feed shows
-its `send_to_session`/`start_session` tool calls as outgoing peer bubbles (`↗ …`), and a queued
-message as `⏸ Message to “<title>” is waiting` with the reason and `Open`.
+Feed (Workchat): the receiver's feed shows these lines as peer bubbles by their fixed prefix —
+`↘ From “<title>” · <folder>` and `✓ Sub-session “<title>” finished · <folder>`. The sender's
+feed shows its tool calls as outgoing peer bubbles — `↗ Sub-session “<title>” started ·
+<folder> · ⑂ <worktree>` (`start_session`) and `↗ To “<title>” · <folder>` (`send_to_session`)
+— and a queued message as `⏸ Message to “<title>” is waiting` with a reason line and `Open`.
+Reasons: `The session is at a permission prompt; the message goes once it is answered.`,
+`The session is busy; the message goes when it is idle.` (Codex), `The owner is typing in this
+session; the message goes after that.`
 
 ### 6.7 The agent suggests a folder
 **Detection (Claude Code):** the PostToolUse hook reads the tool's path arguments
@@ -247,7 +264,8 @@ itself.
 bench and path; a second call returns the open one; `declined` for a declined path;
 `other_bench` for a folder on another bench). The card in Waiting for you: title
 `Put <name> on the bench?`, subtitle `From “<session>” · the agent worked in <path> <n> times`,
-buttons `Put on Bench` (primary) · `Not Now` · `Never for This Folder` (quiet).
+buttons `Put on Bench` (primary) · `Not Now` on one line and `Never for This Folder` (quiet)
+under them (the panel is too narrow for three).
 - Put on Bench → the Desktop runs §6.1 as the owner's action (TCC confirm if needed); the answer
   line to the agent: `<name> is on the bench now. Start a sub-session there with
   start_session("<name>", …).` A failed add shows the reason on the card (`Already on the
@@ -288,6 +306,8 @@ read from every folder's `.watchtower/automations`; a duplicate recipe name is s
 - Phone: session rows gain the folder label; sub-sessions show flat with `from #<id>`. Kit model
   gains `folder` and `parentSessionID` (optional, old Macs send none).
 - `workbench_info` lists folders (`name`, `path`, `home`, `installed`).
+- Workbench switcher: a multi-folder bench's row shows its folders after the name
+  (`acme · app, hub, site`, truncated at the tail).
 - Briefing WORKBENCHES block: unchanged.
 
 ## 7. Failures and races
@@ -363,6 +383,11 @@ To be approved by the owner in a separate ask before review:
 9. `strip-child` — `📁 hub › ⑂ export-api › ⎇ … ↖ from “…”`.
 10. `board-card-folder` — folder chip, drift `folder removed`.
 
+Rendered (light and dark): `docs/design/mockups/multi-folder/*.png`, index in its `README.md`.
+`suggest-card` and `remove-refused` are split into their states (`suggest-card-busy`,
+`suggest-card-error`, `remove-refused-sessions`, `remove-refused-last`). Not yet in a shot: the
+switcher row's folder list (§6.12) — added with task 13.
+
 Every string above lives in a presentation model with a test (owner rule).
 
 ## 10. Task outline (the plan details it)
@@ -418,6 +443,8 @@ Every string above lives in a presentation model with a test (owner rule).
 | D24 | A sub-session is finish-gated on its own target only, or not at all | decided by the agent |
 | D25 | Open Folder… on a non-home bench folder opens that bench; existing nesting grandfathered | decided by the agent |
 | D26 | Docs key gains the folder id; 2 000 cap per folder | decided by the agent |
+| D27 | Removed folders are soft-removed (`removed_at`) so targets can show "folder removed" | decided by the agent |
+| D28 | Put on the Bench… icon `plus.rectangle.on.folder`; Open Folder… keeps `folder.badge.plus` | decided by the agent |
 
 ## Left to the builder
 Exact migration number; how `CodeRoot` encodes the folder id in its defaults key; the hub's
