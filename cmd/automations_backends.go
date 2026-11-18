@@ -237,7 +237,7 @@ func (r *cliAgentRunner) routingRequest(tier string) providerrouting.Request {
 
 func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) (res automations.AgentResult, err error) {
 	if err := aiconsent.Check(ctx); err != nil {
-		return automations.AgentResult{}, automations.PolicyError(err) // BGAI-02: nothing spawned, nothing metered
+		return automations.AgentResult{}, automations.PolicyError(err) // BGAI-01: nothing spawned, nothing metered
 	}
 	if !r.prepared {
 		selected, err := r.Prepare(ctx, req.Tier)
@@ -516,7 +516,7 @@ func (r *runtimeBAgentRunner) Name() string { return "runtime-b" }
 
 func (r *runtimeBAgentRunner) Run(ctx context.Context, req automations.AgentRequest) (automations.AgentResult, error) {
 	if err := aiconsent.Check(ctx); err != nil {
-		return automations.AgentResult{}, automations.PolicyError(err) // BGAI-02
+		return automations.AgentResult{}, automations.PolicyError(err) // BGAI-01
 	}
 	if err := providers.Allowed(r.cfg.AI.Provider); err != nil {
 		return automations.AgentResult{}, automations.PolicyError(err) // #608

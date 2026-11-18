@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/ai"
 	"watchtower/internal/aiconsent"
 	"watchtower/internal/aiconsent/aiconsenttest"
 	"watchtower/internal/automations"
@@ -24,6 +25,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/planusage"
 	"watchtower/internal/policy/policytest"
+	"watchtower/internal/providers/transport"
 	"watchtower/internal/tools"
 )
 
@@ -134,6 +136,7 @@ func TestCLIAgentRunner_PausedSpawnsNothing(t *testing.T) {
 	require.ErrorAs(t, err, &sdkErr)
 	assert.Equal(t, automations.ErrNamePolicy, sdkErr.Name)
 	assert.Equal(t, aiconsent.ErrPaused.Error(), sdkErr.Message)
+	require.ErrorIs(t, err, aiconsent.ErrPaused)
 	_, statErr := os.Stat(marker)
 	assert.True(t, errors.Is(statErr, os.ErrNotExist), "no agent child started")
 
@@ -143,6 +146,7 @@ func TestCLIAgentRunner_PausedSpawnsNothing(t *testing.T) {
 	_, err = (&runtimeBAgentRunner{cfg: ollamaCfg, reg: tools.NewReadRegistry(db.OpenTestDB(t))}).Run(context.Background(), req)
 	require.ErrorAs(t, err, &sdkErr)
 	assert.Equal(t, aiconsent.ErrPaused.Error(), sdkErr.Message)
+	require.ErrorIs(t, err, aiconsent.ErrPaused)
 	assert.Equal(t, int32(0), calls.Load())
 	assert.Equal(t, 0, metered)
 }
@@ -180,4 +184,83 @@ func TestPlanUsagePoller_NotGatedByConsent(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, st)
 	assert.Equal(t, "ok", st.State)
+}
+
+// BGAI-01: with the Claude↔Codex reserve on, the long-lived client is a
+// toolRouteProvider (the daemon's Jira board analyzer, the actions
+// registry). Paused, an unadmitted call builds no leaf.
+func TestToolRouteProvider_PausedBuildsNoLeaf(t *testing.T) {
+	policytest.Set(t, nil)
+	aiconsenttest.Use(t, "daemon", nil, false)
+	t.Setenv("HOME", t.TempDir())
+	bin, marker := writeMarkerStub(t)
+	cfg := &config.Config{ClaudePath: bin, CodexPath: bin, ActiveWorkspace: "test"}
+	cfg.AI.Provider = "claude"
+	cfg.AI.Fallback.Enabled, cfg.AI.Fallback.Provider = true, "codex"
+
+	routed, ok := checkedAIClient(cfg, "").(*toolRouteProvider)
+	require.True(t, ok, "the reserve on makes checkedAIClient a toolRouteProvider")
+	built := 0
+	inner := routed.build
+	routed.build = func(c *config.Config) (ai.Provider, func(), error) { built++; return inner(c) }
+
+	_, _, err := routed.QuerySync(context.Background(), "", "", "")
+	require.ErrorIs(t, err, aiconsent.ErrPaused)
+	chunks, errs, ids := routed.Query(context.Background(), "", "", "")
+	for range chunks {
+	}
+	for range ids {
+	}
+	require.ErrorIs(t, <-errs, aiconsent.ErrPaused)
+	assert.Equal(t, 0, built, "no leaf built")
+	_, statErr := os.Stat(marker)
+	assert.True(t, errors.Is(statErr, os.ErrNotExist), "no provider process started")
+}
+
+// BGAI-01: the owner commands' one-off clients (ask, ai query, jira boards
+// analyze, jira fields, repl) refuse in a process a background unit started
+// while paused; an owner process builds them as before.
+func TestOneOffClients_BackgroundProcessPausedRefused(t *testing.T) {
+	policytest.Set(t, nil)
+	aiconsenttest.Use(t, "cli", backgroundEnv, false)
+	t.Setenv("HOME", t.TempDir())
+	bin, marker := writeMarkerStub(t)
+	cfg := &config.Config{ClaudePath: bin, CodexPath: bin, ActiveWorkspace: "test"}
+	cfg.AI.Provider = "claude"
+
+	_, _, err := newAIClientWithModel(cfg, "", "").QuerySync(context.Background(), "", "", "")
+	require.ErrorIs(t, err, aiconsent.ErrPaused)
+	_, cleanup, err := newQueryClient(cfg, "", transport.Options{})
+	require.ErrorIs(t, err, aiconsent.ErrPaused)
+	cleanup()
+	_, _, _, err = legacyCLIGenerator(cfg).Generate(context.Background(), "", "", "")
+	require.ErrorIs(t, err, aiconsent.ErrPaused)
+	_, statErr := os.Stat(marker)
+	assert.True(t, errors.Is(statErr, os.ErrNotExist), "no provider process started")
+
+	aiconsenttest.Use(t, "cli", nil, false)
+	_, isRefused := newAIClientWithModel(cfg, "", "").(refusedProvider)
+	assert.False(t, isRefused, "an owner command builds its client while paused")
+	_, cleanup, err = newQueryClient(cfg, "", transport.Options{})
+	require.NoError(t, err)
+	cleanup()
+}
+
+// Decision 3: the daemon's chat engine titles the owner's chat in-process.
+// Its generator checks consent per call, so the owner mark the Title hook
+// puts on the ctx lets it run while paused; an unmarked call is refused.
+func TestBGAI02_DaemonChatTitleIsOwnerCall(t *testing.T) {
+	policytest.Set(t, nil)
+	aiconsenttest.Use(t, "daemon", nil, false)
+	srv, calls := fakeChatServer(t)
+	cfg := &config.Config{ActiveWorkspace: "test"}
+	cfg.AI.Provider, cfg.AI.OllamaURL = "ollama", srv.URL
+	gen := daemonChatTitleGenerator(cfg)
+
+	_, _, _, err := gen.Generate(context.Background(), "", "", "")
+	require.ErrorIs(t, err, aiconsent.ErrPaused)
+	assert.Equal(t, int32(0), calls.Load())
+	_, _, _, err = gen.Generate(aiconsent.WithOwnerStarted(context.Background()), "", "", "")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), calls.Load())
 }

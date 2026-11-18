@@ -50,7 +50,7 @@ func (r refusedProvider) QuerySync(context.Context, string, string, string) (str
 // newAIClient's construction-time check, which leaves the client's own
 // type (its MCP setters) intact. Before the policy, every call asks
 // aiconsent: an unadmitted background call while background AI is paused
-// fails with aiconsent.ErrPaused (BGAI-02).
+// fails with aiconsent.ErrPaused (BGAI-01).
 type policyCheckedProvider struct {
 	inner    ai.Provider
 	provider string

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -46,6 +47,13 @@ func validateModel(_ *config.Config) error {
 // (#608): every call fails with the policy error, no fallback.
 func legacyCLIGenerator(cfg *config.Config) digest.Generator {
 	if err := providers.Allowed(cfg.AI.Provider); err != nil {
+		return newRefusedProvider(err)
+	}
+	// At construction, as newAIClientWithModel (BGAI-01): the owner's one-off
+	// commands build it, and a process a background unit started is refused
+	// while paused. The daemon builds none; its chat title goes through
+	// daemonChatTitleGenerator, checked per call.
+	if err := aiconsent.Check(context.Background()); err != nil {
 		return newRefusedProvider(err)
 	}
 	return buildGenerator(cfg)
@@ -135,6 +143,13 @@ func newAIClient(cfg *config.Config, dbPath string) ai.Provider {
 // (e.g. the --model flag of `watchtower ai query`); empty means the
 // resolved strong-tier model.
 func newAIClientWithModel(cfg *config.Config, dbPath, modelOverride string) ai.Provider {
+	// The owner's commands (ask, jira boards analyze, jira fields, repl)
+	// build it; one a background unit started is refused while paused
+	// (BGAI-01). No daemon path builds it: there the process is background
+	// and only a per-call ctx could admit.
+	if err := aiconsent.Check(context.Background()); err != nil {
+		return newRefusedProvider(err)
+	}
 	if err := providers.Allowed(cfg.AI.Provider); err != nil {
 		return newRefusedProvider(err) // #608: no fallback to an allowed provider
 	}
@@ -168,6 +183,9 @@ func buildQuerier(cfg *config.Config, opts transport.Options) ai.Provider {
 // returns a cleanup to run after the query drains (closing the tool-loop's
 // DB, if one was opened); the cleanup is a no-op otherwise.
 func newQueryClient(cfg *config.Config, dbPath string, opts transport.Options) (ai.Provider, func(), error) {
+	if err := aiconsent.Check(context.Background()); err != nil {
+		return nil, func() {}, err // BGAI-01, as newAIClientWithModel
+	}
 	if toolRoutingEnabled(cfg, aiFlagModel) {
 		routed := newToolRouteProvider(cfg, func(actual *config.Config) (ai.Provider, func(), error) { return newQueryClient(actual, dbPath, opts) })
 		routed.readFolder = opts.ReadFolder
