@@ -122,6 +122,12 @@ func runAIBackgroundAllow(cmd *cobra.Command, _ []string) error {
 	if !aiBackgroundFlagYes && !stdinIsTTY() {
 		return fmt.Errorf("background AI was not allowed: run with --yes to confirm")
 	}
+	// An explicit --workspace names the daemon to wake; it must be a plain
+	// workspace name (no "/" or ".."), checked before anything is written. No
+	// --workspace keeps a fresh install, with no workspace yet, able to answer.
+	if flagWorkspace != "" && !config.ValidWorkspaceRe.MatchString(flagWorkspace) {
+		return fmt.Errorf("invalid workspace name %q; nothing was written", flagWorkspace)
+	}
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)

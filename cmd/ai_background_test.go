@@ -542,3 +542,19 @@ func TestAIBackground_PromptReadErrorIsNotAnAnswer(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "allowed", storedAnswer(t, path))
 }
+
+func TestAIBackground_AllowRefusesBadWorkspace(t *testing.T) {
+	policytest.Set(t, nil)
+	path, signals := aiBackgroundFixture(t, "", false)
+
+	_, _, err := runAIBackground(t, "allow", "--yes", "--workspace", "../x")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid workspace name")
+	assert.Empty(t, storedAnswer(t, path))
+	assert.Zero(t, *signals)
+
+	// No --workspace on a fresh install (no config, no workspace) answers.
+	_, _, err = runAIBackground(t, "allow", "--yes")
+	require.NoError(t, err)
+	assert.Equal(t, "allowed", storedAnswer(t, path))
+}
