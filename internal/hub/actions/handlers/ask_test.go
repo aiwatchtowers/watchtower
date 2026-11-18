@@ -4,15 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"watchtower/internal/askanswer"
 	"watchtower/internal/asks"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
@@ -22,6 +21,8 @@ import (
 // Go twins of AskAnswerHandlerTests: the phone's answer through Go's own
 // reader, each outcome its echo, one store and one line per action, and the
 // handler's own timeout.
+// The line's own delivery and the held answers (the answer core) are
+// tested where the code lives, in internal/askanswer.
 
 const questions = `{"questions":[{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}`
 
@@ -134,9 +135,11 @@ func TestARerunWithNoKeptDeliveryIsAppliedWithoutOne(t *testing.T) {
 	s := e.seedAsk(asks.KindQuestion, questions)
 	e.port.start(s.session)
 	a := asks.Answer{Answers: []asks.QuestionAnswer{{ID: "a", Labels: []string{"Yes"}}}}
-	if ok, err := e.h.storeAnswer(s.ask, s.wb, normalizeAnswer(a, asks.Payload{})); err != nil || !ok {
-		t.Fatalf("store: %v %v", ok, err)
+	encoded, err := askanswer.EncodeAnswer(normalizeAnswer(a, asks.Payload{}))
+	if err != nil {
+		t.Fatal(err)
 	}
+	e.exec(`UPDATE owner_asks SET status = 'answered', answer = ?, answered_at = '2026-11-18T08:00:00Z' WHERE id = ?`, encoded, s.ask)
 
 	got := e.h.askAnswer(context.Background(), e.answerAction(s, yes))
 
@@ -264,226 +267,6 @@ func TestEveryOutcomeMapsToItsEcho(t *testing.T) {
 		e.port.start(s.session)
 		e.port.result = DeliverResult{Outcome: host, Reason: "prompt_has_text"}
 		wantDelivery(t, e.h.askAnswer(context.Background(), e.answerAction(s, yes)), want)
-	}
-}
-
-// PROJ-12 (controller ruling, Swift parity): an answer line is one line with
-// the submitSettle pause and no kept line breaks or format characters, sent
-// without HoldIfPromptText — over the owner's draft the host pastes it and
-// leaves it typed, and the echo says typed.
-func TestAnAnswerLineIsTypedBesideTheOwnersDraft(t *testing.T) {
-	e := newEnv(t)
-	s := e.seedAsk(asks.KindQuestion, questions)
-	e.port.start(s.session)
-	e.port.result = DeliverResult{Outcome: DeliverTyped}
-	wantDelivery(t, e.h.askAnswer(context.Background(), e.answerAction(s, yes)), deliveryTyped)
-	lines := e.port.lines()
-	if len(lines) != 1 {
-		t.Fatalf("lines = %d", len(lines))
-	}
-	l := lines[0]
-	want := asks.DeliveryLine(s.ask, asks.KindQuestion, asks.Answer{})
-	if l.HoldIfPromptText || l.KeepLineBreaks || l.KeepFormat || l.Settle != submitSettle || l.Run != 1 || l.Text != want {
-		t.Fatalf("request = %+v", l)
-	}
-}
-
-// The re-check after the pause vouches for a Return only with this run's
-// hooks and no permission prompt.
-func TestTheRecheckVouchesOnlyForThisRunsHooks(t *testing.T) {
-	e := newEnv(t)
-	s := e.seedAsk(asks.KindQuestion, questions)
-	e.port.start(s.session)
-	e.h.askAnswer(context.Background(), e.answerAction(s, yes))
-	if c := e.port.checks[0]; !c.Fresh || c.CanSubmit || c.AnswersDialog {
-		t.Fatalf("no hook state this run: check = %+v", c)
-	}
-
-	s2 := e.seedAsk(asks.KindQuestion, questions)
-	e.port.start(s2.session)
-	e.hooksReport(s2.session, "waiting")
-	e.h.askAnswer(context.Background(), e.answerAction(s2, yes))
-	if c := e.port.checks[1]; !c.Fresh || !c.CanSubmit || c.AnswersDialog {
-		t.Fatalf("hooks report: check = %+v", c)
-	}
-
-	s3 := e.seedAsk(asks.KindQuestion, questions)
-	e.port.start(s3.session)
-	e.hooksReport(s3.session, "waiting")
-	e.port.onDeliver = func(DeliverRequest) { e.hooksReport(s3.session, "approval") }
-	e.h.askAnswer(context.Background(), e.answerAction(s3, yes))
-	if c := e.port.checks[2]; !c.Fresh || c.CanSubmit || !c.AnswersDialog {
-		t.Fatalf("a prompt during the pause: check = %+v", c)
-	}
-}
-
-// A held answer goes on the next read of the session states once the
-// permission prompt is gone, and never into a later launch.
-func TestAHeldAnswerGoesOnTheNextStateRead(t *testing.T) {
-	e := newEnv(t)
-	s := e.seedAsk(asks.KindQuestion, questions)
-	e.port.start(s.session)
-	e.hooksReport(s.session, "approval")
-	wantDelivery(t, e.h.askAnswer(context.Background(), e.answerAction(s, yes)), deliveryHeld)
-
-	e.h.DeliverHeld(context.Background())
-	if len(e.port.lines()) != 0 || len(e.h.held) != 1 {
-		t.Fatal("still at the prompt: still held, nothing typed")
-	}
-	e.hooksReport(s.session, "waiting")
-	e.h.DeliverHeld(context.Background())
-	if len(e.port.lines()) != 1 || len(e.h.held) != 0 {
-		t.Fatalf("lines = %d held = %d, want the line typed once", len(e.port.lines()), len(e.h.held))
-	}
-
-	// A relaunch: the held line is meant for the run before; its brief has it.
-	s2 := e.seedAsk(asks.KindQuestion, questions)
-	e.port.start(s2.session)
-	e.hooksReport(s2.session, "approval")
-	e.h.askAnswer(context.Background(), e.answerAction(s2, yes))
-	e.port.live[s2.session] = LiveRun{SessionID: s2.session, Run: 2, StartedAt: time.Now()}
-	e.hooksReport(s2.session, "waiting")
-	e.h.DeliverHeld(context.Background())
-	if len(e.port.lines()) != 1 || len(e.h.held) != 0 {
-		t.Fatal("a relaunched session never gets the held line")
-	}
-}
-
-// A held answer survives a hub restart (session-host keeps the session):
-// hub_meta keeps only its ids, the line comes back from owner_asks.
-func TestAHeldAnswerSurvivesAHubRestart(t *testing.T) {
-	e := newEnv(t)
-	s := e.seedAsk(asks.KindQuestion, questions)
-	e.port.start(s.session)
-	e.hooksReport(s.session, "approval")
-	wantDelivery(t, e.h.askAnswer(context.Background(), e.answerAction(s, yes)), deliveryHeld)
-	if raw, _, _ := e.store.Meta(heldMetaKey); strings.Contains(raw, "answered") || !strings.Contains(raw, `"ask":`) {
-		t.Fatalf("hub_meta = %q, want ids only", raw)
-	}
-
-	restarted := Register(actions.NewDispatcher(), e.h.d)
-	e.hooksReport(s.session, "waiting")
-	restarted.DeliverHeld(context.Background())
-
-	lines := e.port.lines()
-	if len(lines) != 1 || lines[0].Text != asks.DeliveryLine(s.ask, asks.KindQuestion, asks.Answer{}) {
-		t.Fatalf("lines = %+v", lines)
-	}
-	if again := Register(actions.NewDispatcher(), e.h.d); len(again.held) != 0 {
-		t.Fatal("a delivered answer is not held again after the next restart")
-	}
-}
-
-// An answer the brief delivered meanwhile is not rebuilt at start.
-func TestAHeldAnswerTheBriefDeliveredIsDropped(t *testing.T) {
-	e := newEnv(t)
-	s := e.seedAsk(asks.KindQuestion, questions)
-	e.port.start(s.session)
-	e.hooksReport(s.session, "approval")
-	e.h.askAnswer(context.Background(), e.answerAction(s, yes))
-	e.exec(`UPDATE owner_asks SET status = 'delivered' WHERE id = ?`, s.ask)
-
-	if restarted := Register(actions.NewDispatcher(), e.h.d); len(restarted.held) != 0 {
-		t.Fatal("a delivered answer is not held")
-	}
-}
-
-// A failed read of the host holds the answer, as a failed state read does.
-func TestALiveErrorHoldsTheAnswer(t *testing.T) {
-	e := newEnv(t)
-	s := e.seedAsk(asks.KindQuestion, questions)
-	e.port.start(s.session)
-	e.port.liveErr = errors.New("host busy")
-	wantDelivery(t, e.h.askAnswer(context.Background(), e.answerAction(s, yes)), deliveryHeld)
-	e.h.DeliverHeld(context.Background())
-	if len(e.h.held) != 1 || len(e.port.lines()) != 0 {
-		t.Fatal("still held while the host cannot be read")
-	}
-	e.port.liveErr = nil
-	e.h.DeliverHeld(context.Background())
-	if len(e.h.held) != 0 || len(e.port.lines()) != 1 {
-		t.Fatal("goes once the host answers")
-	}
-}
-
-// N1 (PROJ-12): a line held before its launch was known (the host could not
-// be read) never goes into a launch started after the answer was stored —
-// that launch's brief already lists it — before or after a hub restart.
-func TestAnUnpinnedHeldLineNeverGoesIntoALaterLaunch(t *testing.T) {
-	for _, restart := range []bool{false, true} {
-		e := newEnv(t)
-		s := e.seedAsk(asks.KindQuestion, questions)
-		e.port.start(s.session)
-		e.port.liveErr = errors.New("host busy")
-		wantDelivery(t, e.h.askAnswer(context.Background(), e.answerAction(s, yes)), deliveryHeld)
-		e.port.liveErr = nil
-		e.port.live[s.session] = LiveRun{SessionID: s.session, Run: 2, StartedAt: time.Now().Add(2 * time.Second)}
-		h := e.h
-		if restart {
-			h = Register(actions.NewDispatcher(), e.h.d)
-		}
-
-		h.DeliverHeld(context.Background())
-
-		if len(e.port.lines()) != 0 || len(h.held) != 0 {
-			t.Fatalf("restart=%v: lines = %d held = %d, want the line dropped", restart, len(e.port.lines()), len(h.held))
-		}
-	}
-}
-
-// N2: each held line leaves hub_meta just before its own delivery, so a
-// crash mid-loop loses at most the line in flight.
-func TestEachHeldLineLeavesTheStoreJustBeforeItsDelivery(t *testing.T) {
-	e := newEnv(t)
-	first := e.seedAsk(asks.KindQuestion, questions)
-	second := e.seedAsk(asks.KindQuestion, questions)
-	for _, s := range []seeded{first, second} {
-		e.port.start(s.session)
-		e.hooksReport(s.session, "approval")
-		wantDelivery(t, e.h.askAnswer(context.Background(), e.answerAction(s, yes)), deliveryHeld)
-		e.hooksReport(s.session, "waiting")
-	}
-	var stored []string
-	e.port.onDeliver = func(DeliverRequest) {
-		raw, _, _ := e.store.Meta(heldMetaKey)
-		stored = append(stored, raw)
-	}
-
-	e.h.DeliverHeld(context.Background())
-
-	if len(stored) != 2 {
-		t.Fatalf("deliveries = %d", len(stored))
-	}
-	ask := func(id int64) string { return `"ask":` + strconv.FormatInt(id, 10) + "," }
-	if strings.Contains(stored[0], ask(first.ask)) || !strings.Contains(stored[0], ask(second.ask)) {
-		t.Fatalf("during the first delivery hub_meta = %s, want only the second ask", stored[0])
-	}
-	if strings.Contains(stored[1], ask(second.ask)) {
-		t.Fatalf("during the second delivery hub_meta = %s", stored[1])
-	}
-}
-
-// N3: a held line goes only while its ask is still answered — not once the
-// agent read it (delivered) or it was withdrawn.
-func TestAHeldLineOfAnAskNoLongerAnsweredIsSkipped(t *testing.T) {
-	for _, status := range []string{"delivered", "withdrawn"} {
-		e := newEnv(t)
-		s := e.seedAsk(asks.KindQuestion, questions)
-		e.port.start(s.session)
-		e.hooksReport(s.session, "approval")
-		e.h.askAnswer(context.Background(), e.answerAction(s, yes))
-		e.hooksReport(s.session, "waiting")
-		if status == "withdrawn" {
-			e.exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = 'agent', answer = '' WHERE id = ?`, s.ask)
-		} else {
-			e.exec(`UPDATE owner_asks SET status = ? WHERE id = ?`, status, s.ask)
-		}
-
-		e.h.DeliverHeld(context.Background())
-
-		if len(e.port.lines()) != 0 || len(e.h.held) != 0 {
-			t.Fatalf("%s: lines = %d held = %d", status, len(e.port.lines()), len(e.h.held))
-		}
 	}
 }
 

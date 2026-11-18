@@ -92,7 +92,7 @@ func answerFromPhone(database *db.DB, row int64, status string) <-chan error {
 		id, err := pendingPermissionID(database, row, ended)
 		if err == nil {
 			var ok bool
-			ok, err = database.ClosePermissionRequest(id, status, time.Now())
+			ok, err = database.ClosePermissionRequest(id, status, "", time.Now())
 			if err == nil && !ok {
 				err = errors.New("the request was no longer pending")
 			}
@@ -207,7 +207,7 @@ func TestPermissionWait_RecordsApprovalAtOnce(t *testing.T) {
 			if s, sErr := database.GetTerminalSession(row); sErr != nil || s.AgentState.String != agentStateApproval {
 				err = errors.Join(sErr, errors.New("state is not approval while pending"))
 			}
-			_, cErr := database.ClosePermissionRequest(id, db.PermissionAllowed, time.Now())
+			_, cErr := database.ClosePermissionRequest(id, db.PermissionAllowed, "", time.Now())
 			err = errors.Join(err, cErr)
 		}
 		done <- err
