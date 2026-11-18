@@ -207,7 +207,11 @@ final class WorkbenchSessionReportLineTests: XCTestCase {
         let presented = SessionSwitcherPresentation.rows([row], liveIDs: [], statuses: [:], now: Date())[0]
         let view = TerminalSessionRow(row: presented, actions: .init(open: { _ in }, rename: { _ in }, delete: { _ in }))
         let label = try view.inspect().find(SessionStateLabel.self)
-        let details = try label.find(ViewType.HStack.self, relation: .parent)
+        // The state line (label, sub-session count, prompt warning) sits in
+        // its own stack inside the details line; the details line is hidden.
+        let details = try label.find(ViewType.HStack.self, relation: .parent) {
+            (try? $0.accessibilityHidden()) == true
+        }
         XCTAssertTrue(try details.accessibilityHidden(), "the title line's control reads it out instead")
     }
 
