@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,7 @@ import (
 	"watchtower/internal/policy"
 	"watchtower/internal/policy/policytest"
 	watchtowerslack "watchtower/internal/slack"
+	"watchtower/internal/slackauth"
 	"watchtower/internal/slackconnect"
 	"watchtower/internal/slackmode"
 )
@@ -368,8 +370,37 @@ func TestSlackLinkConnect_RebindRestartMidway(t *testing.T) {
 	a := env.account(t, id)
 	assert.Equal(t, connRetiredID, a.ClientID, "the row still names the old app until the repair")
 	assert.NotEqual(t, "removed", a.Status, "an existing row is never rolled back")
-	// The repair itself is slackauth.LoadFresh's (plan B Task 8): it copies
-	// the file's client and app id onto the row.
+
+	// The next process: the crash is over, and its first token read
+	// (slackauth.LoadFresh, plan B Task 8) copies the file's client and app
+	// id onto the row.
+	_, err = env.db.Exec(`DROP TRIGGER die_midway`)
+	require.NoError(t, err)
+	noRefresh := func(context.Context, string, string) (slackauth.Refreshed, error) {
+		t.Error("a fresh token is not refreshed")
+		return slackauth.Refreshed{}, errors.New("unexpected")
+	}
+	tok, err = slackauth.LoadFresh(context.Background(), env.cfg.WorkspaceDir(), env.db, id, noRefresh, time.Now)
+	require.NoError(t, err)
+	assert.Equal(t, "xoxp-new", tok.AccessToken)
+	a = env.account(t, id)
+	assert.Equal(t, connNewID, a.ClientID, "the row is repaired from the file")
+	assert.Equal(t, connAppID, a.AppID)
+
+	accounts, err := env.db.ListSlackAccounts()
+	require.NoError(t, err)
+	var out bytes.Buffer
+	require.NoError(t, writeSlackAccountsJSON(&out, accounts))
+	var doc struct {
+		Accounts []struct {
+			ID        int64 `json:"id"`
+			SharedApp bool  `json:"shared_app"`
+		} `json:"accounts"`
+	}
+	require.NoError(t, json.Unmarshal(out.Bytes(), &doc), out.String())
+	require.Len(t, doc.Accounts, 1)
+	assert.Equal(t, id, doc.Accounts[0].ID)
+	assert.False(t, doc.Accounts[0].SharedApp, "slack accounts --json no longer reports the retired shared app")
 }
 
 // A18: the account's history belongs to its user.

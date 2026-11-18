@@ -293,7 +293,7 @@ func TestWireSlackSyncers_PassesTheTokenTeam(t *testing.T) {
 	require.NoError(t, watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), 1).Save(
 		&watchtowerslack.Token{AccessToken: "xoxp-test", TeamID: "T_OTHER"}))
 
-	orchs := wireSlackSyncers(database, cfg, log.New(io.Discard, "", 0))
+	orchs := wireSlackSyncers(context.Background(), database, cfg, log.New(io.Discard, "", 0))
 	require.Len(t, orchs, 1)
 	err = orchs[0].Run(context.Background(), sync.SyncOptions{})
 	require.ErrorIs(t, err, sync.ErrSlackTeamMismatch)

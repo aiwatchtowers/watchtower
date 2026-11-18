@@ -336,7 +336,7 @@ func TestWireSlackSyncers_MissingTokenRecordsAuthState(t *testing.T) {
 	require.NoError(t, err)
 	// No token file written for this account — the store.Load() nil-token branch.
 
-	orchs := wireSlackSyncers(database, cfg, quietTestLogger())
+	orchs := wireSlackSyncers(context.Background(), database, cfg, quietTestLogger())
 	assert.Empty(t, orchs, "an account with no token must not get an orchestrator")
 
 	acct, err := database.GetSlackAccount(id)
@@ -358,7 +358,7 @@ func TestWireSlackSyncers_AlreadyErrorDoesNotChurn(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, database.SetSlackAccountAuthState(id, "revoked", "user revoked access"))
 
-	wireSlackSyncers(database, cfg, quietTestLogger())
+	wireSlackSyncers(context.Background(), database, cfg, quietTestLogger())
 
 	acct, err := database.GetSlackAccount(id)
 	require.NoError(t, err)

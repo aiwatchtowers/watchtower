@@ -158,7 +158,7 @@ func TestPolicyToolFactories_RefuseForbiddenSource(t *testing.T) {
 	require.ErrorIs(t, err, policy.ErrNotAllowed, "jira connect")
 	_, err = linearWriteClientFactory(cfg, nil)(db.LinearAccount{ID: 1})
 	require.ErrorIs(t, err, policy.ErrNotAllowed, "linear writes")
-	_, _, err = slackSenderFactory(cfg)(db.SlackAccount{ID: 1})
+	_, _, err = slackSenderFactory(cfg, nil)(db.SlackAccount{ID: 1})
 	require.ErrorIs(t, err, policy.ErrNotAllowed, "slack send")
 	assert.Contains(t, err.Error(), "source slack is not allowed by your organization (allowed: google)")
 }

@@ -177,7 +177,7 @@ func TestWorkspaceInit_UnblocksCommandsWithoutSlack(t *testing.T) {
 	require.NoError(t, err)
 	defer database.Close()
 	logger := log.New(io.Discard, "", 0)
-	orchestrators := wireSlackSyncers(database, cfg, logger)
+	orchestrators := wireSlackSyncers(context.Background(), database, cfg, logger)
 	assert.Empty(t, orchestrators)
 
 	ctx, cancel := context.WithCancel(context.Background())
