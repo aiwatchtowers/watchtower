@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -16,19 +16,22 @@ import (
 // workspace's scope.
 var ErrNotRunning = errors.New("the session is not running")
 
-// Port is the hub's handlers.SessionPort over session-host. It holds two
-// connections: one only for Deliver, which keeps its client for the pause
-// plus up to sessionhost.CheckTimeout of re-check, and one for everything
-// else (lists, launches, InputTo, stops), so a delivery never holds a list
-// or an Interrupt up. A connection the client closed after a failure is
-// dropped and dialled again (the host started first when none answers) on
-// the next call.
+// Port is the hub's handlers.SessionPort over session-host. It holds a
+// connection only for Deliver, which keeps its client for the pause plus up
+// to sessionhost.CheckTimeout of re-check, and one for everything else
+// (lists, launches, InputTo, stops), so a delivery never holds a list or an
+// Interrupt up; Runs and PromptState have their own. A connection the client
+// closed after a failure is dropped and dialled again (the host started
+// first when none answers) on the next call.
 type Port struct {
 	d       Deps
 	deliver slot
 	control slot
 	// list is Runs' connection: a plain dial, never a host start.
-	list   slot
+	list slot
+	// prompt is PromptState's connection (a plain dial), so its bounded
+	// read never queues behind a control call.
+	prompt slot
 	closed atomic.Bool
 }
 
@@ -60,9 +63,11 @@ func newPort(d Deps, client *sessionhost.Client) *Port {
 	}
 	socket, err := d.socket()
 	p := &Port{d: d}
-	p.deliver = slot{socket: socket, socketErr: err, exe: d.CLIPath, c: client}
-	p.control = slot{socket: socket, socketErr: err, exe: d.CLIPath}
-	p.list = slot{socket: socket, socketErr: err, dialOnly: true}
+	p.deliver = newSlot(socket, err, d.CLIPath, false)
+	p.deliver.c = client
+	p.control = newSlot(socket, err, d.CLIPath, false)
+	p.list = newSlot(socket, err, "", true)
+	p.prompt = newSlot(socket, err, "", true)
 	return p
 }
 
@@ -73,13 +78,14 @@ func (p *Port) Warm(ctx context.Context) error {
 	return err
 }
 
-// Close closes both connections (later calls fail; a Start refuses before
+// Close closes every connection (later calls fail; a Start refuses before
 // writing a row); the hosted sessions keep running.
 func (p *Port) Close() error {
 	p.closed.Store(true)
 	p.deliver.close()
 	p.control.close()
 	p.list.close()
+	p.prompt.close()
 	return nil
 }
 
@@ -199,6 +205,53 @@ func (p *Port) Interrupt(ctx context.Context, sessionID int64, run uint64) error
 	return nil
 }
 
+// PromptState reads whether the prompt of the session's run holds text not
+// submitted (the host writes nothing), on its own connection and within
+// sessionhost.PromptStateTimeout however busy the other connections are.
+// known is false on every error: a run that is not this one, or that exited
+// before the host read it (ErrNotRunning), a host without the request
+// (sessionhost.ErrFeatureMissing, never sent there), no host, a timeout or a
+// dropped connection — none of them is an empty prompt.
+func (p *Port) PromptState(ctx context.Context, sessionID int64, run uint64) (holds, known bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, sessionhost.PromptStateTimeout)
+	defer cancel()
+	c, err := p.prompt.get(ctx)
+	if err != nil {
+		return false, false, err
+	}
+	list, err := c.List(ctx)
+	p.prompt.done(c, err)
+	if err != nil {
+		return false, false, fmt.Errorf("listing the session host: %w", err)
+	}
+	info, ok := findRun(list, p.d.scope(), sessionID)
+	if !ok || info.Exited || info.Launch != run {
+		return false, false, ErrNotRunning
+	}
+	r, err := c.PromptState(ctx, sessionhost.PromptStateMsg{Row: info.Row, Run: info.Run, Launch: info.Launch})
+	p.prompt.done(c, err)
+	if hostSaysNotRunning(err) {
+		// The run exited (or was forgotten, or relaunched) since the list.
+		return false, false, ErrNotRunning
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("reading session %d's prompt: %w", sessionID, err)
+	}
+	return r.HoldsText, r.Known, nil
+}
+
+// hostSaysNotRunning reports the host's refusal of a request for a run it
+// has no running launch of (Server.running's three answers); any other
+// Error frame is not one.
+func hostSaysNotRunning(err error) bool {
+	var he *sessionhost.HostError
+	if !errors.As(err, &he) {
+		return false
+	}
+	m := he.Message
+	return strings.Contains(m, ": no session row ") || strings.Contains(m, " is not running") || strings.Contains(m, " is launch ")
+}
+
 // Start starts a session (Start) and answers once its launch was checked,
 // as the Swift handler's launchCheck and launch watch do: a refused launch,
 // an unreachable host or a failed placement is an error (failed
@@ -247,32 +300,62 @@ type slot struct {
 	socketErr error
 	// dialOnly dials a host that runs and never starts one.
 	dialOnly bool
+	// dial replaces the socket dial (tests: an in-memory host).
+	dial func(context.Context) (*sessionhost.Client, error)
 
-	mu     sync.Mutex
+	// turn guards the fields below: a one-slot channel, so a get waiting
+	// out another caller's dial gives up when its ctx ends.
+	turn   chan struct{}
 	c      *sessionhost.Client
 	closed bool
+}
+
+func newSlot(socket string, socketErr error, exe string, dialOnly bool) slot {
+	return slot{socket: socket, socketErr: socketErr, exe: exe, dialOnly: dialOnly, turn: make(chan struct{}, 1)}
 }
 
 // errPortClosed answers a call after Close.
 var errPortClosed = errors.New("the session port is closed")
 
+func (s *slot) lock(ctx context.Context) error {
+	select {
+	case s.turn <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err() //nolint:wrapcheck // the caller's own cancellation
+	}
+}
+
+func (s *slot) unlock() { <-s.turn }
+
 func (s *slot) get(ctx context.Context) (*sessionhost.Client, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if err := s.lock(ctx); err != nil {
+		return nil, err
+	}
+	defer s.unlock()
 	if s.closed {
 		return nil, errPortClosed
 	}
-	if s.c != nil {
+	if s.c != nil && !s.c.Dead() {
 		return s.c, nil
+	}
+	if s.c != nil {
+		// Dead after a caller's failure that has not dropped it (done never
+		// waits for the slot): replaced here.
+		_ = s.c.Close()
+		s.c = nil
 	}
 	if s.socketErr != nil {
 		return nil, s.socketErr
 	}
 	var c *sessionhost.Client
 	var err error
-	if s.dialOnly {
+	switch {
+	case s.dial != nil:
+		c, err = s.dial(ctx)
+	case s.dialOnly:
 		c, err = sessionhost.Dial(ctx, s.socket)
-	} else {
+	default:
 		c, err = dialHost(ctx, s.socket, s.exe)
 	}
 	if err != nil {
@@ -284,13 +367,19 @@ func (s *slot) get(ctx context.Context) (*sessionhost.Client, error) {
 
 // done drops c once the client closed it (a failure that left its stream
 // out of step): the next call dials again. Other errors (the host's own
-// answer, a database or build error of the caller) keep it.
+// answer, a database or build error of the caller) keep it. It never waits:
+// while another caller holds the slot (a redial, say), the dead client is
+// left to get, which replaces a dead client itself.
 func (s *slot) done(c *sessionhost.Client, _ error) {
 	if !c.Dead() {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	select {
+	case s.turn <- struct{}{}:
+	default:
+		return
+	}
+	defer s.unlock()
 	if s.c == c {
 		_ = s.c.Close()
 		s.c = nil
@@ -306,8 +395,8 @@ func (s *slot) lease(ctx context.Context) (*sessionhost.Client, func(error), err
 }
 
 func (s *slot) close() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	_ = s.lock(context.Background())
+	defer s.unlock()
 	s.closed = true
 	if s.c != nil {
 		_ = s.c.Close()
