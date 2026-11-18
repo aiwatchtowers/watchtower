@@ -203,34 +203,62 @@ var folderLiveSessions = func(cfg *config.Config, database *db.DB) workbenchfold
 	}
 }
 
+// folderCmd is an open `workbench folder` verb: its config, database and
+// bench, and done, which releases the folder lock (a write's) and closes
+// the database.
+type folderCmd struct {
+	cfg      *config.Config
+	database *db.DB
+	p        *db.Workbench
+	done     func()
+}
+
 // openFolderCmd checks the flags shared by every verb and opens the
-// database; the bench must exist.
-func openFolderCmd(write bool) (*config.Config, *db.DB, *db.Workbench, error) {
+// database. A write takes the folder lock first and only then reads the
+// bench, so a write queued behind another sees what that one left (a
+// moved home, a deleted bench). The bench must exist.
+func openFolderCmd(ctx context.Context, write bool) (folderCmd, error) {
 	if write {
 		if err := checkFolderWriter(); err != nil {
-			return nil, nil, nil, err
+			return folderCmd{}, err
 		}
 	}
 	if folderFlagWorkbench <= 0 {
-		return nil, nil, nil, usageError("--%s takes a positive workbench id", workbenchFlag)
+		return folderCmd{}, usageError("--%s takes a positive workbench id", workbenchFlag)
 	}
 	cfg, database, err := openJiraCmdDB()
 	if err != nil {
-		return nil, nil, nil, err
+		return folderCmd{}, err
+	}
+	unlock := func() {}
+	if write {
+		if unlock, err = lockFolders(ctx, cfg); err != nil {
+			_ = database.Close()
+			return folderCmd{}, err
+		}
+	}
+	done := func() {
+		unlock()
+		_ = database.Close()
 	}
 	p, err := database.GetWorkbench(folderFlagWorkbench)
 	if err != nil {
-		_ = database.Close()
-		return nil, nil, nil, err
+		done()
+		return folderCmd{}, err
 	}
-	return cfg, database, p, nil
+	return folderCmd{cfg: cfg, database: database, p: p, done: done}, nil
 }
 
+// folderLockWait runs just before a command waits for the folder lock; a
+// seam for the tests that queue a command behind another.
+var folderLockWait = func() {}
+
 // lockFolders takes the workspace's folder-membership lock
-// (workbenchfolders.LockPath): held from before a membership write's
-// transaction through its install or uninstall, so two changes of one
+// (workbenchfolders.LockPath): held from before a membership write's reads
+// and transaction through its install or uninstall, so two changes of one
 // folder never interleave their filesystem work across processes.
 func lockFolders(ctx context.Context, cfg *config.Config) (func(), error) {
+	folderLockWait()
 	unlock, err := fsutil.LockFile(ctx, workbenchfolders.LockPath(cfg.WorkspaceDir()))
 	if err != nil {
 		return nil, fmt.Errorf("waiting for the workbench folders lock: %w", err)
@@ -245,17 +273,13 @@ func runWorkbenchFolderAdd(cmd *cobra.Command, _ []string) error {
 	if err := workbenchfolders.CheckAddedBy(folderFlagAddedBy); err != nil {
 		return folderFailed(cmd, folderCodeBadArgs, err)
 	}
-	cfg, database, p, err := openFolderCmd(true)
-	if err != nil {
-		return err
-	}
-	defer database.Close()
 	ctx := cmdContext(cmd)
-	unlock, err := lockFolders(ctx, cfg)
+	fc, err := openFolderCmd(ctx, true)
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	defer fc.done()
+	cfg, database, p := fc.cfg, fc.database, fc.p
 	f, err := workbenchfolders.Add(ctx, database, p.ID, folderFlagFolder, folderFlagAddedBy, workbenchProtectedDirs())
 	if err != nil {
 		return folderRefused(cmd, database, err)
@@ -274,17 +298,13 @@ func runWorkbenchFolderRemove(cmd *cobra.Command, _ []string) error {
 	if strings.TrimSpace(folderFlagFolder) == "" {
 		return usageError("--folder is required")
 	}
-	cfg, database, p, err := openFolderCmd(true)
-	if err != nil {
-		return err
-	}
-	defer database.Close()
 	ctx := cmdContext(cmd)
-	unlock, err := lockFolders(ctx, cfg)
+	fc, err := openFolderCmd(ctx, true)
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	defer fc.done()
+	cfg, database, p := fc.cfg, fc.database, fc.p
 	f, err := workbenchfolders.Resolve(ctx, database, p.ID, folderFlagFolder)
 	if err != nil {
 		return folderRefused(cmd, database, err)
@@ -318,17 +338,13 @@ func runWorkbenchFolderLocate(cmd *cobra.Command, _ []string) error {
 	if strings.TrimSpace(folderFlagFolder) == "" || strings.TrimSpace(folderFlagTo) == "" {
 		return usageError("--folder and --to are required")
 	}
-	cfg, database, p, err := openFolderCmd(true)
-	if err != nil {
-		return err
-	}
-	defer database.Close()
 	ctx := cmdContext(cmd)
-	unlock, err := lockFolders(ctx, cfg)
+	fc, err := openFolderCmd(ctx, true)
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	defer fc.done()
+	cfg, database, p := fc.cfg, fc.database, fc.p
 	f, err := workbenchfolders.Resolve(ctx, database, p.ID, folderFlagFolder)
 	if err != nil {
 		return folderRefused(cmd, database, err)
@@ -350,11 +366,12 @@ func runWorkbenchFolderLocate(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkbenchFolderList(cmd *cobra.Command, _ []string) error {
-	_, database, p, err := openFolderCmd(false)
+	fc, err := openFolderCmd(cmdContext(cmd), false)
 	if err != nil {
 		return err
 	}
-	defer database.Close()
+	defer fc.done()
+	database, p := fc.database, fc.p
 	folders, err := database.WorkbenchFolders(cmdContext(cmd), p.ID, folderFlagWithRemoved)
 	if err != nil {
 		return err

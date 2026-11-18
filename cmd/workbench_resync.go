@@ -142,18 +142,21 @@ func runWorkbenchResync(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer database.Close()
-	p, err := database.GetWorkbench(id)
-	if err != nil {
-		return fmt.Errorf("workbench %d: %w", id, err)
-	}
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// It installs into the bench's folders: in step with folder add/remove.
+	// It installs into the bench's folders: in step with folder add/remove
+	// and delete. The bench is read under the lock, so a resync queued
+	// behind a delete or a folder change sees what that one left.
 	unlock, err := lockFolders(ctx, cfg)
 	if err != nil {
 		return err
+	}
+	p, err := database.GetWorkbench(id)
+	if err != nil {
+		unlock()
+		return fmt.Errorf("workbench %d: %w", id, err)
 	}
 	res, stepErr := resyncWorkbench(ctx, database, p, cfg.Knowledge.Enabled)
 	unlock()

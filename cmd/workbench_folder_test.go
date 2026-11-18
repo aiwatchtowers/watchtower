@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,6 +20,7 @@ import (
 	"watchtower/internal/devpack"
 	"watchtower/internal/fsutil"
 	"watchtower/internal/gitbin"
+	"watchtower/internal/kb"
 	"watchtower/internal/workbenchfolders"
 )
 
@@ -513,4 +516,110 @@ func TestFolderChangesHoldTheLockThroughTheirFilesystemWork(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, free, "the lock is released when the command ends")
 	unlock()
+}
+
+// queueBehindLock runs the workbench command args while the test holds the
+// folder lock: once the command is about to wait for it, whileHeld runs
+// (another process's change), then the lock is released and the command's
+// outcome returned. A command that read the bench before the lock acts on
+// what whileHeld changed.
+func queueBehindLock(t *testing.T, whileHeld func(), args ...string) (string, error) {
+	t.Helper()
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+	unlock, err := fsutil.LockFile(context.Background(), workbenchfolders.LockPath(cfg.WorkspaceDir()))
+	require.NoError(t, err)
+	waiting := make(chan struct{})
+	var once sync.Once
+	prev := folderLockWait
+	folderLockWait = func() { once.Do(func() { close(waiting) }) }
+	t.Cleanup(func() { folderLockWait = prev })
+	type result struct {
+		out string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		var out, errOut bytes.Buffer
+		rootCmd.SetOut(&out)
+		rootCmd.SetErr(&errOut)
+		rootCmd.SetArgs(append([]string{"workbench"}, args...))
+		err := rootCmd.Execute()
+		done <- result{out.String(), err}
+	}()
+	<-waiting
+	whileHeld()
+	unlock()
+	r := <-done
+	rootCmd.SetArgs(nil)
+	resetSetFlags(append(append(workbenchCmd.Commands(), workbenchFolderCmd.Commands()...), workbenchCmd, rootCmd)...)
+	workbenchFlagJSON = false
+	return r.out, r.err
+}
+
+// A resync queued behind a delete reads the bench under the lock: the bench
+// is gone, so it installs nothing anywhere.
+func TestResyncQueuedBehindADeleteDoesNothing(t *testing.T) {
+	f := newFolderFixture(t)
+	hub := repoDir(t, "hub")
+	require.True(t, f.add(t, hub).Install.OK)
+
+	_, err := queueBehindLock(t, func() {
+		for _, dir := range []string{f.app, hub} {
+			require.NoError(t, workbenchRemoveInstall(context.Background(), nil, &db.Workbench{ID: f.pid, FolderPath: dir}))
+		}
+		require.NoError(t, f.database.DeleteWorkbench(f.pid))
+	}, "resync", f.id(), "--json")
+	require.ErrorIs(t, err, db.ErrWorkbenchNotFound)
+	for _, dir := range []string{f.app, hub} {
+		_, statErr := os.Stat(filepath.Join(dir, ".claude"))
+		assert.True(t, os.IsNotExist(statErr), "nothing installed in %s for the deleted bench", dir)
+	}
+}
+
+// A remove queued behind the home folder's removal reads the bench under
+// the lock: it sees the promoted home, so removing that folder re-points
+// the index at the next one (the documents only it listed leave search).
+func TestFolderRemoveQueuedBehindAHomeRemovalSeesTheNewHome(t *testing.T) {
+	f := newFolderFixture(t)
+	hub := plainDir(t, "hub")
+	require.NoError(t, os.WriteFile(filepath.Join(hub, "README.md"), []byte("# hub\nzebrafinch\n"), 0o644))
+	require.True(t, f.add(t, hub).OK)
+	site := plainDir(t, "site")
+	require.True(t, f.add(t, site).OK)
+	ctx := context.Background()
+	search := func() int {
+		t.Helper()
+		res, err := kb.Search(ctx, f.database, kb.Request{Queries: []string{"zebrafinch"}, WorkbenchID: f.pid})
+		require.NoError(t, err)
+		return len(res.Hits)
+	}
+
+	out, err := queueBehindLock(t, func() {
+		home, err := f.database.HomeFolder(ctx, f.pid)
+		require.NoError(t, err)
+		_, err = workbenchfolders.Remove(ctx, f.database, home.ID, nil)
+		require.NoError(t, err)
+		_, _, err = kb.IndexWorkbenchDocs(ctx, f.database, f.pid) // hub is home now: its README is indexed
+		require.NoError(t, err)
+		require.Equal(t, 1, search())
+	}, "folder", "remove", "--workbench", f.id(), "--folder", "hub", "--json")
+	require.NoError(t, err)
+	require.True(t, decodeFolderResult(t, out).OK, out)
+
+	wb, err := f.database.GetWorkbench(f.pid)
+	require.NoError(t, err)
+	assert.Equal(t, site, wb.FolderPath, "site is home now")
+	assert.Zero(t, search(), "the removed home's documents left the index")
+}
+
+// plainDir is a resolved folder named name outside git (the docs listing
+// walks it).
+func plainDir(t *testing.T, name string) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	dir := filepath.Join(root, name)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	return dir
 }
