@@ -35,6 +35,23 @@ final class WatchmanMockCopyTests: XCTestCase {
         XCTAssertTrue(names.contains("watchman-journal-night-unsure"))
     }
 
+    /// Phase 2's arming frames render the real controls: the spec's copy is
+    /// `WatchmanArmingCopy`'s. The sheet's confirm reads Hand to Watchman
+    /// (not the mockup's Start), and the tray has no Going to sleep (D47).
+    func testArmingFramesUseTheRealCopy() {
+        typealias Real = WatchmanArmingCopy
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = .gmt
+        let since = AutomationDates.parse("2026-11-17T01:40:00Z")
+        XCTAssertEqual(Copy.armedChip, Real.stripArmed(since: since, calendar: utc))
+        XCTAssertEqual(Copy.targetArmed, Real.targetArmed(since: since, calendar: utc))
+        XCTAssertEqual([Copy.handTo, Copy.takeBack, Copy.notNow], [Real.handTo, Real.takeBack, Real.notNow])
+        XCTAssertEqual(Copy.armAnalytics, Real.analyticsLine)
+        XCTAssertEqual(Copy.armHistory, Real.historyLine(WatchmanEstimate(decisions: 1850, needLabels: 1200, tokens: 1_600_000)))
+        XCTAssertEqual(Copy.armLimits, Real.limitsLine)
+        XCTAssertEqual(Copy.trayHandAll, Real.trayHandAll)
+    }
+
     func testEmptyAndErrorStatesNameTheWayOut() {
         XCTAssertTrue(Copy.emptyHint.contains("Hand to Watchman"))
         XCTAssertTrue(Copy.readFailed.contains("nothing was lost"))

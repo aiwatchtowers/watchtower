@@ -28,6 +28,7 @@ var (
 	watchmanArmFlagSession    int64
 	watchmanArmFlagTarget     int64
 	watchmanArmFlagAllRunning bool
+	watchmanArmFlagOnly       []int64
 	watchmanArmFlagCheck      bool
 	watchmanArmFlagJSON       bool
 
@@ -51,6 +52,8 @@ func init() {
 	arm.Flags().Int64Var(&watchmanArmFlagSession, "session", 0, "terminal session id")
 	arm.Flags().Int64Var(&watchmanArmFlagTarget, "target", 0, "target id (every session under it)")
 	arm.Flags().BoolVar(&watchmanArmFlagAllRunning, "all-running", false, "every running workbench agent session")
+	arm.Flags().Int64SliceVar(&watchmanArmFlagOnly, "only", nil,
+		"with --all-running: arm only these sessions (the ones a --check reported); a session started since is left out")
 	arm.Flags().BoolVar(&watchmanArmFlagCheck, "check", false, "write nothing; report first_time and the learning estimate")
 	arm.Flags().BoolVar(&watchmanArmFlagJSON, "json", false, "print JSON")
 	disarm := &cobra.Command{
@@ -77,7 +80,13 @@ type watchmanArmJSON struct {
 	AnalyticsTurnedOn bool                     `json:"analytics_turned_on"`
 	LearningStarted   bool                     `json:"learning_started"`
 	Estimate          *watchman.EstimateStatus `json:"estimate"`
-	Error             string                   `json:"error"`
+	// Sessions are the session ids this arm (or --check) covers by a
+	// session row; empty for --target. The Desktop confirms exactly these.
+	Sessions []int64 `json:"sessions"`
+	// Dropped are the --only ids that were not armed: no longer running, or
+	// not a workbench agent session. A partial arm is visible this way.
+	Dropped []int64 `json:"dropped"`
+	Error   string  `json:"error"`
 	// SidecarError: the rows were written (ok stays true) but the sidecar
 	// rewrite failed; the daemon's upkeep rewrites it next cycle.
 	SidecarError string `json:"sidecar_error"`
@@ -229,7 +238,7 @@ func exactlyOne(set ...bool) bool {
 }
 
 func runWatchmanArm(cmd *cobra.Command, _ []string) error {
-	out := watchmanArmJSON{Armed: []watchman.ArmedEntry{}}
+	out := watchmanArmJSON{Armed: []watchman.ArmedEntry{}, Sessions: []int64{}, Dropped: []int64{}}
 	err := watchmanArm(cmd, &out)
 	out.OK = err == nil
 	if err != nil {
@@ -252,7 +261,9 @@ func runWatchmanArm(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	if watchmanArmFlagCheck {
-		if out.Estimate != nil {
+		if watchmanArmFlagAllRunning && len(out.Sessions) == 0 {
+			fmt.Fprintln(w, "No running session to hand to Watchman.")
+		} else if out.Estimate != nil {
 			fmt.Fprintf(w, "The first time on this workbench: Watchman learns ~%d decisions first (~%d tokens on the light model).\n",
 				out.Estimate.Decisions, out.Estimate.Tokens)
 		} else {
@@ -292,6 +303,9 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 	if !exactlyOne(watchmanArmFlagSession != 0, watchmanArmFlagTarget != 0, watchmanArmFlagAllRunning) {
 		return errors.New("name exactly one of --session N, --target N or --all-running")
 	}
+	if len(watchmanArmFlagOnly) > 0 && !watchmanArmFlagAllRunning {
+		return errors.New("--only goes with --all-running")
+	}
 	cfg, err := workspaceConfigFromFlags()
 	if err != nil {
 		return err
@@ -308,7 +322,22 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 	defer database.Close()
 	rows, workbenches, err := watchmanArmRows(database)
 	if err != nil {
+		// Every confirmed session stopped: all of them are dropped (not on
+		// a lookup error, which says nothing about them).
+		if errors.Is(err, errNoConfirmedSession) {
+			out.Dropped = append(out.Dropped, watchmanArmFlagOnly...)
+		}
 		return err
+	}
+	for _, r := range rows {
+		if r.Scope == "session" {
+			out.Sessions = append(out.Sessions, r.RefID)
+		}
+	}
+	for _, id := range watchmanArmFlagOnly {
+		if !slices.Contains(out.Sessions, id) && !slices.Contains(out.Dropped, id) {
+			out.Dropped = append(out.Dropped, id)
+		}
 	}
 	var first []int64 // workbenches Watchman is not on for or has not learned
 	var notOn []int64 // of those, the ones it is not on for
@@ -393,6 +422,9 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 	return nil
 }
 
+// errNoConfirmedSession: `--only` named sessions none of which runs now.
+var errNoConfirmedSession = errors.New("none of the confirmed sessions is still running")
+
 // watchmanCheckBusy bounds how long `arm --check` waits for another
 // process's lock on the read-only database.
 const watchmanCheckBusy = 2 * time.Second
@@ -424,6 +456,9 @@ func watchmanArmRows(database *db.DB) ([]db.WatchmanArming, []int64, error) {
 		if !watchmanArmFlagAllRunning && s.SessionID != watchmanArmFlagSession {
 			continue
 		}
+		if len(watchmanArmFlagOnly) > 0 && !slices.Contains(watchmanArmFlagOnly, s.SessionID) {
+			continue
+		}
 		rows = append(rows, db.WatchmanArming{Scope: "session", RefID: s.SessionID})
 		if !slices.Contains(wbs, s.WorkbenchID) {
 			wbs = append(wbs, s.WorkbenchID)
@@ -432,6 +467,11 @@ func watchmanArmRows(database *db.DB) ([]db.WatchmanArming, []int64, error) {
 	switch {
 	case len(rows) > 0:
 		return rows, wbs, nil
+	case watchmanArmFlagAllRunning && len(watchmanArmFlagOnly) > 0:
+		return nil, nil, errNoConfirmedSession
+	case watchmanArmFlagAllRunning && watchmanArmFlagCheck:
+		// --check only reads: no running session is an answer (sessions: []).
+		return nil, nil, nil
 	case watchmanArmFlagAllRunning:
 		return nil, nil, errors.New("no running workbench agent session to hand to Watchman")
 	default:

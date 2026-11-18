@@ -202,3 +202,26 @@ func TestWatchmanArmedSession_ReadsOneSession(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, armed)
 }
+
+func TestWatchmanSessionsUnderArmedTargets(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	wmTarget(t, d, 1, nil)
+	wmTarget(t, d, 2, 1)
+	wmTarget(t, d, 3, nil)
+	wmSession(t, d, 10, 1, "claude", 2, false) // under target 1
+	wmSession(t, d, 11, 1, "claude", 3, false) // unrelated target
+	wmSession(t, d, 12, 1, "claude", 2, true)  // finished
+	wmSession(t, d, 13, 1, "shell", 2, false)  // a shell is never armed
+	got, err := d.WatchmanSessionsUnderArmedTargets()
+	require.NoError(t, err)
+	require.Empty(t, got)
+	t0 := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "target", RefID: 2, ArmedAt: t0.Add(time.Hour), ArmedBy: "cli"}))
+	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "target", RefID: 1, ArmedAt: t0, ArmedBy: "cli"}))
+	// A direct row does not hide the target that covers it.
+	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "session", RefID: 10, ArmedAt: t0, ArmedBy: "cli"}))
+	got, err = d.WatchmanSessionsUnderArmedTargets()
+	require.NoError(t, err)
+	require.Equal(t, map[int64]int64{10: 1}, got, "the oldest-armed covering target")
+}

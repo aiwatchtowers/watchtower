@@ -9,16 +9,42 @@ package struct WatchmanStatus: Decodable, Equatable, Sendable {
     package let workbenches: [WatchmanWorkbenchStatus]
     /// `daemon_running` (phase 2); unknown from a CLI that does not print it.
     package let daemon: WatchmanDaemonState
+    /// `mode` (phase 2, D47): Sleep while anything is handed to Watchman.
+    /// Missing or unknown → off.
+    package let mode: WatchmanMode
+    /// `mode_since`: the oldest arming; nil while off.
+    package let modeSince: Date?
+    /// `armed`: every arming row, oldest first.
+    package let armed: [WatchmanArmedEntry]
+    /// `armed_sessions` by session id (tolerant: an entry of any other shape
+    /// reads as a session armed by its own row, or is skipped; a malformed
+    /// key reads as none): the live sessions the twin decides
+    /// for, armed directly or under an armed target (Go resolves the subtree).
+    package let armedSessions: [Int64: WatchmanArmedSession]
 
     enum CodingKeys: String, CodingKey {
-        case ok, workbenches
+        case ok, workbenches, mode, armed
         case daemonRunning = "daemon_running"
+        case modeSince = "mode_since"
+        case armedSessions = "armed_sessions"
     }
 
-    package init(ok: Bool = true, workbenches: [WatchmanWorkbenchStatus], daemon: WatchmanDaemonState = .unknown) {
+    package init(
+        ok: Bool = true,
+        workbenches: [WatchmanWorkbenchStatus],
+        daemon: WatchmanDaemonState = .unknown,
+        mode: WatchmanMode = .off,
+        modeSince: Date? = nil,
+        armed: [WatchmanArmedEntry] = [],
+        armedSessions: [WatchmanArmedSession] = []
+    ) {
         self.ok = ok
         self.workbenches = workbenches
         self.daemon = daemon
+        self.mode = mode
+        self.modeSince = modeSince
+        self.armed = armed
+        self.armedSessions = Self.byID(armedSessions)
     }
 
     package init(from decoder: Decoder) throws {
@@ -31,11 +57,236 @@ package struct WatchmanStatus: Decodable, Equatable, Sendable {
         case false?: daemon = .stopped
         case nil: daemon = .unknown
         }
+        let rawMode = try container.decodeIfPresent(String.self, forKey: .mode) ?? ""
+        mode = WatchmanMode(rawValue: rawMode) ?? .off
+        modeSince = AutomationDates.parse(try container.decodeIfPresent(String.self, forKey: .modeSince))
+        armed = try container.decodeIfPresent([WatchmanArmedEntry].self, forKey: .armed) ?? []
+        let lossy = try? container.decodeIfPresent([LossyArmedSession].self, forKey: .armedSessions)
+        armedSessions = Self.byID(lossy.flatMap { $0 }?.compactMap(\.value) ?? [])
+    }
+
+    private static func byID(_ sessions: [WatchmanArmedSession]) -> [Int64: WatchmanArmedSession] {
+        Dictionary(sessions.map { ($0.id, $0) }) { first, _ in first }
     }
 
     package func workbench(_ id: Int64) -> WatchmanWorkbenchStatus? {
         workbenches.first { $0.workbench == id }
     }
+
+    /// Whether the twin decides for this session now: armed itself or under
+    /// an armed target.
+    package func isArmed(session id: Int64) -> Bool {
+        armedSessions[id] != nil || armed.contains { $0.scope == .session && $0.id == id }
+    }
+
+    /// Whether this target is handed to Watchman itself.
+    package func isArmed(target id: Int64) -> Bool {
+        armed.contains { $0.scope == .target && $0.id == id }
+    }
+}
+
+/// What the twin may do now (`watchman.Mode`, spec §2). Phase 2 prints only
+/// `off` and `sleep`; `away` is phase 3's.
+package enum WatchmanMode: String, Equatable, Sendable {
+    case off, sleep, away
+}
+
+/// One `armed_sessions` entry: `target` is the armed target whose subtree
+/// holds the session (0 = armed only by its own row; such a session goes
+/// back only with its target), `armedAt` that target's arming time, else
+/// the session row's.
+package struct WatchmanArmedSession: Decodable, Equatable, Sendable {
+    package let id: Int64
+    package let target: Int64
+    package let armedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id, target
+        case armedAt = "armed_at"
+    }
+
+    package init(id: Int64, target: Int64 = 0, armedAt: Date? = nil) {
+        self.id = id
+        self.target = target
+        self.armedAt = armedAt
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int64.self, forKey: .id)
+        target = try container.decodeIfPresent(Int64.self, forKey: .target) ?? 0
+        armedAt = AutomationDates.parse(try container.decodeIfPresent(String.self, forKey: .armedAt))
+    }
+}
+
+/// One `armed_sessions` entry read whatever its shape: the object, a bare
+/// session id (an older CLI: a direct row), or nothing.
+private struct LossyArmedSession: Decodable {
+    let value: WatchmanArmedSession?
+
+    init(from decoder: Decoder) throws {
+        if let session = try? WatchmanArmedSession(from: decoder) {
+            value = session
+        } else if let id = try? decoder.singleValueContainer().decode(Int64.self) {
+            value = WatchmanArmedSession(id: id)
+        } else {
+            value = nil
+        }
+    }
+}
+
+/// One `watchman_arming` row as `watchman status|arm|disarm --json` print it.
+package struct WatchmanArmedEntry: Decodable, Equatable, Sendable {
+    package enum Scope: String, Decodable, Equatable, Sendable {
+        case session, target
+    }
+
+    package let scope: Scope
+    package let id: Int64
+    package let armedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case scope, id
+        case armedAt = "armed_at"
+    }
+
+    package init(scope: Scope, id: Int64, armedAt: Date? = nil) {
+        self.scope = scope
+        self.id = id
+        self.armedAt = armedAt
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        scope = try container.decode(Scope.self, forKey: .scope)
+        id = try container.decode(Int64.self, forKey: .id)
+        armedAt = AutomationDates.parse(try container.decodeIfPresent(String.self, forKey: .armedAt))
+    }
+}
+
+/// What `watchman arm|disarm` acts on.
+package enum WatchmanArmScope: Hashable, Sendable {
+    case session(Int64)
+    case target(Int64)
+    /// `arm --all-running` / `disarm --all`.
+    case allRunning
+
+    /// The scope flags of `watchman arm` (`disarm` takes `--all` for
+    /// `allRunning`).
+    package func flags(disarm: Bool = false) -> [String] {
+        switch self {
+        case let .session(id): ["--session", String(id)]
+        case let .target(id): ["--target", String(id)]
+        case .allRunning: [disarm ? "--all" : "--all-running"]
+        }
+    }
+}
+
+/// `watchman arm [--check] --json` (`cmd/watchman_arming.go`, keys pinned by
+/// `TestWatchmanArm_JSONKeysPinned`). Every key but `ok` is tolerant.
+package struct WatchmanArmReply: Decodable, Equatable, Sendable {
+    package let ok: Bool
+    package let error: String
+    /// Watchman is not on for, or has not learned, a workbench this arm covers.
+    package let firstTime: Bool
+    package let analyticsTurnedOn: Bool
+    package let learningStarted: Bool
+    /// The learning estimate (`--check` on a first time only).
+    package let estimate: WatchmanEstimate?
+    /// The session ids this arm (or check) covers by a session row; empty
+    /// for a target; nil from a CLI that does not print the key.
+    package let sessions: [Int64]?
+    /// `--only` ids that were not armed (no longer running).
+    package let dropped: [Int64]
+    /// The branch-protection check's line; empty when protected.
+    package let protectionWarning: String
+    /// One line per repository the git guard cannot be installed in.
+    package let hooksWarning: String
+    /// The rows were written but the arm sidecar was not rewritten (the
+    /// daemon rewrites it next cycle).
+    package let sidecarError: String
+
+    enum CodingKeys: String, CodingKey {
+        case ok, error, estimate, sessions, dropped
+        case firstTime = "first_time"
+        case analyticsTurnedOn = "analytics_turned_on"
+        case learningStarted = "learning_started"
+        case protectionWarning = "protection_warning"
+        case hooksWarning = "hooks_warning"
+        case sidecarError = "sidecar_error"
+    }
+
+    package init(
+        ok: Bool = true,
+        error: String = "",
+        firstTime: Bool = false,
+        analyticsTurnedOn: Bool = false,
+        learningStarted: Bool = false,
+        estimate: WatchmanEstimate? = nil,
+        sessions: [Int64]? = nil,
+        dropped: [Int64] = [],
+        protectionWarning: String = "",
+        hooksWarning: String = "",
+        sidecarError: String = ""
+    ) {
+        self.ok = ok
+        self.error = error
+        self.firstTime = firstTime
+        self.analyticsTurnedOn = analyticsTurnedOn
+        self.learningStarted = learningStarted
+        self.estimate = estimate
+        self.sessions = sessions
+        self.dropped = dropped
+        self.protectionWarning = protectionWarning
+        self.hooksWarning = hooksWarning
+        self.sidecarError = sidecarError
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try container.decode(Bool.self, forKey: .ok)
+        error = try container.decodeIfPresent(String.self, forKey: .error) ?? ""
+        firstTime = try container.decodeIfPresent(Bool.self, forKey: .firstTime) ?? false
+        analyticsTurnedOn = try container.decodeIfPresent(Bool.self, forKey: .analyticsTurnedOn) ?? false
+        learningStarted = try container.decodeIfPresent(Bool.self, forKey: .learningStarted) ?? false
+        estimate = try container.decodeIfPresent(WatchmanEstimate.self, forKey: .estimate)
+        sessions = (try? container.decodeIfPresent([Int64].self, forKey: .sessions)).flatMap { $0 }
+        dropped = (try? container.decodeIfPresent([Int64].self, forKey: .dropped)) ?? []
+        protectionWarning = try container.decodeIfPresent(String.self, forKey: .protectionWarning) ?? ""
+        hooksWarning = try container.decodeIfPresent(String.self, forKey: .hooksWarning) ?? ""
+        sidecarError = try container.decodeIfPresent(String.self, forKey: .sidecarError) ?? ""
+    }
+
+    /// The warning lines the arm sheet shows, protection first.
+    package var warnings: [String] {
+        ([protectionWarning] + hooksWarning.split(whereSeparator: \.isNewline).map(String.init)
+            + (dropped.isEmpty ? [] : [WatchmanArmingCopy.droppedLine(dropped)]))
+            .filter { !$0.isEmpty }
+    }
+
+    /// `--check` said the owner should see the sheet before arming: a first
+    /// time on a workbench, or a warning to arm knowing.
+    package var needsSheet: Bool { firstTime || !warnings.isEmpty }
+}
+
+/// `watchman disarm --json`: only what the controls read.
+package struct WatchmanDisarmReply: Decodable, Equatable, Sendable {
+    package let sidecarError: String
+
+    enum CodingKeys: String, CodingKey {
+        case sidecarError = "sidecar_error"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sidecarError = try container.decodeIfPresent(String.self, forKey: .sidecarError) ?? ""
+    }
+}
+
+/// What `watchman arm --check` said: its reply, or why it could not say.
+package enum WatchmanArmCheck: Equatable, Sendable {
+    case reply(WatchmanArmReply)
+    case failed(String)
 }
 
 /// Whether the daemon runs, as `watchman status --json` last said.
@@ -110,6 +361,12 @@ package struct WatchmanEstimate: Decodable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case decisions, tokens
         case needLabels = "need_labels"
+    }
+
+    package init(decisions: Int, needLabels: Int, tokens: Int) {
+        self.decisions = decisions
+        self.needLabels = needLabels
+        self.tokens = tokens
     }
 }
 

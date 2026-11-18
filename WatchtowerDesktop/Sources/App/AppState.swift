@@ -1584,6 +1584,8 @@ final class AppState {
         applyUIVisibility(uiVisibility.isOnScreen)
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         if watchmanCenter == nil { watchmanCenter = WatchmanCenter(runner: ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()) }
+        workbenchesViewModel?.watchman = watchmanCenter
+        watchmanCenter?.sessionTitle = { [weak self] in self?.workbenchesViewModel?.sessionTitle($0) } // the arm sheet's list
         watchmanJournal = WatchmanJournalViewModel(pool: manager.dbPool, actions: watchmanJournalActions())
         initAccountPurges(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         initSlackLive(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
@@ -1848,6 +1850,7 @@ final class AppState {
         reports.watchedWorkbenchID = { [weak vm] in vm?.selectedWorkbenchID }
         reports.agentState = { [weak agentStates] id in agentStates?.statuses[id]?.state }
         vm.sessionReports = reports
+        vm.watchman = watchmanCenter
         vm.sessionCleanup = SessionCleanupCenter.forWorkbenches(runner: cliRunner, terminals: terminalCenter)
         workbenchesViewModel?.stop()
         workbenchesViewModel = vm

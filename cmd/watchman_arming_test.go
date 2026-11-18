@@ -47,6 +47,7 @@ func armSession(t *testing.T, wb int64, kind string, target any, finished bool) 
 func resetWatchmanArmFlags() {
 	watchmanArmFlagSession, watchmanArmFlagTarget = 0, 0
 	watchmanArmFlagAllRunning, watchmanArmFlagCheck, watchmanArmFlagJSON = false, false, false
+	watchmanArmFlagOnly = nil
 	watchmanDisarmFlagSession, watchmanDisarmFlagTarget = 0, 0
 	watchmanDisarmFlagAll, watchmanDisarmFlagJSON = false, false
 }
@@ -159,8 +160,8 @@ func TestWatchmanArm_JSONKeysPinned(t *testing.T) {
 	s1, _ := armSession(t, wb, "claude", nil, false)
 	_, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--json")
 	require.NoError(t, err, out)
-	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
-		"protection_warning", "sidecar_error"}, jsonKeys(t, out))
+	assert.Equal(t, []string{"analytics_turned_on", "armed", "dropped", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
+		"protection_warning", "sessions", "sidecar_error"}, jsonKeys(t, out))
 	var raw struct {
 		Armed []map[string]json.RawMessage `json:"armed"`
 	}
@@ -170,8 +171,8 @@ func TestWatchmanArm_JSONKeysPinned(t *testing.T) {
 
 	_, out, err = armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--check", "--json")
 	require.NoError(t, err, out)
-	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
-		"protection_warning", "sidecar_error"}, jsonKeys(t, out))
+	assert.Equal(t, []string{"analytics_turned_on", "armed", "dropped", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
+		"protection_warning", "sessions", "sidecar_error"}, jsonKeys(t, out))
 
 	_, out, err = armCLI(t, "disarm", "--session", strconv.FormatInt(s1, 10), "--json")
 	require.NoError(t, err, out)
@@ -180,8 +181,8 @@ func TestWatchmanArm_JSONKeysPinned(t *testing.T) {
 	// A refused arm still prints its JSON.
 	_, out, err = armCLI(t, "arm", "--session", "999", "--json")
 	require.Error(t, err)
-	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
-		"protection_warning", "sidecar_error"}, jsonKeys(t, out))
+	assert.Equal(t, []string{"analytics_turned_on", "armed", "dropped", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
+		"protection_warning", "sessions", "sidecar_error"}, jsonKeys(t, out))
 }
 
 func TestWatchmanArm_RefusedUnderAgent(t *testing.T) {
@@ -331,6 +332,96 @@ func TestWatchmanArm_AllRunningArmsEachLiveSession(t *testing.T) {
 	assert.Equal(t, []int64{s1, s2}, sc.Sessions)
 	assert.Equal(t, []string{f1, f2}, sc.Worktrees)
 	assert.Equal(t, filepath.Clean(f1), f1)
+}
+
+// TestWatchmanArm_AllRunningOnlyArmsTheConfirmedSet: --check reports the
+// sessions it covers; --only arms just those, so a session started after
+// the owner saw the sheet is left out.
+func TestWatchmanArm_AllRunningOnlyArmsTheConfirmedSet(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	s1, _ := armSession(t, wb, "claude", nil, false)
+	r, out, err := armCLI(t, "arm", "--all-running", "--check", "--json")
+	require.NoError(t, err, out)
+	assert.Equal(t, []int64{s1}, r.Sessions)
+	s2, _ := armSession(t, wb, "claude", nil, false) // started while the sheet is open
+	r, out, err = armCLI(t, "arm", "--all-running", "--only", strconv.FormatInt(s1, 10)+",999", "--json")
+	require.NoError(t, err, out)
+	assert.Equal(t, []int64{s1}, r.Sessions)
+	assert.Equal(t, []int64{999}, r.Dropped, "a confirmed id no longer running is reported")
+	rows := armingRows(t)
+	require.Len(t, rows, 1)
+	assert.Equal(t, s1, rows[0].RefID)
+	assert.NotEqual(t, s2, rows[0].RefID)
+
+	_, out, err = armCLI(t, "arm", "--session", strconv.FormatInt(s2, 10), "--only", "1", "--json")
+	require.Error(t, err, out)
+	assert.Contains(t, out, "--only goes with --all-running")
+}
+
+// TestWatchmanArm_AllRunningEmptySets: a --check with nothing running says
+// so with an empty list (ok, read-only); an arm whose every --only id has
+// stopped fails and reports them all as dropped.
+func TestWatchmanArm_AllRunningEmptySets(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	_, _ = armSession(t, wb, "shell", nil, false) // never eligible
+	r, out, err := armCLI(t, "arm", "--all-running", "--check", "--json")
+	require.NoError(t, err, out)
+	assert.True(t, r.OK)
+	assert.Equal(t, []int64{}, r.Sessions)
+	assert.Empty(t, armingRows(t))
+
+	r, out, err = armCLI(t, "arm", "--all-running", "--only", "7,8", "--json")
+	require.Error(t, err)
+	assert.False(t, r.OK)
+	assert.Equal(t, "none of the confirmed sessions is still running", r.Error)
+	assert.Equal(t, []int64{7, 8}, r.Dropped, out)
+	assert.Empty(t, armingRows(t))
+}
+
+// TestWatchmanArm_CheckFixture writes testdata/watchman_arm_check_session.json
+// (with -update): a real `arm --session N --check --json` reply, which the
+// Desktop's WatchmanArmingTests replays on the strip's path.
+func TestWatchmanArm_CheckFixture(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	s1, _ := armSession(t, wb, "claude", nil, false)
+	_, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--check", "--json")
+	require.NoError(t, err, out)
+	var reply map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &reply))
+	assert.Equal(t, []any{float64(s1)}, reply["sessions"])
+	path := filepath.Join("testdata", "watchman_arm_check_session.json")
+	if *updateSessionReportGolden {
+		require.NoError(t, os.WriteFile(path, []byte(out), 0o600))
+	}
+	want, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(want), out, "rerun with -update")
+}
+
+// TestWatchmanArm_DroppedOnlyWhenNoneRuns: a lookup that fails for another
+// reason (here the database cannot be read) reports no dropped ids.
+func TestWatchmanArm_DroppedOnlyWhenNoneRuns(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	_, _ = armSession(t, wb, "claude", nil, false)
+	var path string
+	d := openAgentsTestMain(t, &path)
+	_, err := d.Exec(`DROP TABLE terminal_sessions`)
+	require.NoError(t, err)
+	r, out, err := armCLI(t, "arm", "--all-running", "--only", "7", "--json")
+	require.Error(t, err)
+	assert.NotEqual(t, errNoConfirmedSession.Error(), r.Error, out)
+	assert.Equal(t, []int64{}, r.Dropped, out)
+}
+
+// TestWatchmanArm_CheckTextNothingRunning: the text form of an all-running
+// check with no eligible session says so.
+func TestWatchmanArm_CheckTextNothingRunning(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	_, _ = armSession(t, wb, "shell", nil, false)
+	_, out, err := armCLI(t, "arm", "--all-running", "--check")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "No running session to hand to Watchman.")
+	assert.NotContains(t, out, "Ready to hand")
 }
 
 // countArmingNudges replaces the daemon nudge with a counter.

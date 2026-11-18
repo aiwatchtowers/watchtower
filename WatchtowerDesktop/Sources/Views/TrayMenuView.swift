@@ -22,6 +22,8 @@ struct TrayMenuView: View {
         .onAppear {
             appState.daemonManager.checkStatus()
             appState.quickRunCenter?.reload()
+            // The Watchman line reads the arming as it is now.
+            Task { await appState.watchmanCenter?.reread() }
         }
     }
 
@@ -54,6 +56,17 @@ struct TrayMenuView: View {
                 Task { await appState.runAutomationFromTray(id) }
             },
             openAutomationsAction: { appState.openAutomationsFromTray() },
+            watchman: appState.watchmanCenter.map { center in
+                TrayWatchmanSection(
+                    statusLine: center.armingReadError.map(WatchmanArmingCopy.statusReadFailed)
+                        ?? WatchmanArmingCopy.trayStatus(center.lastStatus),
+                    notes: center.armNotices[.allRunning]?.components(separatedBy: "\n") ?? [],
+                    busy: center.armingHere.contains(.allRunning)
+                ) {
+                    // A first time or a warning: the arm sheet, in the main window.
+                    Task { if await center.handAllRunning() { openMainWindow() } }
+                }
+            },
             quickCaptureAction: {
                 // Same "become regular" move as Open Watchtower: the Quick
                 // Capture window is a real window and needs a Dock icon /
@@ -70,16 +83,7 @@ struct TrayMenuView: View {
             trainVoicesAction: {
                 Task { await appState.voiceRegistryCenter.open(.train) }
             },
-            openAction: {
-                // Opening from the tray is a deliberate "become regular" move —
-                // it must win over a still-armed login-launch close observer
-                // (see `TrayAppDelegate.endLoginLaunchClosing`), or a window
-                // opened right after a login launch gets closed out from under
-                // the user.
-                (NSApp.delegate as? TrayAppDelegate)?.endLoginLaunchClosing()
-                ActivationPolicyDecision.becomeRegularAndActivate()
-                openWindow(id: TrayAppDelegate.mainWindowSceneID)
-            },
+            openAction: { openMainWindow() },
             settingsAction: {
                 // The policy watcher recomputes only on window CLOSE, so an
                 // accessory-mode app must become regular here or Settings
@@ -90,6 +94,16 @@ struct TrayMenuView: View {
                 openSettings()
             }
         )
+    }
+
+    /// Opening from the tray is a deliberate "become regular" move — it must
+    /// win over a still-armed login-launch close observer (see
+    /// `TrayAppDelegate.endLoginLaunchClosing`), or a window opened right
+    /// after a login launch gets closed out from under the user.
+    private func openMainWindow() {
+        (NSApp.delegate as? TrayAppDelegate)?.endLoginLaunchClosing()
+        ActivationPolicyDecision.becomeRegularAndActivate()
+        openWindow(id: TrayAppDelegate.mainWindowSceneID)
     }
 
     private var plansScreen: PlansScreenPresentation {
@@ -140,6 +154,9 @@ struct TrayMenuContent: View {
     var runAutomationSections: [TrayRunAutomationMenu.Section]?
     var runAutomationAction: (Int64) -> Void = { _ in }
     var openAutomationsAction: () -> Void = {}
+    /// Watchman's lines and Hand all running sessions to Watchman (D47: no
+    /// Going to sleep item in phase 2); nil hides them.
+    var watchman: TrayWatchmanSection?
     let quickCaptureAction: () -> Void
     let voicesAction: () -> Void
     let reviewVoicesAction: () -> Void
@@ -200,6 +217,12 @@ struct TrayMenuContent: View {
             if let runAutomationSections {
                 runAutomationMenu(runAutomationSections)
             }
+            if let watchman {
+                Divider()
+                if let line = watchman.statusLine { Text(line) }
+                ForEach(watchman.notes, id: \.self) { Text($0) }
+                Button(WatchmanArmingCopy.trayHandAll, action: watchman.handAll).disabled(watchman.busy)
+            }
             Divider()
             // Shows the global ⌃⌥D (`GlobalHotKey`) beside the item (issue #288).
             Button("New Voice Idea", action: quickCaptureAction)
@@ -239,4 +262,13 @@ struct TrayMenuContent: View {
             Button("Open Automations…", action: openAutomationsAction)
         }
     }
+}
+
+/// The tray's Watchman part: its status line, what the last Hand all
+/// running sessions left to say, and the item itself.
+struct TrayWatchmanSection {
+    let statusLine: String?
+    let notes: [String]
+    let busy: Bool
+    let handAll: () -> Void
 }

@@ -156,12 +156,24 @@
   "armed": [
     {
       "scope": "session",
-      "id": 7,
+      "id": 1,
       "armed_at": "2026-11-02T12:00:00Z"
     },
     {
       "scope": "target",
       "id": 4,
+      "armed_at": "2026-11-02T13:00:00Z"
+    }
+  ],
+  "armed_sessions": [
+    {
+      "id": 1,
+      "target": 0,
+      "armed_at": "2026-11-02T12:00:00Z"
+    },
+    {
+      "id": 2,
+      "target": 4,
       "armed_at": "2026-11-02T13:00:00Z"
     }
   ],
