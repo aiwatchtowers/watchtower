@@ -111,7 +111,7 @@
 | A22 | A confirmed connect flow has no deadline (see Global Constraints) instead of the earlier 10-minute timer, which had no source | accept (ask #1438) |
 | A23 | "Ask your admin" (the setup's `not_allowed` state, screens §3.2): adds **Copy a note for your admin** — "Please set up Watchtower for <workspace>: <guide link>", the guide page on setting up Slack for a company (`ReleaseLinks` guide URL + anchor) — beside **Cancel**/**Try again** | accept (ask #1438) |
 
-A17–A23 were approved as proposed in ask #1438 («Принять все»); the steps that implement them are Task 3 (A17 backfill), Task 6 (A22 registry without a deadline), Task 7 (A18 same-user check, A21 no revoke), Task 9 (A19 App ID source, A20 merge rules), Task 13 (A19 App ID field, A23 admin note), and Task 14's waiting line (A22).
+A17–A23 were approved as proposed in ask #1438 ("accept all"); the steps that implement them are Task 3 (A17 backfill), Task 6 (A22 registry without a deadline), Task 7 (A18 same-user check, A21 no revoke), Task 9 (A19 App ID source, A20 merge rules), Task 13 (A19 App ID field, A23 admin note), and Task 14's waiting line (A22).
 
 ## Contract changes (approved in ask #1414)
 
