@@ -35,6 +35,7 @@ After this work:
 | D17 | Atlassian PDR erases what came from Atlassian about a closed account, including the memory and people data keyed by that account id; free-text derived texts (digests, briefings, chat transcripts) are not rewritten and age out under retention | ask #1458 |
 | D18 | The corp build's baked deny list moves into the bundle (`link_deny_hosts`), not dropped; a bundle can only add hosts to refuse, never allow one | decided by the agent |
 | D13 | The Live layer for Gmail/Calendar/Atlassian connectors (generalised Slack Live) is a separate project, not part of this spec | decided by the agent |
+| D19 | Every wizard step (Slack, Google, Atlassian, Linear, Microsoft) first looks for a company app the Mac already knows and reuses it; only when none is found does it ask **Create new** (default) / **We already have one**, with a hint for "don't know". Never a second app by accident | ask #1473 ("не только Slack. Так по всем конекторам") |
 | D15 | Sharing on our shared Atlassian app is turned off 30 days after company setup ships | ask #1455 |
 | D14 | Screens (wizard, confirmation, Connections rows, banners) get their own screens spec with DesignShotCatalog mockups for every state, as #1709 does for Slack. This spec holds no screen and no UI task: it fixes the behaviour, the data and the UI texts (in the models, tested — T3); the screens spec is a prerequisite of every UI task and the screen tasks are planned from it | decided by the agent |
 
@@ -66,7 +67,16 @@ One JSON object, versioned, the only thing a link, an MDM key and a pasted code 
 
 Connections → **Set up for my company**. A step per vendor, each skippable; progress kept in a draft (`<workspace>/company/draft.json`, 0600) so a closed window resumes.
 
-1. **Slack** — Slack spec §5.1 unchanged (configuration token, `apps.manifest.create`, no secret kept).
+**Existing apps first (D19).** No vendor lets Watchtower list a company's apps, so each step starts from what this Mac already knows, then asks only if that finds nothing:
+
+1. **Look.** A *known company client* for a vendor is any client id on this Mac that is not our shared baked one: a stored `company/*.json` or the draft; a per-account credentials file (e.g. `google_credentials_<id>.json`); an account connected through a non-shared client (the corp build's baked clients, read by the bridge, §5). Each candidate is shown with where it came from ("Slack app A0… — your connected account").
+2. **Found** → "Use <app>" is the default, beside **Create new**. Reusing keeps the app's ids; for secrets the Mac does not hold (Google, Atlassian), the step asks for the secret only, with a deep link to the page that shows or regenerates it. Slack reuse runs `apps.manifest.export` + `apps.manifest.update` on that `app_id` instead of `apps.manifest.create`; a token whose creator is not the app's collaborator gets "Ask the app's owner to add you as a collaborator", and the step stays open (no new app is created as a fallback).
+3. **Nothing found** → **Create new** (default) / **We already have one**. "Already have one" takes what identifies it: the Slack app's settings URL (`api.slack.com/apps/A…`, the `app_id` is parsed from it), the Google client JSON or id + secret, the Atlassian client id + secret, the Linear client id, the Microsoft client id + tenant id. Under both buttons, a "Not sure?" hint names where to look per vendor (Slack: Apps in the workspace, search Watchtower; Google: Cloud Console → Credentials; Atlassian: developer console → My apps; Linear: Settings → API → OAuth applications; Microsoft: Entra → App registrations).
+4. **A reused app is checked like a new one** before the step completes: the Slack manifest's scopes and redirect are compared with ours and updated if they differ (the update is shown first); Google and Microsoft by a dry authorize URL; Atlassian by asking the admin to confirm Sharing on, personal data Yes and `report:personal-data` (the developer console has no API to read them), with deep links.
+
+The steps (each describes the **Create new** path):
+
+1. **Slack** — Slack spec §5.1 for a new app (configuration token, `apps.manifest.create`, no secret kept), or the reuse path above.
 2. **Google** — deep links into Google Cloud Console in order: create project → enable Gmail API and Calendar API → OAuth consent screen, user type **Internal** → Credentials → OAuth client **Desktop app** → download JSON. The admin drops the JSON on the step (or pastes it). Watchtower checks the client with a dry authorize URL and records the Workspace domain.
 3. **Atlassian** — deep links into developer.atlassian.com: create OAuth 2.0 integration → permissions: Jira API with today's `JiraScopes`, Confluence API with `ConfluenceScopes`, `report:personal-data` → callback URLs (the Jira loopback range, §5 open item) → **Distribution: Sharing on**, "Does your app store personal data? **Yes**" → add a second admin (D6). The admin pastes client id and secret.
 4. **Linear** (optional) — create an OAuth application in Linear settings with the loopback redirect; paste the client id. Skipped = employees use our shared Linear app.
@@ -146,6 +156,8 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 | A link changes a stored company's clients | Change warning, **Keep current** default; nothing stored without **Replace** | listener test: changed ids → no write until Replace |
 | The bundle in the request log | Path only is logged | log assertion test |
 | Corp install updates before the bridge ran | Stays on the gated feed until `company_migrated` | UpdateService test |
+| Reused Slack app, admin not a collaborator | "Ask the app's owner to add you as a collaborator"; step stays open; nothing created | wizard model test with an export fake returning the not-collaborator error |
+| Reused app's id pasted with a typo or from another workspace | Refused at the step (Slack: `team_id` of the export differs from the admin's workspace; others: dry authorize fails) | wizard model tests per vendor |
 | Public build meets an untied account of an unknown client | **Re-login needed — open your company's link**, no silent failure | resolver + refresher test |
 | PDR erase interrupted | One transaction per account: all or nothing; the next cycle repeats it (idempotent) | kill-mid-erase test |
 
@@ -163,11 +175,12 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 |---|---|---|
 | Personal Gmail token outlives 7 days | S2 spike (before T8) | day-8 refresh on a real unverified project; result written into this spec |
 | Our Linear obligations known | S3 spike (Linear terms) | written finding; D12 holds or flips |
-| Atlassian callback URL count; Slack link rendering | S1 spike (with the Slack spec's T1) | written finding |
+| Atlassian callback URL count; Slack link rendering; manifest export/update on an existing app | S1 spike (with the Slack spec's T1) | written finding |
 | One bundle format, Go and Swift alike | T1 bundle package + Swift twin | shared fixture in both |
 | Accounts know their company client | T1b migration `company_slug` + resolvers | `TestAllTablesExist`/golden, resolver order tests |
 | A localhost link connects every vendor (Slack, Google, Atlassian, Microsoft, Linear) after one press; a change needs Replace | T2 listener path + chain | listener + chain tests with a fake per vendor (Microsoft against the bundle's tenant), no-log test |
 | Admin sets up all vendors once; every UI text lives in a model | T3 wizard model and texts | wizard model + text tests (screens: the screens spec, D14) |
+| An existing company app is found and reused, never duplicated (D19) | T3 known-client discovery + reuse per vendor; T5 Slack reuse via `apps.manifest.export`/`update` | discovery test over every source in §2 "Look"; per-vendor reuse tests; Slack: no `apps.manifest.create` call when an app was chosen |
 | Slack page carries the link | T5 publish via `apps.manifest.update` | manifest fake |
 | MDM and code carry the same bundle | T6 `CompanyBundle` policy key + code paste | POLICY-02 fixture rows |
 | Per-account clients for Google, Atlassian, Linear, Microsoft | T7 credentials store + refreshers read it | per-vendor auth tests |
@@ -187,5 +200,6 @@ POLICY-01/02 (new `CompanyBundle` key), the Jira/Confluence auth contracts in `d
 
 - Atlassian 3LO callback URLs: one or several per app? If one, Jira's loopback range collapses to one fixed port (spike S1).
 - Personal Gmail past 7 days (spike S2) and our Linear obligations (spike S3).
+- Whether `apps.manifest.export`/`update` on an existing app need its creator as a collaborator, and the exact error (spike S1).
 - Whether Slack renders the link in `long_description` as clickable (Slack spec T1); the code is the fallback.
 - Live layer for the Google/Atlassian connectors (D13): its own brainstorm.
