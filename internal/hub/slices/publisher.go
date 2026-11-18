@@ -124,9 +124,20 @@ type Config struct {
 
 // SaveLatency is the publisher's side of the latency samples
 // (measure.Recorder): kind saved on transport (the one its write went to),
-// from a source read that began at readAt, done at doneAt.
+// from a source read that began at readAt, done at doneAt; and, at the end
+// (doneAt) of a cycle, each kind it handled from a source read that began at
+// readAt, written or not.
 type SaveLatency interface {
 	Saved(transport, kind string, readAt, doneAt time.Time)
+	NudgeCycleDone(transport, kind string, readAt, doneAt time.Time)
+}
+
+// handledKind is a kind a cycle handled: its source read start and the
+// transport of its first write (the current one when nothing was written).
+type handledKind struct {
+	kind      Kind
+	readAt    time.Time
+	transport transport.Kind
 }
 
 // CycleReport is what one cycle did. Skipped names records not published
@@ -662,6 +673,8 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 		p.cycleMu.Lock()
 	}
 	defer p.cycleMu.Unlock()
+	var handled []handledKind
+	defer func() { p.stampCycleDone(handled) }()
 	rep := CycleReport{Deferred: map[Kind]time.Time{}}
 	p.mu.Lock()
 	paused := p.paused
@@ -723,6 +736,9 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 		if err == nil && !slices.Contains(rep.Failed, k) {
 			p.kindPublished(k)
 			published++
+			if p.c.Latency != nil {
+				handled = append(handled, p.handledStamp(k))
+			}
 		}
 		if !errors.Is(err, errEpochMoved) {
 			p.noteKindOutcome(k, err == nil && !slices.Contains(rep.Failed, k) && len(rep.Skipped) == skipped, now)
@@ -1098,6 +1114,27 @@ func (p *Publisher) stampSaved(k Kind) {
 		return
 	}
 	p.c.Latency.Saved(string(p.kindTransport), string(k), p.kindRead, p.clock())
+}
+
+// handledStamp is k's cycle-end stamp, taken right after publishKind.
+func (p *Publisher) handledStamp(k Kind) handledKind {
+	tr := p.kindTransport
+	if tr == "" {
+		tr = p.transportKind()
+	}
+	return handledKind{kind: k, readAt: p.kindRead, transport: tr}
+}
+
+// stampCycleDone hands the latency recorder every kind this cycle handled,
+// written or not, with the cycle's end (live link R7's nudge_saved).
+func (p *Publisher) stampCycleDone(handled []handledKind) {
+	if p.c.Latency == nil || len(handled) == 0 {
+		return
+	}
+	done := p.clock()
+	for _, h := range handled {
+		p.c.Latency.NudgeCycleDone(string(h.transport), string(h.kind), h.readAt, done)
+	}
 }
 
 // alertSignals reports whether new alerts get a signal record: on CloudKit,

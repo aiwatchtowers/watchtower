@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pressly/goose/v3"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -657,7 +658,7 @@ func TestHubDiagnosticsJSONKeys(t *testing.T) {
 	var readSaved map[string]any
 	for _, r := range rows {
 		row := r.(map[string]any)
-		assert.ElementsMatch(t, []string{"step", "transport", "p50_ms", "p90_ms", "samples"}, hubKeysOf(row))
+		assert.ElementsMatch(t, []string{"step", "transport", "kind", "p50_ms", "p90_ms", "samples"}, hubKeysOf(row))
 		if row["step"] == "read_saved" && row["transport"] == "relay" {
 			readSaved = row
 		}
@@ -677,6 +678,76 @@ func TestHubDiagnosticsJSONKeys(t *testing.T) {
 		_, err := runHub(t, "diagnostics", "--days", bad, "--json")
 		assert.Error(t, err, "--days %s", bad)
 	}
+}
+
+// TestHubDiagnostics_RowsByKind: a step on a transport is its all-kinds row
+// (kind "", first, so a reader of the old rows keeps its numbers) and then
+// one row per action kind, in the JSON (additive key kind) and in the text.
+func TestHubDiagnostics_RowsByKind(t *testing.T) {
+	dir := hubTestDir(t)
+	linkTestPhone(t, dir) // creates the sidecar
+	st, err := state.Open(dir)
+	require.NoError(t, err)
+	now := time.Now()
+	var xs []state.LatencySample
+	for _, k := range []string{"ask_answer", "board_target_create"} {
+		for _, step := range []string{state.StepReadApplied, state.StepNudgeSaved} {
+			xs = append(xs, state.LatencySample{At: now, Transport: "relay", Step: step, Kind: k, MS: 10})
+		}
+	}
+	require.NoError(t, st.AddLatencySamples(xs))
+	require.NoError(t, st.Close())
+
+	out, err := runHub(t, "diagnostics", "--json")
+	require.NoError(t, err)
+	rows, ok := decodeKeys(t, out)["rows"].([]any)
+	require.True(t, ok, "rows is a list")
+	perStep := map[string][]string{}
+	for _, r := range rows {
+		row := r.(map[string]any)
+		perStep[row["step"].(string)] = append(perStep[row["step"].(string)], row["kind"].(string))
+		if row["kind"] == "" {
+			assert.Equal(t, float64(2), row["samples"], "the all-kinds row of %v", row["step"])
+		}
+	}
+	want := []string{"", "ask_answer", "board_target_create"}
+	assert.Equal(t, map[string][]string{state.StepNudgeSaved: want, state.StepReadApplied: want}, perStep)
+
+	out, err = runHub(t, "diagnostics")
+	require.NoError(t, err)
+	assert.Contains(t, out, "nudge_saved on relay (board_target_create)")
+}
+
+// TestHubDiagnostics_SidecarBefore00018: a CLI newer than the sidecar (the
+// hub has not reopened it, and a read-only open never migrates) still prints
+// the all-kinds rows and the overflow count; there are no per-kind rows.
+func TestHubDiagnostics_SidecarBefore00018(t *testing.T) {
+	dir := hubTestDir(t)
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	raw, err := sql.Open("sqlite3", filepath.Join(dir, state.FileName))
+	require.NoError(t, err)
+	migrations, err := state.Migrations()
+	require.NoError(t, err)
+	p, err := goose.NewProvider(goose.DialectSQLite3, raw, migrations, goose.WithDisableGlobalRegistry(true))
+	require.NoError(t, err)
+	_, err = p.UpTo(context.Background(), 17)
+	require.NoError(t, err)
+	now := float64(time.Now().UnixNano()) / 1e9
+	_, err = raw.Exec(`INSERT INTO latency_samples (at, transport, step, ms) VALUES (?, 'relay', 'read_saved', 120), (?, 'relay', 'read_saved', 80)`, now, now)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	out, err := runHub(t, "diagnostics", "--json")
+	require.NoError(t, err)
+	m := decodeKeys(t, out)
+	rows, ok := m["rows"].([]any)
+	require.True(t, ok, "rows is a list")
+	require.Len(t, rows, 1)
+	row := rows[0].(map[string]any)
+	assert.Equal(t, "read_saved", row["step"])
+	assert.Equal(t, "", row["kind"])
+	assert.Equal(t, float64(2), row["samples"])
+	assert.Equal(t, float64(0), m["push_overflow_expired"])
 }
 
 func TestHubDiagnosticsWithoutSidecarIsEmpty(t *testing.T) {

@@ -74,7 +74,7 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 |---|---|
 | `hub status` | `state` (`off`, `starting`, `running`, `paused`), `reason` (`disabled`, `policy_off`, `locked`, `not_test_workspace`, `sidecar_unreadable`, `not_admitted`, `relay_unreachable`, `start_failed`; phase 2: `desktop_host`, `no_relay_origin`, `run_dir_unusable`, `needs_relay`, `not_vouched`, `vouch_revoked`; phase 3: `no_icloud` with `paused` on a CloudKit desktop host), `hub_id`, `relay_device_id`, `transport`, `impl`, `dir`, `phones`, `host` (`desktop`/`headless`), `mode` (`test`/`live`, empty = off), `recordings` (`on`/`off`); phase 3: `adoption` (`none`, `in_progress`, `failed`, `done`), `bridge` (`running`, `restarting`, `unavailable`; "" off a desktop host), `identity` (`keychain`/`file`, "" = not known), `switched_at` (RFC 3339, "" = never), `switched_by` (a device id or `entitlement_expired`), `off_delete` {`state` (`ok`/`pending`/`failed` while the owner's switch is off, "" while on: the owner's off deletes the records the hub published, as POLICY-03's wipe, through the running transports before the hub stops, then retried while off from 1 min doubling to 1 h while records stay; it removes the staged assets (`<hub dir>/assets` and the `slice_assets` descriptors an adoption brought, also on an iCloud account change; a plain stop keeps them); and it unlinks every phone, as the Swift hub's off did (owner, ask #956): `supervisor.unlinkForOff` runs `hub unlink`'s offline path for each linked phone (row and grants gone, keybox read revoked, epoch rotated) and refuses each waiting one, at every reconcile while the switch is written off (`0`; read again under the lock `hub enable` also takes; one phone failing does not stop the rest), so turning on again needs a fresh pairing; the hub's identity key stays, as the Swift hub's Keychain identity did. The policy's off never unlinks), `at` (last try, RFC 3339)}, `transcriber` (a Desktop heartbeat ever arrived: recordings can go on), `cloudkit` {`account` (bridge account state, "" = not read), `throttled_since` (RFC 3339, "" = not throttled), `signed` (a desktop host's build has the bridge and its entitlement)}, `kept_recordings` (absent at 0), `name` (the name phones show: `hub name`'s value, else the short host name; Settings → Mobile's Mac name row); phase 4: `relay` (below), `paying_phones`, `mailbox_full_phones` |
 | `hub phones` | `device_id`, `name`, `scope`, `linked_at`, `typing_allowed`, `typing_requested`, `permissions_allowed`, `permissions_requested`, `start_sessions_allowed`, `start_sessions_granted`, `ordered`, `last_applied_action_seq`, `transport`; phase 4: `paying` (true, false, or null unless the hub runs on the relay and knows the account state), `undelivered` (this Mac's side: held actions plus 1 for an open gap), `mailbox_full`, `alerts` ("" or the last outcome class of 7 days) — each null when the read behind it failed (a stderr warning; the phones are still listed) |
-| `hub diagnostics [--days 1..7]` (phase 4, `cmd/hub_diagnostics.go`; reads the sidecar through `state.OpenReadOnly`, no hub needed; no sidecar = no rows) | `window_days`, `rows` [{`step` (`read_applied`, `applied_saved`, `read_saved`), `transport` (`cloudkit`, `relay`), `p50_ms`, `p90_ms`, `samples`}] (nearest rank), `push_overflow_expired` |
+| `hub diagnostics [--days 1..7]` (phase 4, `cmd/hub_diagnostics.go`; reads the sidecar through `state.OpenReadOnly`, no hub needed; no sidecar = no rows) | `window_days`, `rows` [{`step` (`read_applied`, `applied_saved`, `read_saved`, `event_read`, `nudge_saved`), `transport` (`cloudkit`, `relay`), `kind` (additive, #1992: '' = the all-kinds row, listed first for each step and transport, then one row per action kind), `p50_ms`, `p90_ms`, `samples`}] (nearest rank), `push_overflow_expired` |
 | `hub unlink <device>` | `device_id`, `unlinked` |
 | `hub allow <device> typing\|permissions\|start_sessions [--revoke]` | `device_id`, `grant`, `allowed` |
 | `hub name <name>` | `name` |
@@ -144,6 +144,9 @@ through the handlers' guarded writes. Migrations (`internal/hub/state/migrations
 - `00013_alert_pushes_settled_index` (phase 4) — index on `alert_pushes.settled_at` for the status reads.
 - `00015_resend_requested_at` — `devices.resend_requested_at` (REAL, NULL when not known; a re-link clears it): when the
   gap was last asked, so an ask lost for good is asked again (#1498).
+- `00018_latency_steps` (live link R7, #1992) — `latency_samples` rebuilt in one transaction: `step` gains
+  `event_read` and `nudge_saved`, and a `kind` column (`TEXT NOT NULL DEFAULT ''`, the action's kind name such as
+  `board_target_create`; '' for `event_read` and for older rows) — still no id and no content.
 
 New columns hold ids, counters, timestamps and error classes only; envelopes stay sealed. The only plaintext the
 sidecar keeps is today's: `held_session_lines.line` (a phone line held behind the owner's draft) and the Swift
@@ -635,8 +638,18 @@ re-checked in its Task 0; the plan's Global Constraints, Decisions and Known lim
 - **Latency samples** (`internal/hub/measure`, RC §10). `Recorder.Applied` for an action applied on its first read
   (a held action measures the phone's gap, not the hub) writes `read_applied`; the first save of one of its slice
   kinds whose read began after the apply, within `SaveWait` (60 s), writes `applied_saved` and `read_saved` together;
-  waiting applies are in memory (256 at most). Batched once a second, never inside a pass transaction; pruned once a
-  minute to 7 days and 20 000 rows. Nothing leaves the device; the 500 ms line reads the relay p50 of `read_saved`.
+  waiting applies are in memory (256 at most). Live link R7 (#1992) adds: `read_applied` is per record (the time the
+  processor reached the record, not its page, so an earlier record's handler time is left out); every sample of an
+  action carries its kind (`latency_samples.kind`); `Recorder.NudgeCycleDone`, called by the publisher at a cycle's
+  end for every kind it handled, written or not, writes `nudge_saved` (apply → that cycle's end) once per apply for
+  the first such cycle whose read of the kind began after the apply; `Recorder.EventRead` writes `event_read`
+  (`transport.Event.ArrivedAt`, stamped by each transport's `emit`, → the start of the pass it triggers: the
+  processor's `PassEvent` stamps it after the own-echo check, so the hub's own echoes are not timed; for an inline
+  record the pass applies without a read). `hub diagnostics` reads both groupings in one read-only transaction; a
+  sidecar not yet at 00018 gives the all-kinds rows only. An
+  apply stops waiting once it has both its save and its cycle end, or after `SaveWait`. Batched once a second, never
+  inside a pass transaction; pruned once a minute to 7 days and 20 000 rows. Nothing leaves the device; the 500 ms
+  line reads the relay p50 of `read_saved` (the all-kinds row).
 - **Desktop.** Settings → Mobile shows the Relay row (connection, push-off, storage-full lines) and per-phone lines
   (mailbox full, free phone on a relay hub, not applied on this Mac's side, notifications not set up / last alert sent
   to relay) from `hub status|phones --json` (`MobileHubCLI`, `MobileSettingsModel+Indicators.swift`), and
