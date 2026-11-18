@@ -340,7 +340,10 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   (`changes`, `get_account_state`, `get_download`) and saves/deletes whose every item is conditional are sent again
   over HTTPS (a landed item comes back as a conflict on the hub's own record); any other op returns
   `transport.ErrUnavailable` and its caller's retry re-reads. An op unanswered for 30 s (`socketOpTimeout`, the HTTPS
-  client's timeout) is such an unknown outcome too. A ctx that expires while its frame is being written closes the
+  client's timeout) is such an unknown outcome too; a read or fully conditional write whose caller has a deadline
+  waits on the socket at most half of what is left of it (`socketBound`: the pump's account read, 30 s, gives the
+  socket 15 s), so a socket that never answers `get_account_state` still leaves the HTTPS resend its turn and
+  `SLOT_ADDED` goes out with a fresh account state. A ctx that expires while its frame is being written closes the
   whole socket (coder/websocket), so the live link reconnects and re-reads its zones. `ErrNotSent` comes from the
   relay's client (relay PR #10, `771a99e`; set only when no attempt of a `Send` was written). `relaytest` serves every WebSocket request as over HTTPS
   (`Requests` lists both; `Ops` marks the socket's `ws:<op>`), and `DropAfterNext(op)` cuts a socket after running
@@ -680,7 +683,10 @@ and a burst of 8–10 actions/s ran into `rate_limited`. Now:
   actions next in line first, as Pass does), then writes the queues; an event for any other zone, the shared
   `RelayZone` or a transport that is not an `EventPuller` runs `Pass`. The runtime's 30 s backstop still runs `Pass`
   over every mailbox, and an event pass does not move its timer. So a phone whose mailbox read failed is read again at
-  its own next event or the next backstop pass, not at another phone's event as before.
+  its own next event or the next backstop pass, not at another phone's event as before. An event pass the batch
+  limit stopped goes on with its own mailbox only (`runPass` runs the same event again, which reads on from the
+  stored token, up to 10 times) and kicks the worker's `Pass` for the other mailboxes and queues at once, so the
+  event lane never reads every mailbox and a slow unrelated phone does not delay later mailbox events.
 - **Mailbox events on their own lane (live link R4).** The runtime's `eventLane` goroutine reads the transports'
   events: a mailbox zone's write (no error, control, resync or CloudKit bridge flag) runs its `PassEvent` there at
   once, and any other plain zone write (the hub's own data-zone echoes, one per slice save) ends there; the lane
@@ -696,8 +702,8 @@ and a burst of 8–10 actions/s ran into `rate_limited`. Now:
   so the processor's locks are split: a mailbox zone's read → apply → token move holds that zone's own lock
   (`boxLock`), so the lane and the backstop never read one mailbox together and its token only moves forward, while
   another mailbox's read goes on; `Processor.mu` is held only while a page's records (and the held actions) are
-  applied, never across a mailbox read but the read back of held recording uploads after a restart
-  (`recoverHeld`); each control queue's writes hold that queue's own flush lock (`flushLock`), so one mailbox's
+  applied, never across a mailbox write, nor across a read but the read back of held recording uploads after a
+  restart (`recoverHeld`); each control queue's writes hold that queue's own flush lock (`flushLock`), so one mailbox's
   write never waits for another's, and an event pass writes its own mailbox's queue only (the passes write the
   rest). `LateEcho` decides under `mu` and writes with `mu` released but `run` held shared, so `PauseFor` returns
   only after a late echo already past its pause check has written; that write is bounded by
@@ -706,8 +712,9 @@ and a burst of 8–10 actions/s ran into `rate_limited`. Now:
   `Hygiene` and `PauseFor`'s wait), a mailbox's lock, `mu`, a queue's flush lock. A pass nudges the slice kinds it
   applied (`PublishNow`) before it writes the queued echoes, so the slices' save starts ahead of the applied echo's.
   v1 limits: the daily `Hygiene` holds every pass, the lane's included, while it runs (on CloudKit, its RelayZone
-  sweep); CloudKit's shared `RelayZone` is read under one lock for every phone; a claim's `received` echo is written
-  under `mu`, so other mailboxes' applies wait for that one write (never for another mailbox's).
+  sweep); CloudKit's shared `RelayZone` is read under one lock for every phone. A claim's `received` echo is
+  written with `mu` released (the action is begun in the ledger and its mailbox's lock is held, so nothing else
+  decides it; the handler still runs after the write), so another mailbox's apply never waits for that write.
 - **No read when the event says it all** (`relay.Transport.PullEvent`; zone seqs grow by one per write, so the seqs
   between the stored token and the event's `seq` are exactly the writes not read yet). Already read (`seq` ≤ token):
   nothing. Every seq after the token is one the hub's own `Save` got (`OwnWrites`; kept per zone in memory, at most

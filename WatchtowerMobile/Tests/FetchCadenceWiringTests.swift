@@ -282,6 +282,34 @@ final class FetchCadenceWiringTests: XCTestCase {
         XCTAssertEqual(wired.remote.fullCount, 3, "the launch, the pull and the link fetch")
     }
 
+    /// A return's full fetch cancelled by a short leave (Control Center, a system alert) is still owed: the next
+    /// return fetches in full even when a lighter fetch (a push's) made the last sync recent meanwhile.
+    func testAReturnsFetchCancelledByLeavingIsStillOwed() async throws {
+        let wired = try await makeWired()
+        wired.env.setActive(false)
+        wired.clock.advance(SessionCadence.foregroundRefetchAfter(role: .active) + 1)
+        wired.remote.holding = true
+        wired.env.setActive(true)
+        try await poll({ wired.remote.heldCount == 1 }, "the return did not fetch")
+
+        wired.env.setActive(false)
+        wired.remote.release()
+        // A push's light fetch behind the cancelled one makes the last sync recent.
+        let outcome = await wired.env.handlePush(inForeground: false)
+        XCTAssertEqual(outcome, .noData)
+        XCTAssertEqual(wired.remote.pushCount, 1)
+        let fullBefore = wired.remote.fullCount
+
+        wired.clock.advance(1)
+        wired.env.setActive(true)
+        var fetched = false
+        for _ in 0..<20_000 where !fetched {
+            fetched = wired.remote.fullCount == fullBefore + 1
+            await Task.yield()
+        }
+        XCTAssertTrue(fetched, "the return after a cancelled full fetch read nothing")
+    }
+
     func testAQuickReturnAppliesWhatTheEngineBufferedWithoutFetching() async throws {
         let wired = try await makeWired()
         var applied = 0

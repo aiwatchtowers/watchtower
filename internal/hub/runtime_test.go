@@ -878,8 +878,10 @@ type laneHub struct {
 	e       endToEnd
 	lf      *laneFake
 	relayID string
-	applied chan struct{}
-	release chan struct{}
+	// slowZone is the second phone's mailbox.
+	slowZone string
+	applied  chan struct{}
+	release  chan struct{}
 }
 
 func newLaneHub(t *testing.T) laneHub {
@@ -909,7 +911,8 @@ func newLaneHub(t *testing.T) laneHub {
 	h.relayID = status.RelayDeviceID
 	slow := linkPhoneDirectly(t, h.e.dir) // a second phone, whose mailbox the backstop reads slowly
 	var entered chan struct{}
-	entered, h.release = h.lf.hold(transport.MailboxZone(h.relayID, slow.RelayDeviceID()))
+	h.slowZone = transport.MailboxZone(h.relayID, slow.RelayDeviceID())
+	entered, h.release = h.lf.hold(h.slowZone)
 	<-entered // a backstop pass (the pass ticker's) is reading it
 	return h
 }
@@ -927,6 +930,50 @@ func laneWhileBackstopWaits(t *testing.T, echoes int) {
 	}
 	<-h.applied // the phone's mailbox event, applied while the pass still waits
 	close(h.release)
+}
+
+// TestRuntime_EventPassPastTheBatchLimitStaysOnItsMailbox: a mailbox event
+// whose pass stops at the batch limit goes on with that mailbox only, on the
+// lane, and kicks the worker's pass over the others at once: a slow read of
+// another phone's mailbox then waits on the worker, and the phone's next
+// action is applied from its event with no wait.
+func TestRuntime_EventPassPastTheBatchLimitStaysOnItsMailbox(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		h := newLaneHub(t)
+		close(h.release)
+		synctest.Wait() // the hub is idle
+		// The lane's read of the phone's first action waits while the phone
+		// writes past one pass's batch limit.
+		entered, release := h.lf.hold(h.e.phone.Zone())
+		act := func() {
+			t.Helper()
+			if _, err := h.e.phone.Act("lane_probe"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		act()
+		<-entered
+		for range actions.BatchLimit {
+			act()
+		}
+		slowRead, slowRelease := h.lf.hold(h.slowZone) // whoever reads the other mailbox next waits
+		defer close(slowRelease)
+		start := time.Now()
+		close(release)
+		for range actions.BatchLimit + 1 {
+			<-h.applied
+		}
+		<-slowRead
+		if d := time.Since(start); d != 0 {
+			t.Fatalf("the pass over the other mailboxes came %s later, want a kick at once", d)
+		}
+		synctest.Wait()
+		act()
+		<-h.applied
+		if d := time.Since(start); d != 0 {
+			t.Fatalf("the phone's next action waited %s behind another mailbox's read", d)
+		}
+	})
 }
 
 // TestRuntime_ReachabilityFollowsEventOrder: a transport error handed to

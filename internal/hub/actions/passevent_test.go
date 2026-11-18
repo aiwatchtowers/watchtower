@@ -675,3 +675,77 @@ func TestProcessor_LateEchoWriteIsBounded(t *testing.T) {
 	w.settle()
 	w.wantEcho(seq, wire.StatusApplied, "")
 }
+
+// TestProcessor_ReceivedEchoWriteNotUnderTheApplyLock: while the received
+// echo of one phone's claimed action is being written (a slow save), an
+// event for another phone's mailbox is read, applied and echoed: the write
+// holds no lock another mailbox's apply needs. A pass that waits on the
+// apply lock fails at once (muWait), the held write released.
+func TestProcessor_ReceivedEchoWriteNotUnderTheApplyLock(t *testing.T) {
+	w := newWorld(t, transport.KindRelay)
+	lp := newLanePuller(w.fake)
+	w.use(lp)
+	other := w.addPhone()
+	var order []string // the first phone's: its received echo's save, then its handler
+	w.disp.Register("board_target_create", func(context.Context, Request) Outcome {
+		order = append(order, "handler")
+		return Outcome{Status: wire.StatusApplied}
+	}, KindOptions{NonIdempotent: true, ReceivedEcho: true})
+	slow := w.phone.Zone()
+	writing, release := make(chan struct{}), make(chan struct{})
+	var once, freed sync.Once
+	free := func() { freed.Do(func() { close(release) }) }
+	defer free()
+	lp.saving = func(zone string) {
+		if zone == slow {
+			once.Do(func() {
+				order = append(order, "received echo")
+				close(writing)
+				<-release
+			})
+		}
+	}
+	w.act("board_target_create")
+	claimed := make(chan error, 1)
+	go func() {
+		_, err := w.proc.PassEvent(w.ctx, transport.Event{Zone: slow})
+		claimed <- err
+	}()
+	<-writing
+	waited := make(chan struct{}, 8)
+	w.proc.muWait = func() { waited <- struct{}{} }
+	seq, err := other.Act("board_comment_add")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		r   PassReport
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		r, err := w.proc.PassEvent(w.ctx, transport.Event{Zone: other.Zone()})
+		done <- result{r, err}
+	}()
+	select {
+	case res := <-done:
+		if res.err != nil || res.r.Applied != 1 || res.r.ControlsWritten != 1 {
+			t.Fatalf("the other phone's event pass %+v, %v", res.r, res.err)
+		}
+	case <-waited:
+		free()
+		<-done
+		<-claimed
+		t.Fatal("the other phone's event pass waited for the apply lock while a received echo was being written")
+	}
+	w.wantCalls("board_comment_add:" + strconv.FormatUint(seq, 10))
+	w.proc.muWait = nil
+	free()
+	if err := <-claimed; err != nil {
+		t.Fatal(err)
+	}
+	// Claim before dispatch still holds: the echo's save came first.
+	if !slices.Equal(order, []string{"received echo", "handler"}) {
+		t.Fatalf("order %v, want the received echo's save before the handler", order)
+	}
+}

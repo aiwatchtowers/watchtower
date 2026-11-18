@@ -418,7 +418,10 @@ func unencodable(device secure.ID) Outcome {
 
 // claim commits the ledger key as begun with the rollback mark (and the
 // received echo, written at once so the phone sees it before the handler
-// runs). claimed is false when the ledger already holds the record.
+// runs). claimed is false when the ledger already holds the record. p.mu is
+// held, and released for the echo's write: the action is begun in the
+// ledger and b's mailbox lock is held by the pass, so nothing else decides
+// it meanwhile, and another mailbox's apply does not wait for this write.
 func (p *Processor) claim(ctx context.Context, b mailbox, r record, o secure.Opened, a wire.ActionRequest, key, plain string, received bool, now time.Time, ps *pass) (claimed bool, err error) {
 	var recv *queued
 	if received {
@@ -448,7 +451,10 @@ func (p *Processor) claim(ctx context.Context, b mailbox, r record, o secure.Ope
 	}
 	if recv != nil {
 		ps.report.Echoed++
-		if err := p.flushBox(ctx, b); err != nil {
+		p.mu.Unlock()
+		err := p.flushBox(ctx, b)
+		p.lockMu()
+		if err != nil {
 			return true, err
 		}
 	}

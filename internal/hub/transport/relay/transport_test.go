@@ -990,6 +990,32 @@ func TestTransport_UnansweredSocketRequestTimesOut(t *testing.T) {
 	})
 }
 
+// TestTransport_UnansweredSocketReadLeavesHTTPSATurn: a read whose caller
+// has a deadline (the pump's account read, accountTimeout) spends at most
+// half of what is left on the socket, so a socket that never answers
+// get_account_state still leaves HTTPS its turn inside the caller's budget.
+func TestTransport_UnansweredSocketReadLeavesHTTPSATurn(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv := relaytest.StartInMemory(t)
+		h := newHarnessOn(t, srv, client.WithHTTPClient(srv.HTTPClient()))
+		h.connectVouched(t)
+		ctx, cancel := context.WithTimeout(t.Context(), accountTimeout)
+		defer cancel()
+		mark, start := len(srv.Ops()), time.Now()
+		srv.MuteNext("get_account_state")
+		st, err := h.tr.AccountState(ctx)
+		if err != nil || st == nil {
+			t.Fatalf("account state: %v, %v, want the HTTPS answer", st, err)
+		}
+		if waited := time.Since(start); waited != accountTimeout/2 {
+			t.Fatalf("waited %s on the socket, want %s", waited, accountTimeout/2)
+		}
+		if got := opsSince(srv, mark); got["ws:get_account_state"] != 1 || got["get_account_state"] != 1 {
+			t.Fatalf("ops %v, want the muted socket read and one HTTPS read", got)
+		}
+	})
+}
+
 // TestTransport_CancelAfterWriteIsNotResent: the caller's ctx ending while a
 // written request waits for its answer returns ctx's error, nothing resent.
 func TestTransport_CancelAfterWriteIsNotResent(t *testing.T) {
