@@ -671,7 +671,7 @@
           "https://mcp example.com/",
           "https://mcp.example.com:abc/",
           "https://mcp%zz.example.com/",
-          "https://mcp.example.com/\u00fc",
+          "https://mcp.example.com/ü",
           "https://mcp.example.com:/x",
           "https://mcp.example.com/a!b",
           "https://mcp.example.com/a\u0001b"
@@ -685,7 +685,7 @@
           "MobileSync": null,
           "AllowedQuickConnections": [
             "https://mcp.example.com/a b",
-            "https://mcp.example.com/\u00fc",
+            "https://mcp.example.com/ü",
             "https://mcp.example.com:/x",
             "https://mcp.example.com/a!b"
           ],
@@ -805,6 +805,48 @@
         },
         "reserved_not_enforced": [],
         "errors": [
+          {
+            "key": "AllowBackgroundAI",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    },
+    {
+      "name": "several_invalid_keys_keep_key_order",
+      "raw": {
+        "AllowBackgroundAI": "1",
+        "AllowedAIProviders": "claude",
+        "AllowAutomationShell": 1,
+        "AllowClaudeAITools": "x"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": false,
+          "AllowedAIProviders": [],
+          "AllowClaudeAITools": false,
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": false
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowAutomationShell",
+            "problem": "wrong_type"
+          },
+          {
+            "key": "AllowedAIProviders",
+            "problem": "wrong_type"
+          },
+          {
+            "key": "AllowClaudeAITools",
+            "problem": "wrong_type"
+          },
           {
             "key": "AllowBackgroundAI",
             "problem": "wrong_type"
@@ -1163,7 +1205,7 @@
     {
       "name": "non_ascii_matches_escaped",
       "allowed": [
-        "https://mcp.example.com/\u00fc"
+        "https://mcp.example.com/ü"
       ],
       "kind": "http",
       "url": "https://mcp.example.com/%C3%BC",
@@ -1233,21 +1275,21 @@
     {
       "name": "path_bytes_not_canonical_equivalence",
       "allowed": [
-        "https://mcp.example.com/caf\u00e9"
+        "https://mcp.example.com/café"
       ],
       "kind": "http",
-      "url": "https://mcp.example.com/cafe\u0301",
+      "url": "https://mcp.example.com/café",
       "command": "",
       "want": false
     },
     {
       "name": "command_bytes_not_canonical_equivalence",
       "allowed": [
-        "/opt/caf\u00e9"
+        "/opt/café"
       ],
       "kind": "stdio",
       "url": "",
-      "command": "/opt/cafe\u0301",
+      "command": "/opt/café",
       "want": false
     },
     {
@@ -1296,7 +1338,7 @@
         "https://k.example.com"
       ],
       "kind": "http",
-      "url": "https://\u212a.example.com/",
+      "url": "https://K.example.com/",
       "command": "",
       "want": false
     },

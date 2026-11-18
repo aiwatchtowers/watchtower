@@ -81,10 +81,13 @@ package struct ManagedPolicy: Equatable, Sendable {
         if let v = raw[Key.allowedQuickConnections.rawValue] {
             p.allowedQuickConnections = p.list(.allowedQuickConnections, v) { isConnectionEntry($0) ? nil : "invalid_entry" }
         }
+        if let v = raw[Key.allowAutomationShell.rawValue] {
+            p.allowAutomationShell = p.boolean(.allowAutomationShell, v, restrictive: false)
+        }
         if let v = raw[Key.allowedAIProviders.rawValue] {
             p.allowedAIProviders = p.list(.allowedAIProviders, v) { byteIn($0, knownProviders) ? nil : "unknown_value" }
         }
-        p.normalizeBooleans(raw)
+        p.normalizeTrailingBooleans(raw)
         for key in Key.reserved {
             guard let v = raw[key.rawValue] else { continue }
             p.reservedNotEnforced.append(key.rawValue)
@@ -126,11 +129,8 @@ package struct ManagedPolicy: Equatable, Sendable {
         return out
     }
 
-    /// The boolean keys, each with its most restrictive value on a wrong type.
-    private mutating func normalizeBooleans(_ raw: [String: Any]) {
-        if let v = raw[Key.allowAutomationShell.rawValue] {
-            allowAutomationShell = boolean(.allowAutomationShell, v, restrictive: false)
-        }
+    /// The boolean keys after AllowedAIProviders, in Go's validation order.
+    private mutating func normalizeTrailingBooleans(_ raw: [String: Any]) {
         if let v = raw[Key.allowClaudeAITools.rawValue] {
             allowClaudeAITools = boolean(.allowClaudeAITools, v, restrictive: false)
         }

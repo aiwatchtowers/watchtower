@@ -68,6 +68,7 @@ func printPolicy(w io.Writer, p policy.Policy) error {
 		{policy.KeyAllowedAIProviders, plainList(k.AllowedAIProviders)},
 		{policy.KeyAllowClaudeAITools, plainAllowed(k.AllowClaudeAITools)},
 		{policy.KeyPurgeRevokedData, plainOnOff(k.PurgeRevokedData)},
+		{policy.KeyAllowBackgroundAI, plainAllowed(k.AllowBackgroundAI)},
 	}
 	for _, l := range lines {
 		fmt.Fprintf(&b, "%s: %s\n", l.key, l.value)
