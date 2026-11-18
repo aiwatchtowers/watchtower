@@ -102,7 +102,11 @@ struct ReviewAgentChatPanel: View {
             }
         }
         .onAppear(perform: onShown)
-        .task(id: ReviewedFolderKey(sessionID: chat.sessionID, roundID: model.round?.id)) {
+        .task(id: ReviewedFolderKey(model: model, sessionID: chat.sessionID)) {
+            // A read pending never shows another folder's last status: that
+            // folder may be on another branch now. Home's status is the
+            // page's own, so a home session never flickers to a spinner.
+            if case .other = reviewedFolder { reviewedFolder = nil }
             reviewedFolder = await chat.vm.reviewedFolder(sessionID: chat.sessionID, projectID: chat.projectID)
         }
     }
@@ -123,8 +127,18 @@ struct ReviewAgentChatPanel: View {
     }
 }
 
-/// When the reviewed folder's status is read again: per session and round.
-private struct ReviewedFolderKey: Hashable {
+/// When the reviewed folder's status is read again: per session, round,
+/// diff and tree read (a Refresh of the same round re-reads it, #2003).
+struct ReviewedFolderKey: Hashable {
     let sessionID: Int64
     let roundID: Int64?
+    let diffKey: String?
+    let treeReads: Int
+
+    @MainActor init(model: ReviewChangesModel, sessionID: Int64) {
+        self.sessionID = sessionID
+        roundID = model.round?.id
+        diffKey = model.round?.diffKey
+        treeReads = model.treeReads
+    }
 }

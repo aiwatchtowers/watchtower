@@ -1077,8 +1077,12 @@ struct WorkbenchCLI {
     /// of the workbench folder (board #565): Go places it — `folder_scope`,
     /// `folder_root`, `worktree_name` — and reports that worktree's status.
     /// nil (the main folder) sends no flag, so the main argv is unchanged.
-    func gitStatus(projectID: Int64, folder: String? = nil) async throws -> WorkbenchGitStatus {
+    /// `folderID`: a bench folder other than home (#2003) — every git verb
+    /// here sends it as `--workbench-folder`, so the repository is that
+    /// folder's; nil (home) sends nothing.
+    func gitStatus(projectID: Int64, folder: String? = nil, folderID: Int64? = nil) async throws -> WorkbenchGitStatus {
         var args = ["workbench", "git", "status", "--workbench", String(projectID)]
+        if let folderID { args += ["--workbench-folder", String(folderID)] }
         if let folder { args += ["--folder", folder] }
         args.append("--json")
         let data = try await runner.run(args: args)
@@ -1239,8 +1243,9 @@ struct WorkbenchCLI {
     /// The local branches, newest commit first. `folder`: a session's
     /// worktree, as for `gitStatus` — a folder in none of the repository's
     /// worktrees comes back refused (`folder_not_a_worktree`), exit 0.
-    func gitBranches(projectID: Int64, folder: String? = nil) async throws -> WorkbenchGitBranches {
+    func gitBranches(projectID: Int64, folder: String? = nil, folderID: Int64? = nil) async throws -> WorkbenchGitBranches {
         var args = ["workbench", "git", "branches", "--workbench", String(projectID)]
+        if let folderID { args += ["--workbench-folder", String(folderID)] }
         if let folder { args += ["--folder", folder] }
         args.append("--json")
         let data = try await runner.run(args: args)
@@ -1258,12 +1263,14 @@ struct WorkbenchCLI {
         stash: Bool,
         agentRunning: Bool,
         confirmAgent: Bool,
-        folder: String? = nil
+        folder: String? = nil,
+        folderID: Int64? = nil
     ) async throws -> WorkbenchGitSwitchResult {
         var args = ["workbench", "git", "switch", "--workbench", String(projectID), "--branch", branch]
         if stash { args.append("--stash") }
         if agentRunning { args.append("--agent-running") }
         if confirmAgent { args.append("--confirm-agent") }
+        if let folderID { args += ["--workbench-folder", String(folderID)] }
         if let folder { args += ["--folder", folder] }
         args.append("--json")
         let data = try await runner.run(args: args)
@@ -1279,12 +1286,14 @@ struct WorkbenchCLI {
         stash: Bool,
         agentRunning: Bool,
         confirmAgent: Bool,
-        folder: String? = nil
+        folder: String? = nil,
+        folderID: Int64? = nil
     ) async throws -> WorkbenchGitSwitchResult {
         var args = ["workbench", "git", "checkout", "--workbench", String(projectID), "--branch", branch]
         if stash { args.append("--stash") }
         if agentRunning { args.append("--agent-running") }
         if confirmAgent { args.append("--confirm-agent") }
+        if let folderID { args += ["--workbench-folder", String(folderID)] }
         if let folder { args += ["--folder", folder] }
         args.append("--json")
         let data = try await runner.run(args: args)
@@ -1296,8 +1305,9 @@ struct WorkbenchCLI {
     /// envelope. `folder`: in a session's worktree (board #565).
     /// `unattended`: the automatic fetch, which keeps ssh off the ssh agent
     /// and the Keychain (an agent that approves each use never asks).
-    func gitFetch(projectID: Int64, folder: String? = nil, unattended: Bool = false) async throws -> WorkbenchGitFetchResult {
+    func gitFetch(projectID: Int64, folder: String? = nil, folderID: Int64? = nil, unattended: Bool = false) async throws -> WorkbenchGitFetchResult {
         var args = ["workbench", "git", "fetch", "--workbench", String(projectID)]
+        if let folderID { args += ["--workbench-folder", String(folderID)] }
         if let folder { args += ["--folder", folder] }
         if unattended { args.append("--unattended") }
         args.append("--json")
@@ -1308,8 +1318,9 @@ struct WorkbenchCLI {
     /// Creates a branch from HEAD and switches to it (`git switch -c`): no
     /// files change, so no guard applies.
     /// `folder`: in a session's worktree (board #565).
-    func gitCreateBranch(projectID: Int64, name: String, folder: String? = nil) async throws -> WorkbenchGitSwitchResult {
+    func gitCreateBranch(projectID: Int64, name: String, folder: String? = nil, folderID: Int64? = nil) async throws -> WorkbenchGitSwitchResult {
         var args = ["workbench", "git", "create", "--workbench", String(projectID), "--name", name]
+        if let folderID { args += ["--workbench-folder", String(folderID)] }
         if let folder { args += ["--folder", folder] }
         args.append("--json")
         let data = try await runner.run(args: args)

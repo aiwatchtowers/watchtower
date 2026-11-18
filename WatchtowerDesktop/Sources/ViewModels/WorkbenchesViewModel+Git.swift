@@ -30,7 +30,8 @@ extension WorkbenchesViewModel {
     }
 
     /// Reads `workbench git status` of `root` — with `--folder` for a
-    /// worktree root (board #565), without for the main folder.
+    /// worktree root (board #565), without for the main folder; with
+    /// `--workbench-folder` for a bench folder other than home (#2003).
     func refreshGitStatus(root: CodeRoot) async {
         await refreshGitStatus(key: GitRootKey(root))
     }
@@ -54,7 +55,7 @@ extension WorkbenchesViewModel {
         repeat {
             gitRefreshQueued.remove(key)
             do {
-                let status = try await cli.gitStatus(projectID: key.workbenchID, folder: key.worktreeFolder)
+                let status = try await cli.gitStatus(projectID: key.workbenchID, folder: key.worktreeFolder, folderID: key.folderID)
                 applyGitStatus(status, key: key)
             } catch {
                 if error is CancellationError || Task.isCancelled {
@@ -151,7 +152,9 @@ extension WorkbenchesViewModel {
         defer { switchingBranch[key] = nil }
         let result: WorkbenchGitSwitchResult
         do {
-            result = try await cli.gitCreateBranch(projectID: project.id, name: trimmed, folder: key.worktreeFolder)
+            result = try await cli.gitCreateBranch(
+                projectID: project.id, name: trimmed, folder: key.worktreeFolder, folderID: key.folderID
+            )
         } catch {
             gitErrors[key] = "Could not create \(trimmed): "
                 + gitFailureText(error, command: "create", workbenchID: project.id)
@@ -202,17 +205,22 @@ extension WorkbenchesViewModel {
         // The read above arms the watcher; a status already known (a read
         // coalesced into one in flight) arms it now.
         if let status = gitStatus[id] { armGitWatcher(status, key: .mainFolder(id)) }
+        await loadBenchFolders(projectID: id)
         await followGitRoot(activeCodeRoot(project: project))
+        for root in otherFolderRoots(workbenchID: id) where gitStatus[root] == nil {
+            await refreshGitStatus(root: root)
+        }
     }
 
-    /// The page's branch menu moved to `root` (board #565): a worktree root
-    /// is read and watched beside the main folder — its status, its refs
-    /// watcher, the poll and app activation — until the page shows another
-    /// root or goes away. The main root is always watched by the page.
+    /// The page's branch menu moved to `root` (board #565): a worktree root,
+    /// or the root of a bench folder other than home (#2003), is read and
+    /// watched beside the main folder — its status, its refs watcher, the
+    /// poll and app activation — until the page shows another root or goes
+    /// away. The home folder's main root is always watched by the page.
     func followGitRoot(_ root: CodeRoot) async {
         let id = root.workbenchID
         guard !isStopped, gitWatching.contains(id) else { return }
-        let next: CodeRoot? = root.isMain ? nil : root
+        let next: CodeRoot? = GitRootKey(root) == .mainFolder(id) ? nil : root
         guard gitWatchedWorktree[id] != next else { return }
         if let old = gitWatchedWorktree.removeValue(forKey: id) { stopGitWatcher(key: GitRootKey(old)) }
         guard let next else { return }
@@ -280,7 +288,8 @@ extension WorkbenchesViewModel {
         // The switch swaps the whole work tree of that root, not just the
         // folder: a session at the repository root or in a sibling counts.
         let topLevel = gitStatus[key]?.topLevel ?? ""
-        let workTree = topLevel.isEmpty ? (key.worktreeFolder ?? project.folderPath) : topLevel
+        let ownFolder = key.folderID == nil ? project.folderPath : root.folder.path
+        let workTree = topLevel.isEmpty ? (key.worktreeFolder ?? ownFolder) : topLevel
         guard await saveBeforeSwitch(root: root, workTree: workTree) else { return }
         let agentRunning = terminalCenter?.hasLiveAgentSession(workbenchID: id, workTree: workTree) { [weak self] in
             self?.agentPlace(sessionID: $0) ?? .unknown
@@ -288,7 +297,7 @@ extension WorkbenchesViewModel {
         let result: WorkbenchGitSwitchResult
         do {
             let send = checkout ? cli.gitCheckout : cli.gitSwitch
-            result = try await send(id, branch, stash, agentRunning, confirmAgent && agentRunning, key.worktreeFolder)
+            result = try await send(id, branch, stash, agentRunning, confirmAgent && agentRunning, key.worktreeFolder, key.folderID)
         } catch {
             let command = checkout ? "checkout" : "switch"
             let action = checkout ? "check out" : "switch to"
@@ -350,7 +359,7 @@ extension WorkbenchesViewModel {
         }
         branchListStates[key] = .loading
         do {
-            let list = try await cli.gitBranches(projectID: id, folder: key.worktreeFolder)
+            let list = try await cli.gitBranches(projectID: id, folder: key.worktreeFolder, folderID: key.folderID)
             if list.branchesOK, list.refused.isEmpty {
                 gitBranches[key] = list
                 branchListStates[key] = .loaded
@@ -426,11 +435,12 @@ extension WorkbenchesViewModel {
         }
     }
 
-    /// Whether a page watches `key`: its main folder, or the worktree its
-    /// branch menu works on.
+    /// Whether a page watches `key`: its main folder, or the root its
+    /// branch menu works on. The other bench folders' roots are polled, not
+    /// watched (spec §6.8).
     private func isGitWatched(_ key: GitRootKey) -> Bool {
         guard !isStopped, gitWatching.contains(key.workbenchID) else { return false }
-        guard key.worktreeFolder != nil else { return true }
+        guard key != .mainFolder(key.workbenchID) else { return true }
         return gitWatchedWorktree[key.workbenchID].map(GitRootKey.init) == key
     }
 
@@ -444,7 +454,7 @@ extension WorkbenchesViewModel {
         gitWatchedDirs[key] = dirs
         guard !dirs.isEmpty else { return }
         let id = key.workbenchID
-        let isMain = key.worktreeFolder == nil
+        let isMain = key == .mainFolder(id)
         // The common dir holds every worktree's HEAD and the refs: a
         // worktree session's branch is read again too, unless only the
         // folder's own HEAD or index moved (board #565).
@@ -459,11 +469,16 @@ extension WorkbenchesViewModel {
         gitWatchedDirs[key] = nil
     }
 
-    /// The poll and app activation: the main folder and the worktree the
-    /// page's branch menu works on.
+    /// The poll and app activation: the main folder, the root the page's
+    /// branch menu works on, and every other bench folder's root (#2003,
+    /// spec §6.8: each FILES root polls its own status at this cadence).
     private func refreshWatchedRoots(workbenchID id: Int64) async {
         await refreshGitStatus(projectID: id)
-        if let worktree = gitWatchedWorktree[id] { await refreshGitStatus(root: worktree) }
+        let followed = gitWatchedWorktree[id]
+        if let followed { await refreshGitStatus(root: followed) }
+        for root in otherFolderRoots(workbenchID: id) where root != followed {
+            await refreshGitStatus(root: root)
+        }
     }
 
     /// The owner's line for a failed call; the raw error goes to the log.

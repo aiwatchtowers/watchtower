@@ -49,7 +49,9 @@ extension WorkbenchesViewModel {
         gitFetchTasks[repo] = Task { [weak self] in
             let outcome: Result<WorkbenchGitFetchResult, Error>
             do {
-                outcome = .success(try await cli.gitFetch(projectID: project.id, folder: key.worktreeFolder, unattended: unattended))
+                outcome = .success(try await cli.gitFetch(
+                    projectID: project.id, folder: key.worktreeFolder, folderID: key.folderID, unattended: unattended
+                ))
             } catch {
                 outcome = .failure(error)
             }
@@ -85,8 +87,7 @@ extension WorkbenchesViewModel {
         var roots = [root]
         for key in gitStatus.keys
         where key.workbenchID == project.id && key != GitRootKey(root) && gitFetchRepository(key) == repo {
-            roots.append(key.worktreeFolder.map { CodeRoot(workbenchID: project.id, worktree: URL(fileURLWithPath: $0)) }
-                ?? project.mainCodeRoot)
+            if let other = codeRoot(for: key, project: project) { roots.append(other) }
         }
         for other in roots {
             await refreshGitStatus(root: other)

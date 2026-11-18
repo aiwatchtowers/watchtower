@@ -34,9 +34,19 @@ package enum CodeRootPolicy {
         worktreeFolder: URL?,
         folderExists: (URL) -> Bool = Self.directoryExists
     ) -> CodeRoot {
-        let mainRoot = workbench.mainCodeRoot
+        root(main: workbench.mainCodeRoot, worktreeFolder: worktreeFolder, folderExists: folderExists)
+    }
+
+    /// `root(workbench:…)` for any bench folder's main root (#2003): the
+    /// worktree root carries that folder's id, so a worktree of `hub` keeps
+    /// its own keys and git calls.
+    package static func root(
+        main mainRoot: CodeRoot,
+        worktreeFolder: URL?,
+        folderExists: (URL) -> Bool = Self.directoryExists
+    ) -> CodeRoot {
         guard let worktreeFolder, folderExists(worktreeFolder) else { return mainRoot }
-        let worktreeRoot = CodeRoot(workbenchID: workbench.id, worktree: worktreeFolder)
+        let worktreeRoot = CodeRoot(workbenchID: mainRoot.workbenchID, worktree: worktreeFolder, folderID: mainRoot.folderID)
         let sameFolder = symlinkResolvedPath(worktreeRoot.folder) == symlinkResolvedPath(mainRoot.folder)
         return sameFolder ? mainRoot : worktreeRoot
     }

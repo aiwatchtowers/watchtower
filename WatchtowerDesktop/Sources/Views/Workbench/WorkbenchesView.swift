@@ -12,6 +12,8 @@ enum WorkbenchesPanelItem: Hashable {
 private enum PendingFolder {
     case project(URL)
     case terminal(TerminalSession.Kind, URL)
+    /// Put on the Bench… into workbench `Int64` (#2003).
+    case bench(Int64, URL)
 }
 
 /// Workbench tab: the collapsible, resizable two-level panel on the left
@@ -139,7 +141,7 @@ struct WorkbenchesView: View {
     }
 
     private var switcherActions: WorkbenchSwitcherActions {
-        WorkbenchSwitcherActions(openFolder: chooseFolder, showAll: vm.showAllWorkbenches)
+        WorkbenchSwitcherActions(openFolder: chooseFolder, showAll: vm.showAllWorkbenches, putOnBench: putOnBench)
     }
 
     private var sessionActions: SessionRowActions {
@@ -287,6 +289,20 @@ struct WorkbenchesView: View {
         }
     }
 
+    /// Put on the Bench… (#2003, spec §6.1): the folder panel, Open
+    /// Folder…'s TCC warning unchanged, then `workbench folder add`.
+    private func putOnBench(_ projectID: Int64) {
+        guard let url = runFolderPanel(
+            title: WorkbenchFolderPresentation.panelTitle, prompt: WorkbenchFolderPresentation.panelPrompt, canCreate: false
+        ) else { return }
+        Task {
+            if case let .confirmLocation(location) = await vm.putOnBench(url, projectID: projectID) {
+                pendingFolder = .bench(projectID, url)
+                sensitiveLocation = location
+            }
+        }
+    }
+
     /// New terminal → "… in Folder…": the same TCC warning as a project.
     private func chooseTerminalFolder(_ kind: TerminalSession.Kind) {
         guard let url = runFolderPanel(title: nil, prompt: "Open Terminal", canCreate: false) else { return }
@@ -324,6 +340,8 @@ struct WorkbenchesView: View {
             Task { await vm.createFromOpenedFolder(folder) }
         case let .terminal(kind, folder):
             Task { await vm.newStandalone(kind: kind, folder: folder) }
+        case let .bench(projectID, folder):
+            Task { await vm.addFolderToBench(folder, projectID: projectID) }
         }
     }
 

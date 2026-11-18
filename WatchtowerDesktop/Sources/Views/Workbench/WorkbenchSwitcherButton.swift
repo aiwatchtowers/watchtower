@@ -8,6 +8,9 @@ struct WorkbenchSwitcherActions {
     let openFolder: () -> Void
     /// "All Workbenches": level 1, the panel shown.
     let showAll: () -> Void
+    /// "Put on the Bench…" (#2003): the folder panel, its TCC warning, then
+    /// `workbench folder add` into this workbench.
+    var putOnBench: (Int64) -> Void = { _ in }
 }
 
 /// `▦ <workbench> ▾` (board #250, variant F): the workbench switcher's
@@ -40,6 +43,11 @@ struct WorkbenchSwitcher: View {
                     onShowAll: {
                         showsPopover = false
                         actions.showAll()
+                    },
+                    onPutOnBench: {
+                        showsPopover = false
+                        // The folder panel runs modally: after the popover is gone.
+                        DispatchQueue.main.async { actions.putOnBench(project.id) }
                     }
                 )
                 .popoverSurface()
