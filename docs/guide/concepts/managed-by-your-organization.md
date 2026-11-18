@@ -30,7 +30,7 @@ kind: feature
 since: 0.25.0
 -->
 
-Open **Settings → System → Privacy**. The **Organization policy** section lists every rule in plain words, and any problem with the profile. The command `watchtower policy show` prints the same list.
+Open **Settings → System → Privacy**. The **Organization policy** section lists every rule in plain words, and any problem with the profile; under them, **IT guide → What IT can set** opens the page listing every setting a profile can force. A blocked source's notice in Connections has the same link. The command `watchtower policy show` prints the same list.
 
 ## Related
 

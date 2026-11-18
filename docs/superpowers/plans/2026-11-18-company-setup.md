@@ -748,10 +748,10 @@ What moved where (spec §5): clients → the bundle (Task 28); `PURGE_DEFAULT` �
 
 **Depends on:** Task 8 (`docs/mdm/keys.json`)
 
-**Files:** in the website's own repository (not this one): a page rendering its table from this repo's `docs/mdm/keys.json` at build, with type, default, effect per key and a sample `.mobileconfig`. In this repo: set `policy.ITGuideURL` and `docs/mdm/site.json` to the published URL (one commit).
+**Files:** in the website's own repository (not this one): a page rendering its table from this repo's `docs/mdm/keys.json` at build, with type, default, effect per key and a sample `.mobileconfig`. In this repo: set `policy.ITGuideURL`, `docs/mdm/site.json` and the Desktop's `ManagedPolicyHelp.itGuideURL` (Task 20) to the published URL (one commit).
 
 - [ ] **Step 1:** build the page; publish; record the URL.
-- [ ] **Step 2:** set the constant and remove the `t.Skip` from `TestITGuideURL_NotPlaceholder`; `go test ./internal/policy ./cmd -run 'PolicyKeys|PolicyShow|ITGuideURL'` → PASS with the test running (not `SKIP`), `make test-swift FILTER=ManagedPolicyHelpTests` → PASS.
+- [ ] **Step 2:** set the three values and remove the `t.Skip` from `TestITGuideURL_NotPlaceholder`; `go test ./internal/policy ./cmd -run 'PolicyKeys|PolicyShow|ITGuideURL'` → PASS with the test running (not `SKIP`), `make test-swift FILTER=ManagedPolicyHelpTests` → PASS.
 - [ ] **Step 3: Commit** `feat(policy): IT guide URL (#1887)`.
 
 Owner actions outside code (not tasks): turn Sharing off on the shared Atlassian app 30 days after ship (D15); rotate nothing else.

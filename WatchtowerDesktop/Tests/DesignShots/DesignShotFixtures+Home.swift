@@ -207,6 +207,8 @@ extension HomeShotFixtures {
             "AllowAutomationShell": false,
             "AllowedAIProviders": ["claude"],
             "PurgeRevokedData": true,
+            "AllowAtlassianAPIToken": false,
+            "AllowOwnGoogleProject": true,
             "RetentionDays": 90
         ])
         return AnyView(Form {
