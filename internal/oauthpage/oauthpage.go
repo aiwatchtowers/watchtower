@@ -103,6 +103,21 @@ func Stale() string {
 	})
 }
 
+// SwitchToApp renders the page a Slack connect link answers with: the
+// link only asks Watchtower to start, and nothing reaches Slack until the
+// owner presses Connect in the app.
+func SwitchToApp() string {
+	return render(page{
+		Title:     "Confirm in Watchtower",
+		IconClass: "icon-ok",
+		Icon:      "→",
+		Heading:   "Switch to Watchtower to confirm",
+		Message: "Watchtower asks whether to connect this Slack workspace. " +
+			"Nothing is connected until you press Connect in the app.",
+		Hint: "You can close this tab.",
+	})
+}
+
 type page struct {
 	Title, IconClass, Icon, Heading, Message, Hint string
 	AppReturn, TryToClose                          bool

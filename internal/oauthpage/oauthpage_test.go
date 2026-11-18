@@ -162,3 +162,10 @@ func TestSetOpenURLForTest_Restores(t *testing.T) {
 	ReturnAfterLogin(true, nil, &bytes.Buffer{})
 	assert.True(t, called, "restore puts the previous opener back")
 }
+
+func TestSwitchToApp_AsksForTheAppAndLinksNowhere(t *testing.T) {
+	page := SwitchToApp()
+	assert.Contains(t, page, "Switch to Watchtower to confirm")
+	assert.NotContains(t, page, "href=")
+	assert.NotContains(t, page, "window.close")
+}
