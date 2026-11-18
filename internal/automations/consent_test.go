@@ -353,6 +353,21 @@ func TestExecutor_BackgroundSyncRunHeldInline(t *testing.T) {
 	}
 }
 
+// An admitted ctx that is not the run's own claim (a daemon phase's, a
+// slot's) does not pass the claim-time hold: the run is held while paused.
+func TestExecutor_AdmittedCallerSyncRunStillHeld(t *testing.T) {
+	daemonProcess(t)
+	f, prim, a := newOwnerPrimitiveFixture(t, newConsent(true))
+	id := f.enqueueReq(t, db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerSync})
+	run, err := f.e.ExecuteBuiltinInline(aiconsent.WithAdmitted(context.Background(), "phase:tracks"), id)
+	if err != nil {
+		t.Fatalf("ExecuteBuiltinInline: %v", err)
+	}
+	if run.Status != db.RunCancelled || run.Error != automations.BackgroundAIPausedMessage || len(prim.origin) != 0 {
+		t.Fatalf("run = %s %q, %d calls; want held", run.Status, run.Error, len(prim.origin))
+	}
+}
+
 // flipShell is a shell() backend that pauses background AI when called.
 type flipShell struct{ consent *consentSwitch }
 

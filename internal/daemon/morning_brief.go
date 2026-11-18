@@ -17,8 +17,13 @@ const morningBriefID = "morning-brief"
 
 // SetBuiltins wires the built-ins' slot runner. active[id] false (or absent)
 // keeps that built-in's producers on their legacy phases (the upgrade step
-// decides, Task 8).
+// decides, Task 8). The runner reads the daemon's consent reader
+// (SetConsent) and admits each slot's run itself; the slot phases pass
+// their ctx as is.
 func (d *Daemon) SetBuiltins(r *builtin.Runner, active map[string]bool) {
+	if r != nil {
+		r.SetConsent(d.consent)
+	}
 	d.builtins = r
 	d.builtinActive = active
 }
