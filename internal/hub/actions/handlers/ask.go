@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/sessionline"
 	"watchtower/internal/sessionstate"
 )
 
@@ -242,12 +243,7 @@ func (h *Handlers) deliverLine(ctx context.Context, line heldAnswer) string {
 	res, err := h.d.Sessions.Deliver(ctx, DeliverRequest{
 		SessionID: line.sessionID, Run: live.Run, Text: line.line, Settle: submitSettle,
 		Check: func(ctx context.Context) CheckAnswer {
-			s, r, fresh := h.readState(ctx, line.sessionID, live)
-			return CheckAnswer{
-				Fresh:         fresh,
-				CanSubmit:     fresh && sessionstate.HooksReported(r) && !sessionstate.NeedsApproval(s),
-				AnswersDialog: sessionstate.NeedsApproval(s),
-			}
+			return vouch(h.readState(ctx, line.sessionID, live))
 		},
 	})
 	if err != nil {
@@ -285,14 +281,14 @@ func (h *Handlers) copyLine(line heldAnswer) string {
 // readState reads the session's agent status for live's run; fresh is false
 // when the read failed (a permission prompt shown since may be missed).
 func (h *Handlers) readState(ctx context.Context, sessionID int64, live LiveRun) (sessionstate.State, sessionstate.Row, bool) {
-	row, err := sessionstate.Load(ctx, h.d.DB, sessionID)
-	if err != nil {
-		return "", row, false
-	}
-	if !live.StartedAt.IsZero() {
-		row.RunStartedAt = db.AgentStateStamp(live.StartedAt)
-	}
-	return sessionstate.Resolve(row, h.d.Clock()), row, true
+	s, row, err := sessionline.Load(ctx, h.d.DB, sessionID, live.StartedAt, h.d.Clock())
+	return s, row, err == nil
+}
+
+// vouch is a delivery check's answer over a readState (sessionline.Vouch).
+func vouch(s sessionstate.State, row sessionstate.Row, fresh bool) CheckAnswer {
+	fresh, canSubmit, answersDialog := sessionline.Vouch(row, s, fresh)
+	return CheckAnswer{Fresh: fresh, CanSubmit: canSubmit, AnswersDialog: answersDialog}
 }
 
 func (h *Handlers) hold(line heldAnswer) {
