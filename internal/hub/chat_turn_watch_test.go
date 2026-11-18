@@ -2,14 +2,20 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"watchtower/internal/chatengine"
 	"watchtower/internal/chatstore"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/ownerconfirm"
 	"watchtower/internal/policy"
 )
 
@@ -90,79 +96,96 @@ func TestChatPush_HubTurnEndPushes(t *testing.T) {
 	r.only("stopped", "The answer stopped")
 }
 
-func TestChatPush_DesktopTurnEndPushesOnce(t *testing.T) {
-	r := newChatPushRig(t)
-	r.lease("desktop", "t1")
-	r.check() // primes
-	r.assistant("t1", "complete")
-	r.check() // still leased
-	if len(r.sent) != 0 {
-		t.Fatalf("pushed while the lease is held: %+v", r.sent)
-	}
-	r.release()
-	r.check()
-	r.only("answer", "Answer ready")
-	r.check()
-	r.check()
-	if len(r.sent) != 1 {
-		t.Errorf("a repeat check pushed again: %d", len(r.sent))
-	}
-}
-
-// The lease goes one check before the final row lands: the push waits for it.
-func TestChatPush_DesktopRowLandsAfterTheLease(t *testing.T) {
-	r := newChatPushRig(t)
-	r.lease("desktop", "t1")
-	r.check()
-	r.release()
-	r.check() // no row yet
-	if len(r.sent) != 0 {
-		t.Fatalf("pushed without a row: %+v", r.sent)
-	}
-	r.assistant("t1", "complete")
-	r.check()
-	r.only("answer", "Answer ready")
-	r.check()
-	if len(r.sent) != 1 {
-		t.Errorf("pushed again: %d", len(r.sent))
-	}
-}
-
-func TestChatPush_DesktopRowNeverLandsIsDropped(t *testing.T) {
-	r := newChatPushRig(t)
-	r.lease("desktop", "t1")
-	r.check()
-	r.release()
-	for i := 0; i < chatUnresolvedChecks+2; i++ {
+// TestChatPush_LeasesAreNotWatched: a lease vanishing with its turn's row
+// final pushes nothing from the watch, whoever held it: every turn runs on
+// the engine and pushes from its OnTurnEnd (no Desktop lease watch).
+func TestChatPush_LeasesAreNotWatched(t *testing.T) {
+	for _, owner := range []string{"desktop", "hub"} {
+		r := newChatPushRig(t)
+		r.lease(owner, "t1")
+		r.check() // primes
+		r.assistant("t1", "complete")
+		r.release()
 		r.check()
-	}
-	r.assistant("t1", "complete")
-	r.check()
-	if len(r.sent) != 0 || len(r.w.unresolved) != 0 {
-		t.Errorf("sent %+v unresolved %v", r.sent, r.w.unresolved)
-	}
-}
-
-func TestChatPush_DesktopTurnWithoutRowDoesNotPush(t *testing.T) {
-	r := newChatPushRig(t)
-	r.lease("desktop", "t1")
-	r.check()
-	r.release() // the conversation's turn left no assistant row
-	r.check()
-	if len(r.sent) != 0 {
-		t.Errorf("pushed %+v", r.sent)
+		r.check()
+		if len(r.sent) != 0 {
+			t.Errorf("%s: a vanished lease pushed from the watch: %+v", owner, r.sent)
+		}
 	}
 }
 
-func TestChatPush_HubLeaseDisappearingIsNotWatched(t *testing.T) {
-	r := newChatPushRig(t)
-	r.lease("hub", "t1")
-	r.check()
-	r.assistant("t1", "complete")
-	r.release()
-	r.check()
-	if len(r.sent) != 0 {
-		t.Errorf("the hub's own turn pushed from the watch: %+v", r.sent)
+// TestChatPush_EveryEngineTurnEnd: a turn the Mac app starts over chat.sock
+// runs on the daemon's engine like the phone's, and its end is a
+// chat_answer push with the fixed body (no text of the chat).
+func TestChatPush_EveryEngineTurnEnd(t *testing.T) {
+	d, _ := fileDB(t)
+	path, err := mainFile(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := chatengine.New(chatengine.Config{Exe: "/usr/bin/false", DBPath: path, Dir: t.TempDir(), DB: d})
+	if err := eng.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = eng.Close(context.Background()) })
+	conv, err := eng.NewConversation(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.Manage(context.Background(), chatengine.ManageRequest{Conversation: conv, Op: chatengine.ManageRename, Title: "Release plan"}); err != nil {
+		t.Fatal(err)
+	}
+	pushed := make(chan secure.WorkAlertFields, 4)
+	h := &hubRuntime{}
+	h.chatPush.Store(newChatPushWatch(d.DB, sources.NewChatWatches(), func() bool { return true }, time.Now,
+		func(_ string, f secure.WorkAlertFields, _ time.Time) { pushed <- f }))
+	eng.OnTurnEnd(h.chatTurnEnded(func(work func()) bool { go work(); return true }))
+
+	dir, err := os.MkdirTemp("", "wtc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	l, err := chatengine.Listen(filepath.Join(dir, chatengine.SocketName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow := func(context.Context, ownerconfirm.PeerToken) error { return nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		_ = chatengine.NewServer(eng, chatengine.ServerOptions{VerifyApp: allow, VerifyCLI: allow}).Serve(ctx, l)
+	}()
+	t.Cleanup(func() { cancel(); <-served })
+
+	c, rd, err := chatengine.Dial(ctx, filepath.Join(dir, chatengine.SocketName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	ask := func(line string) map[string]any {
+		t.Helper()
+		if _, err := c.Write([]byte(line + "\n")); err != nil {
+			t.Fatal(err)
+		}
+		b, err := rd.ReadBytes('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err != nil || m["ok"] != true {
+			t.Fatalf("answer %s %v", b, err)
+		}
+		return m
+	}
+	ask(`{"id":"1","op":"hello","params":{"protocol":1,"client":"mac"}}`)
+	ask(fmt.Sprintf(`{"id":"2","op":"chat_turn","params":{"conversation_id":%d,"mode":"send","text":"secret question"}}`, conv))
+
+	f := <-pushed // the session (/usr/bin/false) dies: the turn ends
+	if f.Event != sources.EventChatAnswer || f.ConversationID != conv || f.Title != "Release plan" ||
+		(f.Body != "Answer ready" && f.Body != "The answer stopped") {
+		t.Fatalf("push %+v", f)
 	}
 }
 
@@ -257,10 +280,7 @@ func TestChatPush_DiscussChatNeverPushes(t *testing.T) {
 	r := newChatPushRig(t)
 	r.exec(`UPDATE chat_conversations SET context_type = 'meeting', context_id = '7' WHERE id = ?`, r.conv)
 	r.w.turnEnded(r.conv, "t0", chatstore.StatusComplete)
-	r.lease("desktop", "t1")
 	r.check() // primes
-	r.assistant("t1", "complete")
-	r.release()
 	r.exec(`INSERT INTO agent_actions (tool, args_json, conversation_id, turn_id, status, trust_at_create)
 		VALUES ('send_slack_message', '{}', ?, 't2', 'pending', 'ask')`, r.conv)
 	r.check()

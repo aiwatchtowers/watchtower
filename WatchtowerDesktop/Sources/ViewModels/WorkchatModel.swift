@@ -113,9 +113,22 @@ final class WorkchatModel {
         let paths = attachments.map(\.path)
         let text = ([typed].filter { !$0.isEmpty } + paths.map(Self.quoted)).joined(separator: "\n")
         draft = ""
-        let id = UUID()
-        sentAttachments[id] = attachments
+        let sent = attachments
         attachments = []
+        await deliver(text, typed: typed, paths: paths, attachments: sent)
+    }
+
+    /// Sends `text` as a line of its own — a question card's answers in the feed — leaving the draft and its files
+    /// alone. It goes like a typed line: held, retried and shown on its way the same way.
+    func sendLine(_ text: String) async {
+        let typed = text.replacingOccurrences(of: "\r\n", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !typed.isEmpty else { return }
+        await deliver(typed, typed: typed, paths: [], attachments: [])
+    }
+
+    private func deliver(_ text: String, typed: String, paths: [String], attachments sent: [ChatAttachment]) async {
+        let id = UUID()
+        sentAttachments[id] = sent
         outgoing.append(WorkchatOutgoing(
             id: id, text: text, sentAt: now(), state: .sending, typedText: typed, attachmentPaths: paths
         ))

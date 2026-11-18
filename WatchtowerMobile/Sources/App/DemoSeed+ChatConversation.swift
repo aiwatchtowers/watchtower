@@ -1,3 +1,4 @@
+import ChatWire
 import Foundation
 import WatchtowerChatText
 import WatchtowerKit
@@ -94,9 +95,12 @@ extension DemoSeed.Chat {
                 ],
                 actions: [
                     .init(id: 31, tool: "send_slack_message", title: "Send Slack message",
-                          argsDisplay: "#release · acme\nRelease 1.4 checklist: ✅ notes ✅ tag ⏳ store review", argsSHA256: "a1", status: "pending"),
-                    .init(id: 32, tool: "transition_jira_issue", title: "Move PROJ-12 to Done", argsDisplay: "Jira · acme", argsSHA256: "b2",
-                          status: "pending")
+                          argsDisplay: ##"{"target": {"account_id": 1, "label": "#release", "workspace": "acme"}, "##
+                              + ##""text": "Release 1.4 checklist: ✅ notes ✅ tag ⏳ store review"}"##,
+                          argsSHA256: "a1", status: "pending", external: true, turnID: "t-release", argsComplete: true),
+                    .init(id: 32, tool: "transition_jira_issue", title: "Move PROJ-12 to Done",
+                          argsDisplay: #"{"key": "PROJ-12", "status": "Done"}"#, argsSHA256: "b2", status: "pending",
+                          external: true, turnID: "t-release", argsComplete: true)
                 ]
             )
         }

@@ -3,8 +3,10 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -42,9 +44,31 @@ then prints it with "written": false and makes no AI call.`,
 	RunE: runChatTitle,
 }
 
+var chatShutdownFlagSocketTimeout time.Duration
+
+var chatShutdownCmd = &cobra.Command{
+	Use:   "shutdown",
+	Short: "End every chat turn and close the chat sessions (used by the desktop app)",
+	Long: `Ends the main chat: every running turn stops (its text so far kept) and every
+chat session process is closed. Asks the daemon's chat engine on chat.sock;
+when no daemon answers, sends each session socket cancel and close and reaps
+the sessions' process groups directly (close, then SIGTERM after 2 s, then
+SIGKILL after 3 s more); the replies are then marked by the next daemon
+start. The app runs it when it quits with the daemon already down and
+before it compacts the database.
+
+--socket-timeout bounds the chat.sock step (default 15 s); the app passes a
+short one, having already asked the engine itself, so the direct reap
+always runs within its own wait.`,
+	Args: cobra.NoArgs,
+	RunE: runChatShutdown,
+}
+
 func init() {
 	rootCmd.AddCommand(chatCmd)
 	chatCmd.AddCommand(chatTitleCmd)
+	chatCmd.AddCommand(chatShutdownCmd)
+	chatShutdownCmd.Flags().DurationVar(&chatShutdownFlagSocketTimeout, "socket-timeout", chatShutdownBudget, "how long to wait for the daemon's chat engine on chat.sock before reaping the sessions directly")
 	chatTitleCmd.Flags().StringVar(&chatTitleFlagDBPath, "db-path", "", "SQLite database path (overrides the workspace default)")
 }
 
@@ -101,4 +125,25 @@ func runChatTitle(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	return json.NewEncoder(cmd.OutOrStdout()).Encode(chatTitleResult{Title: res.Title, Written: res.Written})
+}
+
+func runChatShutdown(cmd *cobra.Command, _ []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+	if chatShutdownFlagSocketTimeout <= 0 {
+		return errors.New("--socket-timeout must be positive")
+	}
+	if err := shutdownChatWithin(cfg, chatShutdownFlagSocketTimeout); err != nil {
+		return fmt.Errorf("chat shutdown: %w", err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "Chat sessions closed.")
+	return nil
 }

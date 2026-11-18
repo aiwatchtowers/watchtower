@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/providerhealth"
+	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
 )
 
@@ -142,4 +144,40 @@ func TestRoutingStatusFreshCommandMatchesDesktopContract(t *testing.T) {
 			require.Equal(t, data, after)
 		})
 	}
+}
+
+// TestReadStatus_SameOutputAsCommand: the routing fields `ai routing-status`
+// prints are providerrouting.ReadStatus's (the same JSON) over one config
+// and health store (the chat's routing catalog carries the latter).
+func TestReadStatus_SameOutputAsCommand(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	oldRead := routingStatusApplication
+	defer func() { routingStatusApplication = oldRead }()
+	routingStatusApplication = func(*config.Config) (*routingApplication, error) { return nil, nil }
+	command, _, err := aiCmd.Find([]string{"routing-status"})
+	require.NoError(t, err)
+	output := &bytes.Buffer{}
+	command.SetContext(context.Background())
+	command.SetOut(output)
+	defer command.SetOut(nil)
+	require.NoError(t, command.RunE(command, nil))
+
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+	health, err := providerhealth.Installation()
+	require.NoError(t, err)
+	status, err := providerrouting.ReadStatus(context.Background(), cfg, &providerrouting.Router{Health: health}, false)
+	require.NoError(t, err)
+	want, err := json.Marshal(status)
+	require.NoError(t, err)
+	var printed map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(output.Bytes(), &printed))
+	for _, key := range []string{"application", "application_error", "saved_version"} {
+		delete(printed, key)
+	}
+	got, err := json.Marshal(printed)
+	require.NoError(t, err)
+	require.JSONEq(t, string(want), string(got))
+	require.NotEmpty(t, status.Revision)
 }

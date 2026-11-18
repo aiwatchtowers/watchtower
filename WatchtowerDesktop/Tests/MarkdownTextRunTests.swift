@@ -4,6 +4,7 @@ import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerChatText
+@testable import ChatUI
 
 /// A finished answer's prose drawn by one native text view per run (spec
 /// 2026-10-24 §5b): the look of `MarkdownBlockView`, the same link gate,

@@ -3,6 +3,7 @@ import WatchtowerCore
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerChatText
+@testable import ChatUI
 
 /// The Swift halves of the popover's page messages and placement: the
 /// `selection` message decoded as the Coordinator does, the ✦ kept inside

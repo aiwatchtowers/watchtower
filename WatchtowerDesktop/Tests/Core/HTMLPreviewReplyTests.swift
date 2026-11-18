@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 /// The in-app preview handler's replies (#563).
 final class HTMLPreviewReplyTests: XCTestCase {

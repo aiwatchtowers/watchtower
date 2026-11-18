@@ -158,11 +158,46 @@ extension AppState {
         start: @escaping @MainActor () async -> Void
     ) async -> Bool {
         await enqueueDaemonStart { () -> Bool in
+            // Spec §7: the chat ends first; the stop is `--internal`.
+            await self.shutdownChat()
             await stop()
             let done = await disconnect()
             if !self.daemonStartBlocked("Slack disconnect") { await start() }
             return done
         }.value
+    }
+
+    /// Ends every chat turn and session (spec §7): the engine's
+    /// `chat_shutdown`, else `watchtower chat shutdown`. Quit, the data wipe
+    /// and Slack disconnect run it before their daemon stop.
+    ///
+    /// `forGood` (quit, wipe): the chat client is held first — no new turn,
+    /// no daemon start from a lost connection — and every daemon start is
+    /// refused (`daemonStartBlocked`) until `releaseStopForGood`, so nothing
+    /// brings a daemon back behind the `--internal` stop, which leaves no
+    /// marker.
+    func shutdownChat(forGood: Bool = false) async {
+        if forGood { await beginStopForGood() }
+        let client = chatClient
+        await QuitCoordinator.shutdownChat(
+            engine: { await client?.shutdown() ?? false },
+            cli: chatShutdownCLI
+        )
+    }
+
+    /// The start of a stop that ends the app (quit, wipe): the chat client
+    /// refuses new turns and starts nothing, and every daemon start is
+    /// refused.
+    func beginStopForGood() async {
+        stoppingForGood = true
+        await chatClient?.holdForStop(true)
+    }
+
+    /// A wipe whose daemon did not stop: the app goes on, so its chat and
+    /// daemon starts come back.
+    func releaseStopForGood() async {
+        stoppingForGood = false
+        await chatClient?.holdForStop(false)
     }
 
     static func daemonRestartFailureText(_ error: any Error) -> String {
@@ -175,12 +210,18 @@ extension AppState {
     func stopDaemonAndRemoveEverything(_ remove: @escaping @MainActor () -> Void) async -> Bool {
         let daemon = daemonControl
         return await enqueueDaemonStart { () -> Bool in
+            // Spec §7: every chat turn and session ends first — also with no
+            // daemon running (the CLI reaps sessions a crash left alive), so
+            // nothing writes into what is about to be removed — and no start
+            // follows (the app quits after the wipe).
+            await self.shutdownChat(forGood: true)
             if daemon.daemonIsRunning() {
                 await daemon.stopDaemonNow()
             }
             do {
                 try await daemon.waitUntilStopped()
             } catch {
+                await self.releaseStopForGood()
                 return false
             }
             remove()

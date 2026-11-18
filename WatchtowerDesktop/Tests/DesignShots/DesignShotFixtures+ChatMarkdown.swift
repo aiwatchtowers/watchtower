@@ -1,6 +1,8 @@
+import ChatWire
 import SwiftUI
 @testable import WatchtowerDesktop
 import WatchtowerCore
+@testable import ChatUI
 
 /// A long markdown answer in the chat (spec 2026-10-24 §5b): a finished
 /// row draws its prose with native text runs, a streaming one with SwiftUI
@@ -78,14 +80,15 @@ enum ChatMarkdownShotFixtures {
         let message = ChatMessageRecord(id: 2, conversationID: 1, role: "assistant", text: text, createdAt: 0,
                                         turnID: "t1")
         let item = ChatThreadItem(message: message, steps: [], siblingIndex: 1, siblingCount: 1)
-        return AnyView(ChatMessageRow(item: item, isLast: true, isEditing: false, actions: ChatRowActions())
+        return AnyView(ChatUIShotRow.row(item)
             .environment(\.markdownNavScreens, ["inbox"])
             .frame(width: width, alignment: .topLeading)
             .padding(12))
     }
 
     static func streaming(width: CGFloat, text: String = answer) -> AnyView {
-        AnyView(AssistantMessageBody(text: text, steps: [], isRunning: true)
+        AnyView(ChatUIShotRow.message(ChatFeed.Message(id: 2, role: "assistant", text: text,
+                                                       status: EmbeddedChatFeedAdapter.pendingStatus, createdAt: .distantPast))
             .environment(\.markdownNavScreens, ["inbox"])
             .frame(width: width, alignment: .topLeading)
             .padding(12))

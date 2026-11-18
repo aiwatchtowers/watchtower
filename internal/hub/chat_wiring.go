@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"log"
 	"path/filepath"
 	"slices"
 	"time"
@@ -18,10 +17,11 @@ import (
 	"watchtower/internal/policy"
 )
 
-// The AI chat from the phone, the hub's side (iPhone chat spec §4.5–§4.8):
-// the runner (chatrun) behind the chat_* handlers, the chat sources fed by
-// the handlers' requests, the relay-only capability and the timer that
-// republishes what only time changes.
+// The AI chat from the phone, the hub's side (iPhone chat spec §4.5–§4.8,
+// unified chat §6.4): an adapter over the daemon's chat engine — the chat_*
+// handlers call it, the chat sources read it and its OnChange publishes
+// them —, the requests the phone made, the relay-only capability and the
+// timer that republishes what only time changes.
 
 // chatKinds are the chat slice kinds.
 var chatKinds = []hubslices.Kind{hubslices.KindChatList, hubslices.KindChatFeed, hubslices.KindChatPage, hubslices.KindChatSearch}
@@ -31,9 +31,6 @@ var chatKinds = []hubslices.Kind{hubslices.KindChatList, hubslices.KindChatFeed,
 // capability changing in the sidecar): every slice it changes is
 // republished within this.
 const chatTickEvery = 5 * time.Second
-
-// chatTitleBudget bounds one AI title (the light-tier call).
-const chatTitleBudget = 2 * time.Minute
 
 // chatRequests is the handlers' ChatRequests over the sources' register:
 // each request counts from when the phone asked (sources' lengths).
@@ -73,9 +70,10 @@ func (h *hubRuntime) onRelay() bool {
 	return h.tr != nil && h.tr.Kind() == transport.KindRelay
 }
 
-// chatAvailable is the chat capability (spec §4.8): on only on the relay,
-// with the chat runner, and with no running Desktop app that ignores the
-// chat lease (D18); the organization's workbench_only policy has no chat.
+// chatAvailable is the chat capability (spec §4.8): on only on the relay
+// and with the daemon's chat engine; the organization's workbench_only
+// policy has no chat. A running Desktop app no longer matters: every turn,
+// whoever starts it, runs on the one engine (unified chat §6.4).
 func (h *hubRuntime) chatAvailable() (bool, string) {
 	switch {
 	case h.mode == policy.MobileWorkbenchOnly:
@@ -84,14 +82,6 @@ func (h *hubRuntime) chatAvailable() (bool, string) {
 		return false, wire.ChatOffRunnerDown
 	case !h.onRelay():
 		return false, wire.ChatOffNotRelay
-	}
-	old, err := h.st.OldDesktopRuns(h.sup.o.Clock())
-	if err != nil {
-		log.Printf("hub: the Desktop heartbeat is unreadable (%s): chat off", errClass(err))
-		return false, wire.ChatOffDesktopTooOld
-	}
-	if old {
-		return false, wire.ChatOffDesktopTooOld
 	}
 	return true, ""
 }
@@ -107,11 +97,10 @@ func (h *hubRuntime) chatDeps(o Options, w *wiring, path string) *handlers.ChatD
 		Requests:  chatRequests{w.set.ChatWatches},
 		Tools:     o.ChatTools,
 		FilesDir:  chatFilesDir(path),
-		Store:     w.chatStore,
 		Spawn:     w.spawn,
 	}
 	if w.chat != nil {
-		c.Runner = w.chat
+		c.Engine = w.chat
 	}
 	return c
 }
@@ -120,8 +109,8 @@ func (h *hubRuntime) chatDeps(o Options, w *wiring, path string) *handlers.ChatD
 // moved (no watchtower.db row changes for it, so the data_version watch
 // never sees it): a feed watch, page or search ending; a lease going stale
 // (an "answering" chat turning back to read); a phone's chat grant toggled
-// in the sidecar. And the heartbeat when the chat capability changed (a
-// Desktop heartbeat aging past 2 minutes, the transport switching).
+// in the sidecar. And the heartbeat when the chat capability changed (the
+// transport switching).
 type chatTimer struct {
 	watches   *sources.ChatWatches
 	fresh     func(nowMS int64) ([]int64, error)

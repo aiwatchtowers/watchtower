@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
+@testable import ChatUI
 
 /// "Ask about this" (#536): the feed's selection is read from the window's
 /// field editor while the rows keep rendering as SwiftUI `Text`, and only a
