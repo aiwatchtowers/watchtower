@@ -141,3 +141,55 @@ func TestSlackRemove_NoTokenFileIsSilent(t *testing.T) {
 	assert.Equal(t, "removed", accountStatus(t, cfg, id))
 	assert.NotContains(t, out.String(), "did not confirm")
 }
+
+// #1769 final review: a remove cancels a lease row scheduled while the
+// workspace was live, so the purge gives the full 72 h notice from the pass
+// that sees the remove instead of running at the old due date.
+func TestSlackRemove_CancelsScheduledPurge(t *testing.T) {
+	cfg, store, id := setupSlackRemove(t)
+	fake := &revokeFake{}
+	fake.serve(t, store.Path(), http.StatusOK, `{"ok":true,"revoked":true}`)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	_, err = database.ScheduleAccountPurge("slack", id, "lease", "2026-10-24T12:00:00Z")
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	require.NoError(t, runSlackRemove(cmd, []string{"1"}))
+
+	database, err = db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	defer database.Close()
+	open, err := database.ListAccountPurges(true)
+	require.NoError(t, err)
+	assert.Empty(t, open, "the live lease row is cancelled by the remove")
+}
+
+// #1769 final review: the output says when the kept data goes, and a failed
+// revoke is also logged (to stderr, with the cause).
+func TestSlackRemove_SaysWhenDataGoesAndLogsRevokeFailure(t *testing.T) {
+	_, store, _ := setupSlackRemove(t)
+	fake := &revokeFake{}
+	fake.serve(t, store.Path(), http.StatusOK, `{"ok":true,"revoked":false}`)
+
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	cmd := &cobra.Command{}
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	require.NoError(t, runSlackRemove(cmd, []string{"1"}))
+
+	assert.Contains(t, out.String(), "Removed account 1. Its synced data was kept. "+
+		"With account data deletion on, it is deleted 72 hours after Watchtower's next pass.")
+	assert.Contains(t, errOut.String(), "revoking slack account 1")
+	assert.Contains(t, errOut.String(), "did not revoke the token")
+}
+
+// The Desktop finds the warning in the CLI output by its exact text
+// (SlackRevokeNotice.cliWarning); the two must not drift apart.
+func TestSlackRevokeWarning_MatchesDesktopModel(t *testing.T) {
+	src, err := os.ReadFile("../WatchtowerDesktop/Sources/WatchtowerCore/Models/SlackRevokeNotice.swift")
+	require.NoError(t, err)
+	assert.Contains(t, string(src), `"`+slackRevokeWarning+`"`)
+}
