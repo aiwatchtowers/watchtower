@@ -2,15 +2,15 @@ import ChatUI
 import ChatWire
 import SwiftUI
 import WatchtowerDesign
+import WatchtowerInterface
 import XCTest
 @testable import WatchtowerMobile
 
-/// The phone Inbox's approval card drawn by `ChatUI`'s shared card, with Retry and Dismiss (board #2018, mobile Inbox
-/// spec addendum §12): every state as a mockup, before the build. The states the card already draws come from the real
-/// `AgentActionCard` with the services the Inbox will wire; the rows it does not draw yet (Approve's note with a live
-/// Reject, the settled row without the grant, Not delivered, the Mac-only rows) are drawn by `MockRow` through the
-/// card's `decisionOverride`, in the card's own button style. Phase B replaces `MockRow` with the card's model and
-/// renders these names again for the by-eye comparison. Synthetic data only.
+/// The approval card's states on the phone (board #2018, mobile Inbox spec §12): the phone Inbox's and the phone
+/// chat's, each drawn by the real `ChatUI.AgentActionCard` in `PhoneChatStyle` with the state its screen's model
+/// builds (`InboxApprovalState.make`, `ChatApprovalCardModel.state`) and the Inbox's target row
+/// (`InboxTargetRow`). Rendered under the mockups' names (`docs/design/mockups/mobile-inbox/approval-card/`) for the
+/// by-eye comparison with them. Synthetic data only.
 extension ScreenshotTourTests {
     func testTheInboxApprovalMockShots() async throws {
         guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"],
@@ -25,135 +25,169 @@ extension ScreenshotTourTests {
         let env = AppEnvironment(backend: .inMemoryDemo, defaults: defaults)
         let root = try AppRoot.demo(env, defaults: defaults)
         let host = ScreenshotHost(directory: dir, env: root.env, linking: root.linking)
-        for (name, view) in InboxApprovalMocks.frames {
+        let frames = InboxApprovalShots.frames
+        for (name, view) in frames {
             try await host.captureThree(name, view)
         }
         let written = try FileManager.default.contentsOfDirectory(atPath: path)
-            .filter { name in InboxApprovalMocks.frames.contains { name.hasPrefix($0.0 + "-") } && name.hasSuffix(".png") }
-        XCTAssertEqual(written.count, 3 * InboxApprovalMocks.frames.count)
+            .filter { name in frames.contains { name.hasPrefix($0.0 + "-") } && name.hasSuffix(".png") }
+        XCTAssertEqual(written.count, 3 * frames.count)
     }
 }
 
 @MainActor
-private enum InboxApprovalMocks {
+private enum InboxApprovalShots {
     static let hub = "Acme Mac"
     static let source = "ϟ Release notes · run #4"
+    static let now = Date()
 
     static var frames: [(String, AnyView)] {
         [
             ("inbox-approval-pending", page(
-                card(jira(), label: "With the permissions grant"),
-                card(jira(id: 42), label: "Without the grant", override: .approveNote("Approve on the Mac"))
+                card(jira(), label: "With the permissions grant", inbox(jiraCard(), nil)),
+                card(jira(id: 42), label: "Without the grant", inbox(jiraCard(), nil, grants: noGrant))
             )),
             ("inbox-approval-failed", page(
-                card(failedJira(), label: "Failed — Retry", override: .retry(line: nil, enabled: true)),
-                card(failedJira(id: 42), label: "Failed, without the grant", override: .note("Retry on the Mac", retryNote: true))
+                card(failedJira(), label: "Failed — Retry", inbox(failedCard(), nil)),
+                card(failedJira(id: 42), label: "Failed, without the grant", inbox(failedCard(), nil, grants: noGrant))
             )),
             ("inbox-approval-sending", page(
-                card(jira(), label: "Approve on its way",
-                     state: ChatApprovalState(showsButtons: true, canAnswer: false, line: "Approving…", inFlight: true)),
-                card(failedJira(id: 42), label: "Retry on its way", override: .busy("Retrying…", retryNote: true)),
-                card(jira(id: 43), label: "Waiting to send (the Mac is away)",
-                     state: ChatApprovalState(showsButtons: true, canAnswer: false,
-                                              line: "Waiting to send — it applies when \(hub) wakes."))
+                card(jira(), label: "Approve on its way", inbox(jiraCard(), .busy(request(.approve)))),
+                card(failedJira(id: 42), label: "Retry on its way", inbox(failedCard(), .busy(request(.retry)))),
+                card(jira(id: 43), label: "Waiting to send (the Mac is away)", inbox(jiraCard(), .busy(request(.approve)), away: true))
             )),
             ("inbox-approval-refused", page(
-                card(jira(), label: "Refused with the tower's sentence", state: ChatApprovalState(
-                    showsButtons: true, canAnswer: true, line: nil,
-                    gestureError: "This proposal changed on the Mac — look again before approving."
-                )),
-                card(jira(id: 42), label: "Not delivered",
-                     override: .resend(line: "Not delivered — \(hub) didn't get it.", title: "Retry Approve")),
-                card(jira(id: 43), label: "Didn't confirm (the hub stopped mid-way)",
-                     state: ChatApprovalState(showsButtons: true, canAnswer: false, line: "Didn't confirm — check on the Mac."))
+                card(jira(), label: "Refused with the tower's sentence", inbox(jiraCard(), .refused(
+                    "This proposal changed on the Mac — look again before approving.", .resend(request(.approve), dismiss: nil)))),
+                card(jira(id: 42), label: "Not delivered", inbox(jiraCard(), .refused(
+                    InboxPhoneText.notDelivered(hub: hub), .outbox(actionID: "act-1", request(.approve))))),
+                card(jira(id: 43), label: "Didn't confirm (the hub stopped mid-way)", inbox(jiraCard(), .unknown))
             )),
             ("inbox-approval-settled", page(
-                card(jira(status: "executing"), label: "Approved — the Mac runs it"),
+                card(jira(status: "executing"), label: "Approved — the Mac runs it", nil),
                 card(jira(id: 42, status: "applied",
                           result: #"{"url":"https://example.atlassian.net/browse/ACME-12","key":"ACME-12"}"#),
-                     label: "Done, or already done on the Mac (until the publish drops it)"),
-                card(connector(id: 53, dismissed: true), label: "Dismissed (until the publish drops it)")
+                     label: "Done, or already done on the Mac (until the publish drops it)", nil),
+                card(connector(id: 53, dismissed: true), label: "Dismissed (until the publish drops it)", nil)
             )),
             ("inbox-approval-dismiss", page(
-                card(connector(), label: "Outcome unknown — Dismiss", dismiss: true),
-                card(connector(id: 52), label: "Dismiss on its way", override: .busy("Dismissing…", retryNote: false)),
-                card(connector(id: 54), label: "Outcome unknown, without the grant", override: .note("Dismiss on the Mac", retryNote: false))
+                card(connector(), label: "Outcome unknown — Dismiss", inbox(connectorCard(), nil)),
+                card(connector(id: 52), label: "Dismiss on its way", inbox(connectorCard(), .busy(request(.dismiss)))),
+                card(connector(id: 54), label: "Outcome unknown, without the grant", inbox(connectorCard(), nil, grants: noGrant))
             )),
             ("inbox-approval-mac-only", page(
-                card(ChatAgentAction(id: 61, tool: "save_automation", argsJSON: #"{"name": "Weekly mail roundup"}"#,
-                                     argsStored: false, argsSHA256: "e5", argsComplete: true),
-                     label: "A recipe draft", override: .approveNote("Open Draft — on your Mac"),
+                card(draft(), label: "A recipe draft", inbox(draftCard(), nil),
                      title: "Save automation “Weekly mail roundup”",
                      summary: "“Every Monday, collect the week's unread mail into one roundup.”"),
-                card(ChatAgentAction(id: 62, tool: "create_target",
-                                     argsJSON: #"{"text": "Pin the rollout window", "priority": "high"}"#,
-                                     argsStored: false, argsSHA256: "f6", argsComplete: true, status: "executing"),
-                     label: "An Inbox button's task that didn't finish", override: .tryAgain)
+                card(stuckTarget(), label: "An Inbox button's task that didn't finish", nil, override: InboxTargetRow.view(.stuck, canRetry: true) {})
             )),
-            // The phone chat's card (§12.9, ask #1553).
             ("chat-approval-failed", chatPage(
-                card(failedJira(), label: "Failed — Retry", override: .retry(line: nil, enabled: true)),
+                card(failedJira(), label: "Failed — Retry", chat(failedFeedAction())),
                 card(failedJira(id: 42), label: "Failed, without the grant or on an older hub",
-                     override: .note("Retry on the Mac", retryNote: true))
+                     chat(failedFeedAction(), permissions: false))
             )),
             ("chat-approval-dismiss", chatPage(
-                card(connector(), label: "Outcome unknown — Dismiss", dismiss: true),
-                card(connector(id: 52), label: "Without the grant or on an older hub",
-                     override: .note("Dismiss on the Mac", retryNote: false)),
-                card(connector(id: 53, dismissed: true), label: "Dismissed (the feed's dismissed_at)")
+                card(connector(), label: "Outcome unknown — Dismiss", chat(unknownFeedAction())),
+                card(connector(id: 52), label: "Without the grant or on an older hub", chat(unknownFeedAction(), retryDismiss: false)),
+                card(connector(id: 53, dismissed: true), label: "Dismissed (the feed's dismissed_at)",
+                     chat(unknownFeedAction(dismissed: true)))
             )),
             ("chat-approval-sending", chatPage(
-                card(failedJira(), label: "Retry on its way", override: .busy("Sending your answer…", retryNote: true)),
-                card(failedJira(id: 42), label: "The hub is away (nothing queues)", override: .retry(line: nil, enabled: false))
+                card(failedJira(), label: "Retry on its way", chat(failedFeedAction(), inFlight: true)),
+                card(failedJira(id: 42), label: "The hub is away (nothing queues)", chat(failedFeedAction(), online: false))
+            )),
+            ("chat-approval-refused", chatPage(
+                card(failedJira(), label: "Refused with the hub's sentence",
+                     chat(failedFeedAction(), failure: ChatActionFailure(reason: .notPending, message: "Already approved"))),
+                card(failedJira(id: 42), label: "Couldn't send",
+                     chat(failedFeedAction(), failure: ChatActionFailure(reason: nil, message: "")))
             )),
             ("chat-approval-header-today", header(stacked: false)),
             ("chat-approval-header-stacked", header(stacked: true)),
             ("chat-approval-unconfirmed", chatPage(
                 card(failedJira(id: 43), label: "Didn't confirm (the hub stopped mid-way)",
-                     override: .retry(line: "Didn't confirm — check on the Mac.", enabled: false))
-            )),
-            ("chat-approval-refused", chatPage(
-                card(failedJira(), label: "Refused with the hub's sentence",
-                     state: ChatApprovalState(showsButtons: true, canAnswer: true, line: nil,
-                                              gestureError: "Already approved"),
-                     override: .retry(line: nil, enabled: true)),
-                card(failedJira(id: 42), label: "Couldn't send",
-                     state: ChatApprovalState(showsButtons: true, canAnswer: true, line: nil,
-                                              gestureError: "Couldn't send that. Try again."),
-                     override: .retry(line: nil, enabled: true))
+                     chat(failedFeedAction(), failure: ChatActionFailure(reason: .outcomeUnknown, message: "")))
             ))
         ]
     }
 
-    // MARK: - Actions
+    // MARK: - States from the screens' models
 
-    static func jira(id: Int64 = 41, status: String = "pending", error: String = "", result: String = "") -> ChatAgentAction {
-        ChatAgentAction(
-            id: id, tool: "create_jira_issue", external: true,
-            argsJSON: #"{"project_key": "ACME", "issue_type": "Task", "summary": "Pin the rollout window", "labels": ["release"]}"#,
-            argsStored: false, argsSHA256: "b2", argsComplete: true, reason: "From the release thread",
-            status: status, resultJSON: result, error: error
-        )
+    static let noGrant = Grants(permissions: false, typing: true)
+
+    static func inbox(_ card: InboxCard, _ row: InboxRowState?, grants: Grants = .all, away: Bool = false) -> ChatApprovalState {
+        InboxApprovalState.make(card: card, rowState: row, grants: grants, hubAway: away, hubName: hub, now: now)
     }
 
-    /// A failed external proposal. The card's own retry note is orange today; on the phone it is drawn in the secondary
-    /// tone (§12.4, orange only waits for you), so the mock leaves `external` off, which hides the card's note, and
-    /// `MockRow` draws the note in the secondary tone. The phone's header never shows `external`.
+    static func chat(
+        _ action: ChatFeed.Action,
+        permissions: Bool = true,
+        retryDismiss: Bool = true,
+        online: Bool = true,
+        inFlight: Bool = false,
+        failure: ChatActionFailure? = nil
+    ) -> ChatApprovalState {
+        ChatApprovalCardModel(payload: ChatApprovalPayload(action: action), permissions: permissions, online: online,
+                              inFlight: inFlight, failure: failure, host: .mac, retryDismiss: retryDismiss).state
+    }
+
+    static func request(_ verb: ApprovalVerb) -> ActRequest {
+        ActRequest(requestID: "r", target: "a41", verb: .approval, params: ActParams(approvalVerb: verb, argsSHA256: "b2"))
+    }
+
+    // MARK: - Actions and their entries
+
+    static let jiraArgs = #"{"project_key": "ACME", "issue_type": "Task", "summary": "Pin the rollout window", "labels": ["release"]}"#
+    static let connectorArgs = #"{"server": "Linear", "tool": "create_issue", "input": {"team": "ACME", "title": "Pin the rollout window"}}"#
+
+    static func jira(id: Int64 = 41, status: String = "pending", result: String = "") -> ChatAgentAction {
+        ChatAgentAction(id: id, tool: "create_jira_issue", external: true, argsJSON: jiraArgs, argsStored: false, argsSHA256: "b2",
+                        argsComplete: true, reason: "From the release thread", status: status, resultJSON: result)
+    }
+
     static func failedJira(id: Int64 = 41) -> ChatAgentAction {
-        let failed = jira(id: id, status: "failed", error: "jira: 503 Service Unavailable")
-        return ChatAgentAction(
-            id: failed.id, tool: failed.tool, external: false, argsJSON: failed.argsJSON, argsStored: false,
-            argsSHA256: failed.argsSHA256, argsComplete: true, reason: failed.reason, status: failed.status, error: failed.error
-        )
+        ChatAgentAction(id: id, tool: "create_jira_issue", external: true, argsJSON: jiraArgs, argsStored: false, argsSHA256: "b2",
+                        argsComplete: true, reason: "From the release thread", status: "failed", error: "jira: 503 Service Unavailable")
     }
 
     static func connector(id: Int64 = 51, dismissed: Bool = false) -> ChatAgentAction {
-        ChatAgentAction(
-            id: id, tool: ConnectorCallProposal.tool, external: true,
-            argsJSON: #"{"server": "Linear", "tool": "create_issue", "input": {"team": "ACME", "title": "Pin the rollout window"}}"#,
-            argsStored: false, argsSHA256: "d4", argsComplete: true, status: "failed",
-            error: ConnectorCallProposal.sessionEndedWhileRunning, dismissedAt: dismissed ? "2026-11-18T09:00:00Z" : ""
-        )
+        ChatAgentAction(id: id, tool: ConnectorCallProposal.tool, external: true, argsJSON: connectorArgs, argsStored: false,
+                        argsSHA256: "d4", argsComplete: true, status: "failed", error: ConnectorCallProposal.sessionEndedWhileRunning,
+                        dismissedAt: dismissed ? "2026-11-18T09:00:00Z" : "")
+    }
+
+    static func draft() -> ChatAgentAction {
+        ChatAgentAction(id: 61, tool: "save_automation", argsJSON: #"{"name": "Weekly mail roundup"}"#, argsStored: false,
+                        argsSHA256: "e5", argsComplete: true)
+    }
+
+    static func stuckTarget() -> ChatAgentAction {
+        ChatAgentAction(id: 62, tool: "create_target", argsJSON: #"{"text": "Pin the rollout window", "priority": "high"}"#,
+                        argsStored: false, argsSHA256: "f6", argsComplete: true, status: "executing")
+    }
+
+    static func entry(_ tool: String, status: String = "pending", error: String = "") -> InboxCard {
+        var card = DemoSeed.Inbox.approvalCards(now: now)[0]
+        card.approval = DemoSeed.Inbox.approval(tool, "", "", "b2", status: status, error: error, args: "{}")
+        return card
+    }
+
+    static func jiraCard() -> InboxCard { entry("create_jira_issue") }
+    static func failedCard() -> InboxCard { entry("create_jira_issue", status: "failed", error: "jira: 503") }
+    static func connectorCard() -> InboxCard {
+        entry(ConnectorCallProposal.tool, status: "failed", error: ConnectorCallProposal.sessionEndedWhileRunning)
+    }
+    static func draftCard() -> InboxCard { entry("save_automation") }
+
+    static func failedFeedAction() -> ChatFeed.Action {
+        ChatFeed.Action(id: 41, tool: "create_jira_issue", title: "", argsDisplay: jiraArgs, argsSHA256: "b2", status: "failed",
+                        external: true, error: "jira: 503 Service Unavailable", argsComplete: true)
+    }
+
+    static func unknownFeedAction(dismissed: Bool = false) -> ChatFeed.Action {
+        ChatFeed.Action(id: 51, tool: ConnectorCallProposal.tool, title: "", argsDisplay: connectorArgs, argsSHA256: "d4",
+                        status: "failed", external: true, error: ConnectorCallProposal.sessionEndedWhileRunning, argsComplete: true,
+                        dismissedAt: dismissed ? "2026-11-18T09:00:00Z" : "")
     }
 
     // MARK: - The page and the card
@@ -173,12 +207,12 @@ private enum InboxApprovalMocks {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .background(Color(uiColor: .systemBackground))
-        .environment(\.chatUIStyle, StackedHeaderStyle())
+        .environment(\.chatUIStyle, PhoneChatStyle())
         .environment(\.chatHostText, .phone(hub)))
     }
 
-    /// The header change (§12.5), as a pair of shots in the chat: today's phone header (`stacked: false`) and Phase
-    /// B's (`stacked: true`). Only the narrow shot (the largest text size) tells them apart.
+    /// The header change (§12.5), as a pair of shots in the chat: the header the phone drew before (the shared
+    /// default) and the phone's stacked one. Only the narrow shot (the largest text size) tells them apart.
     static func header(stacked: Bool) -> AnyView {
         let dismiss: (ChatAgentAction) -> Void = { _ in }
         let card = AgentActionCard(action: connector(), services: ChatApprovalServices(dismiss: dismiss))
@@ -186,9 +220,9 @@ private enum InboxApprovalMocks {
             VStack(alignment: .leading, spacing: Spacing.medium) {
                 Text("Chat · Release plan").font(TypeScale.rowEmphasis)
                 if stacked {
-                    card.environment(\.chatUIStyle, StackedHeaderStyle())
-                } else {
                     card.environment(\.chatUIStyle, PhoneChatStyle())
+                } else {
+                    card.environment(\.chatUIStyle, PreviousHeaderStyle())
                 }
             }
             .padding(Spacing.large)
@@ -201,18 +235,20 @@ private enum InboxApprovalMocks {
     static func card(
         _ action: ChatAgentAction,
         label: String,
-        state: ChatApprovalState? = nil,
-        dismiss: Bool = false,
-        override: MockRow.Kind? = nil,
+        _ state: ChatApprovalState?,
         title: String? = nil,
-        summary: String? = nil
+        summary: String? = nil,
+        override: AnyView? = nil
     ) -> AnyView {
+        let noop: (ChatAgentAction) -> Void = { _ in }
         let services = ChatApprovalServices(
             state: { _ in state },
-            dismiss: dismiss ? { _ in } : nil,
+            retry: noop,
+            dismiss: noop,
             title: { _ in title },
             details: { _ in summary.map { AnyView(Text($0).font(.callout).fixedSize(horizontal: false, vertical: true)) } },
-            decisionOverride: { _ in override.map { AnyView(MockRow(kind: $0)) } }
+            decisionOverride: { _ in override },
+            resend: noop
         )
         return AnyView(VStack(alignment: .leading, spacing: Spacing.small) {
             Text(label).font(TypeScale.meta).foregroundStyle(.secondary)
@@ -221,74 +257,9 @@ private enum InboxApprovalMocks {
     }
 }
 
-/// A decision row the shared card does not draw yet, in the card's own style.
-private struct MockRow: View {
-    enum Kind {
-        /// Approve is not offered here: its note in its place, Reject stays live.
-        case approveNote(String)
-        /// No button: the line says where to act (after the retry note, on a failed external proposal).
-        case note(String, retryNote: Bool)
-        /// The press on its way: its busy title with a spinner, the rest off.
-        case busy(String, retryNote: Bool)
-        /// A failed external proposal: the retry note in the secondary tone, Retry (off while nothing can be sent), and
-        /// a line under it.
-        case retry(line: String?, enabled: Bool)
-        /// Not delivered: the line in red and the press's named Retry, the row's one action.
-        case resend(line: String, title: String)
-        /// An Inbox button's stuck task: Didn't finish and Try again.
-        case tryAgain
-    }
-
-    let kind: Kind
-
-    static var retryNoteText: some View {
-        Text("Retrying re-sends the request — check Jira for a duplicate first.").font(.caption).foregroundStyle(.secondary)
-    }
-    @Environment(\.chatUIStyle) private var style
-
-    var body: some View {
-        switch kind {
-        case let .approveNote(note):
-            HStack(spacing: Spacing.regular) {
-                Text(note).font(.caption).foregroundStyle(.secondary)
-                style.approvalButton("Reject", prominent: false) {}
-            }
-        case let .note(line, retryNote):
-            VStack(alignment: .leading, spacing: Spacing.regular) {
-                if retryNote { Self.retryNoteText }
-                Text(line).font(.caption).foregroundStyle(.secondary)
-            }
-        case let .busy(title, retryNote):
-            VStack(alignment: .leading, spacing: Spacing.regular) {
-                if retryNote { Self.retryNoteText }
-                HStack(spacing: Spacing.regular) {
-                    ProgressView().controlSize(.small)
-                    Text(title).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-        case let .retry(line, enabled):
-            VStack(alignment: .leading, spacing: Spacing.regular) {
-                Self.retryNoteText
-                Button("Retry") {}.disabled(!enabled)
-                if let line { Text(line).font(.caption).foregroundStyle(.secondary) }
-            }
-        case let .resend(line, title):
-            VStack(alignment: .leading, spacing: Spacing.regular) {
-                Label(line, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(PhoneTone.red.color)
-                style.approvalButton(title, prominent: true) {}
-            }
-        case .tryAgain:
-            HStack(spacing: Spacing.regular) {
-                Text("Didn't finish").font(.caption).foregroundStyle(.secondary)
-                style.approvalButton("Try again", prominent: true) {}
-            }
-        }
-    }
-}
-
-/// The phone's chat style with the header Phase B gives it (§12.5): the status beside the title when both fit on one
-/// line, under it otherwise, so the largest text size never truncates the title. Everything else is `PhoneChatStyle`.
-private struct StackedHeaderStyle: ChatUIStyle {
+/// The phone's chat style with the header it drew before §12.5 (the shared default, the title cut beside its
+/// status): the "today" half of the header pair. Everything else is `PhoneChatStyle`.
+private struct PreviousHeaderStyle: ChatUIStyle {
     private let phone = PhoneChatStyle()
 
     func primaryButton(_ title: String, action: @escaping () -> Void) -> AnyView { phone.primaryButton(title, action: action) }
@@ -296,26 +267,5 @@ private struct StackedHeaderStyle: ChatUIStyle {
     func card<C: View>(@ViewBuilder _ content: () -> C) -> AnyView { phone.card(content) }
     func chip(_ title: String) -> AnyView { phone.chip(title) }
     func attachmentChip(_ chip: ChatAttachmentChipContent) -> AnyView { phone.attachmentChip(chip) }
-
-    func approvalHeader(_ header: ChatApprovalHeader) -> AnyView {
-        let tone: Color = switch header.kind {
-        case .waiting: Tone.warning
-        case .done: Tone.success
-        case .failed: Tone.error
-        case .neutral: .secondary
-        }
-        let title = Text(header.title).font(.callout.weight(.semibold))
-        let status = Text(header.status).font(.caption).foregroundStyle(tone)
-        return AnyView(ViewThatFits(in: .horizontal) {
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                title
-                Spacer(minLength: Spacing.regular)
-                status
-            }
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                title.fixedSize(horizontal: false, vertical: true)
-                status.fixedSize(horizontal: false, vertical: true)
-            }
-        })
-    }
+    func approvalRetryNote(_ text: String) -> AnyView { phone.approvalRetryNote(text) }
 }

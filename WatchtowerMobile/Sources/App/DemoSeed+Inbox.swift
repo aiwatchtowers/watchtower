@@ -256,20 +256,23 @@ extension DemoSeed {
                 card(
                     slackProposal, approvalsID, .approvalNative, "Send a Slack message", source: "to #acme-release · ϟ Release notes · run #4",
                     at: now.addingTimeInterval(-1_800), hash: "args-101",
-                    approval: approval("slack_send_message", "Send a Slack message", "Release 2.0 is tagged; checklist in the thread.", "args-101")
+                    approval: approval("send_slack_message", "Send a Slack message", "Release 2.0 is tagged; checklist in the thread.", "args-101",
+                                       args: slackArgs("#acme-release", "Release 2.0 is tagged; checklist in the thread."))
                 ),
                 card(
                     replyProposal, approvalsID, .approvalNative, "Reply in #acme-release",
                     source: "Reply from Waiting for me · \(InboxText.thisIPhone)", at: now.addingTimeInterval(-900), hash: "args-102",
                     approval: approval(
-                        "slack_send_message", "Reply in #acme-release", "Signing off now — docs link is the only open item…", "args-102")
+                        "send_slack_message", "Reply in #acme-release", "Signing off now — docs link is the only open item…", "args-102",
+                        args: slackArgs("#acme-release", "Signing off now — docs link is the only open item…"))
                 ),
                 card(
                     "a103", approvalsID, .approvalNative, "Create a Linear issue", source: "ϟ Triage", at: now.addingTimeInterval(-5_400),
                     hash: "args-103",
                     approval: approval(
-                        "linear_create_issue", "Create a Linear issue", "Checklist link broken on the release page", "args-103",
-                        status: "failed", error: "the team was archived")
+                        "create_linear_issue", "Create a Linear issue", "Checklist link broken on the release page", "args-103",
+                        status: "failed", error: "the team was archived",
+                        args: #"{"team": "ACME", "title": "Checklist link broken on the release page"}"#)
                 ),
                 card(
                     "r104", approvalsID, .reminder, "Answer colleague A about the budget", source: "Reminder", at: day.addingTimeInterval(14 * 3_600),
@@ -279,14 +282,27 @@ extension DemoSeed {
             ]
         }
 
+        /// A proposal's approval block; `args` is the display text the shared card draws (mobile Inbox spec §12.1).
         static func approval(
-            _ tool: String, _ title: String, _ summary: String, _ sha: String, status: String = "pending", error: String = ""
+            _ tool: String,
+            _ title: String,
+            _ summary: String,
+            _ sha: String,
+            status: String = "pending",
+            error: String = "",
+            args: String? = nil
         ) -> Approval {
             Approval(
                 tool: tool, title: title, summary: summary, argsSHA256: sha, status: status, error: error, proposer: "assistant",
                 reason: "", editOnMac: false, target: "", targetNote: "", targetUntil: "", superseded: false, disclosure: "",
-                recipeText: "", diff: [], recipeClipped: false
+                recipeText: "", diff: [], recipeClipped: false, argsDisplay: args, argsComplete: args != nil, external: true
             )
+        }
+
+        /// A Slack send's display args, its workspace chosen.
+        static func slackArgs(_ channel: String, _ text: String) -> String {
+            #"{"target": {"account_id": 1, "workspace": "acme", "channel_id": "C1", "label": ""# + channel + #""}, "text": ""#
+                + text + #""}"#
         }
 
         // MARK: The owner's folders

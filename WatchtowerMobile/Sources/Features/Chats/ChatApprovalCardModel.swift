@@ -36,8 +36,13 @@ struct ChatApprovalCardModel: Equatable {
     let settledInFlight: Bool
 
     init(
-        payload: ChatApprovalPayload, permissions: Bool, online: Bool, inFlight: Bool, failure: ChatActionFailure?,
-        host: TowerHost, retryDismiss: Bool = false
+        payload: ChatApprovalPayload,
+        permissions: Bool,
+        online: Bool,
+        inFlight: Bool,
+        failure: ChatActionFailure?,
+        host: TowerHost,
+        retryDismiss: Bool = false
     ) {
         self.payload = payload
         isWaiting = payload.status == "pending"
@@ -75,7 +80,7 @@ struct ChatApprovalCardModel: Equatable {
                 refusal = nil
             } else {
                 line = nil
-                refusal = failure.map { $0.reason == .changed ? Self.changedLine : ($0.message.isEmpty ? ChatSendCoordinator.couldNotSend : $0.message) }
+                refusal = failure.map(Self.sentence)
             }
         } else {
             showsButtons = false
@@ -84,6 +89,12 @@ struct ChatApprovalCardModel: Equatable {
             refusal = nil
             line = Self.outcome(payload)
         }
+    }
+
+    /// A refused answer's sentence: "The action changed — look again" on `changed`, the hub's own otherwise.
+    static func sentence(_ failure: ChatActionFailure) -> String {
+        if failure.reason == .changed { return changedLine }
+        return failure.message.isEmpty ? ChatSendCoordinator.couldNotSend : failure.message
     }
 
     static func outcome(_ payload: ChatApprovalPayload) -> String {

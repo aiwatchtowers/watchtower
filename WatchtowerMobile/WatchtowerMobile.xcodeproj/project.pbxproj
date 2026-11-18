@@ -144,6 +144,7 @@
 		598F0F750CFB3F8CF52F078F /* RecordingHoldTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 528BE8894EDA75D94D9DDF64 /* RecordingHoldTests.swift */; };
 		5AAD4F0C5B9CCBD77ECB0714 /* ChatBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F901DED70633FBEDDF22415 /* ChatBubble.swift */; };
 		5DFE9C537D29C8CE6C61C1DC /* ChatConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B217981668550F76482FCC9E /* ChatConversationView.swift */; };
+		5F04B53732A904B654DE476D /* InboxApprovalSharedCardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9CCC206C2D06AB30CF72620 /* InboxApprovalSharedCardTests.swift */; };
 		60308F364D1CCC828D53294B /* MacTransportModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEB38A13D1FADDABACF8A959 /* MacTransportModelTests.swift */; };
 		60984876AEF6DC770D244031 /* SharedAlertWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A3DDEA22A6A8A679FAAE964 /* SharedAlertWiringTests.swift */; };
 		60D56777C42C19D03F654E1E /* ChatWireKitConformances.swift in Sources */ = {isa = PBXBuildFile; fileRef = C795BF8B605BF4BA1DBB8E88 /* ChatWireKitConformances.swift */; };
@@ -196,6 +197,7 @@
 		83E54C7910CD4FD323B27158 /* ChatsGateModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8349EEC6E4D08022C76D9B89 /* ChatsGateModel.swift */; };
 		83F6C97B186026D626D2BDBF /* RelayBannerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4155D18D7CC6D321AF695AA4 /* RelayBannerModelTests.swift */; };
 		8542588116A6D6C91B918388 /* OutboxBacklog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AD41B1E3AB91B5552C46EF2 /* OutboxBacklog.swift */; };
+		860FBE1732F3A0F8ED1F56B6 /* InboxApprovalState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E5358EA2BD807B41E0638F9 /* InboxApprovalState.swift */; };
 		86886F1BC8E073451E37DFCD /* SessionDetailModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C31DCEEDF952183BAF4ECC6 /* SessionDetailModel.swift */; };
 		8765A16977897B4DC5DF91D2 /* RelayUpgradeWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95B98F90EB8CC76A6479FA03 /* RelayUpgradeWiringTests.swift */; };
 		87B5A9169905994CA11D1762 /* EventDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69EA29ACA1FC531EAFBFC1EC /* EventDetailView.swift */; };
@@ -548,6 +550,7 @@
 		5CA5CC2832CBEF69C498C543 /* RelayAccountCenterSlotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayAccountCenterSlotTests.swift; sourceTree = "<group>"; };
 		5CDDFF7559C9B425982A1ECC /* RelaySubscriptionModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelaySubscriptionModelTests.swift; sourceTree = "<group>"; };
 		5D4A928B7D44789719D76D58 /* AskText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskText.swift; sourceTree = "<group>"; };
+		5E5358EA2BD807B41E0638F9 /* InboxApprovalState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxApprovalState.swift; sourceTree = "<group>"; };
 		5E777929DAE089EB36B2F37D /* ChatListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatListView.swift; sourceTree = "<group>"; };
 		5EDE2898F38881978E85D337 /* WorkbenchWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchWiringTests.swift; sourceTree = "<group>"; };
 		5F8A9F63CFA3087BCC7DC42B /* ResilientObservation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResilientObservation.swift; sourceTree = "<group>"; };
@@ -688,6 +691,7 @@
 		B7D8BB14D242560434FB94E9 /* OrderedActionsWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrderedActionsWiringTests.swift; sourceTree = "<group>"; };
 		B8929F28520AC73CF61CD217 /* AskFormTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskFormTests.swift; sourceTree = "<group>"; };
 		B89F1F70869635249DF29C32 /* ManualRelayClock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualRelayClock.swift; sourceTree = "<group>"; };
+		B9CCC206C2D06AB30CF72620 /* InboxApprovalSharedCardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxApprovalSharedCardTests.swift; sourceTree = "<group>"; };
 		BA76E6466079EBEB2E2CE640 /* LatencyDiagnosticsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LatencyDiagnosticsModel.swift; sourceTree = "<group>"; };
 		BB2B9F86CF3089D68AE6D92D /* StartSessionFormModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartSessionFormModel.swift; sourceTree = "<group>"; };
 		BB51D5844D98DDBFB3E2B8C3 /* StoreKitRelayStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreKitRelayStore.swift; sourceTree = "<group>"; };
@@ -939,6 +943,7 @@
 				F1751079508437F093108AD4 /* HubSwitcherTests.swift */,
 				45B4B3DF5A08D5E2EF1BDD0F /* HubTransportTests.swift */,
 				D8DD86DD68A8D8B123486FF8 /* InboxApprovalMockShots.swift */,
+				B9CCC206C2D06AB30CF72620 /* InboxApprovalSharedCardTests.swift */,
 				6B2466E904A16D479419F3E6 /* InboxOutboxWiringTests.swift */,
 				5219F43A8CCBD34F1B837E75 /* InboxPhoneTextTests.swift */,
 				8CB9075099E7CEADFB8C6CB8 /* InboxTabWiringTests.swift */,
@@ -1375,6 +1380,7 @@
 			children = (
 				6990783A199C1F55186AEDA7 /* HubTransport.swift */,
 				FEFDE4C1B7F68BC016160D49 /* InboxApprovalCard.swift */,
+				5E5358EA2BD807B41E0638F9 /* InboxApprovalState.swift */,
 				50C541622A53F69CE0F9053F /* InboxCardDetailView.swift */,
 				1A17988519653DE79413225B /* InboxCenter.swift */,
 				4D3B40057E79AE8E0611530B /* InboxFolderView.swift */,
@@ -1680,6 +1686,7 @@
 				4AFB097B5F15151D72EE5076 /* HubSwitcherModel.swift in Sources */,
 				41BDBFF7AD99C86AA591346E /* HubTransport.swift in Sources */,
 				9F51833153826499043DD6AA /* InboxApprovalCard.swift in Sources */,
+				860FBE1732F3A0F8ED1F56B6 /* InboxApprovalState.swift in Sources */,
 				800DA14D11276C412F67F8F0 /* InboxCardDetailView.swift in Sources */,
 				6B59FE1D219FCF7890507575 /* InboxCenter.swift in Sources */,
 				1D2E78F98E7ECE6D013A5C02 /* InboxFolderView.swift in Sources */,
@@ -1857,6 +1864,7 @@
 				79F71B90B31710083B0C485E /* HubSwitcherTourPages.swift in Sources */,
 				F1EDA4B614411D06E144CCFF /* HubTransportTests.swift in Sources */,
 				6785BBC70CA1420E830450BC /* InboxApprovalMockShots.swift in Sources */,
+				5F04B53732A904B654DE476D /* InboxApprovalSharedCardTests.swift in Sources */,
 				A570AAE91AC0E9509328E5E9 /* InboxFakes.swift in Sources */,
 				DA5C81796D80D75F5634EE13 /* InboxOutboxWiringTests.swift in Sources */,
 				F9BC1C9348EE44B54D7F3517 /* InboxPhoneTextTests.swift in Sources */,

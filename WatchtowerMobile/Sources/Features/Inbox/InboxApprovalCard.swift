@@ -1,162 +1,145 @@
+import ChatUI
+import ChatWire
 import SwiftUI
 import WatchtowerDesign
 import WatchtowerInterface
 
-/// A Needs approval entry as a waiting card (mockup §3): the proposal's title, where it came from (or "Failed: …"),
-/// its summary quoted, the hub's refusal when there is one ("This proposal changed on the Mac — look again"), and
-/// the Mac's decision row through `InboxApprovalModel` — Approve and Reject, Retry and Dismiss on a failed one,
-/// "Approve on the Mac" without the grant, "Open Draft — on your Mac" and "Edit on your Mac" where the Mac's
-/// editor is needed. A reminder is the same card with Done and Snooze 1h.
+/// A Needs approval entry: a proposal (`a…`) is `ChatUI`'s shared approval card in the phone's style, the same card
+/// the phone chat draws (mobile Inbox spec §12, asks #1469 and #1409), wired to the Inbox's presses; a due reminder
+/// keeps its own card (`InboxReminderCard`).
 struct InboxApprovalCard: View {
     let center: InboxCenter
     let card: InboxCardModel
     let grants: Grants
     let now: Date
+    var hubAway = false
+    var hubName = ""
+    var timeZone: TimeZone = .current
+
+    var body: some View {
+        if card.card.cardKind == .reminder {
+            InboxReminderCard(center: center, card: card, now: now, timeZone: timeZone)
+        } else {
+            AgentActionCard(
+                action: ChatAgentAction(inboxCard: card.card),
+                services: Self.services(center: center, card: card.card, grants: grants, hubAway: hubAway, hubName: hubName,
+                                        now: now),
+                contextLabel: card.sourceLine.isEmpty ? nil : card.sourceLine,
+                offersRetry: card.card.approval?.superseded != true
+            )
+            .environment(\.chatUIStyle, PhoneChatStyle())
+            .environment(\.chatHostText, .phone(hubName))
+        }
+    }
+
+    /// The shared card's services on a Needs approval entry (§12.3): Approve (pinned to the digest drawn) and Reject,
+    /// Retry and Dismiss as `inbox.act` `approval` presses through the center; a Not delivered press's named Retry
+    /// re-sends the same outbox action. Approve, Retry and Dismiss need `permissions`; without it the card shows the
+    /// notes (`InboxApprovalState`) and these send nothing. Edit… stays on the Mac (no edits here).
+    static func services(
+        center: InboxCenter, card: InboxCard, grants: Grants, hubAway: Bool, hubName: String, now: Date
+    ) -> ChatApprovalServices {
+        let model = InboxApprovalModel(card: card, platform: .phone, grants: grants, now: now)
+        let press: (ApprovalVerb) -> Void = { verb in
+            Task { await center.press { model.request(verb, requestID: $0) } }
+        }
+        let targetRow = model.targetRow
+        return ChatApprovalServices(
+            decide: { _, answer in
+                switch answer {
+                case .approve(nil): if model.canApprove { press(.approve) }
+                case .reject: if model.canReject { press(.reject) }
+                // No edits on the phone: an edited approve is never sent as a plain one.
+                case .approve(_?): break
+                }
+            },
+            state: { _ in
+                InboxApprovalState.make(card: card, rowState: center.rowState(card.id), grants: grants, hubAway: hubAway,
+                                        hubName: hubName, now: now)
+            },
+            retry: { _ in if model.canRetry { press(.retry) } },
+            dismiss: { _ in if grants.permissions { press(.dismiss) } },
+            title: { _ in InboxApprovalState.title(card) },
+            details: { _ in
+                InboxApprovalState.summary(card).map {
+                    AnyView(Text($0).font(.callout).lineLimit(3).fixedSize(horizontal: false, vertical: true))
+                }
+            },
+            decisionOverride: { _ in
+                InboxTargetRow.view(targetRow, canRetry: grants.permissions) { press(.retry) }
+            },
+            resend: { _ in
+                if case let .refused(_, retry)? = center.rowState(card.id) {
+                    Task { await center.retry(retry) }
+                }
+            }
+        )
+    }
+}
+
+/// What an Inbox target button's proposal draws in place of the decision row (`InboxApprovalModel.targetRow`, the
+/// Mac's `MacAgentActionCard.targetRowView`): stuck offers "Didn't finish" with Try again; creating shows progress;
+/// anything else keeps the card's row (nil).
+enum InboxTargetRow {
+    static func view(_ row: InboxApprovalModel.TargetRow, canRetry: Bool, onTryAgain: @escaping () -> Void) -> AnyView? {
+        switch row {
+        case .decision:
+            return nil
+        case .inFlight:
+            return AnyView(ProgressView().controlSize(.small))
+        case .stuck:
+            return AnyView(InboxStuckTargetRow(canRetry: canRetry, onTryAgain: onTryAgain))
+        }
+    }
+}
+
+private struct InboxStuckTargetRow: View {
+    let canRetry: Bool
+    let onTryAgain: () -> Void
+    @Environment(\.chatUIStyle) private var style
+
+    var body: some View {
+        HStack(spacing: Spacing.regular) {
+            Text(InboxText.didntFinish).font(.caption).foregroundStyle(.secondary)
+            if canRetry {
+                style.approvalButton(InboxText.tryAgain, prominent: true, action: onTryAgain)
+            } else {
+                Text(InboxPhoneText.retryOnTheMac).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// A due reminder in Needs approval: its time, its note, the message it is about, and Done and Snooze 1h through the
+/// reminder ref's own presses.
+struct InboxReminderCard: View {
+    let center: InboxCenter
+    let card: InboxCardModel
+    let now: Date
     var timeZone: TimeZone = .current
     @Environment(\.openURL) private var openURL
-
-    private var approval: InboxApprovalModel {
-        InboxApprovalModel(card: card.card, platform: .phone, grants: grants, now: now)
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.compact) {
             Text(title).font(TypeScale.rowEmphasis)
-            if let failed = approval.failedLine {
-                Text(failed).font(TypeScale.meta).foregroundStyle(PhoneTone.red.color)
-            } else if !meta.isEmpty {
-                Text(meta).font(TypeScale.meta).foregroundStyle(.secondary)
+            if !card.preview.isEmpty {
+                Text(card.preview).font(TypeScale.rowTitle).lineLimit(3)
             }
-            if !quote.isEmpty {
-                Text(quote).font(TypeScale.rowTitle).lineLimit(3)
-            }
-            if card.card.cardKind == .reminder, let url = PhoneArtifactLayout.webURL(card.card.link) {
+            if let url = PhoneArtifactLayout.webURL(card.card.link) {
                 Button(InboxPhoneText.openInDetail(InboxPhoneText.messageLink)) { openURL(url) }
                     .font(TypeScale.meta)
                     .foregroundStyle(PhoneTone.accent.color)
             }
-            if let error = refusal {
-                Text(error).font(TypeScale.meta).foregroundStyle(PhoneTone.red.color).padding(.top, Spacing.tight)
-            }
-            buttons.padding(.top, Spacing.compact)
-            if let note = approval.editNote {
-                Text(note).font(TypeScale.meta).foregroundStyle(.secondary)
+            if let row = card.refRows.first {
+                reminderButtons(row).padding(.top, Spacing.compact)
             }
         }
         .card(.waiting)
     }
 
     private var title: String {
-        if card.card.cardKind == .reminder, let at = InboxCardRowModel.date(card.card.stamp) {
-            return InboxText.reminderLine(at: at, timeZone: timeZone)
-        }
-        return card.card.approval?.title.isEmpty == false ? card.card.approval?.title ?? card.title : card.title
-    }
-
-    private var meta: String { card.card.cardKind == .reminder ? "" : card.sourceLine }
-
-    private var quote: String {
-        let text = card.card.cardKind == .reminder ? card.preview : (card.card.approval?.summary ?? card.preview)
-        return text.isEmpty || card.card.cardKind == .reminder ? text : "“\(text)”"
-    }
-
-    /// The newest press's refusal or unconfirmed line on this card.
-    private var refusal: String? {
-        switch center.rowState(card.id) {
-        case let .refused(sentence, _)?: sentence
-        case .unknown?: InboxText.didntConfirmPhone
-        default: nil
-        }
-    }
-
-    @ViewBuilder private var buttons: some View {
-        if card.card.cardKind == .reminder, let row = card.refRows.first {
-            reminderButtons(row)
-        } else {
-            decisionButtons
-        }
-    }
-
-    @ViewBuilder private var decisionButtons: some View {
-        let model = approval
-        FlowRow(spacing: Spacing.regular, lineSpacing: Spacing.regular) {
-            switch model.targetRow {
-            case .inFlight:
-                ProgressView().controlSize(.small)
-            case .stuck:
-                Text(InboxText.didntFinish).font(TypeScale.meta).foregroundStyle(.secondary)
-                verb(.retry, InboxText.tryAgain, primary: true, busy: InboxText.approving)
-            case .decision:
-                let state = center.rowState(card.id)
-                if let state, state.isUndelivered, case let .refused(_, retry) = state {
-                    // Not delivered: the one action is its named Retry ("Retry Approve"), the same action again.
-                    Button(state.retryTitle) { Task { await center.retry(retry) } }
-                        .buttonStyle(PhoneArtifactButtonStyle(primary: true))
-                }
-                let busy = state?.isUndelivered == true ? nil : Self.busyVerb(state)
-                if busy == nil, state?.isUndelivered != true, !model.canApprove, let note = model.approveNote {
-                    Button(note) {}.buttonStyle(PhoneArtifactButtonStyle(primary: false)).disabled(true).opacity(PhoneOpacity.disabled)
-                }
-                ForEach(state?.isUndelivered == true ? [] : Self.shownVerbs(model, busy: busy), id: \.rawValue) { item in
-                    verb(item, Self.title(item), primary: item == .approve || item == .retry, busy: Self.busyTitle(item))
-                }
-            }
-        }
-    }
-
-    /// The decision row's verbs (mockup §3): Approve, Retry, Reject, Dismiss as the model offers them; while one is
-    /// on its way only that one shows ("Approving…").
-    static func shownVerbs(_ model: InboxApprovalModel, busy: ApprovalVerb?) -> [ApprovalVerb] {
-        if let busy { return [busy] }
-        return [
-            model.canApprove ? ApprovalVerb.approve : nil,
-            model.canRetry ? .retry : nil,
-            model.canReject ? .reject : nil,
-            model.canDismiss ? .dismiss : nil
-        ].compactMap { $0 }
-    }
-
-    /// The approval verb on its way on this card (its row state), if any.
-    static func busyVerb(_ state: InboxRowState?) -> ApprovalVerb? {
-        guard case let .busy(request)? = state, request.verb == .approval else { return nil }
-        return request.params.approvalVerb
-    }
-
-    static func title(_ verb: ApprovalVerb) -> String {
-        switch verb {
-        case .approve: InboxText.approve
-        case .retry: InboxText.retry
-        case .reject: InboxText.reject
-        default: InboxText.dismiss
-        }
-    }
-
-    static func busyTitle(_ verb: ApprovalVerb) -> String? {
-        switch verb {
-        case .approve, .retry: InboxText.approving
-        case .reject: InboxText.rejecting
-        default: nil
-        }
-    }
-
-    private func verb(_ verb: ApprovalVerb, _ title: String, primary: Bool, busy: String?) -> some View {
-        let isBusy = Self.busyVerb(center.rowState(card.id)) == verb
-        let request = approval
-        return Button {
-            Task { await center.press { request.request(verb, requestID: $0) } }
-        } label: {
-            if isBusy {
-                HStack(spacing: Spacing.compact) {
-                    ProgressView().controlSize(.mini)
-                    Text(busy ?? title)
-                }
-            } else {
-                Text(title)
-            }
-        }
-        .buttonStyle(PhoneArtifactButtonStyle(primary: primary))
-        .disabled(isBusy || center.rowState(card.id) == .unknown)
-        .opacity(isBusy ? PhoneOpacity.dimmed : 1)
+        guard let at = InboxCardRowModel.date(card.card.stamp) else { return card.title }
+        return InboxText.reminderLine(at: at, timeZone: timeZone)
     }
 
     private func reminderButtons(_ row: InboxRefRowModel) -> some View {

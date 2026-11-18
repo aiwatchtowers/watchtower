@@ -17,8 +17,12 @@ final class ChatApprovalCardModelTests: XCTestCase {
                                                 argsDisplay: "{}", argsSHA256: "d4", status: "failed", error: unknown)
 
     private func card(
-        _ action: ChatFeed.Action, permissions: Bool = true, online: Bool = true, inFlight: Bool = false,
-        failure: ChatActionFailure? = nil, retryDismiss: Bool = true
+        _ action: ChatFeed.Action,
+        permissions: Bool = true,
+        online: Bool = true,
+        inFlight: Bool = false,
+        failure: ChatActionFailure? = nil,
+        retryDismiss: Bool = true
     ) -> ChatApprovalCardModel {
         ChatApprovalCardModel(payload: ChatApprovalPayload(action: action), permissions: permissions, online: online,
                               inFlight: inFlight, failure: failure, host: .mac, retryDismiss: retryDismiss)
