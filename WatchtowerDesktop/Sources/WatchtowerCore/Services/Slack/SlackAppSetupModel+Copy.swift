@@ -283,7 +283,7 @@ extension SlackAppSetupModel {
     // MARK: - Buttons
 
     package enum Action: Equatable, Sendable {
-        case cancel, close, done, create, tryAgain, copyAdminNote, updateApp, copyCode
+        case cancel, close, done, create, tryAgain, copyAdminNote, updateApp, copyCode, cancelConnect
         case showAddLink, addLink, continueSetup, checkAgain, clearPending, confirmClear, attachPending
     }
 
@@ -299,7 +299,7 @@ extension SlackAppSetupModel {
         switch phase {
         case .running:
             if case .addLink = form { return [button(.close), button(.addLink, prominent: true)] }
-            return [button(.close)]
+            return isConnecting ? [button(.close), button(.cancelConnect)] : [button(.close)]
         case .editing:
             return editingActions
         case let .finished(outcome):
@@ -336,7 +336,7 @@ extension SlackAppSetupModel {
 
     package static func label(_ action: Action) -> String {
         switch action {
-        case .cancel: "Cancel"
+        case .cancel, .cancelConnect: action == .cancel ? "Cancel" : "Cancel connecting"
         case .close: "Close"
         case .done: "Done"
         case .create: "Create the app"
@@ -400,6 +400,7 @@ extension SlackAppSetupModel {
             guard case let .addLink(target) = form else { return nil }
             startLink(team: target.teamID, token: fields.token)
         case .tryAgain: tryAgain()
+        case .cancelConnect: cancelConnect()
         case .copyAdminNote: return copyAdminNote()
         case .copyCode: return connectCode
         case .showAddLink: showAddLink()

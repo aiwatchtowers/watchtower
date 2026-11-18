@@ -436,6 +436,12 @@ package final class SlackConnectFlowModel {
         }
     }
 
+    /// Cancels the awaited flow (the setup's **Cancel**); `run` returns false.
+    package func cancelRun() {
+        guard runWaiter != nil else { return }
+        cancel()
+    }
+
     private func settleRun() {
         guard let waiter = runWaiter else { return }
         let connected: Bool

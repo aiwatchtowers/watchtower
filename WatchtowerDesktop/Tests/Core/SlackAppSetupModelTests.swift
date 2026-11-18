@@ -13,6 +13,8 @@ private final class FakeSetupConnector: SlackSetupConnectStarting {
         calls.append("\(teamID):\(clientID)")
         return outcomes.isEmpty ? .connected : outcomes.removeFirst()
     }
+
+    func cancelSetupConnect() { calls.append("cancel") }
 }
 
 @MainActor
@@ -675,6 +677,7 @@ final class SlackAppSetupModelTests: XCTestCase {
                     onCall()
                     return .connected
                 }
+                func cancelSetupConnect() {}
             }
             model.connector = Counting { calls += 1 }
         }
@@ -824,5 +827,39 @@ final class SlackAppSetupModelTests: XCTestCase {
         let olderRead = await first
         XCTAssertEqual(olderRead?.map(\.connected), [true], "the caller decides from its own snapshot")
         XCTAssertTrue(model.records.isEmpty, "the cache keeps the newest read")
+    }
+
+    // MARK: - Cancel on the admin connect (plan B Task 14 fix round 3)
+
+    /// The admin connect has no deadline (A22) and its own sheet is hidden
+    /// under this one: **Cancel connecting** ends the real connect flow, the
+    /// run goes on to not-connected; **Close** still only hides the sheet.
+    func testCancelConnectEndsTheConnectFlow() async {
+        let fake = FakeCLILineStream(replies: [reply(result("ok")), noSetups])
+        let host = SlackConnectListenerHost(streamer: fake)
+        let flow = SlackConnectFlowModel(host: host)
+        let model = Model(streamer: fake)
+        model.connector = SlackSetupConnector(flow: flow)
+        model.isPresented = true
+        model.startCreate(token: token)
+        await untilObserved { model.isConnecting }
+        let child = await fake.session(number: 1)
+        XCTAssertEqual(child.writtenLines, [#"{"client_id":"1111.2222","cmd":"start","team_id":"T0ACME"}"#])
+        XCTAssertEqual(labels(model), ["Close", "Cancel connecting"])
+
+        var fields = Model.Fields()
+        _ = model.perform(.close, fields: &fields)
+        XCTAssertFalse(model.isPresented)
+        XCTAssertTrue(model.isConnecting, "Close does not cancel")
+        model.isPresented = true
+
+        child.emit(#"{"event":"browser","flow":"f1"}"#)
+        await untilObserved { if case .browser = flow.step { true } else { false } }
+        _ = model.perform(.cancelConnect, fields: &fields)
+        XCTAssertEqual(child.writtenLines.last, #"{"cmd":"cancel","flow":"f1"}"#)
+        await settled(model)
+        XCTAssertEqual(model.steps.first { $0.id == "connect" }?.mark, .failed)
+        XCTAssertEqual(labels(model), ["Close", "Continue setup"])
+        XCTAssertEqual(flow.step, .idle, "no connect sheet left behind")
     }
 }

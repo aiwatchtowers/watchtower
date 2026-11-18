@@ -15,4 +15,8 @@ package final class SlackSetupConnector: SlackSetupConnectStarting {
     package func connectForSetup(teamID: String, clientID: String) async -> SlackSetupConnectOutcome {
         await flow.run(SlackConnectTarget(teamID: teamID, clientID: clientID)) ? .connected : .notConnected
     }
+
+    package func cancelSetupConnect() {
+        flow.cancelRun()
+    }
 }

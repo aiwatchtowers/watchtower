@@ -18,6 +18,8 @@ package enum SlackSetupConnectOutcome: Equatable, Sendable {
 @MainActor
 package protocol SlackSetupConnectStarting: AnyObject {
     func connectForSetup(teamID: String, clientID: String) async -> SlackSetupConnectOutcome
+    /// Ends a running admin connect: its `connectForSetup` returns `.notConnected`.
+    func cancelSetupConnect()
 }
 
 /// One `slack_app_setups` record as `slack app status --json` reports it.
@@ -219,6 +221,18 @@ package final class SlackAppSetupModel {
     }
 
     package var isRunning: Bool { phase == .running }
+    /// The run waits on the admin's own connect (step 4), which has no
+    /// deadline (A22): the sheet offers **Cancel** for it.
+    package var isConnecting: Bool {
+        isRunning && steps.contains { $0.id == "connect" && $0.mark == .running }
+    }
+
+    /// **Cancel** on the connect step: ends the connect flow; the run goes on
+    /// to its not-connected outcome. **Close** still only hides the sheet.
+    package func cancelConnect() {
+        guard isConnecting else { return }
+        connector?.cancelSetupConnect()
+    }
     /// The model holds a configuration token (only while a run is running).
     package var holdsToken: Bool { heldToken != nil }
 
