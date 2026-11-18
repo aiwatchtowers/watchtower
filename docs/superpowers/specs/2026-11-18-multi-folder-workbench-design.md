@@ -71,7 +71,8 @@ One migration (next free number at implementation time; SQL, goose):
 1. `workbench_folders`
    `id`, `workbench_id` (FK `projects` ON DELETE CASCADE), `folder_path` TEXT NOT NULL
    (symlink-resolved, as `projects.folder_path`), `position` INTEGER, `added_at`, `added_by`
-   CHECK IN (`owner`,`agent_suggestion`), `removed_at` (NULL while on the bench). Partial unique
+   CHECK IN (`owner`,`agent_suggestion`), `removed_at` (NULL while on the bench), `name` (unique
+   per bench among live rows, NOCASE; §6.2). Partial unique
    index on `folder_path COLLATE NOCASE WHERE removed_at IS NULL` — one folder, one workbench,
    globally. Removing a folder sets `removed_at` (the row stays, so targets and sessions keep
    pointing at it and can say "folder removed"); putting the same path back on the same bench
@@ -98,6 +99,10 @@ One migration (next free number at implementation time; SQL, goose):
 8. `session_outside_touches` (`session_id` FK CASCADE, `repo_root`, `touches`, `nudged_at`,
    `quiet` — set by Not Now; PK `session_id, repo_root`): the §6.7 hook's counter. One autocommit
    upsert per counted tool call, inside the hook's existing budget; rows go with the session.
+9. `review_reviewer_threads` and `workbench_pr_states` gain `workbench_folder_id` (backfilled with
+   the home folder) as part of their keys, so two folders with the same branch never share a
+   thread or a PR state; `owner_asks` (rebuilt in item 4) gains `doc_folder_id` (NULL = home) and
+   `doc_path` stays relative to that folder.
 
 Mirrors: `schema.sql`, `TestAllTablesExist`, golden snapshot, `TestDatabase+Schema.swift`,
 Kit's schema floor if it reads these tables.
