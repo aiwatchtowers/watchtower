@@ -117,6 +117,7 @@ func migrateFeatureGatesLocked(lk *WriteLock, configPath string) (bool, error) {
 func FeatureMigrationPending(configPath string) (pending, legacy bool, err error) {
 	v := viper.New()
 	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
 
 	if err := v.ReadInConfig(); err != nil {
 		// Missing config file is not an error here — nothing to migrate.

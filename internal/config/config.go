@@ -607,8 +607,12 @@ func Load(configPath string) (*Config, error) {
 	// after RunSchemaUpgrade succeeds.
 	v.SetDefault("db.schema_format", 1)
 	v.SetDefault("workbench.default_agent", string(agentkind.Claude))
-	// Config file
+	// Config file. config.yaml is YAML by contract, whatever the path's
+	// extension (--config / WATCHTOWER_CONFIG_PATH may name any file): every
+	// reader and writer of it sets the type, so the format never follows
+	// the name.
 	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
 
 	if err := v.ReadInConfig(); err != nil {
 		// Missing config file is OK — use defaults

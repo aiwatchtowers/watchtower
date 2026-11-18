@@ -72,6 +72,7 @@ func ensureSchemaFormat(_ *cobra.Command, _ []string) error {
 	return config.WithWriteLock(flagConfig, func(lk *config.WriteLock) error {
 		v := viper.New()
 		v.SetConfigFile(flagConfig)
+		v.SetConfigType("yaml")
 		if err := v.ReadInConfig(); err != nil {
 			return fmt.Errorf("re-reading config for schema_format bump: %w", err)
 		}

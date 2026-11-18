@@ -170,6 +170,7 @@ type rawAI struct {
 func readRawAI(path string) (rawAI, error) {
 	v := viper.New()
 	v.SetConfigFile(path)
+	v.SetConfigType("yaml")
 	if err := v.ReadInConfig(); err != nil {
 		return rawAI{}, err
 	}

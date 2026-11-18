@@ -319,20 +319,64 @@ func TestWriteInitConfig_EmptyFileIsAnEmptyConfig(t *testing.T) {
 func TestWriteInitConfig_NewPathWithoutExtension(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "watchtower-config")
 	require.NoError(t, writeInitConfig(cfgPath, map[string]any{"active_workspace": "acme"}))
-	v := viper.New()
-	v.SetConfigType("yaml")
-	raw, err := os.ReadFile(cfgPath)
-	require.NoError(t, err)
-	require.NoError(t, v.ReadConfig(bytes.NewReader(raw)))
-	assert.Equal(t, "acme", v.GetString("active_workspace"))
+	cfg, err := config.Load(cfgPath)
+	require.NoError(t, err, "the next command loads what init wrote")
+	assert.Equal(t, "acme", cfg.ActiveWorkspace)
 
 	// An existing extensionless file is read as YAML and its keys kept.
 	require.NoError(t, writeInitConfig(cfgPath, map[string]any{"sync.workers": 3}))
-	raw, err = os.ReadFile(cfgPath)
+	cfg, err = config.Load(cfgPath)
 	require.NoError(t, err)
-	require.NoError(t, v.ReadConfig(bytes.NewReader(raw)))
-	assert.Equal(t, "acme", v.GetString("active_workspace"))
-	assert.Equal(t, 3, v.GetInt("sync.workers"))
+	assert.Equal(t, "acme", cfg.ActiveWorkspace)
+	assert.Equal(t, 3, cfg.Sync.Workers)
+}
+
+// TestConfigReaders_ForceYAML: config.yaml is YAML by contract, so every
+// viper that names the config file also sets its type to yaml — the format
+// never follows the path's extension (an extensionless --config path, or one
+// ending in .json, still holds YAML that init and config.Load agree on).
+func TestConfigReaders_ForceYAML(t *testing.T) {
+	fset := token.NewFileSet()
+	files, typed := 0, 0
+	for _, dir := range []string{".", filepath.Join("..", "internal", "config"), filepath.Join("..", "internal", "diagnostics")} {
+		paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		require.NoError(t, err)
+		for _, p := range paths {
+			if strings.HasSuffix(p, "_test.go") {
+				continue
+			}
+			file, err := parser.ParseFile(fset, p, nil, 0)
+			require.NoError(t, err)
+			for _, decl := range file.Decls {
+				setFile, setYAML := 0, 0
+				ast.Inspect(decl, func(n ast.Node) bool {
+					call, ok := n.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					sel, ok := call.Fun.(*ast.SelectorExpr)
+					if !ok {
+						return true
+					}
+					switch sel.Sel.Name {
+					case "SetConfigFile":
+						setFile++
+					case "SetConfigType":
+						if lit, ok := call.Args[0].(*ast.BasicLit); ok && lit.Value == `"yaml"` {
+							setYAML++
+						}
+					}
+					return true
+				})
+				files += setFile
+				typed += setYAML
+				assert.LessOrEqual(t, setFile, setYAML,
+					"%s: a viper on the config file sets SetConfigType(\"yaml\")", fset.Position(decl.Pos()))
+			}
+		}
+	}
+	assert.Positive(t, files, "the scan sees the config readers")
+	assert.GreaterOrEqual(t, typed, files)
 }
 
 func TestConfigInit_BrokenConfigFailsBeforeAnyPrompt(t *testing.T) {

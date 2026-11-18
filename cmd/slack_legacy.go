@@ -122,6 +122,7 @@ func blankLegacySlackConfigToken(cfg *config.Config, logger *log.Logger) {
 	// nothing; checked again inside it before the write.
 	pre := viper.New()
 	pre.SetConfigFile(flagConfig)
+	pre.SetConfigType("yaml")
 	if err := pre.ReadInConfig(); err != nil {
 		logger.Printf("slack: failed to read config to blank legacy token: %v", err)
 		return
@@ -132,6 +133,7 @@ func blankLegacySlackConfigToken(cfg *config.Config, logger *log.Logger) {
 	err := config.WithWriteLock(flagConfig, func(lk *config.WriteLock) error {
 		v := viper.New()
 		v.SetConfigFile(flagConfig)
+		v.SetConfigType("yaml")
 		if err := v.ReadInConfig(); err != nil {
 			return fmt.Errorf("re-reading config: %w", err)
 		}

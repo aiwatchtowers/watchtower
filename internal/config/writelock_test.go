@@ -144,3 +144,20 @@ func TestWithWriteLock_SharedLockFileFixture(t *testing.T) {
 		return nil
 	}))
 }
+
+// TestLoad_ExtensionlessPathIsYAML: config.yaml is YAML by contract, so a
+// --config path without an extension (or with another one) loads as YAML.
+func TestLoad_ExtensionlessPathIsYAML(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"watchtower-config", "config.json"} {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(p, []byte("active_workspace: acme\nsync:\n  workers: 3\n"), 0o600))
+		cfg, err := Load(p)
+		require.NoError(t, err, name)
+		require.Equal(t, "acme", cfg.ActiveWorkspace, name)
+		require.Equal(t, 3, cfg.Sync.Workers, name)
+	}
+	cfg, err := Load(filepath.Join(dir, "missing-config"))
+	require.NoError(t, err, "a missing extensionless config is the defaults")
+	require.NotNil(t, cfg)
+}

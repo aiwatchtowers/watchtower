@@ -549,6 +549,7 @@ func setAIConfigKey(path, key string, value any) error {
 func setAIConfigKeyLocked(lk *config.WriteLock, path, key string, value any) error {
 	v := viper.New()
 	v.SetConfigFile(path)
+	v.SetConfigType("yaml")
 	if err := v.ReadInConfig(); err != nil && !os.IsNotExist(err) {
 		return err
 	}

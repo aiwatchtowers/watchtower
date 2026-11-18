@@ -206,6 +206,7 @@ func writeWorkspaceScaffold(configPath, workspace string, force bool, profile ma
 func writeWorkspaceScaffoldLocked(lk *config.WriteLock, configPath, workspace string, force bool, profile map[string]any) error {
 	v := viper.New()
 	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
 	if err := v.ReadInConfig(); err != nil {
 		var notFound viper.ConfigFileNotFoundError
 		if !errors.As(err, &notFound) && !errors.Is(err, fs.ErrNotExist) {

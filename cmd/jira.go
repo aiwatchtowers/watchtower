@@ -707,6 +707,7 @@ func enableJiraPhase() error {
 	return config.WithWriteLock(flagConfig, func(lk *config.WriteLock) error {
 		v := viper.New()
 		v.SetConfigFile(flagConfig)
+		v.SetConfigType("yaml")
 		_ = v.ReadInConfig()
 		v.Set("jira.enabled", true)
 		return writeConfigAtomic(lk, v, flagConfig)
@@ -1688,6 +1689,7 @@ func runJiraFeaturesReset(cmd *cobra.Command, _ []string) error {
 	if err := config.WithWriteLock(flagConfig, func(lk *config.WriteLock) error {
 		v := viper.New()
 		v.SetConfigFile(flagConfig)
+		v.SetConfigType("yaml")
 		_ = v.ReadInConfig()
 		for _, name := range featureNames {
 			ptr, _ := featureToggleRef(&defaults, name)

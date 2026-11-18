@@ -209,6 +209,7 @@ func enableLinearPhase() error {
 	return config.WithWriteLock(flagConfig, func(lk *config.WriteLock) error {
 		v := viper.New()
 		v.SetConfigFile(flagConfig)
+		v.SetConfigType("yaml")
 		_ = v.ReadInConfig()
 		v.Set("linear.enabled", true)
 		return writeConfigAtomic(lk, v, flagConfig)

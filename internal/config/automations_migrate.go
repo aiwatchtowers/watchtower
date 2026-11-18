@@ -54,6 +54,7 @@ func RemoveLegacyAutomationsKey(configPath string) error {
 func readConfigFile(configPath string) (*viper.Viper, error) {
 	v := viper.New()
 	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
 	if err := v.ReadInConfig(); err != nil {
 		var notFound viper.ConfigFileNotFoundError
 		if errors.As(err, &notFound) || os.IsNotExist(err) {

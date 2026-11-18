@@ -567,6 +567,7 @@ func setConfigKeyUnderLock(lk *config.WriteLock, configPath, key string, value a
 	}
 	v := viper.New()
 	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
 	// A Desktop-only install (no Slack OAuth flow yet) has no config.yaml, so
 	// the very first `features enable/disable` — including the onboarding
 	// feature splash's apply() — would fail here with nothing to write against.

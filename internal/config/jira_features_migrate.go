@@ -104,6 +104,7 @@ func MigrateJiraFeatureKeys(configPath string) (bool, error) {
 func migrateJiraFeatureKeysLocked(lk *WriteLock, configPath string) (bool, error) {
 	v := viper.New()
 	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
 
 	if err := v.ReadInConfig(); err != nil {
 		var configNotFound viper.ConfigFileNotFoundError
