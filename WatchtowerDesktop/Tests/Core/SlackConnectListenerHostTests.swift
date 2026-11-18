@@ -143,21 +143,25 @@ final class SlackConnectListenerHostTests: XCTestCase {
         _ = await fake.session(number: 4)
     }
 
-    /// Crashes far apart (each after the child bound the port) each get a
-    /// restart: binding the port refills the budget. No clock involved.
-    func testCrashesAfterListeningEachRestart() async {
+    /// A10: binding the port does not refill the restart budget — a child
+    /// that binds and then crashes again stops after the one automatic
+    /// restart; only `ensureRunning()` (the Slack pane opening) retries.
+    func testCrashAfterListeningAgainStopsUntilEnsureRunning() async {
         let (host, fake) = makeHost()
         host.ensureRunning()
-        for number in 1...3 {
+        for number in 1...2 {
             let child = await fake.session(number: number)
             child.emit(listening)
             await untilObserved { host.state == .listening }
             child.exit(code: 1)
         }
-        let fourth = await fake.session(number: 4)
-        fourth.emit(listening)
+        await untilObserved { host.state == .stopped }
+        XCTAssertEqual(fake.sessions.count, 2, "one automatic restart only")
+
+        host.ensureRunning()
+        let third = await fake.session(number: 3)
+        third.emit(listening)
         await untilObserved { host.state == .listening }
-        XCTAssertEqual(fake.sessions.count, 4)
     }
 
     func testEnsureRunningWhileStartingThenPortBusyRelaunches() async {
@@ -184,8 +188,8 @@ final class SlackConnectListenerHostTests: XCTestCase {
         first.emit(listening)
         await untilObserved { host.state == .listening }
 
-        // The bound child answered the retry: its crash is an ordinary restart,
-        // and the restart's own crash before binding stops the host.
+        // The bound child answered the retry (no relaunch flag left): its crash
+        // uses the one automatic restart, and the restart's crash stops the host.
         first.exit(code: 1)
         let second = await fake.session(number: 2)
         second.exit(code: 1)

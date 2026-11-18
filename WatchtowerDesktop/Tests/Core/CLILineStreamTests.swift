@@ -8,6 +8,8 @@ final class CLILineStreamTests: XCTestCase {
     private var groups: [pid_t] = []
 
     override func tearDown() {
+        // Groups a passing test confirmed gone were dropped; what is left is a
+        // failing test's, killed here whatever its state.
         groups.forEach { _ = killpg($0, SIGKILL) }
         groups = []
         super.tearDown()
@@ -91,6 +93,7 @@ final class CLILineStreamTests: XCTestCase {
         // the pipe) gives only once it has exited: both are gone, not running.
         XCTAssertFalse(Self.isRunning(leader))
         XCTAssertFalse(Self.isRunning(sleeper))
+        forgetIfGone(leader, members: [leader, sleeper])
     }
 
     func testTerminateKillsProcessGroup() async throws {
@@ -102,6 +105,8 @@ final class CLILineStreamTests: XCTestCase {
         session.terminate()
         await session.waitForExit()
         XCTAssertFalse(Self.isRunning(leader))
+        // The stream ended on stdout's EOF: the sleeper holding it is gone too.
+        forgetIfGone(leader, members: [leader])
     }
 
     func testFailedPipeClosesEarlierPipes() throws {
@@ -121,6 +126,13 @@ final class CLILineStreamTests: XCTestCase {
             XCTAssertEqual(fcntl(fd, F_GETFD), -1, "fd \(fd) still open")
             XCTAssertEqual(errno, EBADF)
         }
+    }
+
+    /// Drops `group` from teardown's kill list once none of its known members
+    /// runs: its id may be recycled from here on.
+    private func forgetIfGone(_ group: pid_t, members: [pid_t]) {
+        guard !members.contains(where: Self.isRunning) else { return }
+        groups.removeAll { $0 == group }
     }
 
     /// Alive and not a zombie (a zombie has exited; only its parent's reap is left).

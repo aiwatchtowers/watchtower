@@ -9,8 +9,8 @@ package enum SlackConnectListenerState: Equatable, Sendable {
     case listening
     /// Something else holds the port; stays so until `ensureRunning()`.
     case portBusy
-    /// Stopped, or the child died again before binding the port after its
-    /// restart; stays so until `ensureRunning()`.
+    /// Stopped, or the child died again after its one automatic restart
+    /// (plan B A10); stays so until `ensureRunning()`.
     case stopped
 }
 
@@ -121,8 +121,9 @@ package final class SlackConnectListenerHost {
         case .listening:
             if !stopping {
                 state = .listening
-                // Bound: a later crash gets its own restart, and a pending retry is moot.
-                restartsLeft = 1
+                // Bound: a pending retry is moot. The restart budget refills only on
+                // `ensureRunning()` (plan B A10: one automatic restart, then a retry
+                // when the Slack pane opens), so a bind-then-crash loop stops.
                 relaunchAfterExit = false
             }
         case .portBusy: if !stopping { state = .portBusy }
