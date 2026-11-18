@@ -57,8 +57,12 @@ type ImapMessage struct {
 }
 
 // CreateEmailAccount inserts a new connected mailbox and returns its ID. An
-// empty a.Label gets the automatic label (MailAccountLabel).
+// empty a.Label gets the automatic label (MailAccountLabel). Only an Outlook
+// account can belong to a company.
 func (db *DB) CreateEmailAccount(a EmailAccount) (int64, error) {
+	if a.CompanySlug != "" && a.Provider != "outlook" {
+		return 0, fmt.Errorf("creating email account: a %s mailbox cannot belong to a company", a.Provider)
+	}
 	res, err := db.Exec(`INSERT INTO email_accounts
         (provider, email_address, host, port, security, folder, label, company_slug)
         VALUES (?,?,?,?,?,?,?,?)`,

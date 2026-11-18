@@ -48,7 +48,7 @@ func (db *DB) CreateLinearAccount(label string) (int64, error) {
 }
 
 // CreateLinearAccountForCompany inserts a new, not yet resolved Linear account
-// tied to companySlug (” = our shared client).
+// tied to companySlug (empty = our shared client).
 func (db *DB) CreateLinearAccountForCompany(label, companySlug string) (int64, error) {
 	res, err := db.Exec(`INSERT INTO linear_accounts (label, company_slug) VALUES (?, ?)`, strings.TrimSpace(label), companySlug)
 	if err != nil {

@@ -537,7 +537,11 @@ func printLinearAccounts(w io.Writer, database *db.DB, workspaceDir string, asJS
 	if asJSON {
 		rows := make([]linearAccountJSON, 0, len(accounts))
 		for _, a := range accounts {
-			rows = append(rows, linearAccountJSON{a.ID, a.Label, a.OrgName, linearWorkspaceURL(a), a.Status, a.Enabled, a.Error, linearAuthKind(workspaceDir, a.ID), a.CompanySlug})
+			rows = append(rows, linearAccountJSON{
+				ID: a.ID, Label: a.Label, OrgName: a.OrgName, URL: linearWorkspaceURL(a),
+				Status: a.Status, Enabled: a.Enabled, Error: a.Error,
+				Auth: linearAuthKind(workspaceDir, a.ID), CompanySlug: a.CompanySlug,
+			})
 		}
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")

@@ -22,14 +22,17 @@ var CompanyAccountSources = []string{"slack", "google", "jira", "linear", "outlo
 // IMAP). Both are fixed SQL, never built from input.
 type companyAccountTable struct {
 	table, filter string
+	// markSet is appended to MarkCompanyAccounts' SET list (the table's own
+	// updated_at, as its Set*AuthState writer keeps it).
+	markSet string
 }
 
 var companyAccountTables = map[string]companyAccountTable{
 	"slack":   {table: "slack_accounts"},
-	"google":  {table: "google_accounts"},
+	"google":  {table: "google_accounts", markSet: `, updated_at = ` + nowSQL},
 	"jira":    {table: "jira_accounts"},
 	"linear":  {table: "linear_accounts"},
-	"outlook": {table: "email_accounts", filter: ` AND provider = 'outlook'`},
+	"outlook": {table: "email_accounts", filter: ` AND provider = 'outlook'`, markSet: `, updated_at = ` + nowSQL},
 }
 
 func companyTable(source string) (companyAccountTable, error) {
@@ -50,7 +53,7 @@ type CompanyAccountRef struct {
 	Error  string
 }
 
-// SetAccountCompany ties one account to companySlug (” unties it). source is
+// SetAccountCompany ties one account to slug (empty unties it). source is
 // one of CompanyAccountSources; a missing row (or an IMAP mailbox named as
 // "outlook") is an error.
 func (db *DB) SetAccountCompany(source string, id int64, slug string) error {
@@ -125,7 +128,7 @@ func (db *DB) MarkCompanyAccounts(slug string, sources []string, code string) ([
 			continue
 		}
 		t := companyAccountTables[source]
-		refs, err := queryCompanyAccountRefs(ctx, tx, source, slug, `UPDATE `+t.table+` SET status = 'error', error = ?
+		refs, err := queryCompanyAccountRefs(ctx, tx, source, slug, `UPDATE `+t.table+` SET status = 'error', error = ?`+t.markSet+`
 			WHERE company_slug = ?`+t.filter+markableStatusSQL+` RETURNING id, status, error`, code, slug)
 		if err != nil {
 			return nil, err

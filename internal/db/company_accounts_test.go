@@ -8,7 +8,7 @@ import (
 )
 
 // companyFixture creates one account per company source; every account is
-// left on the shared client (company_slug ”).
+// left on the shared client (empty company_slug).
 func companyFixture(t *testing.T, d *DB) map[string]int64 {
 	t.Helper()
 	ids := map[string]int64{}
@@ -148,7 +148,10 @@ func TestSetAccountCompany(t *testing.T) {
 	assert.Error(t, d.SetAccountCompany("teams", ids["slack"], "acme"), "unknown source")
 	assert.Error(t, d.SetAccountCompany("slack", ids["slack"]+100, "acme"), "missing row")
 
-	// An IMAP mailbox is not an Outlook account, even though both live in email_accounts.
+	// An IMAP mailbox is not an Outlook account, even though both live in
+	// email_accounts: it is never created with a company, nor tied to one.
+	_, err = d.CreateEmailAccount(EmailAccount{Provider: "imap", EmailAddress: "c@example.com", Security: "ssl", CompanySlug: "acme"})
+	assert.Error(t, err)
 	imapID, err := d.CreateEmailAccount(EmailAccount{Provider: "imap", EmailAddress: "b@example.com", Host: "imap.example.com", Security: "ssl"})
 	require.NoError(t, err)
 	assert.Error(t, d.SetAccountCompany("outlook", imapID, "acme"))
@@ -195,6 +198,17 @@ func TestMarkCompanyAccounts_OneTxOnlyThatSlug(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, d.SetSlackAccountAuthState(revokedID, "revoked", "token_revoked"))
 
+	// Removed and purged rows stay as they are too.
+	removedID, err := d.CreateJiraAccount(JiraAccount{CloudID: "c9", CompanySlug: "acme"})
+	require.NoError(t, err)
+	require.NoError(t, d.SetJiraAccountRemoved(removedID))
+	purgedID, err := d.CreateGoogleAccount(GoogleAccount{Email: "p@example.com", CompanySlug: "acme"})
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE google_accounts SET status = 'purged' WHERE id = ?`, purgedID)
+	require.NoError(t, err)
+	// An account already in error gets the new code.
+	require.NoError(t, d.SetJiraAccountAuthState(acme["jira"], "error", "invalid_client"))
+
 	marked, err := d.MarkCompanyAccounts("acme", []string{"jira", "google"}, "company_changed_app")
 	require.NoError(t, err)
 	assert.Equal(t, []CompanyAccountRef{
@@ -206,10 +220,15 @@ func TestMarkCompanyAccounts_OneTxOnlyThatSlug(t *testing.T) {
 	require.NoError(t, err)
 	for _, r := range refs {
 		switch {
-		case r.Source == "google" || r.Source == "jira":
-			assert.Equal(t, "error", r.Status, r.Source)
+		case r.Source == "jira" && r.ID == removedID:
+			assert.Equal(t, "removed", r.Status)
+		case r.Source == "google" && r.ID == purgedID:
+			assert.Equal(t, "purged", r.Status)
 		case r.Source == "slack" && r.ID == revokedID:
 			assert.Equal(t, "revoked", r.Status)
+		case r.Source == "google" || r.Source == "jira":
+			assert.Equal(t, "error", r.Status, r.Source)
+			assert.Equal(t, "company_changed_app", r.Error, r.Source)
 		default:
 			assert.Equal(t, "ok", r.Status, r.Source)
 		}
@@ -219,6 +238,18 @@ func TestMarkCompanyAccounts_OneTxOnlyThatSlug(t *testing.T) {
 	for _, r := range others {
 		assert.Equal(t, "ok", r.Status, "another company's %s account", r.Source)
 	}
+
+	// "outlook" marks Outlook rows only, never an IMAP mailbox in the same table.
+	imapID, err := d.CreateEmailAccount(EmailAccount{Provider: "imap", EmailAddress: "i@example.com", Host: "imap.example.com", Security: "ssl"})
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE email_accounts SET company_slug = 'acme' WHERE id = ?`, imapID)
+	require.NoError(t, err)
+	marked, err = d.MarkCompanyAccounts("acme", []string{"outlook"}, "company_changed_app")
+	require.NoError(t, err)
+	assert.Equal(t, []CompanyAccountRef{{Source: "outlook", ID: acme["outlook"], Status: "error", Error: "company_changed_app"}}, marked)
+	imap, err := d.GetEmailAccount(imapID)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", imap.Status)
 
 	// All or nothing: an unknown source anywhere in the list marks nothing.
 	_, err = d.MarkCompanyAccounts("acme", []string{"slack", "teams"}, "company_changed_app")
@@ -231,4 +262,14 @@ func TestMarkCompanyAccounts_OneTxOnlyThatSlug(t *testing.T) {
 	assert.Error(t, err, "an empty slug would mark every shared-client account")
 	_, err = d.MarkCompanyAccounts("acme", []string{"slack"}, "")
 	assert.Error(t, err)
+}
+
+// Every purge source is a company source, so a new account table added to one
+// map cannot be forgotten in the other.
+func TestCompanyAccountSources_CoverPurgeSources(t *testing.T) {
+	for source, table := range accountTables {
+		assert.Contains(t, CompanyAccountSources, source)
+		assert.Equal(t, table, companyAccountTables[source].table, source)
+	}
+	assert.Len(t, companyAccountTables, len(CompanyAccountSources))
 }
