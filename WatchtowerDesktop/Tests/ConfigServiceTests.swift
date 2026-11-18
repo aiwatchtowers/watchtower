@@ -123,6 +123,50 @@ struct ConfigServiceTests {
         #expect(!missing.backgroundRunsUnreadable)
     }
 
+    @Test("A mixed-case AI section: the answer reads as Go reads it, and a Save keeps it (no shadow `ai` map)")
+    func testSaveKeepsBackgroundRunsInMixedCaseAISection() throws {
+        let path = makeTempConfig("AI: {Background_Runs: paused, model: old-model}\nsync: {workers: 2}\n")
+        let service = ConfigService(configPath: path)
+        #expect(service.backgroundRuns == "paused")
+        #expect(service.aiModel == "old-model")
+        service.syncWorkers = 5
+        service.aiModel = "new-model"
+        try service.save()
+        let yaml = try #require(try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any])
+        #expect(yaml["ai"] == nil, "no second, lowercase ai map")
+        let ai = try #require(yaml["AI"] as? [String: Any])
+        #expect(ai["Background_Runs"] as? String == "paused")
+        #expect(ai["model"] as? String == "new-model")
+        #expect(ConfigService(configPath: path).backgroundRuns == "paused")
+    }
+
+    @Test("A config.yaml that cannot be reached or read is unreadable, never absent")
+    func testBackgroundRunsUnreadableFileOrDirectory() throws {
+        let path = makeTempConfig("ai: {background_runs: paused}\n")
+        let dir = (path as NSString).deletingLastPathComponent
+        let fm = FileManager.default
+        defer {
+            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir)
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        }
+        let service = ConfigService(configPath: path)
+        #expect(service.backgroundRuns == "paused")
+
+        try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: path)
+        service.reloadBackgroundRuns()
+        #expect(service.backgroundRunsUnreadable, "an unreadable file")
+        #expect(ConfigService(configPath: path).backgroundRunsUnreadable)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+
+        try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: dir)
+        service.reloadBackgroundRuns()
+        #expect(service.backgroundRuns == nil)
+        #expect(service.backgroundRunsUnreadable, "a directory this process cannot enter")
+        let fresh = ConfigService(configPath: path)
+        #expect(fresh.backgroundRunsUnreadable)
+        #expect(fresh.parseError != nil)
+    }
+
     @Test("reloadBackgroundRuns picks up an answer written behind the instance and keeps unsaved edits")
     func testReloadBackgroundRunsKeepsEdits() throws {
         let path = makeTempConfig("ai: {model: m}\n")

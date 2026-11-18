@@ -139,118 +139,124 @@ final class ConfigService {
         reload()
     }
 
-    /// The config file's text, or nil when there is nothing to load. A
-    /// missing file keeps the defaults; one that is present but unreadable is
-    /// a third state, recorded in `parseError` (#740).
-    private func readConfigText() -> String? {
-        guard let data = FileManager.default.contents(atPath: configPath) else {
-            if FileManager.default.fileExists(atPath: configPath) {
-                parseError = "config.yaml can't be read"
-            }
-            return nil
+    /// One read of config.yaml, shared by `reload()` and
+    /// `reloadBackgroundRuns()` so "unreadable" means the same in both. Only a
+    /// confirmed file-not-found is `absent` (a missing file keeps the
+    /// defaults); a file that is present but cannot be read, decoded or
+    /// parsed — or a path that cannot be checked, such as one in a directory
+    /// this process cannot enter — is a third state (#740), as in Go.
+    enum ConfigRead {
+        case absent
+        /// A blank, comments-only or `null` document: an empty config, as the Go CLI reads it.
+        case empty
+        case mapping([String: Any])
+        case unreadable(reason: String)
+    }
+
+    static func readConfig(atPath path: String) -> ConfigRead {
+        let data: Data
+        do {
+            data = try Data(contentsOf: URL(fileURLWithPath: path))
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return .absent
+        } catch {
+            return .unreadable(reason: "config.yaml can't be read")
         }
         guard let str = String(data: data, encoding: .utf8) else {
-            parseError = "config.yaml is not UTF-8 text"
-            return nil
+            return .unreadable(reason: "config.yaml is not UTF-8 text")
         }
-        return str
+        let loaded: Any?
+        do { loaded = try Yams.load(yaml: str) } catch {
+            return .unreadable(reason: error.localizedDescription)
+        }
+        guard let loaded, !(loaded is NSNull) else { return .empty }
+        guard let yaml = loaded as? [String: Any] else {
+            return .unreadable(reason: "config.yaml is not a YAML mapping")
+        }
+        return .mapping(yaml)
     }
 
     func reload() {
         resetProviderOperations()
         routingApplication.configurationReloaded()
         defer { resetModelEditTracking() }
-        // Unknown until the file parses; a missing file is a clean "not answered".
-        backgroundRuns = nil
-        backgroundRunsUnreadable = FileManager.default.fileExists(atPath: configPath)
-        guard let str = readConfigText() else { return }
-
-        do {
-            let loaded = try Yams.load(yaml: str)
-            guard let yaml = loaded as? [String: Any] else {
-                // An empty document (blank, comments only, `null`) is an
-                // empty config, as the Go CLI reads it — not an error.
-                if let loaded, !(loaded is NSNull) {
-                    parseError = "config.yaml is not a YAML mapping"
-                } else {
-                    backgroundRunsUnreadable = false
-                }
-                return
-            }
-            adoptRawConfiguration(yaml)
-
-            if let sync = yaml["sync"] as? [String: Any] {
-                syncInterval = sync["poll_interval"] as? String
-                    ?? (sync["poll_interval"].flatMap { "\($0)" })
-                syncWorkers = sync["workers"] as? Int
-                syncThreads = (sync["sync_threads"] as? Bool) ?? true
-                initialHistoryDays = sync["initial_history_days"] as? Int
-                backfillDays = sync["backfill_days"] as? Int
-            }
-
-            if let digest = yaml["digest"] as? [String: Any] {
-                digestEnabled = (digest["enabled"] as? Bool) ?? false
-                digestMinMessages = digest["min_messages"] as? Int
-                digestLanguage = digest["language"] as? String
-            }
-
-            if let briefing = yaml["briefing"] as? [String: Any] {
-                briefingHour = (briefing["hour"] as? Int) ?? 8
-            }
-
-            if let ai = yaml["ai"] as? [String: Any] {
-                loadFallback(ai)
-                prepareProviderModels(ai)
-                aiModel = ai["model"] as? String
-                aiWorkers = ai["workers"] as? Int
-                aiProvider = ai["provider"] as? String
-                aiOllamaURL = ai["ollama_url"] as? String
-                if let models = ai["models"] as? [String: Any] {
-                    aiModelLight = models["light"] as? String
-                    aiModelStrong = models["strong"] as? String
-                }
-            }
-
-            loadProviderModels()
-            loadCLIPaths(yaml)
-
-            if let calendar = yaml["calendar"] as? [String: Any] {
-                calendarEnabled = (calendar["enabled"] as? Bool) ?? true
-                diskCalendarEnabled = calendarEnabled
-                calendarSyncDaysAhead = (calendar["sync_days_ahead"] as? Int) ?? Self.defaultCalendarSyncDaysAhead
-                calendarHistoryDays = (calendar["history_days"] as? Int) ?? 30
-            }
-
-            if let gmail = yaml["gmail"] as? [String: Any] {
-                gmailEnabled = (gmail["enabled"] as? Bool) ?? true
-                diskGmailEnabled = gmailEnabled
-            }
-
-            if let jira = yaml["jira"] as? [String: Any],
-               let features = jira["features"] as? [String: Bool] {
-                jiraFeatures = features
-            } else {
-                jiraFeatures = [:]
-            }
-
-            if let transcripts = yaml["transcripts"] as? [String: Any] {
-                transcriptAudioRetentionDays = (transcripts["audio_retention_days"] as? Int) ?? 30
-            }
-
-            if let ideas = yaml["ideas"] as? [String: Any] {
-                ideasEnabled = (ideas["enabled"] as? Bool) ?? true
-                ideasMineIntervalHours = (ideas["mine_interval_hours"] as? Int) ?? 6
-            }
-
-            loadDayPlan(yaml)
-
-            purgeRevokedData = (yaml["privacy"] as? [String: Any])?["purge_revoked_data"] as? Bool
-            diskPurgeRevokedData = purgeRevokedData
-
-            parseError = nil
-        } catch {
-            parseError = error.localizedDescription
+        let read = Self.readConfig(atPath: configPath)
+        adoptBackgroundRuns(read)
+        guard case .mapping(let yaml) = read else {
+            if case .unreadable(let reason) = read { parseError = reason }
+            return
         }
+        adoptRawConfiguration(yaml)
+
+        if let sync = yaml["sync"] as? [String: Any] {
+            syncInterval = sync["poll_interval"] as? String
+                ?? (sync["poll_interval"].flatMap { "\($0)" })
+            syncWorkers = sync["workers"] as? Int
+            syncThreads = (sync["sync_threads"] as? Bool) ?? true
+            initialHistoryDays = sync["initial_history_days"] as? Int
+            backfillDays = sync["backfill_days"] as? Int
+        }
+
+        if let digest = yaml["digest"] as? [String: Any] {
+            digestEnabled = (digest["enabled"] as? Bool) ?? false
+            digestMinMessages = digest["min_messages"] as? Int
+            digestLanguage = digest["language"] as? String
+        }
+
+        if let briefing = yaml["briefing"] as? [String: Any] {
+            briefingHour = (briefing["hour"] as? Int) ?? 8
+        }
+
+        if let ai = Self.aiSection(yaml) {
+            loadFallback(ai)
+            prepareProviderModels(ai)
+            aiModel = ai["model"] as? String
+            aiWorkers = ai["workers"] as? Int
+            aiProvider = ai["provider"] as? String
+            aiOllamaURL = ai["ollama_url"] as? String
+            if let models = ai["models"] as? [String: Any] {
+                aiModelLight = models["light"] as? String
+                aiModelStrong = models["strong"] as? String
+            }
+        }
+
+        loadProviderModels()
+        loadCLIPaths(yaml)
+
+        if let calendar = yaml["calendar"] as? [String: Any] {
+            calendarEnabled = (calendar["enabled"] as? Bool) ?? true
+            diskCalendarEnabled = calendarEnabled
+            calendarSyncDaysAhead = (calendar["sync_days_ahead"] as? Int) ?? Self.defaultCalendarSyncDaysAhead
+            calendarHistoryDays = (calendar["history_days"] as? Int) ?? 30
+        }
+
+        if let gmail = yaml["gmail"] as? [String: Any] {
+            gmailEnabled = (gmail["enabled"] as? Bool) ?? true
+            diskGmailEnabled = gmailEnabled
+        }
+
+        if let jira = yaml["jira"] as? [String: Any],
+           let features = jira["features"] as? [String: Bool] {
+            jiraFeatures = features
+        } else {
+            jiraFeatures = [:]
+        }
+
+        if let transcripts = yaml["transcripts"] as? [String: Any] {
+            transcriptAudioRetentionDays = (transcripts["audio_retention_days"] as? Int) ?? 30
+        }
+
+        if let ideas = yaml["ideas"] as? [String: Any] {
+            ideasEnabled = (ideas["enabled"] as? Bool) ?? true
+            ideasMineIntervalHours = (ideas["mine_interval_hours"] as? Int) ?? 6
+        }
+
+        loadDayPlan(yaml)
+
+        purgeRevokedData = (yaml["privacy"] as? [String: Any])?["purge_revoked_data"] as? Bool
+        diskPurgeRevokedData = purgeRevokedData
+
+        parseError = nil
     }
 
     private func loadDayPlan(_ yaml: [String: Any]) {
@@ -267,43 +273,45 @@ final class ConfigService {
     /// and after the Desktop's own allow/pause call). Unsaved Settings edits
     /// stay; `parseError` is left to `reload()`.
     func reloadBackgroundRuns() {
-        backgroundRuns = nil
-        guard let data = FileManager.default.contents(atPath: configPath) else {
-            backgroundRunsUnreadable = FileManager.default.fileExists(atPath: configPath)
-            return
-        }
-        guard let text = String(data: data, encoding: .utf8) else {
-            backgroundRunsUnreadable = true
-            return
-        }
-        do {
-            let loaded = try Yams.load(yaml: text)
-            if let yaml = loaded as? [String: Any] {
-                backgroundRuns = Self.backgroundRuns(in: yaml)
-                backgroundRunsUnreadable = false
-            } else {
-                // An empty document is an empty config, as `reload()` reads it.
-                backgroundRunsUnreadable = loaded != nil && !(loaded is NSNull)
-            }
-        } catch {
+        adoptBackgroundRuns(Self.readConfig(atPath: configPath))
+    }
+
+    private func adoptBackgroundRuns(_ read: ConfigRead) {
+        switch read {
+        case .absent, .empty:
+            backgroundRuns = nil
+            backgroundRunsUnreadable = false
+        case .mapping(let yaml):
+            backgroundRuns = Self.backgroundRuns(in: yaml)
+            backgroundRunsUnreadable = false
+        case .unreadable:
+            backgroundRuns = nil
             backgroundRunsUnreadable = true
         }
     }
 
-    /// `ai.background_runs` as a string, keys matched without regard to case
-    /// as Go's viper reads them; a non-string value reads as nil (absent).
+    /// The key of `m` that viper reads as `key`, as Go's `lookupFold`: the
+    /// exact key first, else a case-insensitive match (the first in sorted
+    /// order, so the pick is stable).
+    static func foldKey(_ m: [String: Any], _ key: String) -> String? {
+        if m[key] != nil { return key }
+        return m.keys.filter { $0.caseInsensitiveCompare(key) == .orderedSame }.min()
+    }
+
+    /// The `ai` section, found as Go finds it.
+    static func aiSection(_ yaml: [String: Any]) -> [String: Any]? {
+        foldKey(yaml, "ai").flatMap { yaml[$0] as? [String: Any] }
+    }
+
+    /// `ai.background_runs` as a string, keys matched as Go's `lookupFold`
+    /// matches them; a non-string value reads as nil (absent).
     private static func backgroundRuns(in yaml: [String: Any]) -> String? {
-        func fold(_ m: [String: Any], _ key: String) -> Any? {
-            m[key] ?? m.first { $0.key.caseInsensitiveCompare(key) == .orderedSame }?.value
-        }
-        guard let ai = fold(yaml, "ai") as? [String: Any] else { return nil }
-        return fold(ai, "background_runs") as? String
+        guard let ai = aiSection(yaml), let key = foldKey(ai, "background_runs") else { return nil }
+        return ai[key] as? String
     }
 
     private func adoptRawConfiguration(_ yaml: [String: Any]) {
         rawYAML = yaml
-        backgroundRuns = Self.backgroundRuns(in: yaml)
-        backgroundRunsUnreadable = false
         activeWorkspace = yaml["active_workspace"] as? String
     }
 
@@ -512,7 +520,10 @@ final class ConfigService {
     }
 
     private func applyAISection(to yaml: inout [String: Any]) throws {
-        var ai = (yaml["ai"] as? [String: Any]) ?? [:]
+        // Update the section where it is, whatever its case (`AI:` hand-edited):
+        // a second lowercase `ai` map would shadow the owner's background_runs.
+        let aiKey = Self.foldKey(yaml, "ai") ?? "ai"
+        var ai = (yaml[aiKey] as? [String: Any]) ?? [:]
         var buckets = ai["providers"] as? [String: [String: Any]] ?? [:]
         let selected = aiProvider ?? "claude"
         applyFallback(to: &ai)
@@ -553,7 +564,7 @@ final class ConfigService {
             if let val = aiModelStrong, !val.isEmpty { aiModels["strong"] = val } else { aiModels.removeValue(forKey: "strong") }
             if !aiModels.isEmpty { ai["models"] = aiModels } else { ai.removeValue(forKey: "models") }
         }
-        if !ai.isEmpty { yaml["ai"] = ai } else { yaml.removeValue(forKey: "ai") }
+        if !ai.isEmpty { yaml[aiKey] = ai } else { yaml.removeValue(forKey: aiKey) }
     }
 
     /// `workbench.default_agent` straight from the file, off the main actor
@@ -678,15 +689,14 @@ final class ConfigService {
         routingApplication.saved()
 
         rawYAML = yaml
-        loadFallback(yaml["ai"] as? [String: Any] ?? [:])
-        backgroundRuns = Self.backgroundRuns(in: yaml)
-        backgroundRunsUnreadable = false
+        loadFallback(Self.aiSection(yaml) ?? [:])
+        adoptBackgroundRuns(.mapping(yaml))
         lastSaveChangedPurge = purgeChanged
         diskPurgeRevokedData = purgeRevokedData
         // Adopt what is on disk now, so a switch the CLI turned on behind this
         // instance also shows as on.
         adoptGoogleSyncSwitches(from: yaml)
-        if let ai = yaml["ai"] as? [String: Any] {
+        if let ai = Self.aiSection(yaml) {
             providerBuckets = ai["providers"] as? [String: [String: Any]] ?? [:]
             loadProviderModels()
         }

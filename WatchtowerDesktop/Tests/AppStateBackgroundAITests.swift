@@ -29,6 +29,7 @@ final class AppStateBackgroundAITests: XCTestCase {
         let (state, _) = try appState(config: nil)
         XCTAssertEqual(state.backgroundAI, BackgroundAIConsent.resolve(answer: nil, policy: nil))
         XCTAssertTrue(state.backgroundAI.prompt)
+        XCTAssertFalse(state.backgroundAIConfigUnreadable)
     }
 
     func testAnswerAndPolicyResolveTogether() throws {
@@ -54,5 +55,6 @@ final class AppStateBackgroundAITests: XCTestCase {
         let (state, _) = try appState(config: "ai: [unclosed\n", policy: ["AllowBackgroundAI": true])
         XCTAssertFalse(state.backgroundAI.isAllowed)
         XCTAssertEqual(state.backgroundAI.reason, .unanswered)
+        XCTAssertTrue(state.backgroundAIConfigUnreadable)
     }
 }

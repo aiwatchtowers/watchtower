@@ -15,6 +15,12 @@ extension AppState {
         )
     }
 
+    /// config.yaml is there but cannot be read, so the answer is unknown and
+    /// `backgroundAI` reads paused. Answering cannot be saved then (the
+    /// writers refuse a file they cannot parse), so the consent sheet stays
+    /// closed for this state.
+    var backgroundAIConfigUnreadable: Bool { sharedConfig.backgroundRunsUnreadable }
+
     /// Re-reads the answer from config.yaml: on app activation and after the
     /// Desktop's own `ai background allow|pause` call. Unsaved Settings
     /// edits stay.
