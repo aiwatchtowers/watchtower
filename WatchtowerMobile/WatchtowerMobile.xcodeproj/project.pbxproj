@@ -181,6 +181,7 @@
 		7E1CEB00E2AEA4E1FADAFBA0 /* RecorderNotices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67BF6DB29267D73FA3E8AEA6 /* RecorderNotices.swift */; };
 		7E85DCB5A5DBE705F60F7CC0 /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = EB8572B29D41BB288DE5049A /* SwiftProtobuf */; };
 		7F00F3800B6D983D9681DCA1 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEBD9ECF17CEA4057EAF471 /* NotificationService.swift */; };
+		7F9588991B27615DF8BAC9FC /* UploadRetryGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53916518B1A7A19D92E9342F /* UploadRetryGate.swift */; };
 		80B0BD82A7280A1574E94711 /* RelayConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFC2F522FC1F6E775AB62D3A /* RelayConfig.swift */; };
 		80B679DC462012FD3C8DA200 /* ReviewAskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B49C9F3C607137081E616A5F /* ReviewAskView.swift */; };
 		82E1B2966847B84D12131831 /* NotifyContent.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C3F9240000D56B30D4AB7332 /* NotifyContent.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -279,6 +280,7 @@
 		CBAC6DFC16DA706DE9C73921 /* CheckAskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFCBBC92D3DFC415396C183C /* CheckAskView.swift */; };
 		CC58E9B61684A610576DA392 /* DemoSeed+Workbench.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC1D506E95E1AC75991E81EB /* DemoSeed+Workbench.swift */; };
 		CD1CF9B9ABA758B79FE0F0C6 /* MultiHubEnvironmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AE856C04E56DC5BC73E2622 /* MultiHubEnvironmentTests.swift */; };
+		CD7632D37E7B6B71B272D44B /* HubSession+Wake.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA2466DA58D361D0BBFD4A7D /* HubSession+Wake.swift */; };
 		CDC11FD078A2FB5E6866D0A2 /* PermissionCardModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 235E649016A78F0B50BAC758 /* PermissionCardModel.swift */; };
 		CE27B9D95BCA2C594B3AA611 /* MacMovedWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFEAE5C2DA8B8D7B7FFDEA68 /* MacMovedWiringTests.swift */; };
 		CE73BE7359EBFEB63F294C2E /* WorkchatComposerBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58EF604C900416B89A5531DD /* WorkchatComposerBar.swift */; };
@@ -499,6 +501,7 @@
 		525B421389B4DBB63C7176F8 /* DemoTourTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoTourTests.swift; sourceTree = "<group>"; };
 		528BE8894EDA75D94D9DDF64 /* RecordingHoldTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingHoldTests.swift; sourceTree = "<group>"; };
 		529DCD91B3058908D98062C3 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		53916518B1A7A19D92E9342F /* UploadRetryGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadRetryGate.swift; sourceTree = "<group>"; };
 		55D1C1D5173ED2758596AA8F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		56918895035C3877F703E1A9 /* MetricHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricHistory.swift; sourceTree = "<group>"; };
 		5874A63A0C325EAE95BA10DE /* LinkNotice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkNotice.swift; sourceTree = "<group>"; };
@@ -726,6 +729,7 @@
 		F6CC7B3E7EA9A863558A8DE6 /* AgendaModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgendaModel.swift; sourceTree = "<group>"; };
 		F6D260627EE7F272A12C5F7C /* MacNotShowingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacNotShowingView.swift; sourceTree = "<group>"; };
 		F7CFE5AE719977FA1B0F3599 /* SettingsWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWiringTests.swift; sourceTree = "<group>"; };
+		FA2466DA58D361D0BBFD4A7D /* HubSession+Wake.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HubSession+Wake.swift"; sourceTree = "<group>"; };
 		FA4C19BC528865AFEB075299 /* LinkedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedView.swift; sourceTree = "<group>"; };
 		FEC6D907F03F9B14B2029703 /* SessionDetailWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDetailWiringTests.swift; sourceTree = "<group>"; };
 		FEE107B34964A17A7CBF17B4 /* MacTransportWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacTransportWiringTests.swift; sourceTree = "<group>"; };
@@ -1008,6 +1012,7 @@
 				14B25D8C909B1B658ECF2B57 /* HubSession+Chats.swift */,
 				4856D6B222E9182B2632BE9B /* HubSession+ReaderStatus.swift */,
 				2C7BE965E32256F4C81D29A0 /* HubSession+RecordingHandover.swift */,
+				FA2466DA58D361D0BBFD4A7D /* HubSession+Wake.swift */,
 				1AD41B1E3AB91B5552C46EF2 /* OutboxBacklog.swift */,
 				3D9BD2D3D252DAA71D12ABD1 /* PromotedLinkResumer.swift */,
 				8060EE68F5A9E7FAEA29B27B /* RelayAvailability.swift */,
@@ -1018,6 +1023,7 @@
 				6F42875048B226127DDDBF6C /* TransportFactory.swift */,
 				74E5581315BD167F485A1318 /* TransportFollower.swift */,
 				790EDA0792AA0F8934CF6925 /* TransportRequest.swift */,
+				53916518B1A7A19D92E9342F /* UploadRetryGate.swift */,
 			);
 			path = Hubs;
 			sourceTree = "<group>";
@@ -1576,6 +1582,7 @@
 				78BD3CD238277CBF445B2B49 /* HubSession+Chats.swift in Sources */,
 				8FB166E987D0412D7DDBC10E /* HubSession+ReaderStatus.swift in Sources */,
 				ED65ED4CF15623705631BC86 /* HubSession+RecordingHandover.swift in Sources */,
+				CD7632D37E7B6B71B272D44B /* HubSession+Wake.swift in Sources */,
 				DC20254FEA64E44647E9EB4C /* HubSession.swift in Sources */,
 				B13D19119CF5FEBCB8801027 /* HubSwitcherChip.swift in Sources */,
 				4AFB097B5F15151D72EE5076 /* HubSwitcherModel.swift in Sources */,
@@ -1679,6 +1686,7 @@
 				02256DE705F39E629063D8C3 /* TransportFollower.swift in Sources */,
 				772241DF8C99B5627B4AEE7D /* TransportRequest.swift in Sources */,
 				410E27EFD2AA0AAFCF607AA3 /* TypeScale.swift in Sources */,
+				7F9588991B27615DF8BAC9FC /* UploadRetryGate.swift in Sources */,
 				DD8721FE3C3E934F209AF425 /* WatchtowerMobileApp.swift in Sources */,
 				89AB9D775F2DF39C5E7D5EDB /* WelcomeView.swift in Sources */,
 				06BA6C9ACCABAA061160AED9 /* WorkbenchAutomationsModel.swift in Sources */,

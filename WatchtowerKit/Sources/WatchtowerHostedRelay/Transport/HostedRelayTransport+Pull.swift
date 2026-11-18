@@ -1,4 +1,5 @@
 import Foundation
+import os
 import WatchtowerRelayProto
 import WatchtowerSync
 
@@ -16,10 +17,14 @@ extension HostedRelayTransport {
     /// Pulls `zones`, joining the pull in flight (which then pulls them too before it ends).
     func pullZones(_ zones: Set<CloudZoneID>) async throws {
         zonesToPull.formUnion(zones)
-        if let pullTask { return try await pullTask.value }
-        let task = Task { try await self.drainPulls() }
+        let task = pullTask ?? Task { try await self.drainPulls() }
         pullTask = task
-        try await task.value
+        // A caller cancelled (the app left mid-read, `HubSession.setActive(false)`) stops the pull it waits on.
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     /// Pulls the owed zones until none is owed, each pass reading its zones concurrently. The last check and the
@@ -47,17 +52,24 @@ extension HostedRelayTransport {
         if buffered { engineFetchedHandler?() }
     }
 
-    /// Reads `zones` at once, in their order (the data zone first); whether any buffered, and the first failure.
+    /// Reads `zones` concurrently; whether any buffered, and the first failure. Only the starts are in order (the
+    /// data zone first): each zone's first request is handed over for sending before the next zone starts.
     private func pullConcurrently(_ zones: [CloudZoneID]) async -> (buffered: Bool, failure: (any Error)?) {
         await withTaskGroup(of: Result<Bool, any Error>.self) { group in
             for zone in zones {
+                let started = StartSignal()
                 group.addTask {
+                    defer { started.fire() }
                     do {
-                        return .success(try await self.pullZone(zone))
+                        let pulled = try await HostedRelayClient.$submitted.withValue({ started.fire() }, operation: {
+                            try await self.pullZone(zone)
+                        })
+                        return .success(pulled)
                     } catch {
                         return .failure(error)
                     }
                 }
+                await started.wait()
             }
             var buffered = false
             var failure: (any Error)?
@@ -222,6 +234,32 @@ extension HostedRelayTransport {
             try await pullZones([zone])
         } catch {
             Self.logger.error("relay re-read after a refused write failed, \(Self.kind(zone), privacy: .public)")
+        }
+    }
+}
+
+/// Fires once; `wait` returns once it fired.
+private final class StartSignal: Sendable {
+    private let state = OSAllocatedUnfairLock<(fired: Bool, waiters: [CheckedContinuation<Void, Never>])>(
+        initialState: (false, []))
+
+    func fire() {
+        let waiters = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+            guard !state.fired else { return [] }
+            state.fired = true
+            defer { state.waiters = [] }
+            return state.waiters
+        }
+        for waiter in waiters { waiter.resume() }
+    }
+
+    func wait() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let fired = state.withLock { state in
+                if !state.fired { state.waiters.append(continuation) }
+                return state.fired
+            }
+            if fired { continuation.resume() }
         }
     }
 }

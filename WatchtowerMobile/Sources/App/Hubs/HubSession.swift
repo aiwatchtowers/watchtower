@@ -366,11 +366,13 @@ final class HubSession {
     /// link R6); nil for a transport without one.
     @ObservationIgnored private let wake: (@Sendable () async -> Void)?
     /// When the app last became active: the start of the next `wake_ms` sample (live link R7).
-    @ObservationIgnored private var activatedAt: Date?
+    @ObservationIgnored var activatedAt: Date?
+    /// The serial of the last fetch begun for a return to the foreground: cancelled when the app leaves again.
+    @ObservationIgnored private var foregroundFetch: Int?
     @ObservationIgnored private var loopTask: Task<Void, Never>?
     /// The safety poll's wait; tests step it by hand.
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
-    @ObservationIgnored private let now: @Sendable () -> Date
+    @ObservationIgnored let now: @Sendable () -> Date
     /// Fetches begun so far: a push is served by any fetch begun after it.
     @ObservationIgnored private var fetchSerial = 0
     @ObservationIgnored private var runningFetch: (serial: Int, task: Task<FetchOutcome, Never>)?
@@ -444,7 +446,7 @@ final class HubSession {
     /// The unlock signal's registration (`protectedDataDidBecomeAvailable`), removed by `stop()`.
     @ObservationIgnored private var unlockObserver: NotificationToken?
 
-    nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "HubSession")
+    nonisolated static let logger = Logger(subsystem: "WatchtowerMobile", category: "HubSession")
 
     /// Designated init with an injectable transport and replica path, so
     /// wiring tests build isolated sessions. Throws when the replica
@@ -545,8 +547,7 @@ final class HubSession {
         // Each fetch reaches CloudKit once (`remoteFetch`); the hydrator and
         // the feed then read what that buffered, so neither pulls on its own.
         // An in-memory stand-in has no engine and gets nil.
-        self.remoteFetch = remoteFetch ?? Self.cloudReach(transport)
-        self.wake = wake ?? (transport as? any LiveTransport).map { live in { await live.wake() } }
+        (self.remoteFetch, self.wake) = (remoteFetch ?? Self.cloudReach(transport), wake ?? liveTransport.map { live in { await live.wake() } })
         let keyboxSignal = KeyboxSignal()
         self.keyboxSignal = keyboxSignal
         // Labelled: a trailing closure would bind to `pull`, the first closure parameter.
@@ -1123,6 +1124,7 @@ final class HubSession {
     ) -> Task<FetchOutcome, Never> {
         fetchSerial += 1
         let serial = fetchSerial
+        if trigger == .foreground { foregroundFetch = serial }
         let depth = depth ?? push.map { .push(since: $0.at, pollOnFallback: $0.inForeground) } ?? .full
         if depth == .full {
             fullFetchOwed = false
@@ -1152,6 +1154,8 @@ final class HubSession {
             await wake?()
         }
         do {
+            // The app left during the wake (`setActive(false)` cancelled this fetch): nothing is read.
+            try Task.checkCancellation()
             try await remoteFetch?(depth)
             if trigger == .foreground { recordWake() }
         } catch {
@@ -1165,6 +1169,13 @@ final class HubSession {
             applyOwed = false
         }
         await noteRelayAnswer()
+        if remoteError is CancellationError || Task.isCancelled {
+            Self.logger.info("fetch stopped: the app left (\(String(describing: trigger), privacy: .public))")
+            if owed {
+                await applyBuffered()
+            }
+            return .failed
+        }
         if let remoteError {
             lastFetchError = remoteError.localizedDescription
             let what = "\(trigger), \(Self.describe(depth))"
@@ -1209,18 +1220,6 @@ final class HubSession {
         // this launch took the refusal. The push fetched nothing, and its data waits for the next open.
         if case .push = depth, let relay = await relayAvailability(), relay != .available { return .failed }
         return .noData
-    }
-
-    /// The return's fetch read every zone: one `wake_ms` sample (became active → all zones read) in the replica's
-    /// latency rows and the log (live link R7). Once per activation.
-    private func recordWake() {
-        guard let activatedAt else { return }
-        self.activatedAt = nil
-        let readAt = now()
-        let ms = Int((readAt.timeIntervalSince(activatedAt) * 1000).rounded())
-        let transport = route.map(Self.transportKind(of:)) ?? .cloudKit
-        store.recordWake(ms: ms, transport: transport, at: readAt)
-        Self.logger.info("wake: all zones read in \(ms, privacy: .public) ms (\(transport.rawValue, privacy: .public))")
     }
 
     /// A depth for the log: `full` or `push`.
@@ -1292,6 +1291,12 @@ final class HubSession {
         // The chats' prefetch runs in the foreground only.
         chats.setForeground(active)
         guard active else {
+            // The return's wake and reads stop with the app (live link R6): the next return reads again from the
+            // stored cursors.
+            activatedAt = nil
+            if let foreground = foregroundFetch, runningFetch?.serial == foreground {
+                runningFetch?.task.cancel()
+            }
             restartLoop(firstCycle: nil)
             return
         }
@@ -2083,33 +2088,5 @@ final class HubSession {
                 _ = await self.startFetch(.loop).value
             }
         }
-    }
-}
-
-/// Whether the recording uploader may re-send (the app is active). Read by
-/// the uploader's actor, written on the main actor.
-final class UploadRetryGate: Sendable {
-    private let state: OSAllocatedUnfairLock<Bool>
-
-    init(_ open: Bool) {
-        state = OSAllocatedUnfairLock(initialState: open)
-    }
-
-    var isOpen: Bool { state.withLock { $0 } }
-
-    /// Sets the gate; true when that changed it.
-    func set(_ open: Bool) -> Bool {
-        state.withLock { current in
-            defer { current = open }
-            return current != open
-        }
-    }
-}
-
-extension PhoneRecording {
-    /// On its way to the Mac and not yet acknowledged: waiting, or saved
-    /// and waiting for the Mac's receipt, while it still retries by itself.
-    var needsUpload: Bool {
-        (state == .waiting || state == .uploading) && !isUploadStuck
     }
 }

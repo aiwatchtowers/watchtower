@@ -406,6 +406,15 @@ final class FakeRelaySocket: RelaySocket, @unchecked Sendable {
         }
     }
 
+    /// The pong of every ping waiting for one.
+    func pong() {
+        let waiters = pipe.withLock { pipe in
+            defer { pipe.pingWaiters = [] }
+            return pipe.pingWaiters
+        }
+        for waiter in waiters { waiter.resume() }
+    }
+
     func ping() async throws {
         let pongs = relay.pongs
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in

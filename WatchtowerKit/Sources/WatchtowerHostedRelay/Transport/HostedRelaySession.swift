@@ -181,17 +181,14 @@ public actor HostedRelaySession {
 
     // MARK: - Wake (live link R6)
 
-    /// The app became active: the socket is pinged, and with no pong within
-    /// `HostedRelayConnection.wakePingDeadline` a second socket is dialled while the first may still pong;
-    /// whichever is ready first carries the reads that follow. Returns once the socket to read on is known; a
-    /// wake already in flight is joined. Nothing without a connection (its loop is dialling, or nobody wants it).
+    /// The app became active (`HostedRelayConnection.wake`): the socket is pinged, and with no pong within
+    /// `HostedRelayConnection.wakePingDeadline` a second socket is dialled while the first may still pong; a
+    /// connection waiting out a reconnect backoff dials at once. Returns once the socket to read on is known; a
+    /// wake already in flight is joined. Nothing without a connection (nobody wants the socket).
     public func wake() async {
         if let waking { return await waking.value }
         guard let connection else { return }
-        let task = Task {
-            if await connection.probe() { return }
-            await connection.redialRace()
-        }
+        let task = Task { await connection.wake() }
         waking = task
         await task.value
         waking = nil

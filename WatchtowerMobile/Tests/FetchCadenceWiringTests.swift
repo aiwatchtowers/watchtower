@@ -108,7 +108,7 @@ final class FetchCadenceWiringTests: XCTestCase {
     /// before its fetch reads the zones, and the span from becoming active to all zones read is one `wake_ms` row.
     func testSetActiveWakesSessionBeforeFetch() async throws {
         let steps = StepLog()
-        let wired = try await makeWired(wake: { await steps.append("wake") })
+        let wired = try await makeWired { await steps.append("wake") }
         steps.fetches = { wired.remote.depths.count }
         wired.env.setActive(false)
         wired.clock.advance(SessionCadence.foregroundRefetchAfter(role: .active) + 1)
@@ -126,6 +126,34 @@ final class FetchCadenceWiringTests: XCTestCase {
         let sample = try XCTUnwrap(try wired.env.store.wakeSamples(since: .distantPast).first)
         XCTAssertEqual(sample.wakeMs, 800)
         XCTAssertEqual(sample.transport, .cloudKit)
+    }
+
+    /// The app leaves again while the return's wake still runs: the fetch is cancelled, so nothing is read and no
+    /// `wake_ms` sample is recorded; the next return reads again.
+    func testLeavingDuringTheWakeCancelsTheReturnsFetch() async throws {
+        let steps = StepLog()
+        let (hang, keep) = AsyncStream<Void>.makeStream()
+        defer { keep.finish() }
+        let wired = try await makeWired {
+            await steps.append("wake")
+            // Waits until its task is cancelled (the stream never yields while `keep` lives).
+            for await _ in hang {}
+            await steps.append("wake ended")
+        }
+        steps.fetches = { wired.remote.depths.count }
+        wired.env.setActive(false)
+        wired.clock.advance(SessionCadence.foregroundRefetchAfter(role: .active) + 1)
+        let fetchesBefore = wired.remote.depths.count
+
+        wired.env.setActive(true)
+        try await poll({ steps.all.count == 1 }, "the return did not wake")
+        wired.env.setActive(false)
+        try await poll({ steps.all.count == 2 }, "leaving did not cancel the wake")
+
+        XCTAssertEqual(steps.all.last, "wake ended after \(fetchesBefore) fetches", "nothing was read")
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertEqual(wired.remote.depths.count, fetchesBefore)
+        XCTAssertEqual(try wired.env.store.wakeSamples(since: .distantPast), [])
     }
 
     // MARK: - Pushes

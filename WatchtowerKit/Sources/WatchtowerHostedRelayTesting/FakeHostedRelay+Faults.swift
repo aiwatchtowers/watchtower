@@ -99,6 +99,12 @@ extension FakeHostedRelay {
         locked { state.faults.pongs }
     }
 
+    /// Answers every ping waiting for its pong now (a late pong); `setPongs` still decides the next pings.
+    public func answerPings() {
+        let sockets = locked { state.sockets }
+        for socket in sockets { socket.pong() }
+    }
+
     /// The next subscribe that names `zone` gets no answer (the client's 10 s subscribe deadline).
     public func silenceSubscribe(zone: String) {
         _ = locked { state.faults.silenced.insert(zone) }
