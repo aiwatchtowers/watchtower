@@ -23,6 +23,10 @@ var refreshAhead = time.Hour
 // left, so a Mac that syncs rarely never lets it lapse (parent spec §5.5).
 var refreshTokenAhead = 7 * 24 * time.Hour
 
+// slackAccessTokenDefaultTTL is a new access token's lifetime when Slack's
+// answer does not state it: 12 hours (the spike saw expires_in=43200).
+const slackAccessTokenDefaultTTL = 12 * time.Hour
+
 // slackRefreshTokenDefaultTTL is a rotated refresh token's lifetime when
 // Slack's answer does not state it: 30 days for an app with PKCE on (the
 // plan B spike, Task 1). Task 16 confirms it.
@@ -104,6 +108,10 @@ func freshLocked(ctx context.Context, store *slack.TokenStore, database *db.DB, 
 	// one works, so a cancel of the caller (Sync Now, a sleep, Ctrl-C) must
 	// not drop the answer before it is saved. The caller's ctx bounded only
 	// the lock wait; the refresh and the save run to the end.
+	// The lock can be taken after the caller gave up: start nothing then.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 	defer cancelRefresh()
 	got, err := refresh(refreshCtx, clientID, tok.RefreshToken)
@@ -144,13 +152,19 @@ func freshLocked(ctx context.Context, store *slack.TokenStore, database *db.DB, 
 var saveFault func() error
 
 // refreshedToken is tok after Slack's refresh answer got at at. An expiry
-// Slack did not state is kept from tok — except a new refresh token without
-// a stated lifetime, which gets slackRefreshTokenDefaultTTL.
+// Slack did not state is kept from tok — except for a new token: a new access
+// token gets slackAccessTokenDefaultTTL, a new refresh token
+// slackRefreshTokenDefaultTTL.
 func refreshedToken(tok *slack.Token, got Refreshed, clientID string, at time.Time) *slack.Token {
 	next := *tok
 	next.AccessToken = got.AccessToken
-	if got.ExpiresIn > 0 {
+	switch {
+	case got.ExpiresIn > 0:
 		next.ExpiresAt = at.Add(time.Duration(got.ExpiresIn) * time.Second).UTC()
+	case got.AccessToken != tok.AccessToken:
+		// A new token never inherits the old one's (near or past) expiry,
+		// which would rotate it again on every read.
+		next.ExpiresAt = at.Add(slackAccessTokenDefaultTTL).UTC()
 	}
 	rotatedRefresh := got.RefreshToken != "" && got.RefreshToken != tok.RefreshToken
 	if rotatedRefresh {

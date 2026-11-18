@@ -501,8 +501,13 @@ func TestSlackRefresh_UnstatedExpiries(t *testing.T) {
 			wantAccess: t0.Add(12 * time.Hour), wantRefresh: oldRefresh, wantRefreshToken: "xoxe-1-old",
 		},
 		{
-			name:       "no expires_in",
+			name:       "new access token without expires_in",
 			got:        Refreshed{AccessToken: "a2", RefreshToken: "r2", RefreshExpiresIn: 3600},
+			wantAccess: t0.Add(12 * time.Hour), wantRefresh: t0.Add(time.Hour), wantRefreshToken: "r2",
+		},
+		{
+			name:       "same access token without expires_in",
+			got:        Refreshed{AccessToken: "xoxe.xoxp-old", RefreshToken: "r2", RefreshExpiresIn: 3600},
 			wantAccess: oldAccess, wantRefresh: t0.Add(time.Hour), wantRefreshToken: "r2",
 		},
 	} {
@@ -562,4 +567,19 @@ func TestSlackRefresh_RowExpiryFailureStillReturnsToken(t *testing.T) {
 	saved, err := f.store().Load()
 	require.NoError(t, err)
 	assert.Equal(t, "xoxe.xoxp-new", saved.AccessToken)
+}
+
+// A caller that gave up while waiting for the lock starts no refresh.
+func TestSlackRefresh_CancelledBeforeRefreshStartsNone(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, "111.222", "")
+	f.save(t, rotated(t0.Add(10*time.Minute), t0.Add(20*24*time.Hour)))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tok, err := LoadFresh(ctx, f.dir, f.db, f.id, mustNotRefresh(t), clockAt(t0))
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, tok)
+	saved, err := f.store().Load()
+	require.NoError(t, err)
+	assert.Equal(t, "xoxe-1-old", saved.RefreshToken)
 }

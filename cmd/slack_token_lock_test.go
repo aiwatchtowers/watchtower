@@ -350,13 +350,13 @@ func TestSlackRemove_HoldsTheTokenLockThroughRevoke(t *testing.T) {
 		AccessToken: "xoxe.xoxp-acme", TeamID: "T1", RefreshToken: "xoxe-1-r",
 		ExpiresAt: time.Now().Add(-time.Minute), ClientID: "111.222",
 	}))
-	var heldDuringRevoke []bool
+	held := make(chan bool, 4) // the server goroutine reports, the test reads
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		unlock, ok, err := fsutil.TryLockFile(store.Path() + ".lock")
 		if err == nil && ok {
 			unlock()
 		}
-		heldDuringRevoke = append(heldDuringRevoke, err == nil && !ok)
+		held <- err == nil && !ok
 		_, _ = w.Write([]byte(`{"ok":true,"revoked":true}`))
 	}))
 	t.Cleanup(srv.Close)
@@ -367,6 +367,11 @@ func TestSlackRemove_HoldsTheTokenLockThroughRevoke(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetOut(&bytes.Buffer{})
 	require.NoError(t, runSlackRemove(cmd, []string{strconv.FormatInt(id, 10)}))
+	close(held)
+	var heldDuringRevoke []bool
+	for h := range held {
+		heldDuringRevoke = append(heldDuringRevoke, h)
+	}
 	assert.Equal(t, []bool{true}, heldDuringRevoke, "auth.revoke runs under the account's token lock")
 
 	database, err := db.Open(cfg.DBPath())
