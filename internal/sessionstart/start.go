@@ -254,13 +254,15 @@ func (w workbenchRow) onDisk() error {
 }
 
 // checkFolder refuses a start in a folder that is not on disk
-// (folder_missing) or, other than the home folder, has no Watchtower install
-// for the workbench (not_installed): the home folder starts as it always did.
-func (w workbenchRow) checkFolder() error {
+// (folder_missing) or has no Watchtower install for the workbench
+// (not_installed). An ordinary start in the home folder starts as it always
+// did; a sub-session (sub) needs the install in every folder, home included:
+// its parent relies on the hooks for its finish line and messages (spec §6.5).
+func (w workbenchRow) checkFolder(sub bool) error {
 	if err := w.onDisk(); err != nil {
 		return err
 	}
-	if w.home {
+	if w.home && !sub {
 		return nil
 	}
 	ok, err := devpack.HasCoreStateHooks(w.folder, w.id)
@@ -628,7 +630,7 @@ func begin(ctx context.Context, d Deps, r handlers.StartRequest) (st *newStart, 
 			return nil, nil, res, err
 		}
 	}
-	if err := wb.checkFolder(); err != nil {
+	if err := wb.checkFolder(r.ParentSessionID != 0); err != nil {
 		release()
 		return nil, nil, res, err
 	}

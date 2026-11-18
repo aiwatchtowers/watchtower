@@ -132,7 +132,30 @@ func Search(ctx context.Context, d *db.DB, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Hits: f.hits(now, limit), IndexNote: note}, nil
+	hits := f.hits(now, limit)
+	if err := showWorkbenchDocPaths(ctx, d, req.WorkbenchID, hits); err != nil {
+		return Result{}, err
+	}
+	return Result{Hits: hits, IndexNote: note}, nil
+}
+
+// showWorkbenchDocPaths titles the workbench documents among hits by their
+// shown path (workbenchDocTitle): <folder>/<rel> on a workbench with more
+// than one folder. Only the bound workbench's documents are ever hits.
+func showWorkbenchDocPaths(ctx context.Context, d *db.DB, workbenchID int64, hits []Hit) error {
+	if workbenchID == 0 || !slices.ContainsFunc(hits, func(h Hit) bool { return h.Source == WorkbenchDocSource }) {
+		return nil
+	}
+	names, err := workbenchDocNames(ctx, d, workbenchID)
+	if err != nil {
+		return err
+	}
+	for i := range hits {
+		if hits[i].Source == WorkbenchDocSource {
+			hits[i].Title = workbenchDocTitle(names, hits[i].Ref, hits[i].Title)
+		}
+	}
+	return nil
 }
 
 // guideOnly reports whether a sources filter asks for the guide alone.
@@ -442,6 +465,13 @@ func GetDocument(ctx context.Context, d *db.DB, ref string, opts DocOptions) (Do
 	}
 	if v.Anchor, err = parseAnchor(anchorJS); err != nil {
 		return DocView{}, fmt.Errorf("kb: anchor of %s: %w", ref, err)
+	}
+	if v.Source == WorkbenchDocSource {
+		names, err := workbenchDocNames(ctx, d, opts.WorkbenchID)
+		if err != nil {
+			return DocView{}, err
+		}
+		v.Title = workbenchDocTitle(names, ref, v.Title)
 	}
 	if opts.FromChunk < 0 || opts.FromChunk >= v.ChunkCount {
 		return DocView{}, &RequestError{Msg: fmt.Sprintf("from_chunk %d is outside the document (chunks 0–%d)", opts.FromChunk, v.ChunkCount-1)}

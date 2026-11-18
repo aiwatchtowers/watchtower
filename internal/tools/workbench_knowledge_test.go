@@ -177,40 +177,99 @@ func TestSearchKnowledge_WorkbenchScopeErrors(t *testing.T) {
 	assert.Contains(t, res.ScopeNote, "slack_channel #no-such-channel")
 }
 
-// PROJ-08 at the tool layer (was ...ShowProjectDocsOnlyToTheirProject;
-// amended 2026-10-03): search_knowledge and get_knowledge_document show a
-// workbench folder's files — none attached — only in that workbench's
-// session; the main and Discuss chats (no WorkbenchID) and another
-// workbench see nothing.
-func TestProj08_KnowledgeToolsShowFolderFilesOnlyToTheirWorkbench(t *testing.T) {
-	d := openDB(t)
-	folder := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(folder, "plan.md"), []byte("# Plan\nКанареечный выкат\n"), 0o600))
-	p := seedWorkbench(t, d, "alpha")
-	_, err := d.Exec(`UPDATE projects SET folder_path = ? WHERE id = ?`, folder, p)
+// putFolderOnBench adds a live folder named name to workbench wb and
+// returns the folder's path and row id.
+func putFolderOnBench(t *testing.T, d *db.DB, wb int64, name string, position int) (string, int64) {
+	t.Helper()
+	path, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
+	res, err := d.Exec(`INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
+		VALUES (?, ?, ?, 'owner', ?)`, wb, path, position, name)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return path, id
+}
+
+// PROJ-08 at the tool layer (was ...ShowProjectDocsOnlyToTheirProject;
+// amended 2026-10-03, and for multi-folder workbenches 2026-11-18):
+// search_knowledge and get_knowledge_document show the files of every folder
+// of a workbench — none attached — only in that workbench's session; the
+// main and Discuss chats (no WorkbenchID) and another workbench see nothing.
+func TestProj08_KnowledgeToolsShowFolderFilesOnlyToTheirWorkbench(t *testing.T) {
+	ctx := context.Background()
+	d := openDB(t)
+	p := seedWorkbench(t, d, "alpha")
+	home, err := d.HomeFolder(ctx, p)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(home.FolderPath, "plan.md"), []byte("# Plan\nКанареечный выкат\n"), 0o600))
+	hub, _ := putFolderOnBench(t, d, p, "hub", 1)
+	require.NoError(t, os.WriteFile(filepath.Join(hub, "hub.md"), []byte("# Hub\nКанареечный хаб\n"), 0o600))
 	other := seedWorkbench(t, d, "beta")
-	_, err = kb.Run(context.Background(), d, kb.Options{})
+	_, err = kb.Run(ctx, d, kb.Options{})
 	require.NoError(t, err)
 	reg := knowledgeRegistry(t, d)
 
 	own, err := searchIn(t, reg, p, `{"queries":["канареечн*"]}`)
 	require.NoError(t, err)
-	require.Len(t, own.Hits, 1)
-	assert.Equal(t, "project_doc", own.Hits[0].Source)
-	ref := own.Hits[0].Ref
-	_, err = reg.CallRead(context.Background(), "get_knowledge_document", json.RawMessage(`{"ref":"`+ref+`"}`), Binding{WorkbenchID: p})
-	require.NoError(t, err)
+	require.Len(t, own.Hits, 2, "both folders' files")
+	var refs []string
+	for _, h := range own.Hits {
+		assert.Equal(t, "project_doc", h.Source)
+		refs = append(refs, h.Ref)
+		_, err = reg.CallRead(ctx, "get_knowledge_document", json.RawMessage(`{"ref":"`+h.Ref+`"}`), Binding{WorkbenchID: p})
+		require.NoError(t, err)
+	}
 
 	for _, b := range []Binding{{}, {Surface: "main", ConversationID: 3}, {ContextType: "target", ContextID: "9"}, {WorkbenchID: other}} {
-		out, err := reg.CallRead(context.Background(), "search_knowledge", json.RawMessage(`{"queries":["канареечн*"]}`), b)
+		out, err := reg.CallRead(ctx, "search_knowledge", json.RawMessage(`{"queries":["канареечн*"]}`), b)
 		require.NoError(t, err)
 		assert.Empty(t, out.(kb.Result).Hits, "binding %+v", b)
-		_, err = reg.CallRead(context.Background(), "get_knowledge_document", json.RawMessage(`{"ref":"`+ref+`"}`), b)
-		var ve *ValidationError
-		require.ErrorAs(t, err, &ve, "binding %+v", b)
-		assert.Contains(t, ve.Msg, "no document with that ref", "indistinguishable from a missing one")
+		for _, ref := range refs {
+			_, err = reg.CallRead(ctx, "get_knowledge_document", json.RawMessage(`{"ref":"`+ref+`"}`), b)
+			var ve *ValidationError
+			require.ErrorAs(t, err, &ve, "binding %+v", b)
+			assert.Contains(t, ve.Msg, "no document with that ref", "indistinguishable from a missing one")
+		}
 	}
+}
+
+// TestDocDisplayPathOnlyWithSeveralFolders (spec §6.11, F17): a workbench
+// document is shown as <folder>/<rel> — the folder's stored name — in search
+// and open only while the bench has more than one folder, else as <rel>.
+func TestDocDisplayPathOnlyWithSeveralFolders(t *testing.T) {
+	ctx := context.Background()
+	d := openDB(t)
+	p := seedWorkbench(t, d, "alpha")
+	home, err := d.HomeFolder(ctx, p)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(home.FolderPath, "plan.md"), []byte("# Plan\nquokka\n"), 0o600))
+	_, _, err = kb.IndexWorkbenchDocs(ctx, d, p)
+	require.NoError(t, err)
+	reg := knowledgeRegistry(t, d)
+	titles := func() (string, string) {
+		t.Helper()
+		res, err := searchIn(t, reg, p, `{"queries":["quokka"]}`)
+		require.NoError(t, err)
+		require.Len(t, res.Hits, 1)
+		out, err := reg.CallRead(ctx, "get_knowledge_document", json.RawMessage(`{"ref":"`+res.Hits[0].Ref+`"}`), Binding{WorkbenchID: p})
+		require.NoError(t, err)
+		return res.Hits[0].Title, out.(kb.DocView).Title
+	}
+
+	hit, opened := titles()
+	assert.Equal(t, "plan.md", hit, "one folder: <rel>")
+	assert.Equal(t, "plan.md", opened)
+
+	_, hubID := putFolderOnBench(t, d, p, "hub", 1)
+	hit, opened = titles()
+	assert.Equal(t, home.Name+"/plan.md", hit, "two folders: <folder>/<rel>")
+	assert.Equal(t, home.Name+"/plan.md", opened)
+
+	_, err = d.Exec(`UPDATE workbench_folders SET removed_at = '2026-11-18T00:00:00Z' WHERE id = ?`, hubID)
+	require.NoError(t, err)
+	hit, _ = titles()
+	assert.Equal(t, "plan.md", hit, "back to one live folder")
 }
 
 func TestSearchKnowledge_ProjectDocSourceOutsideAProjectSessionIsRefused(t *testing.T) {

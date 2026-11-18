@@ -555,8 +555,12 @@ func openQuestionSeriesAsk(d *db.DB, ask db.OwnerAsk, previousAskID int64) (*db.
 // target to its session, both best-effort: a failure lands in out as
 // index_warning or session_link_warning.
 func indexAndLinkFiledAsk(ctx context.Context, d *db.DB, p *db.Workbench, docFolder string, ask db.OwnerAsk, out map[string]any) {
-	if ask.DocPath != "" {
-		set := kb.FileSet{Source: kb.WorkbenchDocSource, Container: p.ID, Root: docFolder, Files: []string{ask.DocPath}}
+	// Keyed by the document's own folder (doc_folder_id), so the same
+	// relative path in two folders makes two entries. A bench with no folder
+	// row (NULL) has nothing to key it by; its next index pass covers it.
+	if ask.DocPath != "" && ask.DocFolderID.Valid {
+		set := kb.FileSet{Source: kb.WorkbenchDocSource, Container: p.ID, Folder: ask.DocFolderID.Int64, Root: docFolder,
+			Files: []string{ask.DocPath}}
 		if _, _, err := kb.IndexFileSet(ctx, d, set); err != nil {
 			out["index_warning"] = fmt.Sprintf("the ask is filed, but %s is not in search yet: %v", ask.DocPath, err)
 		}

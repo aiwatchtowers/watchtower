@@ -147,6 +147,11 @@ func (ix *Indexer) RescanFolder(ctx context.Context, scope Scope, dir string) (R
 		return RescanReport{}, fmt.Errorf("rescanning %s: %w", canon, err)
 	}
 	scan := &folderScan{ix: ix, scope: scope, dir: canon, now: ix.clock.Now()}
+	if scope.Kind == ScopeWorkbench {
+		if scan.prefix, scan.others, err = ix.workbenchFolderSpace(ctx, scope.WorkbenchID, dir, canon); err != nil {
+			return RescanReport{}, fmt.Errorf("rescanning %s: %w", canon, err)
+		}
+	}
 	if err := scan.run(ctx); err != nil {
 		return RescanReport{}, fmt.Errorf("rescanning %s: %w", canon, err)
 	}
@@ -160,6 +165,31 @@ func (ix *Indexer) RescanFolder(ctx context.Context, scope Scope, dir string) (R
 	ix.seen[canon] = folderState{fingerprint: fp, scope: scope, generation: gen}
 	ix.mu.Unlock()
 	return scan.report, nil
+}
+
+// workbenchFolderSpace places a workbench recipe folder among its bench's
+// live folders (multi-folder workbench, spec §6.11): prefix is
+// "<folder name>/" — the stored name a recipe of dir takes when another
+// folder of the bench already holds its slug — and others are the recipe
+// folders of the bench's other live folders, whose rows a rescan of dir
+// leaves alone. Folders are compared as stored (no filesystem call: another
+// folder may be privacy-protected). dir outside every live folder (a bench
+// without folder rows) has no prefix.
+func (ix *Indexer) workbenchFolderSpace(ctx context.Context, workbenchID int64, dir, canon string) (string, map[string]bool, error) {
+	folders, err := ix.db.WorkbenchFolders(ctx, workbenchID, false)
+	if err != nil {
+		return "", nil, err
+	}
+	prefix, others := "", map[string]bool{}
+	for _, f := range folders {
+		fdir := filepath.Clean(WorkbenchDir(f.FolderPath))
+		if fdir == canon || fdir == filepath.Clean(dir) {
+			prefix = f.Name + "/"
+			continue
+		}
+		others[fdir] = true
+	}
+	return prefix, others, nil
 }
 
 // workbenchPathPlain reports whether the scheduler may rescan folder's
@@ -204,7 +234,15 @@ type folderScan struct {
 	bySlug map[string]db.Automation
 	keep   []string
 	report RescanReport
+	// prefix and others place a workbench folder among its bench's folders
+	// (workbenchFolderSpace); empty for the personal scope.
+	prefix string
+	others map[string]bool
 }
+
+// ofOtherFolder reports whether row a belongs to another live folder of the
+// bench: this scan neither re-indexes nor removes it.
+func (s *folderScan) ofOtherFolder(a db.Automation) bool { return s.others[filepath.Dir(a.Path)] }
 
 func (s *folderScan) scopeName() string { return string(s.scope.Kind) }
 
@@ -221,8 +259,12 @@ func (s *folderScan) run(ctx context.Context) error {
 		if a.IsBuiltin() {
 			continue // a built-in row has no file here (its indexer is builtin.Sync)
 		}
-		s.byPath[a.Path] = a
 		s.bySlug[a.Slug] = a
+		if s.ofOtherFolder(a) {
+			s.keep = append(s.keep, a.Path) // that folder's own rescan decides
+			continue
+		}
+		s.byPath[a.Path] = a
 	}
 	names, notes, err := listRecipeEntries(s.dir)
 	if err != nil {
@@ -258,8 +300,8 @@ func (s *folderScan) indexEntry(name string) error {
 		s.skip(path, fmt.Sprintf("file name %q is not a valid automation slug (want %s%s)", name, slugPattern.String(), recipeExt))
 		return nil
 	}
-	if other, ok := s.bySlug[slug]; ok && other.Path != path {
-		s.skip(path, slugTakenReason(slug, other))
+	stored, ok := s.storedSlug(slug, path)
+	if !ok {
 		return nil
 	}
 	data, contentHash, err := s.ix.readRecipe(path)
@@ -275,11 +317,40 @@ func (s *folderScan) indexEntry(name string) error {
 	if err != nil {
 		return err
 	}
+	cand.Slug = stored
 	prev, exists := s.byPath[path]
 	if exists {
 		return s.update(prev, cand)
 	}
 	return s.insert(cand)
+}
+
+// storedSlug is the slug the recipe at path is indexed under: its file stem;
+// <folder name>/<stem> when another folder's row holds the stem — a live
+// folder's, or one that left the bench (spec §6.11) — or when its row
+// already has that name. ok is false (the file
+// skipped with a note) when the slug is taken in the scope otherwise.
+func (s *folderScan) storedSlug(slug, path string) (string, bool) {
+	if prev, ok := s.byPath[path]; ok && s.prefix != "" && prev.Slug == s.prefix+slug {
+		return prev.Slug, true // keeps its name while the other folder's recipe comes and goes
+	}
+	other, taken := s.bySlug[slug]
+	if !taken || other.Path == path {
+		return slug, true
+	}
+	// The fallback name applies when the stem's holder is another live
+	// folder's recipe, or a row outside every live folder of the bench (its
+	// folder left the bench): never against a row of this folder.
+	if s.prefix == "" || filepath.Dir(other.Path) == s.dir {
+		s.skip(path, slugTakenReason(slug, other))
+		return "", false
+	}
+	stored := s.prefix + slug
+	if other, taken := s.bySlug[stored]; taken && other.Path != path {
+		s.skip(path, slugTakenReason(stored, other))
+		return "", false
+	}
+	return stored, true
 }
 
 func slugTakenReason(slug string, other db.Automation) string {

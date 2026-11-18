@@ -27,8 +27,8 @@ import (
 const fixtureWorkbenchID = 1
 
 const (
-	fixturePlanRef   = "wbdoc:1:docs/plans/rollout.md"
-	fixtureReadmeRef = "wbdoc:1:README.md"
+	fixturePlanRef   = "wbdoc:1:1:docs/plans/rollout.md"
+	fixtureReadmeRef = "wbdoc:1:1:README.md"
 )
 
 // seedWorkbenchDocs creates a workbench whose folder holds two text files —
@@ -40,8 +40,23 @@ func seedWorkbenchDocs(t *testing.T, d *db.DB) string {
 	writeWorkbenchFile(t, folder, "docs/plans/rollout.md", "# Rollout plan\nIntro text.\n## Phase 1\nРоадмап первой фазы.\n```\n# not a heading\n```\n")
 	writeWorkbenchFile(t, folder, "README.md", "Readme without headings, rollout notes.\n")
 	writeWorkbenchFile(t, folder, "main.go", "package main // роадмап\n")
-	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (?, 'acme', ?)`, fixtureWorkbenchID, folder)
+	seedBench(t, d, fixtureWorkbenchID, "acme", folder)
 	return folder
+}
+
+// seedBench creates workbench id on folder with its home folder row, whose
+// id is the workbench's (so its documents are keyed wbdoc:<id>:<id>:<rel>).
+func seedBench(t *testing.T, d *db.DB, id int64, name, folder string) {
+	t.Helper()
+	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (?, ?, ?)`, id, name, folder)
+	seedFolder(t, d, id, id, filepath.Base(folder), folder, 0)
+}
+
+// seedFolder puts folder on workbench bench as row id at position.
+func seedFolder(t *testing.T, d *db.DB, bench, id int64, name, folder string, position int) {
+	t.Helper()
+	exec(t, d, `INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name)
+		VALUES (?, ?, ?, ?, 'owner', ?)`, id, bench, folder, position, name)
 }
 
 func writeWorkbenchFile(t *testing.T, folder, rel, text string) {
@@ -75,7 +90,7 @@ func TestWorkbenchDoc_RendersSectionsAtHeadings(t *testing.T) {
 	require.Len(t, readme.Sections, 1)
 	assert.Empty(t, readme.Sections[0].Anchor)
 
-	for _, key := range []string{"wbdoc:1:gone.md", "wbdoc:99:README.md", "wbdoc:x:README.md", "wbdoc:1", "project_doc:1"} {
+	for _, key := range []string{"wbdoc:1:1:gone.md", "wbdoc:99:99:README.md", "wbdoc:1:7:README.md", "wbdoc:1:README.md", "wbdoc:x:README.md", "wbdoc:1", "project_doc:1"} {
 		assert.Nil(t, buildWorkbenchDoc(t, d, key), key)
 	}
 }
@@ -243,14 +258,14 @@ func TestWorkbenchDoc_GitIgnoredFilesAreNotIndexed(t *testing.T) {
 	writeWorkbenchFile(t, folder, "notes.txt", "неотслеженные заметки\n")
 	writeWorkbenchFile(t, folder, "build/out.md", "игнорируемый вывод\n")
 	writeWorkbenchFile(t, folder, ".claude/worktrees/x/a.md", "копия другого дерева\n")
-	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', ?)`, folder)
+	seedBench(t, d, 1, "acme", folder)
 
 	runWorkbenchDocs(t, d)
-	assert.Equal(t, []string{"wbdoc:1:docs/spec.md", "wbdoc:1:notes.txt"}, indexedIDs(t, d))
+	assert.Equal(t, []string{"wbdoc:1:1:docs/spec.md", "wbdoc:1:1:notes.txt"}, indexedIDs(t, d))
 
 	writeWorkbenchFile(t, folder, ".gitignore", "build/\n.claude/worktrees/\nnotes.txt\n")
 	assert.Equal(t, 1, runWorkbenchDocs(t, d).Deleted, "a newly ignored file loses its entry")
-	assert.Equal(t, []string{"wbdoc:1:docs/spec.md"}, indexedIDs(t, d))
+	assert.Equal(t, []string{"wbdoc:1:1:docs/spec.md"}, indexedIDs(t, d))
 }
 
 // Outside git the walk skips node_modules and .git and never follows a
@@ -280,7 +295,7 @@ func TestWorkbenchDoc_IndexesTheNewest2000(t *testing.T) {
 		at := base.Add(time.Duration(i) * time.Second)
 		require.NoError(t, os.Chtimes(filepath.Join(folder, rel), at, at))
 	}
-	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', ?)`, folder)
+	seedBench(t, d, 1, "acme", folder)
 	var logged bytes.Buffer
 	log.SetOutput(&logged)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
@@ -290,7 +305,7 @@ func TestWorkbenchDoc_IndexesTheNewest2000(t *testing.T) {
 	assert.Equal(t, 2000, documents)
 	assert.Equal(t, 2000, changed)
 	assert.Len(t, indexedIDs(t, d), 2000)
-	assert.NotContains(t, indexedIDs(t, d), "wbdoc:1:n0000.md", "the oldest is cut")
+	assert.NotContains(t, indexedIDs(t, d), "wbdoc:1:1:n0000.md", "the oldest is cut")
 	assert.Contains(t, logged.String(), "2001 text files")
 }
 
@@ -302,10 +317,10 @@ func TestWorkbenchDoc_FailingGitKeepsTheEntries(t *testing.T) {
 	folder := t.TempDir()
 	gitIn(t, folder, "init", "-q")
 	writeWorkbenchFile(t, folder, "plan.md", "# Plan\nКанареечный выкат\n")
-	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', ?)`, folder)
+	seedBench(t, d, 1, "acme", folder)
 	_, _, err := IndexWorkbenchDocs(ctx, d, 1)
 	require.NoError(t, err)
-	require.Equal(t, []string{"wbdoc:1:plan.md"}, indexedIDs(t, d))
+	require.Equal(t, []string{"wbdoc:1:1:plan.md"}, indexedIDs(t, d))
 
 	fake := filepath.Join(t.TempDir(), "git")
 	require.NoError(t, os.WriteFile(fake, []byte("#!/bin/sh\nexit 1\n"), 0o755))
@@ -314,7 +329,7 @@ func TestWorkbenchDoc_FailingGitKeepsTheEntries(t *testing.T) {
 
 	_, _, err = indexWorkbenchDocs(ctx, d, 1, broken)
 	require.Error(t, err)
-	assert.Equal(t, []string{"wbdoc:1:plan.md"}, indexedIDs(t, d), "the explicit trigger kept the entry")
+	assert.Equal(t, []string{"wbdoc:1:1:plan.md"}, indexedIDs(t, d), "the explicit trigger kept the entry")
 
 	var logged bytes.Buffer
 	log.SetOutput(&logged)
@@ -322,7 +337,7 @@ func TestWorkbenchDoc_FailingGitKeepsTheEntries(t *testing.T) {
 	r := runner{sources: func() []Source { return []Source{&workbenchDocSource{list: broken}} }, clock: time.Now}
 	_, err = r.run(ctx, d, Options{Now: time.Now()})
 	require.NoError(t, err, "one workbench's listing never fails the source")
-	assert.Equal(t, []string{"wbdoc:1:plan.md"}, indexedIDs(t, d), "the daemon pass kept the entry")
+	assert.Equal(t, []string{"wbdoc:1:1:plan.md"}, indexedIDs(t, d), "the daemon pass kept the entry")
 	assert.Contains(t, logged.String(), "kb: listing workbench 1 documents")
 	assert.Equal(t, 1, strings.Count(logged.String(), "kb: listing"), "listed once per run: Changed and Keys share it")
 }
@@ -335,7 +350,7 @@ func TestWorkbenchDoc_MissingFolderIsSkippedQuietly(t *testing.T) {
 	d := db.OpenTestDB(t)
 	folder := filepath.Join(t.TempDir(), "acme")
 	writeWorkbenchFile(t, folder, "plan.md", "# Plan\nКанареечный выкат\n")
-	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', ?)`, folder)
+	seedBench(t, d, 1, "acme", folder)
 	_, _, err := IndexWorkbenchDocs(ctx, d, 1)
 	require.NoError(t, err)
 	require.NoError(t, os.RemoveAll(folder))
@@ -348,7 +363,7 @@ func TestWorkbenchDoc_MissingFolderIsSkippedQuietly(t *testing.T) {
 		require.NoError(t, err)
 	}
 	assert.Empty(t, logged.String(), "a missing folder is not a listing error")
-	assert.Equal(t, []string{"wbdoc:1:plan.md"}, indexedIDs(t, d), "its entries stay")
+	assert.Equal(t, []string{"wbdoc:1:1:plan.md"}, indexedIDs(t, d), "its entries stay")
 }
 
 // kb reindex indexes every workbench even when one folder cannot be listed:
@@ -356,16 +371,16 @@ func TestWorkbenchDoc_MissingFolderIsSkippedQuietly(t *testing.T) {
 func TestIndexAllWorkbenchDocs_OneFailureDoesNotStopTheOthers(t *testing.T) {
 	ctx := context.Background()
 	d := db.OpenTestDB(t)
-	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'gone', ?)`, filepath.Join(t.TempDir(), "gone"))
+	seedBench(t, d, 1, "gone", filepath.Join(t.TempDir(), "gone"))
 	other := t.TempDir()
 	writeWorkbenchFile(t, other, "b.md", "beta")
-	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (2, 'beta', ?)`, other)
+	seedBench(t, d, 2, "beta", other)
 
 	n, err := indexAllWorkbenchDocs(ctx, d)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "workbench 1")
 	assert.Equal(t, 1, n)
-	assert.Equal(t, []string{"wbdoc:2:b.md"}, indexedIDs(t, d))
+	assert.Equal(t, []string{"wbdoc:2:2:b.md"}, indexedIDs(t, d))
 }
 
 // The daemon never reads a folder macOS guards (~/Documents and the like):
@@ -380,30 +395,30 @@ func TestWorkbenchDoc_DaemonSkipsProtectedFoldersExplicitIndexDoesNot(t *testing
 	folder := filepath.Join(home, "Documents", "acme")
 	writeWorkbenchFile(t, folder, "plan.md", "# Plan\nКанареечный выкат\n")
 	writeWorkbenchFile(t, folder, "gone.md", "скоро удалят\n")
-	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', ?)`, folder)
+	seedBench(t, d, 1, "acme", folder)
 	other := t.TempDir()
 	writeWorkbenchFile(t, other, "b.md", "beta")
-	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (2, 'beta', ?)`, other)
+	seedBench(t, d, 2, "beta", other)
 
 	runWorkbenchDocs(t, d)
-	assert.Empty(t, indexedText(t, d, "wbdoc:1:plan.md"), "the daemon did not read the protected folder")
-	assert.Contains(t, indexedText(t, d, "wbdoc:2:b.md"), "beta")
+	assert.Empty(t, indexedText(t, d, "wbdoc:1:1:plan.md"), "the daemon did not read the protected folder")
+	assert.Contains(t, indexedText(t, d, "wbdoc:2:2:b.md"), "beta")
 
 	documents, changed, err := IndexWorkbenchDocs(ctx, d, 1)
 	require.NoError(t, err)
 	assert.Equal(t, 2, documents)
 	assert.Equal(t, 2, changed)
-	assert.Contains(t, indexedText(t, d, "wbdoc:1:plan.md"), "Канареечный")
+	assert.Contains(t, indexedText(t, d, "wbdoc:1:1:plan.md"), "Канареечный")
 
 	runWorkbenchDocs(t, d)
-	assert.Contains(t, indexedText(t, d, "wbdoc:1:plan.md"), "Канареечный", "the daemon keeps what the trigger indexed")
+	assert.Contains(t, indexedText(t, d, "wbdoc:1:1:plan.md"), "Канареечный", "the daemon keeps what the trigger indexed")
 
 	require.NoError(t, os.Remove(filepath.Join(folder, "gone.md")))
 	_, changed, err = IndexWorkbenchDocs(ctx, d, 1)
 	require.NoError(t, err)
 	assert.Equal(t, 1, changed, "the removed file left the index")
-	assert.Empty(t, indexedText(t, d, "wbdoc:1:gone.md"))
-	assert.Contains(t, indexedText(t, d, "wbdoc:2:b.md"), "beta", "another workbench's entries are untouched")
+	assert.Empty(t, indexedText(t, d, "wbdoc:1:1:gone.md"))
+	assert.Contains(t, indexedText(t, d, "wbdoc:2:2:b.md"), "beta", "another workbench's entries are untouched")
 }
 
 func TestIndexWorkbenchDocs_UnknownWorkbenchIsAnError(t *testing.T) {
@@ -450,13 +465,13 @@ func TestReindex_KeepsProtectedWorkbenchDocs(t *testing.T) {
 	d := db.OpenTestDB(t)
 	folder := filepath.Join(home, "Documents", "acme")
 	writeWorkbenchFile(t, folder, "plan.md", "# Plan\nКанареечный выкат\n")
-	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', ?)`, folder)
+	seedBench(t, d, 1, "acme", folder)
 	_, _, err := IndexWorkbenchDocs(ctx, d, 1)
 	require.NoError(t, err)
 
 	_, err = Reindex(ctx, d, []string{WorkbenchDocSource}, time.Now())
 	require.NoError(t, err)
-	assert.Contains(t, indexedText(t, d, "wbdoc:1:plan.md"), "Канареечный")
+	assert.Contains(t, indexedText(t, d, "wbdoc:1:1:plan.md"), "Канареечный")
 }
 
 // TestProj08_FolderFilesOnlyInTheirOwnWorkbenchSession (was
@@ -470,7 +485,7 @@ func TestProj08_FolderFilesOnlyInTheirOwnWorkbenchSession(t *testing.T) {
 	seedWorkbenchDocs(t, d)
 	other := t.TempDir()
 	writeWorkbenchFile(t, other, "plan.md", "# Other\nроадмап другого проекта\n")
-	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (2, 'beta', ?)`, other)
+	seedBench(t, d, 2, "beta", other)
 	_, err := Run(ctx, d, Options{Now: testNow()})
 	require.NoError(t, err)
 
@@ -482,13 +497,13 @@ func TestProj08_FolderFilesOnlyInTheirOwnWorkbenchSession(t *testing.T) {
 	assert.Empty(t, search(0), "a non-workbench search sees no workbench document")
 	assert.Empty(t, search(0, WorkbenchDocSource), "not even when it asks for the source")
 	assert.Equal(t, []string{fixturePlanRef}, search(1))
-	assert.Equal(t, []string{"wbdoc:2:plan.md"}, search(2), "another workbench sees only its own")
+	assert.Equal(t, []string{"wbdoc:2:2:plan.md"}, search(2), "another workbench sees only its own")
 
 	for _, tc := range []struct {
 		workbenchID int64
 		ref         string
 		visible     bool
-	}{{0, fixturePlanRef, false}, {2, fixturePlanRef, false}, {1, fixturePlanRef, true}, {2, "wbdoc:2:plan.md", true}} {
+	}{{0, fixturePlanRef, false}, {2, fixturePlanRef, false}, {1, fixturePlanRef, true}, {2, "wbdoc:2:2:plan.md", true}} {
 		_, err := GetDocument(ctx, d, tc.ref, DocOptions{WorkbenchID: tc.workbenchID})
 		if tc.visible {
 			assert.NoError(t, err, "%s from workbench %d", tc.ref, tc.workbenchID)
