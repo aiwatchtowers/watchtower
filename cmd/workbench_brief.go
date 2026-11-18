@@ -444,7 +444,10 @@ func renderSessionBrief(board []db.BoardNode, p *db.Workbench, comments []db.Wor
 // briefDriftSection renders the drift findings within limit runes; "" when
 // the check ran to the end and found nothing. A check cut short, or a
 // repository whose branch checks could not run (no default branch
-// resolves), says so, so it never reads as a clean board.
+// resolves), says so, so it never reads as a clean board. Each folder whose
+// branch checks did not run (Report.Skipped) gets a line of its own, ahead
+// of the findings, so a clipped section counts it in its "… N more" line
+// instead of dropping it.
 func briefDriftSection(drift workbenchcheck.Report, limit int) string {
 	caveat := ""
 	switch {
@@ -452,24 +455,38 @@ func briefDriftSection(drift workbenchcheck.Report, limit int) string {
 		caveat = "the drift check ran out of time, so only part of the board was checked"
 	case drift.Git && drift.Base == "":
 		caveat = "branch checks did not run: " + strings.Join(drift.Notes, "; ")
-	case len(drift.Skipped) > 0:
-		caveat = "branch checks did not run " + skippedFolders(drift.Skipped)
+	}
+	skipped := make([]string, 0, len(drift.Skipped))
+	for _, sk := range drift.Skipped {
+		skipped = append(skipped, "- "+briefClip("branch checks did not run in "+sk.Folder+": "+sk.Reason, briefLineChars))
 	}
 	if len(drift.Findings) == 0 {
-		if caveat == "" {
+		switch {
+		case caveat == "" && len(skipped) == 0:
 			return ""
+		case len(skipped) == 0:
+			return briefClip("Board drift: none found, but "+caveat+".", min(limit, briefLineChars))
 		}
-		return briefClip("Board drift: none found, but "+caveat+".", min(limit, briefLineChars))
+		title := "Board drift: none found, but not every folder was checked:"
+		if caveat != "" {
+			title = briefClip("Board drift: none found, but "+caveat+"; not every folder was checked:", briefLineChars)
+		}
+		section, _ := fitBriefSection(title, skipped, limit, "skipped folders (watchtower workbench check)")
+		return section
 	}
 	title := "Board drift — fix it with update_target:"
 	if caveat != "" {
 		title = briefClip("Board drift ("+caveat+")", briefLineChars) + " — fix it with update_target:"
 	}
-	lines := make([]string, 0, len(drift.Findings))
+	what := "drift findings (watchtower workbench check)"
+	if len(skipped) > 0 {
+		what = "drift lines (watchtower workbench check)"
+	}
+	lines := skipped
 	for _, f := range drift.Findings {
 		lines = append(lines, "- "+briefClip(f.Line(), briefLineChars))
 	}
-	section, _ := fitBriefSection(title, lines, limit, "drift findings (watchtower workbench check)")
+	section, _ := fitBriefSection(title, lines, limit, what)
 	return section
 }
 

@@ -1008,3 +1008,76 @@ func TestCheck_OneGHSessionAcrossFolders(t *testing.T) {
 		t.Errorf("pr_checked %v notes %v", r.PRChecked, r.Notes)
 	}
 }
+
+// A missing home folder never reads as "gh not signed in": the sign-in
+// probe runs from a directory that exists, and the other folders' pull
+// requests are still read.
+func TestCheck_GHProbeRunsFromAnExistingDirectory(t *testing.T) {
+	gitEnv(t)
+	gone, hub := filepath.Join(t.TempDir(), "gone"), t.TempDir()
+	var authDir string
+	run := func(_ context.Context, dir string, _ []byte, name string, args ...string) ([]byte, int, error) {
+		if name != "gh" {
+			return nil, 128, os.ErrNotExist
+		}
+		if _, err := os.Stat(dir); err != nil {
+			return nil, -1, err // exec fails in a missing working directory
+		}
+		if args[0] == "auth" {
+			authDir = dir
+			return nil, 0, nil
+		}
+		return []byte(`{"state":"MERGED"}`), 0, nil
+	}
+	n := node(1, "in_progress", "", time.Hour)
+	n.Target.PR = "#5"
+	r := Check(context.Background(), 1, []db.BoardNode{n}, Options{Folder: gone, Now: testNow, Network: true, Run: run,
+		FolderOf: func(int64) (string, bool) { return hub, false }})
+	if authDir != os.TempDir() {
+		t.Errorf("auth probe ran in %q, want %q", authDir, os.TempDir())
+	}
+	if !r.PRChecked || !slices.Equal(kinds(r)[1], []string{KindMergedOpen}) {
+		t.Errorf("pr_checked %v findings %v notes %v", r.PRChecked, r.Findings, r.Notes)
+	}
+}
+
+// Each gh call's timeout is at most what is left of the shared budget, so
+// all the reads together never pass ghBudget.
+func TestCheck_GHCallTimeoutCappedByTheSharedBudget(t *testing.T) {
+	gitEnv(t)
+	home := t.TempDir()
+	start := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	now := start
+	var timeouts []time.Duration
+	run := func(ctx context.Context, _ string, _ []byte, name string, args ...string) ([]byte, int, error) {
+		if name != "gh" {
+			return nil, 128, os.ErrNotExist
+		}
+		if args[0] == "auth" {
+			return nil, 0, nil
+		}
+		dl, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("a gh call without a deadline")
+		}
+		timeouts = append(timeouts, time.Until(dl))
+		now = now.Add(ghBudget - 3*time.Second) // the first read leaves 3 s of the budget
+		return []byte(`{"state":"OPEN"}`), 0, nil
+	}
+	pr := func(id int, ref string) db.BoardNode {
+		n := node(id, "in_progress", "", time.Hour)
+		n.Target.PR = ref
+		return n
+	}
+	Check(context.Background(), 1, []db.BoardNode{pr(1, "#1"), pr(2, "#2")}, Options{Folder: home, Now: testNow, Network: true,
+		Run: run, clock: func() time.Time { return now }})
+	if len(timeouts) != 2 {
+		t.Fatalf("gh reads %d, want 2", len(timeouts))
+	}
+	if timeouts[0] <= 3*time.Second || timeouts[0] > ghCallTimeout {
+		t.Errorf("first call's timeout %v, want the full %v", timeouts[0], ghCallTimeout)
+	}
+	if timeouts[1] <= 0 || timeouts[1] > 3*time.Second {
+		t.Errorf("second call's timeout %v, want at most the 3 s left of the budget", timeouts[1])
+	}
+}

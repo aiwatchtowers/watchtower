@@ -91,10 +91,14 @@ func (p *prChecker) state(ctx context.Context, ref string) string {
 	switch {
 	case ref == "" || strings.HasPrefix(ref, "-"):
 		return p.skip("invalid reference " + ref)
-	case p.gh.now().After(p.gh.deadline):
+	}
+	// Each call gets at most what is left of the shared budget, so all the
+	// folders' reads together never pass ghBudget.
+	left := p.gh.deadline.Sub(p.gh.now())
+	if left <= 0 {
 		return p.skip("the gh time budget was spent")
 	}
-	cctx, cancel := context.WithTimeout(ctx, ghCallTimeout)
+	cctx, cancel := context.WithTimeout(ctx, min(ghCallTimeout, left))
 	defer cancel()
 	var v struct {
 		State string `json:"state"`

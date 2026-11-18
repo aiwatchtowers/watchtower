@@ -302,13 +302,27 @@ func TestProj07_BriefNamesTheSkippedFolders(t *testing.T) {
 			{Folder: "/code/hub", Reason: "the folder is not a git work tree; branch checks skipped"},
 			{Folder: "/code/old", Reason: "the folder is missing (moved or deleted?); branch checks skipped"},
 		}}, briefMaxChars)
-	assert.Equal(t, "Board drift: none found, but branch checks did not run in /code/hub (the folder is not a git work tree; "+
-		"branch checks skipped); in /code/old (the folder is missing (moved or deleted?); branch checks skipped).", out)
+	assert.Equal(t, "Board drift: none found, but not every folder was checked:\n"+
+		"- branch checks did not run in /code/hub: the folder is not a git work tree; branch checks skipped\n"+
+		"- branch checks did not run in /code/old: the folder is missing (moved or deleted?); branch checks skipped", out)
 
 	withFinding := briefDriftSection(workbenchcheck.Report{Git: true, Base: "origin/main",
 		Findings: []workbenchcheck.Finding{{TargetID: 1, Title: "t", Status: "in_progress", Kind: workbenchcheck.KindMergedOpen, Detail: "d", Fix: "f"}},
 		Skipped:  []workbenchcheck.FolderSkip{{Folder: "/code/hub", Reason: "no default branch"}}}, briefMaxChars)
-	assert.Contains(t, withFinding, "Board drift (branch checks did not run in /code/hub (no default branch))")
+	assert.Equal(t, "Board drift — fix it with update_target:\n"+
+		"- branch checks did not run in /code/hub: no default branch\n"+
+		`- #1 "t" [in_progress]: d — f`, withFinding)
+
+	// Clipped: no folder silently drops — the rest are counted.
+	many := workbenchcheck.Report{Git: true, Base: "origin/main", Findings: []workbenchcheck.Finding{}}
+	for i := range 20 {
+		many.Skipped = append(many.Skipped, workbenchcheck.FolderSkip{Folder: "/code/folder-" + strconv.Itoa(i), Reason: "the folder is missing"})
+	}
+	clipped := briefDriftSection(many, 300)
+	assert.LessOrEqual(t, len([]rune(clipped)), 300)
+	shown := strings.Count(clipped, "\n- branch checks did not run in ")
+	require.Positive(t, shown)
+	assert.Contains(t, clipped, "\n… "+strconv.Itoa(20-shown)+" more skipped folders (watchtower workbench check)")
 }
 
 // Spec 2026-11-18 §6.3: a target whose folder left the bench reports

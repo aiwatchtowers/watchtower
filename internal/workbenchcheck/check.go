@@ -247,7 +247,14 @@ func Check(ctx context.Context, workbenchID int64, board []db.BoardNode, o Optio
 	case o.Network:
 		// One sign-in probe and one time budget for every folder's reads.
 		var note string
-		c.gh, note = newGHSession(ctx, o, o.Folder)
+		// The sign-in does not depend on the folder, but the probe needs a
+		// working directory that exists: a missing home folder would read as
+		// "not signed in" and turn off every folder's PR checks.
+		probeDir := o.Folder
+		if home.missing {
+			probeDir = os.TempDir()
+		}
+		c.gh, note = newGHSession(ctx, o, probeDir)
 		rep.PRChecked = c.gh.available
 		if note != "" {
 			rep.Notes = append(rep.Notes, note)
