@@ -96,6 +96,24 @@ func (db *DB) CancelAccountPurge(id int64) (bool, error) {
 	return n > 0, nil
 }
 
+// CancelScheduledAccountPurges cancels every scheduled row of one account
+// (running rows always finish) and reports how many it cancelled. A Slack
+// remove calls it (#1769): a lease row scheduled while the workspace was live
+// keeps its old due date, which can give less than the 72 h notice the remove
+// promises; with no open row the next pass schedules a fresh one.
+func (db *DB) CancelScheduledAccountPurges(source string, accountID int64) (int64, error) {
+	res, err := db.Exec(`UPDATE account_purges SET state = 'cancelled',
+		finished_at = `+nowSQL+` WHERE source = ? AND account_id = ? AND state = 'scheduled'`, source, accountID)
+	if err != nil {
+		return 0, fmt.Errorf("cancelling %s account %d purges: %w", source, accountID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("cancelling %s account %d purges: %w", source, accountID, err)
+	}
+	return n, nil
+}
+
 const accountPurgeColumns = `id, source, account_id, reason, scheduled_at, due_at, state,
 	started_at, finished_at, rows_deleted, error`
 

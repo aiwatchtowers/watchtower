@@ -1,6 +1,7 @@
 package guide
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -89,7 +90,6 @@ func TestGatherJiraDelivery_WithData(t *testing.T) {
 	assert.Contains(t, result, "Expertise: [api, backend]")
 	assert.Contains(t, result, "Recent accomplishments:")
 	assert.Contains(t, result, "PROJ-1")
-	assert.Contains(t, result, "overdue issue(s)")
 }
 
 func TestGatherJiraDelivery_MaxAccomplishments(t *testing.T) {
@@ -136,28 +136,37 @@ func TestGatherJiraDelivery_MaxAccomplishments(t *testing.T) {
 	assert.LessOrEqual(t, resolvedCount, maxAccomplishments)
 }
 
-func TestBuildWorkloadSignals_Compound(t *testing.T) {
-	stats := &db.DeliveryStats{
-		OpenIssues:    12,
-		OverdueIssues: 2,
-	}
-	signals := buildWorkloadSignals(stats)
+// TestGuideJira_NoRiskLabels pins #1769 (spec §5.1 rule 7): the Jira lines
+// given to the people prompt are facts — 5 overdue and 20 open issues read
+// as counts, never as a burnout, bottleneck or risk label, and the
+// instruction combines nothing with Slack activity.
+func TestGuideJira_NoRiskLabels(t *testing.T) {
+	database := testDB(t)
+	accountID := db.SeedTestJiraAccount(t, database)
+	cfg := &config.Config{}
+	cfg.Jira.Enabled = true
+	cfg.Jira.Features.MyIssuesInBriefing = true
 
-	hasCompound := false
-	for _, s := range signals {
-		if strings.Contains(s, "burnout risk") {
-			hasCompound = true
+	for i := range 20 {
+		due := ""
+		if i < 5 {
+			due = "2026-04-01"
+		}
+		key := fmt.Sprintf("PROJ-%d", 100+i)
+		require.NoError(t, database.UpsertJiraIssue(db.JiraIssue{
+			AccountID: accountID, Key: key, ID: key, ProjectKey: "PROJ", Summary: "Open " + key,
+			Status: "In Progress", StatusCategory: "indeterminate", AssigneeSlackID: "U123", Priority: "High",
+			DueDate: due, CreatedAt: "2026-03-25", UpdatedAt: "2026-04-06", Labels: `[]`, Components: `[]`,
+			SyncedAt: "2026-04-07",
+		}))
+	}
+
+	result, err := gatherJiraDelivery(database, cfg, "U123", "2026-04-01", "2026-04-08")
+	require.NoError(t, err)
+	assert.Contains(t, result, "Open issues: 20, Overdue: 5")
+	for _, text := range []string{result, jiraDeliveryInstruction} {
+		for _, word := range []string{"burnout", "bottleneck", "risk", "COMPOUND", "red flag", "workload"} {
+			assert.NotContains(t, strings.ToLower(text), strings.ToLower(word))
 		}
 	}
-	assert.True(t, hasCompound, "expected compound burnout risk signal")
-}
-
-func TestBuildWorkloadSignals_NoSignals(t *testing.T) {
-	stats := &db.DeliveryStats{
-		OpenIssues:       3,
-		OverdueIssues:    0,
-		AvgCycleTimeDays: 5,
-	}
-	signals := buildWorkloadSignals(stats)
-	assert.Empty(t, signals)
 }

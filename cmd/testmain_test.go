@@ -117,6 +117,9 @@ func TestMain(m *testing.M) {
 	askOwnerDesktop = func(context.Context, string, ownerconfirm.Request) (ownerconfirm.Reply, error) {
 		return ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil
 	}
+	// No cmd test may call Slack: `slack remove` revokes at a refused local
+	// port unless a test points slackRevokeAPIURL at its own server.
+	slackRevokeAPIURL = "http://127.0.0.1:1/"
 	// No git a cmd test starts may leave maintenance writing into a
 	// t.TempDir repository after it returns.
 	gittest.DisableBackgroundGit()
