@@ -379,16 +379,12 @@ final class AppState {
     private(set) var planUsageCenter: PlanUsageCenter?
     /// The account purge ledger (board #601): red lines, Home banner, notices.
     var accountPurgeCenter: AccountPurgeCenter?
-    /// `fdesetup status`, read at launch and on activation (#1769); `.unknown` until read.
-    var fileVaultState: FileVaultState = .unknown
-    @ObservationIgnored var fileVaultTask: Task<Void, Never>?
+    let fileVault = FileVaultWatch() // `fdesetup status` at launch and on activation (#1769)
     /// The Slack Live probe's verdicts (Connections → Slack).
     var slackLiveStatusCenter: SlackLiveStatusCenter?
-    /// The live workbench sessions' agent states (board #312), polled while
-    /// a `claude` session runs, whatever tab is shown.
+    /// The live workbench sessions' agent states (board #312), polled while a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
-    /// The Go hub over its control socket (heartbeat, view inputs, status;
-    /// go hub plan 3 Task 14); none under XCTest.
+    /// The Go hub over its control socket (heartbeat, view inputs, status; go hub plan 3 Task 14); none under XCTest.
     var hubCenter: HubCenter? // set by replaceHubCenter (AppState+MobileSettings)
     /// The one-time v1-host restart (go hub spec §8 p. 4b), made by `startHostRestart`; the
     /// adoption awaits its `waitUntilSettled()` (order: migrate → compact → restart → adoption).
@@ -833,8 +829,6 @@ final class AppState {
         questions.stopQuestionSearches()
     }
 
-    deinit { fileVaultTask?.cancel() }
-
     func initialize() {
         guard !isInitializing else { return }
         isInitializing = true
@@ -842,7 +836,7 @@ final class AppState {
         Constants.prewarmResolvedEnvironment()
         // Before anything a key decides starts (the mobile hub, the pickers).
         managedPolicy.start(activation: NSApplication.didBecomeActiveNotification)
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil { watchFileVault() }
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil { fileVault.start() }
         // Text older versions handed the CLI through temp files (now stdin).
         Task.detached(priority: .utility) {
             StaleTempSweep.run(in: FileManager.default.temporaryDirectory)

@@ -24,20 +24,4 @@ extension AppState {
         bringMainWindowForward(windows: windows, activate: activate)
         openConnections(ConnectionService(rawValue: source))
     }
-
-    /// FileVault's state now and on every activation (a user who turns it on
-    /// in System Settings comes back to the app). Subscribes first, so an
-    /// activation during the first probe is not lost; none under XCTest.
-    func watchFileVault(status: FileVaultStatus = .live) {
-        fileVaultTask?.cancel()
-        fileVaultTask = Task { [weak self] in
-            var activations = NotificationCenter.default
-                .notifications(named: NSApplication.didBecomeActiveNotification).makeAsyncIterator()
-            self?.fileVaultState = await status.read()
-            while await activations.next() != nil {
-                guard let self else { return }
-                self.fileVaultState = await status.read()
-            }
-        }
-    }
 }

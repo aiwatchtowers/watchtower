@@ -9,7 +9,7 @@ struct FileVaultLine: View {
     @Environment(AppState.self) private var appState
 
     var body: some View {
-        if FileVaultNotice.isShown(appState.fileVaultState) {
+        if FileVaultNotice.isShown(appState.fileVault.state) {
             FileVaultLineContent()
         }
     }
