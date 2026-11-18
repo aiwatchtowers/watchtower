@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"slices"
@@ -31,6 +32,12 @@ const handshakeTimeout = 10 * time.Second
 // ErrDisconnected is returned by Send while the connection is down or when it drops before the
 // response arrived; the request may or may not have been executed.
 var ErrDisconnected = errors.New("relay: websocket disconnected")
+
+// ErrNotSent is the ErrDisconnected of a request refused before any of it was written (no socket
+// at the time): the server never saw it, so it may be sent another way. It matches ErrDisconnected.
+// Local to this copy until the relay repo's client carries it (upstreamed in the live link relay
+// branch, #1992), so a re-pin by make relay-go keeps it.
+var ErrNotSent = fmt.Errorf("%w: request not sent", ErrDisconnected)
 
 // errUnauthenticated: the server refused the session at hello.
 var errUnauthenticated = errors.New("relay: websocket unauthenticated")
@@ -208,8 +215,9 @@ func (k *Conn) Subscribe(ctx context.Context, zones ...string) error {
 	return err
 }
 
-// Send performs one operation over the WebSocket. Errors are as for Client.Do, plus ErrDisconnected;
-// an operation answered UNAVAILABLE is retried as in Client.Do.
+// Send performs one operation over the WebSocket. Errors are as for Client.Do, plus ErrDisconnected
+// (ErrNotSent when the request was never written); an operation answered UNAVAILABLE is retried as
+// in Client.Do.
 func (k *Conn) Send(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
 	return k.c.retryUnavailable(ctx, func() (*relayv1.Response, error) { return k.sendOnce(ctx, req) })
 }
@@ -229,7 +237,7 @@ func (k *Conn) sendOnce(ctx context.Context, req *relayv1.Request) (*relayv1.Res
 	}
 	k.mu.Unlock()
 	if ws == nil {
-		return nil, ErrDisconnected
+		return nil, ErrNotSent
 	}
 	defer func() {
 		k.mu.Lock()
