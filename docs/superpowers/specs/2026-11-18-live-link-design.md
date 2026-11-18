@@ -20,7 +20,7 @@ No — alone it is not. What the owner feels is the sum of four parts, and the s
 |---|---|---|
 | The phone shows the change only after the round trip | yes, for everything but answers | **R5 optimistic apply** — the change shows at tap time (0 ms) |
 | Extra round trips (HTTPS per op, a `changes` read after every notice) | 2–4 per action | **R1 + R2** — ops over the socket, records delivered inside the event |
-| The hub's own queue and handlers (`read_applied` p50 ~1 s on the live install) | ~1 s | **R4 hub event lane** — a socket does nothing for it |
+| The hub's own queue and handlers (`read_applied`, seconds-level on a live install; figures kept out of the repo) | seconds-level | **R4 hub event lane** — a socket does nothing for it |
 | Relay hops (phone → Cloudflare edge → device DOs → peer) | not measured — the external probe has never run (`PROBE_URL_STAGING` unset in the relay repo) | **R7** measures it first; estimate 20–60 ms per one-way hop in one region |
 
 Estimated after the change, good network, tower online: tap → visible **0 ms** (optimistic), tap → confirmed by the
