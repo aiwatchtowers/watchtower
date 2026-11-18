@@ -533,7 +533,7 @@ After the build, `make mobile-shots SHOTS_ONLY=inbox-approval` renders these nam
 
 #### 12.8 Open questions (ask #1549)
 
-The design above follows the recommended option of each question. Every line that depends on one says "per ask #1549".
+The design above follows the recommended option of each question. Every line that depends on one says "per ask #1549". Phase B (the code) does not start until ask #1549 and ask #1553 are answered; an answer other than the recommended one first changes this section, its Promises rows, the mockups and the Decisions lines, and the spec goes back for review.
 
 - **Q1. Dismiss on an ordinary failed proposal.** Today's phone Dismiss on such a row is refused by Go.
   - A (recommended): offer Dismiss only where Go accepts it, on a session call whose outcome is unknown, as on the Mac. Ordinary failed rows get Retry only.
