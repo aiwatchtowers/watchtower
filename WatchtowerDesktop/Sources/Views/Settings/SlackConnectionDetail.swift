@@ -49,6 +49,7 @@ struct SlackConnectionDetail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.large) {
                 modeSection
+                SlackSetupRecordRows(model: appState.slackAppSetup, blocked: sourceBlocked)
                 workspaceSection
                 FileVaultLine()
                 slackAccountsSection
@@ -66,6 +67,10 @@ struct SlackConnectionDetail: View {
             await slackAuth.refreshStatus()
         }
         .onAppear { appState.slackLiveStatusCenter?.refreshIfStale() }
+        .task(id: appState.databaseManager?.dbPool.path) { await appState.slackAppSetup.reloadRecords() }
+        .sheet(isPresented: Bindable(appState.slackAppSetup).isPresented) {
+            SlackAppSetupSheet(model: appState.slackAppSetup).frame(width: 520)
+        }
         // The Workspaces list below enables/disables, removes and adds
         // accounts through its own VM; re-derive the Workspace status from the
         // table whenever that list changes, or it goes stale (e.g. "Slack
