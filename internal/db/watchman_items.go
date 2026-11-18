@@ -214,13 +214,15 @@ func (db *DB) QueueWatchmanWaitPoint(it WatchmanItem) (id int64, inserted bool, 
 var watchmanHandoverBeforeWrite = func() {}
 
 // PromoteWatchmanHandover makes ask it.RefID the twin's handover in one write
-// transaction: a queued item of the ask, whatever its kind, becomes kind
-// handover; with no item at all a handover is inserted — only for an open
-// ask that no automation run filed, of an armed session no automation
-// started (QueueWatchmanWaitPoint's guards). An item already deciding or done
-// is left. So a scan or writer racing it ends with exactly one handover row.
-// it carries the insert's workbench, session, target and question; promoted
-// reports a queued handover it wrote, inserted a new row.
+// transaction: a queued or deciding item of the ask, whatever its kind,
+// becomes kind handover (the twin deciding it as a question re-reads the
+// kind in its finish transaction and takes it again as a handover); with no
+// item at all a handover is inserted — only for an open ask that no
+// automation run filed, of an armed session no automation started
+// (QueueWatchmanWaitPoint's guards). A done item is left. So a scan or
+// writer racing it ends with exactly one handover row. it carries the
+// insert's workbench, session, target and question; promoted reports a
+// handover it wrote, inserted a new row.
 func (db *DB) PromoteWatchmanHandover(it WatchmanItem) (promoted, inserted bool, err error) {
 	watchmanHandoverBeforeWrite()
 	q := []rune(it.Question)
@@ -229,7 +231,7 @@ func (db *DB) PromoteWatchmanHandover(it WatchmanItem) (promoted, inserted bool,
 	}
 	err = db.WithTx(func(tx *sql.Tx) error {
 		res, err := tx.Exec(`UPDATE watchman_items SET kind = 'handover'
-			WHERE ref_kind = 'ask' AND ref_id = ? AND state = 'queued' AND kind != 'handover'`, it.RefID)
+			WHERE ref_kind = 'ask' AND ref_id = ? AND state IN ('queued','deciding') AND kind != 'handover'`, it.RefID)
 		if err != nil {
 			return err
 		}
@@ -409,6 +411,22 @@ func (db *DB) ParkWatchmanGuard(it WatchmanItem, at time.Time) error {
 // deciding with attempts+1 and lease_until = now+lease. Nil when none. The
 // move is a compare-and-set, so two workers never get the same item.
 func (db *DB) LeaseWatchmanItem(now time.Time, lease time.Duration, eligible func(WatchmanItem) bool) (*WatchmanItem, error) {
+	return db.leaseWatchmanItem(now, lease, eligible, false)
+}
+
+// LeaseArmedWatchmanItem is LeaseWatchmanItem for the twin: the
+// compare-and-set also requires the item's session to be armed at that
+// statement (armedSessionsFrom), so a disarm between the caller's arming
+// read and the lease leaves the item queued (WATCHMAN-04).
+func (db *DB) LeaseArmedWatchmanItem(now time.Time, lease time.Duration, eligible func(WatchmanItem) bool) (*WatchmanItem, error) {
+	return db.leaseWatchmanItem(now, lease, eligible, true)
+}
+
+func (db *DB) leaseWatchmanItem(now time.Time, lease time.Duration, eligible func(WatchmanItem) bool, armedOnly bool) (*WatchmanItem, error) {
+	armed := ""
+	if armedOnly {
+		armed = ` AND session_id IN (SELECT id FROM (` + armedSessionsFrom + `))`
+	}
 	nowS := wmTime(now)
 	until := now.Add(lease)
 	afterCreated, afterID := "", int64(0)
@@ -423,13 +441,13 @@ func (db *DB) LeaseWatchmanItem(now time.Time, lease time.Duration, eligible fun
 			}
 			res, err := db.Exec(`UPDATE watchman_items SET state = 'deciding', attempts = attempts + 1, lease_until = ?
 				WHERE id = ? AND kind = ? AND attempts = ?
-				  AND ((state = 'queued' AND (not_before IS NULL OR not_before <= ?)) OR (state = 'deciding' AND lease_until < ?))`,
+				  AND ((state = 'queued' AND (not_before IS NULL OR not_before <= ?)) OR (state = 'deciding' AND lease_until < ?))`+armed,
 				wmTime(until), c.ID, c.Kind, c.Attempts, nowS, nowS)
 			if err != nil {
 				return nil, fmt.Errorf("leasing watchman item %d: %w", c.ID, err)
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
-				continue // another worker took it, or its kind changed
+				continue // another worker took it, its kind changed or its session was disarmed
 			}
 			c.State, c.Attempts = "deciding", c.Attempts+1
 			u := until.UTC().Truncate(time.Second)
@@ -494,7 +512,7 @@ func (db *DB) FinishWatchmanItemTx(tx *sql.Tx, id int64, lease time.Time, o Watc
 	}
 	res, err := tx.Exec(`UPDATE watchman_items SET state = 'done', outcome = ?, choice = ?, rationale = ?, confidence = ?,
 			importance = ?, category = ?, park_reason = ?, delivery = ?, error = ?, precedent_ids = ?, round_id = ?,
-			cost_usd = ?, decided_at = ?, lease_until = NULL
+			cost_usd = cost_usd + ?, decided_at = ?, lease_until = NULL
 		WHERE id = ? AND state = 'deciding' AND lease_until = ?`,
 		o.Outcome, o.Choice, o.Rationale, o.Confidence, o.Importance, o.Category, o.ParkReason, o.Delivery, o.Error,
 		string(precJSON), wmNullID(o.RoundID), o.CostUSD, wmTime(decided), id, wmTime(lease))
@@ -515,6 +533,138 @@ func (db *DB) RequeueWatchmanItem(id int64, lease time.Time, notBefore time.Time
 	}
 	n, err := res.RowsAffected()
 	return n > 0, err
+}
+
+// DropWatchmanItem deletes a deciding item under the caller's lease — its
+// wait point went away before the twin answered (the ask was withdrawn or
+// superseded), so there is nothing to journal; false when the lease is stale.
+func (db *DB) DropWatchmanItem(id int64, lease time.Time) (bool, error) {
+	res, err := db.Exec(`DELETE FROM watchman_items WHERE id = ? AND state = 'deciding' AND lease_until = ?`, id, wmTime(lease))
+	if err != nil {
+		return false, fmt.Errorf("dropping watchman item %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// ReleaseWatchmanItem hands a deciding item back to the queue as if this
+// attempt never ran (attempts-1, not_before kept): the worker stopped
+// (shutdown) or the item changed under it. costUSD, what the released
+// attempt's calls cost, is added to the item's cost. False when the lease is
+// stale.
+func (db *DB) ReleaseWatchmanItem(id int64, lease time.Time, costUSD float64) (bool, error) {
+	res, err := db.Exec(`UPDATE watchman_items SET state = 'queued', lease_until = NULL, attempts = MAX(attempts - 1, 0),
+			cost_usd = cost_usd + ?
+		WHERE id = ? AND state = 'deciding' AND lease_until = ?`, costUSD, id, wmTime(lease))
+	if err != nil {
+		return false, fmt.Errorf("releasing watchman item %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// WatchmanItemKindTx is item id's kind inside tx (the finish transaction's
+// re-read).
+func (db *DB) WatchmanItemKindTx(tx *sql.Tx, id int64) (string, error) {
+	var kind string
+	if err := tx.QueryRow(`SELECT kind FROM watchman_items WHERE id = ?`, id).Scan(&kind); err != nil {
+		return "", fmt.Errorf("reading watchman item %d kind: %w", id, err)
+	}
+	return kind, nil
+}
+
+// DoneWatchmanItemsWithError lists answered done items of kind whose error
+// is exactly errText, oldest first (a step after the answer still owed).
+func (db *DB) DoneWatchmanItemsWithError(kind, errText string) ([]WatchmanItem, error) {
+	rows, err := db.Query(`SELECT `+watchmanItemCols+` FROM watchman_items
+		WHERE kind = ? AND state = 'done' AND outcome = 'answered' AND error = ? ORDER BY id`, kind, errText)
+	if err != nil {
+		return nil, fmt.Errorf("listing watchman items with an owed step: %w", err)
+	}
+	defer rows.Close()
+	var out []WatchmanItem
+	for rows.Next() {
+		it, err := scanWatchmanItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *it)
+	}
+	return out, rows.Err()
+}
+
+// SetWatchmanItemError moves a done item's error from was to errText (a
+// compare-and-set on the error: the step a later step owes); false when it
+// was no longer was.
+func (db *DB) SetWatchmanItemError(id int64, was, errText string) (bool, error) {
+	res, err := db.Exec(`UPDATE watchman_items SET error = ? WHERE id = ? AND state = 'done' AND error = ?`, errText, id, was)
+	if err != nil {
+		return false, fmt.Errorf("setting watchman item %d error: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// ClaimWatchmanItemStep is SetWatchmanItemError for a step that is tried a
+// bounded number of times: it also counts the try in attempts (reset by
+// ResetWatchmanItemAttemptsTx when the step became owed) and returns the
+// count; claimed false when the error was no longer was.
+func (db *DB) ClaimWatchmanItemStep(id int64, was, errText string) (tries int, claimed bool, err error) {
+	err = db.WithTx(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE watchman_items SET error = ?, attempts = attempts + 1 WHERE id = ? AND state = 'done' AND error = ?`,
+			errText, id, was)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil
+		}
+		claimed = true
+		return tx.QueryRow(`SELECT attempts FROM watchman_items WHERE id = ?`, id).Scan(&tries)
+	})
+	if err != nil {
+		return 0, false, fmt.Errorf("claiming watchman item %d step: %w", id, err)
+	}
+	return tries, claimed, nil
+}
+
+// ResetWatchmanItemAttemptsTx zeroes a finished item's attempts inside tx: the
+// count is the owed step's from then on.
+func (db *DB) ResetWatchmanItemAttemptsTx(tx *sql.Tx, id int64) error {
+	if _, err := tx.Exec(`UPDATE watchman_items SET attempts = 0 WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("resetting watchman item %d attempts: %w", id, err)
+	}
+	return nil
+}
+
+// WatchmanItemArmed reports whether the twin may still act for an item of
+// session and target: the session armed directly, or the target or one of
+// its ancestors armed (the session itself may have ended).
+func (db *DB) WatchmanItemArmed(sessionID, targetID int64) (bool, error) {
+	var n int
+	err := db.QueryRow(`WITH RECURSIVE up(id) AS (
+			SELECT ? WHERE ? > 0
+			UNION
+			SELECT t.parent_id FROM targets t JOIN up ON t.id = up.id WHERE t.parent_id IS NOT NULL
+		)
+		SELECT COUNT(*) FROM watchman_arming
+		WHERE (scope = 'session' AND ref_id = ?) OR (scope = 'target' AND ref_id IN (SELECT id FROM up))`,
+		targetID, targetID, sessionID).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("checking watchman arming of session %d / target %d: %w", sessionID, targetID, err)
+	}
+	return n > 0, nil
+}
+
+// NoteWatchmanItemDelivery records, on a done item, how its answer reached
+// the session (the answer's line is typed after the commit that finished the
+// item) and an error of a step after it ("" keeps none).
+func (db *DB) NoteWatchmanItemDelivery(id int64, delivery, errText string) error {
+	if _, err := db.Exec(`UPDATE watchman_items SET delivery = ?, error = ? WHERE id = ? AND state = 'done'`,
+		delivery, errText, id); err != nil {
+		return fmt.Errorf("noting watchman item %d delivery: %w", id, err)
+	}
+	return nil
 }
 
 // SetWatchmanItemKind changes the kind of a still queued item.

@@ -61,13 +61,14 @@ final class WatchmanFeedbackQueriesTests: XCTestCase {
         XCTAssertEqual(row["feedback_at"], "2026-11-17T08:00:00Z")
     }
 
-    /// Only a finished twin decision takes OK or Correct…: a parked, handed
-    /// or owner-first item, a check and an item still deciding are not the
+    /// Only a finished twin decision takes OK or Correct…: a parked, handed,
+    /// owner-first or superseded item, a check and an item still deciding are not the
     /// twin's decisions, so learning must never read them as one.
     func testOnlyTwinDecisionsTakeFeedback() throws {
         let queue = try TestDatabase.create()
         let ids = try queue.write { db in
             [try item(db, outcome: "parked"), try item(db, outcome: "handed"), try item(db, outcome: "owner_first"),
+             try item(db, outcome: "superseded"),
              try item(db, kind: "check"), try item(db, outcome: "", state: "deciding")]
         }
         for id in ids {

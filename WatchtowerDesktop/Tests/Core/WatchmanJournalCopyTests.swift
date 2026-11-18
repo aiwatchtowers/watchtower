@@ -33,6 +33,8 @@ final class WatchmanJournalCopyTests: XCTestCase {
         XCTAssertEqual(Copy.outcome(WatchmanItem(id: 4, outcome: "approved", createdAt: created)), "Approved the review round")
         XCTAssertEqual(Copy.outcome(WatchmanItem(id: 5, outcome: "changes", createdAt: created)),
                        "Asked for changes in the review round")
+        XCTAssertEqual(Copy.outcome(WatchmanItem(id: 6, outcome: "superseded", createdAt: created)),
+                       "The ask was withdrawn before the answer")
     }
 
     func testEveryCardLabel() {

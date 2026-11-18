@@ -573,7 +573,7 @@ final class WatchmanJournalViewModel {
     }
 
     private func ownerFirstLine(_ item: WatchmanItem) -> Line {
-        Line(id: item.id, title: WatchmanJournalCopy.question(item), note: WatchmanJournalCopy.ownerFirst,
+        Line(id: item.id, title: WatchmanJournalCopy.question(item), note: WatchmanJournalCopy.outcome(item),
              meta: WatchmanJournalCopy.place(item, calendar: calendar))
     }
 

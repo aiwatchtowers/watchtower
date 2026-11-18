@@ -120,9 +120,10 @@ func watchmanReviewOfChanges(ctx context.Context, d *db.DB, p *db.Workbench, ses
 
 // markWatchmanHandover makes handover ask askID the twin's handover item
 // (db.PromoteWatchmanHandover, one transaction): its queued item changes
-// kind, and with no item at all (its own insert failed earlier) an open ask
-// is queued as a handover. An item already deciding or done is left. A
-// failure is logged.
+// kind — a queued one, or one the twin is deciding as a question (its finish
+// re-reads the kind, rolls back and decides it again as the handover) — and
+// with no item at all (its own insert failed earlier) an open ask is queued
+// as a handover. A done item is left. A failure is logged.
 func markWatchmanHandover(d *db.DB, workbenchID, session, ticket, askID int64, wake func()) {
 	ask, err := d.GetOwnerAsk(workbenchID, askID)
 	if err != nil {

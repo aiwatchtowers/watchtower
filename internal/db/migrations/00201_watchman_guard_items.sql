@@ -8,7 +8,8 @@
 -- rebuilt with every row, its id and its AUTOINCREMENT high-water mark
 -- (sqlite_sequence carry), and its indexes — 00198's two and 00200's
 -- created_at index (IF NOT EXISTS: created here too should 00200 not have
--- run). One transaction as one goose statement (see 00150); foreign keys are
+-- run). Task 9 adds the outcome 'superseded' (an ask withdrawn or replaced
+-- after the twin decided it). One transaction as one goose statement (see 00150); foreign keys are
 -- OFF around it so the DROP fires no cascade (nothing references the table).
 PRAGMA foreign_keys = OFF;
 -- +goose StatementBegin
@@ -22,7 +23,7 @@ CREATE TABLE watchman_items_new (
     ref_kind      TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round','guard')),
     ref_id        INTEGER NOT NULL,
     state         TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','deciding','done')),
-    outcome       TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('','answered','handed','parked','owner_first','approved','changes')),
+    outcome       TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('','answered','handed','parked','owner_first','approved','changes','superseded')),
     attempts      INTEGER NOT NULL DEFAULT 0,
     lease_until   TEXT,
     not_before    TEXT,
@@ -62,11 +63,13 @@ COMMIT;
 PRAGMA foreign_keys = ON;
 
 -- +goose Down
--- The guard's own items cannot live in the old table: they go.
+-- The guard's own items cannot live in the old table: they go; a
+-- superseded item reads as owner_first there.
 PRAGMA foreign_keys = OFF;
 -- +goose StatementBegin
 BEGIN IMMEDIATE;
 DELETE FROM watchman_items WHERE ref_kind = 'guard';
+UPDATE watchman_items SET outcome = 'owner_first' WHERE outcome = 'superseded';
 CREATE TABLE watchman_items_new (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     workbench_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

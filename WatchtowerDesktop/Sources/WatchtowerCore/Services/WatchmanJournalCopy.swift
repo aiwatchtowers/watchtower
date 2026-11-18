@@ -18,6 +18,8 @@ package enum WatchmanJournalCopy {
     package static let checkLine = "Not run by you — Watchman continued"
     package static let daemonStopped = "Watchman is not running — the daemon is stopped"
     package static let ownerFirst = "the owner answered first"
+    /// An ask withdrawn or replaced by the agent after the twin decided it.
+    package static let superseded = "The ask was withdrawn before the answer"
     package static let sessionEnded = "session ended"
     package static let stayedAwake = "the Mac stayed awake"
 
@@ -140,6 +142,7 @@ package enum WatchmanJournalCopy {
         if item.delivery == "no_session" { return sessionEnded }
         switch item.outcome {
         case "owner_first": return ownerFirst
+        case "superseded": return superseded
         case "approved": return "Approved the review round"
         case "changes": return "Asked for changes in the review round"
         case "parked", "handed": return waitingReason(item)
