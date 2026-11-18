@@ -1,14 +1,17 @@
 import AppKit
 import DesignKit
 import SwiftUI
-import WatchtowerCore
+@testable import WatchtowerCore
 @testable import WatchtowerDesktop
 
 /// The multi-folder workbench spec's mockups (board #2003, spec
 /// 2026-11-18-multi-folder-workbench-design.md §9): static views on `acme`
 /// sample data, drawn from the design kit and plain SwiftUI; the strings are
 /// the spec's §6 words. Built parts use the production views: the FILES
-/// root rows (`FilesRootRow`) and the switcher rows (`SwitcherPopoverRow`).
+/// root rows (`FilesRootRow`), the switcher rows (`SwitcherPopoverRow`),
+/// the session rows (`TerminalSessionRow`), the prompt notice bar, the
+/// folder label and the from-parent link; the New Session menu's entries
+/// come from its model (`SessionNestingPresentation.newSessionMenu`).
 @MainActor
 enum MultiFolderShotFixtures {
     static var shots: [DesignShot] {
@@ -74,11 +77,6 @@ enum MultiFolderMockCopy {
     static let sessionsRunning = "2 sessions are running in hub. Finish them first."
     static let lastFolder = "A workbench needs at least one folder."
     static let benchFolders = "app, hub, site"
-    static let parentWaiting = "Sub-sessions working · 2 sub-sessions"
-    static let messageWaitingSuffix = "· Agent message waiting in the prompt"
-    static let messageInPromptNotice = "An agent's message is in the prompt. Press Return in the terminal to send it."
-    static let showInTerminal = "Show in Terminal"
-    static let fromParent = "↖ from “Export reports to PDF”"
 }
 
 // MARK: - Shared parts
@@ -105,56 +103,44 @@ private struct PutOnBenchIcon: View {
     }
 }
 
-/// A sessions-panel row as the spec draws it: the live dot and title, the
-/// state line, an optional report line, and where it works — prefixed with
-/// its folder only when the bench has more than one.
+/// A sessions-panel row drawn by the production row (`TerminalSessionRow`)
+/// with its nesting indent, folder label, sub-session count and prompt flag
+/// (spec 2026-11-18 §6.2, §6.5, §6.6).
 private struct MockSessionRow: View {
     let title: String
     let state: SessionSwitcherPresentation.State
-    let caption: String
     var report: (text: String, progress: Double)?
     var folder: String?
     let place: String
-    var closed: String?
-    /// A second, warning-toned part of the state line (§6.6).
-    var captionWarning: String?
+    var depth = 0
+    var messageInPrompt = false
     var selected = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.tight) {
-            HStack(spacing: Spacing.compact) {
-                SessionLiveDot(state: state).frame(width: 16)
-                Text(title).lineLimit(1)
-                Spacer(minLength: Spacing.small)
-                if let closed {
-                    Text(closed).font(.caption2).foregroundStyle(Color.accentColor)
-                }
+        TerminalSessionRow(
+            row: SessionSwitcherPresentation.Row(
+                session: TerminalSession(
+                    id: Int64(abs(title.hashValue % 10_000)), projectID: 1, kind: .claude, title: title,
+                    titleSource: .auto, targetID: nil, folderPath: "/tmp/acme", claudeSessionID: "uuid",
+                    createdAt: "2026-11-18T10:00:00Z", lastActiveAt: "2026-11-18T10:00:00Z"
+                ),
+                state: state, caption: SessionStatePresentation.caption(for: state), badge: nil, shortcut: nil,
+                place: .init(text: place, systemImage: SessionPlacePresentation.mainSymbol, help: place)
+            ),
+            actions: SessionRowActions(open: { _ in }, rename: { _ in }, delete: { _ in }),
+            reportLine: report?.text,
+            reportProgress: report?.progress,
+            folderLabel: folder,
+            messageInPrompt: messageInPrompt
+        )
+        .padding(.leading, CGFloat(depth) * SessionsPanelSessionRow.nestIndent)
+        .overlay(alignment: .leading) {
+            if depth > 0 {
+                Rectangle()
+                    .fill(.separator)
+                    .frame(width: 1)
+                    .padding(.leading, CGFloat(depth) * SessionsPanelSessionRow.nestIndent - SessionsPanelSessionRow.nestIndent / 2)
             }
-            VStack(alignment: .leading, spacing: Spacing.tight) {
-                HStack(spacing: Spacing.small) {
-                    SessionStateLabel(state: state, caption: caption)
-                    if let captionWarning {
-                        Text(captionWarning).foregroundStyle(Tone.warning).lineLimit(1)
-                    }
-                }
-                if let report {
-                    HStack(spacing: Spacing.small) {
-                        ProgressView(value: report.progress).frame(width: 28).controlSize(.mini)
-                        Text(report.text)
-                    }
-                }
-                HStack(spacing: Spacing.small) {
-                    if let folder {
-                        FolderLabel(name: folder)
-                        Text("·")
-                    }
-                    Text(place)
-                }
-                .lineLimit(1)
-            }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .padding(.leading, 16 + Spacing.compact)
         }
         .padding(.vertical, Spacing.small)
         .panelTab(isSelected: selected)
@@ -280,29 +266,22 @@ private struct MultiFolderPanel: View {
     private var nestedSessions: some View {
         VStack(alignment: .leading, spacing: 0) {
             MockSessionRow(title: "Export reports to PDF",
-                           state: parentWaiting ? .init(kind: .background, live: true, backgroundShells: 1)
-                               : .init(kind: .working, live: true),
-                           caption: parentWaiting ? MultiFolderMockCopy.parentWaiting : "Working · 2 sub-sessions",
+                           state: .live(parentWaiting ? .subSessionsWorking : .working, liveSubSessions: 2),
                            report: ("#2010 · 1/3 · no PR yet", 0.33),
-                           folder: "app", place: "⎇ feature/pdf-export", closed: "▸ 2 closed", selected: true)
-            HStack(alignment: .top, spacing: 0) {
-                Rectangle().fill(.quaternary).frame(width: 1).padding(.leading, 22).padding(.vertical, Spacing.small)
-                VStack(alignment: .leading, spacing: 0) {
-                    MockSessionRow(title: "PDF export API", state: .init(kind: .working, live: true),
-                                   caption: "Working", folder: "hub", place: "⑂ export-api")
-                    MockSessionRow(title: "Download PDF button", state: .init(kind: .waitingOnAsk, live: true),
-                                   caption: "Waiting for you · ask #2011", folder: "site", place: "⑂ pdf-button")
-                }
-                .padding(.leading, Spacing.small)
-            }
+                           folder: "app", place: "⎇ feature/pdf-export", selected: true)
+            MockSessionRow(title: "PDF export API", state: .live(.working),
+                           folder: "hub", place: "⑂ export-api", depth: 1)
+            MockSessionRow(title: "Download PDF button",
+                           state: .live(.waitingOnAsk, openAsks: 1, oldestAskID: 2011),
+                           folder: "site", place: "⑂ pdf-button", depth: 1)
             MockSessionRow(title: "Update dependencies", state: .init(kind: .stopped, live: false),
-                           caption: "Stopped", folder: "hub", place: "main folder · main", closed: "▸ 4 closed")
+                           folder: "hub", place: "main folder · main")
         }
     }
 
     private var singleSession: some View {
-        MockSessionRow(title: "Export reports to PDF", state: .init(kind: .working, live: true),
-                       caption: "Working", report: ("#2010 · 1/3 · no PR yet", 0.33),
+        MockSessionRow(title: "Export reports to PDF", state: .live(.working),
+                       report: ("#2010 · 1/3 · no PR yet", 0.33),
                        place: "main folder · main", selected: true)
     }
 
@@ -420,14 +399,21 @@ private struct MultiFolderSwitcher: View {
 
 /// The (+) menu with per-folder items, the "in hub" submenu open beside it.
 private struct MultiFolderNewSessionMenu: View {
+    /// The production menu's model on the acme bench, from app.
+    private let model = SessionNestingPresentation.newSessionMenu(
+        folders: BenchFolders(folders: ["app", "hub", "site"].enumerated().map { index, name in
+            WorkbenchFolder(id: Int64(index + 1), workbenchID: 1, folderPath: "~/code/\(name)", position: index, name: name)
+        }, homeID: 1),
+        contextFolderID: 1
+    )
+    private let agents = AgentChoicePresentation.newSessionAgentChoices { _ in true }.map { Entry.item($0.title) }
+
     var body: some View {
         HStack(alignment: .top, spacing: Spacing.tight) {
-            menu([
-                .item("New Claude Code session"), .item("New Codex session"), .separator,
-                .submenu("in hub", highlighted: true), .submenu("in site"), .separator,
-                .submenu("In This Folder"), .submenu("In Its Own Worktree")
-            ])
-            menu([.item("New Claude Code session"), .item("New Codex session")])
+            menu(agents + [.separator]
+                + model.otherFolders.enumerated().map { .submenu($1.title, highlighted: $0 == 0) } + [.separator]
+                + [WorktreeChoice.folder, .worktree].map { .submenu(SessionStartPlacementPresentation.menuTitle($0)) })
+            menu(agents)
                 .padding(.top, Spacing.hero + Spacing.medium)
         }
         .padding(Spacing.cozy)
@@ -691,14 +677,14 @@ private struct MultiFolderStripChild: View {
             SessionLiveDot(state: .init(kind: .working, live: true))
             Text("PDF export API").font(.callout.weight(.semibold))
             Text("›").foregroundStyle(.tertiary)
-            FolderLabel(name: "hub")
+            SessionFolderLabel(name: "hub", font: .caption)
             Text("›").foregroundStyle(.tertiary)
             Text("⑂ export-api")
             Text("›").foregroundStyle(.tertiary)
             Text("⎇ wt/export-api")
             Image(systemName: "circle.fill").font(.system(size: IconSize.stateDot)).foregroundStyle(Tone.warning)
             Spacer(minLength: Spacing.regular)
-            Button(MultiFolderMockCopy.fromParent) {}.buttonStyle(.kitQuiet).foregroundStyle(Color.accentColor)
+            SessionFromParentButton(parentTitle: "Export reports to PDF") {}
         }
         .font(.caption)
         .lineLimit(1)
@@ -716,8 +702,8 @@ private struct MultiFolderStripChild: View {
 private struct MultiFolderMessageInPrompt: View {
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            MockSessionRow(title: "PDF export API", state: .init(kind: .stopped, live: true), caption: "Idle",
-                           folder: "hub", place: "⑂ export-api", captionWarning: MultiFolderMockCopy.messageWaitingSuffix)
+            MockSessionRow(title: "PDF export API", state: .live(.stopped), folder: "hub", place: "⑂ export-api",
+                           messageInPrompt: true)
                 .frame(width: 300)
             Divider()
             VStack(alignment: .leading, spacing: 0) {
@@ -725,24 +711,14 @@ private struct MultiFolderMessageInPrompt: View {
                     SessionLiveDot(state: .init(kind: .stopped, live: true))
                     Text("PDF export API").font(.callout.weight(.semibold))
                     Text("›").foregroundStyle(.tertiary)
-                    FolderLabel(name: "hub")
+                    SessionFolderLabel(name: "hub", font: .caption)
                     Spacer(minLength: 0)
                 }
                 .font(.caption)
                 .lineLimit(1)
                 .padding(.horizontal, Spacing.medium)
                 .frame(minHeight: 36)
-                HStack(spacing: Spacing.compact) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Tone.warning)
-                    Text(MultiFolderMockCopy.messageInPromptNotice)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: Spacing.small)
-                    Button(MultiFolderMockCopy.showInTerminal) {}.buttonStyle(.kitSecondary).fixedSize()
-                }
-                .font(.callout)
-                .padding(.horizontal, Spacing.medium)
-                .padding(.vertical, Spacing.regular)
-                .background(Tone.warning.opacity(0.12))
+                SessionPromptNoticeBar(offersDismiss: false, showInTerminal: {}, dismiss: {})
             }
         }
         .detailBackground()

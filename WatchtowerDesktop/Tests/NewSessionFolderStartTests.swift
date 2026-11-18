@@ -160,6 +160,26 @@ final class NewSessionFolderStartTests: XCTestCase {
         XCTAssertEqual(fromSite.otherFolders.map(\.title), ["in \(homeName)", "in hub"])
     }
 
+    /// Dismiss shows only with a session host that lacks `prompt_state`
+    /// (spec §5, D41); the hello's features say which.
+    func testDismissOnlyWithAnOldHost() async throws {
+        XCTAssertTrue(vm.promptNoticeOffersDismiss, "a host whose hello names no features: Dismiss")
+        let current = SessionHostClient(socketPath: "/tmp/wt-test-2.sock", cliPath: { nil }, makeTransport: { _ in
+            let transport = FakeSessionHostTransport()
+            transport.helloFeatures = [SessionHostHello.promptStateFeature]
+            return transport
+        })
+        let running = await current.ensureRunning()
+        XCTAssertTrue(running)
+        XCTAssertEqual(current.hostFeatures, ["prompt_state"])
+        XCTAssertFalse(current.lacksPromptState)
+        center.sessionHost = current
+        XCTAssertFalse(vm.promptNoticeOffersDismiss, "the host reads the prompt itself: no Dismiss")
+        center.sessionHost = nil
+        XCTAssertFalse(vm.promptNoticeOffersDismiss, "no host known: no Dismiss")
+        center.sessionHost = client
+    }
+
     /// The prompt notice's Dismiss marks each flagged message through
     /// `workbench message dismiss --id`; the Desktop writes nothing itself.
     func testDismissCallsTheCLI() async throws {

@@ -228,7 +228,7 @@ struct TerminalSessionRow: View {
     /// The state label, a parent's `· N sub-sessions` and, while an
     /// agent's message sits in the prompt, its warning (§6.5, §6.6).
     private func stateLine(_ caption: String) -> some View {
-        HStack(spacing: 3) {
+        HStack(spacing: Spacing.small) {
             SessionStateLabel(state: row.state, caption: caption)
             if let suffix = SessionNestingPresentation.subSessionsSuffix(row.state.liveSubSessions) {
                 Text(suffix).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
@@ -246,7 +246,7 @@ struct TerminalSessionRow: View {
     /// Where the agent works, after its folder on a bench of several.
     @ViewBuilder private var placeLine: some View {
         if let folderLabel {
-            HStack(spacing: 4) {
+            HStack(spacing: Spacing.small) {
                 SessionFolderLabel(name: folderLabel)
                 if let place = row.place {
                     Text("·").font(.caption2).foregroundStyle(.tertiary).accessibilityHidden(true)

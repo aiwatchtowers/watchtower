@@ -213,7 +213,9 @@ extension WorkbenchesViewModel {
     /// (`drilledWorkbenchID` is nil or this one). `folder`: where it starts
     /// (spec 2026-11-18 §6.4) — nil is ⌘T's context (`shortcutFolder`).
     func newSessionOnPage(
-        agent: AgentKind? = nil, worktree: WorktreeChoice = .auto, folder: NewSessionFolder.Context? = nil
+        agent: AgentKind? = nil,
+        worktree: WorktreeChoice = .auto,
+        folder: NewSessionFolder.Context? = nil
     ) async {
         guard let projectID = selectedWorkbenchID else { return }
         await newSession(projectID: projectID, agent: agent, worktree: worktree, folder: folder)
@@ -221,7 +223,10 @@ extension WorkbenchesViewModel {
 
     /// A pane picker's "New … session": starts one in that pane.
     func newSession(
-        inPane slot: WorkspacePane, projectID: Int64, agent: AgentKind? = nil, worktree: WorktreeChoice = .auto,
+        inPane slot: WorkspacePane,
+        projectID: Int64,
+        agent: AgentKind? = nil,
+        worktree: WorktreeChoice = .auto,
         folder: NewSessionFolder.Context? = nil
     ) async {
         await newSession(projectID: projectID, placement: .replacing(slot), agent: agent, worktree: worktree, folder: folder)
@@ -232,7 +237,10 @@ extension WorkbenchesViewModel {
     /// where it starts (`placementForNewSession`); `folder`: in which bench
     /// folder (nil: ⌘T's context, `shortcutFolder`).
     func newSession(
-        projectID: Int64, placement: Placement = .show, agent: AgentKind? = nil, worktree: WorktreeChoice = .auto,
+        projectID: Int64,
+        placement: Placement = .show,
+        agent: AgentKind? = nil,
+        worktree: WorktreeChoice = .auto,
         folder: NewSessionFolder.Context? = nil
     ) async {
         let ticket = beginSwitch(projectID: projectID)
@@ -517,9 +525,13 @@ extension WorkbenchesViewModel {
     /// A target's own workbench, the target, whether it has sub-targets on
     /// that workbench, the sessions of that workbench working on it, and the
     /// bench's folders (where a new session for it starts).
-    typealias TargetSessions = (
-        project: Workbench, target: Target, isGroup: Bool, rows: [TerminalSession], folders: BenchFolders
-    )
+    struct TargetSessions {
+        let project: Workbench
+        let target: Target
+        let isGroup: Bool
+        let rows: [TerminalSession]
+        let folders: BenchFolders
+    }
 
     /// nil when the target is not on a workbench board. A session waiting in
     /// the Undo batch is never among the rows: "open existing" must not
@@ -533,7 +545,10 @@ extension WorkbenchesViewModel {
             let rows = try TerminalSessionQueries.fetchForTarget(db, targetID: targetID)
             let isGroup = try TargetQueries.hasChildren(db, id: targetID, workbenchID: projectID)
             let folders = try WorkbenchFolderQueries.benchFolders(db, workbenchID: projectID)
-            return (project, target, isGroup, rows.filter { $0.projectID == projectID && !hidden.contains($0.id) }, folders)
+            return TargetSessions(
+                project: project, target: target, isGroup: isGroup,
+                rows: rows.filter { $0.projectID == projectID && !hidden.contains($0.id) }, folders: folders
+            )
         }
     }
 

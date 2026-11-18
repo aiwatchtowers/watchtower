@@ -27,7 +27,7 @@ struct SessionFolderLabel: View {
     var font: Font = .caption2
 
     var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: Spacing.tight) {
             Image(systemName: "folder")
             Text(name).lineLimit(1)
         }

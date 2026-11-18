@@ -109,14 +109,11 @@ package struct SessionPanelSections: Equatable, Sendable {
         groupSessions = nestedGroup.map(\.row)
         let depths = Dictionary((nestedMain + nestedGroup).map { ($0.row.id, $0.depth) }) { first, _ in first }
         let numbered = mainSessions.map(\.id) + (expanded ? groupSessions.map(\.id) : [])
-        let rows = SessionSwitcherPresentation.rows(
+        var rows = SessionSwitcherPresentation.rows(
             mainSessions + groupSessions, liveIDs: liveIDs, statuses: statuses, now: now, shortcutOrder: numbered,
             places: places
-        ).map { row in
-            var nested = row
-            nested.depth = depths[row.id] ?? 0
-            return nested
-        }
+        )
+        for index in rows.indices { rows[index].depth = depths[rows[index].id] ?? 0 }
         let mainRows = Array(rows.prefix(mainSessions.count))
         let groupRows = Array(rows.dropFirst(mainSessions.count))
         let pinned = expanded ? nil : groupRows.first { $0.id == sticky?.sessionID }

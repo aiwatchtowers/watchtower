@@ -60,7 +60,7 @@ final class SubSessionsWorkingTests: XCTestCase {
         XCTAssertEqual(resolve(rows(), live: [2])[1]?.state.kind, .notStarted, "a parent not running is not waiting")
     }
 
-    func testProj11_NoOwnerPresenceNoticeWhileChildrenWork() {
+    func testProj11_NoOwnerPresenceNoticeWhileChildrenWork() throws {
         var notices = SessionAgentNoticePolicy()
         XCTAssertEqual(notices.update(resolve(rows(), live: [1, 2]), canPost: true), [],
                        "no Idle banner while the child works")
@@ -73,7 +73,7 @@ final class SubSessionsWorkingTests: XCTestCase {
         }
 
         let question = rows(question: true)
-        let asked = SessionAgentStatus.parseStamp(stamp(60))!
+        let asked = try XCTUnwrap(SessionAgentStatus.parseStamp(stamp(60)))
         func decide(liveChildren: Int) -> ChatQuestionEscalationPolicy.Decision {
             ChatQuestionEscalationPolicy.decide(
                 row: question[0], live: true, startedAt: start, presence: .away(since: asked.addingTimeInterval(-1)),
@@ -102,9 +102,11 @@ final class SubSessionsWorkingTests: XCTestCase {
         let db = try TestDatabase.create()
         let bench = try db.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: "/tmp/acme") }
         let (a, b, c) = try db.write { db in
-            let make = { try TerminalSessionQueries.create(
-                db, .init(projectID: bench, kind: .claude, title: "s", folderPath: "/tmp/acme", claudeSessionID: UUID().uuidString)
-            ).id }
+            let make = {
+                try TerminalSessionQueries.create(db, .init(
+                    projectID: bench, kind: .claude, title: "s", folderPath: "/tmp/acme", claudeSessionID: UUID().uuidString
+                )).id
+            }
             return (try make(), try make(), try make())
         }
         func message(to: Int64, reason: String, cleared: Bool) throws {

@@ -18,7 +18,7 @@ struct SessionsPanelSessionRow: View {
     let panelHasKeyboard: Bool
 
     /// One nesting level's indent.
-    static let nestIndent: CGFloat = 14
+    static let nestIndent = Spacing.large
 
     var body: some View {
         TerminalSessionRow(
