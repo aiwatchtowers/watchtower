@@ -305,9 +305,9 @@ func TestAnswerer_SessionGoneStoresAnswer(t *testing.T) {
 	}
 }
 
-// One ledger for both origins: a hub answer and a twin answer held by one
-// Answerer are reloaded by a new one over the same store and go once each.
-func TestAnswerer_HeldLinesOneLedgerBothOrigins(t *testing.T) {
+// Held answers kept by one Answerer are reloaded by a new one over the same
+// store and go once each.
+func TestAnswerer_HeldLinesReloadAcrossInstances(t *testing.T) {
 	e := newEnv(t)
 	hub, twin := e.seedAsk(), e.seedAsk()
 	for _, s := range []seeded{hub, twin} {
@@ -420,6 +420,66 @@ func TestAnswerer_HooksHearSubmitAndNoPasteMode(t *testing.T) {
 	e.a.SetHooks(Hooks{})
 	if got := e.a.DeliverLine(context.Background(), s.session, "x"); got != DeliveryCannotType {
 		t.Fatalf("no hook: delivery = %q", got)
+	}
+}
+
+// A release clears the hooks only while they are still its own: a stopped
+// hub never clears the hooks of the hub that started after it.
+func TestAnswerer_ReleaseClearsOnlyItsOwnHooks(t *testing.T) {
+	e := newEnv(t)
+	s := e.seedAsk()
+	e.port.start(s.session)
+	e.port.result = DeliverResult{Outcome: DeliverNoPasteMode}
+	releaseOld := e.a.SetHooks(Hooks{NoPasteMode: func(string) string { return "old" }})
+	releaseNew := e.a.SetHooks(Hooks{NoPasteMode: func(string) string { return "new" }})
+
+	releaseOld()
+	if got := e.a.DeliverLine(context.Background(), s.session, "x"); got != "new" {
+		t.Fatalf("after the old release: delivery = %q, want the new hub's hook", got)
+	}
+	releaseNew()
+	if got := e.a.DeliverLine(context.Background(), s.session, "x"); got != DeliveryCannotType {
+		t.Fatalf("after its own release: delivery = %q", got)
+	}
+}
+
+// Deps.HeldKey keeps a second Answerer's held answers apart from the hub's
+// in the same store.
+func TestAnswerer_HeldKeyKeepsLedgersApart(t *testing.T) {
+	e := newEnv(t)
+	own := New(Deps{DB: e.db, Sessions: e.port, Held: e.held, HeldKey: "watchman_held_asks"})
+	s := e.seedAsk()
+	e.port.start(s.session)
+	e.hooksReport(s.session, "approval")
+	wantDelivery(t, e.answer(own, s), DeliveryHeld)
+
+	if raw, _, _ := e.held.Meta("watchman_held_asks"); !strings.Contains(raw, `"ask":`+strconv.FormatInt(s.ask, 10)+",") {
+		t.Fatalf("own key = %q", raw)
+	}
+	if _, ok, _ := e.held.Meta(HeldMetaKey); ok {
+		t.Fatal("the hub's key is untouched")
+	}
+	if heldCount(e.restart()) != 0 {
+		t.Fatal("an Answerer on the hub's key does not reload the other ledger")
+	}
+}
+
+// The write is not cancelled by the caller's context: an answer whose
+// caller gave up (the hub's outcome_unknown) still lands, as before the move.
+func TestAnswerer_CancelledContextStillStoresAnswer(t *testing.T) {
+	e := newEnv(t)
+	s := e.seedAsk()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got, err := e.a.Answer(ctx, AnswerRequest{Ask: e.askRow(s.ask), Answer: yesAnswer(),
+		Marks: []db.SpecReviewMark{{ItemKey: "k", State: "ok"}}})
+
+	if err != nil || !got.Stored {
+		t.Fatalf("result = %+v err = %v, want stored", got, err)
+	}
+	if st := e.scalar(`SELECT status FROM owner_asks WHERE id = ?`, s.ask); st != "answered" {
+		t.Fatalf("status = %s", st)
 	}
 }
 

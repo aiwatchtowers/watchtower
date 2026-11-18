@@ -16,8 +16,9 @@ type HeldStore interface {
 	SetMeta(key, value string) error
 }
 
-// HeldMetaKey is the HeldStore key of the held answers: ask, session and run
-// ids only (no content); the line is rebuilt from owner_asks at start.
+// HeldMetaKey is the hub's HeldStore key of the held answers (Deps.HeldKey's
+// default): ask, session and run ids only (no content); the line is rebuilt
+// from owner_asks at start.
 const HeldMetaKey = "handlers_held_asks"
 
 // heldLine is a line waiting for its session to leave a permission prompt, a
@@ -70,7 +71,7 @@ func (a *Answerer) saveHeldLocked() {
 	}
 	b, err := json.Marshal(recs)
 	if err == nil {
-		err = a.d.Held.SetMeta(HeldMetaKey, string(b))
+		err = a.d.Held.SetMeta(a.d.HeldKey, string(b))
 	}
 	if err != nil {
 		log.Printf("askanswer: held answers not kept (%d)", len(recs))
@@ -84,7 +85,7 @@ func (a *Answerer) loadHeld() {
 	if a.d.Held == nil {
 		return
 	}
-	raw, ok, err := a.d.Held.Meta(HeldMetaKey)
+	raw, ok, err := a.d.Held.Meta(a.d.HeldKey)
 	if err != nil || !ok {
 		if err != nil {
 			log.Printf("askanswer: held answers not read")

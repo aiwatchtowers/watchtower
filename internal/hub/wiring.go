@@ -634,6 +634,9 @@ func (w *wiring) close() {
 		w.titlesCancel()
 	}
 	w.stopBackground(chatBackgroundBudget)
+	if w.handlers != nil {
+		w.handlers.ReleaseAnswerer()
+	}
 	if w.port != nil {
 		_ = w.port.Close()
 	}

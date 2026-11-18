@@ -207,6 +207,8 @@ type Handlers struct {
 	mu        sync.Mutex
 	answering map[int64]bool
 	lines     lineState
+	// releaseHooks clears this set's hooks on the Answerer (ReleaseAnswerer).
+	releaseHooks func()
 	// chatWG tracks the chat work run after an answer (chatAsync).
 	chatWG sync.WaitGroup
 }
@@ -242,7 +244,7 @@ func Register(d *actions.Dispatcher, deps Deps) *Handlers {
 	// Every line the Answerer submits counts for the phone lines' busy
 	// window; a line the host cannot paste goes to the clipboard on a
 	// desktop host.
-	deps.Answerer.SetHooks(askanswer.Hooks{Submitted: h.lines.noteSubmit, NoPasteMode: h.copyLine})
+	h.releaseHooks = deps.Answerer.SetHooks(askanswer.Hooks{Submitted: h.lines.noteSubmit, NoPasteMode: h.copyLine})
 	h.startHeldLines()
 	reg := func(kind string, fn actions.Handler) {
 		if len(NudgeTable[kind]) == 0 {
@@ -276,6 +278,11 @@ func Register(d *actions.Dispatcher, deps Deps) *Handlers {
 	}
 	return h
 }
+
+// ReleaseAnswerer clears this set's delivery hooks on its Answerer when the
+// hub stops — only while they are still this set's (a later hub's Register
+// owns them then).
+func (h *Handlers) ReleaseAnswerer() { h.releaseHooks() }
 
 func nudgeNames(kind string) []string {
 	out := make([]string, 0, len(NudgeTable[kind]))

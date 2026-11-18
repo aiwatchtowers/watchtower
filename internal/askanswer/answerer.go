@@ -102,11 +102,14 @@ type Sessions interface {
 }
 
 // Deps is what an Answerer runs against. Held keeps the held lines' ids
-// across a restart (nil = memory only); Clock nil is time.Now.
+// across a restart under HeldKey (nil = memory only; "" = HeldMetaKey, the
+// hub's): two Answerers never share one key, or each would overwrite the
+// other's records. Clock nil is time.Now.
 type Deps struct {
 	DB       *db.DB
 	Sessions Sessions
 	Held     HeldStore
+	HeldKey  string
 	Clock    func() time.Time
 }
 
@@ -128,6 +131,8 @@ type Answerer struct {
 	held  []heldLine
 	seq   uint64
 	hooks Hooks
+	// hooksOwner is the token of the SetHooks call whose hooks are set.
+	hooksOwner uint64
 }
 
 // New builds an Answerer and reloads the lines Held kept.
@@ -135,16 +140,31 @@ func New(d Deps) *Answerer {
 	if d.Clock == nil {
 		d.Clock = time.Now
 	}
+	if d.HeldKey == "" {
+		d.HeldKey = HeldMetaKey
+	}
 	a := &Answerer{d: d}
 	a.loadHeld()
 	return a
 }
 
-// SetHooks sets the hub's delivery hooks (replacing any set before).
-func (a *Answerer) SetHooks(h Hooks) {
+// SetHooks sets the delivery hooks, replacing any set before, and returns
+// their release: it clears them only while they are still these (a later
+// SetHooks owns them then). One owner per Answerer — the hub that built or
+// was given it; the twin runs its own Answerer.
+func (a *Answerer) SetHooks(h Hooks) (release func()) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.hooks = h
+	a.seq++
+	token := a.seq
+	a.hooks, a.hooksOwner = h, token
+	return func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if a.hooksOwner == token {
+			a.hooks, a.hooksOwner = Hooks{}, 0
+		}
+	}
 }
 
 func (a *Answerer) currentHooks() Hooks {
@@ -189,7 +209,9 @@ func (a *Answerer) Answer(ctx context.Context, r AnswerRequest) (Result, error) 
 	at := a.d.Clock().UTC().Format(answeredAtLayout)
 	stored := false
 	err = a.d.DB.WithTx(func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE owner_asks SET status = 'answered', answer = ?, answered_at = ?
+		// Not cancelled by ctx: an answer cut by the caller's timeout may
+		// still land (the hub's outcome_unknown), as before the move.
+		res, err := tx.Exec(`UPDATE owner_asks SET status = 'answered', answer = ?, answered_at = ?
 			WHERE id = ? AND project_id = ? AND status = 'open'
 			  AND NOT EXISTS (SELECT 1 FROM spec_reviews sr WHERE sr.ask_id = owner_asks.id AND sr.loop = 'author')`,
 			encoded, at, r.Ask.ID, r.Ask.WorkbenchID)
@@ -200,7 +222,7 @@ func (a *Answerer) Answer(ctx context.Context, r AnswerRequest) (Result, error) 
 		if err != nil || n != 1 {
 			return err
 		}
-		if err := writeMarks(ctx, tx, r.Ask.ID, r.Marks, at); err != nil {
+		if err := writeMarks(tx, r.Ask.ID, r.Marks, at); err != nil {
 			return err
 		}
 		if r.Also != nil {
@@ -222,13 +244,13 @@ func (a *Answerer) Answer(ctx context.Context, r AnswerRequest) (Result, error) 
 
 // writeMarks upserts the answer's spec review marks (an empty UpdatedAt is
 // the answer's stamp).
-func writeMarks(ctx context.Context, tx *sql.Tx, askID int64, marks []db.SpecReviewMark, at string) error {
+func writeMarks(tx *sql.Tx, askID int64, marks []db.SpecReviewMark, at string) error {
 	for _, m := range marks {
 		updated := m.UpdatedAt
 		if updated == "" {
 			updated = at
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO spec_review_marks (ask_id, item_key, state, body, about, updated_at)
+		if _, err := tx.Exec(`INSERT INTO spec_review_marks (ask_id, item_key, state, body, about, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?)
 			ON CONFLICT (ask_id, item_key) DO UPDATE SET state = excluded.state, body = excluded.body,
 				about = excluded.about, updated_at = excluded.updated_at`,
