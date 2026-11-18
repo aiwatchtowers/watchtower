@@ -1,4 +1,4 @@
-package handlers
+package specreview
 
 import (
 	"encoding/json"
@@ -12,7 +12,6 @@ import (
 
 	"watchtower/internal/asks"
 	"watchtower/internal/db"
-	"watchtower/internal/specreview"
 )
 
 // anchorFixtures is WatchtowerKit/Tests/Fixtures/asks/anchor-fixtures.json,
@@ -38,7 +37,7 @@ type anchorFixtures struct {
 
 func loadAnchorFixtures(t *testing.T) anchorFixtures {
 	t.Helper()
-	raw, err := os.ReadFile("../../../../WatchtowerKit/Tests/Fixtures/asks/anchor-fixtures.json")
+	raw, err := os.ReadFile("../../WatchtowerKit/Tests/Fixtures/asks/anchor-fixtures.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +205,7 @@ func TestManyCommentsIndexTheSnapshotOnce(t *testing.T) {
 		marks[fmt.Sprintf("old:%03d", i)] = db.SpecReviewMark{State: "comment", About: fmt.Sprintf("Line %d of", i*7)}
 	}
 	before := anchorIndexBuilds.Load()
-	a := buildSpecReviewAnswer(nil, marks, nil, false, asks.Answer{}, md.String())
+	a := BuildAnswer(nil, marks, nil, asks.Answer{}, "", md.String())
 	if n := anchorIndexBuilds.Load() - before; n != 1 {
 		t.Fatalf("index built %d times for one snapshot", n)
 	}
@@ -230,11 +229,11 @@ func BenchmarkPlaceCommentsOnALargeSnapshot(b *testing.B) {
 
 // The non-loop path end to end: a finding's comment carries its context.
 func TestMarkCommentsCarryContext(t *testing.T) {
-	result := &specreview.Result{BlindSpots: []specreview.BlindSpot{{Key: "bs:1", Text: "No undo",
-		Where: &specreview.Anchor{Heading: "## Behaviour", Quote: "Muting lasts **a day**"}}}}
+	result := &Result{BlindSpots: []BlindSpot{{Key: "bs:1", Text: "No undo",
+		Where: &Anchor{Heading: "## Behaviour", Quote: "Muting lasts **a day**"}}}}
 	marks := map[string]db.SpecReviewMark{"bs:1": {State: "comment", Body: "add one"}}
-	a := buildSpecReviewAnswer(result, marks, nil, false, asks.Answer{}, "# Spec\n\n## Behaviour\n\nMuting lasts **a day** for acme.\n")
-	want := asks.Comment{Heading: "Behaviour", Quote: "Muting lasts a day", Prefix: "Spec\n\nBehaviour\n\n", Suffix: " for acme.\n\n", Body: "No undo — add one"}
+	a := BuildAnswer(result, marks, nil, asks.Answer{}, "", "# Spec\n\n## Behaviour\n\nMuting lasts **a day** for acme.\n")
+	want := asks.Comment{Heading: "Behaviour", Quote: "Muting lasts a day", Prefix: "Spec\n\nBehaviour\n\n", Suffix: " for acme.\n\n", Body: "No undo — add one", ItemKey: "bs:1"}
 	if len(a.Comments) != 1 || a.Comments[0] != want {
 		t.Fatalf("comments = %+v\nwant %+v", a.Comments, want)
 	}
@@ -276,5 +275,21 @@ func TestRenderPlainFollowsDocumentRendering(t *testing.T) {
 	if len(doc.headings) != 2 || utf16Len(doc.text[:doc.headings[1].offset]) != 17 ||
 		doc.headings[0].level != 1 || doc.headings[1].level != 3 || doc.headings[1].title != "Deep" {
 		t.Fatalf("headings = %+v", doc.headings)
+	}
+}
+
+// The first-heading fallback's quote (the first body line, markers rendered
+// away) is found again, under the rendered heading nearest before it.
+func TestSpecReviewFallbackAnchorIsRelocated(t *testing.T) {
+	snapshot := "# Spec\n\n## Behaviour\n\n- Muting lasts **twenty-four** hours\n"
+	anchor := firstHeadingAnchor(snapshot)
+	if anchor != [2]string{"Spec", "Muting lasts twenty-four hours"} {
+		t.Fatalf("anchor = %q", anchor)
+	}
+	doc := renderDocument(snapshot)
+	c := placeComment(anchor[0], anchor[1], "b", &doc)
+	want := asks.Comment{Heading: "Behaviour", Quote: "Muting lasts twenty-four hours", Prefix: "Spec\n\nBehaviour\n\n• ", Suffix: "\n\n", Body: "b"}
+	if c != want {
+		t.Fatalf("comment = %+v\nwant %+v", c, want)
 	}
 }

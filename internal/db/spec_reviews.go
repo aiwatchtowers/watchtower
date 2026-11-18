@@ -57,8 +57,12 @@ const SpecReviewMarkNotUseful = "not_useful"
 
 // SpecReviewMark is the owner's mark on one item (Desktop-written). About is
 // a comment's finding text, kept so a comment whose finding a re-run drops
-// still says what it was about.
+// still says what it was about. AskID and Key are set where a mark travels
+// alone (specreview.AnswerMarks); ListSpecReviewMarks leaves them zero, its
+// map key being the item key.
 type SpecReviewMark struct {
+	AskID                         int64
+	Key                           string
 	State, Body, About, UpdatedAt string
 }
 
