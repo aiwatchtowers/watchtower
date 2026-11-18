@@ -1,6 +1,7 @@
 package slackconnect
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -9,18 +10,27 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 )
 
 // startListener runs Handler on a loopback listener on an ephemeral port
 // (never 18551) and returns its base URL and Host value.
 func startListener(t *testing.T, reg *Registry, events chan<- Event) (base, host string) {
 	t.Helper()
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	return startListenerStop(t, reg, events, stop)
+}
+
+func startListenerStop(t *testing.T, reg *Registry, events chan<- Event, stop <-chan struct{}) (base, host string) {
+	t.Helper()
 	ln, err := Listen(0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	host = ln.Addr().String()
-	srv := httptest.NewUnstartedServer(Handler(reg, events, host))
+	srv := httptest.NewUnstartedServer(Handler(reg, events, host, stop))
 	srv.Listener.Close()
 	srv.Listener = ln
 	srv.Start()
@@ -162,12 +172,14 @@ func TestSlackConnectListener_CallbackWriteFailureShowsError(t *testing.T) {
 	authURL, _ := reg.BrowserURL(id)
 	go func() {
 		ev := <-events
-		ev.Reply <- errors.New("Signed in as someone else; nothing was changed")
+		ev.Reply <- errors.New("other_user: detail for the log only")
 	}()
 	status, body := get(t, base+"/callback?state="+url.QueryEscape(stateOf(t, authURL))+"&code=abc")
-	if status != http.StatusOK || !strings.Contains(body, "Authorization failed") ||
-		!strings.Contains(body, "someone else") {
+	if status != http.StatusOK || !strings.Contains(body, "could not save the connection") {
 		t.Fatalf("callback = %d:\n%s", status, body)
+	}
+	if strings.Contains(body, "detail for the log only") {
+		t.Fatalf("the owner's error reached the page:\n%s", body)
 	}
 }
 
@@ -224,5 +236,113 @@ func TestSlackConnectListener_RejectsOtherHostsMethodsPaths(t *testing.T) {
 	}
 	if _, err := reg.Begin(testTarget, false); err != nil {
 		t.Fatalf("a refused request started a flow: %v", err)
+	}
+}
+
+// callbackRequest builds a request for the handler's callback path.
+func callbackRequest(ctx context.Context, host, query string) *http.Request {
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://"+host+"/callback?"+query, nil)
+	req.Host = host
+	return req
+}
+
+func TestSlackConnectListener_NonConnectedOutcomeNeedsNoReply(t *testing.T) {
+	reg, _, _ := newTestRegistry(t)
+	events := make(chan Event, 1)
+	const host = "127.0.0.1:1"
+	h := Handler(reg, events, host, nil)
+	id, _ := reg.Begin(testTarget, false)
+	authURL, _ := reg.BrowserURL(id)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, callbackRequest(context.Background(), host,
+		"state="+url.QueryEscape(stateOf(t, authURL))+"&error=access_denied"))
+	ev := <-events
+	if ev.Kind != EventCallback || ev.Result.Outcome != OutcomeDenied || ev.Reply != nil {
+		t.Fatalf("event = %+v, want a denied callback with no Reply", ev)
+	}
+	if !strings.Contains(rec.Body.String(), "not granted") {
+		t.Fatalf("page:\n%s", rec.Body.String())
+	}
+}
+
+func TestSlackConnectListener_OwnerNeverReplies(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ex := &fakeExchange{team: testTarget.TeamID}
+		reg := NewRegistry(SystemClock{}, ex.exchange)
+		events := make(chan Event, 1)
+		const host = "127.0.0.1:1"
+		h := Handler(reg, events, host, nil)
+		id, _ := reg.Begin(testTarget, false)
+		authURL, _ := reg.BrowserURL(id)
+
+		start := time.Now()
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, callbackRequest(context.Background(), host,
+			"state="+url.QueryEscape(stateOf(t, authURL))+"&code=abc"))
+		if waited := time.Since(start); waited != storeWait {
+			t.Fatalf("handler waited %v, want storeWait %v", waited, storeWait)
+		}
+		if ev := <-events; ev.Reply == nil {
+			t.Fatal("connected callback has no Reply")
+		}
+		if !strings.Contains(rec.Body.String(), "Check Watchtower for the result") {
+			t.Fatalf("page:\n%s", rec.Body.String())
+		}
+	})
+}
+
+func TestSlackConnectListener_BrowserGoneBeforeReply(t *testing.T) {
+	reg, _, _ := newTestRegistry(t)
+	events := make(chan Event, 1)
+	const host = "127.0.0.1:1"
+	h := Handler(reg, events, host, nil)
+	id, _ := reg.Begin(testTarget, false)
+	authURL, _ := reg.BrowserURL(id)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	rec := httptest.NewRecorder()
+	go func() {
+		defer close(done)
+		h.ServeHTTP(rec, callbackRequest(ctx, host, "state="+url.QueryEscape(stateOf(t, authURL))+"&code=abc"))
+	}()
+	ev := <-events // the owner has the grant even though the tab goes away
+	if ev.Result.Outcome != OutcomeConnected {
+		t.Fatalf("event = %+v", ev)
+	}
+	cancel()
+	<-done
+	ev.Reply <- nil // a late reply never blocks the owner
+}
+
+func TestSlackConnectListener_StoppedOwnerReleasesHandler(t *testing.T) {
+	reg, _, _ := newTestRegistry(t)
+	events := make(chan Event) // nobody reads
+	stop := make(chan struct{})
+	close(stop)
+	const host = "127.0.0.1:1"
+	h := Handler(reg, events, host, stop)
+
+	// A callback whose flow ended: the handler does not block on events.
+	id, _ := reg.Begin(testTarget, false)
+	authURL, _ := reg.BrowserURL(id)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, callbackRequest(context.Background(), host, "state="+url.QueryEscape(stateOf(t, authURL))+"&code=abc"))
+	if !strings.Contains(rec.Body.String(), "Check Watchtower for the result") {
+		t.Fatalf("callback page with a stopped owner:\n%s", rec.Body.String())
+	}
+
+	// A link: refused, and the flow it began is not left behind.
+	req := httptest.NewRequest(http.MethodGet,
+		"http://"+host+"/slack/connect?team="+testTarget.TeamID+"&client="+testTarget.ClientID, nil)
+	req.Host = host
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("link with a stopped owner = %d", rec.Code)
+	}
+	if _, err := reg.Begin(testTarget, false); err != nil {
+		t.Fatalf("the refused link left a flow: %v", err)
 	}
 }

@@ -40,9 +40,16 @@ type Exchanger func(ctx context.Context, clientID, code, verifier, redirectURI s
 
 // NewExchanger returns the real exchanger: a form POST of client_id, code,
 // code_verifier and redirect_uri to endpoint (OAuthAccessURL outside tests).
-// The form shape is provisional until the Slack spike (plan B Task 1, Q3);
-// Task 16 finalises it.
+// It never follows a redirect — a 307/308 would replay the code and the
+// verifier to wherever it points — whatever client is passed in. The form
+// shape is provisional until plan B Task 16 applies the spike's answers.
 func NewExchanger(client *http.Client, endpoint string) Exchanger {
+	noRedirects := http.Client{}
+	if client != nil {
+		noRedirects = *client
+	}
+	noRedirects.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	client = &noRedirects
 	return func(ctx context.Context, clientID, code, verifier, redirectURI string) (Grant, error) {
 		form := url.Values{
 			"client_id":     {clientID},

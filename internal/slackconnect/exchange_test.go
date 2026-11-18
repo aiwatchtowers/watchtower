@@ -101,3 +101,30 @@ func TestExchange_EnterpriseTeamFallback(t *testing.T) {
 		t.Fatalf("grant team = %q %q", g.TeamID, g.TeamName)
 	}
 }
+
+func TestExchange_RefusesRedirects(t *testing.T) {
+	var target, origin *httptest.Server
+	targetHit := false
+	target = httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { targetHit = true }))
+	defer target.Close()
+	origin = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer origin.Close()
+
+	for name, ex := range map[string]Exchanger{
+		"caller client": NewExchanger(origin.Client(), origin.URL),
+		"nil client":    NewExchanger(nil, origin.URL),
+	} {
+		_, err := ex(context.Background(), "1111.2222", "code-1", "verifier-1", RedirectURL)
+		if err == nil || !strings.Contains(err.Error(), "307") {
+			t.Fatalf("%s: err = %v, want the 307 refused", name, err)
+		}
+	}
+	if targetHit {
+		t.Fatal("the code and verifier were replayed to the redirect target")
+	}
+	if origin.Client().CheckRedirect != nil {
+		t.Fatal("NewExchanger changed the caller's client")
+	}
+}

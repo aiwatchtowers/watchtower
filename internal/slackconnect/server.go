@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"syscall"
+	"time"
 
 	"watchtower/internal/auth"
 	"watchtower/internal/oauthpage"
@@ -27,6 +28,10 @@ func Listen(port int) (net.Listener, error) {
 	return ln, err
 }
 
+// storeWait bounds how long the browser's callback page waits for the
+// owner to store a connected grant; past it the page says to check Watchtower.
+const storeWait = 30 * time.Second
+
 // EventKind names what the listener tells its owner.
 type EventKind string
 
@@ -35,10 +40,12 @@ const (
 	EventLink EventKind = "link"
 	// EventBusy: a link arrived while Flow was running; nothing started.
 	EventBusy EventKind = "busy"
-	// EventCallback: Slack's redirect ended Flow; Result says how. The owner
-	// must answer on Reply exactly once — nil after storing a connected grant,
-	// or the error that kept it from being stored — before the browser gets
-	// its page.
+	// EventCallback: Slack's redirect ended Flow; Result says how. For
+	// OutcomeConnected, Reply is set and the owner answers on it exactly once
+	// (it is buffered, so the send never blocks) — nil after storing the
+	// grant, or the error that kept it from being stored; the browser's page
+	// waits for that answer (at most storeWait). For every other outcome
+	// Reply is nil.
 	EventCallback EventKind = "callback"
 )
 
@@ -57,18 +64,22 @@ type Event struct {
 // flow → the "start again" page, nothing else). A request whose Host is not
 // exactly host is 421, another path 404, another method 405 — all with no
 // body. It never serves files.
-func Handler(reg *Registry, events chan<- Event, host string) http.Handler {
+//
+// stop is closed by the owner when it stops reading events (shutdown): from
+// then on no request blocks on events, so http.Server.Shutdown can finish.
+func Handler(reg *Registry, events chan<- Event, host string, stop <-chan struct{}) http.Handler {
+	l := &listener{reg: reg, events: events, stop: stop}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Host != host {
 			w.WriteHeader(http.StatusMisdirectedRequest)
 			return
 		}
-		var serve func(http.ResponseWriter, *http.Request, *Registry, chan<- Event)
+		var serve func(http.ResponseWriter, *http.Request)
 		switch r.URL.Path {
 		case connectPath:
-			serve = serveConnect
+			serve = l.serveConnect
 		case callbackPath:
-			serve = serveCallback
+			serve = l.serveCallback
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -81,70 +92,105 @@ func Handler(reg *Registry, events chan<- Event, host string) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		serve(w, r, reg, events)
+		serve(w, r)
 	})
 }
 
-func serveConnect(w http.ResponseWriter, r *http.Request, reg *Registry, events chan<- Event) {
+type listener struct {
+	reg    *Registry
+	events chan<- Event
+	stop   <-chan struct{}
+}
+
+func (l *listener) serveConnect(w http.ResponseWriter, r *http.Request) {
 	t, err := ParseConnectInput("http://" + linkHost() + connectPath + "?" + r.URL.RawQuery)
 	if err != nil {
 		writePage(w, http.StatusBadRequest, oauthpage.Error("This is not a Watchtower Slack link.", false))
 		return
 	}
-	id, err := reg.Begin(t, true)
+	id, err := l.reg.Begin(t, true)
 	switch {
 	case errors.Is(err, ErrFlowRunning):
-		if !send(r, events, Event{Kind: EventBusy, Flow: id}) {
-			return
+		if l.send(r, Event{Kind: EventBusy, Flow: id}) {
+			writePage(w, http.StatusConflict, oauthpage.Error(
+				"Another Slack connection is in progress in Watchtower. Finish or cancel it there, then open this link again.",
+				false))
 		}
-		writePage(w, http.StatusConflict, oauthpage.Error(
-			"Another Slack connection is in progress in Watchtower. Finish or cancel it there, then open this link again.",
-			false))
 		return
 	case err != nil:
 		writePage(w, http.StatusInternalServerError, oauthpage.Error("Watchtower could not start the connection.", false))
 		return
 	}
-	if !send(r, events, Event{Kind: EventLink, Flow: id, Target: t}) {
-		reg.Cancel(id)
+	if !l.send(r, Event{Kind: EventLink, Flow: id, Target: t}) {
+		l.reg.Cancel(id)
+		writePage(w, http.StatusServiceUnavailable, oauthpage.Error(
+			"Watchtower did not take this link. Open Watchtower, then open the link again.", false))
 		return
 	}
 	writePage(w, http.StatusOK, oauthpage.SwitchToApp())
 }
 
-func serveCallback(w http.ResponseWriter, r *http.Request, reg *Registry, events chan<- Event) {
+func (l *listener) serveCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	res, err := reg.Callback(q.Get("state"), q.Get("code"), q.Get("error"))
+	res, err := l.reg.Callback(q.Get("state"), q.Get("code"), q.Get("error"))
 	if err != nil {
 		auth.WriteStaleCallback(w)
 		return
 	}
-	reply := make(chan error, 1)
-	// The flow has ended and the code is spent: the owner must learn the
-	// result even if the browser tab is gone, so this send does not give up.
-	events <- Event{Kind: EventCallback, Flow: res.Flow, Target: res.Target, Result: res, Reply: reply}
-	var stored error
-	select {
-	case stored = <-reply:
-	case <-r.Context().Done():
+	ev := Event{Kind: EventCallback, Flow: res.Flow, Target: res.Target, Result: res}
+	if res.Outcome != OutcomeConnected {
+		// The flow has ended and the code is spent: the owner learns the
+		// result even if the tab is gone — only its stop ends this send.
+		if !l.sendUntilStop(ev) {
+			writePage(w, http.StatusOK, oauthpage.CheckApp())
+			return
+		}
+		writePage(w, http.StatusOK, oauthpage.Error(res.Message, false))
 		return
 	}
-	switch {
-	case res.Outcome != OutcomeConnected:
-		writePage(w, http.StatusOK, oauthpage.Error(res.Message, false))
-	case stored != nil:
-		writePage(w, http.StatusOK, oauthpage.Error(stored.Error(), false))
-	default:
+	reply := make(chan error, 1)
+	ev.Reply = reply
+	if !l.sendUntilStop(ev) {
+		writePage(w, http.StatusOK, oauthpage.CheckApp())
+		return
+	}
+	select {
+	case stored := <-reply:
+		if stored != nil {
+			// The owner logs the error; the page carries a fixed sentence.
+			writePage(w, http.StatusOK, oauthpage.Error(
+				"Slack signed you in, but Watchtower could not save the connection. Check Watchtower for details.",
+				false))
+			return
+		}
 		writePage(w, http.StatusOK, oauthpage.Success("Slack", false))
+	case <-r.Context().Done():
+	case <-l.stop:
+		writePage(w, http.StatusOK, oauthpage.CheckApp())
+	case <-l.reg.clock.After(storeWait):
+		writePage(w, http.StatusOK, oauthpage.CheckApp())
 	}
 }
 
-// send hands ev to the listener's owner, giving up when the browser goes away.
-func send(r *http.Request, events chan<- Event, ev Event) bool {
+// send hands ev to the owner, giving up when the browser goes away or the
+// owner stops.
+func (l *listener) send(r *http.Request, ev Event) bool {
 	select {
-	case events <- ev:
+	case l.events <- ev:
 		return true
 	case <-r.Context().Done():
+		return false
+	case <-l.stop:
+		return false
+	}
+}
+
+// sendUntilStop hands ev to the owner, giving up only when the owner stops.
+func (l *listener) sendUntilStop(ev Event) bool {
+	select {
+	case l.events <- ev:
+		return true
+	case <-l.stop:
 		return false
 	}
 }

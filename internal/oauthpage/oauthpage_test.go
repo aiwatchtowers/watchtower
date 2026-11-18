@@ -169,3 +169,10 @@ func TestSwitchToApp_AsksForTheAppAndLinksNowhere(t *testing.T) {
 	assert.NotContains(t, page, "href=")
 	assert.NotContains(t, page, "window.close")
 }
+
+func TestCheckApp_PointsToTheApp(t *testing.T) {
+	page := CheckApp()
+	assert.Contains(t, page, "Check Watchtower for the result")
+	assert.NotContains(t, page, "href=")
+	assert.NotContains(t, page, "window.close")
+}

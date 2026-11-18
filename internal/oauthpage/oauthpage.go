@@ -118,6 +118,20 @@ func SwitchToApp() string {
 	})
 }
 
+// CheckApp renders the page a Slack connect callback ends on when Watchtower
+// has the answer but the tab cannot say how it ended (the app was closing,
+// or saving took too long).
+func CheckApp() string {
+	return render(page{
+		Title:     "Check Watchtower",
+		IconClass: "icon-ok",
+		Icon:      "→",
+		Heading:   "Check Watchtower for the result",
+		Message:   "Slack sent its answer to Watchtower. The app shows whether the workspace is connected.",
+		Hint:      "You can close this tab.",
+	})
+}
+
 type page struct {
 	Title, IconClass, Icon, Heading, Message, Hint string
 	AppReturn, TryToClose                          bool

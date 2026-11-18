@@ -13,10 +13,12 @@ import (
 	"watchtower/internal/auth"
 )
 
-// fakeClock is a fixed clock for the registry.
+// fakeClock is a fixed clock whose timers never fire.
 type fakeClock struct{ now time.Time }
 
 func (c *fakeClock) Now() time.Time { return c.now }
+
+func (c *fakeClock) After(time.Duration) <-chan time.Time { return make(chan time.Time) }
 
 // fakeExchange records its calls and answers with a grant for team.
 type fakeExchange struct {
@@ -318,11 +320,13 @@ func TestRegistry_ExchangeFailure(t *testing.T) {
 
 func TestRegistry_CancelDuringExchange(t *testing.T) {
 	reg, _, _ := newTestRegistry(t)
-	release := make(chan struct{})
 	entered := make(chan struct{})
-	reg.exchange = func(context.Context, string, string, string, string) (Grant, error) {
+	exchangeErr := make(chan error, 1)
+	reg.exchange = func(ctx context.Context, _, _, _, _ string) (Grant, error) {
 		close(entered)
-		<-release
+		<-ctx.Done() // Cancel aborts the request
+		exchangeErr <- ctx.Err()
+		// A token Slack issued anyway must still be dropped.
 		return Grant{AccessToken: "xoxp-test", TeamID: testTarget.TeamID}, nil
 	}
 	id, _ := reg.Begin(testTarget, false)
@@ -341,10 +345,15 @@ func TestRegistry_CancelDuringExchange(t *testing.T) {
 	if _, err := reg.Callback(stateOf(t, authURL), "code", ""); !errors.Is(err, ErrNoFlow) {
 		t.Fatalf("replayed callback err = %v, want ErrNoFlow", err)
 	}
+	if _, ok := reg.WaitingSince(id); ok {
+		t.Fatal("a flow being exchanged still reports waiting")
+	}
 	if !reg.Cancel(id) {
 		t.Fatal("Cancel during exchange returned false")
 	}
-	close(release)
+	if err := <-exchangeErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("exchange ctx err = %v, want context.Canceled", err)
+	}
 	res := <-done
 	if res.Outcome != OutcomeCancelled || res.Grant != (Grant{}) {
 		t.Fatalf("result after Cancel during exchange = %+v", res)

@@ -39,14 +39,22 @@ var (
 // child and the Desktop.
 type FlowID string
 
-// Clock is the registry's time source ("waiting since"); tests inject one.
-type Clock interface{ Now() time.Time }
+// Clock is the registry's and the listener's time source (the "waiting
+// since" line, the listener's bounded wait for the account write); tests
+// inject one.
+type Clock interface {
+	Now() time.Time
+	After(d time.Duration) <-chan time.Time
+}
 
 // SystemClock is the wall clock.
 type SystemClock struct{}
 
 // Now returns time.Now().
 func (SystemClock) Now() time.Time { return time.Now() }
+
+// After returns time.After(d).
+func (SystemClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
 // Outcome is how a callback ended a flow. The values are the reason strings
 // of the listener child's events.
@@ -95,6 +103,8 @@ type flow struct {
 	// slot (Begin is refused) but no other callback can finish it.
 	exchanging bool
 	cancelled  bool
+	// stopExchange aborts the running exchange; set while exchanging.
+	stopExchange context.CancelFunc
 }
 
 // NewRegistry returns an empty registry exchanging codes with exchange.
@@ -135,7 +145,9 @@ func (r *Registry) Begin(t Target, needsConfirm bool) (FlowID, error) {
 
 // Confirm is the owner's Connect on a link flow: it opens the flow to its
 // callback and returns the authorize URL to open in the browser. Confirming
-// a flow again (or one that skipped the confirm) returns the same URL.
+// a flow again (or one that skipped the confirm) returns the same URL. A flow
+// whose callback arrived (its code is being exchanged) is no longer
+// confirmable: ErrNoFlow.
 func (r *Registry) Confirm(id FlowID) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -151,7 +163,8 @@ func (r *Registry) Confirm(id FlowID) (string, error) {
 }
 
 // BrowserURL returns a confirmed flow's authorize URL; a link flow before
-// Confirm gets ErrNotConfirmed.
+// Confirm gets ErrNotConfirmed, and a flow whose code is being exchanged
+// ErrNoFlow.
 func (r *Registry) BrowserURL(id FlowID) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -166,8 +179,9 @@ func (r *Registry) BrowserURL(id FlowID) (string, error) {
 }
 
 // WaitingSince reports when a live flow's browser step began, for the
-// "Waiting for Slack since …" line. ok is false for no live flow with id and
-// for a link flow not yet confirmed.
+// "Waiting for Slack since …" line. ok is false for no live flow with id, for
+// a link flow not yet confirmed, and for a flow whose code is being exchanged
+// (it no longer waits for Slack).
 func (r *Registry) WaitingSince(id FlowID) (since time.Time, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -178,8 +192,9 @@ func (r *Registry) WaitingSince(id FlowID) (since time.Time, ok bool) {
 	return f.waitingSince, true
 }
 
-// Cancel ends the flow id, also while its code is being exchanged (the
-// exchange's grant is then dropped). It reports whether a live flow ended.
+// Cancel ends the flow id, also while its code is being exchanged: the
+// exchange's request is aborted, and a grant Slack issued anyway is dropped.
+// It reports whether a live flow ended.
 func (r *Registry) Cancel(id FlowID) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -187,6 +202,9 @@ func (r *Registry) Cancel(id FlowID) bool {
 		return false
 	}
 	r.flow.cancelled = true
+	if r.flow.stopExchange != nil {
+		r.flow.stopExchange()
+	}
 	r.flow = nil
 	return true
 }
@@ -198,7 +216,9 @@ func (r *Registry) Cancel(id FlowID) bool {
 // a grant for another team than the target's (team_mismatch, no grant handed
 // out), Cancel during the exchange, or connected with the grant.
 func (r *Registry) Callback(state, code, slackErr string) (Result, error) {
-	f, err := r.take(state)
+	ctx, cancel := context.WithTimeout(context.Background(), exchangeTimeout)
+	defer cancel()
+	f, err := r.take(state, cancel)
 	if err != nil {
 		return Result{}, err
 	}
@@ -209,11 +229,13 @@ func (r *Registry) Callback(state, code, slackErr string) (Result, error) {
 		return withOutcome(res, o, detail), nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), exchangeTimeout)
-	defer cancel()
 	g, exErr := r.exchange(ctx, f.target.ClientID, code, f.pkce.Verifier, RedirectURL)
 
 	if !r.finish(f) {
+		// Cancelled during the exchange. A token Slack issued anyway is
+		// dropped here, never handed out; revocation, if any, belongs to
+		// the account write (plan B Task 7, writeConnectedAccount).
+		// TODO(#1709 Task 7): decide whether a dropped grant is revoked.
 		return withOutcome(res, OutcomeCancelled, ""), nil
 	}
 	switch {
@@ -226,8 +248,9 @@ func (r *Registry) Callback(state, code, slackErr string) (Result, error) {
 	return res, nil
 }
 
-// take claims the live, confirmed flow for a callback with state.
-func (r *Registry) take(state string) (*flow, error) {
+// take claims the live, confirmed flow for a callback with state; stop
+// aborts its exchange when the flow is cancelled.
+func (r *Registry) take(state string, stop context.CancelFunc) (*flow, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	f := r.flow
@@ -238,6 +261,7 @@ func (r *Registry) take(state string) (*flow, error) {
 		return nil, ErrStateMismatch
 	}
 	f.exchanging = true
+	f.stopExchange = stop
 	return f, nil
 }
 
