@@ -1,9 +1,15 @@
 package state
 
 import (
+	"context"
+	"database/sql"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/pressly/goose/v3"
 )
 
 func TestLatencyStatsNearestRank(t *testing.T) {
@@ -45,7 +51,7 @@ func TestLatencyStatsNearestRank(t *testing.T) {
 }
 
 // TestLatencySamplesAreContentFreeAndBoundedPrune: the table holds a time,
-// the transport, the step and a duration, nothing else; a prune drops what
+// the transport, the step, a duration and the action kind, nothing else; a prune drops what
 // is older than the window and then the oldest rows past the cap.
 func TestLatencySamplesAreContentFreeAndBoundedPrune(t *testing.T) {
 	s := openTest(t)
@@ -65,7 +71,7 @@ func TestLatencySamplesAreContentFreeAndBoundedPrune(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"at", "transport", "step", "ms"}; !slices.Equal(cols, want) {
+	if want := []string{"at", "transport", "step", "ms", "kind"}; !slices.Equal(cols, want) {
 		t.Fatalf("latency_samples columns %v, want %v", cols, want)
 	}
 	if err := s.AddLatencySamples([]LatencySample{{At: time.Now(), Transport: "relay", Step: "title", MS: 1}}); err == nil {
@@ -97,5 +103,112 @@ func TestLatencySamplesAreContentFreeAndBoundedPrune(t *testing.T) {
 	var old int
 	if err := s.db.QueryRow(`SELECT count(*) FROM latency_samples WHERE step = 'read_saved'`).Scan(&old); err != nil || old != 0 {
 		t.Fatalf("the 8-day-old row is still there (%d, %v)", old, err)
+	}
+}
+
+// TestLatencyStatsGroupsByKind: by kind, a step on a transport is one row per
+// action kind, the kind "" (event_read, rows from before 00018) a row of its
+// own; LatencyStats keeps one row per step and transport over every kind.
+func TestLatencyStatsGroupsByKind(t *testing.T) {
+	s := openTest(t)
+	t0 := time.Unix(1_800_000_000, 0).UTC()
+	if err := s.AddLatencySamples([]LatencySample{
+		{At: t0, Transport: "relay", Step: StepNudgeSaved, Kind: "board_target_create", MS: 40},
+		{At: t0, Transport: "relay", Step: StepNudgeSaved, Kind: "ask_answer", MS: 10},
+		{At: t0, Transport: "relay", Step: StepNudgeSaved, Kind: "ask_answer", MS: 30},
+		{At: t0, Transport: "relay", Step: StepEventRead, MS: 15},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.LatencyStatsByKind(t0.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms := time.Millisecond
+	want := []LatencyRow{
+		{Step: StepEventRead, Transport: "relay", P50: 15 * ms, P90: 15 * ms, Samples: 1},
+		{Step: StepNudgeSaved, Transport: "relay", Kind: "ask_answer", P50: 10 * ms, P90: 30 * ms, Samples: 2},
+		{Step: StepNudgeSaved, Transport: "relay", Kind: "board_target_create", P50: 40 * ms, P90: 40 * ms, Samples: 1},
+	}
+	if !slices.Equal(rows, want) {
+		t.Fatalf("stats\n got  %+v\n want %+v", rows, want)
+	}
+	all, err := s.LatencyStats(t0.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAll := []LatencyRow{
+		{Step: StepEventRead, Transport: "relay", P50: 15 * ms, P90: 15 * ms, Samples: 1},
+		{Step: StepNudgeSaved, Transport: "relay", P50: 30 * ms, P90: 40 * ms, Samples: 3},
+	}
+	if !slices.Equal(all, wantAll) {
+		t.Fatalf("over every kind\n got  %+v\n want %+v", all, wantAll)
+	}
+}
+
+// TestMigration00018_KeepsRowsAndAcceptsNewSteps: a file at 00017 with
+// samples keeps them (kind "") through the rebuild, takes the two new steps
+// and still refuses a step outside the enum; the at index is back.
+func TestMigration00018_KeepsRowsAndAcceptsNewSteps(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "hub")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite3", filepath.Join(dir, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := Migrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := goose.NewProvider(goose.DialectSQLite3, raw, migrations, goose.WithDisableGlobalRegistry(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(context.Background(), 17); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO latency_samples (at, transport, step, ms) VALUES
+		(1800000000.5, 'relay', 'read_applied', 12), (1800000001.0, 'cloudkit', 'read_saved', 340)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO latency_samples (at, transport, step, ms) VALUES (1800000002, 'relay', 'event_read', 1)`); err == nil {
+		t.Fatal("00017 took a step it does not know")
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open (migrating to 00018): %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	rows, err := s.LatencyStats(time.Unix(1_799_999_000, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms := time.Millisecond
+	want := []LatencyRow{
+		{Step: StepReadApplied, Transport: "relay", P50: 12 * ms, P90: 12 * ms, Samples: 1},
+		{Step: StepReadSaved, Transport: "cloudkit", P50: 340 * ms, P90: 340 * ms, Samples: 1},
+	}
+	if !slices.Equal(rows, want) {
+		t.Fatalf("rows after 00018\n got  %+v\n want %+v", rows, want)
+	}
+	at := time.Unix(1_800_000_010, 0)
+	if err := s.AddLatencySamples([]LatencySample{
+		{At: at, Transport: "relay", Step: StepEventRead, MS: 15},
+		{At: at, Transport: "relay", Step: StepNudgeSaved, Kind: "board_target_create", MS: 40},
+	}); err != nil {
+		t.Fatalf("the new steps: %v", err)
+	}
+	if err := s.AddLatencySamples([]LatencySample{{At: at, Transport: "relay", Step: "title", MS: 1}}); err == nil {
+		t.Fatal("a step outside the enum was stored")
+	}
+	var idx int
+	if err := s.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'latency_samples_at' AND tbl_name = 'latency_samples'`).Scan(&idx); err != nil || idx != 1 {
+		t.Fatalf("index latency_samples_at present = %d %v", idx, err)
 	}
 }

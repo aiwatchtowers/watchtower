@@ -304,7 +304,7 @@ Carried over from main's Swift-hub text (asks #514/#519/#521/#523, boards #986/#
 
 ### Measurements
 
-`measure.Recorder` stamps, for an action applied on its first read, read → applied and, when a slice of its kind is saved within 60 s (`SaveWait`), applied → slice saved and read → slice saved, tagged with the active transport. Samples go to `latency_samples` (`00011`: `at`, `transport`, `step`, `ms`, nothing else), at most 20 000 rows and 7 days. They never leave the Mac; the phone keeps its own.
+`measure.Recorder` stamps, for an action applied on its first read, read → applied and, when a slice of its kind is saved within 60 s (`SaveWait`), applied → slice saved and read → slice saved, tagged with the active transport. Since #1992 (live link R7) it also stamps `nudge_saved` (applied → the end of the first cycle that handled a nudged kind, written or not) and `event_read` (a mailbox event for a phone's write: arrival → the start of the pass it triggers; the hub's own echoes are not timed), and every action sample carries the action's kind. Samples go to `latency_samples` (`00011`: `at`, `transport`, `step`, `ms`; `00018` added `kind`, the action kind name or '' — no id, no content), at most 20 000 rows and 7 days. They never leave the Mac; the phone keeps its own.
 
 ### `hub …` CLI (pinned `--json` keys)
 
@@ -312,7 +312,7 @@ go-hub.md has the full table. Phase 4 added:
 
 - `hub status`: `relay` (absent with no relay origin) {`state` `connected|connecting|unavailable` (no connection for 60 s), `since`, `quota_hub` (a data-zone save refused as over quota, cleared by the next good save), `push_off` (the newest `send_alert` answer across phones was `push_off`; cleared only by a later `accepted`, `not_paying`, `too_large` or `no_token`), `last_saved_at` (RFC 3339 rounded down to the minute, or "")}, `paying_phones` (device ids; null = unknown: no hub, no account state read yet, or forgotten after `HUB_NOT_VOUCHED` — never "nobody pays"), `mailbox_full_phones` (one flag per phone, kept in `hub_meta`, cleared only by a good write to that phone's mailbox or by unlinking it).
 - `hub phones` rows: `paying` (true, false or null), `undelivered` (this Mac's side: held actions plus 1 for an open gap), `mailbox_full`, `alerts` ("" or the last outcome class of 7 days); each is null when its read failed.
-- `hub diagnostics [--days 1..7] [--json]` (`cmd/hub_diagnostics.go`, reads the sidecar read-only, no hub needed): `window_days`, `rows` [{`step`, `transport`, `p50_ms`, `p90_ms`, `samples`}] (nearest rank), `push_overflow_expired`.
+- `hub diagnostics [--days 1..7] [--json]` (`cmd/hub_diagnostics.go`, reads the sidecar read-only, no hub needed): `window_days`, `rows` [{`step`, `transport`, `kind` (additive: '' = the all-kinds row, first for each step and transport, then one row per action kind), `p50_ms`, `p90_ms`, `samples`}] (nearest rank), `push_overflow_expired`. The Diagnostics sheet reads the all-kinds rows.
 
 ### Desktop over the hub
 

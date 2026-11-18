@@ -14,6 +14,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
@@ -789,4 +790,159 @@ func TestHandlerDepsServerHostFollowsTheHubKind(t *testing.T) {
 	if d := handlerDeps(Options{}, nil, &sources.Set{}, nil, nil, nil, nil); !d.ServerHost {
 		t.Fatal("a headless hub reads as a Mac")
 	}
+}
+
+// laneFake is the memfake read the hosted relay's way (an
+// actions.EventPuller keeping its own zone tokens), with one zone's next
+// page read held: hold arms it, entered closes as that read starts, and
+// the read waits for release.
+type laneFake struct {
+	*memfake.Fake
+	mu       sync.Mutex
+	tokens   map[string]uint64
+	slowZone string
+	entered  chan struct{}
+	release  chan struct{}
+}
+
+func (l *laneFake) hold(zone string) (entered, release chan struct{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.slowZone, l.entered, l.release = zone, make(chan struct{}), make(chan struct{})
+	return l.entered, l.release
+}
+
+func (l *laneFake) Changes(ctx context.Context, zone string, since uint64) (transport.Batch, error) {
+	l.mu.Lock()
+	slow := zone == l.slowZone
+	entered, release := l.entered, l.release
+	if slow {
+		l.slowZone = ""
+	}
+	l.mu.Unlock()
+	if slow {
+		close(entered)
+		<-release
+	}
+	return l.Fake.Changes(ctx, zone, since)
+}
+
+func (l *laneFake) OwnWrites(transport.Event) bool { return false }
+
+func (l *laneFake) PullEvent(ctx context.Context, ev transport.Event, apply func(transport.Batch) error) error {
+	return l.Pull(ctx, ev.Zone, apply)
+}
+
+func (l *laneFake) Pull(ctx context.Context, zone string, apply func(transport.Batch) error) error {
+	l.mu.Lock()
+	since := l.tokens[zone]
+	l.mu.Unlock()
+	for {
+		b, err := l.Changes(ctx, zone, since)
+		if err != nil {
+			return err
+		}
+		if err := apply(b); err != nil {
+			return err
+		}
+		l.mu.Lock()
+		l.tokens[zone] = b.NewSeq
+		l.mu.Unlock()
+		since = b.NewSeq
+		if !b.More {
+			return nil
+		}
+	}
+}
+
+// TestRuntime_MailboxEventNotQueuedBehindBackstopPass: while the backstop
+// pass waits on a slow read of one phone's mailbox, another phone's action
+// is read from its mailbox event and applied (the event lane, live link R4)
+// before that pass returns.
+func TestRuntime_MailboxEventNotQueuedBehindBackstopPass(t *testing.T) {
+	bubble(t, func(t *testing.T) { laneWhileBackstopWaits(t, 0) })
+}
+
+// TestRuntime_DataZoneEchoesDoNotBlockTheLane: the hub's own data-zone
+// writes come back as events (one per slice save); far more of them than
+// work() takes while a backstop pass waits never hold up a mailbox event.
+func TestRuntime_DataZoneEchoesDoNotBlockTheLane(t *testing.T) {
+	bubble(t, func(t *testing.T) { laneWhileBackstopWaits(t, 200) })
+}
+
+// laneHub is a hub over a laneFake with a paired phone that can send
+// lane_probe (each apply lands on applied) and a second phone, linked
+// directly, whose mailbox the backstop pass is reading when it returns:
+// that read waits for release.
+type laneHub struct {
+	e       endToEnd
+	lf      *laneFake
+	relayID string
+	applied chan struct{}
+	release chan struct{}
+}
+
+func newLaneHub(t *testing.T) laneHub {
+	t.Helper()
+	h := laneHub{applied: make(chan struct{}, 4)}
+	h.e = runEndToEnd(t, "", func(o *Options) {
+		newTransport := o.newTransport
+		o.newTransport = func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
+			tr, err := newTransport(ctx, id, st, zones)
+			if err != nil {
+				return nil, err
+			}
+			h.lf = &laneFake{Fake: tr.(*memfake.Fake), tokens: map[string]uint64{}}
+			return h.lf, nil
+		}
+		o.Register = func(d *actions.Dispatcher) {
+			d.Register("lane_probe", func(context.Context, actions.Request) actions.Outcome {
+				h.applied <- struct{}{}
+				return actions.Outcome{Status: wire.StatusApplied}
+			}, actions.KindOptions{})
+		}
+	})
+	status, err := ReadStatus(h.e.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.relayID = status.RelayDeviceID
+	slow := linkPhoneDirectly(t, h.e.dir) // a second phone, whose mailbox the backstop reads slowly
+	var entered chan struct{}
+	entered, h.release = h.lf.hold(transport.MailboxZone(h.relayID, slow.RelayDeviceID()))
+	<-entered // a backstop pass (the pass ticker's) is reading it
+	return h
+}
+
+// laneWhileBackstopWaits sends echoes data-zone write events while the
+// backstop's read waits, then has the paired phone act: its action must be
+// applied before the read is released.
+func laneWhileBackstopWaits(t *testing.T, echoes int) {
+	h := newLaneHub(t)
+	for range echoes {
+		h.lf.SendEvent(transport.Event{Zone: transport.DataZone(h.relayID), Seq: 1})
+	}
+	if _, err := h.e.phone.Act("lane_probe"); err != nil {
+		t.Fatal(err)
+	}
+	<-h.applied // the phone's mailbox event, applied while the pass still waits
+	close(h.release)
+}
+
+// TestRuntime_ReachabilityFollowsEventOrder: a transport error handed to
+// work() while a backstop pass runs, then a zone write the lane takes at
+// once: the hub reads reachable once work() caught up — the later event
+// wins, whichever goroutine handled it.
+func TestRuntime_ReachabilityFollowsEventOrder(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		h := newLaneHub(t)
+		h.lf.SendEvent(transport.Event{Err: transport.ErrUnavailable})
+		h.lf.SendEvent(transport.Event{Zone: transport.DataZone(h.relayID), Seq: 1})
+		synctest.Wait()
+		close(h.release)
+		synctest.Wait()
+		if s := h.e.rig.rec.last(); s.Reason != "" {
+			t.Fatalf("status %s/%s after the later zone write, want running", s.State, s.Reason)
+		}
+	})
 }
