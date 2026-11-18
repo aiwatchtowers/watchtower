@@ -122,6 +122,7 @@ and the client sends `PromptState` only to such a host, with a 2 s deadline per 
 counts as "unknown", never as "empty"). A host without the feature (an adopted older host — it
 would drop an unknown frame silently and never answer) is never asked; the deliverer then falls back to `UserPromptSubmit` and the run's end, and the pane notice gets a `Dismiss` that sets `prompt_cleared_at` by hand. Hosts are adopted across updates (PROJ-20), so the fallback is needed until the old host restarts. |
 | Daemon | delivers `session_messages` (§6.6) |
+| Added in implementation | `workbench folder quiet --session S --root R` (Not Now) and `workbench folder decline --workbench N --folder P` (Never), the Desktop's writers of §7; `workbench message dismiss --id N` (the pane's `Dismiss`); `workbench merge --from B --into A` (§6.13); `workbench session ensure-install --session S` (the §6.13 launch backstop: the Desktop runs it before every agent launch); `workbench git … --workbench-folder F` (id, name or path) picks the folder whose repository a git verb uses (without it `--folder`'s own folder, else the home folder); `workbench outside-touch --workbench N` (the §6.7 hook entry) |
 
 The pack version (DEV-06 tool count) goes up by four tools.
 
@@ -283,6 +284,12 @@ a deleted parent drops it (logged). A parent's report and feed show the finish e
 its sub-sessions is live shows **Sub-sessions working** (a new state presentation beside
 Agents working, `· <n> sub-sessions` on the row), not Finished or Waiting for you, and raises no
 owner-presence notice or chat-question escalation until the last child is no longer live.
+*Added in implementation (owner approved in ask #1595):* only a parent that would otherwise rest —
+idle (Stopped), or Finished with no open ask — shows Sub-sessions working. A parent with an open
+ask, a permission prompt (Needs approval), a working turn, background agents or a failed turn
+keeps its own state, so the owner still sees what the parent itself needs (Go
+`sessionstate.Resolve`, Swift `SessionAgentStatus.effective`). Background shells alone (a dev
+server) do not count as the parent's own work.
 
 **Finish gate for sub-sessions.** `start_session`'s `target_id` is optional. A sub-session with
 its own target is gated (gate 1) on that target's subtree only, never on its parent's; one
@@ -392,6 +399,38 @@ Suggestion card: when the suggested folder is on bench B, the card reads
   (`acme · app, hub, site`, truncated at the tail).
 - Briefing WORKBENCHES block: unchanged.
 
+### 6.15 Strings and behaviour added in implementation
+The tasks named these where the spec gave no text; each lives in a presentation model with a test.
+- **FILES and Put on the Bench (§6.1–§6.3).** A refusal without words from the CLI reads
+  `the command gave no reason.` A failed Remove: `Couldn’t remove <name> from the bench: <reason>`;
+  a refusal Go sends after the confirmation (a session started meanwhile) keeps the title
+  `Can’t remove <name> from the bench` with Go's sentence and `OK`. Locate…'s folder panel: title
+  `Locate <name>`, button `Choose`; a failed Locate: `Couldn’t locate <name>: <reason>`. A root whose
+  install is missing shows `Retry`, its icon's tooltip `Watchtower is not installed in <name>.
+  Sessions can’t start there until it is — Retry sets it up again.` Two roots with the same last
+  path component show their parent directory as a caption. Locate… goes through the same
+  sensitive-location (TCC) warning as Put on the Bench…. Re-run Setup's summary adds
+  `Setting up <name> failed: <error>` per folder and `The other folders were not set up: <error>`.
+- **Suggestion card (§6.7).** The subtitle drops `From “<session>” · ` when the session is gone
+  (the line then starts `The agent worked in …`) and drops the count when no touches were counted
+  (a Codex session asks by itself): `… the agent worked in <path>`; one touch reads `1 time`. When
+  Put on Bench meets the sensitive-location warning, its cancel button on a card is `Cancel`. A
+  failure whose answer could not be saved shows `Retry` (sends the answer again) instead of `OK`.
+  The ask kind's label is `Folder`.
+- **Work on It (§6.4).** A target whose folder left the bench starts in the home folder with the
+  notice `Started in <home>: the target's folder <folder> left the bench.`
+- **Merge (§6.13).** A merge that fails after the confirmation: `Couldn’t merge “<B>”: <reason>`.
+  The launch backstop is `workbench session ensure-install --session S` (it reinstalls only when
+  the installed workbench id differs from the row's, logging `install_mismatch`).
+- **Feed (§6.6).** A refused or failed tool call is no success bubble: `↗ To “<title>” — not sent:
+  <error>`, `↗ Sub-session “<title>” not started: <error>`; a start whose result is not read yet:
+  `↗ Sub-session “<title>” starting · <folder>`; a started one's body `Brief sent.` A waiting
+  message whose hold the Desktop cannot tell reads `The message goes when the session can take
+  it.`; with the daemon stopped, `Watchtower's background sync is stopped; the message goes when
+  it runs.` (D44).
+- **Board (§6.10).** The folder chip's tooltip is `Folder`; the target panel's folder menu reads
+  `Folder removed` for a removed folder.
+
 ## 7. Failures and races
 
 | Path | Failure | Behaviour | Test |
@@ -447,7 +486,8 @@ Approved by the owner (asks #1545, #1548):
   union of its folders; the key gains the folder id and the 2 000 cap is per folder.
 - **PROJ-10** (header branch switch): per folder of the active session.
 - **PROJ-11** (session states): new presentation **Sub-sessions working** for a parent whose
-  turn ended while its sub-sessions are live; no owner-presence notice meanwhile.
+  turn ended while its sub-sessions are live; no owner-presence notice meanwhile. A parent with
+  an open ask, an approval or a working turn keeps its own state (ask #1595, §6.6).
 - **PROJ-14** (session report, finish gate): a parent's report does not include its
   sub-sessions' work; a sub-session is gated only on its own target, or not at all without one.
 - **PROJ-16** (phone lines): unchanged in behaviour; its gate moves into a shared package the

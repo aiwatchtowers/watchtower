@@ -1,16 +1,16 @@
 # Sessions
 
-A session is one Claude Code or Codex conversation running in an embedded terminal in the workbench folder. You use this page to read a session's state at a glance, and to start, resume and clear sessions.
+A session is one Claude Code or Codex conversation in an embedded terminal in a workbench folder. Use this page to read a session's state at a glance, and to start, resume and clear sessions.
 
 ## Why use it
 
-With several sessions running, the terminals say nothing until you open each one. Watchtower reads each session's state from the agent's own hooks, so the panel shows which session works, which needs a permission and which is waiting for you.
+With several sessions running, the terminals say nothing until you open each one. Watchtower reads each session's state from the agent's hooks, so the panel shows which works, which needs a permission and which waits for you.
 
 ## How it works
 
 A session runs the agent as your own terminal does: the same login, permissions and project memory. Click a workbench in the left panel to see its sessions; a filled dot is running. Sessions keep running as you change sessions, workbenches or tabs.
 
-Copying in the terminal works as in your own: text that Claude Code, vim or tmux copies lands on your clipboard. The terminal does not answer clipboard-read requests hidden in program output, so a file or tool output cannot pull in what you copied. Programs you run can still read it (e.g. `pbpaste`). Paste with ⌘V.
+Copying works as in your own terminal: what Claude Code, vim or tmux copies lands on your clipboard. Clipboard reads hidden in program output get no answer, so a file cannot pull in what you copied; programs you run still can (`pbpaste`). Paste with ⌘V.
 
 Updating never stops your sessions; quitting asks you. See [Updates and quitting](updates-and-quitting.md).
 
@@ -37,6 +37,7 @@ A caption under the session name says what the agent does. When several apply, t
 | **Working** | green | The agent works on your prompt. |
 | **Agents working** (or **N agents working**) | green, pulsing | Its turn is over but helpers it started (or their own helpers) still work; wins over a background task. |
 | **Background task running** (or **N …**) | green, pulsing | The turn is over but a background command runs, such as a CI wait; then the agent resumes. Up to 2 hours. |
+| **Sub-sessions working** | green | Its turn is over; [sub-sessions](folders.md#sub-sessions-in-other-folders) it started still work. |
 | **Ready to check · ask #N** | purple | Its open asks are only checks or reviews for you (**Ready for review** when all are reviews). |
 | **Finished** | blue | The agent said it is done. Orange while an ask is still open, such as the one that tells you what it left of its target and why. |
 | **Waiting for you · ask #N** | orange | A question of the agent waits for your answer. |
@@ -44,19 +45,19 @@ A caption under the session name says what the agent does. When several apply, t
 | **Idle** | grey | The turn is over; the agent waits for you. |
 | **Running** / **Not running** | green / grey | No state reported yet, or not started. |
 
-A ring instead of a filled dot means the session is not running. A blue ring is finished, orange still has a question, purple still has checks or reviews for you. A state from before an exit, a Restart or a Watchtower restart is never shown.
+A ring instead of a filled dot means the session is not running: blue is finished, orange still has a question, purple still has checks or reviews for you. A state from before an exit, a Restart or a Watchtower restart is never shown.
 
-Two limits: interrupting the agent (Esc, Ctrl+C) reports nothing, so it keeps saying "Working" until your next prompt; and only sessions started in a workbench's terminal in Watchtower report a state.
+Two limits: interrupting the agent (Esc, Ctrl+C) reports nothing, so it keeps saying "Working" until your next prompt; and only sessions started in Watchtower's workbench terminal report a state.
 
-After 30 minutes without news from a helper, Watchtower asks Claude Code whether the session still works, then every 30 minutes, and shows **Idle** on a no or after two failed checks.
+After 30 minutes without news from a helper, Watchtower asks Claude Code every 30 minutes whether the session still works, and shows **Idle** on a no or after two failed checks.
 
 ### Where the agent works
 
-A line under the caption shows where the agent works, such as **main folder · main** or **⑂ name · branch**. On a task with a branch it shows that branch: **⎇ feature/login** ([details](worktrees-and-cleanup.md#what-the-session-line-shows)).
+A line under the caption shows where the agent works, such as **main folder · main** or **⑂ name · branch**; on a task with a branch, **⎇ feature/login** ([details](worktrees-and-cleanup.md#what-the-session-line-shows)). A sub-session sits nested under the session that started it.
 
 ### Sessions an automation opens
 
-A workbench automation can start an agent session, such as for a review round. It shows in SESSIONS titled "⚙ <name> · run #N" and starts in the background, without taking the page from you. You can watch it, type into it, stop it or resume it.
+A workbench automation can start an agent session, such as for a review round. It shows in SESSIONS titled "⚙ <name> · run #N" and starts in the background without taking the page. You can watch, type into, stop or resume it.
 
 The run waits until the session finishes. If you stop it or it exits, the run goes on, knowing it stopped. If Watchtower was not open when the automation asked, the session starts the next time it is.
 
@@ -102,7 +103,7 @@ action: hotkey:go-to
 -->
 
 - ⌘1…⌘9 open the first nine sessions of the list.
-- **Go to…** (⌘K on the Workbench tab) searches names across every workbench and its sessions. Type `#` and a target number to find the session on that target.
+- **Go to…** (⌘K on the Workbench tab) searches every workbench and session by name. Type `#` and a target number to find the session on that target.
 - The workbench name at the top of the panel is a switcher with **Find workbench**. Each row shows the new agent comments on open targets, the blocked targets and how many sessions are working now; with none working, how long ago a session was last active. ⌘[ goes back to the workbench list.
 - ⌥⌘S hides and shows the sessions panel.
 
@@ -118,7 +119,7 @@ since: 0.24.0
 action: nav:projects
 -->
 
-- A session that is finished with no open ask moves into **▸ N finished** at the bottom, most recent first. The group remembers if it is open; a session you look at never jumps.
+- A session finished with no open ask moves into **▸ N finished** at the bottom, newest first. The group remembers if it is open; a session you look at never jumps.
 - Drag a session to reorder it; right-click for **Rename…** and **Delete…**.
 - Right-click an agent session, **Session Target**, to pick the target its progress counts; **None — Count What It Touched** resets it.
 - Hover a **Ready to check** session for **Review Branch**, which opens its [Branch review](diff-review.md); the right-click menu has it for every session.
@@ -128,11 +129,11 @@ action: nav:projects
 
 ### Read a session's report and analytics
 
-The progress line under the caption, the **Report** view and the **Analytics** view have their own page: [Session report and analytics](session-report.md).
+The progress line, the **Report** view and the **Analytics** view have their own page: [Session report and analytics](session-report.md).
 
 ### Drive a session from its Workchat
 
-Workchat is a session's second mode: its dialog as a chat that you can write to, in the same place as its terminal. The toggle on the session's strip or ⌃` switches between them, and each session opens in the mode you last used. See [Workchat](workchat.md).
+Workchat is a session's second mode: its dialog as a chat you can write to, in place of its terminal. The toggle on the session's strip or ⌃` switches between them, and each session opens in the mode you last used. See [Workchat](workchat.md).
 
 ### Get notified
 

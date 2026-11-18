@@ -85,6 +85,25 @@ A shortened request, or an edit of Watchtower or shell settings, gets **Deny** o
 
 Each open ask of the session shows at the end of the chat as a card with its number and title. **Open Ask** opens it in the ask drawer, where you answer it as anywhere else.
 
+### Read messages between agents
+<!-- learn
+id: workchat-peer-bubbles
+title: Follow agents talking to each other
+text: In Workchat, messages between a session and its sub-sessions show as bubbles with the other session's name and folder.
+area: development
+level: power
+kind: feature
+since: next
+action: nav:projects
+-->
+
+When agents of a workbench talk to each other ([sub-sessions](folders.md#sub-sessions-in-other-folders)), Workchat shows their messages as bubbles, not as your lines:
+
+- **↘ From “<title>” · <folder>**: a message another session sent here.
+- **✓ Sub-session “<title>” finished · <folder>**: a sub-session's finish summary.
+- **↗ Sub-session “<title>” started · <folder> · ⑂ <worktree>** and **↗ To “<title>” · <folder>**: what this session started or sent. A refused one reads **not started: …** or **not sent: …**.
+- **⏸ Message to “<title>” is waiting**: the other session can't take it yet; the line under it says why, and **Open** shows that session.
+
 ### Read a subagent
 <!-- learn
 id: workchat-live-agents
