@@ -216,6 +216,13 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         await detachFromSession()
     }
 
+    /// The device's one socket is checked before the return's fetch (live link R6, `HostedRelaySession.wake`);
+    /// nothing while this transport does not want the socket.
+    public func wake() async {
+        guard wantsSocket else { return }
+        await session.wake()
+    }
+
     /// Flushes the plain queue; a stopped flush re-reads its zone.
     public func sendNow() async {
         guard held() == nil else { return }

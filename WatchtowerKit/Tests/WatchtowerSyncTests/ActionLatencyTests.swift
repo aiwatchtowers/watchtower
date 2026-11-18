@@ -309,6 +309,23 @@ final class ActionLatencyTests: XCTestCase {
         XCTAssertEqual(kept.map(\.at).min(), now.addingTimeInterval(-4_999), "the oldest rows went first")
     }
 
+    /// Live link R7: a wake (became active → all zones read) is one content-free row of its own, pruned like the
+    /// action samples.
+    func testWakeSampleRecorded() throws {
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener(store: try TestE2E.phoneStore()))
+        store.recordWake(ms: 420, transport: .relay, at: base)
+        store.recordWake(ms: -5, transport: .relay, at: base.addingTimeInterval(1))
+
+        XCTAssertEqual(try store.wakeSamples(since: .distantPast), [WakeSample(at: base, transport: .relay, wakeMs: 420)],
+                       "a negative span (a clock moved) records nothing")
+        let columns = try store.reader.read { db in try db.columns(in: "latency_wake").map(\.name) }
+        XCTAssertEqual(columns, ["at", "transport", "wake_ms"])
+        XCTAssertEqual(try store.latencySamples(since: .distantPast), [], "the action samples are untouched")
+
+        store.recordWake(ms: 10, transport: .cloudKit, at: base.addingTimeInterval(ReplicaStore.latencyWindow + 10))
+        XCTAssertEqual(try store.wakeSamples(since: .distantPast).map(\.wakeMs), [10], "rows past the window are pruned")
+    }
+
     func testASampleHoldsNoIDOrKind() throws {
         let store = try ReplicaStore.inMemory(opener: TestE2E.opener(store: try TestE2E.phoneStore()))
         let columns = try store.reader.read { db in try db.columns(in: "latency_samples").map(\.name) }

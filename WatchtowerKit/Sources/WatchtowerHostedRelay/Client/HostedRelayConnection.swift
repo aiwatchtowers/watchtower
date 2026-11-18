@@ -23,6 +23,8 @@ extension HostedRelayClient {
 /// - 4008, 1006, 1011, a failed dial or a dead socket → `defaultBackoff(attempt)`, the attempt
 ///   reset by a connection that reached `HelloOk`;
 /// - a ping every 30 s while open; no pong within 10 s closes and reconnects;
+/// - on a wake (live link R6) the socket is pinged; with no pong within 300 ms a second socket is dialled while
+///   the first may still pong, and whichever is ready first carries on (`probe`, `redialRace`);
 /// - after every connect, each zone subscribed one by one (a refused zone is dropped and
 ///   reported), then a record-less `zoneChanged` per subscribed zone; a subscribe with no
 ///   answer within 10 s, or answered "try again later" (unavailable, a rate or traffic limit),
@@ -35,6 +37,9 @@ extension HostedRelayClient {
 public final class HostedRelayConnection: Sendable {
     static let handshakeTimeout = Duration.seconds(10)
     static let pingInterval = Duration.seconds(30)
+    /// How long a wake's ping waits for its pong before a second socket is dialled (live link R6): a starting
+    /// value, tuned from the phone's `wake_ms` samples.
+    static let wakePingDeadline = Duration.milliseconds(300)
     static let closeNormal = 1000
     static let closeGoingAway = 1001
     static let closeUnsupportedVersion = 4000
@@ -57,9 +62,18 @@ public final class HostedRelayConnection: Sendable {
         let generation: Int
     }
 
+    /// A socket a wake's redial made live while the reconnect loop still serves the one it replaces: the loop
+    /// serves it next, with no `disconnected` and no backoff in between.
+    private struct Handover {
+        let socket: any RelaySocket
+        let generation: Int
+        let token: String
+    }
+
     private struct State {
         var zones: [String]
         var live: Live?
+        var handover: Handover?
         var generation = 0
         var nextID: UInt64 = 0
         var pending: [UInt64: Waiter] = [:]
@@ -181,17 +195,19 @@ public final class HostedRelayConnection: Sendable {
     /// cancellable, and it includes the App Attest / DeviceCheck calls, which have no timeout
     /// of ours, besides its HTTPS requests (30 s each).
     public func close() async {
-        let (runner, live, pending) = state.withLock { state in
+        let (runner, live, handover, pending) = state.withLock { state in
             state.closed = true
             defer {
                 state.live = nil
+                state.handover = nil
                 state.pending = [:]
             }
-            return (state.runner, state.live, state.pending)
+            return (state.runner, state.live, state.handover, state.pending)
         }
         for waiter in pending.values { waiter.continuation.resume(throwing: SocketLoss.lost) }
         runner?.cancel()
         await live?.socket.close(code: Self.closeNormal)
+        await handover?.socket.close(code: Self.closeNormal)
         await runner?.value
         buffer.finish()
     }
@@ -213,7 +229,7 @@ public final class HostedRelayConnection: Sendable {
             switch await handshake(stale: stale) {
             case let .open(socket, token):
                 stale = nil
-                let end = await serve(socket)
+                let (end, lastToken) = await serveHandingOver(socket, token: token)
                 if end == .closed || isClosed { return }
                 buffer.push(.disconnected)
                 cuts = end == .subscribeCut ? cuts + 1 : 0
@@ -224,7 +240,7 @@ public final class HostedRelayConnection: Sendable {
                     wait = .milliseconds(Int.random(in: 1_000...3_000))
                 case .sessionExpired:
                     // Only this connection's token: `perform` may already hold a newer one.
-                    stale = token
+                    stale = lastToken
                     wait = backoff(0)
                 case .subscribeCut:
                     wait = backoff(cuts - 1)
@@ -242,6 +258,22 @@ public final class HostedRelayConnection: Sendable {
                 return
             }
         }
+    }
+
+    /// Serves `socket`, then each socket a wake's redial handed over in its place, at once (no `disconnected`, no
+    /// backoff); how the last one ended, and the token it was opened with.
+    private func serveHandingOver(_ socket: any RelaySocket, token: String) async -> (End, token: String) {
+        guard let generation = attach(socket) else {
+            await socket.close(code: Self.closeNormal)
+            return (.closed, token)
+        }
+        var current = Handover(socket: socket, generation: generation, token: token)
+        var end = await serve(current.socket, generation: current.generation)
+        while end != .closed, !isClosed, let next = takeHandover() {
+            current = next
+            end = await serve(current.socket, generation: current.generation)
+        }
+        return (end, current.token)
     }
 
     /// A session token and a socket that said `HelloOk`. A token the relay refuses
@@ -352,12 +384,8 @@ public final class HostedRelayConnection: Sendable {
 
     // MARK: - One connection
 
-    /// Runs one open socket until it ends: the reader, the keepalive and the subscribes.
-    private func serve(_ socket: any RelaySocket) async -> End {
-        guard let generation = attach(socket) else {
-            await socket.close(code: Self.closeNormal)
-            return .closed
-        }
+    /// Runs one open socket, live as `generation`, until it ends: the reader, the keepalive and the subscribes.
+    private func serve(_ socket: any RelaySocket, generation: Int) async -> End {
         Self.logger.info("relay socket: connected")
         buffer.push(.connected)
         let zones = state.withLock { $0.zones }
@@ -470,6 +498,165 @@ public final class HostedRelayConnection: Sendable {
             }
             return .dropped
         }
+    }
+
+    // MARK: - Wake (live link R6)
+
+    /// What decided a wake's redial race.
+    private enum Redial: Sendable {
+        /// The old socket answered its ping.
+        case pong
+        /// The second socket said `HelloOk` first.
+        case opened(any RelaySocket, token: String)
+        /// Neither within the handshake timeout.
+        case timedOut
+    }
+
+    /// Pings the live socket; true when its pong comes within `limit`. False while disconnected, when the ping
+    /// fails, or when the pong is late: the ping stays out (it is not cancellable), so `redialRace` can still
+    /// see the old socket answer.
+    func probe(deadline limit: Duration = wakePingDeadline) async -> Bool {
+        guard let live = state.withLock({ $0.live }) else { return false }
+        let clock = clock
+        let answered = await Self.firstAnswer([
+            {
+                do {
+                    try await live.socket.ping()
+                    return true
+                } catch {
+                    return false
+                }
+            },
+            {
+                do { try await clock.sleep(for: limit) } catch { return nil }
+                return false
+            }
+        ])
+        return answered ?? false
+    }
+
+    /// The wake after a silent `probe`: a second socket is dialled (the session token reused while valid) while
+    /// the old one is pinged again, and whichever is ready first carries on. A new socket that wins becomes live
+    /// at once as the next generation (requests go to it from now; the old generation's waiters fail as lost
+    /// when its socket ends) and the reconnect loop serves it next; the old socket is closed. An old socket that
+    /// pongs first stays, and the dial is abandoned (a socket it still makes is closed). Neither within the
+    /// handshake timeout: the old socket is closed (no pong in 10 s, the keepalive's rule) and the loop redials.
+    /// Nothing while disconnected: the reconnect loop is already dialling.
+    func redialRace() async {
+        guard let old = state.withLock({ $0.closed ? nil : $0.live }) else { return }
+        let clock = clock
+        let racers: [@Sendable () async -> Redial?] = [
+            {
+                do {
+                    try await old.socket.ping()
+                    return .pong
+                } catch {
+                    return nil
+                }
+            },
+            {
+                guard case let .open(socket, token) = await self.handshake(stale: nil) else { return nil }
+                return Redial.opened(socket, token: token)
+            },
+            {
+                do { try await clock.sleep(for: Self.handshakeTimeout) } catch { return nil }
+                return .timedOut
+            }
+        ]
+        let winner = await Self.firstAnswer(racers, endsAfterNils: 2) { late in
+            if case .opened(let socket, _) = late { await socket.close(code: Self.closeNormal) }
+        }
+        switch winner {
+        case .pong?:
+            Self.logger.info("relay socket: wake, the socket answered")
+        case let .opened(socket, token)?:
+            guard handOver(socket, token: token, replacing: old.generation) else {
+                await socket.close(code: Self.closeNormal)
+                return
+            }
+            Self.logger.info("relay socket: wake, a second socket was ready first")
+            await old.socket.close(code: Self.closeNormal)
+        case .timedOut?, nil:
+            Self.logger.error("relay socket: wake, no pong and no second socket, reconnecting")
+            await old.socket.close(code: Self.closeNormal)
+        }
+    }
+
+    /// Makes `socket` live as the next generation in place of `generation`, for the reconnect loop to serve once
+    /// the replaced socket's serve ends. False when `generation` is no longer the live one or the connection closed.
+    private func handOver(_ socket: any RelaySocket, token: String, replacing generation: Int) -> Bool {
+        state.withLock { state in
+            guard !state.closed, state.live?.generation == generation else { return false }
+            state.generation += 1
+            state.live = Live(socket: socket, generation: state.generation)
+            state.handover = Handover(socket: socket, generation: state.generation, token: token)
+            return true
+        }
+    }
+
+    private func takeHandover() -> Handover? {
+        state.withLock { state in
+            defer { state.handover = nil }
+            return state.handover
+        }
+    }
+
+    /// `firstAnswer`'s state: its caller, whether the race is decided, and how many racers answered nil.
+    private struct Answering<T: Sendable> {
+        var continuation: CheckedContinuation<T?, Never>?
+        var decided = false
+        var nils = 0
+    }
+
+    /// The first non-nil answer of `racers`, each run in a task of its own; nil once `endsAfterNils` of them
+    /// answered nil (or the caller is cancelled). The others are cancelled then, and not awaited: a ping is not
+    /// cancellable. A non-nil answer that comes after the race was decided goes to `discard`.
+    private static func firstAnswer<T: Sendable>(
+        _ racers: [@Sendable () async -> T?],
+        endsAfterNils: Int? = nil,
+        discard: @escaping @Sendable (T) async -> Void = { _ in }
+    ) async -> T? {
+        let needed = endsAfterNils ?? racers.count
+        let race = OSAllocatedUnfairLock(initialState: Answering<T>())
+        let tasks = OSAllocatedUnfairLock<[Task<Void, Never>]>(initialState: [])
+        @Sendable func decide(_ answer: T?) -> Bool {
+            let continuation: CheckedContinuation<T?, Never>? = race.withLock { race in
+                if answer == nil { race.nils += 1 }
+                guard !race.decided, answer != nil || race.nils >= needed else { return nil }
+                race.decided = true
+                defer { race.continuation = nil }
+                return race.continuation
+            }
+            continuation?.resume(returning: answer)
+            return continuation != nil
+        }
+        let answer = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
+                let cancelled = race.withLock { race in
+                    if race.decided { return true }
+                    race.continuation = continuation
+                    return false
+                }
+                if cancelled { return continuation.resume(returning: nil) }
+                let started = racers.map { racer in
+                    Task {
+                        let answer = await racer()
+                        if !decide(answer), let answer { await discard(answer) }
+                    }
+                }
+                tasks.withLock { $0 = started }
+            }
+        } onCancel: {
+            let continuation = race.withLock { race -> CheckedContinuation<T?, Never>? in
+                guard !race.decided else { return nil }
+                race.decided = true
+                defer { race.continuation = nil }
+                return race.continuation
+            }
+            continuation?.resume(returning: nil)
+        }
+        tasks.withLock { $0.forEach { $0.cancel() } }
+        return answer
     }
 
     /// Subscribes `zones` one at a time. A refused zone is dropped and reported; the others

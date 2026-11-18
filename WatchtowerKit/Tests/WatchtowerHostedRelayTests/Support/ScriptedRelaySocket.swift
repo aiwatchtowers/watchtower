@@ -137,6 +137,15 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
         deliver(.closed(code: code))
     }
 
+    /// Answers every ping waiting for its pong (a socket built with `pongs: false`).
+    func pong() {
+        let waiters = state.withLock { state in
+            defer { state.pingWaiters = [] }
+            return state.pingWaiters
+        }
+        for waiter in waiters { waiter.resume() }
+    }
+
     // MARK: - RelaySocket
 
     func send(_ data: Data) async throws {
@@ -289,6 +298,8 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
 final class ScriptedRelayDialer: RelaySocketDialer, @unchecked Sendable {
     enum Step: Sendable {
         case socket(ScriptedRelaySocket)
+        /// The socket, once the dial has waited this long on the clock (a cancelled wait fails the dial).
+        case delayed(Duration, ScriptedRelaySocket)
         case http(Int)
         case unreachable
     }
@@ -337,9 +348,13 @@ final class ScriptedRelayDialer: RelaySocketDialer, @unchecked Sendable {
         }
         var socket: ScriptedRelaySocket?
         if case .socket(let scripted) = step { socket = scripted }
+        if case .delayed(_, let scripted) = step { socket = scripted }
         state.withLock { $0.dials.append(Dial(url: url, headers: headers, at: now, socket: socket)) }
         switch step {
         case .socket(let scripted):
+            return scripted
+        case let .delayed(wait, scripted):
+            try await clock.sleep(for: wait)
             return scripted
         case .http(let status):
             throw RelayDialError.http(status: status)

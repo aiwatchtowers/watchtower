@@ -362,6 +362,11 @@ final class HubSession {
     /// Reaches CloudKit before each fetch hydrates; nil for a transport
     /// without an engine (the in-memory demo).
     @ObservationIgnored private let remoteFetch: (@Sendable (RemoteFetchDepth) async throws -> Void)?
+    /// Brings the live transport's socket up on the return to the foreground, before its fetch reads (live
+    /// link R6); nil for a transport without one.
+    @ObservationIgnored private let wake: (@Sendable () async -> Void)?
+    /// When the app last became active: the start of the next `wake_ms` sample (live link R7).
+    @ObservationIgnored private var activatedAt: Date?
     @ObservationIgnored private var loopTask: Task<Void, Never>?
     /// The safety poll's wait; tests step it by hand.
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
@@ -449,7 +454,8 @@ final class HubSession {
     /// safety poll's wait, `now` the clock
     /// of the foreground-return rule. `remoteFetch` replaces the CloudKit
     /// reach of each fetch (tests); nil derives it from a
-    /// `CloudKitTransport` (none for any other transport). `linkedDevice`
+    /// `CloudKitTransport` (none for any other transport). `wake` replaces
+    /// the live transport's wake on the return to the foreground (tests). `linkedDevice`
     /// is the saved link (the demo kind is always `DemoSeed.device`). `keys` is the phone's
     /// E2E key material; nil: the demo pairing on the demo kind, none on
     /// the live backend. Keys whose store holds no device id yet, or whose
@@ -497,6 +503,7 @@ final class HubSession {
         makeRecorder: ((RecordingUploader) throws -> PhoneRecorderController)? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         remoteFetch: (@Sendable (RemoteFetchDepth) async throws -> Void)? = nil,
+        wake: (@Sendable () async -> Void)? = nil,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         energy: EnergyCounter? = nil,
         startWork: BackgroundWork.Starter? = nil
@@ -539,6 +546,7 @@ final class HubSession {
         // the feed then read what that buffered, so neither pulls on its own.
         // An in-memory stand-in has no engine and gets nil.
         self.remoteFetch = remoteFetch ?? Self.cloudReach(transport)
+        self.wake = wake ?? (transport as? any LiveTransport).map { live in { await live.wake() } }
         let keyboxSignal = KeyboxSignal()
         self.keyboxSignal = keyboxSignal
         // Labelled: a trailing closure would bind to `pull`, the first closure parameter.
@@ -1139,8 +1147,13 @@ final class HubSession {
         let hydrated: (applied: Int, deleted: Int)
         var remoteError: (any Error)?
         fetchesAwaitingRemote += 1
+        if trigger == .foreground {
+            // The socket is checked (and redialled in parallel if silent) before the zones are read over it.
+            await wake?()
+        }
         do {
             try await remoteFetch?(depth)
+            if trigger == .foreground { recordWake() }
         } catch {
             remoteError = error
         }
@@ -1196,6 +1209,18 @@ final class HubSession {
         // this launch took the refusal. The push fetched nothing, and its data waits for the next open.
         if case .push = depth, let relay = await relayAvailability(), relay != .available { return .failed }
         return .noData
+    }
+
+    /// The return's fetch read every zone: one `wake_ms` sample (became active → all zones read) in the replica's
+    /// latency rows and the log (live link R7). Once per activation.
+    private func recordWake() {
+        guard let activatedAt else { return }
+        self.activatedAt = nil
+        let readAt = now()
+        let ms = Int((readAt.timeIntervalSince(activatedAt) * 1000).rounded())
+        let transport = route.map(Self.transportKind(of:)) ?? .cloudKit
+        store.recordWake(ms: ms, transport: transport, at: readAt)
+        Self.logger.info("wake: all zones read in \(ms, privacy: .public) ms (\(transport.rawValue, privacy: .public))")
     }
 
     /// A depth for the log: `full` or `push`.
@@ -1270,6 +1295,7 @@ final class HubSession {
             restartLoop(firstCycle: nil)
             return
         }
+        activatedAt = now()
         startOwedRelay()
         // A relay feed parked while away reads again on the return (relay client Phase 5).
         feedResumeOwed = true
@@ -1286,6 +1312,8 @@ final class HubSession {
         restartLoop(firstCycle: recent ? nil : .foreground)
         if recent, isBootstrapped {
             Task { await applyBuffered() }
+            // No fetch: the socket is still checked, so live events keep coming.
+            if let wake { Task { await wake() } }
         }
     }
 

@@ -18,6 +18,9 @@ final class InterceptingRelayHTTP: RelayHTTP, @unchecked Sendable {
         var ops: [String] = []
         var hold: ((Relay_V1_Request) -> Bool)?
         var held: CheckedContinuation<Void, Never>?
+        var park: ((Relay_V1_Request) -> Bool)?
+        var nextParked = 0
+        var parked: [Int: (request: Relay_V1_Request, continuation: CheckedContinuation<Void, any Error>)] = [:]
     }
 
     private let base: any RelayHTTP
@@ -63,6 +66,26 @@ final class InterceptingRelayHTTP: RelayHTTP, @unchecked Sendable {
         held?.resume()
     }
 
+    /// Parks every op `matches` accepts until `releaseParked()` (nil parks nothing more). A parked op whose task
+    /// is cancelled ends with `CancellationError`, as a cancelled `URLSession` request does.
+    func park(where matches: ((Relay_V1_Request) -> Bool)?) {
+        state.withLock { $0.park = matches }
+    }
+
+    /// The ops parked now, in arrival order.
+    var parked: [Relay_V1_Request] {
+        state.withLock { $0.parked.sorted { $0.key < $1.key }.map(\.value.request) }
+    }
+
+    /// Lets every parked op go on.
+    func releaseParked() {
+        let all = state.withLock { state in
+            defer { state.parked = [:] }
+            return state.parked.values.map(\.continuation)
+        }
+        for continuation in all { continuation.resume() }
+    }
+
     var puts: [URL] {
         state.withLock { $0.puts }
     }
@@ -85,11 +108,34 @@ final class InterceptingRelayHTTP: RelayHTTP, @unchecked Sendable {
            }) {
             await withCheckedContinuation { continuation in state.withLock { $0.held = continuation } }
         }
+        if let request = parsed, state.withLock({ $0.park?(request) ?? false }) {
+            try await parkUntilReleased(request)
+        }
         let hook = state.withLock { $0.answer }
         if let hook, let request = parsed, let response = try hook(request) {
             return (200, try response.serializedData())
         }
         return try await base.post(url, body: body, headers: headers)
+    }
+
+    private func parkUntilReleased(_ request: Relay_V1_Request) async throws {
+        let id = state.withLock { state in
+            state.nextParked += 1
+            return state.nextParked
+        }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                let cancelled = state.withLock { state in
+                    if Task.isCancelled { return true }
+                    state.parked[id] = (request, continuation)
+                    return false
+                }
+                if cancelled { continuation.resume(throwing: CancellationError()) }
+            }
+        } onCancel: {
+            let parked = state.withLock { $0.parked.removeValue(forKey: id) }
+            parked?.continuation.resume(throwing: CancellationError())
+        }
     }
 
     func put(_ url: URL, file: URL, headers: [String: String]) async throws -> Int {

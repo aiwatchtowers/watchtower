@@ -24,7 +24,7 @@ final class FetchCadenceWiringTests: XCTestCase {
     }
 
     /// A booted demo environment whose safety poll waits on its first sleep.
-    private func makeWired() async throws -> Wired {
+    private func makeWired(wake: (@Sendable () async -> Void)? = nil) async throws -> Wired {
         let sleeper = TickSleeper()
         let clock = MutableClock()
         let remote = RemoteFetchRecorder()
@@ -37,6 +37,7 @@ final class FetchCadenceWiringTests: XCTestCase {
             recordingsDirectory: try makeRecordingsDirectory(),
             now: { clock.now },
             remoteFetch: { try await remote.fetch($0) },
+            wake: wake,
             sleep: { try await sleeper.sleep($0) },
             energy: counter
         )
@@ -101,6 +102,30 @@ final class FetchCadenceWiringTests: XCTestCase {
         try await poll({ wired.remote.depths.count == 2 && wired.sleeper.waitingCount == 1 }, "the return fetches at once")
         XCTAssertEqual(wired.remote.depths.last, .full)
         XCTAssertEqual(wired.counter.counts(daysAgo: 0)[.fetchForeground], 1)
+    }
+
+    /// Live link R6/R7: the return to the foreground wakes the transport (the socket's ping, a parallel redial)
+    /// before its fetch reads the zones, and the span from becoming active to all zones read is one `wake_ms` row.
+    func testSetActiveWakesSessionBeforeFetch() async throws {
+        let steps = StepLog()
+        let wired = try await makeWired(wake: { await steps.append("wake") })
+        steps.fetches = { wired.remote.depths.count }
+        wired.env.setActive(false)
+        wired.clock.advance(SessionCadence.foregroundRefetchAfter(role: .active) + 1)
+        wired.remote.holding = true
+        let fetchesBefore = wired.remote.depths.count
+
+        wired.env.setActive(true)
+        try await poll({ wired.remote.heldCount == 1 }, "the return did not fetch")
+        XCTAssertEqual(steps.all, ["wake after \(fetchesBefore) fetches"], "the wake ran before the fetch")
+        XCTAssertEqual(wired.remote.depths.count, fetchesBefore + 1)
+        wired.clock.advance(0.8)
+        wired.remote.release()
+
+        try await poll({ ((try? wired.env.store.wakeSamples(since: .distantPast)) ?? []).count == 1 }, "no wake sample")
+        let sample = try XCTUnwrap(try wired.env.store.wakeSamples(since: .distantPast).first)
+        XCTAssertEqual(sample.wakeMs, 800)
+        XCTAssertEqual(sample.transport, .cloudKit)
     }
 
     // MARK: - Pushes
@@ -593,5 +618,17 @@ final class RemoteFetchRecorder {
         let all = held
         held = []
         all.forEach { $0.resume() }
+    }
+}
+
+/// The order of what a test's hooks saw.
+@MainActor
+final class StepLog {
+    private(set) var all: [String] = []
+    /// How many fetches had begun, read at each step.
+    var fetches: (() -> Int)?
+
+    func append(_ step: String) {
+        all.append("\(step) after \(fetches?() ?? -1) fetches")
     }
 }
