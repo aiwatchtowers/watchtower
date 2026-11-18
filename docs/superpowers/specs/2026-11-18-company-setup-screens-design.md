@@ -174,7 +174,7 @@ The company name is never asked when it can be derived: Slack workspace name fir
 
 ### 3.1 Connect Acme?
 
-A sheet over the main window, Connections selected (460 pt; `-narrow` at 360): a confirmation, the style guide's case for a sheet (decision S23).
+A sheet over the main window, Connections selected (460 pt; `-narrow` at 360): a confirmation, the style guide's case for a sheet (decision S26).
 
 | Variant | Shot | Title / body | Rows |
 |---|---|---|---|
@@ -266,7 +266,7 @@ Google detail → **Use my own Google project** (secondary button in "Add an acc
 
 ### 5.2 The page (in the Google detail; `-narrow` at 360)
 
-A page in the Google detail, like Jira's drill-in, with **‹ Google** as the way back (decision S23): the flow takes about ten minutes in Google Cloud Console, too long for a sheet. Leaving the page keeps nothing but a dropped JSON while the app runs; nothing is stored before **Connect** succeeds.
+A page in the Google detail, like Jira's drill-in, with **‹ Google** as the way back (decision S26): the flow takes about ten minutes in Google Cloud Console, too long for a sheet. Leaving the page keeps nothing but a dropped JSON while the app runs; nothing is stored before **Connect** succeeds.
 
 | State | Shot | What shows | Buttons |
 |---|---|---|---|
@@ -296,7 +296,7 @@ Jira detail → "Add an account": **Connect with Acme's Atlassian app** (when a 
 
 ### 6.2 The sheet (520 pt; `-narrow` at 380)
 
-A sheet: one short form, the style guide's case for a sheet (decision S23).
+A sheet: one short form, the style guide's case for a sheet (decision S26).
 
 Top: "Connect Jira with an API token" / "For a person whose company has no Atlassian app yet, or who prefers a token. The token stays on this Mac." "1. Create a scoped API token" + "On your Atlassian account's Security page, create an API token with scopes: the Jira scopes Watchtower lists, and the Confluence ones if you use Confluence." + **Open Atlassian's token page**, quiet **Copy scopes**; "2. Fill in": Atlassian email, Site, API token (secure); the scoped-token hint "A token without scopes works too, but a scoped one can read only what Watchtower needs."
 
@@ -581,6 +581,10 @@ Screen tasks (C) follow the parent's tasks they need.
 | S21 | The Atlassian step is checked by the admin's own 3LO sign-in; Publish is disabled with a named reason until it succeeds or Atlassian is skipped | ask #1496 (spec review round 1) |
 | S22 | An unreadable draft is kept as `draft.json.bad-<ts>`, not deleted; the wizard starts again on Services | ask #1496 |
 | S23 | The Slack setup record owns the Slack app; the draft keeps only its `app_id` | ask #1496 |
+| S24 | Google, Jira, Linear and Outlook details move off `Form` onto `SettingsSection`s (as Slack did, its decision 1) | ask #1498 |
+| S25 | A **Companies** zone on the overview above Sources, always shown (one inviting line when empty) | ask #1498 |
+| S26 | Following S18, sheets stay only for short blocking flows: the connect confirmation, chain and replace warning (§3) and the API-token form (§6.2) are sheets; **Use my own Google project** becomes a page in the Google detail, like the wizard (ten minutes of console work) | ask #1498 |
+| S27 | The wizard draft keeps typed secrets (Google, Atlassian) in `draft.json`, 0600, until Publish or Discard; the Slack configuration token is never written | ask #1498 |
 | S1 | One **Set up for my company** for every vendor; the Slack-only setup becomes its Slack step | parent D7 (ask #1440) |
 | S2 | Each step first looks for a known app; found → "Use <app>" default + **Create new**; none → **Create new** default / **We already have one** + "Not sure?" | parent D19 (ask #1473) |
 | S3 | Reused Slack app, not a collaborator: the error, the step stays open, nothing created | parent §2, D19 (ask #1473) |
@@ -601,10 +605,6 @@ Screen tasks (C) follow the parent's tasks they need.
 | S18 | The wizard is a page in the Connections detail area (like Jira's drill-in), not a sheet; leaving it keeps the draft and the Companies zone shows **Continue setup** | ask #1490 (N1) |
 | S19 | "Advanced: custom OAuth client" is removed from Add Google Account, replaced by **Use my own Google project**; the CLI flags stay | ask #1490 (N2) |
 | S20 | No "forget company" in v1: accounts are removed one by one, the card stays with every vendor **Not connected** | ask #1490 (N3) |
-| S21 | Google, Jira, Linear and Outlook details move off `Form` onto `SettingsSection`s (as Slack did, its decision 1) | ask #1498 |
-| S22 | A **Companies** zone on the overview above Sources, always shown (one inviting line when empty) | ask #1498 |
-| S23 | Following S18, sheets stay only for short blocking flows: the connect confirmation, chain and replace warning (§3) and the API-token form (§6.2) are sheets; **Use my own Google project** becomes a page in the Google detail, like the wizard (ten minutes of console work) | ask #1498 |
-| S24 | The wizard draft keeps typed secrets (Google, Atlassian) in `draft.json`, 0600, until Publish or Discard; the Slack configuration token is never written | ask #1498 |
 
 ### Decided by the agent
 
