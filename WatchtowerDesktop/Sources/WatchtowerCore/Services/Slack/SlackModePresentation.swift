@@ -162,12 +162,15 @@ package struct SlackModePresentation: Equatable, Sendable {
     private static let providerOrder = ["claude", "codex"]
 
     package static func providerName(_ provider: String) -> String {
-        switch provider {
-        case "claude": "Claude"
-        case "codex": "ChatGPT (Codex)"
-        default: provider
-        }
+        providerNames[provider] ?? provider
     }
+
+    /// Display names by provider id: labels, not a transport decision
+    /// (LLMTRANSPORT-01).
+    private static let providerNames = ["claude": "Claude", "codex": "ChatGPT (Codex)"]
+
+    /// The "not installed" line by provider id; Claude Code's is the default.
+    private static let cliMissingReasons = ["codex": "Codex is not installed on this Mac."]
 
     /// One provider's newest check: one probe writes a row per team (and
     /// team "") at one instant, and that batch is the provider's verdict —
@@ -261,7 +264,7 @@ package struct SlackModePresentation: Equatable, Sendable {
     private static func notConnectedReason(_ errorClass: String, provider: String) -> String {
         switch errorClass {
         case "cli_missing":
-            provider == "codex" ? "Codex is not installed on this Mac." : "Claude Code is not installed on this Mac."
+            cliMissingReasons[provider] ?? "Claude Code is not installed on this Mac."
         case "connectors_off": "Connectors are off in Watchtower's chat settings."
         case "disabled": "The Slack connector is switched off in Watchtower's chat settings."
         case "policy": "Your organization's policy turns this off."

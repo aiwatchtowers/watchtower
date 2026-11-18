@@ -54,7 +54,6 @@ enum DesktopProcessLaunchSites {
         "ViewModels/JiraAccountsViewModel.swift": Site(launch: .noModel, reason: "jira account flows"),
         "ViewModels/CalendarAccountsViewModel.swift": Site(launch: .noModel, reason: "caldav account flows"),
         "Views/Settings/JiraFeaturesSettingsView.swift": Site(launch: .noModel, reason: "jira features toggles"),
-        "Views/Settings/SlackConnectionDetail.swift": Site(launch: .noModel, reason: "auth login and account calls"),
         "Views/Settings/JiraBoardsSettingsView.swift": Site(launch: .noModel, reason: "jira boards select/deselect"),
         "Views/Settings/JiraUserMappingSettingsView.swift": Site(launch: .noModel, reason: "jira users map/resolve"),
         "Services/GoogleAuthService.swift": Site(launch: .noModel, reason: "google/calendar login"),
