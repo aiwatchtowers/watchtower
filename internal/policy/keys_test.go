@@ -24,6 +24,5 @@ func TestKeyDocs_EveryKeyDocumented(t *testing.T) {
 // TestITGuideURL_NotPlaceholder keeps the placeholder IT page address out of
 // main: the umbrella merge checklist requires it to run unskipped.
 func TestITGuideURL_NotPlaceholder(t *testing.T) {
-	t.Skip("Task 31 sets the URL")
 	assert.NotEqual(t, itGuidePlaceholder, ITGuideURL)
 }

@@ -6,7 +6,7 @@ import Foundation
 /// golden-writes to `docs/mdm/site.json` (`ManagedPolicyHelpTests`).
 package enum ManagedPolicyHelp {
     // A fixed https string always parses.
-    package static let itGuideURL = URL(string: "https://example.com/mdm")!
+    package static let itGuideURL = URL(string: "https://aiwatchtowers.com/guide/mdm/")!
     package static let label = "What IT can set"
     package static let rowTitle = "IT guide"
     package static let rowCaption = "Every setting a configuration profile can force, with a sample profile."
