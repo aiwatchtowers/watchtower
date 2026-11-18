@@ -31,6 +31,15 @@ type JiraAccount struct {
 	OwnerAccountID   string
 	OwnerEmail       string
 	OwnerDisplayName string
+	// CompanySlug ties the account to the company bundle whose OAuth client
+	// it signed in with; '' = our shared client (migration 00198).
+	CompanySlug string
+	// AuthKind is "oauth" or "api_token"; CreateJiraAccount stores "" as
+	// "oauth".
+	AuthKind string
+	// LastPDRAt is the RFC 3339 UTC time of the last whole-account Personal
+	// Data Reporting pass; '' = never.
+	LastPDRAt string
 }
 
 // jiraAccountColumns is the shared column list for ListJiraAccounts,
@@ -39,7 +48,8 @@ type JiraAccount struct {
 // slackAccountColumns precedent).
 const jiraAccountColumns = `id, cloud_id, site_url, site_name, label,
         status, error, enabled, memory_jira_last_extracted_ts, created_at,
-        owner_account_id, owner_email, owner_display_name`
+        owner_account_id, owner_email, owner_display_name,
+        company_slug, auth_kind, last_pdr_at`
 
 // scanJiraAccount scans one jiraAccountColumns row from either *sql.Row or
 // *sql.Rows.
@@ -47,16 +57,18 @@ func scanJiraAccount(scanner interface{ Scan(dest ...any) error }) (JiraAccount,
 	var a JiraAccount
 	err := scanner.Scan(&a.ID, &a.CloudID, &a.SiteURL, &a.SiteName, &a.Label,
 		&a.Status, &a.Error, &a.Enabled, &a.MemoryJiraLastExtractedTS, &a.CreatedAt,
-		&a.OwnerAccountID, &a.OwnerEmail, &a.OwnerDisplayName)
+		&a.OwnerAccountID, &a.OwnerEmail, &a.OwnerDisplayName,
+		&a.CompanySlug, &a.AuthKind, &a.LastPDRAt)
 	return a, err
 }
 
 // CreateJiraAccount inserts a new connected Jira account and returns its ID.
+// An empty a.AuthKind is stored as "oauth".
 func (db *DB) CreateJiraAccount(a JiraAccount) (int64, error) {
 	res, err := db.Exec(`INSERT INTO jira_accounts
-        (cloud_id, site_url, site_name, label)
-        VALUES (?,?,?,?)`,
-		a.CloudID, a.SiteURL, a.SiteName, a.Label)
+        (cloud_id, site_url, site_name, label, company_slug, auth_kind)
+        VALUES (?,?,?,?,?,COALESCE(NULLIF(?, ''), 'oauth'))`,
+		a.CloudID, a.SiteURL, a.SiteName, a.Label, a.CompanySlug, a.AuthKind)
 	if err != nil {
 		return 0, fmt.Errorf("creating jira account: %w", err)
 	}
@@ -177,6 +189,19 @@ func (db *DB) SetJiraAccountOwner(accountID int64, atlassianID, email, displayNa
 		atlassianID, email, displayName, accountID)
 	if err != nil {
 		return fmt.Errorf("setting jira account %d owner: %w", accountID, err)
+	}
+	return nil
+}
+
+// SetJiraLastPDR stamps the last whole-account Personal Data Reporting pass
+// (RFC 3339 UTC). The PDR phase is its only writer.
+func (db *DB) SetJiraLastPDR(id int64, at string) error {
+	res, err := db.Exec(`UPDATE jira_accounts SET last_pdr_at = ? WHERE id = ?`, at, id)
+	if err != nil {
+		return fmt.Errorf("setting jira account %d last PDR: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting last PDR: no jira_accounts row %d", id)
 	}
 	return nil
 }

@@ -1409,7 +1409,7 @@ last_uid INTEGER NOT NULL DEFAULT 0, -- sync watermark: highest IMAP UID synced
 uidvalidity INTEGER NOT NULL DEFAULT 0, -- IMAP UIDVALIDITY; a change means last_uid must reset
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, ideas_email_floor REAL NOT NULL DEFAULT 0)
+, ideas_email_floor REAL NOT NULL DEFAULT 0, company_slug TEXT NOT NULL DEFAULT '')
 
 table	ext_comments
 CREATE TABLE ext_comments (
@@ -1572,7 +1572,7 @@ gmail_last_internal_date REAL NOT NULL DEFAULT 0, -- per-account Gmail sync wate
 memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0, -- per-account memory extraction watermark (was workspace.memory_gmail_last_extracted_ts)
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, ideas_email_floor REAL NOT NULL DEFAULT 0, deletions_checked_at TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '')
+, ideas_email_floor REAL NOT NULL DEFAULT 0, deletions_checked_at TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '', company_slug TEXT NOT NULL DEFAULT '')
 
 table	history_backfill
 CREATE TABLE history_backfill (
@@ -1812,7 +1812,7 @@ error TEXT NOT NULL DEFAULT '',
 enabled INTEGER NOT NULL DEFAULT 1,
 memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0, -- per-account memory extraction watermark (was workspace.memory_jira_last_extracted_ts)
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, ideas_jira_floor TEXT NOT NULL DEFAULT '', owner_account_id TEXT NOT NULL DEFAULT '', owner_email TEXT NOT NULL DEFAULT '', owner_display_name TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '')
+, ideas_jira_floor TEXT NOT NULL DEFAULT '', owner_account_id TEXT NOT NULL DEFAULT '', owner_email TEXT NOT NULL DEFAULT '', owner_display_name TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '', company_slug TEXT NOT NULL DEFAULT '', auth_kind TEXT NOT NULL DEFAULT 'oauth' CHECK (auth_kind IN ('oauth','api_token')), last_pdr_at TEXT NOT NULL DEFAULT '')
 
 table	jira_board_field_map
 CREATE TABLE "jira_board_field_map" (
@@ -2072,7 +2072,7 @@ memory_last_extracted_ts REAL NOT NULL DEFAULT 0,
 ideas_floor TEXT NOT NULL DEFAULT '',
 moved_watermark TEXT NOT NULL DEFAULT '', -- moved-issue reconcile cursor; advances only on success
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '')
+, access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '', company_slug TEXT NOT NULL DEFAULT '')
 
 table	linear_comments
 CREATE TABLE linear_comments (
@@ -3076,7 +3076,7 @@ error TEXT NOT NULL DEFAULT '',
 enabled INTEGER NOT NULL DEFAULT 1,
 search_last_date TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '')
+, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '', company_slug TEXT NOT NULL DEFAULT '')
 
 table	slack_live_status
 CREATE TABLE slack_live_status (
@@ -4948,6 +4948,7 @@ GROUP BY up.ancestor
 12	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 13	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 14	ideas_email_floor	REAL	notnull=1	dflt=0	pk=0
+15	company_slug	TEXT	notnull=1	dflt=''	pk=0
 
 ## ext_comments
 0	source_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -5086,6 +5087,7 @@ GROUP BY up.ancestor
 13	deletions_checked_at	TEXT	notnull=1	dflt=''	pk=0
 14	access_ok_at	TEXT	notnull=1	dflt=''	pk=0
 15	revoked_at	TEXT	notnull=1	dflt=''	pk=0
+16	company_slug	TEXT	notnull=1	dflt=''	pk=0
 
 ## history_backfill
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -5288,6 +5290,9 @@ GROUP BY up.ancestor
 13	owner_display_name	TEXT	notnull=1	dflt=''	pk=0
 14	access_ok_at	TEXT	notnull=1	dflt=''	pk=0
 15	revoked_at	TEXT	notnull=1	dflt=''	pk=0
+16	company_slug	TEXT	notnull=1	dflt=''	pk=0
+17	auth_kind	TEXT	notnull=1	dflt='oauth'	pk=0
+18	last_pdr_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## jira_board_field_map
 0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -5534,6 +5539,7 @@ GROUP BY up.ancestor
 14	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 15	access_ok_at	TEXT	notnull=1	dflt=''	pk=0
 16	revoked_at	TEXT	notnull=1	dflt=''	pk=0
+17	company_slug	TEXT	notnull=1	dflt=''	pk=0
 
 ## linear_comments
 0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -6396,6 +6402,7 @@ GROUP BY up.ancestor
 14	deletion_sweep_day	TEXT	notnull=1	dflt=''	pk=0
 15	access_ok_at	TEXT	notnull=1	dflt=''	pk=0
 16	revoked_at	TEXT	notnull=1	dflt=''	pk=0
+17	company_slug	TEXT	notnull=1	dflt=''	pk=0
 
 ## slack_live_status
 0	team_id	TEXT	notnull=1	dflt=NULL	pk=1

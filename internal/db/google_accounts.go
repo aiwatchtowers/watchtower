@@ -26,14 +26,18 @@ type GoogleAccount struct {
 	MemoryGmailLastExtractedTS float64
 	CreatedAt                  string
 	UpdatedAt                  string
+	// CompanySlug ties the account to a company bundle's OAuth client; '' =
+	// our shared client or an own per-account credentials file (migration
+	// 00198).
+	CompanySlug string
 }
 
 // CreateGoogleAccount inserts a new connected Google account and returns its ID.
 func (db *DB) CreateGoogleAccount(a GoogleAccount) (int64, error) {
 	res, err := db.Exec(`INSERT INTO google_accounts
-        (email, label, client_id, calendar_enabled, gmail_enabled)
-        VALUES (?,?,?,?,?)`,
-		a.Email, a.Label, a.ClientID, a.CalendarEnabled, a.GmailEnabled)
+        (email, label, client_id, calendar_enabled, gmail_enabled, company_slug)
+        VALUES (?,?,?,?,?,?)`,
+		a.Email, a.Label, a.ClientID, a.CalendarEnabled, a.GmailEnabled, a.CompanySlug)
 	if err != nil {
 		return 0, fmt.Errorf("creating google account: %w", err)
 	}
@@ -47,7 +51,7 @@ func (db *DB) CreateGoogleAccount(a GoogleAccount) (int64, error) {
 // ListGoogleAccounts returns every connected Google account, oldest first.
 func (db *DB) ListGoogleAccounts() ([]GoogleAccount, error) {
 	rows, err := db.Query(`SELECT id, email, label, client_id, calendar_enabled, gmail_enabled,
-        status, error, gmail_last_internal_date, memory_gmail_last_extracted_ts, created_at, updated_at
+        status, error, gmail_last_internal_date, memory_gmail_last_extracted_ts, created_at, updated_at, company_slug
         FROM google_accounts ORDER BY id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("listing google accounts: %w", err)
@@ -58,7 +62,7 @@ func (db *DB) ListGoogleAccounts() ([]GoogleAccount, error) {
 		var a GoogleAccount
 		if err := rows.Scan(&a.ID, &a.Email, &a.Label, &a.ClientID, &a.CalendarEnabled, &a.GmailEnabled,
 			&a.Status, &a.Error, &a.GmailLastInternalDate, &a.MemoryGmailLastExtractedTS,
-			&a.CreatedAt, &a.UpdatedAt); err != nil {
+			&a.CreatedAt, &a.UpdatedAt, &a.CompanySlug); err != nil {
 			return nil, fmt.Errorf("scanning google account: %w", err)
 		}
 		out = append(out, a)
@@ -70,11 +74,11 @@ func (db *DB) ListGoogleAccounts() ([]GoogleAccount, error) {
 func (db *DB) GetGoogleAccount(id int64) (GoogleAccount, error) {
 	var a GoogleAccount
 	err := db.QueryRow(`SELECT id, email, label, client_id, calendar_enabled, gmail_enabled,
-        status, error, gmail_last_internal_date, memory_gmail_last_extracted_ts, created_at, updated_at
+        status, error, gmail_last_internal_date, memory_gmail_last_extracted_ts, created_at, updated_at, company_slug
         FROM google_accounts WHERE id = ?`, id).
 		Scan(&a.ID, &a.Email, &a.Label, &a.ClientID, &a.CalendarEnabled, &a.GmailEnabled,
 			&a.Status, &a.Error, &a.GmailLastInternalDate, &a.MemoryGmailLastExtractedTS,
-			&a.CreatedAt, &a.UpdatedAt)
+			&a.CreatedAt, &a.UpdatedAt, &a.CompanySlug)
 	if err != nil {
 		return GoogleAccount{}, fmt.Errorf("getting google account %d: %w", id, err)
 	}
