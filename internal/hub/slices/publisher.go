@@ -426,6 +426,12 @@ func (p *Publisher) takeDue(now time.Time) []Kind {
 	return out
 }
 
+// joinable says whether a cycle may take k mid-cycle: without a linked
+// phone only the unlinked kinds are published.
+func joinable(linked bool, k Kind) bool {
+	return linked || slices.Contains(UnlinkedKinds, k)
+}
+
 // takeNowDuring takes, between two kinds of a running cycle, the kinds
 // PublishNow marked since the cycle began that the cycle has not tried
 // (done) and Run holds no longer (backoff, spacing: those wait for their
@@ -639,6 +645,13 @@ func (p *Publisher) Run(ctx context.Context) error {
 			after := p.mono()
 			clockNow := p.clock()
 			retryOn = p.transportKind()
+			// A kind a PublishNow brought in mid-cycle is settled like the
+			// kinds asked for: its expired hold and retry are spent (before
+			// a spacing deferral installs its new hold).
+			for _, k := range rep.Joined {
+				delete(held, k)
+				delete(retrying, k)
+			}
 			for k, at := range rep.Deferred {
 				held[k] = after.Add(max(0, at.Sub(clockNow)))
 				delete(retrying, k)
@@ -646,12 +659,6 @@ func (p *Publisher) Run(ctx context.Context) error {
 			tried := kinds
 			if tried == nil {
 				tried = p.sourceKinds()
-			}
-			// A kind a PublishNow brought in mid-cycle is settled like the
-			// kinds asked for: its expired hold and retry are spent.
-			for _, k := range rep.Joined {
-				delete(held, k)
-				delete(retrying, k)
 			}
 			tried = append(slices.Clone(tried), rep.Joined...)
 			for _, k := range tried {
@@ -760,7 +767,6 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 		errs             []error
 		tried, published int
 	)
-	take := func(kind Kind) bool { return linked || slices.Contains(UnlinkedKinds, kind) }
 	for i := 0; i < len(todo); i++ {
 		k := todo[i]
 		// A PublishNow that came in while the earlier kinds were saved goes
@@ -768,7 +774,7 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 		// answer is not held to the end of a full diff); a kind already
 		// tried this cycle waits for Run.
 		if i > 0 {
-			if extra := p.takeNowDuring(todo[:i], take); len(extra) > 0 {
+			if extra := p.takeNowDuring(todo[:i], func(k Kind) bool { return joinable(linked, k) }); len(extra) > 0 {
 				rep.Joined = append(rep.Joined, extra...)
 				rest := slices.DeleteFunc(slices.Clone(todo[i:]), func(k Kind) bool { return slices.Contains(extra, k) })
 				todo = append(append(todo[:i:i], extra...), rest...)

@@ -431,7 +431,7 @@ func TestPublisher_PublishNowHeldKindNotTakenMidCycle(t *testing.T) {
 	_, p, order, saves := midCycleRig(t, 1, func(p *Publisher, order []Kind) { p.PublishNow(order[5]) })
 	late := order[5]
 	p.setHolds(map[Kind]time.Time{late: time.Now().Add(time.Hour)})
-	if _, err := p.Cycle(context.Background(), order[:2]); err != nil {
+	if _, err := p.Cycle(context.Background(), order[:3]); err != nil {
 		t.Fatalf("Cycle: %v", err)
 	}
 	if saves.has(late) || !p.DirtyForTest(late) {
@@ -443,7 +443,7 @@ func TestPublisher_PublishNowHeldKindNotTakenMidCycle(t *testing.T) {
 // dirty for Run.
 func TestPublisher_PublishNowKindAlreadyTriedLeftForRun(t *testing.T) {
 	_, p, _, saves := midCycleRig(t, slices.Index(publishOrder, "target"), func(p *Publisher, _ []Kind) { p.PublishNow("owner_ask") })
-	if _, err := p.Cycle(context.Background(), []Kind{"owner_ask", "target"}); err != nil {
+	if _, err := p.Cycle(context.Background(), []Kind{"owner_ask", "target", "track"}); err != nil {
 		t.Fatalf("Cycle: %v", err)
 	}
 	n := 0
@@ -457,33 +457,56 @@ func TestPublisher_PublishNowKindAlreadyTriedLeftForRun(t *testing.T) {
 	}
 }
 
-// With no phone linked a cycle publishes only the unlinked kinds: a nudge
-// for any other kind is not taken.
-func TestPublisher_PublishNowUnlinkedRuleKeptMidCycle(t *testing.T) {
-	r, p, _, saves := midCycleRig(t, slices.Index(publishOrder, KindDeviceGrant), func(p *Publisher, _ []Kind) { p.PublishNow("target") })
-	r.setLinked(false)
-	if _, err := p.Cycle(context.Background(), nil); err != nil {
-		t.Fatalf("Cycle: %v", err)
-	}
-	if saves.has("target") || !p.DirtyForTest("target") {
-		t.Fatalf("unlinked: target saved %v, dirty %v; want not saved and still dirty", saves.has("target"), p.DirtyForTest("target"))
+// With no phone linked a cycle may take only the unlinked kinds mid-cycle.
+func TestJoinableHonoursTheLinkState(t *testing.T) {
+	if joinable(false, "target") || !joinable(false, KindDeviceGrant) || !joinable(true, "target") {
+		t.Fatal("joinable: want only the unlinked kinds without a phone, any kind with one")
 	}
 }
 
-// A kind a nudge brings into a cycle is settled by Run like the kinds it
-// asked for: its expired hold and backoff are spent, so nothing reads it
-// again.
+// runFakeKinds is runFake with the saved kinds recorded in order.
+func (r *rig) runFakeKinds(sources ...Source) (*runner, *kindSaves) {
+	r.t.Helper()
+	ft := newFakeTime()
+	saves := &kindSaves{}
+	p := r.publisherWith(Config{Clock: ft.Now, Latency: saves}, sources...)
+	p.mono, p.timer = ft.Now, ft.Timer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx) }()
+	r.t.Cleanup(func() {
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			r.t.Errorf("Run = %v", err)
+		}
+	})
+	ru := &runner{t: r.t, ft: ft, p: p}
+	ru.settle(0)
+	return ru, saves
+}
+
+func (s *kindSaves) list() []Kind {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.kinds)
+}
+
+// A kind whose hold runs out while a cycle runs and that is nudged then
+// joins that cycle ahead of the kinds still waiting in it, and is settled
+// like the rest (a later failure backs off from the first step).
 func TestPublisher_JoinedKindSettledLikeTheRest(t *testing.T) {
 	r := newRig(t, transport.KindRelay)
 	a := &fakeSource{kind: "owner_ask"}
 	x := &fakeSource{kind: "target"}
+	y := &fakeSource{kind: "track"}
 	x.set(item("1", `{"v":1}`))
-	r.tr.FailNext("save", transport.ErrUnavailable) // the start cycle's save of x
-	ru := r.runFake(a, x)                           // x held for RetryFirst, backoff set
-	if n := len(x.readTimes()); n != 1 {
-		t.Fatalf("x read %d times at start, want 1", n)
-	}
+	ru, saves := r.runFakeKinds(a, x, y)
+	ru.step(RelaySpacing)
+	x.set(item("1", `{"v":9}`))
+	r.tr.FailNext("save", transport.ErrUnavailable)
+	ru.publishNow("target") // x's save fails: held for RetryFirst, backoff set
 	a.set(item("1", `{"v":1}`))
+	y.set(item("1", `{"v":1}`))
 	fired := false
 	a.during = func() {
 		if fired {
@@ -493,15 +516,16 @@ func TestPublisher_JoinedKindSettledLikeTheRest(t *testing.T) {
 		ru.ft.advance(RetryFirst) // x's hold runs out while the cycle runs
 		ru.p.PublishNow("target")
 	}
-	ru.publishNow("owner_ask")
-	if _, ok := r.live()[r.wireName("target-1")]; !ok {
-		t.Fatal("x not saved by the cycle it joined")
+	n := ru.ft.armedCount()
+	ru.p.PublishNow("owner_ask", "track")
+	ru.settle(n)
+	got := saves.list()
+	if len(got) < 3 || !slices.Equal(got[len(got)-3:], []Kind{"owner_ask", "target", "track"}) {
+		t.Fatalf("saved %v, want target joined between owner_ask and track", got)
 	}
 	ru.step(RelaySpacing)
 	ru.step(RelaySpacing)
 	ru.step(RelaySpacing)
-	// Settled: a later failure backs off from the first step again (1 s),
-	// not from the doubled backoff the start cycle's failure left.
 	x.set(item("1", `{"v":2}`))
 	r.tr.FailNext("save", transport.ErrUnavailable)
 	ru.publishNow("target")
@@ -509,5 +533,35 @@ func TestPublisher_JoinedKindSettledLikeTheRest(t *testing.T) {
 	ru.step(RetryFirst)
 	if n := len(x.readTimes()); n != failed+1 {
 		t.Fatalf("x read %d times after the retry wait, want %d: it kept the stale doubled backoff", n, failed+1)
+	}
+}
+
+// A joined kind that the spacing defers keeps a hold and is published when
+// the spacing ends, not at the next full diff.
+func TestPublisher_JoinedKindDeferredBySpacingKeepsItsHold(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	a := &fakeSource{kind: "owner_ask"}
+	x := &fakeSource{kind: "target"}
+	x.set(item("1", `{"v":1}`))
+	y := &fakeSource{kind: "track"}
+	ru, saves := r.runFakeKinds(a, x, y) // x saved at start: its spacing runs
+	a.set(item("1", `{"v":1}`))
+	y.set(item("1", `{"v":1}`))
+	fired := false
+	a.during = func() {
+		if fired {
+			return
+		}
+		fired = true
+		x.set(item("1", `{"v":2}`))
+		ru.p.PublishNow("target")
+	}
+	n := ru.ft.armedCount()
+	ru.p.PublishNow("owner_ask", "track") // track follows owner_ask: x joins before it
+	ru.settle(n)
+	before := len(saves.list())
+	ru.step(RelaySpacing)
+	if got := saves.list(); len(got) != before+1 || got[len(got)-1] != "target" {
+		t.Fatalf("saved %v after the spacing, want target published then", got)
 	}
 }
