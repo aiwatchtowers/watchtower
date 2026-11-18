@@ -90,20 +90,21 @@ type jiraAccountsJSON struct {
 }
 
 // jiraOnSharedApp reports an OAuth account on our shared Atlassian app: no
-// company and no client file of its own, so its client is the env or baked
-// one — or none at all once the public build stops baking it (D4), when the
+// company of its own, and its client is the baked shared id (on any layer) —
+// or none at all once the public build stops baking it (D4), when the
 // account needs a company's app to sign in again (its status and error say
-// so). An API-token site has no app; a tied account or an own client file is
-// a company's app, and so is a flavoured build's baked client.
+// so). An API-token site has no app; a tied account is a company's, a
+// development env client of another id is the developer's own app, and a
+// flavoured build's baked client is its company's app.
 func jiraOnSharedApp(workspaceDir string, a db.JiraAccount) bool {
 	if BuildFlavor != "" || a.AuthKind == "api_token" || a.CompanySlug != "" || accountGone(a.Status) {
 		return false
 	}
-	_, src, err := resolveJiraOAuthConfigForAccount(workspaceDir, a)
+	cfg, _, err := resolveJiraOAuthConfigForAccount(workspaceDir, a)
 	if err != nil {
 		return errors.Is(err, errNoOAuthClient)
 	}
-	return src == clientSourceEnv || src == clientSourceBaked
+	return jira.DefaultJiraClientID != "" && cfg.ClientID == jira.DefaultJiraClientID
 }
 
 func writeJiraAccountsJSON(w io.Writer, workspaceDir string, accounts []db.JiraAccount) error {

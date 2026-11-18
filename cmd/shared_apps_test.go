@@ -307,6 +307,12 @@ func TestConnectionsJSON_SharedFlags(t *testing.T) {
 				assert.True(t, r.SharedAtlassian)
 			}
 		}
+		// A developer's own app in the env is not the shared one.
+		t.Setenv("WATCHTOWER_JIRA_CLIENT_ID", "developer-app")
+		for _, r := range read().Accounts {
+			assert.False(t, r.SharedAtlassian, r.ID)
+		}
+		t.Setenv("WATCHTOWER_JIRA_CLIENT_ID", "")
 		// A flavoured build's baked client is its company's app.
 		prevFlavor := BuildFlavor
 		BuildFlavor = "corp"
