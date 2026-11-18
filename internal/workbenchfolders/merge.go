@@ -329,7 +329,6 @@ func pinHomeThenMove(table, column, where string) func(ctx context.Context, tx *
 // home folder by NULL (where, when set, narrows the rows the NULL means a
 // folder for).
 func pinHomeSQL(table, column, where string) string {
-	//nolint:gosec // G202: table, column and where are constants; every value is a bound arg.
 	pin := `UPDATE ` + table + ` SET ` + column + ` = ? WHERE project_id = ? AND ` + column + ` IS NULL`
 	if where != "" {
 		pin += ` AND ` + where
