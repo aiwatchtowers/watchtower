@@ -83,7 +83,7 @@ func TestProj24_AFolderBelongsToOneWorkbench(t *testing.T) {
 	bench(t, d, "beta", hub)
 	before := folderCount(t, d)
 
-	_, err := Add(context.Background(), d, a, hub, AddedByOwner)
+	_, err := Add(context.Background(), d, a, hub, AddedByOwner, nil)
 	r := refusal(t, err, CodeOtherBench)
 	require.NotNil(t, r.OtherBench)
 	assert.Equal(t, "beta", r.OtherBench.Name)
@@ -109,7 +109,7 @@ func TestProj24_ConcurrentAddsOneWins(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, errs[i] = Add(context.Background(), c.d, c.wb, shared, AddedByOwner)
+			_, errs[i] = Add(context.Background(), c.d, c.wb, shared, AddedByOwner, nil)
 		}()
 	}
 	wg.Wait()
@@ -135,7 +135,7 @@ func TestAddOfAMissingPathWritesNothing(t *testing.T) {
 	d := testDB(t)
 	a := bench(t, d, "acme", dir(t, "app"))
 	before := folderCount(t, d)
-	_, err := Add(context.Background(), d, a, filepath.Join(t.TempDir(), "gone"), AddedByOwner)
+	_, err := Add(context.Background(), d, a, filepath.Join(t.TempDir(), "gone"), AddedByOwner, nil)
 	refusal(t, err, CodeNotFound)
 	assert.Equal(t, before, folderCount(t, d))
 }
@@ -148,11 +148,11 @@ func TestAddRefusesNested(t *testing.T) {
 	a := bench(t, d, "acme", app)
 	other := bench(t, d, "beta", dir(t, "web"))
 
-	_, err := Add(context.Background(), d, other, filepath.Join(app, "pkg"), AddedByOwner)
+	_, err := Add(context.Background(), d, other, filepath.Join(app, "pkg"), AddedByOwner, nil)
 	r := refusal(t, err, CodeNested)
 	assert.Contains(t, r.Detail, "inside app", "names the folder it is inside")
 	require.NotNil(t, r.Folder)
-	_, err = Add(context.Background(), d, a, root, AddedByOwner)
+	_, err = Add(context.Background(), d, a, root, AddedByOwner, nil)
 	r = refusal(t, err, CodeNested)
 	assert.Contains(t, r.Detail, "contains app")
 
@@ -181,7 +181,7 @@ func TestAddTreatsSpellingsAsOneFolder(t *testing.T) {
 		spellings = append(spellings, lower) // case (a case-insensitive volume, as APFS by default)
 	}
 	for _, spelling := range spellings {
-		_, err := Add(context.Background(), d, a, spelling, AddedByOwner)
+		_, err := Add(context.Background(), d, a, spelling, AddedByOwner, nil)
 		r := refusal(t, err, CodeAlreadyHere)
 		require.NotNil(t, r.Folder, spelling)
 		assert.Equal(t, app, r.Folder.FolderPath, spelling)
@@ -192,7 +192,7 @@ func TestAddTreatsSpellingsAsOneFolder(t *testing.T) {
 func TestAddNamesAClashingFolderAfterItsParent(t *testing.T) {
 	d := testDB(t)
 	a := bench(t, d, "acme", dir(t, "code", "app"))
-	f, err := Add(context.Background(), d, a, dir(t, "work", "app"), AddedByOwner)
+	f, err := Add(context.Background(), d, a, dir(t, "work", "app"), AddedByOwner, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "work-app", f.Name)
 	assert.Equal(t, 1, f.Position)
@@ -210,10 +210,10 @@ func TestAddNamesAClashingFolderAfterItsParent(t *testing.T) {
 func TestAddRecordsAgentSuggestion(t *testing.T) {
 	d := testDB(t)
 	a := bench(t, d, "acme", dir(t, "app"))
-	f, err := Add(context.Background(), d, a, dir(t, "hub"), AddedByAgentSuggestion)
+	f, err := Add(context.Background(), d, a, dir(t, "hub"), AddedByAgentSuggestion, nil)
 	require.NoError(t, err)
 	assert.Equal(t, AddedByAgentSuggestion, f.AddedBy)
-	_, err = Add(context.Background(), d, a, dir(t, "site"), "someone")
+	_, err = Add(context.Background(), d, a, dir(t, "site"), "someone", nil)
 	assert.Error(t, err)
 }
 
@@ -221,15 +221,15 @@ func TestAddBackOnTheSameBenchClearsRemovedAt(t *testing.T) {
 	d := testDB(t)
 	ctx := context.Background()
 	a := bench(t, d, "acme", dir(t, "app"))
-	hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner)
+	hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner, nil)
 	require.NoError(t, err)
-	_, err = Add(ctx, d, a, dir(t, "site"), AddedByOwner)
+	_, err = Add(ctx, d, a, dir(t, "site"), AddedByOwner, nil)
 	require.NoError(t, err)
 	removed, err := Remove(ctx, d, hub.ID, nil)
 	require.NoError(t, err)
 	require.True(t, removed.RemovedAt.Valid)
 
-	back, err := Add(ctx, d, a, hub.FolderPath, AddedByOwner)
+	back, err := Add(ctx, d, a, hub.FolderPath, AddedByOwner, nil)
 	require.NoError(t, err)
 	assert.Equal(t, hub.ID, back.ID, "the row is reused")
 	assert.False(t, back.RemovedAt.Valid)
@@ -242,7 +242,7 @@ func TestRemoveRefusedWhileSessionsRun(t *testing.T) {
 	for _, n := range []int{1, 2} {
 		d := testDB(t)
 		a := bench(t, d, "acme", dir(t, "app"))
-		hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner)
+		hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner, nil)
 		require.NoError(t, err)
 		for range n {
 			seedSession(t, d, hub)
@@ -250,6 +250,9 @@ func TestRemoveRefusedWhileSessionsRun(t *testing.T) {
 		_, err = Remove(ctx, d, hub.ID, nil)
 		r := refusal(t, err, CodeSessionsRunning)
 		assert.Equal(t, strconv.Itoa(n), r.Detail)
+		want := map[int]string{1: "sessions_running: 1 session is running in hub. Finish it first.",
+			2: "sessions_running: 2 sessions are running in hub. Finish them first."}[n]
+		assert.Equal(t, want, r.Error(), "spec §6.3's sentence")
 		assert.Equal(t, "hub", r.Folder.Name)
 		f, err := d.WorkbenchFolderByID(ctx, hub.ID)
 		require.NoError(t, err)
@@ -263,7 +266,7 @@ func TestRemoveTrustsTheHostForRowsItAnswered(t *testing.T) {
 	ctx := context.Background()
 	d := testDB(t)
 	a := bench(t, d, "acme", dir(t, "app"))
-	hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner)
+	hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner, nil)
 	require.NoError(t, err)
 	stale := seedSession(t, d, hub)
 	_, err = d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = '2026-11-01T00:00:00.000Z' WHERE id = ?`, stale)
@@ -297,9 +300,9 @@ func TestRemoveHomeMovesFolderPath(t *testing.T) {
 	d := testDB(t)
 	app := dir(t, "app")
 	a := bench(t, d, "acme", app)
-	site, err := Add(ctx, d, a, dir(t, "site"), AddedByOwner)
+	site, err := Add(ctx, d, a, dir(t, "site"), AddedByOwner, nil)
 	require.NoError(t, err)
-	hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner)
+	hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner, nil)
 	require.NoError(t, err)
 	_, err = Remove(ctx, d, site.ID, nil)
 	require.NoError(t, err)
@@ -327,7 +330,7 @@ func TestRemoveVsStartRace(t *testing.T) {
 	ctx := context.Background()
 	d := testDB(t)
 	a := bench(t, d, "acme", dir(t, "app"))
-	hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner)
+	hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner, nil)
 	require.NoError(t, err)
 
 	// The start commits its row while remove waits on the host's answer.
@@ -354,24 +357,62 @@ func TestLocateKeepsTheNameAndMovesHome(t *testing.T) {
 	ctx := context.Background()
 	d := testDB(t)
 	a := bench(t, d, "acme", dir(t, "app"))
-	hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner)
+	hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner, nil)
 	require.NoError(t, err)
 	home, err := d.HomeFolder(ctx, a)
 	require.NoError(t, err)
 
 	moved := dir(t, "moved", "app2")
-	f, err := Locate(ctx, d, home.ID, moved)
+	// Spec §6.3: Locate is for a missing folder; one still at its path keeps
+	// its install there, so it is removed from the bench instead.
+	_, err = Locate(ctx, d, home.ID, moved, nil)
+	r := refusal(t, err, CodeFolderPresent)
+	assert.Equal(t, "folder_present: app is still at "+home.FolderPath+". Remove it from the bench instead.", r.Error())
+
+	require.NoError(t, os.RemoveAll(home.FolderPath))
+	_, err = Locate(ctx, d, home.ID, hub.FolderPath, nil)
+	refusal(t, err, CodeAlreadyHere)
+	_, err = Locate(ctx, d, home.ID, filepath.Join(t.TempDir(), "gone"), nil)
+	refusal(t, err, CodeNotFound)
+
+	f, err := Locate(ctx, d, home.ID, moved, nil)
 	require.NoError(t, err)
 	assert.Equal(t, moved, f.FolderPath)
 	assert.Equal(t, "app", f.Name, "Locate keeps the name")
 	wb, err := d.GetWorkbench(a)
 	require.NoError(t, err)
 	assert.Equal(t, moved, wb.FolderPath, "the home folder follows")
+}
 
-	_, err = Locate(ctx, d, home.ID, hub.FolderPath)
-	refusal(t, err, CodeAlreadyHere)
-	_, err = Locate(ctx, d, home.ID, filepath.Join(t.TempDir(), "gone"))
-	refusal(t, err, CodeNotFound)
+// One `~` expansion for every path: Add stores the expanded form, the
+// protected-dir check runs on exactly that form, Resolve finds it by the `~`
+// spelling, and Locate's new path gets the same check.
+func TestTildePathsAreExpandedOnceAndChecked(t *testing.T) {
+	ctx := context.Background()
+	home := dir(t, "home")
+	t.Setenv("HOME", home)
+	d := testDB(t)
+	a := bench(t, d, "acme", dir(t, "app"))
+	require.NoError(t, os.MkdirAll(filepath.Join(home, "code", "hub"), 0o755))
+	protectedDir := filepath.Join(home, "Library", "Application Support", "Watchtower")
+	require.NoError(t, os.MkdirAll(filepath.Join(protectedDir, "recordings"), 0o755))
+	protected := []string{protectedDir}
+
+	hub, err := Add(ctx, d, a, "~/code/hub", AddedByOwner, protected)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "code", "hub"), hub.FolderPath, "stored expanded")
+	got, err := Resolve(ctx, d, a, "~/code/hub")
+	require.NoError(t, err)
+	assert.Equal(t, hub.ID, got.ID)
+
+	before := folderCount(t, d)
+	_, err = Add(ctx, d, a, "~/Library/Application Support/Watchtower/recordings", AddedByOwner, protected)
+	assert.ErrorIs(t, err, db.ErrWorkbenchFolderNotAllowed)
+	assert.Equal(t, before, folderCount(t, d))
+
+	require.NoError(t, os.RemoveAll(hub.FolderPath))
+	_, err = Locate(ctx, d, hub.ID, "~/Library/Application Support/Watchtower/recordings", protected)
+	assert.ErrorIs(t, err, db.ErrWorkbenchFolderNotAllowed)
 }
 
 func TestResolveByEveryRef(t *testing.T) {
@@ -379,7 +420,7 @@ func TestResolveByEveryRef(t *testing.T) {
 	d := testDB(t)
 	app := dir(t, "app")
 	a := bench(t, d, "acme", app)
-	hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner)
+	hub, err := Add(ctx, d, a, dir(t, "hub"), AddedByOwner, nil)
 	require.NoError(t, err)
 	other := bench(t, d, "beta", dir(t, "web"))
 
@@ -397,6 +438,12 @@ func TestResolveByEveryRef(t *testing.T) {
 	refusal(t, err, CodeNotFound)
 	_, err = Resolve(ctx, d, a, "nope")
 	refusal(t, err, CodeNotFound)
+
+	_, err = Remove(ctx, d, hub.ID, nil)
+	require.NoError(t, err)
+	_, err = Resolve(ctx, d, a, itoa(hub.ID))
+	removed := refusal(t, err, CodeFolderRemoved)
+	assert.Equal(t, "folder_removed: hub was removed from the bench.", removed.Error())
 }
 
 func isDir(p string) bool {

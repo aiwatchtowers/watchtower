@@ -30,20 +30,58 @@ const (
 	CodeSessionsRunning = "sessions_running"
 	CodeLastFolder      = "last_folder"
 	CodeFolderRemoved   = "folder_removed"
+	CodeFolderPresent   = "folder_present"
 )
 
 // Refusal is a folder write or lookup the rules refuse. Folder is the folder
-// it is about (already_here, nested, folder_removed, sessions_running,
-// last_folder); OtherBench the workbench a folder already belongs to
-// (other_bench). For sessions_running Detail is the count of running
-// sessions.
+// it is about (already_here, nested, folder_removed, folder_present,
+// sessions_running, last_folder); OtherBench the workbench a folder already
+// belongs to (other_bench). For sessions_running Detail is the count of
+// running sessions; for every other code it is the sentence.
 type Refusal struct {
 	Code, Detail string
 	Folder       *db.WorkbenchFolder
 	OtherBench   *db.Workbench
 }
 
-func (r *Refusal) Error() string { return r.Code + ": " + r.Detail }
+// Error is "<code>: <sentence>" (spec D42), the text every caller — the CLI,
+// MCP, a start — shows; sessions_running's sentence is spec §6.3's.
+func (r *Refusal) Error() string {
+	if r.Code == CodeSessionsRunning && r.Folder != nil {
+		if r.Detail == "1" {
+			return fmt.Sprintf("%s: 1 session is running in %s. Finish it first.", r.Code, r.Folder.Name)
+		}
+		return fmt.Sprintf("%s: %s sessions are running in %s. Finish them first.", r.Code, r.Detail, r.Folder.Name)
+	}
+	return r.Code + ": " + r.Detail
+}
+
+// SessionRowsSQL picks the agent session rows (not shells) of one folder:
+// its own rows and, for the home folder, the bench's rows with no folder (a
+// row written without the CLI reads as the home folder). Its two arguments
+// are SessionRowsArgs. Callers add db.NotDeletingSQL and their own run
+// conditions.
+const SessionRowsSQL = `(workbench_folder_id = ? OR (workbench_folder_id IS NULL AND project_id = ?)) AND kind <> 'shell'`
+
+// SessionRowsArgs are SessionRowsSQL's arguments for folder f; home says f
+// is its bench's home folder.
+func SessionRowsArgs(f db.WorkbenchFolder, home bool) []any {
+	homeBench := int64(-1) // matches no project
+	if home {
+		homeBench = f.WorkbenchID
+	}
+	return []any{f.ID, homeBench}
+}
+
+// LockPath is the lock file that serialises folder membership changes of the
+// workspace across processes (workbench folder add|remove|locate, resync,
+// delete): the caller holds it (fsutil.LockFile) from before the
+// transaction through the install or uninstall that follows it, so a
+// remove's uninstall never strips a re-add's fresh install. The SQLite
+// write transaction itself stays short inside it.
+func LockPath(workspaceDir string) string {
+	return filepath.Join(workspaceDir, "workbench-folders.lock")
+}
 
 // AddedBy values (workbench_folders.added_by).
 const (
@@ -51,24 +89,44 @@ const (
 	AddedByAgentSuggestion = "agent_suggestion"
 )
 
+// CheckAddedBy refuses an added_by value the column does not take.
+func CheckAddedBy(addedBy string) error {
+	if addedBy != AddedByOwner && addedBy != AddedByAgentSuggestion {
+		return fmt.Errorf("added_by %q: want %s or %s", addedBy, AddedByOwner, AddedByAgentSuggestion)
+	}
+	return nil
+}
+
 // LiveSessions counts the sessions the session host runs in folder folderID
 // (advisory; see Remove).
 type LiveSessions func(ctx context.Context, folderID int64) (int, error)
 
-// resolve is path as workbench_folders stores it: `~` expanded, absolute,
-// symlinks resolved, cleaned (db.ResolveWorkbenchFolder). A path that does
-// not name a directory is a not_found refusal; a folder no workbench may
-// have (root, home, a line break) keeps db.ErrWorkbenchFolderNotAllowed.
-func resolve(path string) (string, error) {
+// expandHome is path trimmed, with a leading `~` or `~/` made the home
+// directory: the one expansion every lookup and write of this package does.
+func expandHome(path string) (string, error) {
 	p := strings.TrimSpace(path)
-	if p == "~" || strings.HasPrefix(p, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolving %s: %w", path, err)
-		}
-		p = filepath.Join(home, strings.TrimPrefix(p, "~"))
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p, nil
 	}
-	resolved, err := db.ResolveWorkbenchFolder(p, nil)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving %s: %w", path, err)
+	}
+	return filepath.Join(home, strings.TrimPrefix(p, "~")), nil
+}
+
+// normalize is path as workbench_folders stores it: `~` expanded, absolute,
+// symlinks resolved, cleaned, and checked against the folders no workbench
+// may have — root, home, a line break, or overlapping a protected dir
+// (Watchtower's own data) — on exactly that stored form
+// (db.ResolveWorkbenchFolder). A path that names no directory is a
+// not_found refusal; a refused folder keeps db.ErrWorkbenchFolderNotAllowed.
+func normalize(path string, protected []string) (string, error) {
+	p, err := expandHome(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := db.ResolveWorkbenchFolder(p, protected)
 	if errors.Is(err, db.ErrWorkbenchFolderNotAllowed) {
 		return "", err //nolint:wrapcheck // db's message names the folder and why
 	}
@@ -76,6 +134,23 @@ func resolve(path string) (string, error) {
 		return "", &Refusal{Code: CodeNotFound, Detail: path + " does not exist or is not a folder."}
 	}
 	return resolved, nil
+}
+
+// lookupForm is path as a lookup compares it: normalize's form when the path
+// resolves, else `~` expanded, absolute and cleaned (a moved folder's old
+// path no longer resolves).
+func lookupForm(path string) string {
+	p, err := expandHome(path)
+	if err != nil {
+		p = strings.TrimSpace(path)
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		p = r
+	}
+	return filepath.Clean(p)
 }
 
 // within reports whether child lies strictly inside parent, by whole path
@@ -92,15 +167,17 @@ func within(child, parent string) bool {
 // containing a live folder of any bench, named; benches nested before this
 // rule stay as they are). A folder this bench removed earlier comes back on
 // its old row (same id, removed_at cleared, last position). The stored name
-// is db.UniqueFolderName among the bench's live folders.
-func Add(ctx context.Context, d *db.DB, workbenchID int64, path, addedBy string) (db.WorkbenchFolder, error) {
+// is db.UniqueFolderName among the bench's live folders. protected are the
+// directories no bench folder may overlap (Watchtower's own data; the
+// caller knows where it lives).
+func Add(ctx context.Context, d *db.DB, workbenchID int64, path, addedBy string, protected []string) (db.WorkbenchFolder, error) {
 	if addedBy == "" {
 		addedBy = AddedByOwner
 	}
-	if addedBy != AddedByOwner && addedBy != AddedByAgentSuggestion {
-		return db.WorkbenchFolder{}, fmt.Errorf("added_by %q: want %s or %s", addedBy, AddedByOwner, AddedByAgentSuggestion)
+	if err := CheckAddedBy(addedBy); err != nil {
+		return db.WorkbenchFolder{}, err
 	}
-	folder, err := resolve(path)
+	folder, err := normalize(path, protected)
 	if err != nil {
 		return db.WorkbenchFolder{}, err
 	}
@@ -227,20 +304,13 @@ func Remove(ctx context.Context, d *db.DB, folderID int64, live LiveSessions) (d
 	return byID(ctx, d, folderID)
 }
 
-// countLiveRows counts f's session rows that may be running (F2): agent rows
-// (not shells) of the folder — or, for the home folder, of the bench with no
-// folder (a row written without the CLI reads as the home folder) — not
-// being deleted, not finished and not failed to launch; with asked, only
-// those newer than mark or never reported by a hook.
+// countLiveRows counts f's session rows (SessionRowsSQL) that may be running
+// (F2): not being deleted, not finished and not failed to launch; with
+// asked, only those newer than mark or never reported by a hook.
 func countLiveRows(ctx context.Context, tx *sql.Tx, f db.WorkbenchFolder, home, asked bool, mark int64) (int, error) {
-	homeBench := int64(-1) // matches no project
-	if home {
-		homeBench = f.WorkbenchID
-	}
-	q := `SELECT COUNT(*) FROM terminal_sessions
-		WHERE (workbench_folder_id = ? OR (workbench_folder_id IS NULL AND project_id = ?))
-		AND kind <> 'shell' AND ` + db.NotDeletingSQL + ` AND finished_at IS NULL AND agent_failed_at IS NULL`
-	args := []any{f.ID, homeBench}
+	q := `SELECT COUNT(*) FROM terminal_sessions WHERE ` + SessionRowsSQL + ` AND ` + db.NotDeletingSQL +
+		` AND finished_at IS NULL AND agent_failed_at IS NULL`
+	args := SessionRowsArgs(f, home)
 	if asked {
 		// The host answered for what ran before the mark; a start since
 		// (or one still launching: no hook has reported it) is the race
@@ -255,15 +325,27 @@ func countLiveRows(ctx context.Context, tx *sql.Tx, f db.WorkbenchFolder, home, 
 	return n, nil
 }
 
-// Locate re-points folder folderID to newPath (spec §6.3 Locate…), with
-// Add's validation (the folder itself aside); the name stays. When it is the
+// Locate re-points folder folderID, moved or deleted, to newPath (spec §6.3
+// Locate…), with Add's validation (the folder itself aside); the name stays.
+// A folder still at its stored path is refused with folder_present: its
+// install is there, so it is removed from the bench instead. When it is the
 // home folder, projects.folder_path follows. The reinstall is the caller's.
-func Locate(ctx context.Context, d *db.DB, folderID int64, newPath string) (db.WorkbenchFolder, error) {
-	folder, err := resolve(newPath)
+func Locate(ctx context.Context, d *db.DB, folderID int64, newPath string, protected []string) (db.WorkbenchFolder, error) {
+	f, err := byID(ctx, d, folderID)
 	if err != nil {
-		return db.WorkbenchFolder{}, err
+		return f, err
 	}
-	var f db.WorkbenchFolder
+	if _, err := onBench(f); err != nil {
+		return f, err
+	}
+	if info, serr := os.Stat(f.FolderPath); serr == nil && info.IsDir() {
+		return f, &Refusal{Code: CodeFolderPresent, Detail: fmt.Sprintf("%s is still at %s. Remove it from the bench instead.", f.Name, f.FolderPath),
+			Folder: &f}
+	}
+	folder, err := normalize(newPath, protected)
+	if err != nil {
+		return f, err
+	}
 	err = withTx(ctx, d, func(tx *sql.Tx) error {
 		cur, err := liveFolder(ctx, tx, folderID)
 		if err != nil {
@@ -320,14 +402,7 @@ func Resolve(ctx context.Context, d *db.DB, workbenchID int64, ref string) (db.W
 			return f, nil
 		}
 	}
-	path := ref
-	if abs, err := filepath.Abs(ref); err == nil {
-		path = abs
-	}
-	if r, err := filepath.EvalSymlinks(path); err == nil {
-		path = r
-	}
-	path = filepath.Clean(path)
+	path := lookupForm(ref)
 	var removed *db.WorkbenchFolder
 	for i, f := range all {
 		if !strings.EqualFold(f.FolderPath, path) {

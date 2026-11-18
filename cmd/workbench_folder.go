@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/workbenchfolders"
 )
@@ -175,8 +176,8 @@ var folderLiveSessions = func(cfg *config.Config, database *db.DB) workbenchfold
 		if err != nil {
 			return 0, err //nolint:wrapcheck // advisory, as above
 		}
-		rows, err := database.QueryContext(ctx, `SELECT id FROM terminal_sessions WHERE kind <> 'shell' AND `+db.NotDeletingSQL+`
-			AND (workbench_folder_id = ? OR (workbench_folder_id IS NULL AND project_id = ? AND ? = ?))`, f.ID, f.WorkbenchID, f.ID, home)
+		rows, err := database.QueryContext(ctx, `SELECT id FROM terminal_sessions WHERE `+workbenchfolders.SessionRowsSQL+
+			` AND `+db.NotDeletingSQL, workbenchfolders.SessionRowsArgs(*f, home == f.ID)...)
 		if err != nil {
 			return 0, err //nolint:wrapcheck // advisory, as above
 		}
@@ -225,9 +226,24 @@ func openFolderCmd(write bool) (*config.Config, *db.DB, *db.Workbench, error) {
 	return cfg, database, p, nil
 }
 
+// lockFolders takes the workspace's folder-membership lock
+// (workbenchfolders.LockPath): held from before a membership write's
+// transaction through its install or uninstall, so two changes of one
+// folder never interleave their filesystem work across processes.
+func lockFolders(ctx context.Context, cfg *config.Config) (func(), error) {
+	unlock, err := fsutil.LockFile(ctx, workbenchfolders.LockPath(cfg.WorkspaceDir()))
+	if err != nil {
+		return nil, fmt.Errorf("waiting for the workbench folders lock: %w", err)
+	}
+	return unlock, nil
+}
+
 func runWorkbenchFolderAdd(cmd *cobra.Command, _ []string) error {
 	if strings.TrimSpace(folderFlagFolder) == "" {
 		return usageError("--folder is required")
+	}
+	if err := workbenchfolders.CheckAddedBy(folderFlagAddedBy); err != nil {
+		return folderFailed(cmd, folderCodeBadArgs, err)
 	}
 	cfg, database, p, err := openFolderCmd(true)
 	if err != nil {
@@ -235,15 +251,12 @@ func runWorkbenchFolderAdd(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 	ctx := cmdContext(cmd)
-	path := folderFlagFolder
-	// Watchtower's own data is never a bench folder (workbench create's rule);
-	// a missing path is left to Add, whose refusal names it.
-	if resolved, rerr := db.ResolveWorkbenchFolder(path, workbenchProtectedDirs()); errors.Is(rerr, db.ErrWorkbenchFolderNotAllowed) {
-		return rerr
-	} else if rerr == nil {
-		path = resolved
+	unlock, err := lockFolders(ctx, cfg)
+	if err != nil {
+		return err
 	}
-	f, err := workbenchfolders.Add(ctx, database, p.ID, path, folderFlagAddedBy)
+	defer unlock()
+	f, err := workbenchfolders.Add(ctx, database, p.ID, folderFlagFolder, folderFlagAddedBy, workbenchProtectedDirs())
 	if err != nil {
 		return folderRefused(cmd, database, err)
 	}
@@ -267,6 +280,11 @@ func runWorkbenchFolderRemove(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 	ctx := cmdContext(cmd)
+	unlock, err := lockFolders(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	f, err := workbenchfolders.Resolve(ctx, database, p.ID, folderFlagFolder)
 	if err != nil {
 		return folderRefused(cmd, database, err)
@@ -306,18 +324,17 @@ func runWorkbenchFolderLocate(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 	ctx := cmdContext(cmd)
+	unlock, err := lockFolders(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	f, err := workbenchfolders.Resolve(ctx, database, p.ID, folderFlagFolder)
 	if err != nil {
 		return folderRefused(cmd, database, err)
 	}
-	to := folderFlagTo
-	if resolved, rerr := db.ResolveWorkbenchFolder(to, workbenchProtectedDirs()); errors.Is(rerr, db.ErrWorkbenchFolderNotAllowed) {
-		return rerr
-	} else if rerr == nil {
-		to = resolved
-	}
 	wasHome := strings.EqualFold(p.FolderPath, f.FolderPath)
-	f, err = workbenchfolders.Locate(ctx, database, f.ID, to)
+	f, err = workbenchfolders.Locate(ctx, database, f.ID, folderFlagTo, workbenchProtectedDirs())
 	if err != nil {
 		return folderRefused(cmd, database, err)
 	}
@@ -413,18 +430,41 @@ func folderDone(cmd *cobra.Command, database *db.DB, f db.WorkbenchFolder, step 
 	return nil
 }
 
+// The CLI's own codes beside the package's refusals: a folder no workbench
+// may have (root, home, Watchtower's own data), and a flag value the verb
+// does not take.
+const (
+	folderCodeNotAllowed = "not_allowed"
+	folderCodeBadArgs    = "bad_args"
+)
+
+// folderFailed reports err under code: with --json as an ok:false result
+// (exit 0) whose error reads "<code>: <message>", otherwise as a usage error.
+func folderFailed(cmd *cobra.Command, code string, err error) error {
+	if !folderFlagJSON {
+		return usageError("%s: %v", code, err)
+	}
+	return writeJSON(cmd.OutOrStdout(), folderResultJSON{ErrorCode: code, Error: code + ": " + err.Error()})
+}
+
 // folderRefused reports a refusal: with --json as an ok:false result (exit
-// 0), otherwise as the command's error. Any other error is returned as is.
+// 0), otherwise as the command's error. A folder no workbench may have is
+// reported the same way (not_allowed); any other error is returned as is.
 func folderRefused(cmd *cobra.Command, database *db.DB, err error) error {
+	if errors.Is(err, db.ErrWorkbenchFolderNotAllowed) {
+		if !folderFlagJSON {
+			return err
+		}
+		return folderFailed(cmd, folderCodeNotAllowed, err)
+	}
 	var r *workbenchfolders.Refusal
 	if !errors.As(err, &r) {
 		return err
 	}
-	msg := refusalMessage(r)
 	if !folderFlagJSON {
-		return errors.New(msg)
+		return r
 	}
-	out := folderResultJSON{ErrorCode: r.Code, Error: msg}
+	out := folderResultJSON{ErrorCode: r.Code, Error: r.Error()}
 	if r.Folder != nil {
 		if p, gerr := database.GetWorkbench(r.Folder.WorkbenchID); gerr == nil {
 			fj := toFolderJSON(p, *r.Folder)
@@ -435,16 +475,4 @@ func folderRefused(cmd *cobra.Command, database *db.DB, err error) error {
 		out.OtherBench = &folderBenchJSON{ID: r.OtherBench.ID, Name: r.OtherBench.Name}
 	}
 	return writeJSON(cmd.OutOrStdout(), out)
-}
-
-// refusalMessage is "<code>: <sentence>" (spec D42); sessions_running's
-// Detail is the bare count, so its sentence is built here (spec §6.3).
-func refusalMessage(r *workbenchfolders.Refusal) string {
-	if r.Code != workbenchfolders.CodeSessionsRunning || r.Folder == nil {
-		return r.Error()
-	}
-	if r.Detail == "1" {
-		return fmt.Sprintf("%s: 1 session is running in %s. Finish it first.", r.Code, r.Folder.Name)
-	}
-	return fmt.Sprintf("%s: %s sessions are running in %s. Finish them first.", r.Code, r.Detail, r.Folder.Name)
 }

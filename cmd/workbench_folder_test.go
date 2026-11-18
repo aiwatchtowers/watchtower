@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/gitbin"
 	"watchtower/internal/workbenchfolders"
 )
@@ -307,14 +308,20 @@ func TestResyncInstallsEveryFolder(t *testing.T) {
 		assert.True(t, installed, dir)
 	}
 
-	// One folder failing fails the integration, naming the folder.
+	// Another folder failing is told in its entry; integration_ok stays the
+	// home folder's. Without --json the run fails.
 	folderInstall = func(context.Context, *db.Workbench) error { return errors.New("read-only") }
 	out, _, err = runWorkbench(t, "resync", f.id(), "--json")
 	require.NoError(t, err)
 	resynced = decodeResync(t, out)
-	assert.False(t, resynced.IntegrationOK)
-	assert.Contains(t, resynced.IntegrationError, "installing in hub: read-only")
+	assert.True(t, resynced.IntegrationOK, resynced.IntegrationError)
+	assert.Empty(t, resynced.IntegrationError)
+	require.Len(t, resynced.Folders, 1)
 	assert.False(t, resynced.Folders[0].OK)
+	assert.Equal(t, "read-only", resynced.Folders[0].Error)
+	out, _, err = runWorkbench(t, "resync", f.id())
+	assert.ErrorContains(t, err, "installing in hub: read-only")
+	assert.Contains(t, out, "hub ("+hub+"): FAILED — read-only")
 }
 
 // A one-folder bench resyncs with an empty folders list, never null.
@@ -329,7 +336,7 @@ func TestResyncFoldersIsAnEmptyArray(t *testing.T) {
 
 // D25: create on a folder that is on a bench, home or not, names that
 // bench in the refusal the Desktop already matches.
-func TestCreateOnABenchFolderReturnsItsBench(t *testing.T) {
+func TestCreateOnABenchFolderNamesItsBench(t *testing.T) {
 	f := newFolderFixture(t)
 	hub := repoDir(t, "hub")
 	require.True(t, f.add(t, hub).OK)
@@ -412,4 +419,98 @@ func TestProj24_RemoveTouchesNothingButTheInstall(t *testing.T) {
 	installed, err := devpack.HasCoreStateHooks(f.app, f.pid)
 	require.NoError(t, err)
 	assert.False(t, installed, "the home folder was never installed here, and is untouched")
+}
+
+// Spec §6.3: Locate… is for a missing folder; one still at its path is
+// refused (its install is there; Remove takes it out).
+func TestFolderLocateRefusesAFolderStillThere(t *testing.T) {
+	f := newFolderFixture(t)
+	hub := f.add(t, repoDir(t, "hub"))
+	out, _, err := runFolder(t, "locate", "--workbench", f.id(), "--folder", "hub", "--to", repoDir(t, "elsewhere"), "--json")
+	require.NoError(t, err)
+	res := decodeFolderResult(t, out)
+	assert.False(t, res.OK)
+	assert.Equal(t, workbenchfolders.CodeFolderPresent, res.ErrorCode)
+	assert.Equal(t, "folder_present: hub is still at "+hub.Folder.Path+". Remove it from the bench instead.", res.Error)
+	installed, err := devpack.HasCoreStateHooks(hub.Folder.Path, f.pid)
+	require.NoError(t, err)
+	assert.True(t, installed, "the folder and its install stay as they were")
+}
+
+// A literal `~` path (as the Desktop or a quoted shell argument passes it)
+// gets the protected-dir check on its expanded, stored form; under --json
+// that refusal and a bad --added-by are ok:false results.
+func TestFolderAddJSONRefusesProtectedAndBadArgs(t *testing.T) {
+	f := newFolderFixture(t)
+	home := os.Getenv("HOME") // writeActionsConfig's temp HOME
+	require.NoError(t, os.MkdirAll(filepath.Join(home, "Library", "Application Support", "Watchtower", "recordings"), 0o755))
+	before := 0
+	require.NoError(t, f.database.QueryRow(`SELECT COUNT(*) FROM workbench_folders`).Scan(&before))
+
+	res := f.add(t, "~/Library/Application Support/Watchtower/recordings")
+	assert.False(t, res.OK)
+	assert.Equal(t, "not_allowed", res.ErrorCode)
+	assert.Regexp(t, `^not_allowed: `, res.Error)
+	after := 0
+	require.NoError(t, f.database.QueryRow(`SELECT COUNT(*) FROM workbench_folders`).Scan(&after))
+	assert.Equal(t, before, after, "nothing written")
+
+	out, _, err := runFolder(t, "add", "--workbench", f.id(), "--folder", repoDir(t, "hub"), "--added-by", "someone", "--json")
+	require.NoError(t, err)
+	res = decodeFolderResult(t, out)
+	assert.False(t, res.OK)
+	assert.Equal(t, "bad_args", res.ErrorCode)
+	_, _, err = runFolder(t, "add", "--workbench", f.id(), "--folder", repoDir(t, "hub"), "--added-by", "someone")
+	assert.ErrorContains(t, err, "bad_args: ")
+}
+
+// Membership changes hold the workspace's folder lock from before their
+// transaction through the install or uninstall after it, so a remove's
+// uninstall can never strip a re-add's fresh install (another process
+// waits on the lock); remove then re-add ends installed.
+func TestFolderChangesHoldTheLockThroughTheirFilesystemWork(t *testing.T) {
+	f := newFolderFixture(t)
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+	lock := workbenchfolders.LockPath(cfg.WorkspaceDir())
+	held := func(step string) {
+		t.Helper()
+		unlock, free, err := fsutil.TryLockFile(lock)
+		require.NoError(t, err)
+		if free {
+			unlock()
+		}
+		assert.False(t, free, "%s runs under the folder lock", step)
+	}
+	prevInstall, prevRemove := folderInstall, workbenchRemoveInstall
+	t.Cleanup(func() { folderInstall, workbenchRemoveInstall = prevInstall, prevRemove })
+	var steps []string
+	folderInstall = func(ctx context.Context, p *db.Workbench) error {
+		held("the install")
+		steps = append(steps, "install")
+		return prevInstall(ctx, p)
+	}
+	workbenchRemoveInstall = func(ctx context.Context, cfg *config.Config, p *db.Workbench) error {
+		held("the uninstall")
+		steps = append(steps, "uninstall")
+		return prevRemove(ctx, cfg, p)
+	}
+
+	hub := repoDir(t, "hub")
+	require.True(t, f.add(t, hub).Install.OK)
+	out, _, err := runFolder(t, "remove", "--workbench", f.id(), "--folder", "hub", "--json")
+	require.NoError(t, err)
+	require.True(t, decodeFolderResult(t, out).OK, out)
+	res := f.add(t, hub)
+	require.True(t, res.OK && res.Install.OK, "%+v", res)
+
+	assert.Equal(t, []string{"install", "uninstall", "install"}, steps)
+	assert.True(t, res.Folder.Installed, "remove then re-add ends installed")
+	installed, err := devpack.HasCoreStateHooks(hub, f.pid)
+	require.NoError(t, err)
+	assert.True(t, installed)
+	unlock, free, err := fsutil.TryLockFile(lock)
+	require.NoError(t, err)
+	require.True(t, free, "the lock is released when the command ends")
+	unlock()
 }

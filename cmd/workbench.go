@@ -496,6 +496,13 @@ func runWorkbenchDelete(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The folder removals run in step with folder add/remove/resync, so no
+	// install lands in a folder of the bench after its removal ran.
+	unlock, err := lockFolders(cmdContext(cmd), cfg)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	kept := cleanPlacedWorktrees(cmd.Context(), cmd.ErrOrStderr(), database, id)
 	rerr := removeEveryFolderInstall(cmd.Context(), cmd.ErrOrStderr(), cfg, database, p)
 	// A file or directory linked outside the folder is never written through

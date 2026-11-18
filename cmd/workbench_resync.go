@@ -90,9 +90,11 @@ type workbenchResyncJSON struct {
 
 	// Folders is the install in each other live folder of the workbench
 	// (multi-folder workbench, spec 2026-11-18 §6.14); the fields above are
-	// the home folder's. A failure here also fails integration_ok, its
-	// integration_error naming the folder. Never null. Additive.
-	Folders []resyncFolderJSON `json:"folders"`
+	// the home folder's, integration_ok included; a failure in another folder
+	// lives only in its entry here. Never null. Additive. FoldersError: the
+	// folder list could not be read, so no other folder was set up.
+	Folders      []resyncFolderJSON `json:"folders"`
+	FoldersError string             `json:"folders_error"`
 
 	install    devpack.WorkbenchInstallReport // for the text report
 	installErr error
@@ -123,7 +125,11 @@ type resyncFolderJSON struct {
 }
 
 func (r workbenchResyncJSON) failed() bool {
-	return !r.IntegrationOK || !r.IndexOK || r.SuggestionsError != "" || (r.Codex != nil && !r.Codex.OK)
+	failed := !r.IntegrationOK || !r.IndexOK || r.SuggestionsError != "" || (r.Codex != nil && !r.Codex.OK) || r.FoldersError != ""
+	for _, f := range r.Folders {
+		failed = failed || !f.OK
+	}
+	return failed
 }
 
 func runWorkbenchResync(cmd *cobra.Command, args []string) error {
@@ -144,7 +150,13 @@ func runWorkbenchResync(cmd *cobra.Command, args []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// It installs into the bench's folders: in step with folder add/remove.
+	unlock, err := lockFolders(ctx, cfg)
+	if err != nil {
+		return err
+	}
 	res, stepErr := resyncWorkbench(ctx, database, p, cfg.Knowledge.Enabled)
+	unlock()
 	if workbenchFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), res)
 	}
@@ -199,12 +211,14 @@ func resyncWorkbench(ctx context.Context, database *db.DB, p *db.Workbench, know
 }
 
 // resyncOtherFolders installs in every live folder but the home one (the
-// same steps, PROJ-04 rules) and records each outcome in res.Folders; a
-// failure fails integration_ok with the folder named in integration_error.
+// same steps, PROJ-04 rules) and records each outcome in res.Folders only:
+// integration_ok stays the home folder's.
 func resyncOtherFolders(ctx context.Context, database *db.DB, p *db.Workbench, res *workbenchResyncJSON) error {
 	folders, err := database.WorkbenchFolders(ctx, p.ID, false)
 	if err != nil {
-		return failIntegration(res, fmt.Errorf("listing the workbench's folders: %w", err))
+		err = fmt.Errorf("listing the workbench's folders: %w", err)
+		res.FoldersError = err.Error()
+		return err
 	}
 	var errs []error
 	for _, f := range folders {
@@ -218,21 +232,7 @@ func resyncOtherFolders(ctx context.Context, database *db.DB, p *db.Workbench, r
 		}
 		res.Folders = append(res.Folders, out)
 	}
-	if len(errs) == 0 {
-		return nil
-	}
-	return failIntegration(res, errors.Join(errs...))
-}
-
-// failIntegration marks res's integration failed with err, after any home
-// folder failure already recorded, and returns err.
-func failIntegration(res *workbenchResyncJSON, err error) error {
-	res.IntegrationOK = false
-	if res.IntegrationError != "" {
-		res.IntegrationError += "; "
-	}
-	res.IntegrationError += err.Error()
-	return err
+	return errors.Join(errs...)
 }
 
 func resyncIntegration(ctx context.Context, p *db.Workbench, res *workbenchResyncJSON) error {
@@ -364,6 +364,9 @@ func printResyncReport(w io.Writer, p *db.Workbench, res workbenchResyncJSON) {
 				fmt.Fprintf(w, "  %s (%s): FAILED — %s\n", f.Name, f.Path, f.Error)
 			}
 		}
+	}
+	if res.FoldersError != "" {
+		fmt.Fprintf(w, "Other folders: FAILED — %s\n", res.FoldersError)
 	}
 	if res.Codex != nil {
 		fmt.Fprintln(w, "Codex integration:")
