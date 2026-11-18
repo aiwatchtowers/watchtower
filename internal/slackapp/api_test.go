@@ -111,3 +111,12 @@ func TestClient_RefusesRedirectAndHTTPErrors(t *testing.T) {
 		assert.NotEqual(t, "/auth.test", r.URL.Path, "the redirect is never followed")
 	}
 }
+
+func TestClient_AnswerWithoutOKIsUnknown(t *testing.T) {
+	c, _, _ := slackServer(t, map[string]string{"apps.manifest.create": `{}`})
+	_, _, err := c.Create(context.Background(), cfgToken, Manifest{})
+	require.Error(t, err)
+	var se *SlackError
+	assert.False(t, errors.As(err, &se), "no ok field is not an explicit refusal")
+	assert.False(t, notCreated(err), "the app may exist")
+}

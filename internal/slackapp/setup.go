@@ -6,12 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/url"
 	"regexp"
-	"strings"
 
 	"watchtower/internal/db"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/slackconnect"
 )
 
 // Result kinds of a setup run (the final JSON line's "result").
@@ -23,6 +22,9 @@ const (
 	// lost (timeout, cut connection), so Slack may have made the app. Never
 	// a second create: the owner checks api.slack.com/apps for "Watchtower".
 	KindPendingCreate   = "pending_create"
+	KindConfirmApp      = "confirm_app"      // adopt: the App ID came only from --app-id; re-run with --confirm-app-id after checking app_name
+	KindNoPending       = "no_pending"       // pending: the team has no pending record
+	KindBadIDs          = "bad_ids"          // pending --attach: an id is malformed (Code says which)
 	KindNoApp           = "no_app"           // adopt: the team has no live account on a company app
 	KindNoRecord        = "no_record"        // link: the team has no setup record
 	KindWrongTeam       = "wrong_team"       // link: --team names another workspace than the token
@@ -38,17 +40,19 @@ const (
 	KindBusy            = "busy"        // another setup run holds the lock
 )
 
-// Codes of a KindNeedAppID result.
+// Codes of a KindNeedAppID or KindBadIDs result.
 const (
-	CodeAppIDMissing  = "app_id_missing"  // no App ID known and none given
-	CodeAppIDFormat   = "app_id_format"   // --app-id is not an App ID
-	CodeAppIDMismatch = "app_id_mismatch" // --app-id is not this workspace's connected Watchtower app
+	CodeAppIDMissing   = "app_id_missing"   // no App ID known and none given
+	CodeAppIDFormat    = "app_id_format"    // --app-id is not an App ID
+	CodeAppIDMismatch  = "app_id_mismatch"  // --app-id differs from the account row's App ID
+	CodeClientIDFormat = "client_id_format" // pending --attach: --client-id is not a Client ID
 )
 
 // Step names and states (one JSON line each).
 const (
 	StepCheckToken = "check_token"
 	StepCreateApp  = "create_app"
+	StepReadApp    = "read_app"
 	StepUpdateApp  = "update_app"
 	StepWriteLink  = "write_link"
 
@@ -71,6 +75,7 @@ type Result struct {
 	TeamID      string
 	TeamName    string
 	AppID       string
+	AppName     string // adopt: the exported app's display name (confirm_app)
 	ClientID    string
 	LinkWritten bool
 	// Err is the Go error behind KindStorage; for stderr only, never in the
@@ -125,13 +130,24 @@ func failure(err error) Result {
 	return r
 }
 
+// notCreatedCodes are the ok:false codes of apps.manifest.create that
+// certainly made no app: the token was refused, the manifest was refused,
+// the workspace refused, or the call was rate limited before running.
+var notCreatedCodes = map[string]bool{
+	"invalid_auth": true, "not_authed": true, "token_expired": true, "token_revoked": true,
+	"account_inactive": true, "not_allowed_token_type": true, "invalid_manifest": true,
+	"restricted_action": true, "ratelimited": true, "missing_scope": true,
+}
+
 // notCreated reports that a failed apps.manifest.create certainly made no
-// app: Slack answered ok:false, or the connection was never made. Anything
-// else (a timeout, a cut connection, an unreadable answer) may have.
+// app: Slack answered an explicit ok:false with a known not-created code, or
+// the connection was never made. Anything else (a timeout, a cut
+// connection, an unreadable answer or one without ok, an unknown code) may
+// have.
 func notCreated(err error) bool {
 	var se *SlackError
 	if errors.As(err, &se) {
-		return true
+		return notCreatedCodes[se.Code]
 	}
 	var op *net.OpError
 	return errors.As(err, &op) && op.Op == "dial"
@@ -354,27 +370,16 @@ func (r *Runner) writeLink(ctx context.Context, cfgToken, appID string, link Lin
 
 var appIDPattern = regexp.MustCompile(`^A[A-Z0-9]+$`)
 
-// looksLikeWatchtower reports whether an exported manifest is plausibly the
-// workspace's Watchtower app: it registers a loopback redirect URL (every
-// Watchtower app does) or is named Watchtower. Slack offers no way to tie
-// an App ID to a client id, so this is the proof an --app-id can get.
-func looksLikeWatchtower(m Manifest) bool {
+// appName is the exported manifest's display name, "" when it has none.
+func appName(m Manifest) string {
 	info, _ := m["display_information"].(map[string]any)
-	if name, _ := info["name"].(string); strings.Contains(strings.ToLower(name), "watchtower") {
-		return true
-	}
-	oauth, _ := m["oauth_config"].(map[string]any)
-	for _, raw := range toStrings(oauth["redirect_urls"]) {
-		if u, err := url.Parse(raw); err == nil && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost") {
-			return true
-		}
-	}
-	return false
+	name, _ := info["name"].(string)
+	return name
 }
 
 // adoptAppID picks the App ID adopt works on (A19): the account row's, else
-// appIDFlag. fromFlag reports that the flag supplied it (then the exported
-// manifest must look like a Watchtower app); fail is a KindNeedAppID.
+// appIDFlag. fromFlag reports that only the flag supplied it (then the
+// owner must confirm the app by name first); fail is a KindNeedAppID.
 func adoptAppID(acct db.SlackAccount, appIDFlag string) (appID string, fromFlag bool, fail *Result) {
 	need := func(code, msg string) (string, bool, *Result) {
 		return "", false, &Result{Kind: KindNeedAppID, Code: code, Error: msg}
@@ -396,12 +401,16 @@ func adoptAppID(acct db.SlackAccount, appIDFlag string) (appID string, fromFlag 
 
 // Adopt brings the team's existing company app (the one its live account is
 // on) in line with our manifest instead of creating a second app (ask
-// #1425): check_token → update_app (export, MergeManifest, update). The App
-// ID comes from the account row, else appIDFlag (A19); a flag that is not an
-// App ID, differs from the row's, or names an app that does not look like a
-// Watchtower app is KindNeedAppID and nothing is written. The record (link
-// written) is inserted only after the update succeeded.
-func (r *Runner) Adopt(ctx context.Context, cfgToken, appIDFlag string) (Result, error) {
+// #1425). The App ID comes from the account row, else appIDFlag (A19); a
+// flag that is not an App ID or differs from the row's is KindNeedAppID.
+//
+// Row's App ID: check_token → update_app (export, MergeManifest, update).
+// Flag-only App ID (Slack cannot tie an App ID to the row's client id):
+// check_token → read_app, answering KindConfirmApp with the app's name and
+// changing nothing, until confirmAppID repeats that App ID; then
+// check_token → read_app → update_app. The record (link written) is
+// inserted only after the update succeeded.
+func (r *Runner) Adopt(ctx context.Context, cfgToken, appIDFlag, confirmAppID string) (Result, error) {
 	return r.locked(func() (Result, error) {
 		teamID, teamName, fail := r.team(ctx, cfgToken)
 		if fail != nil {
@@ -429,16 +438,33 @@ func (r *Runner) Adopt(ctx context.Context, cfgToken, appIDFlag string) (Result,
 		}
 		base.AppID = appID
 
-		link := Link{TeamID: teamID, TeamName: teamName, ClientID: acct.ClientID}
-		fail = r.step(StepUpdateApp, func() *Result {
-			theirs, err := r.API.Export(ctx, cfgToken, appID)
-			if err != nil {
+		var theirs Manifest
+		read := func() *Result {
+			var err error
+			if theirs, err = r.API.Export(ctx, cfgToken, appID); err != nil {
 				f := failure(err)
 				return &f
 			}
-			if fromFlag && !looksLikeWatchtower(theirs) {
-				return &Result{Kind: KindNeedAppID, Code: CodeAppIDMismatch,
-					Error: "App ID doesn't match this workspace's connected app: " + appID + " is not a Watchtower app"}
+			base.AppName = appName(theirs)
+			return nil
+		}
+		if fromFlag {
+			if fail := r.step(StepReadApp, read); fail != nil {
+				base.Kind, base.Code, base.Error = fail.Kind, fail.Code, fail.Error
+				return base, nil
+			}
+			if confirmAppID != appID {
+				base.Kind = KindConfirmApp
+				return base, nil
+			}
+		}
+
+		link := Link{TeamID: teamID, TeamName: teamName, ClientID: acct.ClientID}
+		fail = r.step(StepUpdateApp, func() *Result {
+			if theirs == nil {
+				if f := read(); f != nil {
+					return f
+				}
 			}
 			m, err := MergeManifest(theirs, link, r.EnablePKCEOnAdopt)
 			if err != nil {
@@ -464,6 +490,66 @@ func (r *Runner) Adopt(ctx context.Context, cfgToken, appIDFlag string) (Result,
 		base.LinkWritten = true
 		return base, nil
 	})
+}
+
+// ClearPending deletes team's pending setup record: the owner checked
+// api.slack.com/apps and no Watchtower app was made. KindNoPending when the
+// team has no pending record.
+func (r *Runner) ClearPending(team string) (Result, error) {
+	return r.locked(func() (Result, error) {
+		s, fail, err := r.pending(team)
+		if fail != nil || err != nil {
+			return derefResult(fail), err
+		}
+		if err := r.DB.DeleteSlackAppSetup(team); err != nil {
+			return storage(err), nil
+		}
+		return recordResult(KindOK, s), nil
+	})
+}
+
+// AttachPending fills team's pending setup record with the app the owner
+// found on api.slack.com/apps (its App ID and Client ID, format-checked);
+// the setup then continues with `slack app link`.
+func (r *Runner) AttachPending(team, appID, clientID string) (Result, error) {
+	return r.locked(func() (Result, error) {
+		if !appIDPattern.MatchString(appID) {
+			return Result{Kind: KindBadIDs, Code: CodeAppIDFormat, TeamID: team,
+				Error: fmt.Sprintf("%q is not an App ID (it starts with A; Basic Information page)", appID)}, nil
+		}
+		if _, err := slackconnect.ParseConnectInput(team + ":" + clientID); err != nil {
+			return Result{Kind: KindBadIDs, Code: CodeClientIDFormat, TeamID: team,
+				Error: fmt.Sprintf("%q is not a Client ID (digits.digits; Basic Information page)", clientID)}, nil
+		}
+		s, fail, err := r.pending(team)
+		if fail != nil || err != nil {
+			return derefResult(fail), err
+		}
+		if err := r.DB.SetSlackAppSetupApp(team, appID, clientID); err != nil {
+			return storage(err), nil
+		}
+		s.AppID, s.ClientID = appID, clientID
+		return recordResult(KindOK, s), nil
+	})
+}
+
+// pending returns team's pending record, or KindNoPending.
+func (r *Runner) pending(team string) (db.SlackAppSetup, *Result, error) {
+	s, ok, err := r.record(team)
+	if err != nil {
+		return db.SlackAppSetup{}, nil, err
+	}
+	if !ok || s.AppID != "" {
+		return db.SlackAppSetup{}, &Result{Kind: KindNoPending, TeamID: team}, nil
+	}
+	return s, nil, nil
+}
+
+func derefResult(r *Result) Result {
+	if r == nil {
+		return Result{}
+	}
+	return *r
 }
 
 // Link writes the connect link to the About page of the app of team's setup

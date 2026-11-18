@@ -270,7 +270,7 @@ func TestAppSetup_ConcurrentRunBusy(t *testing.T) {
 	defer unlock()
 	for name, run := range map[string]func() (Result, error){
 		"create": func() (Result, error) { return h.r.Create(context.Background(), cfgToken) },
-		"adopt":  func() (Result, error) { return h.r.Adopt(context.Background(), cfgToken, "") },
+		"adopt":  func() (Result, error) { return h.r.Adopt(context.Background(), cfgToken, "", "") },
 		"link":   func() (Result, error) { return h.r.Link(context.Background(), cfgToken, "") },
 	} {
 		res, err := run()
@@ -334,9 +334,9 @@ func TestAdopt_OK(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest()
-	res, err := h.r.Adopt(context.Background(), cfgToken, "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "")
 	require.NoError(t, err)
-	assert.Equal(t, Result{Kind: KindOK, TeamID: "T0ACME", TeamName: "Acme", AppID: "A0CORP", ClientID: "5555.6666", LinkWritten: true}, res)
+	assert.Equal(t, Result{Kind: KindOK, TeamID: "T0ACME", TeamName: "Acme", AppID: "A0CORP", AppName: "Acme Watchtower", ClientID: "5555.6666", LinkWritten: true}, res)
 	assert.Equal(t, []Step{
 		{StepCheckToken, StateRunning}, {StepCheckToken, StateDone},
 		{StepUpdateApp, StateRunning}, {StepUpdateApp, StateDone},
@@ -356,16 +356,60 @@ func TestAdopt_AppIDFlag(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "", "ok")
 	h.api.manifests["A0FLAG"] = theirManifest()
-	res, err := h.r.Adopt(context.Background(), cfgToken, "A0FLAG")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "A0FLAG", "")
+	require.NoError(t, err)
+	assert.Equal(t, KindConfirmApp, res.Kind, "a flag-only App ID is confirmed by name first")
+	assert.Equal(t, "A0FLAG", res.AppID)
+	assert.Equal(t, "Acme Watchtower", res.AppName)
+	assert.Zero(t, h.api.updates, "nothing changed")
+	assert.Empty(t, h.setups(t))
+	assert.Equal(t, []Step{
+		{StepCheckToken, StateRunning}, {StepCheckToken, StateDone},
+		{StepReadApp, StateRunning}, {StepReadApp, StateDone},
+	}, h.steps)
+
+	res, err = h.r.Adopt(context.Background(), cfgToken, "A0FLAG", "A0OTHER")
+	require.NoError(t, err)
+	assert.Equal(t, KindConfirmApp, res.Kind, "a confirmation of another id changes nothing")
+	assert.Zero(t, h.api.updates)
+
+	h.steps = nil
+	res, err = h.r.Adopt(context.Background(), cfgToken, "A0FLAG", "A0FLAG")
 	require.NoError(t, err)
 	assert.Equal(t, KindOK, res.Kind)
 	assert.Equal(t, "A0FLAG", res.AppID)
+	assert.Equal(t, 1, h.api.updates)
+	assert.Equal(t, []Step{
+		{StepCheckToken, StateRunning}, {StepCheckToken, StateDone},
+		{StepReadApp, StateRunning}, {StepReadApp, StateDone},
+		{StepUpdateApp, StateRunning}, {StepUpdateApp, StateDone},
+	}, h.steps)
+	require.Len(t, h.setups(t), 1)
+}
+
+func TestAdopt_RowAppIDSkipsConfirm(t *testing.T) {
+	h := newHarness(t)
+	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
+	h.api.manifests["A0CORP"] = theirManifest()
+	res, err := h.r.Adopt(context.Background(), cfgToken, "A0CORP", "")
+	require.NoError(t, err)
+	assert.Equal(t, KindOK, res.Kind)
+	assert.Equal(t, 1, h.api.updates)
+}
+
+func TestAdopt_ConfirmUnknownApp(t *testing.T) {
+	h := newHarness(t)
+	h.account(t, "T0ACME", "5555.6666", "", "ok")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "A0GONE", "A0GONE")
+	require.NoError(t, err)
+	assert.Equal(t, KindAppNotFound, res.Kind)
+	assert.Zero(t, h.api.updates)
 }
 
 func TestAdopt_NeedAppID(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "", "ok")
-	res, err := h.r.Adopt(context.Background(), cfgToken, "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "")
 	require.NoError(t, err)
 	assert.Equal(t, KindNeedAppID, res.Kind)
 	assert.Equal(t, "5555.6666", res.ClientID)
@@ -375,7 +419,7 @@ func TestAdopt_NeedAppID(t *testing.T) {
 
 func TestAdopt_NoApp(t *testing.T) {
 	h := newHarness(t)
-	res, err := h.r.Adopt(context.Background(), cfgToken, "A0X")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "A0X", "")
 	require.NoError(t, err)
 	assert.Equal(t, KindNoApp, res.Kind)
 	assert.Zero(t, h.api.exports)
@@ -385,7 +429,7 @@ func TestAdopt_NotCollaborator(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.exportErr = &SlackError{Method: "apps.manifest.export", Code: "no_permission"}
-	res, err := h.r.Adopt(context.Background(), cfgToken, "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "")
 	require.NoError(t, err)
 	assert.Equal(t, KindNotCollaborator, res.Kind)
 	assert.Equal(t, "no_permission", res.Code)
@@ -399,7 +443,7 @@ func TestAdopt_AppNotFound(t *testing.T) {
 		h := newHarness(t)
 		h.account(t, "T0ACME", "5555.6666", "A0GONE", "ok")
 		h.api.exportErr = &SlackError{Code: code}
-		res, err := h.r.Adopt(context.Background(), cfgToken, "")
+		res, err := h.r.Adopt(context.Background(), cfgToken, "", "")
 		require.NoError(t, err)
 		assert.Equal(t, KindAppNotFound, res.Kind, code)
 		assert.Empty(t, h.setups(t))
@@ -411,7 +455,7 @@ func TestAdopt_UpdateFailsNoRecord(t *testing.T) {
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest()
 	h.api.updateErrs = []error{&SlackError{Code: "invalid_manifest"}}
-	res, err := h.r.Adopt(context.Background(), cfgToken, "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "")
 	require.NoError(t, err)
 	assert.Equal(t, KindRefused, res.Kind)
 	assert.Equal(t, "invalid_manifest", res.Code)
@@ -422,7 +466,7 @@ func TestAdopt_SecretNeverStored(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest() // carries credentials.client_secret
-	res, err := h.r.Adopt(context.Background(), cfgToken, "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "")
 	require.NoError(t, err)
 	require.Equal(t, KindOK, res.Kind)
 	_, creds := h.api.lastUpdate["credentials"]
@@ -547,32 +591,26 @@ func TestAdopt_StorageAfterUpdate(t *testing.T) {
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest()
 	h.api.afterUpdate = func() { _ = h.db.Close() }
-	res, err := h.r.Adopt(context.Background(), cfgToken, "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "")
 	require.NoError(t, err)
 	assert.Equal(t, KindStorage, res.Kind)
 	assert.Error(t, res.Err)
 }
 
 func TestAdopt_AppIDFlagChecks(t *testing.T) {
-	notOurs := Manifest{
-		"display_information": map[string]any{"name": "Expenses"},
-		"oauth_config":        map[string]any{"redirect_urls": []any{"https://expenses.example.com/oauth"}},
-	}
 	for name, tc := range map[string]struct {
 		rowAppID, flag, code string
 	}{
 		"bad format":           {"", "a0lower", CodeAppIDFormat},
 		"client id typed":      {"", "1111.2222", CodeAppIDFormat},
 		"differs from the row": {"A0CORP", "A0OTHER", CodeAppIDMismatch},
-		"not a watchtower app": {"", "A0EXPENSES", CodeAppIDMismatch},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
 			h.account(t, "T0ACME", "5555.6666", tc.rowAppID, "ok")
 			h.api.manifests["A0CORP"] = theirManifest()
 			h.api.manifests["A0OTHER"] = theirManifest()
-			h.api.manifests["A0EXPENSES"] = notOurs
-			res, err := h.r.Adopt(context.Background(), cfgToken, tc.flag)
+			res, err := h.r.Adopt(context.Background(), cfgToken, tc.flag, "")
 			require.NoError(t, err)
 			assert.Equal(t, KindNeedAppID, res.Kind)
 			assert.Equal(t, tc.code, res.Code)
@@ -584,7 +622,85 @@ func TestAdopt_AppIDFlagChecks(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest()
-	res, err := h.r.Adopt(context.Background(), cfgToken, "A0CORP")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "A0CORP", "")
 	require.NoError(t, err)
 	assert.Equal(t, KindOK, res.Kind, "the row's own App ID repeated is fine")
+}
+
+func TestAppSetup_UnknownCreateCodeStaysPending(t *testing.T) {
+	h := newHarness(t)
+	h.api.createErr = &SlackError{Code: "internal_error"}
+	res, err := h.r.Create(context.Background(), cfgToken)
+	require.NoError(t, err)
+	assert.Equal(t, KindPendingCreate, res.Kind, "an unknown code may have made the app")
+	require.Len(t, h.setups(t), 1)
+}
+
+func pendingHarness(t *testing.T) *harness {
+	t.Helper()
+	h := newHarness(t)
+	h.api.createLost = context.DeadlineExceeded
+	res, err := h.r.Create(context.Background(), cfgToken)
+	require.NoError(t, err)
+	require.Equal(t, KindPendingCreate, res.Kind)
+	h.api.createLost = nil
+	return h
+}
+
+func TestPending_Clear(t *testing.T) {
+	h := pendingHarness(t)
+	res, err := h.r.ClearPending("T0ACME")
+	require.NoError(t, err)
+	assert.Equal(t, KindOK, res.Kind)
+	assert.Empty(t, h.setups(t))
+	res, err = h.r.ClearPending("T0ACME")
+	require.NoError(t, err)
+	assert.Equal(t, KindNoPending, res.Kind)
+
+	res, err = h.r.Create(context.Background(), cfgToken)
+	require.NoError(t, err)
+	assert.Equal(t, KindOK, res.Kind, "cleared: create runs again")
+}
+
+func TestPending_Attach(t *testing.T) {
+	h := pendingHarness(t)
+	for _, tc := range []struct{ app, client, code string }{
+		{"a0lower", "1111.2222", CodeAppIDFormat},
+		{"A0NEW", "T0ACME", CodeClientIDFormat},
+		{"A0NEW", "", CodeClientIDFormat},
+	} {
+		res, err := h.r.AttachPending("T0ACME", tc.app, tc.client)
+		require.NoError(t, err)
+		assert.Equal(t, KindBadIDs, res.Kind)
+		assert.Equal(t, tc.code, res.Code)
+	}
+	res, err := h.r.AttachPending("T0ACME", "A0NEW", "1111.2222")
+	require.NoError(t, err)
+	assert.Equal(t, KindOK, res.Kind)
+	assert.Equal(t, "A0NEW", res.AppID)
+	assert.Equal(t, StageInstall, h.stage(t))
+
+	res, err = h.r.Link(context.Background(), cfgToken, "")
+	require.NoError(t, err)
+	assert.Equal(t, KindOK, res.Kind, "the setup continues with link")
+
+	res, err = h.r.AttachPending("T0ACME", "A0NEW", "1111.2222")
+	require.NoError(t, err)
+	assert.Equal(t, KindNoPending, res.Kind, "a filled record is not pending")
+	assert.Equal(t, 1, h.api.creates)
+}
+
+func TestPending_Busy(t *testing.T) {
+	h := pendingHarness(t)
+	unlock, ok, err := fsutil.TryLockFile(h.r.LockPath)
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer unlock()
+	res, err := h.r.ClearPending("T0ACME")
+	require.NoError(t, err)
+	assert.Equal(t, KindBusy, res.Kind)
+	res, err = h.r.AttachPending("T0ACME", "A0NEW", "1111.2222")
+	require.NoError(t, err)
+	assert.Equal(t, KindBusy, res.Kind)
+	require.Len(t, h.setups(t), 1)
 }

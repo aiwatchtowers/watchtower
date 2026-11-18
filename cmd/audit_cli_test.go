@@ -369,6 +369,7 @@ var cliNoContentCommands = map[string]bool{
 	"slack app adopt":                  true, // updates the app's manifest; prints ids and the result only
 	"slack app create":                 true, // creates the app; prints ids and the result only
 	"slack app link":                   true,
+	"slack app pending":                true,
 	"slack app status":                 true,
 	"slack backfill":                   true, // fetches into the database; prints counts only
 	"slack disable":                    true,

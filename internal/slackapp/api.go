@@ -80,7 +80,7 @@ func NewClient(baseURL string) *Client {
 
 // slackAnswer is the envelope every method shares.
 type slackAnswer struct {
-	OK     bool   `json:"ok"`
+	OK     *bool  `json:"ok"` // nil: no ok field, not an answer we can trust either way
 	Error  string `json:"error"`
 	Errors []struct {
 		Code    string `json:"code"`
@@ -88,8 +88,13 @@ type slackAnswer struct {
 	} `json:"errors"`
 }
 
+// err is nil for ok:true and a SlackError for an explicit ok:false; an
+// answer without ok is a plain error (its outcome is unknown).
 func (a slackAnswer) err(method string) error {
-	if a.OK {
+	if a.OK == nil {
+		return fmt.Errorf("slack %s: the answer has no ok field", method)
+	}
+	if *a.OK {
 		return nil
 	}
 	code := a.Error

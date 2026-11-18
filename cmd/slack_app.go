@@ -13,6 +13,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/auth"
+	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/slackapp"
 )
 
@@ -55,6 +57,17 @@ var slackAppLinkCmd = &cobra.Command{
 	RunE:  runSlackAppLink,
 }
 
+var slackAppPendingCmd = &cobra.Command{
+	Use:   "pending",
+	Short: "Resolve a setup whose create answer was lost: --clear or --attach the app you found",
+	Long: "A setup whose apps.manifest.create answer was lost stays pending, so no second\n" +
+		"app is ever created. Look for \"Watchtower\" on api.slack.com/apps, then either\n" +
+		"--clear (nothing is there; create can run again) or --attach --app-id A --client-id C\n" +
+		"(the app is there; continue with 'slack app link').",
+	Args: cobra.NoArgs,
+	RunE: runSlackAppPending,
+}
+
 var slackAppStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show every Slack app setup and its stage",
@@ -63,12 +76,18 @@ var slackAppStatusCmd = &cobra.Command{
 }
 
 func init() {
-	for _, c := range []*cobra.Command{slackAppCreateCmd, slackAppAdoptCmd, slackAppLinkCmd, slackAppStatusCmd} {
+	for _, c := range []*cobra.Command{slackAppCreateCmd, slackAppAdoptCmd, slackAppLinkCmd, slackAppPendingCmd, slackAppStatusCmd} {
 		c.Flags().Bool("json", false, "print one JSON line per step and a final result line")
 		slackAppCmd.AddCommand(c)
 	}
 	slackAppAdoptCmd.Flags().String("app-id", "", "the app's App ID (Basic Information page), when Watchtower does not know it")
+	slackAppAdoptCmd.Flags().String("confirm-app-id", "", "repeat --app-id after checking the app's name (confirm_app)")
 	slackAppLinkCmd.Flags().String("team", "", "the workspace's team id (default: the token's workspace)")
+	slackAppPendingCmd.Flags().String("team", "", "the workspace's team id (required)")
+	slackAppPendingCmd.Flags().Bool("clear", false, "no Watchtower app exists: drop the pending setup")
+	slackAppPendingCmd.Flags().Bool("attach", false, "the app exists: record its --app-id and --client-id")
+	slackAppPendingCmd.Flags().String("app-id", "", "the app's App ID (Basic Information page)")
+	slackAppPendingCmd.Flags().String("client-id", "", "the app's Client ID (Basic Information page)")
 	slackCmd.AddCommand(slackAppCmd)
 }
 
@@ -106,6 +125,7 @@ type slackAppResultJSON struct {
 	TeamID      string `json:"team_id"`
 	TeamName    string `json:"team_name"`
 	AppID       string `json:"app_id"`
+	AppName     string `json:"app_name,omitempty"`
 	ClientID    string `json:"client_id"`
 	LinkWritten bool   `json:"link_written"`
 	Code        string `json:"code,omitempty"`
@@ -120,8 +140,9 @@ func runSlackAppCreate(cmd *cobra.Command, _ []string) error {
 
 func runSlackAppAdopt(cmd *cobra.Command, _ []string) error {
 	appID, _ := cmd.Flags().GetString("app-id")
+	confirm, _ := cmd.Flags().GetString("confirm-app-id")
 	return runSlackAppSetup(cmd, func(ctx context.Context, r *slackapp.Runner, tok string) (slackapp.Result, error) {
-		return r.Adopt(ctx, tok, strings.TrimSpace(appID))
+		return r.Adopt(ctx, tok, strings.TrimSpace(appID), strings.TrimSpace(confirm))
 	})
 }
 
@@ -146,10 +167,24 @@ func runSlackAppSetup(cmd *cobra.Command, run func(context.Context, *slackapp.Ru
 		return err
 	}
 	defer database.Close()
+	r, enc := newSlackAppRunner(cmd, cfg, database, asJSON)
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	res, err := run(ctx, r, tok)
+	if err != nil {
+		return err
+	}
+	return finishSlackAppRun(cmd, enc, res, asJSON)
+}
 
+// newSlackAppRunner is a Runner on database whose steps print to cmd's
+// stdout (JSON lines, or "step: state" for finished steps).
+func newSlackAppRunner(cmd *cobra.Command, cfg *config.Config, database *db.DB, asJSON bool) (*slackapp.Runner, *json.Encoder) {
 	out := cmd.OutOrStdout()
 	enc := json.NewEncoder(out)
-	r := &slackapp.Runner{
+	return &slackapp.Runner{
 		DB:              database,
 		API:             slackAppAPI(),
 		LockPath:        filepath.Join(cfg.WorkspaceDir(), slackAppSetupLock),
@@ -161,22 +196,21 @@ func runSlackAppSetup(cmd *cobra.Command, run func(context.Context, *slackapp.Ru
 				fmt.Fprintf(out, "%s: %s\n", s.Name, s.State)
 			}
 		},
-	}
-	ctx := cmd.Context()
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	res, err := run(ctx, r, tok)
-	if err != nil {
-		return err
-	}
+	}, enc
+}
+
+// finishSlackAppRun prints res: the final JSON line, or the human line (an
+// error for a result that is not ok/exists); a storage failure's Go detail
+// goes to stderr only.
+func finishSlackAppRun(cmd *cobra.Command, enc *json.Encoder, res slackapp.Result, asJSON bool) error {
+	out := cmd.OutOrStdout()
 	if res.Err != nil {
 		// The Go detail of a storage failure: stderr only, never the result line.
 		fmt.Fprintf(cmd.ErrOrStderr(), "slack app setup: %v\n", res.Err)
 	}
 	if asJSON {
 		return enc.Encode(slackAppResultJSON{Result: res.Kind, TeamID: res.TeamID, TeamName: res.TeamName,
-			AppID: res.AppID, ClientID: res.ClientID, LinkWritten: res.LinkWritten, Code: res.Code, Error: res.Error})
+			AppID: res.AppID, AppName: res.AppName, ClientID: res.ClientID, LinkWritten: res.LinkWritten, Code: res.Code, Error: res.Error})
 	}
 	return printSlackAppResult(out, res)
 }
@@ -185,7 +219,15 @@ func runSlackAppSetup(cmd *cobra.Command, run func(context.Context, *slackapp.Ru
 func printSlackAppResult(out io.Writer, res slackapp.Result) error {
 	switch res.Kind {
 	case slackapp.KindOK:
+		if res.AppID == "" {
+			fmt.Fprintf(out, "The pending setup of %s was cleared; 'slack app create' can run again.\n", res.TeamID)
+			return nil
+		}
 		fmt.Fprintf(out, "Watchtower's app %s is ready in %s. Connect code: %s:%s\n", res.AppID, res.TeamName, res.TeamID, res.ClientID)
+		return nil
+	case slackapp.KindConfirmApp:
+		fmt.Fprintf(out, "App %s is %q. If that is your Watchtower app, run again with --confirm-app-id %s; nothing was changed.\n",
+			res.AppID, res.AppName, res.AppID)
 		return nil
 	case slackapp.KindExists:
 		fmt.Fprintf(out, "%s already has Watchtower's app %s (client id %s); nothing was created.\n", res.TeamName, res.AppID, res.ClientID)
@@ -202,6 +244,41 @@ func printSlackAppResult(out io.Writer, res slackapp.Result) error {
 		detail = ": " + detail
 	}
 	return fmt.Errorf("slack app setup ended with %s%s", res.Kind, detail)
+}
+
+func runSlackAppPending(cmd *cobra.Command, _ []string) error {
+	asJSON, _ := cmd.Flags().GetBool("json")
+	team, _ := cmd.Flags().GetString("team")
+	doClear, _ := cmd.Flags().GetBool("clear")
+	attach, _ := cmd.Flags().GetBool("attach")
+	appID, _ := cmd.Flags().GetString("app-id")
+	clientID, _ := cmd.Flags().GetString("client-id")
+	team = strings.TrimSpace(team)
+	if team == "" {
+		return errors.New("--team is required")
+	}
+	if doClear == attach {
+		return errors.New("give exactly one of --clear and --attach")
+	}
+	if doClear && (appID != "" || clientID != "") {
+		return errors.New("--app-id and --client-id go with --attach only")
+	}
+	cfg, database, err := openSlackCmdDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	r, enc := newSlackAppRunner(cmd, cfg, database, asJSON)
+	var res slackapp.Result
+	if doClear {
+		res, err = r.ClearPending(team)
+	} else {
+		res, err = r.AttachPending(team, strings.TrimSpace(appID), strings.TrimSpace(clientID))
+	}
+	if err != nil {
+		return err
+	}
+	return finishSlackAppRun(cmd, enc, res, asJSON)
 }
 
 func runSlackAppStatus(cmd *cobra.Command, _ []string) error {

@@ -92,7 +92,11 @@ func slackAppTestCmd(stdin string, flags map[string]string) (*cobra.Command, *by
 	c := &cobra.Command{}
 	c.Flags().Bool("json", false, "")
 	c.Flags().String("app-id", "", "")
+	c.Flags().String("confirm-app-id", "", "")
 	c.Flags().String("team", "", "")
+	c.Flags().Bool("clear", false, "")
+	c.Flags().Bool("attach", false, "")
+	c.Flags().String("client-id", "", "")
 	for k, v := range flags {
 		_ = c.Flags().Set(k, v)
 	}
@@ -280,4 +284,40 @@ func TestAppSetup_RetiredIDWired(t *testing.T) {
 	auth.RetiredSharedClientID = "9999.0000"
 	t.Cleanup(func() { auth.RetiredSharedClientID = old })
 	assert.Equal(t, "9999.0000", slackAppRetiredClientID())
+}
+
+func TestAppSetup_PendingCLI(t *testing.T) {
+	setupSlackAppWorkspace(t)
+	fake := &fakeSlackAppServer{garbled: true}
+	fake.serve(t)
+	c, _, _ := slackAppTestCmd(slackAppTestToken+"\n", map[string]string{"json": "true"})
+	require.NoError(t, runSlackAppCreate(c, nil))
+
+	for _, flags := range []map[string]string{
+		{"clear": "true"},
+		{"team": "T0ACME"},
+		{"team": "T0ACME", "clear": "true", "attach": "true"},
+		{"team": "T0ACME", "clear": "true", "app-id": "A0NEW"},
+	} {
+		pc, _, _ := slackAppTestCmd("", flags)
+		require.Error(t, runSlackAppPending(pc, nil), "%v", flags)
+	}
+
+	pc, out, _ := slackAppTestCmd("", map[string]string{"json": "true", "team": "T0ACME", "attach": "true", "app-id": "A0NEW", "client-id": "bad"})
+	require.NoError(t, runSlackAppPending(pc, nil))
+	assert.Equal(t, "bad_ids", jsonLines(t, out.String())[0]["result"])
+
+	pc, out, _ = slackAppTestCmd("", map[string]string{"json": "true", "team": "T0ACME", "attach": "true", "app-id": "A0NEW", "client-id": "1111.2222"})
+	require.NoError(t, runSlackAppPending(pc, nil))
+	last := jsonLines(t, out.String())[0]
+	assert.Equal(t, "ok", last["result"])
+	assert.Equal(t, "A0NEW", last["app_id"])
+
+	sc, sout, _ := slackAppTestCmd("", map[string]string{"json": "true"})
+	require.NoError(t, runSlackAppStatus(sc, nil))
+	assert.Contains(t, sout.String(), `"stage":"install"`)
+
+	pc, out, _ = slackAppTestCmd("", map[string]string{"json": "true", "team": "T0ACME", "clear": "true"})
+	require.NoError(t, runSlackAppPending(pc, nil))
+	assert.Equal(t, "no_pending", jsonLines(t, out.String())[0]["result"])
 }
