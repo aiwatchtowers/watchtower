@@ -23,7 +23,7 @@ struct TrayMenuView: View {
             appState.daemonManager.checkStatus()
             appState.quickRunCenter?.reload()
             // The Watchman line reads the arming as it is now.
-            Task { await appState.watchmanCenter?.load() }
+            Task { await appState.watchmanCenter?.reread() }
         }
     }
 
@@ -58,10 +58,14 @@ struct TrayMenuView: View {
             openAutomationsAction: { appState.openAutomationsFromTray() },
             watchman: appState.watchmanCenter.map { center in
                 TrayWatchmanSection(
-                    statusLine: WatchmanArmingCopy.trayStatus(center.lastStatus),
+                    statusLine: center.armingReadError.map(WatchmanArmingCopy.statusReadFailed)
+                        ?? WatchmanArmingCopy.trayStatus(center.lastStatus),
                     notes: center.armNotices[.allRunning]?.components(separatedBy: "\n") ?? [],
                     busy: center.armingHere.contains(.allRunning)
-                ) { Task { await center.handAllRunning() } }
+                ) {
+                    // A first time or a warning: the arm sheet, in the main window.
+                    Task { if await center.handAllRunning() { openMainWindow() } }
+                }
             },
             quickCaptureAction: {
                 // Same "become regular" move as Open Watchtower: the Quick
@@ -79,16 +83,7 @@ struct TrayMenuView: View {
             trainVoicesAction: {
                 Task { await appState.voiceRegistryCenter.open(.train) }
             },
-            openAction: {
-                // Opening from the tray is a deliberate "become regular" move —
-                // it must win over a still-armed login-launch close observer
-                // (see `TrayAppDelegate.endLoginLaunchClosing`), or a window
-                // opened right after a login launch gets closed out from under
-                // the user.
-                (NSApp.delegate as? TrayAppDelegate)?.endLoginLaunchClosing()
-                ActivationPolicyDecision.becomeRegularAndActivate()
-                openWindow(id: TrayAppDelegate.mainWindowSceneID)
-            },
+            openAction: { openMainWindow() },
             settingsAction: {
                 // The policy watcher recomputes only on window CLOSE, so an
                 // accessory-mode app must become regular here or Settings
@@ -99,6 +94,16 @@ struct TrayMenuView: View {
                 openSettings()
             }
         )
+    }
+
+    /// Opening from the tray is a deliberate "become regular" move — it must
+    /// win over a still-armed login-launch close observer (see
+    /// `TrayAppDelegate.endLoginLaunchClosing`), or a window opened right
+    /// after a login launch gets closed out from under the user.
+    private func openMainWindow() {
+        (NSApp.delegate as? TrayAppDelegate)?.endLoginLaunchClosing()
+        ActivationPolicyDecision.becomeRegularAndActivate()
+        openWindow(id: TrayAppDelegate.mainWindowSceneID)
     }
 
     private var plansScreen: PlansScreenPresentation {

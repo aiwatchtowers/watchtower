@@ -71,7 +71,8 @@ final class WatchmanStatusDecodingTests: XCTestCase {
         XCTAssertEqual(status.armed.map(\.scope), [.session, .target])
         XCTAssertEqual(status.armed.last, WatchmanArmedEntry(
             scope: .target, id: 4, armedAt: AutomationDates.parse("2026-11-02T13:00:00Z")))
-        XCTAssertEqual(status.armedSessions, [1])
+        XCTAssertEqual(status.armedSessions, [1: WatchmanArmedSession(
+            id: 1, target: 0, armedAt: AutomationDates.parse("2026-11-02T12:00:00Z"))])
         XCTAssertTrue(status.isArmed(session: 1))
         XCTAssertTrue(status.isArmed(target: 4))
         XCTAssertFalse(status.isArmed(target: 1))
@@ -206,13 +207,17 @@ final class WatchmanStatusDecodingTests: XCTestCase {
         }
         let armed = try decode(#"""
             {"ok":true,"workbenches":null,"mode":"sleep","mode_since":"2026-11-17T01:40:00Z",
-             "armed":[{"scope":"session","id":7,"armed_at":"2026-11-17T01:40:00Z"}],"armed_sessions":[7,9]}
+             "armed":[{"scope":"session","id":7,"armed_at":"2026-11-17T01:40:00Z"}],
+             "armed_sessions":[{"id":7,"target":0},{"id":9,"target":4,"armed_at":"2026-11-17T01:40:00Z"}]}
             """#)
         XCTAssertEqual(armed.mode, .sleep)
         XCTAssertEqual(armed.modeSince, AutomationDates.parse("2026-11-17T01:40:00Z"))
         XCTAssertEqual(armed.armed, [WatchmanArmedEntry(scope: .session, id: 7,
                                                         armedAt: AutomationDates.parse("2026-11-17T01:40:00Z"))])
         XCTAssertTrue(armed.isArmed(session: 9))
+        XCTAssertEqual(armed.armedSessions[9], WatchmanArmedSession(
+            id: 9, target: 4, armedAt: AutomationDates.parse("2026-11-17T01:40:00Z")))
+        XCTAssertEqual(armed.armedSessions[7]?.target, 0)
 
         let off = try decode(#"{"ok":true,"workbenches":[],"mode":"off","mode_since":null,"armed":[],"armed_sessions":[]}"#)
         XCTAssertEqual(off.mode, .off)
@@ -223,7 +228,7 @@ final class WatchmanStatusDecodingTests: XCTestCase {
         XCTAssertEqual(older.mode, .off)
         XCTAssertNil(older.modeSince)
         XCTAssertEqual(older.armed, [])
-        XCTAssertEqual(older.armedSessions, [])
+        XCTAssertEqual(older.armedSessions, [:])
         XCTAssertEqual(try decode(#"{"ok":true,"workbenches":[],"mode":"later"}"#).mode, .off)
         // A session armed itself counts even without `armed_sessions`.
         let direct = try decode(#"{"ok":true,"workbenches":[],"mode":"sleep","armed":[{"scope":"session","id":3}]}"#)

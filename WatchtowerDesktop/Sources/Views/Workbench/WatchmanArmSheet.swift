@@ -50,3 +50,19 @@ struct WatchmanArmSheet: View {
         }
     }
 }
+
+/// Presents the arm sheet over the main window, whichever screen is on it:
+/// a strip, a target panel or the tray asked for it (`WatchmanCenter.sheet`).
+struct WatchmanArmSheetHost: ViewModifier {
+    let center: WatchmanCenter?
+
+    func body(content: Content) -> some View {
+        content.sheet(item: Binding(get: { center?.sheet }, set: { if $0 == nil { center?.sheet = nil } })) { request in
+            WatchmanArmSheet(
+                content: request.content,
+                onCancel: { center?.sheet = nil },
+                onConfirm: { Task { await center?.confirmSheet() } }
+            )
+        }
+    }
+}

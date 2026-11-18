@@ -31,7 +31,7 @@ type StatusReport struct {
 	// ArmedSessions is the live sessions the twin decides for, armed
 	// directly or under an armed target (db.WatchmanArmedSessions), so the
 	// Desktop's session strip need not resolve the target subtree itself.
-	ArmedSessions []int64 `json:"armed_sessions"`
+	ArmedSessions []ArmedSession `json:"armed_sessions"`
 	// DaemonRunning: the daemon that runs the twin is up; when it is not,
 	// nothing decides ("Watchman is not running — the daemon is stopped").
 	DaemonRunning bool `json:"daemon_running"`
@@ -45,6 +45,16 @@ type ArmedEntry struct {
 	ArmedAt string `json:"armed_at"` // RFC 3339 UTC
 }
 
+// ArmedSession is one session the twin decides for: Target is the armed
+// target whose subtree holds it (0 = armed only by its own row; a session
+// under an armed target is returned only by taking the target back), and
+// ArmedAt is that target's arming time, else the session row's.
+type ArmedSession struct {
+	ID      int64  `json:"id"`
+	Target  int64  `json:"target"`
+	ArmedAt string `json:"armed_at"` // RFC 3339 UTC
+}
+
 // ArmedEntries converts arming rows, never nil.
 func ArmedEntries(rows []db.WatchmanArming) []ArmedEntry {
 	out := make([]ArmedEntry, 0, len(rows))
@@ -52,6 +62,36 @@ func ArmedEntries(rows []db.WatchmanArming) []ArmedEntry {
 		out = append(out, ArmedEntry{Scope: a.Scope, ID: a.RefID, ArmedAt: a.ArmedAt.UTC().Format(time.RFC3339)})
 	}
 	return out
+}
+
+// armedSessions lists the armed live sessions with the target that covers
+// each and its arming time; never nil.
+func armedSessions(d *db.DB, arming []db.WatchmanArming) ([]ArmedSession, error) {
+	sessions, err := d.WatchmanArmedSessions()
+	if err != nil {
+		return nil, err
+	}
+	under, err := d.WatchmanSessionsUnderArmedTargets()
+	if err != nil {
+		return nil, err
+	}
+	at := map[string]time.Time{}
+	for _, a := range arming {
+		at[fmt.Sprintf("%s/%d", a.Scope, a.RefID)] = a.ArmedAt
+	}
+	out := make([]ArmedSession, 0, len(sessions))
+	for _, s := range sessions {
+		e := ArmedSession{ID: s.SessionID, Target: under[s.SessionID]}
+		key := fmt.Sprintf("session/%d", s.SessionID)
+		if e.Target != 0 {
+			key = fmt.Sprintf("target/%d", e.Target)
+		}
+		if t, ok := at[key]; ok {
+			e.ArmedAt = t.UTC().Format(time.RFC3339)
+		}
+		out = append(out, e)
+	}
+	return out, nil
 }
 
 // armingMode is Mode over the arming rows: armed when there is any, since
@@ -176,15 +216,12 @@ func Status(ctx context.Context, d *db.DB, workbenchID int64, o StatusOptions) (
 	if err != nil {
 		return StatusReport{}, fmt.Errorf("watchman status: %w", err)
 	}
-	sessions, err := d.WatchmanArmedSessions()
+	armedSessions, err := armedSessions(d, arming)
 	if err != nil {
 		return StatusReport{}, fmt.Errorf("watchman status: %w", err)
 	}
 	rep := StatusReport{OK: true, Workbenches: []WorkbenchStatus{}, Armed: ArmedEntries(arming),
-		ArmedSessions: make([]int64, 0, len(sessions)), DaemonRunning: o.DaemonRunning}
-	for _, s := range sessions {
-		rep.ArmedSessions = append(rep.ArmedSessions, s.SessionID)
-	}
+		ArmedSessions: armedSessions, DaemonRunning: o.DaemonRunning}
 	var since time.Time
 	rep.Mode, since = armingMode(time.Now(), arming)
 	if !since.IsZero() {

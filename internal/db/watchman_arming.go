@@ -190,3 +190,37 @@ func (db *DB) WatchmanArmedSession(sessionID int64) (s ArmedSession, armed bool,
 	}
 	return list[0], true, nil
 }
+
+// WatchmanSessionsUnderArmedTargets maps each live session whose ticket sits
+// in the subtree of an armed target to that target (the oldest-armed one
+// when several cover it): such a session is decided by the twin whatever
+// its own arming row, and only taking the target back returns it.
+func (db *DB) WatchmanSessionsUnderArmedTargets() (map[int64]int64, error) {
+	rows, err := db.Query(`
+		WITH RECURSIVE sub(root, id) AS (
+			SELECT ref_id, ref_id FROM watchman_arming WHERE scope = 'target'
+			UNION
+			SELECT sub.root, t.id FROM targets t JOIN sub ON t.parent_id = sub.id
+		)
+		SELECT ts.id, sub.root
+		FROM terminal_sessions ts
+		JOIN sub ON ts.target_id = sub.id
+		JOIN watchman_arming a ON a.scope = 'target' AND a.ref_id = sub.root
+		WHERE ts.finished_at IS NULL AND ts.` + NotDeletingSQL + ` AND ts.kind <> 'shell'
+		ORDER BY ts.id, a.armed_at, sub.root`)
+	if err != nil {
+		return nil, fmt.Errorf("listing sessions under armed targets: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64]int64{}
+	for rows.Next() {
+		var session, target int64
+		if err := rows.Scan(&session, &target); err != nil {
+			return nil, err
+		}
+		if _, ok := out[session]; !ok {
+			out[session] = target
+		}
+	}
+	return out, rows.Err()
+}

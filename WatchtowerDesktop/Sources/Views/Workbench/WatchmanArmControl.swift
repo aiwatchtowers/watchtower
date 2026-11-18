@@ -38,8 +38,10 @@ struct WatchmanArmControl: View {
         guard let status else { return .unarmed }
         switch scope {
         case let .session(id):
-            if status.armed.contains(where: { $0.scope == .session && $0.id == id }) { return .armed }
-            return status.isArmed(session: id) ? .viaTarget : .unarmed
+            // Under an armed target it stays the twin's whatever its own row
+            // says: Take back here would not return it.
+            if let entry = status.armedSessions[id], entry.target != 0 { return .viaTarget }
+            return status.isArmed(session: id) ? .armed : .unarmed
         case let .target(id):
             return status.isArmed(target: id) ? .armed : .unarmed
         case .allRunning:
@@ -47,9 +49,33 @@ struct WatchmanArmControl: View {
         }
     }
 
+    /// "Sleep since": the session's own arming time (its target's when it
+    /// came with one) or the target row's; else the status's `mode_since`.
+    static func since(_ scope: WatchmanArmScope, in status: WatchmanStatus?) -> Date? {
+        guard let status else { return nil }
+        let own: Date? = switch scope {
+        case let .session(id): status.armedSessions[id]?.armedAt
+        case let .target(id): status.armed.first { $0.scope == .target && $0.id == id }?.armedAt
+        case .allRunning: nil
+        }
+        return own ?? status.modeSince
+    }
+
     private var arming: Arming { Self.arming(scope, in: center.lastStatus) }
     private var busy: Bool { center.armingHere.contains(scope) }
-    private var since: Date? { center.lastStatus?.modeSince }
+    private var since: Date? { Self.since(scope, in: center.lastStatus) }
+    /// The warning lines under a control: the daemon is stopped while it is
+    /// handed over (nothing decides), then the last call's notice.
+    static func noticeLines(arming: Arming, daemon: WatchmanDaemonState, notice: String?) -> [String] {
+        var lines: [String] = []
+        if arming != .unarmed, daemon == .stopped { lines.append(Copy.daemonStopped) }
+        if let notice { lines.append(notice) }
+        return lines
+    }
+
+    private var lines: [String] {
+        Self.noticeLines(arming: arming, daemon: center.daemon, notice: center.armNotices[scope])
+    }
 
     var body: some View {
         Group {
@@ -58,14 +84,16 @@ struct WatchmanArmControl: View {
             case .panel: panel
             }
         }
-        .task(id: scope) { await center.loadIfNeeded(for: scope) }
+        // Each appearance rereads the arming (an arm made elsewhere shows).
+        .task(id: scope) { await center.reread() }
     }
 
     // MARK: - Strip
 
     private var strip: some View {
         HStack(spacing: Spacing.regular) {
-            notice.map { NoticeLine(text: $0).frame(maxWidth: ListLayout.textColumn) }
+            // A notice wins room over the session name, which truncates.
+            if hasNotices { notices.frame(maxWidth: ListLayout.textColumn).layoutPriority(1) }
             switch arming {
             case .armed:
                 Chip(text: Copy.stripArmed(since: since, calendar: calendar), color: Self.tone, dot: true).fixedSize()
@@ -94,7 +122,7 @@ struct WatchmanArmControl: View {
             } else {
                 armedCard(target)
             }
-            notice.map { NoticeLine(text: $0) }
+            notices
         }
     }
 
@@ -140,7 +168,25 @@ struct WatchmanArmControl: View {
         .disabled(busy)
     }
 
-    private var notice: String? { center.armNotices[scope] }
+    /// The lines under the control: the daemon is stopped, the arming could
+    /// not be read (with Retry), the last call's notice.
+    private var hasNotices: Bool {
+        !lines.isEmpty || center.armingReadError != nil
+    }
+
+    @ViewBuilder private var notices: some View {
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            if let error = center.armingReadError {
+                HStack(spacing: Spacing.small) {
+                    NoticeLine(text: Copy.statusReadFailed(error))
+                    Button(Copy.retry) { Task { await center.reread() } }
+                        .buttonStyle(.kitQuiet)
+                        .fixedSize()
+                }
+            }
+            ForEach(lines, id: \.self) { NoticeLine(text: $0) }
+        }
+    }
 
     private static func targetID(_ scope: WatchmanArmScope) -> Int64 {
         if case let .target(id) = scope { return id }

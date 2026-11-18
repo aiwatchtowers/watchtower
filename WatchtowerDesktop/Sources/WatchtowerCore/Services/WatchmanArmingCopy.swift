@@ -50,6 +50,28 @@ package enum WatchmanArmingCopy {
     /// `sidecar_error`: the arming is written; the guard's fallback file
     /// follows at the daemon's next cycle.
     package static let sidecarNote = "Handed to Watchman; its guard file is rewritten at the daemon's next cycle"
+    /// `disarm`'s `sidecar_error`.
+    package static let takeBackSidecarNote = "Taken back; its guard file is rewritten at the daemon's next cycle"
+    /// A verb's stdout that is not its JSON reply.
+    package static let replyUnreadable = "the reply could not be read"
+    /// `arm` exited 0 but its reply could not be read: the status says.
+    package static let rereading = "Watchman's reply could not be read; rereading its state"
+    package static let retry = "Retry"
+
+    /// The controls could not read `watchman status`.
+    package static func statusReadFailed(_ message: String) -> String {
+        "Couldn't read Watchman's state: \(message)"
+    }
+
+    /// What stays under a control after a successful arm: the D21 line when
+    /// analytics was turned on, the warnings, the sidecar note.
+    package static func armedNotice(_ reply: WatchmanArmReply) -> String? {
+        var lines: [String] = []
+        if reply.analyticsTurnedOn { lines.append(analyticsLine) }
+        lines += reply.warnings
+        if !reply.sidecarError.isEmpty { lines.append(sidecarNote) }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
 
     // MARK: Menu bar
 
@@ -87,6 +109,9 @@ package enum WatchmanArmingCopy {
         "Hand \(workbench) to Watchman?"
     }
 
+    /// The tray's sheet: every running session, maybe on several workbenches.
+    package static let sheetTitleAllRunning = "Hand all running sessions to Watchman?"
+
     /// "Learning from your history: ~1 850 decisions, est. 1.6 M tokens".
     package static func historyLine(_ estimate: WatchmanEstimate?) -> String {
         guard let estimate else { return "Learning from your history first" }
@@ -118,8 +143,12 @@ package struct WatchmanArmSheetContent: Equatable, Sendable {
     package let cancel = WatchmanArmingCopy.notNow
 
     package init(workbench: String, reply: WatchmanArmReply) {
+        self.init(title: WatchmanArmingCopy.sheetTitle(workbench: workbench), reply: reply)
+    }
+
+    package init(title: String, reply: WatchmanArmReply) {
         typealias Copy = WatchmanArmingCopy
-        title = Copy.sheetTitle(workbench: workbench)
+        self.title = title
         body = Copy.sheetBody
         var lines: [Line] = []
         if reply.firstTime {

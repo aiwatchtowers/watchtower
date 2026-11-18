@@ -13,13 +13,15 @@ private final class ArmingRunner: CLIRunnerProtocol, @unchecked Sendable {
     private var calls: [[String]] = []
     private var statusJSON: String
     private var replies: [String: CLICapturedResult] = [:]
+    private var statusError: Error?
 
     init(status: String) { statusJSON = status }
 
     var invocations: [[String]] { lock.withLock { calls } }
     /// The arm/disarm calls only, without the status reads.
     var verbs: [[String]] { invocations.filter { $0.dropFirst().first != "status" } }
-    func setStatus(_ json: String) { lock.withLock { statusJSON = json } }
+    func setStatus(_ json: String) { lock.withLock { statusJSON = json; statusError = nil } }
+    func failStatus(_ error: Error) { lock.withLock { statusError = error } }
 
     /// `key`: "check", "arm" or "disarm".
     func reply(_ key: String, _ json: String, exitCode: Int32 = 0, stderr: String = "") {
@@ -27,8 +29,9 @@ private final class ArmingRunner: CLIRunnerProtocol, @unchecked Sendable {
     }
 
     func run(args: [String]) async throws -> Data {
-        lock.withLock {
+        try lock.withLock {
             calls.append(args)
+            if let statusError { throw statusError }
             return Data(statusJSON.utf8)
         }
     }
@@ -49,7 +52,9 @@ final class WatchmanArmingTests: XCTestCase {
     private static let unarmed = #"{"ok":true,"workbenches":[],"mode":"off","mode_since":null,"armed":[],"armed_sessions":[],"daemon_running":true}"#
     private static let sessionArmed = #"""
         {"ok":true,"workbenches":[],"mode":"sleep","mode_since":"2026-11-17T01:40:00Z",
-         "armed":[{"scope":"session","id":5,"armed_at":"2026-11-17T01:40:00Z"}],"armed_sessions":[5],"daemon_running":true}
+         "armed":[{"scope":"session","id":5,"armed_at":"2026-11-17T01:40:00Z"}],
+         "armed_sessions":[{"id":5,"target":0,"armed_at":"2026-11-17T01:40:00Z"}],
+         "daemon_running":true}
         """#
     private static let firstTimeCheck = #"""
         {"ok":true,"armed":[],"first_time":true,"analytics_turned_on":false,"learning_started":false,
@@ -92,7 +97,8 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertNil(center.sheet)
         XCTAssertEqual(runner.verbs.filter { !$0.contains("--check") }, [["watchman", "arm", "--session", "5", "--json"]])
         XCTAssertEqual(WatchmanArmControl.arming(.session(5), in: center.lastStatus), .armed)
-        XCTAssertNil(center.armNotices[.session(5)])
+        // The reply's D21 line stays visible under the control.
+        XCTAssertEqual(center.armNotices[.session(5)], Copy.analyticsLine)
     }
 
     func testArmCallsCLIThenReloads() async throws {
@@ -171,19 +177,39 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertNil(center.sheet)
     }
 
-    func testTrayHandAllRunningCallsAllRunning() async throws {
+    /// The tray's first arm: `arm --all-running --check`, the same sheet
+    /// (the tray then opens the main window), arm only on confirm; with
+    /// nothing to show it arms at once.
+    func testTrayHandAllRunningChecksThenOpensTheSheet() async throws {
         let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", Self.firstTimeCheck)
         runner.reply("arm", #"""
             {"ok":true,"armed":[],"first_time":true,"analytics_turned_on":true,"learning_started":true,
-             "protection_warning":"main is not protected on GitHub — an agent's gh pr merge cannot be stopped here",
-             "hooks_warning":"","sidecar_error":"","error":""}
+             "protection_warning":"","hooks_warning":"","sidecar_error":"","error":""}
             """#)
         let center = await center(runner)
-        await center.handAllRunning()
-        XCTAssertEqual(runner.verbs, [["watchman", "arm", "--all-running", "--json"]])
-        // No sheet from a menu: what it would say stays as the tray's lines.
+        let opened = await center.handAllRunning()
+        XCTAssertTrue(opened, "the tray brings the main window up for the sheet")
+        XCTAssertEqual(runner.verbs, [["watchman", "arm", "--all-running", "--check", "--json"]])
+        let sheet = try XCTUnwrap(center.sheet)
+        XCTAssertEqual(sheet.scope, .allRunning)
+        XCTAssertEqual(sheet.content.title, Copy.sheetTitleAllRunning)
+        XCTAssertTrue(sheet.content.lines.map(\.text).contains(Copy.analyticsLine))
+
+        await center.confirmSheet()
+        XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--all-running", "--json"])
+        XCTAssertEqual(runner.verbs.count, 2)
+        XCTAssertEqual(center.armNotices[.allRunning], Copy.analyticsLine)
+
+        // Learned, no warning: no sheet, armed at once.
+        runner.reply("check", #"{"ok":true,"first_time":false}"#)
+        let again = await center.handAllRunning()
+        XCTAssertFalse(again)
         XCTAssertNil(center.sheet)
-        XCTAssertEqual(center.armNotices[.allRunning], [Copy.analyticsLine, Copy.protectionWarning].joined(separator: "\n"))
+        XCTAssertEqual(Array(runner.verbs.suffix(2)), [
+            ["watchman", "arm", "--all-running", "--check", "--json"],
+            ["watchman", "arm", "--all-running", "--json"]
+        ])
 
         var fired = false
         let tray = TrayMenuContent(
@@ -202,31 +228,124 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertThrowsError(try tray.inspect().find(button: "Going to sleep"))
     }
 
-    /// Strips that appear together share one first status read.
-    func testControlsShareTheFirstRead() async {
+    /// The real reply's warnings and sidecar note stay under any control;
+    /// Take back says when its sidecar was not rewritten.
+    func testArmReplyWarningsShowUnderEveryScope() async throws {
         let runner = ArmingRunner(status: Self.unarmed)
-        let center = WatchmanCenter(runner: runner)
-        await center.loadIfNeeded(for: .session(5))
-        await center.loadIfNeeded(for: .session(6))
-        await center.loadIfNeeded(for: .target(4))
-        XCTAssertEqual(runner.invocations, [["watchman", "status", "--json"]])
-        XCTAssertEqual(center.lastStatus?.mode, .off)
+        runner.reply("arm", #"""
+            {"ok":true,"armed":[],"first_time":false,"protection_warning":"",
+             "hooks_warning":"guard cannot be installed in /tmp/acme","sidecar_error":"disk full","error":""}
+            """#)
+        let center = await center(runner)
+        await center.arm(.session(5))
+        let notice = ["guard cannot be installed in /tmp/acme", Copy.sidecarNote].joined(separator: "\n")
+        XCTAssertEqual(center.armNotices[.session(5)], notice)
+        await center.arm(.target(4))
+        XCTAssertEqual(center.armNotices[.target(4)], notice)
+
+        runner.reply("disarm", #"{"ok":true,"armed":[],"error":"","sidecar_error":"disk full"}"#)
+        await center.disarm(.session(5))
+        XCTAssertEqual(center.armNotices[.session(5)], Copy.takeBackSidecarNote)
+        runner.reply("disarm", #"{"ok":true,"armed":[],"error":"","sidecar_error":""}"#)
+        await center.disarm(.target(4))
+        XCTAssertNil(center.armNotices[.target(4)])
     }
 
-    /// A session started under an armed target after the last read: the
-    /// strip rereads the status once for it.
-    func testSessionUnderArmedTargetRereadsOnce() async throws {
-        let targetArmed = #"""
+    /// Handed over while the daemon is stopped: the armed chip and card say
+    /// nothing decides; an unarmed control does not.
+    func testDaemonStoppedShowsUnderArmedControls() async throws {
+        let stopped = Self.sessionArmed.replacingOccurrences(of: #""daemon_running":true"#, with: #""daemon_running":false"#)
+            .replacingOccurrences(of: #""armed":[{"scope":"session","id":5,"#,
+                                  with: #""armed":[{"scope":"target","id":4,"armed_at":"2026-11-17T01:40:00Z"},"#
+                                      + #"{"scope":"session","id":5,"#)
+        let center = await center(ArmingRunner(status: stopped))
+        XCTAssertEqual(center.daemon, .stopped)
+        typealias Control = WatchmanArmControl
+        for scope in [WatchmanArmScope.session(5), .target(4)] {
+            let arming = Control.arming(scope, in: center.lastStatus)
+            XCTAssertNotEqual(arming, .unarmed)
+            XCTAssertEqual(Control.noticeLines(arming: arming, daemon: center.daemon, notice: nil), [Copy.daemonStopped])
+        }
+        XCTAssertEqual(Control.noticeLines(arming: .unarmed, daemon: .stopped, notice: nil), [])
+        XCTAssertEqual(Control.noticeLines(arming: .viaTarget, daemon: .stopped, notice: "x"), [Copy.daemonStopped, "x"])
+        XCTAssertEqual(Control.noticeLines(arming: .armed, daemon: .running, notice: nil), [])
+    }
+
+    /// A failed first read does not latch: the control shows it with Retry,
+    /// and the next read shows the right state.
+    func testFailedFirstReadRetriesToTheRightState() async throws {
+        let runner = ArmingRunner(status: Self.sessionArmed)
+        runner.failStatus(CLIRunnerError.nonZeroExit(code: 1, stderr: "database is locked"))
+        let center = WatchmanCenter(runner: runner)
+        await center.reread()
+        XCTAssertEqual(center.armingReadError, "database is locked")
+        let control = WatchmanArmControl(center: center, scope: .session(5), workbench: "acme-api", style: .strip)
+        XCTAssertNoThrow(try control.inspect().find(text: Copy.statusReadFailed("database is locked")))
+        XCTAssertNoThrow(try control.inspect().find(button: Copy.retry))
+
+        runner.setStatus(Self.sessionArmed)
+        await center.reread()
+        XCTAssertNil(center.armingReadError)
+        XCTAssertEqual(WatchmanArmControl.arming(.session(5), in: center.lastStatus), .armed)
+        XCTAssertThrowsError(try control.inspect().find(button: Copy.retry))
+    }
+
+    /// An arm made elsewhere (the CLI, another control) shows the next time
+    /// a control appears: every appearance rereads, nothing latches.
+    func testArmMadeElsewhereShowsAfterTheNextAppear() async {
+        let runner = ArmingRunner(status: Self.unarmed)
+        let center = WatchmanCenter(runner: runner)
+        await center.reread()
+        XCTAssertEqual(WatchmanArmControl.arming(.session(5), in: center.lastStatus), .unarmed)
+        runner.setStatus(Self.sessionArmed)
+        await center.reread()
+        XCTAssertEqual(WatchmanArmControl.arming(.session(5), in: center.lastStatus), .armed)
+        XCTAssertEqual(runner.invocations.count, 2)
+    }
+
+    /// A session under an armed target is the target's, even with its own
+    /// row: no Take back (it would not return it).
+    func testSessionWithDirectRowUnderArmedTargetIsViaTarget() async throws {
+        let both = #"""
             {"ok":true,"workbenches":[],"mode":"sleep","mode_since":"2026-11-17T01:40:00Z",
-             "armed":[{"scope":"target","id":4,"armed_at":"2026-11-17T01:40:00Z"}],"armed_sessions":[],"daemon_running":true}
+             "armed":[{"scope":"target","id":4,"armed_at":"2026-11-17T01:40:00Z"},
+                      {"scope":"session","id":9,"armed_at":"2026-11-17T02:10:00Z"}],
+             "armed_sessions":[{"id":9,"target":4,"armed_at":"2026-11-17T01:40:00Z"}],"daemon_running":true}
             """#
-        let runner = ArmingRunner(status: targetArmed)
-        let center = await center(runner)
-        runner.setStatus(targetArmed.replacingOccurrences(of: #""armed_sessions":[]"#, with: #""armed_sessions":[9]"#))
-        await center.loadIfNeeded(for: .session(9))
+        let center = await center(ArmingRunner(status: both))
         XCTAssertEqual(WatchmanArmControl.arming(.session(9), in: center.lastStatus), .viaTarget)
-        await center.loadIfNeeded(for: .session(9))
-        await center.loadIfNeeded(for: .target(4))
-        XCTAssertEqual(runner.invocations.count, 2, "one initial read, one reread for session 9")
+        let control = WatchmanArmControl(center: center, scope: .session(9), workbench: "acme-api", style: .strip)
+        XCTAssertThrowsError(try control.inspect().find(button: Copy.takeBack))
+    }
+
+    /// "Sleep since" is the session's own arming time when the status
+    /// carries it, else `mode_since`.
+    func testSinceIsTheSessionsOwnArmingTime() throws {
+        let status = try WatchmanStatusFixtures.decode(#"""
+            {"ok":true,"workbenches":[],"mode":"sleep","mode_since":"2026-11-17T01:40:00Z",
+             "armed":[{"scope":"session","id":3,"armed_at":"2026-11-17T01:40:00Z"},
+                      {"scope":"session","id":5,"armed_at":"2026-11-17T02:10:00Z"}],
+             "armed_sessions":[{"id":3,"target":0,"armed_at":"2026-11-17T01:40:00Z"},
+                               {"id":5,"target":0,"armed_at":"2026-11-17T02:10:00Z"},{"id":7,"target":0}]}
+            """#)
+        XCTAssertEqual(WatchmanArmControl.since(.session(5), in: status), AutomationDates.parse("2026-11-17T02:10:00Z"))
+        XCTAssertEqual(WatchmanArmControl.since(.session(7), in: status), AutomationDates.parse("2026-11-17T01:40:00Z"))
+    }
+
+    /// `arm` exited 0 but its reply could not be read: say the state is
+    /// being reread (not that it failed), and reread it.
+    func testUnreadableArmReplyRereads() async {
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("arm", "not json")
+        let center = await center(runner)
+        runner.setStatus(Self.sessionArmed)
+        await center.arm(.session(5))
+        XCTAssertEqual(center.armNotices[.session(5)], Copy.rereading)
+        XCTAssertEqual(runner.invocations.last, ["watchman", "status", "--json"])
+        XCTAssertEqual(WatchmanArmControl.arming(.session(5), in: center.lastStatus), .armed)
+
+        runner.reply("check", "not json")
+        await center.handTo(.session(6), workbench: "acme-api")
+        XCTAssertEqual(center.armNotices[.session(6)], Copy.armFailed(Copy.replyUnreadable))
     }
 }

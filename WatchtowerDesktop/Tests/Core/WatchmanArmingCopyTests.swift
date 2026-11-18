@@ -70,13 +70,14 @@ final class WatchmanArmingCopyTests: XCTestCase {
         let off = WatchmanStatus(workbenches: [], daemon: .running)
         XCTAssertEqual(Copy.trayStatus(off), "Watchman · Off")
         let armed = WatchmanStatus(workbenches: [], daemon: .running, mode: .sleep, modeSince: Self.since,
-                                   armed: [WatchmanArmedEntry(scope: .target, id: 4)], armedSessions: [3, 5, 7])
+                                   armed: [WatchmanArmedEntry(scope: .target, id: 4)],
+                                   armedSessions: [3, 5, 7].map { WatchmanArmedSession(id: $0, target: 4) })
         XCTAssertEqual(Copy.trayStatus(armed, calendar: Self.utc), "Watchman · Sleep since 01:40 · 3 sessions")
         let one = WatchmanStatus(workbenches: [], daemon: .unknown, mode: .sleep, modeSince: Self.since,
-                                 armed: [WatchmanArmedEntry(scope: .session, id: 3)], armedSessions: [3])
+                                 armed: [WatchmanArmedEntry(scope: .session, id: 3)], armedSessions: [WatchmanArmedSession(id: 3)])
         XCTAssertEqual(Copy.trayStatus(one, calendar: Self.utc), "Watchman · Sleep since 01:40 · 1 session")
         let stopped = WatchmanStatus(workbenches: [], daemon: .stopped, mode: .sleep, modeSince: Self.since,
-                                     armed: [WatchmanArmedEntry(scope: .session, id: 3)], armedSessions: [3])
+                                     armed: [WatchmanArmedEntry(scope: .session, id: 3)], armedSessions: [WatchmanArmedSession(id: 3)])
         XCTAssertEqual(Copy.trayStatus(stopped), Copy.daemonStopped)
     }
 

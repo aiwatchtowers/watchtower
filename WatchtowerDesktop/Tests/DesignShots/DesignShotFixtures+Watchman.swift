@@ -314,15 +314,27 @@ enum WatchmanArmingShotFixture {
         kept = []
     }
 
-    static func status(armed: Bool, scope: WatchmanArmedEntry.Scope, id: Int64, sessions: Set<Int64>) -> WatchmanStatus {
-        guard armed else { return WatchmanStatus(workbenches: [], daemon: .running) }
-        let since = JournalFixture.at("2026-11-17T01:40:00Z")
-        return WatchmanStatus(workbenches: [], daemon: .running, mode: .sleep, modeSince: since,
-                              armed: [WatchmanArmedEntry(scope: scope, id: id, armedAt: since)], armedSessions: sessions)
+    /// `watchman status --json` with one arming row (none when not armed);
+    /// `sessions` are the armed sessions, under the target when it is one.
+    static func statusJSON(armed: Bool, scope: WatchmanArmedEntry.Scope, id: Int64, sessions: [Int64]) -> String {
+        guard armed else {
+            return #"{"ok":true,"workbenches":[],"mode":"off","mode_since":null,"armed":[],"armed_sessions":[],"daemon_running":true}"#
+        }
+        let since = "2026-11-17T01:40:00Z"
+        let target = scope == .target ? id : 0
+        let entries = sessions.map { #"{"id":\#($0),"target":\#(target),"armed_at":"\#(since)"}"# }
+        return #"{"ok":true,"workbenches":[],"mode":"sleep","mode_since":"\#(since)","#
+            + #""armed":[{"scope":"\#(scope.rawValue)","id":\#(id),"armed_at":"\#(since)"}],"#
+            + #""armed_sessions":[\#(entries.joined(separator: ","))],"daemon_running":true}"#
     }
 
-    private static func center(_ status: WatchmanStatus) -> WatchmanCenter {
-        let center = WatchmanCenter(runner: FakeCLIRunner(), status: status)
+    static func status(armed: Bool, scope: WatchmanArmedEntry.Scope, id: Int64, sessions: [Int64]) -> WatchmanStatus {
+        WatchmanStatusFixtures.status(statusJSON(armed: armed, scope: scope, id: id, sessions: sessions))
+    }
+
+    /// A center that holds the status and answers each reread with it.
+    private static func center(_ json: String) -> WatchmanCenter {
+        let center = WatchmanCenter(runner: FakeCLIRunner(stdout: Data(json.utf8)), status: WatchmanStatusFixtures.status(json))
         kept.append(center)
         return center
     }
@@ -344,7 +356,7 @@ enum WatchmanArmingShotFixture {
             let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
             vm.selectedWorkbenchID = project.id
             vm.terminalSessions[project.id] = [session]
-            vm.watchman = center(status(armed: armed, scope: .session, id: session.id, sessions: [session.id]))
+            vm.watchman = center(statusJSON(armed: armed, scope: .session, id: session.id, sessions: [session.id]))
             kept.append(vm)
             return AnyView(VStack(spacing: 0) {
                 WorkbenchSessionStrip(vm: vm, project: project, pane: .session(session.id), sessionID: session.id,
@@ -382,7 +394,7 @@ enum WatchmanArmingShotFixture {
             vm.load()
             vm.select(Int(group))
             let node = try XCTUnwrap(vm.selectedNode)
-            let watchman = center(status(armed: armed, scope: .target, id: group, sessions: []))
+            let watchman = center(statusJSON(armed: armed, scope: .target, id: group, sessions: []))
             kept.append(vm)
             return AnyView(WorkbenchTargetPanel(
                 vm: vm, node: node, findings: [], titleDraft: .constant(Copy.targetTitle),
