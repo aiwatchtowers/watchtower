@@ -71,6 +71,6 @@ Each item rests on Slack's docs or the spike, not on a live run; the post-merge 
 
 1. Tokens issued before an adopt with `--enable-pkce` keep working after PKCE is turned on.
 2. Slack refuses a non-PKCE loopback sign-in (`auth.Login`) on an app with PKCE on — the reason the build's own app is not adopted before Task 18 (review M1).
-3. Every refresh rotates the refresh token, and whether its 30 days are absolute from the first grant or slide with each refresh (the refresher assumes 30 days from each new refresh token). If Slack instead keeps the refresh token and states no lifetime, an access token it also kept is refreshed again on every read once it has expired (`expiryDue` retries past expiry; owner ruling, verify round 2): harmless while Slack rotates as documented, a refresh per read if it does not.
+3. Every refresh rotates the refresh token, and whether its 30 days are absolute from the first grant or slide with each refresh (the refresher assumes 30 days from each new refresh token). If Slack instead keeps the refresh token and states no lifetime, an access token it also kept is refreshed again on every read once it has expired (`expiryDue` retries past expiry; review ruling, verify round 2): harmless while Slack rotates as documented, a refresh per read if it does not.
 4. Slack accepts PKCE parameters on the authorize URL of an app without PKCE.
 5. End to end on a test workspace: create → connect → a 12-hour refresh → Re-login.
