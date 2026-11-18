@@ -124,20 +124,23 @@ func processMark() originMark {
 
 	// The lookup reads the database: run it outside the lock.
 	trigger, err := lookup(id)
+	resolved := background
+	if err == nil && !BackgroundTrigger(trigger) {
+		resolved = originMark{origin: OriginOwner}
+	}
+	proc.mu.Lock()
+	defer proc.mu.Unlock()
+	if proc.runID != raw {
+		// Another caller resolved the marker (or InitProcess ran) meanwhile:
+		// its answer is the process default now.
+		return proc.mark
+	}
 	if err != nil {
 		// Not cached: the next call retries.
 		logf("aiconsent: cannot read the trigger of automation run %d (%v); its AI calls run as background", id, err)
 		return background
 	}
-	resolved := background
-	if !BackgroundTrigger(trigger) {
-		resolved = originMark{origin: OriginOwner}
-	}
-	proc.mu.Lock()
-	if proc.runID == raw { // InitProcess did not run meanwhile
-		proc.runID, proc.mark = "", resolved
-	}
-	proc.mu.Unlock()
+	proc.runID, proc.mark = "", resolved
 	return resolved
 }
 

@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -93,6 +95,37 @@ func TestOrigin_AutomationMarkerTakesRunTrigger(t *testing.T) {
 				t.Fatalf("logged %q, want %d lines", *lines, wantLines)
 			}
 		})
+	}
+}
+
+// A caller whose lookup fails after another caller resolved the marker
+// returns the resolved origin, not background.
+func TestOrigin_FailedLookupReturnsAResolvedMark(t *testing.T) {
+	resetForTest(t)
+	captureLog(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	SetRunTriggerLookup(func(int64) (string, error) {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-release
+			return "", errors.New("db busy")
+		}
+		return "manual", nil
+	})
+	InitProcess("mcp", envOf(map[string]string{RunMarkerEnv: "7"}))
+	slow := make(chan Origin)
+	go func() {
+		o, _ := OriginOf(context.Background())
+		slow <- o
+	}()
+	<-entered
+	if o, _ := OriginOf(context.Background()); o != OriginOwner {
+		t.Fatalf("the resolving caller got %v, want owner", o)
+	}
+	close(release)
+	if o := <-slow; o != OriginOwner {
+		t.Fatalf("the caller whose lookup failed got %v, want the resolved owner", o)
 	}
 }
 
@@ -229,7 +262,7 @@ func TestOverrideHookOnlyInTests(t *testing.T) {
 		}
 		rel, _ := filepath.Rel(root, path)
 		for _, imp := range f.Imports {
-			if strings.Trim(imp.Path.Value, `"`) == helperPath {
+			if ip, err := strconv.Unquote(imp.Path.Value); err == nil && ip == helperPath {
 				offenders = append(offenders, rel+" imports aiconsenttest")
 			}
 		}
