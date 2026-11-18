@@ -242,7 +242,7 @@ final class PendingOverlayTests: XCTestCase {
         let moved = shown(try replica(pending: try store.pendingActions()), book, at: t0.addingTimeInterval(0.3))
         try await writer.setStatus(.todo, on: try XCTUnwrap(moved.targets.first { $0.id == 416 }))
 
-        XCTAssertFalse(book.overlays.contains { $0.actionID == first }, "the older write to the field went")
+        XCTAssertEqual(book.overlays.last?.expected, .status(.todo), "the newest write is the one shown")
         let back = shown(try replica(pending: try store.pendingActions()), book, at: t0.addingTimeInterval(0.5))
         XCTAssertEqual(back.targets.first { $0.id == 416 }?.status, .todo)
     }
@@ -295,8 +295,7 @@ final class PendingOverlayTests: XCTestCase {
         XCTAssertEqual(try status(), .todo, "and on the next pass, while the save runs")
         await gate.release()
         try await saving.value
-        XCTAssertFalse(book.overlays.contains { $0.actionID == first }, "queued: the older write is gone for good")
-        XCTAssertEqual(try status(), .todo)
+        XCTAssertEqual(try status(), .todo, "queued: still Todo, the older write waits unseen for its slice")
 
         // Again, with a save that throws: In progress comes back.
         try await writer.setStatus(.inProgress, on: try XCTUnwrap(try replica().targets.first { $0.id == 416 }))
@@ -310,6 +309,136 @@ final class PendingOverlayTests: XCTestCase {
             XCTFail("the save threw")
         } catch is SaveFailed {}
         XCTAssertEqual(try status(), .inProgress)
+    }
+
+    // MARK: - Several writes to one field (fix round 4)
+
+    /// Target 416 (Todo in the replica) as the board shows it.
+    private func shownStatus(_ book: OverlayBook, _ snapshot: WorkbenchReplicaSnapshot, after seconds: TimeInterval) -> WorkbenchTargetStatus? {
+        shown(snapshot, book, at: t0.addingTimeInterval(seconds)).targets.first { $0.id == 416 }?.status
+    }
+
+    /// In progress (a), then back to Todo (b), both queued.
+    private func reversal() -> OverlayBook {
+        let book = book()
+        status(book, "a", on: 416, .inProgress)
+        status(book, "b", on: 416, .todo)
+        return book
+    }
+
+    /// The replica still shows Todo, the reversal's own value: that never clears it while In progress is on its
+    /// way, so the card does not flicker when that slice comes.
+    func testAReversalHoldsUntilTheOlderWriteIsSettled_sliceFirst() throws {
+        let book = reversal()
+        XCTAssertEqual(shownStatus(book, try replica(), after: 0.1), .todo)
+        XCTAssertEqual(book.reconcile(with: try replica(), now: t0.addingTimeInterval(0.1)).map(\.actionID), ["b"], "only the newest shows")
+
+        // The older write's slice: the reversal still covers it.
+        let first = try replica(targets: set(416, status: .inProgress))
+        XCTAssertEqual(shownStatus(book, first, after: 0.4), .todo)
+        XCTAssertEqual(book.overlays.map(\.actionID), ["b"])
+        XCTAssertEqual(shownStatus(book, first, after: 0.5), .todo)
+
+        // Its own slice: done.
+        XCTAssertEqual(shownStatus(book, try replica(), after: 0.9), .todo)
+        XCTAssertTrue(book.overlays.isEmpty)
+    }
+
+    /// The same when the older write's echo comes after the reversal is queued, before or after its slice, and
+    /// when both echoes beat both slices.
+    func testAReversalHoldsUntilTheOlderWriteIsSettled_echoes() throws {
+        let inProgress = try replica(targets: set(416, status: .inProgress))
+
+        let echoFirst = reversal()
+        XCTAssertEqual(shownStatus(echoFirst, try replica(), after: 0.1), .todo)
+        echoFirst.receiveEcho(echo("a", .boardTargetStatus, entity: 416), now: t0.addingTimeInterval(0.2))
+        XCTAssertEqual(shownStatus(echoFirst, try replica(), after: 0.3), .todo)
+        XCTAssertEqual(echoFirst.overlays.map(\.actionID), ["a", "b"], "the echo alone settles nothing")
+        XCTAssertEqual(shownStatus(echoFirst, inProgress, after: 0.4), .todo)
+        XCTAssertEqual(shownStatus(echoFirst, try replica(), after: 0.9), .todo)
+        XCTAssertTrue(echoFirst.overlays.isEmpty)
+
+        let sliceFirst = reversal()
+        XCTAssertEqual(shownStatus(sliceFirst, inProgress, after: 0.2), .todo)
+        sliceFirst.receiveEcho(echo("a", .boardTargetStatus, entity: 416), now: t0.addingTimeInterval(0.3))
+        XCTAssertEqual(shownStatus(sliceFirst, inProgress, after: 0.4), .todo)
+        XCTAssertEqual(shownStatus(sliceFirst, try replica(), after: 0.9), .todo)
+        XCTAssertTrue(sliceFirst.overlays.isEmpty)
+
+        let bothEchoes = reversal()
+        XCTAssertEqual(shownStatus(bothEchoes, try replica(), after: 0.1), .todo)
+        bothEchoes.receiveEcho(echo("a", .boardTargetStatus, entity: 416), now: t0.addingTimeInterval(0.2))
+        bothEchoes.receiveEcho(echo("b", .boardTargetStatus, entity: 416), now: t0.addingTimeInterval(0.3))
+        XCTAssertEqual(shownStatus(bothEchoes, try replica(), after: 0.35), .todo)
+        XCTAssertEqual(bothEchoes.overlays.map(\.actionID), ["a", "b"])
+        XCTAssertEqual(shownStatus(bothEchoes, inProgress, after: 0.4), .todo)
+        XCTAssertEqual(shownStatus(bothEchoes, try replica(), after: 0.9), .todo)
+        XCTAssertTrue(bothEchoes.overlays.isEmpty)
+    }
+
+    /// The newer save throws while the older write is on its way: In progress shows again. Another writer then
+    /// moves the card to Done; once In progress is settled (its echo, then the entity's next record) nothing of it
+    /// is left over the replica.
+    func testARolledBackReversalNeverLeavesAStaleValue() throws {
+        let book = reversal()
+        XCTAssertEqual(shownStatus(book, try replica(), after: 0.1), .todo)
+        book.remove(actionID: "b")
+        XCTAssertEqual(shownStatus(book, try replica(), after: 0.2), .inProgress)
+
+        let done = try replica(targets: set(416, status: .done))
+        XCTAssertEqual(shownStatus(book, done, after: 0.3), .inProgress, "not applied yet: still on its way")
+        book.receiveEcho(echo("a", .boardTargetStatus, entity: 416), now: t0.addingTimeInterval(0.4))
+        XCTAssertEqual(shownStatus(book, done, after: 0.5), .inProgress)
+        let later = try replica { targets in
+            targets = targets.map { $0.id == 416 ? $0.overlaid(status: .done, priority: $0.priority == .high ? .low : .high) : $0 }
+        }
+        XCTAssertEqual(shownStatus(book, later, after: 0.6), .done)
+        XCTAssertTrue(book.overlays.isEmpty)
+    }
+
+    /// The older write is settled while a newer one covers it (its slice came during the newer save): a rollback
+    /// brings nothing back over what the replica shows by then.
+    func testAWriteSettledWhileCoveredIsNotRestoredByARollback() throws {
+        let book = reversal()
+        XCTAssertEqual(shownStatus(book, try replica(targets: set(416, status: .inProgress)), after: 0.2), .todo)
+        let done = try replica(targets: set(416, status: .done))
+        XCTAssertEqual(shownStatus(book, done, after: 0.3), .todo)
+        book.remove(actionID: "b")
+        XCTAssertEqual(shownStatus(book, done, after: 0.4), .done)
+        XCTAssertTrue(book.overlays.isEmpty)
+    }
+
+    /// The newest write is refused while an older one is on its way: the older one shows again.
+    func testARefusedNewestWriteShowsTheOlderOne() throws {
+        let book = reversal()
+        XCTAssertEqual(shownStatus(book, try replica(), after: 0.1), .todo)
+        book.receiveEcho(echo("b", .boardTargetStatus, entity: 416, .failed), now: t0.addingTimeInterval(0.2))
+        XCTAssertEqual(shownStatus(book, try replica(), after: 0.3), .inProgress)
+        XCTAssertEqual(book.overlays.map(\.actionID), ["a"])
+        XCTAssertEqual(shownStatus(book, try replica(targets: set(416, status: .inProgress)), after: 0.5), .inProgress)
+        XCTAssertTrue(book.overlays.isEmpty)
+    }
+
+    /// Three taps; the middle save throws, then the last: each time the newest write left shows.
+    func testOfThreeWritesTheNewestLeftShows() throws {
+        let book = reversal()
+        status(book, "c", on: 416, .done)
+        XCTAssertEqual(shownStatus(book, try replica(), after: 0.1), .done)
+        book.remove(actionID: "b")
+        XCTAssertEqual(shownStatus(book, try replica(), after: 0.2), .done)
+        book.remove(actionID: "c")
+        XCTAssertEqual(shownStatus(book, try replica(), after: 0.3), .inProgress)
+    }
+
+    /// The tower applies a field's writes in order: the newer write's `applied` echo covers an older write whose
+    /// own echo never came, so when the newer one runs out of time the older one is not shown in its place.
+    func testAnAppliedNewerWriteTakesTheOlderOnesWithIt() throws {
+        let book = reversal()
+        status(book, "c", on: 416, .done)
+        book.receiveEcho(echo("c", .boardTargetStatus, entity: 416), now: t0.addingTimeInterval(0.2))
+        XCTAssertEqual(shownStatus(book, try replica(), after: 29), .done)
+        XCTAssertEqual(shownStatus(book, try replica(), after: 31), .todo)
+        XCTAssertTrue(book.overlays.isEmpty)
     }
 
     /// Fix round 2, 2: the first of two identical comments is confirmed and done; its record stays its own, so the

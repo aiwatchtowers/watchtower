@@ -131,7 +131,6 @@ final class AskAnswerer {
                 overlays?.remove(actionID: id)
                 throw error
             }
-            if let overlay { overlays?.supersede(by: overlay) }
         }
         guard sent else { return false }
         for id in stale {

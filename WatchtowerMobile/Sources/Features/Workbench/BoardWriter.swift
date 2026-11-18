@@ -247,7 +247,6 @@ final class BoardWriter {
                 if overlay != nil { overlays?.remove(actionID: id) }
                 throw error
             }
-            if let overlay { overlays?.supersede(by: overlay) }
         }
     }
 
