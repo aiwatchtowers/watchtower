@@ -566,7 +566,7 @@ skill, would make every later `integrate` a risk to the owner's own setup.
 
 **Locked since:** 2026-09-29
 
-*2026-11-18 amendment (multi-folder workbench, spec `docs/superpowers/specs/2026-11-18-multi-folder-workbench-design.md` §6.1, §6.13, §8; **owner approved in ask #1545**):* the install runs in every folder of the bench — on `workbench folder add` and `locate`, on `workbench resync`, and after a merge (the moved folders and their sessions' worktrees get the bench's id) — with the same never-overwrite rules: the owner's content is kept, a merged bench's install is replaced but the owner's edits stay. The launch backstop (`workbench session ensure-install`, `internal/sessionstart/install_backstop.go`) reinstalls only when the folder is installed for another workbench id, under the same rules.
+*2026-11-18 amendment (multi-folder workbench, spec `docs/superpowers/specs/2026-11-18-multi-folder-workbench-design.md` §6.1, §6.13, §8; **owner approved in ask #1545**):* the install runs in every folder of the bench — on `workbench folder add` and `locate`, on `workbench resync`, and after a merge (the moved folders and their sessions' worktrees get the bench's id) — with the same never-overwrite rules: the owner's content is kept, a merged bench's install is replaced but the owner's edits stay. The launch backstop (`workbench session ensure-install`, `internal/sessionstart/install_backstop.go`) repairs a place whose install names any other workbench id, even beside the row's own, under the same rules; a place with only the row's install, or none, is left alone. The post-merge reinstall covers only the moved folders and the still-existing worktrees of the merged bench's sessions.
 
 ## PROJ-05 — a workbench parent's status never lags its children
 

@@ -363,7 +363,7 @@ read from every folder's `.watchtower/automations`; a duplicate recipe name is s
 Putting on the bench a folder that belongs to another bench B (from Put on the Bench… or a
 suggestion card) offers to **merge B into this bench A** instead of refusing.
 
-Confirmation: title `Merge “<B>” into “<A>”?`, text `<B>'s board (<n> targets), asks and
+Confirmation: title `Merge “<B>” into “<A>”?`, text `<B>'s board (<n> targets; `1 target` for one), asks and
 sessions move to <A>, and <B> leaves the workbench list. Folders that move: <list>.`, buttons
 `Cancel` · `Merge` (primary). Refused while B has a live session (title `Can’t merge “<B>” yet`,
 text `<n> sessions are running in <B>. Finish them first.` / singular, `OK`) — a running agent's
@@ -419,9 +419,21 @@ The tasks named these where the spec gave no text; each lives in a presentation 
   The ask kind's label is `Folder`.
 - **Work on It (§6.4).** A target whose folder left the bench starts in the home folder with the
   notice `Started in <home>: the target's folder <folder> left the bench.`
-- **Merge (§6.13).** A merge that fails after the confirmation: `Couldn’t merge “<B>”: <reason>`.
-  The launch backstop is `workbench session ensure-install --session S` (it reinstalls only when
-  the installed workbench id differs from the row's, logging `install_mismatch`).
+- **Merge (§6.13).** A merge that fails after the confirmation: `Couldn’t merge “<B>”: <reason>`;
+  when the bench it names is gone meanwhile the reason is `that workbench is not on the workbench
+  list any more.` A merge whose data moved but a later step failed: `Merged “<B>”, but <steps>
+  failed.`, the steps `moving its target images` and `updating search` joined by ` and ` (a failed
+  reinstall shows on its folder's install icon instead). The confirmation says `1 target` for one.
+  A suggestion card's `other_bench` may be stale: Merge Benches… (like Put on Bench) first resolves
+  the folder's bench again through `workbench folder add` — on another bench it offers the merge
+  for that bench; free or already here, the folder is simply on the bench and the agent is told; a
+  filed `other_bench` naming the ask's own bench shows the plain card. The merge is refused
+  (`sessions_running`) while any session of B was active at the transaction's snapshot, a resumed
+  one included. The post-merge reinstall covers only the moved folders and the still-existing
+  worktrees of B's moved sessions. The launch backstop is `workbench session ensure-install
+  --session S`: it repairs a place whose install names any other workbench id, even beside the
+  row's own (removing the installs of ids whose workbench is gone, putting the row's in), logging
+  `install_mismatch`; a place with only the row's install, or none, is left alone.
 - **Feed (§6.6).** A refused or failed tool call is no success bubble: `↗ To “<title>” — not sent:
   <error>`, `↗ Sub-session “<title>” not started: <error>`; a start whose result is not read yet:
   `↗ Sub-session “<title>” starting · <folder>`; a started one's body `Brief sent.` A waiting

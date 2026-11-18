@@ -76,14 +76,15 @@ A Codex agent is not reminded, so it suggests a folder only when it sees the nee
 
 ### Merge two benches
 
-If the folder you add already belongs to another bench, Watchtower offers **Merge “<B>” into “<A>”?** instead. **Merge** moves that bench's board, asks, sessions and folders into this one, and it leaves the workbench list. Its board columns and its **Never for This Folder** choices are dropped; each target lands in this board's first column for its status. On a suggestion card the same choice reads **Merge Benches…**.
+If the folder you add already belongs to another bench, Watchtower offers **Merge “<B>” into “<A>”?** instead. **Merge** moves that bench's board, asks, sessions and folders into this one, and it leaves the workbench list. Its board columns and its **Never for This Folder** choices are dropped; each target lands in this board's first column for its status. On a suggestion card the same choice reads **Merge Benches…**; Watchtower checks first which bench the folder is on now. While a session of the other bench runs, the merge waits with **Can’t merge “<B>” yet**.
 
 ## When it's empty or wrong
 
 - **Git unavailable** or **Not a repository** on a root. The folder works for reading and sessions; branch features are off there.
 - **The install icon on a root.** Setting the folder up failed. Press **Retry**; until then sessions refuse to start there with **Install Watchtower in <name> first**.
 - **Can’t remove <name> from the bench** or **Can’t merge “<B>” yet.** Sessions still run there. Finish them, then try again.
-- **Couldn’t put <name> on the bench: …**, **Couldn’t locate <name>: …** or **Couldn’t merge “<B>”: …** The reason follows the colon.
+- **Couldn’t put <name> on the bench: …**, **Couldn’t locate <name>: …** or **Couldn’t merge “<B>”: …** The reason follows the colon. **that workbench is not on the workbench list any more.** means the other bench was deleted or merged meanwhile.
+- **Merged “<B>”, but … failed.** The board, asks and sessions moved; only moving its target images or updating search failed. A folder whose setup failed shows the install icon with **Retry**.
 - **An agent's message is in the prompt.** It was typed but not sent. Click **Show in Terminal** and press Return. With a session started before an update, **Dismiss** clears the note.
 - **⏸ Message to … is waiting** in Workchat. The other session is busy or at a prompt; the message goes when it can.
 
