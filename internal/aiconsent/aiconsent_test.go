@@ -394,3 +394,21 @@ func TestCurrent_SingleCaseVariantReads(t *testing.T) {
 		t.Fatalf("got %+v, want allowed by the owner", s)
 	}
 }
+
+func TestCheckUnambiguous(t *testing.T) {
+	for _, ok := range []string{
+		"", "a: 1\n", "ai: {background_runs: allowed}\n", "AI: {Background_Runs: paused}\n", "not: [yaml\n",
+	} {
+		if err := CheckUnambiguous([]byte(ok)); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"AI: {provider: claude}\nai: {background_runs: allowed}\n",
+		"ai: {background_runs: paused, Background_Runs: allowed}\n",
+	} {
+		if err := CheckUnambiguous([]byte(bad)); !errors.Is(err, ErrAmbiguousConfig) {
+			t.Errorf("%q: got %v, want ErrAmbiguousConfig", bad, err)
+		}
+	}
+}

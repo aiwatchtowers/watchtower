@@ -188,6 +188,32 @@ func lookupFold(m map[string]any, key string) (v any, ok bool) {
 	return found, true
 }
 
+// ErrAmbiguousConfig refuses a config.yaml write while the file holds the
+// background AI answer's section or key more than once in different case:
+// viper would fold them into one and could persist an answer the owner never
+// gave (fail closed, #1886).
+var ErrAmbiguousConfig = errors.New("config.yaml sets ai or ai.background_runs more than once in different case")
+
+// CheckUnambiguous reports ErrAmbiguousConfig (wrapped with the key) when
+// data, a config.yaml's bytes, holds `ai` or `ai.background_runs` more than
+// once without regard to case. Bytes that do not parse are not its concern
+// (the reader reports them): nil.
+func CheckUnambiguous(data []byte) error {
+	var root map[string]any
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return nil
+	}
+	ai, ok := lookupFold(root, "ai")
+	if !ok {
+		return fmt.Errorf("%w: fix the duplicate ai section first", ErrAmbiguousConfig)
+	}
+	aiMap, _ := ai.(map[string]any)
+	if _, ok := lookupFold(aiMap, "background_runs"); !ok {
+		return fmt.Errorf("%w: fix the duplicate ai.background_runs key first", ErrAmbiguousConfig)
+	}
+	return nil
+}
+
 func ambiguousMsg(key, path string) string {
 	return fmt.Sprintf("aiconsent: %s appears more than once in %s (keys differing only in case); background AI reads as paused", key, path)
 }

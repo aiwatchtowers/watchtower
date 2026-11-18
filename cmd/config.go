@@ -18,6 +18,7 @@ import (
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/auth"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/config"
 	"watchtower/internal/hub"
 	"watchtower/internal/providers"
@@ -523,6 +524,15 @@ func readConfigForWrite(configPath string) (*viper.Viper, error) {
 func writeConfigAtomic(lk *config.WriteLock, v *viper.Viper, configPath string) error {
 	if !lk.Covers(configPath) {
 		return fmt.Errorf("writing config %s: config write lock not held for this path", configPath)
+	}
+	// Viper folded keys that differ only in case when it read the file: an
+	// ambiguous background AI answer is refused, never persisted folded.
+	if raw, err := os.ReadFile(configPath); err == nil {
+		if err := aiconsent.CheckUnambiguous(raw); err != nil {
+			return fmt.Errorf("writing config %s: %w", configPath, err)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("reading config %s: %w", configPath, err)
 	}
 	dir := filepath.Dir(configPath)
 

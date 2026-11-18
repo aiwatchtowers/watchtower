@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/config"
 )
 
@@ -447,4 +448,17 @@ func TestEnablePhase_MissingConfigStartsEmpty(t *testing.T) {
 			}
 		})
 	}
+}
+
+// #1886 (fail closed): a Viper-based write of a config.yaml that holds the
+// ai section twice in different case is refused, never written folded.
+func TestSetConfigKey_RefusesAmbiguousBackgroundAnswer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := "AI:\n  provider: claude\nai:\n  background_runs: allowed\n"
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	err := setConfigKey(path, "digest.enabled", true)
+	require.ErrorIs(t, err, aiconsent.ErrAmbiguousConfig)
+	got, rerr := os.ReadFile(path)
+	require.NoError(t, rerr)
+	assert.Equal(t, body, string(got), "the file is left as it was")
 }
