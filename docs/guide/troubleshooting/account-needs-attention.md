@@ -23,6 +23,8 @@ The service revoked or expired the sign-in (a password change, an admin removing
 4. **Email (IMAP, Outlook) and CalDAV or ICS:** these rows have no **Re-login**. Remove the account and add it again, using SSL or STARTTLS for mail and an https URL for CalDAV.
    **Known issue:** removing a Google, Email or Calendar account deletes the mail or events synced from it, though the dialog says they are kept. Before you remove one, make sure you can live without the old mail or events; adding the account again syncs recent mail and events from the server again, and older mail returns through [history backfill](../concepts/history-backfill.md). Slack and Jira keep their data. See [Known issues](known-issues.md).
 
+5. **A row that says "Re-login needed — …"** (Google, Jira, Linear, Outlook): the app it signed in through changed or is unknown here. For "<company> changed its app", press **Re-login**. For "open the new link" or "open your company's link", press **Paste a company code** and paste your company's current code ([company setup](../start/company-setup.md)). A Jira row "The API token stopped working" takes **Paste a new token**. The data stays in each case.
+
 A row that says **Data deleted** (Slack, Google, Jira or Linear) is fixed the same way, with **Re-login**; the account then syncs again from scratch. See [My data was deleted](../concepts/revoked-access.md#my-data-was-deleted).
 
 ## Slack is signed in to a different workspace

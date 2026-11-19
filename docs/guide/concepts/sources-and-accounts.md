@@ -77,6 +77,18 @@ A source your company's profile forbids is listed as **Blocked by your organizat
 
 Use **Reconnect Slack** or **Re-login** on the row (**Move to Full** on an account of the retiring shared Slack app). Your data stays and syncing resumes. More in [Troubleshooting](../troubleshooting/README.md).
 
+## Whose app an account signs in through
+<!-- learn: none -->
+
+Every account signs in through an app: your company's, from its [company setup](../start/company-setup.md); your own (your own Google project, an Atlassian API token, a Linear API key); or one of Watchtower's shared apps. Each service's page in **Connections** groups its accounts that way, company by company.
+
+- **Google:** Watchtower's shared app connects Calendar only (**Connect Google Calendar**). Gmail needs your company's Google project or your own (**Use my own Google project**). A Gmail account already on the shared app keeps syncing until Google stops its sign-in; until then the Google page says "Gmail is leaving Watchtower's shared Google app".
+- **Jira and Confluence:** Watchtower's shared Atlassian app is retired, with no grace period. Its sites show "Watchtower's shared Atlassian app is retired" and sign in again through your company's Atlassian app or with an API token ([Jira and Linear](../features/jira-and-linear.md)). Their data stays meanwhile.
+- **Linear and Outlook:** Watchtower's own apps still connect them; a company setup can bring the company's own instead.
+- **Slack:** through your workspace's own app ([Slack Full](../features/slack-full.md)).
+
+A row that says "Re-login needed — open your company's link" signed in through an app this Watchtower no longer knows. Paste your company's code or open its link; your data stays meanwhile.
+
 ## What removing an account does
 
 It depends on the source. **Remove** always stops syncing and deletes the sign-in from your Mac.
@@ -97,6 +109,7 @@ With none connected, Briefings, Day Plan and Inbox say "Connect Slack, Google, J
 ## Related
 
 - [Set up Watchtower](../start/setup.md)
+- [Set up Watchtower for your company](../start/company-setup.md)
 - [History backfill](history-backfill.md): what happens to a source's older data after you connect it.
 - [Privacy](privacy.md)
 

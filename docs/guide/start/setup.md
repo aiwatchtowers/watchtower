@@ -77,6 +77,7 @@ Most tabs are empty at first. Each says what will land there and when, instead o
 
 - [How Watchtower works](../concepts/how-watchtower-works.md): what the background sync does after setup.
 - [Sources and accounts](../concepts/sources-and-accounts.md): connecting more later.
+- [Set up Watchtower for your company](company-setup.md): your company's apps, a link or a code for colleagues.
 - [Your first week](first-week.md)
 
 For developers: [docs/features/onboarding-v2.md](../../features/onboarding-v2.md)

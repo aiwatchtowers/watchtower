@@ -86,6 +86,8 @@ with `make periphery-baseline` and explain in the release notes why.
 
 ## Step 6: Build
 
+First check the build profile: a public release must not set `WATCHTOWER_JIRA_CLIENT_ID/SECRET` (our shared Atlassian app is retired, company setup D4, D15 amended, ask #1600). `scripts/build-app.sh` refuses such a release (`shared-jira-check`); remove the two values from `.env` (keep them only for `--dev` builds). A corp-flavored build needs `BUILD_COMPANY_NAME` in `.env.corp` for its company bridge.
+
 Run the build via Makefile (this ensures `.env` is loaded and OAuth credentials are injected via ldflags):
 ```bash
 make app VERSION=<version>
