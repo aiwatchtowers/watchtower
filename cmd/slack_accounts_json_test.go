@@ -170,6 +170,24 @@ func TestSlackAccountsJSON_Relogin(t *testing.T) {
 	}
 }
 
+// The one-release Task 18 corp build (ask #1632) keeps the corp app's client
+// id without its secret: an old row without a client id is backfilled to the
+// corp id (A17), the build has no built-in app, and the row re-logs in
+// through the PKCE connect flow.
+func TestSlackAccountsJSON_CorpIDWithoutSecret(t *testing.T) {
+	setSlackBuild(t, jsonCorpID, "", "")
+	configPath, _ := slackAccountsWorkspace(t, "", jsonCorpID)
+	doc := runSlackAccountsJSON(t, configPath)
+	assert.Equal(t, false, doc["builtin_app"])
+	accounts := jsonAccounts(t, doc)
+	require.Len(t, accounts, 2)
+	for _, a := range accounts {
+		assert.Equal(t, jsonCorpID, a["client_id"], "backfilled from the id alone")
+		assert.Equal(t, false, a["shared_app"])
+		assert.Equal(t, "connect", a["relogin"])
+	}
+}
+
 // The shared-app flag follows the client id alone: the build flavor never
 // changes it, and a removed row is never shared.
 func TestSlackAccountsJSON_SharedAppByClientIDOnly(t *testing.T) {
