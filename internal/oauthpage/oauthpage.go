@@ -136,7 +136,7 @@ func CheckApp() string {
 
 // The company link pages' texts (screens spec §3.4). The Desktop's
 // CompanySetupMockCopy page constants equal them; cmd's
-// TestCompanyPages_Fixture writes them to cmd/testdata/company_pages.json.
+// TestCompanyPages_Fixture writes them to cmd/testdata/company/pages.json.
 const (
 	CompanyOpenHeading    = "Continue in Watchtower"
 	CompanyRefusedHeading = "This link does not work"

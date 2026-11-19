@@ -28,7 +28,7 @@ import (
 )
 
 // companyPagesGolden is the page-text fixture the Desktop's copy tests read.
-var companyPagesGolden = filepath.Join("testdata", "company_pages.json")
+var companyPagesGolden = filepath.Join("testdata", "company", "pages.json")
 
 // Sample secrets: a test fails if any of them reaches a log.
 const (
