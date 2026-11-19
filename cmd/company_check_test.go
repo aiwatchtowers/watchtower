@@ -156,6 +156,8 @@ func TestCheckSignInCreatesCompanyAccount(t *testing.T) {
 	assert.Equal(t, "https://acme.atlassian.net", res.Site)
 	assert.Equal(t, "a@example.com", res.Email)
 	assert.True(t, res.Checked)
+	require.NotNil(t, res.Confluence)
+	assert.True(t, *res.Confluence, "the grant carries the Confluence scopes")
 
 	accounts, err := h.database.ListJiraAccounts()
 	require.NoError(t, err)
@@ -477,6 +479,26 @@ func TestCompanyCheck_GoogleGrantTooNarrowStoresNothing(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, accounts, 1)
 	assert.Empty(t, accounts[0].CompanySlug)
+}
+
+// An Atlassian app without the Confluence API: the sign-in retries Jira
+// only, the check passes, and its answer says Confluence is off (the
+// wizard's "Confluence off").
+func TestCompanyCheck_AtlassianConfluenceRefusedIsOff(t *testing.T) {
+	h := newJiraAddHarness(t, nil)
+	stubJiraMyself(t, "557058:aaaa")
+	jiraLogin = func(_ context.Context, _ jira.JiraOAuthConfig, _ io.Writer, opts ...jira.LoginOptions) (*jira.OAuthToken, error) {
+		if opts[0].WithConfluence {
+			return nil, jira.ErrScopeRefused
+		}
+		return &jira.OAuthToken{AccessToken: "a", RefreshToken: "r", Scope: jira.JiraScopes}, nil
+	}
+
+	res := runSignInCheck(t, h.cfg, h.database, "atlassian", companyCheckInput{Company: "Acme", Atlassian: checkAtlassianBlock()}, false, "")
+
+	require.Equal(t, checkOK, res.Result, res.Message)
+	require.NotNil(t, res.Confluence)
+	assert.False(t, *res.Confluence)
 }
 
 // Re-logging an Atlassian account that uses Confluence write asks for the

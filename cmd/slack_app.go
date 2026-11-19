@@ -130,11 +130,13 @@ func readConfigToken(in io.Reader) (string, error) {
 
 // slackAppResultJSON is the final line of a setup verb's --json output.
 type slackAppResultJSON struct {
-	Result      string `json:"result"`
-	TeamID      string `json:"team_id"`
-	TeamName    string `json:"team_name"`
-	AppID       string `json:"app_id"`
-	AppName     string `json:"app_name,omitempty"`
+	Result   string `json:"result"`
+	TeamID   string `json:"team_id"`
+	TeamName string `json:"team_name"`
+	AppID    string `json:"app_id"`
+	AppName  string `json:"app_name,omitempty"`
+	// AppTeamID: wrong_workspace — the workspace the app belongs to.
+	AppTeamID   string `json:"app_team_id,omitempty"`
 	ClientID    string `json:"client_id"`
 	LinkWritten bool   `json:"link_written"`
 	// Changes: adopt read the app (what its update changes; dry_run).
@@ -233,7 +235,7 @@ func finishSlackAppRun(cmd *cobra.Command, enc *json.Encoder, res slackapp.Resul
 	}
 	if asJSON {
 		return enc.Encode(slackAppResultJSON{Result: res.Kind, TeamID: res.TeamID, TeamName: res.TeamName,
-			AppID: res.AppID, AppName: res.AppName, ClientID: res.ClientID, LinkWritten: res.LinkWritten, Code: res.Code, Error: res.Error,
+			AppID: res.AppID, AppName: res.AppName, AppTeamID: res.AppTeamID, ClientID: res.ClientID, LinkWritten: res.LinkWritten, Code: res.Code, Error: res.Error,
 			Changes: res.Changes})
 	}
 	return printSlackAppResult(out, res)

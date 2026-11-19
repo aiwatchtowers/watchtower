@@ -110,6 +110,9 @@ type companyCheckResult struct {
 	Checked         bool   `json:"checked"`
 	DraftError      string `json:"draft_error,omitempty"`
 	AdminConsentURL string `json:"admin_consent_url,omitempty"`
+	// Confluence: an Atlassian check's grant carries the Confluence scopes
+	// (false = Atlassian refused them and Jira alone connected).
+	Confluence *bool `json:"confluence,omitempty"`
 }
 
 // companyDryHTTP is the dry check's HTTP client (nil = default); a var so
@@ -505,7 +508,8 @@ func checkAtlassianCompany(cmd *cobra.Command, cfg *config.Config, database *db.
 			return companyCheckResult{}, err
 		}
 	}
-	res := companyCheckResult{Result: checkOK, AccountID: id, Email: me.EmailAddress, Site: chosen.URL}
+	confluence := jira.HasConfluenceScopes(token)
+	res := companyCheckResult{Result: checkOK, AccountID: id, Email: me.EmailAddress, Site: chosen.URL, Confluence: &confluence}
 	markCompanyDraft(&res, store, company.DraftCheck{Vendor: "atlassian", Hash: p.hash, Company: companyName, Slug: p.slug})
 	return res, nil
 }

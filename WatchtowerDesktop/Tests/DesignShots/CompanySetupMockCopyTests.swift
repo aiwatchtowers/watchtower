@@ -10,6 +10,8 @@ import XCTest
 final class CompanySetupMockCopyTests: XCTestCase {
     private typealias Copy = CompanySetupMockCopy
     private typealias Pres = CompanyConnectionsPresentation
+    private typealias Model = CompanySetupWizardModel
+    private typealias Guide = CompanyVendorGuide
 
     private static let acme = CompanyRef(slug: "acme", name: "Acme", vendors: [
         .slack: "Watchtower (A0ACME)", .google: "example.com", .atlassian: "https://acme.atlassian.net",
@@ -177,6 +179,138 @@ final class CompanySetupMockCopyTests: XCTestCase {
         XCTAssertEqual(jira?.body, Copy.atlassianBannerBody)
         XCTAssertEqual(Copy.ownGoogleLocked, Pres.lockCard(.ownGoogleProject).text)
         XCTAssertEqual(Copy.tokenLocked, Pres.lockCard(.atlassianAPIToken).text)
+    }
+
+    /// Task 21 moved the wizard's words into `CompanySetupWizardModel` and
+    /// `CompanyVendorGuide`.
+    func testWizardCopyLivesInTheModel() {
+        XCTAssertEqual(Copy.wizardTitle, Model.wizardTitle)
+        XCTAssertEqual(Copy.wizardIntro, Model.wizardIntro)
+        XCTAssertEqual(Copy.railSteps, [Model.Step.services] .map(Model.railName)
+            + CompanyVendor.allCases.map { Model.railName(.vendor($0)) } + [Model.railName(.denyList), Model.railName(.publish)])
+        XCTAssertEqual([Copy.railDone, Copy.railReused, Copy.railSkipped, Copy.railWaiting],
+                       [Model.StepMark.done, .reused, .skipped, .waiting].compactMap(Model.railWord))
+        XCTAssertEqual(Copy.changeServices, Model.changeServices)
+        XCTAssertEqual(Copy.skipStep, Model.skipStep)
+        XCTAssertEqual(Copy.back, Model.backTitle)
+        XCTAssertEqual(Copy.continueStep, Model.continueTitle)
+        XCTAssertEqual(Copy.tryAgain, Model.tryAgainTitle)
+        XCTAssertEqual(Copy.backToConnections, Model.backToConnections)
+        // Services.
+        XCTAssertEqual(Copy.servicesTitle, Guide.servicesTitle)
+        XCTAssertEqual(Copy.servicesBody, Guide.servicesBody)
+        XCTAssertEqual(Copy.services.map(\.0), CompanyVendor.allCases.map { Guide.servicesRow($0).title })
+        XCTAssertEqual(Copy.services.map(\.1), CompanyVendor.allCases.map { Guide.servicesRow($0).detail })
+        XCTAssertEqual(Copy.foundOnMac, Guide.foundOnMac)
+        XCTAssertEqual(Copy.mcpNote, Guide.mcpNote)
+        XCTAssertEqual(Copy.openQuickConnections, Guide.openQuickConnections)
+        XCTAssertEqual(ConnectionService(rawValue: Guide.quickConnectionsService), .quickConnections)
+        let drop = Model.dropWarningFor(.atlassian)
+        XCTAssertEqual([Copy.dropServiceTitle, Copy.dropServiceBody, Copy.dropService, Copy.keepService],
+                       [drop.title, drop.body, drop.drop, drop.keep])
+        XCTAssertEqual(Copy.draftUnreadableTitle, Model.draftUnreadableTitle)
+        XCTAssertEqual(Copy.draftUnreadableBody, Model.draftUnreadableBody(file: "draft.json.bad-20261118-0412"))
+        XCTAssertEqual(Copy.showInFinder, Model.showInFinder)
+        let nov17 = DateComponents(calendar: .current, year: 2026, month: 11, day: 17, hour: 12).date ?? Date()
+        XCTAssertEqual(Copy.resumeLine, Model.resumeLine(started: nov17))
+        XCTAssertEqual(Copy.discardSetup, Model.discardSetup)
+        XCTAssertEqual(Copy.discardConfirm, Model.discardConfirm)
+    }
+
+    func testWizardVendorCopyLivesInTheModel() {
+        // Existing apps first.
+        XCTAssertEqual(Copy.lookingSlack, Guide.looking(.slack))
+        XCTAssertEqual(Copy.foundTitle, Model.foundTitle)
+        XCTAssertEqual(Copy.reuseCaption, Guide.reuseCaption(.slack))
+        XCTAssertEqual(Copy.googleReuseCaption, Guide.reuseCaption(.google))
+        XCTAssertEqual(Copy.useSelected, Model.useSelected)
+        XCTAssertEqual(Copy.notFoundGoogle, Guide.notFound(.google))
+        XCTAssertEqual(Copy.createNew, Model.createNew)
+        XCTAssertEqual(Copy.alreadyHaveOne, Model.alreadyHaveOne)
+        XCTAssertEqual(Copy.createNewDetail, Model.createNewDetail)
+        XCTAssertEqual(Copy.alreadyHaveDetail, Model.alreadyHaveDetail)
+        XCTAssertEqual([Copy.notSureSlack, Copy.notSureGoogle, Copy.notSureAtlassian, Copy.notSureLinear, Copy.notSureMicrosoft],
+                       CompanyVendor.allCases.map(Guide.notSure))
+        XCTAssertEqual(Copy.reuseSecretBody, Model.reuseSecretBody)
+        XCTAssertEqual(Copy.openClient, Model.openClient)
+        XCTAssertEqual(Copy.clientSecret, Guide.alreadyHaveFields(.google)[1].label)
+        XCTAssertEqual(Copy.clientID, Guide.alreadyHaveFields(.atlassian)[0].label)
+        // Slack.
+        XCTAssertEqual([Copy.slackTokenStep1, Copy.slackTokenHelp, Copy.openTokenPage, Copy.slackTokenStep2,
+                        Copy.tokenPlaceholder, Copy.tokenNote, Copy.createApp, Copy.updateApp],
+                       [Model.slackTokenStep1, Model.slackTokenHelp, Model.openTokenPage, Model.slackTokenStep2,
+                        Model.tokenPlaceholder, Model.tokenNote, Model.createApp, Model.updateApp])
+        XCTAssertEqual(Copy.slackReuseSteps, ["Checking the token", Model.readingApp("A0ACME"), Model.comparingApp])
+        XCTAssertEqual(Copy.slackProgressCaption, Model.slackProgressCaption)
+        XCTAssertEqual(Copy.manifestDiffTitle, Model.manifestDiffTitle("A0ACME"))
+        XCTAssertEqual(Copy.manifestDiffBody, Model.manifestDiffBody)
+        XCTAssertEqual(Copy.manifestDiffLines, Model.diffLines(SlackAppChanges(
+            addScopes: ["reactions:read", "users:read.email"], addRedirectURLs: ["http://127.0.0.1:18551/slack/callback"])))
+        XCTAssertEqual(Copy.notCollaborator, Model.notCollaborator(appID: "A0ACME"))
+        XCTAssertEqual(Copy.wrongWorkspace, SlackAppSetupModel.wrongWorkspaceLine(appID: "A0ACME", appTeam: "T0OTHER",
+                                                                                  workspace: "acme"))
+        XCTAssertEqual(Copy.slackSettingsLink, Guide.alreadyHaveFields(.slack)[0].label)
+        XCTAssertEqual(Copy.slackSettingsHelp, Guide.alreadyHaveFields(.slack)[0].help)
+        XCTAssertEqual(Copy.slackSettingsInvalid, Model.slackSettingsInvalid)
+        XCTAssertEqual(Copy.badToken, SlackAppSetupModel.badTokenBody)
+        // Google.
+        XCTAssertEqual(Copy.googleGuide, Guide.guideLines(.google).map(\.text))
+        XCTAssertEqual(Copy.dropJSON, Model.dropJSON)
+        XCTAssertEqual(Copy.checkingGoogle, Model.checkingGoogle)
+        XCTAssertEqual(Copy.googleRejected, Model.rejectedLine(.google, code: "invalid_client", tenant: ""))
+        XCTAssertEqual(Copy.noOrgLink, Model.noOrgLink)
+        XCTAssertEqual(Copy.noOrgTitle, Model.noOrgTitle)
+        XCTAssertEqual(Copy.noOrgBody, Model.noOrgBody(domain: "example.com"))
+        XCTAssertEqual(Copy.copyStepsForAdmin, Model.copyStepsForAdmin)
+        XCTAssertEqual(Copy.googleNetwork, Model.networkLine(.google, "the request timed out"))
+    }
+
+    func testWizardPublishCopyLivesInTheModel() {
+        // Atlassian.
+        XCTAssertEqual(Copy.atlassianGuide, Guide.guideLines(.atlassian).map(\.text))
+        XCTAssertEqual([Copy.copyScopes, Copy.copyCallbacks], [1, 2].compactMap { Guide.guideCopyButtons(.atlassian)[$0] })
+        XCTAssertEqual(Copy.atlassianSigninWait, Model.atlassianSigninWait)
+        XCTAssertEqual(Copy.atlassianSigninFailed, Model.rejectedLine(.atlassian, code: "invalid_client", tenant: ""))
+        XCTAssertEqual(Copy.checkBySignin, Model.checkBySignin)
+        XCTAssertEqual(Copy.publishWaitsAtlassian, Model.publishWaitsAtlassian)
+        XCTAssertEqual(Copy.confirmTitle, Model.confirmTitle)
+        XCTAssertEqual(Copy.confirmBody, Model.confirmBody)
+        XCTAssertEqual(Copy.confirmChecks, Model.confirmChecks)
+        // Linear and Microsoft.
+        XCTAssertEqual(Copy.linearGuide, Guide.guideLines(.linear).map(\.text))
+        XCTAssertEqual(Copy.copyCallback, Guide.guideCopyButtons(.linear)[1])
+        XCTAssertEqual(Copy.linearNote, Guide.fieldsNote(.linear))
+        XCTAssertEqual(Copy.microsoftGuide, Guide.guideLines(.microsoft).map(\.text))
+        XCTAssertEqual(Copy.copyPermissions, Guide.guideCopyButtons(.microsoft)[2])
+        XCTAssertEqual(Copy.microsoftNote, Guide.fieldsNote(.microsoft))
+        XCTAssertEqual([Copy.microsoftClientID, Copy.microsoftTenantID], Guide.alreadyHaveFields(.microsoft).map(\.label))
+        XCTAssertEqual(Copy.consentTitle, Model.consentTitle)
+        XCTAssertEqual(Copy.consentBody, Model.consentBody)
+        XCTAssertEqual(Copy.consentLinkLabel, Model.consentLinkLabel)
+        XCTAssertEqual(Copy.checkAgain, Model.checkAgain)
+        XCTAssertEqual(Copy.microsoftRejected, Model.rejectedLine(.microsoft, code: "AADSTS700016", tenant: "0000-acme"))
+        // Deny list.
+        XCTAssertEqual(Copy.denyTitle, Model.railName(.denyList))
+        XCTAssertEqual(Copy.denyBody, Model.denyBody)
+        XCTAssertEqual(Copy.addHost, Model.addHostLabel)
+        XCTAssertEqual(Copy.add, Model.addTitle)
+        XCTAssertEqual(Copy.denyInvalid, Model.denyInvalid)
+        // Publish.
+        XCTAssertEqual(Copy.companyName, Model.companyNameLabel)
+        XCTAssertEqual(Copy.publishCaption, Model.publishCaption)
+        XCTAssertEqual(Copy.publish, Model.publishTitle)
+        XCTAssertEqual(Copy.publishSteps, Model.publishStepLines(slack: true).map(\.label))
+        XCTAssertEqual(Copy.publishedTitle, Model.publishedTitle("Acme"))
+        XCTAssertEqual(Copy.publishedBody, Model.publishedBody)
+        XCTAssertEqual(Copy.publishedNoSlack, Model.publishedNoSlack)
+        XCTAssertEqual([Copy.linkLabel, Copy.codeLabel, Copy.profileLabel, Copy.saveProfile],
+                       [Model.linkLabel, Model.codeLabel, Model.profileLabel, Model.saveProfile])
+        XCTAssertEqual(Copy.profileValue, Model.profileFileName("Acme"))
+        XCTAssertEqual(Copy.connectThisMac, Model.connectThisMacTitle)
+        XCTAssertEqual(Copy.publishTokenExpired, Model.publishTokenExpiredLine)
+        XCTAssertEqual(Copy.publishNeedsToken, Model.publishNeedsTokenLine)
+        XCTAssertEqual(Copy.itGuideLink, ManagedPolicyHelp.label)
+        XCTAssertEqual(Copy.publishSummary[3], Guide.notUsedLine(.linear, skipped: true))
     }
 
     func testEveryFrameHasAShotAndNamesAreUnique() {

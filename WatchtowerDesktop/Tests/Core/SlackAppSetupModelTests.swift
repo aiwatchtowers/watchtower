@@ -1049,15 +1049,38 @@ final class SlackAppSetupModelTests: XCTestCase {
     }
 
     func testWrongWorkspaceRefused() async {
-        for kind in ["wrong_team", "wrong_workspace"] {
-            let other = #"{"result":"\#(kind)","team_id":"T0OTHER","team_name":"other"}"#
-            let (model, _, _, box) = makeWizard([reply(other), noSetups])
-            model.startAdopt(token: token, appID: "A0ACME")
-            await reported(box)
-            XCTAssertEqual(box.outcomes, [.failed(.wrongTeam(workspace: "other"))], kind)
-            XCTAssertEqual(model.notice?.body, "That token is for other, not this setup's workspace. Generate one in the "
-                + "right workspace.", kind)
-        }
+        let other = #"{"result":"wrong_team","team_id":"T0OTHER","team_name":"other"}"#
+        let (model, _, _, box) = makeWizard([reply(other), noSetups])
+        model.startAdopt(token: token, appID: "A0ACME")
+        await reported(box)
+        XCTAssertEqual(box.outcomes, [.failed(.wrongTeam(workspace: "other"))])
+        XCTAssertEqual(model.notice?.body, "That token is for other, not this setup's workspace. Generate one in the "
+            + "right workspace.")
+        // Company plan Task 14: the App ID is this Mac's in another workspace.
+        let elsewhere = #"{"result":"wrong_workspace","team_id":"T0ACME","team_name":"acme","app_id":"A0ACME","#
+            + #""app_team_id":"T0OTHER"}"#
+        let (wizard, _, _, outcomes) = makeWizard([reply(elsewhere), noSetups])
+        wizard.startAdopt(token: token, appID: "A0ACME")
+        await reported(outcomes)
+        XCTAssertEqual(outcomes.outcomes, [.failed(.wrongWorkspace(appID: "A0ACME", appTeam: "T0OTHER", workspace: "acme"))])
+        XCTAssertEqual(wizard.notice?.body, "App A0ACME belongs to another workspace (T0OTHER), not acme. "
+            + "Check the link and paste it again.")
+    }
+
+    /// The wizard's found app: adopt passes its Client ID, and confirm_app
+    /// carries what the update would change (the manifest diff, §2.5).
+    func testAdoptCarriesClientIDAndChanges() async {
+        let confirm = result("confirm_app", extra: #","app_name":"Watchtower","changes":{"add_scopes":["reactions:read"],"#
+            + #""add_redirect_urls":["http://127.0.0.1:18551/slack/callback"],"enable_pkce":true}"#)
+        let (model, fake, _, _) = makeWizard([reply(confirm), noSetups])
+        model.startAdopt(token: token, appID: "A0ACME", clientID: "1111.2222")
+        await untilObserved { if case .adopt = model.form { !model.isRunning } else { false } }
+        XCTAssertEqual(fake.invocations.first?.args, ["slack", "app", "adopt", "--json", "--enable-pkce", "--app-id", "A0ACME",
+                                                      "--client-id", "1111.2222"])
+        guard case let .adopt(adopt) = model.form else { return XCTFail("not on the adopt form") }
+        XCTAssertEqual(adopt.changes, SlackAppChanges(addScopes: ["reactions:read"],
+                                                      addRedirectURLs: ["http://127.0.0.1:18551/slack/callback"], enablePKCE: true))
+        XCTAssertEqual(adopt.confirm?.appID, "A0ACME")
     }
 
     func testRunThatEndsOnAFormReportsNothing() async {
