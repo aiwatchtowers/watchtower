@@ -32,8 +32,7 @@ func project(now time.Time, l Limit, samples []db.PlanUsageSample) Projection {
 		return Projection{State: "idle"}
 	}
 	from := now.Add(-lookback(l.Group))
-	var xs, ys []float64
-	var first, last time.Time
+	var window []db.PlanUsageSample
 	for _, s := range samples {
 		if s.TakenAt.Before(from) || s.TakenAt.After(now) || s.ResetsAt.IsZero() {
 			continue
@@ -41,6 +40,12 @@ func project(now time.Time, l Limit, samples []db.PlanUsageSample) Projection {
 		if d := s.ResetsAt.Sub(*l.ResetsAt); d > sameWindowTol || d < -sameWindowTol {
 			continue
 		}
+		window = append(window, s)
+	}
+	window = sinceLastReset(window)
+	var xs, ys []float64
+	var first, last time.Time
+	for _, s := range window {
 		if first.IsZero() {
 			first = s.TakenAt
 		}
@@ -77,4 +82,22 @@ func slope(xs, ys []float64) float64 {
 		return 0
 	}
 	return (n*sxy - sx*sy) / den
+}
+
+// resetDropPercent is the fall, in percentage points, that marks an early
+// reset: within one window usage never goes down, but a provider can reset a
+// limit early and keep resets_at unchanged. The Desktop twin is
+// PlanUsageStatus.resetDropPercent in WatchtowerCore/Models/PlansUsage.swift.
+const resetDropPercent = 5
+
+// sinceLastReset cuts samples (one limit, one window, ordered by taken_at) to
+// the part after the last early reset: it starts at the last sample whose
+// percent is at least resetDropPercent below the sample before it.
+func sinceLastReset(samples []db.PlanUsageSample) []db.PlanUsageSample {
+	for i := len(samples) - 1; i > 0; i-- {
+		if samples[i-1].Percent-samples[i].Percent >= resetDropPercent {
+			return samples[i:]
+		}
+	}
+	return samples
 }
