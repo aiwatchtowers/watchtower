@@ -553,9 +553,8 @@ func TestCompanyChain_ConnectReleasesTheLink(t *testing.T) {
 }
 
 // companyGolden is the chain's wire fixture for the Desktop's decoder
-// (Task 23 adds the company events to SlackConnectEvent; until then they
-// live apart from serve_events.jsonl, whose every line the Swift decoder
-// must read).
+// (`CompanyConnectFlowModelTests.testDecodesCompanyEvents` reads every
+// line; serve_events.jsonl stays the Slack flow's).
 var companyGolden = filepath.Join("..", "internal", "slackconnect", "testdata", "company_events.jsonl")
 
 // TestCompanyChainServe_WireGolden runs one chain through every vendor state

@@ -62,26 +62,40 @@ var companyListCmd = &cobra.Command{
 	},
 }
 
+var companyInspectFlags struct {
+	slug string
+}
+
 var companyInspectCmd = &cobra.Command{
 	Use:   "inspect",
-	Short: "Show what a company link or code (on stdin) would connect, without storing it",
+	Short: "Show what a company link or code (on stdin), or a stored company (--slug), would connect, without storing it",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		wire, err := readCompanyWire(cmd.InOrStdin())
-		var pe *companybundle.ParseError
-		if errors.As(err, &pe) {
-			res := companyRefused(pe)
-			return writeCompanyResult(cmd, res, func(w io.Writer) { _, _ = fmt.Fprintf(w, "refused: %s\n", res.Refused) })
-		}
-		if err != nil {
-			return err
+		var wire string
+		if companyInspectFlags.slug == "" {
+			var err error
+			wire, err = readCompanyWire(cmd.InOrStdin())
+			var pe *companybundle.ParseError
+			if errors.As(err, &pe) {
+				res := companyRefused(pe)
+				return writeCompanyResult(cmd, res, func(w io.Writer) { _, _ = fmt.Fprintf(w, "refused: %s\n", res.Refused) })
+			}
+			if err != nil {
+				return err
+			}
 		}
 		cfg, database, err := openJiraCmdDB()
 		if err != nil {
 			return err
 		}
 		defer database.Close()
-		res, err := inspectCompany(company.NewStore(cfg.WorkspaceDir()), database, wire, companyForcedBundle())
+		store := company.NewStore(cfg.WorkspaceDir())
+		var res companyInspectResult
+		if companyInspectFlags.slug != "" {
+			res, err = inspectStoredCompany(store, database, companyInspectFlags.slug, companyForcedBundle())
+		} else {
+			res, err = inspectCompany(store, database, wire, companyForcedBundle())
+		}
 		if err != nil {
 			return err
 		}
@@ -138,6 +152,8 @@ func init() {
 	for _, c := range []*cobra.Command{companyListCmd, companyInspectCmd, companyConfirmCmd} {
 		c.Flags().Bool("json", false, "print JSON")
 	}
+	companyInspectCmd.Flags().StringVar(&companyInspectFlags.slug, "slug", "",
+		"inspect this stored (or organization-set) company instead of a bundle on stdin")
 	companyConfirmCmd.Flags().StringVar(&companyConfirmFlags.source, "source", "",
 		"where the bundle came from: link, code or mdm")
 	companyConfirmCmd.Flags().BoolVar(&companyConfirmFlags.replace, "replace", false,
@@ -276,6 +292,9 @@ type companyInspectResult struct {
 	Connected map[string]bool     `json:"connected"`
 	Changes   []companyChangeJSON `json:"changes"`
 	Forbidden []string            `json:"forbidden"`
+	// Details are the effective bundle's vendor blocks without secrets: what
+	// the Desktop's confirm rows name (domain, site, Confluence).
+	Details map[string]companyVendorJSON `json:"details"`
 }
 
 // companyMatch is an incoming bundle against what this install has for the
@@ -313,7 +332,10 @@ func matchCompany(store company.Store, wire string, origin companybundle.Origin,
 
 // newCompanyInspectResult has every list and map non-nil (JSON [] and {}).
 func newCompanyInspectResult() companyInspectResult {
-	return companyInspectResult{Vendors: []string{}, Connected: map[string]bool{}, Changes: []companyChangeJSON{}, Forbidden: []string{}}
+	return companyInspectResult{
+		Vendors: []string{}, Connected: map[string]bool{}, Changes: []companyChangeJSON{}, Forbidden: []string{},
+		Details: map[string]companyVendorJSON{},
+	}
 }
 
 func companyRefused(pe *companybundle.ParseError) companyInspectResult {
@@ -348,6 +370,7 @@ func inspectCompany(store company.Store, database *db.DB, wire, forced string) (
 		effective = m.current.Bundle
 	}
 	res.Vendors = append(res.Vendors, effective.Vendors()...)
+	res.Details = companyVendorsJSON(effective)
 	if m.stored {
 		res.State = "same"
 		if len(m.changes) > 0 {
@@ -381,6 +404,29 @@ func inspectCompany(store company.Store, database *db.DB, wire, forced string) (
 		}
 	}
 	return res, nil
+}
+
+// inspectStoredCompany is inspectCompany for the company stored (or forced)
+// under slug, as if its own bundle came in again: state "same", what is
+// connected, what the policy forbids. A personal bundle is refused like
+// a link carrying one.
+func inspectStoredCompany(store company.Store, database *db.DB, slug, forced string) (companyInspectResult, error) {
+	entry, ok, err := store.Get(slug, forced)
+	if err != nil {
+		return companyInspectResult{}, fmt.Errorf("reading company %s: %w", slug, err)
+	}
+	if !ok {
+		return companyInspectResult{}, fmt.Errorf("no company %s is stored (see 'watchtower company list')", slug)
+	}
+	wire, err := companybundle.Encode(entry.Bundle)
+	var pe *companybundle.ParseError
+	if errors.As(err, &pe) {
+		return companyRefused(pe), nil
+	}
+	if err != nil {
+		return companyInspectResult{}, fmt.Errorf("encoding company %s: %w", slug, err)
+	}
+	return inspectCompany(store, database, wire, forced)
 }
 
 type companyMarkedJSON struct {

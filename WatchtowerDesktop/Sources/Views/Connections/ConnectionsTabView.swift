@@ -21,6 +21,18 @@ struct ConnectionsTabView: View {
             appState.refreshConnectionAccounts()
             appState.sharedConfig.reloadUnlessEdited()
         }
+        // A company link, code or Connect all (#1887 §3): over whichever
+        // Connections page is open. Closing it keeps a running chain.
+        .sheet(isPresented: Binding(
+            get: { appState.companyConnect?.showsSheet ?? false },
+            set: { shown in if !shown { appState.companyConnect?.close() } }
+        )) {
+            if let flow = appState.companyConnect {
+                CompanyConnectSheet(flow: flow)
+                    .frame(width: 460)
+                    .onExitCommand { flow.close() }
+            }
+        }
     }
 }
 

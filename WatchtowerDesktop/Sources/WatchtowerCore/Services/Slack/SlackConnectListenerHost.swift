@@ -31,6 +31,11 @@ package final class SlackConnectListenerHost {
     /// A child ended (crash, port busy, stop), before any restart: a flow it
     /// held is gone with it.
     @ObservationIgnored package var onChildEnded: (() -> Void)?
+    /// The same two for the company connect flow (`CompanyConnectFlowModel`,
+    /// #1887): it gets every event after `onEvent` — `busy` answers either
+    /// flow's start, so each one reads it against its own state.
+    @ObservationIgnored package var onCompanyEvent: ((SlackConnectEvent) -> Void)?
+    @ObservationIgnored package var onCompanyChildEnded: (() -> Void)?
 
     @ObservationIgnored private let streamer: any CLILineStreaming
     @ObservationIgnored private let args: [String]
@@ -133,6 +138,7 @@ package final class SlackConnectListenerHost {
         default: break
         }
         onEvent?(event)
+        onCompanyEvent?(event)
     }
 
     private func childEnded(generation current: Int, error: Error?) {
@@ -140,6 +146,7 @@ package final class SlackConnectListenerHost {
         child = nil
         isChildRunning = false
         onChildEnded?()
+        onCompanyChildEnded?()
         if relaunchAfterExit {
             launch()
             return

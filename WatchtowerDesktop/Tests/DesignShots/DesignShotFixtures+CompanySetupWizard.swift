@@ -400,64 +400,6 @@ enum CompanyWizardScenes {
     }
 }
 
-// MARK: - The employee: confirm, chain, replace (spec §3)
-
-@MainActor
-enum CompanyConnectScenes {
-    private static func vendorChecks(connected: Set<Int> = []) -> MockBlock {
-        .checks(Copy.vendorRows.enumerated().map { index, row in
-            connected.contains(index)
-                ? MockCheck(title: row.0, detail: row.1, checked: true, disabled: true, trailing: Copy.alreadyConnected)
-                : MockCheck(title: row.0, detail: row.1)
-        })
-    }
-
-    private static let connectButtons = MockBlock.buttons(
-        leading: [], trailing: [MockButton(title: Copy.cancel), MockButton(title: Copy.connect, kind: .primary)])
-
-    private static func chain(_ marks: [MockMark], _ details: [String?]) -> MockBlock {
-        .steps(Copy.vendorRows.enumerated().map { index, row in
-            MockStep(title: row.0, mark: marks[index], detail: details[index])
-        }, caption: Copy.chainCaption)
-    }
-
-    private static let chainButtons = MockBlock.buttons(
-        leading: [], trailing: [MockButton(title: Copy.stop), MockButton(title: Copy.skipService)])
-
-    static var scenes: [(String, [MockBlock])] {
-        [
-            ("confirm", [.title(Copy.confirmConnectTitle, nil), .body(Copy.confirmLinkBody), vendorChecks(),
-                         .caption(Copy.confirmCaption), connectButtons]),
-            ("confirm-code", [.title(Copy.confirmConnectTitle, nil), .body(Copy.confirmCodeBody), vendorChecks(),
-                              .caption(Copy.confirmCaption), connectButtons]),
-            ("confirm-again", [.title(Copy.confirmConnectTitle, nil), .body(Copy.confirmLinkBody),
-                               vendorChecks(connected: [0, 1]), .caption(Copy.confirmCaption), connectButtons]),
-            ("confirm-mdm", [.title(Copy.mdmTitle, nil), .managedBadge, .body(Copy.mdmBody), vendorChecks(),
-                             .caption(Copy.confirmCaption), connectButtons]),
-            ("chain", [.title(Copy.chainTitle, nil),
-                       chain([.done, .running, .waiting, .waiting, .waiting],
-                             [Copy.chainSlackDone, Copy.chainBrowserGoogle, Copy.chainNext, nil, nil]),
-                       chainButtons]),
-            ("chain-failed", [.title(Copy.chainTitle, nil),
-                              chain([.done, .failed, .running, .waiting, .waiting],
-                                    [Copy.chainSlackDone, Copy.chainDenied, Copy.chainBrowserAtlassian, Copy.chainNext, nil]),
-                              chainButtons]),
-            ("done", [.title(Copy.chainDonePartial, nil),
-                      .steps([MockStep(title: Copy.vendorRows[0].0, mark: .done),
-                              MockStep(title: Copy.vendorRows[1].0, mark: .failed, detail: Copy.notConnected),
-                              MockStep(title: Copy.vendorRows[2].0, mark: .done),
-                              MockStep(title: Copy.vendorRows[3].0, mark: .done),
-                              MockStep(title: Copy.vendorRows[4].0, mark: .skipped, detail: Copy.chainSkipped)], caption: nil),
-                      .body(Copy.chainDoneBody),
-                      .buttons(leading: [], trailing: [MockButton(title: Copy.done, kind: .primary)])]),
-            ("replace", [.warning(Copy.replaceBody, title: Copy.replaceTitle),
-                         .steps(Copy.replaceLines.map { MockStep(title: $0, mark: .waiting) }, caption: Copy.replaceCaption),
-                         .buttons(leading: [], trailing: [MockButton(title: Copy.replace),
-                                                          MockButton(title: Copy.keepCurrent, kind: .primary)])])
-        ]
-    }
-}
-
 /// A page in a service's detail (the own Google project, ask #1490): the way
 /// back on top, then the blocks.
 struct MockPage: View {
