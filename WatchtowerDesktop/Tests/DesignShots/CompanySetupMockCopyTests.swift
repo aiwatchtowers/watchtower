@@ -204,7 +204,7 @@ final class CompanySetupMockCopyTests: XCTestCase {
         let google = Pres.detailActions(.google, companies: [], empty: true).map(\.title)
         XCTAssertEqual(google, [Copy.connectCalendar, Copy.useOwnGoogle, Copy.pasteCode])
         let jira = Pres.detailActions(.atlassian, companies: [], empty: true).map(\.title)
-        XCTAssertEqual(jira, [Copy.connectTokenButton, Copy.pasteCode])
+        XCTAssertEqual(jira, [Copy.connectTokenButton, Copy.pasteCode, Copy.setUpForCompany]) // §2.1 entry
         XCTAssertEqual(Pres.detailActions(.atlassian, companies: [Self.acme], empty: false).map(\.title),
                        [Copy.connectCompanyAtlassian, Copy.connectTokenButton])
     }

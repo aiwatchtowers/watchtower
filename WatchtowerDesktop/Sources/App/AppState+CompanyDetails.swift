@@ -146,13 +146,16 @@ extension AppState {
 
     /// Email → Add Account → **Connect Gmail** where the sheet cannot ask for
     /// Gmail: the Google detail, opened on the own Google project page unless
-    /// a company's Google app (or the policy lock) makes the detail the way.
+    /// a company's Google app, the policy (Google blocked, own projects
+    /// locked) or company files that could not be read make the detail the
+    /// way. The companies are read afresh first: the zone's last read may be
+    /// from before a link or the CLI stored a company, or never have run.
     /// The caller closes its sheet first.
-    func connectGmail() {
-        let zone = companiesZone
+    func connectGmail() async {
+        await companiesZone.reload()
         let route = CompanyConnectionsPresentation.gmailRoute(
-            offersGmail: false, companies: companyRefs,
-            companiesKnown: zone.hasRead && zone.listError == nil && zone.errors.isEmpty, locks: companyLocks)
+            companies: companyRefs, companiesKnown: companiesZone.readEveryCompany,
+            googleAllowed: managedPolicy.policy.sourceAllowed("google"), locks: companyLocks)
         if route == .ownProjectPage { ownGoogleProject.open() }
         openConnections(.google)
     }

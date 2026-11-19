@@ -1,15 +1,14 @@
 import Foundation
 
-/// Where Email → Add Account → **Connect Gmail** goes (#1887 D11: the
-/// shared Google app asks for Calendar only).
+/// Where Email → Add Account → **Connect Gmail** goes on the public build
+/// (#1887 D11: the shared Google app asks for Calendar only; a flavored
+/// build keeps the Add Google Account sheet).
 package enum GmailRoute: Equatable, Sendable {
-    /// The Add Google Account sheet with its Gmail switch: a flavored build,
-    /// whose baked client asks for Gmail itself.
-    case sharedSheet
     /// The own Google project page in the Google detail (§5.2).
     case ownProjectPage
     /// The Google detail: a stored company's Google row (§5.3), or the empty
-    /// state's company code while own projects are locked (§5.4).
+    /// state's company code while own projects are locked (§5.4), or its
+    /// blocked notice while the organization blocks Google.
     case googleDetail
 }
 
@@ -30,9 +29,11 @@ extension CompanyConnectionsPresentation {
     package static let connectMenuCompanyActions: [CompaniesZoneState.Action] = [.setUpForCompany, .connectWithCode]
 
     /// Whether the Add Google Account sheet (Watchtower's baked client) may
-    /// ask for Gmail. Go's `googleOnSharedClient`: only the public,
-    /// flavorless build bakes the shared app, which asks for Calendar only
-    /// (D11); a flavored build bakes its company's app (or a developer's).
+    /// ask for Gmail. Go (`googleOnSharedClient`) refuses Gmail on the
+    /// public, flavorless build's baked shared app (D11); a flavored build
+    /// bakes its company's app (or a developer's). Conservative: a
+    /// flavorless build without a baked client (a local source build) also
+    /// keeps Gmail off here, though Go would accept it with an env client.
     package static func sharedGoogleOffersGmail(buildFlavor: String) -> Bool {
         !buildFlavor.isEmpty
     }
@@ -59,22 +60,28 @@ extension CompanyConnectionsPresentation {
         return "Gmail needs a Google project: your company's or your own. Connect opens Connections → Google."
     }
 
-    /// **Connect Gmail**: the sheet when the build's client asks for Gmail;
-    /// else a stored company's Google app (its row in the Google detail), the
-    /// own project page, or — own projects locked — the detail's company code.
-    /// `companiesKnown` is false while the company files are unread or
-    /// failed to read: the detail then, never the own project page over a
-    /// company Google app nobody could see.
+    /// The onboarding Google card's subtitle: mail only where the sheet
+    /// can ask for it.
+    package static func onboardingGoogleSubtitle(offersGmail: Bool) -> String {
+        offersGmail ? "Mail and calendar · for work communication and meetings"
+            : "Calendar · for meetings; Gmail connects later in Connections"
+    }
+
+    /// **Connect Gmail** on the public build: a stored company's Google app
+    /// (its row in the Google detail), the own project page, or — own
+    /// projects locked — the detail's company code. `companiesKnown` is
+    /// false while the company files are unread or failed to read: the
+    /// detail then, never the own project page over a company Google app
+    /// nobody could see. A blocked Google source is the detail too, whose
+    /// buttons say so (the page itself checks no policy).
     package static func gmailRoute(
-        offersGmail: Bool,
         companies: [CompanyRef],
         companiesKnown: Bool,
+        googleAllowed: Bool,
         locks: Set<LockKey>
     ) -> GmailRoute {
-        if offersGmail { return .sharedSheet }
-        guard companiesKnown else { return .googleDetail }
+        guard companiesKnown, googleAllowed, !locks.contains(.ownGoogleProject) else { return .googleDetail }
         let companyGoogle = companies.contains { !$0.personal && $0.vendors[.google] != nil }
-        if companyGoogle || locks.contains(.ownGoogleProject) { return .googleDetail }
-        return .ownProjectPage
+        return companyGoogle ? .googleDetail : .ownProjectPage
     }
 }

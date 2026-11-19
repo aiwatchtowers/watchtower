@@ -55,17 +55,15 @@ final class CompanyGmailAndMenuPresentationTests: XCTestCase {
     }
 
     private func route(
-        offersGmail: Bool = false,
         _ companies: [CompanyRef],
         known: Bool = true,
+        googleAllowed: Bool = true,
         locks: Set<LockKey> = []
     ) -> GmailRoute {
-        Pres.gmailRoute(offersGmail: offersGmail, companies: companies, companiesKnown: known, locks: locks)
+        Pres.gmailRoute(companies: companies, companiesKnown: known, googleAllowed: googleAllowed, locks: locks)
     }
 
     func testGmailRoute() {
-        // A flavored build keeps the sheet: its client asks for Gmail itself.
-        XCTAssertEqual(route(offersGmail: true, [acme]), .sharedSheet)
         // No company Google app: the own Google project page (T26).
         XCTAssertEqual(route([]), .ownProjectPage)
         XCTAssertEqual(route([slackOnly, own]), .ownProjectPage)
@@ -73,7 +71,16 @@ final class CompanyGmailAndMenuPresentationTests: XCTestCase {
         XCTAssertEqual(route([slackOnly, acme]), .googleDetail)
         // Own projects locked (§5.4): the detail, whose empty state offers the company code.
         XCTAssertEqual(route([], locks: [.ownGoogleProject]), .googleDetail)
-        // Company files unread or failed to read: the detail, which says so, never a guess.
+        // Company files unread or failed to read: the detail, never a guess.
         XCTAssertEqual(route([], known: false), .googleDetail)
+        // The organization blocks Google: the detail with its blocked buttons, never the page.
+        XCTAssertEqual(route([], googleAllowed: false), .googleDetail)
+    }
+
+    func testOnboardingGoogleSubtitle() {
+        XCTAssertEqual(Pres.onboardingGoogleSubtitle(offersGmail: true),
+                       "Mail and calendar · for work communication and meetings")
+        XCTAssertEqual(Pres.onboardingGoogleSubtitle(offersGmail: false),
+                       "Calendar · for meetings; Gmail connects later in Connections")
     }
 }

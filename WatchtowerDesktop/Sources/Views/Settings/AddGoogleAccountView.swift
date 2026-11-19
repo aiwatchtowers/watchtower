@@ -69,7 +69,7 @@ struct AddGoogleAccountView: View {
             }
 
             Toggle(Copy.calendar, isOn: $wantCalendar)
-            Toggle(Copy.gmail, isOn: offersGmail ? $wantGmail : .constant(false))
+            Toggle(Copy.gmail, isOn: $wantGmail)
                 .disabled(!offersGmail)
             if !offersGmail {
                 Text(CompanyConnectionsPresentation.sharedGoogleGmailNote(locks: appState.companyLocks))

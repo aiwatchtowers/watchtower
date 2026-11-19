@@ -26,6 +26,14 @@ package final class CompaniesZoneModel {
     /// No read has finished yet: the zone shows its loading line.
     package private(set) var hasRead = false
 
+    /// The last read listed every company file: it finished, `company list`
+    /// worked and no company file was damaged (the draft's own error aside,
+    /// as the zone counts it).
+    package var readEveryCompany: Bool {
+        hasRead && listError == nil
+            && errors.allSatisfy { $0.file == CompanyConnectionsPresentation.draftFile }
+    }
+
     /// **Connect with a company code** opened the field (or the port is busy).
     package private(set) var codeFieldOpen = false
     package var code = "" {

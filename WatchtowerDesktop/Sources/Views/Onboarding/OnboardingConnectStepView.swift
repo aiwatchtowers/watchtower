@@ -239,7 +239,8 @@ struct OnboardingConnectStepView: View {
             let account = appState.googleAccountsViewModel?.accounts.first
             sourceRow(
                 letter: "G", title: "Google",
-                subtitle: "Mail and calendar · for work communication and meetings",
+                subtitle: CompanyConnectionsPresentation.onboardingGoogleSubtitle(
+                    offersGmail: appState.sharedGoogleOffersGmail),
                 connected: account?.displayName,
                 available: appState.googleAccountsViewModel != nil,
                 error: appState.googleAccountsViewModel?.error,

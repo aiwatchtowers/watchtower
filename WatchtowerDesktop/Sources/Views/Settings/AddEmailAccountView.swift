@@ -190,7 +190,7 @@ struct AddEmailAccountView: View {
             showAddGoogleAccountSheet = true
         } else {
             dismiss()
-            appState.connectGmail()
+            Task { await appState.connectGmail() }
         }
     }
 

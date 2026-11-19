@@ -17,6 +17,8 @@ final class CompanyEntryPointsTests: XCTestCase {
     private static let acmeWithGoogle = #"{"companies":[{"slug":"acme","company":"Acme","forced":false,"personal":false,"#
         + #""vendors":{"google":{"client_id":"goo-1"}}}],"errors":[],"draft":{"state":"none"}}"#
     private static let none = #"{"companies":[],"errors":[],"draft":{"state":"none"}}"#
+    private static let damagedDraft = #"{"companies":[],"errors":[{"file":"draft.json","error":"bad json"}],"#
+        + #""draft":{"state":"none"}}"#
     private static let damaged = #"{"companies":[],"errors":[{"file":"acme.json","error":"bad json"}],"#
         + #""draft":{"state":"none"}}"#
 
@@ -40,7 +42,9 @@ final class CompanyEntryPointsTests: XCTestCase {
     /// Without the company actions (a caller that has no zone) the menu lists services only.
     func testConnectMenuWithoutCompanyActions() throws {
         let view = ConnectionsOverviewContent(summaries: [ConnectionSummary(service: .slack, accounts: [], blocked: false)]) { _ in }
-        XCTAssertThrowsError(try view.inspect().find(ViewType.Menu.self).find(button: "Set up for my company"))
+        let menu = try view.inspect().find(ViewType.Menu.self)
+        XCTAssertNoThrow(try menu.find(button: "Slack"))
+        XCTAssertThrowsError(try menu.find(button: "Set up for my company"))
     }
 
     /// **Set up for my company** opens the wizard page; **Connect with a
@@ -79,56 +83,68 @@ final class CompanyEntryPointsTests: XCTestCase {
     func testConnectGmailOpensTheOwnProjectPage() async {
         let (appState, fake) = LinearConnectionDetailTests.wired()
         fake.enqueue(.init(lines: [Self.none]))
-        await appState.companiesZone.reload()
 
-        appState.connectGmail()
+        await appState.connectGmail()
         XCTAssertEqual(appState.selectedDestination, .connections)
         XCTAssertEqual(appState.selectedConnection, .google)
         XCTAssertTrue(appState.ownGoogleProject.isOpen)
     }
 
     /// A stored company with a Google app: the Google detail, where its row's
-    /// Connect is the way; no own project page over it.
+    /// Connect is the way; no own project page over it. The companies are
+    /// read afresh: a company stored since the zone's last read counts.
     func testConnectGmailWithACompanyGoogleAppOpensTheDetail() async {
         let (appState, fake) = LinearConnectionDetailTests.wired()
-        fake.enqueue(.init(lines: [Self.acmeWithGoogle]))
+        fake.enqueue(.init(lines: [Self.none]))
         await appState.companiesZone.reload()
+        fake.enqueue(.init(lines: [Self.acmeWithGoogle]))
 
-        appState.connectGmail()
+        await appState.connectGmail()
         XCTAssertEqual(appState.selectedConnection, .google)
         XCTAssertFalse(appState.ownGoogleProject.isOpen)
     }
 
-    /// Failure paths: company files never read, `company list` failing, or a
-    /// damaged company file — whether a company has a Google app is unknown,
-    /// so the detail (which shows the read state) opens, never the own page.
+    /// Failure paths: `company list` failing, or a damaged company file —
+    /// whether a company has a Google app is unknown, so the detail (which
+    /// shows the read state) opens, never the own page. A damaged setup
+    /// draft holds no Google app and does not count.
     func testConnectGmailWithUnknownCompaniesOpensTheDetail() async {
-        let (unread, _) = LinearConnectionDetailTests.wired()
-        unread.connectGmail()
-        XCTAssertEqual(unread.selectedConnection, .google)
-        XCTAssertFalse(unread.ownGoogleProject.isOpen)
-
         let (failed, failedFake) = LinearConnectionDetailTests.wired()
         failedFake.enqueue(.init(lines: [], exitCode: 1))
-        await failed.companiesZone.reload()
+        await failed.connectGmail()
         XCTAssertNotNil(failed.companiesZone.listError)
-        failed.connectGmail()
+        XCTAssertEqual(failed.selectedConnection, .google)
         XCTAssertFalse(failed.ownGoogleProject.isOpen)
 
         let (broken, brokenFake) = LinearConnectionDetailTests.wired()
         brokenFake.enqueue(.init(lines: [Self.damaged]))
-        await broken.companiesZone.reload()
-        broken.connectGmail()
+        await broken.connectGmail()
+        XCTAssertEqual(broken.selectedConnection, .google)
         XCTAssertFalse(broken.ownGoogleProject.isOpen)
+
+        let (draft, draftFake) = LinearConnectionDetailTests.wired()
+        draftFake.enqueue(.init(lines: [Self.damagedDraft]))
+        await draft.connectGmail()
+        XCTAssertTrue(draft.ownGoogleProject.isOpen)
     }
 
     /// Own projects locked (§5.4): the detail, whose empty state offers the company code.
     func testConnectGmailUnderTheOwnProjectLockOpensTheDetail() async {
         let (appState, fake) = LinearConnectionDetailTests.wired(policy: ["AllowOwnGoogleProject": false])
         fake.enqueue(.init(lines: [Self.none]))
-        await appState.companiesZone.reload()
 
-        appState.connectGmail()
+        await appState.connectGmail()
+        XCTAssertEqual(appState.selectedConnection, .google)
+        XCTAssertFalse(appState.ownGoogleProject.isOpen)
+    }
+
+    /// The organization blocks Google: the detail with its blocked buttons,
+    /// never the own project page (Go would refuse its sign-in at the end).
+    func testConnectGmailWithGoogleBlockedOpensTheDetail() async {
+        let (appState, fake) = LinearConnectionDetailTests.wired(policy: ["AllowedSources": ["slack", "imap"]])
+        fake.enqueue(.init(lines: [Self.none]))
+
+        await appState.connectGmail()
         XCTAssertEqual(appState.selectedConnection, .google)
         XCTAssertFalse(appState.ownGoogleProject.isOpen)
     }
@@ -139,13 +155,12 @@ final class CompanyEntryPointsTests: XCTestCase {
     func testEmailGmailCardRoutesAwayFromTheSharedSheet() async throws {
         let (appState, fake) = LinearConnectionDetailTests.wired()
         fake.enqueue(.init(lines: [Self.none]))
-        await appState.companiesZone.reload()
         XCTAssertFalse(appState.sharedGoogleOffersGmail)
 
         let view = AddEmailAccountView().environment(appState)
         XCTAssertNoThrow(try view.inspect().find(text: Pres.gmailCardLine(offersGmail: false, locks: [])))
         try view.inspect().find(button: Pres.connectGmail).tap()
-        XCTAssertEqual(appState.selectedConnection, .google)
+        await untilObserved { appState.selectedConnection == .google }
         XCTAssertTrue(appState.ownGoogleProject.isOpen)
     }
 }

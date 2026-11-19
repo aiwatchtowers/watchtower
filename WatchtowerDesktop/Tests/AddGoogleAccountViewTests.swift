@@ -1,6 +1,7 @@
 import GRDB
 import SwiftUI
 import ViewInspector
+import WatchtowerCore
 import WatchtowerTestSupport
 import XCTest
 @testable import WatchtowerDesktop
@@ -34,6 +35,24 @@ final class AddGoogleAccountViewTests: XCTestCase {
         XCTAssertFalse(try gmail.isOn())
         XCTAssertNoThrow(try view.inspect().find(text: CompanyConnectionsPresentation.sharedGoogleGmailNote(locks: [])))
         XCTAssertFalse(try view.inspect().find(button: "Connect").isDisabled(), "Calendar alone still connects")
+    }
+
+    /// The safety property itself: Connect on the shared path asks the CLI
+    /// for Calendar only, never `--gmail` (Go would refuse it, D11).
+    func testSharedPathConnectAsksForCalendarOnly() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
+        let (appState, _) = LinearConnectionDetailTests.wired()
+        let cli = try GoogleConnectionDetailTests.stubCLI(test: self)
+        let vm = GoogleAccountsViewModel(dbPool: pool, daemon: FakeDaemonRestarter()) { cli.path }
+        vm.loginEnvironment = { [:] }
+        appState.googleAccountsViewModel = vm
+        let view = AddGoogleAccountView(offersGmail: false).environment(appState)
+
+        try view.inspect().find(button: "Connect").tap()
+        await vm.addTask?.value
+        let args = try String(contentsOf: cli.log, encoding: .utf8)
+        XCTAssertEqual(args.trimmingCharacters(in: .whitespacesAndNewlines), "google add --app-return --calendar")
     }
 
     /// Own projects locked (§5.4): the note names the company's project only.

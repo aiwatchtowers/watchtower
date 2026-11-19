@@ -309,7 +309,7 @@ package enum CompanyConnectionsPresentation {
     private static let codeUnknownClient = "unknown_client"
     private static let codeAPITokenDead = "api_token_dead"
     private static let codePDRScopeMissing = "pdr_scope_missing"
-    private static let draftFile = "draft.json"
+    package static let draftFile = "draft.json"
 
     package static let companiesTitle = "Companies"
     package static let companiesLoading = "Reading company setups…"
