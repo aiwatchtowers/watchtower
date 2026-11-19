@@ -777,3 +777,42 @@ func TestParkedBy_HeredocIdiomAndMoreHiddenShapes(t *testing.T) {
 	r.Lenient = true
 	require.False(t, mergeBackstop(r), "the guard's backstop skips the plain body")
 }
+
+// Final review A-C1: a wrapper that changes directory leaves a relative
+// delete with no known directory, in the twin's strict mode and the
+// guard's lenient mode alike; env -S runs a string this reader cannot see.
+func TestParkedBy_WrapperChdirRelativeDelete(t *testing.T) {
+	var cases []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}
+	both := func(cmd string, limit HardLimit) {
+		strict, lenient := bash(cmd), bash(cmd)
+		lenient.Lenient = true
+		for _, r := range []PermissionAsk{strict, lenient} {
+			name := "strict " + cmd
+			if r.Lenient {
+				name = "lenient " + cmd
+			}
+			cases = append(cases, struct {
+				name  string
+				ask   PermissionAsk
+				limit HardLimit
+			}{name, r, limit})
+		}
+	}
+	both("env -C /tmp rm -rf foo", LimitDeleteOutside)
+	both("env -C/tmp rm -rf foo", LimitDeleteOutside)
+	both("env --chdir=/tmp rm -rf foo", LimitDeleteOutside)
+	both("env --chdir /tmp rm -rf foo", LimitDeleteOutside)
+	both("sudo -D /tmp rm -rf foo", LimitDeleteOutside)
+	both("sudo -D/tmp rm -rf foo", LimitDeleteOutside)
+	both("env -iC/tmp rm -rf foo", LimitDeleteOutside)
+	both("env -iC /tmp rm -rf foo", LimitDeleteOutside)
+	both("env -S 'rm -rf foo'", LimitUnreadable)
+	both("env --split-string='rm -rf foo'", LimitUnreadable)
+	both("env -i rm -rf foo", "")
+	both("rm -rf foo", "")
+	expectParked(t, cases)
+}

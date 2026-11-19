@@ -305,10 +305,10 @@ func stripWrappers(words []string, c *shellCmd) []string {
 		for len(words) > 0 && strings.HasPrefix(words[0], "-") {
 			opt := words[0]
 			words = words[1:]
-			name, _, _ := strings.Cut(opt, "=")
-			moved := valued[name] && chdirOpts[name]
+			name, takesNext := wrapperOption(opt, valued)
+			moved := chdirOpts[name]
 			c.elsewhere, c.chdir = c.elsewhere || moved, c.chdir || moved
-			if valued[opt] && len(words) > 0 {
+			if takesNext && len(words) > 0 {
 				words = words[1:]
 			}
 		}
@@ -320,6 +320,31 @@ func stripWrappers(words []string, c *shellCmd) []string {
 		return []string{unresolved}
 	}
 	return nil
+}
+
+// wrapperOption reads one wrapper option word: name is the valued option it
+// sets ("" when it takes no operand) and takesNext reports that its operand
+// is the next word. An operand can be attached (-C/tmp, --chdir=/tmp) and a
+// short valued option can end a cluster of flags (env -iC/tmp, sudo -iu x).
+func wrapperOption(opt string, valued map[string]bool) (name string, takesNext bool) {
+	if valued[opt] {
+		return opt, true
+	}
+	if long, _, ok := strings.Cut(opt, "="); ok && strings.HasPrefix(opt, "--") {
+		if valued[long] {
+			return long, false
+		}
+		return "", false
+	}
+	if strings.HasPrefix(opt, "--") {
+		return "", false
+	}
+	for i := 1; i < len(opt); i++ {
+		if short := "-" + opt[i:i+1]; valued[short] {
+			return short, i == len(opt)-1
+		}
+	}
+	return "", false
 }
 
 // commands splits a Bash summary into its commands. The request's
@@ -509,6 +534,9 @@ func commandsIn(summary, cwd string, depth int) ([]shellCmd, string) {
 		if len(words) == 0 {
 			continue
 		}
+		if c.chdir { // env -C, sudo -D...: the command runs elsewhere
+			c.cwd = cwdUnknown
+		}
 		if strings.HasPrefix(words[0], "$") { // the program is a variable's value
 			out = append(out, shellCmd{w: []string{hiddenMark}, cwd: cwd})
 		}
@@ -526,11 +554,7 @@ func commandsIn(summary, cwd string, depth int) ([]shellCmd, string) {
 				out = append(out, shellCmd{w: []string{mark}, cwd: cwd})
 				continue
 			}
-			innerCwd := cwd
-			if c.chdir { // env -C, sudo -D...: the string runs elsewhere
-				innerCwd = cwdUnknown
-			}
-			sub, subCwd := commandsIn(inner, innerCwd, depth+1)
+			sub, subCwd := commandsIn(inner, c.cwd, depth+1)
 			for _, ic := range sub {
 				ic.elsewhere = ic.elsewhere || c.elsewhere
 				out = append(out, ic)
