@@ -293,6 +293,25 @@ final class SessionChatViewTests: XCTestCase {
         XCTAssertEqual(runner.calls.count, 1 + SessionChatView.maxPagesWithoutDialog)
     }
 
+    /// The batch stops before the next page once the pane is off screen (the poll's gate), and leaves the
+    /// "Load earlier messages" button to go on (final fix).
+    func testPagingStopsOffScreen() async {
+        let pages = (0...SessionChatView.maxPagesWithoutDialog).map { page([marker("m\($0)")], before: "m\($0)") }
+        let runner = PageRunner([page([agent("e90")], before: "e90")] + pages)
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        var checks = 0
+        let added = await SessionChatView.pageEarlier(store: store, retry: false) {
+            checks += 1
+            return checks <= 2
+        }
+        XCTAssertEqual(added, .stalled)
+        XCTAssertEqual(runner.calls.count, 1 + 2, "two pages, then the window went off screen")
+        let offScreen = await SessionChatView.pageEarlier(store: store, retry: false) { false }
+        XCTAssertEqual(offScreen, .stalled)
+        XCTAssertEqual(runner.calls.count, 3, "nothing read off screen")
+    }
+
     /// Answers each read by its arguments (`respond`), so the order in which
     /// the poll and the pages reach the CLI does not matter; holds the read
     /// `holds` picks until `open()`, and `reached` yields once it started.

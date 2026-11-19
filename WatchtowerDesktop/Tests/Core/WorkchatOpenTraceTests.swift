@@ -56,15 +56,21 @@ final class WorkchatOpenTraceTests: XCTestCase {
         XCTAssertEqual(trace.report, report)
     }
 
-    @MainActor func testStoreKeepsOneLiveTraceAndReplacesAFinishedOne() {
+    /// Each open starts its own trace: an unpainted one (its pane closed first) is abandoned, never reused, so it
+    /// cannot poison the next open's total or label (final fix).
+    @MainActor func testEachOpenStartsAFreshTrace() {
         let store = SessionFeedStore(sessionID: 3, runner: nil)
         let first = store.openTrace
         XCTAssertNotNil(first)
         store.beginOpenTrace(reopen: true)
-        XCTAssertTrue(store.openTrace === first, "a live trace is kept")
+        let second = store.openTrace
+        XCTAssertFalse(second === first, "an unpainted trace is replaced")
         first?.mark(.paint)
+        XCTAssertNil(first?.report, "an abandoned trace never reports")
+        second?.mark(.paint)
+        XCTAssertTrue(second?.report?.contains(" reopen ") ?? false)
         store.beginOpenTrace(reopen: true)
-        XCTAssertFalse(store.openTrace === first, "a finished trace is replaced")
+        XCTAssertFalse(store.openTrace === second, "a finished trace is replaced")
         XCTAssertNil(store.openTrace?.report)
     }
 }

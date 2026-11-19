@@ -104,32 +104,6 @@ struct SessionChatView: View {
         WorkchatLivePresentation.busy(vm.sessionStatuses[sessionID]?.state)
     }
 
-    /// The live line (Task 6): the agent's open step, Agents working or
-    /// Thinking…, from the main feed's `activity`. The permission card
-    /// replaces it while it shows.
-    private var activityLine: WorkchatActivityPresenter.Line? {
-        guard permission == nil else { return nil }
-        return Self.activityLine(
-            activity: store.activity, working: working, background: stateKind == .background,
-            status: vm.sessionStatuses[sessionID],
-            entries: store.entries,
-            runningSubagents: store.subagents.count { $0.subagent?.status == "running" })
-    }
-
-    static func activityLine(
-        activity: SessionFeedActivity?,
-        working: Bool,
-        background: Bool,
-        status: SessionAgentStatus?,
-        entries: [SessionFeedEntry],
-        runningSubagents: Int
-    ) -> WorkchatActivityPresenter.Line? {
-        let lastAgent = entries.last { $0.kind == "agent" }
-        return WorkchatActivityPresenter.line(
-            activity: activity, working: working, background: background, runningSubagents: runningSubagents,
-            stateAt: SessionFeedEntry.parseDate(status?.at), lastAgentAt: lastAgent?.at)
-    }
-
     /// The session's pending prompt, shown only while the session takes
     /// lines: a finished one's stale row is not answered from here.
     private var permission: SessionControl.PermissionPrompt? {
@@ -496,7 +470,7 @@ struct SessionChatView: View {
         guard pagingTask == nil else { return }
         let top = dialogEntries.first?.id
         pagingTask = Task {
-            let result = await Self.pageEarlier(store: store, retry: retry)
+            let result = await Self.pageEarlier(store: store, retry: retry) { vm.isTabOnScreen() }
             pagingTask = nil
             guard !Task.isCancelled else { return }
             pagingStalled = result == .stalled
@@ -512,8 +486,9 @@ struct SessionChatView: View {
     enum EarlierBatch: Equatable {
         /// A page added dialog entries.
         case added
-        /// `maxPagesWithoutDialog` pages added none and more exist: the next
-        /// batch waits for the owner's "Load earlier messages".
+        /// `maxPagesWithoutDialog` pages added none, or the pane went off
+        /// screen, and more exist: the next batch waits for the owner's
+        /// "Load earlier messages".
         case stalled
         /// A failure, the end of the paging, a page already being read, or
         /// the batch was cancelled.
@@ -524,12 +499,18 @@ struct SessionChatView: View {
     /// markers alone, or of entries already held, leaves the feed's height
     /// as it was, so nothing would ask again). Counts only what each page
     /// itself added: a poll appending to the tail meanwhile never ends the
-    /// batch.
+    /// batch. The poll's off-screen gate (`isOnScreen`: the window minimized
+    /// or covered) ends it before the next page, as stalled.
     @MainActor
-    static func pageEarlier(store: SessionFeedStore, retry: Bool) async -> EarlierBatch {
+    static func pageEarlier(
+        store: SessionFeedStore,
+        retry: Bool,
+        isOnScreen: () -> Bool = { true }
+    ) async -> EarlierBatch {
         var retry = retry
         for _ in 0..<maxPagesWithoutDialog {
             guard !Task.isCancelled, store.hasEarlierPage, !store.loadingEarlierPage else { return .stopped }
+            guard isOnScreen() else { return store.earlierPageError == nil ? .stalled : .stopped }
             let added = retry ? await store.retryEarlierPage() : await store.loadEarlierPage()
             retry = false
             if added > 0 { return .added }

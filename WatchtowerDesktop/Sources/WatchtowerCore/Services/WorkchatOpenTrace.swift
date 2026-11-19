@@ -22,6 +22,8 @@ package final class WorkchatOpenTrace {
     private var marks: [WorkchatOpenPhase: ContinuousClock.Instant] = [:]
     private var interval: (state: OSSignpostIntervalState, phase: WorkchatOpenPhase)?
     private var reported: String?
+    /// The pane closed before its first paint (`abandon()`): no more marks, no report.
+    private var abandoned = false
 
     package init(sessionID: Int64, reopen: Bool, clock: @escaping () -> ContinuousClock.Instant = { ContinuousClock.now }) {
         self.sessionID = sessionID
@@ -35,7 +37,7 @@ package final class WorkchatOpenTrace {
     package func mark(_ phase: WorkchatOpenPhase) {
         // Once the report is out the open is over: a later poll must not start
         // an interval that nothing closes.
-        guard reported == nil, marks[phase] == nil else { return }
+        guard reported == nil, !abandoned, marks[phase] == nil else { return }
         marks[phase] = clock()
         let signposter = Self.signposter
         if let interval { signposter.endInterval(Self.name(interval.phase), interval.state) }
@@ -44,6 +46,15 @@ package final class WorkchatOpenTrace {
         let line = makeReport()
         reported = line
         Self.log.notice("\(line, privacy: .public)")
+    }
+
+    /// Ends an open whose pane went before painting: its open interval closes,
+    /// later marks are ignored and it never reports.
+    package func abandon() {
+        guard reported == nil, !abandoned else { return }
+        abandoned = true
+        if let interval { Self.signposter.endInterval(Self.name(interval.phase), interval.state) }
+        interval = nil
     }
 
     /// Gaps in enum order; a phase that never happened (a kept store paints

@@ -80,6 +80,20 @@ final class WorkbenchesFeedStoreTests: XCTestCase {
         XCTAssertTrue(trace.report?.contains(" reopen ") ?? false)
     }
 
+    /// A pane that closed before painting leaves no trace behind: the next open of the kept store times itself.
+    func testReopenBeforePaintStartsAFreshTrace() throws {
+        let vm = makeVM(FeedRunner())
+        let store = vm.feedStore(sessionID: 1)
+        let unpainted = try XCTUnwrap(store.openTrace)
+        _ = vm.feedStore(sessionID: 1)
+        let trace = try XCTUnwrap(store.openTrace)
+        XCTAssertFalse(trace === unpainted)
+        trace.mark(.paint)
+        XCTAssertNotNil(trace.report)
+        unpainted.mark(.paint)
+        XCTAssertNil(unpainted.report)
+    }
+
     func testForgetProcessStateDropsTheStore() {
         let vm = makeVM(FeedRunner())
         let store = vm.feedStore(sessionID: 1)

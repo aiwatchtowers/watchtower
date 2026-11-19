@@ -77,12 +77,13 @@ package final class SessionFeedStore: ObservableObject {
         beginOpenTrace(reopen: false)
     }
 
-    /// Starts the trace of one pane open and marks `.appear`. One trace per
-    /// open: while the current one has not reported, it stays (a re-appear or
-    /// a poll never starts a second); a finished one is replaced, so a kept
-    /// store shown again (`reopen: true`) times its own open.
+    /// Starts the trace of one pane open and marks `.appear`. Called once
+    /// per open (the store's init, `WorkbenchesViewModel.feedStore`), so a
+    /// kept store shown again (`reopen: true`) always times its own open: a
+    /// trace a pane left unpainted is abandoned (its interval ends), never
+    /// carried into the next open.
     package func beginOpenTrace(reopen: Bool) {
-        if let openTrace, openTrace.report == nil { return }
+        openTrace?.abandon()
         let trace = WorkchatOpenTrace(sessionID: sessionID, reopen: reopen)
         openTrace = trace
         trace.mark(.appear)
