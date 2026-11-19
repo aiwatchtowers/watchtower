@@ -423,6 +423,20 @@ func reviseSlackSend(_ context.Context, _ *db.DB, stored, patch json.RawMessage)
 	return mergeJSON(stored, changes)
 }
 
+// SlackSendNeedsWorkspace reports whether a send_slack_message proposal's
+// stored args still wait for the workspace to send from (no pinned target):
+// an approve is refused until it is chosen on the Mac (slackSendReady). It
+// reads the whole stored args, so a card whose display args were clipped
+// still knows (mobile Inbox spec §12.1). False for any other tool and for
+// unreadable args.
+func SlackSendNeedsWorkspace(tool, argsJSON string) bool {
+	if tool != "send_slack_message" {
+		return false
+	}
+	s, err := decodeStoredSlackSend(json.RawMessage(argsJSON))
+	return err == nil && s.Target == nil
+}
+
 func slackSendReady(args json.RawMessage) error {
 	s, err := decodeStoredSlackSend(args)
 	if err != nil {

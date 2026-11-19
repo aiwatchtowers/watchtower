@@ -245,6 +245,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
         let questions = CodeQuestionCenter(defaultChoice: claude)
         questions.workbenches = vm
         questions.dbPool = pool
+        questions.chatWrites = .fake(pool)
         let dbPool: DatabasePool = pool
         questions.embeddedChats = EmbeddedChatCenter { spec, gate in makeSurfaceEngine(spec, dbPool: dbPool, ai: ai, gate: gate) }
         return questions

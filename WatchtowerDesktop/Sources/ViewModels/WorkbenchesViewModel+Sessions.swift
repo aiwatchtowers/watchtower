@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import WatchtowerCore
+import WatchtowerInterface
 
 /// Project and standalone terminal sessions (spec
 /// 2026-09-30-project-workspace-sessions §§2–5). Every result is keyed by
@@ -320,7 +321,7 @@ extension WorkbenchesViewModel {
     /// exit was already reported write nothing. A shell that exits a moment
     /// later (`claude` missing, a refused resume) is still `.running` here —
     /// its exit arrives asynchronously — so it does move the target (v1).
-    /// The write (`WorkbenchQueries.markInProgressOnWorkOn`) re-reads
+    /// The write (Go's `targets.work_on`) re-reads
     /// the status in its own transaction: only a `todo` task moves, never a
     /// group or a status the agent or the owner set meanwhile. The target and
     /// the parents the rollup moved are reported as the owner's writes (no
@@ -329,11 +330,12 @@ extension WorkbenchesViewModel {
     private func markInProgressOnWorkOn(_ targetID: Int64, session row: TerminalSession) async {
         guard terminalCenter?.states[row.id] == .running, let projectID = row.projectID else { return }
         do {
-            let rolledUp = try await dbPool.write {
-                try WorkbenchQueries.markInProgressOnWorkOn($0, targetID: targetID)
+            guard let tower else { throw TowerWriteError(TowerText.daemonDown) }
+            let result: WorkOnResult = try await tower.perform(.targetsWorkOn) {
+                ScreenIDRequest(requestID: $0, id: targetID)
             }
-            guard let rolledUp else { return }
-            for id in [targetID] + rolledUp {
+            guard result.moved else { return }
+            for id in [targetID] + result.rolledUp.sorted() {
                 onOwnerWrite?(projectID, .target(id))
             }
             boardReloads[projectID, default: 0] += 1

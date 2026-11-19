@@ -362,6 +362,10 @@ func writeBoardColumns(tx *sql.Tx, projectID int64, stored, cols []BoardColumn) 
 // written: the leaf keeps its progress and no history row is added. A column
 // that is not of the target's workbench and status is refused by the trigger.
 func (db *DB) SetTargetColumnTx(tx *sql.Tx, targetID int64, status string, columnID *int64, actor string) error {
+	return setTargetColumnTx(tx, targetID, status, columnID, actor)
+}
+
+func setTargetColumnTx(tx *sql.Tx, targetID int64, status string, columnID *int64, actor string) error {
 	col := sql.NullInt64{}
 	if columnID != nil {
 		col = sql.NullInt64{Int64: *columnID, Valid: true}

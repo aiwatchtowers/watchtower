@@ -37,15 +37,15 @@ struct InboxCardButtons: View {
 
     var body: some View {
         let actions = drawsOwnActions ? InboxCardAction.ownActions(card) : []
-        let reply = InboxCardAction.replyState(card)
+        let buttons = targets.feedButtons(card.id)
         VStack(alignment: .leading, spacing: Spacing.regular) {
             if !actions.isEmpty {
                 // Up to four 40-character labels: the row wraps in a narrow pane.
                 FlowLayout(spacing: Spacing.regular) {
                     ForEach(actions, id: \.index) { action in
-                        ownButton(action, reply: reply)
+                        ownButton(action, buttons: buttons)
                     }
-                    if actions.contains(where: \.isReply), let caption = Self.caption(reply) {
+                    if actions.contains(where: \.isReply), let caption = buttons.replyCaption {
                         Text(caption)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -61,11 +61,11 @@ struct InboxCardButtons: View {
     // MARK: - The card's own buttons
 
     @ViewBuilder
-    private func ownButton(_ action: InboxCardAction, reply: InboxReplyState) -> some View {
+    private func ownButton(_ action: InboxCardAction, buttons: InboxFeedButtons) -> some View {
         if case .target(let target) = action.kind {
             targetButton(action, target: target)
         } else {
-            plainButton(action, reply: reply)
+            plainButton(action, buttons: buttons)
         }
     }
 
@@ -79,9 +79,9 @@ struct InboxCardButtons: View {
     }
 
     @ViewBuilder
-    private func plainButton(_ action: InboxCardAction, reply: InboxReplyState) -> some View {
-        let button = Button(Self.label(action, card: card, reply: reply)) { press(action, reply: reply) }
-            .disabled(isDisabled(action, reply: reply))
+    private func plainButton(_ action: InboxCardAction, buttons: InboxFeedButtons) -> some View {
+        let button = Button(Self.label(action, buttons: buttons)) { press(action, buttons: buttons) }
+            .disabled(isDisabled(action, buttons: buttons))
             .help(help(action))
             .popover(isPresented: isPicking(action.index), arrowEdge: .bottom) {
                 InboxWorkbenchPicker(workbenches: workbenches, onPick: pick).popoverSurface()
@@ -93,36 +93,22 @@ struct InboxCardButtons: View {
         }
     }
 
-    private func press(_ action: InboxCardAction, reply: InboxReplyState) {
-        switch InboxCardPress.resolve(action, card: card, reply: reply, workbenches: workbenches) {
+    private func press(_ action: InboxCardAction, buttons: InboxFeedButtons) {
+        switch InboxCardPress.resolve(action, card: card, buttons: buttons, workbenches: workbenches) {
         case .command(let command): onCommand(command)
         case .pick(let task): picking = AgentPick(anchor: action.index, task: task)
         case .nothing: break
         }
     }
 
-    private func isDisabled(_ action: InboxCardAction, reply: InboxReplyState) -> Bool {
-        InboxCardPress.isDisabled(action, reply: reply, isWriting: isWriting, navScreens: navScreens)
+    private func isDisabled(_ action: InboxCardAction, buttons: InboxFeedButtons) -> Bool {
+        InboxCardPress.isDisabled(action, buttons: buttons, isWriting: isWriting, navScreens: navScreens)
     }
 
-    /// The pressed Reply reads "Sent — run #N"; every other button keeps
-    /// the label its recipe wrote.
-    static func label(_ action: InboxCardAction, card: AutomationOutputCard, reply: InboxReplyState) -> String {
-        guard action.isReply, case let .sent(runID) = reply, card.pressedAction == action.index else {
-            return action.label
-        }
-        return runID.map { "Sent — run #\($0)" } ?? "Sent"
-    }
-
-    /// Why the Reply buttons will not send right now.
-    static func caption(_ reply: InboxReplyState) -> String? {
-        switch reply {
-        case .ready, .sent: nil
-        case .needsConfirmation: "Needs confirmation"
-        case .off: "Off"
-        case .unreadable: "Recipe can't be read"
-        case .removed: "Recipe removed"
-        }
+    /// A Reply's label is the feed's ("Sent — run #N" on the pressed one);
+    /// every other button keeps the label its recipe wrote.
+    static func label(_ action: InboxCardAction, buttons: InboxFeedButtons) -> String {
+        action.isReply ? buttons.label(at: action.index, recipe: action.label) : action.label
     }
 
     private func help(_ action: InboxCardAction) -> String {

@@ -40,6 +40,18 @@ package enum TimeFormatting {
         return "\(Int(interval / 86400))d"
     }
 
+    /// The time between `date` and `now` as SwiftUI's `Text(_:style: .relative)`
+    /// words it ("26 days, 23 hr"), for a screen drawn at a fixed moment (the
+    /// design shots).
+    package static func relativeSpan(from date: Date, now: Date, calendar: Calendar = .current) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.calendar = calendar
+        formatter.unitsStyle = .short
+        formatter.maximumUnitCount = 2
+        formatter.allowedUnits = [.year, .month, .day, .hour, .minute, .second]
+        return formatter.string(from: min(date, now), to: max(date, now)) ?? ""
+    }
+
     /// Relative time from unix timestamp
     package static func relativeTimeFromUnix(_ ts: Double) -> String {
         relativeTime(from: Date(timeIntervalSince1970: ts))

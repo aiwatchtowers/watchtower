@@ -34,7 +34,41 @@ final class RelayChatClient: ChatClient {
     /// The approvals whose answer is on its way (agent action ids): their buttons are off.
     private(set) var answering: Set<Int64> = []
     /// The last refusal of an answer, by agent action id.
-    private(set) var approvalFailures: [Int64: ChatActionFailure] = [:]
+    private(set) var approvalFailures: [Int64: ScopedFailure] = [:]
+
+    /// An answer's failure, kept only while the action is as it was when the answer went (its status, error and
+    /// dismissal): once the feed moves, "Didn't confirm" or the refusal clears and the card offers what the action
+    /// offers now (mobile Inbox spec §12.9).
+    struct ScopedFailure: Equatable {
+        let failure: ChatActionFailure
+        let fingerprint: String
+    }
+
+    /// What an answer's failure is scoped to.
+    static func fingerprint(status: String, error: String, dismissedAt: String) -> String {
+        "\(status)|\(dismissedAt)|\(error)"
+    }
+
+    /// A stored failure goes for good once the feed shows its action in another state (§12.9): a later return to the
+    /// same status and error is a new state of the action, not the one the answer failed on.
+    private func dropMovedFailures(_ snapshot: ChatsSnapshot) {
+        guard !approvalFailures.isEmpty else { return }
+        for entry in snapshot.feeds.values {
+            for action in entry.feed.actions {
+                guard let scoped = approvalFailures[action.id] else { continue }
+                let now = Self.fingerprint(status: action.status, error: action.error, dismissedAt: action.dismissedAt)
+                if now != scoped.fingerprint { approvalFailures[action.id] = nil }
+            }
+        }
+    }
+
+    /// The action's failure while the feed still shows it as it was when the answer went.
+    func failure(for payload: ChatApprovalPayload) -> ChatActionFailure? {
+        guard let scoped = approvalFailures[payload.id],
+              scoped.fingerprint == Self.fingerprint(status: payload.status, error: payload.error, dismissedAt: payload.dismissedAt)
+        else { return nil }
+        return scoped.failure
+    }
     /// The opened chats whose feed did not come within `recordPatience` of their request.
     private(set) var unanswered: Set<Int64> = []
 
@@ -273,6 +307,7 @@ final class RelayChatClient: ChatClient {
     /// as gone, and a page or a search waiting for its record hears it.
     func snapshotChanged() {
         let snapshot = self.snapshot
+        dropMovedFailures(snapshot)
         let gone = Set(feedRequests.compactMap { conversation, action in
             snapshot.failures[action]?.reason == .notFound ? conversation : nil
         })
@@ -471,42 +506,65 @@ final class RelayChatClient: ChatClient {
         await decide(ChatAgentAction(payload: payload), decision, permissions: permissions)
     }
 
-    /// The shared card's answer: the action it showed, pinned to the digest the hub sent (AGENT-07).
-    func decide(_ action: ChatAgentAction, _ decision: ChatApprovalDecision, permissions: Bool) async {
-        // An approve pins the digest the hub sent (AGENT-07); with none there is nothing to pin, and only Reject goes.
-        guard permissions, isConnected, action.status == "pending", !answering.contains(action.id),
-              decision == .reject || action.approveDigest != nil else { return }
+    /// The shared card's answer: the action it showed, pinned to the digest the hub sent (AGENT-07). Retry and Dismiss
+    /// (mobile Inbox spec §12.9) go only to a hub whose heartbeat has `chat_actions` (`retryDismiss`), only on the
+    /// action that offers them, and never while the hub is away (nothing queues, ask #1570).
+    func decide(_ action: ChatAgentAction, _ decision: ChatApprovalDecision, permissions: Bool, retryDismiss: Bool = false) async {
+        guard permissions, isConnected, !answering.contains(action.id),
+              Self.mayAnswer(action, decision, retryDismiss: retryDismiss) else { return }
         let digest = action.approveDigest ?? ""
         answering.insert(action.id)
         approvalFailures[action.id] = nil
         defer { answering.remove(action.id) }
-        let params = ChatActionAnswerParams(
-            actionID: action.id, decision: decision == .approve ? .approve : .reject, argsSHA256: digest
-        )
+        let fingerprint = Self.fingerprint(status: action.status, error: action.error, dismissedAt: action.dismissedAt)
+        let params = ChatActionAnswerParams(actionID: action.id, decision: Self.wire(decision), argsSHA256: digest)
         switch await sender.request(params) {
         case .applied:
             break
         case let .failed(failure):
-            approvalFailures[action.id] = failure
+            approvalFailures[action.id] = ScopedFailure(failure: failure, fingerprint: fingerprint)
         case .lost:
-            approvalFailures[action.id] = ChatActionFailure(reason: nil, message: ChatSendCoordinator.couldNotSend)
+            approvalFailures[action.id] = ScopedFailure(
+                failure: ChatActionFailure(reason: nil, message: ChatSendCoordinator.couldNotSend), fingerprint: fingerprint)
+        }
+    }
+
+    /// Whether `decision` may go for `action`: Approve (with a digest to pin) and Reject on a pending action; Retry and
+    /// Dismiss where the card offers them, to a hub that takes them.
+    static func mayAnswer(_ action: ChatAgentAction, _ decision: ChatApprovalDecision, retryDismiss: Bool) -> Bool {
+        switch decision {
+        case .approve: action.isPending && action.approveDigest != nil
+        case .reject: action.isPending
+        case .retry: retryDismiss && AgentActionCard.settledOffer(for: action) == .retry
+        case .dismiss: retryDismiss && AgentActionCard.settledOffer(for: action) == .dismiss
+        }
+    }
+
+    static func wire(_ decision: ChatApprovalDecision) -> ChatActionDecision {
+        switch decision {
+        case .approve: .approve
+        case .reject: .reject
+        case .retry: .retry
+        case .dismiss: .dismiss
         }
     }
 
     /// The card of one action as this phone may answer it.
-    func approvalCard(_ payload: ChatApprovalPayload, permissions: Bool, host: TowerHost) -> ChatApprovalCardModel {
+    func approvalCard(_ payload: ChatApprovalPayload, permissions: Bool, host: TowerHost, retryDismiss: Bool = false) -> ChatApprovalCardModel {
         ChatApprovalCardModel(
             payload: payload, permissions: permissions, online: isConnected, inFlight: answering.contains(payload.id),
-            failure: approvalFailures[payload.id], host: host
+            failure: failure(for: payload), host: host, retryDismiss: retryDismiss
         )
     }
 
-    /// The shared card's state for the action it shows (its id and status are all the state reads).
-    func approvalCard(_ action: ChatAgentAction, permissions: Bool, host: TowerHost) -> ChatApprovalCardModel {
+    /// The shared card's state for the action it shows (its id, status, tool, error and dismissal are what the state
+    /// reads).
+    func approvalCard(_ action: ChatAgentAction, permissions: Bool, host: TowerHost, retryDismiss: Bool = false) -> ChatApprovalCardModel {
         approvalCard(ChatApprovalPayload(id: action.id, tool: action.tool, title: "", argsDisplay: action.argsJSON,
-                                         argsSHA256: action.argsSHA256, status: action.status, turnID: action.turnID,
-                                         argsComplete: action.argsComplete),
-                     permissions: permissions, host: host)
+                                         argsSHA256: action.argsSHA256, status: action.status, error: action.error,
+                                         turnID: action.turnID, argsComplete: action.argsComplete,
+                                         dismissedAt: action.dismissedAt),
+                     permissions: permissions, host: host, retryDismiss: retryDismiss)
     }
 
     // MARK: - Echo mapping

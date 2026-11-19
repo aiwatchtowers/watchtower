@@ -43,6 +43,30 @@ func TestHeartbeatCarriesTheRecordingsCapability(t *testing.T) {
 	}
 }
 
+// TestHeartbeatCarriesTheInboxCapability: "on" while the Inbox is
+// published, "policy_off" with the reason "policy" under workbench_only, a
+// change restamps at once, and no Inbox fact leaves the key out (an older
+// hub).
+func TestHeartbeatCarriesTheInboxCapability(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	var on atomic.Bool
+	on.Store(true)
+	f := heartbeatFacts(func() time.Time { return now }, nil)
+	f.Inbox = on.Load
+	src := HeartbeatSource(f)
+	if p := onlyItem(t, src).Payload; !bytes.Contains(p, []byte(`"capabilities":{"inbox":"on"}`)) {
+		t.Fatalf("payload %s", p)
+	}
+	on.Store(false)
+	now = now.Add(time.Second)
+	if p := onlyItem(t, src).Payload; !bytes.Contains(p, []byte(`"capabilities":{"inbox":"policy_off","inbox_reason":"policy"}`)) {
+		t.Fatalf("payload %s", p)
+	}
+	if c := capabilitiesOf(t, onlyItem(t, HeartbeatSource(heartbeatFacts(func() time.Time { return now }, nil))).Payload); c != nil {
+		t.Fatalf("capabilities without an Inbox fact: %+v", c)
+	}
+}
+
 // TestHeartbeatCarriesTheHubKind: the hub kind goes out as hub_kind (#1783);
 // no kind fact leaves the key out, as an older hub does.
 func TestHeartbeatCarriesTheHubKind(t *testing.T) {
@@ -98,12 +122,14 @@ func TestHeartbeatCarriesTheChatCapability(t *testing.T) {
 	f := heartbeatFacts(func() time.Time { return now }, nil)
 	f.Chat = func() (bool, string) { return on, reason }
 	src := HeartbeatSource(f)
-	if c := capabilitiesOf(t, onlyItem(t, src).Payload); c == nil || c.Chat != "on" || c.ChatReason != "" {
+	if c := capabilitiesOf(t, onlyItem(t, src).Payload); c == nil || c.Chat != "on" || c.ChatReason != "" ||
+		c.ChatActions != wire.ChatActionsRetryDismiss {
 		t.Fatalf("capabilities = %+v", c)
 	}
 	on, reason = false, wire.ChatOffRunnerDown
 	now = now.Add(time.Second)
-	if c := capabilitiesOf(t, onlyItem(t, src).Payload); c == nil || c.Chat != "off" || c.ChatReason != wire.ChatOffRunnerDown {
+	if c := capabilitiesOf(t, onlyItem(t, src).Payload); c == nil || c.Chat != "off" || c.ChatReason != wire.ChatOffRunnerDown ||
+		c.ChatActions != "" {
 		t.Fatalf("capabilities = %+v", c)
 	}
 }

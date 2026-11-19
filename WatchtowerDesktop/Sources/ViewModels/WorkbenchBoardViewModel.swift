@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import WatchtowerCore
+import WatchtowerInterface
 
 /// The project page's Board pane: the target tree, one selected target's
 /// detail and its comment threads. Owner edits are direct GRDB writes through
@@ -226,9 +227,14 @@ final class WorkbenchBoardViewModel {
     private var fingerprint = ""
     private var pollTask: Task<Void, Never>?
 
-    init(dbPool: DatabasePool, projectID: Int64, defaults: UserDefaults = .standard) {
+    /// The owner's status and card moves go through it (nil: a board made
+    /// without the app's tower; such a move fails with the daemon's sentence).
+    @ObservationIgnored private let tower: (any TowerSending)?
+
+    init(dbPool: DatabasePool, projectID: Int64, defaults: UserDefaults = .standard, tower: (any TowerSending)? = nil) {
         self.dbPool = dbPool
         self.projectID = projectID
+        self.tower = tower
         let preferences = WorkbenchBoardPreferences(workbenchID: projectID, defaults: defaults)
         self.preferences = preferences
         mode = preferences.mode
@@ -585,8 +591,9 @@ final class WorkbenchBoardViewModel {
         guard after != status else { return nil }
         // The rollup (PROJ-05) may move the target's parents in the same
         // write; they are the owner's doing too, so they never notify.
-        return placementWrite(id, Placement(status: status, columnID: nil), "change the status") { db in
-            try WorkbenchOwnerWrites.setStatus(db, targetID: Int64(id), status: status).rolledUp
+        return placementWrite(id, Placement(status: status, columnID: nil), "change the status",
+                              command: .targetsSetStatus) {
+            TargetStatusRequest(requestID: $0, id: Int64(id), status: status)
         }
     }
 
@@ -599,19 +606,48 @@ final class WorkbenchBoardViewModel {
 
     /// A status or card move, remembered as the target's placement until it
     /// settled (unless a later move replaced it), so the next pick compares
-    /// with it rather than with the board read before it was queued.
-    private func placementWrite(
+    /// with it rather than with the board read before it was queued. Go
+    /// writes it (`targets.set_status` / `targets.set_column`, #1170 Task 12)
+    /// as the owner's (PROJ-06), with the PROJ-05 rollup in the same write;
+    /// every target it names and every parent it rolled up
+    /// (`WorkbenchOwnerWrite.touched`) is reported to `onOwnerWrite`, so none
+    /// notifies. The press's key is the target and its placement: picking
+    /// the same move again after a failure with no answer re-sends the same
+    /// request_id.
+    private func placementWrite<Params: Encodable & Sendable>(
         _ id: Int,
         _ placement: Placement,
         _ what: String,
-        _ body: @escaping @Sendable (Database) throws -> [Int64]
+        command: TowerCommand,
+        _ params: @escaping (String) -> Params
     ) -> Task<Bool, Never> {
         placementToken += 1
         let token = placementToken
         queuedPlacements[id] = (placement, token)
-        return startWrite(what, target: id, onSettled: { [weak self] in
-            if self?.queuedPlacements[id]?.token == token { self?.queuedPlacements[id] = nil }
-        }, body)
+        let tower = tower
+        let key = "board|\(id)|\(placement.status)|\(placement.columnID.map(String.init) ?? "")"
+        return writes.start { [weak self] () async -> Bool in
+            defer {
+                if self?.queuedPlacements[id]?.token == token { self?.queuedPlacements[id] = nil }
+            }
+            do {
+                guard let tower else { throw TowerWriteError(TowerText.daemonDown) }
+                let result: TargetStatusResult = try await tower.perform(command, key: key, params)
+                guard let self else { return true }
+                self.errorMessage = nil
+                let write = WorkbenchOwnerWrite(result, target: Int64(id))
+                for touched in write.touched { self.onOwnerWrite?(self.projectID, .target(touched)) }
+                self.load()
+                return true
+            } catch {
+                guard let self else { return false }
+                self.errorMessage = "Could not \(what): \(error.localizedDescription)"
+                // Go's refusal (a card deleted elsewhere, a column of
+                // another status): the board as it is now.
+                self.load()
+                return false
+            }
+        }
     }
 
     /// A Kanban drop on `column`, or the panel's column menu (board #267):
@@ -649,8 +685,9 @@ final class WorkbenchBoardViewModel {
             )
             guard current.target.status != status || shown?.id != columnID else { return nil }
         }
-        return placementWrite(id, Placement(status: status, columnID: columnID), "move the card") { db in
-            try WorkbenchOwnerWrites.moveToColumn(db, targetID: Int64(id), status: status, columnID: columnID).rolledUp
+        return placementWrite(id, Placement(status: status, columnID: columnID), "move the card",
+                              command: .targetsSetColumn) {
+            TargetColumnRequest(requestID: $0, id: Int64(id), status: status, columnID: columnID)
         }
     }
 

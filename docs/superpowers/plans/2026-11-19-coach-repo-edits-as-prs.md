@@ -17,7 +17,7 @@ Guard suites every Go task also runs: `go test ./internal/coach -run 'TestCOACH0
 
 Depends on: none.
 
-- Migration `internal/db/migrations/00197_coach_pr_urls.sql`: `ALTER TABLE coach_proposals ADD COLUMN pr_url TEXT NOT
+- Migration `internal/db/migrations/00198_coach_pr_urls.sql`: `ALTER TABLE coach_proposals ADD COLUMN pr_url TEXT NOT
   NULL DEFAULT ''` and `revert_pr_url` alike (plain `ADD COLUMN`, no rebuild). Mirror into `internal/db/schema.sql`;
   regenerate the golden and `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift`
   (`go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`).

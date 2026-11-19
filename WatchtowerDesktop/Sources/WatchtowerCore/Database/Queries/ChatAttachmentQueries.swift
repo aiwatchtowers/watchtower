@@ -16,12 +16,4 @@ package enum ChatAttachmentQueries {
         }
         return out
     }
-
-    package static func delete(_ db: Database, id: Int64) throws {
-        try db.execute(sql: "DELETE FROM chat_attachments WHERE id = ?", arguments: [id])
-    }
-
-    package static func referenceCount(_ db: Database, path: String) throws -> Int {
-        try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM chat_attachments WHERE path = ?", arguments: [path]) ?? 0
-    }
 }

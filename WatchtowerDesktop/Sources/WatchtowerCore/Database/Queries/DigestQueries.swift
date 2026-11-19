@@ -61,64 +61,6 @@ package enum DigestQueries {
 
     // MARK: - Read tracking
 
-    /// Best-effort, unchecked: zero rows also means "already read" (`read_at IS
-    /// NULL` guard), and a digest deleted meanwhile has nothing left to read.
-    package static func markDigestRead(_ db: Database, id: Int) throws {
-        try db.execute(
-            sql: "UPDATE digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ? AND read_at IS NULL",
-            arguments: [id]
-        )
-    }
-
-    /// Marks multiple digests read in one write. No-op on empty input.
-    package static func markRead(_ db: Database, ids: [Int]) throws {
-        guard !ids.isEmpty else { return }
-        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
-        try db.execute(
-            sql: """
-                UPDATE digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id IN (\(placeholders)) AND read_at IS NULL
-                """,
-            arguments: StatementArguments(ids)
-        )
-    }
-
-    package static func markDecisionRead(_ db: Database, digestID: Int, decisionIdx: Int) throws {
-        guard try db.tableExists("decision_reads") else { return }
-        try db.execute(
-            sql: """
-                INSERT INTO decision_reads (digest_id, decision_idx)
-                VALUES (?, ?)
-                ON CONFLICT DO NOTHING
-                """,
-            arguments: [digestID, decisionIdx]
-        )
-    }
-
-    /// Mark all decisions in a digest as read (cascade from digest read).
-    package static func markAllDecisionsRead(_ db: Database, digestID: Int) throws {
-        guard try db.tableExists("decision_reads") else { return }
-        // Parse decisions count from the digest
-        let decisionsJSON = try String.fetchOne(
-            db,
-            sql: "SELECT decisions FROM digests WHERE id = ?",
-            arguments: [digestID]
-        )
-        guard let json = decisionsJSON, json != "[]", !json.isEmpty,
-              let data = json.data(using: .utf8),
-              let decisions = try? JSONDecoder().decode([Decision].self, from: data) else { return }
-        for idx in 0..<decisions.count {
-            try db.execute(
-                sql: """
-                    INSERT INTO decision_reads (digest_id, decision_idx)
-                    VALUES (?, ?)
-                    ON CONFLICT DO NOTHING
-                    """,
-                arguments: [digestID, idx]
-            )
-        }
-    }
-
     package static func unreadDigestCount(_ db: Database) throws -> Int {
         try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM digests WHERE read_at IS NULL") ?? 0
     }

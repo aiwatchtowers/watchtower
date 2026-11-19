@@ -63,7 +63,7 @@ final class ViewWriteTests: XCTestCase {
         XCTAssertFalse(state.pending, "the next submit is allowed again")
     }
 
-    /// The track pane's shape: a toggle on a watch deleted elsewhere stays
+    /// The target pane's shape: a toggle on a target deleted elsewhere stays
     /// where it was.
     func testFailureKeepsTheToggle() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
@@ -71,7 +71,7 @@ final class ViewWriteTests: XCTestCase {
         let state = ViewState()
 
         await ViewWrite.run(manager.dbPool, { db in
-            try TrackQueries.setEnabled(db, id: 4242, enabled: false)
+            try TargetQueries.updatePriority(db, id: 4242, priority: "high")
         }, onSuccess: { state.collecting = false }, onFailure: { state.error = $0.localizedDescription })
 
         XCTAssertTrue(state.collecting, "the toggle stays on")

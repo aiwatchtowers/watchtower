@@ -9,6 +9,7 @@ package actions
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"sync"
@@ -100,11 +101,28 @@ type Handler func(ctx context.Context, r Request) Outcome
 // KindOptions describe a kind: NonIdempotent claims it begun before the
 // handler, ReceivedEcho echoes received before the handler, MaxAge is its
 // window (0 = ActionMaxAge) and Nudges are what the runtime refreshes after
-// an applied action (Config.Nudge).
+// an applied action (Config.Nudge). NonIdempotentFor (nil = none) decides
+// it per action from its params (the JSON object): one kind whose verbs
+// differ, such as inbox_act; a true from it claims the action as
+// NonIdempotent does.
 type KindOptions struct {
 	NonIdempotent, ReceivedEcho bool
 	MaxAge                      time.Duration
 	Nudges                      []string
+	NonIdempotentFor            func(params json.RawMessage) bool
+}
+
+// nonIdempotent reports whether a of this kind is claimed begun before its
+// handler. Params that do not encode are claimed (the safe side).
+func (o KindOptions) nonIdempotent(a wire.ActionRequest) bool {
+	if o.NonIdempotent {
+		return true
+	}
+	if o.NonIdempotentFor == nil {
+		return false
+	}
+	params, err := json.Marshal(a.Params)
+	return err != nil || o.NonIdempotentFor(params)
 }
 
 type registration struct {

@@ -86,6 +86,17 @@ func (h *hubRuntime) chatAvailable() (bool, string) {
 	return true, ""
 }
 
+// inboxAvailable is the heartbeat's inbox capability (mobile Inbox spec
+// §6): on while the hub publishes the Inbox (MobileSync allowed), else
+// policy_off (POLICY-03: workbench_only, or any mode that keeps company data
+// on the Mac); nil — no capability — on a hub without the daemon's tower.
+func (h *hubRuntime) inboxAvailable() func() bool {
+	if h.sup.o.Tower == nil {
+		return nil
+	}
+	return func() bool { return h.mode == policy.MobileAllowed }
+}
+
 // chatDeps is the handlers' chat side (nil under workbench_only, where the
 // sources have no chat).
 func (h *hubRuntime) chatDeps(o Options, w *wiring, path string) *handlers.ChatDeps {

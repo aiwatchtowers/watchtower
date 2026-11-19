@@ -48,7 +48,7 @@ struct DigestListView: View {
         }
         .onAppear {
             if let db = appState.databaseManager, viewModel == nil {
-                viewModel = DigestViewModel(dbManager: db)
+                viewModel = DigestViewModel(dbManager: db, tower: appState.screenTower)
             }
             // Unconditional (not only on first creation): `.onDisappear`
             // stops the observations, so a re-appearing view holding the same

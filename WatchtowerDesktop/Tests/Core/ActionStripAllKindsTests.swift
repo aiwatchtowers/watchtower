@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerCore
+import WatchtowerInterface
 import WatchtowerTestSupport
 
 /// The Inbox view model over every kind (C1 Task 5): one pure read
@@ -25,11 +26,17 @@ final class ActionStripAllKindsTests: XCTestCase {
         TestDatabase.cleanup(path: path)
     }
 
-    private var today: String { HomeFeedBuilder.dayString(Date(), calendar: .current) }
-
     private func makeVM(_ runner: CLIRunnerProtocol = FakeCLIRunner()) -> ActionStripViewModel {
         ActionStripViewModel(dbPool: pool, cliRunner: runner, defaults: defaults)
     }
+
+    /// The Go feed case `name` (`inbox_feed_cases.json`) seeded into the pool.
+    private func tower(_ name: String) throws -> FeedCaseTransport {
+        try FeedCaseTransport.seeded(name, pool: XCTUnwrap(pool))
+    }
+
+    /// The day the Go cases are built on (their `now`).
+    private static let caseDay = "2026-11-16"
 
     nonisolated private static func message(_ db: Database, _ n: Int, created: String = "2026-10-21T07:00:00Z") throws -> Int {
         let id = try TestDatabase.insertInboxItem(db, messageTS: "1700000\(String(format: "%04d", n)).000100")
@@ -74,12 +81,8 @@ final class ActionStripAllKindsTests: XCTestCase {
     /// landed, and the card leaves when the next read finds it done; the
     /// Desktop writes no row itself (STRIP-02).
     func testRetryBuiltinUpgradeRunsTheCLIRestartsAndRereads() async throws {
-        try await pool.write { db in
-            try db.execute(sql: """
-                INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at)
-                VALUES ('morning-brief', 'failed', 'config unreadable', 1, '2026-10-22T07:00:00Z')
-                """)
-        }
+        // morning-brief's move failed; Go's next feed once the CLI marks it done.
+        let tower = try tower("desktop_kinds_builtin_retry")
         let runner = FakeCLIRunner(stdout: Data(#"{"results":[{"builtin_id":"morning-brief","status":"done"}]}"#.utf8))
         let pool = try XCTUnwrap(pool)
         runner.onRun = { _ in
@@ -89,7 +92,7 @@ final class ActionStripAllKindsTests: XCTestCase {
             }
         }
         let vm = makeVM(runner)
-        await vm.refresh()
+        await vm.follow(tower)
         XCTAssertEqual(vm.feed.builtinNotices.map(\.builtinID), ["morning-brief"], "the notice is read")
         var restarts = 0
 
@@ -118,29 +121,10 @@ final class ActionStripAllKindsTests: XCTestCase {
     // MARK: - STRIP-02
 
     func testRefreshIsStillOnePureRead() async throws {
-        let date = today
-        try await pool.write { db in
-            let automationID = try TestDatabase.insertAutomation(db, slug: "mail-summary", name: "Mail summary")
-            let runID = try TestDatabase.insertAutomationRun(db, automationID: automationID)
-            try TestDatabase.insertAutomationOutput(db, automationID: automationID, runID: runID)
-            try TestDatabase.insertAgentAction(
-                db, surface: "automation", conversationID: 0, contextType: "automation_run", contextID: String(runID))
-            try db.execute(sql: """
-                INSERT INTO reminders (message_ref, note, remind_at, status)
-                VALUES ('C1@1','call back','2000-01-01T00:00:00Z','pending')
-                """)
-            try TestDatabase.insertBriefing(db, date: date)
-            let plan = try TestDatabase.insertDayPlan(db, planDate: date)
-            try TestDatabase.insertDayPlanItem(db, dayPlanID: plan, title: "A", status: "pending")
-            let track = try TestDatabase.insertTrack(db, hasUpdates: true)
-            try db.execute(sql: "INSERT INTO track_events (track_id, summary) VALUES (?, 's')", arguments: [track])
-            try TestDatabase.insertIdea(db, kind: "idea")
-            _ = try Self.message(db, 1)
-            try db.execute(sql: """
-                INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at)
-                VALUES ('morning-brief', 'failed', 'config unreadable', 1, '2026-10-22T07:00:00Z')
-                """)
-        }
+        let date = Self.caseDay
+        // An output, its run's proposal, a due reminder, the day's briefing and
+        // plan, a track with an event, an idea, a message and a failed move.
+        let tower = try tower("desktop_kinds_every_source")
         let tables = [
             "briefings", "day_plans", "day_plan_items", "tracks", "track_events", "ideas", "inbox_items",
             "agent_actions", "reminders", "automation_outputs", "automation_runs", "automations", "pipeline_runs",
@@ -149,7 +133,7 @@ final class ActionStripAllKindsTests: XCTestCase {
         let before = try dump(tables)
         let vm = makeVM()
 
-        await vm.refresh()
+        await vm.follow(tower)
         await vm.refresh()
 
         XCTAssertEqual(try dump(tables), before)
@@ -169,56 +153,14 @@ final class ActionStripAllKindsTests: XCTestCase {
 
     // MARK: - Opening
 
-    func testOpeningTheDayCardMarksTheBriefingRead() async throws {
-        let date = today
-        let id = try await pool.write { db -> Int in
-            try TestDatabase.insertBriefing(db, date: "2026-01-01")
-            try TestDatabase.insertBriefing(db, date: date)
-            return Int(db.lastInsertedRowID)
-        }
-        let other = try row("briefings", id - 1)
-        let before = try row("briefings", id)
-        let vm = makeVM()
-        await vm.refresh()
-
-        await vm.select(.day(date))
-
-        let after = try row("briefings", id)
-        XCTAssertNotNil(after["read_at"] as String?)
-        assertOnlyChanged("read_at", before: before, after: after)
-        XCTAssertEqual(try row("briefings", id - 1), other)
-        XCTAssertEqual(vm.selection, .day(date))
-        XCTAssertEqual(vm.feed.days.first { $0.date == date }?.isUnread, false)
-        XCTAssertNil(vm.lastError)
-    }
-
-    func testOpeningAMessageWritesOnlyReadAt() async throws {
-        let id = try await pool.write { try Self.message($0, 1) }
-        let before = try row("inbox_items", id)
-        let vm = makeVM()
-        await vm.refresh()
-
-        await vm.select(.message(id))
-
-        let after = try row("inbox_items", id)
-        XCTAssertNotNil(after["read_at"] as String?)
-        XCTAssertNotEqual(after["read_at"] as String?, "")
-        assertOnlyChanged("read_at", before: before, after: after)
-        XCTAssertEqual(vm.feed.messages.map(\.item.isUnread), [false])
-        XCTAssertNil(vm.lastError)
-    }
-
     func testOpeningATrackWritesNothing() async throws {
-        let id = try await pool.write { db -> Int in
-            let track = try TestDatabase.insertTrack(db, hasUpdates: true)
-            try db.execute(sql: "INSERT INTO track_events (track_id, summary) VALUES (?, 's')", arguments: [track])
-            try TestDatabase.insertIdea(db, kind: "idea")
-            return Int(track)
-        }
+        // Track 1 with an unread event, idea 1.
+        let tower = try tower("desktop_kinds_track_and_idea")
+        let id = 1
         let tables = ["tracks", "track_events", "ideas"]
         let before = try dump(tables)
         let vm = makeVM()
-        await vm.refresh()
+        await vm.follow(tower)
         let idea = try XCTUnwrap(vm.feed.ideas.first)
 
         await vm.select(.track(id))
@@ -228,61 +170,14 @@ final class ActionStripAllKindsTests: XCTestCase {
         XCTAssertEqual(vm.selection, .idea(idea.id))
     }
 
-    func testOpeningAnAlreadyReadCardWritesNothing() async throws {
-        let date = today
-        let id = try await pool.write { db -> Int in
-            try TestDatabase.insertBriefing(db, date: date, readAt: "2026-10-01T00:00:00Z")
-            let id = try Self.message(db, 1)
-            try db.execute(sql: "UPDATE inbox_items SET read_at = '2026-10-01T00:00:00Z' WHERE id = ?", arguments: [id])
-            return id
-        }
-        let tables = ["briefings", "inbox_items"]
-        let before = try dump(tables)
-        let vm = makeVM()
-        await vm.refresh()
-
-        await vm.select(.day(date))
-        await vm.select(.message(id))
-
-        XCTAssertEqual(try dump(tables), before)
-        XCTAssertNil(vm.lastError)
-    }
-
     // MARK: - Tracks
 
-    func testTrackDoneMarksTrackAndEventsRead() async throws {
-        let (id, other) = try await pool.write { db -> (Int, Int) in
-            let track = try TestDatabase.insertTrack(db, hasUpdates: true)
-            let other = try TestDatabase.insertTrack(db, hasUpdates: true)
-            for owner in [track, track, other] {
-                try db.execute(sql: "INSERT INTO track_events (track_id, summary) VALUES (?, 's')", arguments: [owner])
-            }
-            return (Int(track), Int(other))
-        }
-        let vm = makeVM()
-        await vm.refresh()
-
-        await vm.markTrackDone(id)
-
-        let after = try row("tracks", id)
-        XCTAssertEqual(after["has_updates"] as Int?, 0)
-        XCTAssertNotNil(after["read_at"] as String?)
-        XCTAssertEqual(try unreadEvents(id), 0)
-        XCTAssertEqual(try unreadEvents(other), 1)
-        XCTAssertEqual(try row("tracks", other)["has_updates"] as Int?, 1)
-        XCTAssertEqual(vm.feed.tracks.first { $0.track.id == id }?.isUnread, false)
-        XCTAssertNil(vm.lastError)
-    }
-
     func testStopWatchingACustomTrackPausesIt() async throws {
-        let (custom, auto) = try await pool.write { db -> (Int, Int) in
-            let custom = try TestDatabase.insertTrack(db, text: "Watch the launch")
-            try db.execute(sql: "UPDATE tracks SET origin = 'custom', enabled = 1 WHERE id = ?", arguments: [custom])
-            let auto = try TestDatabase.insertTrack(db)
-            return (Int(custom), Int(auto))
-        }
+        // Custom track 1 (collecting) and auto track 2; Go's feeds once each is stopped.
+        let tower = try tower("desktop_kinds_custom_and_auto_track")
+        let (custom, auto) = (1, 2)
         let vm = makeVM()
-        await vm.refresh()
+        await vm.followWriting(tower)
         let cards = vm.feed.tracks.map(\.track)
         let customTrack = try XCTUnwrap(cards.first { $0.id == custom })
         let autoTrack = try XCTUnwrap(cards.first { $0.id == auto })
@@ -291,13 +186,15 @@ final class ActionStripAllKindsTests: XCTestCase {
 
         await vm.stopWatching(customTrack)
         await vm.stopWatching(autoTrack)
+        // Go's writes, which the test's database never sees on its own.
+        try tower.write("custom_stopped")
+        try tower.write("auto_stopped")
+        await vm.refresh()
 
-        let customRow = try row("tracks", custom)
-        XCTAssertNotEqual(customRow["dismissed_at"] as String?, "")
-        XCTAssertEqual(customRow["enabled"] as Int?, 0)
-        let autoRow = try row("tracks", auto)
-        XCTAssertNotEqual(autoRow["dismissed_at"] as String?, "")
-        XCTAssertEqual(autoRow["enabled"] as Int?, 1)
+        // One `inbox.act ref stop` each; Go turns the custom track's collection off.
+        XCTAssertEqual(tower.acts.map(\.params.refID), [Int64(custom), Int64(auto)])
+        XCTAssertEqual(tower.acts.map(\.params.refVerb), [.stop, .stop])
+        XCTAssertEqual(tower.acts.map(\.params.refKind), [.track, .track])
         XCTAssertTrue(vm.feed.tracks.isEmpty)
         XCTAssertNil(vm.lastError)
     }
@@ -387,40 +284,46 @@ final class ActionStripAllKindsTests: XCTestCase {
 
     // MARK: - Messages
 
-    func testMessageButtonsRunTheInboxCLI() async throws {
-        let id = try await pool.write { try Self.message($0, 1) }
+    func testMessageButtonsSendInboxAct() async throws {
+        let tower = try tower("desktop_kinds_one_message")
+        let id = 1
         let runner = FakeCLIRunner()
         let vm = makeVM(runner)
-        await vm.refresh()
+        await vm.followWriting(tower)
 
         await vm.messageDone(id)
         await vm.hideMessage(id)
         await vm.snoozeMessage(id, duration: "3d")
 
-        XCTAssertEqual(runner.invocations, [
-            ["inbox", "resolve", "\(id)"],
-            ["inbox", "dismiss", "\(id)"],
-            ["inbox", "snooze", "\(id)", "3d"]
-        ])
+        XCTAssertEqual(tower.acts.map(\.target), ["messages", "messages", "messages"])
+        XCTAssertEqual(tower.acts.map(\.params.refVerb), [.resolve, .dismiss, .snooze])
+        XCTAssertEqual(tower.acts.map(\.params.refID), [Int64(id), Int64(id), Int64(id)])
+        XCTAssertNotNil(tower.acts.last?.params.until, "a snooze names its end")
+        XCTAssertTrue(runner.invocations.isEmpty, "no CLI: the tower writes")
         XCTAssertNil(vm.lastError)
         XCTAssertFalse(vm.isWriting(.message(id)))
     }
 
-    func testAMessageCLIFailureSaysWhy() async throws {
-        let id = try await pool.write { try Self.message($0, 1) }
-        let vm = makeVM(FakeCLIRunner(error: CLIRunnerError.binaryNotFound))
-        await vm.refresh()
+    func testAMessageWriteFailureStaysOnItsRow() async throws {
+        let tower = try tower("desktop_kinds_one_message")
+        let id = 1
+        let vm = makeVM()
+        await vm.followWriting(tower)
+        let sentence = "Couldn't mark it done: the database is busy."
+        tower.actRefusal = sentence
 
         await vm.messageDone(id)
 
-        XCTAssertEqual(vm.lastError, CLIRunnerError.binaryNotFound.localizedDescription)
+        XCTAssertEqual(vm.rowErrors[.message(id)], InboxRowFailure(message: sentence, press: .done))
         XCTAssertEqual(vm.feed.messages.map(\.item.id), [id])
     }
 
     func testMessageDoneOnAResolvedItemIsQuiet() async throws {
-        let id = try await pool.write { try Self.message($0, 1) }
+        // Message 1; Go's next feed once INBOX-02 resolved it.
+        let tower = try tower("desktop_kinds_message_resolved_elsewhere")
+        let id = 1
         let vm = makeVM()
-        await vm.refresh()
+        await vm.follow(tower)
         XCTAssertEqual(vm.feed.messages.count, 1)
         // INBOX-02 auto-resolved it after the list was read; the CLI exits 0.
         try await pool.write { db in
@@ -434,15 +337,11 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testSelectionMovesWhenTheSelectedRowVanished() async throws {
-        let ids = try await pool.write { db in
-            try [
-                Self.message(db, 1, created: "2026-10-21T09:00:00Z"),
-                Self.message(db, 2, created: "2026-10-21T08:00:00Z"),
-                Self.message(db, 3, created: "2026-10-21T07:00:00Z")
-            ]
-        }
+        // Messages 1–3, newest first; Go's feeds once 2 and 3, then 1, are resolved.
+        let tower = try tower("desktop_kinds_selected_message_vanishes")
+        let ids = [1, 2, 3]
         let vm = makeVM()
-        await vm.refresh()
+        await vm.follow(tower)
         vm.openLegacy(.messages)
         XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), ids.map { .message($0) })
         await vm.select(.message(ids[1]))
@@ -463,15 +362,11 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testSelectionMovesToTheRowBelow() async throws {
-        let ids = try await pool.write { db in
-            try [
-                Self.message(db, 1, created: "2026-10-21T09:00:00Z"),
-                Self.message(db, 2, created: "2026-10-21T08:00:00Z"),
-                Self.message(db, 3, created: "2026-10-21T07:00:00Z")
-            ]
-        }
+        // Messages 1–3, newest first; Go's feed once 2 is resolved.
+        let tower = try tower("desktop_kinds_selected_message_resolved")
+        let ids = [1, 2, 3]
         let vm = makeVM()
-        await vm.refresh()
+        await vm.follow(tower)
         vm.openLegacy(.messages)
         await vm.select(.message(ids[1]))
         try await pool.write { db in
@@ -484,7 +379,12 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testOverlappingRefreshesEachEndOnAFreshRead() async throws {
+        // The tower already lists message 1 (its read saw the write first);
+        // the panes' records read decides when its row shows.
+        let tower = try FeedCaseTransport("desktop_kinds_one_message", pool: XCTUnwrap(pool))
+        try tower.seedFolders()
         let vm = makeVM()
+        await vm.follow(tower)
         async let first: Void = vm.refresh()
         let id = try await pool.write { try Self.message($0, 1) }
         async let second: Void = vm.refresh()
@@ -511,14 +411,17 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testOpenShowsTheListAndSelects() async throws {
-        let id = try await pool.write { try Self.message($0, 1) }
+        let tower = try tower("desktop_kinds_one_message")
+        let id = 1
         let vm = makeVM()
+        await vm.followWriting(tower)
 
         await vm.open(folder: nil, select: .card(.message(id)))
 
         XCTAssertEqual(vm.legacyList, .messages)
         XCTAssertEqual(vm.selection, .message(id))
-        XCTAssertNotNil(try row("inbox_items", id)["read_at"] as String?)
+        XCTAssertEqual(tower.acts.map(\.verb), [.read], "its read mark is Go's write")
+        XCTAssertEqual(tower.acts.first?.params.refID, Int64(id))
     }
 
     /// A route to a message no longer listed (resolved meanwhile) selects
@@ -538,60 +441,15 @@ final class ActionStripAllKindsTests: XCTestCase {
         XCTAssertNil(try row("inbox_items", id)["read_at"] as String?)
     }
 
-    func testShowOlderDaysReadsAnotherPage() async throws {
-        try await pool.write { db in
-            for day in 1...31 {
-                try TestDatabase.insertBriefing(db, date: String(format: "2026-08-%02d", day))
-            }
-        }
-        let vm = makeVM()
-        await vm.refresh()
-        XCTAssertEqual(vm.feed.days.count, 30)
-        XCTAssertTrue(vm.feed.hasOlderDays)
-
-        await vm.showOlderDays().value
-
-        XCTAssertEqual(vm.dayLimit, 60)
-        XCTAssertEqual(vm.feed.days.count, 31)
-        XCTAssertFalse(vm.feed.hasOlderDays, "nothing older left")
-    }
-
-    /// A route to a day past the loaded pages reads older pages until the
-    /// day is listed; a day that is nowhere selects nothing.
-    func testOpeningAnOldDayLoadsOlderPages() async throws {
-        try await pool.write { db in
-            for day in 1...31 {
-                try TestDatabase.insertBriefing(db, date: String(format: "2026-08-%02d", day))
-                try TestDatabase.insertBriefing(db, date: String(format: "2026-07-%02d", day))
-            }
-        }
-        let vm = makeVM()
-
-        await vm.open(folder: nil, select: .card(.day("2026-07-01")))
-        XCTAssertEqual(vm.selection, .day("2026-07-01"))
-        XCTAssertEqual(vm.entrySelection, "day:2026-07-01", "its Morning brief entry in the root")
-        XCTAssertEqual(vm.dayLimit, 90)
-
-        await vm.open(folder: nil, select: .card(.day("2020-01-01")))
-        XCTAssertNil(vm.selection, "not found: nothing selected")
-        XCTAssertNil(vm.entrySelection)
-        XCTAssertFalse(vm.feed.hasOlderDays)
-    }
-
     /// A link to a stopped track opens the Stopped fold and selects it; a
     /// link to a merged idea selects the idea it was merged into; a card
     /// that is nowhere selects nothing (never a pane the next poll empties).
     func testOpeningAHiddenTrackOrIdeaSelectsWhatIsListed() async throws {
-        let (stopped, target, merged) = try await pool.write { db -> (Int, Int, Int) in
-            let stopped = try TestDatabase.insertTrack(db, text: "Old vendor migration")
-            try db.execute(sql: "UPDATE tracks SET dismissed_at = '2026-10-18T10:00:00Z' WHERE id = ?",
-                           arguments: [stopped])
-            let target = try TestDatabase.insertIdea(db, title: "Weekly digest")
-            let merged = try TestDatabase.insertIdea(db, title: "Friday email", status: "merged",
-                                                     mergedIntoID: Int(target))
-            return (Int(stopped), Int(target), Int(merged))
-        }
+        // Track 1 stopped; idea 2 merged into idea 1.
+        let tower = try tower("desktop_kinds_stopped_track_and_merged_idea")
+        let (stopped, target, merged) = (1, 1, 2)
         let vm = makeVM()
+        await vm.follow(tower)
 
         await vm.open(folder: nil, select: .card(.track(stopped)))
         XCTAssertTrue(vm.showsStopped, "the Stopped fold opens")
@@ -606,50 +464,14 @@ final class ActionStripAllKindsTests: XCTestCase {
         XCTAssertNil(vm.selection)
     }
 
-    /// A failed read stops the route's paging instead of looping.
-    func testOpeningAnOldDayStopsOnAFailedRead() async throws {
-        try await pool.write { db in
-            for day in 1...31 {
-                try TestDatabase.insertBriefing(db, date: String(format: "2026-08-%02d", day))
-            }
-        }
-        let vm = makeVM()
-        await vm.refresh()
-        XCTAssertTrue(vm.feed.hasOlderDays)
-        // Every later read fails on a column the day query orders by.
-        try await pool.write { db in
-            try db.execute(sql: "ALTER TABLE briefings RENAME COLUMN created_at TO created_at_gone")
-        }
-
-        await vm.open(folder: nil, select: .card(.day("2020-01-01")))
-
-        XCTAssertNotNil(vm.lastError)
-        XCTAssertNil(vm.selection)
-        XCTAssertEqual(vm.dayLimit, ActionStripViewModel.dayPage, "no page asked for after the failed read")
-    }
-
-    /// Today with neither a brief nor a plan: its placeholder card is listed
-    /// in the root but the badge stays 0; no legacy list carries it.
-    func testTodaysPlaceholderIsListedButNeverCounted() async throws {
-        let vm = makeVM()
-        await vm.refresh()
-        XCTAssertEqual(vm.folderEntries.map(\.id), [], "no owner: the root has no placeholder")
-        try await pool.write { db in _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1") }
-        await vm.refresh()
-
-        XCTAssertEqual(vm.folderEntries.map(\.id), ["day:\(today)"])
-        vm.openLegacy(.messages)
-        XCTAssertEqual(vm.sections, [])
-        let nowUTC = AutomationDates.format(Date())
-        let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: nowUTC) }
-        XCTAssertEqual(badge, 0)
-    }
-
     // MARK: - Polling (board #731)
 
     func testPollSkipsWhileOffScreen() async throws {
+        // The tower already lists message 1; the panes' records read decides when it shows.
+        let tower = try FeedCaseTransport("desktop_kinds_one_message", pool: XCTUnwrap(pool))
+        try tower.seedFolders()
         let vm = makeVM()
-        await vm.refresh()
+        await vm.follow(tower)
         vm.setOnScreen(false)
         let id = try await pool.write { try Self.message($0, 1) }
 

@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 import Observation
 import WatchtowerCore
+import WatchtowerInterface
 
 // MARK: - DayPlanViewModel
 
@@ -26,9 +27,14 @@ final class DayPlanViewModel {
 
     // MARK: - Init
 
-    init(databasePool: any DatabaseWriter, cliRunner: any CLIRunnerProtocol) {
+    /// The presses through the tower and each item row's state.
+    let presses: TowerPresses
+
+    init(databasePool: any DatabaseWriter, cliRunner: any CLIRunnerProtocol, tower: (any TowerSending)? = nil) {
         self.dbPool = databasePool
         self.cli = cliRunner
+        presses = TowerPresses(tower: tower)
+        presses.reread = { [weak self] in await self?.reload() }
     }
 
     // MARK: - Load
@@ -117,71 +123,72 @@ final class DayPlanViewModel {
         await setItemStatus(item, done: false)
     }
 
-    /// Marks the item and cascades to its task. A task deleted elsewhere
-    /// fails the cascade (and rolls the whole write back); the item itself is
-    /// then marked alone, so it never gets stuck for the rest of the day, and
-    /// the message says the task is gone. An item a regenerated plan replaced
-    /// reloads the plan before its message shows.
+    /// The row key of plan item `id`'s presses.
+    static func row(_ id: Int64) -> String { "plan:\(id)" }
+    /// The row key of the plan's own presses (reorder, add).
+    static let planRow = "plan"
+
+    /// Marks the item and cascades to its task (`dayplan.done` /
+    /// `dayplan.pending`, #1170 Task 12). A task deleted elsewhere leaves the
+    /// item marked alone in the same write — Go answers why in `note`, so it
+    /// never gets stuck for the rest of the day. An item a regenerated plan
+    /// replaced is Go's `not_found`: the plan re-reads under its sentence.
     private func setItemStatus(_ item: DayPlanItem, done: Bool) async {
-        let mark = done ? DayPlanQueries.markItemDone : DayPlanQueries.markItemPending
         let id = item.id
-        do {
-            do {
-                let cascade = item.sourceType == .task
-                try await dbPool.write { db in try mark(db, id, cascade) }
-                await reload()
-            } catch let gone as TargetNotFoundError {
-                try await dbPool.write { db in try mark(db, id, false) }
-                await reload()
-                generationError = "Updated the plan item only: \(gone.localizedDescription)"
-            }
-        } catch {
-            if error is RowNotFoundError { await reload() }
-            generationError = error.localizedDescription
+        let cascade = item.sourceType == .task
+        let result: ActResult? = await press(done ? .dayplanDone : .dayplanPending, row: Self.row(id),
+                                             label: TowerPressText.updating) {
+            PlanItemStatusRequest(requestID: $0, itemID: id, cascade: cascade)
         }
+        if let note = result?.note, !note.isEmpty { generationError = note }
     }
 
     func delete(_ item: DayPlanItem) async {
         guard !item.isReadOnly else { return }
-        do {
-            try await dbPool.write { db in
-                try DayPlanQueries.deleteItem(db, itemId: item.id)
-            }
-            await reload()
-        } catch {
-            generationError = error.localizedDescription
+        let id = item.id
+        let _: ActResult? = await press(.dayplanDelete, row: Self.row(id), label: TowerPressText.deleting) {
+            PlanItemRequest(requestID: $0, itemID: id)
         }
     }
 
     func reorderBacklog(_ orderedIds: [Int64]) async {
         guard let planId = plan?.id else { return }
-        do {
-            try await dbPool.write { db in
-                try DayPlanQueries.reorderBacklog(db, planId: planId, orderedIds: orderedIds)
-            }
-            await reload()
-        } catch {
-            generationError = error.localizedDescription
+        let variant = orderedIds.map(String.init).joined(separator: ",")
+        let _: ActResult? = await press(.dayplanReorder, row: Self.planRow, label: TowerPressText.moving,
+                                        variant: variant) {
+            PlanReorderRequest(requestID: $0, planID: planId, orderedIDs: orderedIds)
         }
     }
 
     func addManual(kind: DayPlanItemKind, title: String, startTime: Date?, endTime: Date?) async {
         guard let planId = plan?.id else { return }
-        do {
-            _ = try await dbPool.write { db in
-                try DayPlanQueries.addManualItem(
-                    db,
-                    planId: planId,
-                    kind: kind,
-                    title: title,
-                    startTime: startTime,
-                    endTime: endTime
-                )
-            }
-            await reload()
-        } catch {
-            generationError = error.localizedDescription
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime]
+        let start = startTime.map { fmt.string(from: $0) }
+        let end = endTime.map { fmt.string(from: $0) }
+        let variant = "\(kind.rawValue)|\(title)|\(start ?? "")|\(end ?? "")"
+        let _: CreatedResult? = await press(.dayplanAdd, row: Self.planRow, label: TowerPressText.saving,
+                                            variant: variant) {
+            PlanAddRequest(requestID: $0, planID: planId, kind: kind.rawValue, title: title,
+                           startTime: start, endTime: end)
         }
+    }
+
+    /// One press through the tower: an item's row keeps its state
+    /// (`presses`); a press on the plan itself (reorder, add) says why it
+    /// failed in `generationError`. The plan re-reads after every answer.
+    private func press<Resp: Decodable & Sendable, Params: Encodable & Sendable>(
+        _ command: TowerCommand,
+        row: String,
+        label: String,
+        variant: String = "",
+        _ params: @escaping (String) -> Params
+    ) async -> Resp? {
+        let result: Resp? = await presses.send(command, row: row, label: label, variant: variant, params: params)
+        if result == nil, row == Self.planRow, case .refused(let sentence) = presses.state(row) {
+            generationError = sentence
+        }
+        return result
     }
 
     // MARK: - CLI Actions

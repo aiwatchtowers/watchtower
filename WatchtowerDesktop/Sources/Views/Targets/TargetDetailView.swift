@@ -396,7 +396,7 @@ struct TargetDetailView: View {
         VStack(alignment: .leading, spacing: 20) {
             breadcrumbSection
             heroSection
-            statusBadgesRow
+            TargetStatusBadges(target: target, viewModel: viewModel)
             nextStepCard
             metadataGrid
             checklistSection
@@ -507,39 +507,6 @@ struct TargetDetailView: View {
     }
 
     // MARK: - Status badges
-
-    private var statusBadgesRow: some View {
-        HStack(spacing: 8) {
-            ForEach(["todo", "in_progress", "blocked", "done"], id: \.self) { status in
-                statusBadge(status)
-            }
-            Spacer(minLength: 0)
-        }
-    }
-
-    private func statusBadge(_ status: String) -> some View {
-        let isSelected = target.status == status
-        let color = statusButtonColor(status)
-        return Button {
-            Task { await viewModel.updateStatus(target, to: status) }
-        } label: {
-            Text(statusDisplayName(status))
-                .font(.callout)
-                .fontWeight(isSelected ? .semibold : .regular)
-                .foregroundStyle(isSelected ? color : Color.secondary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(isSelected ? color.opacity(0.16) : Color.secondary.opacity(0.08))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7)
-                        .strokeBorder(isSelected ? color.opacity(0.5) : Color.clear, lineWidth: 1)
-                )
-        }
-        .buttonStyle(.plain)
-    }
 
     // MARK: - Next Step Card
 
@@ -1052,7 +1019,8 @@ struct TargetDetailView: View {
             scanService: TrackScanService(runner: runner),
             actionRunner: runner,
             scanCenter: appState.trackScanCenter,
-            trackControls: appState.customTrackControls
+            trackControls: appState.customTrackControls,
+            tower: appState.screenTower
         )
         vm.start()
         watchesVM = vm
@@ -1744,30 +1712,6 @@ struct TargetDetailView: View {
         case "medium": return .orange
         case "low": return .blue
         default: return .orange
-        }
-    }
-
-    private func statusDisplayName(_ status: String) -> String {
-        switch status {
-        case "todo": return "To Do"
-        case "in_progress": return "In Progress"
-        case "blocked": return "Blocked"
-        case "done": return "Done"
-        case "dismissed": return "Dismissed"
-        case "snoozed": return "Snoozed"
-        default: return status.capitalized
-        }
-    }
-
-    private func statusButtonColor(_ status: String) -> Color {
-        switch status {
-        case "todo": return .secondary
-        case "in_progress": return .blue
-        case "blocked": return .red
-        case "done": return .green
-        case "dismissed": return .gray
-        case "snoozed": return .purple
-        default: return .secondary
         }
     }
 

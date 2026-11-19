@@ -73,15 +73,16 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
     /// entry in the root, listed and readable.
     func testOwner02DayPlanShowsEmptyStateOnlyWithoutOwnerAndPlan() async throws {
         XCTAssertNoThrow(try makeDayFilterEmpty(ownerKnown: false).inspect().find(text: Self.message))
-        try await insertTodaysPlan()
-        let listed = try await makeDayFilter(ownerKnown: false)
+        // No owner; the case's day (Go's today) has a plan with "Standup".
+        let tower = try FeedCaseTransport.seeded("desktop_owner_none_plan_today", pool: testPool())
+        let listed = try await makeDayFilter(ownerKnown: false, tower)
         XCTAssertFalse(Self.days(listed.vm).isEmpty, "the planned day is listed")
         XCTAssertThrowsError(try listed.inspect().find(text: Self.message))
-        let readable = try await makeDayPlanBlock(owner: .unknown, hasPlan: true)
+        let readable = try await makeDayPlanBlock(owner: .unknown, hasPlan: true, day: Self.caseDay)
         XCTAssertNoThrow(try readable.inspect().find(text: "Standup"), "the plan stays readable")
 
         XCTAssertThrowsError(try makeDayFilterEmpty(ownerKnown: true).inspect().find(text: Self.message))
-        let known = try await makeDayFilter(ownerKnown: true)
+        let known = try await makeDayFilter(ownerKnown: true, tower)
         XCTAssertThrowsError(try known.inspect().find(text: Self.message))
     }
 
@@ -113,9 +114,12 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
         let suite = "NoOwnerEmptyStateViewTests.\(UUID().uuidString)"
         suites.append(suite)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        let vm = ActionStripViewModel(dbPool: try testPool(), cliRunner: FakeCLIRunner(), defaults: defaults)
+        let vm = ActionStripViewModel(dbPool: try testPool(), cliRunner: FakeCLIRunner(), defaults: defaults,
+                                      clock: Self.caseClock)
+        // Nothing made, no owner; Go's next feed once a Slack account names the owner.
+        let tower = try FeedCaseTransport.seeded("desktop_owner_arrives", pool: testPool())
 
-        await vm.refresh()
+        await vm.follow(tower)
         XCTAssertTrue(Self.days(vm).isEmpty, "no owner: no placeholder in the root")
         XCTAssertNoThrow(try makeInboxEmpty(vm, ownerKnown: false) {}.inspect().find(text: Self.message))
 
@@ -123,7 +127,7 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
             _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1")
         }
         await vm.refresh()
-        XCTAssertEqual(Self.days(vm), [AppState.inboxToday()])
+        XCTAssertEqual(Self.days(vm), [AppState.inboxToday(Self.caseNow)])
         XCTAssertThrowsError(try makeInboxEmpty(vm, ownerKnown: true) {}.inspect().find(text: Self.message))
     }
 
@@ -131,17 +135,18 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
     /// day-plan features both off the root does not list it; with one off it
     /// is listed and offers to make only the other half.
     func testTodaysPlaceholderObeysTheFeatureSwitches() async throws {
-        try await testPool().write { db in
-            _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1")
-        }
+        // The owner is known (a Slack account); nothing made. Go builds the
+        // feed with the Mac's feature switches: one case per setting.
+        let bothOff = try FeedCaseTransport.seeded("desktop_owner_placeholder_both_off", pool: testPool())
+        let briefingOff = try FeedCaseTransport("desktop_owner_placeholder_briefing_off", pool: testPool())
         let vm = try inboxVM()
-        let today = AppState.inboxToday()
+        let today = AppState.inboxToday(Self.caseNow)
         vm.disabledFeatures = ["briefing", "day-plan"]
-        await vm.refresh()
+        await vm.follow(bothOff)
         XCTAssertTrue(Self.days(vm).isEmpty, "both off: no placeholder in the root")
 
         vm.disabledFeatures = ["briefing"]
-        await vm.refresh()
+        await vm.follow(briefingOff)
         XCTAssertEqual(Self.days(vm), [today])
         XCTAssertFalse(vm.feed.briefingOn)
         XCTAssertTrue(vm.feed.dayPlanOn)
@@ -151,7 +156,7 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
             InboxDayNothingReady(
                 owner: Self.known,
                 briefing: BriefingViewModel(dbManager: DatabaseManager(pool: pool), cliRunner: FakeCLIRunner()),
-                plan: DayPlanViewModel(databasePool: pool, cliRunner: FakeCLIRunner()),
+                plan: DayPlanViewModel(databasePool: pool, cliRunner: FakeCLIRunner(), tower: FakeScreenTower.applying(pool)),
                 emptyState: .neutral, briefingOn: briefingOn, dayPlanOn: dayPlanOn,
                 onMake: {}, onOpenConnections: {})
         }
@@ -204,11 +209,17 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
         }
     }
 
+    /// The moment Go's cases are built at, and its day: the tower's today.
+    private static let caseNow = Date(timeIntervalSince1970: 1_794_830_400) // 2026-11-16T12:00:00Z
+    private static let caseDay = "2026-11-16"
+    private static let caseClock: @Sendable () -> Date = { caseNow }
+
     private func inboxVM() throws -> ActionStripViewModel {
         let suite = "NoOwnerEmptyStateViewTests.\(UUID().uuidString)"
         suites.append(suite)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        return ActionStripViewModel(dbPool: try testPool(), cliRunner: FakeCLIRunner(), defaults: defaults)
+        return ActionStripViewModel(dbPool: try testPool(), cliRunner: FakeCLIRunner(), defaults: defaults,
+                                    clock: Self.caseClock)
     }
 
     /// The dates of the root's Morning brief entries, in list order.
@@ -227,27 +238,29 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
         return InboxDayNothingReady(
             owner: ownerKnown ? Self.known : .unknown,
             briefing: BriefingViewModel(dbManager: DatabaseManager(pool: pool), cliRunner: FakeCLIRunner()),
-            plan: DayPlanViewModel(databasePool: pool, cliRunner: FakeCLIRunner()),
+            plan: DayPlanViewModel(databasePool: pool, cliRunner: FakeCLIRunner(), tower: FakeScreenTower.applying(pool)),
             emptyState: .neutral,
             onMake: {},
             onOpenConnections: {}
         )
     }
 
-    /// The Inbox after a read of what the database holds.
-    private func makeDayFilter(ownerKnown: Bool) async throws -> ActionStripActionsView {
+    /// The Inbox after it read what `tower` (Go's case) lists.
+    private func makeDayFilter(ownerKnown: Bool, _ tower: FeedCaseTransport) async throws -> ActionStripActionsView {
         let vm = try inboxVM()
-        await vm.refresh()
+        await vm.follow(tower)
         return makeInboxEmpty(vm, ownerKnown: ownerKnown) {}
     }
 
-    /// Today's card's plan half, loaded for today (with a plan when `hasPlan`).
-    private func makeDayPlanBlock(owner: Owner, hasPlan: Bool) async throws -> InboxDayPlanBlock {
-        if hasPlan, try await testPool().read({ try DayPlanQueries.fetchByDate($0, date: AppState.inboxToday()) }) == nil {
+    /// Today's card's plan half, loaded for `day` (today unless given; with
+    /// a plan when `hasPlan`).
+    private func makeDayPlanBlock(owner: Owner, hasPlan: Bool, day: String? = nil) async throws -> InboxDayPlanBlock {
+        let day = day ?? AppState.inboxToday()
+        if hasPlan, try await testPool().read({ try DayPlanQueries.fetchByDate($0, date: day) }) == nil {
             try await insertTodaysPlan()
         }
         let plan = DayPlanViewModel(databasePool: try testPool(), cliRunner: FakeCLIRunner())
-        await plan.loadFor(date: AppState.inboxToday())
+        await plan.loadFor(date: day)
         if !hasPlan { XCTAssertNil(plan.plan, "precondition: no plan") }
         return InboxDayPlanBlock(plan: plan, isToday: true, owner: owner, openRow: .constant(nil)) { _ in }
     }

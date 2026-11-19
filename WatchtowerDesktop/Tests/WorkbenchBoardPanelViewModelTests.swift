@@ -42,7 +42,7 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
     }
 
     private func makeVM(project: Int64) -> WorkbenchBoardViewModel {
-        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: project, defaults: defaults)
+        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: project, defaults: defaults, tower: dbManager.fakeTower)
         vm.load()
         return vm
     }
@@ -300,7 +300,7 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
                                                     targetID: Int64(taskA))
         }
         let pool = try DatabasePool(path: dbPath)
-        let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid, defaults: defaults)
+        let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid, defaults: defaults, tower: FakeScreenTower.applying(pool))
         vm.load()
         vm.select(taskA)
         XCTAssertEqual(vm.threads.map(\.root.body), ["On A"])
@@ -323,7 +323,7 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
     func testTheBannerShowsTheErrorWhenNoPanelIsDrawnForTheSelection() throws {
         let (pid, _, taskA, _) = try seedGroup()
         let pool = try DatabasePool(path: dbPath)
-        let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid, defaults: defaults)
+        let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid, defaults: defaults, tower: FakeScreenTower.applying(pool))
         vm.load()
         vm.select(taskA)
         vm.refuseCrossLaneDrop()
@@ -383,7 +383,7 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         try dbManager.dbPool.write { db in
             try db.execute(sql: "UPDATE targets SET status = 'in_progress', status_actor = 'agent' WHERE id = ?",
                            arguments: [taskA])
-            try TargetQueries.updateStatus(db, id: taskA, status: "done")
+            try db.execute(sql: "UPDATE targets SET status = 'done', status_actor = 'owner' WHERE id = ?", arguments: [taskA])
         }
         let vm = makeVM(project: pid)
         vm.select(taskA)
@@ -394,7 +394,9 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         vm.push(taskB)
         XCTAssertEqual(vm.selectedHistory.map(\.toStatus), ["todo"])
 
-        try dbManager.dbPool.write { try TargetQueries.updateStatus($0, id: taskB, status: "blocked") }
+        try dbManager.dbPool.write {
+            try $0.execute(sql: "UPDATE targets SET status = 'blocked', status_actor = 'owner' WHERE id = ?", arguments: [taskB])
+        }
         // An explicit reload: the poll fingerprint's `updated_at` has second
         // resolution, so a same-second write may not move it.
         vm.load()

@@ -2928,8 +2928,8 @@ CREATE TABLE IF NOT EXISTS coach_proposals (
     conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL, -- the tuning conversation of a chat proposal
     written_branch  TEXT NOT NULL DEFAULT '',  -- repo_*: the branch Accept wrote on
     measure_from    TEXT,                      -- repo_*: when the edit was first seen at HEAD; NULL = not yet / not repo_*
-    pr_url          TEXT NOT NULL DEFAULT '',  -- 00197: the pull request a repo_* Accept opened ('' = not a PR row)
-    revert_pr_url   TEXT NOT NULL DEFAULT ''   -- 00197: the pull request a Rollback opened to undo it
+    pr_url          TEXT NOT NULL DEFAULT '',  -- 00198: the pull request a repo_* Accept opened ('' = not a PR row)
+    revert_pr_url   TEXT NOT NULL DEFAULT ''   -- 00198: the pull request a Rollback opened to undo it
 );
 CREATE INDEX IF NOT EXISTS coach_proposals_conversation ON coach_proposals(conversation_id);
 
@@ -3885,3 +3885,14 @@ CREATE TABLE IF NOT EXISTS chat_turn_leases (
     heartbeat_at_ms        INTEGER NOT NULL,
     cancel_requested_at_ms INTEGER                               -- set by the other side's Stop
 );
+
+-- Tower request ledger (00197). Go-written by internal/tower: the request ledger, exactly-once writes for the socket and the hub. Rows older than the hub ledger window (8 days) are pruned by the daemon.
+CREATE TABLE IF NOT EXISTS tower_requests (
+    request_id  TEXT PRIMARY KEY,                                  -- the client's UUID, kept across retries of one press
+    command     TEXT NOT NULL,                                     -- the tower command name (domain.verb)
+    state       TEXT NOT NULL CHECK (state IN ('begun','done')),   -- begun: a non-idempotent command is acting; done: its write committed
+    result_json TEXT NOT NULL DEFAULT '',                          -- the marshalled response a repeat returns ('' while begun or refused)
+    refusal_json TEXT NOT NULL DEFAULT '',                         -- a non-idempotent command's marshalled refusal on a done row ('' otherwise)
+    at          TEXT NOT NULL                                      -- last write, UTC %Y-%m-%dT%H:%M:%SZ
+);
+CREATE INDEX IF NOT EXISTS idx_tower_requests_at ON tower_requests(at);

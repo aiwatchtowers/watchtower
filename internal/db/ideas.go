@@ -82,26 +82,13 @@ func scanIdea(row interface{ Scan(...any) error }) (*Idea, error) {
 // source='owner') plus its owner mention, in one transaction. The Go twin of
 // Swift IdeaQueries.createManual.
 func (db *DB) CreateManualIdea(kind, title, essence string) (int64, error) {
-	now := time.Now().UTC().Format(time.RFC3339)
-	tx, err := db.Begin()
-	if err != nil {
-		return 0, fmt.Errorf("begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // no-op once committed
-	id, err := db.CreateIdeaTx(tx, Idea{
-		Kind: kind, Title: title, Essence: essence,
-		Status: "active", Source: "owner", LastMentionAt: now,
+	var id int64
+	err := db.WithTx(func(tx *sql.Tx) error {
+		var err error
+		id, err = db.CreateManualIdeaTx(tx, kind, title, essence, time.Now())
+		return err
 	})
-	if err != nil {
-		return 0, err
-	}
-	if err := db.InsertIdeaMentionTx(tx, IdeaMention{IdeaID: id, Source: "owner", Quote: essence, SaidAt: now}); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit: %w", err)
-	}
-	return id, nil
+	return id, err
 }
 
 // CreateIdeaTx inserts a new idea and returns its ID.
