@@ -409,21 +409,25 @@ func TestProj13_AskGuardNeverRunsAMigration(t *testing.T) {
 }
 
 // A database another process holds exclusively: the guard gives up within
-// its busy timeout and lets the tool run, well inside 2 s.
+// its busy timeout and lets the tool run, well inside 2 s. The locked-database
+// subtests read no clock: a lock costs the hook only SQLite busy waits, each
+// recorded in dblock.jsonl with the busy timeout it waited out, so they
+// count the waits and bound their sum on the constants.
 func TestProj13_AskGuardFinishesFastOnALockedDatabase(t *testing.T) {
 	t.Run("pre-tool-use", func(t *testing.T) {
 		database := writeActionsConfig(t)
 		id, err := database.CreateWorkbench("acme", t.TempDir())
 		require.NoError(t, err)
+		dblock := dblockPath(t)
 		lockDatabase(t, database)
+		before := busyTimeouts(t, dblock)
 
-		start := time.Now()
 		out, errOut, err := runAskGuard(t, strconv.FormatInt(id, 10), strings.NewReader(askToolPayload("AskUserQuestion")))
 
-		assert.Less(t, time.Since(start), 2*time.Second)
 		require.NoError(t, err)
 		assert.Empty(t, out)
 		assert.Empty(t, errOut)
+		assertBusyWaitsFit(t, busyTimeouts(t, dblock)[len(before):])
 	})
 	// Presence reads that stall after the workbench was found: the read
 	// budget cuts them off and the hook denies with the away reason (never
@@ -466,15 +470,67 @@ func TestProj13_AskGuardFinishesFastOnALockedDatabase(t *testing.T) {
 		database, pid, row := stopGuardFixture(t)
 		setOwnerPresence(t, database, row, time.Now())
 		useAskGuardGen(t, &stubAskGuardGen{reply: e1Verdict})
+		dblock := dblockPath(t)
 		lockDatabase(t, database)
+		before := busyTimeouts(t, dblock)
 
-		start := time.Now()
 		out, _, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(guardPayload(e1Message, false)))
 
-		assert.Less(t, time.Since(start), 2*time.Second)
 		require.NoError(t, err)
 		assert.Equal(t, guardBlock(t, askGuardReasonAway), out)
+		assertBusyWaitsFit(t, busyTimeouts(t, dblock)[len(before):])
 	})
+}
+
+// dblockPath is the dblock.jsonl next to the test's database: every
+// SQLITE_BUSY lands there, whatever its length (db-lock-metrics.md).
+func dblockPath(t *testing.T) string {
+	t.Helper()
+	cfg, err := loadWorkbenchCLIConfig()
+	require.NoError(t, err)
+	return filepath.Join(filepath.Dir(cfg.DBPath()), "dblock.jsonl")
+}
+
+// assertBusyWaitsFit: the hook waited on the lock (at least one busy), each
+// wait was bounded by askGuardBusyTimeout, and the waits with the stdin
+// wait's bound — its worst case, not what this run took — stay within
+// PROJ-13's 2 s.
+func assertBusyWaitsFit(t *testing.T, waits []time.Duration) {
+	t.Helper()
+	require.NotEmpty(t, waits, "the locked database made the hook wait out a busy timeout")
+	total := askGuardInputWait
+	for _, w := range waits {
+		assert.Equal(t, askGuardBusyTimeout, w, "every wait on the lock is bounded by the guard's busy timeout")
+		total += w
+	}
+	assert.LessOrEqual(t, total, 2*time.Second, "PROJ-13: the stdin wait and %d busy waits fit in 2 s", len(waits))
+}
+
+// busyTimeouts is the busy timeout of each busy event in the dblock.jsonl
+// at path, oldest first (none when the file does not exist yet).
+func busyTimeouts(t *testing.T, path string) []time.Duration {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	require.NoError(t, err)
+	var out []time.Duration
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return nil
+	}
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		var e struct {
+			Kind          string `json:"kind"`
+			BusyTimeoutMS int64  `json:"busy_timeout_ms"`
+		}
+		require.NoError(t, json.Unmarshal(line, &e), "dblock.jsonl line %q", line)
+		if e.Kind == "busy" {
+			out = append(out, time.Duration(e.BusyTimeoutMS)*time.Millisecond)
+		}
+	}
+	return out
 }
 
 // lockDatabase makes database's handle hold the file exclusively until the
