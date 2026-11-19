@@ -197,7 +197,8 @@ work for both.
   Swift: `SessionFeedStore` (tail/before paging, Done from `subagents`),
   `SessionFeedSubagent` decoding `started_at`, the CLI lookup's arguments.
   The Kit/phone slice is not touched (it keeps `ChatFetch` entries). (b) `WorkbenchesViewModel` keeps
-  each session's `SessionFeedStore` for the app's lifetime (it already keeps
+  each session's `SessionFeedStore` while the app runs (at most 8, the
+  least recently shown dropped first; a hidden one runs no CLI) (it already keeps
   `WorkchatModel` per session), so reopening paints the kept entries at once
   and reads only after the cursor.
 - Target: first paint ≤ 300 ms on the 950-entry session on reopen, ≤ 500 ms
