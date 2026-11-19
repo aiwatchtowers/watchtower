@@ -244,7 +244,7 @@ final class SessionDetailWiringTests: XCTestCase {
             "live", "stateKind", "stateCaption", "stateCaptionClipped", "stateTone", "stateGlyph", "isRing", "openAsks",
             "oldestAskID", "closedAsks", "finishSummary", "finishSummaryClipped", "agentError", "agentErrorClipped",
             "reportTargetID", "reportDone", "reportTotal", "reportMerged", "reportMergedStale", "reportPRLine",
-            "reportPRLineClipped", "watchIssue", "watchHelp", "phone"
+            "reportPRLineClipped", "watchIssue", "watchHelp", "phone", "folder", "parentSessionID"
         ])
     }
 
