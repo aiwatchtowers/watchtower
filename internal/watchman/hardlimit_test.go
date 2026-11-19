@@ -814,5 +814,19 @@ func TestParkedBy_WrapperChdirRelativeDelete(t *testing.T) {
 	both("env --split-string='rm -rf foo'", LimitUnreadable)
 	both("env -i rm -rf foo", "")
 	both("rm -rf foo", "")
+	// Fix wave 2: an abbreviated long option is the option it abbreviates;
+	// an unknown or ambiguous one cannot be placed and parks.
+	both("sudo --chd=/tmp rm -rf foo", LimitDeleteOutside)
+	both("sudo --chd /tmp rm -rf foo", LimitDeleteOutside)
+	both("env --chd=/tmp rm -rf foo", LimitDeleteOutside)
+	both("env --chdi /tmp rm -rf foo", LimitDeleteOutside)
+	both("env --frobnicate /tmp rm -rf foo", LimitUnreadable)
+	both("sudo --ch /tmp rm -rf foo", LimitUnreadable)
+	both("env --ignore-environment rm -rf foo", "")
+	both("env --ignore-env rm -rf foo", "")
+	both("env --ignore rm -rf foo", LimitUnreadable) // ambiguous: -environment or -signal
+	both("sudo --preserve-env=PATH rm -rf foo", "")
+	both("sudo -- rm -rf foo", "")
+	both("timeout --foreground 10 go test ./...", "")
 	expectParked(t, cases)
 }

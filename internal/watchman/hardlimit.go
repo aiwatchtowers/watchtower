@@ -3,6 +3,7 @@ package watchman
 import (
 	"cmp"
 	"encoding/json"
+	"maps"
 	"path"
 	"regexp"
 	"slices"
@@ -305,7 +306,13 @@ func stripWrappers(words []string, c *shellCmd) []string {
 		for len(words) > 0 && strings.HasPrefix(words[0], "-") {
 			opt := words[0]
 			words = words[1:]
-			name, takesNext := wrapperOption(opt, valued)
+			if opt == "--" { // the end of the wrapper's options
+				break
+			}
+			name, takesNext, known := wrapperOption(opt, valued, wrapperFlags[path.Base(w)])
+			if !known { // an option this reader cannot place: what follows may be its operand
+				return []string{unresolved}
+			}
 			moved := chdirOpts[name]
 			c.elsewhere, c.chdir = c.elsewhere || moved, c.chdir || moved
 			if takesNext && len(words) > 0 {
@@ -322,29 +329,55 @@ func stripWrappers(words []string, c *shellCmd) []string {
 	return nil
 }
 
+// wrapperFlags are the wrappers' long options that take no operand; with
+// the valued ones of wrappers they are every long option this reader knows.
+var wrapperFlags = map[string][]string{
+	"sudo":    {"--preserve-env", "--non-interactive", "--login", "--shell", "--reset-timestamp", "--remove-timestamp", "--background", "--stdin", "--set-home", "--validate", "--list", "--edit", "--askpass", "--bell", "--preserve-groups", "--other-user"},
+	"env":     {"--ignore-environment", "--null", "--debug", "--default-signal", "--ignore-signal", "--block-signal", "--list-signal-handling"},
+	"time":    {"--verbose", "--portability", "--append", "--quiet"},
+	"timeout": {"--preserve-status", "--foreground", "--verbose"},
+	"xargs":   {"--null", "--no-run-if-empty", "--verbose", "--interactive", "--exit", "--open-tty", "--show-limits"},
+	"xcrun":   {"--run", "--verbose", "--no-cache", "--kill-cache", "--log"},
+}
+
 // wrapperOption reads one wrapper option word: name is the valued option it
 // sets ("" when it takes no operand) and takesNext reports that its operand
 // is the next word. An operand can be attached (-C/tmp, --chdir=/tmp) and a
 // short valued option can end a cluster of flags (env -iC/tmp, sudo -iu x).
-func wrapperOption(opt string, valued map[string]bool) (name string, takesNext bool) {
+// A long option may be abbreviated to an unambiguous prefix, as getopt_long
+// takes it (--chd is --chdir); known is false for a long option that is
+// neither a known one nor such a prefix.
+func wrapperOption(opt string, valued map[string]bool, flags []string) (name string, takesNext, known bool) {
 	if valued[opt] {
-		return opt, true
-	}
-	if long, _, ok := strings.Cut(opt, "="); ok && strings.HasPrefix(opt, "--") {
-		if valued[long] {
-			return long, false
-		}
-		return "", false
+		return opt, true, true
 	}
 	if strings.HasPrefix(opt, "--") {
-		return "", false
+		long, _, attached := strings.Cut(opt, "=")
+		var hits []string
+		for _, cand := range append(slices.Collect(maps.Keys(valued)), flags...) {
+			if cand == long {
+				hits = []string{cand}
+				break
+			}
+			if strings.HasPrefix(cand, "--") && strings.HasPrefix(cand, long) {
+				hits = append(hits, cand)
+			}
+		}
+		if len(hits) != 1 { // unknown, or an ambiguous prefix
+			return "", false, false
+		}
+		match := hits[0]
+		if valued[match] {
+			return match, !attached, true
+		}
+		return "", false, true
 	}
 	for i := 1; i < len(opt); i++ {
 		if short := "-" + opt[i:i+1]; valued[short] {
-			return short, i == len(opt)-1
+			return short, i == len(opt)-1, true
 		}
 	}
-	return "", false
+	return "", false, true
 }
 
 // commands splits a Bash summary into its commands. The request's
