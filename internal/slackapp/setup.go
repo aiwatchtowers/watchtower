@@ -81,13 +81,15 @@ type Step struct {
 
 // Result is how a run ended.
 type Result struct {
-	Kind        string
-	Code        string // Slack's error code, or a CodeAppID* for KindNeedAppID
-	Error       string // what went wrong, for the owner (network, pending_create, need_app_id)
-	TeamID      string
-	TeamName    string
-	AppID       string
-	AppName     string // adopt: the exported app's display name (confirm_app)
+	Kind     string
+	Code     string // Slack's error code, or a CodeAppID* for KindNeedAppID
+	Error    string // what went wrong, for the owner (network, pending_create, need_app_id)
+	TeamID   string
+	TeamName string
+	AppID    string
+	AppName  string // adopt: the exported app's display name (confirm_app)
+	// AppTeamID: wrong_workspace — the workspace this Mac knows the app in.
+	AppTeamID   string
 	ClientID    string
 	LinkWritten bool
 	// Changes: adopt read the app; what the update makes (or made) differ.
@@ -497,7 +499,7 @@ func (r *Runner) AdoptWith(ctx context.Context, cfgToken string, opts AdoptOptio
 		if other, err := r.appTeam(appIDFlag); err != nil {
 			return Result{}, err
 		} else if other != "" && other != teamID {
-			return Result{Kind: KindWrongWorkspace, TeamID: teamID, TeamName: teamName, AppID: appIDFlag}, nil
+			return Result{Kind: KindWrongWorkspace, TeamID: teamID, TeamName: teamName, AppID: appIDFlag, AppTeamID: other}, nil
 		}
 		if s, ok, err := r.record(teamID); err != nil {
 			return Result{}, err

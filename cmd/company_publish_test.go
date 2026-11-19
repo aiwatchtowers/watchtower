@@ -576,4 +576,5 @@ func TestReuse_AdoptTakesSettingsURLCLI(t *testing.T) {
 	require.NoError(t, runSlackAppAdopt(c, nil))
 	lines = jsonLines(t, out.String())
 	assert.Equal(t, "wrong_workspace", lines[len(lines)-1]["result"])
+	assert.Equal(t, "T0OTHER", lines[len(lines)-1]["app_team_id"])
 }

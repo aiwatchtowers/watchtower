@@ -99,6 +99,31 @@ package struct SlackSetupTarget: Equatable, Sendable {
     package var workspace: String { teamName.isEmpty ? teamID : teamName }
 }
 
+/// What adopting an app changes in it (`slack app adopt` `changes`, Go
+/// `slackapp.Changes`).
+package struct SlackAppChanges: Decodable, Equatable, Sendable {
+    package var addScopes: [String]
+    package var addRedirectURLs: [String]
+    package var enablePKCE: Bool
+
+    package init(addScopes: [String] = [], addRedirectURLs: [String] = [], enablePKCE: Bool = false) {
+        self.addScopes = addScopes
+        self.addRedirectURLs = addRedirectURLs
+        self.enablePKCE = enablePKCE
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case addScopes = "add_scopes", addRedirectURLs = "add_redirect_urls", enablePKCE = "enable_pkce"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        addScopes = try c.decodeIfPresent([String].self, forKey: .addScopes) ?? []
+        addRedirectURLs = try c.decodeIfPresent([String].self, forKey: .addRedirectURLs) ?? []
+        enablePKCE = try c.decodeIfPresent(Bool.self, forKey: .enablePKCE) ?? false
+    }
+}
+
 /// **Set up for my company** (screens spec §3, plan B Task 13): creates or
 /// adopts Watchtower's Slack app through `watchtower slack app … --json`,
 /// mirrors each step, then runs the admin's own connect. Held on `AppState`
@@ -134,6 +159,9 @@ package final class SlackAppSetupModel {
         package var appIDProblem: AppIDProblem?
         /// `confirm_app`: the App ID came from the field; the owner checks the name.
         package var confirm: (appID: String, appName: String)?
+        /// What **Update the app** changes in it (`confirm_app` reads the app first;
+        /// the company wizard's manifest diff, screens §2.5). Nil: not read.
+        package var changes: SlackAppChanges?
 
         package init(target: SlackSetupTarget, needsAppID: Bool = false) {
             self.target = target
@@ -143,6 +171,7 @@ package final class SlackAppSetupModel {
         package static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.target == rhs.target && lhs.needsAppID == rhs.needsAppID && lhs.appIDProblem == rhs.appIDProblem
                 && lhs.confirm?.appID == rhs.confirm?.appID && lhs.confirm?.appName == rhs.confirm?.appName
+                && lhs.changes == rhs.changes
         }
     }
 
@@ -175,6 +204,9 @@ package final class SlackAppSetupModel {
         /// The local save failed; the setup's record row (if any) says how to go on.
         case storage(teamID: String)
         case wrongTeam(workspace: String)
+        /// `wrong_workspace`: the App ID is known on this Mac in another
+        /// workspace (`appTeam`) than the token's (`workspace`).
+        case wrongWorkspace(appID: String, appTeam: String, workspace: String)
         case noRecord(workspace: String)
         case noApp(workspace: String)
         case idsRejected(clientID: Bool)
@@ -339,12 +371,14 @@ package final class SlackAppSetupModel {
     }
 
     /// **Update the app** (ask #1425). A repeated App ID after `confirm_app`
-    /// confirms it.
-    package func startAdopt(token: String, appID: String?) {
+    /// confirms it. `clientID` (the company wizard's found app) adopts an app
+    /// no account here is on yet.
+    package func startAdopt(token: String, appID: String?, clientID: String? = nil) {
         let appID = appID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let clientID = clientID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let fromField = !appID.isEmpty
         startRun(token: token, steps: fromField ? Self.adoptFieldSteps : Self.adoptSteps, reports: true) { [self] token in
-            await runAdopt(token: token, appID: appID)
+            await runAdopt(token: token, appID: appID, clientID: clientID)
         }
     }
 
@@ -583,7 +617,7 @@ package final class SlackAppSetupModel {
         if result?.result == "ok" { target.linkWritten = true }
     }
 
-    private func runAdopt(token: String, appID: String) async {
+    private func runAdopt(token: String, appID: String, clientID: String) async {
         let adopt: Adopt
         if case let .adopt(shown) = form {
             adopt = shown
@@ -605,11 +639,13 @@ package final class SlackAppSetupModel {
             args += ["--app-id", appID]
             if adopt.confirm?.appID == appID { args += ["--confirm-app-id", appID] }
         }
+        if !clientID.isEmpty { args += ["--client-id", clientID] }
         guard let result = await stream(args, token: token) else { return }
         var next = adopt
         next.target = result.target(fallback: adopt.target)
         next.confirm = nil
         next.appIDProblem = nil
+        next.changes = result.changes
         switch result.result {
         case "ok":
             phase = .finished(.success(next.target))
@@ -708,7 +744,9 @@ package final class SlackAppSetupModel {
         case "storage": .storage(teamID: result.teamID ?? "")
         // wrong_workspace: company plan Task 14's adopt answer for an app
         // of another workspace than the token's.
-        case "wrong_team", "wrong_workspace": .wrongTeam(workspace: workspace)
+        case "wrong_team": .wrongTeam(workspace: workspace)
+        case "wrong_workspace":
+            .wrongWorkspace(appID: result.appID ?? "", appTeam: result.appTeamID ?? "", workspace: workspace)
         case "no_record": .noRecord(workspace: workspace)
         case "no_pending": .notPending(workspace: workspace)
         case "no_app": .noApp(workspace: workspace)
@@ -747,7 +785,11 @@ package final class SlackAppSetupModel {
         let teamName: String?
         let appID: String?
         let appName: String?
+        /// `wrong_workspace`: the workspace the app belongs to.
+        let appTeamID: String?
         let clientID: String?
+        /// adopt read the app: what its update changes.
+        let changes: SlackAppChanges?
         /// Absent on early results (a bad token): then the fallback's.
         let linkWritten: LinkWritten
         let code: String?
@@ -762,6 +804,8 @@ package final class SlackAppSetupModel {
             teamName = try c.decodeIfPresent(String.self, forKey: .teamName)
             appID = try c.decodeIfPresent(String.self, forKey: .appID)
             appName = try c.decodeIfPresent(String.self, forKey: .appName)
+            appTeamID = try c.decodeIfPresent(String.self, forKey: .appTeamID)
+            changes = try c.decodeIfPresent(SlackAppChanges.self, forKey: .changes)
             clientID = try c.decodeIfPresent(String.self, forKey: .clientID)
             linkWritten = try c.decodeIfPresent(Bool.self, forKey: .linkWritten).map(LinkWritten.value) ?? .absent
             code = try c.decodeIfPresent(String.self, forKey: .code)
@@ -770,7 +814,7 @@ package final class SlackAppSetupModel {
 
         enum CodingKeys: String, CodingKey {
             case result, teamID = "team_id", teamName = "team_name", appID = "app_id", appName = "app_name"
-            case clientID = "client_id", linkWritten = "link_written", code, error
+            case appTeamID = "app_team_id", clientID = "client_id", linkWritten = "link_written", code, error, changes
         }
 
         func target(fallback: SlackSetupTarget?) -> SlackSetupTarget {

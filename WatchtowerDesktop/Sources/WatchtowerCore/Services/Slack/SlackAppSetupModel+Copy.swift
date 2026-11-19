@@ -259,7 +259,15 @@ extension SlackAppSetupModel {
         return false
     }
 
-    private func problemLine(_ problem: Problem) -> String {
+    /// `wrong_workspace` (company screens spec §2.5): the app is this Mac's in
+    /// another workspace than the token's.
+    package static func wrongWorkspaceLine(appID: String, appTeam: String, workspace: String) -> String {
+        let team = appTeam.isEmpty ? "" : " (\(appTeam))"
+        return "App \(appID) belongs to another workspace\(team), not \(workspace). Check the link and paste it again."
+    }
+
+    /// The line a problem shows (the company wizard words two of them itself).
+    package func problemLine(_ problem: Problem) -> String {
         let nothing = changesNothingCreated ? "Nothing was created." : "Nothing was changed."
         switch problem {
         case .badToken: return Self.badTokenBody
@@ -273,6 +281,8 @@ extension SlackAppSetupModel {
             return Self.storageBody(rowAction: recordRows.first { $0.record.teamID == teamID && !teamID.isEmpty }?.label)
         case let .wrongTeam(workspace):
             return "That token is for \(workspace), not this setup's workspace. Generate one in the right workspace."
+        case let .wrongWorkspace(appID, appTeam, workspace):
+            return Self.wrongWorkspaceLine(appID: appID, appTeam: appTeam, workspace: workspace)
         case let .noRecord(workspace):
             return "This Mac has no unfinished setup for \(workspace), so there is nothing to add the link to."
         case let .noApp(workspace):

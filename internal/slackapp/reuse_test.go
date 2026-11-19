@@ -128,6 +128,7 @@ func TestReuse_WrongWorkspaceRefused(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, KindWrongWorkspace, res.Kind)
 			assert.Equal(t, "T0ACME", res.TeamID, "the token's workspace")
+			assert.Equal(t, "T0OTHER", res.AppTeamID, "the app's workspace, for the wizard's line")
 			assert.Zero(t, h.api.exports, "nothing read")
 			assert.Zero(t, h.api.updates, "nothing changed")
 			assert.Zero(t, h.api.creates)
