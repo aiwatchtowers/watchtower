@@ -413,6 +413,25 @@ extension WorkbenchesViewModel {
         return model
     }
 
+    /// The session's Workchat feed store, made once per session and kept
+    /// (`feedStores`); called once per pane open, so a kept store handed to
+    /// a pane starts that open's trace (a reopen when it holds entries).
+    /// Without the watchtower CLI the store is `runnerMissing`.
+    func feedStore(sessionID: Int64) -> SessionFeedStore {
+        feedStoreOrder.removeAll { $0 == sessionID }
+        feedStoreOrder.append(sessionID)
+        if let store = feedStores[sessionID] {
+            store.beginOpenTrace(reopen: !store.entries.isEmpty)
+            return store
+        }
+        let store = SessionFeedStore(sessionID: sessionID, runner: cli?.runner)
+        feedStores[sessionID] = store
+        while feedStoreOrder.count > Self.keptFeedStores {
+            feedStores[feedStoreOrder.removeFirst()] = nil
+        }
+        return store
+    }
+
     /// The workbench's Find Repeats model, made once; nil without the watchtower CLI.
     func reviewLessonsModel(projectID: Int64) -> ReviewLessonsModel? {
         if let model = reviewLessonModels[projectID] { return model }

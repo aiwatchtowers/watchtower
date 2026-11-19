@@ -18,6 +18,8 @@ struct SessionChatView: View {
     /// The composer takes the keyboard as it is made.
     var composerAutoFocus = false
 
+    /// The session's kept store (`WorkbenchesViewModel.feedStore`): a pane
+    /// shown again paints the entries it holds at once.
     @StateObject private var store: SessionFeedStore
     /// The subagents opened in place; empty = the main feed.
     @State private var path = SessionChatPath()
@@ -44,9 +46,10 @@ struct SessionChatView: View {
         self.projectID = projectID
         self.composerFocus = composerFocus
         self.composerAutoFocus = composerAutoFocus
-        // An autoclosure: the store and its CLI lookup are built once per
-        // pane, not on every render of the parent.
-        _store = StateObject(wrappedValue: SessionFeedStore(sessionID: sessionID, runner: ProcessCLIRunner.makeDefault()))
+        // An autoclosure, run once per pane (the pane is keyed by session):
+        // the store is fetched, and its open trace started, once per open,
+        // never on a re-render of the parent.
+        _store = StateObject(wrappedValue: vm.feedStore(sessionID: sessionID))
     }
 
     /// The agent works or has background subagents running: poll every 3 s.
@@ -215,6 +218,8 @@ struct SessionChatView: View {
         .onChange(of: busy) { _, nowBusy in
             if !nowBusy { store.clearActivity() }
         }
+        // A kept store missed the change while its pane was closed.
+        .onAppear { if !busy { store.clearActivity() } }
         .onChange(of: sessionID) { path = SessionChatPath() }
     }
 
@@ -366,7 +371,7 @@ struct SessionChatView: View {
         workchatFeed.answerPending = !(workchat?.outgoing.isEmpty ?? true)
         workchatFeed.onOpenArtifact = { artifact = $0 }
         var context = workchatFeed.context()
-        context.hasEarlier = window.hasEarlier(total: total)
+        context.hasEarlier = window.hasEarlier(total: total) || store.hasEarlierPage
         context.rowActions.loadEarlier = loadEarlier
         context.focusMessageID = earlierAnchor
         var follow = ChatFeedFollow(conversationID: sessionID)
@@ -421,8 +426,20 @@ struct SessionChatView: View {
         if window.followingChanged(following, total: dialogEntries.count) { earlierAnchor = nil }
     }
 
+    /// Grows the window over the entries held; once it shows them all, reads
+    /// the store's earlier page and grows over that.
     private func loadEarlier() {
-        if let anchor = window.loadEarlier(entries: dialogEntries) { earlierAnchor = anchor }
+        let entries = dialogEntries
+        if window.hasEarlier(total: entries.count) {
+            if let anchor = window.loadEarlier(entries: entries) { earlierAnchor = anchor }
+            return
+        }
+        guard store.hasEarlierPage else { return }
+        let top = entries.first?.id
+        Task {
+            await store.loadEarlierPage()
+            if let anchor = window.earlierPageArrived(entries: dialogEntries, previousTop: top) { earlierAnchor = anchor }
+        }
     }
 
     @ViewBuilder
@@ -467,5 +484,15 @@ extension SessionFeedWindow {
         guard hasEarlier(total: entries.count) else { return nil }
         let anchor = grow(entries: entries)
         return following ? nil : anchor.map(WorkchatFeedAdapter.messageID)
+    }
+
+    /// The store put an earlier page in front of the entries the window
+    /// showed from their start (`previousTop`): the window grows when the page
+    /// does not fit, and while the owner reads older text the old top entry's
+    /// message id comes back, to keep in view. Nil when following or nothing
+    /// was shown.
+    mutating func earlierPageArrived(entries: [SessionFeedEntry], previousTop: String?) -> Int64? {
+        if hasEarlier(total: entries.count) { _ = grow(entries: entries) }
+        return following ? nil : previousTop.map(WorkchatFeedAdapter.messageID)
     }
 }

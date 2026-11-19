@@ -1640,6 +1640,8 @@ extension WorkbenchesViewModel {
         resumeFailed.remove(sessionID)
         // A deleted session's overview run never outlives it.
         reviewModels.removeValue(forKey: sessionID)?.shutDown()
+        feedStores[sessionID] = nil
+        feedStoreOrder.removeAll { $0 == sessionID }
         if workchatModels.removeValue(forKey: sessionID) != nil {
             lineDelivery.dropHeld(sessionID: sessionID) { if case .workchat = $0 { true } else { false } }
         }

@@ -20,11 +20,19 @@ final class SessionFeedStoreTests: XCTestCase {
         }
     }
 
-    private func payload(cursor: String = "c1", entries: String = "", subagents: String = "", activity: String = "null") -> String {
-        """
+    private func payload(
+        cursor: String = "c1", entries: String = "", subagents: String = "", activity: String = "null", before: String? = nil
+    ) -> String {
+        let beforeKey = before.map { #","before":"\#($0)""# } ?? ""
+        return """
         {"session_id":7,"cursor":"\(cursor)","entries":[\(entries)],"subagents":[\(subagents)],
-         "activity":\(activity),"skipped":0,"unknown_records":{}}
+         "activity":\(activity),"skipped":0,"unknown_records":{}\(beforeKey)}
         """
+    }
+
+    /// Agent entries `e<lower>` … `e<upper-1>`, joined for `payload(entries:)`.
+    private func entries(_ range: Range<Int>, text: String = "t") -> String {
+        range.map { entry("e\($0)", "agent", text: text) }.joined(separator: ",")
     }
 
     private func entry(_ id: String, _ kind: String, text: String = "t", at: String = "2026-10-16T10:00:00Z") -> String {
@@ -89,8 +97,146 @@ final class SessionFeedStoreTests: XCTestCase {
         await store.refresh()
         XCTAssertEqual(store.entries.map(\.id), ["m0", "m1", "m2"])
         XCTAssertEqual(store.entries[1].text, "longer text")
-        XCTAssertEqual(runner.calls[0], ["workbench", "session-feed", "--session", "7", "--json"])
+        XCTAssertEqual(runner.calls[0], ["workbench", "session-feed", "--session", "7", "--json", "--tail", "60"])
         XCTAssertEqual(runner.calls[1], ["workbench", "session-feed", "--session", "7", "--json", "--after", "c1"])
+    }
+
+    // MARK: Tail read and earlier pages (#2065 Task 8)
+
+    func testFirstReadIsATailRead() async {
+        let runner = FakeRunner([.success(payload(entries: entries(90..<150), before: "e90"))])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        XCTAssertEqual(SessionFeedStore.tailSize, 60)
+        XCTAssertFalse(store.hasEarlierPage, "nothing read yet")
+        await store.refresh()
+        XCTAssertEqual(runner.calls[0], ["workbench", "session-feed", "--session", "7", "--json", "--tail", "60"])
+        XCTAssertTrue(store.hasEarlierPage)
+        XCTAssertEqual(store.entries.count, 60)
+    }
+
+    func testFirstReadWithoutBeforeHasNoEarlierPage() async {
+        let runner = FakeRunner([.success(payload(entries: entries(0..<10)))])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        XCTAssertFalse(store.hasEarlierPage)
+        await store.loadEarlierPage()
+        XCTAssertEqual(runner.calls.count, 1, "no earlier page: no read")
+    }
+
+    func testLaterReadsUseAfterCursor() async {
+        let runner = FakeRunner([
+            .success(payload(entries: entries(90..<150), before: "e90")),
+            .success(payload(cursor: "c2", entries: entries(150..<151)))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        await store.refresh()
+        XCTAssertEqual(runner.calls[1], ["workbench", "session-feed", "--session", "7", "--json", "--after", "c1"])
+        XCTAssertFalse(runner.calls[1].contains("--tail"))
+        XCTAssertTrue(store.hasEarlierPage, "an --after read (no before key) keeps the earlier page")
+        XCTAssertEqual(store.entries.last?.id, "e150")
+    }
+
+    func testEarlierPagePrependsAndMovesBefore() async {
+        let runner = FakeRunner([
+            .success(payload(entries: entries(90..<150), before: "e90")),
+            .success(payload(entries: entries(30..<90), before: "e30")),
+            .success(payload(entries: entries(0..<30)))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        await store.loadEarlierPage()
+        XCTAssertEqual(runner.calls.last, ["workbench", "session-feed", "--session", "7", "--json", "--tail", "60", "--before", "e90"])
+        XCTAssertEqual(store.entries.first?.id, "e30")
+        XCTAssertEqual(store.entries.count, 120)
+        XCTAssertTrue(store.hasEarlierPage)
+        await store.loadEarlierPage()
+        XCTAssertEqual(runner.calls.last, ["workbench", "session-feed", "--session", "7", "--json", "--tail", "60", "--before", "e30"])
+        XCTAssertEqual(store.entries.map(\.id), (0..<150).map { "e\($0)" })
+        XCTAssertFalse(store.hasEarlierPage, "a page without before is the first one")
+        await store.loadEarlierPage()
+        XCTAssertEqual(runner.calls.count, 3, "no earlier page: no third page read")
+    }
+
+    func testEarlierPageSkipsEntriesAlreadyHeldAndUpsertsByIDAfter() async {
+        let runner = FakeRunner([
+            .success(payload(entries: entries(90..<150), before: "e90")),
+            // A page overlapping what is held: e90 is not added twice.
+            .success(payload(entries: entries(30..<91), before: "e30")),
+            .success(payload(cursor: "c2", entries: entry("e95", "agent", text: "grown")))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        await store.loadEarlierPage()
+        XCTAssertEqual(store.entries.count, 120)
+        XCTAssertEqual(Set(store.entries.map(\.id)).count, 120)
+        await store.refresh()
+        XCTAssertEqual(store.entries[65].id, "e95", "the index is rebuilt after a prepend")
+        XCTAssertEqual(store.entries[65].text, "grown")
+        XCTAssertEqual(store.entries.count, 120)
+    }
+
+    func testEarlierPageFailureKeepsEntriesAndPaging() async {
+        let runner = FakeRunner([
+            .success(payload(entries: entries(90..<150), before: "e90")),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")),
+            .success(payload(entries: entries(30..<90), before: "e30"))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        await store.loadEarlierPage()
+        XCTAssertEqual(store.entries.count, 60)
+        XCTAssertEqual(store.entries.first?.id, "e90")
+        XCTAssertTrue(store.hasEarlierPage)
+        XCTAssertNotNil(store.error)
+        await store.loadEarlierPage()
+        XCTAssertEqual(runner.calls.last?.suffix(2), ["--before", "e90"], "the retry asks for the same page")
+        XCTAssertEqual(store.entries.first?.id, "e30")
+        XCTAssertNil(store.error)
+    }
+
+    func testEarlierPageWithAPermanentlyBadBeforeStopsPaging() async {
+        for stderr in [#"Error: before id "L5" is ambiguous (2 entries)"#, #"Error: before "e90": no such entry"#] {
+            let runner = FakeRunner([
+                .success(payload(entries: entries(90..<150), before: "e90")),
+                .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: stderr))
+            ])
+            let store = SessionFeedStore(sessionID: 7, runner: runner)
+            await store.refresh()
+            await store.loadEarlierPage()
+            XCTAssertFalse(store.hasEarlierPage, "the same before fails every time: paging stops, never retried")
+            XCTAssertEqual(store.entries.count, 60)
+            XCTAssertNotNil(store.error)
+            await store.loadEarlierPage()
+            XCTAssertEqual(runner.calls.count, 2)
+        }
+    }
+
+    func testGrowingEntryInWindowUpsertsByID() async {
+        let runner = FakeRunner([
+            .success(payload(entries: entries(90..<150, text: "short"), before: "e90")),
+            .success(payload(cursor: "c2", entries: entry("e149", "agent", text: "longer")))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        await store.refresh()
+        XCTAssertEqual(store.entries.count, 60)
+        XCTAssertEqual(store.entries.last?.id, "e149")
+        XCTAssertEqual(store.entries.last?.text, "longer")
+    }
+
+    func testStoreKeepsEntriesWhenALaterReadFails() async {
+        let runner = FakeRunner([
+            .success(payload(entries: entries(90..<150), before: "e90")),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        await store.refresh()
+        XCTAssertEqual(store.entries.count, 60)
+        XCTAssertNotNil(store.error)
+        XCTAssertTrue(store.hasEarlierPage)
+        XCTAssertTrue(store.feedLoaded)
     }
 
     func testEmptyCursorMeansFullReadNext() async {

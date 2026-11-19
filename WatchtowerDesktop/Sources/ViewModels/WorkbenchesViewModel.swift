@@ -638,6 +638,16 @@ final class WorkbenchesViewModel {
     /// lines survive pane switches; dropped with the session
     /// (`forgetProcessState`). Created during a view's body, hence not observed.
     @ObservationIgnored var workchatModels: [Int64: WorkchatModel] = [:]
+    /// The Workchat feed stores kept while the app runs (#2065), so a pane
+    /// shown again paints its entries at once and reads only after the
+    /// cursor; at most `keptFeedStores`, the least recently shown dropped
+    /// first (`feedStoreOrder`, oldest first), and dropped with the session
+    /// (`forgetProcessState`). A kept store off screen runs no CLI: only an
+    /// open pane's `follow` polls it. Created during a view's body, hence not
+    /// observed.
+    @ObservationIgnored var feedStores: [Int64: SessionFeedStore] = [:]
+    @ObservationIgnored var feedStoreOrder: [Int64] = []
+    static let keptFeedStores = 8
     /// Workchat panes' in-memory toggles (the 👥 list's Done), kept for the
     /// app's lifetime and never persisted (#2065).
     let paneMemory = WorkchatPaneMemory()
