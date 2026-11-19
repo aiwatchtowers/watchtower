@@ -3,6 +3,7 @@ package coach
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"watchtower/internal/db"
@@ -29,6 +30,11 @@ var (
 	ErrPRFailed = errors.New("the pull request call failed")
 	// ErrTimeout: a git or gh network call ran over its budget.
 	ErrTimeout = errors.New("a network call timed out")
+	// ErrPRUnreadable: gh could not read a pull request's state.
+	ErrPRUnreadable = errors.New("reading the pull request failed")
+	// ErrOriginMoved: the folder's origin is no longer the repository the
+	// pull request a rollback reverts is in.
+	ErrOriginMoved = errors.New("the folder's origin is not the pull request's repository")
 
 	// errPRNotWired is an Applier built without the pull-request seams
 	// meeting a pull-request route or row: never written or undone locally.
@@ -43,7 +49,23 @@ const (
 	PushFailedLine  = "GitHub refused the branch, or the push needed a password prompt."
 	PRFailedLine    = "GitHub did not open or close the pull request — press the button again to retry."
 	TimeoutLine     = "GitHub did not answer in time; nothing changed — try again."
+	// PRUnreadableLine takes the pull request's "#N".
+	PRUnreadableLine = "Could not read pull request %s from GitHub — try again."
+	OriginMovedLine  = "This folder's origin is no longer the repository the pull request is in; nothing changed."
 )
+
+// BaseDiffersError is ErrBaseDiffers (errors.Is) with the text the default
+// branch holds now (Current; "" when the file is missing there): a rollback
+// shows it as a diff from the accepted text. Detail is git's words; neither
+// message carries the text.
+type BaseDiffersError struct {
+	Current, Detail string
+}
+
+func (e *BaseDiffersError) Error() string { return ErrBaseDiffers.Error() + ": " + e.Detail }
+
+// Is makes errors.Is(err, ErrBaseDiffers) match.
+func (e *BaseDiffersError) Is(target error) bool { return target == ErrBaseDiffers }
 
 // The pull-request states RepoPRState reports (gh pr view --json state).
 const (
@@ -60,14 +82,24 @@ type RepoRoute struct{ PR bool }
 // RepoPublishReq is one pull request RepoPublish opens: After committed over
 // Before (the text the default branch must hold, else ErrBaseDiffers) to the
 // file Rel (relative to the workbench folder, forward slashes) on Branch
-// (coach/proposal-<id> or coach/revert-<id>), titled Title with Body. ID
-// names the proposal. cmd resolves the base branch and its commit.
+// (coach/proposal-<id> or coach/revert-<id>; cmd scopes it to the
+// workspace, coach/<token>/proposal-<id>, and RepoPublish returns the branch
+// it pushed), titled Title with Body. ID names the proposal. cmd resolves
+// the base branch and its commit. MayCreate: the file may be missing from
+// the base when Before is "" (an Accept of CLAUDE.md or AGENTS.md);
+// otherwise a missing file is ErrBaseDiffers. Delete removes the file
+// instead (After is ""): the revert of an Accept that created it. Reverts names the pull request a revert undoes ("" for an
+// Accept): its repository must still be the folder's origin
+// (ErrOriginMoved).
 type RepoPublishReq struct {
 	ID            int64
 	Rel           string
 	Before, After string
 	Branch        string
 	Title, Body   string
+	MayCreate     bool
+	Delete        bool
+	Reverts       string
 }
 
 // prRefusal is a seam failure in the owner's words: the sentence, then the
@@ -95,10 +127,31 @@ func prError(err error, rel string) error {
 		line = PRFailedLine
 	case errors.Is(err, ErrTimeout):
 		line = TimeoutLine
+	case errors.Is(err, ErrOriginMoved):
+		line = OriginMovedLine
 	default:
 		return err
 	}
 	return prRefusal{line: line, cause: err}
+}
+
+// prStateError is a RepoPRState failure as the owner reads it: an
+// unreadable state names the pull request (never "did not open or close"),
+// the other sentinels get prError's sentence.
+func prStateError(err error, prURL, rel string) error {
+	if errors.Is(err, ErrPRUnreadable) && !errors.Is(err, ErrNoGH) && !errors.Is(err, ErrTimeout) {
+		return prRefusal{line: fmt.Sprintf(PRUnreadableLine, prNumber(prURL)), cause: err}
+	}
+	return prError(err, rel)
+}
+
+// prNumber is "#N" of a pull request URL (.../pull/N), else the URL.
+func prNumber(prURL string) string {
+	i := strings.LastIndex(prURL, "/pull/")
+	if i < 0 {
+		return prURL
+	}
+	return "#" + strings.TrimSuffix(prURL[i+len("/pull/"):], "/")
 }
 
 // repoRoute is the folder of p's workbench and whether its edit opens a pull
@@ -164,9 +217,10 @@ func (a *Applier) acceptPR(p db.CoachProposal, folder, edited string, baseline *
 	}
 	prURL, branch, err := a.RepoPublish(folder, RepoPublishReq{
 		ID: id, Rel: rel, Before: p.BeforeText, After: after,
-		Branch: fmt.Sprintf("coach/proposal-%d", id),
-		Title:  p.Title,
-		Body:   p.Why + fmt.Sprintf("\n\n_Opened by the Watchtower coach on your Accept (proposal %d)._", id),
+		Branch:    fmt.Sprintf("coach/proposal-%d", id),
+		MayCreate: creatableRepoDestinations[p.Destination],
+		Title:     p.Title,
+		Body:      p.Why + fmt.Sprintf("\n\n_Opened by the Watchtower coach on your Accept (proposal %d)._", id),
 	})
 	if err != nil {
 		return fail(prError(err, rel))
@@ -179,16 +233,17 @@ func (a *Applier) acceptPR(p db.CoachProposal, folder, edited string, baseline *
 
 // rollbackPR is Rollback of an edit Accept opened a pull request for, by the
 // pull request's state: merged — a revert pull request (Before and After
-// swapped, branch coach/revert-<id>) whose base must hold the accepted text,
-// else ErrChangedSince (no diff: the coach never reads the default branch);
-// open — the pull request is closed; closed unmerged — nothing on GitHub.
-// Then the proposal goes rolled_back with the revert's URL. A seam failure
-// refuses and leaves it accepted. force does not apply: a base that moved
-// cannot be reverted by a pull request either way.
-func (a *Applier) rollbackPR(p db.CoachProposal) (string, error) {
+// swapped, branch coach/revert-<id>; a file the Accept created is deleted,
+// as the working-copy route does) whose base must hold the accepted text,
+// else ErrChangedSince with the diff accepted → the base's text now; open —
+// the pull request is closed; closed unmerged — nothing on GitHub. Then the
+// proposal goes rolled_back with the revert's URL. A seam failure refuses
+// and leaves it accepted. force does not apply: a base that moved cannot be
+// reverted by a pull request either way.
+func (a *Applier) rollbackPR(p db.CoachProposal) (revertURL, diff string, err error) {
 	id := p.ID
-	fail := func(err error) (string, error) {
-		return "", fmt.Errorf("rolling back coach proposal %d (%s): %w", id, p.Destination, err)
+	fail := func(err error) (string, string, error) {
+		return "", "", fmt.Errorf("rolling back coach proposal %d (%s): %w", id, p.Destination, err)
 	}
 	if a.RepoPRState == nil || a.RepoPublish == nil || a.RepoClosePR == nil {
 		return fail(errPRNotWired)
@@ -203,19 +258,25 @@ func (a *Applier) rollbackPR(p db.CoachProposal) (string, error) {
 	}
 	state, _, err := a.RepoPRState(folder, p.PRURL)
 	if err != nil {
-		return fail(prError(err, rel))
+		return fail(prStateError(err, p.PRURL, rel))
 	}
-	var revertURL string
 	switch state {
 	case prMerged:
 		revertURL, _, err = a.RepoPublish(folder, RepoPublishReq{
 			ID: id, Rel: rel, Before: p.AfterText, After: p.BeforeText,
-			Branch: fmt.Sprintf("coach/revert-%d", id),
-			Title:  "Revert: " + p.Title,
-			Body:   fmt.Sprintf("Reverts %s — rolled back in Watchtower (coach proposal %d).", p.PRURL, id),
+			Branch:  fmt.Sprintf("coach/revert-%d", id),
+			Title:   "Revert: " + p.Title,
+			Body:    fmt.Sprintf("Reverts %s — rolled back in Watchtower (coach proposal %d).", p.PRURL, id),
+			Delete:  p.BeforeText == "" && creatableRepoDestinations[p.Destination],
+			Reverts: p.PRURL,
 		})
+		var bd *BaseDiffersError
+		if errors.As(err, &bd) {
+			diff = unifiedDiff(p.AfterText, bd.Current)
+		}
 		if errors.Is(err, ErrBaseDiffers) {
-			return fail(fmt.Errorf("%w: %w", ErrChangedSince, prError(err, rel)))
+			_, _, err = fail(fmt.Errorf("%w: %w", ErrChangedSince, prError(err, rel)))
+			return "", diff, err
 		}
 		if err != nil {
 			return fail(prError(err, rel))
@@ -230,11 +291,11 @@ func (a *Applier) rollbackPR(p db.CoachProposal) (string, error) {
 	}
 	if err := a.DB.MarkCoachRolledBack(id, revertURL, a.now()); err != nil {
 		if revertURL != "" { // the next Rollback finds the same revert pull request
-			return "", fmt.Errorf("rolling back coach proposal %d (revert pull request %s open): %w", id, revertURL, err)
+			return "", "", fmt.Errorf("rolling back coach proposal %d (revert pull request %s open): %w", id, revertURL, err)
 		}
-		return "", fmt.Errorf("rolling back coach proposal %d: %w", id, err)
+		return "", "", fmt.Errorf("rolling back coach proposal %d: %w", id, err)
 	}
-	return revertURL, nil
+	return revertURL, "", nil
 }
 
 // SyncPRs brings the accepted pull-request edits not yet measured up to date
@@ -286,7 +347,7 @@ func (a *Applier) syncPR(p db.CoachProposal, now time.Time) (bool, error) {
 	state, mergedAt, err := a.RepoPRState(folder, p.PRURL)
 	if err != nil {
 		rel, _ := RepoRelPath(p.Destination, p.Skill)
-		return false, prError(err, rel)
+		return false, prStateError(err, p.PRURL, rel)
 	}
 	switch state {
 	case prMerged:

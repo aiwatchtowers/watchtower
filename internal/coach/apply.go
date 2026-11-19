@@ -87,7 +87,7 @@ func (a *Applier) now() time.Time {
 // the branch checked out there at the write ("detached:<short sha>" for a
 // detached HEAD; "" when it could not be read, and for every other
 // destination). An Accept that opened a pull request has its URL in PRURL
-// and its branch (coach/proposal-<id>) in WrittenBranch; the working copy
+// and its branch (coach/<workspace token>/proposal-<id>) in WrittenBranch; the working copy
 // was not written.
 type AcceptResult struct {
 	PackCopiesUpdated, PackCopiesDrifted int
@@ -134,19 +134,21 @@ func (a *Applier) accept(p db.CoachProposal, edited string) (AcceptResult, error
 		return AcceptResult{}, fmt.Errorf("coach proposal %d is %s, not open: %w", id, p.Status, db.ErrCoachStateChanged)
 	}
 	now := a.now()
-	// The slow measure runs first so the read and the write stay adjacent.
+	folder, pr := "", false
+	if repoDestinations[p.Destination] {
+		var err error
+		if folder, pr, err = a.repoRoute(p); err != nil { // a no_gh refusal needs no measure
+			return AcceptResult{}, fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
+		}
+	}
+	// The slow measure runs before the destination is read, so the read and
+	// the write stay adjacent.
 	baseline, n, err := a.baseline(p, now)
 	if err != nil {
 		return AcceptResult{}, fmt.Errorf("coach proposal %d: measuring the baseline: %w", id, err)
 	}
-	if repoDestinations[p.Destination] {
-		folder, pr, err := a.repoRoute(p)
-		if err != nil {
-			return AcceptResult{}, fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
-		}
-		if pr {
-			return a.acceptPR(p, folder, edited, baseline, n, now)
-		}
+	if pr {
+		return a.acceptPR(p, folder, edited, baseline, n, now)
 	}
 	branch, err := a.acceptLocal(p, edited, baseline, n, now)
 	return AcceptResult{WrittenBranch: branch}, err
@@ -249,8 +251,8 @@ func (a *Applier) RollbackWithResult(id int64, force bool) (RollbackResult, erro
 		return RollbackResult{}, fmt.Errorf("coach proposal %d is %s, not accepted: %w", id, p.Status, db.ErrCoachStateChanged)
 	}
 	if p.PRURL != "" {
-		url, err := a.rollbackPR(p)
-		return RollbackResult{RevertPRURL: url}, err
+		url, diff, err := a.rollbackPR(p)
+		return RollbackResult{Diff: diff, RevertPRURL: url}, err
 	}
 	diff, err := a.rollbackLocal(p, force)
 	return RollbackResult{Diff: diff}, err

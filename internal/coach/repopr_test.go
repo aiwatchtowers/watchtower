@@ -95,7 +95,7 @@ func TestAcceptPR_OpensPRAndLeavesWorkingCopy(t *testing.T) {
 	assert.Equal(t, "CLAUDE.md", r.WrittenPath)
 	require.Len(t, f.published, 1)
 	assert.Equal(t, RepoPublishReq{ID: id, Rel: "CLAUDE.md", Before: "Run tests.\n", After: "Run tests.\nKeep diffs small.\n",
-		Branch: fmt.Sprintf("coach/proposal-%d", id), Title: "title", Body: f.published[0].Body}, f.published[0])
+		Branch: fmt.Sprintf("coach/proposal-%d", id), Title: "title", Body: f.published[0].Body, MayCreate: true}, f.published[0])
 	assert.Contains(t, f.published[0].Body, "why")
 	for _, seen := range f.folders {
 		assert.Equal(t, folder, seen)
@@ -117,6 +117,7 @@ func TestAcceptPR_OpensPRAndLeavesWorkingCopy(t *testing.T) {
 	require.Len(t, f.published, 2)
 	assert.Equal(t, ".agents/skills/b/SKILL.md", f.published[1].Rel)
 	assert.Equal(t, "Read the board, then the plan.\n", f.published[1].After)
+	assert.False(t, f.published[1].MayCreate, "a skill is never created by an Accept")
 	assert.Equal(t, ".agents/skills/b/SKILL.md", r.WrittenPath)
 	assert.Equal(t, "Read the board, then the plan.\n", proposal(t, d, id).AfterText)
 	assert.Equal(t, before, folderFiles(t, folder))
@@ -233,7 +234,8 @@ func TestRollbackPR_ByState(t *testing.T) {
 	assert.Equal(t, "https://github.com/acme/repo/pull/2", r.RevertPRURL)
 	require.Len(t, f.published, 2)
 	assert.Equal(t, RepoPublishReq{ID: id, Rel: "CLAUDE.md", Before: "Run lint.\n", After: "Run tests.\n",
-		Branch: fmt.Sprintf("coach/revert-%d", id), Title: "Revert: title", Body: f.published[1].Body}, f.published[1])
+		Branch: fmt.Sprintf("coach/revert-%d", id), Title: "Revert: title", Body: f.published[1].Body,
+		Reverts: "https://github.com/acme/repo/pull/1"}, f.published[1])
 	assert.Contains(t, f.published[1].Body, "https://github.com/acme/repo/pull/1")
 	p := proposal(t, d, id)
 	assert.Equal(t, "rolled_back", p.Status)
@@ -274,7 +276,7 @@ func TestRollbackPR_FailuresStayAccepted(t *testing.T) {
 		sentinel error
 	}{
 		{"gh fails", func(f *fakeGitHub) { f.stateErr = fmt.Errorf("%w: gh missing", ErrNoGH) }, ErrNoGH},
-		{"state read fails", func(f *fakeGitHub) { f.stateErr = errors.New("gh pr view: 502") }, nil},
+		{"state read fails", func(f *fakeGitHub) { f.stateErr = fmt.Errorf("%w: gh pr view: 502", ErrPRUnreadable) }, ErrPRUnreadable},
 		{"revert push fails", func(f *fakeGitHub) {
 			f.state, f.publishErr = prMerged, fmt.Errorf("%w: protected", ErrPushFailed)
 		}, ErrPushFailed},
@@ -296,7 +298,7 @@ func TestRollbackPR_FailuresStayAccepted(t *testing.T) {
 			if c.sentinel != nil {
 				require.ErrorIs(t, err, c.sentinel)
 			}
-			assert.Empty(t, diff, "the coach never reads the default branch: no diff")
+			assert.Empty(t, diff, "no base text from the seam: no diff")
 			p := proposal(t, d, id)
 			assert.Equal(t, "accepted", p.Status)
 			assert.Empty(t, p.RevertPRURL)
@@ -310,6 +312,92 @@ func TestRollbackPR_FailuresStayAccepted(t *testing.T) {
 	_, err := a.Rollback(id, false)
 	require.ErrorIs(t, err, ErrBaseDiffers)
 	assert.Contains(t, err.Error(), fmt.Sprintf(BaseDiffersLine, "CLAUDE.md"))
+}
+
+// Spec §4.5: a revert whose base moved shows the diff accepted → the base's
+// text now (changed_since, as the working-copy route does).
+func TestRollbackPR_BaseMovedShowsTheDiff(t *testing.T) {
+	d := openDBs(t)
+	a, f, _, wb := prApplier(t, d)
+	id := prAccepted(t, d, a, wb, 7)
+	f.state = prMerged
+	f.publishErr = &BaseDiffersError{Current: "Run lint.\nAnd format.\n", Detail: "CLAUDE.md on main"}
+	r, err := a.RollbackWithResult(id, false)
+	require.ErrorIs(t, err, ErrChangedSince)
+	require.ErrorIs(t, err, ErrBaseDiffers)
+	assert.Contains(t, r.Diff, "+And format.")
+	assert.NotContains(t, err.Error(), "And format.", "the error never carries the file's text")
+	diff, err := a.Rollback(id, true)
+	require.ErrorIs(t, err, ErrChangedSince)
+	assert.Equal(t, r.Diff, diff)
+	assert.Equal(t, "accepted", proposal(t, d, id).Status)
+}
+
+// Ask #1169 on the PR route: reverting the Accept that created CLAUDE.md or
+// AGENTS.md deletes the file again; a file that existed (or a skill, which
+// Accept never creates) gets its before-text back.
+func TestRollbackPR_CreatedFileIsDeleted(t *testing.T) {
+	d := openDBs(t)
+	a, f, _, wb := prApplier(t, d)
+	f.state = prMerged
+	for i, dest := range []string{DestRepoClaudeMD, DestRepoAgentsMD} {
+		p := repoProposal(dest, wb, "", "", "Run tests.\n")
+		p.Fingerprint = fmt.Sprintf("created|%d", i)
+		id := propose(t, d, p)
+		_, err := a.Accept(id, "")
+		require.NoError(t, err)
+		_, err = a.RollbackWithResult(id, false)
+		require.NoError(t, err)
+		last := f.published[len(f.published)-1]
+		assert.True(t, last.Delete, dest)
+		assert.Equal(t, "Run tests.\n", last.Before, dest)
+		assert.Empty(t, last.After, dest)
+	}
+	id := prAccepted(t, d, a, wb, 8)
+	_, err := a.RollbackWithResult(id, false)
+	require.NoError(t, err)
+	assert.False(t, f.published[len(f.published)-1].Delete, "an edited file is written back, not deleted")
+}
+
+// A failed state read names the pull request, never "did not open or close
+// it" (PRFailedLine); gh missing keeps its own sentence. SyncPRs reports it
+// the same way.
+func TestRollbackPR_UnreadableStateSaysSo(t *testing.T) {
+	d := openDBs(t)
+	a, f, _, wb := prApplier(t, d)
+	id := prAccepted(t, d, a, wb, 9)
+	f.stateErr = fmt.Errorf("%w: gh pr view: HTTP 502", ErrPRUnreadable)
+	_, err := a.Rollback(id, false)
+	require.ErrorIs(t, err, ErrPRUnreadable)
+	assert.Contains(t, err.Error(), fmt.Sprintf(PRUnreadableLine, "#1"))
+	assert.NotContains(t, err.Error(), PRFailedLine)
+	_, err = a.SyncPRs(applyNow)
+	require.ErrorIs(t, err, ErrPRUnreadable)
+	assert.Contains(t, err.Error(), fmt.Sprintf(PRUnreadableLine, "#1"))
+
+	f.stateErr = fmt.Errorf("%w: %w: gh", ErrPRUnreadable, ErrNoGH)
+	_, err = a.Rollback(id, false)
+	assert.Contains(t, err.Error(), NoGHLine)
+	assert.Equal(t, "accepted", proposal(t, d, id).Status)
+}
+
+// A refusal of the route (no gh) comes before the baseline measure: an
+// Applier that cannot measure still gets the no_gh sentence.
+func TestAcceptPR_RouteRefusalBeforeTheMeasure(t *testing.T) {
+	d := openDBs(t)
+	a, f, _, wb := prApplier(t, d)
+	a.AgentLog = nil // the measure would fail
+	f.routeErr = fmt.Errorf("%w: gh: not logged in", ErrNoGH)
+	id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "Run tests.\n", "Run lint.\n"))
+	_, err := a.Accept(id, "")
+	require.ErrorIs(t, err, ErrNoGH)
+	assert.NotContains(t, err.Error(), "baseline")
+}
+
+func TestPRNumber(t *testing.T) {
+	assert.Equal(t, "#12", prNumber("https://github.com/acme/repo/pull/12"))
+	assert.Equal(t, "#12", prNumber("https://github.com/acme/repo/pull/12/"))
+	assert.Equal(t, "x", prNumber("x"))
 }
 
 // An Applier without the pull-request seams (the daemon's, the tuning

@@ -54,7 +54,7 @@ func newPublishFixture(t *testing.T) *publishFixture {
 // stubGH answers the gh calls Publish, DefaultBase, PRState, ClosePR and
 // GHReady make, logging each argv (one per line) to <stub>/log. Flags in
 // <stub>: fail-create (pr create fails), loggedout / offline (auth status
-// fails saying so),
+// fails saying so; pr view and pr close too),
 // hang (pr list writes its pid to <stub>/pid, signals <stub>/ready, then
 // blocks on <stub>/hold), view (pr
 // view's JSON). An opened PR's URL is kept in <stub>/pr-<branch, / as _>.
@@ -80,8 +80,11 @@ case "$1 $2" in
   u="https://github.com/example/repo/pull/$((n+1))"
   echo "$u" > "$S/pr-$head"
   echo "Creating pull request"; echo "$u" ;;
-"pr view") cat "$S/view" ;;
-"pr close") exit 0 ;;
+"pr view"|"pr close")
+  [ -e "$S/loggedout" ] && { echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4; }
+  [ -e "$S/offline" ] && { echo "error connecting to api.github.com" >&2; exit 1; }
+  [ "$2" = view ] && cat "$S/view"
+  exit 0 ;;
 *) echo "unexpected gh $*" >&2; exit 2 ;;
 esac
 `
@@ -98,7 +101,7 @@ func (f *publishFixture) options(r *recorder) Options {
 func (f *publishFixture) request(id int64) PublishRequest {
 	return PublishRequest{
 		ID: id, Rel: "CLAUDE.md", Before: "# Rules\n", After: "# Rules\n\n- be brief\n",
-		Branch: "coach/proposal-" + itoa(id), Title: "Be brief", Body: "Why:\n`brief` — \"quoted\" $HOME",
+		Branch: "coach/0a1b2c3d/proposal-" + itoa(id), Title: "Be brief", Body: "Why:\n`brief` — \"quoted\" $HOME",
 		BaseBranch: "main", BaseSHA: f.base,
 	}
 }
@@ -171,7 +174,7 @@ func TestPublish_OpensThePR(t *testing.T) {
 	if res.PRURL != "https://github.com/example/repo/pull/1" || res.Base != "main" {
 		t.Fatalf("result = %+v", res)
 	}
-	tip := gitIn(t, f.origin, "rev-parse", "refs/heads/coach/proposal-7")
+	tip := gitIn(t, f.origin, "rev-parse", "refs/heads/coach/0a1b2c3d/proposal-7")
 	if got := gitIn(t, f.origin, "rev-parse", tip+"^"); got != f.base {
 		t.Errorf("the commit's parent = %s, want the base %s", got, f.base)
 	}
@@ -185,7 +188,7 @@ func TestPublish_OpensThePR(t *testing.T) {
 		t.Errorf("the commit changes %q, want only CLAUDE.md", got)
 	}
 	calls := f.ghCalls(t)
-	want := "pr create -R github.com/example/repo --base main --head coach/proposal-7 --title Be brief --body " + req.Body
+	want := "pr create -R github.com/example/repo --base main --head coach/0a1b2c3d/proposal-7 --title Be brief --body " + req.Body
 	if !strings.HasSuffix(strings.Join(calls, "\n"), want) { // the body is multi-line in the log
 		t.Errorf("gh calls %q lack %q", calls, want)
 	}
@@ -216,6 +219,13 @@ func TestPublish_BaseDiffers(t *testing.T) {
 	if !errors.Is(err, ErrBaseDiffers) {
 		t.Fatalf("err = %v, want ErrBaseDiffers", err)
 	}
+	var bd *BaseDiffersError
+	if !errors.As(err, &bd) || bd.Current != "# Rules\n" || bd.Rel != "CLAUDE.md" || bd.Base != "main" {
+		t.Errorf("err = %#v, want the base's text for the caller's diff", bd)
+	}
+	if strings.Contains(err.Error(), "# Rules") {
+		t.Errorf("the message carries the file's text: %q", err)
+	}
 	if got := refs(t, f.origin); len(got) != 2 {
 		t.Errorf("origin refs = %q, want main and feature only", got)
 	}
@@ -225,22 +235,75 @@ func TestPublish_BaseDiffers(t *testing.T) {
 	f.assertScratchGone(t, 3)
 }
 
-// A proposal may create a file: an empty Before matches a missing path.
+// A file missing from the base matches an empty Before only for a request
+// that may create it (CLAUDE.md, AGENTS.md); any other — a stale skill
+// edit, or a file deleted on the default branch — is ErrBaseDiffers and is
+// never recreated.
 func TestPublish_NewFile(t *testing.T) {
 	f := newPublishFixture(t)
 	req := f.request(4)
-	req.Rel, req.Before, req.After = filepath.Join(".claude", "skills", "x", "SKILL.md"), "", "skill\n"
+	req.Rel, req.Before, req.After = "AGENTS.md", "", "agents\n"
+	_, err := Publish(context.Background(), f.options(nil), req)
+	var bd *BaseDiffersError
+	if !errors.As(err, &bd) || bd.Current != "" {
+		t.Fatalf("missing file without MayCreate: err = %v, want ErrBaseDiffers", err)
+	}
+	if got := refs(t, f.origin); len(got) != 2 {
+		t.Errorf("origin refs = %q, want main and feature only", got)
+	}
+
+	req.MayCreate = true
 	if _, err := Publish(context.Background(), f.options(nil), req); err != nil {
 		t.Fatal(err)
 	}
-	if got := gitIn(t, f.origin, "show", "coach/proposal-4:.claude/skills/x/SKILL.md"); got != "skill" {
+	if got := gitIn(t, f.origin, "show", "coach/0a1b2c3d/proposal-4:AGENTS.md"); got != "agents" {
 		t.Errorf("new file = %q", got)
+	}
+
+	// May create, but the request expects text there: still refused.
+	req = f.request(5)
+	req.Rel, req.Before, req.MayCreate = "AGENTS.md", "old\n", true
+	if _, err := Publish(context.Background(), f.options(nil), req); !errors.Is(err, ErrBaseDiffers) {
+		t.Fatalf("missing file with a Before: err = %v, want ErrBaseDiffers", err)
+	}
+}
+
+// A revert of an edit that created the file deletes it again; the base must
+// still hold the text the deletion removes.
+func TestPublish_DeletesTheFile(t *testing.T) {
+	f := newPublishFixture(t)
+	req := f.request(8)
+	req.Branch, req.Before, req.After, req.Delete = "coach/0a1b2c3d/revert-8", "# Rules\n", "", true
+	if _, err := Publish(context.Background(), f.options(nil), req); err != nil {
+		t.Fatal(err)
+	}
+	tip := gitIn(t, f.origin, "rev-parse", "refs/heads/coach/0a1b2c3d/revert-8")
+	if got := gitIn(t, f.origin, "diff-tree", "--no-commit-id", "--name-status", "-r", tip); got != "D\tCLAUDE.md" {
+		t.Errorf("the commit = %q, want CLAUDE.md deleted", got)
+	}
+
+	req = f.request(9)
+	req.Branch, req.Before, req.After, req.Delete = "coach/0a1b2c3d/revert-9", "# Other\n", "", true
+	_, err := Publish(context.Background(), f.options(nil), req)
+	var bd *BaseDiffersError
+	if !errors.As(err, &bd) || bd.Current != "# Rules\n" {
+		t.Fatalf("err = %v, want ErrBaseDiffers with the base's text", err)
+	}
+	for _, bad := range []PublishRequest{{Before: "", Delete: true}, {Before: "# Rules\n", After: "x", Delete: true}} {
+		req = f.request(10)
+		req.Before, req.After, req.Delete = bad.Before, bad.After, bad.Delete
+		if _, err := Publish(context.Background(), f.options(nil), req); err == nil || errors.Is(err, ErrBaseDiffers) {
+			t.Errorf("deletion %+v: err = %v, want a refusal before git", bad, err)
+		}
+	}
+	if got := refs(t, f.origin); len(got) != 3 {
+		t.Errorf("origin refs = %q, want main, feature and coach/0a1b2c3d/revert-8 only", got)
 	}
 }
 
 func TestPublish_PushFailed(t *testing.T) {
 	f := newPublishFixture(t)
-	// refs/heads/coach on origin: coach/proposal-5 cannot be created next to it.
+	// refs/heads/coach on origin: coach/0a1b2c3d/proposal-5 cannot be created next to it.
 	gitIn(t, f.origin, "update-ref", "refs/heads/coach", f.base)
 	_, err := Publish(context.Background(), f.options(nil), f.request(5))
 	if !errors.Is(err, ErrPushFailed) {
@@ -266,13 +329,13 @@ func TestPublish_PRFailedThenRerunReuses(t *testing.T) {
 	if !errors.Is(err, ErrPRFailed) || !strings.Contains(err.Error(), "simulated failure") {
 		t.Fatalf("err = %v, want ErrPRFailed with gh's words", err)
 	}
-	first := gitIn(t, f.origin, "rev-parse", "refs/heads/coach/proposal-9")
+	first := gitIn(t, f.origin, "rev-parse", "refs/heads/coach/0a1b2c3d/proposal-9")
 	f.unflag(t, "fail-create")
 	res, err := Publish(context.Background(), o, f.request(9))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again := gitIn(t, f.origin, "rev-parse", "refs/heads/coach/proposal-9"); again == first {
+	if again := gitIn(t, f.origin, "rev-parse", "refs/heads/coach/0a1b2c3d/proposal-9"); again == first {
 		t.Log("the rerun's commit is identical to the first one")
 	}
 	res2, err := Publish(context.Background(), o, f.request(9))
@@ -339,10 +402,10 @@ func TestPublish_KeepsTheFileMode(t *testing.T) {
 	if _, err := Publish(context.Background(), f.options(nil), req); err != nil {
 		t.Fatal(err)
 	}
-	if got := gitIn(t, f.origin, "ls-tree", "coach/proposal-14", "run.sh"); !strings.HasPrefix(got, "100755 ") {
+	if got := gitIn(t, f.origin, "ls-tree", "coach/0a1b2c3d/proposal-14", "run.sh"); !strings.HasPrefix(got, "100755 ") {
 		t.Errorf("run.sh on the branch = %q, want mode 100755", got)
 	}
-	if got := gitIn(t, f.origin, "diff-tree", "-r", "--summary", "coach/proposal-14^", "coach/proposal-14"); strings.Contains(got, "mode change") {
+	if got := gitIn(t, f.origin, "diff-tree", "-r", "--summary", "coach/0a1b2c3d/proposal-14^", "coach/0a1b2c3d/proposal-14"); strings.Contains(got, "mode change") {
 		t.Errorf("the commit changes the mode: %q", got)
 	}
 }
@@ -384,7 +447,7 @@ func TestPublish_ParallelIDs(t *testing.T) {
 		}
 	}
 	for _, id := range []int64{21, 22} {
-		gitIn(t, f.origin, "rev-parse", "--verify", "refs/heads/coach/proposal-"+itoa(id))
+		gitIn(t, f.origin, "rev-parse", "--verify", "refs/heads/coach/0a1b2c3d/proposal-"+itoa(id))
 		f.assertScratchGone(t, id)
 	}
 }
@@ -484,13 +547,108 @@ func TestPRStateAndClosePR(t *testing.T) {
 	if err := ClosePR(context.Background(), o, pr); err != nil {
 		t.Fatal(err)
 	}
-	if calls := f.ghCalls(t); !slices.Contains(calls, "pr close "+pr+" --delete-branch") ||
+	if calls := f.ghCalls(t); !slices.Contains(calls, "pr close "+pr) ||
 		!slices.Contains(calls, "pr view "+pr+" --json state,mergedAt") {
 		t.Errorf("gh calls = %q", calls)
 	}
 	writeFile(t, f.stub, "view", `not json`)
 	if _, _, err := PRState(context.Background(), o, pr); err == nil {
 		t.Error("PRState accepted output with no state")
+	}
+
+	// gh offline is gh's own words; logged out or missing is ErrNoGH.
+	f.flag(t, "offline")
+	if _, _, err := PRState(context.Background(), o, pr); err == nil || errors.Is(err, ErrNoGH) ||
+		!strings.Contains(err.Error(), "error connecting") {
+		t.Errorf("offline: %v, want gh's words, not ErrNoGH", err)
+	}
+	f.unflag(t, "offline")
+	f.flag(t, "loggedout")
+	if _, _, err := PRState(context.Background(), o, pr); !errors.Is(err, ErrNoGH) {
+		t.Errorf("logged out: %v, want ErrNoGH", err)
+	}
+	if err := ClosePR(context.Background(), o, pr); !errors.Is(err, ErrNoGH) {
+		t.Errorf("close logged out: %v, want ErrNoGH", err)
+	}
+	o.GHPath = filepath.Join(f.stub, "missing-gh")
+	if _, _, err := PRState(context.Background(), o, pr); !errors.Is(err, ErrNoGH) {
+		t.Errorf("missing gh: %v, want ErrNoGH", err)
+	}
+}
+
+// COACH-01: ClosePR closes without gh's --delete-branch (which deletes a
+// local branch of that name too) and deletes the head branch on origin only;
+// the owner's local branch of the pull request's name survives. A branch
+// already gone on origin is fine.
+func TestClosePR_DeletesOnlyTheRemoteBranch(t *testing.T) {
+	f := newPublishFixture(t)
+	o := f.options(nil)
+	res, err := Publish(context.Background(), o, f.request(6))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const branch = "coach/0a1b2c3d/proposal-6"
+	gitIn(t, f.dir, "branch", branch, "main") // the owner checked the PR out
+	localBefore := gitIn(t, f.dir, "rev-parse", "refs/heads/"+branch)
+	writeFile(t, f.stub, "view", `{"headRefName":"`+branch+`","isCrossRepository":false}`)
+	if err := ClosePR(context.Background(), o, res.PRURL); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitIn(t, f.origin, "for-each-ref", "refs/heads/coach"); got != "" {
+		t.Errorf("origin still has %q", got)
+	}
+	if got := gitIn(t, f.dir, "rev-parse", "refs/heads/"+branch); got != localBefore {
+		t.Errorf("the local branch moved: %s, was %s", got, localBefore)
+	}
+	for _, c := range f.ghCalls(t) {
+		if strings.Contains(c, "--delete-branch") {
+			t.Errorf("gh ran %q", c)
+		}
+	}
+	// Again: the branch is gone on origin already.
+	if err := ClosePR(context.Background(), o, res.PRURL); err != nil {
+		t.Fatalf("closing again: %v", err)
+	}
+	// A pull request of another repository, or a branch that is not a
+	// coach branch: closed, no branch deleted.
+	gitIn(t, f.dir, "push", "-q", Remote, "main:refs/heads/"+branch)
+	for _, c := range []struct{ pr, view string }{
+		{"https://github.com/example/other/pull/1", `{"headRefName":"` + branch + `"}`},
+		{res.PRURL, `{"headRefName":"feature"}`},
+		{res.PRURL, `{"headRefName":"` + branch + `","isCrossRepository":true}`},
+	} {
+		writeFile(t, f.stub, "view", c.view)
+		if err := ClosePR(context.Background(), o, c.pr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, ref := range []string{"refs/heads/" + branch, "refs/heads/feature"} {
+		if gitIn(t, f.origin, "for-each-ref", ref) == "" {
+			t.Errorf("%s was deleted, though not this pull request's coach branch of origin", ref)
+		}
+	}
+}
+
+func TestPRRepository(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://GitHub.com/example/repo/pull/3":       "github.com/example/repo",
+		"https://ghe.example.com/example/repo/pull/3/": "ghe.example.com/example/repo",
+		"":                                "",
+		"x":                               "",
+		"https://github.com/example/repo": "",
+		"https://github.com/example/repo/issues/3": "",
+	} {
+		if got := PRRepository(in); got != want {
+			t.Errorf("PRRepository(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestOriginRepo(t *testing.T) {
+	f := newPublishFixture(t)
+	got, err := OriginRepo(context.Background(), f.options(nil))
+	if err != nil || got != "github.com/example/repo" {
+		t.Fatalf("OriginRepo = %q, %v", got, err)
 	}
 }
 
@@ -596,7 +754,7 @@ func TestExecRunner_RefusesAPushOutsidePublish(t *testing.T) {
 // detached scratch worktree and pushes only its own branch. The owner's
 // working copy (dirty, with an untracked file), HEAD, every local ref —
 // origin/* and FETCH_HEAD included — and the stash stay as they were, and
-// origin gains coach/proposal-<id> and nothing else.
+// origin gains coach/0a1b2c3d/proposal-<id> and nothing else.
 func TestCOACH01_PublishTouchesOnlyItsBranch(t *testing.T) {
 	f := newPublishFixture(t)
 	gitIn(t, f.dir, "fetch", "-q", Remote) // origin/* and FETCH_HEAD exist
@@ -669,7 +827,7 @@ func TestCOACH01_PublishTouchesOnlyItsBranch(t *testing.T) {
 			added = append(added, strings.Fields(r)[0])
 		}
 	}
-	if len(added) != 1 || added[0] != "refs/heads/coach/proposal-42" || len(originAfter) != len(originBefore)+1 {
-		t.Errorf("origin refs: before %q, after %q; want only refs/heads/coach/proposal-42 added", originBefore, originAfter)
+	if len(added) != 1 || added[0] != "refs/heads/coach/0a1b2c3d/proposal-42" || len(originAfter) != len(originBefore)+1 {
+		t.Errorf("origin refs: before %q, after %q; want only refs/heads/coach/0a1b2c3d/proposal-42 added", originBefore, originAfter)
 	}
 }

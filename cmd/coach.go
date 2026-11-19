@@ -39,7 +39,7 @@ var coachCmd = &cobra.Command{
 	Long: "The weekly coach proposes edits to the owner's own setup (session instructions, target procedure,\n" +
 		"chat instructions, prompt additions, the Claude allow list, ~/.claude/CLAUDE.md). `status` and\n" +
 		"`proposals` read; `accept`, `decline`, `rollback` and `run` are the owner's own decisions and are\n" +
-		"refused under an AI agent. --json prints a pinned shape; a failure prints {\"ok\":false,\"error\":…}\n" +
+		"refused under an AI agent, as is `sync-prs` (reads the accepted pull requests' state from GitHub). --json prints a pinned shape; a failure prints {\"ok\":false,\"error\":…}\n" +
 		"and exits non-zero.",
 }
 
@@ -100,7 +100,7 @@ func init() {
 			if err := coachRefuseUnderAgent(c, "roll back a coach proposal"); err != nil {
 				return err
 			}
-			return coachRun(c, func(c *cobra.Command, e *coachEnv) (any, error) { return runCoachRollback(e, a[0]) })
+			return coachRun(c, func(c *cobra.Command, e *coachEnv) (any, error) { return runCoachRollback(c, e, a[0]) })
 		}}
 	rollbackCmd.Flags().BoolVar(&coachFlagForce, "force", false, "roll back although the destination changed since the accept")
 	runCmd := &cobra.Command{Use: "run [--dry-run]", Short: "Judge, collect and propose now (ignores the weekly stamp)",
@@ -112,10 +112,20 @@ func init() {
 			return coachRun(c, runCoachNow)
 		}}
 	runCmd.Flags().BoolVar(&coachFlagDryRun, "dry-run", false, "print the validated proposals, write nothing")
-	for _, c := range []*cobra.Command{statusCmd, proposalsCmd, acceptCmd, declineCmd, rollbackCmd, runCmd} {
+	syncCmd := &cobra.Command{Use: "sync-prs", Short: "Read the accepted pull-request edits' state from GitHub",
+		Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
+			// Not an owner decision (no confirmation): it only reads GitHub and
+			// starts or ends the verdict window. Still the owner's process,
+			// never an agent's: gh may raise a Keychain prompt.
+			if err := coachRefuseUnderAgent(c, "sync the coach's pull requests"); err != nil {
+				return err
+			}
+			return coachRun(c, runCoachSyncPRs)
+		}}
+	for _, c := range []*cobra.Command{statusCmd, proposalsCmd, acceptCmd, declineCmd, rollbackCmd, runCmd, syncCmd} {
 		c.Flags().BoolVar(&coachFlagJSON, "json", false, "output JSON")
 	}
-	coachCmd.AddCommand(statusCmd, proposalsCmd, acceptCmd, declineCmd, rollbackCmd, runCmd)
+	coachCmd.AddCommand(statusCmd, proposalsCmd, acceptCmd, declineCmd, rollbackCmd, runCmd, syncCmd)
 	rootCmd.AddCommand(coachCmd)
 }
 
@@ -229,6 +239,9 @@ func coachRun(cmd *cobra.Command, fn func(*cobra.Command, *coachEnv) (any, error
 		if errors.As(err, &ce) {
 			if !coachFlagJSON && ce.diff != "" {
 				fmt.Fprint(cmd.OutOrStdout(), ce.diff)
+				if errors.Is(err, coach.ErrBaseDiffers) { // a pull request: --force cannot help
+					return fmt.Errorf("%w; the file on the default branch changed since the accept (diff above)", err)
+				}
 				return fmt.Errorf("%w; the destination changed since the accept (diff above): pass --force to roll back anyway", err)
 			}
 		}
@@ -393,6 +406,11 @@ type coachProposalJSON struct {
 	// out in the workbench folder now ("detached:<short sha>"; "" when it
 	// cannot be read). No key on any other row.
 	FolderBranch *string `json:"folder_branch,omitempty"`
+	// PRURL is the pull request a repository edit's Accept opened ("" for a
+	// working-copy edit and every other destination); RevertPRURL the one
+	// its Rollback opened to undo a merged edit.
+	PRURL       string `json:"pr_url"`
+	RevertPRURL string `json:"revert_pr_url"`
 }
 
 type coachProposalsJSON struct {
@@ -420,7 +438,8 @@ func proposalJSON(p db.CoachProposal) coachProposalJSON {
 		Baseline: p.Baseline, Verdict: p.Verdict, VerdictValue: p.VerdictValue, VerdictAt: stampPtr(p.VerdictAt),
 		RevertsID: p.RevertsID, Budget: coach.BudgetOf(p.Destination, p.BeforeText),
 		Origin: p.Origin, Skill: p.Skill, ConversationID: p.ConversationID,
-		WrittenBranch: p.WrittenBranch, MeasureFrom: stampPtr(p.MeasureFrom)}
+		WrittenBranch: p.WrittenBranch, MeasureFrom: stampPtr(p.MeasureFrom),
+		PRURL: p.PRURL, RevertPRURL: p.RevertPRURL}
 }
 
 func proposalsOf(ps []db.CoachProposal) coachProposalsJSON {
@@ -510,8 +529,19 @@ type coachAcceptJSON struct {
 	// workbench folder; "" for every other destination.
 	WrittenPath string `json:"written_path"`
 	// WrittenBranch is the branch that file was written on ("" for every
-	// other destination, or when the branch could not be read).
+	// other destination, or when the branch could not be read); for a pull
+	// request, its branch coach/proposal-<id>.
 	WrittenBranch string `json:"written_branch"`
+	// PRURL is the pull request the Accept opened instead of writing the
+	// working copy ("" when it wrote it, and for every other destination).
+	PRURL string `json:"pr_url"`
+}
+
+// coachRollbackJSON is a Rollback's decision plus the revert pull request
+// it opened for a merged pull request ("" otherwise).
+type coachRollbackJSON struct {
+	coachDecisionJSON
+	RevertPRURL string `json:"revert_pr_url"`
 }
 
 func parseCoachID(s string) (int64, error) {
@@ -543,13 +573,15 @@ func runCoachAccept(cmd *cobra.Command, e *coachEnv, arg string) (any, error) {
 	if err := coachConfirm(e, "accept a coach proposal", id, edited); err != nil {
 		return nil, err
 	}
-	res, err := e.applier().Accept(id, edited)
+	ctx, cancel := coachPRContext(cmd.Context())
+	defer cancel()
+	res, err := e.prApplier(ctx).Accept(id, edited)
 	if err != nil {
 		return nil, codedCoachErr(err)
 	}
 	return coachAcceptJSON{coachDecisionJSON: coachDecisionJSON{OK: true, ID: id, Status: "accepted"},
 		PackCopiesUpdated: res.PackCopiesUpdated, PackCopiesDrifted: res.PackCopiesDrifted,
-		WrittenPath: res.WrittenPath, WrittenBranch: res.WrittenBranch}, nil
+		WrittenPath: res.WrittenPath, WrittenBranch: res.WrittenBranch, PRURL: res.PRURL}, nil
 }
 
 func runCoachDecline(e *coachEnv, arg string) (any, error) {
@@ -566,7 +598,7 @@ func runCoachDecline(e *coachEnv, arg string) (any, error) {
 	return coachDecisionJSON{OK: true, ID: id, Status: "declined"}, nil
 }
 
-func runCoachRollback(e *coachEnv, arg string) (any, error) {
+func runCoachRollback(cmd *cobra.Command, e *coachEnv, arg string) (any, error) {
 	id, err := parseCoachID(arg)
 	if err != nil {
 		return nil, err
@@ -574,13 +606,39 @@ func runCoachRollback(e *coachEnv, arg string) (any, error) {
 	if err := coachConfirm(e, "roll back a coach proposal", id, ""); err != nil {
 		return nil, err
 	}
-	diff, err := e.applier().Rollback(id, coachFlagForce)
+	ctx, cancel := coachPRContext(cmd.Context())
+	defer cancel()
+	res, err := e.prApplier(ctx).RollbackWithResult(id, coachFlagForce)
 	if err != nil {
 		ce := codedCoachErr(err)
-		ce.diff = diff
+		ce.diff = res.Diff
 		return nil, ce
 	}
-	return coachDecisionJSON{OK: true, ID: id, Status: "rolled_back"}, nil
+	return coachRollbackJSON{coachDecisionJSON: coachDecisionJSON{OK: true, ID: id, Status: "rolled_back"},
+		RevertPRURL: res.RevertPRURL}, nil
+}
+
+// coachSyncJSON is `coach sync-prs --json`: how many accepted pull-request
+// edits moved (measured from the merge, too_little_data, or rolled_back as
+// closed unmerged), and — when some could not be read and were left as they
+// were — why, with that failure's code. The rows read still synced, so it
+// is not a failure object.
+type coachSyncJSON struct {
+	OK        bool   `json:"ok"`
+	Changed   int    `json:"changed"`
+	SyncError string `json:"sync_error"`
+	SyncCode  string `json:"sync_code"`
+}
+
+func runCoachSyncPRs(cmd *cobra.Command, e *coachEnv) (any, error) {
+	ctx, cancel := coachPRContext(cmd.Context())
+	defer cancel()
+	n, err := e.prApplier(ctx).SyncPRs(time.Now())
+	res := coachSyncJSON{OK: true, Changed: n}
+	if err != nil {
+		res.SyncError, res.SyncCode = err.Error(), codedCoachErr(err).code
+	}
+	return res, nil
 }
 
 // coachConfirm is AGENT-07's second step for a decision on proposal id (the
@@ -609,8 +667,22 @@ func codedCoachErr(err error) *coachCodedError {
 	switch {
 	case errors.Is(err, coach.ErrStale):
 		code = "stale"
-	case errors.Is(err, coach.ErrChangedSince):
+	case errors.Is(err, coach.ErrChangedSince): // before base_differs: a rollback's base that moved
 		code = "changed_since"
+	case errors.Is(err, coach.ErrNoGH):
+		code = "no_gh"
+	case errors.Is(err, coach.ErrBaseDiffers):
+		code = "base_differs"
+	case errors.Is(err, coach.ErrPushFailed):
+		code = "push_failed"
+	case errors.Is(err, coach.ErrPRFailed):
+		code = "pr_failed"
+	case errors.Is(err, coach.ErrTimeout):
+		code = "timeout"
+	case errors.Is(err, coach.ErrPRUnreadable):
+		code = "pr_unreadable"
+	case errors.Is(err, coach.ErrOriginMoved):
+		code = "origin_moved"
 	case errors.Is(err, db.ErrCoachStateChanged):
 		code = "state_changed"
 	case errors.Is(err, coach.ErrRepoDirty):
@@ -735,6 +807,19 @@ func printCoach(w io.Writer, v any) {
 			fmt.Fprintf(w, "Installed copies updated: %d; edited by hand and not updated: %d\n",
 				r.PackCopiesUpdated, r.PackCopiesDrifted)
 		}
+		if r.PRURL != "" {
+			fmt.Fprintf(w, "Pull request: %s\n", r.PRURL)
+		}
+	case coachRollbackJSON:
+		fmt.Fprintf(w, "Proposal %d: %s\n", r.ID, r.Status)
+		if r.RevertPRURL != "" {
+			fmt.Fprintf(w, "Revert pull request: %s (merge it to remove the edit from the default branch)\n", r.RevertPRURL)
+		}
+	case coachSyncJSON:
+		fmt.Fprintf(w, "Pull requests synced: %d changed.\n", r.Changed)
+		if r.SyncError != "" {
+			fmt.Fprintf(w, "Not synced: %s\n", r.SyncError)
+		}
 	case coachRunJSON:
 		if r.Skipped != "" {
 			fmt.Fprintln(w, r.Skipped)
@@ -786,6 +871,12 @@ func printCoachProposals(w io.Writer, ps []coachProposalJSON) {
 			fmt.Fprintf(w, "  from: chat %s\n", from)
 		}
 		fmt.Fprintf(w, "  why: %s\n", p.Why)
+		if p.PRURL != "" {
+			fmt.Fprintf(w, "  pull request: %s\n", p.PRURL)
+		}
+		if p.RevertPRURL != "" {
+			fmt.Fprintf(w, "  revert: %s\n", p.RevertPRURL)
+		}
 		printCoachChange(w, p.Before, p.After)
 	}
 }

@@ -48,13 +48,35 @@ var (
 	ErrTimeout = errors.New("a network call timed out")
 )
 
+// BaseDiffersError is ErrBaseDiffers (errors.Is) with what the base holds
+// now: Current is the file's text there ("" when it is missing), for the
+// caller's diff. Its message names the file and the branch, never the text.
+type BaseDiffersError struct {
+	Rel, Base, Current string
+}
+
+func (e *BaseDiffersError) Error() string {
+	return fmt.Sprintf("%s: %s on %s", ErrBaseDiffers, e.Rel, e.Base)
+}
+
+// Is makes errors.Is(err, ErrBaseDiffers) match.
+func (e *BaseDiffersError) Is(target error) bool { return target == ErrBaseDiffers }
+
 // PublishRequest is one pull request Publish opens.
 type PublishRequest struct {
 	ID            int64  // the proposal; its scratch worktree is <Options.Scratch>/<ID>
 	Rel           string // the file, relative to the folder's top level
 	Before, After string // the text the base must hold, the text to commit
-	Branch        string // coach/proposal-<id> or coach/revert-<id>
+	Branch        string // coach/<token>/proposal-<id> or coach/<token>/revert-<id>
 	Title, Body   string // Body goes to gh verbatim
+	// MayCreate: the file may be missing from the base when Before is ""
+	// (an Accept creating CLAUDE.md or AGENTS.md). Otherwise a file missing
+	// there is ErrBaseDiffers, however empty Before is.
+	MayCreate bool
+	// Delete removes Rel instead of writing After (which must be ""): a
+	// revert of an edit that created the file. The base must still hold
+	// Before.
+	Delete bool
 	// BaseBranch and BaseSHA are the repository's default branch and its
 	// head commit (DefaultBase).
 	BaseBranch, BaseSHA string
@@ -264,6 +286,16 @@ func ghRepo(ctx context.Context, r *repo) (string, error) {
 	return host + "/" + path, nil
 }
 
+// OriginRepo is the folder's origin as HOST/OWNER/REPO (the repository gh
+// works on). It runs no network call and no gh.
+func OriginRepo(ctx context.Context, o Options) (string, error) {
+	r, err := open(o)
+	if err != nil {
+		return "", err
+	}
+	return ghRepo(ctx, r)
+}
+
 // DefaultBase is the repository's default branch on GitHub (spec D4: `gh
 // repo view --json defaultBranchRef`, not origin/HEAD) and its head commit,
 // read from origin with `git ls-remote` — no ref of the repository moves.
@@ -316,8 +348,11 @@ func remoteHead(ctx context.Context, o Options, r *repo, url, branch string) (st
 }
 
 var (
-	shaPattern    = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
-	branchPattern = regexp.MustCompile(`^coach/(proposal|revert)-[0-9]+$`)
+	shaPattern = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
+	// A coach branch: coach/<workspace token>/proposal-<id> or
+	// coach/<workspace token>/revert-<id> (the token keeps two Watchtower
+	// workspaces' proposals of the same id apart on one repository).
+	branchPattern = regexp.MustCompile(`^coach/[0-9a-f]{8}/(proposal|revert)-[0-9]+$`)
 )
 
 // Publish opens a pull request with After in place of Before at Rel against
@@ -341,6 +376,8 @@ func Publish(ctx context.Context, o Options, req PublishRequest) (res PublishRes
 		return res, fmt.Errorf("publish: invalid base %q at %q", req.BaseBranch, req.BaseSHA)
 	case o.Scratch == "" || !filepath.IsAbs(o.Scratch):
 		return res, fmt.Errorf("publish: the scratch folder %q is not an absolute path", o.Scratch)
+	case req.Delete && (req.Before == "" || req.After != ""):
+		return res, errors.New("publish: a deletion needs the text the base holds and no new text")
 	}
 	r, err := open(o)
 	if err != nil {
@@ -449,8 +486,9 @@ func forgetWorktree(ctx context.Context, r *repo, dir string) {
 
 // commitInScratch adds the detached worktree at the base commit without a
 // checkout (no filter or hook of the folder runs on the tree), checks the
-// file holds req.Before, stages req.After with the file's mode and commits
-// that one file with the repository's identity and no hooks.
+// file holds req.Before, stages req.After with the file's mode (or, for
+// req.Delete, the file's removal) and commits that one file with the
+// repository's identity and no hooks.
 func commitInScratch(ctx context.Context, r *repo, dir string, req PublishRequest) error {
 	if _, err := r.git(ctx, "worktree", "add", "--detach", "--no-checkout", dir, req.BaseSHA); err != nil {
 		return failure(nil, err)
@@ -461,12 +499,18 @@ func commitInScratch(ctx context.Context, r *repo, dir string, req PublishReques
 		return failure(nil, err)
 	}
 	rel := filepath.ToSlash(req.Rel)
-	current, mode, err := blobAt(ctx, s, rel)
+	current, mode, exists, err := blobAt(ctx, s, rel)
 	if err != nil {
 		return failure(nil, err)
 	}
-	if current != req.Before { // a missing file reads as "": a proposal may create one
-		return fmt.Errorf("%w: %s on %s", ErrBaseDiffers, rel, req.BaseBranch)
+	if current != req.Before || !exists && !req.MayCreate {
+		return &BaseDiffersError{Rel: rel, Base: req.BaseBranch, Current: current}
+	}
+	if req.Delete {
+		if _, err := s.git(ctx, "update-index", "--force-remove", "--", rel); err != nil {
+			return failure(nil, err)
+		}
+		return commitScratch(ctx, s, req.Title)
 	}
 	// After goes into the index as a raw blob with the base's mode (an
 	// executable stays one); the scratch folder's disk is never written, so
@@ -479,29 +523,35 @@ func commitInScratch(ctx context.Context, r *repo, dir string, req PublishReques
 		mode+","+strings.TrimSpace(string(blob))+","+rel); err != nil {
 		return failure(nil, err)
 	}
-	if _, err := s.git(ctx, "commit", "--no-verify", "--quiet", "-m", "coach: "+req.Title); err != nil {
+	return commitScratch(ctx, s, req.Title)
+}
+
+// commitScratch commits the scratch worktree's index without hooks.
+func commitScratch(ctx context.Context, s *repo, title string) error {
+	if _, err := s.git(ctx, "commit", "--no-verify", "--quiet", "-m", "coach: "+title); err != nil {
 		return failure(nil, err)
 	}
 	return nil
 }
 
-// blobAt is the raw content of rel in the commit (no filter, no textconv)
-// and its mode; "" and 100644 when the path is not in it. A path that is
-// not a regular file (a symlink, a submodule, a folder) is an error.
-func blobAt(ctx context.Context, r *repo, rel string) (content, mode string, err error) {
+// blobAt is the raw content of rel in the commit (no filter, no textconv),
+// its mode and whether it is there at all ("", 100644 and false when it is
+// not). A path that is not a regular file (a symlink, a submodule, a
+// folder) is an error.
+func blobAt(ctx context.Context, r *repo, rel string) (content, mode string, exists bool, err error) {
 	entry, err := r.git(ctx, "ls-tree", "-z", "HEAD", "--", rel)
 	switch {
 	case err != nil:
-		return "", "", err
+		return "", "", false, err
 	case len(entry) == 0:
-		return "", "100644", nil
+		return "", "100644", false, nil
 	}
 	mode, _, _ = strings.Cut(string(entry), " ")
 	if mode != "100644" && mode != "100755" {
-		return "", "", fmt.Errorf("%s is not a regular file in the base (mode %s)", rel, mode)
+		return "", "", false, fmt.Errorf("%s is not a regular file in the base (mode %s)", rel, mode)
 	}
 	out, err := r.git(ctx, "cat-file", "blob", "HEAD:"+rel)
-	return string(out), mode, err
+	return string(out), mode, err == nil, err
 }
 
 // push sends the scratch worktree's HEAD to refs/heads/<branch> on url —
@@ -554,7 +604,7 @@ func openPR(ctx context.Context, o Options, slug string, req PublishRequest) (st
 func PRState(ctx context.Context, o Options, prURL string) (state string, mergedAt time.Time, err error) {
 	out, err := gh(ctx, o, "pr", "view", prURL, "--json", "state,mergedAt")
 	if err != nil {
-		return "", time.Time{}, failure(nil, err)
+		return "", time.Time{}, ghFailure(out, err)
 	}
 	var view struct {
 		State    string     `json:"state"`
@@ -569,11 +619,99 @@ func PRState(ctx context.Context, o Options, prURL string) (state string, merged
 	return view.State, mergedAt, nil
 }
 
-// ClosePR closes a pull request and deletes its branch on origin (`gh pr
-// close --delete-branch`; the branch never exists locally).
-func ClosePR(ctx context.Context, o Options, prURL string) error {
-	_, err := gh(ctx, o, "pr", "close", prURL, "--delete-branch")
-	return failure(nil, err)
+// ClosePR closes a pull request (`gh pr close`, never --delete-branch,
+// which would also delete a local branch of that name the owner checked
+// out) and then deletes its head branch on origin only: by a push of the
+// deletion to origin's push URL, under the owner-network rules, so no
+// local ref moves. The branch is deleted only when it is a coach branch
+// of the same repository, origin is that repository, and it still exists
+// there; otherwise it is left. ErrNoGH when gh is missing or logged out,
+// ErrTimeout over the budget.
+func ClosePR(ctx context.Context, o Options, prURL string) (err error) {
+	defer overBudget(&err)
+	out, err := gh(ctx, o, "pr", "view", prURL, "--json", "headRefName,isCrossRepository")
+	if err != nil {
+		return ghFailure(out, err)
+	}
+	var view struct {
+		HeadRefName       string `json:"headRefName"`
+		IsCrossRepository bool   `json:"isCrossRepository"`
+	}
+	if err := json.Unmarshal(out, &view); err != nil {
+		return fmt.Errorf("gh pr view: no head branch in %q", clip(string(out)))
+	}
+	if out, err := gh(ctx, o, "pr", "close", prURL); err != nil {
+		return ghFailure(out, err)
+	}
+	if view.IsCrossRepository || !branchPattern.MatchString(view.HeadRefName) {
+		return nil
+	}
+	return deleteRemoteBranch(ctx, o, prURL, view.HeadRefName)
+}
+
+// deleteRemoteBranch deletes refs/heads/<branch> on origin when origin is
+// the pull request's repository (else leaves it): a push of the deletion
+// to the push URL, no hooks, no prompt; a branch already gone is fine.
+func deleteRemoteBranch(ctx context.Context, o Options, prURL, branch string) error {
+	r, err := open(o)
+	if err != nil {
+		return err
+	}
+	slug, err := ghRepo(ctx, r)
+	if err != nil || !strings.EqualFold(slug, PRRepository(prURL)) {
+		return nil // origin is not (or no longer names) the pull request's repository: its branch is left
+	}
+	fetchURL, err := r.git(ctx, "remote", "get-url", Remote)
+	if err != nil {
+		return failure(nil, err)
+	}
+	pushURL, err := r.git(ctx, "remote", "get-url", "--push", Remote)
+	if err != nil {
+		return failure(nil, err)
+	}
+	if !sameRepository(strings.TrimSpace(string(fetchURL)), strings.TrimSpace(string(pushURL))) {
+		return nil
+	}
+	pctx, cancel := context.WithTimeout(withOwnerNetwork(ctx, ghPath(o)), budget(o))
+	defer cancel()
+	_, err = r.git(pctx, "push", "--quiet", "--no-verify", "--receive-pack=git-receive-pack",
+		strings.TrimSpace(string(pushURL)), "--delete", "refs/heads/"+branch)
+	var re *runError
+	if errors.As(err, &re) && strings.Contains(re.stderr, "remote ref does not exist") {
+		return nil
+	}
+	return failure(ErrPushFailed, err)
+}
+
+// PRRepository is HOST/OWNER/REPO of a pull request URL
+// (https://HOST/OWNER/REPO/pull/N), host lowercased; "" when it is not one.
+func PRRepository(prURL string) string {
+	u, err := url.Parse(prURL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) != 4 || parts[2] != "pull" || parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+	return strings.ToLower(u.Hostname()) + "/" + parts[0] + "/" + parts[1]
+}
+
+// ghFailure is a failed gh call's error: ErrNoGH when gh is missing or says
+// the owner is not logged in, ErrTimeout over the budget, else gh's words.
+func ghFailure(out []byte, err error) error {
+	var missing *exec.Error
+	var re *runError
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, context.DeadlineExceeded):
+		return failure(nil, err)
+	case errors.As(err, &missing), errors.Is(err, fs.ErrNotExist),
+		errors.As(err, &re) && loggedOut(string(out)+"\n"+re.stderr):
+		return fmt.Errorf("%w: %s", ErrNoGH, gitError(err))
+	}
+	return err
 }
 
 // gh runs gh in the folder under the budget, in its own process group

@@ -83,7 +83,7 @@ func TestCoachAccept_RefusedUnderAgent(t *testing.T) {
 	t.Setenv(agentEnvMarkers[0], "1")
 
 	for _, verb := range [][]string{{"accept", strconv.FormatInt(id, 10)}, {"decline", strconv.FormatInt(id, 10)},
-		{"rollback", strconv.FormatInt(id, 10)}, {"run", "--dry-run"}} {
+		{"rollback", strconv.FormatInt(id, 10)}, {"run", "--dry-run"}, {"sync-prs"}} {
 		_, err := runCoach(t, "", verb...)
 		require.Error(t, err, verb[0])
 		assert.Contains(t, err.Error(), agentEnvMarkers[0])
@@ -217,7 +217,7 @@ func TestCoachProposals_JSONKeysPinned(t *testing.T) {
 	assert.ElementsMatch(t, []string{"id", "title", "why", "destination", "workbench_id", "prompt_id", "kind",
 		"metric", "before", "after", "evidence", "sources", "status", "created_at", "decided_at", "baseline",
 		"verdict", "verdict_value", "verdict_at", "reverts_id", "budget", "origin", "skill", "conversation_id",
-		"written_branch", "measure_from"}, got)
+		"written_branch", "measure_from", "pr_url", "revert_pr_url"}, got)
 	assert.JSONEq(t, `[{"kind":"session","ref":"s1"}]`, string(items[0]["evidence"]))
 	assert.Equal(t, `""`, string(items[0]["written_branch"]))
 	assert.Equal(t, "null", string(items[0]["measure_from"]))
@@ -314,7 +314,7 @@ func TestCoachAccept_JSONKeysPinned(t *testing.T) {
 		got = append(got, k)
 	}
 	assert.ElementsMatch(t, []string{"ok", "id", "status", "pack_copies_updated", "pack_copies_drifted",
-		"written_path", "written_branch"}, got)
+		"written_path", "written_branch", "pr_url"}, got)
 	assert.Equal(t, "accepted", strings.Trim(string(top["status"]), `"`))
 	assert.Equal(t, "0", string(top["pack_copies_updated"]))
 	assert.JSONEq(t, `""`, string(top["written_path"]))
@@ -367,7 +367,7 @@ func TestCoachAccept_RepoCodes(t *testing.T) {
 		got = append(got, k)
 	}
 	assert.ElementsMatch(t, []string{"ok", "id", "status", "pack_copies_updated", "pack_copies_drifted",
-		"written_path", "written_branch"}, got)
+		"written_path", "written_branch", "pr_url"}, got)
 	assert.JSONEq(t, `"CLAUDE.md"`, string(top["written_path"]))
 	assert.JSONEq(t, `"main"`, string(top["written_branch"]))
 	p, err := d.GetCoachProposal(id)
@@ -431,7 +431,7 @@ func TestCoachRollback_ChangedSincePrintsDiff(t *testing.T) {
 
 	out, err = runCoach(t, "", "rollback", idArg, "--force", "--json")
 	require.NoError(t, err)
-	assert.JSONEq(t, fmt.Sprintf(`{"ok":true,"id":%d,"status":"rolled_back"}`, id), out)
+	assert.JSONEq(t, fmt.Sprintf(`{"ok":true,"id":%d,"status":"rolled_back","revert_pr_url":""}`, id), out)
 }
 
 func TestCoachProposals_HumanOutputShowsTheEdit(t *testing.T) {

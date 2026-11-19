@@ -319,7 +319,7 @@ func folderFiles(t *testing.T, folder string) map[string]string {
 // check (in internal/daemon/coach*.go) and every file of internal/tuning
 // (matched by package folder, whatever the file name) — call no workbenchgit
 // helper but PathStatus, ReadStatus and FileAtHead; the pull-request helpers
-// (OriginHost, IsGitHubFolder, GHReady, DefaultBase, Publish, PRState,
+// (OriginHost, OriginRepo, PRRepository, IsGitHubFolder, GHReady, DefaultBase, Publish, PRState,
 // ClosePR) are allowed only in cmd/coach*.go, the processes the owner starts
 // — never in the daemon, cmd/tuning*.go or internal/tuning; and only those
 // paths name the coach and tuning seams (tuningGitProblems). (c) The
@@ -460,12 +460,12 @@ func tuningFileName(name string) bool {
 // prHelpers are workbenchgit's pull-request helpers and their types:
 // allowed in cmd/coach*.go only (COACH-01 as amended for ask #1606).
 var prHelpers = map[string]bool{
-	"workbenchgit.OriginHost": true, "workbenchgit.IsGitHubFolder": true, "workbenchgit.GHReady": true,
-	"workbenchgit.DefaultBase": true, "workbenchgit.Publish": true,
+	"workbenchgit.OriginHost": true, "workbenchgit.OriginRepo": true, "workbenchgit.PRRepository": true, "workbenchgit.IsGitHubFolder": true,
+	"workbenchgit.GHReady": true, "workbenchgit.DefaultBase": true, "workbenchgit.Publish": true,
 	"workbenchgit.PRState": true, "workbenchgit.ClosePR": true,
 	"workbenchgit.PublishRequest": true, "workbenchgit.PublishResult": true,
 	"workbenchgit.ErrNoGH": true, "workbenchgit.ErrBaseDiffers": true, "workbenchgit.ErrPushFailed": true,
-	"workbenchgit.ErrPRFailed": true, "workbenchgit.ErrTimeout": true,
+	"workbenchgit.ErrPRFailed": true, "workbenchgit.ErrTimeout": true, "workbenchgit.BaseDiffersError": true,
 }
 
 // prHelperProblems is COACH-01 (b)'s pull-request rule over files of any
