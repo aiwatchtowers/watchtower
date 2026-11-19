@@ -657,6 +657,7 @@ func TestSessionChatARequestWakesTheLoopAtOnce(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() { done <- s.Run(ctx) }()
+		defer func() { cancel(); <-done }()
 		synctest.Wait() // the first pass: no watch, nothing read
 		s.RequestWatches().Watch(handlers.ChatWatch{SessionID: 7, Expires: r.clock.Now().Add(handlers.ChatWatchLength)})
 		synctest.Wait()
@@ -674,7 +675,5 @@ func TestSessionChatARequestWakesTheLoopAtOnce(t *testing.T) {
 		if n := r.callCount(); n != 1 {
 			t.Fatalf("%d reads after a burst inside Every, want 1", n)
 		}
-		cancel()
-		<-done
 	})
 }

@@ -240,9 +240,9 @@ func TestABurstOfUrgentSignalsDuringAPassMakesOneFollowUpPass(t *testing.T) {
 	})
 }
 
-// A loop stopped while an urgent signal is pending (its ctx ended) leaves
-// it for the next wait of the same wake.
-func TestACancelledWaitKeepsAnUrgentSignalForTheNextWait(t *testing.T) {
+// A wait entered with its ctx already ended returns at once and consumes no
+// pending urgent signal (the early return).
+func TestAWaitEnteredWithAnEndedContextConsumesNoUrgentSignal(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		w := newRunnerWake(0)
 		ctx, cancel := context.WithCancel(context.Background())

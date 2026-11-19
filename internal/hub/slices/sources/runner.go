@@ -22,14 +22,19 @@ const runnerMinimumGap = 5 * time.Second
 var errRunTimedOut = errors.New("the run timed out")
 
 // runnerWake is HubRunnerWake: the wait between two passes of a runner. A
-// signal — a session state change, a timer the runner set — ends the wait;
-// one sent during a pass ends the next wait, so none is lost. A signalled
+// signal — a session state change (SessionStateChanged of the report runner
+// and the git refresher) — ends the wait; one sent during a pass ends the
+// next wait, so none is lost. A deferred run is not a signal: the runner
+// shortens the wait's d to when it is due. A signalled
 // wait still lasts minimumGap from its start, so a burst of signals costs one
 // pass per gap. signalNow is a phone request's (runners on request, #1996):
 // it ends the wait, or the gap a signal started, at once. Either kind sent
 // during a pass costs exactly one follow-up pass: the wait that ends takes
 // every pending signal of both kinds. With no signal a wait lasts its full
-// duration; a cancelled ctx ends it and leaves pending signals for the next.
+// duration. A cancelled ctx ends the wait; one entered with ctx already
+// ended consumes nothing, while one cancelled as it blocks may have taken a
+// pending signal — which does not matter, as a cancelled ctx ends the
+// runner's loop.
 type runnerWake struct {
 	ch, now    chan struct{}
 	minimumGap time.Duration

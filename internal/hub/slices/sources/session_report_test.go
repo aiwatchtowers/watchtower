@@ -647,7 +647,7 @@ func TestSessionReportAChangeWhileTheHubWasOffRunsOnTheFirstPass(t *testing.T) {
 }
 
 // Runners on request (#1996): the phone's session_report_request starts a
-// pass at once, not after the 5 s gap a background signal waits.
+// pass at once, cutting the 5 s gap a state change's signal started.
 func TestSessionReportAPhoneRequestStartsAPassWithoutTheGap(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := newReportRig(t)
@@ -659,11 +659,18 @@ func TestSessionReportAPhoneRequestStartsAPassWithoutTheGap(t *testing.T) {
 		}
 		done := make(chan error, 1)
 		go func() { done <- run.Run(ctx) }()
+		defer func() { cancel(); <-done }()
 		synctest.Wait() // the first pass ran nothing (stored, not live)
 		if n := len(r.callList()); n != 0 {
 			t.Fatalf("first pass: %d runs", n)
 		}
-		time.Sleep(time.Second) // inside the gap of the wait that follows
+		time.Sleep(time.Second)
+		run.SessionStateChanged(project) // a background signal: its gap runs to 5 s
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if n := len(r.callList()); n != 0 {
+			t.Fatalf("%d runs inside the state change's gap", n)
+		}
 		if !run.RequestReport(session) {
 			t.Fatal("the request was refused")
 		}
@@ -671,8 +678,6 @@ func TestSessionReportAPhoneRequestStartsAPassWithoutTheGap(t *testing.T) {
 		if c := r.callList(); len(c) != 1 || c[0] != (reportCall{project, session, true}) {
 			t.Fatalf("calls %v right after the request, want one network run", c)
 		}
-		cancel()
-		<-done
 	})
 }
 

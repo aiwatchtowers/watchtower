@@ -839,11 +839,15 @@ spacing. A stored requested report also runs its workbench's summaries in the sa
 once for that workbench only (`cadence.requestNow`; `TestCadenceAnUrgentRequestSkipsTheSpacingOnceForThatWorkbenchOnly`,
 `TestSessionReportARequestedRunRefreshesTheWorkbenchSummariesInsideTheirSpacing`): gh refreshed the PR cache they read.
 `session_chat_request` opens its watch through `SessionChatSource.RequestWatches`, which wakes the chat loop instead
-of its 2 s tick (`TestSessionChatARequestWakesTheLoopAtOnce`). Background signals — a session state change, a deferred
-run's timer — keep the 5 s minimum gap and the spacings (the existing `runner_test.go` twins). The other kinds the
-research note lists are not runner-fed: `permission_answer`, `session_input` and `session_start` move
+of its 2 s tick (`TestSessionChatARequestWakesTheLoopAtOnce`). A background signal — a session state change
+(`SessionStateChanged` of the report runner and the git refresher) — keeps the 5 s minimum gap and the spacings (the
+existing `runner_test.go` twins); a deferred run is no signal, it shortens the wait itself. The other kinds the research
+note lists are not runner-fed: `permission_answer`, `session_input` and `session_start` move
 `permission_request`/`terminal_session`/`session_timeline` through the state lane (kicked by the `data_version` watch,
-nudging at once), and `chat_turn` through the chat engine.
+nudging at once), and `chat_turn` through the chat engine. After a phone `session_start` or `session_input` the
+record shows at once, but its report fields — `terminal_session`'s `report_*` (`SessionReportRunner.Summary`) and the
+report milestones of `session_timeline` — still follow the state change's `signal()`, with the 5 s gap and
+`SummarySpacing`. That is deliberate: input is frequent and report runs are costly, so these stay background.
 
 - **Bursts.** Requests sent while a pass runs cost exactly one follow-up pass, started at once: the wait that ends
   takes every pending signal of both kinds (`TestABurstOfUrgentSignalsDuringAPassMakesOneFollowUpPass`). Report
@@ -851,8 +855,9 @@ nudging at once), and `chat_turn` through the chat engine.
   chat pass reads only watches that are due (`Every` 3 s per watch), so a burst of chat requests reads nothing more.
   A pass in flight is not interrupted: the request waits for it to end (up to its runs' timeouts, 30 s per report).
 - **Failure modes.** The host closing mid-pass (the runner's ctx ends): the run in flight stores nothing and the
-  request stays due with the network for the next pass (`TestSessionReportARequestCutByStopStaysDue`); a wait cancelled
-  with an urgent signal pending leaves it for the next wait (`TestACancelledWaitKeepsAnUrgentSignalForTheNextWait`). A
+  request stays due with the network for the next pass (`TestSessionReportARequestCutByStopStaysDue`); the ended ctx
+  ends the runner's loop, so signals still pending do not matter (a wait entered with ctx already ended consumes
+  none, `TestAWaitEnteredWithAnEndedContextConsumesNoUrgentSignal`). A
   requested run that fails or times out keeps the stored report, consumes the request (the phone may ask again after
   60 s) and leaves the summaries to their cadence (`TestSessionReportAFailedRequestedRunLeavesTheSummariesToTheirCadence`,
   `TestSessionReportAHungRunTimesOutAndStoresNothing`). A hub restart with a request pending loses it — the wake, the

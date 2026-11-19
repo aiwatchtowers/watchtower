@@ -196,8 +196,15 @@ func TestHandlerDepsCarryTheRunnerSeams(t *testing.T) {
 		if deps.Windows == nil || deps.ChatWatches == nil || deps.Reports == nil {
 			t.Fatalf("runner seams: windows %v, watches %v, reports %v", deps.Windows != nil, deps.ChatWatches != nil, deps.Reports != nil)
 		}
-		if _, plain := deps.ChatWatches.(*handlers.ChatWatchRegistry); plain {
+		// The handlers' watches are the chat source's waking ones (their wake
+		// is TestSessionChatARequestWakesTheLoopAtOnce) over the registry the
+		// source reads.
+		if deps.ChatWatches != set.Chat.RequestWatches() {
 			t.Fatal("the handlers' chat watches do not wake the session chat runner")
+		}
+		deps.ChatWatches.Watch(handlers.ChatWatch{SessionID: 7, Expires: time.Now().Add(time.Minute)})
+		if got := watches.Active(time.Now()); len(got) != 1 || got[0].SessionID != 7 {
+			t.Fatalf("a watch through the handlers' deps is not in the source's registry: %v", got)
 		}
 		if deps.Sealer == nil || deps.LateEcho == nil || deps.Sessions == nil || deps.DB == nil || deps.Store == nil {
 			t.Fatal("held lines need the sealer and the late echo")
