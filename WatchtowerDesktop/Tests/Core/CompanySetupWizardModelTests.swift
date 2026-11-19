@@ -3,96 +3,6 @@ import WatchtowerTestSupport
 import XCTest
 @testable import WatchtowerCore
 
-/// The `watchtower company …` / `slack app …` verbs, answered by args
-/// prefix: a queued reply per prefix (FIFO), a held run the test releases,
-/// else a default (an empty draft, no apps, saves that succeed). Every call
-/// is recorded with its stdin.
-private final class ScriptedCLI: CLILineStreaming, @unchecked Sendable {
-    struct Call {
-        let args: [String]
-        let stdin: Data?
-        var input: String { stdin.flatMap { String(data: $0, encoding: .utf8) } ?? "" }
-    }
-
-    private let lock = NSLock()
-    private var scripts: [(prefix: [String], lines: [String], exit: Int32)] = []
-    private var holds: [[String]] = []
-    private var held: [(prefix: [String], sink: AsyncThrowingStream<String, Error>.Continuation)] = []
-    private var recorded: [Call] = []
-    let signal = StateSignal()
-    var setups = #"{"setups":[]}"#
-
-    func on(_ prefix: [String], _ lines: [String], exit: Int32 = 0) {
-        lock.withLock { scripts.append((prefix, lines, exit)) }
-    }
-
-    /// The next call with this prefix waits until `release`.
-    func hold(_ prefix: [String]) {
-        lock.withLock { holds.append(prefix) }
-    }
-
-    func release(_ prefix: [String], _ lines: [String]) {
-        let sink = lock.withLock { () -> AsyncThrowingStream<String, Error>.Continuation? in
-            guard let index = held.firstIndex(where: { $0.prefix == prefix }) else { return nil }
-            return held.remove(at: index).sink
-        }
-        lines.forEach { sink?.yield($0) }
-        sink?.finish()
-    }
-
-    var calls: [Call] { lock.withLock { recorded } }
-
-    func calls(_ prefix: [String]) -> [Call] {
-        calls.filter { Array($0.args.prefix(prefix.count)) == prefix }
-    }
-
-    func waitFor(_ prefix: [String], count: Int = 1) async {
-        await signal.until { [self] in calls(prefix).count >= count }
-    }
-
-    func lines(args: [String], stdin: Data?) -> AsyncThrowingStream<String, Error> {
-        let (stream, sink) = AsyncThrowingStream.makeStream(of: String.self)
-        let match = { (prefix: [String]) in Array(args.prefix(prefix.count)) == prefix }
-        let action = lock.withLock { () -> (lines: [String], exit: Int32)? in
-            recorded.append(Call(args: args, stdin: stdin))
-            if let index = holds.firstIndex(where: match) {
-                held.append((holds.remove(at: index), sink))
-                return nil
-            }
-            if let index = scripts.firstIndex(where: { match($0.prefix) }) {
-                let script = scripts.remove(at: index)
-                return (script.lines, script.exit)
-            }
-            return (defaultLines(args), 0)
-        }
-        signal.changed()
-        if let action {
-            action.lines.forEach { sink.yield($0) }
-            if action.exit == 0 {
-                sink.finish()
-            } else {
-                sink.finish(throwing: CLIRunnerError.nonZeroExit(code: action.exit, stderr: ""))
-            }
-        }
-        return stream
-    }
-
-    private func defaultLines(_ args: [String]) -> [String] {
-        switch Array(args.prefix(3)) {
-        case ["company", "draft", "show"]: [#"{"state":"none","draft":null,"bad_file":"","checked_vendors":[]}"#]
-        case ["company", "discover", "--json"]: [#"{"candidates":[]}"#]
-        case ["slack", "app", "status"]: [setups]
-        default: []
-        }
-    }
-
-    /// The wizard runs no long-lived child; a stray one is recorded and never answers.
-    func session(args: [String]) -> any CLILineSession {
-        lock.withLock { recorded.append(Call(args: args, stdin: nil)) }
-        return FakeCLILineStream().session(args: args)
-    }
-}
-
 @MainActor
 final class CompanySetupWizardModelTests: XCTestCase {
     private typealias Model = CompanySetupWizardModel
@@ -105,7 +15,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     private let googleOK = #"{"result":"ok","slug":"acme","account_id":3,"email":"alice@example.com","#
         + #""domain":"example.com","checked":true}"#
 
-    private func make(_ cli: ScriptedCLI = ScriptedCLI()) -> (Model, ScriptedCLI) {
+    private func make(_ cli: CompanyScriptedCLI = CompanyScriptedCLI()) -> (Model, CompanyScriptedCLI) {
         let slack = SlackAppSetupModel(streamer: cli, mode: .wizard)
         let started = started
         return (Model(streamer: cli, slack: slack) { started }, cli)
@@ -117,14 +27,16 @@ final class CompanySetupWizardModelTests: XCTestCase {
     }
 
     /// A model opened on a stored draft.
-    private func resume(_ draft: String, checked: [String] = [], cli: ScriptedCLI = ScriptedCLI()) async -> (Model, ScriptedCLI) {
+    private func resume(
+        _ draft: String, checked: [String] = [], cli: CompanyScriptedCLI = CompanyScriptedCLI()
+    ) async -> (Model, CompanyScriptedCLI) {
         cli.on(["company", "draft", "show"], [draftShow(draft, checked: checked)])
         let (model, cli) = make(cli)
         await model.open()
         return (model, cli)
     }
 
-    private func savedDrafts(_ cli: ScriptedCLI) -> [[String: Any]] {
+    private func savedDrafts(_ cli: CompanyScriptedCLI) -> [[String: Any]] {
         cli.calls(["company", "draft", "save"]).compactMap {
             $0.stdin.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
         }
@@ -149,7 +61,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     }
 
     func testDiscoveredServicesArePreTicked() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         cli.on(["company", "discover"], [#"{"candidates":[{"vendor":"atlassian","client_id":"9f3a8d0e4b7c21","#
             + #""label":"Acme app","source":"stored","source_label":"Acme's saved company setup"}]}"#])
         let (model, _) = make(cli)
@@ -287,7 +199,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     // MARK: - Existing apps first
 
     func testFoundAppIsDefault() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         cli.on(["company", "discover"], [#"{"candidates":[{"vendor":"google","client_id":"1234-abcd.apps.googleusercontent.com","#
             + #""label":"acme-watchtower · 1234-abcd.apps.googleusercontent.com","source":"stored","#
             + #""source_label":"Acme's saved company setup"},{"vendor":"google","client_id":"5678-efgh.apps.googleusercontent.com","#
@@ -326,7 +238,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     // MARK: - Slack step
 
     func testResumeAfterCreateOffersReuse() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         cli.setups = acmeSetup
         let draft = #"{"company":"","services":["slack"],"step":"slack","slack":{"app_id":"A0ACME"}}"#
         let (model, _) = await resume(draft, cli: cli)
@@ -342,7 +254,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     }
 
     func testSlackStepReadsSetupRecordNotDraft() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         cli.setups = acmeSetup
         let draft = #"{"company":"","services":["slack"],"step":"publish","slack":{"app_id":"A0ACME"}}"#
         let (model, _) = await resume(draft, cli: cli)
@@ -363,7 +275,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
         XCTAssertEqual(model.phase(.slack), .nothingFound)
 
         // A failed status read knows nothing: the reference stays.
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         cli.on(["slack", "app", "status"], [], exit: 1)
         let (unread, _) = await resume(draft, cli: cli)
         XCTAssertFalse(unread.slack.recordsRead)
@@ -371,7 +283,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     }
 
     func testSlackCreateRecordsTheAppAndMovesOn() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         let (model, _) = make(cli)
         await model.open()
         model.toggle(.slack)
@@ -393,7 +305,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     }
 
     func testReusedAppShowsDiffThenUpdates() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         cli.on(["company", "discover"], [#"{"candidates":[{"vendor":"slack","client_id":"1111.2222","app_id":"A0ACME","#
             + #""label":"Watchtower · A0ACME","source":"account","source_label":"Slack app — your connected account acme"}]}"#])
         let (model, _) = make(cli)
@@ -434,8 +346,8 @@ final class CompanySetupWizardModelTests: XCTestCase {
         + #""app_name":"Watchtower","client_id":"1111.2222","changes":{"add_scopes":["reactions:read"]}}"#
 
     /// The settings link's app, through the token form to the diff.
-    private func slackAtDiff() async -> (Model, ScriptedCLI) {
-        let cli = ScriptedCLI()
+    private func slackAtDiff() async -> (Model, CompanyScriptedCLI) {
+        let cli = CompanyScriptedCLI()
         let (model, _) = make(cli)
         await model.open()
         model.toggle(.slack)
@@ -466,7 +378,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     }
 
     func testUnknownAppLinkSaysSo() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         let (model, _) = make(cli)
         await model.open()
         model.toggle(.slack)
@@ -487,7 +399,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     }
 
     func testSettingsLinkAdoptsWithClientID() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         let (model, _) = make(cli)
         await model.open()
         model.toggle(.slack)
@@ -509,7 +421,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     }
 
     func testMatchingAppShowsNoDiffLines() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         let (model, _) = make(cli)
         await model.open()
         model.toggle(.slack)
@@ -526,7 +438,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     }
 
     func testDiscoveryFailureIsNotNothingFound() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         cli.on(["company", "discover"], [], exit: 1)
         let (model, _) = make(cli)
         await model.open()
@@ -539,7 +451,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     }
 
     func testDiscardStartsFresh() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         cli.on(["company", "discover"], [#"{"candidates":[{"vendor":"linear","client_id":"lin","label":"lin","#
             + #""source":"account","source_label":"Linear app — your connected account acme"}]}"#])
         let (model, _) = make(cli)
@@ -581,7 +493,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     }
 
     func testNotCollaboratorKeepsStepOpen() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         let (model, _) = make(cli)
         await model.open()
         model.toggle(.slack)
@@ -607,7 +519,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     }
 
     func testWrongWorkspaceRefused() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         let (model, _) = make(cli)
         await model.open()
         model.toggle(.slack)
@@ -869,7 +781,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     // MARK: - Unreadable draft, discard
 
     func testUnreadableDraftIsRenamedNotDeleted() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         cli.on(["company", "draft", "show"], [#"{"state":"unreadable","draft":null,"bad_file":"draft.json.bad-20261118T041200Z","#
             + #""checked_vendors":[]}"#])
         let (model, _) = make(cli)
@@ -884,7 +796,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     }
 
     func testUnreadableDraftIsNotNoDraft() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         cli.on(["company", "draft", "show"], [#"{"state":"unreadable","draft":null,"bad_file":"draft.json.bad-x","checked_vendors":[]}"#])
         let (model, _) = make(cli)
         await model.open()
@@ -920,7 +832,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     }
 
     func testDraftReadFailureNeverOverwrites() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         cli.on(["company", "draft", "show"], [], exit: 1)
         let (model, _) = make(cli)
         await model.open()
@@ -935,7 +847,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
     }
 
     func testPreTicksAloneMakeNoDraft() async {
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         cli.on(["company", "discover"], [#"{"candidates":[{"vendor":"linear","client_id":"lin","label":"lin","#
             + #""source":"account","source_label":"Linear app — your connected account acme"}]}"#])
         let (model, _) = make(cli)
@@ -985,8 +897,8 @@ final class CompanySetupWizardModelTests: XCTestCase {
         + #""client_secret":"sample-secret","site":"https://acme.atlassian.net","confluence":true},"skipped":["linear"],"#
         + #""deny_hosts":["intranet.example.com","wiki.corp.example.com"]}"#
 
-    private func publishReady() async -> (Model, ScriptedCLI) {
-        let cli = ScriptedCLI()
+    private func publishReady() async -> (Model, CompanyScriptedCLI) {
+        let cli = CompanyScriptedCLI()
         cli.setups = acmeSetup
         return await resume(publishDraft, checked: ["atlassian"], cli: cli)
     }
@@ -1096,7 +1008,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
             + #""client_secret":"s","domain":"example.com"},"atlassian":{"client_id":"9f3a8d0e4b7c21","client_secret":"s","#
             + #""site":"https://acme.atlassian.net","confluence":true},"linear":{"client_id":"lin"},"#
             + #""microsoft":{"client_id":"m","tenant_id":"t"},"skipped":["linear"]}"#
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         cli.setups = acmeSetup
         let (model, _) = await resume(draft, checked: ["google", "atlassian"], cli: cli)
         XCTAssertEqual(model.connectThisMacVendors, [.slack, .microsoft])
@@ -1124,7 +1036,7 @@ final class CompanySetupWizardModelTests: XCTestCase {
         XCTAssertEqual(google.companyNameHelp, "Colleagues see “Connect Example?”. Taken from your Google Workspace domain; "
             + "change it if people know the company by another name.")
         // …and the Slack workspace before both.
-        let cli = ScriptedCLI()
+        let cli = CompanyScriptedCLI()
         cli.setups = acmeSetup
         let slackDraft = draft.replacingOccurrences(of: #""slack":{}"#, with: #""slack":{"app_id":"A0ACME"}"#)
         let (slack, _) = await resume(slackDraft, cli: cli)

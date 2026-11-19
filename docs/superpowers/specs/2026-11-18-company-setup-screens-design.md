@@ -463,6 +463,8 @@ Light frames linked; each has a `-dark` twin. The vendor-step shots show a compa
 | [`company-wizard-services-found`](../../design/mockups/company-setup/company-wizard-services-found-light.png) | Slack and Atlassian pre-ticked from discovery |
 | [`company-wizard-services-change`](../../design/mockups/company-setup/company-wizard-services-change-light.png) | **Change services**: unticking a filled step asks first |
 | [`company-wizard-draftUnreadable`](../../design/mockups/company-setup/company-wizard-draftUnreadable-light.png) | error: the draft cannot be read, kept as `.bad-<ts>` |
+| [`company-wizard-loading`](../../design/mockups/company-setup/company-wizard-loading-light.png) | loading: the page reads the draft (Task 22) |
+| [`company-wizard-readFailed`](../../design/mockups/company-setup/company-wizard-readFailed-light.png) | error: `company draft show` failed, **Try again** (Task 22) |
 | [`company-wizard-looking`](../../design/mockups/company-setup/company-wizard-looking-light.png) | loading: looking for known apps |
 | [`company-wizard-slack-notFound`](../../design/mockups/company-setup/company-wizard-slack-notFound-light.png) | empty: first open, nothing found |
 | [`company-wizard-slack-found`](../../design/mockups/company-setup/company-wizard-slack-found-light.png) | found one: **Use Watchtower** / **Create new** |

@@ -209,6 +209,8 @@ struct SlackAppSetupSheet: View {
 struct SlackSetupRecordRows: View {
     let model: SlackAppSetupModel
     var blocked = false
+    /// Opens a row elsewhere (the company wizard); false leaves it to the sheet.
+    var route: ((SlackSetupRecord) -> Bool)?
 
     var body: some View {
         ForEach(model.recordRows) { row in
@@ -227,6 +229,9 @@ struct SlackSetupRecordRows: View {
 
     private func button(_ row: SlackAppSetupModel.RecordRow) -> some View {
         // The row's one prominent action, the approval's Check again too (§3.4).
-        Button(row.label) { model.open(row.record) }.buttonStyle(.kitPrimary)
+        Button(row.label) {
+            if route?(row.record) != true { model.open(row.record) }
+        }
+        .buttonStyle(.kitPrimary)
     }
 }

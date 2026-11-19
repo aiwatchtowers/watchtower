@@ -106,6 +106,11 @@ package enum CompanyVendorGuide {
         }
     }
 
+    /// What a guide line's Copy button copies (scopes, callback URLs,
+    /// permissions). Empty until spike S1 settles the values (plan Task 2):
+    /// the button stays disabled rather than copy nothing.
+    package static func guideCopyText(_: CompanyVendor, line _: Int) -> String { "" }
+
     /// The caption under a public client's fields (no secret).
     package static func fieldsNote(_ v: CompanyVendor) -> String? {
         switch v {

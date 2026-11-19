@@ -8,6 +8,10 @@ private typealias Copy = CompanySetupMockCopy
 
 // MARK: - The admin wizard (spec §2)
 
+// The scenes below are the mockups' data and names; since Task 22 the
+// `company-wizard-*` shots render the production `CompanySetupPage` over a
+// model driven to the same state (`CompanyWizardLive`).
+
 enum RailState { case done, reused, skipped, waiting, current, todo }
 
 struct WizardScene {
@@ -39,87 +43,6 @@ struct WizardScene {
         self.labels = [Copy.railSteps[0]] + ticked + Array(Copy.railSteps.suffix(2))
         self.rail = [.current] + done + Array(repeating: .todo, count: ticked.count + 2 - done.count)
         self.blocks = blocks
-    }
-}
-
-/// The wizard page in the Connections detail area (owner, ask #1490): the way
-/// back to Connections on top, the step rail on the left (one line at narrow
-/// width), the step's content on the right, the buttons at the bottom.
-struct CompanyWizardMock: View {
-    let scene: WizardScene
-    var narrow = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.large) {
-            Button {} label: { Label(Copy.backToConnections, systemImage: "chevron.left") }.buttonStyle(.kitQuiet)
-            MockBlockView(block: .title(Copy.wizardTitle, Copy.wizardIntro))
-            if scene.resume { resumeLine }
-            if narrow {
-                Text(Copy.stepLine(scene.step, of: scene.labels)).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            }
-            if narrow, scene.step == 0 { Text(Copy.servicesTitle).font(.headline) }
-            HStack(alignment: .top, spacing: Spacing.large) {
-                if !narrow { rail.frame(width: PaneWidth.sideListIdeal) }
-                VStack(alignment: .leading, spacing: Spacing.medium) {
-                    if !narrow { Text(scene.step == 0 ? Copy.servicesTitle : scene.labels[scene.step]).font(.headline) }
-                    ForEach(Array(scene.blocks.enumerated()), id: \.offset) { _, block in MockBlockView(block: block) }
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-            }
-        }
-        .controlSize(.small)
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
-    }
-
-    private var resumeLine: some View {
-        HStack(spacing: Spacing.regular) {
-            Image(systemName: "arrow.uturn.forward.circle").foregroundStyle(.secondary)
-            Text(Copy.resumeLine).font(.caption)
-            Spacer(minLength: Spacing.regular)
-            Button(Copy.discardSetup) {}.buttonStyle(.kitQuiet)
-        }
-        .padding(Spacing.regular)
-        .card()
-    }
-
-    private var rail: some View {
-        VStack(alignment: .leading, spacing: Spacing.tight) {
-            ForEach(Array(scene.labels.enumerated()), id: \.offset) { index, title in
-                let state = scene.rail[index]
-                HStack(spacing: Spacing.regular) {
-                    railMark(state)
-                    Text(title).font(.callout).foregroundStyle(state == .todo ? .secondary : .primary)
-                    Spacer(minLength: Spacing.small)
-                    if let word = railWord(state) { Text(word).font(.caption2).foregroundStyle(.secondary) }
-                }
-                .padding(.horizontal, Spacing.regular)
-                .padding(.vertical, Spacing.compact)
-                .kitRow(isSelected: state == .current)
-            }
-            if scene.step > 0 {
-                Button(Copy.changeServices) {}.buttonStyle(.kitQuiet).padding(.leading, Spacing.regular)
-            }
-        }
-    }
-
-    private func railMark(_ state: RailState) -> some View {
-        switch state {
-        case .done, .reused: MockMarkView(mark: .done)
-        case .skipped: MockMarkView(mark: .skipped)
-        case .current, .todo, .waiting: MockMarkView(mark: .waiting)
-        }
-    }
-
-    private func railWord(_ state: RailState) -> String? {
-        switch state {
-        case .done: Copy.railDone
-        case .reused: Copy.railReused
-        case .skipped: Copy.railSkipped
-        case .waiting: Copy.railWaiting
-        case .current, .todo: nil
-        }
     }
 }
 

@@ -249,7 +249,7 @@ extension HomeShotFixtures {
         func summary(_ service: ConnectionService, _ accounts: [ConnectionAccountState]) -> ConnectionSummary {
             ConnectionSummary(service: service, accounts: accounts, blocked: false)
         }
-        let summaries = ConnectionService.allCases.map { service -> ConnectionSummary in
+        let summaries = ConnectionService.services.map { service -> ConnectionSummary in
             switch service {
             case .slack:
                 summary(.slack, [

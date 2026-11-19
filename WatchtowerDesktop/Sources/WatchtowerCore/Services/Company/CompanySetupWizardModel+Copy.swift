@@ -66,7 +66,9 @@ extension CompanySetupWizardModel {
     }
 
     package static let showInFinder = "Show file in Finder"
-    static let draftReadFailed = "Watchtower could not read the setup's progress on this Mac. Try opening this page again."
+    /// The page while the draft is read.
+    package static let loadingLine = "Reading the setup's progress on this Mac…"
+    package static let draftReadFailed = "Watchtower could not read the setup's progress on this Mac. Try opening this page again."
     static let draftSaveFailed = "Watchtower could not save the setup's progress on this Mac, so nothing was checked. "
         + "Try again."
     static let discardFailed = "Watchtower could not delete the setup's draft on this Mac. Try again."
@@ -167,6 +169,8 @@ extension CompanySetupWizardModel {
     // MARK: Google (§2.6)
 
     package static let dropJSON = "Drop the client JSON here, or paste it"
+    /// The drop zone's file line for JSON pasted rather than dropped.
+    package static let pastedJSON = "Pasted client JSON"
     package static let googleFileInvalid = "That is not a Google OAuth client JSON. Download it again from Credentials → "
         + "OAuth 2.0 Client IDs."
     /// "client_secret_1234-abcd.json · project acme-watchtower"
@@ -434,4 +438,8 @@ extension CompanySetupWizardModel {
     package static let profileLabel = "Configuration profile for IT"
     package static let saveProfile = "Save…"
     package static func profileFileName(_ company: String) -> String { "\(company)-Watchtower.mobileconfig" }
+    package static let profileFailed = "Watchtower could not make the configuration profile. Try again."
+    package static func profileSaveFailed(_ detail: String) -> String {
+        "The configuration profile could not be saved: \(detail)."
+    }
 }

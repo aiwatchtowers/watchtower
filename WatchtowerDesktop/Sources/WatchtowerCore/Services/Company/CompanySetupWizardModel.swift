@@ -288,6 +288,7 @@ package final class CompanySetupWizardModel {
     package func open() async {
         guard load == .notOpened else {
             await slack.reloadRecords()
+            applyEntry()
             return
         }
         load = .loading
@@ -304,6 +305,62 @@ package final class CompanySetupWizardModel {
         await slack.reloadRecords()
         load = .ready
         enter(current)
+        applyEntry()
+    }
+
+    // MARK: Entry points (A19)
+
+    /// Where a Slack setup-record row opens the page (company screens spec
+    /// §0, A19): **Continue setup** and **Check again** at the Slack step,
+    /// **Add the link to the app** at Publish.
+    package enum Entry: Equatable, Sendable {
+        case slackStep(appID: String)
+        case publish(appID: String)
+
+        /// A setup-record row's entry; nil for a lost create (`pending_create`),
+        /// which only plan B's sheet can clear or attach (never a second app).
+        package init?(record: SlackSetupRecord) {
+            switch record.stage {
+            case "install", "approval": self = .slackStep(appID: record.appID)
+            case "link_missing": self = .publish(appID: record.appID)
+            default: return nil
+            }
+        }
+    }
+
+    /// Asked before the draft is read, an entry waits for it.
+    @ObservationIgnored private var pendingEntry: Entry?
+
+    /// Opens the page at an entry's step: applied now when the page is
+    /// loaded, else once `open()` has read the draft.
+    package func request(_ entry: Entry) {
+        pendingEntry = entry
+        applyEntry()
+    }
+
+    private func applyEntry() {
+        guard let entry = pendingEntry, load == .ready, publishState != .running else { return }
+        pendingEntry = nil
+        // A finished Publish starts fresh, as Done would.
+        if isPublished { reset() }
+        let (target, appID): (Step, String) = switch entry {
+        case let .slackStep(appID): (.vendor(.slack), appID)
+        case let .publish(appID): (.publish, appID)
+        }
+        touched = true
+        if !ticked.contains(.slack) {
+            draft.services = CompanyVendor.allCases.filter { ticked.contains($0) || $0 == .slack }.map(\.rawValue)
+        }
+        draft.skipped.removeAll { $0 == CompanyVendor.slack.rawValue }
+        // The record owns the app; the draft only references it, and never
+        // loses an app of its own to another record's.
+        if draft.slack.appID.isEmpty, !appID.isEmpty {
+            draft.slack = .init(appID: appID)
+            phases[.slack] = nil
+        }
+        guard let index = steps.firstIndex(of: target) else { return }
+        reached.formUnion(steps.prefix(index + 1))
+        move(to: target)
     }
 
     private func readDraft() async -> CompanyDraftShow? {
@@ -977,6 +1034,19 @@ package final class CompanySetupWizardModel {
             return Self.notCollaborator(appID: slackReuse?.appID ?? "")
         default:
             return slack.problemLine(problem)
+        }
+    }
+
+    /// The problem is about the app, not the token (not a collaborator,
+    /// another workspace, an App ID Slack does not know): the step shows the
+    /// problem alone, and **Try again** keeps the token in memory.
+    package var slackProblemNamesTheApp: Bool {
+        guard slackProblem != nil else { return false }
+        if case .editing = slack.phase, case let .adopt(adopt) = slack.form, adopt.appIDProblem != nil { return true }
+        guard case let .finished(.problem(problem)) = slack.phase else { return false }
+        switch problem {
+        case .notCollaborator, .wrongWorkspace: return true
+        default: return false
         }
     }
 

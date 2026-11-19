@@ -1,3 +1,4 @@
+import AppKit
 import ChatUI
 import Foundation
 import WatchtowerCore
@@ -10,6 +11,21 @@ extension AppState {
         selectedDestination = .connections
     }
 
+    /// **Set up for my company** (company screens spec §2.1): the wizard's
+    /// page in the Connections detail area; an entry (a Slack setup-record
+    /// row, A19) opens it at that entry's step.
+    func openCompanySetup(_ entry: CompanySetupWizardModel.Entry? = nil) {
+        if let entry { companySetup.request(entry) }
+        openConnections(.companySetup)
+    }
+
+    /// **Show file in Finder** for the set-aside draft, next to the company setups.
+    func showCompanySetupFile(_ name: String) {
+        guard let workspace = Constants.activeWorkspaceDir() else { return }
+        let file = URL(fileURLWithPath: workspace).appendingPathComponent("company").appendingPathComponent(name)
+        NSWorkspace.shared.activateFileViewerSelecting([file])
+    }
+
     /// How often a sidebar click may re-read the accounts for the badge.
     static let connectionAccountsRefreshInterval: TimeInterval = 60
 
@@ -18,7 +34,7 @@ extension AppState {
     /// The Connections tab calls it on appear.
     func refreshConnectionAccounts(now: Date = Date()) {
         connectionAccountsReadAt = now
-        for service in ConnectionService.allCases { refreshAccounts(of: service) }
+        for service in ConnectionService.services { refreshAccounts(of: service) }
     }
 
     /// The badge's re-read on a sidebar click: at most once a minute.
@@ -36,6 +52,7 @@ extension AppState {
         case .jira: jiraAccountsViewModel?.refresh()
         case .linear: linearAccountsViewModel?.refresh()
         case .quickConnections: externalConnectionsViewModel?.refresh()
+        case .companySetup: break
         }
     }
 
@@ -78,7 +95,7 @@ extension AppState {
 
     /// Every service, in the overview's order.
     var connectionSummaries: [ConnectionSummary] {
-        ConnectionService.allCases.map(connectionSummary)
+        ConnectionService.services.map(connectionSummary)
     }
 
     /// The Connections row's badge: services that need the owner.
@@ -113,6 +130,7 @@ extension AppState {
         case .jira: jiraAccountsViewModel?.readError
         case .linear: linearAccountsViewModel?.readError
         case .quickConnections: externalConnectionsViewModel?.readError
+        case .companySetup: nil
         }
     }
 
@@ -126,6 +144,7 @@ extension AppState {
         case .jira: jiraAccountsViewModel?.accounts.map(ConnectionAccountState.init)
         case .linear: linearAccountsViewModel?.accounts.map(ConnectionAccountState.init)
         case .quickConnections: externalConnectionsViewModel?.connections.map(ConnectionAccountState.init)
+        case .companySetup: []
         }
     }
 }
