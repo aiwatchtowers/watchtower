@@ -18,7 +18,9 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
     /// accessibility, no text view. Runs the macOS 27 path on every macOS.
     private final class InteractionStub: NSView {
         var selected = ""
+        var range = NSRange(location: 0, length: 0)
         override var acceptsFirstResponder: Bool { true }
+        override func accessibilitySelectedTextRange() -> NSRange { range }
         override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
         override func accessibilitySelectedText() -> String? { selected }
     }
@@ -234,6 +236,10 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
         up(feed, atStub: nil)
         XCTAssertEqual(feed.tracker.selection, first, "so does a key such as ⌘C")
 
+        feed.stub.range = NSRange(location: 30, length: 5)
+        up(feed, atStub: CGPoint(x: 300, y: 50))
+        XCTAssertNotEqual(feed.tracker.selection?.rect, first.rect, "the same word elsewhere is measured where it now is")
+
         feed.stub.selected = "retry budget"
         up(feed, atStub: nil)
         XCTAssertEqual(feed.tracker.selection?.text, "retry budget", "a changed selection is measured again")
@@ -264,6 +270,11 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
         feed.stub.selected = "budget"
         up(feed, atStub: CGPoint(x: 50, y: 20))
         XCTAssertEqual(feed.tracker.selection?.text, "budget", "a new selection is offered again")
+
+        feed.tracker.askAboutSelection()
+        feed.stub.range = NSRange(location: 40, length: 6)
+        up(feed, atStub: CGPoint(x: 300, y: 40))
+        XCTAssertEqual(feed.tracker.selection?.text, "budget", "the same word elsewhere in the text is another selection")
     }
 
     private func mouseUpEvent(at point: CGPoint, in window: NSWindow) throws -> NSEvent {

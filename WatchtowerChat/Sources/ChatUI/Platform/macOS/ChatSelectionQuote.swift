@@ -76,12 +76,18 @@ public final class ChatSelectionQuoteTracker {
     /// selection's box in its coordinates.
     @ObservationIgnored private weak var interaction: NSView?
     @ObservationIgnored private var interactionBox: CGRect = .zero
-    /// The selected text `interactionBox` was measured for.
-    @ObservationIgnored private var interactionText: String?
+    /// The selection `interactionBox` was measured for: its text and range
+    /// (the same word twice in one `Text` is two selections).
+    @ObservationIgnored private var interactionMark: InteractionMark?
     /// The macOS 27 passage "Ask about this" just took, still selected in
     /// its `Text`: no chip for it again until the selection changes.
     @ObservationIgnored private weak var quotedView: NSView?
-    @ObservationIgnored private var quotedText: String?
+    @ObservationIgnored private var quotedMark: InteractionMark?
+
+    private struct InteractionMark: Equatable {
+        let text: String
+        let range: NSRange
+    }
     /// The answer region the current selection lies in.
     @ObservationIgnored private weak var region: NSView?
     @ObservationIgnored private let regions = NSHashTable<NSView>.weakObjects()
@@ -162,7 +168,7 @@ public final class ChatSelectionQuoteTracker {
     /// "Ask about this": the passage joins the batch and the selection goes.
     func askAboutSelection() {
         guard let text = selection?.text else { return }
-        if let interaction { (quotedView, quotedText) = (interaction, interactionText) }
+        if let interaction { (quotedView, quotedMark) = (interaction, interactionMark) }
         clear()
         quote?.onQuote(text)
     }
@@ -197,17 +203,18 @@ public final class ChatSelectionQuoteTracker {
             if interaction != nil { clear() }
             return
         }
-        if view === quotedView, text == quotedText { return }
+        let mark = InteractionMark(text: text, range: view.accessibilitySelectedTextRange())
+        if view === quotedView, mark == quotedMark { return }
         quotedView = nil
         // The same selection (a ⌘C, a click on the scroller or blank
         // space): the chip stays by the point it was measured at.
-        if view === interaction, text == interactionText {
+        if view === interaction, mark == interactionMark {
             refresh()
             return
         }
         editor = nil
         interaction = view
-        interactionText = text
+        interactionMark = mark
         interactionBox = Self.interactionBox(in: view, at: locationInWindow.map { view.convert($0, from: nil) })
         locateRegion()
     }
@@ -287,7 +294,7 @@ public final class ChatSelectionQuoteTracker {
     private func clear() {
         editor = nil
         interaction = nil
-        interactionText = nil
+        interactionMark = nil
         region = nil
         stopObservingGeometry()
         setSelection(nil)
