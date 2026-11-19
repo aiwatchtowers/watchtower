@@ -48,6 +48,15 @@ const agentActionColumns = `id, tool, external, args_json, reason, surface, conv
 	context_type, context_id, turn_id, status, trust_at_create, result_json, error,
 	created_at, decided_at, applied_at, session_token, dismissed_at`
 
+// AgentActionColumns are the agent_actions columns ScanAgentAction reads,
+// in its order, for a reader that runs its own query (internal/inboxfeed).
+const AgentActionColumns = agentActionColumns
+
+// ScanAgentAction scans one row of AgentActionColumns.
+func ScanAgentAction(row interface{ Scan(dest ...any) error }) (*AgentAction, error) {
+	return scanAgentAction(row)
+}
+
 func scanAgentAction(row interface{ Scan(dest ...any) error }) (*AgentAction, error) {
 	var a AgentAction
 	err := row.Scan(&a.ID, &a.Tool, &a.External, &a.ArgsJSON, &a.Reason, &a.Surface, &a.ConversationID,

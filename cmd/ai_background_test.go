@@ -371,6 +371,7 @@ var modelCommandFiles = map[string][][]string{
 	"tracks.go":                    {{"tracks", "create"}, {"tracks", "generate"}, {"tracks", "scan"}},
 	"workbench_review_overview.go": {{"workbench", "review", "overview"}},
 	"workbench_spec_review.go":     {{"workbench", "spec-review", "run"}, {"workbench", "spec-review", "start"}},
+	"watchman.go":                  {{"watchman", "backtest"}, {"watchman", "learn"}},
 }
 
 var modelHelperFiles = map[string]string{

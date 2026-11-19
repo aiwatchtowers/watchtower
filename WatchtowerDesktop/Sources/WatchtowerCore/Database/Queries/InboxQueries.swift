@@ -36,14 +36,6 @@ package enum InboxQueries {
             """, arguments: [nowUTC, limit]) ?? 0
     }
 
-    /// Opening a message card: writes `read_at` only, once.
-    package static func markRead(_ db: Database, id: Int) throws {
-        try db.execute(sql: """
-            UPDATE inbox_items SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-            WHERE id = ? AND (read_at IS NULL OR read_at = '')
-            """, arguments: [id])
-    }
-
     package static func fetchByID(_ db: Database, id: Int) throws -> InboxItem? {
         try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items WHERE id = ?", arguments: [id])
     }

@@ -65,6 +65,8 @@ struct WorkchatModel: Equatable {
     let stateLine: StateLineModel
     /// The dialog, oldest first; empty until the chat arrives.
     let entries: [SessionChat.Entry]
+    /// The session's subagents, for the agents sheet (they are not in `entries`).
+    let agents: WorkchatAgents
     /// The session's open asks, newest first, as the Waiting stack builds
     /// them.
     let inlineAsks: [WaitingCardModel]
@@ -109,7 +111,8 @@ struct WorkchatModel: Equatable {
         stateLine = Self.stateLine(session, asOf: mac.asOf, now: now)
         banner = MacAwayBanner(mac, name: snapshot.heartbeat?.macName ?? "", now: now)
         finishNotice = finishDelivery.map { "Finish · \($0.resolved(for: session).text)" }
-        entries = chat?.entries ?? []
+        entries = WorkchatAgents.dialog(chat?.entries ?? [])
+        agents = WorkchatAgents(entries: chat?.entries ?? [], sessionID: session.id)
         let asks = snapshot.asks
             .filter { $0.status == .open && $0.sessionID == session.id }
             .sorted(by: WorkbenchReplicaSnapshot.newestFirst)

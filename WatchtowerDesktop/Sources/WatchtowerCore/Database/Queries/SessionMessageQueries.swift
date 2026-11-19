@@ -1,6 +1,6 @@
 import GRDB
 
-/// Reads of `session_messages` (00197). Read-only: MCP inserts, the daemon
+/// Reads of `session_messages` (00208). Read-only: MCP inserts, the daemon
 /// delivers, and the Desktop's one change (the prompt-flag Dismiss) goes
 /// through `WorkbenchCLI.messageDismiss`.
 package enum SessionMessageQueries {

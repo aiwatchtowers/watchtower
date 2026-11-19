@@ -12,24 +12,6 @@ final class TargetStatusHistoryTests: XCTestCase {
         db = try TestDatabase.create()
     }
 
-    func testDesktopStatusWritesAreRecordedAsTheOwners() throws {
-        try db.write { d in
-            let p = try TestDatabase.insertWorkbench(d)
-            let id = try TestDatabase.insertWorkbenchTarget(d, projectID: p)
-            // The agent's write, as the Go MCP path makes it.
-            try d.execute(sql: "UPDATE targets SET status = 'in_review', status_actor = 'agent' WHERE id = ?",
-                          arguments: [id])
-            try TargetQueries.updateStatus(d, id: Int(id), status: "done")
-
-            let history = try TargetQueries.statusHistory(d, targetID: id)
-            XCTAssertEqual(history.map(\.toStatus), ["todo", "in_review", "done"])
-            XCTAssertEqual(history.map(\.fromStatus), [nil, "todo", "in_review"])
-            XCTAssertEqual(history.map(\.actor), ["owner", "agent", "owner"])
-            XCTAssertNil(try String.fetchOne(d, sql: "SELECT status_actor FROM targets WHERE id = ?", arguments: [id]),
-                         "the claim is cleared by its own write")
-        }
-    }
-
     func testInReviewDecodesAsActiveWithProgressAndBoardRank() throws {
         try db.write { d in
             let p = try TestDatabase.insertWorkbench(d)
@@ -52,7 +34,7 @@ final class TargetStatusHistoryTests: XCTestCase {
         try db.write { d in
             let id = try TargetQueries.create(d, text: "personal", level: "day",
                                               periodStart: "2026-09-30", periodEnd: "2026-09-30")
-            XCTAssertThrowsError(try TargetQueries.updateStatus(d, id: id, status: "in_review"))
+            XCTAssertThrowsError(try d.execute(sql: "UPDATE targets SET status = 'in_review' WHERE id = ?", arguments: [id]))
             XCTAssertEqual(try TargetQueries.statusHistory(d, targetID: Int64(id)), [])
         }
     }

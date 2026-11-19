@@ -67,6 +67,19 @@ final class WorkchatWiringTests: XCTestCase {
         chat.disappeared()
     }
 
+    func testWorkchatFeedHasNoAgentRows() throws {
+        let marker = SessionChat.Entry(
+            id: "s1", kind: .subagent, text: "",
+            subagent: .init(agentID: "a", toolUseID: "t", type: "Explore", description: "Look", status: "running")
+        )
+        let chat = SessionChat(sessionID: 10, live: true, entries: [SessionChat.Entry(id: "o1", kind: .owner, text: "hi"), marker])
+        let replica = try snapshot()
+        let workchat = model(try session(10), replica, chat: chat)
+
+        XCTAssertEqual(workchat.entries.map(\.id), ["o1"])
+        XCTAssertEqual(workchat.agents.badge, .working(1))
+    }
+
     // MARK: - Header
 
     func testStateLineShowsTimerWhileWorking() throws {

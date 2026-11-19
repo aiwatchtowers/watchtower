@@ -34,6 +34,7 @@ final class EmbeddedChatWiringTests: XCTestCase {
     /// the same line in another embedded chat does.
     func testADecisionPrefixInAThreadWritesNoIdea() async throws {
         let factory = EmbeddedChatEngineFactory()
+        factory.chatWrites = .fake(pool)
         factory.dbPool = pool
         let knowledge = try XCTUnwrap(factory.knowledgeCenter)
         func stored(_ contextType: String, message: Int64) async {

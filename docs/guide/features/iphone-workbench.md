@@ -8,7 +8,7 @@ You leave your desk while an agent works through a target. On the phone you foll
 
 ## How it works
 
-The phone never gets terminal output. The Mac sends the session's dialog only while the screen is open, plus five minutes, and refreshes it every few seconds while the agent works. You see your lines, the agent's text, subagents and Watchtower's notes, never tool calls; the newest 300 entries, with **N earlier messages — open on the tower** above them.
+The phone never gets terminal output. The Mac sends the session's dialog only while the screen is open, plus five minutes, and refreshes it every few seconds while the agent works. You see your lines, the agent's text and Watchtower's notes, never tool calls; the newest 300 entries, with **N earlier messages — open on the tower** above them.
 
 A Claude Code session takes your line while it works and reads it at its next step. A Codex session takes your line when it is idle: while it works, the Mac holds the line and sends it once Codex stops (an older Mac shows no field for Codex: write to it on the Mac). If the Mac refuses a line, the line shows the Mac's reason, for example **The session is not running on your tower**. Writing needs **Type into sessions from this phone** and the Mac's **Allow…**; see [Let the phone do more](iphone.md#let-the-phone-do-more).
 
@@ -58,7 +58,7 @@ kind: tip
 since: 0.28.3
 -->
 
-Tap a session in **Now** or a workbench. The top shows the workbench, the title and one state line: a timer like **Working · 3:14** while the agent works, an age like **Needs approval · 1m** while it waits on you. Your lines sit on the right, the agent's text on the left. **Brief** opens what the session was told at start, and a subagent row opens that subagent's own chat, which is read-only.
+Tap a session in **Now** or a workbench. The top shows the workbench, the title and one state line: a timer like **Working · 3:14** while the agent works, an age like **Needs approval · 1m** while it waits on you. Your lines sit on the right, the agent's text on the left. **Brief** opens what the session was told at start. The agents button (**✓ N** once all finish) opens **Working** and **Done · N**; a row opens its read-only chat.
 
 Under it, once the turn is over, a card says what's next, even before the chat loads: a finished session's summary, PR and **Report**; after an error, **Continue** (sends "Continue") and **New session** on its target; a session no longer running, **New session**. The phone can't restart a session.
 

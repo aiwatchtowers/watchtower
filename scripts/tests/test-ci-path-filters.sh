@@ -124,7 +124,7 @@ fi
 # whose repo-shaped paths are test data, not reads of the repo: reviewmap
 # classifies diff paths; devpack looks for a path inside skill text; the
 # others build the same names in a temp folder or pass one as a flag value.
-GO_DATA_ONLY='^(internal/reviewmap/|internal/devpack/workbench_flow_skill_test\.go|internal/specreview/inputs_test\.go|internal/planusage/nocredentials_test\.go|cmd/(workbench_test|workbench_resync_test|memory_test)\.go)'
+GO_DATA_ONLY='^(internal/reviewmap/|internal/devpack/workbench_flow_skill_test\.go|internal/specreview/inputs_test\.go|internal/planusage/nocredentials_test\.go|internal/watchman/source_git_test\.go|cmd/(workbench_test|workbench_resync_test|memory_test)\.go)'
 { git grep -HE '"[^"]*Watchtower(Desktop|Kit|Mobile)|"(\.\./)*docs[/"]' -- '*_test.go' ':!docs/**' || true; } | grep -vE "$GO_DATA_ONLY" \
     | awk '{
         line = $0; sub(/^[^:]*:/, "", line)

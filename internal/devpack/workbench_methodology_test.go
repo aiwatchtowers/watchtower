@@ -119,7 +119,8 @@ func TestShippedCoreDigestsAreTheFixtures(t *testing.T) {
 		"watchtower-workbench-v14.md": v14CoreSHA256, "watchtower-workbench-v15.md": v15CoreSHA256,
 		"watchtower-workbench-v16.md": v16CoreSHA256, "watchtower-workbench-v17.md": v17CoreSHA256,
 		"watchtower-workbench-v18.md": v18CoreSHA256, "watchtower-workbench-v19.md": v19CoreSHA256,
-		"watchtower-workbench-v20.md": v20CoreSHA256, "watchtower-workbench-v21.md": v21CoreSHA256} {
+		"watchtower-workbench-v20.md": v20CoreSHA256, "watchtower-workbench-v21.md": v21CoreSHA256,
+		"watchtower-workbench-v22.md": v22CoreSHA256} {
 		b, err := os.ReadFile(filepath.Join("testdata", fixture))
 		require.NoError(t, err)
 		sum := sha256.Sum256(b)

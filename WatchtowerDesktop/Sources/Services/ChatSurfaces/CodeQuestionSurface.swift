@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import WatchtowerCore
+import WatchtowerInterface
 
 // MARK: - CodeQuestionSurface
 
@@ -61,22 +62,21 @@ enum CodeQuestionSurface {
         ModelChoice(provider: AIProvider.fromConfig(configProvider), model: "")
     }
 
-    /// A new conversation for one question, holding the owner's pick. The
-    /// write waits on the writer queue, never on the main thread (board #670).
+    /// A new conversation for one question, holding the owner's pick
+    /// (`chat.new` with the context and the pick, one Go transaction).
     static func createConversation(
-        workbenchID: Int64, origin: CodeQuestionOrigin, choice: ModelChoice, dbPool: DatabasePool
+        workbenchID: Int64, origin: CodeQuestionOrigin, choice: ModelChoice, writes: ChatWrites
     ) async throws -> Int64 {
         let title = "\(origin.path):\(origin.line)"
         let contextType = contextType
         let contextID = origin.contextID(workbenchID: workbenchID)
         let provider = choice.provider.rawValue
         let model = choice.model.isEmpty ? nil : choice.model
-        return try await dbPool.write { db in
-            let conversation = try ChatConversationQueries.create(
-                db, title: title, contextType: contextType, contextID: contextID)
-            try ChatConversationQueries.setProviderModel(db, id: conversation.id, provider: provider, model: model)
-            return conversation.id
+        let created: ChatNewResponse = try await writes.perform(.chatNew) {
+            ChatNewRequest(requestID: $0, routing: ChatModelPick(automatic: false, provider: provider, model: model),
+                           context: ChatContext(type: contextType, id: contextID, title: title))
         }
+        return created.conversationID
     }
 
     /// The conversation's pick; the default for a row that has none.
@@ -88,12 +88,11 @@ enum CodeQuestionSurface {
         return ModelChoice(provider: provider, model: row.model ?? "")
     }
 
-    static func setModelChoice(_ choice: ModelChoice, conversationID: Int64, dbPool: DatabasePool) async throws {
+    static func setModelChoice(_ choice: ModelChoice, conversationID: Int64, writes: ChatWrites) async throws {
         let provider = choice.provider.rawValue
         let model = choice.model.isEmpty ? nil : choice.model
-        try await dbPool.write { db in
-            try ChatConversationQueries.setProviderModel(db, id: conversationID, provider: provider, model: model)
-            guard db.changesCount > 0 else { throw ChatContextGoneError() }
+        let _: ChatDone = try await writes.perform(.chatSetModel) {
+            ChatSetModelRequest(requestID: $0, conversationID: conversationID, provider: provider, model: model)
         }
     }
 

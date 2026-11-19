@@ -41,6 +41,23 @@ final class ChatAgentActionTests: XCTestCase {
         XCTAssertTrue(fromOld.isPending)
     }
 
+    /// The chat feed's `dismissed_at` (mobile Inbox spec §12.9): a dismissed session call stops awaiting dismissal; a
+    /// payload or feed action without the field (an older engine) reads as not dismissed.
+    func testDismissedAtDecodesWithAndWithoutTheField() throws {
+        let unknown = ConnectorCallProposal.sessionEndedWhileRunning
+        let json = #"{"id": 4, "tool": "claude_ai_connector_call", "status": "failed", "error": "\#(unknown)""#
+        let decoder = ChatWireCoder.makeDecoder()
+        let dismissed = try decoder.decode(ChatApprovalPayload.self, from: Data((json + #", "dismissed_at": "2026-11-18T09:00:00Z"}"#).utf8))
+        XCTAssertEqual(dismissed.dismissedAt, "2026-11-18T09:00:00Z")
+        XCTAssertFalse(ConnectorCallProposal.awaitsDismissal(ChatAgentAction(payload: dismissed)))
+        let older = try decoder.decode(ChatApprovalPayload.self, from: Data((json + "}").utf8))
+        XCTAssertEqual(older.dismissedAt, "")
+        XCTAssertTrue(ConnectorCallProposal.awaitsDismissal(ChatAgentAction(payload: older)))
+        let feedAction = try decoder.decode(ChatFeed.Action.self, from: Data((json + #", "dismissed_at": "x"}"#).utf8))
+        XCTAssertEqual(ChatApprovalPayload(action: feedAction).dismissedAt, "x")
+        XCTAssertEqual(try decoder.decode(ChatFeed.Action.self, from: Data((json + "}").utf8)).dismissedAt, "")
+    }
+
     func testClippedArgsYieldNoEditableProposal() throws {
         let args = ##"{"text":"hi","target":{"account_id":1,"workspace":"Acme","channel_id":"CGEN","label":"#general"}}"##
         func action(complete: Bool) -> ChatAgentAction {

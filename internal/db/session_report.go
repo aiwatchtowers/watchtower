@@ -7,7 +7,7 @@ import (
 )
 
 // PRState is a workbench_pr_states row: the cached state of a PR or branch a
-// session report names, per workbench folder (00197). Go is its only reader
+// session report names, per workbench folder (00208). Go is its only reader
 // and writer.
 type PRState struct {
 	WorkbenchID int64
@@ -196,19 +196,30 @@ func sessionLinkedTargets(q interface {
 // time at (finish_session). A repeat call overwrites both, so the newest summary
 // wins; only a `working` state write clears finished_at again.
 func (db *DB) FinishTerminalSession(sessionID int64, summary string, at time.Time) error {
-	res, err := db.Exec(`UPDATE terminal_sessions SET finished_at = ?, finish_summary = ? WHERE id = ?`,
-		at.UTC().Format(agentStateAtLayout), summary, sessionID)
-	if err != nil {
-		return fmt.Errorf("finishing terminal session %d: %w", sessionID, err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("finishing terminal session %d: %w", sessionID, err)
-	}
-	if n == 0 {
-		return ErrTerminalSessionNotFound
-	}
-	return nil
+	_, err := db.FinishTerminalSessionSettling(sessionID, summary, at, 0)
+	return err
+}
+
+// FinishTerminalSessionSettling is FinishTerminalSession and, in the same
+// write transaction, the settling of the session's held Watchman handovers
+// (SettleWatchmanHandoversTx): the one of handoverAskID released, the rest
+// closed. A finish that fails leaves every hold as it was.
+func (db *DB) FinishTerminalSessionSettling(sessionID int64, summary string, at time.Time, handoverAskID int64) (released bool, err error) {
+	err = db.WithTx(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE terminal_sessions SET finished_at = ?, finish_summary = ? WHERE id = ?`,
+			at.UTC().Format(agentStateAtLayout), summary, sessionID)
+		if err != nil {
+			return fmt.Errorf("finishing terminal session %d: %w", sessionID, err)
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return fmt.Errorf("finishing terminal session %d: %w", sessionID, err)
+		} else if n == 0 {
+			return ErrTerminalSessionNotFound
+		}
+		released, err = db.SettleWatchmanHandoversTx(tx, sessionID, handoverAskID, at)
+		return err
+	})
+	return released, err
 }
 
 // UpsertPRState stores s, replacing the cached row of the same workbench,

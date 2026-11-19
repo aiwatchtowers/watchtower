@@ -271,7 +271,7 @@ func TestStartFailureLeavesNoRow(t *testing.T) {
 	assert.Equal(t, 1, w.rowCount(), "only the parent")
 }
 
-// A legacy bench whose only folder row migration 00197 marked removed (a
+// A legacy bench whose only folder row migration 00208 marked removed (a
 // case-insensitive duplicate) still starts in that fallback home, through
 // Begin and Finish alike.
 func TestALegacyBenchStartsInItsFallbackHome(t *testing.T) {

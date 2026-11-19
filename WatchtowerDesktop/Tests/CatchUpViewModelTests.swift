@@ -70,7 +70,7 @@ final class CatchUpViewModelTests: XCTestCase {
             return try Self.insertRecap(db, from: 2000, to: 3000)
         }
 
-        let vm = CatchUpViewModel(dbPool: pool)
+        let vm = CatchUpViewModel(dbPool: pool, tower: FakeScreenTower.applying(pool))
         vm.startObserving()
 
         // The selection lands a tick after the recaps.
@@ -104,7 +104,7 @@ final class CatchUpViewModelTests: XCTestCase {
         let clock = ManualClock(due.addingTimeInterval(-1))
         let held = HeldSleep()
         defer { held.releaseAll() }
-        let vm = CatchUpViewModel(dbPool: pool, now: { clock.now }, sleep: { await held.sleep($0) })
+        let vm = CatchUpViewModel(dbPool: pool, tower: FakeScreenTower.applying(pool), now: { clock.now }, sleep: { await held.sleep($0) })
         vm.startObserving()
         // The selection lands a tick after the recaps (and the recheck's request).
         await untilObserved { vm.recaps.count == 1 && vm.selected != nil }
@@ -142,7 +142,7 @@ final class CatchUpViewModelTests: XCTestCase {
         let clock = ManualClock(due.addingTimeInterval(1))
         let held = HeldSleep()
         defer { held.releaseAll() }
-        let vm = CatchUpViewModel(dbPool: pool, now: { clock.now }, sleep: { await held.sleep($0) })
+        let vm = CatchUpViewModel(dbPool: pool, tower: FakeScreenTower.applying(pool), now: { clock.now }, sleep: { await held.sleep($0) })
         vm.startObserving()
         await untilObserved { vm.selected != nil }
         XCTAssertEqual(vm.selected?.isFailed, true, "the observation reads the injected clock")
@@ -202,7 +202,7 @@ final class CatchUpViewModelTests: XCTestCase {
             return older
         }
 
-        let vm = CatchUpViewModel(dbPool: pool)
+        let vm = CatchUpViewModel(dbPool: pool, tower: FakeScreenTower.applying(pool))
         await vm.reload()
         vm.selected = vm.recaps.first { $0.id == older }
         XCTAssertEqual(vm.selected?.isAcknowledged, false)
@@ -233,7 +233,7 @@ final class CatchUpViewModelTests: XCTestCase {
             return older
         }
 
-        let vm = CatchUpViewModel(dbPool: pool)
+        let vm = CatchUpViewModel(dbPool: pool, tower: FakeScreenTower.applying(pool))
         await vm.reload()
         vm.selected = vm.recaps.first { $0.id == older }
         XCTAssertEqual(vm.selected?.id, older)
@@ -279,7 +279,7 @@ final class CatchUpViewModelTests: XCTestCase {
             _ = try Self.insertRecap(db, from: 2000, to: 3000)
             return older
         }
-        let vm = CatchUpViewModel(dbPool: pool)
+        let vm = CatchUpViewModel(dbPool: pool, tower: FakeScreenTower.applying(pool))
         await vm.reload()
         vm.selected = vm.recaps.first { $0.id == older }
 
@@ -340,7 +340,7 @@ final class CatchUpViewModelTests: XCTestCase {
             return try Self.insertDigest(db, periodTo: 1500)
         }
 
-        let vm = CatchUpViewModel(dbPool: pool)
+        let vm = CatchUpViewModel(dbPool: pool, tower: FakeScreenTower.applying(pool))
         vm.startObserving()
         await untilObserved { vm.selected != nil }
 
@@ -366,7 +366,7 @@ final class CatchUpViewModelTests: XCTestCase {
             _ = try Self.insertRecap(db, from: 1000, to: 2000)
         }
 
-        let vm = CatchUpViewModel(dbPool: pool)
+        let vm = CatchUpViewModel(dbPool: pool, tower: FakeScreenTower.applying(pool))
         let notified = NotificationCounter()
         vm.onRecapsChanged = { await notified.record() }
         vm.startObserving()
@@ -393,7 +393,7 @@ final class CatchUpViewModelTests: XCTestCase {
             _ = try Self.insertRecap(db, from: 1000, to: 2000)
         }
 
-        let vm = CatchUpViewModel(dbPool: pool)
+        let vm = CatchUpViewModel(dbPool: pool, tower: FakeScreenTower.applying(pool))
         vm.startObserving()
         await untilObserved { vm.selected != nil }
         XCTAssertNil(vm.autoWindowStart, "nothing acknowledged yet — the caption has no start")

@@ -4,11 +4,13 @@ import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
 @testable import WatchtowerCore
+import WatchtowerInterface
 import WatchtowerTestSupport
 
 /// The approval card of an Inbox target button's proposal (Inbox builder A,
-/// spec "A proposal stuck in approved or executing"): the stuck rule and
-/// Try again apply there as on the button, on the same row.
+/// spec "A proposal stuck in approved or executing"): the stuck state (Go's
+/// `Approval.target`, turned stuck by the Mac's clock past `target_until`)
+/// and Try again apply there as on the button, on the same row.
 @MainActor
 final class AgentActionCardStuckTargetTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -24,12 +26,19 @@ final class AgentActionCardStuckTargetTests: XCTestCase {
         }
     }
 
+    /// The card as the feed draws it: Go's target state of the row, which
+    /// is creating until `decided_at` + 2 min (`target_until`), then stuck.
     private func card(_ action: AgentAction, inFlight: Bool = false, onRetry: @escaping () -> Void = {})
         -> MacAgentActionCard {
-        let facts = InboxTargetButtonFacts(proposal: .init(action), inFlight: inFlight)
+        let decided = ISO8601DateFormatter().date(from: action.decidedAt) ?? now
+        let until = decided.addingTimeInterval(120)
+        var approval = TestInboxFeeds.approval(title: "Create task", target: until > now ? "creating" : "stuck")
+        approval.targetUntil = until > now ? ISO8601DateFormatter().string(from: until) : ""
+        var button = InboxTargetButton(approval: approval)
+        button?.inFlight = inFlight
         return MacAgentActionCard(
             action: action, inFlight: inFlight, onApprove: {}, onReject: {}, onRetry: onRetry,
-            targetButtonState: TargetButtonStateResolver.state(facts, now: now))
+            targetButtonState: button.map { TargetButtonStateResolver.state($0, now: now) })
     }
 
     func testApprovalCard_StuckTargetProposalTryAgain() throws {

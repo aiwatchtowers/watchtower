@@ -1,10 +1,13 @@
 import Foundation
 import GRDB
 import WatchtowerCore
+import WatchtowerInterface
 
 /// Owns `AppState.embeddedChatCenter` and builds the engines it hands out: a
-/// database chat writes through the pool opened at launch, a memory chat
-/// keeps its rows in the engine; every turn goes through `watchtower ai query`.
+/// database chat reads the pool opened at launch and its turns save
+/// themselves (`ai query --persist`, the Mac's own writes through
+/// `chatWrites`), a memory chat keeps its rows in the engine; every turn goes
+/// through `watchtower ai query`.
 @MainActor
 final class EmbeddedChatEngineFactory {
     /// Set once the database opens. A database chat is only ever requested
@@ -14,11 +17,19 @@ final class EmbeddedChatEngineFactory {
         get { pool.value }
         set {
             pool.value = newValue
-            draftMirror.writer = newValue
+            draftMirror.reader = newValue
             remember.center = newValue.flatMap { pool in
                 ProcessCLIRunner.makeDefault().map { RememberCenter(cli: WorkbenchCLI(runner: $0), dbPool: pool) }
             }
-            remember.knowledge = newValue.map { ChatKnowledgeCenter(dbPool: $0) }
+            remember.knowledge = newValue.map { [pool] in ChatKnowledgeCenter(dbPool: $0) { pool.writes?.tower } }
+        }
+    }
+    /// The chat writes (the tower); set with `dbPool`.
+    var chatWrites: ChatWrites? {
+        get { pool.writes }
+        set {
+            pool.writes = newValue
+            draftMirror.writes = newValue
         }
     }
     /// Remember in place for every chat that carries the owner's
@@ -29,11 +40,6 @@ final class EmbeddedChatEngineFactory {
     /// database opens.
     var knowledgeCenter: ChatKnowledgeCenter? { remember.knowledge }
 
-    /// A stored owner message of a chat with the owner's instructions: each
-    /// center acts on its own prefix only (remember, or a knowledge prefix).
-    func ownerMessageStored(text: String, conversationID: Int64, messageID: Int64) {
-        remember.ownerMessageStored(text: text, conversationID: conversationID, messageID: messageID, savesKnowledge: true)
-    }
     private let remember: RememberBox
     let center: EmbeddedChatCenter
     private let pool: PoolBox
@@ -63,8 +69,8 @@ final class EmbeddedChatEngineFactory {
         case .memory:
             store = MemoryEmbeddedChatStore()
         case .database(let conversationID):
-            if let dbPool = pool.value {
-                store = DatabaseEmbeddedChatStore(dbPool: dbPool, conversationID: conversationID)
+            if let dbPool = pool.value, let writes = pool.writes {
+                store = DatabaseEmbeddedChatStore(dbPool: dbPool, writes: writes, conversationID: conversationID)
             } else {
                 // Unreachable while ids come from this pool; if it ever is
                 // not, the chat shows an error instead of crashing the app.
@@ -112,6 +118,7 @@ final class EmbeddedChatEngineFactory {
     @MainActor
     private final class PoolBox {
         var value: DatabasePool?
+        var writes: ChatWrites?
     }
 }
 
@@ -119,18 +126,22 @@ final class EmbeddedChatEngineFactory {
 /// so an app quit before its turn starts brings it back as an unsent draft
 /// (CHAT-01). `restore` is synchronous: it answers from what this process saved
 /// or cleared, else reads the row. A message queued before the database opens
-/// stays in memory and is written once `writer` is set; setting it also moves
-/// the legacy `embeddedChat.queuedDraft.*` defaults into the table.
+/// stays in memory and is written once `writes` is set; setting it also moves
+/// the legacy `embeddedChat.queuedDraft.*` defaults into the table. The
+/// writes are `chat.draft.save` / `chat.draft.clear`, one after another.
 @MainActor
 final class DatabaseDraftMirror: EmbeddedDraftMirror {
     /// Set once the database opens.
-    var writer: (any DatabaseWriter)? {
-        didSet { if oldValue == nil, writer != nil { flushOnOpen() } }
+    var reader: (any DatabaseReader)?
+    /// Set once the database opens (with `reader`).
+    var writes: ChatWrites? {
+        didSet { if oldValue == nil, writes != nil { flushOnOpen() } }
     }
     private let defaults: UserDefaults
     static let legacyPrefix = "embeddedChat.queuedDraft."
     /// What this process saved (text) or cleared (nil), by surface key.
     private var known: [String: String?] = [:]
+    private let chain = SerialWrites()
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -148,18 +159,23 @@ final class DatabaseDraftMirror: EmbeddedDraftMirror {
 
     func restore(for key: EmbeddedChatKey) -> String? {
         if let value = known[key.description] { return value }
-        guard let writer else { return nil }
+        guard let reader else { return nil }
         do {
-            return try writer.read { try QueuedDraftQueries.text($0, key: key.description) }
+            return try reader.read { try QueuedDraftQueries.text($0, key: key.description) }
         } catch {
             NSLog("DatabaseDraftMirror: reading a queued draft failed: %@", error.localizedDescription)
             return nil
         }
     }
 
+    /// Returns once every write asked for so far has landed (tests).
+    func writesSettled() async {
+        await chain.idle()
+    }
+
     /// Writes what was queued before the database opened, then the legacy
     /// defaults no write of this process superseded; the defaults go once the
-    /// write commits, so a failed write keeps them for the next launch.
+    /// writes land, so a failed write keeps them for the next launch.
     private func flushOnOpen() {
         var changes = known
         var legacyKeys: [String] = []
@@ -178,32 +194,30 @@ final class DatabaseDraftMirror: EmbeddedDraftMirror {
         }
     }
 
-    /// One ordered write (GRDB runs async writes in call order, so a save and
-    /// a later clear land in that order); nothing before the database opens.
-    private func write(_ changes: [String: String?], completion: (@Sendable (Bool) -> Void)? = nil) {
-        guard let writer, !changes.isEmpty else { return }
-        let now = Date()
-        writer.asyncWrite({ db in
+    /// The changes in order, after every earlier one (a save and a later
+    /// clear land in that order); nothing before the database opens.
+    private func write(_ changes: [String: String?], completion: (@MainActor (Bool) -> Void)? = nil) {
+        guard let writes, !changes.isEmpty else { return }
+        chain.start {
+            var succeeded = true
             for (key, text) in changes {
-                if let text {
-                    try QueuedDraftQueries.save(db, key: key, text: text, at: now)
-                } else {
-                    try QueuedDraftQueries.clear(db, key: key)
+                do {
+                    if let text {
+                        let _: ChatDone = try await writes.perform(.chatDraftSave) {
+                            ChatDraftSaveRequest(requestID: $0, surfaceKey: key, text: text)
+                        }
+                    } else {
+                        let _: ChatDone = try await writes.perform(.chatDraftClear) {
+                            ChatDraftClearRequest(requestID: $0, surfaceKey: key)
+                        }
+                    }
+                } catch {
+                    succeeded = false
+                    NSLog("DatabaseDraftMirror: writing a queued draft failed: %@", error.localizedDescription)
                 }
             }
-        }, completion: { _, result in
-            if case .failure(let error) = result {
-                NSLog("DatabaseDraftMirror: writing a queued draft failed: %@", error.localizedDescription)
-            }
-            completion?(result.isSuccess)
-        })
-    }
-}
-
-private extension Result {
-    var isSuccess: Bool {
-        if case .success = self { return true }
-        return false
+            completion?(succeeded)
+        }
     }
 }
 

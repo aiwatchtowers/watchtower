@@ -393,8 +393,15 @@ func (db *DB) MarkAutomationsRemovedIn(scope string, projectID int64, dirs []str
 // on sets last_scheduled_for = now, so the scheduler never back-fills the
 // ticks it missed while off; enabling an enabled row keeps its schedule point.
 func (db *DB) SetAutomationEnabled(id int64, enabled bool, now time.Time) error {
+	return db.WithTx(func(tx *sql.Tx) error { return SetAutomationEnabledTx(tx, id, enabled, now) })
+}
+
+// SetAutomationEnabledTx is SetAutomationEnabled in the caller's transaction
+// (inbox.act's Stop watching and Restore of a track bound to a watch recipe;
+// trg_automations_enabled_watch_track mirrors tracks.enabled).
+func SetAutomationEnabledTx(tx *sql.Tx, id int64, enabled bool, now time.Time) error {
 	stamp := formatAutomationTime(now)
-	res, err := db.Exec(`UPDATE automations SET
+	res, err := tx.Exec(`UPDATE automations SET
 		last_scheduled_for = CASE WHEN ? AND enabled = 0 THEN ? ELSE last_scheduled_for END,
 		enabled = ?, disabled_reason = '', disabled_at = NULL, updated_at = ?
 		WHERE id = ?`, enabled, stamp, enabled, stamp, id)

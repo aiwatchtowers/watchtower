@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 import os
 import WatchtowerCore
+import WatchtowerInterface
 
 /// Drives the target's "Watch" tab: the watches linked to the target, the
 /// origin track it was promoted from (if any), and the merged activity feed
@@ -22,6 +23,8 @@ final class TargetWatchesViewModel {
     /// A bound watch's scan goes through the custom-track seam (its recipe);
     /// nil, or an unbound watch, runs `tracks scan` through `scanService`.
     private let trackControls: (any CustomTrackControlling)?
+    /// Where the watch and event writes go (nil: they fail with the daemon's sentence).
+    private let tower: (any TowerSending)?
 
     var watches: [Track] = []
     var originTrack: Track?
@@ -36,8 +39,10 @@ final class TargetWatchesViewModel {
          scanService: TrackScanService,
          actionRunner: any CLIRunnerProtocol,
          scanCenter: TrackScanCenter,
-         trackControls: (any CustomTrackControlling)? = nil) {
+         trackControls: (any CustomTrackControlling)? = nil,
+         tower: (any TowerSending)? = nil) {
         self.target = target
+        self.tower = tower
         self.dbPool = dbManager.dbPool
         self.scanService = scanService
         self.trackControls = trackControls
@@ -196,29 +201,33 @@ final class TargetWatchesViewModel {
         }
     }
 
+    // The watch and event writes are `tracks.*` tower commands (#1170 Task
+    // 12): Go writes them, in this view model's chain, and the tab re-reads
+    // after the answer — the observations never see another process's write.
+
     private func dismissNow(_ event: TrackEvent) async {
         errorMessage = nil
         do {
-            try await chained { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "dismissed") }
-        } catch { reportWriteFailure("dismiss", error) }
-    }
-
-    /// The observations never see another process's delete, so a write that
-    /// found its row gone re-reads the watches and the feed first — the stale
-    /// row would otherwise stay and fail again on every retry.
-    private func reportWriteFailure(_ what: String, _ error: Error) {
-        if error is RowNotFoundError {
-            refreshEvents()
-            if let rows = try? dbPool.read({ db in try TrackQueries.fetchByLinkedTarget(db, targetID: target.id) }) {
-                watches = rows
+            let id = Int64(event.id)
+            let _: ActResult = try await send(.tracksEventStatus) {
+                TrackEventStatusRequest(requestID: $0, eventID: id, status: "dismissed")
             }
-        }
-        errorMessage = "Failed to \(what): \(error.localizedDescription)"
+        } catch { errorMessage = Self.failure("Failed to dismiss", error) }
+        refreshEvents()
     }
 
+    /// Opening an unread event marks it read; a failure is logged, never shown.
     func markRead(_ event: TrackEvent) async {
         guard event.isUnread else { return }
-        try? await chained { db in try TrackEventQueries.markRead(db, id: event.id) }
+        let (track, id) = (Int64(event.trackId), Int64(event.id))
+        do {
+            let _: ActResult = try await send(.tracksEventsRead) {
+                TrackEventsReadRequest(requestID: $0, trackID: track, eventID: id)
+            }
+            refreshEvents()
+        } catch {
+            Self.log.error("marking event \(id) read: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: - Watch management
@@ -226,19 +235,38 @@ final class TargetWatchesViewModel {
     func setCollecting(_ watch: Track, _ on: Bool) async {
         errorMessage = nil
         do {
-            try await chained { db in try TrackQueries.setEnabled(db, id: watch.id, enabled: on) }
+            let id = Int64(watch.id)
+            let _: ActResult = try await send(.tracksEnabled) { TrackEnabledRequest(requestID: $0, id: id, enabled: on) }
         } catch {
-            reportWriteFailure("update the watch", error)
+            errorMessage = Self.failure("Failed to update the watch", error)
         }
+        refreshWatches()
     }
 
     func deleteWatch(_ watch: Track) async {
-        try? await chained { db in try TrackQueries.delete(db, id: watch.id) }
+        let id = Int64(watch.id)
+        do {
+            let _: ActResult = try await send(.tracksDelete) { ScreenIDRequest(requestID: $0, id: id) }
+        } catch {
+            errorMessage = Self.failure("Failed to delete the watch", error)
+        }
+        refreshWatches()
+        refreshEvents()
     }
 
-    /// A database write in this view model's chain (board #670): it starts
-    /// only once every write asked for before it finished.
-    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
-        try await writes.runThrowing { try await self.dbPool.write(body) }
+    /// A failed watch or event write as the tab shows it: the tower's own
+    /// sentence as is (Go already says what failed, so no second prefix),
+    /// any other error under `prefix`.
+    static func failure(_ prefix: String, _ error: Error) -> String {
+        if let tower = error as? TowerWriteError { return tower.sentence }
+        return "\(prefix): \(error.localizedDescription)"
+    }
+
+    /// One write in this view model's chain (board #670), through the tower.
+    private func send<Resp: Decodable & Sendable, Params: Encodable & Sendable>(
+        _ command: TowerCommand, _ params: @escaping (String) -> Params
+    ) async throws -> Resp {
+        guard let tower else { throw TowerWriteError(TowerText.daemonDown) }
+        return try await writes.runThrowing { try await tower.perform(command, params) }
     }
 }

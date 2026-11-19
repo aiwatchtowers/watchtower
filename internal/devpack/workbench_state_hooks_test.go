@@ -125,11 +125,12 @@ func TestInstallWorkbenchInstallsTheStateHooks(t *testing.T) {
 	for _, event := range stateEvents {
 		assertOneAsyncStateEntry(t, event, eventGroups(t, m, event), cmd)
 	}
-	// PreToolUse holds the ask tool block's AskUserQuestion group and our
-	// "*" state group side by side.
+	// PreToolUse holds the ask tool block's AskUserQuestion group, our "*"
+	// state group and the Watchman guard's "*" group side by side.
 	preToolUse := eventGroups(t, m, "PreToolUse")
 	assertToolStartEntry(t, preToolUse, cmd)
-	if len(preToolUse) != 2 || countCommand(preToolUse, WorkbenchAskGuardHookCommand(o.Bin, 7)) != 1 {
+	if len(preToolUse) != 3 || countCommand(preToolUse, WorkbenchAskGuardHookCommand(o.Bin, 7)) != 1 ||
+		countCommand(preToolUse, watchmanGuardSpec.command(o.Bin, 7)) != 1 {
 		t.Fatalf("PreToolUse must hold the ask tool block and the state entry: %#v", preToolUse)
 	}
 	// Stop keeps its one synchronous drift entry, next to the ask guard's
@@ -397,9 +398,10 @@ func TestInstallStateHooksRepairsASixHookFolder(t *testing.T) {
 	if full, err := HasStateHooks(folder, 7); err != nil || full {
 		t.Fatalf("the six-hook folder reads complete: %v err=%v", full, err)
 	}
+	// The Watchman guard's "*" group (installed with the ask guard) follows.
 	beforePre := eventGroups(t, decodeSettings(t, folder), "PreToolUse")
-	if len(beforePre) != 1 || beforePre[0].(map[string]any)["matcher"] != "AskUserQuestion" {
-		t.Fatalf("expected the ask block's group alone: %#v", beforePre)
+	if len(beforePre) != 2 || beforePre[0].(map[string]any)["matcher"] != "AskUserQuestion" {
+		t.Fatalf("expected the ask block's group first and the Watchman guard's: %#v", beforePre)
 	}
 
 	changed, err := InstallStateHooks(folder, o.Bin, 7)
@@ -410,7 +412,7 @@ func TestInstallStateHooksRepairsASixHookFolder(t *testing.T) {
 	m := decodeSettings(t, folder)
 	assertOneAsyncStateEntry(t, "PostToolUseFailure", eventGroups(t, m, "PostToolUseFailure"), cmd)
 	pre := eventGroups(t, m, "PreToolUse")
-	if len(pre) != 2 || !reflect.DeepEqual(pre[0], beforePre[0]) {
+	if len(pre) != 3 || !reflect.DeepEqual(pre[0], beforePre[0]) {
 		t.Fatalf("the ask block's group must stay first and as it was: %#v", pre)
 	}
 	assertToolStartEntry(t, pre, cmd)

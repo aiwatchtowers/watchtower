@@ -36,7 +36,7 @@ func TestSyncDaemon_GoHubStartsOnlyInATestWorkspace(t *testing.T) {
 	logger := log.New(&buf, "", 0)
 
 	t.Setenv(hub.EnvTestWorkspace, "acme")
-	startGoHub(context.Background(), &config.Config{ActiveWorkspace: "acme"}, nil, nil, logger)()
+	startGoHub(context.Background(), &config.Config{ActiveWorkspace: "acme"}, nil, nil, nil, logger)()
 	assert.Contains(t, buf.String(), "hub: off (not_test_workspace)")
 	_, err = os.Stat(dir)
 	assert.True(t, errors.Is(err, fs.ErrNotExist), "a refused hub creates nothing")
@@ -46,7 +46,7 @@ func TestSyncDaemon_GoHubStartsOnlyInATestWorkspace(t *testing.T) {
 	t.Setenv(hub.EnvHubDir, "")
 	t.Setenv("HOME", base)
 	setGoHubProbe(t, hostkind.Probe{GOOS: "linux", Stat: os.Stat, ReadFile: os.ReadFile})
-	startGoHub(context.Background(), &config.Config{ActiveWorkspace: "hubtest-a"}, nil, nil, logger)()
+	startGoHub(context.Background(), &config.Config{ActiveWorkspace: "hubtest-a"}, nil, nil, nil, logger)()
 	assert.Contains(t, buf.String(), "hub: off (disabled)")
 	live, err := hub.DefaultDir()
 	require.NoError(t, err)
@@ -56,7 +56,7 @@ func TestSyncDaemon_GoHubStartsOnlyInATestWorkspace(t *testing.T) {
 	buf.Reset()
 	t.Setenv(hub.EnvHubDir, dir)
 	t.Setenv(hub.EnvTestWorkspace, "hubtest-a")
-	stop := startGoHub(context.Background(), &config.Config{ActiveWorkspace: "hubtest-a"}, nil, nil, logger)
+	stop := startGoHub(context.Background(), &config.Config{ActiveWorkspace: "hubtest-a"}, nil, nil, nil, logger)
 	assert.Contains(t, buf.String(), "hub: started (test workspace)")
 	waitFor(t, "the hub reports off/disabled", func() bool {
 		s, err := hub.ReadStatus(dir)
@@ -111,7 +111,7 @@ func TestSyncDaemon_GoHubLiveHeadlessAndDesktopWaitsForAdoption(t *testing.T) {
 		}
 		return nil, fs.ErrNotExist
 	}})
-	stopDesktop := startGoHub(context.Background(), &config.Config{}, nil, nil, logger)
+	stopDesktop := startGoHub(context.Background(), &config.Config{}, nil, nil, nil, logger)
 	assert.Contains(t, buf.String(), "hub: held off (live, desktop, swift_beside_go)")
 	waitFor(t, "the desktop hub reports swift_beside_go", func() bool {
 		s, err := hub.ReadStatus(live)
@@ -125,7 +125,7 @@ func TestSyncDaemon_GoHubLiveHeadlessAndDesktopWaitsForAdoption(t *testing.T) {
 	require.NoError(t, os.RemoveAll(mobile))
 	buf.Reset()
 	setGoHubProbe(t, hostkind.Probe{GOOS: "linux", Stat: os.Stat, ReadFile: os.ReadFile})
-	stop := startGoHub(context.Background(), &config.Config{}, nil, nil, logger)
+	stop := startGoHub(context.Background(), &config.Config{}, nil, nil, nil, logger)
 	assert.Contains(t, buf.String(), "hub: started (live, headless)")
 	waitFor(t, "the live hub reports starting", func() bool {
 		s, err := hub.ReadStatus(live)

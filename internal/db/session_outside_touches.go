@@ -8,7 +8,7 @@ import (
 )
 
 // CountOutsideTouch counts one more tool call of session sessionID inside
-// repoRoot, a repository outside its workbench's folders (00197, the folder
+// repoRoot, a repository outside its workbench's folders (00208, the folder
 // suggestion hook), in one autocommit upsert, and returns the new count,
 // whether the agent was already nudged about it and whether the owner
 // quieted it (Not Now).

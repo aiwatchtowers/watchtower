@@ -23,6 +23,16 @@ public struct ChatComposerFieldConfig {
     public var focusRequest: UUID?
     /// Send is off whatever the field holds (the chat cannot be reached, or it is gone); the text stays.
     public var sendBlocked = false
+    /// The round button is Send whenever there is something to send, even while the agent works (Stop only with
+    /// nothing to send): the Workchat, whose agent takes a line mid-turn. false: Stop while streaming (the AI chat).
+    public var sendWhileStreaming = false
+    /// A pasted image or long text goes into the field as a token (`[Image #1]`, `[Pasted text #2 +42 lines]`,
+    /// `ComposerPasteRoute`) through `onInlinePaste`: the Workchat. false: a chip and the "Attach as file" offer
+    /// (the AI chat). A dropped or picked file is a chip either way.
+    public var inlinePastes = false
+    /// The kind of each token number that has a payload (`inlinePastes`): one Backspace removes such a token of that
+    /// kind whole.
+    public var livePastes: [Int: PasteKind] = [:]
 
     public init(
         placeholder: String,
@@ -33,7 +43,10 @@ public struct ChatComposerFieldConfig {
         hasPendingContent: Bool = false,
         autoFocus: Bool = false,
         focusRequest: UUID? = nil,
-        sendBlocked: Bool = false
+        sendBlocked: Bool = false,
+        sendWhileStreaming: Bool = false,
+        inlinePastes: Bool = false,
+        livePastes: [Int: PasteKind] = [:]
     ) {
         self.placeholder = placeholder
         self.maxHeight = maxHeight
@@ -44,6 +57,9 @@ public struct ChatComposerFieldConfig {
         self.autoFocus = autoFocus
         self.focusRequest = focusRequest
         self.sendBlocked = sendBlocked
+        self.sendWhileStreaming = sendWhileStreaming
+        self.inlinePastes = inlinePastes
+        self.livePastes = livePastes
     }
 }
 
@@ -63,10 +79,18 @@ public struct ChatComposerField: View {
     var attachmentError: String?
     var onAttachFiles: (([URL]) -> Void)?
     var onPasteData: ((Data, String) async -> Bool)?
+    /// `inlinePastes`: keeps a pasted image or long text and returns the token to insert at the paste; nil inserts
+    /// nothing (the paste was not taken, and the owner's model says why).
+    var onInlinePaste: ((InlinePaste) async -> String?)?
+    /// A token `onInlinePaste` returned that the field could not insert: the owner lets its payload go.
+    var onInlinePasteDropped: ((String) -> Void)?
     var onRemoveAttachment: ((Int64) -> Void)?
     var onRetryAttachment: ((Int64) -> Void)?
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
+    /// ⌥↓ in the Mac's field (the Workchat steps list), asked when the key goes down: true = handled; false or
+    /// nil = the key does what it always did.
+    var onOptionArrowDown: (() -> Bool)?
     /// The phone's paperclip: opens its attachment menu (the files come back through the shell, not `onAttachFiles`).
     var onAttachMenu: (() -> Void)?
 
@@ -95,7 +119,10 @@ public struct ChatComposerField: View {
         onRemoveAttachment: ((Int64) -> Void)? = nil,
         onRetryAttachment: ((Int64) -> Void)? = nil,
         onCursorChange: ((String, Int) -> Void)? = nil,
-        onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)? = nil
+        onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)? = nil,
+        onInlinePaste: ((InlinePaste) async -> String?)? = nil,
+        onInlinePasteDropped: ((String) -> Void)? = nil,
+        onOptionArrowDown: (() -> Bool)? = nil
     ) {
         _text = text
         self.isStreaming = isStreaming
@@ -113,6 +140,9 @@ public struct ChatComposerField: View {
         self.onRetryAttachment = onRetryAttachment
         self.onCursorChange = onCursorChange
         self.onPickerKey = onPickerKey
+        self.onInlinePaste = onInlinePaste
+        self.onInlinePasteDropped = onInlinePasteDropped
+        self.onOptionArrowDown = onOptionArrowDown
     }
 
     /// The same field whose paperclip opens the shell's own attachment menu (the phone).
@@ -170,12 +200,11 @@ public struct ChatComposerField: View {
                 ComposerAttachButton(help: attachHelp, action: onAttachMenu)
             }
             dictated(style.composerFieldBackground(AnyView(input)))
-            style.sendStopButton(isStreaming: isStreaming, active: buttonActive) {
-                if isStreaming {
-                    onStop?()
-                } else {
-                    onSend()
-                }
+            switch buttonMode {
+            case .sendButton(let active):
+                style.sendStopButton(isStreaming: false, active: active, action: onSend)
+            case .stopButton(let active):
+                style.sendStopButton(isStreaming: true, active: active) { onStop?() }
             }
         }
         .padding(.horizontal, ComposerMetrics.rowInset)
@@ -193,8 +222,12 @@ public struct ChatComposerField: View {
             onPasteData: pastableData,
             onAttachFiles: attachableFiles,
             onLongTextPaste: { longPaste = $0 },
+            onInlinePaste: config.inlinePastes ? onInlinePaste : nil,
+            onInlinePasteDropped: onInlinePasteDropped,
+            livePastes: config.livePastes,
             onCursorChange: onCursorChange,
             onPickerKey: onPickerKey,
+            onOptionArrowDown: onOptionArrowDown,
             autoFocus: config.autoFocus,
             focusRequest: config.focusRequest,
             onSubmit: submit
@@ -275,7 +308,8 @@ public struct ChatComposerField: View {
             || config.hasPendingContent
     }
 
-    private var buttonActive: Bool {
-        isStreaming ? onStop != nil : canSend
+    private var buttonMode: ComposerButtonMode {
+        ComposerButtonMode.resolve(isStreaming: isStreaming, sendWhileStreaming: config.sendWhileStreaming,
+                                   canSend: canSend, canStop: onStop != nil)
     }
 }

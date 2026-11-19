@@ -7,13 +7,13 @@ import WatchtowerCore
 
 /// Workchat's feed on ChatUI (unified chat spec §9.2), shared by the pane and the subagent view: the owner's lines and
 /// the agent's text are ChatUI's rows (`WorkchatFeedAdapter`), with their time and "via Watchtower" as the caption;
-/// the `system` lines — Watchtower's own, the brief, notices, separators and subagent cards — are `SessionChatRow`.
+/// the `system` lines — Watchtower's own, the brief, notices and separators — are `SessionChatRow`. Subagent markers
+/// draw nothing here (#2065): they live in the live line's 👥 list.
 @MainActor
 struct WorkchatFeed {
     let entries: [SessionFeedEntry]
     let markdown: SessionFeedMarkdownCache
     let expandedEvents: Set<String>
-    let onOpenSubagent: (SessionFeedSubagent) -> Void
     let onToggle: (String) -> Void
     /// Sends a question card's answers as the owner's next line; nil (a subagent's run, a finished session) shows the
     /// card read-only.
@@ -72,13 +72,14 @@ struct WorkchatFeed {
                 })
             }
         }
-        let (markdown, expanded, open, toggle) = (markdown, expandedEvents, onOpenSubagent, onToggle)
+        let (markdown, expanded, toggle) = (markdown, expandedEvents, onToggle)
         context.systemRow = { message in
             guard let entry = byID[message.id] else { return AnyView(EmptyView()) }
             return AnyView(
-                SessionChatRow(entry: entry, blocks: markdown.blocks(for: entry), expanded: expanded.contains(entry.id),
-                               onOpenSubagent: { entry.subagent.map(open) }, onToggle: { toggle(entry.id) })
-                    .equatable()
+                SessionChatRow(entry: entry, blocks: markdown.blocks(for: entry), expanded: expanded.contains(entry.id)) {
+                    toggle(entry.id)
+                }
+                .equatable()
             )
         }
         return context
@@ -86,7 +87,7 @@ struct WorkchatFeed {
 }
 
 /// A `system` line of the session chat (Watchtower's own line, the brief, a
-/// notice, a separator, a subagent card). `Equatable` on its data only +
+/// notice, a separator). `Equatable` on its data only +
 /// `.equatable()` at the call site: an unchanged row never re-renders its
 /// markdown. The closures are rebuilt per render and stay out of `==`.
 struct SessionChatRow: View, Equatable {
@@ -95,7 +96,6 @@ struct SessionChatRow: View, Equatable {
     let blocks: [MarkdownBlock]
     /// An event's body is shown (events only).
     var expanded = false
-    var onOpenSubagent: (() -> Void)?
     var onToggle: (() -> Void)?
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -127,10 +127,6 @@ struct SessionChatRow: View, Equatable {
                 Rectangle().fill(.quaternary).frame(height: 1)
                 Text("New conversation").font(.caption).foregroundStyle(.secondary)
                 Rectangle().fill(.quaternary).frame(height: 1)
-            }
-        case "subagent":
-            if let subagent = entry.subagent {
-                subagentCard(subagent)
             }
         case "peer":
             if let bubble = PeerBubblePresentation.bubble(for: entry) {
@@ -187,31 +183,6 @@ struct SessionChatRow: View, Equatable {
                 .foregroundStyle(.tertiary)
             }
         }
-    }
-
-    private func subagentCard(_ subagent: SessionFeedSubagent) -> some View {
-        Button {
-            onOpenSubagent?()
-        } label: {
-            HStack(spacing: Spacing.regular) {
-                Image(systemName: "person.2").foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: Spacing.tight) {
-                    Text(subagent.type.isEmpty ? "Subagent" : subagent.type).font(.callout.weight(.semibold))
-                    if !subagent.description.isEmpty {
-                        Text(subagent.description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                    }
-                }
-                Spacer(minLength: 4)
-                Text(subagent.status == "running" ? "Running" : subagent.status == "finished" ? "Finished" : "")
-                    .font(.caption).foregroundStyle(.secondary)
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-            }
-            .padding(Spacing.cozy)
-            .card()
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: 420, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

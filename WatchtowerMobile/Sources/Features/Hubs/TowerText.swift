@@ -226,6 +226,17 @@ enum ChatText {
     /// Mockup 2c without the `permissions` grant.
     static func approveElsewhere(_ host: TowerHost) -> String { host == .mac ? "Approve on the Mac" : "Approve on your tower" }
 
+    /// A failed action's Retry without the `permissions` grant or on an older hub (mobile Inbox spec §12.9).
+    static func retryElsewhere(_ host: TowerHost) -> String { host == .mac ? "Retry on the Mac" : "Retry on your tower" }
+
+    /// An unknown-outcome call's Dismiss without the grant or on an older hub (§12.9).
+    static func dismissElsewhere(_ host: TowerHost) -> String { host == .mac ? "Dismiss on the Mac" : "Dismiss on your tower" }
+
+    /// A Retry or Dismiss whose hub stopped mid-way (`outcome_unknown`): never sent again (§12.9).
+    static func didntConfirm(_ host: TowerHost) -> String {
+        host == .mac ? "Didn't confirm — check on the Mac." : "Didn't confirm — check on your tower."
+    }
+
     /// An artifact the feed cap cut (spec §4.6).
     static func openToSeeAll(_ host: TowerHost) -> String {
         host == .mac ? "Too long for the phone. Open it on your Mac." : "Too long for the phone. Open it on your tower."

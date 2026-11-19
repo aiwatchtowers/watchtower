@@ -21,6 +21,10 @@ packages:
   # builder, quote reply; iPhone chat spec D8). Dependency-free of the Kit.
   WatchtowerChatText:
     path: ../WatchtowerChatText
+  # The tower interface's Swift side (types generated from internal/tower/api),
+  # shared with the Mac. Foundation only.
+  WatchtowerInterface:
+    path: ../WatchtowerInterface
   # The chat shared with the Mac (unified chat spec §6.1): ChatWire carries the
   # chat wire models, operations and stores; the relay conformances of its
   # models are the app's (Sources/Features/Chats/ChatWireKitConformances.swift).
@@ -86,6 +90,8 @@ targets:
         product: WatchtowerHostedRelay
       - package: WatchtowerChatText
         product: WatchtowerChatText
+      - package: WatchtowerInterface
+        product: WatchtowerInterface
       - package: WatchtowerChat
         product: ChatWire
       - package: WatchtowerChat

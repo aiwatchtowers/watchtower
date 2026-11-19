@@ -25,26 +25,39 @@ var workbenchSurfaces = []string{WorkbenchSurface}
 // maxBatchTargets caps one create_targets call — a whole plan, not a backlog.
 const maxBatchTargets = 100
 
+// WorkbenchDeps is what the workbench tools need from their process.
+type WorkbenchDeps struct {
+	// Files stores the images attached to targets.
+	Files workbenchfiles.Store
+	// LaunchSpecReview starts a spec review's reviewer; nil = none.
+	LaunchSpecReview SpecReviewLauncher
+	// WakeWatchman asks the daemon to run the Watchman twin now, after a
+	// wait point queued its item; nil = no wake (the daemon's cycle scan).
+	WakeWatchman func()
+	// Sessions reaches the session host, the daemon and the CLI for agent
+	// messages and sub-sessions.
+	Sessions SessionDeps
+}
+
 // WorkbenchTools returns every workbench tool (surface "project"), in the order
-// buildToolRegistry registers them. files stores the images attached to
-// targets; sessions reaches the session host, the daemon and the CLI for
-// agent messages and sub-sessions.
-func WorkbenchTools(files workbenchfiles.Store, launch SpecReviewLauncher, sessions SessionDeps) []*Tool {
-	return workbenchTools(files, processTerminalSession, launch, sessions)
+// buildToolRegistry registers them.
+func WorkbenchTools(deps WorkbenchDeps) []*Tool {
+	return workbenchTools(deps, processTerminalSession)
 }
 
 // workbenchTools is WorkbenchTools with the terminal session env read through
 // sessionEnv — tests inject their own.
-func workbenchTools(files workbenchfiles.Store, sessionEnv func() string, launch SpecReviewLauncher, sessions SessionDeps) []*Tool {
+func workbenchTools(deps WorkbenchDeps, sessionEnv func() string) []*Tool {
+	files, wake, sessions := deps.Files, deps.WakeWatchman, deps.Sessions
 	return []*Tool{
 		NewWorkbenchInfo(), NewWorkbenchBoard(), NewUpdateWorkbench(),
 		NewAddWorkbenchSource(), NewRemoveWorkbenchSource(),
 		NewCreateTargets(files, sessionEnv), NewUpdateTarget(files, sessionEnv),
 		NewListComments(), NewAddComment(sessionEnv), NewResolveComment(sessionEnv),
-		NewAskOwner(sessionEnv, launch), NewGetAsk(), NewGetReview(), NewGetSpecReview(),
+		NewAskOwner(sessionEnv, deps.LaunchSpecReview, wake), NewGetAsk(), NewGetReview(), NewGetSpecReview(),
 		NewAnnotateChanges(sessionEnv), NewReplyReviewComment(), NewAnswerReviewQuestion(sessionEnv),
 		NewListAsks(sessionEnv), NewWithdrawAsk(),
-		NewFinishSession(sessionEnv, sessions), NewSetSessionTarget(sessionEnv),
+		NewFinishSession(sessionEnv, wake, sessions), NewSetSessionTarget(sessionEnv),
 		NewSendToSession(sessionEnv, sessions), NewStartSession(sessionEnv, sessions), NewListSessions(sessions),
 		NewSuggestWorkbenchFolder(sessionEnv),
 	}

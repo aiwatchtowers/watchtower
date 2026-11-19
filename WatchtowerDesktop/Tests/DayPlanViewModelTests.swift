@@ -16,7 +16,7 @@ final class DayPlanViewModelTests: XCTestCase {
     override func setUp() async throws {
         pool = try TestDatabase.create()
         cli = FakeCLIRunner()
-        vm = DayPlanViewModel(databasePool: pool, cliRunner: cli)
+        vm = DayPlanViewModel(databasePool: pool, cliRunner: cli, tower: FakeScreenTower.applying(pool))
     }
 
     override func tearDown() async throws {

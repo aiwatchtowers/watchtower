@@ -1,6 +1,6 @@
 import GRDB
 
-/// Reads of `workbench_folders` (00197). Read-only: the Go CLI is the only
+/// Reads of `workbench_folders` (00208). Read-only: the Go CLI is the only
 /// writer of folder membership (`workbench folder add|remove|locate`), the
 /// Desktop calls it through `WorkbenchCLI`.
 package enum WorkbenchFolderQueries {
@@ -17,7 +17,7 @@ package enum WorkbenchFolderQueries {
 
     /// The home folder's row id as Go's `db.HomeFolder` reads it: the live
     /// folder whose path is `projects.folder_path`, else the lowest-position
-    /// row (a legacy bench whose only row 00197 marked removed). A scalar
+    /// row (a legacy bench whose only row 00208 marked removed). A scalar
     /// subquery bound to one workbench id; NULL for a workbench without
     /// folder rows.
     package static let homeFolderIDSQL = """

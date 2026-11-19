@@ -14,7 +14,26 @@ import WatchtowerTestSupport
 struct DesignShot {
     let name: String
     let size: NSSize
-    let make: @MainActor () -> AnyView
+    /// The view, built at once; nil for a shot whose fixture awaits its state.
+    let make: (@MainActor () -> AnyView)?
+    /// The view, its fixture's async work awaited first (an Inbox shot lists
+    /// Go's feed through the fake tower): no run-loop spin, no deadline.
+    let prepare: @MainActor () async throws -> AnyView
+
+    init(name: String, size: NSSize, make: @escaping @MainActor () -> AnyView) {
+        self.name = name
+        self.size = size
+        self.make = make
+        prepare = { make() }
+    }
+
+    /// `prepare` comes before `size` so a trailing closure always means `make`.
+    init(name: String, prepare: @escaping @MainActor () async throws -> AnyView, size: NSSize) {
+        self.name = name
+        self.size = size
+        make = nil
+        self.prepare = prepare
+    }
 }
 
 /// Every shot `make desktop-shots` renders (`DesignShotsTests`). The kit's
@@ -69,6 +88,10 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "chat-rows", size: NSSize(width: 560, height: 280)) {
                 AnyView(DesignShotFixtures.chatRows().padding(12).shotFrame().detailBackground())
+            },
+            // #1170 Task 12, mockup §8: a press through the tower on another screen.
+            DesignShot(name: "ideas-row-states", size: NSSize(width: 620, height: 0)) {
+                AnyView(DesignShotFixtures.ideasRowStates().shotFrame())
             },
             DesignShot(name: "chat-knowledge-marks", size: NSSize(width: 560, height: 260)) {
                 AnyView(DesignShotFixtures.chatKnowledgeMarks().padding(12).shotFrame().detailBackground())
@@ -258,60 +281,61 @@ enum DesignShotCatalog {
                 AnyView(AutomationShotFixtures.editorPanel(review: true).detailBackground())
             },
             // The Inbox read like mail (spec B1).
-            DesignShot(name: "inbox-reading-pane", size: NSSize(width: 1180, height: 720)) {
-                InboxShotFixtures.readingPane()
-            },
+            DesignShot(name: "inbox-reading-pane", prepare: {
+                await InboxShotFixtures.readingPane()
+            }, size: NSSize(width: 1180, height: 720)),
             DesignShot(name: "inbox-reading-pane-narrow", size: NSSize(width: 420, height: 560)) {
                 InboxShotFixtures.narrowPane()
             },
-            DesignShot(name: "inbox-proposal-pane", size: NSSize(width: 1180, height: 720)) {
-                InboxShotFixtures.proposalPane()
-            },
-            DesignShot(name: "inbox-message-pane", size: NSSize(width: 1180, height: 720)) {
-                InboxShotFixtures.messagePane()
-            },
+            DesignShot(name: "inbox-proposal-pane", prepare: {
+                await InboxShotFixtures.proposalPane()
+            }, size: NSSize(width: 1180, height: 720)),
+            DesignShot(name: "inbox-message-pane", prepare: {
+                await InboxShotFixtures.messagePane()
+            }, size: NSSize(width: 1180, height: 720)),
             // The one Inbox (C1) without its filters (inbox builder B): today's
             // day card in the root and the root's legacy lists, at a fixed moment.
-            DesignShot(name: "inbox-day-card", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.dayCard()
-            },
-            DesignShot(name: "inbox-day-card-regenerate", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.dayCardRegenerate()
-            },
-            DesignShot(name: "inbox-day-card-empty", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.dayCardEmpty()
-            },
-            DesignShot(name: "inbox-track-card", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.trackCard()
-            },
-            DesignShot(name: "inbox-tracks-stopped", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.tracksStopped()
-            },
-            DesignShot(name: "inbox-idea-card", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.ideaCard()
-            },
-            DesignShot(name: "inbox-decision-card", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.decisionCard()
-            },
-            DesignShot(name: "inbox-chat-decision-card", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.chatDecisionCard()
-            },
-            DesignShot(name: "inbox-message-card", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.messageCard()
-            },
-            DesignShot(name: "inbox-ideas-new", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.ideasNew()
-            },
-            DesignShot(name: "inbox-cheat-sheet", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.cheatSheet()
-            },
+            DesignShot(name: "inbox-day-card", prepare: {
+                await OneInboxShotFixtures.dayCard()
+            }, size: NSSize(width: 1180, height: 720)),
+            DesignShot(name: "inbox-day-card-regenerate", prepare: {
+                await OneInboxShotFixtures.dayCardRegenerate()
+            }, size: NSSize(width: 1180, height: 720)),
+            DesignShot(name: "inbox-day-card-empty", prepare: {
+                await OneInboxShotFixtures.dayCardEmpty()
+            }, size: NSSize(width: 1180, height: 720)),
+            DesignShot(name: "inbox-track-card", prepare: {
+                await OneInboxShotFixtures.trackCard()
+            }, size: NSSize(width: 1180, height: 720)),
+            DesignShot(name: "inbox-tracks-stopped", prepare: {
+                await OneInboxShotFixtures.tracksStopped()
+            }, size: NSSize(width: 1180, height: 720)),
+            DesignShot(name: "inbox-idea-card", prepare: {
+                await OneInboxShotFixtures.ideaCard()
+            }, size: NSSize(width: 1180, height: 720)),
+            DesignShot(name: "inbox-decision-card", prepare: {
+                await OneInboxShotFixtures.decisionCard()
+            }, size: NSSize(width: 1180, height: 720)),
+            DesignShot(name: "inbox-chat-decision-card", prepare: {
+                await OneInboxShotFixtures.chatDecisionCard()
+            }, size: NSSize(width: 1180, height: 720)),
+            DesignShot(name: "inbox-message-card", prepare: {
+                await OneInboxShotFixtures.messageCard()
+            }, size: NSSize(width: 1180, height: 720)),
+            DesignShot(name: "inbox-ideas-new", prepare: {
+                await OneInboxShotFixtures.ideasNew()
+            }, size: NSSize(width: 1180, height: 720)),
+            DesignShot(name: "inbox-cheat-sheet", prepare: {
+                await OneInboxShotFixtures.cheatSheet()
+            }, size: NSSize(width: 1180, height: 720)),
             DesignShot(name: "inbox-day-card-narrow", size: NSSize(width: 420, height: 560)) {
                 OneInboxShotFixtures.dayCardNarrow()
             },
             // Built-in automations (C2): the Inbox notice of a failed move.
-            DesignShot(name: "inbox-builtin-notice", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.builtinNotice()
-            },
+            DesignShot(name: "inbox-builtin-notice", prepare: {
+                await OneInboxShotFixtures.builtinNotice()
+            }, size: NSSize(width: 1180, height: 720))
+        ] + InboxFeedStateShotFixtures.shots + [
             // Built-in automations (C2): the Built in section and Morning brief's card.
             DesignShot(name: "automation-builtin-list", size: NSSize(width: 1280, height: 760)) {
                 BuiltinShotFixtures.list()
@@ -338,15 +362,15 @@ enum DesignShotCatalog {
             DesignShot(name: "automations-new-watch", size: NSSize(width: 900, height: 720)) {
                 AnyView(AutomationShotFixtures.newPanel(fixedToAcme: false).detailBackground())
             },
-            DesignShot(name: "inbox-track-card-watch", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.trackCard(.bound)
-            },
-            DesignShot(name: "inbox-track-card-watch-edited", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.trackCard(.edited)
-            },
-            DesignShot(name: "inbox-track-card-unbound", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.trackCard(.unbound)
-            },
+            DesignShot(name: "inbox-track-card-watch", prepare: {
+                await OneInboxShotFixtures.trackCard(.bound)
+            }, size: NSSize(width: 1180, height: 720)),
+            DesignShot(name: "inbox-track-card-watch-edited", prepare: {
+                await OneInboxShotFixtures.trackCard(.edited)
+            }, size: NSSize(width: 1180, height: 720)),
+            DesignShot(name: "inbox-track-card-unbound", prepare: {
+                await OneInboxShotFixtures.trackCard(.unbound)
+            }, size: NSSize(width: 1180, height: 720)),
             // Branch review (#712, artboards A–C).
             DesignShot(name: "branch-review-changes", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.changes()
@@ -548,6 +572,13 @@ enum DesignShotCatalog {
             DesignShot(name: "usage-progress-run", size: NSSize(width: 860, height: 420)) {
                 LLMUsageShotFixtures.progress()
             },
+            // The tray's Pause Sync / Resume Sync (mobile Inbox spec §3, mockup §8).
+            DesignShot(name: "tray-menu-running", size: NSSize(width: 300, height: 280)) {
+                TrayPauseShotFixtures.menu(paused: false)
+            },
+            DesignShot(name: "tray-menu-paused", size: NSSize(width: 300, height: 280)) {
+                TrayPauseShotFixtures.menu(paused: true)
+            },
             // The one-time v1-host restart (go hub phase 3 Task 19): the notice waiting, busy,
             // failed with Retry and narrow; the other workspaces' wait lines, wide and narrow.
             DesignShot(name: "hostRestartNotice", size: NSSize(width: 760, height: 64)) {
@@ -633,6 +664,9 @@ enum DesignShotCatalog {
             + RoutingPillShotFixtures.shots // The routing pill and fallback card before and after ChatUI (#1822 T17).
             + MultiFolderShotFixtures.shots // The multi-folder workbench spec's mockups (#2003), design only.
             + BackgroundAIConsentShotFixtures.shots // Background AI consent spec (#1886), design only.
+            + WatchmanShotFixtures.shots // Watchman spec (#1824), design only.
+            + WorkchatAgentsMockShotFixtures.shots // Workchat agents list and live steps spec (#2065), design only.
+            + WorkchatAgentsShotFixtures.shots // The same states on the built views (#2065), against the mockups.
     }
 }
 
@@ -674,10 +708,13 @@ enum DesignShotFixtures {
         InboxFolderMenuShotFixtures.cleanUp()
         InboxFoldersShotFixtures.cleanUp()
         InboxApprovalsShotFixtures.cleanUp()
+        InboxFeedStateShotFixtures.cleanUp()
         TuningChatShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
         ClosedAsksShotFixtures.cleanUp()
+        WatchmanArmingShotFixture.cleanUp()
         IPhoneChatShotFixtures.cleanUp()
+        cleanUpIdeaRows()
         UnifiedChatShotFixtures.cleanUp()
         ComposerShotFixtures.cleanUp()
         ApprovalCardShotFixtures.cleanUp()
@@ -761,7 +798,7 @@ enum DesignShotFixtures {
                                                                     status: "in_progress", priority: "high")
                 return (pid, parent)
             }
-            let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid)
+            let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid, tower: FakeScreenTower.applying(pool))
             vm.load()
             return AnyView(WorkbenchNewTargetSheet(
                 request: WorkbenchNewTargetRequest(parentID: Int(parent)), vm: vm, workbenchName: "acme"

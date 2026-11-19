@@ -38,7 +38,9 @@ func AskLookupFor(d *db.DB, workbenchID int64) AskLookup {
 
 // FindSubagent finds the subagent started by tool call toolUseID in any
 // conversation of the tab (or nested in another subagent) and returns its
-// feed, nested markers resolved, with the path of its transcript file. A
+// feed, nested markers resolved, with the path of its transcript file. It
+// searches the feed's subagent list, so a marker known only from its sidecar
+// meta file (its launch call not in the parent transcript) opens too. A
 // one-off drill-in: it parses every subagent on the way, correctness over
 // speed.
 func FindSubagent(convs []Conversation, toolUseID string) (*Result, string, error) {
@@ -58,7 +60,7 @@ func FindSubagent(convs []Conversation, toolUseID string) (*Result, string, erro
 			return nil, "", err
 		}
 		dir := strings.TrimSuffix(c.Path, ".jsonl")
-		res, path, err := findSubagent(dir, feed.Entries, toolUseID, 0)
+		res, path, err := findSubagent(dir, feed.Subagents, toolUseID, 0)
 		if err != nil {
 			return nil, "", err
 		}

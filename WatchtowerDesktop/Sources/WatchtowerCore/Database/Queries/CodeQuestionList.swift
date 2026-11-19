@@ -78,13 +78,13 @@ package enum CodeQuestionList {
     }
 
     /// The conversation holds at least one message, of any role.
-    private static func hasMessage(_ table: String) -> String {
+    package static func hasMessage(_ table: String) -> String {
         "EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = \(table).id)"
     }
 
     /// `context_id` starts with the bound `<id>:` (bound twice): matched
     /// exactly, so workbench 1 never takes 10's.
-    private static func ofWorkbench(_ table: String) -> String {
+    package static func ofWorkbench(_ table: String) -> String {
         "substr(\(table).context_id, 1, length(?)) = ?"
     }
 
@@ -102,33 +102,4 @@ package enum CodeQuestionList {
     /// How old a question with no message must be before `deleteEmpty`
     /// takes it: far longer than writing a first turn ever takes.
     package static let emptyQuestionAge: TimeInterval = 10 * 60
-
-    /// Deletes the workbench's code questions that have no message at all
-    /// and were created before `createdBefore` (unix seconds), except
-    /// `keeping` (conversations a surface still holds); how many went.
-    @discardableResult
-    package static func deleteEmpty(
-        _ db: Database, workbenchID: Int64, createdBefore: Double, keeping: Set<Int64> = []
-    ) throws -> Int {
-        let prefix = "\(workbenchID):"
-        let candidates = try Int64.fetchAll(db, sql: """
-            SELECT c.id FROM chat_conversations c
-            WHERE c.context_type = ? AND \(ofWorkbench("c")) AND c.created_at < ? AND NOT \(hasMessage("c"))
-            """, arguments: [contextType, prefix, prefix, createdBefore])
-        var deleted = 0
-        for id in candidates where !keeping.contains(id) {
-            try db.execute(sql: "DELETE FROM chat_conversations WHERE id = ?", arguments: [id])
-            deleted += db.changesCount
-        }
-        return deleted
-    }
-
-    /// Deletes a code question with its messages (and their search rows,
-    /// through the cascade and the FTS triggers); true when one was deleted.
-    @discardableResult
-    package static func delete(_ db: Database, conversationID: Int64) throws -> Bool {
-        try db.execute(sql: "DELETE FROM chat_conversations WHERE id = ? AND context_type = ?",
-                       arguments: [conversationID, contextType])
-        return db.changesCount > 0
-    }
 }

@@ -372,30 +372,61 @@ func (t *Turn) stepStarted(id, name, args string) error {
 	}
 	t.mu.Unlock()
 	return t.write(func(tx *sql.Tx) error {
-		if err := requireMessageTx(tx, t.messageID); err != nil {
-			return err
-		}
-		var existing int64
-		err := tx.QueryRow(`SELECT id FROM chat_turn_steps WHERE message_id = ? AND tool_id = ?`, t.messageID, id).Scan(&existing)
-		switch {
-		case err == nil:
-			_, err = tx.Exec(`UPDATE chat_turn_steps SET name = ?, args_json = ?, started_at = ? WHERE id = ?`,
-				name, args, seconds(now), existing)
-		case errors.Is(err, sql.ErrNoRows):
-			_, err = tx.Exec(`INSERT INTO chat_turn_steps (message_id, seq, tool_id, name, args_json, started_at)
-				VALUES (?, ?, ?, ?, ?, ?)`, t.messageID, seq, id, name, args, seconds(now))
-		}
-		if err != nil {
+		if err := upsertStepStartTx(tx, t.messageID, seq, id, name, args, seconds(now)); err != nil {
 			return err
 		}
 		if !isSlackConnectorStep(name) {
 			return nil
 		}
-		_, err = tx.Exec(`UPDATE chat_conversations SET live_slack_since = ?
+		_, err := tx.Exec(`UPDATE chat_conversations SET live_slack_since = ?
 			WHERE id = (SELECT conversation_id FROM chat_messages WHERE id = ?) AND live_slack_since IS NULL`,
 			t.messageID, t.messageID)
 		return err
 	})
+}
+
+// upsertStepStartTx is ChatStepQueries.upsertStart: a step started (again)
+// under its tool id, the message required.
+func upsertStepStartTx(tx *sql.Tx, messageID int64, seq int, toolID, name, args string, at float64) error {
+	if err := requireMessageTx(tx, messageID); err != nil {
+		return err
+	}
+	var existing int64
+	err := tx.QueryRow(`SELECT id FROM chat_turn_steps WHERE message_id = ? AND tool_id = ?`, messageID, toolID).Scan(&existing)
+	switch {
+	case err == nil:
+		_, err = tx.Exec(`UPDATE chat_turn_steps SET name = ?, args_json = ?, started_at = ? WHERE id = ?`,
+			name, args, at, existing)
+	case errors.Is(err, sql.ErrNoRows):
+		_, err = tx.Exec(`INSERT INTO chat_turn_steps (message_id, seq, tool_id, name, args_json, started_at)
+			VALUES (?, ?, ?, ?, ?, ?)`, messageID, seq, toolID, name, args, at)
+	}
+	return err
+}
+
+// finishStepTx is ChatStepQueries.finish: a tool_end whose tool_start never
+// came is still a visible step (CHAT-02).
+func finishStepTx(tx *sql.Tx, messageID int64, ev chat.Event, at float64) error {
+	if err := requireMessageTx(tx, messageID); err != nil {
+		return err
+	}
+	okFlag := 0
+	if ev.OK != nil && *ev.OK {
+		okFlag = 1
+	}
+	sources := sourcesJSON(ev.Sources)
+	res, err := tx.Exec(`UPDATE chat_turn_steps SET ok = ?, summary = ?, sources_json = ?, ended_at = ?
+		WHERE message_id = ? AND tool_id = ?`, okFlag, ev.Summary, sources, at, messageID, ev.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+	_, err = tx.Exec(`INSERT INTO chat_turn_steps (message_id, seq, tool_id, name, ok, summary, sources_json, started_at, ended_at)
+		VALUES (?, (SELECT COALESCE(MAX(seq) + 1, 0) FROM chat_turn_steps WHERE message_id = ?), ?, '', ?, ?, ?, ?, ?)`,
+		messageID, messageID, ev.ID, okFlag, ev.Summary, sources, at, at)
+	return err
 }
 
 // stepFinished is LiveTurn.finishStep + ChatStepQueries.finish, then a
@@ -422,27 +453,7 @@ func (t *Turn) stepFinished(ev chat.Event) error {
 			Sources: ev.Sources, StartedAt: now, EndedAt: &now})
 	}
 	t.mu.Unlock()
-	okFlag, sources, ended := 0, sourcesJSON(ev.Sources), seconds(now)
-	if ok {
-		okFlag = 1
-	}
-	err := t.write(func(tx *sql.Tx) error {
-		if err := requireMessageTx(tx, t.messageID); err != nil {
-			return err
-		}
-		res, err := tx.Exec(`UPDATE chat_turn_steps SET ok = ?, summary = ?, sources_json = ?, ended_at = ?
-			WHERE message_id = ? AND tool_id = ?`, okFlag, ev.Summary, sources, ended, t.messageID, ev.ID)
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n > 0 {
-			return nil
-		}
-		_, err = tx.Exec(`INSERT INTO chat_turn_steps (message_id, seq, tool_id, name, ok, summary, sources_json, started_at, ended_at)
-			VALUES (?, (SELECT COALESCE(MAX(seq) + 1, 0) FROM chat_turn_steps WHERE message_id = ?), ?, '', ?, ?, ?, ?, ?)`,
-			t.messageID, t.messageID, ev.ID, okFlag, ev.Summary, sources, ended, ended)
-		return err
-	})
+	err := t.write(func(tx *sql.Tx) error { return finishStepTx(tx, t.messageID, ev, seconds(now)) })
 	if err != nil {
 		return err
 	}

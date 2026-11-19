@@ -29,7 +29,7 @@ final class TargetAssistantViewModelTests: XCTestCase {
         target: Target,
         aiService: @escaping @autoclosure () -> any AIServiceProtocol = MockClaudeService()
     ) async -> TargetAssistantViewModel {
-        let targets = TargetsViewModel(dbManager: manager)
+        let targets = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let assistant = TargetAssistantViewModel(
             target: target,
             viewModel: targets,
@@ -480,7 +480,7 @@ final class TargetAssistantViewModelTests: XCTestCase {
         let center = EmbeddedChatCenter(idleTTL: 0) { spec, gate in
             makeSurfaceEngine(spec, dbPool: manager.dbPool, ai: ai, gate: gate)
         }
-        let assistant = TargetAssistantViewModel(target: target, viewModel: TargetsViewModel(dbManager: manager),
+        let assistant = TargetAssistantViewModel(target: target, viewModel: TargetsViewModel(dbManager: manager, tower: manager.fakeTower),
                                                  dbManager: manager, embeddedChats: center)
         _ = await assistant.readyChat()
         return (assistant, center)
@@ -519,7 +519,8 @@ final class TargetAssistantViewModelTests: XCTestCase {
         }
         let targets = TargetAssistantCenter()
         targets.embeddedChats = embedded
-        let container = targets.container(for: target, viewModel: TargetsViewModel(dbManager: manager),
+        targets.chatWrites = .fake(manager.dbPool)
+        let container = targets.container(for: target, viewModel: TargetsViewModel(dbManager: manager, tower: manager.fakeTower),
                                           dbManager: manager)
         _ = await container.readyChat()
         XCTAssertEqual(embedded.count, 1)

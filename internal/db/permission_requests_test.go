@@ -94,11 +94,11 @@ func TestClosePermissionRequestIsCompareAndSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ok, err := d.ClosePermissionRequest(id, PermissionAllowed, at.Add(time.Second))
+	ok, err := d.ClosePermissionRequest(id, PermissionAllowed, "", at.Add(time.Second))
 	if err != nil || !ok {
 		t.Fatalf("first close ok=%v err=%v", ok, err)
 	}
-	ok, err = d.ClosePermissionRequest(id, PermissionDenied, at.Add(2*time.Second))
+	ok, err = d.ClosePermissionRequest(id, PermissionDenied, "", at.Add(2*time.Second))
 	if err != nil || ok {
 		t.Fatalf("second close ok=%v err=%v", ok, err)
 	}
@@ -108,6 +108,40 @@ func TestClosePermissionRequestIsCompareAndSet(t *testing.T) {
 	}
 	if got.Status != PermissionAllowed || !got.DecidedAt.Valid || got.DecidedAt.String != AgentStateStamp(at.Add(time.Second)) {
 		t.Fatalf("row = %+v", got)
+	}
+}
+
+// The decider is stored with the decision ("watchman" for the twin); the
+// hook's own closes pass "" and leave decided_by NULL.
+func TestClosePermissionRequest_WritesDecidedBy(t *testing.T) {
+	d, pid, row := openPermissionFixture(t)
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	twin, err := d.OpenPermissionRequest(row, pid, agentStateUUID, "Bash", "a", false, at, AgentOrder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := d.ClosePermissionRequest(twin, PermissionDenied, "watchman", at.Add(time.Second)); err != nil || !ok {
+		t.Fatalf("close ok=%v err=%v", ok, err)
+	}
+	hook, err := d.OpenPermissionRequest(row, pid, agentStateUUID, "Bash", "b", false, at.Add(2*time.Second), AgentOrder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := d.ClosePermissionRequest(hook, PermissionExpired, "", at.Add(3*time.Second)); err != nil || !ok {
+		t.Fatalf("close ok=%v err=%v", ok, err)
+	}
+	got, err := d.GetPermissionRequest(twin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != PermissionDenied || !got.DecidedBy.Valid || got.DecidedBy.String != "watchman" {
+		t.Fatalf("twin row = %+v", got)
+	}
+	if got, err = d.GetPermissionRequest(hook); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != PermissionExpired || got.DecidedBy.Valid {
+		t.Fatalf("hook row = %+v, want decided_by NULL", got)
 	}
 }
 

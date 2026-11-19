@@ -75,7 +75,7 @@ var mergeTables = []mergeTable{
 	{table: "terminal_sessions", column: "project_id", op: opCustom, apply: pinHomeThenMove("terminal_sessions", "workbench_folder_id", "")},
 	{table: "owner_asks", column: "project_id", op: opCustom, apply: moveAsks},
 	{table: "coach_proposals", column: "workbench_id", op: opMove},
-	// Keyed by folder too (00197): B's folders came along, so no clash.
+	// Keyed by folder too (00208): B's folders came along, so no clash.
 	{table: "workbench_pr_states", column: "project_id", op: opMove},
 	{table: "review_reviewer_threads", column: "project_id", op: opMove},
 	{table: "automations", column: "project_id", op: opCustom, apply: moveAutomations},
@@ -90,6 +90,17 @@ var mergeTables = []mergeTable{
 	{table: "permission_requests", column: "workbench_id", op: opMove},
 	{table: "session_messages", column: "workbench_id", op: opMove},
 	{table: "agent_log_sessions", column: "project_id", op: opMove},
+	// Watchman (00198..00207): the twin's items and backtests move with the
+	// sessions they are of; learned state keyed by a unique key keeps the
+	// surviving bench's row on a clash; B's per-source cursors go (they
+	// index B's sources, and A's own cursors carry on).
+	{table: "watchman_workbenches", column: "workbench_id", op: opDedupe},
+	{table: "watchman_precedents", column: "workbench_id", op: opDedupe},
+	{table: "watchman_skipped_keys", column: "workbench_id", op: opDedupe},
+	{table: "watchman_profile", column: "workbench_id", op: opDedupe},
+	{table: "watchman_cursors", column: "workbench_id", op: opDrop},
+	{table: "watchman_backtests", column: "workbench_id", op: opMove},
+	{table: "watchman_items", column: "workbench_id", op: opMove},
 }
 
 // mergeStepHook, when set (tests only), runs before each table's step; its

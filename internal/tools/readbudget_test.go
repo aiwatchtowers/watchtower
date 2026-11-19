@@ -192,6 +192,23 @@ func TestRead01_TooLargeRefused(t *testing.T) {
 	assert.EqualValues(t, 1, got[0]["rows_total"])
 }
 
+// A tool that refuses its own oversized result is audited as too_large, not
+// as a failure.
+func TestRead01_ToolSideTooLargeAudited(t *testing.T) {
+	lines := captureAudit(t)
+	var n atomic.Int64
+	tool := newCompanyTool(t, "co", false, &n, func() (any, error) {
+		return nil, &ValidationError{Msg: "too big, ask for less", Err: ErrResultTooLarge}
+	})
+	reg := newBudgetRegistry(t, testLimits(10, 1000), tool)
+	_, err := reg.CallRead(context.Background(), "co", nil, Binding{ConversationID: 1})
+	require.ErrorIs(t, err, ErrResultTooLarge)
+	got := lines()
+	require.Len(t, got, 1)
+	assert.Equal(t, "too_large", got[0]["result"])
+	assert.EqualValues(t, 1, got[0]["calls"], "the call is debited")
+}
+
 func TestRead01_ListRowsBackstop(t *testing.T) {
 	captureAudit(t)
 	var n atomic.Int64

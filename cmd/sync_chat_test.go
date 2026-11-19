@@ -19,6 +19,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/hub"
 	"watchtower/internal/policy/policytest"
+	"watchtower/internal/tower"
 )
 
 // TestSyncDaemon_StartsChatEngineBeforeHub: the daemon starts the chat
@@ -35,12 +36,12 @@ func TestSyncDaemon_StartsChatEngineBeforeHub(t *testing.T) {
 			steps = append(steps, "chat start")
 			return eng, func() { steps = append(steps, "chat stop") }
 		}
-		startGoHubFn = func(_ context.Context, _ *config.Config, _ *db.DB, got *chatengine.Engine, _ *log.Logger) func() {
+		startGoHubFn = func(_ context.Context, _ *config.Config, _ *db.DB, _ *tower.Tower, got *chatengine.Engine, _ *log.Logger) func() {
 			assert.Same(t, eng, got, "the hub gets the daemon's engine")
 			steps = append(steps, "hub start")
 			return func() { steps = append(steps, "hub stop") }
 		}
-		err := withChatAndHub(context.Background(), &config.Config{}, nil, log.New(&bytes.Buffer{}, "", 0),
+		err := withChatAndHub(context.Background(), &config.Config{}, nil, nil, log.New(&bytes.Buffer{}, "", 0),
 			func() error { steps = append(steps, "run"); return nil })
 		require.NoError(t, err)
 		assert.Equal(t, []string{"chat start", "hub start", "run", "hub stop", "chat stop"}, steps)
@@ -62,7 +63,7 @@ func TestSyncDaemon_StartsChatEngineBeforeHub(t *testing.T) {
 		logger := log.New(&buf, "", 0)
 		sock := chatengine.SocketPath(cfg.WorkspaceDir(), os.TempDir())
 
-		err = withChatAndHub(context.Background(), cfg, database, logger, func() error {
+		err = withChatAndHub(context.Background(), cfg, database, nil, logger, func() error {
 			conn, r, err := chatengine.Dial(context.Background(), sock) // waits for the greeting
 			if err != nil {
 				return err

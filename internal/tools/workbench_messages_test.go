@@ -45,7 +45,7 @@ func (w *messageWorld) deps(live ...int64) SessionDeps {
 func messageRegistry(t *testing.T, d *db.DB, env int64, deps SessionDeps) *Registry {
 	t.Helper()
 	reg := New(d)
-	for _, tool := range workbenchTools(workbenchfiles.New(t.TempDir()), func() string { return strconv.FormatInt(env, 10) }, nil, deps) {
+	for _, tool := range workbenchTools(WorkbenchDeps{Files: workbenchfiles.New(t.TempDir()), Sessions: deps}, func() string { return strconv.FormatInt(env, 10) }) {
 		require.NoError(t, reg.Register(tool))
 	}
 	return reg

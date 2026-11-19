@@ -116,7 +116,7 @@ func runWorkbenchBrief(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: workbench %d brief: terminal session not recorded: %v\n", id, err)
 		}
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), loadWorkbenchBriefFlag(workbenchBriefFlagWorkbench, cmd.ErrOrStderr()))
+	fmt.Fprintln(cmd.OutOrStdout(), loadWorkbenchBriefFlag(workbenchBriefFlagWorkbench, cmd.ErrOrStderr(), "claude"))
 	return nil
 }
 
@@ -136,7 +136,7 @@ func runCodexBrief(stdin io.Reader, stdout, stderr io.Writer) {
 		fmt.Fprintf(stderr, "watchtower: workbench %d brief: terminal session not recorded: %v\n", row.WorkbenchID.Int64, err)
 	}
 	_ = database.Close()
-	fmt.Fprintln(stdout, loadWorkbenchBrief(row.WorkbenchID.Int64, stderr))
+	fmt.Fprintln(stdout, loadWorkbenchBrief(row.WorkbenchID.Int64, stderr, "codex"))
 }
 
 // parseWorkbenchBriefFlag parses the raw id flag value: 0 for empty
@@ -158,12 +158,12 @@ func parseWorkbenchBriefFlag(raw string) (int64, error) {
 // reads as "no --workbench id given" via loadWorkbenchBrief's own id<=0
 // branch; an invalid value gets its own one-line reason so it isn't
 // misreported as missing.
-func loadWorkbenchBriefFlag(raw string, stderr io.Writer) string {
+func loadWorkbenchBriefFlag(raw string, stderr io.Writer, agent string) string {
 	id, err := parseWorkbenchBriefFlag(raw)
 	if err != nil {
 		return briefUnavailable(0, "is unavailable: "+err.Error())
 	}
-	return loadWorkbenchBrief(id, stderr)
+	return loadWorkbenchBrief(id, stderr, agent)
 }
 
 // loadWorkbenchBrief is workbench id's brief. It first runs the one-time
@@ -171,7 +171,7 @@ func loadWorkbenchBriefFlag(raw string, stderr io.Writer) string {
 // existed at the board #558 upgrade (carryOverWorkflowChecks — a no-op under
 // an agent's markers, so in practice only a brief run outside a session); its
 // failure goes to stderr (the hook log) and the brief is printed as always.
-func loadWorkbenchBrief(id int64, stderr io.Writer) string {
+func loadWorkbenchBrief(id int64, stderr io.Writer, agent string) string {
 	if id <= 0 {
 		return briefUnavailable(id, "is unavailable: no --workbench id given")
 	}
@@ -191,10 +191,10 @@ func loadWorkbenchBrief(id int64, stderr io.Writer) string {
 	if _, err := os.Stat(p.FolderPath); err != nil {
 		return briefUnavailable(id, fmt.Sprintf("folder %s is missing (moved or deleted?)", p.FolderPath))
 	}
-	return briefFromDB(database, p)
+	return briefFromDB(database, p, agent, stderr)
 }
 
-func briefFromDB(database *db.DB, p *db.Workbench) string {
+func briefFromDB(database *db.DB, p *db.Workbench, agent string, stderr io.Writer) string {
 	board, err := database.GetWorkbenchBoard(p.ID)
 	if err != nil {
 		return briefUnavailable(p.ID, "is unavailable: "+err.Error())
@@ -225,7 +225,8 @@ func briefFromDB(database *db.DB, p *db.Workbench) string {
 	// The board columns (PROJ-19) share the folder rules' reserved slot.
 	method := joinBriefLines(briefMethodSection(e, briefPresetMismatch(e, p.FolderPath, p.ID)), briefColumnsFor(database, p.ID))
 	return renderSessionBrief(board, p, comments, drift, loadBriefRecent(database, p.ID, now), loadBriefAsks(database, p.ID), now,
-		briefRulesFor(e.Preset), method, joinBriefLines(briefReviewLines(database, p.ID), briefCleanupLine(database, p.ID)), briefInstructionsSlot(database, p.ID))
+		briefRulesFor(e.Preset), method, joinBriefLines(briefReviewLines(database, p.ID), briefCleanupLine(database, p.ID)),
+		joinBriefLines(briefInstructionsSlot(database, p.ID), briefWatchmanLine(database, p.ID, agent, stderr)))
 }
 
 // briefAsks is the answered-asks input: the asks for the brief's own session
@@ -296,6 +297,35 @@ func briefInstructionsSlot(database *db.DB, workbenchID int64) string {
 		return ""
 	}
 	return instructions.BriefSlot(t)
+}
+
+// briefWatchmanLineText is the spec's line for a session the owner handed to Watchman.
+const briefWatchmanLineText = "The owner handed this session to Watchman; asks are answered by his twin; do not wait, keep working."
+
+// briefWatchmanLine is briefWatchmanLineText while the brief's own session is
+// armed (arming is the delegation); "" when it is not, when the session is
+// not of this agent and workbench, or when the read fails (logged to stderr,
+// the hook's log; the brief goes on).
+func briefWatchmanLine(database *db.DB, workbenchID int64, agent string, stderr io.Writer) string {
+	sessionID, ok, err := terminalSessionRowID()
+	if err != nil || !ok {
+		return "" // an invalid env var is already reported by recordTerminalSessionID
+	}
+	// The env id is inherited: it counts only for a row of this brief's own
+	// agent and workbench.
+	row, err := database.GetTerminalSession(sessionID)
+	if err != nil || row.Kind != agent || !row.WorkbenchID.Valid || row.WorkbenchID.Int64 != workbenchID {
+		return ""
+	}
+	armed, err := database.WatchmanSessionArmed(sessionID)
+	if err != nil {
+		fmt.Fprintf(stderr, "watchtower: workbench %d brief: watchman arming: %v\n", workbenchID, err)
+		return ""
+	}
+	if !armed {
+		return ""
+	}
+	return briefWatchmanLineText
 }
 
 // joinBriefLines joins the non-empty parts with newlines.

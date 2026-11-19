@@ -47,7 +47,7 @@ func startRegistry(t *testing.T, d *db.DB, caller int64, deps SessionDeps) *Regi
 	t.Helper()
 	reg := New(d)
 	env := func() string { return strconv.FormatInt(caller, 10) }
-	for _, tool := range workbenchTools(workbenchfiles.New(t.TempDir()), env, nil, deps) {
+	for _, tool := range workbenchTools(WorkbenchDeps{Files: workbenchfiles.New(t.TempDir()), Sessions: deps}, env) {
 		require.NoError(t, reg.Register(tool))
 	}
 	return reg

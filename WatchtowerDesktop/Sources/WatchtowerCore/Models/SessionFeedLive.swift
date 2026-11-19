@@ -11,6 +11,11 @@ package struct SessionFeedLive: Decodable, Equatable, Sendable {
     package var agents: [SessionLiveAgent]
     package var agentsState: String
     package var agentsMore: Int
+    /// The current turn's tool steps in start order (#2065 spec §3): the last
+    /// 40, plus any older one still open; `stepsMore` counts the completed
+    /// steps cut ahead of them.
+    package var steps: [SessionLiveAction]
+    package var stepsMore: Int
 
     package init(
         observedAt: Date?,
@@ -21,14 +26,18 @@ package struct SessionFeedLive: Decodable, Equatable, Sendable {
         latest: SessionLiveAction? = nil,
         agents: [SessionLiveAgent] = [],
         agentsState: String = "known",
-        agentsMore: Int = 0
+        agentsMore: Int = 0,
+        steps: [SessionLiveAction] = [],
+        stepsMore: Int = 0
     ) {
         self.observedAt = observedAt; self.conversation = conversation; self.turnAt = turnAt; self.turnActive = turnActive
         self.current = current; self.latest = latest; self.agents = agents; self.agentsState = agentsState; self.agentsMore = agentsMore
+        self.steps = steps; self.stepsMore = stepsMore
     }
     private enum CodingKeys: String, CodingKey {
         case observedAt = "observed_at", conversation, turnAt = "turn_at", turnActive = "turn_active"
         case current, latest, agents, agentsState = "agents_state", agentsMore = "agents_more"
+        case steps, stepsMore = "steps_more"
     }
     package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -41,6 +50,8 @@ package struct SessionFeedLive: Decodable, Equatable, Sendable {
         agents = try c.decodeIfPresent([SessionLiveAgent].self, forKey: .agents) ?? []
         agentsState = try c.decodeIfPresent(String.self, forKey: .agentsState) ?? "unknown"
         agentsMore = try c.decodeIfPresent(Int.self, forKey: .agentsMore) ?? 0
+        steps = try c.decodeIfPresent([SessionLiveAction].self, forKey: .steps) ?? []
+        stepsMore = try c.decodeIfPresent(Int.self, forKey: .stepsMore) ?? 0
     }
 }
 
