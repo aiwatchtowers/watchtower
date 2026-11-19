@@ -9,8 +9,9 @@ struct WorkchatLiveLine: View {
     let snapshot: SessionFeedLive?
     let error: String?
     let loaded: Bool
-    /// The session runs a turn (or background agents): the list then never
-    /// reads a missing snapshot as "none working".
+    /// The session is busy (`WorkchatLivePresentation.busy`: a turn, background
+    /// agents or an approval): the list then never reads a missing snapshot as
+    /// "none working".
     let working: Bool
     /// A permission card stands in for the activity text; the 👥 list still
     /// reads the real snapshot.
@@ -40,9 +41,8 @@ struct WorkchatLiveLine: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let now = referenceDate ?? context.date
-            let row = WorkchatLivePresentation.row(snapshot: activityHidden ? nil : snapshot,
-                                                   error: activityHidden ? nil : error, loaded: loaded,
-                                                   working: working && !activityHidden, stateAt: stateAt, now: now, done: done)
+            let row = WorkchatLivePresentation.row(snapshot: snapshot, error: error, loaded: loaded, working: working,
+                                                   stateAt: stateAt, now: now, done: done, activityHidden: activityHidden)
             HStack(spacing: Spacing.compact) {
                 if let row {
                     if row.activity {

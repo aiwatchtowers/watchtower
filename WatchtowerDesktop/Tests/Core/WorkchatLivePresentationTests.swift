@@ -128,6 +128,20 @@ final class WorkchatLivePresentationTests: XCTestCase {
         XCTAssertEqual(row(live)?.agentsSymbol, "person.2")
     }
 
+    /// An approval prompt hides the step and its timer, never the 👥 count.
+    func testApprovalPromptKeepsTheRunningCount() throws {
+        let busy = WorkchatLivePresentation.busy(SessionSwitcherPresentation.State(kind: .needsApproval, live: true))
+        let action = SessionLiveAction(tool: "Bash", summary: "go test", startedAt: now - 3)
+        let live = snapshot(current: action, agents: [runningAgent("bg1"), runningAgent("bg2")])
+        let result = try XCTUnwrap(WorkchatLivePresentation.row(snapshot: live, error: nil, loaded: true, working: busy,
+                                                                stateAt: now - 5, now: now, activityHidden: true))
+        XCTAssertEqual(result.agentsBadge, "2"); XCTAssertEqual(result.agentsSymbol, "person.2"); XCTAssertTrue(result.agentsEnabled)
+        XCTAssertFalse(result.activity); XCTAssertNil(result.elapsed); XCTAssertFalse(result.pulse)
+        let none = try XCTUnwrap(WorkchatLivePresentation.row(snapshot: snapshot(), error: nil, loaded: true, working: busy,
+                                                              stateAt: nil, now: now, activityHidden: true))
+        XCTAssertNil(none.agentsBadge, "no agents and no Done: the row keeps its slot, no button")
+    }
+
     func testAgentsLabelNamesTheCount() throws {
         let done = [SessionFeedSubagent(toolUseID: "d1", status: "finished"), SessionFeedSubagent(toolUseID: "d2", status: "finished")]
         let working = try XCTUnwrap(row(snapshot(agents: [runningAgent("w1"), runningAgent("w2")])))

@@ -52,8 +52,7 @@ struct SessionChatView: View {
     /// The agent works or has background subagents running: poll every 3 s.
     private var isActive: Bool {
         guard let session = vm.session(sessionID, projectID: projectID) else { return false }
-        let kind = vm.sessionState(session).kind
-        return kind == .working || kind == .background
+        return WorkchatLivePresentation.busy(vm.sessionState(session))
     }
 
     private var stateKind: SessionSwitcherPresentation.State.Kind? {
@@ -90,6 +89,12 @@ struct SessionChatView: View {
     /// The round button is Stop while the agent or its subagents work.
     private var working: Bool {
         vm.sessionStatuses[sessionID].map(SessionControl.isWorking) ?? false
+    }
+
+    /// Busy for the live line and the 👥 list: working, background agents, or
+    /// waiting on an approval (the live snapshot stays read meanwhile).
+    private var busy: Bool {
+        WorkchatLivePresentation.busy(vm.sessionStatuses[sessionID]?.state)
     }
 
     /// The live line (Task 6): the agent's open step, Agents working or
@@ -166,7 +171,7 @@ struct SessionChatView: View {
             // session ending; under the ended line it stays while there are
             // finished agents to list.
             if path.isRoot, ended == nil ? composerShown && workchat != nil : !done.isEmpty {
-                liveLine(working: ended == nil && working)
+                liveLine(working: ended == nil && busy)
                     .padding(.bottom, ended == nil ? .zero : Spacing.small)
             }
             if path.isRoot, ended == nil, composerShown, let workchat {
@@ -205,8 +210,10 @@ struct SessionChatView: View {
             guard path.isRoot else { return }
             await store.screenChanged(appState.uiVisibility.isOnScreen)
         }
-        .onChange(of: working) { _, nowWorking in
-            if !nowWorking { store.clearActivity() }
+        // Only a session that stops being busy drops its step: an approval
+        // prompt keeps the snapshot (its background agents still run).
+        .onChange(of: busy) { _, nowBusy in
+            if !nowBusy { store.clearActivity() }
         }
         .onChange(of: sessionID) { path = SessionChatPath() }
     }
@@ -237,7 +244,9 @@ struct SessionChatView: View {
     /// step and the 👥 list.
     private func liveLine(working: Bool) -> some View {
         WorkchatLiveLine(snapshot: store.live, error: store.liveError,
-                         loaded: store.liveLoaded, working: working, activityHidden: permission != nil,
+                         loaded: store.liveLoaded, working: working,
+                         // An approval (its card, or the state before the card is read) hides the step only.
+                         activityHidden: permission != nil || !self.working,
                          stateAt: SessionFeedEntry.parseDate(vm.sessionStatuses[sessionID]?.at),
                          done: done, paneKey: "session-\(sessionID)", memory: vm.paneMemory,
                          feedLoaded: store.feedLoaded, feedError: store.error,

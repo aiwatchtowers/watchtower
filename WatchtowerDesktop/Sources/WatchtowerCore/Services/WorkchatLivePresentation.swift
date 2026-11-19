@@ -71,7 +71,8 @@ package enum WorkchatLivePresentation {
         working: Bool,
         stateAt: Date?,
         now: Date,
-        done: [SessionFeedSubagent] = []
+        done: [SessionFeedSubagent] = [],
+        activityHidden: Bool = false
     ) -> Row? {
         guard working else {
             // Idle or ended: only the 👥 button, and only with finished agents to list.
@@ -94,7 +95,24 @@ package enum WorkchatLivePresentation {
         }
         // Unknown live status still opens the list when Done has rows to read.
         result.agentsEnabled = result.agentsBadge != nil && (!unknown || !done.isEmpty)
+        if activityHidden {
+            // A permission card stands in for the step and its timer; the 👥 button keeps the real count.
+            result.activity = false
+            result.elapsed = nil
+            result.pulse = false
+            result.retry = false
+            result.warning = false
+        }
         return result
+    }
+
+    /// Busy for the live line and the 👥 list: the turn works, background
+    /// agents do, or the agent waits on an approval (a permission card pauses
+    /// the turn, it does not end it). Not busy = idle: a missing snapshot then
+    /// means no agents, and the live read stops.
+    package static func busy(_ state: SessionSwitcherPresentation.State?) -> Bool {
+        guard let state, state.live else { return false }
+        return [.working, .background, .needsApproval].contains(state.kind)
     }
 
     private static func workingRow(
@@ -175,7 +193,9 @@ package enum WorkchatLivePresentation {
         let state: AgentsList.State = feedLoaded ? .ready : (feedError == nil ? .loading : .error)
         let doneIDs = Set(done.map(\.toolUseID))
         let working = agentRows(snapshot, error: error, now: now).filter { !doneIDs.contains($0.id) }
-        let unknown = workingUnknown(snapshot, error: error, idle: idle, now: now)
+        var counted = snapshot
+        counted?.agents.removeAll { doneIDs.contains($0.id) }
+        let unknown = workingUnknown(counted, error: error, idle: idle, now: now)
         let note: String? = unknown ? unknownAgents : (working.isEmpty ? noneWorking : nil)
         let rows = done.map {
             DoneRow(ref: $0, title: $0.type.isEmpty ? "Subagent" : $0.type, subtitle: $0.description, id: $0.toolUseID)

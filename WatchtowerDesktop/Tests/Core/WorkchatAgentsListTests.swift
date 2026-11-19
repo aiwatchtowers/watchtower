@@ -114,14 +114,33 @@ final class WorkchatAgentsListTests: XCTestCase {
         XCTAssertEqual(rows.first?.ref.toolUseID, "a")
     }
 
-    /// A permission card hides the activity text, not the agents: without a
-    /// snapshot while the session is busy, the list never claims none works.
+    /// A session waiting on an approval is busy, not idle: the list reads the
+    /// real snapshot and, without one, never claims none works. `idle` is
+    /// derived as the view derives it.
     func testPermissionPromptNeverSaysNoneWorking() {
-        let waiting = list(nil, done: nineDone, idle: false)
+        let approval = SessionSwitcherPresentation.State(kind: .needsApproval, live: true)
+        let idle = !WorkchatLivePresentation.busy(approval)
+        XCTAssertFalse(idle)
+        let waiting = list(nil, done: nineDone, idle: idle)
         XCTAssertEqual(waiting.workingNote, "Agent status unavailable")
         XCTAssertTrue(waiting.doneOpenByDefault)
-        let fed = list(snapshot(agents: [running("bg")]), idle: false)
+        let fed = list(snapshot(agents: [running("bg")]), idle: idle)
         XCTAssertEqual(fed.working.map(\.id), ["bg"], "the real snapshot lists the background agent")
+        XCTAssertNil(fed.workingNote)
+    }
+
+    func testBusyCoversWorkingBackgroundAndApproval() {
+        typealias State = SessionSwitcherPresentation.State
+        let busy = State.Kind.allCases.filter { WorkchatLivePresentation.busy(State(kind: $0, live: true)) }
+        XCTAssertEqual(Set(busy), [.working, .background, .needsApproval])
+        XCTAssertFalse(WorkchatLivePresentation.busy(State(kind: .working, live: false)), "a session that is gone is idle")
+        XCTAssertFalse(WorkchatLivePresentation.busy(nil))
+    }
+
+    func testUnknownDoneAgentDoesNotMakeWorkingUnknown() {
+        let unresolved = SessionLiveAgent(ref: SessionFeedSubagent(toolUseID: "x"))
+        let result = list(snapshot(agents: [unresolved]), done: [finished("x")])
+        XCTAssertEqual(result.workingNote, "No agents working", "an agent already Done does not count, as on the badge")
     }
 
     func testTurnStartBeforeFirstLiveReadIsNotNone() {
