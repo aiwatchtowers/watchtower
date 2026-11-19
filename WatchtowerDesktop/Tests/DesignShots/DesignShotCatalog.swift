@@ -664,6 +664,8 @@ enum DesignShotCatalog {
             + RoutingPillShotFixtures.shots // The routing pill and fallback card before and after ChatUI (#1822 T17).
             + BackgroundAIConsentShotFixtures.shots // Background AI consent spec (#1886), design only.
             + WatchmanShotFixtures.shots // Watchman spec (#1824), design only.
+            + WorkchatAgentsMockShotFixtures.shots // Workchat agents list and live steps spec (#2065), design only.
+            + WorkchatAgentsShotFixtures.shots // The same states on the built views (#2065), against the mockups.
     }
 }
 

@@ -39,6 +39,9 @@ type SubagentRef struct {
 	Description  string `json:"description"`
 	Status       string `json:"status"`
 	ParentReport string `json:"-"`
+	// StartedAt is when the call was made, else the meta file's mtime; never in
+	// the entry JSON (the CLI prints it on `subagents` list items only).
+	StartedAt time.Time `json:"-"`
 }
 
 // Entry is one chat line. An entry can be re-emitted with the same ID and

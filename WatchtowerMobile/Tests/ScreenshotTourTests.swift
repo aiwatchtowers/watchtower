@@ -176,12 +176,12 @@ final class ScreenshotTourTests: XCTestCase {
 
     /// The primary demo Mac's transport and the defaults holding its seq
     /// ceiling, for a later save in the hub's name.
-    private struct DemoHub {
+    struct DemoHub {
         let transport: InMemoryCloudTransport
         let defaults: UserDefaults
     }
 
-    private func makeDemoRoot() throws -> (AppRoot, DemoHub) {
+    func makeDemoRoot() throws -> (AppRoot, DemoHub) {
         let defaults = try makeDefaults()
         var primary: InMemoryCloudTransport?
         let env = AppEnvironment(backend: .inMemoryDemo, defaults: defaults)
@@ -1295,7 +1295,7 @@ final class ScreenshotTourTests: XCTestCase {
     static let alertGap = "The alert is not captured (iOS 26 draws it outside drawHierarchy); its copy is asserted in "
         + "RelaySlotsModelTests and MacsModelTests; the owner checks it on a device"
 
-    private static func isHydrated(_ env: AppEnvironment) -> Bool {
+    static func isHydrated(_ env: AppEnvironment) -> Bool {
         env.activeSession.isBootstrapped && !env.workbenchReplica.snapshot.workbenches.isEmpty
             && !env.calendarReplica.snapshot.events.isEmpty && !env.phoneRecordings.snapshot.recordings.isEmpty
     }
