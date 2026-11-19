@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -65,11 +66,12 @@ func runRootCmd(t *testing.T, cmds []*cobra.Command, args ...string) (stdout, st
 // run print usage. Flags no run set are left alone (flagConfig, for one, is
 // assigned by the tests, never parsed).
 //
-// --config is never put back to its default: that is the machine's real
-// config file, so a Changed mark left by a run that parsed --config (and
-// cleared nowhere) would point every later test at the owner's live config
-// and database. Its mark is cleared and flagConfig keeps its value; the run
-// helpers restore the value they found.
+// --config is only unmarked, never reset: a reset would move flagConfig to
+// the flag's default (TestMain points that at the test home; before it did,
+// a Changed mark leaked by one run pointed every later test at the owner's
+// live config and database). flagConfig keeps whatever the run left in it;
+// runWorkbench and runRootCmd put back the value they found, other callers
+// restore it themselves when they parse --config.
 //
 // A slice flag is restored through Replace: Set appends, and its "[]"
 // default text would parse as one "[]" element.
@@ -99,6 +101,46 @@ func resetSetFlags(cmds ...*cobra.Command) {
 		c.PersistentFlags().VisitAll(reset)
 		c.InheritedFlags().VisitAll(reset)
 	}
+}
+
+// The run helpers never move flagConfig (#2089): a run that parses --config
+// leaves the config the test chose, and a --config Changed mark leaked by
+// another run (runService once left one) is not reset to the flag's
+// default. That default lies under the test home, never the owner's real
+// ~/.config/watchtower/config.yaml.
+func TestRunHelpersKeepTheTestsConfig(t *testing.T) {
+	configFlag := rootCmd.PersistentFlags().Lookup("config")
+	require.NotNil(t, configFlag)
+	assert.True(t, strings.HasPrefix(configFlag.DefValue, os.Getenv("HOME")+string(filepath.Separator)),
+		"--config default %q is not under the test home %q", configFlag.DefValue, os.Getenv("HOME"))
+	// os.UserHomeDir reads HOME (the test home); the account's home is the
+	// owner's real one.
+	if u, err := user.Current(); err == nil && u.HomeDir != "" {
+		assert.False(t, strings.HasPrefix(configFlag.DefValue, u.HomeDir+string(filepath.Separator)),
+			"--config default %q is under the account's real home", configFlag.DefValue)
+	}
+
+	writeActionsConfig(t)
+	mine := flagConfig
+	other := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(other, []byte("active_workspace: other\n"), 0o600))
+
+	_, _, err := runRootCmd(t, nil, "version", "--config", other)
+	require.NoError(t, err)
+	assert.Equal(t, mine, flagConfig, "a run with --config keeps the test's config")
+	assert.False(t, configFlag.Changed)
+
+	_, _, err = runWorkbench(t, "--help")
+	require.NoError(t, err)
+	assert.Equal(t, mine, flagConfig, "a run without --config sees the test's config")
+
+	// A Changed mark another run leaked is cleared, not reset to the default.
+	configFlag.Changed = true
+	t.Cleanup(func() { configFlag.Changed = false })
+	_, _, err = runWorkbench(t, "--help")
+	require.NoError(t, err)
+	assert.Equal(t, mine, flagConfig, "a leaked --config mark does not move flagConfig")
+	assert.False(t, configFlag.Changed)
 }
 
 // The pre-rename `project` command and --project flag are gone (spec

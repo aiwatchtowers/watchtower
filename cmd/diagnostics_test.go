@@ -100,23 +100,23 @@ func runDiag(t *testing.T, args ...string) (string, int) {
 	t.Helper()
 	var out bytes.Buffer
 	oldArgs := os.Args
-	// The run parses --config and --workspace into the shared globals: put
-	// them back with their Changed marks cleared, or a later run's
-	// resetSetFlags would reset --config to the machine's real config.
-	cfgPath, ws := flagConfig, flagWorkspace
 	t.Cleanup(func() {
 		os.Args = oldArgs
 		rootCmd.SetArgs(nil)
 		rootCmd.SetOut(nil)
-		flagConfig, flagWorkspace = cfgPath, ws
-		for _, name := range []string{"config", "workspace"} {
-			rootCmd.PersistentFlags().Lookup(name).Changed = false
-		}
 	})
 	os.Args = append([]string{"watchtower"}, args...)
 	rootCmd.SetArgs(args)
 	rootCmd.SetOut(&out)
+	// The run parses --config and --workspace into the shared globals: put
+	// them back with their Changed marks cleared, or a later run's
+	// resetSetFlags would reset them.
+	cfgPath, ws := flagConfig, flagWorkspace
 	code := Execute()
+	flagConfig, flagWorkspace = cfgPath, ws
+	for _, name := range []string{"config", "workspace"} {
+		rootCmd.PersistentFlags().Lookup(name).Changed = false
+	}
 	return out.String(), code
 }
 
