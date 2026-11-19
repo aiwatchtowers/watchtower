@@ -227,11 +227,12 @@ func TestFinishSession_RefusedFinishHoldsTheHandover(t *testing.T) {
 	assert.Equal(t, asked+2, wakes.Load(), "the release wakes the twin")
 }
 
-// A review ask is the owner's verdict on a document, never a handover
-// (final review B-minor 1).
+// In a session handed to Watchman a review ask is the owner's verdict on a
+// document, never a handover (final review B-minor 1).
 func TestFinishSession_ReviewAskIsNoHandover(t *testing.T) {
 	fx := newWorkbenchFixture(t)
 	session := seedTerminalSession(t, fx.d, fx.a)
+	armSession(t, fx.d, session)
 	reg := askRegistry(t, fx.d, strconv.FormatInt(session, 10))
 	writeWorkbenchFile(t, fx.d, fx.a, "docs/spec.md", "# Spec\n")
 	id := askID(t, mustApply(t, reg, fx.a, "ask_owner", `{"kind":"review","title":"Review","doc_path":"docs/spec.md","reason":"r"}`))
@@ -288,4 +289,16 @@ func TestFinishSession_ArmedHandoverOfAnsweredAskQueuesNothing(t *testing.T) {
 	mustApply(t, reg, fx.a, "finish_session", fmt.Sprintf(`{"summary":"A done.","target_id":%d,"handover_ask_id":%d,"reason":"r"}`, fx.aTarget, id))
 	assert.Zero(t, watchmanItemCount(t, fx.d))
 	assert.Zero(t, wakes.Load())
+}
+
+// Unarmed, the finish contract is unchanged: a review ask still passes as
+// the handover ask (fix wave 2).
+func TestFinishSession_UnarmedReviewAskStillHandsOver(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	session := seedTerminalSession(t, fx.d, fx.a)
+	reg := askRegistry(t, fx.d, strconv.FormatInt(session, 10))
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/spec.md", "# Spec\n")
+	id := askID(t, mustApply(t, reg, fx.a, "ask_owner", `{"kind":"review","title":"Review","doc_path":"docs/spec.md","reason":"r"}`))
+	out := mustApply(t, reg, fx.a, "finish_session", fmt.Sprintf(`{"summary":"Done.","handover_ask_id":%d,"reason":"r"}`, id))
+	assert.EqualValues(t, id, out["handover_ask_id"])
 }

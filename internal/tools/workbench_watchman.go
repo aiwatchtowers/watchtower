@@ -62,6 +62,18 @@ func queueWatchmanAsk(d *db.DB, ask db.OwnerAsk, id int64, wake func()) {
 	}, wake)
 }
 
+// watchmanArmedForGate reports an armed session for a finish check; an
+// arming read that fails is logged and counts as unarmed (spec §7: the
+// finish stays as without Watchman).
+func watchmanArmedForGate(d *db.DB, session int64) bool {
+	armed, err := d.WatchmanSessionArmed(session)
+	if err != nil {
+		watchmanLog("finish of session %d: reading its Watchman arming: %v", session, err)
+		return false
+	}
+	return armed
+}
+
 // checkWatchmanGate is finish_session's gate for an armed session, after the
 // existing gates passed. A handover ask becomes the twin's handover first,
 // held (markWatchmanHandover): so the twin does not decide it as an
@@ -73,12 +85,7 @@ func queueWatchmanAsk(d *db.DB, ask db.OwnerAsk, id int64, wake func()) {
 // — passes; so does a snapshot that cannot be read (logged): the finish
 // stays as without Watchman.
 func checkWatchmanGate(ctx context.Context, d *db.DB, p *db.Workbench, session, ticket int64, a finishSessionArgs, wake func()) error {
-	armed, err := d.WatchmanSessionArmed(session)
-	if err != nil {
-		watchmanLog("finish of session %d: reading its Watchman arming: %v", session, err)
-		return nil
-	}
-	if !armed {
+	if !watchmanArmedForGate(d, session) {
 		return nil
 	}
 	if a.HandoverAskID != 0 {
