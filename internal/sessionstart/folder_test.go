@@ -371,7 +371,9 @@ func TestFinishWithTheHostAbsentFailsTheRow(t *testing.T) {
 	w := newWorld(t)
 	id := w.begin(handlers.StartRequest{Workbench: w.wb})
 	d := w.deps()
-	missing := filepath.Join(t.TempDir(), "absent.sock")
+	// A short dir like newWorld's: past macOS's 104-byte sun_path a dial
+	// fails with EINVAL, not the ENOENT this test is about.
+	missing := filepath.Join(filepath.Dir(w.socket), "absent.sock")
 	d.host = func(ctx context.Context) (*sessionhost.Client, func(error), error) {
 		c, err := sessionhost.Dial(ctx, missing)
 		return c, func(error) {}, err
