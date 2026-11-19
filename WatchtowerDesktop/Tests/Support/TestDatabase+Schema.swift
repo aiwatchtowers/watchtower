@@ -2421,7 +2421,7 @@ CREATE TABLE IF NOT EXISTS "coach_proposals" (
     conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL,
     written_branch  TEXT NOT NULL DEFAULT '',
     measure_from    TEXT
-);
+, pr_url TEXT NOT NULL DEFAULT '', revert_pr_url TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS skill_pack_overlays (
     id          INTEGER PRIMARY KEY,
     skill       TEXT NOT NULL,

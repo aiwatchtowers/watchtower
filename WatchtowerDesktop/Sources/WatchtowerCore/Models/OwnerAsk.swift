@@ -2,7 +2,7 @@ import Foundation
 import WatchtowerChatText
 import GRDB
 
-/// `folder` (00208): the agent suggests putting a folder on the bench
+/// `folder` (00209): the agent suggests putting a folder on the bench
 /// (`suggest_workbench_folder`). A kind this build does not know makes the
 /// row unreadable — named beside the list (`OwnerAskRows`), never shown as
 /// another kind.
@@ -204,7 +204,7 @@ package struct OwnerAsk: FetchableRecord, Identifiable, Equatable, Sendable {
     package let folderSuggestion: FolderSuggestionPayload?
     /// Relative to `docFolderID`'s folder, always.
     package let docPath: String
-    /// The workbench folder `docPath` is relative to (00208); nil = the home
+    /// The workbench folder `docPath` is relative to (00209); nil = the home
     /// folder (every ask filed before multi-folder benches).
     package let docFolderID: Int64?
     /// A review's document kind (00158): spec, plan or other; empty for

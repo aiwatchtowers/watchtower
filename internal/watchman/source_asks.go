@@ -50,9 +50,14 @@ func (s *asksSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cur 
 	return out, next, done, nil
 }
 
-// askPrecedent maps one ask: ok false for a dismissed ask (no decision), an
-// error (log-safe) for a row that cannot be read, which the caller counts.
+// askPrecedent maps one ask: ok false for a dismissed ask (no decision) and
+// for a folder suggestion (the owner's bench membership, never the twin's to
+// learn or answer), an error (log-safe) for a row that cannot be read, which
+// the caller counts.
 func askPrecedent(workbenchID int64, r db.WatchmanAskRow) (db.WatchmanPrecedent, bool, error) {
+	if r.Kind == db.AskKindFolder {
+		return db.WatchmanPrecedent{}, false, nil
+	}
 	if r.Mark.At == "" {
 		return db.WatchmanPrecedent{}, false, errNoStamp
 	}

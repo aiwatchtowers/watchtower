@@ -52,7 +52,8 @@ func queueWatchmanItem(d *db.DB, it db.WatchmanItem, wake func()) (queued bool) 
 
 // queueWatchmanAsk queues a just-filed ask of session for the twin.
 func queueWatchmanAsk(d *db.DB, ask db.OwnerAsk, id int64, wake func()) {
-	if !ask.SessionID.Valid {
+	// A folder suggestion is never the twin's: its answer acts on the Mac.
+	if !ask.SessionID.Valid || ask.Kind == db.AskKindFolder {
 		return
 	}
 	queueWatchmanItem(d, db.WatchmanItem{

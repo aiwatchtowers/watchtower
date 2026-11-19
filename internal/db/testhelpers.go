@@ -27,7 +27,7 @@ func OpenTestDB(t *testing.T) *DB {
 
 // SeedTestHomeFolders gives every workbench a fixture planted with raw SQL
 // (an INSERT INTO projects) its home folder row, as CreateWorkbench and
-// migration 00208 do; a workbench that has one is left alone.
+// migration 00209 do; a workbench that has one is left alone.
 func SeedTestHomeFolders(t *testing.T, d *DB) {
 	t.Helper()
 	if _, err := d.Exec(`INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)

@@ -192,7 +192,12 @@ func (j *job) decideReviewDoc(ctx context.Context, p asks.Payload) {
 	}
 	verdict, outcome := asks.VerdictChanges, OutcomeChanges
 	if j.dec.Choice == ReviewApprove {
-		dir, err := j.t.inventoryDir(j.it.WorkbenchID)
+		dir, err := j.t.inventoryDir(ctx, j.it.WorkbenchID, j.ask.DocFolderID)
+		if errors.Is(err, errDocFolderUnresolved) {
+			log.Printf("watchman twin: item %d: %v", j.it.ID, err)
+			j.park(ctx, ProtectedReason)
+			return
+		}
 		if err != nil {
 			j.fail(ctx, err)
 			return
@@ -243,14 +248,32 @@ func reviewFindings(row *db.SpecReview) (*specreview.Result, []specreview.Ledger
 	return result, loop, nil
 }
 
-// inventoryDir is the behavior inventory of the workbench's folder.
-func (t *Twin) inventoryDir(workbenchID int64) (string, error) {
-	wb, err := t.d.DB.GetWorkbench(workbenchID)
+// inventoryDir is the behavior inventory of the folder the review ask's
+// document is in (its DocFolderID; the home folder for a legacy ask with
+// none); errDocFolderUnresolved when that folder row is gone or not the
+// workbench's.
+func (t *Twin) inventoryDir(ctx context.Context, workbenchID int64, docFolder sql.NullInt64) (string, error) {
+	if !docFolder.Valid {
+		// A legacy ask from before multi-folder workbenches: the home folder.
+		wb, err := t.d.DB.GetWorkbench(workbenchID)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(wb.FolderPath, filepath.FromSlash(inventoryName)), nil
+	}
+	f, err := t.d.DB.WorkbenchFolderByID(ctx, docFolder.Int64)
+	if errors.Is(err, db.ErrWorkbenchNotFound) || (err == nil && f.WorkbenchID != workbenchID) {
+		return "", fmt.Errorf("%w: folder %d of workbench %d", errDocFolderUnresolved, docFolder.Int64, workbenchID)
+	}
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(wb.FolderPath, filepath.FromSlash(inventoryName)), nil
+	return filepath.Join(f.FolderPath, filepath.FromSlash(inventoryName)), nil
 }
+
+// errDocFolderUnresolved: the ask's recorded document folder is gone or not
+// of its workbench, so its inventory cannot be read — the approve parks.
+var errDocFolderUnresolved = errors.New("the document's folder cannot be resolved")
 
 // --- review_code -------------------------------------------------------
 

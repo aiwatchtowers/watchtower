@@ -321,7 +321,7 @@ func chatContext(ctx context.Context, c *tower.Ctx, q api.ChatContextRequest) (a
 }
 
 // chatReviewerThread is ReviewerThreadQueries.ensure: one thread per
-// (workbench, folder, branch) since migration 00208, so two folders with the
+// (workbench, folder, branch) since migration 00209, so two folders with the
 // same branch never share one. No folder is the workbench's home folder.
 func chatReviewerThread(ctx context.Context, c *tower.Ctx, q api.ChatReviewerThreadRequest) (api.ChatNewResponse, error) {
 	if q.ProjectID <= 0 || q.Branch == "" || q.FolderID < 0 {
@@ -367,7 +367,7 @@ func reviewerThreadFolder(projectID, folderID int64) (string, int64) {
 }
 
 // reviewerContextID is ReviewerSurface.contextID: <project>:<branch> for the
-// home folder (as before 00208), <project>:f<folder>:<branch> for a
+// home folder (as before 00209), <project>:f<folder>:<branch> for a
 // session's folder.
 func reviewerContextID(projectID, folderID int64, branch string) string {
 	if folderID == 0 {

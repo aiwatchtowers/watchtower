@@ -26,7 +26,7 @@ const WorkbenchDocSource = "project_doc"
 
 // workbenchDocPrefix starts every workbench document key:
 // wbdoc:<workbench id>:<folder id>:<rel path> (multi-folder workbench, spec
-// 2026-11-18 §4 item 7; 00208 rekeyed the older wbdoc:<workbench id>:<rel>).
+// 2026-11-18 §4 item 7; 00209 rekeyed the older wbdoc:<workbench id>:<rel>).
 const workbenchDocPrefix = "wbdoc:"
 
 // listTextFiles lists a folder's text documents (workbenchdocs.Lister.List).
@@ -79,7 +79,7 @@ func (w workbenchFolder) prefix() string { return workbenchDocKind.folderPrefix(
 
 // indexedFolderCond selects (over workbench_folders f) the folders whose
 // documents are indexed: every live folder, and for a workbench with none
-// (a legacy bench whose only row 00208 marked removed, db.HomeFolder) its
+// (a legacy bench whose only row 00209 marked removed, db.HomeFolder) its
 // lowest-position row.
 const indexedFolderCond = `(f.removed_at IS NULL OR (
 	NOT EXISTS (SELECT 1 FROM workbench_folders l WHERE l.workbench_id = f.workbench_id AND l.removed_at IS NULL)

@@ -433,7 +433,7 @@ func TestGitSource_ForeignAuthorNotOwner(t *testing.T) {
 }
 
 // upsertHomePRState stores s under its workbench's home folder (PR states
-// are keyed per folder since migration 00208), as the git source reads them.
+// are keyed per folder since migration 00209), as the git source reads them.
 func upsertHomePRState(d *db.DB, s db.PRState) error {
 	home, err := d.HomeFolderID(context.Background(), s.WorkbenchID)
 	if err != nil {

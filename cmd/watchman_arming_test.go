@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -767,4 +768,51 @@ func TestWatchmanArm_WarnsWhenTheGuardHookIsMissing(t *testing.T) {
 	resetWatchmanArmFlags()
 	require.NoError(t, err, text)
 	assert.Contains(t, text, want)
+}
+
+// The protection check asks about the repositories the armed scope covers:
+// a session's own bench folder (not only the home folder), and for a target
+// every live folder of its bench (#2003).
+func TestWatchmanArm_ChecksTheCoveredFolders(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	var path string
+	d := openAgentsTestMain(t, &path)
+	var home string
+	require.NoError(t, d.QueryRow(`SELECT folder_path FROM projects WHERE id = ?`, wb).Scan(&home))
+	hub := t.TempDir()
+	res, err := d.Exec(`INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
+		VALUES (?, ?, 1, 'owner', 'hub')`, wb, hub)
+	require.NoError(t, err)
+	hubID, err := res.LastInsertId()
+	require.NoError(t, err)
+	s1, _ := armSession(t, wb, "claude", nil, false)
+	_, err = d.Exec(`UPDATE terminal_sessions SET workbench_folder_id = ? WHERE id = ?`, hubID, s1)
+	require.NoError(t, err)
+
+	var asked []string
+	prev := watchmanProtectionRun
+	// Every repository is protected: each covered one is asked in turn.
+	watchmanProtectionRun = func(_ context.Context, dir, _ string, args ...string) ([]byte, error) {
+		if !slices.Contains(asked, dir) {
+			asked = append(asked, dir)
+		}
+		if args[len(args)-1] == ".default_branch" {
+			return []byte("main\n"), nil
+		}
+		return []byte(`{"required_pull_request_reviews":{"required_approving_review_count":1},"enforce_admins":{"enabled":true}}`), nil
+	}
+	t.Cleanup(func() { watchmanProtectionRun = prev })
+
+	_, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--check", "--json")
+	require.NoError(t, err, out)
+	assert.Equal(t, []string{hub}, asked, "the session's own folder, not the home folder")
+
+	res, err = d.Exec(`INSERT INTO targets (text, period_start, period_end, project_id) VALUES ('acme', '2026-11-01', '2026-11-30', ?)`, wb)
+	require.NoError(t, err)
+	target, err := res.LastInsertId()
+	require.NoError(t, err)
+	asked = nil
+	_, out, err = armCLI(t, "arm", "--target", strconv.FormatInt(target, 10), "--check", "--json")
+	require.NoError(t, err, out)
+	assert.ElementsMatch(t, []string{home, hub}, asked, "a target covers every live folder of its bench")
 }

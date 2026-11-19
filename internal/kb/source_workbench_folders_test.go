@@ -37,7 +37,7 @@ func seedTwoFolderBench(t *testing.T, d *db.DB) (home, hub string) {
 // PROJ-08 amended): the documents of every folder of a workbench are indexed
 // under wbdoc:<workbench>:<folder>:<rel>, searchable and openable only from
 // that workbench's session; a later pass matches the keys it wrote (the
-// shape 00208 rekeyed the older rows to), writing and dropping nothing.
+// shape 00209 rekeyed the older rows to), writing and dropping nothing.
 func TestProj08_EveryFolderIsIndexedUnderItsWorkbench(t *testing.T) {
 	ctx := context.Background()
 	d := db.OpenTestDB(t)

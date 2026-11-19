@@ -1,7 +1,11 @@
+import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// "Accepted edits": accepted and rolled-back proposals, newest first.
+/// "Accepted edits": accepted and rolled-back proposals, newest first. A
+/// pull-request edit links its PR (and its revert PR); the list reads the
+/// PRs' state from GitHub once when it appears (`coach sync-prs`, spec
+/// 2026-11-19 §4.4).
 struct CoachAcceptedLogView: View {
     static let collapsedCount = 10
 
@@ -14,6 +18,11 @@ struct CoachAcceptedLogView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             SectionHeader(title: "Accepted edits", systemImage: "checkmark.circle", count: accepted.count)
+            if let line = coach.syncLine {
+                Label { Text(CoachPRTexts.styled(line)) } icon: { Image(systemName: "exclamationmark.triangle") }
+                    .font(.caption)
+                    .foregroundStyle(Tone.warning)
+            }
             if accepted.isEmpty {
                 Text("Nothing accepted yet").font(.callout).foregroundStyle(.secondary)
             } else {
@@ -27,6 +36,7 @@ struct CoachAcceptedLogView: View {
                 }
             }
         }
+        .onAppear { coach.syncPRs() }
     }
 
     static func tone(_ p: CoachProposal) -> Color {
@@ -49,6 +59,9 @@ struct CoachAcceptedLogView: View {
                 Text(Self.date(p.decidedAt)).font(.caption.weight(.semibold).monospacedDigit())
                 Text(p.title).font(.callout).lineLimit(1)
                 Spacer(minLength: Spacing.regular)
+                if let url = URL(string: p.prURL), !p.prURL.isEmpty {
+                    CoachPRLink(label: p.prLabel, url: url).font(.caption)
+                }
                 Text(p.verdictLine(hasCut: hasCut, now: Date(), writtenPath: coach.written[p.id]?.path))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -60,8 +73,26 @@ struct CoachAcceptedLogView: View {
                         .disabled(coach.pending.contains(p.id))
                 }
             }
+            if p.revertLine != nil, let url = URL(string: p.revertPRURL) {
+                HStack(spacing: Spacing.compact) {
+                    Text(CoachPRTexts.revertLead)
+                    CoachPRLink(label: CoachPRTexts.label(p.revertPRURL), url: url)
+                    Text(CoachPRTexts.revertTail)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.leading, IconSize.stateDot + Spacing.regular)
+            }
             if let error = coach.cardErrors[p.id] {
-                Text(error).font(.caption).foregroundStyle(Tone.warning)
+                HStack(spacing: Spacing.regular) {
+                    Text(CoachPRTexts.styled(error)).font(.caption).foregroundStyle(Tone.warning)
+                    if coach.retries[p.id] == .rollback {
+                        Button(CoachPRTexts.retry) { onRollback(p) }
+                            .buttonStyle(.kitQuiet)
+                            .controlSize(.small)
+                            .disabled(coach.pending.contains(p.id))
+                    }
+                }
             }
         }
         .padding(.horizontal, Spacing.regular)
@@ -76,5 +107,17 @@ struct CoachAcceptedLogView: View {
         f.timeZone = timeZone
         f.dateFormat = "MMM d"
         return f.string(from: d)
+    }
+}
+
+/// "PR #12": opens the pull request in the browser; the caller sets the font.
+struct CoachPRLink: View {
+    let label: String
+    let url: URL
+
+    var body: some View {
+        Button(label) { NSWorkspace.shared.open(url) }
+            .buttonStyle(.link)
+            .help(url.absoluteString)
     }
 }

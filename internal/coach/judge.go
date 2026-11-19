@@ -36,9 +36,11 @@ const (
 // is measured over [decided_at, now) — for a workbench repository file over
 // [measure_from, now), from when the daemon first saw the edit committed
 // (windowStart; not committed within repoCommitWait: a final too_little_data
-// at the first weekly pass after it): under judgeMinSessions sessions, no
-// baseline or no value is too_little_data; a value at least judgeImprovement
-// below the baseline is works; anything else is no_effect. A no_effect edit
+// at the first weekly pass after it; a pull-request row waits instead for
+// SyncPRs, which starts its window at the merge or gives the verdict itself):
+// under judgeMinSessions sessions, no baseline or no value is
+// too_little_data; a value at least judgeImprovement below the baseline is
+// works; anything else is no_effect. A no_effect edit
 // gets one mechanical cut proposal (no model call) when a slot is free. judged
 // counts the works / no_effect verdicts, cuts the proposals written. Nothing
 // is judged until RemeasureMixedBaselines is done (tried again first here), so
@@ -79,8 +81,10 @@ func judge(d *db.DB, al *agentlogdb.DB, home string, now time.Time) (judged, cut
 		if IsRepoDestination(p.Destination) && !committedInTime(p) {
 			// Not committed yet: no window to measure. Past repoCommitWait
 			// it never will be (the daily commit check skips a judged row);
-			// a commit first seen after it counts as never committed.
-			if p.Verdict != "" || p.DecidedAt.IsZero() || now.Sub(p.DecidedAt) < repoCommitWait {
+			// a commit first seen after it counts as never committed. A
+			// pull-request row is GitHub's to decide: SyncPRs, run by the
+			// owner's own process, gives it measure_from or its verdict.
+			if p.PRURL != "" || p.Verdict != "" || p.DecidedAt.IsZero() || now.Sub(p.DecidedAt) < repoCommitWait {
 				continue
 			}
 			if err := d.SetCoachVerdict(p.ID, "too_little_data", nil, now); err != nil &&

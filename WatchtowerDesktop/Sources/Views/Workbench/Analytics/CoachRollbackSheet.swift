@@ -2,7 +2,7 @@ import SwiftUI
 import WatchtowerCore
 
 /// The destination changed since the accept: its diff, then Roll Back Anyway
-/// or Cancel.
+/// or Cancel — or, for a pull-request edit, only Close (`CoachRollbackTexts`).
 struct CoachRollbackSheet: View {
     let proposal: CoachProposal
     let diff: String
@@ -10,13 +10,15 @@ struct CoachRollbackSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
+        let texts = CoachRollbackTexts(proposal)
         VStack(alignment: .leading, spacing: Spacing.regular) {
-            Text("The text changed since you accepted").font(.headline)
-            Text("\(proposal.destinationLabel) was edited after “\(proposal.title)”. Rolling back overwrites those edits.")
+            Text(texts.title).font(.headline)
+            Text(texts.body)
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             ScrollView {
-                Text(diff.isEmpty ? "No diff available." : diff)
+                Text(diff.isEmpty ? CoachRollbackTexts.noDiff : diff)
                     .font(.callout.monospaced())
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
@@ -29,15 +31,21 @@ struct CoachRollbackSheet: View {
             }
             HStack(spacing: Spacing.regular) {
                 Spacer()
-                Button("Cancel") { dismiss() }.buttonStyle(.kitSecondary).keyboardShortcut(.cancelAction)
-                Button("Roll Back Anyway") {
-                    Task {
-                        _ = await coach.rollback(proposal.id, force: true)
-                        if coach.cardErrors[proposal.id] == nil { dismiss() }
+                if texts.offersForce {
+                    Button(texts.dismiss) { dismiss() }.buttonStyle(.kitSecondary).keyboardShortcut(.cancelAction)
+                    Button(CoachRollbackTexts.rollBackAnyway) {
+                        Task {
+                            _ = await coach.rollback(proposal.id, force: true)
+                            if coach.cardErrors[proposal.id] == nil { dismiss() }
+                        }
                     }
+                    .buttonStyle(.kitDestructive)
+                    .disabled(coach.pending.contains(proposal.id))
+                } else {
+                    Button(texts.dismiss) { dismiss() }
+                        .buttonStyle(.kitSecondary)
+                        .keyboardShortcut(.cancelAction)
                 }
-                .buttonStyle(.kitDestructive)
-                .disabled(coach.pending.contains(proposal.id))
             }
         }
         .controlSize(.small)

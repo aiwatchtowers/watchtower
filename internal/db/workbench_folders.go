@@ -9,7 +9,7 @@ import (
 	"strconv"
 )
 
-// WorkbenchFolder is a workbench_folders row (00208, multi-folder
+// WorkbenchFolder is a workbench_folders row (00209, multi-folder
 // workbench): one folder of a workbench. RemovedAt is set once the folder
 // left the bench; the row stays so targets and sessions can still name it.
 type WorkbenchFolder struct {
@@ -108,7 +108,7 @@ func (db *DB) LiveFolderByPath(ctx context.Context, q Querier, path string) (*Wo
 
 // HomeFolder returns workbench workbenchID's home folder: its live row whose
 // path is projects.folder_path; without one, its lowest-position row,
-// removed or not (a legacy bench whose only row 00208 had to mark removed,
+// removed or not (a legacy bench whose only row 00209 had to mark removed,
 // as another spelling of an older bench's folder). ErrWorkbenchNotFound
 // when the bench has no folder row at all.
 func (db *DB) HomeFolder(ctx context.Context, workbenchID int64) (*WorkbenchFolder, error) {

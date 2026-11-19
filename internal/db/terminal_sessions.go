@@ -69,15 +69,15 @@ type TerminalSession struct {
 	ChatQuestionAt   string        // chat_question_at as stored; "" when there is no chat question
 	AutomationRunID  sql.NullInt64 // automation_run_id (00122): the run that started the session; NULL = none. Read by the Desktop launch center (P5 part 2)
 	// WorkbenchFolderID is the workbench folder the session was started for
-	// (00208); NULL on a standalone terminal. ParentSessionID is the session
+	// (00209); NULL on a standalone terminal. ParentSessionID is the session
 	// that started it as a sub-session; NULL = none. Both read as NULL on a
-	// database not yet migrated past 00208.
+	// database not yet migrated past 00209.
 	WorkbenchFolderID sql.NullInt64
 	ParentSessionID   sql.NullInt64
 }
 
 // terminalFolderLinkCols selects workbench_folder_id and parent_session_id
-// (00208), or two NULLs on a database not yet migrated past it: the readers
+// (00209), or two NULLs on a database not yet migrated past it: the readers
 // that open a database without migrating it (`workbench asks`, the ask
 // guard) read them as NULL rather than failing the row. The column check is
 // cached per handle once found (the hooks' hot path).
@@ -1040,7 +1040,7 @@ type NewTerminalSession struct {
 	WorktreeBase    string
 	AutomationRunID int64
 	// WorkbenchFolderID is the workbench folder the session starts for
-	// (00208); ParentSessionID the session starting it as a sub-session.
+	// (00209); ParentSessionID the session starting it as a sub-session.
 	WorkbenchFolderID int64
 	ParentSessionID   int64
 }

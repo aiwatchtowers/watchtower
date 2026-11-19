@@ -106,10 +106,12 @@ type SessionReportOptions struct {
 //   - on a state change, coalesced: no sooner than 5 s after its last run;
 //   - once when the session has no stored report yet;
 //   - on the phone's session_report_request, with the network, at most once
-//     per 60 s per session.
+//     per 60 s per session, in a pass that starts at once (no minimum gap).
 //
 // Per published workbench, the summaries every 60 s while it has a live
-// session and on a state change of one of its sessions (5 s spacing).
+// session, on a state change of one of its sessions (5 s spacing), and
+// right after a requested report of one of its sessions was stored (the
+// spacing skipped once: gh refreshed the PR cache they read).
 //
 // Each report is capped (encodeReport) and stored in the sidecar's
 // session_reports sealed with SealLocal (label session_reports.payload), so a
@@ -229,8 +231,10 @@ func (r *SessionReportRunner) markStatesChanged() {
 }
 
 // RequestReport is the phone's session_report_request: a run with the
-// network at the next pass. False when the session's last accepted request
-// is less than RequestSpacing old (nothing more runs).
+// network at a pass that starts at once (runners on request: no minimum gap;
+// a pass in flight finishes first and one more follows). False when the
+// session's last accepted request is less than RequestSpacing old (nothing
+// more runs) — which also bounds how often requests start passes.
 func (r *SessionReportRunner) RequestReport(sessionID int64) bool {
 	now := r.o.Now()
 	r.mu.Lock()
@@ -241,7 +245,7 @@ func (r *SessionReportRunner) RequestReport(sessionID int64) bool {
 	}
 	r.mu.Unlock()
 	if accepted {
-		r.wake.signal()
+		r.wake.signalNow()
 	}
 	return accepted
 }
@@ -556,6 +560,11 @@ func (r *SessionReportRunner) run(ctx context.Context, t reportTaken) bool {
 	if err := r.save(ctx, t.sessionID, rep); err != nil {
 		log.Printf("hub slices: storing the session report of %d failed (%s)", t.sessionID, errClass(err))
 		return true
+	}
+	if t.network {
+		// gh refreshed the PR cache the summaries read: the workbench's run
+		// later in this pass, inside their spacing, once.
+		r.summaries.requestNow(t.workbenchID)
 	}
 	r.changed()
 	return true

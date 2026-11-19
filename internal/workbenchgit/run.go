@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"watchtower/internal/gitbin"
 	"watchtower/internal/workbenchcheck"
@@ -39,30 +40,50 @@ type Options struct {
 	Run workbenchcheck.Runner
 	// Locate finds git. nil = gitbin.Locate.
 	Locate func() (string, bool)
+	// GHPath is the gh binary Publish, PRState and ClosePR run and the
+	// credential helper an owner's push names. "" = gh from PATH.
+	GHPath string
+	// Scratch is the folder Publish adds its detached worktrees under
+	// (<workspace>/coach-pr), one <Scratch>/<id> per request.
+	Scratch string
+	// Repo is the GitHub repository (HOST/OWNER/REPO) the caller chose
+	// among origin's URLs with GitHubOrigin: DefaultBase and Publish work on
+	// it and refuse when origin no longer names it. "" = the first of
+	// origin's URLs that names a repository.
+	Repo string
+	// NetworkBudget bounds each git fetch, ls-remote or push and each gh
+	// call Publish, PRState, ClosePR, GHReady and DefaultBase make.
+	// 0 = defaultNetworkBudget.
+	NetworkBudget time.Duration
 }
 
 // runError carries git's stderr apart from the rest of the failure, so an
 // envelope can show git's own words.
 type runError struct {
+	tool   string // "" = git
 	args   []string
 	err    error
 	stderr string
 }
 
 func (e *runError) Error() string {
+	tool := e.tool
+	if tool == "" {
+		tool = "git"
+	}
 	sub := ""
 	if len(e.args) > 0 {
 		sub = e.args[0]
 	}
 	switch {
 	case errors.Is(e.err, context.DeadlineExceeded):
-		return "git " + sub + " timed out"
+		return tool + " " + sub + " timed out"
 	case errors.Is(e.err, context.Canceled):
-		return "git " + sub + " was canceled"
+		return tool + " " + sub + " was canceled"
 	case e.stderr == "":
-		return fmt.Sprintf("git %s: %v", strings.Join(e.args, " "), e.err)
+		return fmt.Sprintf("%s %s: %v", tool, strings.Join(e.args, " "), e.err)
 	}
-	return fmt.Sprintf("git %s: %v: %s", strings.Join(e.args, " "), e.err, e.stderr)
+	return fmt.Sprintf("%s %s: %v: %s", tool, strings.Join(e.args, " "), e.err, e.stderr)
 }
 
 func (e *runError) Unwrap() error { return e.err }
@@ -73,11 +94,18 @@ func (e *runError) Unwrap() error { return e.err }
 // the repository's hooks as a terminal would; every other call is a
 // background read that runs none, nor a filter driver (gitbin.ReadArgsIn);
 // a fetch from origin also runs no credential helper, askpass or ssh prompt
-// (gitbin.FetchArgs, gitbin.ExecFetch).
+// (gitbin.FetchArgs, gitbin.ExecFetch). The network calls of an owner's
+// Publish (ctx from withOwnerNetwork) keep the owner's credentials and still
+// never prompt (gitbin.ExecOwnerNetwork).
 func execRunner(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
 	var stdout, stderr []byte
 	var err error
-	if len(args) > 0 && args[0] == "fetch" { // the network: never a prompt (gitbin.ExecFetch)
+	gh, owner := ownerNetwork(ctx)
+	if owner && networkCall(args) {
+		stdout, stderr, err = gitbin.ExecOwnerNetwork(ctx, dir, gh, name, args...)
+	} else if networkCall(args) && args[0] != "fetch" { // a push or ls-remote is only ever the owner's
+		return nil, -1, &runError{args: args, err: errors.New("a network call outside an owner's publish")}
+	} else if len(args) > 0 && args[0] == "fetch" { // the network: never a prompt (gitbin.ExecFetch)
 		stdout, stderr, err = gitbin.ExecFetch(ctx, dir, isUnattended(ctx), name, gitbin.FetchArgs(args...)...)
 	} else {
 		argv := gitbin.OwnerArgs(args...)

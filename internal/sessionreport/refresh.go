@@ -50,8 +50,13 @@ type RefreshOptions struct {
 	// Network allows reading pull requests through the gh CLI; without it
 	// only the branches' git merge state is read.
 	Network bool
-	Budget  time.Duration    // 0 = DefaultRefreshBudget
-	Now     func() time.Time // nil = time.Now
+	Budget  time.Duration // 0 = DefaultRefreshBudget
+	// Now is the clock the budget runs on; nil = time.Now, when the budget
+	// also bounds every git and gh call (a context deadline). A test clock
+	// takes the budget off the wall: it then runs on Now alone, so a loaded
+	// machine never cuts a test's reads short and a test runs a budget out
+	// by moving its clock.
+	Now func() time.Time
 	// SessionID is the session whose report the refs are of: the refresh
 	// runs git and gh in its bench folder and reads and writes that
 	// folder's cache (spec §6.9, §6.10); 0 = the home folder.
@@ -107,7 +112,8 @@ func refresh(ctx context.Context, d *db.DB, workbenchID int64, folder benchFolde
 	if opts.Budget <= 0 {
 		opts.Budget = DefaultRefreshBudget
 	}
-	if opts.Now == nil {
+	wallClock := opts.Now == nil
+	if wallClock {
 		opts.Now = time.Now
 	}
 	if folder.id == 0 {
@@ -137,8 +143,11 @@ func refresh(ctx context.Context, d *db.DB, workbenchID int64, folder benchFolde
 	// (dueAgain), so it is the most recently due and waits behind every
 	// other ref instead of spending the budget ahead of them.
 	slices.SortStableFunc(stale, func(a, b string) int { return dueSince(cache[a]).Compare(dueSince(cache[b])) })
-	ctx, cancel := context.WithTimeout(ctx, opts.Budget)
-	defer cancel()
+	if wallClock {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, opts.Budget)
+		defer cancel()
+	}
 	deadline := start.Add(opts.Budget)
 	r := refresher{d: d, workbenchID: workbenchID, folderID: folder.id, folder: folder.path, cache: cache, opts: opts,
 		deadline: deadline, unchecked: map[string]bool{}}

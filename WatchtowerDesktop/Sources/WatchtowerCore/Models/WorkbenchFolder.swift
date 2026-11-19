@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-/// One `workbench_folders` row (00208, multi-folder workbench): a folder on a
+/// One `workbench_folders` row (00209, multi-folder workbench): a folder on a
 /// workbench. All folders are equal; the home folder is the one the
 /// workbench was opened with (`projects.folder_path`). A removed folder keeps
 /// its row (`removedAt` set) so sessions and targets can still name it. The

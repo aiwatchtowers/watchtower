@@ -144,16 +144,9 @@ package enum TuningChatTexts {
 
     // MARK: Workbench repository files (spec §4.3a, D66–D68)
 
-    /// The open card's diff caption: the file and the branch it would land
-    /// on ("" = the branch could not be read: the path only).
-    package static func repoCardCaption(path: String, branch: String) -> String {
-        guard let on = onBranch(branch, named: true) else { return path }
-        return "\(path) · \(on)"
-    }
-
     /// The folded line of an accepted repository edit until its commit is seen.
     package static func acceptedRepoFile(path: String, branch: String) -> String {
-        let on = onBranch(branch, named: false).map { " \($0)" } ?? ""
+        let on = onBranch(branch).map { " \($0)" } ?? ""
         return "Accepted · wrote \(path)\(on) — commit it yourself"
     }
 
@@ -180,8 +173,14 @@ package enum TuningChatTexts {
 
     /// The folded line of a settled chat proposal, nil while it is open. A
     /// repository edit names the file and branch it wrote (`written`, from
-    /// the accept result, else derived from the proposal).
+    /// the accept result, else derived from the proposal); a pull-request
+    /// edit waits for its merge (spec 2026-11-19 §4.6).
     package static func folded(_ proposal: CoachProposal, written: CoachWrittenFile? = nil) -> String? {
+        if proposal.status == "accepted", prURL(proposal, written: written) != nil {
+            if proposal.measureFrom != nil { return CoachPRTexts.foldedMerged }
+            // sync-prs ends a PR not merged in 30 days with a final verdict while measure_from stays empty.
+            return proposal.verdict == "too_little_data" ? CoachPRTexts.foldedNotMerged : CoachPRTexts.foldedWaiting
+        }
         if proposal.status == "accepted",
            let path = written?.path ?? proposal.repoRelativePath {
             if proposal.measureFrom != nil { return committedRepoFile }
@@ -190,12 +189,20 @@ package enum TuningChatTexts {
         return foldedProposal(status: proposal.status, title: proposal.title)
     }
 
-    /// "on branch main" / "on main" (`named` false); "on a detached HEAD
-    /// (abc1234)" for the CLI's `detached:<short sha>`; nil for "".
-    private static func onBranch(_ branch: String, named: Bool) -> String? {
+    /// The pull request an accepted repository edit opened: the list's
+    /// `pr_url`, else the accept result's until the list reloads; nil for a
+    /// working-copy edit.
+    package static func prURL(_ proposal: CoachProposal, written: CoachWrittenFile?) -> String? {
+        let url = proposal.prURL.isEmpty ? (written?.prURL ?? "") : proposal.prURL
+        return url.isEmpty ? nil : url
+    }
+
+    /// "on main"; "on a detached HEAD (abc1234)" for the CLI's
+    /// `detached:<short sha>`; nil for "".
+    private static func onBranch(_ branch: String) -> String? {
         if branch.isEmpty { return nil }
         if branch.hasPrefix("detached:") { return "on a detached HEAD (\(branch.dropFirst("detached:".count)))" }
-        return named ? "on branch \(branch)" : "on \(branch)"
+        return "on \(branch)"
     }
 
     // MARK: Helpers

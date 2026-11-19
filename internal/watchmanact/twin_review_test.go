@@ -942,3 +942,51 @@ func TestTwin_ReviewCodeFailuresAndAMoveDoNotPark(t *testing.T) {
 		t.Fatalf("item = %s attempts %d moves %d, want queued with 2 failures and 1 move", it.State, it.Attempts, moves)
 	}
 }
+
+// A review ask's document lives in one bench folder (DocFolderID): the twin
+// reads that folder's inventory, never only the home folder's, and parks an
+// approve when the recorded folder cannot be resolved (#2003).
+func TestTwin_ReviewDocUsesTheDocFoldersInventory(t *testing.T) {
+	contract := planDoc + "\nHUB-03: the relay keeps one socket.\n"
+	approve := func(context.Context, watchman.Item) (watchman.Decision, error) {
+		return docDecision(ReviewApprove), nil
+	}
+	t.Run("the contract lives only in the doc's folder", func(t *testing.T) {
+		e := newTwinEnv(t)
+		hub := t.TempDir()
+		inv := filepath.Join(hub, "docs", "inventory")
+		e.must(os.MkdirAll(inv, 0o755))
+		e.must(os.WriteFile(filepath.Join(inv, "hub.md"), []byte("## HUB-03 — One socket\n"), 0o600))
+		res, err := e.db.Exec(`INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
+			VALUES (?, ?, 1, 'owner', 'hub')`, e.wb, hub)
+		e.must(err)
+		folder, err := res.LastInsertId()
+		e.must(err)
+		askID, itemID := e.reviewAsk(contract)
+		_, err = e.db.Exec(`UPDATE owner_asks SET doc_folder_id = ? WHERE id = ?`, folder, askID)
+		e.must(err)
+		e.specReview(askID, "done", "", specResult(t))
+		e.decideFn = approve
+		e.run()
+		wantOutcome(t, e.item(itemID), OutcomeParked)
+	})
+	t.Run("the recorded folder is not this bench's", func(t *testing.T) {
+		e := newTwinEnv(t)
+		res, err := e.db.Exec(`INSERT INTO projects (name, folder_path) VALUES ('other', ?)`, t.TempDir())
+		e.must(err)
+		other, err := res.LastInsertId()
+		e.must(err)
+		res, err = e.db.Exec(`INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
+			VALUES (?, ?, 0, 'owner', 'other')`, other, t.TempDir())
+		e.must(err)
+		folder, err := res.LastInsertId()
+		e.must(err)
+		askID, itemID := e.reviewAsk(planDoc)
+		_, err = e.db.Exec(`UPDATE owner_asks SET doc_folder_id = ? WHERE id = ?`, folder, askID)
+		e.must(err)
+		e.specReview(askID, "done", "", specResult(t))
+		e.decideFn = approve
+		e.run()
+		wantOutcome(t, e.item(itemID), OutcomeParked)
+	})
+}

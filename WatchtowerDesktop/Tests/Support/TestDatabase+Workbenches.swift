@@ -16,7 +16,7 @@ extension TestDatabase {
             arguments: [name, folder]
         )
         let id = db.lastInsertedRowID
-        // Its home folder row, as the CLI's CreateWorkbench writes it (00208).
+        // Its home folder row, as the CLI's CreateWorkbench writes it (00209).
         try db.execute(
             sql: """
                 INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)

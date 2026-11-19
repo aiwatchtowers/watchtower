@@ -11,5 +11,6 @@ import (
 // (see gittest.DisableBackgroundGit).
 func TestMain(m *testing.M) {
 	gittest.DisableBackgroundGit()
+	localPushTargets = true // the fixtures' origins are bare repositories on disk
 	os.Exit(m.Run())
 }

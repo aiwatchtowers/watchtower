@@ -106,6 +106,7 @@ Two modes read the same table: the twin and the backtest are **strict** (every s
 
 ## Changelog
 
+- 2026-11-19 (multi-folder workbench merged with Watchman, board #2003): additive, no guard relaxed — WATCHMAN-04 holds for folder suggestions too (a `kind='folder'` ask is never queued, answered or learned by the twin; `TestScanWatchmanWaitPoints_SkipsFolderAsks`, `TestTextAnswer_RefusesAFolderAsk`); a review ask's protected-document check reads the inventory of its own document folder and parks on an unresolvable one (`TestTwin_ReviewDocUsesTheDocFoldersInventory`); arming checks every covered repository (`TestWatchmanArm_ChecksTheCoveredFolders`). v1 limits (feature note): precedents dedupe by key on a bench merge, the merged bench's cursors drop, sibling-folder edits are denied as `outside_folder`, the git source reads the home folder's PR states only.
 - 2026-11-16 (phase 1, board #1823): file created with WATCHMAN-03 and WATCHMAN-06 (new, beyond the spec's five).
 - 2026-11-16 (final review fixes): WATCHMAN-03 tightened — git commits count only for the folder's `user.email`, automation-started sessions leave the turn source; guards added.
 - 2026-11-17 (Task 12, asks #1422/#1423): the backtest's metric changed (judge grades, strong = ≤ 5 % bad and none bad while sure, go needs `permission`, `design` or `scope`); WATCHMAN-03 and WATCHMAN-06 unchanged.

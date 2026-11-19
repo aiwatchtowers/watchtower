@@ -429,13 +429,15 @@ func (db *DB) ScanWatchmanWaitPoints(now time.Time, question func(string) string
 	return n, nil
 }
 
-// watchmanMissedWaitPoints lists session's open asks (not an automation's)
-// and pending permission requests with no item of any kind, their Question
+// watchmanMissedWaitPoints lists session's open asks (not an automation's,
+// and never a folder suggestion: its answer acts on the Mac and is the
+// owner's alone) and pending permission requests with no item of any kind, their Question
 // the unredacted text.
 func (db *DB) watchmanMissedWaitPoints(session int64) ([]WatchmanItem, error) {
 	rows, err := db.Query(`SELECT 'ask', a.id, a.project_id, COALESCE(a.target_id, 0), a.kind, a.title, a.summary
 		FROM owner_asks a JOIN terminal_sessions s ON s.id = a.session_id
-		WHERE a.session_id = ? AND a.status = 'open' AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL AND s.`+NotDeletingSQL+`
+		WHERE a.session_id = ? AND a.status = 'open' AND a.kind != '`+AskKindFolder+`'
+		  AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL AND s.`+NotDeletingSQL+`
 		  AND NOT EXISTS (SELECT 1 FROM watchman_items w WHERE w.ref_kind = 'ask' AND w.ref_id = a.id)
 		UNION ALL
 		SELECT 'permission', r.id, r.workbench_id, 0, '', r.tool_name, r.summary

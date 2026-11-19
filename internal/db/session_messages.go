@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// SessionMessage is a session_messages row (00208): a message between two
+// SessionMessage is a session_messages row (00209): a message between two
 // live sessions of one workbench, delivered by the daemon at most once.
 type SessionMessage struct {
 	ID, WorkbenchID int64
