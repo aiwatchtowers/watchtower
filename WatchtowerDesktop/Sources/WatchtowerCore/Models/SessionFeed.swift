@@ -124,15 +124,19 @@ package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
     }
 
     /// RFC 3339 with or without fractional seconds; Go's zero time and
-    /// anything unparsable mean "no time".
+    /// anything unparsable mean "no time". The formatters are made once: a
+    /// formatter per date cost most of a large feed's decode (#2065).
     package static func parseDate(_ s: String?) -> Date? {
         guard let s, !s.isEmpty, !s.hasPrefix("0001-01-01") else { return nil }
-        let plain = ISO8601DateFormatter()
-        if let d = plain.date(from: s) { return d }
-        let frac = ISO8601DateFormatter()
-        frac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return frac.date(from: s)
+        return fractionalDate.date(from: s) ?? plainDate.date(from: s)
     }
+
+    private static let plainDate = ISO8601DateFormatter()
+    private static let fractionalDate: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
 }
 
 package struct SessionFeedPayload: Decodable, Sendable {

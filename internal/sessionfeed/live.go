@@ -663,12 +663,15 @@ func (r *liveReader) reconcileAgents() {
 		ids = ids[:maxLiveAgentCandidates]
 		r.live.AgentsState = "unknown"
 	}
+	claudePaths := map[string]string{} // id -> transcript; read only for visible rows
 	for _, id := range ids {
 		a := r.agents[id]
 		r.live.inspectedAgents++
 		if path, ok := r.agentPath(a.Ref); ok {
 			a.CanOpen = true
-			if r.codex {
+			if !r.codex {
+				claudePaths[id] = path
+			} else {
 				action, status, at, err := codexChildHint(path)
 				if err != nil {
 					a.Ref.Status = StatusUnknown
@@ -686,8 +689,6 @@ func (r *liveReader) reconcileAgents() {
 						a.Action = action
 					}
 				}
-			} else if activity, err := ActivityOf(path, false, true); err == nil && activity != nil {
-				a.Action = &LiveAction{Tool: activity.Tool, Summary: activity.Summary, StartedAt: activity.StartedAt}
 			}
 		}
 		if a.Ref.Status == StatusUnknown {
@@ -712,6 +713,13 @@ func (r *liveReader) reconcileAgents() {
 				r.live.AgentsMore++
 			}
 			continue
+		}
+		// A Claude child's open call changes no status or order, so only the
+		// visible rows pay for reading their transcript tails.
+		if path, ok := claudePaths[id]; ok {
+			if activity, err := ActivityOf(path, false, true); err == nil && activity != nil {
+				a.Action = &LiveAction{Tool: activity.Tool, Summary: activity.Summary, StartedAt: activity.StartedAt}
+			}
 		}
 		r.live.Agents = append(r.live.Agents, *a)
 	}

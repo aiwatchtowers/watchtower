@@ -1,6 +1,7 @@
 package sessionfeed
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -261,4 +262,73 @@ func TestParse_QueuedNonHumanIgnored(t *testing.T) {
 func TestParse_QueuedSidechainIgnoredInMain(t *testing.T) {
 	res := parseStr(t, queuedRec("q1", map[string]any{"isSidechain": true}, map[string]any{"prompt": "side"}), 0)
 	assert.Empty(t, res.Entries)
+}
+
+// A transcript longer than one decode batch is decoded in parallel and still
+// handled in file order: entries keep their order, a message streamed across
+// a batch boundary merges into one entry, invalid and over-long lines are
+// counted, and the offset covers every complete line (a partial tail is not
+// read).
+func TestParse_ParallelBatchesKeepFileOrder(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(assistantRec("a0", "m0", textB("start")))
+	want := []string{"start"}
+	invalid, skipped := 0, 0
+	for i := 1; i <= 3*decodeBatchLines; i++ {
+		switch {
+		case i%97 == 0:
+			b.WriteString("not json\n")
+			invalid++
+		case i%211 == 0:
+			b.WriteString(userStr(fmt.Sprintf("long%d", i), repeat("x", 600)))
+			skipped++
+		default:
+			text := fmt.Sprintf("line %d", i)
+			b.WriteString(userStr(fmt.Sprintf("u%d", i), text))
+			want = append(want, text)
+		}
+	}
+	// the first message grows after a few batches: one entry, first place
+	b.WriteString(assistantRec("a1", "m0", textB("start"), textB("end")))
+	want[0] = "start\n\nend"
+	full := b.String()
+	in := full + `{"type":"user"` // a partial last line
+
+	res, err := parse(strings.NewReader(in), 7, "conv1", 400)
+	require.NoError(t, err)
+	got := make([]string, 0, len(res.Entries))
+	for _, e := range res.Entries {
+		got = append(got, e.Text)
+	}
+	assert.Equal(t, want, got)
+	assert.Equal(t, map[string]int{"<invalid>": invalid}, res.Unknown)
+	assert.Equal(t, skipped, res.Skipped)
+	assert.Equal(t, int64(7+len(full)), res.Offset)
+}
+
+// BenchmarkParse is the regression guard of a large pane's first open: a
+// ~1,000-entry transcript of the record mix a long Claude Code session writes
+// (owner lines, streamed agent text, tool calls and results, ignored types).
+func BenchmarkParse(b *testing.B) {
+	var sb strings.Builder
+	result := repeat("r", 4000)
+	for i := range 500 {
+		sb.WriteString(userStr(fmt.Sprintf("u%d", i), fmt.Sprintf("owner line %d", i)))
+		sb.WriteString(assistantRec(fmt.Sprintf("a%d", i), fmt.Sprintf("m%d", i), textB(repeat("t", 800))))
+		sb.WriteString(assistantRec(fmt.Sprintf("c%d", i), fmt.Sprintf("n%d", i),
+			map[string]any{"type": "tool_use", "id": fmt.Sprintf("tu%d", i), "name": "Read", "input": map[string]any{"file_path": "/w/f.go"}}))
+		sb.WriteString(userBlocks(fmt.Sprintf("r%d", i),
+			map[string]any{"type": "tool_result", "tool_use_id": fmt.Sprintf("tu%d", i), "content": result}))
+		sb.WriteString(jsonLine(map[string]any{"type": "queue-operation", "operation": "enqueue", "content": repeat("q", 1000)}))
+		sb.WriteString(jsonLine(map[string]any{"type": "api-request-blob", "blob": map[string]any{"body": repeat("b", 4000)}}))
+		sb.WriteString(jsonLine(map[string]any{"type": "attachment", "attachment": map[string]any{"type": "hook_success", "stdout": repeat("s", 4000)}}))
+	}
+	in := sb.String()
+	b.SetBytes(int64(len(in)))
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := Parse(strings.NewReader(in), 0, "conv1"); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

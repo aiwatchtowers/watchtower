@@ -381,6 +381,19 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertEqual(store.subagents.first?.subagent?.startedAt, first, "an undated marker never clears it")
     }
 
+    /// The cached formatters read both RFC 3339 forms Go prints, to the
+    /// millisecond, and keep "no time" for Go's zero time and garbage.
+    func testParseDateReadsPlainAndFractionalSeconds() {
+        let base = Date(timeIntervalSince1970: 1_790_330_406) // 2026-09-25T10:00:06Z
+        XCTAssertEqual(SessionFeedEntry.parseDate("2026-09-25T10:00:06Z"), base)
+        let frac = SessionFeedEntry.parseDate("2026-09-25T10:00:06.578Z")
+        XCTAssertEqual(frac?.timeIntervalSince1970 ?? 0, base.timeIntervalSince1970 + 0.578, accuracy: 0.0005)
+        XCTAssertEqual(SessionFeedEntry.parseDate("2026-09-25T12:00:06+02:00"), base)
+        for none in [nil, "", "0001-01-01T00:00:00Z", "yesterday"] {
+            XCTAssertNil(SessionFeedEntry.parseDate(none), "\(none ?? "nil")")
+        }
+    }
+
     func testDecodesSubagentStartedAt() throws {
         func ref(_ startedAt: String) throws -> SessionFeedSubagent {
             let json = #"{"tool_use_id":"tu1","agent_id":"a1","type":"Explore","description":"d","status":"finished","#
