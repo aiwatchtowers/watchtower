@@ -155,8 +155,7 @@ var wrappers = map[string]map[string]bool{
 	"stdbuf":     {"-i": true, "-o": true, "-e": true, "--input": true, "--output": true, "--error": true},
 	"xcrun":      {"--sdk": true, "-sdk": true, "--toolchain": true, "-toolchain": true},
 	"xargs": {"-a": true, "-d": true, "-E": true, "-I": true, "-J": true, "-L": true, "-n": true, "-P": true, "-R": true, "-s": true, "-S": true,
-		"--max-args": true, "--max-procs": true, "--max-chars": true, "--delimiter": true, "--arg-file": true, "--process-slot-var": true,
-		"--replace": true, "--eof": true, "--max-lines": true},
+		"--max-args": true, "--max-procs": true, "--max-chars": true, "--delimiter": true, "--arg-file": true, "--process-slot-var": true},
 }
 
 // unresolved stands for a command that cannot be read (a wrapper around
@@ -336,7 +335,8 @@ func stripWrappers(words []string, c *shellCmd) []string {
 
 // wrapperFlags are the wrappers' options that take no operand — short
 // ones, and long ones (xcrun's single-dash too); with the valued ones of
-// wrappers they are every option this reader knows. Any other option cannot be placed and parks
+// wrappers and the optional ones of wrapperOptional they are every option
+// this reader knows. Any other option cannot be placed and parks
 // (wrapperOption). nice's digits are its legacy -N adjustment.
 var wrapperFlags = map[string][]string{
 	"sudo": {"-A", "-B", "-b", "-E", "-e", "-H", "-i", "-K", "-k", "-l", "-N", "-n", "-P", "-S", "-s", "-V", "-v",
@@ -358,24 +358,30 @@ var wrapperFlags = map[string][]string{
 		"--show-sdk-build-version", "--show-sdk-platform-path", "--show-sdk-platform-version"},
 }
 
+// wrapperOptional are the wrappers' options whose operand is optional: it
+// is only ever attached (xargs -i{} or --replace={}), never the next word.
+var wrapperOptional = map[string][]string{
+	"xargs": {"-e", "-i", "-l", "--eof", "--replace", "--max-lines"},
+}
+
 // wrapperOption reads one option word of wrapper prog: name is the option
 // with an operand it sets ("" for a flag) and takesNext reports that its
 // operand is the next word. An operand can be attached (-C/tmp,
-// --chdir=/tmp) and a short valued option can end a cluster of
-// flags (env -iC/tmp, sudo -iu x). A long option may be
+// --chdir=/tmp) and a short valued or optional option can end a cluster of
+// flags (env -iC/tmp, sudo -iu x, xargs -ti{}). A long option may be
 // abbreviated to an unambiguous prefix, as getopt_long takes it (--chd is
 // --chdir). known is false for an option that is none of prog's own — a
 // long one neither known nor such a prefix, or a short letter in a cluster
 // that is not one of its flags: its operand, if any, could be the next word.
 func wrapperOption(opt, prog string) (name string, takesNext, known bool) {
-	valued, flags := wrappers[prog], wrapperFlags[prog]
+	valued, flags, optional := wrappers[prog], wrapperFlags[prog], wrapperOptional[prog]
 	if valued[opt] {
 		return opt, true, true
 	}
 	if strings.HasPrefix(opt, "--") {
 		long, _, attached := strings.Cut(opt, "=")
 		var hits []string
-		for _, cand := range slices.Concat(slices.Collect(maps.Keys(valued)), flags) {
+		for _, cand := range slices.Concat(slices.Collect(maps.Keys(valued)), flags, optional) {
 			if cand == long {
 				hits = []string{cand}
 				break
@@ -388,8 +394,11 @@ func wrapperOption(opt, prog string) (name string, takesNext, known bool) {
 			return "", false, false
 		}
 		match := hits[0]
-		if valued[match] {
+		switch {
+		case valued[match]:
 			return match, !attached, true
+		case slices.Contains(optional, match):
+			return match, false, true
 		}
 		return "", false, true
 	}
@@ -401,6 +410,8 @@ func wrapperOption(opt, prog string) (name string, takesNext, known bool) {
 		switch {
 		case valued[short]:
 			return short, i == len(opt)-1, true
+		case slices.Contains(optional, short): // the rest of the word is its operand
+			return short, false, true
 		case !slices.Contains(flags, short):
 			return "", false, false
 		}

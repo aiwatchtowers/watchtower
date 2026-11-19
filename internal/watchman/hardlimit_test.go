@@ -832,7 +832,9 @@ func TestParkedBy_WrapperChdirRelativeDelete(t *testing.T) {
 }
 
 // Residuals: every wrapper reads only its own options. A valued short
-// option takes its operand (sudo -r role), and a short letter that is none of the wrapper's own cannot be placed — its
+// option takes its operand (sudo -r role), an option whose operand is
+// optional takes only an attached one (xargs -i, -e, -l, --replace), and a
+// short letter that is none of the wrapper's own cannot be placed — its
 // operand could be the next word — so it parks, in both modes.
 func TestParkedBy_WrapperShortOptions(t *testing.T) {
 	var cases []struct {
@@ -874,6 +876,16 @@ func TestParkedBy_WrapperShortOptions(t *testing.T) {
 	both("caffeinate -dims rm -rf /x", LimitDeleteOutside)
 	both("xcrun -run rm -rf /x", LimitDeleteOutside)
 	both("xargs -0 -t rm -rf /x", LimitDeleteOutside)
+	// Optional operands are attached or absent, never the next word.
+	both("xargs -i rm -rf /x", LimitDeleteOutside)
+	both("xargs -i{} rm -rf /x", LimitDeleteOutside)
+	both("xargs -e rm -rf /x", LimitDeleteOutside)
+	both("xargs -eEOF rm -rf /x", LimitDeleteOutside)
+	both("xargs -l rm -rf /x", LimitDeleteOutside)
+	both("xargs -tl2 rm -rf /x", LimitDeleteOutside)
+	both("xargs --replace rm -rf /x", LimitDeleteOutside)
+	both("xargs --replace={} rm -rf /x", LimitDeleteOutside)
+	both("xargs --max-lines rm -rf /x", LimitDeleteOutside)
 	// A short letter none of the wrapper's own parks.
 	both("sudo -Z rm -rf /x", LimitUnreadable)
 	both("sudo -EZ rm -rf /x", LimitUnreadable)
@@ -887,7 +899,7 @@ func TestParkedBy_WrapperShortOptions(t *testing.T) {
 	both("sudo -E go test ./...", "")
 	both("sudo -r role go test ./...", "")
 	both("nice -10 make build", "")
-	both("xargs -0 -n1 echo", "")
+	both("xargs -0 -i echo", "")
 	both("xcrun -sdk macosx swift build", "")
 	expectParked(t, cases)
 }
