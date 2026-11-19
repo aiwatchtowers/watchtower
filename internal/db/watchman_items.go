@@ -229,12 +229,16 @@ func (db *DB) SettleWatchmanHandoversTx(tx *sql.Tx, sessionID, askID int64, now 
 // CloseStaleWatchmanHandovers closes superseded every held handover whose
 // session will not pass a finish any more: it ended without one, is being
 // deleted or is gone, or is no longer armed (daemon upkeep, every cycle).
+// A held handover queued, or deciding under a lease that expired (its
+// worker died mid-decision), is closed; a live lease is left to its worker.
 func (db *DB) CloseStaleWatchmanHandovers(now time.Time) (int64, error) {
-	res, err := db.Exec(`UPDATE watchman_items SET state = 'done', outcome = 'superseded', error = '', decided_at = ?
-		WHERE kind = 'handover' AND state = 'queued' AND error = `+watchmanHeldSQL+`
+	nowS := wmTime(now)
+	res, err := db.Exec(`UPDATE watchman_items SET state = 'done', outcome = 'superseded', error = '', decided_at = ?1, lease_until = NULL
+		WHERE kind = 'handover' AND error = ?2
+		  AND (state = 'queued' OR (state = 'deciding' AND lease_until < ?1))
 		  AND (NOT EXISTS (SELECT 1 FROM terminal_sessions ts WHERE ts.id = watchman_items.session_id
 		                   AND ts.finished_at IS NULL AND ts.`+NotDeletingSQL+`)
-		       OR NOT `+watchmanHandoverArmed+`)`, wmTime(now))
+		       OR NOT `+watchmanHandoverArmed+`)`, nowS, WatchmanHandoverHeld)
 	if err != nil {
 		return 0, fmt.Errorf("closing stale watchman handovers: %w", err)
 	}

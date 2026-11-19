@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"regexp"
@@ -1031,4 +1032,41 @@ func TestWatchmanHeldHandovers_CloseAndSettle(t *testing.T) {
 	require.Equal(t, []string{"done", "superseded"}, []string{st, out})
 	st, _, e = state(otherAsk)
 	require.Equal(t, []string{"queued", ""}, []string{st, e})
+}
+
+// A held handover a worker leased and then died on (its lease expired) is
+// closed by the sweep once its session ended; one under a live lease is
+// left to its worker.
+func TestCloseStaleWatchmanHandovers_ExpiredDecidingHold(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	now := time.Date(2026, 11, 18, 3, 0, 0, 0, time.UTC)
+	s := newTestSession(t, d, wb)
+	wmArmSession(t, d, s)
+	held := func(title, lease string) int64 {
+		a := questionAsk(wb, title)
+		a.SessionID = nullID(s)
+		id := mustInsertAsk(t, d, a)
+		_, _, err := d.PromoteWatchmanHandover(WatchmanItem{WorkbenchID: wb, SessionID: s, RefID: id, Question: "q"}, true)
+		require.NoError(t, err)
+		_, err = d.Exec(`UPDATE watchman_items SET state = 'deciding', attempts = 1, lease_until = ? WHERE ref_kind = 'ask' AND ref_id = ?`, lease, id)
+		require.NoError(t, err)
+		return id
+	}
+	expired := held("Expired", wmTime(now.Add(-time.Minute)))
+	live := held("Live", wmTime(now.Add(time.Minute)))
+	_, err := d.Exec(`UPDATE terminal_sessions SET finished_at = '2026-11-18T01:00:00.000Z' WHERE id = ?`, s)
+	require.NoError(t, err)
+
+	n, err := d.CloseStaleWatchmanHandovers(now)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+	var st, out, e string
+	var lease sql.NullString
+	require.NoError(t, d.QueryRow(`SELECT state, outcome, error, lease_until FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?`,
+		expired).Scan(&st, &out, &e, &lease))
+	require.Equal(t, []string{"done", "superseded", ""}, []string{st, out, e})
+	require.False(t, lease.Valid)
+	require.NoError(t, d.QueryRow(`SELECT state, error FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?`, live).Scan(&st, &e))
+	require.Equal(t, []string{"deciding", WatchmanHandoverHeld}, []string{st, e}, "a live lease is not stolen")
 }
