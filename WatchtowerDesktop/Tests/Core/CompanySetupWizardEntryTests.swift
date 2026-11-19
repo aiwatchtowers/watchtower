@@ -111,6 +111,65 @@ final class CompanySetupWizardEntryTests: XCTestCase {
         XCTAssertFalse(model.slackToken.isEmpty, "Try again reuses the token")
     }
 
+    /// While Publish runs, Back and the rail keep its step (its link and code land there).
+    func testRunningPublishKeepsItsStep() async {
+        let cli = CompanyScriptedCLI()
+        let model = make(cli)
+        await model.open()
+        model.toggle(.linear)
+        model.publishName = "Acme"
+        await model.next() // Linear
+        await model.skip()  // deny list
+        await model.next() // Publish
+        XCTAssertEqual(model.current, .publish)
+        cli.hold(["company", "publish"])
+        let run = Task { await model.next() }
+        await cli.waitFor(["company", "publish"])
+        model.back()
+        model.goTo(.services)
+        XCTAssertEqual(model.current, .publish)
+        cli.release(["company", "publish"], [#"{"result":"no_slack","slug":"acme","link":"l","code":"c"}"#])
+        await run.value
+        XCTAssertTrue(model.isPublished)
+    }
+
+    /// An entry asked while the wizard's Slack run goes on waits for it, then
+    /// checks the app the run set: another app → the Slack step, not Publish.
+    func testEntryWaitsForTheSlackRun() async {
+        let cli = CompanyScriptedCLI()
+        let model = make(cli)
+        await model.open()
+        model.toggle(.slack)
+        await model.next()
+        model.createNew()
+        model.slackToken = "xoxe.xoxp-1-sample-token"
+        cli.hold(["slack", "app", "create"])
+        await model.next()
+        await cli.waitFor(["slack", "app", "create"])
+        await model.leave()
+        model.request(.publish(appID: "A0OTHER"))
+        XCTAssertEqual(model.current, .vendor(.slack), "nothing moves while the run goes on")
+        cli.setups = acmeSetup
+        cli.release(["slack", "app", "create"], [#"{"result":"ok","team_id":"T0ACME","team_name":"acme","app_id":"A0ACME","#
+            + #""client_id":"1111.2222","link_written":false}"#])
+        await untilObserved { model.reached.contains(.denyList) && model.current == .vendor(.slack) }
+        XCTAssertEqual(model.draft.slack.appID, "A0ACME", "the run's app stays; the other row's never lands")
+    }
+
+    /// Ticks made while discovery looks are kept.
+    func testTicksDuringDiscoveryWin() async {
+        let cli = CompanyScriptedCLI()
+        cli.hold(["company", "discover"])
+        let model = make(cli)
+        let open = Task { await model.open() }
+        await cli.waitFor(["company", "discover"])
+        model.toggle(.linear)
+        cli.release(["company", "discover"], [#"{"candidates":[{"vendor":"slack","client_id":"1111.2222","#
+            + #""label":"x","source":"account","source_label":"y"}]}"#])
+        await open.value
+        XCTAssertEqual(model.ticked, [.linear])
+    }
+
     func testPageStrings() {
         XCTAssertEqual(Model.loadingLine, "Reading the setup's progress on this Mac…")
         XCTAssertEqual(Model.pastedJSON, "Pasted client JSON")

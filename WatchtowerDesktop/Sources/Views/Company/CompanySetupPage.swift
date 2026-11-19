@@ -101,7 +101,7 @@ struct CompanySetupPage: View {
                     Text(model.railNarrowLine).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     Spacer(minLength: Spacing.regular)
                     // The folded rail keeps its way back to the services.
-                    if model.current != .services, !model.isPublished {
+                    if model.current != .services, !model.isPublished, model.publishState != .running {
                         Button(Model.changeServices) { model.goTo(.services) }.buttonStyle(.kitQuiet)
                     }
                 }
@@ -112,7 +112,8 @@ struct CompanySetupPage: View {
                     // Narrow, the folded rail's line already names a vendor step.
                     if !isNarrow || model.current == .services { Text(stepTitle).font(.headline) }
                     content
-                    if model.dropWarning == nil { footer }
+                    // The drop warning carries its own Keep / Drop on Services.
+                    if model.dropWarning == nil || model.current != .services { footer }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
@@ -193,7 +194,9 @@ struct CompanySetupPage: View {
             Button(Model.checkAgain) { Task { await model.check(.microsoft) } }.buttonStyle(.kitSecondary)
         } else if model.current != .services {
             // A running check or Slack run goes on when the step is left (§2.2).
-            Button(Model.backTitle) { model.back() }.buttonStyle(.kitSecondary)
+            Button(Model.backTitle) { model.back() }
+                .buttonStyle(.kitSecondary)
+                .disabled(model.publishState == .running)
         }
     }
 

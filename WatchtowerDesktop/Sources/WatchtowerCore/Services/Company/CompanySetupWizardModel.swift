@@ -339,7 +339,9 @@ package final class CompanySetupWizardModel {
     }
 
     private func applyEntry() {
-        guard let entry = pendingEntry, load == .ready else { return }
+        // A Slack run still going sets the draft's app when it ends: the
+        // entry waits for it (slackFinished applies it), then checks the app.
+        guard let entry = pendingEntry, load == .ready, !slack.isRunning else { return }
         pendingEntry = nil
         // Publish is running: the page stays on it (the row can be pressed again).
         guard publishState != .running else { return }
@@ -420,7 +422,8 @@ package final class CompanySetupWizardModel {
         candidates = found.candidates ?? []
         foundVendors = Set(candidates.compactMap { CompanyVendor(rawValue: $0.vendor) })
         // Pre-tick only a fresh setup: a resumed draft keeps its own choice.
-        if !hasDraft {
+        // Ticks the person made while it looked win.
+        if !hasDraft, !touched {
             draft.services = CompanyVendor.allCases.filter(foundVendors.contains).map(\.rawValue)
         }
     }
@@ -601,6 +604,8 @@ package final class CompanySetupWizardModel {
 
     /// **Back**.
     package func back() {
+        // A running Publish keeps its step: its link and code land there.
+        guard publishState != .running else { return }
         if case .vendor(.slack) = current, slackAttempt, !slack.isRunning {
             // From the Slack step's diff or problem: back to its choice. The
             // confirmed App ID goes too: only Update the app may confirm it.
@@ -616,7 +621,7 @@ package final class CompanySetupWizardModel {
 
     /// A rail row: only steps already reached.
     package func goTo(_ step: Step) {
-        guard reached.contains(step), steps.contains(step) else { return }
+        guard reached.contains(step), steps.contains(step), publishState != .running else { return }
         if case let .vendor(v) = step, isSkipped(v) {
             // Reopening a skipped step sets it up after all.
             draft.skipped.removeAll { $0 == v.rawValue }
@@ -1013,9 +1018,10 @@ package final class CompanySetupWizardModel {
             phases[.slack] = .found
             Task {
                 if current == .vendor(.slack) { await advance() } else { await saveDraft() }
+                applyEntry()
             }
         case .failed:
-            break
+            applyEntry()
         }
     }
 

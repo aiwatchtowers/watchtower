@@ -14,7 +14,7 @@ struct CompanySetupRail: View {
             ForEach(model.steps, id: \.self) { step in
                 row(step, mark: marks[step] ?? .notStarted)
             }
-            if model.current != .services, !model.isPublished {
+            if model.current != .services, !model.isPublished, model.publishState != .running {
                 Button(CompanySetupWizardModel.changeServices) { model.goTo(.services) }
                     .buttonStyle(.kitQuiet)
                     .padding(.leading, Spacing.regular)
@@ -24,7 +24,7 @@ struct CompanySetupRail: View {
 
     private func row(_ step: CompanySetupWizardModel.Step, mark: CompanySetupWizardModel.StepMark) -> some View {
         let current = step == model.current
-        let reachable = model.reached.contains(step) && !current && !model.isPublished
+        let reachable = model.reached.contains(step) && !current && !model.isPublished && model.publishState != .running
         return Button { if reachable { model.goTo(step) } } label: {
             HStack(spacing: Spacing.regular) {
                 WizardMark(Self.kind(mark))
