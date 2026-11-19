@@ -19,6 +19,25 @@ struct SessionPlaceLine: View {
     }
 }
 
+/// A bench folder's name with the folder glyph, in the accent colour (spec
+/// 2026-11-18 §6.2): before a session row's place on a bench of several
+/// folders, and as a crumb on its strip.
+struct SessionFolderLabel: View {
+    let name: String
+    var font: Font = .caption2
+
+    var body: some View {
+        HStack(spacing: Spacing.tight) {
+            Image(systemName: "folder")
+            Text(name).lineLimit(1)
+        }
+        .font(font)
+        .foregroundStyle(Color.accentColor)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Folder \(name)")
+    }
+}
+
 /// The header's worktree crumb (`📁 ~/folder › ⑂ mobile-a · feature/x ›
 /// ⎇ branch`): the session on screen works in a linked worktree (a click
 /// reveals its folder in Finder) or in one since removed. Nothing for the

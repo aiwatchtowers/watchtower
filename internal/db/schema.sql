@@ -437,6 +437,7 @@ CREATE TABLE IF NOT EXISTS targets (
     branch              TEXT NOT NULL DEFAULT '',  -- project targets: the git branch carrying the work (00089)
     pr                  TEXT NOT NULL DEFAULT '',  -- project targets: the pull request, a number or URL (00089)
     board_column_id     INTEGER NULL REFERENCES workbench_board_columns(id) ON DELETE SET NULL, -- workbench targets: the board column, of the same workbench and status; NULL = the status's first column (00125)
+    workbench_folder_id INTEGER REFERENCES workbench_folders(id) ON DELETE SET NULL, -- workbench targets: the folder the work is in; NULL = the home folder; a removed folder is told apart by its row's removed_at (00209)
     CHECK(status != 'in_review' OR project_id IS NOT NULL)  -- in_review exists only on a project board (00086)
 );
 CREATE INDEX IF NOT EXISTS idx_targets_level       ON targets(level);
@@ -2633,7 +2634,7 @@ END;
 CREATE TABLE IF NOT EXISTS projects (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT NOT NULL,
-    folder_path TEXT NOT NULL UNIQUE,
+    folder_path TEXT NOT NULL UNIQUE, -- the home folder: a live workbench_folders row of this workbench (00209)
     description TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
@@ -2651,6 +2652,36 @@ CREATE TABLE IF NOT EXISTS projects (
     finish_check_carried_at TEXT NULL, -- when finish_check was carried over from the folder file; NULL = the owner's pick, or never carried (00133)
     session_instructions TEXT NULL, -- the owner's instructions for sessions in this workbench; NULL = none (00137)
     target_procedure TEXT NULL -- the owner's procedure for working a target in this workbench; NULL = none (00137)
+);
+
+-- The folders of a workbench (00209, multi-folder workbench): all equal; the
+-- home folder is the live row whose path equals projects.folder_path (the one
+-- the workbench was opened with, kept there for older readers). folder_path is
+-- absolute and symlink-resolved; one live row per path globally and one live
+-- name per bench (both NOCASE: APFS). Removing a folder sets removed_at and
+-- keeps the row, so targets and sessions can still name it; putting the same
+-- path back on the same bench clears it. The Go CLI is the only writer.
+CREATE TABLE IF NOT EXISTS workbench_folders (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    folder_path  TEXT NOT NULL,
+    position     INTEGER NOT NULL,
+    added_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    added_by     TEXT NOT NULL CHECK (added_by IN ('owner','agent_suggestion')),
+    removed_at   TEXT, -- NULL while on the bench
+    name         TEXT NOT NULL -- the folder's short name: its last path component, else <parent>-<last>(-N) (db.UniqueFolderName)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workbench_folders_live_path ON workbench_folders(folder_path COLLATE NOCASE) WHERE removed_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workbench_folders_live_name ON workbench_folders(workbench_id, name COLLATE NOCASE) WHERE removed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_workbench_folders_bench ON workbench_folders(workbench_id, position);
+
+-- "Never for This Folder" (00209): the agent never suggests this folder for
+-- this workbench again.
+CREATE TABLE IF NOT EXISTS workbench_folder_declines (
+    workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    folder_path  TEXT NOT NULL COLLATE NOCASE,
+    declined_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    PRIMARY KEY (workbench_id, folder_path)
 );
 
 -- Workbench board columns (00125, PROJ-19): named columns inside one status
@@ -2787,14 +2818,18 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     agent_watch_issue_at TEXT, -- when that issue was written, agent_state_at format; NULL with agent_watch_issue
     start_notice      TEXT, -- Go's start (`workbench session start`): the owner's line about the place (worktree warnings, "Started in the folder: …", the setup command that did not run, a failed move); NULL/'' = nothing to say (00179)
     delete_requested_at TEXT, -- the owner confirmed the delete and its background cleanup has not finished (Desktop only, 00192); NULL = not deleting
+    workbench_folder_id INTEGER REFERENCES workbench_folders(id) ON DELETE SET NULL, -- the workbench folder the session was started for (its cwd is that folder or a worktree of it); NULL = a standalone terminal, or a row the Desktop wrote without the CLI (read as the home folder) (00209)
+    parent_session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL, -- the session that started this one as a sub-session; NULL = none (00209)
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_project ON terminal_sessions(project_id, last_active_at);
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_target ON terminal_sessions(target_id);
+CREATE INDEX IF NOT EXISTS idx_terminal_sessions_parent ON terminal_sessions(parent_session_id);
 
 -- Asks the workbench agent puts to the owner (00100): a document review, a
--- check or questions. Go writes open/withdrawn/delivered; the Desktop writes
+-- check, questions or a folder suggestion (kind 'folder', 00209; payload
+-- {"path","repo_root","touches","why","other_bench"?:{"id","name"}}). Go writes open/withdrawn/delivered; the Desktop writes
 -- only open -> answered (answer + answered_at, guarded on status = 'open').
 -- delivered = get_ask has read the answer. At most 30 open per workbench.
 CREATE TABLE IF NOT EXISTS owner_asks (
@@ -2802,12 +2837,12 @@ CREATE TABLE IF NOT EXISTS owner_asks (
     project_id       INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     session_id       INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
     target_id        INTEGER REFERENCES targets(id) ON DELETE SET NULL,
-    kind             TEXT NOT NULL CHECK(kind IN ('review','check','question')),
+    kind             TEXT NOT NULL CHECK(kind IN ('review','check','question','folder')),
     title            TEXT NOT NULL CHECK(title != ''),
     summary          TEXT NOT NULL DEFAULT '',
     changes          TEXT NOT NULL DEFAULT '',   -- review re-round: what changed, agent-written
     payload          TEXT NOT NULL DEFAULT '{}', -- JSON: focus[], questions[], checklist[]
-    doc_path         TEXT NOT NULL DEFAULT '',   -- review only: rel path inside the folder
+    doc_path         TEXT NOT NULL DEFAULT '',   -- review only: rel path inside its folder (doc_folder_id)
     doc_snapshot     TEXT NOT NULL DEFAULT '',   -- review only: file text at ask time
     previous_ask_id  INTEGER REFERENCES owner_asks(id) ON DELETE SET NULL,
     status           TEXT NOT NULL DEFAULT 'open'
@@ -2823,11 +2858,49 @@ CREATE TABLE IF NOT EXISTS owner_asks (
     withdrawn_at     TEXT NOT NULL DEFAULT '',   -- when it was withdrawn (00107); '' while not, and for asks withdrawn before 00107
     automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- the automation run the ask belongs to (00122); NULL = not an automation's
     doc_type         TEXT NOT NULL DEFAULT '',   -- review asks: spec | plan | other (00158); '' for any other ask
+    doc_folder_id    INTEGER REFERENCES workbench_folders(id) ON DELETE SET NULL, -- review asks: the folder doc_path is relative to; NULL = the home folder (00209)
     CHECK ((kind = 'review') = (doc_path != '')),
     CHECK ((status IN ('answered','delivered')) = (answer != ''))
 );
 CREATE INDEX IF NOT EXISTS idx_owner_asks_project ON owner_asks(project_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_owner_asks_session ON owner_asks(session_id);
+
+-- Messages between the live sessions of one workbench (00209). Persisted so a
+-- daemon restart resumes delivery; the daemon is the only deliverer:
+-- queued -> delivering (claimed by one autocommit update) -> delivered |
+-- failed, or back to queued when the session host held it. reason names
+-- why (typed_not_submitted, not_running, unknown_after_restart, …).
+-- prompt_cleared_at: on a typed_not_submitted row, when the text left the
+-- receiver's prompt; NULL while it may still sit there. The text is never
+-- indexed and never leaves the Mac.
+CREATE TABLE IF NOT EXISTS session_messages (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    workbench_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    from_session_id   INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+    to_session_id     INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+    kind              TEXT NOT NULL CHECK (kind IN ('message','finished','failure')),
+    text              TEXT NOT NULL,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    state             TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','delivering','delivered','failed')),
+    reason            TEXT NOT NULL DEFAULT '',
+    delivered_at      TEXT, -- when it was delivered (RFC 3339 UTC); NULL otherwise
+    prompt_cleared_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_messages_state ON session_messages(state);
+CREATE INDEX IF NOT EXISTS idx_session_messages_to ON session_messages(to_session_id, state);
+
+-- A session's tool calls outside its workbench's folders, per repository root
+-- (00209): the folder-suggestion hook's counter. One autocommit upsert per
+-- counted call. nudged_at = the agent was told once; quiet = the owner's
+-- Not Now for this root in this session.
+CREATE TABLE IF NOT EXISTS session_outside_touches (
+    session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+    repo_root  TEXT NOT NULL,
+    touches    INTEGER NOT NULL DEFAULT 0,
+    nudged_at  TEXT,
+    quiet      INTEGER NOT NULL DEFAULT 0 CHECK (quiet IN (0,1)),
+    PRIMARY KEY (session_id, repo_root)
+);
 
 -- Spec review (00158): one reviewer-agent run per review ask. queued -> running
 -- (claimed by a pid) -> done | failed; skipped = no review runs (reason).
@@ -3015,9 +3088,11 @@ CREATE TABLE IF NOT EXISTS agent_session_tombstones (
     deleted_at       TEXT NOT NULL -- UTC ISO-8601 seconds
 );
 
--- Go-only cache of a workbench's PR/branch state for session reports (00101).
+-- Go-only cache of a workbench's PR/branch state for session reports (00101),
+-- per folder of the workbench (00209: two folders may share a branch name).
 CREATE TABLE IF NOT EXISTS workbench_pr_states (
     project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    workbench_folder_id INTEGER NOT NULL REFERENCES workbench_folders(id) ON DELETE CASCADE, -- the folder whose repository the ref is of (00209)
     ref         TEXT NOT NULL, -- 'pr:<number>', 'branch:<name>' or 'into:<base>:<branch>' (a merge verdict, board #986)
     state       TEXT NOT NULL CHECK(state IN ('merged','open','closed','none','unknown')),
     pr_number   INTEGER, -- set for a pr ref, and for a branch whose PR gh found
@@ -3026,7 +3101,7 @@ CREATE TABLE IF NOT EXISTS workbench_pr_states (
     deletions   INTEGER,
     merged_at   TEXT NOT NULL DEFAULT '',
     checked_at  TEXT NOT NULL,
-    PRIMARY KEY (project_id, ref)
+    PRIMARY KEY (project_id, workbench_folder_id, ref)
 );
 
 -- Automations (00113, design spec 2026-10-14 §9.1–§9.4). Go writes every
@@ -3499,16 +3574,17 @@ CREATE TABLE IF NOT EXISTS review_lessons (
   decided_at         TEXT
 );
 
--- The independent reviewer's thread per branch of a workbench (00180, Desktop writer).
--- branch = the round's branch, else the folder's checked-out branch; a detached HEAD
--- keys by 'session:<id>'. conversation_id is a chat_conversations row of context type
+-- The independent reviewer's thread per branch of a workbench folder (00180, Desktop writer;
+-- the folder joined the key in 00209). branch = the round's branch, else the folder's
+-- checked-out branch; a detached HEAD keys by 'session:<id>'. conversation_id is a chat_conversations row of context type
 -- 'review_reviewer', deleted with its thread row.
 CREATE TABLE IF NOT EXISTS review_reviewer_threads (
   project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  workbench_folder_id INTEGER NOT NULL REFERENCES workbench_folders(id) ON DELETE CASCADE, -- (00209)
   branch          TEXT NOT NULL CHECK (branch != ''),
   conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-  PRIMARY KEY (project_id, branch)
+  PRIMARY KEY (project_id, workbench_folder_id, branch)
 );
 CREATE TRIGGER IF NOT EXISTS review_reviewer_threads_ad AFTER DELETE ON review_reviewer_threads
 BEGIN

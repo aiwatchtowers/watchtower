@@ -157,7 +157,7 @@ func TestGitSource_MergedPRs(t *testing.T) {
 		{WorkbenchID: wb, Ref: "pr:13", State: "open", PRNumber: sql.NullInt64{Int64: 13, Valid: true}, Title: "Open one"},
 		{WorkbenchID: wb, Ref: "pr:14", State: "closed", PRNumber: sql.NullInt64{Int64: 14, Valid: true}, Title: "Closed one"},
 	} {
-		if err := d.UpsertPRState(s); err != nil {
+		if err := upsertHomePRState(d, s); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -273,7 +273,7 @@ func TestGitSource_LateCachedMergeStillEmitted(t *testing.T) {
 		return db.PRState{WorkbenchID: wb, Ref: "pr:" + strconv.FormatInt(n, 10), State: "merged",
 			PRNumber: sql.NullInt64{Int64: n, Valid: true}, Title: "PR", MergedAt: merged.Format(time.RFC3339)}
 	}
-	if err := d.UpsertPRState(pr(2, day(10))); err != nil {
+	if err := upsertHomePRState(d, pr(2, day(10))); err != nil {
 		t.Fatal(err)
 	}
 	src := GitSource(ExecGit)
@@ -284,7 +284,7 @@ func TestGitSource_LateCachedMergeStillEmitted(t *testing.T) {
 	}
 	store(t, d, ps)
 	// PR 1 merged earlier but its state is cached only now.
-	if err := d.UpsertPRState(pr(1, day(8))); err != nil {
+	if err := upsertHomePRState(d, pr(1, day(8))); err != nil {
 		t.Fatal(err)
 	}
 	ps, _, _, err = src.Next(ctx, d, wb, c, 10)
@@ -341,7 +341,7 @@ func TestGitSource_LateFindsCountTowardLimit(t *testing.T) {
 		return db.PRState{WorkbenchID: wb, Ref: "pr:" + strconv.FormatInt(n, 10), State: "merged",
 			PRNumber: sql.NullInt64{Int64: n, Valid: true}, Title: "PR", MergedAt: merged.Format(time.RFC3339)}
 	}
-	if err := d.UpsertPRState(pr(9, day(10))); err != nil {
+	if err := upsertHomePRState(d, pr(9, day(10))); err != nil {
 		t.Fatal(err)
 	}
 	src := GitSource(ExecGit)
@@ -352,7 +352,7 @@ func TestGitSource_LateFindsCountTowardLimit(t *testing.T) {
 	}
 	store(t, d, ps)
 	for n := int64(1); n <= 3; n++ { // three merges cached late
-		if err := d.UpsertPRState(pr(n, day(int(n)))); err != nil {
+		if err := upsertHomePRState(d, pr(n, day(int(n)))); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -377,7 +377,7 @@ func TestGitSource_KeysPerWorkbench(t *testing.T) {
 		r.commit(day(2), "rewrite the parser loop", "a.go")
 		wb := addWorkbench(t, d, r.dir)
 		wbs = append(wbs, wb)
-		if err := d.UpsertPRState(db.PRState{WorkbenchID: wb, Ref: "pr:2", State: "merged",
+		if err := upsertHomePRState(d, db.PRState{WorkbenchID: wb, Ref: "pr:2", State: "merged",
 			PRNumber: sql.NullInt64{Int64: 2, Valid: true}, Title: "PR", MergedAt: day(10).Format(time.RFC3339)}); err != nil {
 			t.Fatal(err)
 		}
@@ -391,7 +391,7 @@ func TestGitSource_KeysPerWorkbench(t *testing.T) {
 		cursors[wb] = c
 	}
 	for _, wb := range wbs { // PR 1 merged earlier, cached late in both
-		if err := d.UpsertPRState(db.PRState{WorkbenchID: wb, Ref: "pr:1", State: "merged",
+		if err := upsertHomePRState(d, db.PRState{WorkbenchID: wb, Ref: "pr:1", State: "merged",
 			PRNumber: sql.NullInt64{Int64: 1, Valid: true}, Title: "PR", MergedAt: day(8).Format(time.RFC3339)}); err != nil {
 			t.Fatal(err)
 		}
@@ -430,4 +430,15 @@ func TestGitSource_ForeignAuthorNotOwner(t *testing.T) {
 	if len(ps) != 1 || ps[0].OwnerWords != "owner rewrite" {
 		t.Fatalf("got %+v, want only the owner's rewrite", ps)
 	}
+}
+
+// upsertHomePRState stores s under its workbench's home folder (PR states
+// are keyed per folder since migration 00209), as the git source reads them.
+func upsertHomePRState(d *db.DB, s db.PRState) error {
+	home, err := d.HomeFolderID(context.Background(), s.WorkbenchID)
+	if err != nil {
+		return err
+	}
+	s.FolderID = home
+	return d.UpsertPRState(s)
 }

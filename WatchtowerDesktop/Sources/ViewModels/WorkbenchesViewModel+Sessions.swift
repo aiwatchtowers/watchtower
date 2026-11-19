@@ -211,31 +211,46 @@ extension WorkbenchesViewModel {
     /// Level 2's "New session" (and ⌘T): a fresh agent session of the
     /// workbench on screen — `agent`, else the default agent — put on screen
     /// like a panel click. The panel may be hidden or at level 1
-    /// (`drilledWorkbenchID` is nil or this one).
-    func newSessionOnPage(agent: AgentKind? = nil, worktree: WorktreeChoice = .auto) async {
+    /// (`drilledWorkbenchID` is nil or this one). `folder`: where it starts
+    /// (spec 2026-11-18 §6.4) — nil is ⌘T's context (`shortcutFolder`).
+    func newSessionOnPage(
+        agent: AgentKind? = nil,
+        worktree: WorktreeChoice = .auto,
+        folder: NewSessionFolder.Context? = nil
+    ) async {
         guard let projectID = selectedWorkbenchID else { return }
-        await newSession(projectID: projectID, agent: agent, worktree: worktree)
+        await newSession(projectID: projectID, agent: agent, worktree: worktree, folder: folder)
     }
 
     /// A pane picker's "New … session": starts one in that pane.
     func newSession(
-        inPane slot: WorkspacePane, projectID: Int64, agent: AgentKind? = nil, worktree: WorktreeChoice = .auto
+        inPane slot: WorkspacePane,
+        projectID: Int64,
+        agent: AgentKind? = nil,
+        worktree: WorktreeChoice = .auto,
+        folder: NewSessionFolder.Context? = nil
     ) async {
-        await newSession(projectID: projectID, placement: .replacing(slot), agent: agent, worktree: worktree)
+        await newSession(projectID: projectID, placement: .replacing(slot), agent: agent, worktree: worktree, folder: folder)
     }
 
     /// A new agent session of the workbench: `agent`, or the default agent
     /// (Settings → Workbench → Default agent, D1) when nil. `worktree`:
-    /// where it starts (`placementForNewSession`).
+    /// where it starts (`placementForNewSession`); `folder`: in which bench
+    /// folder (nil: ⌘T's context, `shortcutFolder`).
     func newSession(
-        projectID: Int64, placement: Placement = .show, agent: AgentKind? = nil, worktree: WorktreeChoice = .auto
+        projectID: Int64,
+        placement: Placement = .show,
+        agent: AgentKind? = nil,
+        worktree: WorktreeChoice = .auto,
+        folder: NewSessionFolder.Context? = nil
     ) async {
         let ticket = beginSwitch(projectID: projectID)
         let agent = agent ?? currentDefaultAgent()
         guard let project = await project(id: projectID) else { return }
         await startNewSession(
             project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement, ticket: ticket,
-            agent: agent, worktree: worktree
+            agent: agent, worktree: worktree,
+            folder: startFolder(folder ?? shortcutFolder(projectID: projectID), bench: benchFolders[projectID])
         )
     }
 
@@ -267,7 +282,8 @@ extension WorkbenchesViewModel {
         placement: Placement = .show,
         ticket: Int? = nil,
         agent: AgentKind,
-        worktree: WorktreeChoice = .auto
+        worktree: WorktreeChoice = .auto,
+        folder: StartFolder
     ) async -> TerminalSession? {
         await createAndStart(
             .init(projectID: project.id, kind: TerminalSession.Kind(agent), title: title,
@@ -275,7 +291,7 @@ extension WorkbenchesViewModel {
             prompt: prompt,
             placement: placement,
             ticket: ticket ?? beginSwitch(projectID: project.id),
-            placing: (project, worktree, nil)
+            placing: (project, worktree, nil, folder)
         )
     }
 
@@ -430,7 +446,7 @@ extension WorkbenchesViewModel {
         guard let project = fetched else { throw fail("Workbench #\(projectID) is gone.") }
         return try await createAndActivate(
             makeRow(project), prompt: prompt, placement: placement, ticket: ticket, checkLaunch: true,
-            placing: (project, .auto, nil)
+            placing: (project, .auto, nil, .home)
         )
     }
 
@@ -478,7 +494,7 @@ extension WorkbenchesViewModel {
             return try await reopen(existing, placement: placement, ticket: ticket, checkLaunch: checkLaunch)
         }
         let agent = agent ?? currentDefaultAgent()
-        let text = (title ?? found.targetText).trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = (title ?? found.target.text).trimmingCharacters(in: .whitespacesAndNewlines)
         // A blank brief is no brief: the work-on prompt goes instead.
         let given = prompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let brief = given.isEmpty
@@ -493,7 +509,7 @@ extension WorkbenchesViewModel {
             placement: placement,
             ticket: ticket,
             checkLaunch: checkLaunch,
-            placing: (found.project, worktree, text)
+            placing: (found.project, worktree, text, startFolder(.workOnIt(target: found.target), bench: found.folders))
         )
     }
 
@@ -521,9 +537,16 @@ extension WorkbenchesViewModel {
         )
     }
 
-    /// A target's own workbench, its text, whether it has sub-targets on that
-    /// workbench, and the sessions of that workbench working on it.
-    typealias TargetSessions = (project: Workbench, targetText: String, isGroup: Bool, rows: [TerminalSession])
+    /// A target's own workbench, the target, whether it has sub-targets on
+    /// that workbench, the sessions of that workbench working on it, and the
+    /// bench's folders (where a new session for it starts).
+    struct TargetSessions {
+        let project: Workbench
+        let target: Target
+        let isGroup: Bool
+        let rows: [TerminalSession]
+        let folders: BenchFolders
+    }
 
     /// nil when the target is not on a workbench board. A session waiting in
     /// the Undo batch is never among the rows: "open existing" must not
@@ -536,7 +559,11 @@ extension WorkbenchesViewModel {
                   let project = try WorkbenchQueries.fetch(db, id: projectID) else { return nil }
             let rows = try TerminalSessionQueries.fetchForTarget(db, targetID: targetID)
             let isGroup = try TargetQueries.hasChildren(db, id: targetID, workbenchID: projectID)
-            return (project, target.text, isGroup, rows.filter { $0.projectID == projectID && !hidden.contains($0.id) })
+            let folders = try WorkbenchFolderQueries.benchFolders(db, workbenchID: projectID)
+            return TargetSessions(
+                project: project, target: target, isGroup: isGroup,
+                rows: rows.filter { $0.projectID == projectID && !hidden.contains($0.id) }, folders: folders
+            )
         }
     }
 
@@ -554,7 +581,8 @@ extension WorkbenchesViewModel {
         } else {
             await startNewSession(
                 project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement, ticket: ticket,
-                agent: currentDefaultAgent()
+                agent: currentDefaultAgent(),
+                folder: startFolder(shortcutFolder(projectID: project.id), bench: benchFolders[project.id])
             )
         }
     }
@@ -904,9 +932,10 @@ extension WorkbenchesViewModel {
         return nil
     }
 
-    /// A new agent row's workbench, the owner's worktree choice and the
-    /// target's text (the worktree's name), for `placementForNewSession`.
-    typealias SessionPlacing = (project: Workbench, choice: WorktreeChoice, targetText: String?)
+    /// A new agent row's workbench, the owner's worktree choice, the
+    /// target's text (the worktree's name), for `placementForNewSession`,
+    /// and the bench folder it starts in (Go's start only, `startInGo`).
+    typealias SessionPlacing = (project: Workbench, choice: WorktreeChoice, targetText: String?, folder: StartFolder)
 
     /// The created row, or nil when it could not be written (the error is
     /// reported already).
@@ -955,7 +984,7 @@ extension WorkbenchesViewModel {
         if let placing, let wait = goSessionStart {
             return try await startInGo(
                 new, prompt: prompt, placement: placement, ticket: ticket, checkLaunch: checkLaunch,
-                choice: placing.choice, wait: wait
+                choice: placing.choice, folder: placing.folder, wait: wait
             )
         }
         // A failed insert leaves no notice of an earlier start beside its error.
@@ -1092,6 +1121,7 @@ extension WorkbenchesViewModel {
         ticket: Int?,
         checkLaunch: Bool,
         choice: WorktreeChoice,
+        folder: StartFolder,
         wait: GoSessionStartWait
     ) async throws -> TerminalSession {
         func fail(_ message: String) -> TargetStartError {
@@ -1106,7 +1136,7 @@ extension WorkbenchesViewModel {
         let serial = goStartSerials[projectID] ?? 0
         let request = SessionStartRequest(
             workbenchID: projectID, targetID: new.targetID, agent: agent, place: choice, title: new.title,
-            brief: prompt, automationRunID: new.automationRunID
+            brief: prompt, automationRunID: new.automationRunID, folderID: folder.id
         )
         let id = try await callSessionStart(request, cli: cli, wait: wait, ticket: ticket).sessionID
         let fetched: TerminalSession?
@@ -1138,7 +1168,9 @@ extension WorkbenchesViewModel {
         if case let .failed(reason) = outcome, reason.hasPrefix(GoSessionStartContract.moveFailedPrefix) {
             throw await failedMove(row, message: notice ?? reason, ticket: ticket)
         }
-        if goStartSerials[projectID] == serial || notice != nil { startNotice[projectID] = notice }
+        if goStartSerials[projectID] == serial || notice != nil || folder.notice != nil {
+            startNotice[projectID] = StartFolder.joined(folder.notice, notice)
+        }
         let isLatest = ticket.map { isLatestSwitch($0, projectID: projectID) } ?? false
         let previous = terminalCenter?.focusOrder.last
         if ticket != nil { notYetTitledStreak[id] = nil }
@@ -1161,6 +1193,10 @@ extension WorkbenchesViewModel {
             let line = WorkbenchCLIError.agentNotFound(missing).localizedDescription
             reportStartError(line, projectID: request.workbenchID, ticket: ticket)
             throw TargetStartError.agentNotFound(missing)
+        } catch let WorkbenchCLIError.startRefused(_, sentence) {
+            // Go's sentence alone (`Install Watchtower in hub first`).
+            reportStartError(sentence, projectID: request.workbenchID, ticket: ticket)
+            throw TargetStartError.failed(sentence)
         } catch {
             let message = "Could not start the session: \(Self.cliReason(error))"
             reportStartError(message, projectID: request.workbenchID, ticket: ticket)
@@ -1371,6 +1407,7 @@ extension WorkbenchesViewModel {
         if restorable, let center = terminalCenter,
            let plan = await rowToLaunch(row, fresh: fresh, center: center, ticket: ticket) {
             let row = plan.row
+            await ensureInstallBeforeLaunch(row)
             let mode = await center.launch(
                 row, fresh: fresh, prompt: prompt, codexResume: plan.codexResume, setup: setup
             )
@@ -1512,7 +1549,10 @@ extension WorkbenchesViewModel {
         guard let cli, let center = terminalCenter else { return false }
         let status: WorkbenchGitStatus
         do {
-            status = try await cli.gitStatus(projectID: projectID, folder: row.folderPath)
+            status = try await cli.gitStatus(
+                projectID: projectID, folder: row.folderPath,
+                folderID: nonHomeFolderID(row.workbenchFolderID, projectID: projectID)
+            )
         } catch {
             center.refuseLaunch(row, reason: "The worktree at \(top) could not be checked: \(error.localizedDescription)")
             return false

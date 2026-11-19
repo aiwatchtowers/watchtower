@@ -69,12 +69,16 @@ func removeCaps(pidPath string) {
 // advertiseCaps writes the capabilities file beside the PID file and returns
 // its removal: WatchmanWakeCapability always, AutomationWakeCapability only
 // while automationsActive (otherwise the CLI never signals this daemon for
-// an automation). A failed write is logged, not fatal: the daemon runs, the
-// CLI just never wakes it.
+// an automation), SessionMessagesWakeCapability only with a message
+// deliverer. A failed write is logged, not fatal: the daemon runs, the CLI
+// just never wakes it.
 func (d *Daemon) advertiseCaps() (remove func()) {
 	caps := []string{WatchmanWakeCapability}
 	if d.automationsActive() {
 		caps = append([]string{AutomationWakeCapability}, caps...)
+	}
+	if d.messages != nil {
+		caps = append(caps, SessionMessagesWakeCapability)
 	}
 	if err := writeCaps(d.pidPath, caps); err != nil {
 		d.logger.Printf("daemon: %v (the CLI will not wake this daemon)", err)
@@ -227,8 +231,9 @@ func (d *Daemon) startAutomations(ctx context.Context) (stop func()) {
 }
 
 // startWakeForwarder starts the goroutine that hands every
-// AutomationWakeSignal to the automations runners (when active) and the
-// Watchman twin; the returned stop cancels it and waits for it.
+// AutomationWakeSignal to the automations runners (when active), the agent
+// message deliverer (when wired) and the Watchman twin; the returned stop
+// cancels it and waits for it.
 func (d *Daemon) startWakeForwarder(ctx context.Context) (stop func()) {
 	if d.watchmanWakeCh == nil {
 		d.watchmanWakeCh = make(chan struct{}, 1)
@@ -246,8 +251,9 @@ func (d *Daemon) startWakeForwarder(ctx context.Context) (stop func()) {
 }
 
 // forwardWakes hands every wake to both automations runners (when active)
-// and ticks the twin's channel — non-blocking, so a burst collapses into the
-// tick already queued — until ctx is done or the wake channel closes.
+// and the agent message deliverer (when wired), and ticks the twin's
+// channel — non-blocking, so a burst collapses into the tick already queued —
+// until ctx is done or the wake channel closes.
 func (d *Daemon) forwardWakes(ctx context.Context) {
 	for {
 		select {
@@ -261,6 +267,7 @@ func (d *Daemon) forwardWakes(ctx context.Context) {
 				d.automationScheduler.Wake()
 				d.automationExecutor.Wake()
 			}
+			d.wakeMessages()
 			select {
 			case d.watchmanWakeCh <- struct{}{}:
 			default:

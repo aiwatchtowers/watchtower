@@ -384,7 +384,8 @@
       "command": "chat.reviewer_thread",
       "swift": "ReviewerThreadQueries.ensure",
       "seed": [
-        "INSERT INTO projects (id, name, folder_path) VALUES (1, 'W', '/example/w')"
+        "INSERT INTO projects (id, name, folder_path) VALUES (1, 'W', '/example/w')",
+        "INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name) VALUES (7, 1, '/example/w', 0, 'owner', 'w')"
       ],
       "params": {
         "project_id": 1,
@@ -406,10 +407,11 @@
           ]
         },
         {
-          "sql": "SELECT project_id, branch, conversation_id FROM review_reviewer_threads",
+          "sql": "SELECT project_id, workbench_folder_id, branch, conversation_id FROM review_reviewer_threads",
           "rows": [
             [
               1,
+              7,
               "main",
               1
             ]
@@ -423,8 +425,9 @@
       "swift": "ReviewerThreadQueries.ensure",
       "seed": [
         "INSERT INTO projects (id, name, folder_path) VALUES (1, 'W', '/example/w')",
+        "INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name) VALUES (7, 1, '/example/w', 0, 'owner', 'w')",
         "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (4, 'Reviewer: main', 'review_reviewer', '1:main', 1, 1)",
-        "INSERT INTO review_reviewer_threads (project_id, branch, conversation_id) VALUES (1, 'main', 4)"
+        "INSERT INTO review_reviewer_threads (project_id, workbench_folder_id, branch, conversation_id) VALUES (1, 7, 'main', 4)"
       ],
       "params": {
         "project_id": 1,
@@ -439,6 +442,56 @@
           "rows": [
             [
               1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reviewer_thread_is_per_folder",
+      "command": "chat.reviewer_thread",
+      "swift": "ReviewerThreadQueries.ensure",
+      "seed": [
+        "INSERT INTO projects (id, name, folder_path) VALUES (1, 'W', '/example/w')",
+        "INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name) VALUES (7, 1, '/example/w', 0, 'owner', 'w')",
+        "INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name) VALUES (8, 1, '/example/hub', 1, 'owner', 'hub')",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (4, 'Reviewer: main', 'review_reviewer', '1:main', 1, 1)",
+        "INSERT INTO review_reviewer_threads (project_id, workbench_folder_id, branch, conversation_id) VALUES (1, 7, 'main', 4)"
+      ],
+      "params": {
+        "project_id": 1,
+        "folder_id": 8,
+        "branch": "main"
+      },
+      "result": {
+        "conversation_id": 5
+      },
+      "check": [
+        {
+          "sql": "SELECT id, context_id FROM chat_conversations ORDER BY id",
+          "rows": [
+            [
+              4,
+              "1:main"
+            ],
+            [
+              5,
+              "1:f8:main"
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT workbench_folder_id, branch, conversation_id FROM review_reviewer_threads ORDER BY conversation_id",
+          "rows": [
+            [
+              7,
+              "main",
+              4
+            ],
+            [
+              8,
+              "main",
+              5
             ]
           ]
         }

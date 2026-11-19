@@ -236,6 +236,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("session-state-spec-review") })
     }
 
+    /// The multi-folder workbench spec's mockups (#2003).
+    func testMultiFolderShotsRender() throws {
+        try renderShots(MultiFolderShotFixtures.shots)
+    }
+
     /// The workbench FILES tree's states (#2017).
     func testFilesSectionShotsRender() throws {
         try renderShots(FilesSectionShotFixtures.shots)

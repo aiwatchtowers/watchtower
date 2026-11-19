@@ -139,7 +139,7 @@ func assertLegacyHooksReplaced(t *testing.T, folder string, rep WorkbenchInstall
 		"Stop":               {WorkbenchStopHookCommand(legacyBin, 7), WorkbenchAskGuardStopHookCommand(legacyBin, 7)},
 		"UserPromptSubmit":   {state},
 		"Notification":       {state},
-		"PostToolUse":        {state},
+		"PostToolUse":        {state, outsideTouchSpec.command(legacyBin, 7)},
 		"StopFailure":        {state},
 		"SubagentStop":       {state},
 		"SubagentStart":      {state},

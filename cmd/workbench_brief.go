@@ -208,7 +208,16 @@ func briefFromDB(database *db.DB, p *db.Workbench, agent string, stderr io.Write
 	// Open targets only: the hook blocks the session start, and the closed
 	// targets' walk (done_but_unmerged) tripled it; the board banner and
 	// `workbench check` still show every kind.
-	drift := workbenchcheck.Check(ctx, p.ID, board, workbenchcheck.Options{Folder: p.FolderPath, OpenOnly: true})
+	// Each target is checked in its own folder (PROJ-07); without the folder
+	// rows the branch checks are skipped and the brief says so, never a
+	// verdict read in the wrong repository.
+	var drift workbenchcheck.Report
+	if folderOf, err := targetFolders(ctx, database, p.ID, board); err != nil {
+		drift = workbenchcheck.Report{WorkbenchID: p.ID, Git: true, Findings: []workbenchcheck.Finding{}, Skipped: []workbenchcheck.FolderSkip{},
+			Notes: []string{workbenchcheck.ClipNote(err.Error())}}
+	} else {
+		drift = workbenchcheck.Check(ctx, p.ID, board, workbenchcheck.Options{Folder: p.FolderPath, FolderOf: folderOf, OpenOnly: true})
+	}
 	now := time.Now()
 	// The mismatch check reads the workbench folder, which resync updates; a
 	// session worktree's own copy follows on its next worktree install.
@@ -465,7 +474,10 @@ func renderSessionBrief(board []db.BoardNode, p *db.Workbench, comments []db.Wor
 // briefDriftSection renders the drift findings within limit runes; "" when
 // the check ran to the end and found nothing. A check cut short, or a
 // repository whose branch checks could not run (no default branch
-// resolves), says so, so it never reads as a clean board.
+// resolves), says so, so it never reads as a clean board. Each folder whose
+// branch checks did not run (Report.Skipped) gets a line of its own after
+// the findings, so a clipped section keeps the findings and counts the
+// skipped folders it cannot show in its "… N more" line.
 func briefDriftSection(drift workbenchcheck.Report, limit int) string {
 	caveat := ""
 	switch {
@@ -474,21 +486,40 @@ func briefDriftSection(drift workbenchcheck.Report, limit int) string {
 	case drift.Git && drift.Base == "":
 		caveat = "branch checks did not run: " + strings.Join(drift.Notes, "; ")
 	}
+	skipped := make([]string, 0, len(drift.Skipped))
+	for _, sk := range drift.Skipped {
+		skipped = append(skipped, "- "+briefClip("branch checks did not run in "+sk.Folder+": "+sk.Reason, briefLineChars))
+	}
 	if len(drift.Findings) == 0 {
-		if caveat == "" {
+		switch {
+		case caveat == "" && len(skipped) == 0:
 			return ""
+		case len(skipped) == 0:
+			return briefClip("Board drift: none found, but "+caveat+".", min(limit, briefLineChars))
 		}
-		return briefClip("Board drift: none found, but "+caveat+".", min(limit, briefLineChars))
+		title := "Board drift: none found, but not every folder was checked:"
+		if caveat != "" {
+			title = briefClip("Board drift: none found, but "+caveat+"; not every folder was checked:", briefLineChars)
+		}
+		section, _ := fitBriefSection(title, skipped, limit, "skipped folders (watchtower workbench check)")
+		return section
 	}
 	title := "Board drift — fix it with update_target:"
 	if caveat != "" {
 		title = briefClip("Board drift ("+caveat+")", briefLineChars) + " — fix it with update_target:"
 	}
-	lines := make([]string, 0, len(drift.Findings))
+	what := "drift findings (watchtower workbench check)"
+	if len(skipped) > 0 {
+		what = "drift lines (watchtower workbench check)"
+	}
+	// Findings first: they are what the agent acts on, so a long list of
+	// skipped folders is the part counted in "… N more" when clipped.
+	lines := make([]string, 0, len(drift.Findings)+len(skipped))
 	for _, f := range drift.Findings {
 		lines = append(lines, "- "+briefClip(f.Line(), briefLineChars))
 	}
-	section, _ := fitBriefSection(title, lines, limit, "drift findings (watchtower workbench check)")
+	lines = append(lines, skipped...)
+	section, _ := fitBriefSection(title, lines, limit, what)
 	return section
 }
 

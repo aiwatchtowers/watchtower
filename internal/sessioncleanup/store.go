@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"watchtower/internal/db"
@@ -30,7 +31,8 @@ var ErrStandaloneSession = errors.New("not a workbench session")
 // everything the session saw look younger than it); a standalone terminal
 // has no workbench to clean up. A placed row (worktree_branch set) carries
 // its folder_path and worktree_branch; a row being deleted its
-// delete_requested_at as Ended.
+// delete_requested_at as Ended; a row started for a workbench folder that
+// folder's path and whether it left the bench.
 func (s DBStore) CleanupSession(ctx context.Context, sessionID int64) (SessionInfo, error) {
 	row, err := s.DB.GetTerminalSession(sessionID)
 	if err != nil {
@@ -54,6 +56,13 @@ func (s DBStore) CleanupSession(ctx context.Context, sessionID int64) (SessionIn
 	if row.WorktreeBranch.Valid {
 		info.PlacedCwd, info.PlacedBranch = row.FolderPath, row.WorktreeBranch.String
 	}
+	if row.WorkbenchFolderID.Valid {
+		f, err := s.DB.WorkbenchFolderByID(ctx, row.WorkbenchFolderID.Int64)
+		if err != nil {
+			return SessionInfo{}, fmt.Errorf("session %d: reading its folder: %w", sessionID, err)
+		}
+		info.Folder, info.FolderRemoved = f.FolderPath, f.RemovedAt.Valid
+	}
 	return info, nil
 }
 
@@ -67,7 +76,7 @@ func (s DBStore) SessionTargetBranches(ctx context.Context, sessionID int64) ([]
 	return s.DB.SessionTargetBranches(ctx, sessionID)
 }
 
-// WorkbenchFolder is the workbench's folder_path.
+// WorkbenchFolder is the workbench's folder_path (its home folder).
 func (s DBStore) WorkbenchFolder(_ context.Context, workbenchID int64) (string, error) {
 	wb, err := s.DB.GetWorkbench(workbenchID)
 	if err != nil {
@@ -76,17 +85,63 @@ func (s DBStore) WorkbenchFolder(_ context.Context, workbenchID int64) (string, 
 	return wb.FolderPath, nil
 }
 
-// WorkbenchFolders is every workbench's folder_path.
-func (s DBStore) WorkbenchFolders(context.Context) ([]string, error) {
+// WorkbenchFolders is every workbench's folder_path and every folder row
+// of every workbench, the removed ones included.
+func (s DBStore) WorkbenchFolders(ctx context.Context) ([]string, error) {
 	wbs, err := s.DB.ListWorkbenches()
+	if err != nil {
+		return nil, err
+	}
+	folders, err := s.hasFolderRows()
 	if err != nil {
 		return nil, err
 	}
 	out := make([]string, 0, len(wbs))
 	for _, wb := range wbs {
 		out = append(out, wb.FolderPath)
+		if !folders {
+			continue
+		}
+		rows, err := s.DB.WorkbenchFolders(ctx, wb.ID, true)
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range rows {
+			out = append(out, f.FolderPath)
+		}
 	}
 	return out, nil
+}
+
+// BenchFolders is the workbench's home folder (folder_path) first, then its
+// other live folders by position.
+func (s DBStore) BenchFolders(ctx context.Context, workbenchID int64) ([]string, error) {
+	home, err := s.WorkbenchFolder(ctx, workbenchID)
+	if err != nil {
+		return nil, err
+	}
+	out := []string{home}
+	folders, err := s.hasFolderRows()
+	if err != nil || !folders {
+		return out, err
+	}
+	rows, err := s.DB.WorkbenchFolders(ctx, workbenchID, false)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range rows {
+		if !strings.EqualFold(f.FolderPath, home) {
+			out = append(out, f.FolderPath)
+		}
+	}
+	return out, nil
+}
+
+// hasFolderRows: the database has workbench_folders (migration 00209). The
+// cleanup opens a database without migrating it; an older one has only
+// folder_path.
+func (s DBStore) hasFolderRows() (bool, error) {
+	return s.DB.HasColumns("workbench_folders", "workbench_id", "folder_path", "removed_at")
 }
 
 // AgentSessionIDs is db.DB.AgentSessionIDs.

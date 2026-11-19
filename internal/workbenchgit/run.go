@@ -29,7 +29,12 @@ var errNotRepository = errors.New("the folder is not a git work tree")
 
 // Options configures one call.
 type Options struct {
+	// Folder is the workbench folder whose repository a call runs in.
 	Folder string
+	// Folders is every live folder of the bench, the home folder first;
+	// read only by ResolveFolder when Folder is "", to choose the folder
+	// the requested path belongs to.
+	Folders []string
 	// Run runs the located git binary (its absolute path is the name
 	// argument). nil = a real process.
 	Run workbenchcheck.Runner

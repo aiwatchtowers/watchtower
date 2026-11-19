@@ -52,7 +52,8 @@ func queueWatchmanItem(d *db.DB, it db.WatchmanItem, wake func()) (queued bool) 
 
 // queueWatchmanAsk queues a just-filed ask of session for the twin.
 func queueWatchmanAsk(d *db.DB, ask db.OwnerAsk, id int64, wake func()) {
-	if !ask.SessionID.Valid {
+	// A folder suggestion is never the twin's: its answer acts on the Mac.
+	if !ask.SessionID.Valid || ask.Kind == db.AskKindFolder {
 		return
 	}
 	queueWatchmanItem(d, db.WatchmanItem{
@@ -111,7 +112,12 @@ func watchmanReviewOfChanges(ctx context.Context, d *db.DB, p *db.Workbench, ses
 		return nil
 	}
 	if snap.Branch == "" {
-		left, err := leftItsWorktree(gitCtx, d, p, session, snap.Folder)
+		main, _, err := d.SessionFolderPath(gitCtx, session)
+		if err != nil {
+			watchmanLog("finish of session %d: %v", session, err)
+			return nil
+		}
+		left, err := leftItsWorktree(gitCtx, d, main, session, snap.Folder)
 		if err != nil {
 			watchmanLog("finish of session %d: %v", session, err)
 			return nil
@@ -139,6 +145,11 @@ func markWatchmanHandover(d *db.DB, workbenchID, session, ticket, askID int64) {
 	ask, err := d.GetOwnerAsk(workbenchID, askID)
 	if err != nil {
 		watchmanLog("ask %d was not marked Watchman's handover: %v", askID, err)
+		return
+	}
+	if ask.Kind == db.AskKindFolder {
+		// Never the twin's (checkHandoverAsk refuses it; kept here too).
+		watchmanLog("ask %d is a folder suggestion: not marked Watchman's handover", askID)
 		return
 	}
 	if ask.TargetID.Valid {

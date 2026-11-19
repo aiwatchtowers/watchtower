@@ -154,11 +154,20 @@ func checkFinishGates(ctx context.Context, d *db.DB, p *db.Workbench, session in
 }
 
 // finishTicket is the session's launch target, else the call's target_id
-// (0 = none).
+// (0 = none). A sub-session (parent_session_id set) is gated on its own
+// target only (PROJ-14, spec D24): without one it has no ticket, whatever
+// the call names — the parent's ticket is the parent's to finish.
 func finishTicket(d *db.DB, session int64, a finishSessionArgs) (int64, error) {
 	ticket, err := d.SessionTicket(session)
 	if err != nil || ticket != 0 {
 		return ticket, err
+	}
+	row, err := d.GetTerminalSession(session)
+	if err != nil {
+		return 0, fmt.Errorf("finish check: %w", err)
+	}
+	if row.ParentSessionID.Valid {
+		return 0, nil
 	}
 	return a.TargetID, nil
 }
@@ -185,6 +194,9 @@ func checkHandoverAsk(d *db.DB, workbenchID, session, ticket, askID int64) (bool
 		return false, &ValidationError{Msg: fmt.Sprintf("handover_ask_id: ask #%d was not filed by this session", askID)}
 	case ask.Status == "withdrawn":
 		return false, &ValidationError{Msg: fmt.Sprintf("handover_ask_id: ask #%d is withdrawn", askID)}
+	case ask.Kind == db.AskKindFolder:
+		return false, &ValidationError{Msg: fmt.Sprintf("handover_ask_id: ask #%d is a folder suggestion; "+
+			"file a question or check ask that says what is left and why", askID)}
 	case ask.Kind == "review" && watchmanArmedForGate(d, session):
 		return false, &ValidationError{Msg: fmt.Sprintf("handover_ask_id: ask #%d is a review; "+
 			"file a question or check ask that says what is left and why", askID)}
@@ -230,7 +242,7 @@ func openLeavesRefusal(ticket int64, leaves []db.OpenTicketLeaf) string {
 // alone (reviewai.IntentHash leaves lane items out), so the gate needs no
 // lane map and the overview's lane coverage never gates (tech spec §4); only
 // a missing overview packs the diff once, for the big-branch hint. A folder
-// outside git has no diff to check, nor has the workbench folder once the
+// outside git has no diff to check, nor has the session's bench folder once the
 // session left a worktree of its own (leftItsWorktree) — unless the place is
 // a branch tip, which is the session's task branch wherever the folder is.
 // On a branch-tip place a folder with uncommitted changes refuses, even with
@@ -252,8 +264,12 @@ func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session i
 	if snap.Empty {
 		return nil
 	}
+	main, _, err := d.SessionFolderPath(gitCtx, session)
+	if err != nil {
+		return fmt.Errorf("finish check: %w", err)
+	}
 	if snap.Branch == "" {
-		if left, err := leftItsWorktree(gitCtx, d, p, session, snap.Folder); err != nil || left {
+		if left, err := leftItsWorktree(gitCtx, d, main, session, snap.Folder); err != nil || left {
 			return err
 		}
 	}
@@ -266,7 +282,7 @@ func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session i
 		return fmt.Errorf("finish check: %w", err)
 	}
 	if !ok {
-		return &ValidationError{Msg: missingOverviewRefusal(p.ID, session, bigBranch(gitCtx, p.FolderPath, snap))}
+		return &ValidationError{Msg: missingOverviewRefusal(p.ID, session, bigBranch(gitCtx, main, snap))}
 	}
 	var ov reviewai.Overview
 	if err := json.Unmarshal([]byte(js), &ov); err != nil {
@@ -332,14 +348,15 @@ func uncoveredItems(intent []reviewai.IntentItem, coverage []reviewai.Coverage) 
 	return open
 }
 
-// leftItsWorktree: the snapshot folder is the workbench folder, but the
-// session worked in a worktree of its own — it was launched in one, or its
-// agent recorded one — and has left it (the cleanup step). The workbench
-// folder's diff is then not this session's work, possibly another live
-// session's, so gate 2 does not judge it (v1 limit: the skill runs the check
-// before leaving the worktree).
-func leftItsWorktree(ctx context.Context, d *db.DB, p *db.Workbench, session int64, folder string) (bool, error) {
-	main := realFolder(p.FolderPath)
+// leftItsWorktree: the snapshot folder is the session's bench folder
+// (sessionFolder, db.SessionFolderPath; spec §6.9), but the session worked
+// in a worktree of its own — it was launched in one, or its agent recorded
+// one — and has left it (the cleanup step). The bench folder's diff is then
+// not this session's work, possibly another live session's, so gate 2 does
+// not judge it (v1 limit: the skill runs the check before leaving the
+// worktree).
+func leftItsWorktree(ctx context.Context, d *db.DB, sessionFolder string, session int64, folder string) (bool, error) {
+	main := realFolder(sessionFolder)
 	if realFolder(folder) != main {
 		return false, nil
 	}

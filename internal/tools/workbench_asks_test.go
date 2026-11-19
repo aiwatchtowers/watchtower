@@ -235,6 +235,42 @@ func TestAskOwner_ReviewRefusesAnyFileItMustNotRead(t *testing.T) {
 	assert.Len(t, text, 2<<20)
 }
 
+// TestAskOwner_ReviewDocInTheSessionsFolder (spec §6.11, F9): a relative
+// doc_path is read in the filing session's own folder, an absolute one in
+// the bench folder holding it; the ask stores that folder's id and a path
+// relative to it.
+func TestAskOwner_ReviewDocInTheSessionsFolder(t *testing.T) {
+	ctx := context.Background()
+	fx := newWorkbenchFixture(t)
+	hubPath, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	res, err := fx.d.Exec(`INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
+		VALUES (?, ?, 1, 'owner', 'hub')`, fx.a, hubPath)
+	require.NoError(t, err)
+	hub, err := res.LastInsertId()
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(hubPath, "docs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hubPath, "docs", "spec.md"), []byte("# Hub spec\n"), 0o644))
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/spec.md", "# Home spec\n")
+	session := folderSession(t, fx.d, fx.a, hub, hubPath, 0)
+	reg := askRegistry(t, fx.d, strconv.FormatInt(session, 10))
+
+	out := mustApply(t, reg, fx.a, "ask_owner", `{"kind":"review","title":"Hub spec","doc_path":"docs/spec.md","reason":"r"}`)
+	a := storedAsk(t, fx.d, fx.a, askID(t, out))
+	assert.Equal(t, "docs/spec.md", a.DocPath)
+	assert.Equal(t, "# Hub spec\n", a.DocSnapshot, "relative: the session's folder")
+	assert.Equal(t, sql.NullInt64{Int64: hub, Valid: true}, a.DocFolderID)
+
+	home, err := fx.d.HomeFolder(ctx, fx.a)
+	require.NoError(t, err)
+	out = mustApply(t, reg, fx.a, "ask_owner", fmt.Sprintf(`{"kind":"review","title":"Home spec","doc_path":%q,"reason":"r"}`,
+		filepath.Join(home.FolderPath, "docs", "spec.md")))
+	a = storedAsk(t, fx.d, fx.a, askID(t, out))
+	assert.Equal(t, "docs/spec.md", a.DocPath)
+	assert.Equal(t, "# Home spec\n", a.DocSnapshot, "absolute: the bench folder holding it")
+	assert.Equal(t, sql.NullInt64{Int64: home.ID, Valid: true}, a.DocFolderID)
+}
+
 // folderState is every entry of root with its content hash (files) and mtime.
 func folderState(t *testing.T, root string) map[string]string {
 	t.Helper()

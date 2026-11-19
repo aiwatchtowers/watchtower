@@ -34,6 +34,9 @@ type (
 // *AgentNotFoundError. Title "" is the target's text (else a provisional
 // title); AutomationRunID (0 = none) is the automation run whose session()
 // step starts it — stored on the row and carried by every launch.
+// FolderID is the workbench folder the session starts for (0 = the home
+// folder); ParentSessionID the session starting it as a sub-session (0 =
+// none; multi-folder workbench, spec 2026-11-18 §6.4–6.5).
 type StartRequest struct {
 	Workbench               int64
 	Target                  *int64
@@ -41,6 +44,8 @@ type StartRequest struct {
 	Title                   string
 	AutomationRunID         int64
 	PlanFirst, OpenExisting bool
+	FolderID                int64
+	ParentSessionID         int64
 }
 
 // StartResult is the started row and its state.

@@ -4,9 +4,9 @@ import Foundation
 /// Workchat's session feed (`SessionFeedEntry`, built by Go `internal/sessionfeed`) as ChatUI's feed messages (unified
 /// chat spec §9.2). The session keeps its own engine (the session feed store and the terminal); only the drawing moves
 /// onto ChatUI. The owner's lines and the answers to asks are the owner's, the agent's text is the answer, and
-/// everything else — Watchtower's own lines, the brief, notices and separators — is a `system` line the Mac draws
-/// itself. Subagent markers map to no message: agents live in the 👥 list, never in the dialog (#2065). No parts are
-/// built (D14): ChatUI derives them from the text.
+/// everything else — Watchtower's own lines, the brief, notices, separators and peer cards — is a `system` line the
+/// Mac draws itself. Subagent markers map to no message: agents live in the 👥 list, never in the dialog (#2065). No
+/// parts are built (D14): ChatUI derives them from the text.
 package enum WorkchatFeedAdapter {
     /// ChatUI's role of a line that is neither the owner's nor an answer.
     package static let systemRole = "system"
@@ -31,7 +31,7 @@ package enum WorkchatFeedAdapter {
         switch kind {
         case "owner", "ask_answer": "user"
         case "agent": "assistant"
-        case "watchtower", "brief", "event", "separator": systemRole
+        case "watchtower", "brief", "event", "separator", "peer": systemRole
         default: nil
         }
     }

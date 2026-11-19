@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/sessionline"
 	"watchtower/internal/sessionstate"
 )
 
@@ -169,6 +170,12 @@ func (h *Handlers) readState(ctx context.Context, sessionID int64, live LiveRun)
 	return askanswer.ReadState(ctx, h.d.DB, sessionID, live, h.d.Clock())
 }
 
+// vouch is a delivery check's answer over a readState (sessionline.Vouch).
+func vouch(s sessionstate.State, row sessionstate.Row, fresh bool) CheckAnswer {
+	fresh, canSubmit, answersDialog := sessionline.Vouch(row, s, fresh)
+	return CheckAnswer{Fresh: fresh, CanSubmit: canSubmit, AnswersDialog: answersDialog}
+}
+
 // DeliverHeld tries every held answer again (askanswer.Answerer.DeliverHeld,
 // after a read of the session states), then the held phone lines (PROJ-16).
 func (h *Handlers) DeliverHeld(ctx context.Context) {
@@ -284,6 +291,12 @@ func nonNilAnswers(in []asks.QuestionAnswer) []asks.QuestionAnswer {
 // kind with p for (asks.ParseAnswer then asks.ValidateAnswer): an answer with
 // a problem is never written, or get_ask would fail on it for good.
 func answerProblem(kind string, p asks.Payload, a asks.Answer) error {
+	if kind == db.AskKindFolder {
+		// A folder suggestion's answer acts on the Mac (put the folder on
+		// the bench, quiet, decline); a bare note from the phone would close
+		// it with none of that done. The phone still lists it.
+		return errors.New("Answer this one on the Mac.") //nolint:staticcheck // ST1005: the owner-facing sentence, shown as is
+	}
 	encoded, err := askanswer.EncodeAnswer(a)
 	if err != nil {
 		return err

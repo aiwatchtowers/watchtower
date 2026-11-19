@@ -29,6 +29,7 @@ import (
 	"watchtower/internal/hub/transport/memfake"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/sessionhost"
+	"watchtower/internal/sessionmsg"
 )
 
 const (
@@ -178,6 +179,32 @@ func TestPortInterruptIsOneEscAndNoDraft(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, handlers.DeliverSubmitted, res.Outcome)
 	w.waitPTY(sid, "\x1b"+pasteOpen+"after"+pasteClose+"\r")
+}
+
+// PromptState reads the run's prompt through the host and types nothing: an
+// empty prompt, then the owner's draft; another launch is not running and
+// never "empty".
+func TestPortPromptStateReadsTheDraftAndTypesNothing(t *testing.T) {
+	w := newWorld(t)
+	p := w.port()
+	sid, info := w.startedSession(p)
+	holds, known, err := p.PromptState(context.Background(), sid, info.Launch)
+	require.NoError(t, err)
+	assert.True(t, known)
+	assert.False(t, holds, "an empty prompt")
+
+	pane := attach(t, w.socket, info)
+	pane.send(sessionhost.Input, []byte("my draft"))
+	w.waitPTY(sid, "my draft")
+	holds, known, err = p.PromptState(context.Background(), sid, info.Launch)
+	require.NoError(t, err)
+	assert.True(t, known)
+	assert.True(t, holds, "the owner's draft")
+	assert.Equal(t, "my draft", w.ptyBefore(sid, pane), "not one byte from the read")
+
+	_, known, err = p.PromptState(context.Background(), sid, info.Launch+1)
+	assert.ErrorIs(t, err, ErrNotRunning)
+	assert.False(t, known)
 }
 
 // relay is the hub's handlers over the real port, behind a real processor on
@@ -351,6 +378,35 @@ func TestPortStartFailuresAreNeverStarted(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, StateFailed, res.State)
 	assert.Equal(t, "the session host is not running", w.row(res.SessionID).agentError)
+}
+
+// A sub-session whose launch fails after the host answered stays a failed
+// start, and its parent gets a failure line (spec §7 "sub-session start",
+// amended); a failed start with no parent tells no one.
+func TestFailedSubSessionStartTellsTheParent(t *testing.T) {
+	w := newWorld(t)
+	w.installHome()
+	ctx := context.Background()
+	parent, err := w.db.CreateTerminalSession(ctx, db.NewTerminalSession{WorkbenchID: w.wb, Kind: "codex", Title: "Lead", FolderPath: w.folder})
+	require.NoError(t, err)
+	refused := w.portWith(func(d *Deps) { d.Shell = filepath.Join(w.stub, "no-such-shell") })
+
+	res, err := refused.Start(ctx, handlers.StartRequest{Workbench: w.wb, Brief: "go", ParentSessionID: parent})
+	require.Error(t, err)
+	assert.Equal(t, StateFailed, res.State)
+	reason := w.row(res.SessionID).agentError
+	require.Contains(t, reason, "launch refused: ")
+
+	_, err = refused.Start(ctx, handlers.StartRequest{Workbench: w.wb, Brief: "go"})
+	require.Error(t, err)
+
+	msgs, err := w.db.QueuedSessionMessages(ctx)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1, "only the sub-session's failure is told")
+	assert.Equal(t, sessionmsg.KindFailure, msgs[0].Kind)
+	assert.Equal(t, parent, msgs[0].ToSessionID.Int64)
+	assert.Equal(t, res.SessionID, msgs[0].FromSessionID.Int64)
+	assert.Equal(t, sessionmsg.FailureLine(res.SessionID, sessionmsg.StartFailureReason(reason)), msgs[0].Text)
 }
 
 // Swift's launch watch: a launch that exits 127 at once (no claude on the

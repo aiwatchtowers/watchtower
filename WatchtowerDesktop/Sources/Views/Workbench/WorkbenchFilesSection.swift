@@ -7,49 +7,88 @@ import WatchtowerCore
 /// workbench folder as a tree, resizable by dragging its top edge. A file
 /// click opens it in the Files pane (`WorkbenchesViewModel.openFile`); the
 /// header's + and each row's menu create, rename and trash entries, the
-/// name typed in place in the tree.
+/// name typed in place in the tree. A bench of several folders (#2003,
+/// spec §6.2) shows one root row per folder, each with its own tree; a
+/// one-folder bench keeps today's tree and adds the quiet Put on the
+/// Bench… hint under it.
 struct WorkbenchFilesSection: View {
     static let heightRange: ClosedRange<Double> = 120...700
+    private typealias Copy = WorkbenchFolderPresentation
 
     @Bindable var vm: WorkbenchesViewModel
-    /// The folder FILES shows (the workbench folder or a worktree).
+    let project: Workbench
+    /// The root the page works in (a folder or a session's worktree): the
+    /// header's caption and + act on it, and its folder's root is open.
     let root: CodeRoot
+    /// Put on the Bench… (the folder panel and its TCC confirmation are the page's).
+    let putOnBench: () -> Void
     @AppStorage("workbench.files.expanded") private var isExpanded = false
     @AppStorage("workbench.files.height") private var height: Double = 300
     @State private var liveHeight: Double?
     @State private var cursorPushed = false
     @State private var edit: CodeTreeEdit?
+    /// The root `edit` types in (several trees may be open).
+    @State private var editRoot: CodeRoot?
     @State private var trashing: CodeFileEntry?
+    @State private var trashingRoot: CodeRoot?
     /// The folder's file count for the Trash confirmation, counted off the
     /// main thread.
     @State private var trashCount: Int?
     @State private var operationError: String?
+    /// Remove from Bench…'s confirmation or refusal on screen.
+    @State private var removing: RemoveFolder?
+    /// Locate… waiting on the TCC warning: the folder and its new place.
+    @State private var locating: (folder: WorkbenchFolder, url: URL)?
+    @State private var sensitiveLocation: String?
+
+    /// A folder and the remove dialog about it.
+    private struct RemoveFolder {
+        let folder: WorkbenchFolder
+        let dialog: WorkbenchFolderPresentation.RemoveDialog
+    }
 
     var body: some View {
         let files = vm.codeFiles
         let tree = files.tree(for: root)
+        let roots = vm.filesRoots(project: project, active: root)
         VStack(spacing: 0) {
             if isExpanded { resizeHandle } else { Divider() }
             header(tree)
             if isExpanded {
                 notices(files)
-                CodeFileTreeList(
-                    tree: tree,
-                    rootLine: CodeFilesRootLine(root: root, status: vm.gitStatus[root], staleError: vm.gitStatusErrors[root]),
-                    activeFile: files.tabs(for: root).active,
-                    git: files.git(for: root),
-                    edit: $edit,
-                    actions: rowActions(tree)
-                )
-                .frame(height: liveHeight ?? height)
-                // Keyed by the code root: the panel is not rebuilt when a deep
-                // link switches workbenches, and each root counts as shown
-                // exactly while this runs.
-                .task(id: root) {
-                    tree.loadIfNeeded()
-                    await files.show(root)
+                if WorkbenchesViewModel.showsRootRows(roots) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(roots) { rootSection($0, files: files) }
+                        }
+                        .padding(.horizontal, Spacing.small)
+                        .padding(.bottom, Spacing.compact)
+                    }
+                    .frame(height: liveHeight ?? height)
+                } else {
+                    CodeFileTreeList(
+                        tree: tree,
+                        rootLine: CodeFilesRootLine(root: root, status: vm.gitStatus[root], staleError: vm.gitStatusErrors[root]),
+                        activeFile: files.tabs(for: root).active,
+                        git: files.git(for: root),
+                        edit: editBinding(root),
+                        actions: rowActions(tree, root: root)
+                    )
+                    .frame(height: liveHeight ?? height)
+                    // Keyed by the code root: the panel is not rebuilt when a deep
+                    // link switches workbenches, and each root counts as shown
+                    // exactly while this runs.
+                    .task(id: root) {
+                        tree.loadIfNeeded()
+                        await files.show(root)
+                    }
+                    hint
                 }
             }
+        }
+        .task(id: project.id) {
+            await vm.loadBenchFolders(projectID: project.id)
+            if vm.liveFolders(projectID: project.id).count > 1 { await vm.refreshFolderInstall(projectID: project.id) }
         }
         .confirmationDialog(
             "Move “\(trashing?.name ?? "")” to the Trash?",
@@ -57,12 +96,32 @@ struct WorkbenchFilesSection: View {
             titleVisibility: .visible
         ) {
             Button("Move to Trash", role: .destructive) {
-                if let entry = trashing { moveToTrash(entry) }
+                if let entry = trashing { moveToTrash(entry, root: trashingRoot ?? root) }
                 trashing = nil
             }
             Button("Cancel", role: .cancel) { trashing = nil }
         } message: {
             Text(trashMessage)
+        }
+        .alert(
+            removing?.dialog.title ?? "",
+            isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
+            presenting: removing
+        ) { pending in
+            if pending.dialog.confirms {
+                Button(Copy.cancel, role: .cancel) {}
+                Button(Copy.remove, role: .destructive) { remove(pending.folder) }
+            } else {
+                Button(Copy.ok, role: .cancel) {}
+            }
+        } message: { pending in
+            Text(pending.dialog.message)
+        }
+        .sensitiveLocationAlert($sensitiveLocation) {
+            if let pending = locating { Task { await vm.locateFolder(pending.folder, to: pending.url) } }
+            locating = nil
+        } onCancel: {
+            locating = nil
         }
         .alert(
             "Could not change the files",
@@ -74,6 +133,102 @@ struct WorkbenchFilesSection: View {
         }
     }
 
+    /// One folder of a several-folder bench: its row and, open, its tree.
+    @ViewBuilder
+    private func rootSection(_ item: FilesRootItem, files: CodeFilesCenter) -> some View {
+        FilesRootRow(
+            name: item.name, caption: item.caption, path: item.folder.folderPath, state: item.state,
+            branchLine: item.branchLine, isExpanded: item.isExpanded, isHighlighted: item.isHighlighted,
+            actions: rootActions(item)
+        )
+        if item.isExpanded {
+            let tree = files.tree(for: item.root)
+            // One stack, so the task below runs once (the rows are a group).
+            VStack(alignment: .leading, spacing: 0) {
+                CodeFileTreeRows(
+                    tree: tree,
+                    activeFile: files.tabs(for: item.root).active,
+                    git: files.git(for: item.root),
+                    edit: editBinding(item.root),
+                    actions: rowActions(tree, root: item.root)
+                )
+            }
+            .task(id: item.root) {
+                tree.loadIfNeeded()
+                await files.show(item.root)
+            }
+        }
+    }
+
+    private func rootActions(_ item: FilesRootItem) -> FilesRootActions {
+        let projectID = project.id
+        let url = item.folder.url
+        var actions = FilesRootActions(
+            toggle: { vm.toggleFolderRoot(item.folder.id, projectID: projectID) },
+            showInFinder: { NSWorkspace.shared.activateFileViewerSelecting([url]) },
+            retryInstall: { Task { await vm.retryFolderInstall(projectID: projectID) } }
+        )
+        // A new session of the default agent in this folder (§6.4).
+        actions.newSessionHere = {
+            Task { await vm.newSession(projectID: projectID, folder: .filesRoot(vm.folderRoot(item.folder))) }
+        }
+        actions.locate = { locate(item.folder) }
+        // The bench's only folder cannot leave it (a missing one is located instead).
+        if vm.canRemoveFolder(projectID: projectID) {
+            actions.removeFromBench = { removing = RemoveFolder(folder: item.folder, dialog: vm.removeDialog(item.folder)) }
+        }
+        return actions
+    }
+
+    /// Locate… (§6.3): the folder panel, Open Folder…'s TCC warning when the
+    /// new place needs it, then `workbench folder locate`.
+    private func locate(_ folder: WorkbenchFolder) {
+        guard let url = WorkbenchesView.runFolderPanel(
+            title: Copy.locatePanelTitle(name: folder.name), prompt: Copy.locatePanelPrompt, canCreate: false
+        ) else { return }
+        Task {
+            if case let .confirmLocation(location) = await vm.locate(folder, to: url) {
+                locating = (folder, url)
+                sensitiveLocation = location
+            }
+        }
+    }
+
+    /// Remove after its confirmation; Go's own refusal (a session started
+    /// meanwhile) comes back as the dialog to show.
+    private func remove(_ folder: WorkbenchFolder) {
+        Task {
+            if let refused = await vm.removeFromBench(folder) {
+                removing = RemoveFolder(folder: folder, dialog: refused)
+            }
+        }
+    }
+
+    /// Under a one-folder tree: `Task touches another repo? Put on the Bench…`.
+    private var hint: some View {
+        HStack(spacing: Spacing.small) {
+            Text(Copy.hintLead).foregroundStyle(.tertiary)
+            Button(Copy.putOnBenchTitle, action: putOnBench)
+                .buttonStyle(.kitQuiet)
+                .foregroundStyle(Color.accentColor)
+                .disabled(vm.puttingOnBench.contains(project.id))
+        }
+        .font(.caption2)
+        .padding(.horizontal, Spacing.medium)
+        .padding(.bottom, Spacing.compact)
+    }
+
+    /// `edit` as the tree of `root` sees it: only the root it types in has one.
+    private func editBinding(_ root: CodeRoot) -> Binding<CodeTreeEdit?> {
+        Binding(
+            get: { editRoot == root ? edit : nil },
+            set: { value in
+                edit = value
+                editRoot = value == nil ? nil : root
+            }
+        )
+    }
+
     private var trashMessage: String {
         guard let entry = trashing else { return "" }
         let saved = "Unsaved edits are saved first, so the Trash keeps them."
@@ -82,8 +237,9 @@ struct WorkbenchFilesSection: View {
         return "\(count)You can put it back from the Trash. Tabs of files in it close. \(saved)"
     }
 
-    private func confirmTrash(_ entry: CodeFileEntry) {
+    private func confirmTrash(_ entry: CodeFileEntry, root: CodeRoot) {
         trashCount = nil
+        trashingRoot = root
         trashing = entry
         guard entry.isDirectory else { return }
         let url = root.folder.appendingPathComponent(entry.relPath)
@@ -98,14 +254,33 @@ struct WorkbenchFilesSection: View {
             root: root,
             isExpanded: isExpanded,
             toggle: { withAnimation(Motion.toggle) { isExpanded.toggle() } },
-            newEntry: { folder in startCreate(folder: folder, in: "", tree: tree) },
+            newEntry: { folder in startCreate(folder: folder, in: "", tree: tree, root: root) },
             collapseAll: tree.collapseAll,
-            reload: tree.reloadAll
+            reload: tree.reloadAll,
+            putOnBench: CodeFilesHeader.PutOnBench(
+                action: putOnBench, isDisabled: vm.puttingOnBench.contains(project.id)
+            )
         )
     }
 
     @ViewBuilder
     private func notices(_ files: CodeFilesCenter) -> some View {
+        if let error = vm.putOnBenchErrors[project.id] {
+            Text(error)
+                .font(.caption2)
+                .foregroundStyle(Tone.error)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, Spacing.medium)
+        }
+        if let warning = vm.mergeWarnings[project.id] {
+            Text(warning)
+                .font(.caption2)
+                .foregroundStyle(Tone.warning)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, Spacing.medium)
+        }
         if let error = files.watchErrors[root] {
             Text(error).font(.caption2).foregroundStyle(Tone.warning).padding(.horizontal, Spacing.medium)
         }
@@ -118,28 +293,37 @@ struct WorkbenchFilesSection: View {
         }
     }
 
-    private func rowActions(_ tree: CodeFileTree) -> CodeFileTreeList.Actions {
+    private func rowActions(_ tree: CodeFileTree, root: CodeRoot) -> CodeFileTreeList.Actions {
         CodeFileTreeList.Actions(
             open: { entry, preview in
                 if entry.isDirectory {
                     tree.toggle(entry.relPath)
                 } else {
+                    // Another folder's file: its root becomes the page's (§6.8).
+                    vm.selectFilesRoot(root, project: project)
                     Task { await vm.openFile(entry.relPath, root: root, preview: preview) }
                 }
             },
             newEntry: { entry, folder in
-                startCreate(folder: folder, in: entry.isDirectory ? entry.relPath : CodeFilesCenter.parent(entry.relPath), tree: tree)
+                startCreate(
+                    folder: folder, in: entry.isDirectory ? entry.relPath : CodeFilesCenter.parent(entry.relPath),
+                    tree: tree, root: root
+                )
             },
-            rename: { entry in edit = CodeTreeEdit(kind: .rename(entry.relPath), text: entry.name) },
-            trash: { confirmTrash($0) },
+            rename: { entry in
+                editRoot = root
+                edit = CodeTreeEdit(kind: .rename(entry.relPath), text: entry.name)
+            },
+            trash: { confirmTrash($0, root: root) },
             commit: commit,
             root: root.folder
         )
     }
 
-    private func startCreate(folder: Bool, in directory: String, tree: CodeFileTree) {
+    private func startCreate(folder: Bool, in directory: String, tree: CodeFileTree, root: CodeRoot) {
         isExpanded = true
         tree.expand(directory)
+        editRoot = root
         edit = CodeTreeEdit(kind: .create(folder: folder, in: directory), text: "")
     }
 
@@ -147,6 +331,7 @@ struct WorkbenchFilesSection: View {
     /// and its result only touches the field it started from.
     private func commit() {
         guard var current = edit, !current.isCommitting else { return }
+        let root = editRoot ?? root
         let files = vm.codeFiles
         switch current.kind {
         case let .create(folder, directory):
@@ -181,7 +366,7 @@ struct WorkbenchFilesSection: View {
         }
     }
 
-    private func moveToTrash(_ entry: CodeFileEntry) {
+    private func moveToTrash(_ entry: CodeFileEntry, root: CodeRoot) {
         Task {
             do {
                 try await vm.codeFiles.moveToTrash(entry.relPath, root: root)
@@ -241,14 +426,22 @@ struct CodeTreeEdit: Equatable {
 
 /// The FILES header: the section's toggle under a sidebar-style caption
 /// (`FILES`, or `FILES — ⑂ name` in a worktree), and while open its icon
-/// buttons — new entry, collapse all, reload — always on view.
+/// buttons — Put on the Bench… (#2003), new entry, collapse all, reload —
+/// always on view.
 struct CodeFilesHeader: View {
+    /// The header's Put on the Bench… button (the folder panel is the page's).
+    struct PutOnBench {
+        let action: () -> Void
+        let isDisabled: Bool
+    }
+
     let root: CodeRoot
     let isExpanded: Bool
     let toggle: () -> Void
     let newEntry: (_ folder: Bool) -> Void
     let collapseAll: () -> Void
     let reload: () -> Void
+    var putOnBench: PutOnBench?
 
     var body: some View {
         HStack(spacing: Spacing.tight) {
@@ -268,6 +461,15 @@ struct CodeFilesHeader: View {
             .accessibilityLabel(isExpanded ? CodeFilesCopy.collapse : CodeFilesCopy.expand)
             .accessibilityAddTraits(.isHeader)
             if isExpanded {
+                if let putOnBench {
+                    Button(action: putOnBench.action) {
+                        Image(systemName: WorkbenchFolderPresentation.putOnBenchIcon)
+                    }
+                    .buttonStyle(.kitIcon(isOn: false))
+                    .disabled(putOnBench.isDisabled)
+                    .help(WorkbenchFolderPresentation.tooltip)
+                    .accessibilityLabel(WorkbenchFolderPresentation.tooltip)
+                }
                 Menu {
                     Button(CodeFilesCopy.newFile) { newEntry(false) }
                     Button(CodeFilesCopy.newFolder) { newEntry(true) }
@@ -356,19 +558,37 @@ struct CodeFileTreeList: View {
             LazyVStack(alignment: .leading, spacing: 0) {
                 CodeFilesRootRow(line: rootLine, isExpanded: tree.isRootExpanded) { tree.toggle("") }
                 if tree.isRootExpanded {
-                    if let error = tree.errors[""] {
-                        note(error, depth: 0, tone: Tone.error)
-                    } else if tree.listings[""]?.isEmpty == true, !isCreatingAtRoot {
-                        note(CodeFilesRootLine.emptyFolder, depth: 0, tone: nil)
-                    }
-                    if isCreatingAtRoot { nameField(depth: 1) }
-                    ForEach(tree.rows, id: \.entry.relPath) { row in
-                        rowView(row)
-                    }
+                    CodeFileTreeRows(tree: tree, activeFile: activeFile, git: git, edit: $edit, actions: actions)
                 }
             }
             .padding(.horizontal, Spacing.compact)
             .padding(.bottom, Spacing.compact)
+        }
+    }
+}
+
+/// A tree's rows under its root row, without the row: the one-folder list's
+/// (under `CodeFilesRootRow`) and each open root's on a several-folder bench
+/// (under `FilesRootRow`, #2003). A group, so the rows sit in the caller's
+/// lazy stack.
+struct CodeFileTreeRows: View {
+    let tree: CodeFileTree
+    let activeFile: String?
+    let git: GitStatusSnapshot
+    @Binding var edit: CodeTreeEdit?
+    let actions: CodeFileTreeList.Actions
+
+    var body: some View {
+        Group {
+            if let error = tree.errors[""] {
+                note(error, depth: 0, tone: Tone.error)
+            } else if tree.listings[""]?.isEmpty == true, !isCreatingAtRoot {
+                note(CodeFilesRootLine.emptyFolder, depth: 0, tone: nil)
+            }
+            if isCreatingAtRoot { nameField(depth: 1) }
+            ForEach(tree.rows, id: \.entry.relPath) { row in
+                rowView(row)
+            }
         }
     }
 

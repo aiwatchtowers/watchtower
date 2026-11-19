@@ -56,6 +56,7 @@ import (
 	"watchtower/internal/prompts"
 	"watchtower/internal/providerhealth"
 	"watchtower/internal/providerrouting"
+	"watchtower/internal/sessionmsg/delivery"
 	"watchtower/internal/sessionstart"
 	"watchtower/internal/skills"
 	watchtowerslack "watchtower/internal/slack"
@@ -1061,6 +1062,12 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 		d.SetAgentLogDB(al, agentlogdb.PathFor(cfg.DBPath()))
 	}
 	d.SetPIDPath(pidFilePath(cfg))
+	// Agent messages (spec 2026-11-18 §6.6): this daemon, the sync lock's
+	// single instance, is their one deliverer. The port dials the session
+	// host only once its list shows the receiving session running.
+	messagePort := sessionstart.NewPort(sessionStartDeps(cfg, database), nil)
+	defer func() { _ = messagePort.Close() }()
+	d.SetMessageDeliverer(&delivery.Deliverer{DB: database, Port: messagePort, Log: logger.Printf})
 	// The sweep's relaunch is background work: the reviewer carries its
 	// origin (D20 of #1886).
 	d.SetSpecReviewLaunch(func(ctx context.Context, askID int64) error {

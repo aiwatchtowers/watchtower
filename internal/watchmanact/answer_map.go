@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"watchtower/internal/asks"
+	"watchtower/internal/db"
 	"watchtower/internal/watchman"
 )
 
@@ -143,11 +144,12 @@ func splitPerQuestion(qs []asks.Question, choice string) (map[string]string, err
 // check answer or a handover choice: every question takes it (its option
 // when one has that label, else as "Other"), a check marks every item
 // skipped and carries it as the note. A review cannot be answered with a
-// text (its verdict is the owner's, or Task 12's): false.
+// text (its verdict is the owner's, or Task 12's), nor a folder suggestion
+// (its answer acts on the Mac, the owner's alone): false.
 func textAnswer(kind string, p asks.Payload, text string) (asks.Answer, bool) {
 	ans := emptyAnswer()
 	switch kind {
-	case asks.KindReview:
+	case asks.KindReview, db.AskKindFolder:
 		return asks.Answer{}, false
 	case asks.KindCheck:
 		for _, c := range p.Checklist {

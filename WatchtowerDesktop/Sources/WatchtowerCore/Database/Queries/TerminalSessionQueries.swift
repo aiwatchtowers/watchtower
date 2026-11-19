@@ -50,6 +50,10 @@ package enum TerminalSessionQueries {
         package var worktreeBase: String?
         /// The automation run starting this session (00122); nil = the owner.
         package var automationRunID: Int64?
+        /// The workbench folder (00209). nil on a workbench row = its home
+        /// folder: this insert is the no-CLI fallback, which only ever starts
+        /// in the home folder (`workbench session start` places every other).
+        package var workbenchFolderID: Int64?
 
         package init(
             projectID: Int64?,
@@ -60,7 +64,8 @@ package enum TerminalSessionQueries {
             claudeSessionID: String? = nil,
             worktreeBranch: String? = nil,
             worktreeBase: String? = nil,
-            automationRunID: Int64? = nil
+            automationRunID: Int64? = nil,
+            workbenchFolderID: Int64? = nil
         ) {
             self.projectID = projectID
             self.kind = kind
@@ -71,26 +76,33 @@ package enum TerminalSessionQueries {
             self.worktreeBranch = worktreeBranch
             self.worktreeBase = worktreeBase
             self.automationRunID = automationRunID
+            self.workbenchFolderID = workbenchFolderID
         }
     }
 
     /// Throws `missingSessionID` for a row of an agent whose id the app
     /// chooses (`AgentSessionCaps.appSessionID`: Claude Code) without one
     /// (the schema's CHECK would reject a NULL one; an empty one too, here).
+    /// A workbench row records its folder (00209): the given one, else the
+    /// home folder; a standalone terminal none.
     package static func create(_ db: Database, _ new: NewSession) throws -> TerminalSession {
         if new.kind.agent?.session.caps.appSessionID == true, new.claudeSessionID?.isEmpty ?? true {
             throw TerminalSessionQueryError.missingSessionID
+        }
+        var folderID = new.workbenchFolderID
+        if folderID == nil, let projectID = new.projectID {
+            folderID = try WorkbenchFolderQueries.homeFolderID(db, workbenchID: projectID)
         }
         try db.execute(
             sql: """
                 INSERT INTO terminal_sessions
                     (project_id, kind, title, target_id, folder_path, claude_session_id,
-                     worktree_branch, worktree_base, automation_run_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     worktree_branch, worktree_base, automation_run_id, workbench_folder_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
             arguments: [
                 new.projectID, new.kind.rawValue, new.title, new.targetID, new.folderPath,
-                new.claudeSessionID, new.worktreeBranch, new.worktreeBase, new.automationRunID
+                new.claudeSessionID, new.worktreeBranch, new.worktreeBase, new.automationRunID, folderID
             ]
         )
         let id = db.lastInsertedRowID
@@ -250,6 +262,13 @@ package enum TerminalSessionQueries {
         let cwdAt = try hasAgentCwd(db) ? "s.agent_cwd_at" : "NULL"
         let watchIssue = try hasColumn(db, "agent_watch_issue") ? "s.agent_watch_issue" : "NULL"
         let shells = try hasColumn(db, "agent_background_shells") ? "s.agent_background_shells" : "NULL"
+        // Migration 00209 brought both the sub-session link and session_messages.
+        let multiFolder = try hasColumn(db, "parent_session_id")
+        let parent = multiFolder ? "s.parent_session_id" : "NULL"
+        let inPrompt = multiFolder ? """
+            (SELECT COUNT(*) FROM session_messages m WHERE m.to_session_id = s.id AND m.state = 'delivered'
+             AND m.reason = '\(SessionMessage.typedNotSubmitted)' AND m.prompt_cleared_at IS NULL)
+            """ : "0"
         let open = OwnerAskQueries.notInSpecLoop("a")
         return try SessionAgentStateRow.fetchAll(
             db,
@@ -259,6 +278,8 @@ package enum TerminalSessionQueries {
                        s.agent_background, s.agent_background_at, \(shells) AS agent_background_shells,
                        s.chat_question, s.chat_question_at,
                        \(cwdAt) AS agent_cwd_at, \(watchIssue) AS agent_watch_issue,
+                       \(parent) AS parent_session_id,
+                       \(inPrompt) AS prompt_messages,
                        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND \(open)) AS open_asks,
                        (SELECT MIN(a.id) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND \(open))
                            AS oldest_open_ask_id,

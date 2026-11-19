@@ -128,6 +128,10 @@ struct SessionChatRow: View, Equatable {
                 Text("New conversation").font(.caption).foregroundStyle(.secondary)
                 Rectangle().fill(.quaternary).frame(height: 1)
             }
+        case "peer":
+            if let bubble = PeerBubblePresentation.bubble(for: entry) {
+                PeerBubbleCard(bubble: bubble, blocks: entry.peer?.kind == "started" ? nil : blocks)
+            }
         default:
             EmptyView()
         }

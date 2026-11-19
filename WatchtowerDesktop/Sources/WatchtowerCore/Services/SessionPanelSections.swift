@@ -100,12 +100,28 @@ package struct SessionPanelSections: Equatable, Sendable {
             let section = panelSection(of: session.id, liveIDs: liveIDs, statuses: statuses)
             if heldInGroup(session.id, section: section, sticky: sticky) { groupSessions.append(session) } else { mainSessions.append(session) }
         }
+        // A finished sub-session of a main-list parent stays under it (spec
+        // 2026-11-18 §6.5), drawn finished, never folded away from its parent.
+        var mainIDs = Set(mainSessions.map(\.id))
+        while let index = groupSessions.firstIndex(where: { $0.parentSessionID.map(mainIDs.contains) ?? false }) {
+            let child = groupSessions.remove(at: index)
+            mainSessions.append(child)
+            mainIDs.insert(child.id)
+        }
         groupSessions.sort { finishedFirst($0, $1, statuses: statuses) }
+        // Sub-sessions under their parent within each list; a child of a
+        // folded parent stays at the top of the main list.
+        let nestedMain = SessionNestingPresentation.nest(mainSessions)
+        let nestedGroup = SessionNestingPresentation.nest(groupSessions)
+        mainSessions = nestedMain.map(\.row)
+        groupSessions = nestedGroup.map(\.row)
+        let depths = Dictionary((nestedMain + nestedGroup).map { ($0.row.id, $0.depth) }) { first, _ in first }
         let numbered = mainSessions.map(\.id) + (expanded ? groupSessions.map(\.id) : [])
-        let rows = SessionSwitcherPresentation.rows(
+        var rows = SessionSwitcherPresentation.rows(
             mainSessions + groupSessions, liveIDs: liveIDs, statuses: statuses, now: now, shortcutOrder: numbered,
             places: places
         )
+        for index in rows.indices { rows[index].depth = depths[rows[index].id] ?? 0 }
         let mainRows = Array(rows.prefix(mainSessions.count))
         let groupRows = Array(rows.dropFirst(mainSessions.count))
         let pinned = expanded ? nil : groupRows.first { $0.id == sticky?.sessionID }

@@ -22,6 +22,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/gitbin"
 	"watchtower/internal/kb"
+	"watchtower/internal/workbenchfolders"
 )
 
 // runWorkbench executes the real command tree via rootCmd (the runActions
@@ -502,6 +503,30 @@ func TestProj08_ResyncAndCreateIndexTheFolderAtOnce(t *testing.T) {
 	assert.True(t, resynced.IndexOK, resynced.IndexError)
 	assert.Equal(t, 1, search(pid, "quokka"), "resync: the new plan is searchable at once")
 	assert.Equal(t, 1, search(pid, "narwhal"), "resync: the new note is searchable at once")
+
+	// Multi-folder workbench (spec §6.1, §6.3): a folder put on the bench is
+	// indexed at once — also under ~/Documents — searchable from the same
+	// session only; removing it drops its documents and keeps the others'.
+	prevExe, prevLive := workbenchExecutable, folderLiveSessions
+	workbenchExecutable = func() (string, error) { return folderTestBin, nil }
+	folderLiveSessions = func(*config.Config, *db.DB) workbenchfolders.LiveSessions {
+		return func(context.Context, int64) (int, error) { return 0, nil }
+	}
+	t.Cleanup(func() { workbenchExecutable, folderLiveSessions = prevExe, prevLive })
+	hub := filepath.Join(os.Getenv("HOME"), "Documents", "hub")
+	require.NoError(t, os.MkdirAll(hub, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hub, "hub.md"), []byte("# hub\nwombat\n"), 0o644))
+	out, errOut, err := runFolder(t, "add", "--workbench", id, "--folder", hub, "--json")
+	require.NoError(t, err, errOut)
+	require.True(t, decodeFolderResult(t, out).OK, out)
+	assert.Equal(t, 1, search(pid, "wombat"), "folder add: its files are searchable at once")
+	assert.Zero(t, search(0, "wombat"), "and only from the workbench's own session")
+	assert.Equal(t, 1, search(pid, "zebrafinch"), "the home folder's files stay")
+	out, errOut, err = runFolder(t, "remove", "--workbench", id, "--folder", "hub", "--json")
+	require.NoError(t, err, errOut)
+	require.True(t, decodeFolderResult(t, out).OK, out)
+	assert.Zero(t, search(pid, "wombat"), "folder remove: its files leave search")
+	assert.Equal(t, 1, search(pid, "zebrafinch"), "the home folder's files stay")
 
 	// Knowledge search off: the same paths write no index entry (FEAT-01).
 	require.NoError(t, os.WriteFile(flagConfig, []byte("active_workspace: test\nknowledge:\n  enabled: false\n"), 0o600))

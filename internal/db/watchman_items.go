@@ -263,7 +263,8 @@ func (db *DB) CloseStaleWatchmanHandovers(now time.Time) (int64, error) {
 // not journalled apart; any other handover released or done is left. So
 // a scan or writer racing it ends with exactly one handover row. It
 // carries the insert's workbench, session, target and
-// question; promoted reports a handover it wrote, inserted a new row.
+// question; promoted reports a handover it wrote, inserted a new row. A
+// folder suggestion is never promoted (both false).
 func (db *DB) PromoteWatchmanHandover(it WatchmanItem, held bool) (promoted, inserted bool, err error) {
 	watchmanHandoverBeforeWrite()
 	q := []rune(it.Question)
@@ -275,6 +276,14 @@ func (db *DB) PromoteWatchmanHandover(it WatchmanItem, held bool) (promoted, ins
 		hold = WatchmanHandoverHeld
 	}
 	err = db.WithTx(func(tx *sql.Tx) error {
+		// A folder suggestion is never the twin's, not even as a handover.
+		var folderAsk int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM owner_asks WHERE id = ? AND kind = ?`, it.RefID, AskKindFolder).Scan(&folderAsk); err != nil {
+			return err
+		}
+		if folderAsk > 0 {
+			return nil
+		}
 		res, err := tx.Exec(`UPDATE watchman_items SET kind = 'handover', error = ?
 			WHERE ref_kind = 'ask' AND ref_id = ? AND state IN ('queued','deciding')
 			  AND (kind != 'handover' OR error = ?)`, hold, it.RefID, WatchmanHandoverHeld)
@@ -429,13 +438,15 @@ func (db *DB) ScanWatchmanWaitPoints(now time.Time, question func(string) string
 	return n, nil
 }
 
-// watchmanMissedWaitPoints lists session's open asks (not an automation's)
-// and pending permission requests with no item of any kind, their Question
+// watchmanMissedWaitPoints lists session's open asks (not an automation's,
+// and never a folder suggestion: its answer acts on the Mac and is the
+// owner's alone) and pending permission requests with no item of any kind, their Question
 // the unredacted text.
 func (db *DB) watchmanMissedWaitPoints(session int64) ([]WatchmanItem, error) {
 	rows, err := db.Query(`SELECT 'ask', a.id, a.project_id, COALESCE(a.target_id, 0), a.kind, a.title, a.summary
 		FROM owner_asks a JOIN terminal_sessions s ON s.id = a.session_id
-		WHERE a.session_id = ? AND a.status = 'open' AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL AND s.`+NotDeletingSQL+`
+		WHERE a.session_id = ? AND a.status = 'open' AND a.kind != '`+AskKindFolder+`'
+		  AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL AND s.`+NotDeletingSQL+`
 		  AND NOT EXISTS (SELECT 1 FROM watchman_items w WHERE w.ref_kind = 'ask' AND w.ref_id = a.id)
 		UNION ALL
 		SELECT 'permission', r.id, r.workbench_id, 0, '', r.tool_name, r.summary

@@ -92,10 +92,13 @@ type ChatContextRequest struct {
 }
 
 // ChatReviewerThreadRequest is chat.reviewer_thread: the Branch review
-// reviewer's conversation for one project branch, made on first use.
+// reviewer's conversation for one branch of one workbench folder, made on
+// first use. FolderID is the reviewed session's folder
+// (terminal_sessions.workbench_folder_id); 0 = the workbench's home folder.
 type ChatReviewerThreadRequest struct {
 	WriteParams
 	ProjectID int64  `json:"project_id"`
+	FolderID  int64  `json:"folder_id,omitempty"`
 	Branch    string `json:"branch"`
 }
 

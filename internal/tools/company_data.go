@@ -17,6 +17,7 @@ var unmarkedReadTools = map[string]string{
 	"list_comments":        "the owner's own board",
 	"get_ask":              "the owner's own asks",
 	"list_asks":            "the owner's own asks",
+	"list_sessions":        "the owner's own sessions: titles, folders and states",
 	"get_review":           "the owner's own code review",
 	"get_spec_review":      "the owner's own review loop",
 	"load_skill":           "a skill file",

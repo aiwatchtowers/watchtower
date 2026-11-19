@@ -441,6 +441,10 @@ func printWorkbenchLeftovers(w io.Writer, st devpack.WorkbenchStatus) {
 		fmt.Fprintln(w, "  still present: ask guard hooks")
 		left = true
 	}
+	if st.OutsideTouch {
+		fmt.Fprintln(w, "  still present: outside-bench hook")
+		left = true
+	}
 	if st.WatchmanGuard {
 		fmt.Fprintln(w, "  still present: Watchman guard hook")
 		left = true
@@ -506,6 +510,9 @@ type workbenchStatusJSON struct {
 	// for an answer from the phone (#517). Additive; a workbench missing it
 	// is offered Repair.
 	PermissionWait bool `json:"permission_wait"`
+	// OutsideTouch: the PostToolUse entry counting the agent's touches of
+	// folders outside the bench (multi-folder workbench §6.7). Additive.
+	OutsideTouch bool `json:"outside_touch"`
 	// WatchmanGuard: the PreToolUse hook denying hard-limit actions while
 	// the session is handed to Watchman (WATCHMAN-05). Additive; Re-run
 	// Setup adds it to a folder set up before it.
@@ -575,6 +582,7 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 			CurrentMCP: st.CurrentMCP, StateHooks: st.StateHooks,
 			AskGuard: st.AskGuard, AskToolBlock: st.AskToolBlock,
 			PermissionWait:    st.PermissionWait,
+			OutsideTouch:      st.OutsideTouch,
 			WatchmanGuard:     st.WatchmanGuard,
 			CleanupPermission: st.CleanupPermission,
 			GroupPrompt:       st.GroupPrompt,

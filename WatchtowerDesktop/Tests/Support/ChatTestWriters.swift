@@ -220,15 +220,17 @@ extension CodeQuestionList {
 
 extension ReviewerThreadQueries {
     /// The thread's conversation, made with its row on first use. Read again
-    /// inside the write: two sessions on one branch share one thread.
-    package static func ensure(_ db: Database, projectID: Int64, branch: String) throws -> Int64 {
-        if let existing = try conversationID(db, projectID: projectID, branch: branch) { return existing }
+    /// inside the write: two sessions on one branch of one folder share one thread.
+    package static func ensure(_ db: Database, projectID: Int64, folderID: Int64? = nil, branch: String) throws -> Int64 {
+        if let existing = try conversationID(db, projectID: projectID, folderID: folderID, branch: branch) { return existing }
         let conversation = try ChatConversationQueries.create(
             db, title: "Reviewer: \(branch)", contextType: ReviewerSurface.contextType,
-            contextID: ReviewerSurface.contextID(projectID: projectID, branch: branch))
+            contextID: ReviewerSurface.contextID(projectID: projectID, folderID: folderID, branch: branch))
+        let (folderSQL, folderArg) = folder(projectID: projectID, folderID: folderID)
         try db.execute(sql: """
-            INSERT INTO review_reviewer_threads (project_id, branch, conversation_id) VALUES (?, ?, ?)
-            """, arguments: [projectID, branch, conversation.id])
+            INSERT INTO review_reviewer_threads (project_id, workbench_folder_id, branch, conversation_id)
+            VALUES (?, \(folderSQL), ?, ?)
+            """, arguments: [projectID, folderArg, branch, conversation.id])
         return conversation.id
     }
 }

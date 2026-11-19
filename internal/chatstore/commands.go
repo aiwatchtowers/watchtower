@@ -320,29 +320,60 @@ func chatContext(ctx context.Context, c *tower.Ctx, q api.ChatContextRequest) (a
 	})
 }
 
-// chatReviewerThread is ReviewerThreadQueries.ensure.
+// chatReviewerThread is ReviewerThreadQueries.ensure: one thread per
+// (workbench, folder, branch) since migration 00209, so two folders with the
+// same branch never share one. No folder is the workbench's home folder.
 func chatReviewerThread(ctx context.Context, c *tower.Ctx, q api.ChatReviewerThreadRequest) (api.ChatNewResponse, error) {
-	if q.ProjectID <= 0 || q.Branch == "" {
+	if q.ProjectID <= 0 || q.Branch == "" || q.FolderID < 0 {
 		return api.ChatNewResponse{}, tower.Refuse(api.CodeUnsupported, sentenceBadRequest)
 	}
+	folderSQL, folderArg := reviewerThreadFolder(q.ProjectID, q.FolderID)
 	return write(ctx, c, "This workbench no longer exists.", func(tx *sql.Tx) (api.ChatNewResponse, error) {
 		var id int64
-		err := tx.QueryRow(`SELECT conversation_id FROM review_reviewer_threads WHERE project_id = ? AND branch = ?`,
-			q.ProjectID, q.Branch).Scan(&id)
+		err := tx.QueryRow(`SELECT conversation_id FROM review_reviewer_threads
+			WHERE project_id = ? AND workbench_folder_id = `+folderSQL+` AND branch = ?`,
+			q.ProjectID, folderArg, q.Branch).Scan(&id)
 		if err == nil {
 			return api.ChatNewResponse{ConversationID: id}, nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return api.ChatNewResponse{}, err
 		}
-		contextID := strconv.FormatInt(q.ProjectID, 10) + ":" + q.Branch
-		if id, err = insertContextChatTx(tx, "Reviewer: "+q.Branch, reviewerContext, contextID, nil, seconds(c.Now())); err != nil {
+		if id, err = insertContextChatTx(tx, "Reviewer: "+q.Branch, reviewerContext,
+			reviewerContextID(q.ProjectID, q.FolderID, q.Branch), nil, seconds(c.Now())); err != nil {
 			return api.ChatNewResponse{}, err
 		}
-		_, err = tx.Exec(`INSERT INTO review_reviewer_threads (project_id, branch, conversation_id) VALUES (?, ?, ?)`,
-			q.ProjectID, q.Branch, id)
+		//nolint:gosec // G202: folderSQL is one of two constant fragments; every value is a bound arg.
+		_, err = tx.Exec(`INSERT INTO review_reviewer_threads (project_id, workbench_folder_id, branch, conversation_id)
+			VALUES (?, `+folderSQL+`, ?, ?)`, q.ProjectID, folderArg, q.Branch, id)
 		return api.ChatNewResponse{ConversationID: id}, err
 	})
+}
+
+// reviewerHomeFolderSQL is the home folder of the workbench bound as its one
+// argument (db.HomeFolder, WorkbenchFolderQueries.homeFolderIDSQL).
+const reviewerHomeFolderSQL = `(SELECT f.id FROM workbench_folders f JOIN projects p ON p.id = f.workbench_id
+	WHERE f.workbench_id = ?
+	ORDER BY (f.removed_at IS NULL AND f.folder_path = p.folder_path COLLATE NOCASE) DESC, f.position, f.id
+	LIMIT 1)`
+
+// reviewerThreadFolder is a thread's folder key: folderID, else the
+// workbench's home folder.
+func reviewerThreadFolder(projectID, folderID int64) (string, int64) {
+	if folderID == 0 {
+		return reviewerHomeFolderSQL, projectID
+	}
+	return "?", folderID
+}
+
+// reviewerContextID is ReviewerSurface.contextID: <project>:<branch> for the
+// home folder (as before 00209), <project>:f<folder>:<branch> for a
+// session's folder.
+func reviewerContextID(projectID, folderID int64, branch string) string {
+	if folderID == 0 {
+		return strconv.FormatInt(projectID, 10) + ":" + branch
+	}
+	return strconv.FormatInt(projectID, 10) + ":f" + strconv.FormatInt(folderID, 10) + ":" + branch
 }
 
 // chatDeleteEmptyCodeQuestions is CodeQuestionList.deleteEmpty.

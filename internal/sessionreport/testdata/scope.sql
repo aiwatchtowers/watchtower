@@ -2,6 +2,7 @@
 -- a parent (420). Session 4 owns a leaf with no branch or PR; session 6 owns
 -- nothing; session 7 is another workbench's.
 INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme'), (2, 'other', '/tmp/other');
+INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name) VALUES (1, 1, '/tmp/acme', 0, 'owner', 'acme'), (2, 2, '/tmp/other', 0, 'owner', 'other');
 
 INSERT INTO targets (id, text, period_start, period_end, parent_id, status, project_id, branch) VALUES
     (400, 'Session root', '2026-09-28', '2026-10-05', NULL, 'todo', 1, ''),

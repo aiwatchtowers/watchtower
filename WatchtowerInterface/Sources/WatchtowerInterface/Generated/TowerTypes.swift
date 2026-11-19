@@ -946,21 +946,25 @@ public struct ChatReplyFinishRequest: Codable, Hashable, Sendable {
 public struct ChatReviewerThreadRequest: Codable, Hashable, Sendable {
     public var requestID: String
     public var projectID: Int64
+    public var folderID: Int64?
     public var branch: String
 
     public init(
         requestID: String,
         projectID: Int64,
+        folderID: Int64? = nil,
         branch: String
     ) {
         self.requestID = requestID
         self.projectID = projectID
+        self.folderID = folderID
         self.branch = branch
     }
 
     enum CodingKeys: String, CodingKey {
         case requestID = "request_id"
         case projectID = "project_id"
+        case folderID = "folder_id"
         case branch
     }
 }

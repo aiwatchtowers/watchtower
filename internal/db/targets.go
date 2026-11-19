@@ -14,7 +14,7 @@ const targetSelectCols = `id, text, intent, level, custom_label, period_start, p
 	parent_id, status, priority, ownership,
 	ball_on, due_date, snooze_until, blocking, tags, sub_items, notes,
 	progress, source_type, source_id, ai_level_confidence, created_at, updated_at,
-	next_step, next_step_at, next_step_attempts, next_step_attempted_at, project_id, branch, pr`
+	next_step, next_step_at, next_step_attempts, next_step_attempted_at, project_id, branch, pr, workbench_folder_id`
 
 func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 	var t Target
@@ -24,7 +24,7 @@ func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 		&t.BallOn, &t.DueDate, &t.SnoozeUntil, &t.Blocking, &t.Tags, &t.SubItems, &t.Notes,
 		&t.Progress, &t.SourceType, &t.SourceID, &t.AILevelConfidence, &t.CreatedAt, &t.UpdatedAt,
 		&t.NextStep, &t.NextStepAt, &t.NextStepAttempts, &t.NextStepAttemptedAt, &t.WorkbenchID,
-		&t.Branch, &t.PR,
+		&t.Branch, &t.PR, &t.WorkbenchFolderID,
 	); err != nil {
 		return nil, err
 	}

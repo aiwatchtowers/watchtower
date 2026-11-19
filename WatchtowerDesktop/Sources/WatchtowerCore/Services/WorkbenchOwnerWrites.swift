@@ -37,6 +37,12 @@ package enum WorkbenchOwnerWrites {
         return WorkbenchOwnerWrite(target: targetID, rolledUp: [])
     }
 
+    /// The folder a target's work is in (nil = the home folder).
+    package static func setFolder(_ db: Database, targetID: Int64, folderID: Int64?) throws -> WorkbenchOwnerWrite {
+        try TargetQueries.setFolder(db, targetID: Int(targetID), folderID: folderID)
+        return WorkbenchOwnerWrite(target: targetID, rolledUp: [])
+    }
+
     /// A new owner thread on a target of `projectID`.
     package static func addComment(
         _ db: Database, projectID: Int64, targetID: Int64, body: String

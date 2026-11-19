@@ -133,11 +133,13 @@ final class ChatQuestionEscalator {
         let current = sessions()
         forgetAnsweredQuestions(current.rows)
         let questions = current.rows.filter { $0.chatQuestion != nil && $0.chatQuestionAt != nil }
+        let children = SessionAgentStatus.liveChildren(current.rows, liveIDs: current.liveIDs)
         for row in questions {
             guard inFlight[row.id] == nil, let presence = presence(row.id) else { continue }
             let decision = ChatQuestionEscalationPolicy.decide(
                 row: row, live: current.liveIDs.contains(row.id), startedAt: current.startedAt[row.id],
-                presence: presence, hasOwnerDraft: hasOwnerDraft(row.id), now: now
+                presence: presence, hasOwnerDraft: hasOwnerDraft(row.id), now: now,
+                liveChildren: children[row.id] ?? 0
             )
             switch decision {
             case .none: continue

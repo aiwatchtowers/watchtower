@@ -139,6 +139,7 @@ type Daemon struct {
 	cycleEvents         AutomationEvents // this sync cycle's bus, nil = none (beginAutomationEvents); runSync and startupCalendarSync only
 	planUsage           PlanUsageRunner  // nil = Claude plan limits not wired
 	planUsageDisable    func() error
+	messages            MessageDeliverer                             // nil = agent messages not delivered by this daemon
 	specReviewLaunch    func(ctx context.Context, askID int64) error // nil = the spec review sweep is off
 	// watchmanBacktestLaunch starts a detached backtest child; nil = the weekly backtest is off.
 	watchmanBacktestLaunch func(ctx context.Context, workbenchID int64) error
@@ -627,6 +628,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer stopTwin()
 	stopPlanUsage := d.startPlanUsage(ctx)
 	defer stopPlanUsage()
+	stopMessages := d.startSessionMessages(ctx)
+	defer stopMessages()
 
 	// Calendars first on startup: a calendar sync takes seconds, while the
 	// first cycle's Slack sync of a fresh install takes minutes and runSync

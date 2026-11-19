@@ -133,22 +133,64 @@ func execCommandOutput(ctx context.Context, dir, name string, args ...string) ([
 // watchmanProtectionBudget bounds the branch-protection check's gh calls.
 const watchmanProtectionBudget = 15 * time.Second
 
-// watchmanProtectionWarning checks each workbench repository's default
-// branch protection (spec §5 item 2) and returns the first warning; ""
-// when every one needs an approving review to merge.
-func watchmanProtectionWarning(ctx context.Context, database *db.DB, workbenches []int64) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, watchmanProtectionBudget)
-	defer cancel()
-	for _, id := range workbenches {
-		wb, err := database.GetWorkbench(id)
-		if err != nil {
-			return "", fmt.Errorf("reading workbench %d: %w", id, err)
-		}
-		if w := watchmanact.CheckProtection(ctx, watchmanProtectionRun, wb.FolderPath).Warning; w != "" {
-			return w, nil
+// watchmanScopeRepos is every repository the arming rows cover: a session
+// row's bench folder (db.SessionFolderPath), and for a target row every live
+// folder of its workbench (any of them may hold the ticket's work), each
+// once, in order.
+func watchmanScopeRepos(ctx context.Context, database *db.DB, rows []db.WatchmanArming, workbenches []int64) ([]string, error) {
+	var repos []string
+	add := func(path string) {
+		if path != "" && !slices.Contains(repos, path) {
+			repos = append(repos, path)
 		}
 	}
-	return "", nil
+	whole := false
+	for _, r := range rows {
+		if r.Scope != "session" {
+			whole = true
+			continue
+		}
+		path, _, err := database.SessionFolderPath(ctx, r.RefID)
+		if err != nil {
+			return nil, fmt.Errorf("reading the folder of session %d: %w", r.RefID, err)
+		}
+		add(path)
+	}
+	if !whole {
+		return repos, nil
+	}
+	for _, id := range workbenches {
+		folders, err := database.WorkbenchFolders(ctx, id, false)
+		if err != nil {
+			return nil, fmt.Errorf("reading the folders of workbench %d: %w", id, err)
+		}
+		for _, f := range folders {
+			add(f.FolderPath)
+		}
+	}
+	return repos, nil
+}
+
+// watchmanProtectionWarning checks every covered repository's default
+// branch protection (spec §5 item 2) within one budget and returns their
+// warnings, one line each; "" when every one needs an approving review to
+// merge. With one repository the line is the warning alone; with several
+// each line starts with its repository's path.
+func watchmanProtectionWarning(ctx context.Context, repos []string) string {
+	ctx, cancel := context.WithTimeout(ctx, watchmanProtectionBudget)
+	defer cancel()
+	var text string
+	for _, repo := range repos {
+		w := watchmanact.CheckProtection(ctx, watchmanProtectionRun, repo).Warning
+		if w == "" {
+			continue
+		}
+		if len(repos) > 1 {
+			w = repo + ": " + w
+		}
+		addLine(&text, w)
+	}
+	return text
 }
 
 // addLine appends line to the newline-joined text unless it is there.
@@ -162,21 +204,16 @@ func addLine(text *string, line string) {
 	*text += line
 }
 
-// watchmanGuardWarnings adds to text the repositories of the workbenches
-// whose layout the git guard cannot be installed in; a folder that is no
-// git repository has nothing to warn about here.
-func watchmanGuardWarnings(ctx context.Context, database *db.DB, workbenches []int64, text *string) error {
-	for _, id := range workbenches {
-		wb, err := database.GetWorkbench(id)
-		if err != nil {
-			return fmt.Errorf("reading workbench %d: %w", id, err)
-		}
+// watchmanGuardWarnings adds to text the covered repositories whose layout
+// the git guard cannot be installed in; a folder that is no git repository
+// has nothing to warn about here.
+func watchmanGuardWarnings(ctx context.Context, repos []string, text *string) {
+	for _, repo := range repos {
 		var unsupported *watchmanact.GuardUnsupportedError
-		if err := watchmanact.CheckGuardLayout(ctx, wb.FolderPath); errors.As(err, &unsupported) {
+		if err := watchmanact.CheckGuardLayout(ctx, repo); errors.As(err, &unsupported) {
 			addLine(text, unsupported.Error())
 		}
 	}
-	return nil
 }
 
 // watchmanGuardHookWarnings adds a line for the folder of every live Claude
@@ -405,12 +442,12 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 		}
 	}
 	out.FirstTime = len(first) > 0
-	if out.ProtectionWarning, err = watchmanProtectionWarning(cmd.Context(), database, workbenches); err != nil {
+	repos, err := watchmanScopeRepos(cmd.Context(), database, rows, workbenches)
+	if err != nil {
 		return err
 	}
-	if err := watchmanGuardWarnings(cmd.Context(), database, workbenches, &out.HooksWarning); err != nil {
-		return err
-	}
+	out.ProtectionWarning = watchmanProtectionWarning(cmd.Context(), repos)
+	watchmanGuardWarnings(cmd.Context(), repos, &out.HooksWarning)
 	if err := watchmanGuardHookWarnings(database, rows, &out.HooksWarning); err != nil {
 		return err
 	}

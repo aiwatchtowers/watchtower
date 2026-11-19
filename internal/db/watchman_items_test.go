@@ -1168,3 +1168,24 @@ func TestPromoteWatchmanHandover_ReopensSupersededHold(t *testing.T) {
 	require.False(t, promote(withdrawn), "an ask that went is not handed over")
 	require.Equal(t, []string{"done", "superseded", ""}, state(withdrawn))
 }
+
+// A folder suggestion of an armed session is never queued for the twin: its
+// answer acts on the Mac and is the owner's alone (#2003).
+func TestScanWatchmanWaitPoints_SkipsFolderAsks(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	armed := newTestSession(t, d, wb)
+	wmArmSession(t, d, armed)
+	ask := questionAsk(wb, "Put /code/hub on the bench?")
+	ask.Kind = AskKindFolder
+	ask.Payload = `{"path":"/code/hub"}`
+	ask.SessionID = nullID(armed)
+	askID := mustInsertAsk(t, d, ask)
+
+	n, err := d.ScanWatchmanWaitPoints(time.Date(2026, 11, 18, 2, 0, 0, 0, time.UTC), func(s string) string { return s })
+	require.NoError(t, err)
+	require.Equal(t, 0, n)
+	it, err := d.WatchmanItemByRef("ask", askID, "ask")
+	require.NoError(t, err)
+	require.Nil(t, it)
+}

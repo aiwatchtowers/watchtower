@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -200,15 +202,17 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) error {
 	return errors.Join(errs...)
 }
 
-// rescanWorkbenches rescans the recipe folder of every workbench whose folder
-// is not privacy-protected, when it changed. A protected folder is skipped
-// before any filesystem call — the daemon never stats, lists or reads it (a
-// background read there raises a macOS privacy prompt attributed to
-// Watchtower, a dead network mount can block it); its rows stay as the
-// Desktop indexed them. A workbench whose folder is gone, or whose folder,
-// .watchtower or automations folder is a symlink, is skipped the same way: a
-// link is never followed, since it could lead into a protected folder (the
-// Desktop's rescan indexes such a workbench).
+// rescanWorkbenches first retires, from the database alone, the recipes of
+// every folder that left its workbench (retireLeftFolders), then rescans the
+// recipe folder of every live folder of every workbench (multi-folder
+// workbench, spec §6.11) that is not privacy-protected, when it changed. A
+// protected folder is skipped before any filesystem call — the daemon never
+// stats, lists or reads it (a background read there raises a macOS privacy
+// prompt attributed to Watchtower, a dead network mount can block it); its
+// rows stay as the Desktop indexed them. A folder that is gone, or whose
+// path, .watchtower or automations folder is a symlink, is skipped the same
+// way: a link is never followed, since it could lead into a protected folder
+// (the Desktop's rescan indexes such a folder).
 func (s *Scheduler) rescanWorkbenches(ctx context.Context) []error {
 	wbs, err := s.db.ListWorkbenches()
 	if err != nil {
@@ -219,18 +223,58 @@ func (s *Scheduler) rescanWorkbenches(ctx context.Context) []error {
 		if ctx.Err() != nil {
 			break // the schedule loop reports ctx's end
 		}
-		if s.protected(wb.FolderPath) || !s.ix.workbenchPathPlain(wb.FolderPath) {
-			continue
-		}
-		dir := WorkbenchDir(wb.FolderPath)
-		if !s.ix.Changed(dir) {
-			continue
-		}
-		if _, err := s.ix.RescanFolder(ctx, Scope{Kind: ScopeWorkbench, WorkbenchID: wb.ID}, dir); err != nil {
+		paths, err := s.retireLeftFolders(ctx, wb)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("workbench %d: %w", wb.ID, err))
+			continue
+		}
+		for _, folder := range paths {
+			if s.protected(folder) || !s.ix.workbenchPathPlain(folder) {
+				continue
+			}
+			dir := WorkbenchDir(folder)
+			if !s.ix.Changed(dir) {
+				continue
+			}
+			if _, err := s.ix.RescanFolder(ctx, Scope{Kind: ScopeWorkbench, WorkbenchID: wb.ID}, dir); err != nil {
+				errs = append(errs, fmt.Errorf("workbench %d: %w", wb.ID, err))
+			}
 		}
 	}
 	return errs
+}
+
+// retireLeftFolders marks removed the live recipe rows of wb whose file lies
+// in the recipe folder of a folder that left the bench (and is not also a
+// live folder's) — by folder membership alone, no filesystem call, so it
+// holds when every remaining folder is protected, gone or linked. It returns
+// wb's live folder paths (the home folder for a bench without a live row).
+func (s *Scheduler) retireLeftFolders(ctx context.Context, wb db.Workbench) ([]string, error) {
+	folders, err := s.db.WorkbenchFolders(ctx, wb.ID, true)
+	if err != nil {
+		return nil, err
+	}
+	var live, left []string
+	for _, f := range folders {
+		if f.RemovedAt.Valid {
+			left = append(left, f.FolderPath)
+		} else {
+			live = append(live, f.FolderPath)
+		}
+	}
+	if len(live) == 0 {
+		live = []string{wb.FolderPath} // a bench without a live folder row
+	}
+	var dirs []string
+	for _, f := range left {
+		if !slices.Contains(live, f) {
+			dirs = append(dirs, filepath.Clean(WorkbenchDir(f)))
+		}
+	}
+	if _, err := s.db.MarkAutomationsRemovedIn(string(ScopeWorkbench), wb.ID, dirs, s.clock.Now()); err != nil {
+		return nil, err
+	}
+	return live, nil
 }
 
 // scheduleOne applies the schedule decision for one runnable automation and

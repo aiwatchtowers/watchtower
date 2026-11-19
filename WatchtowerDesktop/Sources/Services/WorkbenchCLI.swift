@@ -183,6 +183,22 @@ struct WorkbenchResynced: Decodable, Equatable {
     /// — no codex binary and no codex skill copy in the folder — and from a
     /// CLI older than Codex support.
     let codex: Codex?
+    /// The install in each other live folder of the workbench (#2003): the
+    /// fields above are the home folder's, `integrationOK` included; another
+    /// folder's failure lives only in its entry. A CLI older than multi-folder
+    /// benches sends none.
+    let folders: [Folder]
+    /// The folder list could not be read, so no other folder was set up.
+    let foldersError: String
+
+    /// `workbench resync --json`'s `folders` entry.
+    struct Folder: Decodable, Equatable {
+        let id: Int64
+        let name: String
+        let path: String
+        let ok: Bool
+        let error: String
+    }
 
     /// `workbench resync --json`'s `codex` object.
     struct Codex: Decodable, Equatable {
@@ -219,6 +235,8 @@ struct WorkbenchResynced: Decodable, Equatable {
         case legacyMCPRemoved = "legacy_mcp_removed"
         case legacyHooksReplaced = "legacy_hooks_replaced"
         case legacyPermissionRules = "legacy_permission_rules"
+        case folders
+        case foldersError = "folders_error"
     }
 
     init(from decoder: Decoder) throws {
@@ -241,12 +259,14 @@ struct WorkbenchResynced: Decodable, Equatable {
         legacyHooksReplaced = try c.decodeIfPresent(Bool.self, forKey: .legacyHooksReplaced) ?? false
         legacyPermissionRules = try c.decodeIfPresent(Int.self, forKey: .legacyPermissionRules) ?? 0
         codex = try c.decodeIfPresent(Codex.self, forKey: .codex)
+        folders = try c.decodeIfPresent([Folder].self, forKey: .folders) ?? []
+        foldersError = try c.decodeIfPresent(String.self, forKey: .foldersError) ?? ""
     }
 
     /// What the workbench page shows: what was added, what failed, then the
     /// suggestions. Never empty.
     var summaryLines: [Line] {
-        var lines = indexLines + integrationLines + codexLines
+        var lines = indexLines + integrationLines + codexLines + folderLines
         if lines.isEmpty { lines.append(Line(text: "Everything was already up to date.", problem: false)) }
         lines += suggestions.map { Line(text: "Next: \($0)", problem: false) }
         if !suggestionsError.isEmpty {
@@ -288,6 +308,18 @@ struct WorkbenchResynced: Decodable, Equatable {
             lines.append(Line(text: "Installing into the folder failed: \(integrationError)", problem: true))
         }
         return lines + legacyLines
+    }
+
+    /// The other folders' failures (#2003), one line each; a folder set up
+    /// fine adds none. They never make the home folder's install read as failed.
+    private var folderLines: [Line] {
+        var lines = folders.filter { !$0.ok }.map {
+            Line(text: "Setting up \($0.name) failed: \($0.error)", problem: true)
+        }
+        if !foldersError.isEmpty {
+            lines.append(Line(text: "The other folders were not set up: \(foldersError)", problem: true))
+        }
+        return lines
     }
 
     /// The codex part's lines. A failed codex step is its own problem line:
@@ -378,6 +410,10 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// up before it lacks it until a Repair; a CLI that does not send the
     /// key has none to install.
     let cleanupPermission: Bool
+    /// The `PostToolUse` entry counting the agent's touches of folders off
+    /// the bench (#2003, spec §6.7). A folder set up before it lacks it
+    /// until a Repair; a CLI that does not send the key has none to install.
+    var outsideTouch = true
     /// The PreToolUse `workbench watchman-guard` hook (Watchman phase 2,
     /// spec 2026-11-16 §5 item 3). A folder set up before it lacks it until
     /// a Repair; a CLI that does not send the key has none to install.
@@ -516,6 +552,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         case askToolBlock = "ask_tool_block"
         case permissionWait = "permission_wait"
         case cleanupPermission = "cleanup_permission"
+        case outsideTouch = "outside_touch"
         case watchmanGuard = "watchman_guard"
         case claudeFound = "claude_found"
         case legacySkill = "legacy_skill"
@@ -599,6 +636,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         permissionWait = try c.decodeIfPresent(Bool.self, forKey: .permissionWait) ?? true
         // Nor one without the cleanup permission (board #535).
         cleanupPermission = try c.decodeIfPresent(Bool.self, forKey: .cleanupPermission) ?? true
+        outsideTouch = try c.decodeIfPresent(Bool.self, forKey: .outsideTouch) ?? true
         // Nor one without the Watchman guard hook.
         watchmanGuard = try c.decodeIfPresent(Bool.self, forKey: .watchmanGuard) ?? true
         mcp = try c.decode(Bool.self, forKey: .mcp)
@@ -696,7 +734,8 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// `legacy` sees only those files, so one Repair settles them.
     var claudeNeedsRepair: Bool {
         legacy || skill == "missing" || skill == "updated" || !hook || !stopHook || !stateHooks
-            || !askGuard || !askToolBlock || !permissionWait || !cleanupPermission || !watchmanGuard
+            || !askGuard || !askToolBlock || !permissionWait || !cleanupPermission || !outsideTouch
+            || !watchmanGuard
             || (claudeFound && (!mcp || missesCurrentMCP))
     }
 
@@ -755,18 +794,60 @@ struct InstructionForgetResult: Decodable, Equatable {
 /// `watchtower workbench session start --json` (Go hub 3 Task 8): the row Go
 /// wrote, answered at once (instant start, #942) — `state` is `starting`
 /// while a detached finish places and launches it, or `running` for a
-/// reopened one. Exactly the four pinned keys.
+/// reopened one. The four original keys are required; `folderID`/`folder`
+/// (the bench folder the session started for, its stored name, #2003),
+/// `place` (the placement asked for) and `worktree` (the worktree's path
+/// once placed in one) are read when present — an older CLI's successful
+/// start must never read as a failure, or a retry would start it twice.
 struct SessionStartResult: Decodable, Equatable {
     let sessionID: Int64
     let state: String
     let folderPath: String
     let worktreeBranch: String
+    let folderID: Int64
+    let folder: String
+    let place: String
+    let worktree: String
 
     enum CodingKeys: String, CodingKey, CaseIterable {
         case sessionID = "session_id"
         case state
         case folderPath = "folder_path"
         case worktreeBranch = "worktree_branch"
+        case folderID = "folder_id"
+        case folder, place, worktree
+    }
+
+    init(
+        sessionID: Int64,
+        state: String,
+        folderPath: String,
+        worktreeBranch: String,
+        folderID: Int64 = 0,
+        folder: String = "",
+        place: String = "",
+        worktree: String = ""
+    ) {
+        self.sessionID = sessionID
+        self.state = state
+        self.folderPath = folderPath
+        self.worktreeBranch = worktreeBranch
+        self.folderID = folderID
+        self.folder = folder
+        self.place = place
+        self.worktree = worktree
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try c.decode(Int64.self, forKey: .sessionID)
+        state = try c.decode(String.self, forKey: .state)
+        folderPath = try c.decode(String.self, forKey: .folderPath)
+        worktreeBranch = try c.decode(String.self, forKey: .worktreeBranch)
+        folderID = try c.decodeIfPresent(Int64.self, forKey: .folderID) ?? 0
+        folder = try c.decodeIfPresent(String.self, forKey: .folder) ?? ""
+        place = try c.decodeIfPresent(String.self, forKey: .place) ?? ""
+        worktree = try c.decodeIfPresent(String.self, forKey: .worktree) ?? ""
     }
 }
 
@@ -781,10 +862,16 @@ struct SessionStartRequest: Equatable {
     var title: String?
     var brief: String?
     var automationRunID: Int64?
+    /// The bench folder to start in (#2003); nil = the home folder (no flag).
+    var folderID: Int64?
+    /// The session this one is a sub-session of; nil = none (no flag).
+    var parentSessionID: Int64?
 
     var args: [String] {
         var args = ["workbench", "session", "start", "--workbench", String(workbenchID)]
         if let targetID { args += ["--target", String(targetID)] }
+        if let folderID { args += ["--folder", String(folderID)] }
+        if let parentSessionID { args += ["--parent", String(parentSessionID)] }
         args += ["--agent", agent.rawValue, "--place", place.rawValue]
         if let title, !title.isEmpty { args += ["--title", title] }
         if let automationRunID { args += ["--automation-run", String(automationRunID)] }
@@ -811,6 +898,11 @@ enum WorkbenchCLIError: LocalizedError, Equatable {
     /// Go refused with exit 3; its words, as the owner sees them (such as
     /// "not added: quote not found" or "the question is closed").
     case refused(String)
+    /// `workbench session start` refused the start (exit 1, `"<code>:
+    /// <sentence>"` on stderr): a folder not installed, missing or removed,
+    /// a parent of another workbench. No row was written. `message` is the
+    /// sentence alone — what the owner sees.
+    case startRefused(code: WorkbenchRefusalCode, message: String)
 
     var errorDescription: String? {
         switch self {
@@ -819,6 +911,7 @@ enum WorkbenchCLIError: LocalizedError, Equatable {
         case let .unexpectedOutput(command): "`watchtower \(command)` did not print an id"
         case let .agentNotFound(agent): TerminalLaunch.exitMessage(code: 127, agent: agent)
         case let .refused(message): message
+        case let .startRefused(_, message): message
         }
     }
 }
@@ -1003,8 +1096,12 @@ struct WorkbenchCLI {
     /// of the workbench folder (board #565): Go places it — `folder_scope`,
     /// `folder_root`, `worktree_name` — and reports that worktree's status.
     /// nil (the main folder) sends no flag, so the main argv is unchanged.
-    func gitStatus(projectID: Int64, folder: String? = nil) async throws -> WorkbenchGitStatus {
+    /// `folderID`: a bench folder other than home (#2003) — every git verb
+    /// here sends it as `--workbench-folder`, so the repository is that
+    /// folder's; nil (home) sends nothing.
+    func gitStatus(projectID: Int64, folder: String? = nil, folderID: Int64? = nil) async throws -> WorkbenchGitStatus {
         var args = ["workbench", "git", "status", "--workbench", String(projectID)]
+        if let folderID { args += ["--workbench-folder", String(folderID)] }
         if let folder { args += ["--folder", folder] }
         args.append("--json")
         let data = try await runner.run(args: args)
@@ -1138,6 +1235,12 @@ struct WorkbenchCLI {
             }
         } catch CLIRunnerError.nonZeroExit(code: GoSessionStartContract.agentNotFoundExit, _) {
             throw WorkbenchCLIError.agentNotFound(r.agent)
+        } catch CLIRunnerError.nonZeroExit(code: 1, let stderr) {
+            let message = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let code = WorkbenchRefusalCode(prefixOf: message) else { throw CLIRunnerError.nonZeroExit(code: 1, stderr: stderr) }
+            // The owner sees the sentence alone, never the code before it.
+            let sentence = message.dropFirst(code.rawValue.count + 1).trimmingCharacters(in: .whitespaces)
+            throw WorkbenchCLIError.startRefused(code: code, message: sentence.isEmpty ? message : sentence)
         }
         return try JSONDecoder().decode(SessionStartResult.self, from: data)
     }
@@ -1179,8 +1282,9 @@ struct WorkbenchCLI {
     /// The local branches, newest commit first. `folder`: a session's
     /// worktree, as for `gitStatus` — a folder in none of the repository's
     /// worktrees comes back refused (`folder_not_a_worktree`), exit 0.
-    func gitBranches(projectID: Int64, folder: String? = nil) async throws -> WorkbenchGitBranches {
+    func gitBranches(projectID: Int64, folder: String? = nil, folderID: Int64? = nil) async throws -> WorkbenchGitBranches {
         var args = ["workbench", "git", "branches", "--workbench", String(projectID)]
+        if let folderID { args += ["--workbench-folder", String(folderID)] }
         if let folder { args += ["--folder", folder] }
         args.append("--json")
         let data = try await runner.run(args: args)
@@ -1198,12 +1302,14 @@ struct WorkbenchCLI {
         stash: Bool,
         agentRunning: Bool,
         confirmAgent: Bool,
-        folder: String? = nil
+        folder: String? = nil,
+        folderID: Int64? = nil
     ) async throws -> WorkbenchGitSwitchResult {
         var args = ["workbench", "git", "switch", "--workbench", String(projectID), "--branch", branch]
         if stash { args.append("--stash") }
         if agentRunning { args.append("--agent-running") }
         if confirmAgent { args.append("--confirm-agent") }
+        if let folderID { args += ["--workbench-folder", String(folderID)] }
         if let folder { args += ["--folder", folder] }
         args.append("--json")
         let data = try await runner.run(args: args)
@@ -1219,12 +1325,14 @@ struct WorkbenchCLI {
         stash: Bool,
         agentRunning: Bool,
         confirmAgent: Bool,
-        folder: String? = nil
+        folder: String? = nil,
+        folderID: Int64? = nil
     ) async throws -> WorkbenchGitSwitchResult {
         var args = ["workbench", "git", "checkout", "--workbench", String(projectID), "--branch", branch]
         if stash { args.append("--stash") }
         if agentRunning { args.append("--agent-running") }
         if confirmAgent { args.append("--confirm-agent") }
+        if let folderID { args += ["--workbench-folder", String(folderID)] }
         if let folder { args += ["--folder", folder] }
         args.append("--json")
         let data = try await runner.run(args: args)
@@ -1236,8 +1344,9 @@ struct WorkbenchCLI {
     /// envelope. `folder`: in a session's worktree (board #565).
     /// `unattended`: the automatic fetch, which keeps ssh off the ssh agent
     /// and the Keychain (an agent that approves each use never asks).
-    func gitFetch(projectID: Int64, folder: String? = nil, unattended: Bool = false) async throws -> WorkbenchGitFetchResult {
+    func gitFetch(projectID: Int64, folder: String? = nil, folderID: Int64? = nil, unattended: Bool = false) async throws -> WorkbenchGitFetchResult {
         var args = ["workbench", "git", "fetch", "--workbench", String(projectID)]
+        if let folderID { args += ["--workbench-folder", String(folderID)] }
         if let folder { args += ["--folder", folder] }
         if unattended { args.append("--unattended") }
         args.append("--json")
@@ -1248,8 +1357,9 @@ struct WorkbenchCLI {
     /// Creates a branch from HEAD and switches to it (`git switch -c`): no
     /// files change, so no guard applies.
     /// `folder`: in a session's worktree (board #565).
-    func gitCreateBranch(projectID: Int64, name: String, folder: String? = nil) async throws -> WorkbenchGitSwitchResult {
+    func gitCreateBranch(projectID: Int64, name: String, folder: String? = nil, folderID: Int64? = nil) async throws -> WorkbenchGitSwitchResult {
         var args = ["workbench", "git", "create", "--workbench", String(projectID), "--name", name]
+        if let folderID { args += ["--workbench-folder", String(folderID)] }
         if let folder { args += ["--folder", folder] }
         args.append("--json")
         let data = try await runner.run(args: args)

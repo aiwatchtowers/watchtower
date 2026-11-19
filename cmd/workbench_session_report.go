@@ -117,7 +117,7 @@ func sessionReport(ctx context.Context, database *db.DB, workbenchID, sessionID 
 		return sessionreport.Report{}, err
 	}
 	res := sessionreport.Refresh(ctx, database, workbenchID, refs, sessionreport.RefreshOptions{
-		Network: network, Budget: sessionreport.DefaultRefreshBudget, Now: sessionReportClock,
+		Network: network, Budget: sessionreport.DefaultRefreshBudget, Now: sessionReportClock, SessionID: sessionID,
 	})
 	return sessionreport.Build(ctx, database, workbenchID, sessionID, sessionreport.Options{PRNote: res.Note})
 }

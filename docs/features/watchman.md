@@ -161,6 +161,8 @@ The Inbox root lists one more built-in entry, **Watchman** (`InboxFolderEntry.wa
 
 ## Guards
 
+A folder suggestion (`owner_asks.kind = 'folder'`) is never a wait point: no item is queued for it (`queueWatchmanAsk`, `ScanWatchmanWaitPoints`), the twin never answers it (`textAnswer`) and the ask source never learns it. A review ask's protected-document check reads the inventory of the ask's own document folder (`doc_folder_id`; the home folder for a legacy ask) and parks when that folder cannot be resolved. Arming checks branch protection and the guard layout in every repository the scope covers (a session's bench folder; every live folder of a target's bench).
+
 `internal/watchman/guard_test.go`: `TestWATCHMAN03_SourcesAreOwnerOnly`, `TestWATCHMAN06_NoActingImports`; `internal/watchmanact/twin_permission_test.go::TestWATCHMAN01_TwinNeverDecidesHardLimit`, `cmd/workbench_watchman_guard_test.go::TestWATCHMAN01_HardLimitsDeniedWhileArmed`, `internal/watchmanact/twin_review_test.go::TestWATCHMAN01_TwinNeverApprovesContractChange`; `internal/askanswer/answerer_test.go::TestWATCHMAN02_TwinNeverOverwritesOwnerAnswer`; `internal/watchmanact/twin_test.go::TestWATCHMAN04_NothingActsOnUnarmedSession`; `internal/devpack/workbench_watchman_guard_test.go::TestWATCHMAN05_GuardInstalledOnlyByIntegrate`. Contracts in `docs/inventory/watchman.md`; the phase also amends PROJ-04, PROJ-12, PROJ-14, PROJ-21 (`workbench.md`), SPECREVIEW-05 and REVIEW-04 (ask #1373).
 
 ## Residual risks (accepted, spec §5 item 4)
@@ -192,3 +194,6 @@ The layers catch what lands at a ref, at GitHub, in a tool call the guard can re
 - The `unlabelled` counter is additive and can inflate when the CLI and the daemon overlap; it is a display figure only.
 - Phase 2 is Sleep only and marks every decision unsure (D43); Away mode, the phone and the sleep window as a gate come with phase 3. The backtest reruns weekly only (D44). Three twin review rounds asking for changes without an Approve park the review for the owner (D45).
 - Every `gh pr merge` the twin sees parks, into an umbrella branch too: merging stays the owner's in phase 2 (the twin's review Approve still counts for a non-main merge the agent makes with a local `git merge` + push).
+- Multi-folder workbenches (#2003): Merging two workbenches dedupes the Watchman precedents and skipped keys by key, so same-numbered PRs from two repositories (`merge:pr:<n>`) keep one precedent; the merged bench's Watchman cursors are dropped.
+- Multi-folder workbenches (#2003): The guard and the twin's permission decisions allow edits only in the home folder and the session's own folder: an edit in a sibling folder of the bench is denied as `outside_folder`.
+- Multi-folder workbenches (#2003): The Watchman git source learns the PR states of the home folder only (as its git log reads the home folder).

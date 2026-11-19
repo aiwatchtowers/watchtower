@@ -155,7 +155,7 @@ package final class FakeChatTower: ChatTowerSending, @unchecked Sendable {
             return try encode(ChatChanged(changed: moved))
         case .chatReviewerThread:
             let q = try request(ChatReviewerThreadRequest.self)
-            let id = try await db.write { try ReviewerThreadQueries.ensure($0, projectID: q.projectID, branch: q.branch) }
+            let id = try await db.write { try ReviewerThreadQueries.ensure($0, projectID: q.projectID, folderID: q.folderID, branch: q.branch) }
             return try encode(ChatNewResponse(conversationID: id))
         case .chatCodeQuestionDeleteEmpty:
             let q = try request(ChatDeleteEmptyCodeQuestionsRequest.self)

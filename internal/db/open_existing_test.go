@@ -132,8 +132,11 @@ func TestOpenExistingRWNeverCreatesNeverMigrates(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 106, version, "no migration ran")
 
-	id, err := rw.CreateWorkbench("acme", t.TempDir())
+	// A raw write: CreateWorkbench needs 00209's workbench_folders.
+	res, err := rw.Exec(`INSERT INTO projects (name, folder_path) VALUES ('acme', ?)`, t.TempDir())
 	require.NoError(t, err, "a write must succeed")
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
 	var fk int
 	require.NoError(t, rw.QueryRow(`PRAGMA foreign_keys`).Scan(&fk))
 	assert.Equal(t, 1, fk, "foreign keys are enforced")

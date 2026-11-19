@@ -68,6 +68,28 @@ type TerminalSession struct {
 	BackgroundShells sql.NullInt64
 	ChatQuestionAt   string        // chat_question_at as stored; "" when there is no chat question
 	AutomationRunID  sql.NullInt64 // automation_run_id (00122): the run that started the session; NULL = none. Read by the Desktop launch center (P5 part 2)
+	// WorkbenchFolderID is the workbench folder the session was started for
+	// (00209); NULL on a standalone terminal. ParentSessionID is the session
+	// that started it as a sub-session; NULL = none. Both read as NULL on a
+	// database not yet migrated past 00209.
+	WorkbenchFolderID sql.NullInt64
+	ParentSessionID   sql.NullInt64
+}
+
+// terminalFolderLinkCols selects workbench_folder_id and parent_session_id
+// (00209), or two NULLs on a database not yet migrated past it: the readers
+// that open a database without migrating it (`workbench asks`, the ask
+// guard) read them as NULL rather than failing the row. The column check is
+// cached per handle once found (the hooks' hot path).
+func (db *DB) terminalFolderLinkCols() (string, error) {
+	ok, err := db.hasColumnsCached("terminal_sessions", "workbench_folder_id", "parent_session_id")
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return `NULL, NULL`, nil
+	}
+	return `workbench_folder_id, parent_session_id`, nil
 }
 
 // terminalBackgroundShells reads row id's agent_background_shells (00186)
@@ -100,15 +122,20 @@ func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 	var s TerminalSession
 	var stateAt, failedAt, backgroundAt sql.NullString
 	var agentError string
-	err := db.QueryRow(`SELECT id, project_id, kind, title, title_source, folder_path, claude_session_id,
+	links, err := db.terminalFolderLinkCols()
+	if err != nil {
+		return nil, err
+	}
+	err = db.QueryRow(`SELECT id, project_id, kind, title, title_source, folder_path, claude_session_id,
 		agent_state, agent_state_at, agent_failed_at, agent_error, finished_at IS NOT NULL,
 		agent_turn_end, agent_tool_run, agent_background, agent_background_at, worktree_branch,
 		CASE WHEN chat_question IS NULL THEN '' ELSE COALESCE(chat_question_at, '') END,
-		automation_run_id
+		automation_run_id, `+links+`
 		FROM terminal_sessions WHERE id = ?`, id).
 		Scan(&s.ID, &s.WorkbenchID, &s.Kind, &s.Title, &s.TitleSource, &s.FolderPath, &s.ClaudeSessionID,
 			&s.AgentState, &stateAt, &failedAt, &agentError, &s.Finished, &s.TurnEnd, &s.ToolRun,
-			&s.Background, &backgroundAt, &s.WorktreeBranch, &s.ChatQuestionAt, &s.AutomationRunID)
+			&s.Background, &backgroundAt, &s.WorktreeBranch, &s.ChatQuestionAt, &s.AutomationRunID,
+			&s.WorkbenchFolderID, &s.ParentSessionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrTerminalSessionNotFound
 	}
@@ -1001,7 +1028,7 @@ func (db *DB) TakeChatQuestion(tx *sql.Tx, id, workbenchID int64, at string) (*C
 // NewTerminalSession is a row CreateTerminalSession inserts, the twin of the
 // Desktop's TerminalSessionQueries.NewSession: WorkbenchID and TargetID 0 are
 // NULL, as are an empty ClaudeSessionID, WorktreeBranch, WorktreeBase and an
-// AutomationRunID of 0.
+// AutomationRunID, WorkbenchFolderID or ParentSessionID of 0.
 type NewTerminalSession struct {
 	WorkbenchID     int64
 	Kind            string
@@ -1012,6 +1039,10 @@ type NewTerminalSession struct {
 	WorktreeBranch  string
 	WorktreeBase    string
 	AutomationRunID int64
+	// WorkbenchFolderID is the workbench folder the session starts for
+	// (00209); ParentSessionID the session starting it as a sub-session.
+	WorkbenchFolderID int64
+	ParentSessionID   int64
 }
 
 // CreateTerminalSession inserts a new session row with the same columns as
@@ -1022,12 +1053,27 @@ type NewTerminalSession struct {
 // capability (sessionagent.Caps.AppSessionID), never this layer by name
 // (LLMTRANSPORT-01).
 func (db *DB) CreateTerminalSession(ctx context.Context, n NewTerminalSession) (int64, error) {
-	res, err := db.ExecContext(ctx, `INSERT INTO terminal_sessions
+	return createTerminalSession(ctx, db, n)
+}
+
+// CreateTerminalSessionTx is CreateTerminalSession inside the caller's
+// transaction (a start re-checks its folder and parent in the same one).
+func CreateTerminalSessionTx(ctx context.Context, tx *sql.Tx, n NewTerminalSession) (int64, error) {
+	return createTerminalSession(ctx, tx, n)
+}
+
+type contextExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func createTerminalSession(ctx context.Context, q contextExecer, n NewTerminalSession) (int64, error) {
+	res, err := q.ExecContext(ctx, `INSERT INTO terminal_sessions
 		(project_id, kind, title, target_id, folder_path, claude_session_id,
-		 worktree_branch, worktree_base, automation_run_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 worktree_branch, worktree_base, automation_run_id, workbench_folder_id, parent_session_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionNullID(n.WorkbenchID), n.Kind, n.Title, sessionNullID(n.TargetID), n.FolderPath, sessionNullText(n.ClaudeSessionID),
-		sessionNullText(n.WorktreeBranch), sessionNullText(n.WorktreeBase), sessionNullID(n.AutomationRunID))
+		sessionNullText(n.WorktreeBranch), sessionNullText(n.WorktreeBase), sessionNullID(n.AutomationRunID),
+		sessionNullID(n.WorkbenchFolderID), sessionNullID(n.ParentSessionID))
 	if err != nil {
 		return 0, fmt.Errorf("creating terminal session: %w", err)
 	}

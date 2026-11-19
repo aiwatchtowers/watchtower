@@ -156,14 +156,14 @@ func workbenchToolsListed(t *testing.T, cs *mcpsdk.ClientSession) map[string]str
 }
 
 // Spec 2026-10-02 §5.2 (extends DEV-06): `mcp --workbench N` lists the
-// twenty-one workbench tools under their current names only, with no
+// twenty-five workbench tools under their current names only, with no
 // description or input schema pointing at a pre-rename name.
-func TestWorkbenchMode_ListsTwentyOneToolsUnderTheCurrentNames(t *testing.T) {
+func TestWorkbenchMode_ListsTwentyFiveToolsUnderTheCurrentNames(t *testing.T) {
 	database := seedDB(t)
 	pid := seedMCPWorkbench(t, database)
 	listed := workbenchToolsListed(t, newWorkbenchSession(t, database, pid))
-	if len(listed) != 21 {
-		t.Errorf("want 21 workbench tools, got %d: %v", len(listed), listed)
+	if len(listed) != 25 {
+		t.Errorf("want 25 workbench tools, got %d: %v", len(listed), listed)
 	}
 	renamed := map[string]string{
 		"project_info": tools.WorkbenchInfoTool, "project_board": tools.WorkbenchBoardTool,

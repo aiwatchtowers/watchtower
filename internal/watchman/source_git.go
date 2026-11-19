@@ -2,6 +2,7 @@ package watchman
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os/exec"
@@ -202,7 +203,7 @@ func (s gitSource) items(ctx context.Context, d *db.DB, workbenchID int64, dir s
 		return nil, err
 	}
 	owner := gitOwnerEmail(ctx, s.git, dir)
-	merges, err := gitMerges(d, workbenchID)
+	merges, err := gitMerges(ctx, d, workbenchID)
 	if err != nil {
 		return nil, err
 	}
@@ -351,10 +352,18 @@ func isTestPath(p string) bool {
 	return strings.HasSuffix(p, "_test.go") || strings.Contains("/"+p, "/Tests/")
 }
 
-// gitMerges turns the workbench's cached merged PRs into finish precedents;
-// a branch ref whose PR is also cached under its number counts once.
-func gitMerges(d *db.DB, workbenchID int64) ([]gitItem, error) {
-	states, err := d.PRStates(workbenchID)
+// gitMerges turns the cached merged PRs of the workbench's home folder (the
+// repository the git source reads) into finish precedents; a branch ref whose
+// PR is also cached under its number counts once.
+func gitMerges(ctx context.Context, d *db.DB, workbenchID int64) ([]gitItem, error) {
+	home, err := d.HomeFolderID(ctx, workbenchID)
+	if errors.Is(err, db.ErrWorkbenchNotFound) {
+		return nil, nil // no folder row: no PR states cached either
+	}
+	if err != nil {
+		return nil, fmt.Errorf("watchman git source: %w", err)
+	}
+	states, err := d.PRStates(workbenchID, home)
 	if err != nil {
 		return nil, fmt.Errorf("watchman git source: %w", err)
 	}

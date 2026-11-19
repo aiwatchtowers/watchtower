@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/gitbin"
+	"watchtower/internal/workbenchfolders"
 	"watchtower/internal/workbenchgit"
 )
 
@@ -87,7 +88,8 @@ func sorted(keys ...string) []string {
 var (
 	gitStatusKeys = sorted("workbench_id", "git_available", "git", "note", "branch", "detached", "unborn", "head",
 		"upstream", "ahead", "behind", "dirty", "changes", "operation", "top_level", "git_dir", "common_dir",
-		"status_ok", "status_error", "folder_requested", "folder_scope", "folder_root", "worktree_name")
+		"status_ok", "status_error", "folder_requested", "folder_scope", "folder_root", "worktree_name",
+		"workbench_folder_path")
 	gitBranchesKeys = sorted("workbench_id", "git_available", "git", "note", "current", "branches", "branches_ok", "branches_error",
 		"refused", "refused_detail", "remote_only", "remote_only_error")
 	gitRemoteBranchKeys = sorted("name", "ref", "head", "committed_at")
@@ -462,4 +464,126 @@ func TestWorkbenchGit_FolderUnreadable(t *testing.T) {
 
 	assert.Equal(t, "mobile-a", gitJSON(t, id, "status", "--folder", wt)["branch"], "the worktree was not switched")
 	assert.Len(t, gitJSON(t, id, "branches")["branches"], 3, "no branch topic was created")
+}
+
+// twoFolderBench is a workbench on app (home, on main) with hub put on the
+// bench (on feature); it returns the bench id and hub's stored name.
+func twoFolderBench(t *testing.T) (id int64, app, hub, hubName string) {
+	t.Helper()
+	database := writeActionsConfig(t)
+	app, hub = gitBranchRepo(t), gitBranchRepo(t)
+	bin, _ := gitbin.Locate()
+	c := exec.Command(bin, "switch", "-q", "feature")
+	c.Dir = hub
+	out, err := c.CombinedOutput()
+	require.NoError(t, err, "git switch: %s", out)
+	id, err = database.CreateWorkbench("acme", app)
+	require.NoError(t, err)
+	f, err := workbenchfolders.Add(t.Context(), database, id, hub, workbenchfolders.AddedByOwner, nil)
+	require.NoError(t, err)
+	return id, app, hub, f.Name
+}
+
+// Multi-folder workbench (#2003): --workbench-folder reads that folder's
+// repository; --folder alone reads the repository of the folder holding it.
+func TestGitStatusPerFolder(t *testing.T) {
+	id, app, hub, hubName := twoFolderBench(t)
+
+	for _, ref := range []string{hubName, strings.ToUpper(hubName), hub} {
+		st := gitJSON(t, id, "status", "--workbench-folder", ref)
+		assert.Equal(t, gitStatusKeys, keysOf(st))
+		assert.Equal(t, "feature", st["branch"], "hub's branch, not app's: %s", ref)
+		assert.Equal(t, hub, st["folder_root"])
+		assert.Equal(t, hub, st["workbench_folder_path"])
+		assert.Equal(t, "main", st["folder_scope"])
+	}
+	st := gitJSON(t, id, "status")
+	assert.Equal(t, "main", st["branch"], "the home folder by default")
+	assert.Equal(t, app, st["workbench_folder_path"])
+
+	hubWT := gitWorktree(t, hub, "hub-a")
+	st = gitJSON(t, id, "status", "--folder", hubWT)
+	assert.Equal(t, "hub-a", st["branch"])
+	assert.Equal(t, "worktree", st["folder_scope"])
+	assert.Equal(t, hub, st["workbench_folder_path"], "the folder holding --folder")
+	st = gitJSON(t, id, "status", "--folder", hub)
+	assert.Equal(t, "feature", st["branch"])
+	assert.Equal(t, "main", st["folder_scope"])
+
+	// --folder outside the chosen folder's repository is refused (PROJ-10).
+	br := gitJSON(t, id, "branches", "--workbench-folder", hubName, "--folder", app)
+	assert.Equal(t, "folder_not_a_worktree", br["refused"])
+	assert.Equal(t, []any{}, br["branches"])
+
+	_, err := runWorkbenchGit(t, "status", "--workbench", strconv.FormatInt(id, 10), "--workbench-folder", "nope", "--json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not_found: ")
+}
+
+// PROJ-10 (multi-folder workbench #2003): a switch runs in the folder asked
+// for — a dirty hub needs confirmation and nothing is written, in hub or in
+// app.
+func TestGitSwitchRunsInTheChosenFolder(t *testing.T) {
+	id, app, hub, hubName := twoFolderBench(t)
+	require.NoError(t, os.WriteFile(filepath.Join(hub, "README.md"), []byte("edited\n"), 0o644))
+
+	sw := gitJSON(t, id, "switch", "--workbench-folder", hubName, "--branch", "main")
+	assert.Equal(t, gitSwitchKeys, keysOf(sw))
+	assert.Equal(t, false, sw["switched"])
+	assert.Equal(t, []any{workbenchgit.NeedUncommitted}, sw["needs_confirmation"])
+	assert.Equal(t, hub, sw["status"].(map[string]any)["workbench_folder_path"])
+
+	hubSt := gitJSON(t, id, "status", "--workbench-folder", hubName)
+	assert.Equal(t, "feature", hubSt["branch"], "hub was not switched")
+	assert.Equal(t, true, hubSt["dirty"], "hub's change is still there")
+	appSt := gitJSON(t, id, "status")
+	assert.Equal(t, "main", appSt["branch"], "app untouched")
+	assert.Equal(t, false, appSt["dirty"])
+	assert.Equal(t, app, appSt["folder_root"])
+
+	// The clean home folder switches; hub stays as it was.
+	sw = gitJSON(t, id, "switch", "--branch", "feature")
+	assert.Equal(t, true, sw["switched"])
+	assert.Equal(t, "feature", gitJSON(t, id, "status", "--workbench-folder", hubName)["branch"])
+	content, err := os.ReadFile(filepath.Join(hub, "README.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "edited\n", string(content))
+}
+
+// PROJ-10 (#2003): a worktree of hub inside the app folder is hub's — a
+// switch there never runs in app.
+func TestGitSwitchInAHubWorktreeInsideAppNeverTouchesApp(t *testing.T) {
+	id, app, hub, _ := twoFolderBench(t)
+	bin, _ := gitbin.Locate()
+	nested := filepath.Join(app, "hub-n")
+	c := exec.Command(bin, "worktree", "add", "-q", "-b", "hub-n", nested, "main")
+	c.Dir = hub
+	out, err := c.CombinedOutput()
+	require.NoError(t, err, "git worktree add: %s", out)
+
+	st := gitJSON(t, id, "status", "--folder", nested)
+	assert.Equal(t, "hub-n", st["branch"])
+	assert.Equal(t, "worktree", st["folder_scope"])
+	assert.Equal(t, hub, st["workbench_folder_path"])
+
+	sw := gitJSON(t, id, "switch", "--folder", nested, "--branch", "feature")
+	assert.Equal(t, "checked_out_elsewhere", sw["refused"], "hub's feature, checked out in hub")
+	sw = gitJSON(t, id, "switch", "--workbench-folder", app, "--folder", nested, "--branch", "feature", "--stash", "--confirm-agent")
+	assert.Equal(t, "folder_not_a_worktree", sw["refused"], "not app's worktree")
+	assert.Equal(t, false, sw["switched"])
+	assert.Equal(t, "main", gitJSON(t, id, "status")["branch"], "app untouched")
+	assert.Equal(t, "hub-n", gitJSON(t, id, "status", "--folder", nested)["branch"])
+}
+
+// A moved home folder blocks only the calls that use it; the bench's other
+// folders keep working.
+func TestGitMissingHomeBlocksOnlyTheHomeFolder(t *testing.T) {
+	id, app, hub, hubName := twoFolderBench(t)
+	hubWT := gitWorktree(t, hub, "hub-a")
+	require.NoError(t, os.RemoveAll(app))
+
+	assert.Equal(t, "feature", gitJSON(t, id, "status", "--workbench-folder", hubName)["branch"])
+	assert.Equal(t, "hub-a", gitJSON(t, id, "status", "--folder", hubWT)["branch"])
+	_, err := runWorkbenchGit(t, "status", "--workbench", strconv.FormatInt(id, 10), "--json")
+	assert.ErrorContains(t, err, "missing")
 }

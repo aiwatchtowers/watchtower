@@ -32,6 +32,11 @@ package enum SessionSwitcherPresentation {
             /// spec review author loop, hidden from the owner (board #1945).
             /// Live or not.
             case specReview
+            /// Live, its own turn over with nothing for the owner (idle, or
+            /// finished with no open ask), while a sub-session of it is live
+            /// (PROJ-11, spec 2026-11-18 §6.5): its children work, not the
+            /// owner. Go `StateSubSessionsWorking`.
+            case subSessionsWorking
         }
 
         package let kind: Kind
@@ -64,6 +69,10 @@ package enum SessionSwitcherPresentation {
         /// The highest author-loop round of the session's open asks
         /// (board #1945); 0 for every other kind.
         package let specReviewRound: Int
+        /// The session's live sub-sessions (the host runs them, spec
+        /// 2026-11-18 §6.6), for every kind: the panel row's `· N
+        /// sub-sessions`.
+        package let liveSubSessions: Int
 
         /// `openQuestionAsks` nil = every open ask is a question: the
         /// reading before asks had kinds here, so a state built without them
@@ -79,9 +88,11 @@ package enum SessionSwitcherPresentation {
             openQuestionAsks: Int? = nil,
             openReviewAsks: Int = 0,
             watchIssue: String? = nil,
-            specReviewRound: Int = 0
+            specReviewRound: Int = 0,
+            liveSubSessions: Int = 0
         ) {
             self.kind = kind
+            self.liveSubSessions = liveSubSessions
             self.live = live
             self.openAsks = openAsks
             self.error = error
@@ -118,12 +129,13 @@ package enum SessionSwitcherPresentation {
             backgroundShells: Int = 0,
             openQuestionAsks: Int? = nil,
             openReviewAsks: Int = 0,
-            specReviewRound: Int = 0
+            specReviewRound: Int = 0,
+            liveSubSessions: Int = 0
         ) -> Self {
             Self(kind: kind, live: true, openAsks: openAsks, error: error, oldestAskID: oldestAskID,
                  backgroundAgents: backgroundAgents, backgroundShells: backgroundShells,
                  openQuestionAsks: openQuestionAsks, openReviewAsks: openReviewAsks,
-                 specReviewRound: specReviewRound)
+                 specReviewRound: specReviewRound, liveSubSessions: liveSubSessions)
         }
     }
 
@@ -144,6 +156,9 @@ package enum SessionSwitcherPresentation {
         /// feature/x`, `main folder · main`, `worktree removed`. nil for a
         /// row the caller placed nowhere (a standalone terminal, a shell).
         package var place: SessionPlacePresentation.PlaceLabel?
+        /// The sessions panel's nesting depth (spec 2026-11-18 §6.5): 0 at
+        /// the top, one more per parent listed above it in the same list.
+        package var depth = 0
 
         package var id: Int64 { session.id }
 

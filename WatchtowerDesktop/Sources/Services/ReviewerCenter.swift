@@ -12,8 +12,11 @@ import WatchtowerInterface
 @MainActor
 @Observable
 final class ReviewerCenter {
+    /// One thread: the workbench, the reviewed session's folder (nil = the
+    /// home folder) and the branch key.
     struct ThreadID: Hashable {
         let projectID: Int64
+        var folderID: Int64?
         let branch: String
     }
 
@@ -80,7 +83,7 @@ final class ReviewerCenter {
         threads[id] = .loading
         do {
             let thread: ChatNewResponse = try await writes.perform(.chatReviewerThread) {
-                ChatReviewerThreadRequest(requestID: $0, projectID: id.projectID, branch: id.branch)
+                ChatReviewerThreadRequest(requestID: $0, projectID: id.projectID, folderID: id.folderID, branch: id.branch)
             }
             threads[id] = .ready(conversationID: thread.conversationID)
         } catch {
@@ -105,7 +108,7 @@ final class ReviewerCenter {
     func workbenchRemoved(_ workbenchID: Int64) {
         for id in threads.keys where id.projectID == workbenchID {
             embeddedChats.dropContext(type: ReviewerSurface.contextType,
-                                      id: ReviewerSurface.contextID(projectID: id.projectID, branch: id.branch))
+                                      id: ReviewerSurface.contextID(projectID: id.projectID, folderID: id.folderID, branch: id.branch))
             threads[id] = nil
         }
     }

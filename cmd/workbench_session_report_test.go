@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/db"
 	"watchtower/internal/gitbin"
 	"watchtower/internal/sessionreport"
 )
@@ -44,7 +45,10 @@ func loadSessionReportFixture(t *testing.T, path, folder string) {
 	require.NoError(t, err)
 	_, err = database.Exec(string(script))
 	require.NoError(t, err)
+	db.SeedTestHomeFolders(t, database)
 	_, err = database.Exec(`UPDATE projects SET folder_path = ? WHERE id = 1`, folder)
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE workbench_folders SET folder_path = ? WHERE workbench_id = 1 AND position = 0`, folder)
 	require.NoError(t, err)
 }
 

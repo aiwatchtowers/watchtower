@@ -61,13 +61,15 @@ final class ScriptedSessionStartRunner: CLIRunnerProtocol, @unchecked Sendable {
                 projectID: workbench, kind: agent, title: value("--title") ?? "s",
                 targetID: value("--target").flatMap { Int64($0) }, folderPath: folder,
                 claudeSessionID: agent == .claude ? UUID().uuidString.lowercased() : nil,
-                automationRunID: value("--automation-run").flatMap { Int64($0) }
+                automationRunID: value("--automation-run").flatMap { Int64($0) },
+                workbenchFolderID: value("--folder").flatMap { Int64($0) }
             ))
         }
         lock.withLock { ids.append(row.id) }
         await onStarted?(row.id)
         return Data("""
-            {"session_id":\(row.id),"state":"starting","folder_path":"\(row.folderPath)","worktree_branch":""}
+            {"ok":true,"session_id":\(row.id),"state":"starting","folder_path":"\(row.folderPath)","worktree_branch":"",
+             "folder_id":\(row.workbenchFolderID ?? 0),"folder":"","place":"\(value("--place") ?? "auto")","worktree":""}
             """.utf8)
     }
 }

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -672,12 +673,11 @@ func recipeFolderOf(cfg *config.Config, database *db.DB, file string) (scope aut
 	if err != nil {
 		return scope, "", "", false, fmt.Errorf("resolving %s: %w", file, err)
 	}
-	w, err := workbenchSpellingRecipeDir(database, given, dir)
+	w, wdir, err := workbenchSpellingRecipeDir(context.Background(), database, given, dir)
 	if err != nil || w == nil {
 		return scope, dir, path, false, err
 	}
-	wdir, err := automationsCanonicalDir(automations.WorkbenchDir(w.FolderPath))
-	if err != nil {
+	if wdir, err = automationsCanonicalDir(wdir); err != nil {
 		return scope, "", "", false, fmt.Errorf("resolving workbench %d's recipe folder: %w", w.ID, err)
 	}
 	if dir != wdir {
@@ -686,35 +686,61 @@ func recipeFolderOf(cfg *config.Config, database *db.DB, file string) (scope aut
 	return automations.Scope{Kind: automations.ScopeWorkbench, WorkbenchID: w.ID}, dir, path, true, nil
 }
 
-// workbenchSpellingRecipeDir is the workbench whose recipe folder, by its
-// stored path alone, is one of dirs (nil when none) — no filesystem call.
-func workbenchSpellingRecipeDir(database *db.DB, dirs ...string) (*db.Workbench, error) {
+// workbenchSpellingRecipeDir is the workbench one of whose live folders'
+// recipe folder, by its stored path alone, is one of dirs, with that recipe
+// folder as stored (nil when none) — no filesystem call.
+func workbenchSpellingRecipeDir(ctx context.Context, database *db.DB, dirs ...string) (*db.Workbench, string, error) {
 	workbenches, err := database.ListWorkbenches()
+	if err != nil {
+		return nil, "", err
+	}
+	for i := range workbenches {
+		recipeDirs, err := benchRecipeDirs(ctx, database, &workbenches[i])
+		if err != nil {
+			return nil, "", err
+		}
+		for _, wdir := range recipeDirs {
+			if slices.Contains(dirs, filepath.Clean(wdir)) {
+				return &workbenches[i], wdir, nil
+			}
+		}
+	}
+	return nil, "", nil
+}
+
+// benchRecipeDirs is the recipe folder of every live folder of workbench w,
+// as stored (multi-folder workbench, spec §6.11) — the home folder's for a
+// bench without a live folder row. No filesystem call.
+func benchRecipeDirs(ctx context.Context, database *db.DB, w *db.Workbench) ([]string, error) {
+	folders, err := database.WorkbenchFolders(ctx, w.ID, false)
 	if err != nil {
 		return nil, err
 	}
-	for i := range workbenches {
-		wdir := filepath.Clean(automations.WorkbenchDir(workbenches[i].FolderPath))
-		if slices.Contains(dirs, wdir) {
-			return &workbenches[i], nil
-		}
+	if len(folders) == 0 {
+		return []string{automations.WorkbenchDir(w.FolderPath)}, nil
 	}
-	return nil, nil
+	out := make([]string, 0, len(folders))
+	for _, f := range folders {
+		out = append(out, automations.WorkbenchDir(f.FolderPath))
+	}
+	return out, nil
 }
 
-// scopeRecipeDir is scope's recipe folder as stored (not canonicalised): the
-// personal folder, or the workbench's .watchtower/automations. ok is false
-// for a workbench that no longer exists.
-func scopeRecipeDir(cfg *config.Config, database *db.DB, scope automations.Scope) (dir string, ok bool, err error) {
+// scopeRecipeDirs is scope's recipe folders as stored (not canonicalised):
+// the personal folder, or every live folder's .watchtower/automations of the
+// workbench (benchRecipeDirs). ok is false for a workbench that no longer
+// exists.
+func scopeRecipeDirs(ctx context.Context, cfg *config.Config, database *db.DB, scope automations.Scope) (dirs []string, ok bool, err error) {
 	if scope.Kind != automations.ScopeWorkbench {
-		return automations.PersonalDir(cfg.WorkspaceDir()), true, nil
+		return []string{automations.PersonalDir(cfg.WorkspaceDir())}, true, nil
 	}
 	w, err := database.GetWorkbench(scope.WorkbenchID)
 	if errors.Is(err, db.ErrWorkbenchNotFound) {
-		return "", false, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return nil, false, err
 	}
-	return automations.WorkbenchDir(w.FolderPath), true, nil
+	dirs, err = benchRecipeDirs(ctx, database, w)
+	return dirs, err == nil, err
 }

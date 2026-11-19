@@ -187,7 +187,13 @@ func TestRun_AgentGetsTheResolvedFolder(t *testing.T) {
 
 func TestRun_AgentCwdWorktreeWins(t *testing.T) {
 	f, askID := runFixture(t)
+	// wt is a linked worktree of the folder's repository (git files written
+	// by hand): only such a directory, or one inside the folder, is read.
+	wtGit := filepath.Join(f.folder, ".git", "worktrees", "wt")
+	require.NoError(t, os.MkdirAll(wtGit, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wtGit, "commondir"), []byte("../..\n"), 0o644))
 	wt := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+wtGit+"\n"), 0o644))
 	_, err := f.d.Exec(`UPDATE terminal_sessions SET agent_cwd = ? WHERE id = ?`, wt, f.session)
 	require.NoError(t, err)
 	agent := &fakeAgent{out: runReply}
@@ -201,6 +207,8 @@ func TestRun_NoReadableFolderFails(t *testing.T) {
 	f, askID := runFixture(t)
 	_, err := f.d.Exec(`UPDATE projects SET folder_path = ? WHERE id = ?`, f.folder+"/gone", f.wb)
 	require.NoError(t, err)
+	_, err = f.d.Exec(`UPDATE workbench_folders SET folder_path = ? WHERE workbench_id = ?`, f.folder+"/gone", f.wb)
+	require.NoError(t, err)
 	agent := &fakeAgent{out: runReply}
 	require.Error(t, Run(context.Background(), f.deps(agent), askID))
 	assert.Zero(t, agent.calls)
@@ -208,6 +216,65 @@ func TestRun_NoReadableFolderFails(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "failed", row.Status)
 	assert.Contains(t, row.Reason, "not a readable directory")
+}
+
+// TestSpecReviewReadsTheSessionsFolder (spec §6.9, F9): the reviewer reads
+// the bench folder the document lives in (doc_folder_id; NULL = home) — the
+// filing session's worktree when the document is in that session's folder,
+// never another folder's working directory.
+func TestSpecReviewReadsTheSessionsFolder(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	hubPath, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	res, err := f.d.Exec(`INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
+		VALUES (?, ?, 1, 'owner', 'hub')`, f.wb, hubPath)
+	require.NoError(t, err)
+	hub, err := res.LastInsertId()
+	require.NoError(t, err)
+	hubTree := filepath.Join(hubPath, "wt")
+	require.NoError(t, os.MkdirAll(hubTree, 0o755))
+	homeTree := filepath.Join(f.folder, "wt")
+	require.NoError(t, os.MkdirAll(homeTree, 0o755))
+	setSession := func(folderID any, cwd string) {
+		_, err := f.d.Exec(`UPDATE terminal_sessions SET workbench_folder_id = ?, agent_cwd = ? WHERE id = ?`,
+			folderID, cwd, f.session)
+		require.NoError(t, err)
+	}
+	readFor := func(docFolder sql.NullInt64) string {
+		a := f.ask(t, "spec", runDoc)
+		a.DocFolderID = docFolder
+		got, err := ReadFolder(ctx, f.d, a)
+		require.NoError(t, err)
+		return got
+	}
+	hubDoc := sql.NullInt64{Int64: hub, Valid: true}
+
+	setSession(hub, hubTree)
+	assert.Equal(t, hubTree, readFor(hubDoc), "a hub session's hub document: its worktree")
+	assert.Equal(t, f.folder, readFor(sql.NullInt64{}), "a home document: the home folder, not the hub worktree")
+
+	setSession(nil, homeTree)
+	assert.Equal(t, hubPath, readFor(hubDoc), "a hub document of a home session: the hub folder")
+	assert.Equal(t, homeTree, readFor(sql.NullInt64{}), "a legacy session (no folder) is a home session")
+
+	// A hub session's cwd counts only inside the hub's repository: a linked
+	// worktree of it (git files written by hand: no git runs) is read, a
+	// directory of another repository is not.
+	wtGit := filepath.Join(hubPath, ".git", "worktrees", "wt1")
+	require.NoError(t, os.MkdirAll(wtGit, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wtGit, "commondir"), []byte("../..\n"), 0o644))
+	linked, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(linked, ".git"), []byte("gitdir: "+wtGit+"\n"), 0o644))
+	setSession(hub, linked)
+	assert.Equal(t, linked, readFor(hubDoc), "a worktree of the hub's repository")
+
+	elsewhere, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(elsewhere, ".git"), 0o755))
+	setSession(hub, elsewhere)
+	assert.Equal(t, hubPath, readFor(hubDoc), "another repository: the document's folder")
 }
 
 // dumpTables is every table's rows but spec_reviews', as text, in a stable

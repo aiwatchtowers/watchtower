@@ -244,7 +244,7 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 	// Binding.DirectApply (DEV-06).
 	regTools = append(regTools, tools.WorkbenchTools(tools.WorkbenchDeps{
 		Files: workbenchfiles.New(cfg.WorkspaceDir()), LaunchSpecReview: specReviewLauncher(cfg),
-		WakeWatchman: watchmanWaitPointWake(cfg),
+		WakeWatchman: watchmanWaitPointWake(cfg), Sessions: workbenchSessionDeps(cfg),
 	})...)
 	// Every migrated read tool. Chat mode dispatches these through the registry's
 	// read branch; the runtime-B loop calls them in-process. Dev-mode MCP mounts

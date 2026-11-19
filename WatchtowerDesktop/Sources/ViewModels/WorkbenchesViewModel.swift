@@ -619,9 +619,50 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var gitRefreshQueued: Set<GitRootKey> = []
     /// Workbench pages on screen that watch their refs.
     @ObservationIgnored var gitWatching: Set<Int64> = []
-    /// The worktree root a watching page's branch menu works on, watched
-    /// beside its main folder; none while the page shows the main folder.
+    /// The root a watching page's branch menu works on — a worktree, or a
+    /// bench folder other than home (#2003) — watched beside its main
+    /// folder; none while the page shows the home folder's main root.
     @ObservationIgnored var gitWatchedWorktree: [Int64: CodeRoot] = [:]
+    /// Each workbench's folder rows and home (#2003), read with the list;
+    /// FILES draws a root per live folder, Open Folder… matches any of them.
+    var benchFolders: [Int64: BenchFolders] = [:]
+    /// Live folders whose directory was gone at the last read (FILES says
+    /// `Folder not found`), per workbench.
+    var missingFolders: [Int64: Set<Int64>] = [:]
+    /// `workbench folder list`'s install flag per folder id, per workbench;
+    /// a folder not listed counts as installed (no icon before the read).
+    var folderInstalled: [Int64: [Int64: Bool]] = [:]
+    /// FILES roots the owner opened (folder ids), per workbench. The active
+    /// session's folder is open whatever this holds.
+    var expandedFolderRoots: [Int64: Set<Int64>] = [:]
+    /// The root Put on the Bench… pointed at (`already_here`, a new folder),
+    /// highlighted in FILES until another one is.
+    var highlightedFolderRoot: [Int64: Int64] = [:]
+    /// The FILES root the owner last opened (a folder id), per workbench:
+    /// ⌘T starts there while no session is on screen (spec §6.4).
+    var selectedFolderRoot: [Int64: Int64] = [:]
+    /// The FILES root a file was opened from when it is not the page
+    /// session's (#2003), per workbench; stale once the session changes.
+    var selectedFilesRoot: [Int64: FilesRootSelection] = [:]
+    /// The last Put on the Bench… failure per workbench, under the FILES header.
+    var putOnBenchErrors: [Int64: String] = [:]
+    /// Workbenches with a Put on the Bench… add in flight.
+    var puttingOnBench: Set<Int64> = []
+    /// The merge confirmation on screen (spec §6.13): another bench's
+    /// folder was put on this one.
+    var mergeOffer: BenchMergeOffer?
+    /// A merge refused while the merged bench has live sessions.
+    var mergeRefusal: BenchMergeRefusal?
+    /// Workbenches a merge into is in flight for.
+    var merging: Set<Int64> = []
+    /// A merge done but a later step of it failed, per workbench: the
+    /// warning line under the FILES header.
+    var mergeWarnings: [Int64: String] = [:]
+    /// A seam for tests: whether a folder's directory exists.
+    @ObservationIgnored var folderExists: (String) -> Bool = { CodeRootPolicy.directoryExists(URL(fileURLWithPath: $0)) }
+    /// A seam for tests: the sessions running now (Remove from Bench… counts
+    /// a folder's before it asks).
+    @ObservationIgnored lazy var liveSessionIDs: () -> Set<Int64> = { [weak self] in self?.terminalCenter?.liveIDs ?? [] }
     @ObservationIgnored var gitWatchers: [GitRootKey: any GitRefsWatching] = [:]
     @ObservationIgnored var gitWatchedDirs: [GitRootKey: [String]] = [:]
     @ObservationIgnored var gitTimers: [Int64: Task<Void, Never>] = [:]
@@ -728,6 +769,7 @@ final class WorkbenchesViewModel {
             let automations = AutomationsCLI(runner: cli.runner)
             asks.wakeAutomations = { try await automations.wake() }
             rescanAutomations = { try await automations.rescan(workbenchID: $0) }
+            asks.folderCLI = cli
         }
         codeFiles.onAutomationRecipesChanged = { [weak self] in self?.automationRecipesChanged(workbenchID: $0) }
         terminalCenter?.onSessionExit = { [weak self] id, code, closedByApp in
@@ -760,6 +802,13 @@ final class WorkbenchesViewModel {
         }
         // A closed session's ring follows its open asks without a poll.
         asks.onAnswered = { [weak agentStates] in await agentStates?.poll() }
+        asks.addSuggestedFolder = { [weak self] path, projectID in
+            guard let self else { throw FolderSuggestionError.noCLI }
+            return try await self.addSuggestedFolder(path: path, projectID: projectID)
+        }
+        asks.offerMerge = { [weak self] ask, bench, path in
+            await self?.offerMerge(fromID: bench.id, fromName: bench.name, into: ask.projectID, path: path, askID: ask.id)
+        }
         // A line (an answer's) is held while its session waits on a permission
         // prompt and goes once the states show it answered (PROJ-12); its
         // Return only into a session whose hooks reported this run (a
@@ -827,7 +876,11 @@ final class WorkbenchesViewModel {
         _ = currentDefaultAgent()
         let previousIDs = summaries.map(\.id)
         do {
-            summaries = try await dbPool.read { try WorkbenchQueries.summaries($0) }
+            let read = try await dbPool.read { db in
+                (try WorkbenchQueries.summaries(db), try WorkbenchFolderQueries.allBenchFolders(db))
+            }
+            summaries = read.0
+            applyBenchFolders(read.1)
         } catch {
             errorMessage = "Could not load workbenches: \(error.localizedDescription)"
             return false
@@ -853,7 +906,11 @@ final class WorkbenchesViewModel {
     /// read beside the error.
     func loadSwitcherSummaries() async {
         do {
-            switcherSummaries = try await dbPool.read { try WorkbenchQueries.switcherSummaries($0) }
+            let read = try await dbPool.read { db in
+                (try WorkbenchQueries.switcherSummaries(db), try WorkbenchFolderQueries.allBenchFolders(db))
+            }
+            switcherSummaries = read.0
+            applyBenchFolders(read.1)
             switcherError = nil
         } catch {
             switcherError = "Could not load workbenches: \(error.localizedDescription)"
@@ -1047,7 +1104,8 @@ final class WorkbenchesViewModel {
     }
 
     /// Open Folder… (board #778), decided on a fresh list: a folder some
-    /// workbench is already bound to opens that workbench, as the switcher's
+    /// workbench is already bound to — any of its folders, not only home
+    /// (#2003) — opens that workbench, as the switcher's
     /// pick does, with no location warning (owner decision #778) —
     /// `workbench create` would refuse it. Any other folder becomes a new
     /// workbench, after the owner confirms a TCC-sensitive location.
@@ -1085,8 +1143,11 @@ final class WorkbenchesViewModel {
     /// without the `/private` of /tmp and /var (`comparableFolder`).
     func workbenchID(boundTo folder: URL) -> Int64? {
         let path = Self.comparableFolder(folder.path)
-        return summaries.first {
-            Self.comparableFolder($0.project.folderPath).caseInsensitiveCompare(path) == .orderedSame
+        let same = { (other: String) in Self.comparableFolder(other).caseInsensitiveCompare(path) == .orderedSame }
+        if let home = summaries.first(where: { same($0.project.folderPath) }) { return home.id }
+        // Any folder on a bench, not only its home (#2003, spec §6.1).
+        return summaries.first { summary in
+            benchFolders[summary.id]?.live.contains { same($0.folderPath) } ?? false
         }?.id
     }
 
@@ -1156,7 +1217,7 @@ final class WorkbenchesViewModel {
         if installed {
             await startNewSession(project: project, title: TerminalSessionNaming.setupTitle,
                                   prompt: TerminalLaunch.firstRunPrompt,
-                                  agent: setupAgent(projectID: project.id))
+                                  agent: setupAgent(projectID: project.id), folder: .home)
         }
     }
 

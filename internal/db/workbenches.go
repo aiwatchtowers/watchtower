@@ -99,7 +99,8 @@ func ResolveWorkbenchFolder(dir string, protected []string) (string, error) {
 }
 
 // CreateWorkbench binds a new workbench to folder, which must already be resolved
-// (ResolveWorkbenchFolder). A folder bound to another workbench fails with
+// (ResolveWorkbenchFolder), and inserts its home folder row (position 0) in
+// the same transaction. A live folder of any workbench fails with
 // ErrWorkbenchFolderTaken.
 func (db *DB) CreateWorkbench(name, folder string) (int64, error) {
 	name = strings.TrimSpace(name)
@@ -112,24 +113,48 @@ func (db *DB) CreateWorkbench(name, folder string) (int64, error) {
 	if err := checkFolderLineBreaks(folder); err != nil {
 		return 0, err
 	}
-	// APFS is case-insensitive, so another spelling of a bound folder is the
-	// same folder; the UNIQUE index below compares bytes.
-	var taken int64
-	err := db.QueryRow(`SELECT id FROM projects WHERE folder_path = ? COLLATE NOCASE LIMIT 1`, folder).Scan(&taken)
-	if err == nil {
-		return 0, fmt.Errorf("%s: %w", folder, ErrWorkbenchFolderTaken)
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("checking folder %s: %w", folder, err)
-	}
-	res, err := db.Exec(`INSERT INTO projects (name, folder_path) VALUES (?, ?)`, name, folder)
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed: projects.folder_path") {
-			return 0, fmt.Errorf("%s: %w", folder, ErrWorkbenchFolderTaken)
+	var id int64
+	err := db.WithTx(func(tx *sql.Tx) error {
+		// APFS is case-insensitive, so another spelling of a live folder is
+		// the same folder (the live-path index compares NOCASE too).
+		var taken int64
+		err := tx.QueryRow(`SELECT id FROM workbench_folders
+			WHERE folder_path = ? COLLATE NOCASE AND removed_at IS NULL LIMIT 1`, folder).Scan(&taken)
+		if err == nil {
+			return fmt.Errorf("%s: %w", folder, ErrWorkbenchFolderTaken)
 		}
-		return 0, fmt.Errorf("inserting workbench: %w", err)
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("checking folder %s: %w", folder, err)
+		}
+		res, err := tx.Exec(`INSERT INTO projects (name, folder_path) VALUES (?, ?)`, name, folder)
+		if err != nil {
+			return folderInsertError(folder, "inserting workbench", err)
+		}
+		if id, err = res.LastInsertId(); err != nil {
+			return fmt.Errorf("inserting workbench: %w", err)
+		}
+		_, err = tx.Exec(`INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
+			VALUES (?, ?, 0, 'owner', ?)`, id, folder, UniqueFolderName(folder, func(string) bool { return false }))
+		if err != nil {
+			return folderInsertError(folder, "inserting the workbench's folder", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
 	}
-	return res.LastInsertId()
+	return id, nil
+}
+
+// folderInsertError maps a unique-path violation (a racing bind of the same
+// folder) to ErrWorkbenchFolderTaken.
+func folderInsertError(folder, doing string, err error) error {
+	msg := err.Error()
+	if strings.Contains(msg, "UNIQUE constraint failed: projects.folder_path") ||
+		strings.Contains(msg, "UNIQUE constraint failed: workbench_folders.folder_path") {
+		return fmt.Errorf("%s: %w", folder, ErrWorkbenchFolderTaken)
+	}
+	return fmt.Errorf("%s: %w", doing, err)
 }
 
 func scanWorkbench(row interface{ Scan(...any) error }) (*Workbench, error) {
@@ -155,13 +180,15 @@ func (db *DB) GetWorkbench(id int64) (*Workbench, error) {
 	return p, nil
 }
 
-// WorkbenchByFolder returns the workbench bound to folder — an absolute,
-// symlink-resolved path (ResolveWorkbenchFolder's form), compared the way
-// CreateWorkbench does (case-insensitively: APFS) — or ErrWorkbenchNotFound.
-// A subfolder of a workbench folder is not that workbench.
+// WorkbenchByFolder returns the workbench one of whose live folders is
+// folder — an absolute, symlink-resolved path (ResolveWorkbenchFolder's
+// form), compared the way CreateWorkbench does (case-insensitively: APFS) —
+// or ErrWorkbenchNotFound. A subfolder of a workbench folder is not that
+// workbench, nor is a folder removed from its bench.
 func (db *DB) WorkbenchByFolder(folder string) (*Workbench, error) {
-	p, err := scanWorkbench(db.QueryRow(`SELECT `+workbenchCols+` FROM projects
-		WHERE folder_path = ? COLLATE NOCASE ORDER BY id LIMIT 1`, folder))
+	p, err := scanWorkbench(db.QueryRow(`SELECT `+workbenchCols+` FROM projects WHERE id = (
+		SELECT workbench_id FROM workbench_folders
+		WHERE folder_path = ? COLLATE NOCASE AND removed_at IS NULL ORDER BY id LIMIT 1)`, folder))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%s: %w", folder, ErrWorkbenchNotFound)
 	}

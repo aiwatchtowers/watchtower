@@ -8,7 +8,6 @@ import (
 	"net"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 )
 
@@ -16,6 +15,10 @@ import (
 // protocol v1 host. The Go hub never talks to one; only Desktop's one-time
 // restart step replaces it.
 var ErrHostV1 = errors.New("sessionhost: a v1 host is running")
+
+// ErrFeatureMissing is returned by a request the host did not name in its
+// HelloOK's features (an adopted older host); nothing was sent.
+var ErrFeatureMissing = errors.New("sessionhost: the host does not serve this request")
 
 // HostError is an Error frame the host answered a request with.
 type HostError struct{ Message string }
@@ -26,13 +29,17 @@ func (e *HostError) Error() string { return "sessionhost: " + e.Message }
 const v1Refusal = "(host speaks 1)"
 
 // Client is a non-attaching v2 client: it lists, launches detached, types
-// with InputTo, delivers lines (Deliver), hints and stops, and never binds its connection to a
-// session, so it never takes a pane over. Calls are serialised.
+// with InputTo, delivers lines (Deliver), reads prompt state, hints and stops, and never binds its connection to a
+// session, so it never takes a pane over. Calls are serialised; a call
+// waiting for another gives up when its ctx ends.
 type Client struct {
-	mu   sync.Mutex
+	// turn is the call lock: a one-slot channel, so a waiter honours its ctx.
+	turn chan struct{}
 	nc   net.Conn
 	pid  int
-	dead atomic.Bool // the connection was closed (Close, or a failure that left the stream out of step)
+	// features is the HelloOK's Features (set once, before any call).
+	features []string
+	dead     atomic.Bool // the connection was closed (Close, or a failure that left the stream out of step)
 }
 
 // Dial connects to the host on socket and says a v2 Hello. A v1 host gives
@@ -43,7 +50,13 @@ func Dial(ctx context.Context, socket string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial session host: %w", err)
 	}
-	c := &Client{nc: nc}
+	return NewClient(ctx, nc)
+}
+
+// NewClient says the v2 Hello on an established connection to a host (Dial's
+// last step; an in-memory connection in tests); nc is closed when it fails.
+func NewClient(ctx context.Context, nc net.Conn) (*Client, error) {
+	c := &Client{nc: nc, turn: make(chan struct{}, 1)}
 	if err := c.hello(ctx); err != nil {
 		_ = nc.Close()
 		return nil, err
@@ -68,11 +81,37 @@ func (c *Client) hello(ctx context.Context) error {
 		return ErrHostV1
 	}
 	c.pid = h.Pid
+	c.features = h.Features
 	return nil
 }
 
 // Pid is the host's process id from its HelloOK.
 func (c *Client) Pid() int { return c.pid }
+
+// Features is the optional requests the host named in its HelloOK
+// (FeaturePromptState); none from an older host.
+func (c *Client) Features() []string { return slices.Clone(c.features) }
+
+// PromptState reads whether the prompt of a session's run holds text not
+// submitted; the host writes nothing to the PTY. A host whose HelloOK did
+// not name FeaturePromptState is never asked (it would skip the frame and
+// never answer): ErrFeatureMissing, nothing written. The caller's ctx
+// carries the deadline (PromptStateTimeout); any failure leaves Known false,
+// which is never an empty prompt.
+func (c *Client) PromptState(ctx context.Context, m PromptStateMsg) (PromptStateReplyMsg, error) {
+	if !slices.Contains(c.features, FeaturePromptState) {
+		return PromptStateReplyMsg{}, ErrFeatureMissing
+	}
+	_, p, err := c.roundTrip(ctx, PromptStateReq, encode(m), PromptStateReply)
+	if err != nil {
+		return PromptStateReplyMsg{}, fmt.Errorf("prompt_state: %w", err)
+	}
+	var r PromptStateReplyMsg
+	if err := json.Unmarshal(p, &r); err != nil {
+		return PromptStateReplyMsg{}, fmt.Errorf("prompt_state: %w", err)
+	}
+	return r, nil
+}
 
 // Dead reports whether the connection is closed: Close was called, or a
 // call failed with anything but the host's own Error answer (the stream was
@@ -187,12 +226,17 @@ func (c *Client) roundTrip(ctx context.Context, t FrameType, p []byte, want Fram
 	return c.do(ctx, func() (FrameType, []byte, error) { return c.exchangeLocked(t, p, want) })
 }
 
-// do runs one exchange under the lock with ctx's deadline and cancellation.
-// Any failure but a host Error leaves the stream out of step, so the
-// connection is closed and later calls fail.
+// do runs one exchange under the lock with ctx's deadline and cancellation;
+// waiting for the lock ends with ctx too (the call then sent nothing). Any
+// failure but a host Error leaves the stream out of step, so the connection
+// is closed and later calls fail.
 func (c *Client) do(ctx context.Context, fn func() (FrameType, []byte, error)) (FrameType, []byte, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	select {
+	case c.turn <- struct{}{}:
+	case <-ctx.Done():
+		return 0, nil, ctx.Err() //nolint:wrapcheck // the caller wraps with the operation
+	}
+	defer func() { <-c.turn }()
 	if err := ctx.Err(); err != nil {
 		return 0, nil, err //nolint:wrapcheck // the caller wraps with the operation
 	}

@@ -52,6 +52,7 @@ struct WorkspacePaneView: View {
                     vm: vm, project: project, pane: pane, sessionID: sessionID, isSplit: isSplit, isExpanded: isExpanded
                 )
                 Divider()
+                SessionPromptNotice(vm: vm, projectID: project.id, sessionID: sessionID)
             } else if isSplit {
                 header
                 Divider()
@@ -100,8 +101,10 @@ struct WorkspacePaneView: View {
                     }
                     .disabled(pane == .session(session.id))
                 }
-                NewSessionMenuItems(vm: vm, projectID: project.id) { agent, worktree in
-                    Task { await vm.newSession(inPane: pane, projectID: project.id, agent: agent, worktree: worktree) }
+                NewSessionMenuItems(vm: vm, projectID: project.id) { agent, worktree, folder in
+                    Task {
+                        await vm.newSession(inPane: pane, projectID: project.id, agent: agent, worktree: worktree, folder: folder)
+                    }
                 }
             }
         } label: {

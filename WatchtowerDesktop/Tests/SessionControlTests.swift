@@ -242,8 +242,9 @@ final class SessionControlTests: XCTestCase {
             if text { try XCTUnwrap(processes.last).onOwnerInput?(Array("fix the".utf8)) }
             sessions.append((submitted, text, id))
         }
+        // Sub-sessions working is the parent's own turn ended (PROJ-11, #2003): idle.
         let idle: Set<SessionSwitcherPresentation.State.Kind> = [
-            .stopped, .finished, .waitingOnAsk, .readyToCheck, .failed, .specReview
+            .stopped, .finished, .waitingOnAsk, .readyToCheck, .failed, .specReview, .subSessionsWorking
         ]
         for kind in SessionSwitcherPresentation.State.Kind.allCases {
             for live in [true, false] {

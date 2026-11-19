@@ -31,6 +31,10 @@ final class WorkbenchBoardViewModel {
     /// previous one stored.
     @ObservationIgnored let columnWrites = SerialWrites()
     var collapsed: Set<Int> = []
+    /// The workbench's folders, set by the board view from
+    /// `WorkbenchesViewModel.benchFolders`: the cards name their folder, the
+    /// panel's Folder menu lists them (spec 2026-11-18 §6.10). nil = unread.
+    var folders: BenchFolders?
     var showDone = false
     /// The toolbar's "Archive (K)" (board #301): archived targets back on
     /// the board, dimmed. Session-only like `showDone`.
@@ -969,6 +973,15 @@ final class WorkbenchBoardViewModel {
         guard let id = selectedTargetID, WorkbenchBoardCard.editablePriorities.contains(priority) else { return }
         startWrite("change the priority") { db in
             _ = try WorkbenchOwnerWrites.setPriority(db, targetID: Int64(id), priority: priority)
+            return []
+        }
+    }
+
+    /// The panel's Folder menu: nil = the home folder.
+    func setFolder(_ folderID: Int64?) {
+        guard let id = selectedTargetID else { return }
+        startWrite("change the folder") { db in
+            _ = try WorkbenchOwnerWrites.setFolder(db, targetID: Int64(id), folderID: folderID)
             return []
         }
     }

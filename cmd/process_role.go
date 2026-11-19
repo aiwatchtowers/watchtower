@@ -14,6 +14,7 @@ var hookCommands = map[string]bool{
 	"workbench ask-guard":      true,
 	"workbench session-state":  true,
 	"workbench watchman-guard": true,
+	"workbench outside-touch":  true,
 }
 
 // roleFor names this process in lock-metrics events from its arguments,

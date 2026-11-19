@@ -37,6 +37,31 @@ final class SessionRowTests: XCTestCase {
         XCTAssertEqual(olderMac.metaItems.dropFirst().map(\.text), ["#415 · 3/32"])
     }
 
+    /// Spec 2026-11-18 §6.14: a session on a bench of several folders names
+    /// its folder right after the caption; a one-folder bench (no key) looks
+    /// as before.
+    func testRowShowsFolderLabel() throws {
+        let row = SessionRowModel(try session(["folder": "hub", "report_target_id": 415]), now: Date())
+        XCTAssertEqual(row.folderLabel, "hub")
+        XCTAssertEqual(row.metaItems.dropFirst().map(\.text), ["hub", "#415"])
+        XCTAssertEqual(row.panelMetaItems.dropFirst().map(\.text), ["hub", "#415"])
+        XCTAssertEqual(row.metaItems[1].tone, .secondary)
+
+        let plain = SessionRowModel(try session([:]), now: Date())
+        XCTAssertNil(plain.folderLabel)
+        XCTAssertEqual(plain.metaItems.map(\.text), [plain.caption])
+    }
+
+    /// A sub-session shows flat, naming the session that started it.
+    func testSubSessionShowsFromParent() throws {
+        let row = SessionRowModel(try session(["folder": "site", "parent_session_id": 30]), now: Date())
+        XCTAssertEqual(row.fromParent, "from #30")
+        XCTAssertEqual(row.metaItems.dropFirst().map(\.text), ["site", "from #30"])
+
+        let top = SessionRowModel(try session([:]), now: Date())
+        XCTAssertNil(top.fromParent)
+    }
+
     func testARecordWithoutAReportTargetHasNoReportLine() throws {
         let row = SessionRowModel(try session(["report_done": 1, "report_total": 2, "report_pr_line": "PR #175 open"]), now: Date())
         XCTAssertEqual(row.metaItems.map(\.text), [row.caption], "the caption alone")

@@ -664,6 +664,7 @@ enum DesignShotCatalog {
             + ComposerShotFixtures.shots // The composer on every Mac surface, before and after ChatUI (#1822 T13).
             + ApprovalCardShotFixtures.shots // The approval card before and after its move to ChatUI (#1822 T15).
             + RoutingPillShotFixtures.shots // The routing pill and fallback card before and after ChatUI (#1822 T17).
+            + MultiFolderShotFixtures.shots // The multi-folder workbench spec's mockups (#2003), design only.
             + BackgroundAIConsentShotFixtures.shots // Background AI consent spec (#1886), design only.
             + WatchmanShotFixtures.shots // Watchman spec (#1824), design only.
             + WorkchatAgentsMockShotFixtures.shots // Workchat agents list and live steps spec (#2065), design only.

@@ -103,8 +103,13 @@ func catchFolders(_ context.Context, b *builder, w worktree) (string, string, er
 }
 
 // catchOwnWorktree is W2: observed by the session and born after it, or
-// the placed row's own worktree (owned by record, spec 2026-10-14 §9).
+// the placed row's own worktree (owned by record, spec 2026-10-14 §9). In a
+// folder that left the bench only a root of the session's own cwd ledger
+// can pass (PROJ-18, #2003): the folder is the owner's now.
 func catchOwnWorktree(_ context.Context, b *builder, w worktree) (string, string, error) {
+	if b.session.FolderRemoved && !b.ledgerRoots[w.Root] {
+		return ReasonNotThisSession, detailFolderLeft, nil
+	}
 	if b.seen.placedRoot != "" && w.Root == b.seen.placedRoot {
 		return "", "", nil
 	}
@@ -334,6 +339,9 @@ func catchCheckedOut(_ context.Context, b *builder, br branchRef) (string, strin
 // §2c candidate another worktree's unreadable HEAD log left undecided is
 // created_unknown (auto cleanup spec 2026-11-10 §2c).
 func catchOwnBranch(_ context.Context, b *builder, br branchRef) (string, string, error) {
+	if b.session.FolderRemoved { // every branch of a folder that left the bench is the owner's (#2003)
+		return ReasonNotThisSession, detailFolderLeft, nil
+	}
 	if b.seen.placedBranch != "" && br.Name == b.seen.placedBranch { // observePlacement set it only when born no later than the row
 		return "", "", nil
 	}

@@ -58,6 +58,9 @@ struct ReviewAgentChatPanel: View {
     let focusOnOpen: Bool
     /// The panel is on screen: `focusOnOpen` was used.
     let onShown: () -> Void
+    /// The reviewed session's folder and, for a folder other than home, its
+    /// own status (#2003); nil until read.
+    @State private var reviewedFolder: ReviewerSurface.ReviewedFolder?
 
     /// What the author side shows: the Workchat with its composer, or one line.
     enum Content: Equatable {
@@ -86,8 +89,10 @@ struct ReviewAgentChatPanel: View {
                 Divider()
                 if side == .reviewer {
                     ReviewerPanel(center: reviewer, model: model, context: ReviewerSurface.context(
-                        projectID: chat.projectID, sessionID: chat.sessionID, round: model.round,
-                        place: identity.place, mainStatus: identity.mainStatus
+                        projectID: chat.projectID, sessionID: chat.sessionID,
+                        folderID: chat.vm.session(chat.sessionID, projectID: chat.projectID)?.workbenchFolderID,
+                        round: model.round, place: identity.place,
+                        mainStatus: ReviewerSurface.folderStatus(reviewedFolder, homeStatus: identity.mainStatus)
                     ))
                 } else {
                     author
@@ -97,6 +102,13 @@ struct ReviewAgentChatPanel: View {
             }
         }
         .onAppear(perform: onShown)
+        .task(id: ReviewedFolderKey(model: model, sessionID: chat.sessionID)) {
+            // A read pending never shows another folder's last status: that
+            // folder may be on another branch now. Home's status is the
+            // page's own, so a home session never flickers to a spinner.
+            if case .other = reviewedFolder { reviewedFolder = nil }
+            reviewedFolder = await chat.vm.reviewedFolder(sessionID: chat.sessionID, projectID: chat.projectID)
+        }
     }
 
     @ViewBuilder private var author: some View {
@@ -112,5 +124,21 @@ struct ReviewAgentChatPanel: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(Spacing.medium)
         }
+    }
+}
+
+/// When the reviewed folder's status is read again: per session, round,
+/// diff and tree read (a Refresh of the same round re-reads it, #2003).
+struct ReviewedFolderKey: Hashable {
+    let sessionID: Int64
+    let roundID: Int64?
+    let diffKey: String?
+    let treeReads: Int
+
+    @MainActor init(model: ReviewChangesModel, sessionID: Int64) {
+        self.sessionID = sessionID
+        roundID = model.round?.id
+        diffKey = model.round?.diffKey
+        treeReads = model.treeReads
     }
 }

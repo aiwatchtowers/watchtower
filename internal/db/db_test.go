@@ -199,6 +199,7 @@ func TestAllTablesExist(t *testing.T) {
 		"projects", "project_sources", "project_comments", "project_target_images",
 		"terminal_sessions", "target_status_history", "owner_asks", "workbench_board_columns",
 		"terminal_session_targets", "workbench_pr_states", "owner_presence",
+		"workbench_folders", "workbench_folder_declines", "session_messages", "session_outside_touches",
 		"review_rounds", "review_comments", "review_viewed", "review_checks",
 		"review_notes", "review_overviews", "review_overview_parts", "review_reverts", "review_lessons", "review_reviewer_threads", "permission_requests", "owner_instructions", "instruction_suggestions", "instruction_chat_lines",
 		"terminal_session_worktrees", "terminal_session_agent_sessions", "agent_session_tombstones",

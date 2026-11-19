@@ -88,6 +88,14 @@ type workbenchResyncJSON struct {
 	// otherwise.
 	Codex *resyncCodexJSON `json:"codex,omitempty"`
 
+	// Folders is the install in each other live folder of the workbench
+	// (multi-folder workbench, spec 2026-11-18 §6.14); the fields above are
+	// the home folder's, integration_ok included; a failure in another folder
+	// lives only in its entry here. Never null. Additive. FoldersError: the
+	// folder list could not be read, so no other folder was set up.
+	Folders      []resyncFolderJSON `json:"folders"`
+	FoldersError string             `json:"folders_error"`
+
 	install    devpack.WorkbenchInstallReport // for the text report
 	installErr error
 	codex      devpack.CodexStatus
@@ -107,8 +115,21 @@ type resyncCodexJSON struct {
 	DuplicatesRemoved bool   `json:"duplicates_removed"`
 }
 
+// resyncFolderJSON is one other folder's install outcome.
+type resyncFolderJSON struct {
+	ID    int64  `json:"id"`
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error"`
+}
+
 func (r workbenchResyncJSON) failed() bool {
-	return !r.IntegrationOK || !r.IndexOK || r.SuggestionsError != "" || (r.Codex != nil && !r.Codex.OK)
+	failed := !r.IntegrationOK || !r.IndexOK || r.SuggestionsError != "" || (r.Codex != nil && !r.Codex.OK) || r.FoldersError != ""
+	for _, f := range r.Folders {
+		failed = failed || !f.OK
+	}
+	return failed
 }
 
 func runWorkbenchResync(cmd *cobra.Command, args []string) error {
@@ -121,15 +142,24 @@ func runWorkbenchResync(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer database.Close()
-	p, err := database.GetWorkbench(id)
-	if err != nil {
-		return fmt.Errorf("workbench %d: %w", id, err)
-	}
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// It installs into the bench's folders: in step with folder add/remove
+	// and delete. The bench is read under the lock, so a resync queued
+	// behind a delete or a folder change sees what that one left.
+	unlock, err := lockFolders(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	p, err := database.GetWorkbench(id)
+	if err != nil {
+		unlock()
+		return fmt.Errorf("workbench %d: %w", id, err)
+	}
 	res, stepErr := resyncWorkbench(ctx, database, p, cfg.Knowledge.Enabled)
+	unlock()
 	if workbenchFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), res)
 	}
@@ -141,7 +171,7 @@ func runWorkbenchResync(cmd *cobra.Command, args []string) error {
 // the suggestions; the error joins every failure (each also recorded in the
 // result).
 func resyncWorkbench(ctx context.Context, database *db.DB, p *db.Workbench, knowledgeEnabled bool) (workbenchResyncJSON, error) {
-	res := workbenchResyncJSON{ID: p.ID, Excluded: []string{}}
+	res := workbenchResyncJSON{ID: p.ID, Excluded: []string{}, Folders: []resyncFolderJSON{}}
 	var errs []error
 
 	if err := resyncIntegration(ctx, p, &res); err != nil {
@@ -152,6 +182,9 @@ func resyncWorkbench(ctx context.Context, database *db.DB, p *db.Workbench, know
 	}
 	if err := resyncCodex(ctx, p, &res); err != nil {
 		errs = append(errs, fmt.Errorf("installing the codex integration: %w", err))
+	}
+	if err := resyncOtherFolders(ctx, database, p, &res); err != nil {
+		errs = append(errs, err)
 	}
 
 	// The folder's files are searchable at once rather than after the daemon's
@@ -178,6 +211,31 @@ func resyncWorkbench(ctx context.Context, database *db.DB, p *db.Workbench, know
 		errs = append(errs, fmt.Errorf("working out suggestions: %w", err))
 	}
 	return res, errors.Join(errs...)
+}
+
+// resyncOtherFolders installs in every live folder but the home one (the
+// same steps, PROJ-04 rules) and records each outcome in res.Folders only:
+// integration_ok stays the home folder's.
+func resyncOtherFolders(ctx context.Context, database *db.DB, p *db.Workbench, res *workbenchResyncJSON) error {
+	folders, err := database.WorkbenchFolders(ctx, p.ID, false)
+	if err != nil {
+		err = fmt.Errorf("listing the workbench's folders: %w", err)
+		res.FoldersError = err.Error()
+		return err
+	}
+	var errs []error
+	for _, f := range folders {
+		if strings.EqualFold(f.FolderPath, p.FolderPath) {
+			continue
+		}
+		out := resyncFolderJSON{ID: f.ID, Name: f.Name, Path: f.FolderPath, OK: true}
+		if ferr := folderInstall(ctx, folderBench(p, f)); ferr != nil {
+			out.OK, out.Error = false, ferr.Error()
+			errs = append(errs, fmt.Errorf("installing in %s: %w", f.Name, ferr))
+		}
+		res.Folders = append(res.Folders, out)
+	}
+	return errors.Join(errs...)
 }
 
 func resyncIntegration(ctx context.Context, p *db.Workbench, res *workbenchResyncJSON) error {
@@ -299,6 +357,19 @@ func printResyncReport(w io.Writer, p *db.Workbench, res workbenchResyncJSON) {
 	}
 	if !res.IntegrationOK {
 		fmt.Fprintf(w, "  FAILED — %s\n", res.IntegrationError)
+	}
+	if len(res.Folders) > 0 {
+		fmt.Fprintln(w, "Other folders:")
+		for _, f := range res.Folders {
+			if f.OK {
+				fmt.Fprintf(w, "  %s (%s): set up\n", f.Name, f.Path)
+			} else {
+				fmt.Fprintf(w, "  %s (%s): FAILED — %s\n", f.Name, f.Path, f.Error)
+			}
+		}
+	}
+	if res.FoldersError != "" {
+		fmt.Fprintf(w, "Other folders: FAILED — %s\n", res.FoldersError)
 	}
 	if res.Codex != nil {
 		fmt.Fprintln(w, "Codex integration:")

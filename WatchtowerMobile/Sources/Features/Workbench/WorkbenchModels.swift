@@ -34,6 +34,13 @@ struct SessionRowModel: Equatable, Identifiable {
     /// given (U6, `watch_help`): the row's accessibility hint; nil when
     /// watched.
     let watchHint: String?
+    /// The bench folder the session runs in, named only on a bench of more
+    /// than one folder (the Mac decides, spec 2026-11-18 §6.14); nil on a
+    /// one-folder bench and from a Mac older than the key.
+    let folderLabel: String?
+    /// `from #<id>` on a sub-session (the list is flat); nil on a top-level
+    /// session.
+    let fromParent: String?
 
     /// `asOf`: the Mac's last contact while it is asleep; a live session's
     /// time then reads "as of …" instead of counting on.
@@ -53,7 +60,17 @@ struct SessionRowModel: Equatable, Identifiable {
         isRing = session.isRing
         openAsks = session.openAsks
 
+        folderLabel = session.folder.flatMap { $0.isEmpty ? nil : $0 }
+        fromParent = session.parentSessionID.map { "from #\($0)" }
         var items = [MetaItem(text: caption, tone: tone, role: .session(isWaiting: isWaiting))]
+        // Right after the caption: the place a session runs in reads before
+        // its report, and the report's tail truncates first.
+        if let folder = folderLabel {
+            items.append(MetaItem(text: folder, tone: .secondary, role: .info))
+        }
+        if let from = fromParent {
+            items.append(MetaItem(text: from, tone: .secondary, role: .info))
+        }
         if let target = session.reportTargetID {
             var report = "#\(target)"
             if let done = session.reportDone, let total = session.reportTotal {

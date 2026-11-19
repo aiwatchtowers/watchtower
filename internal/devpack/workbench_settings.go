@@ -193,9 +193,18 @@ var (
 	// does not count in HasStateHooks / HasCoreStateHooks; status reports it
 	// on its own (HasPermissionWaitHook).
 	permissionWaitSpec = claudeHookSpec("PermissionRequest", "workbench permission-wait --workbench")
+	// outsideTouchSpec: the synchronous PostToolUse entry counting the
+	// agent's touches of folders outside the bench (multi-folder workbench
+	// §6.7). Its own entry in its own matcher group beside the state hook's,
+	// which stays silent (PROJ-11): only this one may add a context line, and
+	// it never writes the session's state. Like permissionWaitSpec it is
+	// installed and removed with the state hooks but is not one of them
+	// (HasStateHooks does not count it); status reports it on its own
+	// (HasOutsideTouchHook).
+	outsideTouchSpec = claudeHookSpec("PostToolUse", "workbench outside-touch --workbench")
 	// ownedHookSpecs is every event the workbench install owns an entry in.
 	// installedStateSpecs: what InstallStateHooks writes and RemoveStateHooks takes out.
-	installedStateSpecs = append([]hookSpec{permissionWaitSpec}, stateHookSpecs...)
+	installedStateSpecs = append(append([]hookSpec{permissionWaitSpec}, stateHookSpecs...), outsideTouchSpec)
 	ownedHookSpecs      = append([]hookSpec{sessionStartSpec, stopSpec, askGuardSpec, askToolBlockSpec, watchmanGuardSpec}, installedStateSpecs...)
 )
 
@@ -278,8 +287,9 @@ func InstallStopHook(dir, command string, workbenchID int64) (bool, error) {
 	return installHook(dir, stopSpec, command, workbenchID)
 }
 
-// InstallStateHooks installs the session state hooks (stateHookSpecs) for
-// workbenchID running bin, one entry per event, under the PROJ-04 rules;
+// InstallStateHooks installs the session state hooks (stateHookSpecs), the
+// permission wait and the outside-bench entry (installedStateSpecs) for
+// workbenchID running bin, one entry per spec, under the PROJ-04 rules;
 // changed is true when any was added or repaired. A malformed file is
 // reported once and none is attempted.
 func InstallStateHooks(dir, bin string, workbenchID int64) (bool, error) {
@@ -367,8 +377,8 @@ func RemoveStopHook(dir string, workbenchID int64) (bool, error) {
 	return removeHook(dir, stopSpec, workbenchID)
 }
 
-// RemoveStateHooks removes every session state hook of workbenchID
-// (PROJ-02/04); the owner's own entries under those events stay.
+// RemoveStateHooks removes every entry InstallStateHooks writes for
+// workbenchID (PROJ-02/04); the owner's own entries under those events stay.
 func RemoveStateHooks(dir string, workbenchID int64) (bool, error) {
 	changed := false
 	for _, spec := range installedStateSpecs {
@@ -474,6 +484,47 @@ func HasCoreStateHooks(dir string, workbenchID int64) (bool, error) {
 	return true, nil
 }
 
+// InstalledWorkbenchIDs is every workbench id whose UserPromptSubmit state
+// hook — the first core state hook — is in dir's settings, in file order:
+// which workbench a folder is installed for (a merged bench's folder, or one
+// of its worktrees, still carries the old id until it is reinstalled).
+func InstalledWorkbenchIDs(dir string) ([]int64, error) {
+	file := settingsLocalPath(dir)
+	settings, _, existed, err := readSettings(file)
+	if err != nil || !existed {
+		return nil, err
+	}
+	spec := coreStateHookSpecs[0]
+	_, groups, err := rawEventGroups(settings, file, spec.event)
+	if err != nil {
+		return nil, err
+	}
+	var ids []int64
+	marker := " " + spec.subcommand + " "
+	for _, g := range groups {
+		m, hs, ok := groupHooks(g)
+		if !ok || !inOurGroup(m, spec) {
+			continue
+		}
+		for _, h := range hs {
+			cmd, ok := hookCommand(h)
+			if !ok {
+				continue
+			}
+			i := strings.LastIndex(cmd, marker)
+			if i < 0 {
+				continue
+			}
+			rest, _ := strings.CutSuffix(cmd[i+len(marker):], spec.flags)
+			id, perr := strconv.ParseInt(rest, 10, 64)
+			if perr == nil && looksLikeOurHook(cmd, spec, id) && !slices.Contains(ids, id) {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids, nil
+}
+
 func hasHooks(dir string, specs []hookSpec, workbenchID int64) (bool, error) {
 	for _, spec := range specs {
 		ok, err := hasHook(dir, spec, workbenchID)
@@ -507,6 +558,12 @@ func HasWatchmanGuardHook(dir string, workbenchID int64) (bool, error) {
 // hook is installed.
 func HasPermissionWaitHook(dir string, workbenchID int64) (bool, error) {
 	return hasHook(dir, permissionWaitSpec, workbenchID)
+}
+
+// HasOutsideTouchHook reports whether workbenchID's outside-bench
+// PostToolUse entry is installed in its matcher group.
+func HasOutsideTouchHook(dir string, workbenchID int64) (bool, error) {
+	return hasHook(dir, outsideTouchSpec, workbenchID)
 }
 
 func hasHook(dir string, spec hookSpec, workbenchID int64) (bool, error) {

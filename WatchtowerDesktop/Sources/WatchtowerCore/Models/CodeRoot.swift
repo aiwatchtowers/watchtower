@@ -6,9 +6,15 @@ import Foundation
 /// (the main root) or a linked git worktree a session's agent works in.
 /// Code-viewer state — tabs, recents, buffers, the index — is keyed by it,
 /// so each worktree keeps its own set (owner, ask #188) and a buffer made
-/// for one root never writes into another (PROJ-03).
+/// for one root never writes into another (PROJ-03). A workbench of several
+/// folders (#2003) has one main root per folder; `folderID` tells a folder
+/// other than home apart (nil = the home folder, so today's roots and keys
+/// are unchanged).
 package struct CodeRoot: Hashable, Sendable {
     package let workbenchID: Int64
+    /// The workbench folder this root is (or is a worktree of); nil = the
+    /// home folder.
+    package let folderID: Int64?
     /// Normalized lexically only (`.`/`..`, duplicate and trailing slashes
     /// collapsed, always a directory URL), never touching the filesystem: no
     /// symlink resolution and no `/private` stripping, so the main root's
@@ -22,27 +28,41 @@ package struct CodeRoot: Hashable, Sendable {
     package let folder: URL
     package let isMain: Bool
 
-    /// The workbench folder.
+    /// The workbench folder (its home folder).
     package init(main workbench: Workbench) {
         workbenchID = workbench.id
+        folderID = nil
         folder = Self.lexicalFolder(workbench.folderURL)
         isMain = true
     }
 
-    /// A linked worktree of the workbench's repository.
-    package init(workbenchID: Int64, worktree folder: URL) {
+    /// A folder of the workbench: the home folder's root equals
+    /// `init(main:)`'s (no folder id), any other folder's carries its id.
+    package init(folder: WorkbenchFolder, homeFolderID: Int64?) {
+        workbenchID = folder.workbenchID
+        folderID = folder.id == homeFolderID ? nil : folder.id
+        self.folder = Self.lexicalFolder(folder.url)
+        isMain = true
+    }
+
+    /// A linked worktree of a workbench folder's repository (`folderID` nil
+    /// or `homeFolderID`: the home folder's, so its key is today's).
+    package init(workbenchID: Int64, worktree folder: URL, folderID: Int64? = nil, homeFolderID: Int64? = nil) {
         self.workbenchID = workbenchID
+        self.folderID = folderID == homeFolderID ? nil : folderID
         self.folder = Self.lexicalFolder(folder)
         isMain = false
     }
 
     /// What a per-workbench UserDefaults key gains for this root: nothing for
-    /// the main root (today's keys stay valid), `.wt.<16 hex>` for a worktree
-    /// — the first 8 bytes of the SHA-256 of its folder path.
+    /// the home folder's main root (today's keys stay valid), `.f<id>` for
+    /// another folder, then `.wt.<16 hex>` for a worktree — the first 8
+    /// bytes of the SHA-256 of its folder path.
     package var defaultsKeySuffix: String {
-        guard !isMain else { return "" }
+        let folderPart = folderID.map { ".f\($0)" } ?? ""
+        guard !isMain else { return folderPart }
         let digest = SHA256.hash(data: Data(folder.path.utf8))
-        return ".wt." + digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+        return folderPart + ".wt." + digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 
     /// The root's folder name: the worktree's in the FILES header and the
