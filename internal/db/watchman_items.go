@@ -256,7 +256,10 @@ func (db *DB) CloseStaleWatchmanHandovers(now time.Time) (int64, error) {
 // already answered as a question (its item done, outcome answered) gets a
 // second row, the handover, beside it — the earlier answer stays in the
 // journal and the twin decides the handover without answering the ask
-// again. A handover released or done is left. So a scan or writer racing it
+// again. A handover closed superseded whose ask still waits (open, or
+// answered by the twin as a question) reopens, so a session re-armed, or a
+// finish that names the ask again, hands it over after all; any other
+// handover released or done is left. So a scan or writer racing it
 // ends with exactly one handover row. it carries the insert's workbench,
 // session, target and question; promoted reports a handover it wrote,
 // inserted a new row.
@@ -286,6 +289,24 @@ func (db *DB) PromoteWatchmanHandover(it WatchmanItem, held bool) (promoted, ins
 			return err
 		}
 		if armed == 0 {
+			return nil
+		}
+		// A handover closed superseded (its hold went stale: the session was
+		// disarmed, or a finish named another ask) whose ask still waits is
+		// offered again: it reopens as a fresh handover with this hold.
+		res, err = tx.Exec(`UPDATE watchman_items SET state = 'queued', outcome = '', error = ?1, attempts = 0, lease_until = NULL,
+				not_before = NULL, decided_at = NULL, session_id = ?2, target_id = ?3, question = ?4
+			WHERE ref_kind = 'ask' AND ref_id = ?5 AND kind = 'handover' AND state = 'done' AND outcome = 'superseded'
+			  AND EXISTS (SELECT 1 FROM owner_asks a WHERE a.id = ?5 AND a.automation_run_id IS NULL
+			              AND (a.status = 'open' OR (a.status IN ('answered','delivered') AND EXISTS (SELECT 1 FROM watchman_items t
+			                   WHERE t.ref_kind = 'ask' AND t.ref_id = a.id AND t.kind != 'handover' AND t.state = 'done' AND t.outcome = 'answered'))))
+			  AND EXISTS (SELECT 1 FROM terminal_sessions WHERE id = ?2 AND automation_run_id IS NULL AND `+NotDeletingSQL+`)`,
+			hold, wmNullID(it.SessionID), wmNullID(it.TargetID), string(q), it.RefID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			promoted = true
 			return nil
 		}
 		// No row: an open ask. Only a done question the twin answered: that

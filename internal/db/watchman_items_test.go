@@ -1098,3 +1098,68 @@ func TestCloseStaleWatchmanHandovers_NullArmingClosed(t *testing.T) {
 	require.NoError(t, d.QueryRow(`SELECT state, outcome FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?`, askID).Scan(&st, &out))
 	require.Equal(t, []string{"done", "superseded"}, []string{st, out})
 }
+
+// A held handover closed superseded — its session taken back, or a finish
+// that named another ask — reopens held when the re-armed session's retry
+// names the same ask again, and the finish that passes releases it to the
+// twin. An ask no longer waiting, or a session still unarmed, stays closed.
+func TestPromoteWatchmanHandover_ReopensSupersededHold(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	wmArmSession(t, d, s)
+	newAsk := func(title string) int64 {
+		a := questionAsk(wb, title)
+		a.SessionID = nullID(s)
+		return mustInsertAsk(t, d, a)
+	}
+	promote := func(askID int64) bool {
+		promoted, _, err := d.PromoteWatchmanHandover(WatchmanItem{WorkbenchID: wb, SessionID: s, RefID: askID, Question: "q"}, true)
+		require.NoError(t, err)
+		return promoted
+	}
+	state := func(askID int64) []string {
+		var st, out, e string
+		require.NoError(t, d.QueryRow(`SELECT state, outcome, error FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ? AND kind = 'handover'`,
+			askID).Scan(&st, &out, &e))
+		return []string{st, out, e}
+	}
+	askID := newAsk("Left: images")
+	require.True(t, promote(askID))
+	_, err := d.DeleteWatchmanArming("session", s)
+	require.NoError(t, err)
+	_, err = d.CloseStaleWatchmanHandovers(time.Now())
+	require.NoError(t, err)
+	require.Equal(t, []string{"done", "superseded", ""}, state(askID))
+
+	require.False(t, promote(askID), "the session is not armed again yet")
+	require.Equal(t, []string{"done", "superseded", ""}, state(askID))
+	wmArmSession(t, d, s)
+	require.True(t, promote(askID), "the re-armed retry reopens it")
+	require.Equal(t, []string{"queued", "", WatchmanHandoverHeld}, state(askID))
+
+	// A finish that named another ask superseded it; the next retry names it again.
+	other := newAsk("Other")
+	require.True(t, promote(other))
+	_, err = d.FinishTerminalSessionSettling(s, "Done.", time.Now(), other)
+	require.NoError(t, err)
+	require.Equal(t, []string{"done", "superseded", ""}, state(askID))
+	_, err = d.Exec(`UPDATE terminal_sessions SET finished_at = NULL WHERE id = ?`, s)
+	require.NoError(t, err)
+	require.True(t, promote(askID))
+	released, err := d.FinishTerminalSessionSettling(s, "Done.", time.Now(), askID)
+	require.NoError(t, err)
+	require.True(t, released)
+	require.Equal(t, []string{"queued", "", ""}, state(askID))
+
+	_, err = d.Exec(`UPDATE terminal_sessions SET finished_at = NULL WHERE id = ?`, s)
+	require.NoError(t, err)
+	withdrawn := newAsk("Withdrawn")
+	require.True(t, promote(withdrawn))
+	_, err = d.Exec(`UPDATE watchman_items SET state = 'done', outcome = 'superseded', error = '' WHERE ref_kind = 'ask' AND ref_id = ?`, withdrawn)
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE owner_asks SET status = 'withdrawn' WHERE id = ?`, withdrawn)
+	require.NoError(t, err)
+	require.False(t, promote(withdrawn), "an ask that went is not handed over")
+	require.Equal(t, []string{"done", "superseded", ""}, state(withdrawn))
+}

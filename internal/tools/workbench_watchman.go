@@ -131,8 +131,10 @@ func watchmanReviewOfChanges(ctx context.Context, d *db.DB, p *db.Workbench, ses
 // (its finish re-reads the kind, rolls back and decides it again as the
 // handover) — with no item at all (its own insert failed earlier) an open
 // ask is queued as a handover, and an ask the twin already answered as a
-// question gets a handover beside it. A released or done handover is left.
-// A failure is logged.
+// question gets a handover beside it. A handover closed superseded whose
+// ask still waits reopens held (a re-armed session, or a retry naming the
+// ask again); any other released or done handover is left. A failure is
+// logged.
 func markWatchmanHandover(d *db.DB, workbenchID, session, ticket, askID int64) {
 	ask, err := d.GetOwnerAsk(workbenchID, askID)
 	if err != nil {
