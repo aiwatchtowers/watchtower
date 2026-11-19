@@ -49,7 +49,10 @@ struct WorkchatLiveLine: View {
             let steps = WorkchatLivePresentation.stepsSlot(snapshot: activityHidden ? nil : snapshot, error: error,
                                                            working: working, now: now)
             VStack(spacing: 0) {
-                if stepsOpen, let steps { WorkchatStepsList(slot: steps) }
+                if stepsOpen, let steps {
+                    // Another pane starts pinned to its newest step, not at this one's scroll.
+                    WorkchatStepsList(slot: steps).id(paneKey)
+                }
                 line(row: row, now: now)
             }
         }

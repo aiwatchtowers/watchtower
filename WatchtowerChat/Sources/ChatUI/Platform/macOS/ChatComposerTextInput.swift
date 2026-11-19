@@ -19,7 +19,7 @@ struct ChatComposerTextInput: View {
     var onLongTextPaste: ((LongPaste) -> Void)?
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
-    var onOptionArrowDown: (() -> Void)?
+    var onOptionArrowDown: (() -> Bool)?
     var autoFocus: Bool
     var focusRequest: UUID?
     let onSubmit: () -> Void
@@ -79,8 +79,8 @@ public struct ExpandingTextInput: NSViewRepresentable {
     var onCursorChange: ((String, Int) -> Void)?
     /// Offered Up/Down/Enter/Tab/Esc first while a picker may be open.
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
-    /// ⌥↓ (the Workchat steps list); nil = the stock key.
-    var onOptionArrowDown: (() -> Void)?
+    /// ⌥↓ (the Workchat steps list): true = handled; false or nil = the stock key.
+    var onOptionArrowDown: (() -> Bool)?
     /// Makes the text view first responder once it is in its window.
     var autoFocus = false
     /// Each new value makes the text view first responder, caret at the end.
@@ -100,7 +100,7 @@ public struct ExpandingTextInput: NSViewRepresentable {
         onLongTextPaste: ((LongPaste) -> Void)? = nil,
         onCursorChange: ((String, Int) -> Void)? = nil,
         onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)? = nil,
-        onOptionArrowDown: (() -> Void)? = nil,
+        onOptionArrowDown: (() -> Bool)? = nil,
         autoFocus: Bool = false,
         focusRequest: UUID? = nil,
         onSubmit: @escaping () -> Void

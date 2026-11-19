@@ -11,14 +11,13 @@ public final class PastingTextView: NSTextView {
     var onPasteData: ((Data, String) async -> Bool)?
     var onAttachFiles: (([URL]) -> Void)?
     var onLongTextPaste: ((LongPaste) -> Void)?
-    /// ⌥↓ goes here instead of moving the caret (the Workchat steps list); nil = the stock key.
-    var onOptionArrowDown: (() -> Void)?
+    /// ⌥↓ goes here first (the Workchat steps list): true = handled; false or nil = the stock key.
+    var onOptionArrowDown: (() -> Bool)?
     /// Always `.general` in the app; tests pass a private named pasteboard.
     var pasteboard: NSPasteboard = .general
 
     override public func keyDown(with event: NSEvent) {
-        if let onOptionArrowDown, !hasMarkedText(), Self.isOptionArrowDown(event) {
-            onOptionArrowDown()
+        if let onOptionArrowDown, !hasMarkedText(), Self.isOptionArrowDown(event), onOptionArrowDown() {
             return
         }
         super.keyDown(with: event)

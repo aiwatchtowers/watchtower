@@ -30,7 +30,9 @@ struct WorkchatStepsList: View {
                 })
             }
             .coordinateSpace(name: Self.space)
-            .defaultScrollAnchor(.bottom)
+            // No default bottom anchor: on macOS 14 it also applies to growth and would pull a reader who
+            // scrolled up back down. The first placement scrolls once; later steps follow `pinned` alone.
+            .onAppear { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
             .onPreferenceChange(StepsFrameKey.self) { frame in
                 // A scroll moves the content; a new step grows it and keeps the last answer.
                 if frame.height == contentHeight { pinned = frame.maxY <= Self.height + 1 }
@@ -48,7 +50,7 @@ struct WorkchatStepsList: View {
                              startPoint: .top, endPoint: .bottom))
         .font(.caption)
         .padding(.horizontal, Spacing.regular)
-        .padding(.bottom, Spacing.small)
+        .padding(.vertical, Spacing.small)
         .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.row))
         .padding(.horizontal, Spacing.large)
         .padding(.bottom, Spacing.small)

@@ -141,7 +141,9 @@ package enum WorkchatLivePresentation {
     /// The current turn's steps above the live line, or nil when the slot
     /// hides: not working (stop, the host or session closed), no snapshot
     /// (the pane passes none while a permission card shows), a failed or
-    /// stale read, the turn ended, or no steps yet.
+    /// stale read, the turn ended, or no steps yet. Stricter than `row`: a
+    /// snapshot without `observedAt` hides the list even before `loaded`,
+    /// since its freshness cannot be told.
     package static func stepsSlot(snapshot: SessionFeedLive?, error: String?, working: Bool, now: Date) -> StepsSlot? {
         guard working, error == nil, let snapshot, snapshot.turnActive, !snapshot.steps.isEmpty,
               let observed = snapshot.observedAt, now.timeIntervalSince(observed) < staleAfter else { return nil }

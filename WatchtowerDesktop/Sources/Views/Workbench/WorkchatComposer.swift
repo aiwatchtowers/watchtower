@@ -15,8 +15,8 @@ struct WorkchatComposer: View {
     var autoFocus = false
     /// Each new value puts the keyboard in the field, caret at the end.
     var focusRequest: UUID?
-    /// ⌥↓ opens or closes the live steps list (#2065 spec §3); nil = the stock key.
-    var onToggleSteps: (() -> Void)?
+    /// ⌥↓ opens or closes the live steps list (#2065 spec §3): true = handled; false or nil = the stock key.
+    var onToggleSteps: (() -> Bool)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {

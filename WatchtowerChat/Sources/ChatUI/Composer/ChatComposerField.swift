@@ -67,8 +67,9 @@ public struct ChatComposerField: View {
     var onRetryAttachment: ((Int64) -> Void)?
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
-    /// ⌥↓ in the Mac's field (the Workchat steps list); nil = the key does what it always did.
-    var onOptionArrowDown: (() -> Void)?
+    /// ⌥↓ in the Mac's field (the Workchat steps list), asked when the key goes down: true = handled; false or
+    /// nil = the key does what it always did.
+    var onOptionArrowDown: (() -> Bool)?
     /// The phone's paperclip: opens its attachment menu (the files come back through the shell, not `onAttachFiles`).
     var onAttachMenu: (() -> Void)?
 
@@ -98,7 +99,7 @@ public struct ChatComposerField: View {
         onRetryAttachment: ((Int64) -> Void)? = nil,
         onCursorChange: ((String, Int) -> Void)? = nil,
         onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)? = nil,
-        onOptionArrowDown: (() -> Void)? = nil
+        onOptionArrowDown: (() -> Bool)? = nil
     ) {
         _text = text
         self.isStreaming = isStreaming

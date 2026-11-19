@@ -245,14 +245,29 @@ struct SessionChatView: View {
     /// A permission card (or the approval state before it is read) hides the step and the steps list.
     private var activityHidden: Bool { permission != nil || !working }
 
-    /// ⌥↓ in the composer toggles the steps list while it has steps to show;
-    /// otherwise the key moves the caret as always.
-    private var toggleSteps: (() -> Void)? {
-        let slot = WorkchatLivePresentation.stepsSlot(snapshot: activityHidden ? nil : store.live, error: store.liveError,
-                                                      working: busy, now: .now)
-        guard slot != nil else { return nil }
-        let memory = vm.paneMemory, pane = paneKey
-        return { memory.toggleSteps(pane) }
+    /// ⌥↓ in the composer: the store and the session state are read when the
+    /// key goes down, not at the last render, so a list that went stale since
+    /// is never toggled unseen.
+    private var toggleSteps: () -> Bool {
+        let view = self, store = store, memory = vm.paneMemory, pane = paneKey
+        return {
+            Self.toggleSteps(memory: memory, pane: pane) {
+                WorkchatLivePresentation.stepsSlot(snapshot: view.activityHidden ? nil : store.live, error: store.liveError,
+                                                   working: view.busy, now: .now)
+            }
+        }
+    }
+
+    /// Toggles the pane's steps list only while it shows; false leaves ⌥↓ to
+    /// the text view (the caret moves as always).
+    static func toggleSteps(
+        memory: WorkchatPaneMemory,
+        pane: String,
+        slot: () -> WorkchatLivePresentation.StepsSlot?
+    ) -> Bool {
+        guard slot() != nil else { return false }
+        memory.toggleSteps(pane)
+        return true
     }
 
     /// The caption row over the composer (or under the ended line): the agent's

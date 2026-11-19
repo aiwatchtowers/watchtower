@@ -33,7 +33,10 @@ final class ComposerOptionArrowDownTests: XCTestCase {
         let (window, view) = makeView()
         defer { window.close() }
         var calls = 0
-        view.onOptionArrowDown = { calls += 1 }
+        view.onOptionArrowDown = {
+            calls += 1
+            return true
+        }
         view.keyDown(with: try arrowDown(.option, in: window))
         XCTAssertEqual(calls, 1)
         XCTAssertEqual(view.string, "first line\nsecond line")
@@ -44,18 +47,34 @@ final class ComposerOptionArrowDownTests: XCTestCase {
         let (window, view) = makeView()
         defer { window.close() }
         var calls = 0
-        view.onOptionArrowDown = { calls += 1 }
+        view.onOptionArrowDown = {
+            calls += 1
+            return true
+        }
         view.keyDown(with: try arrowDown([], in: window))
         XCTAssertEqual(calls, 0, "only ⌥↓ is taken")
         XCTAssertNotEqual(view.selectedRange().location, 0)
     }
 
-    func testPlainDownWithoutHookKeepsDefault() throws {
+    func testOptionDownWithoutHookKeepsDefault() throws {
         let (window, view) = makeView()
         defer { window.close() }
         view.keyDown(with: try arrowDown(.option, in: window))
         XCTAssertEqual(view.string, "first line\nsecond line")
         XCTAssertNotEqual(view.selectedRange().location, 0, "⌥↓ moves the caret as before")
+    }
+
+    func testOptionDownHookDecliningKeepsDefault() throws {
+        let (window, view) = makeView()
+        defer { window.close() }
+        var calls = 0
+        view.onOptionArrowDown = {
+            calls += 1
+            return false
+        }
+        view.keyDown(with: try arrowDown(.option, in: window))
+        XCTAssertEqual(calls, 1, "asked when the key goes down")
+        XCTAssertNotEqual(view.selectedRange().location, 0, "a declined ⌥↓ moves the caret as before")
     }
 }
 #endif
