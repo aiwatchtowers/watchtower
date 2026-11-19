@@ -231,12 +231,31 @@ fi
 # The shared Slack app the public builds used to ship is retired (#1709). A public release (flavor empty or
 # "dev", not --dev, NOTARIZE_PROFILE set: the notarized path) must bake its client id into
 # auth.RetiredSharedClientID so the app recognises accounts still authorised through it. A corp release
-# bakes a company app and needs none. The flavor test lives only here, never in app code. Stops before
+# needs none. The flavor test lives only here, never in app code. Stops before
 # anything is built.
+# Since Task 18 no build bakes a Slack app (A15): any release refuses a Slack client secret, and a public
+# release refuses any WATCHTOWER_OAUTH_CLIENT_ID (review ruling). A corp release may still carry the
+# corp app's client id without a secret: that id only backfills old account rows (A17) and makes no
+# built-in app (auth.BuiltinApp needs id and secret), so Re-login runs the PKCE connect flow.
 RETIRED_SLACK_CLIENT_ID="${RETIRED_SLACK_CLIENT_ID:-}"
-if ! $DEV_MODE && [ -n "$NOTARIZE_PROFILE" ] && { [ -z "$FLAVOR" ] || [ "$FLAVOR" = "dev" ]; } \
-    && [ -z "$RETIRED_SLACK_CLIENT_ID" ]; then
+SLACK_RELEASE=false
+SLACK_PUBLIC_RELEASE=false
+if ! $DEV_MODE && [ -n "$NOTARIZE_PROFILE" ]; then
+    SLACK_RELEASE=true
+    if [ -z "$FLAVOR" ] || [ "$FLAVOR" = "dev" ]; then
+        SLACK_PUBLIC_RELEASE=true
+    fi
+fi
+if $SLACK_PUBLIC_RELEASE && [ -z "$RETIRED_SLACK_CLIENT_ID" ]; then
     echo "ERROR: a public release must set RETIRED_SLACK_CLIENT_ID (recognises accounts on the retired shared Slack app)" >&2
+    exit 1
+fi
+if $SLACK_RELEASE && [ -n "${WATCHTOWER_OAUTH_CLIENT_SECRET:-}" ]; then
+    echo "ERROR: a release must not set WATCHTOWER_OAUTH_CLIENT_SECRET (no build bakes a Slack app any more; drop it from the build profile)" >&2
+    exit 1
+fi
+if $SLACK_PUBLIC_RELEASE && [ -n "${WATCHTOWER_OAUTH_CLIENT_ID:-}" ]; then
+    echo "ERROR: a public release must not set WATCHTOWER_OAUTH_CLIENT_ID (no public build bakes a Slack app; a baked id would become the backfill source for old shared-app rows; drop it from the build profile)" >&2
     exit 1
 fi
 # The value lands unquoted inside -ldflags, so any build rejects a value with whitespace in it.

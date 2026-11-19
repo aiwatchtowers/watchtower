@@ -319,6 +319,36 @@ func TestAppSetup_AdoptBuiltinAppDeferredCLI(t *testing.T) {
 	assert.Contains(t, err.Error(), "later Watchtower update")
 }
 
+// The one-release Task 18 corp build (ask #1632) keeps the corp app's client
+// id without its secret: no built-in app, so create offers the adopt and
+// adopt with --enable-pkce turns PKCE on instead of answering
+// builtin_app_pkce_deferred.
+func TestAppSetup_CorpIDWithoutSecretNotDeferredCLI(t *testing.T) {
+	cfg, _ := setupSlackAppWorkspace(t)
+	setSlackBuild(t, "5555.6666", "", "")
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	id, err := database.CreateSlackAccount(db.SlackAccount{TeamID: "T0ACME", TeamName: "Acme", CurrentUserID: "1:U1"})
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE slack_accounts SET client_id = '5555.6666', app_id = 'A0CORP', status = 'ok' WHERE id = ?`, id)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+	fake := &fakeSlackAppServer{manifest: `{"display_information":{"name":"Acme Watchtower"},"oauth_config":{"scopes":{"user":[]}}}`}
+	fake.serve(t)
+
+	c, out, _ := slackAppTestCmd(slackAppTestToken+"\n", map[string]string{"json": "true"})
+	require.NoError(t, runSlackAppCreate(c, nil))
+	lines := jsonLines(t, out.String())
+	assert.Equal(t, "existing_app", lines[len(lines)-1]["result"], "create offers the adopt")
+
+	c, out, _ = slackAppTestCmd(slackAppTestToken+"\n", map[string]string{"json": "true", "team": "T0ACME", "enable-pkce": "true"})
+	require.NoError(t, runSlackAppAdopt(c, nil))
+	lines = jsonLines(t, out.String())
+	assert.Equal(t, "ok", lines[len(lines)-1]["result"])
+	assert.Contains(t, fake.calls, "apps.manifest.update")
+	assert.Contains(t, fake.manifest, `"pkce_enabled":true`)
+}
+
 func TestAppSetup_PendingCLI(t *testing.T) {
 	setupSlackAppWorkspace(t)
 	fake := &fakeSlackAppServer{garbled: true}

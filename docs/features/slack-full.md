@@ -54,7 +54,7 @@ Spec `docs/superpowers/specs/2026-11-14-slack-full-and-live-design.md` §5–§6
 
 ## v1 limits and follow-ups
 
-- **Corp build:** keeps its baked id until plan B Task 18; its accounts are Full throughout. A build that bakes the corp app refuses to adopt it (`builtin_app_pkce_deferred`), so the corp admin adopts with PKCE only together with the Task 18 build (or with a build that no longer bakes the id): adopting earlier would turn PKCE on under colleagues whose build still signs in without it (review M1, Task 18 gate).
+- **Corp build:** keeps its baked app until plan B Task 18; its accounts are Full throughout. A build that bakes the corp app refuses to adopt it (`builtin_app_pkce_deferred`), so the corp admin adopts with PKCE only together with the Task 18 build: adopting earlier would turn PKCE on under colleagues whose build still signs in without it (review M1, Task 18 gate). Plan B and Task 18 ship in one release (ask #1632): the corp profile drops `WATCHTOWER_OAUTH_CLIENT_SECRET` and keeps `WATCHTOWER_OAUTH_CLIENT_ID`. The id alone is no built-in app (`auth.BuiltinApp` needs id and secret, so `builtin_app` is false and nothing answers `builtin_app_pkce_deferred`) but still feeds the A17 backfill (`slackmode.BackfillSource`), so old corp rows get the corp id and Re-login runs `connect` (PKCE) — `TestSlackAccountsJSON_CorpIDWithoutSecret`, `TestAppSetup_CorpIDWithoutSecretNotDeferredCLI`. A secret-less exchange on an app without `pkce_enabled` answers `bad_client_secret` (spike), so the admin runs adopt `--enable-pkce` as soon as the release ships: until then new sign-ins and Re-login on the new build fail; afterwards only new sign-ins on older builds fail (fix: update). Tokens already issued keep working (Verified live 1). The release guard (`retired-slack-id-check`, A15) refuses any release with `WATCHTOWER_OAUTH_CLIENT_SECRET` set and a public release that sets any `WATCHTOWER_OAUTH_CLIENT_ID` (a stale id would become the backfill source for shared rows); a corp release with the id and no secret passes.
 - **Adopt turns on PKCE (Task 16):** adopt sets `oauth_config.pkce_enabled` with `--enable-pkce` — one-way on Slack's side (undo only through Slack support), required for the secret-less exchange; Slack may ask colleagues already connected to allow Watchtower again, and the adopt body says so (screens §3.2).
 - **Port strictness (A9):** Slack matches the redirect port exactly, so with 18551 busy neither the link nor a paste can finish; the owner must free the port.
 - **Approval:** Slack sends no callback for an install request, so the setup's approval row never appears (`SlackSetupConnector` never answers `approvalRequested`); a waiting flow stays on the browser step until **Cancel**.
@@ -65,12 +65,17 @@ Spec `docs/superpowers/specs/2026-11-14-slack-full-and-live-design.md` §5–§6
 - **Follow-up:** `slack accounts --json` runs on every Desktop accounts refresh and so runs the A17 backfill `UPDATE` each time; it should skip it when no row has an empty `client_id`.
 - **Follow-up:** `notCreatedCodes` and the `not_allowed` code (`restricted_action`) are our list, not Slack's documented set.
 
+## Verified live (2026-11-19, target #1915)
+
+Run on a throwaway app in the test workspace (no PKCE, `token_rotation_enabled: false`, then PKCE turned on through `apps.manifest.update` as adopt does):
+
+1. A user token issued with the secret before PKCE was turned on still answers `auth.test` after it.
+2. With PKCE on, a sign-in without PKCE on a loopback redirect is refused on Slack's page: "Must use PKCE to redirect to a non-web URI" (review M1 confirmed).
+3. Before PKCE is on, Slack's authorize page accepts PKCE parameters and returns a code, but the secret-less exchange answers `bad_client_secret`.
+4. After PKCE is on, the secret-less PKCE exchange succeeds and returns a rotating grant (`expires_in` 43200 and a refresh token) although the app had token rotation off. A refresh returns a new access token and a new refresh token; the previous refresh token still worked once right after the rotation (Slack's grace period).
+
 ## Unverified live (post-merge E2E, ask #1594)
 
-Each item rests on Slack's docs or the spike, not on a live run; the post-merge end-to-end check settles it.
-
-1. Tokens issued before an adopt with `--enable-pkce` keep working after PKCE is turned on.
-2. Slack refuses a non-PKCE loopback sign-in (`auth.Login`) on an app with PKCE on — the reason the build's own app is not adopted before Task 18 (review M1).
-3. Every refresh rotates the refresh token, and whether its 30 days are absolute from the first grant or slide with each refresh (the refresher assumes 30 days from each new refresh token). If Slack instead keeps the refresh token and states no lifetime, an access token it also kept is refreshed again on every read once it has expired (`expiryDue` retries past expiry; review ruling, verify round 2): harmless while Slack rotates as documented, a refresh per read if it does not.
-4. Slack accepts PKCE parameters on the authorize URL of an app without PKCE.
-5. End to end on a test workspace: create → connect → a 12-hour refresh → Re-login.
+1. Whether a refresh token's 30 days are absolute from the first grant or slide with each refresh (the refresher assumes 30 days from each new refresh token). If Slack ever keeps the refresh token and states no lifetime, an access token it also kept is refreshed again on every read once it has expired (`expiryDue` retries past expiry; review ruling, verify round 2): harmless while Slack rotates as observed, a refresh per read if it does not.
+2. End to end with the app: create → connect → a 12-hour refresh → Re-login.
+3. The corp app's connect (PKCE) Re-login on the Task 18 build needs the loopback redirect `http://127.0.0.1:18551/callback` registered on the app and `pkce_enabled` on. Adopt adds the redirect only together with PKCE: without `--enable-pkce` it changes nothing on an app without PKCE (`needs_pkce_consent`). So the corp admin's adopt `--enable-pkce` right after the one release (ask #1632) is the single step that makes the new build's sign-in work; the gap between the release and that step blocks new sign-ins and Re-login on the new build only, and after it only new sign-ins on older builds fail (Verified live 2).

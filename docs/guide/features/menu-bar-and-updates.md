@@ -34,6 +34,8 @@ Installing replaces the app in place and restarts it. Before it swaps anything, 
 
 The first launch of a new version opens the **Software Update** window once more, on **What's New in Watchtower <version>**, so you see what changed.
 
+Some releases are required: older versions stop working with the services Watchtower connects to. Then the window title reads **Update required: Watchtower <version>**, it opens at every launch and every check, and it has no **Later**. Its close button is off; **Quit Watchtower** still works.
+
 ## Using it
 
 ### Menu items
@@ -111,6 +113,7 @@ Settings → System → **Update** does the same: **Check for Updates** checks o
 - **"Install & Restart" is greyed out.** A recording or transcription is in progress. Finish it, then install.
 - **No update shows.** Your build may have no update channel ("distributed out of band"), or you are already on the latest. Press **Check for Updates** to see.
 - **"Update error".** The message under it says why (a failed download or a checksum mismatch). **Retry** checks again.
+- **The Software Update window keeps coming back and will not close.** The update is required. Press **Update Now**; if a recording is running, finish it first, then **Install & Restart**.
 - **Window closed but you wanted Watchtower gone.** Use **Quit Watchtower**, not the red button.
 
 Sync not running or stuck? See [Sync is stuck or slow](../troubleshooting/sync-stuck-or-slow.md).

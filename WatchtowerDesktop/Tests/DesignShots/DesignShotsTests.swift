@@ -241,6 +241,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(FilesSectionShotFixtures.shots)
     }
 
+    /// The Software Update window, required update included (#2096).
+    func testSoftwareUpdateShotsRender() throws {
+        try renderShots(SoftwareUpdateShotFixtures.shots)
+    }
+
     /// The Slack Developer Policy hygiene spec's mockups (#1769).
     func testSlackPolicyShotsRender() throws {
         try renderShots(SlackPolicyShotFixtures.shots)
