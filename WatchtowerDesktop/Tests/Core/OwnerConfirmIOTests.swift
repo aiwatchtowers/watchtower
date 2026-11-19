@@ -20,16 +20,23 @@ final class OwnerConfirmIOTests: XCTestCase {
         return (ends[0], ends[1])
     }
 
+    /// Writes all of `text` (a short write goes on with the rest; a failed one stops).
     private func send(_ fd: Int32, _ text: String) {
         let bytes = Array(text.utf8)
-        _ = bytes.withUnsafeBytes { write(fd, $0.baseAddress, bytes.count) }
+        var sent = 0
+        while sent < bytes.count {
+            let n = bytes[sent...].withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+            if n < 0 && errno == EINTR { continue }
+            guard n > 0 else { return }
+            sent += n
+        }
     }
 
     private func read(_ writes: [String], limit: Int, closing: Bool = false) throws -> OwnerConfirmIO.LineRead {
         let (server, client) = try pair()
         writes.forEach { send(client, $0) }
         if closing { shutdown(client, SHUT_WR) }
-        return OwnerConfirmIO.readLine(server, limit: limit, within: 1)
+        return OwnerConfirmIO.readLine(server, limit: limit, within: nil)
     }
 
     func testALineOfExactlyTheLimitWithItsNewlineIsRead() throws {
@@ -44,11 +51,13 @@ final class OwnerConfirmIOTests: XCTestCase {
         XCTAssertEqual(try read(["12345", "67890"], limit: 10), .tooLong)
     }
 
+    /// The prefix fills the reader's 64 KiB buffer, so the newline lands in a later read whatever the timing.
     func testANewlineInALaterReadEndsTheLine() throws {
         let (server, client) = try pair()
-        send(client, "abc")
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { self.send(client, "def\nrest") }
-        XCTAssertEqual(OwnerConfirmIO.readLine(server, limit: 10, within: 2), .line(Data("abcdef".utf8)))
+        let prefix = String(repeating: "a", count: 64 * 1024)
+        DispatchQueue.global().async { self.send(client, prefix + "def\nrest") }
+        XCTAssertEqual(OwnerConfirmIO.readLine(server, limit: 128 * 1024, within: nil),
+                       .line(Data((prefix + "def").utf8)))
     }
 
     func testBytesAfterTheNewlineAreNotPartOfTheLine() throws {
@@ -59,8 +68,9 @@ final class OwnerConfirmIOTests: XCTestCase {
         XCTAssertEqual(try read(["abc"], limit: 10, closing: true), .noLine)
     }
 
+    /// The deadline is already past (0 s): no clock to wait out.
     func testSilenceRunsOutAsNoLine() throws {
         let (server, _) = try pair()
-        XCTAssertEqual(OwnerConfirmIO.readLine(server, limit: 10, within: 0.2), .noLine)
+        XCTAssertEqual(OwnerConfirmIO.readLine(server, limit: 10, within: 0), .noLine)
     }
 }
