@@ -631,7 +631,7 @@ func testWorkchatFeedHasNoAgentRows() throws // chat with a .subagent entry → 
 - [ ] **Step 4: Targets are a gate.** If ≤ 300 ms reopen or ≤ 500 ms first open on ~950 entries is missed, the umbrella PR does not open: the controller adds Task 11 aimed at the dominant phase the trace shows (CLI parse → cache the parsed offset per conversation in the CLI; decode/adapter → move off the main actor; paint → lazier first window), runs it like any task, and re-measures. The owner gets the numbers either way.
 - [ ] **Step 5: Guide.** `workchat.md`: replace "Read a subagent" with the 👥 list (Working, Done · N, ✓ N, ?), add the steps list (open by default, click or ⌥↓), change the Stop line to "the round button is Stop only with an empty field", replace the paste bullet with tokens; update its learn card text "Click the agent count above the field…". `iphone-workbench.md`: the agents button and sheet. Follow `docs/guide/WRITING.md`; keep each page ≤ 8192 bytes without cards.
 - [ ] **Step 6: Run** `go test ./docs/guide`, `make test-swift FILTER='DesignShotsTests/testWorkchatAgents'`, `make lint-swift` — PASS.
-- [ ] **Step 6: Commit** `docs(workchat): agents list, live steps, send while working, inline pastes (#2065)`.
+- [ ] **Step 7: Commit** `docs(workchat): agents list, live steps, send while working, inline pastes (#2065)`.
 
 ---
 
