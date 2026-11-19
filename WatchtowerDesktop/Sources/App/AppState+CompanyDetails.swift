@@ -152,9 +152,10 @@ extension AppState {
     /// from before a link or the CLI stored a company, or never have run.
     /// The caller closes its sheet first.
     func connectGmail() async {
-        await companiesZone.reload()
+        // A read superseded by a newer one leaves the older snapshot: unknown, so the detail.
+        let landed = await companiesZone.reload()
         let route = CompanyConnectionsPresentation.gmailRoute(
-            companies: companyRefs, companiesKnown: companiesZone.readEveryCompany,
+            companies: companyRefs, companiesKnown: landed && companiesZone.readEveryCompany,
             googleAllowed: managedPolicy.policy.sourceAllowed("google"), locks: companyLocks)
         if route == .ownProjectPage { ownGoogleProject.open() }
         openConnections(.google)

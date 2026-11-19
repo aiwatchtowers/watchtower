@@ -62,18 +62,21 @@ package final class CompaniesZoneModel {
     // MARK: - Reading
 
     /// Re-reads the companies and the draft; a newer call's answer wins.
-    package func reload() async {
+    /// False when a newer read superseded this one before it landed: the
+    /// snapshot is still the older one.
+    @discardableResult
+    package func reload() async -> Bool {
         generation += 1
         let mine = generation
         let listed = await lastJSON(["company", "list", "--json"], as: ListAnswer.self)
-        guard mine == generation else { return }
+        guard mine == generation else { return false }
         switch listed {
         case .failure(let failure):
             listError = failure.message
         case .success(let answer):
             // The whole snapshot lands at once, and only if no newer read started meanwhile.
             let draftRef = await readDraft(state: answer.draft.state)
-            guard mine == generation else { return }
+            guard mine == generation else { return false }
             listError = nil
             draft = draftRef
             companies = answer.companies.map(\.ref)
@@ -83,6 +86,7 @@ package final class CompaniesZoneModel {
             errors = answer.errors.map { CompanyFileError(file: $0.file, error: $0.error) }
         }
         hasRead = true
+        return true
     }
 
     private func readDraft(state: String) async -> CompanySetupDraftRef? {

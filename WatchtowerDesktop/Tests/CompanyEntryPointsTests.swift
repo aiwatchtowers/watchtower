@@ -128,6 +128,23 @@ final class CompanyEntryPointsTests: XCTestCase {
         XCTAssertTrue(draft.ownGoogleProject.isOpen)
     }
 
+    /// Connect Gmail's read superseded by a newer one (the overview's or an
+    /// account refresh's): its own answer never lands, so the route does not
+    /// trust whichever snapshot is there — the detail, never the own page.
+    func testConnectGmailWhoseReadIsSupersededOpensTheDetail() async {
+        let (appState, fake) = LinearConnectionDetailTests.wired()
+        let gmail = Task { await appState.connectGmail() }
+        let held = await fake.session(number: 1) // Connect Gmail's own `company list`, still open
+        fake.enqueue(.init(lines: [Self.none]))
+        let newerLanded = await appState.companiesZone.reload()
+        XCTAssertTrue(newerLanded, "the newer read lands")
+        held.emit(Self.acmeWithGoogle)
+        held.exit()
+        await gmail.value
+        XCTAssertEqual(appState.selectedConnection, .google)
+        XCTAssertFalse(appState.ownGoogleProject.isOpen)
+    }
+
     /// Own projects locked (§5.4): the detail, whose empty state offers the company code.
     func testConnectGmailUnderTheOwnProjectLockOpensTheDetail() async {
         let (appState, fake) = LinearConnectionDetailTests.wired(policy: ["AllowOwnGoogleProject": false])
