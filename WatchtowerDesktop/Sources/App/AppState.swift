@@ -380,6 +380,7 @@ final class AppState {
     var slackLiveStatusCenter: SlackLiveStatusCenter? // the Slack Live probe's verdicts (Connections → Slack)
     var slackConnectListener: SlackConnectListenerHost? // `slack connect serve` on 18551 (#1709); none under XCTest
     var slackConnectFlow: SlackConnectFlowModel? // the connect flow on that listener (link, code, MDM, Reconnect)
+    var companyConnect: CompanyConnectFlowModel? // a company's link, code, Connect all / the rest, Re-login (#1887)
     /// The live workbench sessions' agent states (board #312), polled while a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
     /// The Go hub over its control socket (heartbeat, view inputs, status; go hub plan 3 Task 14); none under XCTest.

@@ -173,6 +173,9 @@ package final class SlackConnectFlowModel {
     @ObservationIgnored package var onConnected: ((SlackConnectedAccount) -> Void)?
     /// Another sign-in runs (`slack login`, `auth login`): no flow may start.
     @ObservationIgnored package var externalBusy: () -> Bool = { false }
+    /// The company flow's paste (A20): nil when it took a company link or
+    /// code, else the field's error. Unset, such text is not a Slack code.
+    @ObservationIgnored package var companyPaste: ((String) async -> String?)?
 
     @ObservationIgnored private let host: SlackConnectListenerHost
     @ObservationIgnored private let now: () -> Date
@@ -214,6 +217,17 @@ package final class SlackConnectFlowModel {
     @discardableResult
     package func connectPasted() -> Bool {
         guard let target = SlackConnectTarget.parse(pasteText) else {
+            if let companyPaste, CompanyConnectFlowModel.isCompanyInput(pasteText) {
+                // A company link or code (A20): the company flow opens its
+                // confirm; its refusal is this field's error.
+                let text = pasteText
+                Task { [weak self] in
+                    let error = await companyPaste(text)
+                    guard let self, pasteText == text else { return }
+                    if let error { pasteError = error } else { pasteText = "" }
+                }
+                return true
+            }
             pasteError = pasteInvalid
             return false
         }
@@ -334,6 +348,8 @@ package final class SlackConnectFlowModel {
             } else if cancelAfterStart {
                 cancelAfterStart = false
             }
+        case .companyLink, .companyVendor, .companyDone:
+            break // the company flow's (`CompanyConnectFlowModel`)
         }
     }
 

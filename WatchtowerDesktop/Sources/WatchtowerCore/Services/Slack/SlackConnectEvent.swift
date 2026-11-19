@@ -49,16 +49,27 @@ package enum SlackConnectEvent: Codable, Equatable, Sendable {
     case browser(flow: String)
     case connected(SlackConnectedAccount)
     case failed(flow: String, reason: SlackConnectFailure, message: String)
-    /// A second start was refused; `flow` is the running one.
+    /// A second start was refused; `flow` is the running one (a Slack flow,
+    /// or a company chain).
     case busy(flow: String)
+    /// A company link waits for the person's confirm (#1887 Task 10):
+    /// `bundle` is its wire form; nothing is stored before the app confirms.
+    case companyLink(flow: String, bundle: String)
+    /// One vendor's step of a company chain (Task 11).
+    case companyVendor(CompanyVendorStep)
+    /// The chain ended: each vendor it was given, by its end state.
+    case companyDone(flow: String, states: [CompanyVendor: CompanyChainState])
 
     private enum Kind: String, Codable {
         case listening, link, browser, connected, failed, busy
         case portBusy = "port_busy"
+        case companyLink = "company_link"
+        case companyVendor = "company_vendor"
+        case companyDone = "company_done"
     }
 
     private enum Keys: String, CodingKey {
-        case event, port, flow, reason, message
+        case event, port, flow, reason, message, bundle, vendor, state, label, states
         case teamID = "team_id"
         case clientID = "client_id"
         case accountID = "account_id"
@@ -93,6 +104,25 @@ package enum SlackConnectEvent: Codable, Equatable, Sendable {
                 message: try box.decodeIfPresent(String.self, forKey: .message) ?? ""
             )
         case .busy: self = .busy(flow: try box.decode(String.self, forKey: .flow))
+        case .companyLink:
+            self = .companyLink(flow: try box.decode(String.self, forKey: .flow),
+                                bundle: try box.decode(String.self, forKey: .bundle))
+        case .companyVendor:
+            self = .companyVendor(CompanyVendorStep(
+                flow: try box.decode(String.self, forKey: .flow),
+                vendor: try box.decode(CompanyVendor.self, forKey: .vendor),
+                state: try box.decode(CompanyChainState.self, forKey: .state),
+                label: try box.decodeIfPresent(String.self, forKey: .label) ?? "",
+                message: try box.decodeIfPresent(String.self, forKey: .message) ?? ""
+            ))
+        case .companyDone:
+            // A vendor this build does not know is left out.
+            let raw = try box.decode([String: CompanyChainState].self, forKey: .states)
+            var states: [CompanyVendor: CompanyChainState] = [:]
+            for (key, state) in raw {
+                if let vendor = CompanyVendor(rawValue: key) { states[vendor] = state }
+            }
+            self = .companyDone(flow: try box.decode(String.self, forKey: .flow), states: states)
         }
     }
 
@@ -128,7 +158,52 @@ package enum SlackConnectEvent: Codable, Equatable, Sendable {
         case let .busy(flow):
             try box.encode(Kind.busy, forKey: .event)
             try box.encode(flow, forKey: .flow)
+        case let .companyLink(flow, bundle):
+            try box.encode(Kind.companyLink, forKey: .event)
+            try box.encode(flow, forKey: .flow)
+            try box.encode(bundle, forKey: .bundle)
+        case let .companyVendor(step):
+            try box.encode(Kind.companyVendor, forKey: .event)
+            try box.encode(step.flow, forKey: .flow)
+            try box.encode(step.vendor, forKey: .vendor)
+            try box.encode(step.state, forKey: .state)
+            try box.encode(step.label, forKey: .label)
+            try box.encode(step.message, forKey: .message)
+        case let .companyDone(flow, states):
+            try box.encode(Kind.companyDone, forKey: .event)
+            try box.encode(flow, forKey: .flow)
+            try box.encode(Dictionary(uniqueKeysWithValues: states.map { ($0.key.rawValue, $0.value) }), forKey: .states)
         }
+    }
+}
+
+/// A `company_vendor` event's payload. `label` names the account only for
+/// Slack; `message` says why on cancelled, failed or a policy skip.
+package struct CompanyVendorStep: Equatable, Sendable {
+    package let flow: String
+    package let vendor: CompanyVendor
+    package let state: CompanyChainState
+    package let label: String
+    package let message: String
+
+    package init(flow: String, vendor: CompanyVendor, state: CompanyChainState, label: String = "", message: String = "") {
+        self.flow = flow
+        self.vendor = vendor
+        self.state = state
+        self.label = label
+        self.message = message
+    }
+}
+
+/// A vendor's state in a company chain (Go `company_vendor`'s `state`). A
+/// state this build does not know reads as `.failed`: as far as this build
+/// can tell, the vendor did not connect.
+package enum CompanyChainState: String, Codable, Equatable, Sendable {
+    case waiting, connected, cancelled, failed, skipped
+
+    package init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = Self(rawValue: raw) ?? .failed
     }
 }
 
@@ -140,9 +215,20 @@ package enum SlackConnectCommand: Encodable, Equatable, Sendable {
     /// The owner confirmed the `link` flow.
     case confirm(flow: String)
     case cancel(flow: String)
+    /// Starts the company chain for stored company `slug` over `vendors`
+    /// (Go orders them); releases the company link `flow` answers.
+    case companyConnect(flow: String, slug: String, vendors: [CompanyVendor])
+    /// Ends the waiting vendor's step only: `vendor` names it, so a Skip that
+    /// arrives after that vendor ended does not skip the next one.
+    case companySkip(flow: String, vendor: CompanyVendor?)
+    /// Ends the wait and skips every vendor left.
+    case companyStop(flow: String)
+    /// The app answered a company link without a chain (Cancel, Keep
+    /// current, Replace, a refused second link): the next link may wait.
+    case companyDismiss(flow: String)
 
     private enum Keys: String, CodingKey {
-        case cmd, flow
+        case cmd, flow, slug, vendors, vendor
         case teamID = "team_id"
         case clientID = "client_id"
         case accountID = "account_id"
@@ -161,6 +247,21 @@ package enum SlackConnectCommand: Encodable, Equatable, Sendable {
             try box.encode(flow, forKey: .flow)
         case let .cancel(flow):
             try box.encode("cancel", forKey: .cmd)
+            try box.encode(flow, forKey: .flow)
+        case let .companyConnect(flow, slug, vendors):
+            try box.encode("company_connect", forKey: .cmd)
+            try box.encode(flow, forKey: .flow)
+            try box.encode(slug, forKey: .slug)
+            try box.encode(vendors, forKey: .vendors)
+        case let .companySkip(flow, vendor):
+            try box.encode("company_skip", forKey: .cmd)
+            try box.encode(flow, forKey: .flow)
+            try box.encodeIfPresent(vendor, forKey: .vendor)
+        case let .companyStop(flow):
+            try box.encode("company_stop", forKey: .cmd)
+            try box.encode(flow, forKey: .flow)
+        case let .companyDismiss(flow):
+            try box.encode("company_dismiss", forKey: .cmd)
             try box.encode(flow, forKey: .flow)
         }
     }

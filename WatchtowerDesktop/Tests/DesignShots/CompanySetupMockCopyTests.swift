@@ -1,4 +1,5 @@
 import WatchtowerCore
+import WatchtowerTestSupport
 import XCTest
 @testable import WatchtowerDesktop
 
@@ -329,5 +330,90 @@ final class CompanySetupMockCopyTests: XCTestCase {
         // Narrow frames: exactly the set the spec lists (§12) — one per screen
         // family, and one per distinct wizard step layout.
         XCTAssertEqual(Set(names.filter { $0.hasSuffix("-narrow") }), Set(CompanySetupShotFixtures.narrowShots))
+        for name in ["confirm", "confirm-code", "confirm-again", "confirm-mdm", "chain", "chain-failed", "done", "replace"] {
+            XCTAssertTrue(names.contains("company-connect-\(name)"), name)
+        }
+        for name in ["open", "refused", "newerVersion"] {
+            XCTAssertTrue(names.contains("company-page-\(name)"), name)
+        }
+    }
+
+    /// Task 10 writes the listener's pages; Go's fixture holds their texts.
+    func testGoPagesMatchMockCopy() throws {
+        let pages = try CompanyPagesFixture.load()
+        XCTAssertEqual(pages.open.heading, Copy.pageOpenHeading)
+        XCTAssertEqual(pages.open.messageAcme, Copy.pageOpenBody)
+        XCTAssertEqual(pages.refused.heading, Copy.pageRefusedHeading)
+        XCTAssertEqual(pages.refused.reasons?["damaged"], Copy.pageRefusedBody)
+        XCTAssertEqual(pages.refused.hint, Copy.pageRefusedHint)
+        XCTAssertEqual(pages.refused.reasons?.count, 4, "damaged, too_long, site_not_https, personal")
+        XCTAssertEqual(pages.newer.heading, Copy.pageNewerHeading)
+        XCTAssertEqual(pages.newer.message, Copy.pageNewerBody)
+        // The two pages without a shot (screens §3.4).
+        XCTAssertEqual(pages.busy.heading, "Another link is waiting")
+        XCTAssertEqual(pages.notTaken.heading, "Watchtower did not take this link")
+    }
+
+    /// Task 23 moved the connect sheet's words into `CompanyConnectFlowModel`;
+    /// the shots render that model, so each scene says what the mockup said.
+    func testConnectCopyLivesInTheFlowModel() async {
+        typealias Flow = CompanyConnectFlowModel
+        XCTAssertEqual(Copy.confirmCaption, Flow.confirmCaption)
+        XCTAssertEqual(Copy.alreadyConnected, Flow.alreadyConnected)
+        XCTAssertEqual(Copy.chainCaption, Flow.chainCaption)
+        XCTAssertEqual(Copy.chainDoneBody, Flow.chainDoneBody)
+        XCTAssertEqual(Copy.replaceBody, Flow.replaceBody)
+        XCTAssertEqual(Copy.replaceCaption, Flow.replaceCaption)
+        XCTAssertEqual(Copy.blockedTitle, Flow.blocked)
+        XCTAssertEqual(Copy.codeInvalid, Flow.codeInvalid)
+        XCTAssertEqual([Copy.cancel, Copy.connect, Copy.stop, Copy.skipService, Copy.done, Copy.replace, Copy.keepCurrent],
+                       [Flow.cancelTitle, Flow.connectTitle, Flow.stopTitle, Flow.skipTitle, Flow.doneTitle,
+                        Flow.replaceTitle, Flow.keepCurrentTitle])
+
+        let scenes = Dictionary(uniqueKeysWithValues: CompanyConnectShots.scenes.map { ($0.0, $0.1()) })
+        func details(_ name: String) -> [String?] {
+            guard let model = scenes[name] else { return [] }
+            return model.rows.map { model.progress($0).detail }
+        }
+        XCTAssertEqual(scenes["confirm"]?.title, Copy.confirmConnectTitle)
+        XCTAssertEqual(scenes["confirm"]?.body, Copy.confirmLinkBody)
+        XCTAssertEqual(scenes["confirm-again"]?.body, Copy.confirmLinkBody)
+        XCTAssertEqual(scenes["confirm-code"]?.body, Copy.confirmCodeBody)
+        XCTAssertEqual(scenes["confirm-mdm"]?.title, Copy.mdmTitle)
+        XCTAssertEqual(scenes["confirm-mdm"]?.body, Copy.mdmBody)
+        XCTAssertEqual(scenes["chain"]?.title, Copy.chainTitle)
+        XCTAssertEqual(details("chain"), [Copy.chainSlackDone, Copy.chainBrowserGoogle, Copy.chainNext, nil, nil])
+        XCTAssertEqual(details("chain-failed"),
+                       [Copy.chainSlackDone, Copy.chainDenied, Copy.chainBrowserAtlassian, Copy.chainNext, nil])
+        XCTAssertEqual(scenes["done"]?.title, Copy.chainDonePartial)
+        XCTAssertEqual(details("done"), [nil, Copy.notConnected, nil, nil, Copy.chainSkipped])
+        XCTAssertEqual(scenes["replace"]?.title, Copy.replaceTitle)
+        if case let .replace(changes) = scenes["replace"]?.phase {
+            XCTAssertEqual(changes.map(\.line), Copy.replaceLines)
+        } else {
+            XCTFail("replace scene")
+        }
+        let failed = Flow.preview(.chain, company: "Acme", slug: "acme", rows: [
+            Flow.VendorRow(vendor: .google, title: "Gmail and Calendar", detail: "example.com", ticked: true,
+                           state: .failed("the request timed out"))
+        ], host: SlackConnectListenerHost(streamer: FakeCLILineStream()))
+        XCTAssertEqual(failed.rows.map { failed.progress($0).detail }, [Copy.chainFailed])
+        let all = Flow.preview(.done, company: "Acme", slug: "acme", rows: [
+            Flow.VendorRow(vendor: .slack, title: "Slack", detail: "workspace acme", ticked: true, state: .connected(label: ""))
+        ], host: SlackConnectListenerHost(streamer: FakeCLILineStream()))
+        XCTAssertEqual(all.title, Copy.chainDoneAll)
+
+        // The rows' words come from Go's inspect answer, not from the mockup.
+        let fake = FakeCLILineStream()
+        let host = SlackConnectListenerHost(streamer: fake)
+        let flow = Flow(host: host) { fake }
+        fake.enqueue(.init(lines: [#"{"company":"Acme","slug":"acme","state":"new","forced":false,"#
+            + #""vendors":["slack","google","atlassian","microsoft","linear"],"connected":{},"changes":[],"forbidden":[],"#
+            + #""details":{"google":{"client_id":"x","domain":"example.com"},"#
+            + #""atlassian":{"client_id":"y","site":"https://acme.atlassian.net","confluence":true}}}"#]))
+        let error = await flow.paste("eyJ2IjoxfQ")
+        XCTAssertNil(error)
+        XCTAssertEqual(flow.rows.map(\.title), Copy.vendorRows.map(\.0))
+        XCTAssertEqual(flow.rows.map(\.detail), Copy.vendorRows.map(\.1))
     }
 }

@@ -48,28 +48,31 @@ enum CompanySetupShotFixtures {
         return shots
     }
 
+    /// The production sheet (Task 23) over a model held in each state.
     private static var connectShots: [DesignShot] {
-        let scenes = CompanyConnectScenes.scenes
-        var shots = scenes.map { name, blocks in shot("connect-\(name)", 460) { MockSheet(blocks: blocks) } }
+        let scenes = CompanyConnectShots.scenes
+        var shots = scenes.map { name, model in shot("connect-\(name)", 460) { CompanyConnectSheet(flow: model()) } }
         if let confirm = scenes.first(where: { $0.0 == "confirm" }) {
-            shots.append(shot("connect-confirm-narrow", 360) { MockSheet(blocks: confirm.1) })
+            shots.append(shot("connect-confirm-narrow", 360) { CompanyConnectSheet(flow: confirm.1()) })
         }
         return shots
     }
 
+    /// The Go pages' texts, read from Go's fixture (`cmd/testdata/company/pages.json`).
     private static var pageShots: [DesignShot] {
-        [
+        guard let pages = try? CompanyPagesFixture.load() else { return [] }
+        return [
             shot("page-open", 560) {
                 BrowserPageMock(icon: "arrow.up.forward.app", tone: Tone.success,
-                                heading: Copy.pageOpenHeading, message: Copy.pageOpenBody)
+                                heading: pages.open.heading, message: pages.open.messageAcme ?? "")
             },
             shot("page-refused", 560) {
-                BrowserPageMock(icon: "xmark.octagon", tone: Tone.error, heading: Copy.pageRefusedHeading,
-                                message: Copy.pageRefusedBody, hint: Copy.pageRefusedHint)
+                BrowserPageMock(icon: "xmark.octagon", tone: Tone.error, heading: pages.refused.heading,
+                                message: pages.refused.reasons?["damaged"] ?? "", hint: pages.refused.hint)
             },
             shot("page-newerVersion", 560) {
                 BrowserPageMock(icon: "arrow.down.circle", tone: Tone.warning,
-                                heading: Copy.pageNewerHeading, message: Copy.pageNewerBody)
+                                heading: pages.newer.heading, message: pages.newer.message ?? "")
             }
         ]
     }

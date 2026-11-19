@@ -414,3 +414,56 @@ func TestCompanyInspect_OversizedStdinIsARefusal(t *testing.T) {
 	require.NoError(t, json.Unmarshal(out.Bytes(), &got))
 	assert.Equal(t, "too_long", got["refused"])
 }
+
+func TestCompanyInspect_DetailsWithoutSecrets(t *testing.T) {
+	policytest.Set(t, nil)
+	store, d := company.NewStore(t.TempDir()), db.OpenTestDB(t)
+	res, err := inspectCompany(store, d, companyWire(t, companySample("Acme")), "")
+	require.NoError(t, err)
+	confluence := true
+	assert.Equal(t, map[string]companyVendorJSON{
+		"slack":     {TeamID: "T0000", ClientID: "000.000"},
+		"google":    {ClientID: "1234-abcd.apps.googleusercontent.com", Domain: "example.com"},
+		"atlassian": {ClientID: "acmeClientId01", Site: "https://acme.atlassian.net", Confluence: &confluence},
+		"microsoft": {ClientID: "00000000-0000-0000-0000-000000000001", TenantID: "00000000-0000-0000-0000-0000000000aa"},
+		"linear":    {ClientID: "acmelinear01"},
+	}, res.Details)
+	raw, err := json.Marshal(res)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "sample-secret")
+	assert.NotContains(t, string(raw), "acme-secret")
+
+	refused, err := inspectCompany(store, d, "!!!", "")
+	require.NoError(t, err)
+	raw, err = json.Marshal(refused)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"details":{}`, "a refused bundle still has an empty map, never null")
+}
+
+// The Desktop's Connect all, Connect the rest and Re-login read a stored (or
+// forced) company by its slug: no wire on stdin.
+func TestCompanyInspect_StoredSlug(t *testing.T) {
+	policytest.Set(t, nil)
+	store, d := company.NewStore(t.TempDir()), db.OpenTestDB(t)
+	require.NoError(t, store.Save("acme", companySample("Acme")))
+	ids := companyAccounts(t, d, "acme")
+	require.NoError(t, d.SetLinearAccountRemoved(ids["linear"]))
+
+	res, err := inspectStoredCompany(store, d, "acme", "")
+	require.NoError(t, err)
+	assert.Equal(t, "same", res.State)
+	assert.Equal(t, "acme", res.Slug)
+	assert.Equal(t, "Acme", res.Company)
+	assert.Equal(t, map[string]bool{"slack": true, "google": true, "atlassian": true, "microsoft": true}, res.Connected)
+	assert.Empty(t, res.Changes)
+
+	_, err = inspectStoredCompany(store, d, "globex", "")
+	assert.ErrorContains(t, err, "no company globex")
+
+	forced := companyWire(t, companySample("Initech"))
+	res, err = inspectStoredCompany(store, d, "initech", forced)
+	require.NoError(t, err)
+	assert.True(t, res.Forced)
+	assert.Equal(t, "Initech", res.Company)
+	assert.Equal(t, "same", res.State)
+}

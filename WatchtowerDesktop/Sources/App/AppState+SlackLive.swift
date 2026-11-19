@@ -47,12 +47,18 @@ extension AppState {
     }
 
     /// Onboarding ended with a connect flow on screen (a link clicked after
-    /// its Connect step): Connections → Slack, where the flow's sheet lives.
-    /// True when it routed there.
+    /// its Connect step): Connections → Slack, where the flow's sheet lives;
+    /// a company link's sheet (#1887) shows over Connections. True when it
+    /// routed there.
     @discardableResult
     func showPendingSlackConnect() -> Bool {
-        guard !needsOnboarding, slackConnectFlow?.showsSheet == true else { return false }
-        openConnections(.slack)
+        guard !needsOnboarding else { return false }
+        if slackConnectFlow?.showsSheet == true {
+            openConnections(.slack)
+            return true
+        }
+        guard companyConnect?.showsSheet == true else { return false }
+        showConnectionsForCompanySheet()
         return true
     }
 
@@ -67,6 +73,7 @@ extension AppState {
         slackConnectListener = host
         // The flow consumes the host's events from its first line on.
         slackConnectFlow = makeSlackConnectFlow(host: host)
+        companyConnect = makeCompanyConnectFlow(host: host)
         host.ensureRunning()
         _ = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
@@ -93,6 +100,7 @@ extension AppState {
         flow.externalBusy = { [weak self] in
             guard let self else { return false }
             return slackAuthFlow.reconnecting || slackAccountsViewModel?.isConnecting == true
+                || companyConnect?.isRunning == true
         }
         // The accounts VM exists by now (wireOnboardingDatabase runs before
         // wireAppDatabase on every launch path); its Re-login routes here.
