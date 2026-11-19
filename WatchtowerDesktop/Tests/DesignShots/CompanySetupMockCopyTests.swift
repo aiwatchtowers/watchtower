@@ -9,6 +9,24 @@ import XCTest
 @MainActor
 final class CompanySetupMockCopyTests: XCTestCase {
     private typealias Copy = CompanySetupMockCopy
+    private typealias Pres = CompanyConnectionsPresentation
+
+    private static let acme = CompanyRef(slug: "acme", name: "Acme", vendors: [
+        .slack: "Watchtower (A0ACME)", .google: "example.com", .atlassian: "https://acme.atlassian.net",
+        .linear: "", .microsoft: "0000-acme"
+    ])
+
+    private func account(
+        _ vendor: CompanyVendor,
+        _ label: String,
+        slug: String = "",
+        shared: Bool = false,
+        status: String = "ok",
+        error: String = ""
+    ) -> AccountRef {
+        AccountRef(vendor: vendor, accountID: 1, label: label, companySlug: slug, status: status, error: error,
+                   sharedApp: shared)
+    }
 
     func testWizardStepsAndHints() {
         XCTAssertEqual(Copy.railSteps,
@@ -56,7 +74,10 @@ final class CompanySetupMockCopyTests: XCTestCase {
         XCTAssertEqual(Copy.tokenDead, "The API token stopped working (expired or revoked) — paste a new one")
         XCTAssertEqual(Copy.tokenMissingScope, "This token lacks read:jira-work — create one with the listed scopes.")
         XCTAssertTrue(Copy.googleBannerBody.contains("Move Gmail to your company's or your own Google project"))
-        XCTAssertTrue(Copy.atlassianBannerBody.hasPrefix("Your company needs its own Atlassian app — ask your admin or set it up"))
+        // D15 amended (ask #1600): a Re-login banner, no countdown.
+        XCTAssertEqual(Copy.atlassianBannerTitle, "Watchtower's shared Atlassian app is retired")
+        XCTAssertEqual(Copy.atlassianBannerBody, "Your company needs its own Atlassian app — ask your admin or set it up. "
+            + "Sign old.atlassian.net in again through your company's app or with an API token.")
         XCTAssertEqual(Copy.reloginNewLink, "Re-login needed — your company changed its app; open the new link")
         XCTAssertEqual(Copy.reloginUntied, "Re-login needed — open your company's link")
         XCTAssertEqual(Copy.mdmTitle, "Acme — Connect all")
@@ -73,6 +94,89 @@ final class CompanySetupMockCopyTests: XCTestCase {
         XCTAssertEqual(Copy.itGuideCaption, ManagedPolicyHelp.rowCaption)
         XCTAssertEqual(Copy.policyTitle, OrganizationPolicySection.title)
         XCTAssertEqual(Copy.policyFooter, OrganizationPolicySection.footer)
+    }
+
+    /// Task 24 moved the Connections words into `CompanyConnectionsPresentation`.
+    func testConnectionsCopyLivesInThePresentation() {
+        let acme = Self.acme
+        XCTAssertEqual(Copy.companiesTitle, Pres.companiesTitle)
+        XCTAssertEqual(Copy.companiesLoading, Pres.companiesLoading)
+        XCTAssertEqual(Copy.companiesEmpty, Pres.companiesEmpty)
+        XCTAssertEqual(Copy.portBusy, Pres.portBusyLine)
+        XCTAssertEqual(Copy.codePlaceholder, Pres.codePlaceholder)
+        XCTAssertEqual(Copy.codeInvalid, Pres.codeInvalid)
+        XCTAssertEqual(Copy.setUpForCompany, CompaniesZoneState.Action.setUpForCompany.title)
+        XCTAssertEqual(Copy.connectWithCode, CompaniesZoneState.Action.connectWithCode.title)
+        XCTAssertEqual(Copy.continueSetup, SetupLine.Action.continueSetup.title)
+        XCTAssertEqual(Copy.connectRest, CompanyCard.Action.connectRest.title)
+        XCTAssertEqual(Copy.connectAll, CompanyCard.Action.connectAll.title)
+        XCTAssertEqual(Copy.relogin, RowStatus.Action.relogin.title)
+        XCTAssertEqual(Copy.connect, RowStatus.Action.connect.title)
+        XCTAssertEqual(Copy.pasteCode, RowStatus.Action.pasteCode.title)
+        XCTAssertEqual(Copy.pasteNewToken, RowStatus.Action.pasteNewToken.title)
+        XCTAssertEqual(Copy.useOwnGoogle, CompanyBanner.Action.useOwnGoogle.title)
+        XCTAssertEqual(Copy.connectTokenButton, CompanyBanner.Action.connectWithToken.title)
+        XCTAssertEqual(Copy.setupInProgress, Pres.zone(
+            companies: [], errors: [], draft: .inProgress(company: "Acme", step: "Atlassian", index: 3, count: 8),
+            accounts: [], portBusy: false, loading: false
+        ).setup?.text)
+        XCTAssertEqual(Copy.companiesReadFailed, "Could not read the company setups: acme.json is damaged.")
+        let failed = Pres.zone(companies: [], errors: [CompanyFileError(file: "acme.json", error: "x")], draft: nil,
+                               accounts: [], portBusy: false, loading: false)
+        XCTAssertEqual(failed.body, .readFailed(Copy.companiesReadFailed))
+        let card = Pres.zone(companies: [acme], errors: [], draft: nil, accounts: [
+            account(.slack, "acme", slug: "acme"), account(.atlassian, "acme.atlassian.net", slug: "acme"),
+            account(.microsoft, "alice@example.com", slug: "acme")
+        ], portBusy: false, loading: false).body.cards.first
+        XCTAssertEqual(card?.line, Copy.companyCount)
+        XCTAssertEqual(card?.missingLine, Copy.companyMissing)
+        let mdm = CompanyRef(slug: "acme", name: "Acme", forced: true, vendors: acme.vendors)
+        XCTAssertEqual(Pres.zone(companies: [mdm], errors: [], draft: nil, accounts: [], portBusy: false, loading: false)
+            .body.cards.first?.line, Copy.companyMDMLine)
+        let changed = account(.atlassian, "acme.atlassian.net", slug: "acme", status: "error", error: "company_changed_app")
+        XCTAssertEqual(Pres.zone(companies: [acme], errors: [], draft: nil, accounts: [changed], portBusy: false, loading: false)
+            .body.cards.first?.problemLine, Copy.companyRelogin)
+        XCTAssertEqual(Copy.reloginChanged, Pres.reloginChanged("Acme"))
+        XCTAssertEqual(Copy.reloginNewLink, Pres.reloginNewLink)
+        XCTAssertEqual(Copy.reloginUntied, Pres.reloginUntied)
+        XCTAssertEqual(Copy.rowNotConnected, Pres.notConnectedStatus.text)
+        XCTAssertEqual(Copy.stoppedByPolicy, Pres.stoppedByPolicyLine)
+        XCTAssertEqual(Copy.tokenDead, Pres.tokenDead)
+        XCTAssertEqual(Copy.tokenTag, Pres.tokenTag)
+        XCTAssertEqual(Copy.sharedTag, Pres.sharedTag)
+        let utc = TimeZone(identifier: "UTC") ?? .current
+        let due = ISO8601DateFormatter().date(from: "2026-12-18T10:00:00Z") ?? Date()
+        XCTAssertEqual(Copy.tokenLease, Pres.tokenLease(due, zone: utc))
+    }
+
+    func testConnectionsGroupsAndBannersLiveInThePresentation() {
+        let acme = Self.acme
+        // Group titles and captions.
+        XCTAssertEqual(Copy.groupOwnGoogle, Pres.groupOwnGoogle)
+        XCTAssertEqual(Copy.groupOwnGoogleCaption, Pres.groupOwnGoogleCaption)
+        XCTAssertEqual(Copy.groupShared, Pres.groupShared)
+        XCTAssertEqual(Copy.groupSharedGoogleCaption, Pres.groupSharedGoogleCaption)
+        XCTAssertEqual(Copy.groupSharedLinear, Pres.groupSharedLinear)
+        XCTAssertEqual(Copy.groupSharedMicrosoft, Pres.groupSharedMicrosoft)
+        XCTAssertEqual(Copy.groupTokens, Pres.groupTokens)
+        XCTAssertEqual(Copy.groupTokensCaption, Pres.groupTokensCaption)
+        XCTAssertEqual(Copy.groupUnknown, Pres.groupUnknown)
+        XCTAssertEqual(Copy.groupUnknownCaption, Pres.groupUnknownCaption)
+        let captions = [CompanyVendor.google, .atlassian, .slack, .linear, .microsoft].map { v in
+            Pres.groups(vendor: v, accounts: [account(v, "x", slug: "acme")], companies: [acme]) { _ in false }
+                .first?.caption
+        }
+        XCTAssertEqual(captions, [Copy.groupAcmeGoogle, Copy.groupAcmeAtlassian, Copy.groupAcmeSlack, Copy.groupAcmeLinear,
+                                  Copy.groupAcmeMicrosoft])
+        // Banners and locks.
+        let google = Pres.banner(.google, accounts: [account(.google, "bob@example.org", shared: true)])
+        XCTAssertEqual(google?.title, Copy.googleBannerTitle)
+        XCTAssertEqual(google?.body, Copy.googleBannerBody)
+        let jira = Pres.banner(.atlassian, accounts: [account(.atlassian, "old.atlassian.net", shared: true)])
+        XCTAssertEqual(jira?.title, Copy.atlassianBannerTitle)
+        XCTAssertEqual(jira?.body, Copy.atlassianBannerBody)
+        XCTAssertEqual(Copy.ownGoogleLocked, Pres.lockCard(.ownGoogleProject).text)
+        XCTAssertEqual(Copy.tokenLocked, Pres.lockCard(.atlassianAPIToken).text)
     }
 
     func testEveryFrameHasAShotAndNamesAreUnique() {
