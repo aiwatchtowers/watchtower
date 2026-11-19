@@ -81,6 +81,7 @@ func init() {
 	googleAddCmd.Flags().String("company", "", "sign in through this stored company's Google app (its slug, see 'watchtower company list'); the account is tied to the company")
 	googleAddCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
 	googleAddCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
+	googleAddCmd.Flags().Bool("json", false, "with --client-id: end with one JSON result line (ok|rejected|network|cancelled, the account and its address)")
 
 	googleCmd.AddCommand(googleLoginCmd)
 	googleCmd.AddCommand(googleAddCmd)
@@ -168,6 +169,9 @@ func runGoogleAdd(cmd *cobra.Command, _ []string) error {
 	if clientID != "" && !clientSecretStdin {
 		return fmt.Errorf("--client-id requires --client-secret-stdin")
 	}
+	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON && clientID == "" {
+		return usageError("--json is for --client-id (your own Google project)")
+	}
 	// The company's client comes first: an unknown company fails here,
 	// before any row, seed or browser.
 	slug, _ := cmd.Flags().GetString("company")
@@ -239,12 +243,24 @@ func runGoogleAdd(cmd *cobra.Command, _ []string) error {
 // passed (googleCompanyGrantRow): a cancelled consent or a refused re-tie
 // stores nothing. A failure after it (the token write) leaves the bundle,
 // which the next add of the same client reuses.
+//
+// With --json (the Desktop's own-project page, #1887 C4) a failed sign-in or
+// a refused re-tie is a result line in `company check`'s shape (rejected
+// with the vendor's code, network, cancelled) and exit 0, as a success is
+// (ok, the account and its address); any other failure stays an error.
 func addOwnGoogleProject(cmd *cobra.Command, cfg *config.Config, database *db.DB, g *companybundle.Google, label string, wantCalendar, wantGmail bool) error {
+	asJSON, _ := cmd.Flags().GetBool("json")
 	grant, err := googleCompanyConsent(cmd, g, wantCalendar, wantGmail)
 	if err != nil {
+		if asJSON {
+			return writeCompanyResult(cmd, classifySignInError(cmd.Context(), err), nil)
+		}
 		return err
 	}
 	if _, err := googleCompanyGrantRow(database, grant); err != nil {
+		if res, rerr := refusedGrant(err); asJSON && rerr == nil {
+			return writeCompanyResult(cmd, res, nil)
+		}
 		return err
 	}
 	// Asked again: IT may have forbidden own projects during the consent.
@@ -255,8 +271,11 @@ func addOwnGoogleProject(cmd *cobra.Command, cfg *config.Config, database *db.DB
 	if err != nil {
 		return fmt.Errorf("saving your own Google project: %w", err)
 	}
-	_, err = recordGoogleCompanyGrant(cmd, cfg, database, grant, slug, label)
-	return err
+	id, err := recordGoogleCompanyGrant(cmd, cfg, database, grant, slug, label)
+	if err != nil || !asJSON {
+		return err
+	}
+	return writeCompanyResult(cmd, companyCheckResult{Result: checkOK, Slug: slug, AccountID: id, Email: grant.result.email}, nil)
 }
 
 func runGoogleAccounts(cmd *cobra.Command, _ []string) error {

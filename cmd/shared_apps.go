@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 
+	"watchtower/internal/calendar"
+	"watchtower/internal/company"
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
 )
@@ -37,6 +39,11 @@ type googleAccountJSON struct {
 	// SharedGmail: the account syncs Gmail through our shared Google client,
 	// which no longer grants Gmail (D11) — the shared-Google banner.
 	SharedGmail bool `json:"shared_gmail"`
+	// OwnProject: the account signs in through a Google project the person
+	// owns (company.IsOwnProject: a personal bundle, or an untied legacy
+	// credentials file) — the Desktop's "Your own Google project" group and
+	// its AllowOwnGoogleProject lock (#1887 C4).
+	OwnProject bool `json:"own_project"`
 }
 
 // googleSharedGmail reports an account that syncs Gmail on our shared Google
@@ -52,12 +59,21 @@ func googleSharedGmail(workspaceDir string, a db.GoogleAccount) bool {
 }
 
 func writeGoogleAccountsJSON(w io.Writer, workspaceDir string, accounts []db.GoogleAccount) error {
+	// An unreadable company directory leaves a tied row's own_project false:
+	// the Desktop reads the same directory for its company groups, where a
+	// personal bundle's rows are grouped from the bundle itself; an untied
+	// row needs no company to tell.
+	entries, _, err := company.NewStore(workspaceDir).LoadAll(companyForcedBundle())
+	if err != nil {
+		entries = nil
+	}
 	rows := make([]googleAccountJSON, 0, len(accounts))
 	for _, a := range accounts {
 		rows = append(rows, googleAccountJSON{
 			ID: a.ID, Label: a.Label, Email: a.Email, Status: a.Status, Error: a.Error,
 			CalendarEnabled: a.CalendarEnabled, GmailEnabled: a.GmailEnabled,
 			CompanySlug: a.CompanySlug, SharedGmail: googleSharedGmail(workspaceDir, a),
+			OwnProject: company.IsOwnProject(a, entries, calendar.NewCredentialStore(workspaceDir, a.ID).Exists()),
 		})
 	}
 	enc := json.NewEncoder(w)
