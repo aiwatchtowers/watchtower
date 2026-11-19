@@ -315,3 +315,33 @@ func TestLegacy_WatchmanJournalCard(t *testing.T) {
 		t.Errorf("at UTC+3 %q", got)
 	}
 }
+
+// OmitMacOnly (the hub's phone feed) leaves the journal card out before the
+// limit: at the cap with the newest card a fresh journal card, the phone
+// still gets Limit real cards and the same cut count as with no journal.
+func TestLegacy_OmitMacOnlyLeavesTheJournalOutBeforeTheLimit(t *testing.T) {
+	seed := []string{
+		"INSERT INTO automations (id, slug, scope, path, name) VALUES (1, 'a', 'personal', '/recipes/a.md', 'A')",
+		"INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+	}
+	for i := 1; i <= 3; i++ {
+		seed = append(seed, fmt.Sprintf("INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, created_at) "+
+			"VALUES (%d, 1, 1, 'inbox', 'Card %d', 'Body', '2026-11-16T0%d:00:00Z')", i, i, i+5))
+	}
+	journal := append(append([]string{}, seed...),
+		"INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme')",
+		"INSERT INTO watchman_workbenches (workbench_id, enabled_at) VALUES (1, '2026-11-10T09:00:00Z')",
+		"INSERT INTO watchman_items (id, workbench_id, kind, ref_kind, ref_id, state, outcome, created_at) "+
+			"VALUES (1, 1, 'ask', 'ask', 1, 'done', 'parked', '2026-11-16T11:00:00Z')")
+	if mac := buildFeed(t, journal, Options{Limit: 2}); !hasCard(mac, WatchmanCardID) {
+		t.Fatalf("the Mac's capped feed has no journal card: %v", cardIDs(mac.Cards))
+	}
+	want := buildFeed(t, seed, Options{Limit: 2, OmitMacOnly: true})
+	got := buildFeed(t, journal, Options{Limit: 2, OmitMacOnly: true})
+	if fmt.Sprint(cardIDs(got.Cards)) != fmt.Sprint(cardIDs(want.Cards)) || len(got.Cards) != 2 {
+		t.Errorf("phone cards %v, want %v", cardIDs(got.Cards), cardIDs(want.Cards))
+	}
+	if fmt.Sprint(got.More) != fmt.Sprint(want.More) || len(got.More) == 0 {
+		t.Errorf("phone more %+v, want %+v", got.More, want.More)
+	}
+}

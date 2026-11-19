@@ -86,30 +86,16 @@ func (c *inboxFeedCache) take(ctx context.Context, k slices.Kind) (*api.Feed, er
 	now := c.now()
 	if age := now.Sub(c.builtAt); c.feed == nil || c.served[k] || age < 0 || age > inboxFeedReuse {
 		c.feed, c.served = nil, map[slices.Kind]bool{}
-		feed, err := c.build(ctx, inboxfeed.Options{Limit: PhoneInboxLimit, Clip: true, Now: now})
+		// OmitMacOnly: the phone has no journal pane, and the card must not
+		// take a slot under the limit.
+		feed, err := c.build(ctx, inboxfeed.Options{Limit: PhoneInboxLimit, Clip: true, OmitMacOnly: true, Now: now})
 		if err != nil {
 			return nil, err
 		}
-		feed = withoutMacOnlyCards(feed)
 		c.feed, c.builtAt = &feed, now
 	}
 	c.served[k] = true
 	return c.feed, nil
-}
-
-// withoutMacOnlyCards drops the cards the phone has no pane for: Watchman's
-// morning journal (the journal is the Mac's own pane). The card is never
-// counted, so the folders' counts stand.
-func withoutMacOnlyCards(feed api.Feed) api.Feed {
-	cards := make([]api.Card, 0, len(feed.Cards))
-	for _, c := range feed.Cards {
-		if c.Legacy != nil && c.Legacy.Kind == api.LegacyWatchman {
-			continue
-		}
-		cards = append(cards, c)
-	}
-	feed.Cards = cards
-	return feed
 }
 
 type inboxKindSource struct {

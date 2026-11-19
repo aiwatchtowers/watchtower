@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -81,15 +80,19 @@ func marshalWire(t *testing.T, v any) []byte {
 // TestInboxSource_RecordsMatchTheGoGolden: over the feed fixture, one record
 // per folder (with its cut count) and one per card, each the fixture's
 // folder or card; a legacy card carries its typed section and its
-// projected document. The fixture's Watchman journal card is the Mac's only
-// (withoutMacOnlyCards), so the phone's records leave it out.
+// projected document. The phone's feed omits the Mac-only Watchman journal
+// card (Options.OmitMacOnly): a case whose expect has one is compared
+// without it; every other case is compared as it stands.
 func TestInboxSource_RecordsMatchTheGoGolden(t *testing.T) {
-	ran := 0
+	ran, journalCases := 0, 0
 	for _, c := range inboxCases(t) {
 		if c.Opts.Folder != nil || c.Opts.Limit != 0 || c.Opts.Day != "" {
 			continue // a request the phone never sends
 		}
-		c.Expect = withoutMacOnlyCards(c.Expect)
+		if expect, dropped := withoutJournalCard(c.Expect); dropped {
+			c.Expect = expect
+			journalCases++
+		}
 		ran++
 		t.Run(c.Name, func(t *testing.T) {
 			now, err := time.Parse(time.RFC3339, c.Now)
@@ -153,10 +156,28 @@ func TestInboxSource_RecordsMatchTheGoGolden(t *testing.T) {
 	if ran < 10 {
 		t.Fatalf("only %d fixture cases ran", ran)
 	}
+	if journalCases != 1 {
+		t.Fatalf("%d fixture cases carry the journal card, want 1 (legacy_watchman_journal)", journalCases)
+	}
+}
+
+// withoutJournalCard is feed without its Watchman journal card, and whether
+// it had one.
+func withoutJournalCard(feed api.Feed) (api.Feed, bool) {
+	cards := make([]api.Card, 0, len(feed.Cards))
+	for _, c := range feed.Cards {
+		if c.Legacy == nil || c.Legacy.Kind != api.LegacyWatchman {
+			cards = append(cards, c)
+		}
+	}
+	dropped := len(cards) != len(feed.Cards)
+	feed.Cards = cards
+	return feed, dropped
 }
 
 // TestInboxSource_LimitAndClipOnThePhone: the feed is built as the phone
-// reads it (Limit 300, Clip), and the cut count rides on its folder.
+// reads it (Limit 300, Clip, no Mac-only cards), and the cut count rides on
+// its folder.
 func TestInboxSource_LimitAndClipOnThePhone(t *testing.T) {
 	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
 	var got []inboxfeed.Options
@@ -169,7 +190,8 @@ func TestInboxSource_LimitAndClipOnThePhone(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("%d builds for one cycle, want 1", len(got))
 	}
-	if o := got[0]; o.Limit != PhoneInboxLimit || PhoneInboxLimit != 300 || !o.Clip || !o.Now.Equal(now) || o.Folder != nil {
+	if o := got[0]; o.Limit != PhoneInboxLimit || PhoneInboxLimit != 300 || !o.Clip || !o.OmitMacOnly ||
+		!o.Now.Equal(now) || o.Folder != nil {
 		t.Fatalf("options %+v", o)
 	}
 	var rec struct {
@@ -398,26 +420,5 @@ func TestInboxSource_FoldersCarryTheirCardOrder(t *testing.T) {
 	}
 	if string(folders["2"]) != string(foldersAfter["2"]) {
 		t.Errorf("an untouched folder's record changed")
-	}
-}
-
-// The phone gets no Watchman journal card (it has no journal pane): not as a
-// card record, not in its folder's card ids; the other cards stand.
-func TestInboxSource_PhoneLeavesTheWatchmanJournalOut(t *testing.T) {
-	journal := api.Card{ID: inboxfeed.WatchmanCardID, FolderID: 1, CardKind: api.CardLegacy, Title: "Watchman",
-		Legacy: &api.LegacySection{Kind: api.LegacyWatchman, Items: []api.LegacyItem{}, Attention: []api.LegacyAttention{}}}
-	build := func(context.Context, inboxfeed.Options) (api.Feed, error) {
-		return api.Feed{V: 1, Folders: []api.Folder{{ID: 1, Kind: api.FolderRoot}},
-			Cards: []api.Card{{ID: "o1", FolderID: 1}, journal, {ID: "o2", FolderID: 1}}}, nil
-	}
-	folders, cards := inboxItems(t, InboxSource(build, nil))
-	if _, ok := cards[inboxfeed.WatchmanCardID]; ok || len(cards) != 2 {
-		t.Fatalf("card records %v", slices.Sorted(maps.Keys(cards)))
-	}
-	var rec struct {
-		CardIDs []string `json:"card_ids"`
-	}
-	if err := json.Unmarshal(folders["1"], &rec); err != nil || strings.Join(rec.CardIDs, ",") != "o1,o2" {
-		t.Fatalf("root card ids %v (%v)", rec.CardIDs, err)
 	}
 }

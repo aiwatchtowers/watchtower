@@ -44,13 +44,12 @@ func WatchmanNightStart(t time.Time, loc *time.Location) time.Time {
 	return noon
 }
 
-// WatchmanJournalSummaryTx reads the Inbox entry's summary inside tx, nights
-// in loc; nil while Watchman was never turned on and has no item, or when
-// it has no item and its enable time does not read (no card rather than an
-// Inbox that fails). The
-// newest night counts its finished twin decisions the way the journal does:
-// not pending, waiting, owner-marked-done, owner-first, superseded or check
-// items.
+// WatchmanJournalSummaryTx reads the Inbox entry's summary inside tx,
+// nights in loc. It is nil while Watchman was never turned on and has no
+// item, and when it has no item and its enable time does not read (no card
+// rather than an Inbox that fails). The newest night counts its finished
+// twin decisions the way the journal does: not pending, waiting,
+// owner-marked-done, owner-first, superseded or check items.
 func WatchmanJournalSummaryTx(ctx context.Context, tx *sql.Tx, loc *time.Location) (*WatchmanJournalSummary, error) {
 	var newest, enabled sql.NullString
 	if err := tx.QueryRowContext(ctx, `SELECT MAX(created_at) FROM watchman_items`).Scan(&newest); err != nil {
