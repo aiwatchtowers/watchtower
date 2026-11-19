@@ -19,6 +19,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
+	"watchtower/internal/workbenchcheck"
 )
 
 // nestedSessionID is a `claude -p` the agent ran from its shell: it inherits
@@ -1503,7 +1504,15 @@ func hookStep(t *testing.T, database *db.DB, pid, row int64, at func(int), sec i
 	at(sec)
 	var out, errOut string
 	if strings.Contains(input, `"hook_event_name": "Stop"`) || strings.Contains(input, `"hook_event_name":"Stop"`) {
+		// The turn state is the subject here, not the board: a drift check
+		// that runs out of its wall-clock budget on a loaded machine would
+		// write to stderr and fail the step for nothing.
+		check := stopHookCheck
+		stopHookCheck = func(context.Context, *db.DB, int64, workbenchcheck.Options) (workbenchcheck.Report, error) {
+			return workbenchcheck.Report{}, nil
+		}
 		out, errOut = stopHookIO(t, strconv.FormatInt(pid, 10), input)
+		stopHookCheck = check
 	} else {
 		var err error
 		out, errOut, err = runSessionState(t, pid, strings.NewReader(input))

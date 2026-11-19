@@ -549,12 +549,16 @@ func recordStopTurnEnd(database *db.DB, rowID, workbenchID int64, in stopHookInp
 // setTerminalTurnEnd is the turn end's write; a seam for tests.
 var setTerminalTurnEnd = (*db.DB).SetTerminalTurnEnd
 
+// stopHookCheck is the Stop hook's drift check; a seam for tests whose
+// subject is the turn state, not the board.
+var stopHookCheck = checkWorkbench
+
 // stopHookDrift runs the drift check and prints the block JSON when git
 // certainly disagrees with the board; true when it blocked the stop.
 func stopHookDrift(ctx context.Context, stdout, stderr io.Writer, database *db.DB, id int64) bool {
 	ctx, cancel := context.WithTimeout(ctx, stopHookBudget)
 	defer cancel()
-	rep, err := checkWorkbench(ctx, database, id, workbenchcheck.Options{OpenOnly: true})
+	rep, err := stopHookCheck(ctx, database, id, workbenchcheck.Options{OpenOnly: true})
 	switch {
 	case errors.Is(err, db.ErrWorkbenchNotFound):
 		return false // a deleted workbench's leftover hook: nothing to say
