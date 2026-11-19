@@ -178,7 +178,7 @@ The layers catch what lands at a ref, at GitHub, in a tool call the guard can re
 - The guard blanks a commit or PR heredoc body from its word scan only for an allowlisted plain request; any other shape keeps the body in the scan, so a body that mentions a merge or a push may be denied (a false park, never a pass).
 - A session whose deletion was requested but that still has its own arming row can authorise a handover's next-session start until the daemon's next prune.
 - A session start that times out after the session host took it may start a second session.
-- A session whose folder lacks the Watchman guard hook (a workbench not repaired since the hook shipped) has no guard layer: `watchman arm` names the folder in `hooks_warning` (`<folder>: the Watchman guard hook is not installed — Repair the workbench, then restart the session`). Claude Code loads hooks at session start, so a session started before the Repair runs without the hook until it is restarted; the arm cannot tell (Claude Code rewrites the settings file itself when the owner allows a tool, so its time proves nothing).
+- A Claude Code session whose folder lacks the Watchman guard hook (a workbench not repaired since the hook shipped) has no guard layer: `watchman arm` names the folder in `hooks_warning` (`<folder>: the Watchman guard hook is not installed — Repair the workbench, then restart the session`). Claude Code loads hooks at session start, so a session started before the Repair runs without the hook until it is restarted; the arm cannot tell (Claude Code rewrites the settings file itself when the owner allows a tool, so its time proves nothing). A Codex session is not checked: its launch flags always carry the guard.
 
 ## v1 limits
 

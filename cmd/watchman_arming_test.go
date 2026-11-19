@@ -742,6 +742,10 @@ func TestWatchmanArm_WarnsWhenTheGuardHookIsMissing(t *testing.T) {
 	_, otherFolder := armSession(t, wb, "claude", nil, false)
 	require.NoError(t, os.Remove(filepath.Join(otherFolder, ".claude", "settings.local.json")))
 	hooked, _ := armSession(t, wb, "claude", nil, false)
+	// A Codex session has the guard from its launch flags: no settings file,
+	// no warning (fix wave 2).
+	codexSession, codexFolder := armSession(t, wb, "codex", tid, false)
+	require.NoError(t, os.Remove(filepath.Join(codexFolder, ".claude", "settings.local.json")))
 	want := bareFolder + ": the Watchman guard hook is not installed — Repair the workbench, then restart the session"
 
 	for _, args := range [][]string{
@@ -756,6 +760,9 @@ func TestWatchmanArm_WarnsWhenTheGuardHookIsMissing(t *testing.T) {
 	r, raw, err := armCLI(t, "arm", "--session", strconv.FormatInt(hooked, 10), "--json")
 	require.NoError(t, err, raw)
 	assert.Empty(t, r.HooksWarning, "a hooked session; the bare ones are not covered")
+	r, raw, err = armCLI(t, "arm", "--session", strconv.FormatInt(codexSession, 10), "--check", "--json")
+	require.NoError(t, err, raw)
+	assert.Empty(t, r.HooksWarning, "a Codex session is guarded by its launch flags")
 	text, err := runWatchman(t, "arm", "--session", strconv.FormatInt(bare, 10), "--check")
 	resetWatchmanArmFlags()
 	require.NoError(t, err, text)

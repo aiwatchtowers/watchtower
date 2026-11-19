@@ -22,7 +22,8 @@ type WatchmanArming struct {
 type ArmedSession struct {
 	SessionID, WorkbenchID  int64
 	Folder, WorkbenchFolder string
-	TargetID                int64 // the session's ticket; 0 = none
+	TargetID                int64  // the session's ticket; 0 = none
+	Kind                    string // the agent: claude or codex
 }
 
 // wmArmTime keeps nanoseconds in a fixed width, so two presses in one second stay distinct and sort in time order.
@@ -125,7 +126,7 @@ const armedSessionsFrom = `
 		UNION
 		SELECT t.id FROM targets t JOIN sub ON t.parent_id = sub.id
 	)
-	SELECT ts.id, ts.project_id, ts.folder_path, p.folder_path, COALESCE(ts.target_id, 0)
+	SELECT ts.id, ts.project_id, ts.folder_path, p.folder_path, COALESCE(ts.target_id, 0), ts.kind
 	FROM terminal_sessions ts JOIN projects p ON p.id = ts.project_id
 	WHERE ts.finished_at IS NULL AND ts.` + NotDeletingSQL + ` AND ts.kind <> 'shell'
 	  AND (EXISTS (SELECT 1 FROM watchman_arming a WHERE a.scope = 'session' AND a.ref_id = ts.id)
@@ -134,7 +135,7 @@ const armedSessionsFrom = `
 // WatchmanLiveSessions lists the live workbench agent sessions — the ones
 // that can be armed — by id.
 func (db *DB) WatchmanLiveSessions() ([]ArmedSession, error) {
-	rows, err := db.Query(`SELECT ts.id, ts.project_id, ts.folder_path, p.folder_path, COALESCE(ts.target_id, 0)
+	rows, err := db.Query(`SELECT ts.id, ts.project_id, ts.folder_path, p.folder_path, COALESCE(ts.target_id, 0), ts.kind
 		FROM terminal_sessions ts JOIN projects p ON p.id = ts.project_id
 		WHERE ts.finished_at IS NULL AND ts.` + NotDeletingSQL + ` AND ts.kind <> 'shell' ORDER BY ts.id`)
 	if err != nil {
@@ -158,7 +159,7 @@ func scanArmedSessions(rows *sql.Rows) ([]ArmedSession, error) {
 	var out []ArmedSession
 	for rows.Next() {
 		var s ArmedSession
-		if err := rows.Scan(&s.SessionID, &s.WorkbenchID, &s.Folder, &s.WorkbenchFolder, &s.TargetID); err != nil {
+		if err := rows.Scan(&s.SessionID, &s.WorkbenchID, &s.Folder, &s.WorkbenchFolder, &s.TargetID, &s.Kind); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

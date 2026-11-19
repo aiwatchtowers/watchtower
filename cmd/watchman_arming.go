@@ -178,8 +178,8 @@ func watchmanGuardWarnings(ctx context.Context, database *db.DB, workbenches []i
 	return nil
 }
 
-// watchmanGuardHookWarnings adds a line for the folder of every live session
-// rows cover (a session row, or a session whose ticket sits under a target
+// watchmanGuardHookWarnings adds a line for the folder of every live Claude
+// Code session rows cover (a session row, or a session whose ticket sits under a target
 // row) whose .claude/settings.local.json lacks the Watchman guard
 // PreToolUse hook (WATCHMAN-05): there the agent's tool calls are not
 // checked against the hard limits. A settings file that cannot be read
@@ -209,7 +209,11 @@ func watchmanGuardHookWarnings(database *db.DB, rows []db.WatchmanArming, text *
 			}
 		}
 		folder := cmp.Or(s.Folder, s.WorkbenchFolder)
-		if !covered || seen[folder] {
+		// A Codex session gets the guard from its launch flags, never from a
+		// settings file: CodexLaunchArgs always carries CodexHookSet, the
+		// watchman-guard row included, and integrate trusts every hook of
+		// that set. Only Claude Code reads it from the folder.
+		if !covered || seen[folder] || s.Kind == "codex" {
 			continue
 		}
 		seen[folder] = true
