@@ -135,9 +135,9 @@ work for both.
 - **Working** rows come from `live.agents` (non-finished), as today.
 - **Done** rows come from the feed's `subagents` list with status
   `finished` (sidecar `meta.json`, every conversation of the tab), title =
-  type, subtitle = description. Order (builder call): markers with an `at`
-  newest first, then meta-only markers (zero `at`) in the store's
-  first-seen order; no new Go field. Done is collapsed while something
+  type, subtitle = description. Order: `started_at` newest first (the
+  additive key from §4, so the order is the same for a full or tail read);
+  ties and zero times keep the CLI's order. Done is collapsed while something
   works (D2) and opens by itself when Working is empty or unknown (C2); a
   toggle by the owner is remembered per pane while the app runs and wins
   over the default. At most 5 rows show, the rest scroll. Codex: the list
@@ -186,7 +186,17 @@ work for both.
 - Speed work (C5): (a) the first read is a tail read — `session-feed
   --tail 60` returns the last 60 entries, the cursor and a `before` cursor;
   scroll-to-top asks `--before C --tail 60` for the previous page (additive
-  CLI flags; `--after` reads are unchanged). (b) `WorkbenchesViewModel` keeps
+  CLI flags; `--after` reads are unchanged). `--tail` parses exactly what a
+  full read parses and only trims the `entries` it prints; the `subagents`
+  list is the full list a full read prints (every conversation, meta.json),
+  never trimmed. Each `subagents` item gains an additive `started_at`: the
+  Agent call's time when the transcript part was parsed, else the
+  `meta.json` file's mtime (FEED-03 additive key; zero only when neither
+  exists). Go paths changing together: `internal/sessionfeed` (`Build`,
+  `subagent.go` refs), `cmd/workbench_session_feed.go` (flags, JSON);
+  Swift: `SessionFeedStore` (tail/before paging, Done from `subagents`),
+  `SessionFeedSubagent` decoding `started_at`, the CLI lookup's arguments.
+  The Kit/phone slice is not touched (it keeps `ChatFetch` entries). (b) `WorkbenchesViewModel` keeps
   each session's `SessionFeedStore` for the app's lifetime (it already keeps
   `WorkchatModel` per session), so reopening paints the kept entries at once
   and reads only after the cursor.
@@ -297,6 +307,8 @@ Today a long text paste raises a bar offering to attach it as a file
 | Echo matched on the expanded text | `WorkchatModel` echo test |
 | Image gone at send refuses with the message, draft kept | `WorkchatModel` test |
 | `--tail` / `--before` pages, cursor kept | Go `feed_test` + `cmd` test |
+| `--tail` prints the same full `subagents` list as a full read | Go `feed_test` |
+| `started_at` from the Agent call, else meta.json mtime | Go `subagent_test` |
 | Store kept per session; reopen paints kept entries | store/view-model test |
 | Phone: no agent rows in the feed; sheet sections | Kit/phone test |
 
