@@ -236,6 +236,7 @@ func liveMarkers(live *Live, conv string) []Entry {
 	var out []Entry
 	for _, a := range live.Agents {
 		ref := a.Ref
+		ref.StartedAt = a.StartedAt
 		out = append(out, Entry{ID: ref.ToolUseID, Kind: KindSubagent, Subagent: &ref, At: a.StartedAt, Conversation: conv})
 	}
 	return out
@@ -279,4 +280,29 @@ func addCounts(dst, src map[string]int) {
 	for k, n := range src {
 		dst[k] += n
 	}
+}
+
+// TailPage returns the last n entries before the entry with id before (the end
+// of the feed when before is empty) and the id to pass as before for the next
+// older page, "" when the page starts at entry 0.
+func TailPage(entries []Entry, before string, n int) (page []Entry, nextBefore string, err error) {
+	end := len(entries)
+	if before != "" {
+		end = -1
+		for i := range entries {
+			if entries[i].ID == before {
+				end = i
+				break
+			}
+		}
+		if end < 0 {
+			return nil, "", fmt.Errorf("before %q: no such entry", before)
+		}
+	}
+	start := max(end-n, 0)
+	page = entries[start:end]
+	if start > 0 {
+		nextBefore = entries[start].ID
+	}
+	return page, nextBefore, nil
 }

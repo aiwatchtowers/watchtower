@@ -10,7 +10,7 @@ A workbench session's transcript holds hundreds of tool calls; the owner wants t
 |---|---|
 | Reader | `internal/sessionfeed/` (`parse.go` record rules, `feed.go` `Build`/`LocateAll`/cursor, `subagent.go` subagent markers and feeds, `entry.go` types) |
 | Ledger | migration `00127_*` `terminal_session_agent_sessions`, `internal/db/terminal_session_agent_sessions.go` (`ListTerminalAgentSessions`) |
-| CLI | `watchtower workbench session-feed --session N [--after C] [--subagent TOOL_USE_ID] [--json]` (`cmd/workbench_session_feed.go`) |
+| CLI | `watchtower workbench session-feed --session N [--after C] [--tail N [--before ID]] [--subagent TOOL_USE_ID] [--json]` (`cmd/workbench_session_feed.go`) |
 | Desktop model/store/poller | `WatchtowerCore` `Models/SessionFeed.swift`, `Services/SessionFeedStore.swift`, `Services/SessionFeedPoller.swift` |
 | Desktop views | `Views/Workbench/SessionChatView.swift`, `SessionChatSubagentView.swift`, `SessionChatRow.swift` (since the unified chat, 2026-11-17 T12: the feed is drawn by `ChatUI` through `WorkchatFeedAdapter`/`WorkchatFeed`; `SessionChatRow` draws only the system rows: the Watchtower bubble "via Watchtower", the brief disclosure, the notice toggle, the separator, the subagent card) |
 | Workchat composer (#711) | `ViewModels/WorkchatModel.swift`, `Views/Workbench/WorkchatComposer.swift`, `Views/Workbench/WorkchatCards.swift`, `Services/SessionControl.swift`, `WatchtowerCore` `Services/WorkchatOutgoing.swift` |
@@ -34,7 +34,7 @@ Record rules (`parse.go`):
 
 ## Cursor and upsert contract
 
-The cursor is `<agent session id>:<byte offset after the last complete line>`. `--after C` returns the entries that follow it; an entry whose message grew after the cursor is re-emitted with the same `id` and the new text, so a caller upserts by id (the Desktop store does). A poll reads only the tail after the cursor: the cursor's conversation is parsed from its offset, later conversations from 0, earlier ones not at all. `subagents` lists every subagent marker of the tab and comes from the sidecar `subagents/*.meta.json` files (tool use id, type, description, finished), not from a transcript parse.
+The cursor is `<agent session id>:<byte offset after the last complete line>`. `--after C` returns the entries that follow it; an entry whose message grew after the cursor is re-emitted with the same `id` and the new text, so a caller upserts by id (the Desktop store does). A poll reads only the tail after the cursor: the cursor's conversation is parsed from its offset, later conversations from 0, earlier ones not at all. `--tail N` parses what a full read parses and trims only the printed `entries` to the last N (`--before ID`: the N before that entry, `sessionfeed.TailPage`); the cursor and `subagents` stay those of a full read, and `before` names the page's first entry (omitted at entry 0). A `subagents` item's `subagent` object carries `started_at`: the Agent call's time, else, for a marker built from `meta.json` alone (an `--after` read past the call), the meta file's mtime. `subagents` lists every subagent marker of the tab and comes from the sidecar `subagents/*.meta.json` files (tool use id, type, description, finished), not from a transcript parse.
 
 ## Subagents
 
