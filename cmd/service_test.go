@@ -154,7 +154,8 @@ func TestServiceInstallRefusesATemporaryBuildBeforeWritingAnything(t *testing.T)
 func runService(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	// Only the verbs' own flags are reset: resetting the inherited --config
-	// would point the next run at the real config file.
+	// would point the next run at the real config file. Its Changed mark is
+	// cleared, though: left set, a later run's resetSetFlags would reset it.
 	cfgPath, ws := flagConfig, flagWorkspace
 	var out, errOut bytes.Buffer
 	rootCmd.SetOut(&out)
@@ -166,6 +167,7 @@ func runService(t *testing.T, args ...string) (string, error) {
 		c.LocalNonPersistentFlags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
 	}
 	flagConfig, flagWorkspace = cfgPath, ws
+	rootCmd.PersistentFlags().Lookup("config").Changed = false
 	return out.String(), err
 }
 

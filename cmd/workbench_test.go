@@ -31,9 +31,11 @@ func runWorkbench(t *testing.T, args ...string) (stdout, stderr string, err erro
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&errOut)
 	rootCmd.SetArgs(append([]string{"workbench"}, args...))
+	cfgPath := flagConfig
 	err = rootCmd.Execute()
 	rootCmd.SetArgs(nil)
 	resetSetFlags(append(workbenchCmd.Commands(), workbenchCmd, rootCmd)...)
+	flagConfig = cfgPath
 	workbenchFlagJSON = false
 	workbenchCreateFlagFolder = ""
 	workbenchCreateFlagName = ""
@@ -49,9 +51,11 @@ func runRootCmd(t *testing.T, cmds []*cobra.Command, args ...string) (stdout, st
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&errOut)
 	rootCmd.SetArgs(args)
+	cfgPath := flagConfig
 	err = rootCmd.Execute()
 	rootCmd.SetArgs(nil)
 	resetSetFlags(append(cmds, rootCmd)...)
+	flagConfig = cfgPath
 	return out.String(), errOut.String(), err
 }
 
@@ -61,11 +65,22 @@ func runRootCmd(t *testing.T, cmds []*cobra.Command, args ...string) (stdout, st
 // run print usage. Flags no run set are left alone (flagConfig, for one, is
 // assigned by the tests, never parsed).
 //
+// --config is never put back to its default: that is the machine's real
+// config file, so a Changed mark left by a run that parsed --config (and
+// cleared nowhere) would point every later test at the owner's live config
+// and database. Its mark is cleared and flagConfig keeps its value; the run
+// helpers restore the value they found.
+//
 // A slice flag is restored through Replace: Set appends, and its "[]"
 // default text would parse as one "[]" element.
 func resetSetFlags(cmds ...*cobra.Command) {
+	configFlag := rootCmd.PersistentFlags().Lookup("config")
 	reset := func(f *pflag.Flag) {
 		if !f.Changed {
+			return
+		}
+		if f == configFlag {
+			f.Changed = false
 			return
 		}
 		if sv, ok := f.Value.(pflag.SliceValue); ok {
