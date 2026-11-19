@@ -226,10 +226,11 @@ package final class CompanyConnectFlowModel {
         if let error = await open(wire: nil, slug: slug, variant: .mdm, linkFlow: nil) { show(.problem(error)) }
     }
 
-    /// **Connect the rest**: the chain over every vendor not connected yet
-    /// (the person's own press on their company's card is the consent).
+    /// **Connect the rest**: the confirm's same-bundle variant (A4) — the
+    /// connected services listed with their chip, the rest ticked.
     package func connectRest(slug: String) async {
-        await startStored(slug: slug) { rows in rows.filter { !$0.connected }.map(\.vendor) }
+        guard !isRunning else { return reshow() }
+        if let error = await open(wire: nil, slug: slug, variant: .again, linkFlow: nil) { show(.problem(error)) }
     }
 
     /// **Re-login** after a Replace: the chain over the changed vendors.
@@ -391,7 +392,7 @@ package final class CompanyConnectFlowModel {
         return nil
     }
 
-    /// Connect the rest and Re-login: the stored company's rows, then the
+    /// Re-login: the stored company's rows, then the
     /// chain straight away over `pick`'s vendors (forbidden ones never run).
     private func startStored(slug: String, pick: ([VendorRow]) -> [CompanyVendor]) async {
         guard !isRunning else { return reshow() }
@@ -446,7 +447,11 @@ package final class CompanyConnectFlowModel {
         }
         // The chain runs in the listener child; with port 18551 held by
         // another app there is none (a pasted code still stored the bundle).
-        if host.state == .portBusy { return show(.problem(Self.portBusy(company))) }
+        if host.state == .portBusy {
+            // Retry the listener now, so the next press works once the port is free.
+            host.ensureRunning()
+            return show(.problem(Self.portBusy(company)))
+        }
         chainFlow = flow
         awaitingStart = true
         show(.chain)

@@ -351,7 +351,7 @@ final class CompanyConnectFlowModelTests: XCTestCase {
     func testStoredCompanyRefusals() async {
         let rig = await makeRig()
         rig.model.externalBusy = { true }
-        await rig.model.connectRest(slug: "acme")
+        await rig.model.relogin(slug: "acme", vendors: [.google])
         XCTAssertEqual(rig.model.phase, .problem(Model.anotherRunning))
         XCTAssertEqual(rig.runs.count, 0)
         rig.model.finish()
@@ -365,13 +365,34 @@ final class CompanyConnectFlowModelTests: XCTestCase {
         XCTAssertEqual(rig.sent, [])
     }
 
-    func testConnectRestWithNothingLeftOpensNothing() async {
+    func testReloginWithNothingLeftOpensNothing() async {
         let rig = await makeRig()
-        rig.fake.enqueue(inspect(state: "same", connected: Self.allVendors))
-        await rig.model.connectRest(slug: "acme")
+        rig.fake.enqueue(inspect(state: "same", forbidden: ["google"]))
+        await rig.model.relogin(slug: "acme", vendors: [.google])
         XCTAssertEqual(rig.model.phase, .idle)
         XCTAssertFalse(rig.model.showsSheet)
         XCTAssertEqual(rig.sent, [])
+    }
+
+    /// The port freed after a busy refusal: the refusal retried the listener,
+    /// so the next press runs the chain.
+    func testPortBusyRetriesTheListener() async {
+        let rig = await makeRig()
+        rig.child.emit(#"{"event":"port_busy","port":18551}"#)
+        await untilObserved { rig.host.state == .portBusy }
+        rig.child.exit(code: 3)
+        rig.fake.enqueue(inspect(state: "same", vendors: ["google"]))
+        await rig.model.relogin(slug: "acme", vendors: [.google])
+        guard case .problem = rig.model.phase else { return XCTFail("\(rig.model.phase)") }
+        let fresh = await rig.fake.session(number: 2)
+        fresh.emit(#"{"event":"listening","port":18551}"#)
+        await untilObserved { rig.host.state == .listening }
+        rig.model.finish()
+
+        rig.fake.enqueue(inspect(state: "same", vendors: ["google"]))
+        await rig.model.relogin(slug: "acme", vendors: [.google])
+        XCTAssertEqual(rig.model.phase, .chain)
+        XCTAssertEqual(fresh.writtenLines.last, #"{"cmd":"company_connect","flow":"chain-1","slug":"acme","vendors":["google"]}"#)
     }
 
     /// Port 18551 held by another app: the code still stores the company,
@@ -547,11 +568,18 @@ final class CompanyConnectFlowModelTests: XCTestCase {
 
     // MARK: - Stored companies
 
-    func testConnectRestStartsWithoutConfirm() async {
+    /// A4: Connect the rest opens the confirm's same-bundle variant.
+    func testConnectRestOpensTheSameBundleConfirm() async {
         let rig = await makeRig()
         rig.fake.enqueue(inspect(state: "same", connected: ["slack", "atlassian"], forbidden: ["linear"]))
         await rig.model.connectRest(slug: "acme")
-        XCTAssertEqual(rig.model.phase, .chain)
+        XCTAssertEqual(rig.runs.last?.args, ["company", "inspect", "--json", "--slug", "acme"])
+        XCTAssertEqual(rig.model.phase, .confirm)
+        XCTAssertEqual(rig.model.variant, .again)
+        XCTAssertEqual(rig.sent, [], "nothing runs before Connect")
+
+        await rig.model.connect()
+        XCTAssertEqual(rig.runs.count, 1, "a stored company is not confirmed again")
         XCTAssertEqual(rig.sent, [#"{"cmd":"company_connect","flow":"chain-1","slug":"acme","#
             + #""vendors":["google","microsoft"]}"#])
     }
