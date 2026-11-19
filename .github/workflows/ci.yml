@@ -339,19 +339,35 @@ jobs:
       - name: Build and vet
         run: go build ./... && go vet ./...
 
+  # Three parallel jobs over disjoint package slices (`make test-cover
+  # SHARD=K/3`: packages dealt by measured weight — the split lives in
+  # scripts/coverage-gate.sh). Unsharded the suite took ~14 min on the Mac
+  # (2026-11-19), CPU-bound. Every threshold is per package, so each shard
+  # checks the packages it ran; internal/db runs a third on each shard and
+  # go-coverage checks it on the merged profiles.
   go-test:
-    name: Go Test
+    name: Go Test (${{ matrix.shard }}/3)
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.go == 'true'
     runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
-    # A hang must fail the job, not run to GitHub's 6 h default. Measured
-    # 2026-10-02: ~7 min on a PR; the race pass runs in go-test-race.
+    strategy:
+      # Every shard reports: one shard's failure must not hide another's.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    # A hang must fail the job, not run to GitHub's 6 h default; the race
+    # pass runs in go-test-race.
     timeout-minutes: 60
-    # On the Mac: half its cores (go test's -p follows GOMAXPROCS too), so the
-    # jobs beside it and the owner's own work keep the rest. Empty in the
-    # cloud, where the runtime ignores it.
+    # On the Mac the three shards share its 16 cores, so 4 each instead of
+    # the unsharded job's 8. GOMAXPROCS is per process: shard 1 runs cmd's 4
+    # slices (serial tests, about a core each) and a db slice; shards 2 and 3
+    # run up to 4 test binaries at once (go test's -p follows GOMAXPROCS)
+    # and a db slice — about 5 busy cores a shard. All three at 8 beside
+    # other work pushed the load past 200 in a local trial (2026-11-19) and
+    # git- and hook-timing tests failed. Empty in the cloud, where the
+    # runtime ignores it.
     env:
-      GOMAXPROCS: ${{ contains(needs.gate.outputs.linux, 'self-hosted') && '8' || '' }}
+      GOMAXPROCS: ${{ contains(needs.gate.outputs.linux, 'self-hosted') && '4' || '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -374,22 +390,61 @@ jobs:
 
       # The shell suite over scripts/build-app.sh — it stubs `ps` and never
       # builds, so it rides this job (Linux in the cloud) rather than paying
-      # for a macOS one.
-      # Seconds long, so it runs before the coverage gate: earlier signal, no cost.
+      # for a macOS one. Short, so it runs before the coverage gate: earlier
+      # signal. Shard 2 runs it, the hub smoke test runs in shard 3: their
+      # ~2 and ~1.5 min would make cmd's shard 1 the long one (measured
+      # 2026-11-19: every shard's test step ~4 min).
       - name: Test (shell scripts)
+        if: matrix.shard == 2
         run: make test-scripts
 
-      # Runs the full suite with -cover and enforces coverage.thresholds —
-      # this IS the test run on feature branches and PRs.
+      # Runs this shard's slice of the suite with -cover and enforces its
+      # packages' coverage.thresholds — this IS the test run on feature
+      # branches and PRs.
       - name: Test + coverage gate
         timeout-minutes: 25
-        run: make test-cover
+        run: make test-cover SHARD=${{ matrix.shard }}/3
 
-      # The headless hub smoke test, live mode on linux/amd64 (build tag smoke,
-      # so the coverage run above never includes it).
+      # The headless hub smoke test, live mode (build tag smoke, so the
+      # coverage run above never includes it).
       - name: Hub smoke test
+        if: matrix.shard == 3
         timeout-minutes: 10
         run: make hub-smoke
+
+      # This shard's internal/db profile, for go-coverage.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage-${{ matrix.shard }}
+          path: coverage-out/
+          if-no-files-found: error
+          # A re-run shard replaces its own profile (the run keeps its
+          # artifacts across attempts), and one re-run days later still finds
+          # the other shards'.
+          overwrite: true
+          retention-days: 7
+
+  # internal/db's coverage threshold over the three shards' profiles
+  # (`coverage-gate.sh --merge`: awk over the files, no Go, no build).
+  go-coverage:
+    name: Go Coverage (merged)
+    needs: [gate, go-test]
+    runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
+    timeout-minutes: 10
+    steps:
+      # A full checkout, not a sparse one: the Mac's runners reuse their
+      # workspace, and the next job's checkout there came out without go.mod
+      # after a sparse one (2026-11-19).
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: go-coverage-*
+          path: coverage-in
+          merge-multiple: true
+
+      - name: Coverage gate (merged)
+        run: ./scripts/coverage-gate.sh --merge coverage-in
 
   # The Go hub on linux/arm64 (a Raspberry Pi; Go hub phase 2, Task 2): the
   # build and the packages a headless host leans on, on a native arm64 runner
