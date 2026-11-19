@@ -61,7 +61,7 @@ struct WorkchatAgentsMock {
     static let error = "Couldn’t read the agents"
     static let retry = "Retry"
     static func doneTitle(_ count: Int) -> String { "Done · \(count)" }
-    static let lineText = "go test ./internal/sessionfeed -run TestLiveSteps"
+    static let lineText = "go test ./pkg/feed -run TestLiveSteps"
     static let lineMore = "· 7 more"
     static let lineElapsed = "1:12"
     static let placeholder = "Message the agent… (/ for commands)"
@@ -96,14 +96,14 @@ struct WorkchatAgentsMock {
         Agent(id: "d9", type: "general-purpose", task: "Map the feed adapter")
     ]
     static let turnSteps = [
-        Step(id: 1, tool: "Read", summary: "internal/sessionfeed/live.go", time: "0:01"),
+        Step(id: 1, tool: "Read", summary: "pkg/feed/steps.go", time: "0:01"),
         Step(id: 2, tool: "Grep", summary: "\"LiveAction\" in internal/", time: "0:01"),
-        Step(id: 3, tool: "Read", summary: "internal/sessionfeed/live_test.go", time: "0:02"),
-        Step(id: 4, tool: "Edit", summary: "internal/sessionfeed/live.go", time: "0:03"),
-        Step(id: 5, tool: "Bash", summary: "go test ./internal/sessionfeed", time: "0:14"),
-        Step(id: 6, tool: "Edit", summary: "internal/sessionfeed/live.go — cap the steps at 40", time: "0:02"),
+        Step(id: 3, tool: "Read", summary: "pkg/feed/steps_test.go", time: "0:02"),
+        Step(id: 4, tool: "Edit", summary: "pkg/feed/steps.go", time: "0:03"),
+        Step(id: 5, tool: "Bash", summary: "go test ./pkg/feed", time: "0:14"),
+        Step(id: 6, tool: "Edit", summary: "pkg/feed/steps.go — cap the steps at 40", time: "0:02"),
         Step(id: 7, tool: "Agent", summary: "codex-wrapper — Codex review of the plan", time: "0:41"),
-        Step(id: 8, tool: "Bash", summary: "go test ./internal/sessionfeed -run TestLiveSteps", time: "0:07", running: true)
+        Step(id: 8, tool: "Bash", summary: "go test ./pkg/feed -run TestLiveSteps", time: "0:07", running: true)
     ]
 
     // MARK: - States (spec §Mockups)
