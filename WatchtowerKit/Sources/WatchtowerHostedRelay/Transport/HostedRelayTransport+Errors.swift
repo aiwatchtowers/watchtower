@@ -61,7 +61,9 @@ extension HostedRelayTransport {
         do {
             let value = try await body()
             setReachable(true)
-            loginNotBefore = nil
+            // A hold stays to its deadline: a call already past the gate (a concurrent zone read) that still got
+            // through does not lift the relay's "retry later" for the next ones.
+            if let until = loginNotBefore, clock.now() >= until { loginNotBefore = nil }
             return value
         } catch {
             await note(error, zone: zone)

@@ -26,10 +26,13 @@ type hubDiagnosticsJSON struct {
 	PushOverflowExpired int `json:"push_overflow_expired"`
 }
 
-// hubDiagnosticsRowJSON is one step on one transport (pinned keys).
+// hubDiagnosticsRowJSON is one step on one transport (pinned keys), over
+// every action kind (kind "", the row as before kinds were recorded, listed
+// first) or for one action kind (kind additive, live link R7).
 type hubDiagnosticsRowJSON struct {
 	Step      string `json:"step"`
 	Transport string `json:"transport"`
+	Kind      string `json:"kind"`
 	P50Ms     int64  `json:"p50_ms"`
 	P90Ms     int64  `json:"p90_ms"`
 	Samples   int    `json:"samples"`
@@ -37,7 +40,7 @@ type hubDiagnosticsRowJSON struct {
 
 func init() {
 	diag := &cobra.Command{
-		Use: "diagnostics", Short: "Show the hub's content-free timings (p50/p90 per step and transport)",
+		Use: "diagnostics", Short: "Show the hub's content-free timings (p50/p90 per step, transport and action kind)",
 		Args: cobra.NoArgs, RunE: runHubDiagnostics,
 	}
 	diag.Flags().Bool("json", false, "print JSON")
@@ -66,16 +69,19 @@ func runHubDiagnostics(cmd *cobra.Command, _ []string) error {
 		return err
 	default:
 		since := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
-		rows, err := st.LatencyStats(since)
+		rows, byKind, err := st.LatencyStatsWithKinds(since) // byKind nil before sidecar 00018
 		overflow, oerr := st.AlertPushOverflows(since)
 		_ = st.Close()
 		if err := errors.Join(err, oerr); err != nil {
 			return err
 		}
 		for _, r := range rows {
-			out.Rows = append(out.Rows, hubDiagnosticsRowJSON{
-				Step: r.Step, Transport: r.Transport, P50Ms: r.P50.Milliseconds(), P90Ms: r.P90.Milliseconds(), Samples: r.Samples,
-			})
+			out.Rows = append(out.Rows, hubDiagnosticsRow(r))
+			for _, k := range byKind {
+				if k.Step == r.Step && k.Transport == r.Transport && k.Kind != "" {
+					out.Rows = append(out.Rows, hubDiagnosticsRow(k))
+				}
+			}
 		}
 		out.PushOverflowExpired = overflow
 	}
@@ -87,10 +93,20 @@ func runHubDiagnostics(cmd *cobra.Command, _ []string) error {
 		lines = append(lines, "  no timings yet")
 	}
 	for _, r := range out.Rows {
-		lines = append(lines, fmt.Sprintf("  %s on %s: p50 %d ms, p90 %d ms (%d samples)", r.Step, r.Transport, r.P50Ms, r.P90Ms, r.Samples))
+		kind := ""
+		if r.Kind != "" {
+			kind = " (" + r.Kind + ")" // one action kind, after its step's all-kinds line
+		}
+		lines = append(lines, fmt.Sprintf("  %s on %s%s: p50 %d ms, p90 %d ms (%d samples)", r.Step, r.Transport, kind, r.P50Ms, r.P90Ms, r.Samples))
 	}
 	if out.PushOverflowExpired > 0 {
 		lines = append(lines, fmt.Sprintf("  %d alert push(es) dropped: too many waiting", out.PushOverflowExpired))
 	}
 	return hubPrint(cmd, false, nil, strings.Join(lines, "\n"))
+}
+
+func hubDiagnosticsRow(r state.LatencyRow) hubDiagnosticsRowJSON {
+	return hubDiagnosticsRowJSON{
+		Step: r.Step, Transport: r.Transport, Kind: r.Kind, P50Ms: r.P50.Milliseconds(), P90Ms: r.P90.Milliseconds(), Samples: r.Samples,
+	}
 }

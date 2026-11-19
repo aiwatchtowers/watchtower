@@ -2,10 +2,13 @@ package relay
 
 import (
 	"errors"
+	"maps"
 	"slices"
 	"testing"
 
+	"watchtower/internal/hub/relaytest"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/relay/relayv1"
 )
 
 // pullEventHarness is a zone already read up to its last seq, and a log of
@@ -18,7 +21,13 @@ type pullEventHarness struct {
 
 func newPullEventHarness(t *testing.T) *pullEventHarness {
 	t.Helper()
-	h := &pullEventHarness{harness: newHarness(t)}
+	return newPullEventHarnessOn(t, relaytest.Start(t))
+}
+
+// newPullEventHarnessOn is newPullEventHarness over srv.
+func newPullEventHarnessOn(t *testing.T, srv *relaytest.Server) *pullEventHarness {
+	t.Helper()
+	h := &pullEventHarness{harness: newHarnessOn(t, srv)}
 	h.zone = h.data
 	h.relay.Put(h.zone, "n0", []byte{0})
 	if err := h.tr.Pull(t.Context(), h.zone, h.apply); err != nil {
@@ -205,5 +214,162 @@ func TestRelayTransport_PullEventUnnotedOwnWriteIsRead(t *testing.T) {
 	h.pullEvent(t, ev)
 	if h.tr.OwnWrites(ev) || h.tr.OwnWrites(transport.Event{Zone: h.zone}) {
 		t.Fatal("an event already read, or a resync marker, taken as own")
+	}
+}
+
+// inlineRecords is a zone event at seq carrying the records written at the
+// given seqs, named as given.
+func (h *pullEventHarness) inlineRecords(seq uint64, recs map[uint64]string) transport.Event {
+	b := &transport.Batch{NewSeq: seq}
+	for _, s := range slices.Sorted(maps.Keys(recs)) {
+		b.Changed = append(b.Changed, transport.Stored{Zone: h.zone, Name: recs[s], Envelope: []byte{9}, RecordSeq: s})
+	}
+	return transport.Event{Zone: h.zone, Seq: seq, Inline: b}
+}
+
+// nextSeqEvent waits for the next event of the harness's zone that names a
+// seq (the initial marker and others skipped).
+func (h *pullEventHarness) nextSeqEvent(t *testing.T) transport.Event {
+	t.Helper()
+	for {
+		if ev := nextEvent(t, h.tr); ev.Zone == h.zone && ev.Err == nil && ev.Seq > 0 {
+			return ev
+		}
+	}
+}
+
+// foreignSave saves n records into the zone as another writer would (a
+// transport whose saves this one never noted as its own).
+func (h *pullEventHarness) foreignSave(t *testing.T, other *Transport, names ...string) uint64 {
+	t.Helper()
+	var items []transport.SaveItem
+	for _, n := range names {
+		items = append(items, transport.SaveItem{Record: h.seal(t, n, `{}`)})
+	}
+	out, err := other.Save(t.Context(), items)
+	if err != nil || !out[len(out)-1].Saved {
+		t.Fatalf("save %+v, %v", out, err)
+	}
+	return out[len(out)-1].RecordSeq
+}
+
+// A save of several records comes as one event carrying all of them (relay
+// records_inline): applied as is, no changes read, the token at its seq.
+func TestPullEvent_MultiRecordInlineNeedsNoRead(t *testing.T) {
+	h := newPullEventHarness(t)
+	h.connectVouched(t)
+	seq := h.foreignSave(t, h.newTransport(t), "target-1", "target-2", "target-3")
+	ev := h.nextSeqEvent(t)
+	if ev.Seq != seq || ev.Inline == nil || len(ev.Inline.Changed) != 3 {
+		t.Fatalf("event %+v", ev)
+	}
+	before := h.changes()
+	h.pullEvent(t, ev)
+	if n := h.changes() - before; n != 0 || len(h.got) != 3 || h.token(t) != seq {
+		t.Fatalf("%d reads, applied %v, token %d (want %d)", n, h.got, h.token(t), seq)
+	}
+}
+
+// An event whose records span the hub's own write: the own seq is skipped,
+// the others applied, no read.
+func TestPullEvent_InlineWithOwnWritesBetween(t *testing.T) {
+	h := newPullEventHarness(t)
+	first := h.relay.Put(h.zone, "phone-1", []byte{1})
+	out, err := h.tr.Save(t.Context(), []transport.SaveItem{{Record: h.seal(t, "target-1", `{}`)}})
+	if err != nil || out[0].RecordSeq != first+1 {
+		t.Fatalf("save %+v, %v", out, err)
+	}
+	last := h.relay.Put(h.zone, "phone-3", []byte{3})
+	before := h.changes()
+	h.pullEvent(t, h.inlineRecords(last, map[uint64]string{first: "phone-1", first + 1: "own", last: "phone-3"}))
+	if n := h.changes() - before; n != 0 || !slices.Equal(h.got, []string{"phone-1", "phone-3"}) || h.token(t) != last {
+		t.Fatalf("%d reads, applied %v, token %d", n, h.got, h.token(t))
+	}
+}
+
+// Records that miss a seq after the token (they start past it, or skip one
+// in the middle) are a changes read from the token.
+func TestPullEvent_GapReads(t *testing.T) {
+	h := newPullEventHarness(t)
+	h.relay.Put(h.zone, "n1", []byte{1})
+	s2 := h.relay.Put(h.zone, "n2", []byte{2})
+	s3 := h.relay.Put(h.zone, "n3", []byte{3})
+	before := h.changes()
+	h.pullEvent(t, h.inlineRecords(s3, map[uint64]string{s2: "n2", s3: "n3"}))
+	if n := h.changes() - before; n != 1 || !slices.Equal(h.got, []string{"n1", "n2", "n3"}) || h.token(t) != s3 {
+		t.Fatalf("records after the token: %d reads, applied %v, token %d", n, h.got, h.token(t))
+	}
+	s4 := h.relay.Put(h.zone, "n4", []byte{4})
+	h.relay.Put(h.zone, "n5", []byte{5})
+	s6 := h.relay.Put(h.zone, "n6", []byte{6})
+	h.got = nil
+	h.pullEvent(t, h.inlineRecords(s6, map[uint64]string{s4: "n4", s6: "n6"}))
+	if n := h.changes() - before; n != 2 || !slices.Equal(h.got, []string{"n4", "n5", "n6"}) || h.token(t) != s6 {
+		t.Fatalf("a seq missing in the middle: %d reads, applied %v, token %d", n, h.got, h.token(t))
+	}
+}
+
+// A relay before records_inline sends only the old single record: a
+// one-record save is applied from the event as before, a multi-record save
+// is read.
+func TestPullEvent_OldRelayWithoutCapability(t *testing.T) {
+	srv := relaytest.Start(t)
+	srv.DisableRecordsInline()
+	h := newPullEventHarnessOn(t, srv)
+	h.connectVouched(t)
+	other := h.newTransport(t)
+	before := h.changes()
+	seq := h.foreignSave(t, other, "target-1")
+	ev := h.nextSeqEvent(t)
+	h.pullEvent(t, ev)
+	if n := h.changes() - before; n != 0 || len(h.got) != 1 || h.token(t) != seq {
+		t.Fatalf("one record: %d reads, applied %v, token %d", n, h.got, h.token(t))
+	}
+	seq = h.foreignSave(t, other, "target-2", "target-3", "target-4")
+	if ev = h.nextSeqEvent(t); ev.Inline != nil {
+		t.Fatalf("an old relay's multi-record event inline: %+v", ev)
+	}
+	h.pullEvent(t, ev)
+	if n := h.changes() - before; n != 1 || len(h.got) != 4 || h.token(t) != seq {
+		t.Fatalf("three records: %d reads, applied %v, token %d", n, h.got, h.token(t))
+	}
+}
+
+// The pump hands records on as one page only when they run without a gap up
+// to the event's seq and none is a deletion; records win over the old single
+// record, which a relay with records_inline fills only for a one-record event.
+func TestRelayTransport_ZoneChangedRecordsInline(t *testing.T) {
+	h := newHarness(t)
+	if err := h.tr.Connect(t.Context(), []string{h.data}); err != nil {
+		t.Fatal(err)
+	}
+	waitZoneEvent(t, h.tr, h.data)
+	rec := func(name string, seq uint64) *relayv1.Record {
+		return &relayv1.Record{Name: name, Envelope: []byte{1}, RecordSeq: seq}
+	}
+	push := func(zc *relayv1.ZoneChanged) transport.Event {
+		t.Helper()
+		zc.Zone = h.data
+		h.relay.Push(t, &relayv1.Event{Kind: &relayv1.Event_ZoneChanged{ZoneChanged: zc}})
+		return nextEvent(t, h.tr)
+	}
+	ev := push(&relayv1.ZoneChanged{Seq: 5, Records: []*relayv1.Record{rec("a", 3), rec("b", 4), rec("c", 5)}})
+	if ev.Inline == nil || ev.Inline.NewSeq != 5 || len(ev.Inline.Changed) != 3 ||
+		ev.Inline.Changed[0].Name != "a" || ev.Inline.Changed[0].RecordSeq != 3 || ev.Inline.Changed[2].Zone != h.data {
+		t.Fatalf("records: %+v", ev.Inline)
+	}
+	for name, zc := range map[string]*relayv1.ZoneChanged{
+		"a gap":              {Seq: 5, Records: []*relayv1.Record{rec("a", 3), rec("c", 5)}},
+		"not up to the seq":  {Seq: 6, Records: []*relayv1.Record{rec("a", 4), rec("b", 5)}},
+		"a deletion":         {Seq: 5, Records: []*relayv1.Record{rec("a", 4), {Name: "b", RecordSeq: 5, Deleted: true}}},
+		"more than the seqs": {Seq: 1, Records: []*relayv1.Record{rec("a", 0), rec("b", 1)}},
+	} {
+		if ev = push(zc); ev.Inline != nil {
+			t.Fatalf("%s: inline %+v", name, ev.Inline)
+		}
+	}
+	ev = push(&relayv1.ZoneChanged{Seq: 7, Record: rec("x", 7), Records: []*relayv1.Record{rec("x", 7)}})
+	if ev.Inline == nil || len(ev.Inline.Changed) != 1 || ev.Inline.Changed[0].Name != "x" {
+		t.Fatalf("one record in both fields: %+v", ev.Inline)
 	}
 }

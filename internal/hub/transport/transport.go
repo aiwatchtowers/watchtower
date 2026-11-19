@@ -151,9 +151,12 @@ type Control struct {
 // CloudKit bridge created the hub's zones again after CloudKit said one was
 // gone (deleted on the server): the runtime republishes everything.
 // Seq is the zone's seq after the change the event announces (the hosted
-// relay's ZoneChanged; 0 = not known, pull). Inline is that change as a
-// one-record page (NewSeq = Seq) when the relay carried the record in the
-// event: a consumer whose cursor is right below it needs no read.
+// relay's ZoneChanged; 0 = not known, pull). Inline is the records the
+// relay carried in the event as one page (NewSeq = Seq): contiguous, oldest
+// first, the last at Seq, each with its RecordSeq; a consumer whose cursor
+// they continue needs no read. ArrivedAt
+// is when the transport received the event (its clock), set on every event
+// a transport emits: the start of the latency samples' event_read.
 // Events are best effort: a consumer still pulls on its own backstop timer.
 type Event struct {
 	Zone           string
@@ -165,6 +168,7 @@ type Event struct {
 	ZonesRecreated bool
 	Seq            uint64
 	Inline         *Batch
+	ArrivedAt      time.Time
 }
 
 // Transport is the record store under the sealer.

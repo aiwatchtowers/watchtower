@@ -18,6 +18,16 @@ enum AskText {
     static let agentContextLabel = "Agent, before asking"
     static let showMore = "Show more"
     static let showLess = "Show less"
+
+    /// A review's verdict as a closed ask and an answer on its way name it.
+    static func verdictLabel(_ verdict: OwnerAskAnswer.Verdict) -> String {
+        verdict == .approved ? "Approved" : "Changes requested"
+    }
+
+    /// A question's free-text answer as a closed ask and an answer on its way name it.
+    static func otherLabel(_ text: String) -> String {
+        "Other: \(text)"
+    }
     /// The agent's message folds past these (5 lines shown).
     static let agentContextFoldCharacters = 280
     static let agentContextFoldLines = 5

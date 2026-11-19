@@ -5,7 +5,10 @@ import WatchtowerRelayProto
 public enum HostedRelayClientEvent: Equatable, Sendable {
     /// A zone changed. `seq` 0 is record-less: "pull, you may have missed changes"
     /// (after every connect, and in place of events that did not fit the buffer).
-    case zoneChanged(zone: String, seq: UInt64)
+    /// `records`: the records of the writes up to `seq`, oldest first, when the relay sent them
+    /// (`ZoneChanged.records`, else its single `record`); a reader whose cursor they continue
+    /// applies them without a `changes` read (live link R1).
+    case zoneChanged(zone: String, seq: UInt64, records: [Relay_V1_Record] = [])
     /// The relay refused to subscribe the zone; it is dropped from the connection's set.
     case zoneRefused(zone: String, error: HostedRelayError)
     /// A control event (`SESSION_EXPIRED` is handled by the connection and never reported).
@@ -21,8 +24,9 @@ public enum HostedRelayClientEvent: Equatable, Sendable {
 
 /// The connection's event queue (the Go `Conn.events` + backlog + resync).
 /// Writers never wait: a zone event that does not fit `capacity` is folded
-/// into that zone's record-less `zoneChanged`, delivered once the queue has
-/// emptied; every other event is queued without bound and never dropped.
+/// into that zone's record-less `zoneChanged` (its records dropped: the reader
+/// pulls), delivered once the queue has emptied; every other event is queued
+/// without bound and never dropped.
 /// One reader, through `next()`.
 final class RelayEventBuffer: Sendable {
     private struct State {
@@ -45,9 +49,9 @@ final class RelayEventBuffer: Sendable {
         hand(event) { $0.queue.append(event) }
     }
 
-    /// A zone event from the socket: queued when it fits, else owed as a record-less one.
-    func zoneChanged(_ zone: String, seq: UInt64) {
-        let event = HostedRelayClientEvent.zoneChanged(zone: zone, seq: seq)
+    /// A zone event from the socket: queued with its records when it fits, else owed as a record-less one.
+    func zoneChanged(_ zone: String, seq: UInt64, records: [Relay_V1_Record] = []) {
+        let event = HostedRelayClientEvent.zoneChanged(zone: zone, seq: seq, records: records)
         hand(event) { state in
             // An owed marker already covers this change.
             guard !state.owed.contains(zone) else { return }

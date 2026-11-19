@@ -984,6 +984,9 @@ func TestTooLargeAnswerIsLoggedOnce(t *testing.T) {
 	r.start()
 	r.enqueue("ask-1")
 	r.nextN(2)
+	// The settle is announced before the log line is written (deliver
+	// settles, then after logs); Stop waits for both senders to finish.
+	r.p.Stop()
 	if n := strings.Count(sink.String(), "too large"); n != 1 {
 		t.Fatalf("too-large logged %d times; want 1:\n%s", n, sink.String())
 	}

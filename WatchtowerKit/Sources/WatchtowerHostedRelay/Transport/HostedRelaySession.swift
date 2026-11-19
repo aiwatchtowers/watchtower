@@ -19,6 +19,9 @@ public actor HostedRelaySession {
     static let logger = Logger(subsystem: "WatchtowerKit", category: "HostedRelay")
     /// `events` keeps the newest this many while nobody reads.
     static let eventBuffer = 256
+    /// The most record bytes (framed as the relay counts them, `recordBytes`) of zone events one owner's inbox holds unread: an event past it is
+    /// delivered without its records, so its owner reads the zone (the relay's own lane bound, `MAX_LANE_BYTES`).
+    static let inboxRecordBytes = 1 << 20
 
     nonisolated public let client: HostedRelayClient
     /// Account-level relay signals: socket controls (`ENTITLEMENT_EXPIRED`, `SUBSCRIPTION_MOVED`,
@@ -38,6 +41,8 @@ public actor HostedRelaySession {
     private struct Owner {
         var zones: [String]
         let inbox: AsyncStream<HostedRelayClientEvent>.Continuation
+        /// The record bytes of the zone events waiting in `inbox`.
+        let waiting: OSAllocatedUnfairLock<Int>
         let reader: Task<Void, Never>
     }
 
@@ -56,6 +61,8 @@ public actor HostedRelaySession {
     private var reachabilityKnown = false
     /// The open connection's last `.connected` / `.disconnected`: nil before its first `connected`.
     private var socketState: HostedRelayClientEvent?
+    /// The wake in flight, fired when it ends: every hub's return to the foreground joins it.
+    private var waking: Latch?
 
     public init(client: HostedRelayClient) {
         self.init(client: client, mirror: nil)
@@ -92,10 +99,15 @@ public actor HostedRelaySession {
             order.append(id)
         }
         let (stream, inbox) = AsyncStream.makeStream(of: HostedRelayClientEvent.self)
+        let waiting = OSAllocatedUnfairLock(initialState: 0)
         let reader = Task {
-            for await event in stream { await handler(event) }
+            for await event in stream {
+                let bytes = Self.recordBytes(event)
+                if bytes > 0 { waiting.withLock { $0 -= bytes } }
+                await handler(event)
+            }
         }
-        owners[id] = Owner(zones: zones, inbox: inbox, reader: reader)
+        owners[id] = Owner(zones: zones, inbox: inbox, waiting: waiting, reader: reader)
         // A late owner learns the open socket's state at once.
         if connection != nil, let socketState { inbox.yield(socketState) }
         if connection == nil {
@@ -168,13 +180,37 @@ public actor HostedRelaySession {
     /// `get_account_state`: an entitlement that does not pay is `.entitlementInactive`.
     func readAccountState() async {
         do {
-            let state = try await client.accountState()
+            let state = try await accountState()
             let inactive: [Relay_V1_EntitlementKind] = [Relay_V1_EntitlementKind.none, .expired, .revoked]
             if inactive.contains(state.entitlement.state) { publish(.entitlementInactive) }
         } catch {
             if let error = error as? HostedRelayError, publishStop(error) { return }
             Self.logger.error("relay account state failed")
         }
+    }
+
+    // MARK: - Wake (live link R6)
+
+    /// The app became active (`HostedRelayConnection.wake`): the socket is pinged; with no pong within
+    /// `HostedRelayConnection.wakePingDeadline` it is dropped at once (the reads go over HTTPS) and a second socket is
+    /// dialled in the background; a connection waiting out a reconnect backoff dials at once. Returns at most the ping
+    /// deadline later; a wake already in flight is joined. Nothing without a connection (nobody wants the socket).
+    public func wake() async {
+        // Each caller's wait is cancellable on its own (the app left): the shared wake goes on for the others.
+        if let waking { return await waking.wait() }
+        guard let connection else { return }
+        let done = Latch()
+        waking = done
+        Task {
+            await connection.wake()
+            await self.wakeEnded(done)
+        }
+        await done.wait()
+    }
+
+    private func wakeEnded(_ done: Latch) {
+        if waking === done { waking = nil }
+        done.fire()
     }
 
     // MARK: - The socket
@@ -235,8 +271,18 @@ public actor HostedRelaySession {
     private func route(_ event: HostedRelayClientEvent, from source: HostedRelayConnection) async {
         guard source === connection else { return }
         switch event {
-        case .zoneChanged(let zone, _):
-            deliver(event, to: owners(of: zone))
+        case let .zoneChanged(zone, seq, _):
+            let bytes = Self.recordBytes(event)
+            for id in owners(of: zone) {
+                guard let owner = owners[id] else { continue }
+                // An owner busy with a pull holds what it has not read: bounded, the rest come record-less.
+                let fits = bytes == 0 || owner.waiting.withLock { waiting in
+                    guard waiting + bytes <= Self.inboxRecordBytes else { return false }
+                    waiting += bytes
+                    return true
+                }
+                owner.inbox.yield(fits ? event : .zoneChanged(zone: zone, seq: seq))
+            }
         case .zoneRefused(let zone, _):
             deliver(event, to: owners(of: zone))
             // The connection dropped it from its set: so does the union.
@@ -275,6 +321,24 @@ public actor HostedRelaySession {
 
     private func owners(of zone: String) -> [ObjectIdentifier] {
         order.filter { owners[$0]?.zones.contains(zone) == true }
+    }
+
+    /// The record bytes waiting unread in `owner`'s inbox.
+    func unreadRecordBytes(owner id: ObjectIdentifier) -> Int {
+        owners[id]?.waiting.withLock { $0 } ?? 0
+    }
+
+    /// What a record costs in an event besides its strings (the relay's `RECORD_OVERHEAD_BYTES`).
+    static let recordOverheadBytes = 32
+
+    /// The bytes of a zone event's records as the relay frames them (its `recordFrameBytes`: envelope, name,
+    /// zone and attachment id plus a fixed overhead, so many tiny records count too); 0 for any other event.
+    private static func recordBytes(_ event: HostedRelayClientEvent) -> Int {
+        guard case .zoneChanged(_, _, let records) = event else { return 0 }
+        return records.reduce(0) { sum, record in
+            sum + record.envelope.count + record.name.utf8.count + record.zone.utf8.count
+                + record.attachmentID.utf8.count + recordOverheadBytes
+        }
     }
 
     private func deliver(_ event: HostedRelayClientEvent, to ids: [ObjectIdentifier]) {

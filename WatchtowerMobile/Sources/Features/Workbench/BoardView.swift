@@ -113,11 +113,26 @@ struct BoardView: View {
             .accessibilityLabel(SectionHeader.spokenLabel(lane.title, count: lane.nodes.count))
             .accessibilityValue(isOpen ? "Expanded" : "Collapsed")
             if isOpen {
-                ForEach(lane.nodes) { BoardNodeView(node: $0, folds: folds, onToggle: toggleGroup) }
+                ForEach(lane.nodes) { nodeView($0, folds: folds) }
             }
         } else {
             SectionHeader(lane.title, count: lane.nodes.count, style: .lane)
-            ForEach(lane.nodes) { BoardNodeView(node: $0, folds: nil, onToggle: toggleGroup) }
+            ForEach(lane.nodes) { nodeView($0, folds: nil) }
+        }
+    }
+
+    private func nodeView(_ node: BoardNode, folds: BoardFolds?) -> BoardNodeView {
+        BoardNodeView(node: node, folds: folds, onToggle: toggleGroup, onApplyAnyway: applyAnyway, onDismiss: dismiss)
+    }
+
+    /// Yes on a card's conflict prompt.
+    private func applyAnyway(_ row: BoardWriteRow) {
+        Task {
+            do {
+                try await writer.applyAnyway(row)
+            } catch {
+                sendError = BoardWriteText.sendError(error)
+            }
         }
     }
 
@@ -213,15 +228,29 @@ struct BoardNodeView: View {
     let node: BoardNode
     let folds: BoardFolds?
     let onToggle: (Int64) -> Void
+    /// A card's refused write (`BoardNode.caption`): Yes on a conflict, and Dismiss.
+    var onApplyAnyway: (BoardWriteRow) -> Void = { _ in }
+    var onDismiss: (BoardWriteRow) -> Void = { _ in }
 
     private var isOpen: Bool { folds?.isGroupOpen(node.id) ?? true }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             card
+            if let caption = node.caption {
+                BoardWriteCaption(
+                    state: caption.state,
+                    onApplyAnyway: { caption.row.map(onApplyAnyway) },
+                    onDismiss: { caption.row.map(onDismiss) }
+                )
+                .buttonStyle(.borderless)
+                .padding(.horizontal, Spacing.small)
+            }
             if node.hasDisclosure, isOpen {
                 VStack(alignment: .leading, spacing: Spacing.regular) {
-                    ForEach(node.children) { Self(node: $0, folds: folds, onToggle: onToggle) }
+                    ForEach(node.children) {
+                        Self(node: $0, folds: folds, onToggle: onToggle, onApplyAnyway: onApplyAnyway, onDismiss: onDismiss)
+                    }
                 }
                 .padding(.leading, Spacing.large)
             }
@@ -230,27 +259,37 @@ struct BoardNodeView: View {
 
     private var foldable: Bool { node.hasDisclosure && folds != nil }
 
+    @ViewBuilder
     private var card: some View {
-        NavigationLink(value: BoardTargetRoute(id: node.id)) {
-            // The chevron lies over the card's trailing edge, so a group is
-            // as wide as its lane's other cards.
-            BoardCard(model: node.card, isDimmed: node.isDimmed, trailingReserve: foldable ? PhoneMetrics.minTouch - Spacing.large : 0)
-        }
-        .buttonStyle(.plain)
-        .overlay(alignment: .trailing) {
-            if foldable {
-                Button {
-                    onToggle(node.id)
-                } label: {
-                    Image(systemName: isOpen ? "chevron.down" : "chevron.right")
-                        .font(TypeScale.meta)
-                        .foregroundStyle(.secondary)
-                        .frame(width: PhoneMetrics.minTouch, height: PhoneMetrics.minTouch)
-                        .contentShape(Rectangle())
-                }
+        if node.opensDetail {
+            NavigationLink(value: BoardTargetRoute(id: node.id)) { cardBody }
                 .buttonStyle(.plain)
-                .accessibilityLabel(isOpen ? "Collapse sub-targets" : "Expand sub-targets")
+                .overlay(alignment: .trailing) { chevron }
+        } else {
+            cardBody
+        }
+    }
+
+    /// The chevron lies over the card's trailing edge, so a group is as
+    /// wide as its lane's other cards.
+    private var cardBody: some View {
+        BoardCard(model: node.card, isDimmed: node.isDimmed, trailingReserve: foldable ? PhoneMetrics.minTouch - Spacing.large : 0)
+    }
+
+    @ViewBuilder
+    private var chevron: some View {
+        if foldable {
+            Button {
+                onToggle(node.id)
+            } label: {
+                Image(systemName: isOpen ? "chevron.down" : "chevron.right")
+                    .font(TypeScale.meta)
+                    .foregroundStyle(.secondary)
+                    .frame(width: PhoneMetrics.minTouch, height: PhoneMetrics.minTouch)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isOpen ? "Collapse sub-targets" : "Expand sub-targets")
         }
     }
 }
