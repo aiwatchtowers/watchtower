@@ -217,3 +217,21 @@ func TestFeed01_ReaderLeavesTranscriptUntouched(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, entries, 1, "reader must create no sibling files")
 }
+
+// A Done row from a sidecar-only marker (the launch call not in the parent
+// transcript) opens: FindSubagent searches the feed's subagent list.
+func TestFindSubagent_SidecarOnlyMarker(t *testing.T) {
+	dir := t.TempDir()
+	a := writeConv(t, dir, "A", userStr("u1", "go"))
+	writeSub(t, filepath.Join(dir, "A"), "ag1",
+		`{"toolUseId":"tu1","finished":true,"agentType":"Explore","description":"look"}`,
+		sideRec(userStr("s1", "the task")))
+	res, path, err := FindSubagent([]Conversation{a}, "tu1")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, "A", "subagents", "agent-ag1.jsonl"), path)
+	require.NotEmpty(t, res.Entries)
+	assert.Equal(t, "the task", res.Entries[0].Text)
+
+	_, _, err = FindSubagent([]Conversation{a}, "tu-missing")
+	assert.ErrorContains(t, err, "not found")
+}

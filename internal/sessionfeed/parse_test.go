@@ -306,8 +306,9 @@ func TestParse_ParallelBatchesKeepFileOrder(t *testing.T) {
 	assert.Equal(t, int64(7+len(full)), res.Offset)
 }
 
-// BenchmarkParse is the regression guard of a large pane's first open: a
-// ~1,000-entry transcript of the record mix a long Claude Code session writes
+// BenchmarkParse is a manual throughput benchmark of a large pane's first
+// open (run it with -bench; nothing fails on a slowdown, so it is not a
+// regression guard): a ~1,000-entry transcript of the record mix a long Claude Code session writes
 // (owner lines, streamed agent text, tool calls and results, ignored types).
 func BenchmarkParse(b *testing.B) {
 	var sb strings.Builder

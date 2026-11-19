@@ -233,7 +233,10 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 	if feed.Cursor.Conv != "" {
 		out.Cursor = feed.Cursor.String()
 	}
-	if len(convs) > 0 {
+	// An earlier page (--tail --before) is history only: the store reads the
+	// live hint from its tail polls, so the page skips both tail reads and
+	// prints them empty (activity and live null, live_ok false).
+	if len(convs) > 0 && before == "" {
 		last := convs[len(convs)-1]
 		out.Activity = sessionFeedActivity(last.Path, last.Codex, false)
 		setSessionFeedLive(&out, last, false)
