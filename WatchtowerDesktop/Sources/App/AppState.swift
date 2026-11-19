@@ -319,7 +319,7 @@ final class AppState {
     /// Google Accounts ViewModel (multi-account Calendar/Gmail) — persists
     /// across tab switches so an in-flight OAuth connect survives navigating
     /// away from the Settings window.
-    private(set) var googleAccountsViewModel: GoogleAccountsViewModel?
+    var googleAccountsViewModel: GoogleAccountsViewModel? // a test may set it
 
     /// Slack Accounts ViewModel (multi-workspace) — persists across tab
     /// switches so an in-flight OAuth connect survives navigating away from the
@@ -329,7 +329,7 @@ final class AppState {
     /// Jira Accounts ViewModel (multi-site) — persists across tab switches so
     /// an in-flight OAuth connect survives navigating away from the Settings
     /// window.
-    private(set) var jiraAccountsViewModel: JiraAccountsViewModel?
+    var jiraAccountsViewModel: JiraAccountsViewModel? // a test may set it
     /// Linear Accounts ViewModel — held here so an in-flight consent survives leaving Settings.
     var linearAccountsViewModel: LinearAccountsViewModel? // a test may set it
 
@@ -1720,7 +1720,7 @@ final class AppState {
     }
 
     func initJiraAccounts(dbPool: DatabasePool) {
-        let vm = JiraAccountsViewModel(dbPool: dbPool)
+        let vm = JiraAccountsViewModel(dbPool: dbPool, readsAccountFlags: !Self.runsUnderXCTest)
         vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
         vm.refresh()
         jiraAccountsViewModel = vm
@@ -2004,7 +2004,7 @@ final class AppState {
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {
-        let vm = GoogleAccountsViewModel(dbPool: dbPool)
+        let vm = GoogleAccountsViewModel(dbPool: dbPool, readsAccountFlags: !Self.runsUnderXCTest)
         vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
         vm.refresh()
         googleAccountsViewModel = vm

@@ -1,3 +1,4 @@
+import DesignKit
 import GRDB
 import OSLog
 import SwiftUI
@@ -21,7 +22,7 @@ struct JiraBoardsSettingsView: View {
     private static let log = Logger(subsystem: "com.watchtower.desktop", category: "jira-boards")
 
     var body: some View {
-        Section("Boards") {
+        SettingsSection(title: "Boards") {
             if boards.isEmpty {
                 Text("No boards synced yet")
                     .foregroundStyle(.secondary)

@@ -15,8 +15,15 @@ struct AddGoogleAccountView: View {
     /// mid-setup (`DaemonRestartPolicy`). Settings keeps the default.
     let daemonPolicy: DaemonRestartPolicy
 
-    init(daemonPolicy: DaemonRestartPolicy = .restart) {
+    /// Opened as **Use my own Google project** (#1887, until Task 26's page):
+    /// the custom client shows from the start and Connect needs both halves,
+    /// so Gmail never goes to the shared app, which refuses it (D11).
+    let requiresCustomClient: Bool
+
+    init(daemonPolicy: DaemonRestartPolicy = .restart, requiresCustomClient: Bool = false) {
         self.daemonPolicy = daemonPolicy
+        self.requiresCustomClient = requiresCustomClient
+        _showAdvanced = State(initialValue: requiresCustomClient)
     }
 
     /// The sheet opens with both services checked on every surface,
@@ -47,6 +54,7 @@ struct AddGoogleAccountView: View {
 
     private var canConnect: Bool {
         (wantCalendar || wantGmail) && customClientFieldsConsistent
+            && (!requiresCustomClient || !clientID.trimmingCharacters(in: .whitespaces).isEmpty)
     }
 
     var body: some View {

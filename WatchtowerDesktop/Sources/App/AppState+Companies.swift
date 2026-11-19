@@ -18,13 +18,20 @@ extension AppState {
                            status: a.status, error: a.error, sharedApp: shared.contains(a.id))
             }
         }
-        refs += (googleAccountsViewModel?.accounts ?? []).map { a in
-            AccountRef(vendor: .google, accountID: a.id, label: a.displayName, companySlug: a.companySlug,
-                       status: a.status, error: a.error)
+        if let vm = googleAccountsViewModel {
+            let shared = vm.sharedFlags.accountIDs
+            refs += vm.accounts.map { a in
+                AccountRef(vendor: .google, accountID: a.id, label: a.displayName, companySlug: a.companySlug,
+                           status: a.status, error: a.error, sharedApp: shared.contains(a.id))
+            }
         }
-        refs += (jiraAccountsViewModel?.accounts ?? []).map { a in
-            AccountRef(vendor: .atlassian, accountID: a.id, label: URL(string: a.siteURL)?.host ?? a.displayName,
-                       companySlug: a.companySlug, status: a.status, error: a.error, authKind: a.authKind)
+        if let vm = jiraAccountsViewModel {
+            let shared = vm.sharedFlags.accountIDs
+            refs += vm.accounts.map { a in
+                AccountRef(vendor: .atlassian, accountID: a.id, label: URL(string: a.siteURL)?.host ?? a.displayName,
+                           companySlug: a.companySlug, status: a.status, error: a.error, authKind: a.authKind,
+                           sharedApp: shared.contains(a.id))
+            }
         }
         refs += (linearAccountsViewModel?.accounts ?? []).map { a in
             AccountRef(vendor: .linear, accountID: Int(a.id), label: a.displayName, companySlug: a.companySlug,

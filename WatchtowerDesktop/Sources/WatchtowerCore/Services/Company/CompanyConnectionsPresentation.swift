@@ -379,9 +379,10 @@ package enum CompanyConnectionsPresentation {
             + "Move Gmail to your company's or your own Google project; Calendar stays on the shared app."
     }
 
-    package static func atlassianBannerBody(_ sites: [String]) -> String {
+    /// `token` false: the API token is not on offer (its lock, or a build without the sheet).
+    package static func atlassianBannerBody(_ sites: [String], token: Bool = true) -> String {
         "Your company needs its own Atlassian app — ask your admin or set it up. "
-            + "Sign \(list(sites)) in again through your company's app or with an API token."
+            + "Sign \(list(sites)) in again through your company's app\(token ? " or with an API token" : "")."
     }
 
     package static func tokenLease(_ due: Date, zone: TimeZone) -> String {
@@ -467,7 +468,7 @@ package enum CompanyConnectionsPresentation {
     }
 
     /// The managed company first, then by name.
-    private static func sorted(_ companies: [CompanyRef]) -> [CompanyRef] {
+    static func sorted(_ companies: [CompanyRef]) -> [CompanyRef] {
         companies.sorted {
             if $0.forced != $1.forced { return $0.forced }
             let order = $0.name.localizedCaseInsensitiveCompare($1.name)
@@ -646,7 +647,8 @@ package enum CompanyConnectionsPresentation {
         case .atlassian:
             let actions: [CompanyBanner.Action] = locks.contains(.atlassianAPIToken)
                 ? [.setUpForCompany] : [.setUpForCompany, .connectWithToken]
-            return CompanyBanner(title: atlassianBannerTitle, body: atlassianBannerBody(labels), actions: actions,
+            return CompanyBanner(title: atlassianBannerTitle,
+                                 body: atlassianBannerBody(labels, token: !locks.contains(.atlassianAPIToken)), actions: actions,
                                  cardLine: atlassianBannerCardLine)
         case .slack, .linear, .microsoft:
             // Slack's shared-app banner is plan B's (`SlackModePresentation`).

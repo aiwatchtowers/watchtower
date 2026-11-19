@@ -1,3 +1,4 @@
+import DesignKit
 import SwiftUI
 import WatchtowerCore
 
@@ -10,7 +11,7 @@ struct JiraFeaturesSettingsView: View {
     @State private var loadError: String?
 
     var body: some View {
-        Section("Jira Features") {
+        SettingsSection(title: "Jira Features") {
             if isLoading {
                 ProgressView("Loading features...")
             } else if let err = loadError {
