@@ -148,6 +148,14 @@ func buildMicrosoftAuthURL(cfg MicrosoftOAuthConfig, redirectURI, state, codeCha
 	return authURL + "?" + params.Encode()
 }
 
+// MicrosoftDryAuthorizeURL is the authorize URL a sign-in through cfg opens,
+// on the first callback port: the company setup wizard GETs it to check the
+// client id, the tenant and the redirect without signing in (#1887).
+func MicrosoftDryAuthorizeURL(cfg MicrosoftOAuthConfig, state, codeChallenge string) string {
+	redirect := fmt.Sprintf("http://127.0.0.1:%d%s", outlookRedirectPorts[0], outlookCallbackPath)
+	return buildMicrosoftAuthURL(cfg, redirect, state, codeChallenge)
+}
+
 // exchangeMicrosoftCode exchanges an authorization code for tokens via raw
 // HTTP POST, sending the PKCE verifier instead of a client_secret.
 func exchangeMicrosoftCode(ctx context.Context, cfg MicrosoftOAuthConfig, code, redirectURI, codeVerifier string) (*MicrosoftOAuthToken, error) {
@@ -354,12 +362,14 @@ func LoginOutlook(ctx context.Context, cfg MicrosoftOAuthConfig, out io.Writer, 
 	return tok, email, nil
 }
 
+// outlookRedirectPorts are listenLocalOutlook's preferred callback ports.
+var outlookRedirectPorts = []int{18531, 18532, 18533, 18534, 18535, 18536, 18537, 18538, 18539, 18540}
+
 // listenLocalOutlook tries preferred ports, then falls back to a random port
 // — a separate range from Calendar (18501-18510), Jira (18511-18520), and
 // Gmail (18521-18530).
 func listenLocalOutlook() (net.Listener, error) {
-	preferred := []int{18531, 18532, 18533, 18534, 18535, 18536, 18537, 18538, 18539, 18540}
-	for _, port := range preferred {
+	for _, port := range outlookRedirectPorts {
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err == nil {
 			return ln, nil

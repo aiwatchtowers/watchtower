@@ -39,6 +39,12 @@ func TestAuthorizeURL_PKCEAndScopes(t *testing.T) {
 	assert.Equal(t, "st", q.Get("state"))
 }
 
+// The dry check's URL is the sign-in's, on the first registered callback.
+func TestDryAuthorizeURL_IsTheSignInURL(t *testing.T) {
+	assert.Equal(t, authorizeURL(OAuthConfig{ClientID: "cid"}, "http://localhost:18531/callback", "st", "chal"),
+		DryAuthorizeURL("cid", "st", "chal"))
+}
+
 func TestExchangeCode_SendsVerifierNoSecret(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, r.ParseForm())

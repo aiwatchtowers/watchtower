@@ -575,6 +575,25 @@ func connectGoogleAccount(cmd *cobra.Command, cfg *config.Config, database *db.D
 // always gets a new row; a Gmail grant whose address cannot be read creates
 // nothing.
 func addGoogleAccountForCompany(cmd *cobra.Command, cfg *config.Config, database *db.DB, g *companybundle.Google, slug, label string, wantCalendar, wantGmail bool) error {
+	grant, err := googleCompanyConsent(cmd, g, wantCalendar, wantGmail)
+	if err != nil {
+		return err
+	}
+	_, err = recordGoogleCompanyGrant(cmd, cfg, database, grant, slug, label)
+	return err
+}
+
+// googleCompanyGrant is a finished consent through a company's Google app,
+// not yet stored anywhere.
+type googleCompanyGrant struct {
+	cfg    calendar.GoogleOAuthConfig
+	token  *calendar.OAuthToken
+	result googleConnectResult
+}
+
+// googleCompanyConsent runs the consent through g and reads the account's
+// Gmail address; it stores nothing.
+func googleCompanyConsent(cmd *cobra.Command, g *companybundle.Google, wantCalendar, wantGmail bool) (googleCompanyGrant, error) {
 	noOpen, _ := cmd.Flags().GetBool("no-open")
 	appReturn, _ := cmd.Flags().GetBool("app-return")
 	googleCfg := calendar.GoogleOAuthConfig{ClientID: g.ClientID, ClientSecret: g.ClientSecret}
@@ -585,82 +604,95 @@ func addGoogleAccountForCompany(cmd *cobra.Command, cfg *config.Config, database
 	}
 	token, err := runGoogleConsent(cmd, googleCfg, scopes, noOpen, appReturn)
 	if err != nil {
-		return err
+		return googleCompanyGrant{}, err
 	}
 	calEnabled, gmEnabled, email := resolveGoogleConnectionResult(cmd.Context(), googleCfg, token, wantCalendar, wantGmail)
 	if gmEnabled && email == "" {
 		// Without the address the person's existing row cannot be found; a
 		// second row for the same user is worse than asking again.
-		return errors.New("google sign-in: could not read the Gmail address of the account — try again")
+		return googleCompanyGrant{}, errors.New("google sign-in: could not read the Gmail address of the account — try again")
 	}
-
-	id, isNewRow, err := companyGoogleAccountRow(database, email, label, g.ClientID, slug)
-	if err != nil {
-		return err
-	}
-	if !isNewRow {
-		// The new grant replaces the row's: it must cover every service the
-		// row syncs, or re-tying would silently switch one off.
-		if err := googleGrantCoversRow(database, id, calEnabled, gmEnabled); err != nil {
-			return err
-		}
-	}
-	if err := refuseLoginDuringPurge(database, "google", id); err != nil {
-		if isNewRow {
-			rollbackGoogleAccount(database, cfg.WorkspaceDir(), id, cmd.ErrOrStderr())
-		}
-		return err
-	}
-	if err := saveGoogleGrant(cfg.WorkspaceDir(), id, googleCfg, true, token); err != nil {
-		if isNewRow {
-			rollbackGoogleAccount(database, cfg.WorkspaceDir(), id, cmd.ErrOrStderr())
-		}
-		return err
-	}
-	if !isNewRow {
-		if err := database.SetGoogleAccountClient(id, g.ClientID, slug); err != nil {
-			return fmt.Errorf("tying account %d to %s: %w", id, slug, err)
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Google account %d (%s) now signs in through %s's app.\n", id, email, slug)
-	}
-	return recordGoogleConnection(cmd.OutOrStdout(), cmd.ErrOrStderr(), flagConfig, cfg, database, id,
-		googleConnectResult{wantCalendar: wantCalendar, wantGmail: wantGmail, calEnabled: calEnabled, gmEnabled: gmEnabled, email: email})
+	return googleCompanyGrant{cfg: googleCfg, token: token, result: googleConnectResult{
+		wantCalendar: wantCalendar, wantGmail: wantGmail, calEnabled: calEnabled, gmEnabled: gmEnabled, email: email,
+	}}, nil
 }
 
+// recordGoogleCompanyGrant lands grant on the row of the same Google user
+// (re-tied to slug) or on a new row tied to slug, and returns the row.
+func recordGoogleCompanyGrant(cmd *cobra.Command, cfg *config.Config, database *db.DB, grant googleCompanyGrant, slug, label string) (int64, error) {
+	r := grant.result
+	id, err := googleCompanyGrantRow(database, grant)
+	if err != nil {
+		return 0, err
+	}
+	isNewRow := id == 0
+	if isNewRow {
+		if id, err = database.CreateGoogleAccount(db.GoogleAccount{Label: label, ClientID: grant.cfg.ClientID, CompanySlug: slug}); err != nil {
+			return 0, fmt.Errorf("creating account: %w", err)
+		}
+	}
+	if err := saveGoogleGrant(cfg.WorkspaceDir(), id, grant.cfg, true, grant.token); err != nil {
+		if isNewRow {
+			rollbackGoogleAccount(database, cfg.WorkspaceDir(), id, cmd.ErrOrStderr())
+		}
+		return 0, err
+	}
+	if !isNewRow {
+		if err := database.SetGoogleAccountClient(id, grant.cfg.ClientID, slug); err != nil {
+			return 0, fmt.Errorf("tying account %d to %s: %w", id, slug, err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Google account %d (%s) now signs in through %s's app.\n", id, r.email, slug)
+	}
+	return id, recordGoogleConnection(cmd.OutOrStdout(), cmd.ErrOrStderr(), flagConfig, cfg, database, id, r)
+}
+
+// errGrantTooNarrow is a grant that lacks a service the row it replaces
+// syncs.
+var errGrantTooNarrow = errors.New("the new sign-in lacks a service the account syncs")
+
 // googleGrantCoversRow refuses a re-tie of account id whose new grant lacks
-// a service the row already syncs.
+// a service the row already syncs (errGrantTooNarrow).
 func googleGrantCoversRow(database *db.DB, id int64, calGranted, gmGranted bool) error {
 	acct, err := database.GetGoogleAccount(id)
 	if err != nil {
 		return fmt.Errorf("loading account %d: %w", id, err)
 	}
 	if (acct.CalendarEnabled && !calGranted) || (acct.GmailEnabled && !gmGranted) {
-		return fmt.Errorf("google account %d also syncs %s; run again with --calendar --gmail and approve both on the consent screen",
-			id, googleAccountServiceBadges(acct))
+		return fmt.Errorf("%w: google account %d also syncs %s; run again with --calendar --gmail and approve both on the consent screen",
+			errGrantTooNarrow, id, googleAccountServiceBadges(acct))
 	}
 	return nil
 }
 
-// companyGoogleAccountRow is the row a company's Google grant for email
-// lands on: the first account of the same address, or a new row tied to the
-// company (isNewRow).
-func companyGoogleAccountRow(database *db.DB, email, label, clientID, slug string) (id int64, isNewRow bool, err error) {
-	if email != "" {
-		accounts, err := database.ListGoogleAccounts()
-		if err != nil {
-			return 0, false, fmt.Errorf("listing accounts: %w", err)
-		}
-		for _, a := range accounts {
-			if strings.EqualFold(a.Email, email) {
-				return a.ID, false, nil
-			}
-		}
+// googleCompanyGrantRow is the row a company's Google grant lands on: the
+// first account of the same Gmail address, or 0 for a new row. A grant that
+// cannot replace that row's (it lacks a service the row syncs —
+// errGrantTooNarrow — or the row's purge is running) is refused. It writes
+// nothing.
+func googleCompanyGrantRow(database *db.DB, grant googleCompanyGrant) (int64, error) {
+	r := grant.result
+	if r.email == "" {
+		return 0, nil
 	}
-	id, err = database.CreateGoogleAccount(db.GoogleAccount{Label: label, ClientID: clientID, CompanySlug: slug})
+	accounts, err := database.ListGoogleAccounts()
 	if err != nil {
-		return 0, false, fmt.Errorf("creating account: %w", err)
+		return 0, fmt.Errorf("listing accounts: %w", err)
 	}
-	return id, true, nil
+	for _, a := range accounts {
+		if !strings.EqualFold(a.Email, r.email) {
+			continue
+		}
+		// The new grant replaces the row's: it must cover every service the
+		// row syncs, or re-tying would silently switch one off.
+		if err := googleGrantCoversRow(database, a.ID, r.calEnabled, r.gmEnabled); err != nil {
+			return 0, err
+		}
+		if err := refuseLoginDuringPurge(database, "google", a.ID); err != nil {
+			return 0, err
+		}
+		return a.ID, nil
+	}
+	return 0, nil
 }
 
 // googleConnectResult is what one consent asked for and what it granted.
@@ -682,7 +714,11 @@ func recordGoogleConnection(out, errOut io.Writer, configPath string, cfg *confi
 	if err := database.UpdateGoogleAccountConnection(accountID, r.email, r.calEnabled, r.gmEnabled); err != nil {
 		return fmt.Errorf("recording connection: %w", err)
 	}
-	_ = database.SetGoogleAccountAuthState(accountID, "ok", "")
+	// A login always clears a Re-login mark; a check relies on it to clear
+	// its own Replace mark.
+	if err := database.SetGoogleAccountAuthState(accountID, "ok", ""); err != nil {
+		return fmt.Errorf("recording auth state: %w", err)
+	}
 
 	printGoogleConnectionResult(out, r.wantCalendar, r.wantGmail, r.calEnabled, r.gmEnabled, accountID)
 	if err := enableGoogleSyncSwitches(configPath, cfg, r.calEnabled, r.gmEnabled); err != nil {

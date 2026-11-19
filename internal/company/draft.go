@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -309,8 +310,9 @@ func (s Store) setDraftAside(now time.Time) (string, error) {
 
 // SaveDraft writes d as draft.json (0600) through a temp file and a rename.
 // It keeps the stored draft's start time and its checked marks: those are
-// written only by MarkDraftChecked, so a save racing a check never drops
-// the check's result, and an edited value un-checks by its hash.
+// written only by RecordDraftCheck, so a save racing a check never drops
+// the check's result, and an edited value un-checks by its hash. What a
+// check found (keepCheckFindings) stays too when d leaves it out.
 func (s Store) SaveDraft(d Draft) error {
 	if err := d.validate(); err != nil {
 		return err
@@ -328,6 +330,7 @@ func (s Store) SaveDraft(d Draft) error {
 		if !cur.StartedAt.IsZero() {
 			d.StartedAt = cur.StartedAt
 		}
+		keepCheckFindings(&d, cur)
 	case !errors.Is(err, fs.ErrNotExist):
 		// A damaged draft is set aside by LoadDraft (which the wizard
 		// runs first), never overwritten with its typed secrets.
@@ -339,13 +342,50 @@ func (s Store) SaveDraft(d Draft) error {
 	return s.writeDraft(d)
 }
 
+// keepCheckFindings carries over what a check wrote into the stored draft
+// cur (RecordDraftCheck) when the saved draft d leaves it out: the company
+// slug, and the Google Workspace domain of the same client.
+func keepCheckFindings(d *Draft, cur Draft) {
+	if d.Slug == "" {
+		d.Slug = cur.Slug
+	}
+	if d.Google != nil && cur.Google != nil && d.Google.Domain == "" && d.Google.ClientID == cur.Google.ClientID {
+		d.Google.Domain = cur.Google.Domain
+	}
+}
+
+// DraftCheck is what a passed check writes into the draft.
+type DraftCheck struct {
+	Vendor string
+	// Hash is CheckHash of the values the check ran with, taken when it
+	// started.
+	Hash string
+	// Company is the company the check ran for ("" = any): a draft of
+	// another company (discarded and started again meanwhile) is left alone.
+	Company string
+	// Slug is the company the check stored its bundle under ("" = none).
+	Slug string
+	// GoogleDomain is the Workspace domain a Google sign-in found.
+	GoogleDomain string
+}
+
 // MarkDraftChecked records that vendor's check passed with the values whose
-// CheckHash is hash (taken when the check started). A check of values
-// edited since is not recorded (ErrDraftValuesChanged): it neither marks the
-// new values nor replaces their own mark. No draft is an error.
+// CheckHash is hash: RecordDraftCheck with nothing else found.
 func (s Store) MarkDraftChecked(vendor, hash string) error {
-	if !slices.Contains(draftVendors, vendor) {
-		return fmt.Errorf("unknown service %q", vendor)
+	return s.RecordDraftCheck(DraftCheck{Vendor: vendor, Hash: hash})
+}
+
+// RecordDraftCheck records a passed check in one draft write. c.Slug becomes
+// the draft's slug whatever the step holds now (the company is stored under
+// it, so a re-check must find it). While the step still holds the values
+// the check ran with, it is marked checked and a Google check's domain is
+// kept; a check of values edited since marks nothing
+// (ErrDraftValuesChanged): it neither marks the new values nor replaces
+// their own mark. A draft of another company than c.Company is not touched
+// (ErrDraftValuesChanged). No draft is an error wrapping fs.ErrNotExist.
+func (s Store) RecordDraftCheck(c DraftCheck) error {
+	if !slices.Contains(draftVendors, c.Vendor) {
+		return fmt.Errorf("unknown service %q", c.Vendor)
 	}
 	unlock, err := s.lockDraft()
 	if err != nil {
@@ -356,13 +396,29 @@ func (s Store) MarkDraftChecked(vendor, hash string) error {
 	if err != nil {
 		return fmt.Errorf("reading the company draft: %w", err)
 	}
-	if hash == "" || hash != CheckHash(vendor, d) {
+	if c.Company != "" && c.Company != d.Company {
 		return ErrDraftValuesChanged
+	}
+	if c.Hash == "" || c.Hash != CheckHash(c.Vendor, d) {
+		if c.Slug == "" || c.Slug == d.Slug {
+			return ErrDraftValuesChanged
+		}
+		d.Slug = c.Slug
+		if err := s.writeDraft(d); err != nil {
+			return err
+		}
+		return ErrDraftValuesChanged
+	}
+	if c.Slug != "" {
+		d.Slug = c.Slug
+	}
+	if c.Vendor == "google" && c.GoogleDomain != "" {
+		d.Google.Domain = c.GoogleDomain
 	}
 	if d.Checked == nil {
 		d.Checked = map[string]string{}
 	}
-	d.Checked[vendor] = hash
+	d.Checked[c.Vendor] = c.Hash
 	return s.writeDraft(d)
 }
 
@@ -477,7 +533,8 @@ func checkValues(vendor string, d Draft) []string {
 		}
 	case "atlassian":
 		if d.Atlassian != nil {
-			return []string{d.Atlassian.ClientID, d.Atlassian.ClientSecret, d.Atlassian.Site}
+			// Confluence changes the scopes the sign-in asks for.
+			return []string{d.Atlassian.ClientID, d.Atlassian.ClientSecret, d.Atlassian.Site, strconv.FormatBool(d.Atlassian.Confluence)}
 		}
 	case "linear":
 		if d.Linear != nil {

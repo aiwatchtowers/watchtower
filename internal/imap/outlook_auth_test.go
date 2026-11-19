@@ -92,6 +92,14 @@ func TestBuildMicrosoftAuthURL(t *testing.T) {
 	assert.Empty(t, q.Get("client_secret"))
 }
 
+// The dry check's URL is the sign-in's, on the first callback port, against
+// the tenant.
+func TestMicrosoftDryAuthorizeURL_IsTheSignInURL(t *testing.T) {
+	cfg := MicrosoftOAuthConfig{ClientID: "client-123", TenantID: "acme.example.com"}
+	assert.Equal(t, buildMicrosoftAuthURL(cfg, "http://127.0.0.1:18531/callback", "st", "chal"),
+		MicrosoftDryAuthorizeURL(cfg, "st", "chal"))
+}
+
 func TestExchangeMicrosoftCode_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, r.ParseForm())

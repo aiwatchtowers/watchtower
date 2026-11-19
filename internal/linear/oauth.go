@@ -92,6 +92,14 @@ func authorizeURL(cfg OAuthConfig, redirectURI, state, challenge string) string 
 	return authorizeEndpoint + "?" + q.Encode()
 }
 
+// DryAuthorizeURL is the authorize URL a sign-in through clientID opens, on
+// the first callback port: the company setup wizard GETs it to check the
+// client id and its callback URL without signing in (#1887).
+func DryAuthorizeURL(clientID, state, challenge string) string {
+	redirect := fmt.Sprintf("http://localhost:%d%s", redirectPorts[0], callbackPath)
+	return authorizeURL(OAuthConfig{ClientID: clientID}, redirect, state, challenge)
+}
+
 // redirectPorts must each be registered as http://localhost:<port>/callback on
 // the Linear OAuth app: Linear matches redirect URIs exactly, so there is no
 // random-port fallback (unlike jira.listenLocal).
