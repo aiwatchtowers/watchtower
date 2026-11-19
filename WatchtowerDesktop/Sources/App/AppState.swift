@@ -104,6 +104,7 @@ final class AppState {
         makeStreamer: { Self.slackLineStream() },
         slack: SlackAppSetupModel(makeStreamer: { Self.slackLineStream() }, mode: .wizard)
     )
+    @ObservationIgnored lazy var companiesZone = CompaniesZoneModel { Self.slackLineStream() } // #1887 C3: outlives the tab
     @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
     /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
     @ObservationIgnored weak var observedProviderConnection: ProviderConnection?
@@ -330,7 +331,7 @@ final class AppState {
     /// window.
     private(set) var jiraAccountsViewModel: JiraAccountsViewModel?
     /// Linear Accounts ViewModel — held here so an in-flight consent survives leaving Settings.
-    private(set) var linearAccountsViewModel: LinearAccountsViewModel?
+    var linearAccountsViewModel: LinearAccountsViewModel? // a test may set it
 
     /// Confluence spaces pickers (Connections → Jira), one per Jira account id —
     /// held here so a select/unselect or re-consent still running when the

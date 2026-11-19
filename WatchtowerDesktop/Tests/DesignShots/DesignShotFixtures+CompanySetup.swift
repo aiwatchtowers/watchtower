@@ -76,13 +76,17 @@ enum CompanySetupShotFixtures {
         ]
     }
 
+    /// The production overview with its Companies zone (Task 25a).
     private static var overviewShots: [DesignShot] {
-        Overview.allCases.map { frame in shot("overview-\(frame.rawValue)", 900) { CompanyOverviewMock(frame: frame) } }
-            + [shot("overview-companies-narrow", 420) { CompanyOverviewMock(frame: .companies) }]
+        Overview.allCases.map { frame in shot("overview-\(frame.rawValue)", 900) { CompaniesZoneScenes.overview(frame) } }
+            + [shot("overview-companies-narrow", 420) { CompaniesZoneScenes.overview(.companies) }]
     }
 
+    /// Slack, Linear and Outlook from the production groups and rows
+    /// (Task 25a); Google and Jira stay mocks until Task 25b.
     private static var paneShots: [DesignShot] {
-        CompanyPaneScenes.scenes.map { name, sections in shot(name, 640) { MockPane(sections: sections) } }
+        CompaniesZoneScenes.panes.map { name, view in shot(name, 640) { view } }
+            + CompanyPaneScenes.scenes.map { name, sections in shot(name, 640) { MockPane(sections: sections) } }
             + ["google-detail", "jira-detail"].compactMap { name in
                 CompanyPaneScenes.scenes.first { $0.0 == name }.map { scene in
                     shot("\(name)-narrow", 360) { MockPane(sections: scene.1) }
@@ -112,144 +116,12 @@ enum CompanySetupShotFixtures {
     }
 }
 
-// MARK: - Connections overview: the Companies zone
-
-private struct CompanyOverviewMock: View {
-    let frame: CompanySetupShotFixtures.Overview
-
-    private static let columns = [GridItem(.adaptive(minimum: PaneWidth.gridCardMin), spacing: Spacing.medium, alignment: .top)]
-
-    private var summaries: [ConnectionSummary] {
-        let jiraState = frame == .relogin
-            ? ConnectionAccountState(name: "acme.atlassian.net", isOK: false, status: "error", error: Copy.reloginChanged)
-            : ConnectionAccountState(name: "acme.atlassian.net", isOK: true, status: "ok", error: "")
-        return [
-            ConnectionSummary(service: .slack, accounts: [
-                ConnectionAccountState(name: "acme", isOK: true, status: "ok", error: "")
-            ], blocked: false),
-            ConnectionSummary(service: .google, accounts: [], blocked: false),
-            ConnectionSummary(service: .jira, accounts: [jiraState], blocked: false)
-        ]
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.large) {
-            HStack {
-                Text(Copy.connectionsTitle).font(.title2.weight(.bold))
-                Spacer()
-                Button {} label: { Label(Copy.connectMenu, systemImage: "plus") }.buttonStyle(.kitSecondary)
-            }
-            ForEach(summaries.filter(\.needsAttention)) { summary in
-                ConnectionAttentionBanner(summary: summary) {}
-            }
-            VStack(alignment: .leading, spacing: Spacing.regular) {
-                HomeZoneTitle(title: Copy.companiesTitle)
-                companies
-            }
-            VStack(alignment: .leading, spacing: Spacing.regular) {
-                HomeZoneTitle(title: Copy.sourcesTitle)
-                LazyVGrid(columns: Self.columns, alignment: .leading, spacing: Spacing.medium) {
-                    ForEach(summaries) { summary in ConnectionCard(summary: summary) {} }
-                }
-            }
-        }
-        .controlSize(.small)
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
-    }
-
-    @ViewBuilder private var companies: some View {
-        switch frame {
-        case .loading:
-            MockBlockView(block: .busy(Copy.companiesLoading))
-        case .readFailed:
-            MockBlockView(block: .problem(Copy.companiesReadFailed, MockButton(title: Copy.tryAgain)))
-        case .empty:
-            MockBlockView(block: .caption(Copy.companiesEmpty))
-            zoneButtons
-        case .mdm:
-            companyCard(managed: true, line: Copy.companyMDMLine, problem: nil,
-                        button: MockButton(title: Copy.connectAll, kind: .primary))
-            zoneButtons
-        case .relogin:
-            companyCard(managed: false, line: Copy.companyCount, problem: Copy.companyRelogin,
-                        button: MockButton(title: Copy.relogin))
-            zoneButtons
-        case .setupInProgress:
-            setupRow
-            companyCard(managed: false, line: Copy.companyCount, problem: nil, button: MockButton(title: Copy.connectRest))
-            zoneButtons
-        case .companies, .codePaste, .portBusy:
-            companyCard(managed: false, line: Copy.companyCount, problem: nil, button: MockButton(title: Copy.connectRest))
-            if frame == .companies { zoneButtons } else { codeField }
-        }
-    }
-
-    private func companyCard(managed: Bool, line: String, problem: String?, button: MockButton) -> some View {
-        HStack(alignment: .top, spacing: Spacing.regular) {
-            Image(systemName: "building.2").foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text("Acme").font(.headline)
-                if managed { ManagedByOrganizationBadge() }
-                Text(line).font(.caption).foregroundStyle(.secondary)
-                Text(problem ?? Copy.companyMissing)
-                    .font(.caption)
-                    .foregroundStyle(problem == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Tone.error))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: Spacing.regular)
-            MockButtonView(button: button)
-        }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-    }
-
-    private var setupRow: some View {
-        HStack(spacing: Spacing.regular) {
-            Image(systemName: "wrench.and.screwdriver").foregroundStyle(Tone.warning)
-            Text(Copy.setupInProgress).font(.callout)
-            Spacer(minLength: Spacing.regular)
-            Button(Copy.continueSetup) {}.buttonStyle(.kitPrimary)
-        }
-        .padding(Spacing.medium)
-        .card()
-    }
-
-    private var zoneButtons: some View {
-        HStack(spacing: Spacing.regular) {
-            Button(Copy.setUpForCompany) {}.buttonStyle(.kitQuiet)
-            Button(Copy.connectWithCode) {}.buttonStyle(.kitQuiet)
-        }
-    }
-
-    private var codeField: some View {
-        VStack(alignment: .leading, spacing: Spacing.compact) {
-            if frame == .portBusy { MockBlockView(block: .problem(Copy.portBusy, nil)) }
-            HStack(spacing: Spacing.regular) {
-                TextField(Copy.codePlaceholder, text: .constant(frame == .codePaste ? "acme-onboarding-2026" : ""))
-                    .textFieldStyle(.kit)
-                Button(Copy.connect) {}.buttonStyle(.kitSecondary).disabled(frame != .codePaste)
-            }
-            if frame == .codePaste {
-                Text(Copy.codeInvalid).font(.caption).foregroundStyle(Tone.error).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-}
-
 // MARK: - Detail panes grouped by company
 
 @MainActor
 enum CompanyPaneScenes {
     private static func ok(_ title: String, _ status: String = Copy.syncing, tag: String? = nil) -> MockBlock {
         .account(MockAccount(title: title, status: status, tone: Tone.success, tag: tag))
-    }
-
-    private static func notConnected(_ title: String) -> MockBlock {
-        .account(MockAccount(title: title, status: Copy.rowNotConnected, tone: Tone.status("gray"),
-                             button: MockButton(title: Copy.connect)))
     }
 
     private static func stopped(_ title: String, tag: String? = nil) -> MockBlock {
@@ -285,7 +157,7 @@ enum CompanyPaneScenes {
                  .buttons(leading: [MockButton(title: Copy.setUpForCompany),
                                     MockButton(title: Copy.connectTokenButton, kind: .quiet)], trailing: [])])
 
-    static var scenes: [(String, [MockPaneSection])] { googleScenes + jiraScenes + otherScenes }
+    static var scenes: [(String, [MockPaneSection])] { googleScenes + jiraScenes }
 
     private static var googleScenes: [(String, [MockPaneSection])] {
         let acme = MockPaneSection(title: "Acme", caption: Copy.groupAcmeGoogle,
@@ -365,25 +237,6 @@ enum CompanyPaneScenes {
                 MockPaneSection(title: Copy.addAccountTitle, blocks: [
                     .buttons(leading: [MockButton(title: Copy.connectCompanyAtlassian)], trailing: [])
                 ])
-            ])
-        ]
-    }
-
-    private static var otherScenes: [(String, [MockPaneSection])] {
-        [
-            ("slack-workspaces", [
-                MockPaneSection(title: "Acme", caption: Copy.groupAcmeSlack, blocks: [ok("acme")]),
-                MockPaneSection(title: Copy.groupUnknown, caption: Copy.groupUnknownCaption, blocks: [
-                    problem("acme-labs", Copy.reloginUntied, MockButton(title: Copy.pasteCode))
-                ])
-            ]),
-            ("linear-detail", [
-                MockPaneSection(title: "Acme", caption: Copy.groupAcmeLinear, blocks: [notConnected("Linear")]),
-                MockPaneSection(title: Copy.groupSharedLinear, blocks: [ok("Side project")])
-            ]),
-            ("outlook-detail", [
-                MockPaneSection(title: "Acme", caption: Copy.groupAcmeMicrosoft, blocks: [ok("alice@example.com")]),
-                MockPaneSection(title: Copy.groupSharedMicrosoft, blocks: [ok("alice@example.org")])
             ])
         ]
     }

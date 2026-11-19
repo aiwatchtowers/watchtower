@@ -456,6 +456,120 @@ final class ConnectionsTabTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(text: ConnectionService.quickConnections.pitch))
     }
 
+    // MARK: - Companies zone (#1887 Task 25a)
+
+    /// Company screens spec §4.1: the zone sits between the banners and
+    /// Sources, its card's button reaches the connect flow with the slug.
+    func testCompaniesZoneAboveSources() throws {
+        let acme = CompanyRef(slug: "acme", name: "Acme", vendors: [.slack: "", .linear: ""])
+        let state = CompanyConnectionsPresentation.zone(
+            companies: [acme], errors: [], draft: nil,
+            accounts: [AccountRef(vendor: .slack, accountID: 1, label: "acme", companySlug: "acme", status: "ok", error: "")],
+            portBusy: false, loading: false)
+        var rest: [String] = []
+        var actions = CompaniesZoneActions()
+        actions.connectRest = { rest.append($0) }
+        let model = CompaniesZoneModel { nil }
+        let view = ConnectionsOverviewContent(
+            summaries: [ConnectionSummary(service: .slack, accounts: [account("acme", ok: true)], blocked: false)],
+            companies: CompaniesZone(state: state, model: model, actions: actions)
+        ) { _ in }
+        let titles = try view.inspect().findAll(HomeZoneTitle.self).map { try $0.actualView().title }
+        XCTAssertEqual(titles, [CompanyConnectionsPresentation.companiesTitle, "Sources", "Tools for AI"])
+        XCTAssertNoThrow(try view.inspect().find(text: "1 of 2 services connected"))
+        XCTAssertNoThrow(try view.inspect().find(text: "Not connected: Linear"))
+        try view.inspect().find(button: "Connect the rest").tap()
+        XCTAssertEqual(rest, ["acme"])
+
+        // Connect with a company code opens the field in place of the quiet buttons.
+        try view.inspect().find(button: CompaniesZoneState.Action.connectWithCode.title).tap()
+        XCTAssertTrue(model.codeFieldOpen)
+    }
+
+    /// The zone's states through the view: loading, read failed with Try
+    /// again, the empty invitation, the port-busy line with the code field,
+    /// the setup line, and a card's spinner while its chain runs.
+    func testCompaniesZoneStates() throws {
+        typealias Pres = CompanyConnectionsPresentation
+        let model = CompaniesZoneModel { nil }
+        var actions = CompaniesZoneActions()
+        var pressed: [String] = []
+        actions.tryAgain = { pressed.append("tryAgain") }
+        actions.setUpForCompany = { pressed.append("setUp") }
+        actions.continueSetup = { pressed.append("continue") }
+        actions.connectAll = { pressed.append("all:\($0)") }
+        func zone(_ state: CompaniesZoneState, connecting: (slug: String, vendor: CompanyVendor)? = nil) -> CompaniesZone {
+            CompaniesZone(state: state, model: model, connecting: connecting, actions: actions)
+        }
+        func state(
+            _ companies: [CompanyRef] = [],
+            draft: CompanySetupDraftRef? = nil,
+            portBusy: Bool = false,
+            loading: Bool = false,
+            listError: String? = nil
+        ) -> CompaniesZoneState {
+            Pres.zone(companies: companies, errors: [], draft: draft, accounts: [], portBusy: portBusy, loading: loading,
+                      listError: listError)
+        }
+
+        XCTAssertNoThrow(try zone(state(loading: true)).inspect().find(text: Pres.companiesLoading))
+
+        let failed = state(listError: "database is locked")
+        try zone(failed).inspect().find(button: Pres.tryAgain).tap()
+        XCTAssertThrowsError(try zone(failed).inspect().find(text: Pres.companiesEmpty), "a failed read is not no company")
+
+        XCTAssertNoThrow(try zone(state()).inspect().find(text: Pres.companiesEmpty))
+        try zone(state()).inspect().find(button: CompaniesZoneState.Action.setUpForCompany.title).tap()
+
+        let busy = state(portBusy: true)
+        XCTAssertNoThrow(try zone(busy).inspect().find(text: Pres.portBusyLine))
+        XCTAssertNoThrow(try zone(busy).inspect().find(button: Pres.connect), "the code field opens with the line")
+        XCTAssertNoThrow(try zone(busy).inspect().find(button: CompaniesZoneState.Action.setUpForCompany.title),
+                         "a busy port never hides the way into the setup")
+
+        let draft = state(draft: .inProgress(company: "Acme", step: "Atlassian", index: 3, count: 8))
+        try zone(draft).inspect().find(button: "Continue setup").tap()
+
+        let mdm = state([CompanyRef(slug: "acme", name: "Acme", forced: true, vendors: [.google: "example.com"])])
+        let running = zone(mdm, connecting: (slug: "acme", vendor: .google))
+        XCTAssertNoThrow(try running.inspect().find(text: Pres.connecting(.google)))
+        XCTAssertThrowsError(try zone(mdm).inspect().find(text: Pres.connecting(.google)))
+        try zone(mdm).inspect().find(button: "Connect all").tap()
+        XCTAssertEqual(pressed, ["tryAgain", "setUp", "continue", "all:acme"])
+    }
+
+    /// A5 unchanged: a company's Re-login row needs the owner (banner and
+    /// badge), a vendor it has not connected yet does not, and a company's
+    /// card is never an attention item of its own.
+    func testAttentionRuleUnchanged() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        try await pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO slack_accounts (id, team_name, status, error, enabled, company_slug)
+                VALUES (1, 'acme', 'ok', '', 1, 'acme')
+                """)
+        }
+        let (appState, fake) = LinearConnectionDetailTests.wired()
+        appState.initSlackAccounts(dbPool: pool)
+        await appState.slackAccountsViewModel?.refreshAsync()
+        fake.enqueue(.init(lines: [#"{"companies":[{"slug":"acme","company":"Acme","forced":false,"personal":false,"#
+                + #""vendors":{"slack":{"client_id":"1.2"},"linear":{"client_id":"l"}}}],"errors":[],"draft":{"state":"none"}}"#]))
+        await appState.companiesZone.reload()
+
+        XCTAssertEqual(appState.companiesZoneState.body.cards.first?.missingLine, "Not connected: Linear")
+        XCTAssertEqual(appState.connectionsAttentionCount, 0, "Not connected is no problem")
+
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE slack_accounts SET status = 'error', error = 'company_changed_app' WHERE id = 1")
+        }
+        await appState.slackAccountsViewModel?.refreshAsync()
+        XCTAssertEqual(appState.connectionsAttentionCount, 1, "a Re-login row is")
+        XCTAssertEqual(appState.companiesZoneState.body.cards.first?.problemLine, "Slack: Re-login needed — Acme changed its app")
+        let ref = try XCTUnwrap(appState.companyAccountRefs.first { $0.vendor == .slack })
+        XCTAssertEqual(appState.companyRowStatus(ref)?.needsAttention, true)
+    }
+
     /// Connect… offers only what the policy allows.
     func testConnectMenuHidesBlockedServices() throws {
         let summaries = [

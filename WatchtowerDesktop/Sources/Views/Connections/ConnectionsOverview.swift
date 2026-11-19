@@ -2,22 +2,34 @@ import SwiftUI
 import WatchtowerCore
 
 /// The Connections tab's first screen: a banner per service that needs the
-/// owner, a card per source, and the assistant's tools. A card opens the
-/// service's detail.
+/// owner, the Companies zone (#1887 C3), a card per source, and the
+/// assistant's tools. A card opens the service's detail.
 struct ConnectionsOverview: View {
     @Environment(AppState.self) private var appState
 
     var body: some View {
-        ConnectionsOverviewContent(summaries: appState.connectionSummaries) { appState.openConnections($0) }
+        ConnectionsOverviewContent(
+            summaries: appState.connectionSummaries,
+            companies: CompaniesZone(state: appState.companiesZoneState, model: appState.companiesZone,
+                                     connecting: appState.companyConnecting, flowBusy: appState.companyFlowBusy,
+                                     actions: appState.companiesZoneActions)
+        ) { appState.openConnections($0) }
+        // Each time the overview shows: a link, a flow or the wizard may have changed a company file.
+        // Not view-bound: leaving for a detail must not cancel the read it then groups by.
+        .onAppear { appState.reloadCompanies() }
     }
 }
 
 /// The overview over given summaries; `onOpen` opens a service's detail.
-struct ConnectionsOverviewContent: View {
+/// `companies` is the zone between the banners and Sources.
+struct ConnectionsOverviewContent<Companies: View>: View {
     let summaries: [ConnectionSummary]
+    let companies: Companies
     let onOpen: (ConnectionService) -> Void
 
-    private static let columns = [GridItem(.adaptive(minimum: PaneWidth.gridCardMin), spacing: Spacing.medium, alignment: .top)]
+    private static var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: PaneWidth.gridCardMin), spacing: Spacing.medium, alignment: .top)]
+    }
 
     var body: some View {
         ScrollView {
@@ -26,6 +38,7 @@ struct ConnectionsOverviewContent: View {
                 ForEach(summaries.filter(\.needsAttention)) { summary in
                     ConnectionAttentionBanner(summary: summary) { onOpen(summary.service) }
                 }
+                companies
                 group("Sources", ConnectionService.sources)
                 group("Tools for AI", ConnectionService.aiTools)
             }
@@ -60,6 +73,13 @@ struct ConnectionsOverviewContent: View {
                 }
             }
         }
+    }
+}
+
+extension ConnectionsOverviewContent where Companies == EmptyView {
+    /// The overview without the Companies zone.
+    init(summaries: [ConnectionSummary], onOpen: @escaping (ConnectionService) -> Void) {
+        self.init(summaries: summaries, companies: EmptyView(), onOpen: onOpen)
     }
 }
 

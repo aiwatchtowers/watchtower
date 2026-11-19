@@ -19,7 +19,9 @@ extension AppState {
             if !needsOnboarding { showConnectionsForCompanySheet() }
             bringMainWindowForward()
         }
-        flow.onCompaniesChanged = { [weak self] in self?.refreshConnectionAccounts() }
+        flow.onCompaniesChanged = { [weak self] in
+            self?.refreshConnectionAccounts()
+        }
         flow.onChainEnded = { [weak self] in
             guard let self else { return }
             refreshConnectionAccounts()
