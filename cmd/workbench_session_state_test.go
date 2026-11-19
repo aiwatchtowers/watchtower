@@ -393,6 +393,7 @@ func TestProj11_NestedSessionNeverMovesTheRow(t *testing.T) {
 		assert.Empty(t, errOut)
 	}
 	// The nested run's Stop hook too.
+	stubStopHookCheck(t)
 	out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), withCwd(t, statePayload("Stop", nestedSessionID, ""), nestedCwd))
 	assert.Empty(t, out)
 	assert.Empty(t, errOut)
@@ -441,6 +442,7 @@ func stopStateFixture(t *testing.T, branch string) (database *db.DB, pid, row in
 func TestSessionState_StopHookRecordsWaitingWithoutDrift(t *testing.T) {
 	database, pid, row := stopStateFixture(t, "open")
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stubStopHookCheck(t) // no drift: the board is not the subject
 
 	out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), statePayload("Stop", briefLaunchID, ""))
 
@@ -1504,15 +1506,8 @@ func hookStep(t *testing.T, database *db.DB, pid, row int64, at func(int), sec i
 	at(sec)
 	var out, errOut string
 	if strings.Contains(input, `"hook_event_name": "Stop"`) || strings.Contains(input, `"hook_event_name":"Stop"`) {
-		// The turn state is the subject here, not the board: a drift check
-		// that runs out of its wall-clock budget on a loaded machine would
-		// write to stderr and fail the step for nothing.
-		check := stopHookCheck
-		stopHookCheck = func(context.Context, *db.DB, int64, workbenchcheck.Options) (workbenchcheck.Report, error) {
-			return workbenchcheck.Report{}, nil
-		}
+		stubStopHookCheck(t)
 		out, errOut = stopHookIO(t, strconv.FormatInt(pid, 10), input)
-		stopHookCheck = check
 	} else {
 		var err error
 		out, errOut, err = runSessionState(t, pid, strings.NewReader(input))
@@ -2458,4 +2453,18 @@ func TestProj11_ShellsNeverMoveTheTurnEndStamp(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, s.BackgroundShells.Valid, "the probe ended the shells")
 	assert.Equal(t, turnEnd, s.AgentStateAt, "the shells ended by the probe")
+}
+
+// stubStopHookCheck makes the Stop hook's drift check find nothing for the
+// rest of t, for tests whose subject is the turn state, not the board: the
+// real check runs git under a wall-clock budget, and on a loaded machine its
+// "ran out of time" line on stderr would fail them for nothing. The drift
+// path itself stays covered by the PROJ-07 tests in workbench_check_test.go.
+func stubStopHookCheck(t *testing.T) {
+	t.Helper()
+	check := stopHookCheck
+	stopHookCheck = func(context.Context, *db.DB, int64, workbenchcheck.Options) (workbenchcheck.Report, error) {
+		return workbenchcheck.Report{}, nil
+	}
+	t.Cleanup(func() { stopHookCheck = check })
 }
