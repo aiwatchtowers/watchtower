@@ -41,9 +41,10 @@ var slackConnectServeCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Hold the Slack connect listener for the Watchtower app (JSON lines on stdin/stdout)",
 	Long: "The Watchtower app's child: holds 127.0.0.1:18551, reports one JSON object per\n" +
-		"line on stdout (listening, port_busy, link, browser, connected, failed, busy) and\n" +
-		"reads commands as JSON lines on stdin (start, confirm, cancel). It exits when\n" +
-		"stdin closes.",
+		"line on stdout (listening, port_busy, link, browser, connected, failed, busy,\n" +
+		"company_link, company_vendor, company_done) and reads commands as JSON lines on\n" +
+		"stdin (start, confirm, cancel, company_dismiss, company_connect, company_skip,\n" +
+		"company_stop). It exits when stdin closes; a running company chain stops then.",
 	Args: cobra.NoArgs,
 	RunE: runSlackConnectServe,
 }
@@ -75,6 +76,9 @@ type slackConnectDeps struct {
 	exchange    slackconnect.Exchanger
 	openBrowser func(rawURL string)
 	clock       slackconnect.Clock
+	// chainLogins are the company chain's non-Slack sign-ins; nil is the
+	// production children (execVendorLogins).
+	chainLogins map[string]vendorLogin
 }
 
 // newSlackConnectDeps returns the production edges: port 18551, Slack's
@@ -144,7 +148,10 @@ func slackConnectReason(err error) string {
 // The account id, its data and its sync position are never touched, and
 // nothing is soft-removed (SLACK-01). reboundFrom is the client id the row
 // had when this connect moved it to another app, else "". Warnings go to
-// warn.
+// warn. A t.CompanySlug ties the row to that company: a new row in its
+// insert, an existing one right after its grant is written (a crash between
+// the two leaves the row on the company's client, untied, and the next
+// chain run ties it).
 func writeConnectedAccount(ctx context.Context, cfg *config.Config, database *db.DB, t slackconnect.Target, g slackconnect.Grant, warn io.Writer) (accountID int64, reboundFrom string, err error) {
 	if err := sourceRefusal("slack"); err != nil {
 		return 0, "", err
@@ -172,9 +179,9 @@ func writeConnectedAccount(ctx context.Context, cfg *config.Config, database *db
 			"the Slack token is for workspace %s, not %s; nothing was connected", identity.TeamID, t.TeamID)}
 	}
 	if id == 0 {
-		return writeNewSlackAccount(ctx, cfg, database, identity, g, warn)
+		return writeNewSlackAccount(ctx, cfg, database, identity, g, t.CompanySlug, warn)
 	}
-	reboundFrom, err = writeSlackGrant(ctx, cfg, database, id, identity, g, warn)
+	reboundFrom, err = writeSlackGrant(ctx, cfg, database, id, identity, g, t.CompanySlug, warn)
 	if err != nil {
 		return 0, "", err
 	}
@@ -232,13 +239,14 @@ func liveSlackAccountForTeam(database *db.DB, team string, except int64) (int64,
 	return 0, nil
 }
 
-// writeNewSlackAccount creates the row for a checked grant and writes it; a
-// failure rolls the row back (and drops its token).
-func writeNewSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB, identity slackIdentity, g slackconnect.Grant, warn io.Writer) (int64, string, error) {
+// writeNewSlackAccount creates the row (tied to company slug, "" = none) for
+// a checked grant and writes it; a failure rolls the row back (and drops its
+// token).
+func writeNewSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB, identity slackIdentity, g slackconnect.Grant, slug string, warn io.Writer) (int64, string, error) {
 	if err := refuseDuplicateSlackTeam(database, 0, identity); err != nil {
 		return 0, "", err
 	}
-	id, err := database.CreateSlackAccount(db.SlackAccount{})
+	id, err := database.CreateSlackAccount(db.SlackAccount{CompanySlug: slug})
 	if err != nil {
 		return 0, "", fmt.Errorf("creating account: %w", err)
 	}
@@ -267,8 +275,9 @@ func writeNewSlackAccount(ctx context.Context, cfg *config.Config, database *db.
 
 // writeSlackGrant checks the grant's identity against existing account id
 // and, when it may be stored, writes the token file and then the row under
-// the account's token lock.
-func writeSlackGrant(ctx context.Context, cfg *config.Config, database *db.DB, id int64, identity slackIdentity, g slackconnect.Grant, warn io.Writer) (string, error) {
+// the account's token lock; a slug other than "" then ties the row to that
+// company.
+func writeSlackGrant(ctx context.Context, cfg *config.Config, database *db.DB, id int64, identity slackIdentity, g slackconnect.Grant, slug string, warn io.Writer) (string, error) {
 	moved, err := checkSlackLoginTeam(database, id, identity, false)
 	if err != nil {
 		return "", err
@@ -310,7 +319,13 @@ func writeSlackGrant(ctx context.Context, cfg *config.Config, database *db.DB, i
 		if err := store.Save(tok); err != nil {
 			return fmt.Errorf("saving token: %w", err)
 		}
-		return writeSlackGrantRow(database, id, identity, user, tok)
+		if err := writeSlackGrantRow(database, id, identity, user, tok); err != nil {
+			return err
+		}
+		if slug == "" {
+			return nil
+		}
+		return database.SetAccountCompany("slack", id, slug)
 	})
 	if err != nil {
 		return "", err
@@ -441,38 +456,11 @@ func runSlackConnectOnce(cmd *cobra.Command, cfg *config.Config, database *db.DB
 		ctx = context.Background()
 	}
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
-	deps := newSlackConnectDeps()
-	ln, err := deps.listen(deps.port)
-	if errors.Is(err, slackconnect.ErrPortBusy) {
-		return &exitCodeError{code: slackConnectPortBusyExitCode, err: fmt.Errorf(
-			"port %d is busy (is Watchtower open? connect from Connections → Slack)", slackconnect.Port)}
+	accountID, res, rebound, err := connectSlackOnce(ctx, cfg, database, newSlackConnectDeps(), t, opts.noOpen, errOut)
+	var busy *exitCodeError
+	if errors.As(err, &busy) && busy.code == slackConnectPortBusyExitCode {
+		return err // before any browser: no result to report
 	}
-	if err != nil {
-		return fmt.Errorf("binding the Slack connect listener: %w", err)
-	}
-	reg := slackconnect.NewRegistry(deps.clock, deps.exchange)
-	// The flow takes the registry's one slot before the listener answers a
-	// request, so a link opened right after the bind cannot take it first.
-	id, err := reg.Begin(t, false)
-	if err != nil {
-		_ = ln.Close()
-		return err
-	}
-	authorizeURL, err := reg.BrowserURL(id)
-	if err != nil {
-		_ = ln.Close()
-		return err
-	}
-	events := make(chan slackconnect.Event)
-	shutdown := serveSlackConnectListener(ln, reg, events, make(chan struct{}), nil)
-	defer shutdown(false)
-	if opts.noOpen {
-		fmt.Fprintf(errOut, "Open this URL to connect Slack:\n%s\n", authorizeURL)
-	} else {
-		fmt.Fprintln(errOut, "Opening Slack in your browser…")
-		deps.openBrowser(authorizeURL)
-	}
-	accountID, res, rebound, err := waitSlackConnectOnce(ctx, cfg, database, reg, id, events, errOut)
 	oauthpage.ReturnAfterLogin(opts.appReturn, err, errOut)
 	if opts.asJSON {
 		if encErr := writeSlackConnectResultJSON(out, accountID, res, rebound, err); encErr != nil {
@@ -493,6 +481,45 @@ func runSlackConnectOnce(cmd *cobra.Command, cfg *config.Config, database *db.DB
 		}
 	}
 	return nil
+}
+
+// connectSlackOnce binds the listener on deps.port (busy: an exitCodeError
+// with slackConnectPortBusyExitCode, before any browser), opens t's sign-in,
+// waits for its redirect until ctx ends and writes the account. It serves
+// the one-shot connect and the one-shot company chain's Slack step.
+func connectSlackOnce(ctx context.Context, cfg *config.Config, database *db.DB, deps slackConnectDeps,
+	t slackconnect.Target, noOpen bool, errOut io.Writer) (int64, slackconnect.Result, string, error) {
+	ln, err := deps.listen(deps.port)
+	if errors.Is(err, slackconnect.ErrPortBusy) {
+		return 0, slackconnect.Result{}, "", &exitCodeError{code: slackConnectPortBusyExitCode, err: fmt.Errorf(
+			"port %d is busy (is Watchtower open? connect from Connections → Slack)", slackconnect.Port)}
+	}
+	if err != nil {
+		return 0, slackconnect.Result{}, "", fmt.Errorf("binding the Slack connect listener: %w", err)
+	}
+	reg := slackconnect.NewRegistry(deps.clock, deps.exchange)
+	// The flow takes the registry's one slot before the listener answers a
+	// request, so a link opened right after the bind cannot take it first.
+	id, err := reg.Begin(t, false)
+	if err != nil {
+		_ = ln.Close()
+		return 0, slackconnect.Result{}, "", err
+	}
+	authorizeURL, err := reg.BrowserURL(id)
+	if err != nil {
+		_ = ln.Close()
+		return 0, slackconnect.Result{}, "", err
+	}
+	events := make(chan slackconnect.Event)
+	shutdown := serveSlackConnectListener(ln, reg, events, make(chan struct{}), nil)
+	defer shutdown(false)
+	if noOpen {
+		fmt.Fprintf(errOut, "Open this URL to connect Slack:\n%s\n", authorizeURL)
+	} else {
+		fmt.Fprintln(errOut, "Opening Slack in your browser…")
+		deps.openBrowser(authorizeURL)
+	}
+	return waitSlackConnectOnce(ctx, cfg, database, reg, id, events, errOut)
 }
 
 // waitSlackConnectOnce waits for flow id's callback and writes its grant.

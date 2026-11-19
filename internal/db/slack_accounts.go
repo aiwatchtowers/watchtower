@@ -202,9 +202,12 @@ func (db *DB) SetSlackRefreshExpiry(id int64, at time.Time) error {
 
 // BackfillSlackClientIDs gives every account without a client id (connected
 // before migration 00196) clientID and returns how many rows it filled. A set
-// id is never overwritten, so it is idempotent and needs no lock (A17).
+// id is never overwritten, so it is idempotent and needs no lock (A17). A row
+// tied to a company (#1887) is never filled: it signed in through the
+// company's Slack app, not the shared one clientID names; its token file
+// carries its client and the next token read repairs the column.
 func (db *DB) BackfillSlackClientIDs(clientID string) (int64, error) {
-	res, err := db.Exec(`UPDATE slack_accounts SET client_id = ? WHERE client_id = ''`, clientID)
+	res, err := db.Exec(`UPDATE slack_accounts SET client_id = ? WHERE client_id = '' AND company_slug = ''`, clientID)
 	if err != nil {
 		return 0, fmt.Errorf("backfilling slack client ids: %w", err)
 	}

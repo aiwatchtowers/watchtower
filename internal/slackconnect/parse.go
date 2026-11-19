@@ -49,6 +49,10 @@ type Target struct {
 	// AccountID is the account row the flow re-binds (Reconnect); 0 means the
 	// caller picks the team's live row or a new one.
 	AccountID int64
+	// CompanySlug ties the connected account to a stored company (#1887:
+	// the company connect chain's Slack step); "" leaves the row's tie as
+	// it is. Never read from a link or code.
+	CompanySlug string
 }
 
 var (

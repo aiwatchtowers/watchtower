@@ -67,14 +67,21 @@ type slackFailedEvent struct {
 }
 
 // slackConnectCommand is one stdin line: start (team_id, client_id and an
-// optional account_id; skips the confirm), confirm (flow), cancel (flow) or
-// company_dismiss (flow: the app answered a company_link event).
+// optional account_id; skips the confirm), confirm (flow), cancel (flow),
+// company_dismiss (flow: the app answered a company_link event),
+// company_connect (flow, slug, vendors: start the company chain; it also
+// releases the company link with that flow), company_skip (flow, optional
+// vendor: end the waiting vendor only) or company_stop (flow: end the wait
+// and skip every vendor left).
 type slackConnectCommand struct {
-	Cmd       string `json:"cmd"`
-	TeamID    string `json:"team_id"`
-	ClientID  string `json:"client_id"`
-	AccountID int64  `json:"account_id"`
-	Flow      string `json:"flow"`
+	Cmd       string   `json:"cmd"`
+	TeamID    string   `json:"team_id"`
+	ClientID  string   `json:"client_id"`
+	AccountID int64    `json:"account_id"`
+	Flow      string   `json:"flow"`
+	Slug      string   `json:"slug"`
+	Vendors   []string `json:"vendors"`
+	Vendor    string   `json:"vendor"`
 }
 
 func writeSlackConnectEvent(out io.Writer, ev any) error {
@@ -107,6 +114,14 @@ type slackConnectServer struct {
 	deps     slackConnectDeps
 	reg      *slackconnect.Registry
 	links    *pendingLinks
+
+	// The company chain: chain is the running one (the loop's alone),
+	// chainEvents carries its events to the loop, loopGone closes when the
+	// loop stops reading them, chainWaiters are its Slack flows.
+	chain        *runningChain
+	chainEvents  chan any
+	loopGone     chan struct{}
+	chainWaiters slackChainWaiters
 }
 
 // serveSlackConnect is `slack connect serve`: it binds the listener (busy:
@@ -131,6 +146,9 @@ func serveSlackConnect(ctx context.Context, cfg *config.Config, database *db.DB,
 		logger: log.New(logOut, "[slack connect] ", log.LstdFlags),
 		reg:    slackconnect.NewRegistry(deps.clock, deps.exchange),
 		links:  &pendingLinks{},
+
+		chainEvents: make(chan any),
+		loopGone:    make(chan struct{}),
 	}
 	events := make(chan slackconnect.Event)
 	stop := make(chan struct{})
@@ -149,6 +167,9 @@ func serveSlackConnect(ctx context.Context, cfg *config.Config, database *db.DB,
 	shutdown := serveSlackConnectListener(ln, s.reg, events, stop, company)
 	// The app is gone (stdin EOF): nobody answers a page any more.
 	defer shutdown(true)
+	// Runs before the listener's shutdown above (defers run last-first):
+	// the chain's Slack step waits on the listener's callback.
+	defer s.endChain()
 	if err := s.emit(slackPortEvent{Event: "listening", Port: ln.Addr().(*net.TCPAddr).Port}); err != nil {
 		return err
 	}
@@ -169,6 +190,11 @@ func serveSlackConnect(ctx context.Context, cfg *config.Config, database *db.DB,
 		case ev := <-events:
 			err = s.handleEvent(ev)
 		case ev := <-companyEvents:
+			err = s.emit(ev)
+		case ev := <-s.chainEvents:
+			if _, done := ev.(companyDoneEvent); done {
+				s.chain = nil
+			}
 			err = s.emit(ev)
 		}
 		if err != nil {
@@ -226,6 +252,11 @@ func (s *slackConnectServer) handleCommand(c slackConnectCommand) error {
 		// the next link may wait for a confirm. An unknown flow is a no-op.
 		s.links.release(c.Flow)
 		return nil
+	case "company_connect":
+		return s.companyConnect(c)
+	case "company_skip", "company_stop":
+		s.chainControl(c)
+		return nil
 	default:
 		s.logger.Printf("skipping unknown command %q", c.Cmd)
 		return nil
@@ -235,6 +266,9 @@ func (s *slackConnectServer) handleCommand(c slackConnectCommand) error {
 // start begins a flow that skips the confirm (paste, MDM, Reconnect, the
 // setup's admin connect) and opens its sign-in.
 func (s *slackConnectServer) start(c slackConnectCommand) error {
+	if s.chain != nil {
+		return s.chainBusy()
+	}
 	t, err := slackconnect.ParseConnectInput(c.TeamID + ":" + c.ClientID)
 	if err != nil {
 		return s.failed("", string(slackconnect.OutcomeOther), "This is not a Watchtower Slack link or code.")
@@ -260,6 +294,9 @@ func (s *slackConnectServer) start(c slackConnectCommand) error {
 
 // confirm is the owner's Connect on a link flow.
 func (s *slackConnectServer) confirm(id slackconnect.FlowID) error {
+	if s.chain != nil {
+		return s.chainBusy()
+	}
 	if err := s.refusal(slackconnect.Target{}); err != nil {
 		s.reg.Cancel(id)
 		return s.failed(id, slackConnectReason(err), err.Error())
@@ -295,6 +332,12 @@ func (s *slackConnectServer) refusal(t slackconnect.Target) error {
 func (s *slackConnectServer) handleEvent(ev slackconnect.Event) error {
 	switch ev.Kind {
 	case slackconnect.EventLink:
+		if s.chain != nil {
+			// The chain holds the shared guard: the link's flow must not keep
+			// the registry's slot while nobody can confirm it.
+			s.reg.Cancel(ev.Flow)
+			return s.chainBusy()
+		}
 		if err := sourceRefusal("slack"); err != nil {
 			s.reg.Cancel(ev.Flow)
 			return s.failed(ev.Flow, slackConnectReasonPolicy, err.Error())
@@ -303,6 +346,10 @@ func (s *slackConnectServer) handleEvent(ev slackconnect.Event) error {
 	case slackconnect.EventBusy:
 		return s.emit(slackFlowEvent{Event: "busy", Flow: string(ev.Flow)})
 	case slackconnect.EventCallback:
+		if done := s.chainWaiters.get(ev.Flow); done != nil {
+			s.chainCallback(ev, done)
+			return nil
+		}
 		return s.callback(ev)
 	}
 	return nil

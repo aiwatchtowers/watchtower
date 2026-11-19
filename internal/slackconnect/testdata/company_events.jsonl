@@ -1,0 +1,11 @@
+{"event":"company_link","flow":"flow-1","bundle":"eyJhdGxhc3NpYW4iOnsiY2xpZW50X2lkIjoiYWNtZUNsaWVudElkMDEiLCJjbGllbnRfc2VjcmV0Ijoic2FtcGxlLWF0bGFzc2lhbi1zZWNyZXQiLCJjb25mbHVlbmNlIjp0cnVlLCJzaXRlIjoiaHR0cHM6Ly9hY21lLmF0bGFzc2lhbi5uZXQifSwiY29tcGFueSI6IkFjbWUiLCJnb29nbGUiOnsiY2xpZW50X2lkIjoiMTIzNC1hYmNkLmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29tIiwiY2xpZW50X3NlY3JldCI6InNhbXBsZS1nb29nbGUtc2VjcmV0IiwiZG9tYWluIjoiZXhhbXBsZS5jb20ifSwic2xhY2siOnsiY2xpZW50X2lkIjoiMDAwLjAwMCIsInRlYW1faWQiOiJUMDAwMCJ9LCJ2IjoxfQ"}
+{"event":"company_vendor","flow":"flow-1","vendor":"slack","state":"waiting","label":"","message":""}
+{"event":"company_vendor","flow":"flow-1","vendor":"slack","state":"connected","label":"Acme","message":""}
+{"event":"company_vendor","flow":"flow-1","vendor":"google","state":"waiting","label":"","message":""}
+{"event":"company_vendor","flow":"flow-1","vendor":"google","state":"cancelled","label":"","message":"you did not allow Watchtower"}
+{"event":"company_vendor","flow":"flow-1","vendor":"atlassian","state":"waiting","label":"","message":""}
+{"event":"company_vendor","flow":"flow-1","vendor":"atlassian","state":"failed","label":"","message":"company Atlassian site: https://acme.atlassian.net is not reached"}
+{"event":"company_vendor","flow":"flow-1","vendor":"microsoft","state":"waiting","label":"","message":""}
+{"event":"company_vendor","flow":"flow-1","vendor":"microsoft","state":"skipped","label":"","message":""}
+{"event":"company_vendor","flow":"flow-1","vendor":"linear","state":"skipped","label":"","message":"Blocked by your organization"}
+{"event":"company_done","flow":"flow-1","states":{"atlassian":"failed","google":"cancelled","linear":"skipped","microsoft":"skipped","slack":"connected"}}
