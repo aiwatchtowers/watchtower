@@ -576,6 +576,9 @@ func connectGoogleAccount(cmd *cobra.Command, cfg *config.Config, database *db.D
 // nothing.
 func addGoogleAccountForCompany(cmd *cobra.Command, cfg *config.Config, database *db.DB, g *companybundle.Google, slug, label string, wantCalendar, wantGmail bool) error {
 	grant, err := googleCompanyConsent(cmd, g, wantCalendar, wantGmail)
+	if errors.Is(err, errGmailNeedsOwnProject) {
+		return fmt.Errorf("company %s: %w", slug, err)
+	}
 	if err != nil {
 		return err
 	}
@@ -600,7 +603,7 @@ func googleCompanyConsent(cmd *cobra.Command, g *companybundle.Google, wantCalen
 
 	scopes, err := googleScopesFor(googleCfg.ClientID, wantCalendar, wantGmail)
 	if err != nil {
-		return fmt.Errorf("company %s: %w", slug, err)
+		return googleCompanyGrant{}, err
 	}
 	token, err := runGoogleConsent(cmd, googleCfg, scopes, noOpen, appReturn)
 	if err != nil {
