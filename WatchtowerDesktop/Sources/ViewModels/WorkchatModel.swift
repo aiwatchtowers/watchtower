@@ -72,7 +72,9 @@ final class WorkchatModel {
     /// The paste payloads of a line on its way, to bring back with its tokenized draft.
     @ObservationIgnored private var sentPastes: [UUID: [Int: PastePayload]] = [:]
     /// Paste numbers given out whose token the draft has not shown yet (the
-    /// field inserts it after `paste` returns): not pruned until it has.
+    /// field inserts it after `paste` returns): not pruned until it has, and
+    /// Send waits for them; a token the field could not insert is let go
+    /// (`pasteNotInserted`).
     @ObservationIgnored private var pendingPastes: Set<Int> = []
     /// The last paste number given out in this draft: a pruned number is never
     /// given out again, so an undone deletion cannot point at a new payload.
@@ -245,6 +247,14 @@ final class WorkchatModel {
             keep(.image(path: path), as: number)
             return PasteTokens.imageLabel(number)
         }
+    }
+
+    /// The field could not insert `label` (it refused the edit or was gone):
+    /// its paste stops waiting, so Send is not held for a token that never
+    /// lands, and the payload goes with it (the draft does not hold it).
+    func pasteNotInserted(_ label: String) {
+        pendingPastes.subtract(PasteTokens.numbers(in: label))
+        prunePastes()
     }
 
     private func keep(_ payload: PastePayload, as number: Int) {

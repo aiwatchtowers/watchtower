@@ -18,6 +18,7 @@ struct ChatComposerTextInput: View {
     var onAttachFiles: (([URL]) -> Void)?
     var onLongTextPaste: ((LongPaste) -> Void)?
     var onInlinePaste: ((InlinePaste) async -> String?)?
+    var onInlinePasteDropped: ((String) -> Void)?
     var livePastes: [Int: PasteKind] = [:]
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
@@ -48,6 +49,7 @@ struct ChatComposerTextInput: View {
                 onAttachFiles: onAttachFiles,
                 onLongTextPaste: onLongTextPaste,
                 onInlinePaste: onInlinePaste,
+                onInlinePasteDropped: onInlinePasteDropped,
                 livePastes: livePastes,
                 onCursorChange: onCursorChange,
                 onPickerKey: onPickerKey,
@@ -81,6 +83,7 @@ public struct ExpandingTextInput: NSViewRepresentable {
     var onLongTextPaste: ((LongPaste) -> Void)?
     /// Set: a pasted image or long text goes in as the token it returns (#2065 §6, `ComposerPasteRoute`).
     var onInlinePaste: ((InlinePaste) async -> String?)?
+    var onInlinePasteDropped: ((String) -> Void)?
     /// The kind of each token number with a payload: one Backspace removes such a token whole.
     var livePastes: [Int: PasteKind] = [:]
     /// The @/ pickers' input (Task 25/26): full text + caret on every change.
@@ -107,6 +110,7 @@ public struct ExpandingTextInput: NSViewRepresentable {
         onAttachFiles: (([URL]) -> Void)? = nil,
         onLongTextPaste: ((LongPaste) -> Void)? = nil,
         onInlinePaste: ((InlinePaste) async -> String?)? = nil,
+        onInlinePasteDropped: ((String) -> Void)? = nil,
         livePastes: [Int: PasteKind] = [:],
         onCursorChange: ((String, Int) -> Void)? = nil,
         onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)? = nil,
@@ -124,6 +128,7 @@ public struct ExpandingTextInput: NSViewRepresentable {
         self.onAttachFiles = onAttachFiles
         self.onLongTextPaste = onLongTextPaste
         self.onInlinePaste = onInlinePaste
+        self.onInlinePasteDropped = onInlinePasteDropped
         self.livePastes = livePastes
         self.onCursorChange = onCursorChange
         self.onPickerKey = onPickerKey
@@ -158,6 +163,7 @@ public struct ExpandingTextInput: NSViewRepresentable {
         textView.onAttachFiles = onAttachFiles
         textView.onLongTextPaste = onLongTextPaste
         textView.onInlinePaste = onInlinePaste
+        textView.onInlinePasteDropped = onInlinePasteDropped
         textView.livePastes = livePastes
         textView.onOptionArrowDown = onOptionArrowDown
 
@@ -196,6 +202,7 @@ public struct ExpandingTextInput: NSViewRepresentable {
         textView.onAttachFiles = onAttachFiles
         textView.onLongTextPaste = onLongTextPaste
         textView.onInlinePaste = onInlinePaste
+        textView.onInlinePasteDropped = onInlinePasteDropped
         textView.livePastes = livePastes
         textView.onOptionArrowDown = onOptionArrowDown
         if textView.string != text {

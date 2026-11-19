@@ -15,6 +15,9 @@ public final class PastingTextView: NSTextView {
     var onLongTextPaste: ((LongPaste) -> Void)?
     /// Keeps a pasted image or long text and returns its token; nil → no inline tokens.
     var onInlinePaste: ((InlinePaste) async -> String?)?
+    /// A token `onInlinePaste` returned that never went in (the field refused the edit or was gone by then): the
+    /// owner lets go of its payload, which would otherwise wait for the token forever.
+    var onInlinePasteDropped: ((String) -> Void)?
     /// The kind of each token number with a payload (the owner's model): only a token of that number and kind is
     /// deleted whole.
     var livePastes: [Int: PasteKind] = [:]
@@ -73,14 +76,23 @@ public final class PastingTextView: NSTextView {
     }
 
     /// Hands the paste to the owner and puts the token it returns where the paste was made: over the selection
-    /// then, when the field has not changed meanwhile, otherwise at the caret. nil → nothing is inserted.
+    /// then, when the field has not changed meanwhile, otherwise at the caret. nil → nothing is inserted. A token
+    /// that cannot go in (the edit refused, the field gone) is reported through `onInlinePasteDropped`.
     private func insertToken(for item: InlinePaste, using onInlinePaste: @escaping (InlinePaste) async -> String?) {
         let target = selectedRange()
         let before = string
+        let dropped = onInlinePasteDropped
         Task { @MainActor [weak self] in
-            guard let label = await onInlinePaste(item), let self else { return }
+            guard let label = await onInlinePaste(item) else { return }
+            guard let self else {
+                dropped?(label)
+                return
+            }
             let range = self.string == before ? target : self.selectedRange()
-            guard self.shouldChangeText(in: range, replacementString: label) else { return }
+            guard self.shouldChangeText(in: range, replacementString: label) else {
+                dropped?(label)
+                return
+            }
             self.textStorage?.replaceCharacters(in: range, with: label)
             self.didChangeText()
             self.undoManager?.setActionName("Paste")

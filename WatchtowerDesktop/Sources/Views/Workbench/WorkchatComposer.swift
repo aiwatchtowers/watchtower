@@ -59,6 +59,7 @@ struct WorkchatComposer: View {
                 onPasteData: { await model.attach(data: $0, name: $1) },
                 onRemoveAttachment: { model.removeAttachment($0) },
                 onInlinePaste: { await model.paste($0) },
+                onInlinePasteDropped: { model.pasteNotInserted($0) },
                 onOptionArrowDown: onToggleSteps
             )
             .macComposerStyle()

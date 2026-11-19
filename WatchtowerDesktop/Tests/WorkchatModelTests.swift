@@ -1483,6 +1483,25 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertEqual(model.outgoing.first?.text, "see x\ny")
     }
 
+    /// A token the field could not insert (edit refused, field gone) does not hold Send: the paste is let go
+    /// (final fix follow-up).
+    func testSendWorksAgainAfterARefusedInsert() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        model.draft = "hi"
+        let pasted = await model.paste(.text("x\ny"))
+        let label = try XCTUnwrap(pasted)
+        await model.send()
+        XCTAssertTrue(model.outgoing.isEmpty, "held while the token may still land")
+
+        model.pasteNotInserted(label)
+        XCTAssertTrue(model.pastes.isEmpty, "the payload goes with the token")
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.first?.text, "hi")
+    }
+
     func testPasteNumberIgnoresHugeHandTypedNumber() async throws {
         let model = try makeModel(try await liveSession())
         model.draft = "[Image #\(Int.max)] [Pasted text #2000000 +1 lines] [Image #4]"

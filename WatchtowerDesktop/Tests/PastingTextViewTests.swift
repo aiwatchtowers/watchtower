@@ -273,6 +273,23 @@ final class PastingTextViewTests: XCTestCase {
         XCTAssertEqual(view.string, "fix")
     }
 
+    /// A token the field cannot insert (the edit refused) is reported back, so its paste does not hold Send.
+    func testRefusedTokenInsertIsReported() async throws {
+        pasteboard.setData(try onePixelPNG(), forType: .png)
+        let view = makeInlineView(label: "[Image #1]")
+        var dropped: [String] = []
+        view.onInlinePasteDropped = { dropped.append($0) }
+        view.string = "fix"
+        view.isEditable = false
+
+        view.paste(nil)
+
+        let reported = await eventually { !dropped.isEmpty }
+        XCTAssertTrue(reported)
+        XCTAssertEqual(dropped, ["[Image #1]"])
+        XCTAssertEqual(view.string, "fix")
+    }
+
     func testBackspaceDeletesALiveTokenWhole() {
         let view = makeInlineView(label: nil)
         view.livePastes = [1: .image]

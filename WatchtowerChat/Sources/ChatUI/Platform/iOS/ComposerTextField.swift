@@ -17,6 +17,7 @@ struct ChatComposerTextInput: View {
     var onLongTextPaste: ((LongPaste) -> Void)?
     /// The Mac's inline paste tokens (#2065 §6); the phone has none.
     var onInlinePaste: ((InlinePaste) async -> String?)?
+    var onInlinePasteDropped: ((String) -> Void)?
     var livePastes: [Int: PasteKind] = [:]
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?

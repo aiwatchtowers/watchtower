@@ -82,6 +82,8 @@ public struct ChatComposerField: View {
     /// `inlinePastes`: keeps a pasted image or long text and returns the token to insert at the paste; nil inserts
     /// nothing (the paste was not taken, and the owner's model says why).
     var onInlinePaste: ((InlinePaste) async -> String?)?
+    /// A token `onInlinePaste` returned that the field could not insert: the owner lets its payload go.
+    var onInlinePasteDropped: ((String) -> Void)?
     var onRemoveAttachment: ((Int64) -> Void)?
     var onRetryAttachment: ((Int64) -> Void)?
     var onCursorChange: ((String, Int) -> Void)?
@@ -119,6 +121,7 @@ public struct ChatComposerField: View {
         onCursorChange: ((String, Int) -> Void)? = nil,
         onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)? = nil,
         onInlinePaste: ((InlinePaste) async -> String?)? = nil,
+        onInlinePasteDropped: ((String) -> Void)? = nil,
         onOptionArrowDown: (() -> Bool)? = nil
     ) {
         _text = text
@@ -138,6 +141,7 @@ public struct ChatComposerField: View {
         self.onCursorChange = onCursorChange
         self.onPickerKey = onPickerKey
         self.onInlinePaste = onInlinePaste
+        self.onInlinePasteDropped = onInlinePasteDropped
         self.onOptionArrowDown = onOptionArrowDown
     }
 
@@ -219,6 +223,7 @@ public struct ChatComposerField: View {
             onAttachFiles: attachableFiles,
             onLongTextPaste: { longPaste = $0 },
             onInlinePaste: config.inlinePastes ? onInlinePaste : nil,
+            onInlinePasteDropped: onInlinePasteDropped,
             livePastes: config.livePastes,
             onCursorChange: onCursorChange,
             onPickerKey: onPickerKey,
