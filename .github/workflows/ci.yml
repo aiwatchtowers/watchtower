@@ -709,6 +709,12 @@ jobs:
         working-directory: .
         run: git clean -ffd
 
+      # "Aqua" means the runner sits in ci's login session and has a window
+      # server; "Background" means WindowServerTestGate's skips are still needed.
+      - name: Launchd session
+        if: runner.environment == 'self-hosted'
+        run: launchctl managername
+
       # The runner's default toolchain (Xcode 16.4) predates the macOS 26 SDK, so
       # any reference to Speech's SpeechTranscriber/SpeechAnalyzer/AssetInventory/
       # AnalyzerInput (AppleProvider.swift) fails to compile with "cannot find type
