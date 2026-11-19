@@ -1439,6 +1439,9 @@ final class WorkchatModelTests: XCTestCase {
 
         model.draft = "fix \(label) like [Image #1]"
         XCTAssertTrue(model.pastes.isEmpty, "a duplicated label holds no payload")
+        XCTAssertEqual(model.attachmentError, "Pasted image #1 appears twice — paste it again", "the drop is not silent")
+        XCTAssertEqual(WorkchatModel.pasteDuplicated(1, kind: .image), "Pasted image #1 appears twice — paste it again")
+        XCTAssertEqual(WorkchatModel.pasteDuplicated(2, kind: .text), "Pasted text #2 appears twice — paste it again")
         await model.send()
 
         XCTAssertEqual(model.outgoing.first?.text, "fix [Image #1] like [Image #1]")
@@ -1454,6 +1457,7 @@ final class WorkchatModelTests: XCTestCase {
         let label = try XCTUnwrap(pasted)
         model.draft = "\(label) copy: [Pasted text #1 +2 lines]"
 
+        XCTAssertEqual(model.attachmentError, "Pasted text #1 appears twice — paste it again")
         model.draft = " copy: [Pasted text #1 +2 lines]"
         XCTAssertTrue(model.pastes.isEmpty)
         await model.send()

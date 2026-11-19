@@ -162,6 +162,11 @@ final class WorkchatModel {
                       pastes: sentPastes)
     }
 
+    /// Why a paste's payload was dropped: its label is in the draft twice, so neither copy is the token.
+    static func pasteDuplicated(_ number: Int, kind: PasteKind) -> String {
+        "\(kind == .image ? "Pasted image" : "Pasted text") #\(number) appears twice — paste it again"
+    }
+
     /// Why a send was refused: a pasted image's saved file is gone (swept or deleted).
     static func imageGone(_ number: Int) -> String {
         "Pasted image #\(number) is gone — paste it again"
@@ -266,13 +271,20 @@ final class WorkchatModel {
     /// Drops each payload whose token (number and kind) the draft no longer
     /// holds once (a typed copy beside it makes both literal), unless its
     /// token has not been inserted yet.
+    /// A payload dropped because its label is held twice says so
+    /// (`pasteDuplicated`) on the attachment-error line.
     private func prunePastes() {
         guard !pastes.isEmpty else { return }
         let kinds = pastes.mapValues(\.kind)
-        pendingPastes.subtract(PasteTokens.heldNumbers(in: draft, kinds: kinds))
+        let held = PasteTokens.heldNumbers(in: draft, kinds: kinds)
+        pendingPastes.subtract(held)
         let live = PasteTokens.liveNumbers(in: draft, kinds: kinds)
         let kept = pastes.filter { live.contains($0.key) || pendingPastes.contains($0.key) }
-        if kept.count != pastes.count { pastes = kept }
+        guard kept.count != pastes.count else { return }
+        if let twice = held.subtracting(live).min(), let kind = kinds[twice] {
+            attachmentError = Self.pasteDuplicated(twice, kind: kind)
+        }
+        pastes = kept
     }
 
     /// Saves pasted bytes under the session's folder; nil → not saved, and `attachmentError` says why.
