@@ -632,6 +632,7 @@ enum DesignShotCatalog {
             + ApprovalCardShotFixtures.shots // The approval card before and after its move to ChatUI (#1822 T15).
             + RoutingPillShotFixtures.shots // The routing pill and fallback card before and after ChatUI (#1822 T17).
             + BackgroundAIConsentShotFixtures.shots // Background AI consent spec (#1886), design only.
+            + WorkchatAgentsMockShotFixtures.shots // Workchat agents list and live steps spec (#2065), design only.
     }
 }
 

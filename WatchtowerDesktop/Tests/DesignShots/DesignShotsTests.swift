@@ -74,6 +74,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("tuning-chat-") })
     }
 
+    /// The Workchat agents list and live steps spec's mockups (#2065).
+    func testWorkchatAgentsMockShotsRender() throws {
+        try renderShots(WorkchatAgentsMockShotFixtures.shots)
+    }
+
     func testWorkchatActivityShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("workchat-activity-") })
     }
