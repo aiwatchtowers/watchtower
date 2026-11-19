@@ -417,13 +417,15 @@ final class CompanySetupWizardModelTests: XCTestCase {
         XCTAssertEqual(Model.manifestDiffTitle("A0ACME"), "App A0ACME's settings differ from Watchtower's")
         XCTAssertEqual(model.primary.title, "Update the app")
         XCTAssertEqual(cli.calls(["slack", "app", "adopt"]).first?.args,
-                       ["slack", "app", "adopt", "--json", "--enable-pkce", "--app-id", "A0ACME", "--client-id", "1111.2222"])
+                       ["slack", "app", "adopt", "--json", "--enable-pkce", "--app-id", "A0ACME", "--client-id", "1111.2222",
+                        "--dry-run"], "the first run only reads the app")
         cli.setups = acmeSetup
         cli.on(["slack", "app", "adopt"], [#"{"result":"ok","team_id":"T0ACME","team_name":"acme","app_id":"A0ACME","#
             + #""client_id":"1111.2222","link_written":true}"#])
         await model.next()
         await untilObserved { model.current == .denyList }
         XCTAssertEqual(cli.calls(["slack", "app", "adopt"]).last?.args.contains("--confirm-app-id"), true)
+        XCTAssertEqual(cli.calls(["slack", "app", "adopt"]).last?.args.contains("--dry-run"), false, "Update the app changes it")
         XCTAssertEqual(model.marks()[.vendor(.slack)], .reused)
         XCTAssertTrue(cli.calls(["slack", "app", "create"]).isEmpty)
     }
@@ -502,7 +504,8 @@ final class CompanySetupWizardModelTests: XCTestCase {
         cli.on(["slack", "app", "adopt"], [confirmApp])
         await model.next()
         await untilObserved { model.slackDiff != nil }
-        XCTAssertEqual(cli.calls(["slack", "app", "adopt"]).first?.args.suffix(4), ["--app-id", "A0ACME", "--client-id", "1111.2222"])
+        XCTAssertEqual(cli.calls(["slack", "app", "adopt"]).first?.args.suffix(5),
+                       ["--app-id", "A0ACME", "--client-id", "1111.2222", "--dry-run"])
     }
 
     func testMatchingAppShowsNoDiffLines() async {
@@ -668,8 +671,11 @@ final class CompanySetupWizardModelTests: XCTestCase {
         XCTAssertEqual(model.primary, .init(title: "Continue", enabled: false))
         model.atlassianConfirmed = [true, true, false]
         XCTAssertFalse(model.primary.enabled)
+        XCTAssertEqual(model.publishBlockedReason, "Publish waits for the Atlassian settings: tick the three items on the "
+            + "Atlassian step.", "a check reached from the rail later still needs the checklist")
         model.atlassianConfirmed = [true, true, true]
         XCTAssertTrue(model.primary.enabled)
+        XCTAssertNil(model.publishBlockedReason)
         await model.next()
         XCTAssertEqual(model.current, .denyList)
     }
@@ -1232,6 +1238,24 @@ final class CompanySetupWizardModelTests: XCTestCase {
         XCTAssertNil(dropped.checks[.atlassian])
         XCTAssertFalse(dropped.isChecked(.atlassian))
         XCTAssertEqual(dropped.ticked, [])
+    }
+
+    func testResumeWhileWaitingForConsentShowsTheLink() async {
+        let draft = #"{"company":"Acme","services":["microsoft"],"step":"microsoft","slack":{},"microsoft_waiting":true,"#
+            + #""microsoft":{"client_id":"4b1e","tenant_id":"0000-acme"}}"#
+        let (model, _) = await resume(draft)
+        XCTAssertEqual(model.checks[.microsoft], .adminConsent(url: "https://login.microsoftonline.com/0000-acme/adminconsent?client_id=4b1e"))
+        XCTAssertEqual(model.primary, .init(title: "Continue", enabled: true))
+    }
+
+    func testPublishDraftNotDeletedIsSaid() async {
+        let (model, cli) = await publishReady()
+        model.slackToken = token
+        cli.on(["company", "publish"], [#"{"result":"ok","slug":"acme","link":"l","code":"c","draft_error":"busy"}"#])
+        await model.next()
+        XCTAssertTrue(model.isPublished)
+        XCTAssertEqual(model.publishDraftLeft, "Published. The setup's draft could not be deleted from this Mac (busy); "
+            + "Discard setup removes it.")
     }
 
     func testPublishThenLeaveWritesNoDraft() async {

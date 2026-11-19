@@ -144,6 +144,10 @@ package final class CompanySetupWizardModel {
     package private(set) var forcedVendors: Set<CompanyVendor> = []
     /// The Atlassian confirm checklist (§2.7), in memory only.
     package var atlassianConfirmed = [false, false, false]
+    /// An Atlassian check passed this session: Publish waits for the checklist too.
+    private var atlassianNeedsConfirm = false
+    /// Published, but the draft is still on disk: the line says so.
+    package private(set) var publishDraftLeft: String?
     /// The dropped Google client file's project ("project acme-watchtower").
     package private(set) var googleFile: (name: String, project: String)?
     package private(set) var googleFileProblem = false
@@ -328,6 +332,10 @@ package final class CompanySetupWizardModel {
             let index = steps.firstIndex(of: current) ?? 0
             reached = Set(steps.prefix(index + 1))
             publishName = read.company
+            if read.microsoftWaiting, let m = read.microsoft, !m.clientID.isEmpty, !m.tenantID.isEmpty {
+                // Resumed while IT has not consented: the waiting layout, not a fresh form.
+                checks[.microsoft] = .adminConsent(url: Self.adminConsentURL(tenant: m.tenantID, clientID: m.clientID))
+            }
         case "unreadable":
             // A third state, never "no draft" (§2.2): Go renamed the file.
             draftUnreadableFile = show.badFile
@@ -402,6 +410,8 @@ package final class CompanySetupWizardModel {
         forcedVendors = []
         confluenceRefused = false
         atlassianConfirmed = [false, false, false]
+        atlassianNeedsConfirm = false
+        publishDraftLeft = nil
         googleFile = nil
         draftUnreadableFile = nil
         resumed = false
@@ -823,7 +833,11 @@ package final class CompanySetupWizardModel {
             }
             checkedValues[v] = values
             if v == .google, !result.domain.isEmpty { draft.google?.domain = result.domain }
-            if v == .atlassian { confluenceRefused = result.confluenceRefused }
+            if v == .atlassian {
+                confluenceRefused = result.confluenceRefused
+                // This session's check: its settings checklist is still to tick.
+                atlassianNeedsConfirm = true
+            }
             if v == .microsoft { draft.microsoftWaiting = false }
             checks[v] = .passed
             // Dry checks move on; a sign-in moves on unless the confirm checklist follows.
@@ -915,7 +929,8 @@ package final class CompanySetupWizardModel {
         slackAttempt = true
         if let reuse = slackReuse {
             slackConfirming = confirming
-            slack.startAdopt(token: token, appID: reuse.appID, clientID: reuse.clientID)
+            // The first run only reads the app (the diff); Update the app changes it.
+            slack.startAdopt(token: token, appID: reuse.appID, clientID: reuse.clientID, dryRun: !confirming)
         } else {
             slackConfirming = false
             slack.startCreate(token: token)
@@ -1151,6 +1166,9 @@ package final class CompanySetupWizardModel {
     /// step without what Publish packs), nil when it can.
     package var publishBlockedReason: String? {
         if isActive(.atlassian), !isChecked(.atlassian) { return Self.publishWaitsAtlassian }
+        if isActive(.atlassian), atlassianNeedsConfirm, !atlassianConfirmed.allSatisfy(\.self) {
+            return Self.publishWaitsAtlassianConfirm
+        }
         if isActive(.google), !isChecked(.google) { return Self.publishWaits(.google) }
         if isActive(.slack), !slackAppReady { return Self.publishWaits(.slack) }
         for v in [CompanyVendor.linear, .microsoft] where isActive(v) && !valuesComplete(v) {
@@ -1220,8 +1238,10 @@ package final class CompanySetupWizardModel {
             publishState = .done(Published(slug: result.slug, link: result.link, code: result.code,
                                            onSlackPage: result.result == "ok"))
             slackToken = ""
-            // Go deleted the draft: nothing writes it back (leave, Done).
-            hasDraft = false
+            // Go deleted the draft: nothing writes it back (leave, Done). One it
+            // could not delete (or a newer one it kept) stays for Discard.
+            hasDraft = !result.draftError.isEmpty
+            publishDraftLeft = result.draftError.isEmpty ? nil : Self.publishDraftLeft(result.draftError)
             touched = false
             draftUnreadableFile = nil
         case "token_expired":

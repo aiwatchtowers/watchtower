@@ -215,6 +215,17 @@ extension CompanySetupWizardModel {
     ]
     /// Each confirm line's **Open**: the developer console's app list.
     package static let confirmLink = URL(string: "https://developer.atlassian.com/console/myapps/")
+    package static let publishWaitsAtlassianConfirm = "Publish waits for the Atlassian settings: tick the three items "
+        + "on the Atlassian step."
+    /// Go `company.AdminConsentURL`.
+    static func adminConsentURL(tenant: String, clientID: String) -> String {
+        "https://login.microsoftonline.com/\(tenant)/adminconsent?client_id=\(clientID)"
+    }
+
+    static func publishDraftLeft(_ detail: String) -> String {
+        "Published. The setup's draft could not be deleted from this Mac (\(detail)); Discard setup removes it."
+    }
+
     package static let publishWaitsAtlassian = "Publish waits for the Atlassian check: sign in on the Atlassian step, or "
         + "skip Atlassian."
 

@@ -380,12 +380,12 @@ package final class SlackAppSetupModel {
     /// **Update the app** (ask #1425). A repeated App ID after `confirm_app`
     /// confirms it. `clientID` (the company wizard's found app) adopts an app
     /// no account here is on yet.
-    package func startAdopt(token: String, appID: String?, clientID: String? = nil) {
+    package func startAdopt(token: String, appID: String?, clientID: String? = nil, dryRun: Bool = false) {
         let appID = appID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let clientID = clientID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let fromField = !appID.isEmpty
         startRun(token: token, steps: fromField ? Self.adoptFieldSteps : Self.adoptSteps, reports: true) { [self] token in
-            await runAdopt(token: token, appID: appID, clientID: clientID)
+            await runAdopt(token: token, appID: appID, clientID: clientID, dryRun: dryRun)
         }
     }
 
@@ -624,7 +624,9 @@ package final class SlackAppSetupModel {
         if result?.result == "ok" { target.linkWritten = true }
     }
 
-    private func runAdopt(token: String, appID: String, clientID: String) async {
+    /// `dryRun` (the company wizard's first look at a reused app): read the
+    /// app and answer its changes as a `confirm_app` form; nothing changes.
+    private func runAdopt(token: String, appID: String, clientID: String, dryRun: Bool = false) async {
         let adopt: Adopt
         if case let .adopt(shown) = form {
             adopt = shown
@@ -647,6 +649,7 @@ package final class SlackAppSetupModel {
             if adopt.confirm?.appID == appID { args += ["--confirm-app-id", appID] }
         }
         if !clientID.isEmpty { args += ["--client-id", clientID] }
+        if dryRun { args.append("--dry-run") }
         guard let result = await stream(args, token: token) else { return }
         var next = adopt
         next.target = result.target(fallback: adopt.target)
@@ -660,7 +663,7 @@ package final class SlackAppSetupModel {
             next.needsAppID = true
             next.appIDProblem = Self.appIDProblem(for: result)
             reset(.adopt(next))
-        case "confirm_app":
+        case "confirm_app", "dry_run":
             next.needsAppID = true
             next.confirm = (result.appID ?? appID, result.appName ?? "")
             reset(.adopt(next))
