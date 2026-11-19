@@ -391,11 +391,14 @@ final class UpdateService {
 
     /// Re-reads the channel's minimum for the downloaded offer. The download
     /// stays unless a newer release is required that it cannot meet: then
-    /// that release replaces it on offer, as a fresh check would. A
-    /// requirement still standing re-opens the window.
+    /// that release replaces it on offer, as a fresh check would. "Up to
+    /// date" lifts the requirement; one still standing re-opens the window.
     private func refreshRequirementOnly() async {
         let inFlight = state
         let result: CheckResult = if let fetchCheck { await fetchCheck() } else { await fetchFromChannel() }
+        if state == inFlight, result == .upToDate {
+            requiredMinVersion = nil
+        }
         if state == inFlight, case .found(let offer) = result {
             let downloaded = availableVersion ?? offer.version
             if case .required(let min) = Self.minVersionVerdict(

@@ -1508,6 +1508,21 @@ final class UpdateServiceRequiredVersionTests {
         #expect(presented == 2)
     }
 
+    @Test("ready to install: up to date lifts the requirement and keeps the download")
+    func upToDateLiftsRequirementWhileReady() async {
+        var presented = 0
+        let svc = service { presented += 1 }
+        await svc.applyCheckResult(found("v0.31.0", min: "0.30.0"), previous: .idle, background: true)
+        let ready = UpdateService.UpdateState.readyToInstall(appPath: URL(fileURLWithPath: "/tmp/W.app"))
+        svc.state = ready
+        svc.fetchCheck = { .upToDate }
+        svc.startPeriodicChecks { _ in throw CancellationError() }
+        await svc.periodicTask?.value
+        #expect(svc.state == ready)
+        #expect(!svc.isUpdateRequired)
+        #expect(presented == 1)
+    }
+
     @Test("a kept newer offer does not make a minimum the publishing release misses required")
     func minimumJudgedAgainstPublishingRelease() async {
         var logs: [String] = []
