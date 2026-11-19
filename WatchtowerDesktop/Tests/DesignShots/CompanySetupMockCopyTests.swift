@@ -391,6 +391,17 @@ final class CompanySetupMockCopyTests: XCTestCase {
         }
     }
 
+    /// The gaps closed after Task 30 (#2099): Jira's empty state with Set up
+    /// for my company (with and without the token), and Gmail off the shared
+    /// Google app (D11) on both sheets.
+    func testEntryPointAndGmailShots() {
+        let names = Set(CompanySetupShotFixtures.shots.map(\.name))
+        for name in ["jira-detail-empty", "jira-detail-empty-locked", "googleSheet-shared", "googleSheet-shared-locked",
+                     "emailSheet-gmail"] {
+            XCTAssertTrue(names.contains("company-\(name)"), name)
+        }
+    }
+
     /// Task 10 writes the listener's pages; Go's fixture holds their texts.
     func testGoPagesMatchMockCopy() throws {
         let pages = try CompanyPagesFixture.load()

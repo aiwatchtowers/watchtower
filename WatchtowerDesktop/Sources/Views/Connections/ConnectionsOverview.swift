@@ -12,8 +12,10 @@ struct ConnectionsOverview: View {
             summaries: appState.connectionSummaries,
             companies: CompaniesZone(state: appState.companiesZoneState, model: appState.companiesZone,
                                      connecting: appState.companyConnecting, flowBusy: appState.companyFlowBusy,
-                                     actions: appState.companiesZoneActions)
-        ) { appState.openConnections($0) }
+                                     actions: appState.companiesZoneActions),
+            onCompanyAction: { appState.performConnectMenuCompanyAction($0) },
+            onOpen: { appState.openConnections($0) }
+        )
         // Each time the overview shows: a link, a flow or the wizard may have changed a company file.
         // Not view-bound: leaving for a detail must not cancel the read it then groups by.
         .onAppear { appState.reloadCompanies() }
@@ -21,10 +23,13 @@ struct ConnectionsOverview: View {
 }
 
 /// The overview over given summaries; `onOpen` opens a service's detail.
-/// `companies` is the zone between the banners and Sources.
+/// `companies` is the zone between the banners and Sources;
+/// `onCompanyAction`, when given, ends the Connect… menu with the company
+/// entries (company screens spec §2.1).
 struct ConnectionsOverviewContent<Companies: View>: View {
     let summaries: [ConnectionSummary]
     let companies: Companies
+    var onCompanyAction: ((CompaniesZoneState.Action) -> Void)?
     let onOpen: (ConnectionService) -> Void
 
     private static var columns: [GridItem] {
@@ -55,6 +60,12 @@ struct ConnectionsOverviewContent<Companies: View>: View {
             Menu {
                 ForEach(summaries.filter { !$0.blocked }) { summary in
                     Button(summary.service.label) { onOpen(summary.service) }
+                }
+                if let onCompanyAction {
+                    Divider()
+                    ForEach(CompanyConnectionsPresentation.connectMenuCompanyActions, id: \.title) { action in
+                        Button(action.title) { onCompanyAction(action) }
+                    }
                 }
             } label: {
                 Label("Connect…", systemImage: "plus")

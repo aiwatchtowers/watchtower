@@ -31,7 +31,7 @@ since: next
 action: nav:connections
 -->
 
-1. Open **Connections** and press **Set up for my company** under **Companies**. Connections → Slack and the Atlassian banner have the same button.
+1. Open **Connections** and press **Set up for my company** under **Companies**, or pick it at the end of the **Connect…** menu. Connections → Slack, the Atlassian banner and the empty Jira page have the same button.
 2. On **Services**, tick what your company uses. Only those become steps; anything else connects through [Quick Connections](../features/quick-connections.md).
 3. Each service step first lists the apps this Mac already knows under **Found on this Mac**. Pick one to reuse it, or choose **Create new** (Watchtower walks you through the vendor's console) or **We already have one** (paste what identifies it). Watchtower never creates a second app by accident.
 4. Google and Atlassian are checked by your own sign-in, which also connects your own account and stores the company setup. Linear and Microsoft 365 are checked without a sign-in. For Atlassian, tick the three settings under **Confirm the app's settings**; Atlassian gives no way to read them.
@@ -57,7 +57,7 @@ since: next
 action: nav:connections
 -->
 
-1. Open Watchtower first, then click the link on your company's Slack app About page. Or press **Connect with a company code** under **Companies** and paste the code.
+1. Open Watchtower first, then click the link on your company's Slack app About page. Or press **Connect with a company code** under **Companies** (also at the end of the **Connect…** menu) and paste the code.
 2. Watchtower asks **Connect <company>?** with a box per service. Nothing is stored before you press **Connect**, so a web page cannot wire your accounts.
 3. Each ticked service opens its sign-in in your browser, one after another. **Skip this service** moves on; **Stop** ends the chain. You can close the window: Connections shows where the chain is.
 

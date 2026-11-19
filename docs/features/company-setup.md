@@ -62,12 +62,12 @@ Per Jira account every 7 days (`last_pdr_at`), after the sync: `atlassianpdr.Run
 
 - `CompanyBundle.swift`, `CompanyVendor.swift` (Models); in `WatchtowerCore/Services/Company/`: `CompanyConnectionsPresentation` (+Details: zone, groups, row statuses, banners, lock cards; every string), `CompaniesZoneModel` (`AppState.companiesZone`), `CompanyConnectFlowModel` (`AppState.companyConnect`: confirm, replace, chain sheet), `CompanySetupWizardModel` (+Copy) and `CompanyVendorGuide` (the wizard page, `AppState.companySetup`), `OwnGoogleProjectModel`, `AtlassianTokenFormModel`, `SharedAppFlagReader`, `CompanyCLI`. Views: `Views/Company/`, `Views/Connections/{CompaniesZone,CompanyAccountGroups,CompanyAccountsSections}.swift`, `Views/Settings/{OwnGoogleProjectPage,AtlassianTokenSheet}.swift`.
 - Connections overview: the **Companies** zone above Sources (cards with **Connect the rest** / **Connect all** / **Re-login**, the draft's **Continue setup** line, **Set up for my company**, **Connect with a company code**, the port-busy line). Service details group accounts: one group per company, then own Google project, **API tokens** (Jira), **API keys** (Linear), Watchtower's shared app, **Other accounts**. One `CompanyLockCard` under a locked group (`AllowOwnGoogleProject`, `AllowAtlassianAPIToken`), rows "Stopped by your organization — data kept".
+- More ways into the wizard and the code field (screens spec §2.1): the end of the overview's **Connect…** menu and Jira's empty state.
+- Gmail (D11): Email → **Add Account** → **Connect Gmail** opens the Google detail — the own Google project page when no stored company has a Google app (`gmailRoute`, +Gmail); the **Add Google Account** sheet shows Gmail off with a note unless the build is flavored.
 - A company link during onboarding waits for onboarding to end; a pasted code is refused with `pasteDuringOnboarding`.
 
 ## v1 limits and follow-ups
 
-- The overview's **Connect…** menu does not offer **Set up for my company** or **Connect with a company code** (screens spec §2.1), and the Jira empty state offers no **Set up for my company**; both are reachable from the Companies zone.
-- Add Email Account → **Connect Gmail** still opens the old Google sheet with a Gmail switch the shared client refuses (fix before release).
 - Draft is not saved on quit; Atlassian's checklist and Google's project name stay in memory only; "Confluence off" is not written back to the bundle.
 - `jira add` / `outlook login --company` always add a new row (no rebind by account id); one-shot `company connect` has no `--no-open`, and a non-Slack child's authorize URL is lost if the browser fails.
 - Port 18551 held by another app: no fallback for the one-shot chain.

@@ -21,6 +21,8 @@ package struct DetailAction: Equatable, Sendable, Identifiable {
         case connectWithToken
         /// The vendor's sign-in through a stored company's app.
         case connectCompany(slug: String)
+        /// The setup wizard (§2.1: Jira's empty state is one of its entries).
+        case setUpForCompany
     }
 
     package enum Emphasis: Equatable, Sendable { case prominent, secondary, quiet }
@@ -32,6 +34,7 @@ package struct DetailAction: Equatable, Sendable, Identifiable {
         case .pasteCode: "paste"
         case .connectWithToken: "token"
         case .connectCompany(let slug): "company:\(slug)"
+        case .setUpForCompany: "setup"
         }
     }
 
@@ -99,7 +102,8 @@ extension CompanyConnectionsPresentation {
     /// the empty state (§5.3, §6.4). Google: Calendar on the shared app, the
     /// own project (gone under its lock, §5.4), a company code. Jira: each
     /// stored company's Atlassian app, the API token (gone under its lock,
-    /// §6.5); a company code when no company app is offered.
+    /// §6.5); a company code when no company app is offered; in the empty
+    /// state also Set up for my company (§2.1).
     package static func detailActions(
         _ vendor: CompanyVendor,
         companies: [CompanyRef],
@@ -126,6 +130,11 @@ extension CompanyConnectionsPresentation {
                                             emphasis: empty ? .prominent : .secondary))
             }
             if companyApps.isEmpty { actions.append(paste) }
+            // §2.1: the empty state is also a way into the setup wizard.
+            if empty {
+                actions.append(DetailAction(kind: .setUpForCompany, title: CompaniesZoneState.Action.setUpForCompany.title,
+                                            emphasis: .quiet))
+            }
             return actions
         case .slack, .linear, .microsoft:
             return []
