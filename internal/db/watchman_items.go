@@ -13,7 +13,6 @@ import (
 // the writers of the wait, leased by the twin worker, finished in the same
 // transaction as the answer. Go never writes the feedback columns (Desktop only).
 
-
 // WatchmanItem is one wait point and the twin's handling of it.
 type WatchmanItem struct {
 	ID                  int64
