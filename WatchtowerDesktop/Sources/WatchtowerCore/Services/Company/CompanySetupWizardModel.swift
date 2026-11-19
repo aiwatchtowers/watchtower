@@ -450,6 +450,8 @@ package final class CompanySetupWizardModel {
     /// set-aside one go; the stored bundle and the accounts the checks made
     /// stay (§2.12).
     package func discard() async {
+        // Publish deletes the draft itself; a discard under it would land on a reset setup.
+        guard publishState != .running else { return }
         // A check waiting on its pre-check save is abandoned now, never started.
         generation += 1
         // After any save in flight: a save landing later would bring the draft back.
@@ -1349,6 +1351,8 @@ package final class CompanySetupWizardModel {
             slackToken = ""
             return Self.publishNeedsTokenLine
         case "wrong_workspace":
+            // That token cannot write this app's page: the field asks for another.
+            slackToken = ""
             return Self.publishWrongWorkspace
         default:
             return Self.publishRefused(result.message.isEmpty ? result.reason : result.message)

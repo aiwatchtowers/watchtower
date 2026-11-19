@@ -88,7 +88,9 @@ struct CompanySetupPage: View {
             Image(systemName: "arrow.uturn.forward.circle").foregroundStyle(.secondary)
             Text(line).font(.caption)
             Spacer(minLength: Spacing.regular)
-            Button(Model.discardSetup) { confirmDiscard = true }.buttonStyle(.kitQuiet)
+            Button(Model.discardSetup) { confirmDiscard = true }
+                .buttonStyle(.kitQuiet)
+                .disabled(model.publishState == .running)
         }
         .padding(Spacing.regular)
         .card()
