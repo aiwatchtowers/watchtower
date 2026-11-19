@@ -37,7 +37,7 @@ struct CompaniesZone: View {
             if let problem = state.problem { problemRow(problem) }
             if model.codeFieldOpen || state.codeFieldOpen {
                 codeField
-                // A busy port keeps the field open: the setup stays reachable beside it.
+                // The field replaces Connect with a company code only: the setup stays reachable (a busy port keeps the field open).
                 if state.actions.contains(.setUpForCompany) { zoneButtons(only: [.setUpForCompany]) }
             } else if !state.actions.isEmpty {
                 zoneButtons(only: state.actions)
