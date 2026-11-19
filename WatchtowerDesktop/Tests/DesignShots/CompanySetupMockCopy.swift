@@ -379,9 +379,9 @@ enum CompanySetupMockCopy {
     static let googleBannerTitle = "Gmail is leaving Watchtower's shared Google app"
     static let googleBannerBody = "bob@example.org keeps syncing Gmail until Google stops the old sign-in. Move Gmail to "
         + "your company's or your own Google project; Calendar stays on the shared app."
-    static let atlassianBannerTitle = "Watchtower's shared Atlassian app is retiring"
+    static let atlassianBannerTitle = "Watchtower's shared Atlassian app is retired"
     static let atlassianBannerBody = "Your company needs its own Atlassian app — ask your admin or set it up. "
-        + "old.atlassian.net syncs through the shared app for 30 more days."
+        + "Sign old.atlassian.net in again through your company's app or with an API token."
     static let useOwnGoogle = "Use my own Google project"
     static let connectTokenButton = "Connect with an API token"
 
