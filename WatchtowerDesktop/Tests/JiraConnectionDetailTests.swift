@@ -25,9 +25,9 @@ final class JiraConnectionDetailTests: XCTestCase {
         return pool
     }
 
-    /// §6.4: no site and no company → the empty line with Paste a company
-    /// code; no Add Jira Site (the shared app is retired) and no token
-    /// button until Task 27's sheet exists.
+    /// §6.4: no site and no company → the empty line with **Connect with an
+    /// API token** (it opens the token sheet) and Paste a company code; no
+    /// Add Jira Site (the shared app is retired).
     func testEmptyStateActions() async throws {
         let (appState, _) = LinearConnectionDetailTests.wired()
         let vm = JiraAccountsViewModel(dbPool: try pool(), daemon: FakeDaemonRestarter()) { nil }
@@ -37,10 +37,12 @@ final class JiraConnectionDetailTests: XCTestCase {
 
         await vm.refreshAsync()
         let view = JiraConnectionDetail().environment(appState)
-        XCTAssertNoThrow(try view.inspect().find(text: Pres.jiraEmptyNoToken))
+        XCTAssertNoThrow(try view.inspect().find(text: Pres.jiraEmpty))
         XCTAssertThrowsError(try view.inspect().find(button: "Add Jira Site"))
-        XCTAssertThrowsError(try view.inspect().find(button: CompanyBanner.Action.connectWithToken.title),
-                             "no dead button before Task 27")
+        try view.inspect().find(button: CompanyBanner.Action.connectWithToken.title).tap()
+        XCTAssertTrue(appState.atlassianToken.isPresented)
+        XCTAssertEqual(appState.atlassianToken.mode, .add)
+        appState.atlassianToken.close()
         appState.openConnections(.jira)
         try view.inspect().find(button: RowStatus.Action.pasteCode.title).tap()
         XCTAssertTrue(appState.companiesZone.codeFieldOpen)
@@ -60,7 +62,7 @@ final class JiraConnectionDetailTests: XCTestCase {
         XCTAssertTrue(line.hasPrefix("Could not read Jira sites: "))
         XCTAssertNoThrow(try view.inspect().find(text: line))
         XCTAssertNoThrow(try view.inspect().find(button: Pres.tryAgain))
-        XCTAssertThrowsError(try view.inspect().find(text: Pres.jiraEmptyNoToken))
+        XCTAssertThrowsError(try view.inspect().find(text: Pres.jiraEmpty))
     }
 
     /// A stored company with an Atlassian app: its Not connected row and
@@ -76,7 +78,7 @@ final class JiraConnectionDetailTests: XCTestCase {
 
         let view = JiraConnectionDetail().environment(appState)
         XCTAssertNoThrow(try view.inspect().find(text: Pres.rowNotConnected))
-        XCTAssertThrowsError(try view.inspect().find(text: Pres.jiraEmptyNoToken))
+        XCTAssertThrowsError(try view.inspect().find(text: Pres.jiraEmpty))
         try view.inspect().find(button: Pres.connectCompanyApp("Acme", .atlassian)).tap()
         await fake.signal.until { fake.invocations.contains { $0.args.starts(with: ["company", "inspect"]) } }
         let inspect = try XCTUnwrap(fake.invocations.last { $0.args.starts(with: ["company", "inspect"]) })
@@ -105,7 +107,7 @@ final class JiraConnectionDetailTests: XCTestCase {
 
         let view = JiraConnectionDetail().environment(appState)
         XCTAssertNoThrow(try view.inspect().find(text: Pres.atlassianBannerTitle))
-        XCTAssertNoThrow(try view.inspect().find(text: Pres.atlassianBannerBody(["old.atlassian.net"], token: false)))
+        XCTAssertNoThrow(try view.inspect().find(text: Pres.atlassianBannerBody(["old.atlassian.net"])))
         XCTAssertNoThrow(try view.inspect().find(text: Pres.sharedTag))
         XCTAssertNoThrow(try view.inspect().find(text: Pres.reloginUntied))
         XCTAssertEqual(try view.inspect().find(text: Pres.groupShared).string(), Pres.groupShared)
@@ -114,10 +116,40 @@ final class JiraConnectionDetailTests: XCTestCase {
         XCTAssertEqual(appState.selectedConnection, .companySetup)
     }
 
-    /// A dead API token says so, but offers no Paste a new token (nor a
-    /// Re-login that cannot work) until Task 27's sheet exists.
-    func testDeadTokenRowHasNoDeadButton() async throws {
+    /// §6.3: a dead API token's row offers **Paste a new token** (the sheet
+    /// in replace mode, email and site read-only), never an OAuth Re-login;
+    /// its note names Go's `purge_lease_at` while no purge is scheduled.
+    func testDeadTokenRowPastesANewToken() async throws {
         let (appState, _) = LinearConnectionDetailTests.wired()
+        let pool = try pool()
+        try await pool.write { db in
+            try db.execute(sql: "INSERT INTO jira_accounts (id, site_url, status, error, auth_kind, owner_email) "
+                + "VALUES (2, 'https://beta.atlassian.net', 'error', 'api_token_dead', 'api_token', 'bob@example.com')")
+        }
+        let cli = try GoogleConnectionDetailTests.stubCLI(
+            stdout: #"[{"id":2,"auth_kind":"api_token","shared_atlassian":false,"purge_lease_at":"2026-12-18T09:00:00Z"}]"#,
+            test: self)
+        let vm = JiraAccountsViewModel(dbPool: pool, daemon: FakeDaemonRestarter(), cliPath: { cli.path },
+                                       readsAccountFlags: true)
+        appState.jiraAccountsViewModel = vm
+        await vm.refreshAsync()
+
+        let view = JiraConnectionDetail().environment(appState)
+        XCTAssertNoThrow(try view.inspect().find(text: Pres.tokenDead))
+        let lease = Pres.tokenLease(Date(timeIntervalSince1970: 1_797_584_400), zone: .current)
+        XCTAssertNoThrow(try view.inspect().find(text: lease))
+        XCTAssertThrowsError(try view.inspect().find(button: RowStatus.Action.relogin.title))
+        try view.inspect().find(button: RowStatus.Action.pasteNewToken.title).tap()
+        XCTAssertTrue(appState.atlassianToken.isPresented)
+        XCTAssertEqual(appState.atlassianToken.mode,
+                       .replace(accountID: 2, email: "bob@example.com", site: "https://beta.atlassian.net"))
+    }
+
+    /// §6.5: with API tokens forbidden the token site reads "Stopped by your
+    /// organization — data kept" under the lock card (no lease note: POLICY-03
+    /// holds the lease), and no token offer or new-token button is left.
+    func testTokenLock() async throws {
+        let (appState, _) = LinearConnectionDetailTests.wired(policy: ["AllowAtlassianAPIToken": false])
         let pool = try pool()
         try await pool.write { db in
             try db.execute(sql: "INSERT INTO jira_accounts (id, site_url, status, error, auth_kind) "
@@ -128,9 +160,14 @@ final class JiraConnectionDetailTests: XCTestCase {
         await vm.refreshAsync()
 
         let view = JiraConnectionDetail().environment(appState)
-        XCTAssertNoThrow(try view.inspect().find(text: Pres.tokenDead))
+        XCTAssertNoThrow(try view.inspect().find(text: Pres.stoppedByPolicyLine))
+        XCTAssertNoThrow(try view.inspect().find(text: Pres.tokenLocked))
+        XCTAssertNoThrow(try view.inspect().find(button: ManagedPolicyHelp.label))
+        XCTAssertThrowsError(try view.inspect().find(text: Pres.tokenDead))
         XCTAssertThrowsError(try view.inspect().find(button: RowStatus.Action.pasteNewToken.title))
+        XCTAssertThrowsError(try view.inspect().find(button: CompanyBanner.Action.connectWithToken.title))
         XCTAssertThrowsError(try view.inspect().find(button: RowStatus.Action.relogin.title))
+        XCTAssertNil(appState.companyRowStatus(appState.companyAccountRefs[0])?.note)
     }
 
     /// A failed flags read is not the account read.

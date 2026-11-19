@@ -469,4 +469,24 @@ final class CompanySetupMockCopyTests: XCTestCase {
         XCTAssertEqual(flow.rows.map(\.title), Copy.vendorRows.map(\.0))
         XCTAssertEqual(flow.rows.map(\.detail), Copy.vendorRows.map(\.1))
     }
+
+    /// The API-token sheet's words (§6.2) are `AtlassianTokenFormModel`'s,
+    /// each state's line built the way the model builds it.
+    func testTokenSheetStringsEqualModel() {
+        typealias Token = AtlassianTokenFormModel
+        XCTAssertEqual([Copy.tokenTitle, Copy.tokenIntro, Copy.tokenStep1, Copy.tokenStep1Help, Copy.openAtlassianTokens,
+                        Copy.copyScopes, Copy.tokenStep2, Copy.atlassianEmail, Copy.site, Copy.apiToken, Copy.scopedHint,
+                        Copy.cancel, Copy.connect, Copy.saveToken, Copy.tryAgain, Copy.done, Copy.tokenUnauthorized,
+                        Copy.tokenDoneBody, Copy.tokenReplaceIntro],
+                       [Token.addTitle, Token.addIntro, Token.step1, Token.step1Help, Token.openTokenPage,
+                        Token.copyScopes, Token.step2, Token.emailLabel, Token.siteLabel, Token.tokenLabel, Token.scopedHint,
+                        Token.cancelTitle, Token.connectTitle, Token.saveTitle, Token.tryAgainTitle, Token.doneTitle,
+                        Token.unauthorized, Token.doneBody, Token.replaceIntro])
+        XCTAssertEqual(Copy.tokenChecking, Token.checking("acme.atlassian.net"))
+        XCTAssertEqual(Copy.tokenMissingScope, Token.missingScope("read:jira-work"))
+        XCTAssertEqual(Copy.tokenNotCloud, Token.notCloud("acme.example.com"))
+        XCTAssertEqual(Copy.tokenNetwork, Token.network("acme.atlassian.net", "the request timed out"))
+        XCTAssertEqual(Copy.tokenDoneTitle, Token.connected("acme.atlassian.net", "alice@example.com"))
+        XCTAssertEqual(Copy.tokenReplaceTitle, Token.replaceTitle("acme.atlassian.net"))
+    }
 }

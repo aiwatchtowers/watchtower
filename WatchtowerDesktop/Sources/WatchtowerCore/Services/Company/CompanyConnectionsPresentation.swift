@@ -81,7 +81,7 @@ package struct AccountRef: Equatable, Sendable, Identifiable {
 
     /// Removed or purged: it no longer connects its company's vendor.
     var isGone: Bool { status == "removed" || status == "purged" }
-    var isAPIToken: Bool { authKind == "api_token" }
+    package var isAPIToken: Bool { authKind == "api_token" }
     /// A Linear workspace connected with the person's own API key: no app of ours.
     var isAPIKey: Bool { authKind == "api_key" }
 }

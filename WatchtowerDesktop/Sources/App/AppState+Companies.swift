@@ -73,12 +73,21 @@ extension AppState {
         ) { own.contains($0.accountID) }
     }
 
-    /// A row's §4.3 status (no purge lease here: Slack, Linear and Outlook
-    /// have no token rows); an own Google project's row under the §5.4 lock
-    /// is stopped by the organization.
+    /// A row's §4.3 status. A row the policy stops (an own Google project
+    /// under §5.4, an API-token site under §6.5) says so; a dead token's note
+    /// names PURGE-01's lease day while it counts (Go's `purge_lease_at`) and
+    /// no purge is scheduled yet — then the purge line takes over (§6.3, A17).
     func companyRowStatus(_ account: AccountRef) -> RowStatus? {
-        CompanyConnectionsPresentation.rowStatus(account, purgeLease: nil, companies: companyRefs,
+        CompanyConnectionsPresentation.rowStatus(account, purgeLease: companyPurgeLease(account), companies: companyRefs,
                                                  stoppedByPolicy: companyRowStoppedByPolicy(account))
+    }
+
+    private func companyPurgeLease(_ account: AccountRef) -> Date? {
+        guard account.vendor == .atlassian,
+              let due = jiraAccountsViewModel?.sharedFlags.leaseDates[account.accountID],
+              accountPurgeCenter?.openRow(source: "jira", accountID: Int64(account.accountID)) == nil
+        else { return nil }
+        return due
     }
 
     /// No card or row may start a company flow: none exists (no listener —
@@ -140,8 +149,15 @@ extension AppState {
         case .pasteCode, .relogin, .connect:
             if let paste { paste() } else { pasteCompanyCode() }
         case .pasteNewToken:
-            break // Jira's API-token rows (Task 27)
+            openAtlassianTokenReplace(accountID: account.accountID)
         }
+    }
+
+    /// **Paste a new token** on a dead API-token site: the token sheet in
+    /// replace mode, its email and site read-only (§6.2, A16).
+    func openAtlassianTokenReplace(accountID: Int) {
+        guard let account = jiraAccountsViewModel?.accounts.first(where: { $0.id == accountID }) else { return }
+        openAtlassianToken { $0.openReplace(accountID: account.id, email: account.ownerEmail, site: account.siteURL) }
     }
 
     /// **Paste a company code** on a row: the overview's code field, opened.
