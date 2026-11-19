@@ -286,6 +286,9 @@ func addCounts(dst, src map[string]int) {
 // of the feed when before is empty) and the id to pass as before for the next
 // older page, "" when the page starts at entry 0.
 func TailPage(entries []Entry, before string, n int) (page []Entry, nextBefore string, err error) {
+	if n < 1 {
+		return nil, "", fmt.Errorf("tail page size %d: must be at least 1", n)
+	}
 	end := len(entries)
 	if before != "" {
 		end = -1

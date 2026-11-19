@@ -128,6 +128,9 @@ func ResolveSubagents(sessionDir string, entries []Entry) []Entry {
 		if ok && m.Shape == "background" {
 			ref.ParentReport = "" // the parent's result is only a launch notice
 		}
+		if ok && ref.StartedAt.IsZero() {
+			ref.StartedAt = m.modTime // the call carried no usable time
+		}
 		switch {
 		case !ok:
 			ref.Status = StatusUnknown

@@ -68,3 +68,8 @@ func TestBuild_TailKeepsFullSubagentsList(t *testing.T) {
 	require.Len(t, f.Subagents, 1)
 	assert.Equal(t, "tu1", f.Subagents[0].ID)
 }
+
+func TestTailPage_RejectsNonPositiveSize(t *testing.T) {
+	_, _, err := TailPage(entriesN(3), "", 0)
+	require.Error(t, err)
+}
