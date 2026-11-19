@@ -267,7 +267,7 @@ struct CustomTrackControlsSection: View {
     }
 
     private func failed(_ what: String, _ error: Error) {
-        if error is RowNotFoundError { onWatchGone() }
+        if error is RowNotFoundError || (error as? TowerWriteError)?.isGone == true { onWatchGone() }
         state.watchEditError = "Failed to \(what): \(error.localizedDescription)"
     }
 }

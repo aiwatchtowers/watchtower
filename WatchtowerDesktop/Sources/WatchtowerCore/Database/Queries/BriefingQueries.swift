@@ -46,6 +46,12 @@ package enum BriefingQueries {
                 SELECT date AS date FROM briefings UNION SELECT plan_date AS date FROM day_plans
             ) ORDER BY date DESC LIMIT ? OFFSET ?
             """, arguments: [limit, offset])
+        return try fetchDayCards(db, dates: dates)
+    }
+
+    /// The day cards of `dates` (a date with neither a briefing nor a plan
+    /// has a card with neither), in the order given.
+    package static func fetchDayCards(_ db: Database, dates: [String]) throws -> [InboxDayCard] {
         guard !dates.isEmpty else { return [] }
         let marks = dates.map { _ in "?" }.joined(separator: ",")
         let dateArgs = StatementArguments(dates)
@@ -100,29 +106,6 @@ package enum BriefingQueries {
             SELECT COUNT(*) FROM (SELECT read_at FROM briefings ORDER BY created_at DESC, id DESC LIMIT 1)
             WHERE read_at IS NULL OR read_at = ''
             """) ?? 0
-    }
-
-    package static func markRead(_ db: Database, id: Int) throws {
-        try db.execute(
-            sql: """
-                UPDATE briefings SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ? AND read_at IS NULL
-                """,
-            arguments: [id]
-        )
-    }
-
-    /// Marks multiple briefings read in one write. No-op on empty input.
-    package static func markRead(_ db: Database, ids: [Int]) throws {
-        guard !ids.isEmpty else { return }
-        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
-        try db.execute(
-            sql: """
-                UPDATE briefings SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id IN (\(placeholders)) AND read_at IS NULL
-                """,
-            arguments: StatementArguments(ids)
-        )
     }
 
     package static func unreadCount(_ db: Database) throws -> Int {

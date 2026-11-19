@@ -36,13 +36,12 @@ final class IdeaNavigationTests: XCTestCase {
     }
 
     func testNavigateToIdeaOpensItsCardInTheIdeaFinder() async throws {
-        let ids = try await dbManager.dbPool.write { db in
-            [try TestDatabase.insertIdea(db, kind: "note", title: "A note", status: "rejected"),
-             try TestDatabase.insertIdea(db, title: "Reacted idea", status: "active", source: "owner"),
-             try TestDatabase.insertIdea(db, kind: "decision", title: "Ship on Fridays", status: "active")]
-        }
+        // A rejected note (1), an idea the owner reacted (2), a decision (3).
+        let tower = try FeedCaseTransport.seeded("desktop_ideas_note_reacted_decision", pool: dbManager.dbPool)
+        let ids: [Int64] = [1, 2, 3]
         for id in ids.map(Int.init) {
             let (appState, inbox) = try appStateOnTheInbox()
+            await inbox.follow(tower)
             inbox.openLegacy(.messages)
             await appState.navigateToIdea(id)?.value
 

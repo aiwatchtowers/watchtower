@@ -69,10 +69,10 @@ struct InboxArtifactCard: View {
     private var layout: InboxCardLayout { .artifact(result, cardActions: cardActions) }
 
     var body: some View {
-        let reply = InboxCardAction.replyState(card)
+        let buttons = targets.feedButtons(card.id)
         VStack(alignment: .leading, spacing: Spacing.regular) {
             ArtifactCardBody(result: result, text: card.body, cardActions: cardActions, mode: .inbox)
-                .environment(\.artifactEnvironment, environment(reply: reply))
+                .environment(\.artifactEnvironment, environment(buttons: buttons))
                 .environment(\.openURL, OpenURLAction { url in
                     // Links in blocks go through the card's link rules at press time.
                     onCommand(.openLink(url))
@@ -81,7 +81,7 @@ struct InboxArtifactCard: View {
                 .popover(isPresented: isPicking, arrowEdge: .bottom) {
                     InboxWorkbenchPicker(workbenches: workbenches, onPick: pick).popoverSurface()
                 }
-            if layout.hasReply, let caption = Self.replyCaption(reply) {
+            if layout.hasReply, let caption = buttons.replyLine(pressed: card.pressedAction) {
                 Text(caption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -93,20 +93,13 @@ struct InboxArtifactCard: View {
         }
     }
 
-    /// The Reply state in words: "Sent — run #N" once pressed (the buttons
-    /// drawn in blocks keep their labels), else why it cannot send.
-    static func replyCaption(_ reply: InboxReplyState) -> String? {
-        if case let .sent(runID) = reply { return runID.map { "Sent — run #\($0)" } ?? "Sent" }
-        return InboxCardButtons.caption(reply)
-    }
-
     /// The chat's markdown renderer for a block's `md` text: the Inbox
     /// card's, and the editor's Look preview's ("drawn as the Inbox draws it").
     static func markdown(_ text: String) -> AnyView {
         AnyView(MarkdownView(text: text))
     }
 
-    private func environment(reply: InboxReplyState) -> ArtifactEnvironment {
+    private func environment(buttons: InboxFeedButtons) -> ArtifactEnvironment {
         let byIndex = Dictionary(layout.pressable.map { ($0.index, $0) }) { first, _ in first }
         return ArtifactEnvironment(
             markdown: Self.markdown,
@@ -117,7 +110,7 @@ struct InboxArtifactCard: View {
                     if let command = targets.command(target, index: index, card: card) { onCommand(command) }
                     return
                 }
-                switch InboxCardPress.resolve(action, card: card, reply: reply, workbenches: workbenches) {
+                switch InboxCardPress.resolve(action, card: card, buttons: buttons, workbenches: workbenches) {
                 case .command(let command): onCommand(command)
                 case .pick(let task): pickingTask = task
                 case .nothing: break
@@ -133,7 +126,7 @@ struct InboxArtifactCard: View {
                 if case .target(let target) = action.kind {
                     return !targets.isProposing(targets.button(target, index: index, card: card).context)
                 }
-                return !InboxCardPress.isDisabled(action, reply: reply, isWriting: isWriting, navScreens: navScreens)
+                return !InboxCardPress.isDisabled(action, buttons: buttons, isWriting: isWriting, navScreens: navScreens)
             }
         )
     }

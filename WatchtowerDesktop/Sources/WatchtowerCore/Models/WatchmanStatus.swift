@@ -1,0 +1,586 @@
+import Foundation
+
+/// Decoded `watchtower watchman status --json` (`cmd/watchman.go`, keys
+/// pinned by `TestWatchmanStatus_JSONKeysPinned`; the Go test writes
+/// `internal/watchman/testdata/status.json`, which `WatchmanStatusDecodingTests`
+/// reads). Fields the CLI may print as `null` or leave out are optional.
+package struct WatchmanStatus: Decodable, Equatable, Sendable {
+    package let ok: Bool
+    package let workbenches: [WatchmanWorkbenchStatus]
+    /// `daemon_running` (phase 2); unknown from a CLI that does not print it.
+    package let daemon: WatchmanDaemonState
+    /// `mode` (phase 2, D47): Sleep while anything is handed to Watchman.
+    /// Missing or unknown → off.
+    package let mode: WatchmanMode
+    /// `mode_since`: the oldest arming; nil while off.
+    package let modeSince: Date?
+    /// `armed`: every arming row, oldest first.
+    package let armed: [WatchmanArmedEntry]
+    /// `armed_sessions` by session id (tolerant: an entry of any other shape
+    /// reads as a session armed by its own row, or is skipped; a malformed
+    /// key reads as none): the live sessions the twin decides
+    /// for, armed directly or under an armed target (Go resolves the subtree).
+    package let armedSessions: [Int64: WatchmanArmedSession]
+
+    enum CodingKeys: String, CodingKey {
+        case ok, workbenches, mode, armed
+        case daemonRunning = "daemon_running"
+        case modeSince = "mode_since"
+        case armedSessions = "armed_sessions"
+    }
+
+    package init(
+        ok: Bool = true,
+        workbenches: [WatchmanWorkbenchStatus],
+        daemon: WatchmanDaemonState = .unknown,
+        mode: WatchmanMode = .off,
+        modeSince: Date? = nil,
+        armed: [WatchmanArmedEntry] = [],
+        armedSessions: [WatchmanArmedSession] = []
+    ) {
+        self.ok = ok
+        self.workbenches = workbenches
+        self.daemon = daemon
+        self.mode = mode
+        self.modeSince = modeSince
+        self.armed = armed
+        self.armedSessions = Self.byID(armedSessions)
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try container.decode(Bool.self, forKey: .ok)
+        // A nil Go slice marshals to null: an empty list, not a decode failure.
+        workbenches = try container.decodeIfPresent([WatchmanWorkbenchStatus].self, forKey: .workbenches) ?? []
+        switch try container.decodeIfPresent(Bool.self, forKey: .daemonRunning) {
+        case true?: daemon = .running
+        case false?: daemon = .stopped
+        case nil: daemon = .unknown
+        }
+        let rawMode = try container.decodeIfPresent(String.self, forKey: .mode) ?? ""
+        mode = WatchmanMode(rawValue: rawMode) ?? .off
+        modeSince = AutomationDates.parse(try container.decodeIfPresent(String.self, forKey: .modeSince))
+        armed = try container.decodeIfPresent([WatchmanArmedEntry].self, forKey: .armed) ?? []
+        let lossy = try? container.decodeIfPresent([LossyArmedSession].self, forKey: .armedSessions)
+        armedSessions = Self.byID(lossy.flatMap { $0 }?.compactMap(\.value) ?? [])
+    }
+
+    private static func byID(_ sessions: [WatchmanArmedSession]) -> [Int64: WatchmanArmedSession] {
+        Dictionary(sessions.map { ($0.id, $0) }) { first, _ in first }
+    }
+
+    package func workbench(_ id: Int64) -> WatchmanWorkbenchStatus? {
+        workbenches.first { $0.workbench == id }
+    }
+
+    /// Whether the twin decides for this session now: armed itself or under
+    /// an armed target.
+    package func isArmed(session id: Int64) -> Bool {
+        armedSessions[id] != nil || armed.contains { $0.scope == .session && $0.id == id }
+    }
+
+    /// Whether this target is handed to Watchman itself.
+    package func isArmed(target id: Int64) -> Bool {
+        armed.contains { $0.scope == .target && $0.id == id }
+    }
+}
+
+/// What the twin may do now (`watchman.Mode`, spec §2). Phase 2 prints only
+/// `off` and `sleep`; `away` is phase 3's.
+package enum WatchmanMode: String, Equatable, Sendable {
+    case off, sleep, away
+}
+
+/// One `armed_sessions` entry: `target` is the armed target whose subtree
+/// holds the session (0 = armed only by its own row; such a session goes
+/// back only with its target), `armedAt` that target's arming time, else
+/// the session row's.
+package struct WatchmanArmedSession: Decodable, Equatable, Sendable {
+    package let id: Int64
+    package let target: Int64
+    package let armedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id, target
+        case armedAt = "armed_at"
+    }
+
+    package init(id: Int64, target: Int64 = 0, armedAt: Date? = nil) {
+        self.id = id
+        self.target = target
+        self.armedAt = armedAt
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int64.self, forKey: .id)
+        target = try container.decodeIfPresent(Int64.self, forKey: .target) ?? 0
+        armedAt = AutomationDates.parse(try container.decodeIfPresent(String.self, forKey: .armedAt))
+    }
+}
+
+/// One `armed_sessions` entry read whatever its shape: the object, a bare
+/// session id (an older CLI: a direct row), or nothing.
+private struct LossyArmedSession: Decodable {
+    let value: WatchmanArmedSession?
+
+    init(from decoder: Decoder) throws {
+        if let session = try? WatchmanArmedSession(from: decoder) {
+            value = session
+        } else if let id = try? decoder.singleValueContainer().decode(Int64.self) {
+            value = WatchmanArmedSession(id: id)
+        } else {
+            value = nil
+        }
+    }
+}
+
+/// One `watchman_arming` row as `watchman status|arm|disarm --json` print it.
+package struct WatchmanArmedEntry: Decodable, Equatable, Sendable {
+    package enum Scope: String, Decodable, Equatable, Sendable {
+        case session, target
+    }
+
+    package let scope: Scope
+    package let id: Int64
+    package let armedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case scope, id
+        case armedAt = "armed_at"
+    }
+
+    package init(scope: Scope, id: Int64, armedAt: Date? = nil) {
+        self.scope = scope
+        self.id = id
+        self.armedAt = armedAt
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        scope = try container.decode(Scope.self, forKey: .scope)
+        id = try container.decode(Int64.self, forKey: .id)
+        armedAt = AutomationDates.parse(try container.decodeIfPresent(String.self, forKey: .armedAt))
+    }
+}
+
+/// What `watchman arm|disarm` acts on.
+package enum WatchmanArmScope: Hashable, Sendable {
+    case session(Int64)
+    case target(Int64)
+    /// `arm --all-running` / `disarm --all`.
+    case allRunning
+
+    /// The scope flags of `watchman arm` (`disarm` takes `--all` for
+    /// `allRunning`).
+    package func flags(disarm: Bool = false) -> [String] {
+        switch self {
+        case let .session(id): ["--session", String(id)]
+        case let .target(id): ["--target", String(id)]
+        case .allRunning: [disarm ? "--all" : "--all-running"]
+        }
+    }
+}
+
+/// `watchman arm [--check] --json` (`cmd/watchman_arming.go`, keys pinned by
+/// `TestWatchmanArm_JSONKeysPinned`). Every key but `ok` is tolerant.
+package struct WatchmanArmReply: Decodable, Equatable, Sendable {
+    package let ok: Bool
+    package let error: String
+    /// Watchman is not on for, or has not learned, a workbench this arm covers.
+    package let firstTime: Bool
+    package let analyticsTurnedOn: Bool
+    package let learningStarted: Bool
+    /// The learning estimate (`--check` on a first time only).
+    package let estimate: WatchmanEstimate?
+    /// The session ids this arm (or check) covers by a session row; empty
+    /// for a target; nil from a CLI that does not print the key.
+    package let sessions: [Int64]?
+    /// `--only` ids that were not armed (no longer running).
+    package let dropped: [Int64]
+    /// The branch-protection check's line; empty when protected.
+    package let protectionWarning: String
+    /// One line per repository the git guard cannot be installed in.
+    package let hooksWarning: String
+    /// The rows were written but the arm sidecar was not rewritten (the
+    /// daemon rewrites it next cycle).
+    package let sidecarError: String
+
+    enum CodingKeys: String, CodingKey {
+        case ok, error, estimate, sessions, dropped
+        case firstTime = "first_time"
+        case analyticsTurnedOn = "analytics_turned_on"
+        case learningStarted = "learning_started"
+        case protectionWarning = "protection_warning"
+        case hooksWarning = "hooks_warning"
+        case sidecarError = "sidecar_error"
+    }
+
+    package init(
+        ok: Bool = true,
+        error: String = "",
+        firstTime: Bool = false,
+        analyticsTurnedOn: Bool = false,
+        learningStarted: Bool = false,
+        estimate: WatchmanEstimate? = nil,
+        sessions: [Int64]? = nil,
+        dropped: [Int64] = [],
+        protectionWarning: String = "",
+        hooksWarning: String = "",
+        sidecarError: String = ""
+    ) {
+        self.ok = ok
+        self.error = error
+        self.firstTime = firstTime
+        self.analyticsTurnedOn = analyticsTurnedOn
+        self.learningStarted = learningStarted
+        self.estimate = estimate
+        self.sessions = sessions
+        self.dropped = dropped
+        self.protectionWarning = protectionWarning
+        self.hooksWarning = hooksWarning
+        self.sidecarError = sidecarError
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try container.decode(Bool.self, forKey: .ok)
+        error = try container.decodeIfPresent(String.self, forKey: .error) ?? ""
+        firstTime = try container.decodeIfPresent(Bool.self, forKey: .firstTime) ?? false
+        analyticsTurnedOn = try container.decodeIfPresent(Bool.self, forKey: .analyticsTurnedOn) ?? false
+        learningStarted = try container.decodeIfPresent(Bool.self, forKey: .learningStarted) ?? false
+        estimate = try container.decodeIfPresent(WatchmanEstimate.self, forKey: .estimate)
+        sessions = (try? container.decodeIfPresent([Int64].self, forKey: .sessions)).flatMap { $0 }
+        dropped = (try? container.decodeIfPresent([Int64].self, forKey: .dropped)) ?? []
+        protectionWarning = try container.decodeIfPresent(String.self, forKey: .protectionWarning) ?? ""
+        hooksWarning = try container.decodeIfPresent(String.self, forKey: .hooksWarning) ?? ""
+        sidecarError = try container.decodeIfPresent(String.self, forKey: .sidecarError) ?? ""
+    }
+
+    /// The warning lines the arm sheet shows, protection first.
+    package var warnings: [String] {
+        ([protectionWarning] + hooksWarning.split(whereSeparator: \.isNewline).map(String.init)
+            + (dropped.isEmpty ? [] : [WatchmanArmingCopy.droppedLine(dropped)]))
+            .filter { !$0.isEmpty }
+    }
+
+    /// `--check` said the owner should see the sheet before arming: a first
+    /// time on a workbench, or a warning to arm knowing.
+    package var needsSheet: Bool { firstTime || !warnings.isEmpty }
+}
+
+/// `watchman disarm --json`: only what the controls read.
+package struct WatchmanDisarmReply: Decodable, Equatable, Sendable {
+    package let sidecarError: String
+
+    enum CodingKeys: String, CodingKey {
+        case sidecarError = "sidecar_error"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sidecarError = try container.decodeIfPresent(String.self, forKey: .sidecarError) ?? ""
+    }
+}
+
+/// What `watchman arm --check` said: its reply, or why it could not say.
+package enum WatchmanArmCheck: Equatable, Sendable {
+    case reply(WatchmanArmReply)
+    case failed(String)
+}
+
+/// Whether the daemon runs, as `watchman status --json` last said.
+package enum WatchmanDaemonState: Equatable, Sendable {
+    case unknown, running, stopped
+}
+
+package struct WatchmanWorkbenchStatus: Decodable, Equatable, Sendable {
+    package let workbench: Int64
+    package let name: String
+    /// RFC 3339; nil while Watchman is not on for the workbench.
+    package let enabledAt: String?
+    package let analyticsOn: Bool
+    package let precedents: [String: Int]
+    package let sources: [String: WatchmanSourceProgress]
+    /// `"HH:MM-HH:MM"`; empty while not learned.
+    package let sleepWindow: String?
+    package let sleepWindowPinned: Bool
+    /// The counts-only estimate of a workbench Watchman is not on for.
+    package let estimate: WatchmanEstimate?
+    /// The first learning pass of an enabled workbench.
+    package let learning: WatchmanLearning?
+    /// The newest backtest row, whatever its status.
+    package let backtest: WatchmanBacktest?
+    /// The newest finished backtest.
+    package let lastDone: WatchmanBacktest?
+    /// The workspace-wide Watchman lock is held (the same on every row).
+    package let running: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case workbench, name, precedents, sources, estimate, learning, backtest, running
+        case enabledAt = "enabled_at", analyticsOn = "analytics_on"
+        case sleepWindow = "sleep_window", sleepWindowPinned = "sleep_window_pinned"
+        case lastDone = "last_done"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        workbench = try container.decode(Int64.self, forKey: .workbench)
+        name = try container.decode(String.self, forKey: .name)
+        enabledAt = try container.decodeIfPresent(String.self, forKey: .enabledAt)
+        analyticsOn = try container.decode(Bool.self, forKey: .analyticsOn)
+        precedents = try container.decodeIfPresent([String: Int].self, forKey: .precedents) ?? [:]
+        sources = try container.decodeIfPresent([String: WatchmanSourceProgress].self, forKey: .sources) ?? [:]
+        sleepWindow = try container.decodeIfPresent(String.self, forKey: .sleepWindow)
+        sleepWindowPinned = try container.decodeIfPresent(Bool.self, forKey: .sleepWindowPinned) ?? false
+        estimate = try container.decodeIfPresent(WatchmanEstimate.self, forKey: .estimate)
+        learning = try container.decodeIfPresent(WatchmanLearning.self, forKey: .learning)
+        backtest = try container.decodeIfPresent(WatchmanBacktest.self, forKey: .backtest)
+        lastDone = try container.decodeIfPresent(WatchmanBacktest.self, forKey: .lastDone)
+        running = try container.decode(Bool.self, forKey: .running)
+    }
+
+    package var isEnabled: Bool { !(enabledAt ?? "").isEmpty }
+    package var isLearned: Bool { isEnabled && (learning?.done ?? false) }
+    /// Earlier decisions the relabel pass still sorts; above 0 the backtest
+    /// cannot start (the CLI refuses it).
+    package var relabelLeft: Int { learning?.relabelPending ?? 0 }
+    package var isRelabelling: Bool { relabelLeft > 0 }
+}
+
+package struct WatchmanSourceProgress: Decodable, Equatable, Sendable {
+    package let written: Int
+    package let done: Bool
+}
+
+package struct WatchmanEstimate: Decodable, Equatable, Sendable {
+    package let decisions: Int
+    package let needLabels: Int
+    package let tokens: Int
+
+    enum CodingKeys: String, CodingKey {
+        case decisions, tokens
+        case needLabels = "need_labels"
+    }
+
+    package init(decisions: Int, needLabels: Int, tokens: Int) {
+        self.decisions = decisions
+        self.needLabels = needLabels
+        self.tokens = tokens
+    }
+}
+
+package struct WatchmanLearning: Decodable, Equatable, Sendable {
+    package let written: Int
+    package let estimated: Int
+    package let done: Bool
+    /// Rows the relabel pass (phase 1b) has not flagged yet; the backtest
+    /// waits for 0. Missing in the JSON → 0.
+    package let relabelPending: Int
+
+    enum CodingKeys: String, CodingKey {
+        case written, estimated, done
+        case relabelPending = "relabel_pending"
+    }
+
+    package init(written: Int, estimated: Int, done: Bool, relabelPending: Int = 0) {
+        self.written = written
+        self.estimated = estimated
+        self.done = done
+        self.relabelPending = relabelPending
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        written = try container.decode(Int.self, forKey: .written)
+        estimated = try container.decode(Int.self, forKey: .estimated)
+        done = try container.decode(Bool.self, forKey: .done)
+        relabelPending = try container.decodeIfPresent(Int.self, forKey: .relabelPending) ?? 0
+    }
+}
+
+package struct WatchmanBacktest: Decodable, Equatable, Sendable {
+    package let id: Int64
+    /// `running`, `done`, `failed` or `interrupted` (a running row whose
+    /// process died; shown like `failed`).
+    package let status: String
+    package let startedAt: String?
+    package let finishedAt: String?
+    package let error: String?
+    /// `go` or `stop` once finished.
+    package let verdict: String?
+    package let costUSD: Double
+    /// `"<category>, <i> of <n> · <k> of 8 categories done"` while running.
+    package let progress: String?
+    package let categories: [WatchmanBacktestCategory]
+
+    enum CodingKeys: String, CodingKey {
+        case id, status, error, verdict, progress, categories
+        case startedAt = "started_at", finishedAt = "finished_at", costUSD = "cost_usd"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int64.self, forKey: .id)
+        status = try container.decode(String.self, forKey: .status)
+        startedAt = try container.decodeIfPresent(String.self, forKey: .startedAt)
+        finishedAt = try container.decodeIfPresent(String.self, forKey: .finishedAt)
+        error = try container.decodeIfPresent(String.self, forKey: .error)
+        verdict = try container.decodeIfPresent(String.self, forKey: .verdict)
+        costUSD = try container.decodeIfPresent(Double.self, forKey: .costUSD) ?? 0
+        progress = try container.decodeIfPresent(String.self, forKey: .progress)
+        categories = try container.decodeIfPresent([WatchmanBacktestCategory].self, forKey: .categories) ?? []
+    }
+
+    package var isFailed: Bool { status == "failed" || status == "interrupted" }
+}
+
+/// One category's backtest row: `total` scored decisions the judge graded
+/// same (`agree`), `acceptable` or `bad`; strong = at most 5 % bad and none
+/// bad while sure (ask #1423).
+package struct WatchmanBacktestCategory: Decodable, Equatable, Sendable {
+    package let category: String
+    package let total: Int
+    package let agree: Int
+    package let acceptable: Int
+    package let bad: Int
+    /// Bad decisions taken while the twin's confidence was high.
+    package let wrongHigh: Int
+    /// Decisions handed to the owner (justified handoffs), not scored.
+    /// Missing in the JSON → 0.
+    package let handed: Int
+    package let costUSD: Double
+    /// The share of the hidden decisions that always giving the owner's most
+    /// common choice would get right (informational).
+    package let baseline: Double
+    /// The share of the decisions where the owner picked the option the agent
+    /// recommended (informational).
+    package let recBaseline: Double
+    /// `strong`, `weak` or `not_measured`.
+    package let status: String
+
+    enum CodingKeys: String, CodingKey {
+        case category, total, agree, acceptable, bad, status, baseline
+        case handed
+        case wrongHigh = "wrong_high", costUSD = "cost_usd", recBaseline = "rec_baseline"
+    }
+
+    package init(
+        category: String,
+        total: Int,
+        agree: Int,
+        acceptable: Int = 0,
+        bad: Int = 0,
+        wrongHigh: Int,
+        handed: Int = 0,
+        costUSD: Double,
+        baseline: Double = 0,
+        recBaseline: Double = 0,
+        status: String
+    ) {
+        self.category = category
+        self.total = total
+        self.agree = agree
+        self.acceptable = acceptable
+        self.bad = bad
+        self.wrongHigh = wrongHigh
+        self.handed = handed
+        self.costUSD = costUSD
+        self.baseline = baseline
+        self.recBaseline = recBaseline
+        self.status = status
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        category = try container.decode(String.self, forKey: .category)
+        total = try container.decode(Int.self, forKey: .total)
+        agree = try container.decode(Int.self, forKey: .agree)
+        acceptable = try container.decodeIfPresent(Int.self, forKey: .acceptable) ?? 0
+        bad = try container.decodeIfPresent(Int.self, forKey: .bad) ?? 0
+        wrongHigh = try container.decode(Int.self, forKey: .wrongHigh)
+        handed = try container.decodeIfPresent(Int.self, forKey: .handed) ?? 0
+        costUSD = try container.decodeIfPresent(Double.self, forKey: .costUSD) ?? 0
+        baseline = try container.decodeIfPresent(Double.self, forKey: .baseline) ?? 0
+        recBaseline = try container.decodeIfPresent(Double.self, forKey: .recBaseline) ?? 0
+        status = try container.decode(String.self, forKey: .status)
+    }
+}
+
+// MARK: - Screen state
+
+/// Where one workbench stands in Settings → Watchman.
+package enum WatchmanWorkbenchPhase: Equatable, Sendable {
+    /// Watchman is not on: the estimate and Start Learning.
+    case notLearned
+    /// The first learning pass runs (here or in the daemon).
+    case learning
+    case neverRun
+    /// A backtest runs; the status's progress line.
+    case running(progress: String)
+    case failed(message: String)
+    case results
+
+    /// `learningHere` / `backtestHere`: this app started the CLI call and it
+    /// has not returned yet (the status may not show it so far).
+    package static func of(
+        _ row: WatchmanWorkbenchStatus, learningHere: Bool = false, backtestHere: Bool = false
+    ) -> Self {
+        // `running` is the workspace-wide lock, the same on every row: only
+        // the row whose latest backtest is `running` (or that this app just
+        // started) runs.
+        if backtestHere || row.backtest?.status == "running" {
+            let progress = row.backtest?.status == "running" ? row.backtest?.progress ?? "" : ""
+            return .running(progress: progress)
+        }
+        if learningHere || (row.isEnabled && !row.isLearned) { return .learning }
+        if !row.isEnabled { return .notLearned }
+        if let backtest = row.backtest, backtest.isFailed {
+            return .failed(message: backtest.error ?? "")
+        }
+        return row.lastDone == nil ? .neverRun : .results
+    }
+}
+
+/// Settings → Watchman as a whole: the phase of its focus workbench — the
+/// first one Watchman is on for (or learning here), else nothing is learned.
+package enum WatchmanSettingsState: Equatable, Sendable {
+    case loading
+    case notLearned(WatchmanStatus)
+    case learning(WatchmanStatus, workbench: Int64)
+    case neverRun(WatchmanStatus)
+    case running(WatchmanStatus, progress: String)
+    case failed(WatchmanStatus, message: String)
+    case results(WatchmanStatus)
+    case readFailed(String)
+
+    package static func of(
+        _ status: WatchmanStatus, learningHere: Set<Int64> = [], backtestHere: Set<Int64> = []
+    ) -> Self {
+        let focus = status.workbenches.first {
+            $0.isEnabled || learningHere.contains($0.workbench) || backtestHere.contains($0.workbench)
+        }
+        guard let focus else { return .notLearned(status) }
+        let phase = WatchmanWorkbenchPhase.of(
+            focus, learningHere: learningHere.contains(focus.workbench),
+            backtestHere: backtestHere.contains(focus.workbench)
+        )
+        switch phase {
+        case .notLearned: return .notLearned(status)
+        case .learning: return .learning(status, workbench: focus.workbench)
+        case .neverRun: return .neverRun(status)
+        case let .running(progress): return .running(status, progress: progress)
+        case let .failed(message): return .failed(status, message: message)
+        case .results: return .results(status)
+        }
+    }
+
+    /// The report this state shows; nil while loading or after a failed read.
+    package var status: WatchmanStatus? {
+        switch self {
+        case .loading, .readFailed: nil
+        case let .notLearned(status), let .learning(status, _), let .neverRun(status),
+             let .running(status, _), let .failed(status, _), let .results(status): status
+        }
+    }
+}

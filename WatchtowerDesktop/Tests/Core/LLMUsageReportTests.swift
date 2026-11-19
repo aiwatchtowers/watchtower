@@ -95,6 +95,10 @@ final class LLMUsageReportTests: XCTestCase {
         XCTAssertEqual(LLMPurposeNames.display(purpose: "instructions.suggest").name, "Agent instruction suggestions")
         XCTAssertEqual(LLMPurposeNames.display(purpose: "jira.boards").group, "Jira")
         XCTAssertEqual(LLMPurposeNames.display(purpose: "probe").name, "Model checks")
+        XCTAssertEqual(LLMPurposeNames.display(purpose: "watchman.label").name, "Watchman — learning labels")
+        XCTAssertEqual(LLMPurposeNames.display(purpose: "watchman.profile").name, "Watchman — profiles")
+        XCTAssertEqual(LLMPurposeNames.display(purpose: "watchman.decide").name, "Watchman — decisions")
+        XCTAssertEqual(LLMPurposeNames.display(purpose: "watchman.judge").group, "Watchman")
     }
 
     func testUnknownPurposeFallsBackToTheRawTag() {

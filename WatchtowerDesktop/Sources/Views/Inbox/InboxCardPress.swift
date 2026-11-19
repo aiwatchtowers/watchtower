@@ -14,10 +14,10 @@ enum InboxCardPress: Equatable {
 
     /// The press of `action` on `card`. A Reply carries the action's index
     /// in the card's flattened action list and the content hash the card
-    /// was drawn at; one whose recipe cannot run opens its automation,
-    /// where it is confirmed or turned on (spec B3).
+    /// was drawn at; one that does not send now (Go's state, `buttons`)
+    /// opens its automation, where it is confirmed or turned on (spec B3).
     static func resolve(
-        _ action: InboxCardAction, card: AutomationOutputCard, reply: InboxReplyState, workbenches: [Workbench]
+        _ action: InboxCardAction, card: AutomationOutputCard, buttons: InboxFeedButtons, workbenches: [Workbench]
     ) -> Self {
         switch action.kind {
         case .link(let url):
@@ -34,7 +34,7 @@ enum InboxCardPress: Equatable {
             case .pick: return .command(.agent(InboxCardSubject(card), task: full, workbench: ref))
             }
         case .reply:
-            guard reply == .ready else { return .command(.openAutomation(card)) }
+            guard buttons.replySends(at: action.index) else { return .command(.openAutomation(card)) }
             return .command(.reply(outputID: card.id, action: action.index, contentHash: card.contentHash))
         case .target:
             // A target button's click depends on its state: `target(…)`.
@@ -43,10 +43,10 @@ enum InboxCardPress: Equatable {
     }
 
     /// A button that cannot be pressed now: a link the link rules refuse, a
-    /// Reply already sent or whose recipe is gone, or any Reply while a
-    /// press of the card is under way.
+    /// Reply the feed draws closed (sent, its recipe gone), or any Reply
+    /// while a press of the card is under way.
     static func isDisabled(
-        _ action: InboxCardAction, reply: InboxReplyState, isWriting: Bool, navScreens: Set<String>
+        _ action: InboxCardAction, buttons: InboxFeedButtons, isWriting: Bool, navScreens: Set<String>
     ) -> Bool {
         switch action.kind {
         case .link(let url):
@@ -58,10 +58,7 @@ enum InboxCardPress: Equatable {
             // only a propose under way holds it here.
             return false
         case .reply:
-            switch reply {
-            case .sent, .removed: return true
-            case .ready, .needsConfirmation, .off, .unreadable: return isWriting
-            }
+            return buttons.replyClosed(at: action.index) || isWriting
         }
     }
 }
@@ -105,18 +102,18 @@ extension InboxCardPress {
         _ target: InboxCardAction.Target,
         index: Int,
         card: AutomationOutputCard,
-        facts: InboxTargetButtonFacts,
+        button: InboxTargetButton,
         state: ArtifactTargetButtonState
     ) -> InboxCardCommand? {
         switch state {
         case .idle, .proposeError:
             return .proposeTarget(InboxTargetPress(card: card, index: index, target: target))
         case .waiting:
-            return facts.proposal.map { .openProposal($0.id) }
+            return button.proposalID.map { .openProposal($0) }
         case .stuck, .failed:
-            return facts.proposal.map { .tryAgainTarget($0.id) }
+            return button.proposalID.map { .tryAgainTarget($0) }
         case .created:
-            return facts.taskID.map { .openTarget(Int($0)) }
+            return button.taskID.map { .openTarget(Int($0)) }
         case .creating:
             return nil
         }

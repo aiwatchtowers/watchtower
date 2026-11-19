@@ -30,27 +30,6 @@ package enum TrackEventQueries {
         try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM track_events WHERE id = ?)", arguments: [id]) ?? false
     }
 
-    /// Best-effort, unchecked: an event deleted meanwhile has nothing left to read.
-    package static func markRead(_ db: Database, id: Int) throws {
-        try db.execute(sql: """
-            UPDATE track_events SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?
-            """, arguments: [id])
-    }
-
-    /// Marks every unread event of one track read; other tracks are untouched.
-    package static func markAllRead(_ db: Database, trackId: Int) throws {
-        try db.execute(sql: """
-            UPDATE track_events SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-            WHERE track_id = ? AND (read_at IS NULL OR read_at = '')
-            """, arguments: [trackId])
-    }
-
-    package static func setActionStatus(_ db: Database, id: Int, status: String) throws {
-        try db.execute(sql: "UPDATE track_events SET action_status = ? WHERE id = ?",
-                       arguments: [status, id])
-        try db.requireUpdated("track event", id: id)
-    }
-
     /// Best-effort external link to an event's underlying source. Inbox-sourced
     /// events resolve to their Slack permalink; other source types have no
     /// single external URL (the event's own `source_refs` cover those).

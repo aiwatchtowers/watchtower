@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import WatchtowerCore
+import WatchtowerInterface
 
 @MainActor
 @Observable
@@ -25,7 +26,9 @@ final class TracksViewModel {
     private(set) var workspaceDomain: String?
     private(set) var slackLinks: SlackLinkResolver?
     private let dbManager: DatabaseManager
-    /// Every write of this view model, in order (board #670).
+    /// The presses through the tower and each track row's state.
+    let presses: TowerPresses
+    /// The feedback writes, in order (board #670).
     @ObservationIgnored private let writes = SerialWrites()
     /// One pending sub-item write per track (board #670).
     let pendingWrites = PendingWrites()
@@ -37,8 +40,10 @@ final class TracksViewModel {
         pattern: "U[A-Z0-9]{8,11}"
     )
 
-    init(dbManager: DatabaseManager) {
+    init(dbManager: DatabaseManager, tower: (any TowerSending)? = nil) {
         self.dbManager = dbManager
+        presses = TowerPresses(tower: tower)
+        presses.reread = { [weak self] in self?.load() }
         refreshJiraStatus()
     }
 
@@ -102,70 +107,43 @@ final class TracksViewModel {
         trackTaskCounts[trackID] ?? 0
     }
 
+    // Every write is a `tracks.*` tower command (#1170 Task 12): Go writes
+    // the row, the track's row carries the press's state (`presses`), and
+    // the screen re-reads after an answer.
+
+    /// The row key of `id`'s presses.
+    static func row(_ id: Int) -> String { "track:\(id)" }
+
     func markRead(_ track: Track) async {
-        do {
-            try await chained { db in
-                try TrackQueries.markRead(db, id: track.id)
-            }
-            load()
-        } catch {
-            errorMessage = "Failed to mark read: \(error.localizedDescription)"
+        await press(.tracksRead, track.id, label: TowerPressText.marking) {
+            ScreenIDsRequest(requestID: $0, iDs: [Int64(track.id)])
         }
     }
 
-    /// A write to a track deleted elsewhere (the daemon, the CLI) reloads
-    /// first so the vanished row leaves the list instead of failing again on
-    /// every retry; the message is set after the reload.
-    private func reportWriteFailure(_ what: String, _ error: Error) {
-        if error is RowNotFoundError { load() }
-        errorMessage = "Failed to \(what): \(error.localizedDescription)"
-    }
-
     func updatePriority(_ track: Track, to priority: String) async {
-        do {
-            try await chained { db in
-                try TrackQueries.updatePriority(db, id: track.id, priority: priority)
-            }
-            load()
-        } catch {
-            reportWriteFailure("update priority", error)
+        await press(.tracksPriority, track.id, label: TowerPressText.updating, variant: priority) {
+            TrackPriorityRequest(requestID: $0, id: Int64(track.id), priority: priority)
         }
     }
 
     func updateOwnership(_ track: Track, to ownership: String) async {
-        do {
-            try await chained { db in
-                try TrackQueries.updateOwnership(db, id: track.id, ownership: ownership)
-            }
-            load()
-        } catch {
-            reportWriteFailure("update ownership", error)
+        await press(.tracksOwnership, track.id, label: TowerPressText.updating, variant: ownership) {
+            TrackOwnershipRequest(requestID: $0, id: Int64(track.id), ownership: ownership)
         }
     }
 
     /// Sets the sub-item to the opposite of what the row showed (board #670).
-    /// The write re-reads the row in its own transaction and changes only
-    /// that item, so another item's change landing first is kept. A second
-    /// press on the same item while its write waits does nothing.
+    /// Go re-reads the row in its own transaction and changes only that
+    /// item, so another item's change landing first is kept. A second press
+    /// on the same item while its write waits does nothing.
     func toggleSubItem(_ track: Track, at index: Int) async {
         let shown = track.decodedSubItems
         guard index >= 0, index < shown.count else { return }
         let done = !shown[index].isDone
         let id = track.id
         await pendingWrites.run(Self.subItemKey(trackID: id, index: index)) {
-            do {
-                try await chained { db in
-                    guard let fresh = try TrackQueries.fetchByID(db, id: id) else {
-                        throw RowNotFoundError(kind: "track", id: id)
-                    }
-                    var items = fresh.decodedSubItems
-                    guard index < items.count else { return }
-                    items[index].status = done ? "done" : "open"
-                    try TrackQueries.updateSubItems(db, id: id, subItems: items)
-                }
-                load()
-            } catch {
-                reportWriteFailure("toggle sub-item", error)
+            await press(.tracksSubItems, id, label: TowerPressText.updating, variant: "\(index)|\(done)") {
+                TrackSubItemRequest(requestID: $0, id: Int64(id), index: index, done: done)
             }
         }
     }
@@ -176,26 +154,32 @@ final class TracksViewModel {
         "subItem:\(trackID):\(index)"
     }
 
+    /// Stop watching (TRACKS-07): `tracks.stop`, which also stops a custom
+    /// track's collection.
     func dismissTrack(_ track: Track) async {
-        do {
-            try await chained { db in
-                try TrackQueries.dismiss(db, id: track.id)
-            }
-            load()
-        } catch {
-            reportWriteFailure("dismiss", error)
+        await press(.tracksStop, track.id, label: TowerPressText.updating) {
+            ScreenIDsRequest(requestID: $0, iDs: [Int64(track.id)])
         }
     }
 
     func restoreTrack(_ track: Track) async {
-        do {
-            try await chained { db in
-                try TrackQueries.restore(db, id: track.id)
-            }
-            load()
-        } catch {
-            reportWriteFailure("restore", error)
+        await press(.tracksRestore, track.id, label: TowerPressText.updating) {
+            ScreenIDRequest(requestID: $0, id: Int64(track.id))
         }
+    }
+
+    /// One press on track `id`'s row; its failure stays on the row and in
+    /// `errorMessage` (the track pane's banner).
+    private func press<Params: Encodable & Sendable>(
+        _ command: TowerCommand,
+        _ id: Int,
+        label: String,
+        variant: String = "",
+        _ params: @escaping (String) -> Params
+    ) async {
+        let row = Self.row(id)
+        let result: ActResult? = await presses.send(command, row: row, label: label, variant: variant, params: params)
+        if result == nil, case .refused(let sentence) = presses.state(row) { errorMessage = sentence }
     }
 
     func fetchDigest(id: Int) -> Digest? {

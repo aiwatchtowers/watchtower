@@ -28,6 +28,9 @@ let package = Package(
         // The chat text helpers shared with the phone (artifact parser, Markdown
         // document and run builder, quote reply). Neither the Kit nor Core.
         .package(path: "../WatchtowerChatText"),
+        // The tower interface's Swift side (types generated from
+        // internal/tower/api), shared with the phone. Foundation only.
+        .package(path: "../WatchtowerInterface"),
         // The chat shared with the phone (unified chat spec §6.1): Core takes
         // ChatWire (Foundation only, imports nothing of ours), never ChatUI or
         // the Kit (pinned by PublicAPISurfaceTests); the app takes ChatUI (its
@@ -58,6 +61,7 @@ let package = Package(
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "Markdown", package: "swift-markdown"),
                 .product(name: "WatchtowerChatText", package: "WatchtowerChatText"),
+                .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
                 .product(name: "ChatWire", package: "WatchtowerChat"),
             ],
             path: "Sources/WatchtowerCore"
@@ -82,13 +86,17 @@ let package = Package(
             name: "DesignKit",
             dependencies: [
                 .product(name: "WatchtowerDesign", package: "WatchtowerKit"),
+                .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
             ],
             path: "Sources/DesignKit"
         ),
         // The gallery's views over the kit; never linked into the app.
         .target(
             name: "DesignKitCatalog",
-            dependencies: ["DesignKit"],
+            dependencies: [
+                "DesignKit",
+                .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
+            ],
             path: "Sources/DesignKitCatalog"
         ),
         // The gallery window (`make design-gallery`): a thin @main over the
@@ -131,6 +139,8 @@ let package = Package(
                 .product(name: "Qwen3ASR", package: "speech-swift"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
                 .product(name: "WatchtowerSync", package: "WatchtowerKit"),
+                // AppState's TowerClient (the tray's Pause Sync).
+                .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
                 .product(name: "ChatUI", package: "WatchtowerChat"),
                 "CloudBridgeCore",
             ],
@@ -150,6 +160,10 @@ let package = Package(
             dependencies: [
                 "WatchtowerCore",
                 .product(name: "GRDB", package: "GRDB.swift"),
+                // TestInboxFeeds (the Inbox's canned tower feeds) and the chat writers' fakes
+                // (FakeChatTower) speak the generated commands.
+                .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
+                .product(name: "WatchtowerChatText", package: "WatchtowerChatText"),
                 .product(name: "ChatWire", package: "WatchtowerChat"),
             ],
             path: "Tests/Support"
@@ -160,6 +174,8 @@ let package = Package(
                 "WatchtowerCore",
                 "WatchtowerTestSupport",
                 .product(name: "GRDB", package: "GRDB.swift"),
+                // The Inbox's tests read canned tower feeds (TestInboxFeeds, ScriptedFeedTransport).
+                .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
                 .product(name: "ChatWire", package: "WatchtowerChat"),
             ],
             path: "Tests/Core",
@@ -185,6 +201,7 @@ let package = Package(
                 .product(name: "WatchtowerSync", package: "WatchtowerKit"),
                 // F25: the test hub and phone (fixed pairing) that seal and open what the hub publishes.
                 .product(name: "WatchtowerE2ETesting", package: "WatchtowerKit"),
+                .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
             ],
             path: "Tests",
             exclude: ["Core", "Support", "OCRHelperTests", "CloudBridge"]

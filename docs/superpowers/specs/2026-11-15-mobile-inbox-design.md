@@ -1,0 +1,709 @@
+# Phone Inbox on one tower interface: the Inbox and its writes in Go, drawn by the Mac and the iPhone (design)
+
+Target #1170. This is sub-project F ("Phone renders blocks") of the Inbox builder umbrella (`docs/superpowers/specs/2026-11-02-inbox-builder-design.md`). It builds on sub-project A (`docs/features/inbox-card-blocks.md`) and sub-project B (`docs/features/inbox-folders.md`). The parts it touches are documented here:
+- The hub is the Go hub (`docs/features/go-hub.md`).
+- The phone is `WatchtowerMobile/` (`docs/features/mobile-companion.md`).
+- Chat on the tower is #1791 (`docs/features/iphone-chat.md`).
+
+Mockups are in `docs/design/mockups/mobile-inbox/index.html`, with every state in dark and light. Sections 1–6 cover the phone, and section 7 covers the Mac's new states. After the build, each phone frame becomes a `ScreenshotTourTests` shot named `inbox-…`, and each Mac frame becomes a `DesignShotCatalog` shot named `inbox-feed-…`. Both are compared with the mockup before review (§11).
+
+## Intent
+
+The owner wants to clear the Inbox on the go: open the phone, act on what waits (approve, reject, mark done, snooze, hide, reply) and put it away. The phone shows an adapted copy of the Mac's Inbox, with every section, in its own tab (ask #1326).
+
+The Inbox must work the same on the Mac and on the phone (ask #1348). Today the Inbox list is built only in Swift, and most of its writes are Swift-only.
+
+This design moves the line:
+- **Logic and writes live in Go on the tower.** The tower is the daemon, the CLI and the hub, and it also runs with no Desktop (ask #1356).
+- **One interface on top serves both clients.** It is one contract generated from Go, one Swift client and one set of screen models. Only the SwiftUI views differ between the Mac and the iPhone (ask #1362).
+- **How each client reaches the tower.** The Mac reaches it over a local socket of an always-on daemon (ask #1362), and the phone reaches it through the hub.
+- **Chat follows the same line.** The Desktop's Swift chat writer moves onto the Go one #1791 built, and the owner's chat UX must not get worse (ask #1361).
+
+## Goals
+
+- **The tower interface.** Commands whose request and response types are defined once in Go. A generator writes the Swift types, and CI fails when the generated Swift and the Go types differ. Every write carries an idempotency key, and the same Go code gives both transports exactly-once delivery.
+- **`WatchtowerInterface`.** A Foundation-only Swift package that both apps use. It holds:
+  - the generated types;
+  - `TowerClient`, with one state machine for loading, stale, refused, unknown outcome and offline;
+  - the screen models, with every user-facing string and their tests.
+- **An always-on daemon.** While the app runs, the daemon serves the tower socket. The tray gains **Pause Sync** / **Resume Sync**, which pause sync and leave the daemon running. The few restarts that remain (a new binary, an exclusive database step, a config change) show "Reconnecting…", not an error, and only after 1 s.
+- **The Inbox core in Go** (`internal/inboxfeed`). It builds the root, the folders, their order and counts, Needs approval, Waiting for me, card texts, ref facts and the legacy root entries. It also applies every Inbox action.
+- **The Desktop on the interface.** The Inbox looks the same, except for the states in mockup §7. Every other Mac screen that writes the same rows also writes through the interface: Home, Ideas, Digests, Tracks, CatchUp, Day plan, Quick capture and Decisions (ask #1362). The Swift builders and writers these replace are deleted.
+- **An Inbox tab on the iPhone**, placed second (ask #1349). It shows the same feed through the hub:
+  - the root, Needs approval and the owner's folders, up to three levels deep, each with the Mac's count;
+  - every artifact drawn from the same block JSON;
+  - on each `ref` row, the native actions of its kind, plan-item checks included (ask #1348);
+  - Needs approval following APPROVAL-01, where Approve pins the arguments the owner saw and needs the `permissions` grant (ask #1349).
+- **The Desktop's chat writes in Go.** The live stream, Stop, warm sessions and speed stay the same (ask #1361).
+- **Honest states on both clients:**
+  - loading;
+  - empty, and an empty folder;
+  - a failed load and a failed action, each with **Retry**;
+  - "Didn't confirm";
+  - reconnecting (Mac);
+  - the Mac away, and not delivered (phone);
+  - a tower too old;
+  - organization policy.
+
+## Non-goals
+
+- **Managing the Inbox from the phone.** Folders, routes, recipe editing, turning automations on or off, and Delete stay on the Mac (ask #1349). Folder management is already in Go (`inbox folders …`) and is outside this work.
+- **Mac-only actions on the phone.** Discuss in Chat, Hand to Agent, the `chat`/`agent` card actions, Open Draft (`save_automation`) and Edit… on a proposal are drawn disabled with "On your Mac" (ask #1349).
+- Push notifications for new Inbox cards are not in v1 (ask #1349).
+- Learned Rules, Assistant Profile and the reaction cheat sheet are not on the phone.
+- The phone gets no renderers for block types beyond A's v1 set.
+- **The read side of screens other than the Inbox** (Home's own open-row query, for example). Those screens switch their writes only (ask #1362). Their reads are a follow-up target.
+- **New chat features.** Stage 3 changes only who writes the Mac's chat rows.
+- **Sub-project C.** The legacy root entries stay until C (§4.4).
+- **Shared SwiftUI views.** Each platform keeps its own views (ask #1362).
+
+## Anti-goals
+
+- Two implementations of one rule or one write. After this work, no Swift code decides an Inbox rule (which rows are open, what a folder counts, which card Needs approval shows, what a card says), and no Swift code writes a moved table.
+- A row that looks done while its write failed, or a closed row that comes back from a stale publish or a stale feed.
+- An approval that goes through for arguments the owner did not see.
+- A Mac that silently changes. The Inbox look and behaviour stay as they are, apart from mockup §7. Chat must not get slower or lose anything: no later first text, no slower Stop, no cold process where a warm one was, and no send that can be lost (CHAT-01) (ask #1361).
+- A phone holding more of the owner's data than the Inbox shows.
+- A dev build that talks to a daemon of another interface version.
+
+## Constraints
+
+- **Wire.** The wire is additive (protocol spec §8). `slices.AllKinds`, `secure.dataKinds` and the Kit `SliceKind` change together. `handlers.NudgeTable` is pinned to `hub_contract_cases.json`. The legacy names `inbox_item` and `inbox_resolve`/`inbox_dismiss`/`inbox_snooze` stay unused.
+- **Size.** An envelope is at most 900 KB. A block document is at most 128 KB canonical, so one card is one record.
+- **Guards.** The read, done and dismiss marks stay guarded by `content_hash` (A). Every Go writer keeps its Swift writer's guard.
+- **Policy.** Under MDM `MobileSync = workbench_only`, the hub publishes no Inbox kinds (POLICY-03).
+- **Write transactions.** They are `BEGIN IMMEDIATE` and short. No rendering, LLM call or network call runs inside one. A new migration follows the `add-migration` skill.
+- **Dependencies.** `WatchtowerCore` stays Kit-free (`PublicAPISurfaceTests`). It may import `WatchtowerInterface`, which, like `WatchtowerChatText`, depends on Foundation only.
+- **Design rules.**
+  - Phone: flat rows, cards only for waiting items and detail blocks, orange only for waiting-for-you, and no row separators outside a card.
+  - Desktop: `docs/design/desktop-style-guide.md`.
+  - Both: colours only through Tone, and every string in a model with a test.
+
+## Approaches
+
+**Where the logic lives:**
+- **One core in Go, with both clients thin (chosen, asks #1348 and #1356).**
+- A Go twin kept equal to Swift by fixtures. That means two implementations forever. Rejected (ask #1348).
+- Raw rows sent to the phone, with cards built there. Rejected (ask #1332).
+
+**How much the clients share (ask #1362):**
+- **The contract, the client and the screen models (chosen).** The SwiftUI views stay per platform, because the Mac and phone layouts differ (see the mockups).
+- The views as well, as one adaptive renderer. Less code, but the Mac and the phone would converge in look.
+- The contract only. Each client would keep its own screen models, and texts and states would drift.
+
+**How the contract is kept in step (ask #1362):**
+- **A generator writes Swift types from Go types (chosen).** CI fails on a difference.
+- Hand-written types pinned by shared JSON fixtures (today's way).
+- A separate schema file (protobuf or JSON Schema).
+
+**How the Mac reaches the core (asks #1356 and #1362):**
+- **A local socket on an always-on daemon (chosen, ask #1362).** There is no process spawn per call, and the daemon can push change events. The cost is that the daemon must be up, so stopping it becomes pausing sync (§3).
+- A CLI process per call (ask #1356's first answer, replaced by ask #1362). It works without the daemon, but every refresh and every action pays for a process start.
+
+**How the Mac's chat turn reaches Go (ask #1361):**
+- **The Desktop's own warm `ai session` process saves the turn (chosen).** The live stream comes from stdout, as today.
+- The daemon's hub runner runs Mac turns. The Mac would see about one database re-read per second, and it would share the hub's pool of 2 with the phone. Rejected because the UX would be worse.
+
+## Design
+
+### 1. Stages
+
+0. **The interface and the always-on daemon** (§2, §3). This stage adds the command layer, the request ledger, the generator, `WatchtowerInterface`, the socket, and pause instead of stop. No screen changes. A `tower.ping` command proves the path end to end.
+1. **The Inbox core, with the Mac on it** (§4, §5). This stage adds `inboxfeed` and the Go writers. It moves the Desktop Inbox and the other screens' writes onto `TowerClient`, then deletes the Swift builders and writers.
+2. **The phone** (§6, §7). This stage adds hub sources and actions over the same commands, and the phone tab following mockup §§1–6.
+3. **The Desktop's chat writes in Go** (§8).
+
+Stages 1 and 3 depend on stage 0, and stage 2 depends on stage 1. Stage 3 may run in a parallel lane alongside stages 1–2.
+
+### 2. The tower interface
+
+#### 2.1 Commands (Go, `internal/tower`)
+
+- **Registration.** A command is a name (`domain.verb`) with a request type and a response type in `internal/tower/api`. Each is registered in one table: `tower.Register(name, handler, Spec{Idempotent bool, Grant string, ChangeTables []string})`.
+- **Commands by stage:**
+  - Stage 0: `tower.hello` (the interface version and the build) and `tower.ping`.
+  - Stage 1: `inbox.feed`, `inbox.watch` (a stream of `changed` events), `inbox.act`, and the write commands the other screens need: `tracks.*`, `ideas.*`, `reminders.*`, `briefing.read`, `dayplan.*`, `outputs.*` and `inbox_items.*`. Each write command is a thin entry over the same Go writer the Inbox uses (§4.3). The plan names each one from the list of Swift call sites (§5.2).
+  - Stage 3: `chat.*` for the conversation-level writes (§8).
+- **Envelope.** A request is `{v, id, command, params}`. A response is `{id, status: "ok" | "refused" | "unknown", result | refusal{code, sentence}}`. The `sentence` is written in Go, and both clients show it as is.
+- **Exactly once, with one mechanism for both transports.** Every write command carries `request_id`, a UUID the client makes and keeps across retries. `tower.Call` records it in the new table `tower_requests` (`request_id` PK, `command`, `state` `begun`|`done`, `result_json`, `at`), added by migration `NNNNN_tower_requests`. Rows are kept as long as the hub's own ledger: `actions.ActionMaxAge` (7 days) plus its `retentionMargin` (1 day). The daemon prunes them itself, with or without the hub: once at start and then hourly, deleting `done` rows past the window and `begun` rows past it as well (an abandoned `begun` row older than any possible resend). The constants are shared with the hub's hygiene, so both ledgers keep the same window. Test: a daemon test with the hub off prunes old rows and keeps fresh ones. The hub already refuses an action older than `ActionMaxAge` before it reaches a handler, so a phone action replayed after a long Mac sleep either finds its ledger row or is refused as too old; it never runs twice. Socket requests retry for at most 15 s, far inside the window.
+  - A guarded command writes its result row in the same transaction as its writes, so `done` exists exactly when the write committed.
+  - A non-idempotent command commits `begun` in its own short transaction before it acts. The non-idempotent commands are approve, retry, Run Now and the `reply` press.
+  - A repeat of a `done` id returns the stored result.
+  - A repeat of a `begun` id answers `unknown` for a non-idempotent command and re-runs a guarded one.
+  - The hub's `relay_processed` still guards envelopes. This ledger guards the command below them.
+- **Long work leaves the call.**
+  - Approve and retry commit the decision in one short transaction, then run the tool outside any transaction. Over the socket, the call answers when the tool finishes, so the Mac shows the result as it does today (`actions approve` is synchronous now). The wait is capped at 120 s; after that the call answers `ok` with `status: "applying"` and the card's status line follows the feed.
+  - Over the hub, the handler answers after the decision, and the tool runs in a hub goroutine, as the hub's background apply does today.
+  - An apply cut by a daemon restart leaves the row `approved`, and the card offers the existing apply button, as a cut `actions approve` does today.
+  - The `reply` press queues the reply run and returns; the run's result shows in the feed.
+  - No write transaction is held across network or LLM work.
+
+#### 2.2 The generator
+
+- **What it writes.** `go run ./internal/tower/gen` (`make gen-interface`) reads the registered request, response and model types by reflection. It writes Swift `Codable` structs into `WatchtowerInterface/Sources/WatchtowerInterface/Generated/`:
+  - Field names come from the JSON tags.
+  - Optional fields come from `omitempty` and pointers.
+  - String enums get an `unknown(String)` case, so an older client still decodes a newer value.
+  - Every file starts with a `// Code generated … DO NOT EDIT.` header.
+- **The CI check.** `make gen-interface-check` regenerates into a temporary folder and diffs. It runs in CI's Go job and in `make lint-all`.
+- **Golden files.** Golden JSON for every type lives in `internal/tower/api/testdata/*.json`. The generator also writes a Swift test that decodes and re-encodes each golden file, so one fixture set proves both sides.
+- **The interface version.** `tower.InterfaceVersion` is a hash of the generated output. `tower.hello` returns it, and the generated Swift carries it as a constant.
+
+#### 2.3 `WatchtowerInterface` (Swift package, Foundation only, macOS 14 / iOS 17)
+
+- **Generated types.**
+- **`TowerClient`.** An actor over a `TowerTransport` protocol (`call`, `watch`), with one state machine for every screen: `idle`, `loading`, `ready(stale: Date?)`, `reconnecting`, `failed(sentence)`.
+  - Each action has the states `busy`, `refused(sentence)` and `unknown`.
+  - In the `unknown` state the client shows "Didn't confirm — checking again…" on the Mac and "Didn't confirm — check on the Mac." on the phone (mockup §6 on the phone, §8 on the Mac). It refreshes and never re-sends a non-idempotent call.
+  - The client makes the `request_id` for each press and keeps it until a final answer arrives.
+- **Screen models.** `InboxRootModel`, `InboxFolderModel`, `InboxCardModel`, `InboxRefRowModel`, `InboxApprovalModel`, `InboxTabState` and `TowerText` (every string), each with tests.
+  - The Mac and the phone both bind to them.
+  - Platform differences are inputs to the models (`Platform.mac`/`.phone`, the grants), never forks in the views.
+- **Transports.** `SocketTransport` lives in WatchtowerCore (§3). `HubTransport` lives in the phone app (§7), because it needs the Kit.
+
+### 3. The always-on daemon and the socket
+
+- **The socket.** The daemon (`watchtower sync --daemon`) serves `<workspace>/tower.sock`. When that path exceeds the 103 usable bytes of `sun_path`, it binds at `<TMPDIR>/wt-<uid>/<first 12 hex of sha256(workspace path)>.sock` (dir 0700) and writes that path to `<workspace>/tower.sock.path`, which the client reads. The socket has mode 0600 inside a 0700 directory, and the daemon checks the peer's uid, as the hub's control socket does. Frames are newline-delimited JSON (§2.1). When the hub runs, it is in the same process and calls the same `tower.Call`. The socket does not depend on the hub.
+- **The handshake.** The client sends `tower.hello`. When the interface version differs:
+  - A Desktop that started the daemon from its own CLI (`DaemonManager`, the CLI store) restarts it from that CLI. `ensureDaemonRunning` already stops whatever daemon runs at launch and starts the app's own, so a dev build gets a daemon of its own version from the start. The handshake covers a daemon that was replaced afterwards.
+  - When the client cannot restart the daemon, it shows "Watchtower's background service is a different version" with **Restart** (mockup §7).
+- **Always on from launch.** The app starts the daemon at launch, after the compaction step, also before onboarding is finished. Until onboarding finishes, the app starts it with `--no-sync` (a start argument, never stored): socket, Inbox and writes work, and no sync cycle runs. Onboarding's finish restarts it without `--no-sync`, as today, so it picks up the feature set and accounts. This is separate from the owner's pause below: onboarding never sets or clears the owner's pause. Screens that write today without a daemon (Quick capture, Home, Day plan) therefore always have one.
+- **Pause.** `sync.pause` and `sync.resume` are tower commands. A pause stops starting new sync cycles, scheduled automation runs and the plan-usage poll, and lets a running cycle finish. The socket, the hub, approval apply, living rewrites and the Inbox keep running. The owner's pause is kept in a file the daemon alone writes, `<workspace>/sync.paused` (present = paused, written atomically), not in the config the app also writes, so it survives a restart and has one writer. `sync.pause` and `sync.resume` are the only ways to change it; the tray reads the state from `tower.hello`. The tray gets **Pause Sync** / **Resume Sync** (the owner's "only sync stops", ask #1362; mockup §8); there is no other new control. While paused, the tray's status line reads "Sync paused".
+- **Answer to the owner's question in ask #1362** ("the daemon always runs, and only sync turns off when I stop it — right?"): yes for stopping — the owner's stop is now a pause and the daemon keeps running. The daemon still restarts for a second when the app changes its config, resets data or installs a new binary, because the daemon reads its config once at start; a live reload is a separate, larger change and is not in this work. Those restarts are short and the Mac hides them (below).
+- **Restarts that stay.** Every place that restarts the daemon today keeps doing it: config changes (account view models' `restartLoggingQueued`, `restartOnChain` for Turn on, the feature offer, Settings and the action strip; Slack disconnect; onboarding finish), the data resets (`stopWipeRestart`, `stopDaemonAndRemoveEverything`), a new binary (`CLIBinaryStore`, an app update), quit, and a crash (the start queue restarts it). The daemon wires its syncers once at start, so a restart is still how config takes effect; a live reload is not part of this work. The launch compaction runs before the daemon starts.
+- **Reconnecting.** While the socket is down, `TowerClient` is `reconnecting`. It retries at 0.2 s, doubling to 2 s.
+  - The line "Reconnecting to Watchtower…" shows only after 1 s down, so an ordinary restart (about a second) shows nothing.
+  - After 15 s it becomes `failed` with "Watchtower's background service isn't running" and **Retry**, which also asks the start queue to start the daemon.
+  - A pressed action waits in `busy` and is sent with its `request_id` when the socket returns; after 15 s it fails with **Retry**.
+  - A watch is re-opened on reconnect, and the client reads the feed once.
+- **Change events.** The daemon owns a change watch of its own, independent of the hub (on a desktop host the hub may be off).
+  - A write made through `tower.Call` emits `changed` for its command's `ChangeTables` at commit, so the Mac's own action redraws as fast as a GRDB write does today.
+  - Writes by other processes (an `ai session`, a CLI verb) are seen by a `PRAGMA data_version` poll every 250 ms while a watch is open. The Mac opens the watch only while an Inbox window is on screen and closes it when the window hides; with no watch open, the poll does not run. It cannot tell tables apart, so it emits `changed` with no table list, and the client re-reads.
+  - `inbox.watch` delivers only events whose table list meets the Inbox's `ChangeTables`, or that have no list.
+  - Budget: a foreign write shows on the Mac within 0.5 s at the 95th percentile, measured by a daemon test.
+
+### 4. The Inbox core: `internal/inboxfeed`
+
+#### 4.1 What moves from Swift
+
+| Swift today | Go after stage 1 |
+|---|---|
+| `InboxFolderEntries.build`, `InboxListBuilder`, and the list and counts part of `ActionStripViewModel` | `inboxfeed.Build` |
+| `InboxFolderCounts` with `legacyCounts` | `inboxfeed` counts |
+| `NeedsApprovalSelection` (APPROVAL-01) | `inboxfeed` approvals, with a new reader across all automations next to `db.ReadApprovalsView`, which reads one automation |
+| `InboxCardTexts`, `InboxCardSubject`, `InboxCardNotice`, `SaveAutomationProposalSummary` | `inboxfeed` texts. A small Swift remainder stays: `InboxCardTexts.preview` (used by `ChatPanelRow`), `targetTitleLimit` (used by `WorkbenchNewTargetSheet`), and the Mac-only handoff texts (`discussMessage`, `handToAgentTask`, `agentActionTask`, `agentActionHelp`, `attachmentMarkdown`), which serve chat and agent handoff and never reach the phone |
+| `InboxRefState` (its track and idea parts), `InboxReplyPolicy` | `inboxfeed` ref facts, reusing `db.OpenInboxItems` and the open-approvals reader |
+| `InboxTargetButtonFacts`, the `InboxCardAction` button states | `inboxfeed` action states |
+| The legacy root entries | `inboxfeed` legacy sections (§4.4) |
+
+These stay as Mac views over the screen models: `InboxFolderMenuModel`, `InboxFolderListContent`, `NeedsApprovalNoteContent`, `InboxArtifactMenuModel`, `InboxFolderIcons`, `WatchTrackControls`, `RecipeCustomTrackControls` and `InboxAgentHandoff`. Handoff to chat and to the agent stays on the Mac.
+
+`Build` runs in one read-only transaction, so every count and row comes from one snapshot. It writes nothing.
+
+#### 4.2 The feed (`inbox.feed`)
+
+- **The feed:** `Feed{v, built_at, folders[], cards[], more}`.
+- **A folder:** `{id, kind (root|approvals|owner), slug, title, icon, parent_id, position, count, waiting}`. `waiting` is the part of `count` that waits on the owner: open approvals, plus open rows with a `ref` that wait.
+- **Card ids** are typed so that they never collide: `o<output>`, `a<action>`, `r<reminder>`, `n<builtin migration>`, `brief-<date>`, `tracks`, `ideas`, `thread-brief-<id>` (one card per thread brief, at its own time — controller ruling on Task 7 Q2, revised in Task 11b), `messages`.
+- **A card** has these fields:
+  - `folder_id` and `card_kind` (`artifact`, `approval_native`, `reminder`, `notice` or `legacy`);
+  - `title`, `source_line`, `preview`, `stamp`, `living`, `unread`, `priority`, `pinned`;
+  - `automation` `{id, name, builtin_id, run_id}`;
+  - `blocks`: the stored bytes, or `""` for a markdown card;
+  - `body`: clipped to 16 KB, with `body_clipped`, when `opts.Clip` is set (the phone sets it);
+  - `content_hash`: on a native approval, its args SHA-256;
+  - `actions[] {index, kind, label, state}`;
+  - `ref_facts {open, waits, reply, reply_waiting, link}` for each ref;
+  - `approval {tool, title, summary, args_sha256, status, error, proposer, reason, edit_on_mac}`, on approvals only;
+  - `legacy`, on legacy cards only.
+- **Time.** Stamps are UTC. Grouping such as Today/Earlier happens in the shared screen models with the client's own time zone, so the phone groups by the phone's zone while travelling.
+- **Closed refs.** Rows whose ref is closed stay in the document, and the screen models hide them by `ref_facts.open`.
+- **Options.**
+  - `opts.Folder` narrows the feed to one folder.
+  - `opts.Limit` (300 on the phone, none on the Mac) keeps Needs approval and Waiting for me first, then the rest newest first, and counts what is left out per folder in `more`. Every folder and its count are always sent; only old artifact cards past the cap are left out. On the phone, a folder with `more > 0` ends with the line "N older cards are on your Mac" (mockup §6). 300 cards hold far more than a normal Inbox; the cap only bounds a runaway one.
+
+#### 4.3 Writes (`inbox.act` and the screens' write commands)
+
+`inbox.act` takes `{request_id, target, verb, params}`:
+
+| Verb | Target | Params | Write (the Swift guard is kept) |
+|---|---|---|---|
+| `read` | `o…`, `brief-…`, `r…`, `n…` | `content_hash` | Output `read_at`, guarded by hash; briefing `read_at`; `inbox_items.read_at` |
+| `done`, `dismiss` | `o…` | `content_hash` | Output `done_at`/`dismissed_at`, guarded by hash, open rows only |
+| `press` | `o…` | `index`, `content_hash`, `text` | `reply`: queues the automation's reply run, as `PressInboxOutputAction` does today (`ErrOutputChanged` → `changed`). `target`: the `create_target` propose path |
+| `run_now` | `o…` | none | The function behind the `automation_run` action kind, where `Entry.RunNow`. Non-idempotent |
+| `ref` | any card | `ref_kind`, `ref_id`, `ref_verb`, `until` | See the list below |
+| `reply_propose` | any card | `ref_id`, `text` | `InsertInboxReplyProposal` (`ErrReplyAlreadyWaiting` → `reply_waiting`) |
+| `approval` | `a…` | `approval_verb` (`approve`/`reject`/`retry`/`dismiss`), `args_sha256`, `patch` (the Mac's Edit…, as `actions approve --patch` today; refused from the phone) | `Registry`, pinned to the SHA (a mismatch → `args_changed`). Approve and retry are non-idempotent and run the tool afterwards in the daemon (§2.1) |
+
+The `ref` verb writes by ref kind:
+- `inbox_item`: resolve, dismiss, snooze.
+- `track`: done (with its read cascade), stop, restore, and `make_task` (the `apply_track_action` propose path, as `TrackActionPress` does).
+- `idea`: approve, reject, not now.
+- `reminder`: done, snooze (with the approval hook).
+- `plan_item`: check, uncheck (`day_plan_items.status`, with `DayPlanQueries.cascadeTaskStatus`'s cascade).
+
+- **Answers.** The refusal codes are `not_found`, `changed`, `args_changed`, `reply_waiting`, `not_permitted` and `unsupported`. A guarded no-op answers `ok` with `already: true`.
+- **Go writers.** Each one is ported from its query in `WatchtowerCore/Database/Queries`:
+  - `AutomationQueries.markOutputDone`/`dismissOutput` and the output read mark;
+  - `TrackQueries.markRead`/`restore` and track stop;
+  - `DayPlanQueries`, `ReminderQueries`, `InboxQueries` and `BriefingQueries`;
+  - the idea writers in `IdeaQueries`.
+- **Shared fixture.** While both exist, `inbox_writes.json` runs every case through the Swift writer (a Core test) and the Go writer (a Go test). The Swift side is deleted with the Swift writer, and the fixture stays as the Go golden.
+- **One writer.** A Core guard test lists the moved tables and columns. It fails on any Swift `INSERT`, `UPDATE` or `DELETE` to them anywhere under `WatchtowerDesktop/Sources`.
+
+#### 4.4 Legacy root entries (ask #1348)
+
+Until sub-project C, the feed carries each legacy entry as a typed `legacy` section `{kind, items[]}`:
+- Morning brief, per date, under the Mac's unread rule;
+- Track my threads, with stopped tracks flagged `stopped` inside the one card;
+- Idea finder;
+- Thread briefs;
+- the Messages stand-in.
+
+How each client draws them:
+- **The Mac** draws them with its current views, so the Mac does not change.
+- **The phone** gets them from the hub as block documents with `ref` rows (`inboxlegacy`, §6):
+  - Morning brief, Track my threads and Idea finder look as in mockup §5.
+  - Thread briefs become a list of thread rows that carry the `track` ref.
+  - Messages becomes a notice card with its Mac text and "On your Mac".
+- Plan items use the ref kind `plan_item`, added to the Kit `ArtifactRefKind` so the phone can read it.
+- C's PR deletes each section and its projection.
+
+### 5. The Mac after stage 1
+
+#### 5.1 Inbox
+
+- **Binding.** The Inbox binds to the screen models over `TowerClient` with `SocketTransport`. It reads `inbox.feed` on open, on every `changed` event and on folder navigation. A change during a read marks the screen dirty, so at most one read runs at a time, with one more after it.
+- **New states** (all strings from `TowerText`; mockup §7):
+  - First load: a spinner.
+  - A failed read keeps the last list and shows the reason with **Retry**. With no last list, it shows the line alone.
+  - A failed action keeps its row with the sentence and **Retry**.
+  - Reconnecting: the line "Reconnecting to Watchtower…" above the last list.
+- **Speed budget.** On a fixture with 2 000 outputs, 200 approvals, 500 open items and 30 folders:
+  - `inbox.feed` over the socket takes at most 100 ms median, and a write command at most 15 ms median (`BenchmarkInboxFeedBuild` and a socket round-trip benchmark).
+  - The earlier draft's 150 ms included a CLI process start per read; the socket removes it, so the budget is stricter.
+  - Over budget, the first fixes are `--folder` reads and a counts-only mode. A cache table is never the fix.
+- **Parity before the switch.** Swift `InboxListBuilder` and Go `Build` run over the same fixture databases, and their outputs are compared (`inbox_feed_cases.json`). The fixture then stays as the Go golden.
+- **Shots.** The Mac Inbox's `DesignShotCatalog` shots, taken before and after the switch, match.
+
+#### 5.2 The other screens' writes
+
+`CatchUpQueries.acknowledge` writes moved tables in one transaction with `digests`, `stream_digests` and `catchup_recaps`, so `catchup.acknowledge` and `digests.*` move too; `ChatKnowledgeCenter` writes `ideas`, so `ideas.create_from_chat` and `ideas.undo_chat` move in stage 1; the plan-item cascade writes `targets.status`, so `TargetQueries.updateStatus` and its Targets callers move to `targets.set_status` (all by ask #1362: everyone who writes the same rows). These callers of the moved Swift writers call `TowerClient` write commands instead: `IdeasViewModel`, `DigestViewModel`, `TracksViewModel`, `DayPlanViewModel`, the Home actions in `AppState+Home`, `CatchUpViewModel`, `QuickCaptureView`, `IdeaDetailPane`, `DecisionsListView`, `ActionStripViewModel` and `Reminder`.
+- The plan lists every call site from a grep of the moved writers' names. The guard test in §4.3 proves none is left.
+- Their reads stay on GRDB, as today.
+- Each screen shows busy, refused and reconnecting through `TowerClient`'s action states, with sentences from `TowerText`, in one shared row treatment (mockup §8, shown on Ideas).
+- A screen that refreshes after its GRDB write today refreshes after the command's `ok`.
+
+#### 5.3 Inventory
+
+Contracts in `docs/inventory/` that name a moved Swift type are re-pointed to the Go code in the PR that moves it. APPROVAL-01 is one of them. Their guard tests move to Go with the same `Test<Module>NN_` names, and no assertion is weakened.
+
+### 6. Hub (stage 2)
+
+- **Slices.**
+  - `inbox_folder-<id>`: one record per visible folder.
+  - `inbox_card-<id>`: one record per card, from `inbox.feed` with `Limit: 300, Clip: true`. A legacy card carries `blocks` from `inboxlegacy`, checked by `blocks.Validate` with a hub-only option that admits `plan_item`.
+  - `ChangeTables` comes from the `inbox.feed` registration (§2.1).
+- **Capability.** `wire.HeartbeatCapabilities` gains `inbox: "on" | "policy_off"`, with the reason `policy` under `workbench_only`. A missing key means an older hub, as it does for `chat`. The tab's copy names the hub ("Update Watchtower on <hub name>") through `TowerText`, so the copy is right on a server hub too.
+- **One action kind, `inbox_act`.** Its params are the generated `inbox.act` request, and its handler calls `tower.Call`.
+  - The dispatcher asks the registration whether a call is idempotent, by verb. That table is pinned in `hub_contract_cases.json`.
+  - Grants (ask #1349, widened by ask #1459): `permissions` for approve, retry and dismiss on an approval, for `ref` `make_task`, and for every button press except Reply; `typing` for `reply_propose` and for a `reply` press; none for everything else (done, snooze, hide, folders, plan items, open/read).
+  - The handler nudges `inbox_card` and `inbox_folder`.
+- **Building the feed.** The hub builds the feed outside any write transaction. A failed build keeps the last records and logs its error class.
+
+### 7. Phone (stage 2)
+
+- **The tab.** **Inbox** (`tray`), second: Now, Inbox, Workbench, Chats, Calendar (ask #1349; Chats came with #1791).
+  - The badge is the sum of the folders' `waiting`, in orange (ask #1349).
+  - Unread artifacts show as dots only.
+- **`HubTransport`.**
+  - It answers `inbox.feed` from the slice store, putting the records together into the generated `Feed`.
+  - It sends `inbox.act` through the outbox as `inbox_act`.
+  - It maps the outbox's queued, not delivered, applied and refused states onto `TowerClient`'s.
+- **What is shared and what is phone-only.** The screen models come from `WatchtowerInterface`. Phone-only are the views and `PhoneArtifactView` (in `WatchtowerMobile/Sources/DesignSystem/Artifacts/`, over the Kit `ArtifactDocument`). `PhoneArtifactView` draws:
+  - heading and text;
+  - metrics;
+  - lists;
+  - tables, with sideways scroll inside a card;
+  - people, as initials;
+  - links;
+  - actions.
+
+  Tones go only through `PhoneTone.artifact(_:)`.
+- **Gestures.**
+  - Ref rows: swipe left for Done and Snooze, swipe right for Hide. A track gets Done and Stop, and a reminder gets Done and Snooze 1h.
+  - The context menu holds the full verb set, Make a Task included, and is also the accessibility path.
+  - A tap on a row pushes its detail.
+  - Reply… opens a sheet with "Propose".
+- **Optimistic hide, never optimistic success.**
+  - A pressed row shows busy. The "Didn't confirm" text is the one in mockup §6.
+  - On `ok`, the row hides until a publish leaves it out or reopens it. If two publishes pass and the row is still there, the hub's state wins and the row shows again (mockup §2).
+  - On a refusal, the row comes back with the sentence and **Retry**.
+  - Queued actions show in the existing outbox lines.
+
+### 8. Stage 3: the Desktop's chat writes in Go
+
+> **Superseded for the main chat (2026-11-18, ask #1469).** The approved unified chat spec (`docs/superpowers/specs/2026-11-16-unified-chat-design.md`, #1822, ask #1378) moved the main chat onto one Go engine in the daemon (`internal/chatengine`, `chat.sock`), which writes every main-chat row for the Mac and the phone. What this section says of the main chat — the warm `ai session --persist` process saving its own turn, the desktop lease, `chat.recover`/`chat.release_launches`, the main chat's `chat.*` commands, `BenchmarkPersistStart` and the ≤ 20 ms start gate — was built on the #1170 branch and retired when main was merged in. What stays from it: embedded chats' turns through `ai query --persist`, their conversation-level writes, queued drafts and `meetings.delete` as `chat.*` tower commands (each refuses a main chat), and "Swift writes no `chat_*` table". See `docs/features/tower-interface.md` ("Chat commands").
+
+**Today.** The Desktop spawns warm `ai session --conversation N …` processes (`ChatSessionPool`, 3) and reads their events from stdout (`ChatSessionClient`). Swift writes every `chat_*` row:
+- the turn start (`ChatViewModel.persistTurnStart`);
+- the turn's progress and end (`ChatTurnDriver` through `ChatTurnStore`);
+- conversations, branches, read marks, projects and their sources, artifact comments, queued drafts and knowledge artifacts.
+
+`internal/chatstore` already has the Go twin of most turn and conversation writes. Two parts of `persistTurnStart` are missing and are ported in stage 3 with fixture cases: the quote batch, and the reuse of an existing owner message (and its placeholder) on regenerate and edit.
+
+**After stage 3.**
+- **`ai session --persist`.** The warm process saves its own turn through `chatstore`: `Start`, `Turn.Apply/Flush/Finalize`, and the lease heartbeat and release.
+  - The stdin `turn` request carries what `persistTurnStart` writes today: the text, the attachment ids, the parent or edit target, the mode and the quote batch.
+  - Before its first delta, the process answers `started {conversation_id, owner_message_id, assistant_message_id, turn_id}`.
+  - While the hub holds the lease, the process answers `refused {reason: "conversation_busy", holder}`, and the draft comes back with the holder's line, as today.
+  - The process reads remote Stop (`cancel_requested_at_ms`) itself.
+  - **Lease owner.** The Desktop passes `--lease-owner desktop --lease-owner-id <app launch id>`, so leases are claimed exactly as today (`owner = desktop`, the launch id). At launch, the Desktop calls `chat.release_launches {keep: <launch id>}`, the Go port of `releaseEarlierLaunchesChatLeases`. The daemon never releases a `desktop` lease: warm sessions are children of the app, not of the daemon, and a daemon restart does not touch them. The hub's `Sweep` keeps releasing only `hub` leases.
+- **The live view does not change.**
+  - The Desktop draws the answer from the stdout events, as today, and reloads the rows at `started` and at the end.
+  - The owner's bubble shows at once from the draft.
+  - Stop is the existing stdin `cancel`.
+  - Embedded chats (target brief, Discuss, tuning, the automation editor) run `ai query --events v2` per turn and write their rows through `EmbeddedChatStore` today; `ai query` gains the same `--persist`, so they move to Go writes too.
+- **Every other chat write goes through `TowerClient`.** The commands are `chat.new`, `pin`, `rename`, `delete`, `branch`, `read`, `attach`, `project.*`, `comment.*`, `draft.*` and `recover`. They run on `chatstore`, plus new Go writers ported from `ChatProjectQueries`, `ArtifactCommentQueries`, `QueuedDraftQueries` and the knowledge-artifact writes. Each new writer is pinned by a fixture case until its Swift writer is deleted.
+- **Deleted in Swift:**
+  - `ChatTurnStore` and the write half of `ChatTurnDriver`;
+  - `persistTurnStart`;
+  - `releaseEarlierLaunchesChatLeases` (replaced by `chat.release_launches`);
+  - every `chat_*` write. A Core guard test fails if one is left.
+- **Contracts.** CHAT-01/02/03/05 and LIVE-01 (`docs/inventory/chat.md`) keep their meaning. Their guards move with their names and are not weakened.
+
+**UX kept, and how it is checked** (ask #1361):
+
+| What the owner feels | Rule after stage 3 | Check |
+|---|---|---|
+| The owner's bubble after Send | Shows at once, from the draft | A view-model test: the bubble shows before `started` |
+| The first answer text | The same stdout stream. `chatstore.Start` runs before the provider call, as `persistTurnStart` did | `BenchmarkPersistStart` is no slower than the Swift start on the same fixture. In a stub-provider timing test before and after, the median is no more than 20 ms worse. 20 ms is the run-to-run noise of that test on the dev Mac, not an allowed slowdown: the start does the same writes in the same order, only in Go |
+| Live text cadence | Every stdout delta | The existing stream tests |
+| Stop | stdin `cancel` | The existing Stop tests |
+| Warm sessions | A pool of 3 | The existing pool tests |
+| Pin, rename, delete, branch, read | The row changes at once in the view, as with the GRDB write today, and the socket write follows. A refusal puts the row back and shows the sentence. Delete keeps its existing confirmation | The 15 ms socket budget (§5.1); a refusal-reverts test per command |
+| A send survives a crash (CHAT-01) | The owner row commits before the provider runs, and the Desktop keeps the draft until `started` | The moved CHAT-01 guard and a kill-before-`started` test |
+
+A path that fails its check does not switch. Speed is a gate.
+
+### 9. Failure modes
+
+- **The daemon is down or restarting.** `TowerClient` goes to `reconnecting`, then to `failed` with **Retry**. A pressed action waits and is sent with the same `request_id` when the socket is back. Test: `TowerClientTests` with a transport that drops and returns, and one that never returns.
+- **The daemon dies mid-command.** A guarded command has either committed with its ledger row or not committed at all, so a resend applies it or returns the stored result. A non-idempotent command left `begun` answers `unknown`, and the client shows "Didn't confirm — check again". Test: for both classes, a kill between `begun` and the write, and between the write and the reply.
+- **A failure partway through a Go write.** Each write is one transaction, so a failure rolls it back. Test: a fault seam in every writer test, plus a kill-between-statements case for each writer with a cascade (track done, the reminder approval hook, the plan-item cascade).
+- **Interface version mismatch** (a dev build against an old daemon). The handshake restarts the daemon from the client's CLI, or shows the different-version state. Test: `TowerClientTests` with a mismatched `hello`.
+- **Another user reaches the socket.** The peer-uid check refuses the connection. Test: the same shape as the hub's control-socket test.
+- **Sync is paused.** The Inbox and the writes keep working, but the feed's sync-driven content stops changing. The pause survives a restart. Test: a daemon test that serves `inbox.feed` while paused and across a restart.
+- **A config change restarts the daemon.** The Mac keeps the last list, shows nothing for the first second, then "Reconnecting…". Actions wait and are sent after. Test: `TowerClientTests` with a 1 s and a 3 s drop.
+- **No daemon before onboarding.** Cannot happen: the app starts a paused daemon at launch. Test: the launch sequence test starts the daemon paused before onboarding finishes.
+- **The hub stops mid-action.** The ledger answers `unknown` for a non-idempotent call. The phone shows "Didn't confirm — check on the Mac" and never re-sends. Test: hub order tests with the new kind.
+- **The Mac restarts with phone actions queued.** The outbox re-sends, and `relay_processed` plus `tower_requests` keep each action to exactly once. Test: the replay suite with `inbox_act`.
+- **The phone is killed with actions queued.** The outbox is persistent. Test: an outbox wiring test with `inbox_act`.
+- **Stale card.** A `content_hash` mismatch answers `changed`, and the client shows "This card changed — look again". Test: a stale-hash case for every hash-guarded verb in `inbox_writes.json`.
+- **Approval arguments changed.** The command answers `args_changed`, and the card is redrawn. Test: an `inbox.act` test.
+- **Writers of the same rows, and who wins.** After stage 1, every writer is Go code going through `tower.Call` or the daemon's own work:
+  - the Mac, over the socket;
+  - the hub;
+  - the daemon (living rewrites, automation runs, approval apply);
+  - the existing CLI verbs.
+
+  The first commit wins, and a later guarded write is an `already` no-op. A living rewrite with a new hash clears the marks (A), so a Done on the old hash answers `changed`. Test: per verb, two calls from two connections on one file; one answers `ok` and the other `already` or `changed`.
+- **Policy tightens while cards are on the phone.** POLICY-03 deletes the records, and the tab shows "The Inbox stays on your Mac". Test: a policy test in `sources`.
+- **The chat session dies mid-turn (stage 3).**
+  - After `started`, the Desktop calls `chat.recover {conversation, turn}`, which marks the row `session_lost` and releases the lease, as the hub's `Sweep` does. If that call fails, the next app launch's `chat.release_launches` frees the lease and marks the row `session_lost`.
+  - Before `started`, nothing was written: the draft comes back and the existing "session ended" card shows.
+  - With no `started` within 10 s, the Desktop gives up the same way.
+  - Tests: a kill before and after `started`, the sweep, and a silent process.
+- **The hub and the Mac race for one chat.** The lease decides, and both writers are `chatstore`. Test: `chat_lease_cases.json` and a two-process start race.
+
+### 10. Docs
+
+- New `docs/features/tower-interface.md`: the commands, the ledger, the generator, `WatchtowerInterface`, the socket, and pause instead of stop. It gets a CLAUDE.md line and a README summary.
+- New `docs/features/inbox-core.md`.
+- Updated feature docs:
+  - `inbox-folders.md` and `inbox-card-blocks.md`: the builder and writers are in Go.
+  - `tray-daemon-lifecycle.md`: the daemon is always on, and a stop pauses sync.
+  - `mobile-companion.md`: a new Inbox section.
+  - `go-hub.md`: the new kind and capability.
+  - `chat-redesign.md` (its **Writers** line), `embedded-chat.md` and `iphone-chat.md`.
+- The protocol spec tables (§6.2, §7.2, §9).
+- `docs/inventory/` entries re-pointed to the Go code.
+- `docs/guide`: the iPhone page gains the Inbox, and the tray page describes pausing sync.
+- CLAUDE.md build notes gain `make gen-interface`.
+
+### 11. Shots
+
+- **Stage 1.** The Mac's Inbox shots before and after the switch match, and the `inbox-feed-*` states match mockup §7.
+- **Stage 2.** The `ScreenshotTourTests` `inbox-*` shots match mockup §§1–6, and `DemoSeed` gains the sample Inbox.
+
+### 12. Addendum: the phone Inbox draws ChatUI's approval card (board #2018)
+
+The owner's answer to ask #1469: "Сразу ChatUI, добавить в неё Retry и Dismiss". The phone Inbox stops drawing its own approval card and draws ChatUI's `AgentActionCard`, the one card that #1822 shared between the chat, the Mac Inbox and the iPhone (ask #1409). The card gains what the phone Inbox needs around Retry and Dismiss.
+
+Mockups: `docs/design/mockups/mobile-inbox/approval-card/` has fourteen frames, each in `-light`, `-dark` and `-narrow` (iPhone SE width at the largest Dynamic Type). Seven are the phone Inbox's: `inbox-approval-pending`, `-failed`, `-sending`, `-refused`, `-settled`, `-dismiss` and `-mac-only`. Seven are the phone chat's (§12.9): `chat-approval-failed`, `-dismiss`, `-sending`, `-refused`, `-unconfirmed`, and the header pair `chat-approval-header-today` / `-header-stacked` (§12.5). `make mobile-shots SHOTS_ONLY=inbox-approval` renders them from `WatchtowerMobile/Tests/InboxApprovalMockShots.swift`. They use the real card in the phone's style, with Phase B's stacked header (§12.5). The rows the card does not draw yet come from a test-only `MockRow` passed through `decisionOverride`. After the build, the same names come from the real card and are compared with these images.
+
+#### 12.1 What the phone Inbox draws
+
+- **Before.** A Needs approval entry `a…` is `InboxApprovalCard`, over `InboxApprovalModel` from `WatchtowerInterface`. A due reminder `r…` uses the same view with Done and Snooze 1h.
+- **After.** A Needs approval entry `a…` is `ChatUI.AgentActionCard` in `PhoneChatStyle`, with the card's `ChatApprovalServices` wired to `InboxCenter`.
+  - The card's context line is the entry's source line ("ϟ Release notes · run #4").
+  - The body is the card's per-tool body, as in the phone chat. For that, the feed's `Approval` gains `args_display`, `args_complete` and `external` (decided, ask #1549). Go fills them from the chat engine's `argsDisplay`, which clips at 4000 characters and is applied under `FeedRequest.Clip`. A `ChatAgentAction(inboxApproval:)` builds the action with `argsStored: false` and the feed's `args_sha256`. An older hub sends no `args_display`; the body is then the feed's `summary`, quoted, through `details`, as today.
+  - `save_automation` takes its title and its summary through `title` and `details`, as the Mac does. Without them the card shows the raw tool id and raw JSON (seen in the first mock render).
+  - A reminder is not a proposal. It keeps a phone view of its own, the reminder part of today's card, renamed `InboxReminderCard`.
+- **Removed.** `InboxApprovalCard`'s approval half and, if nothing else uses it, `InboxApprovalModel`. Their tests go only where an equivalent ChatUI or phone test replaces them.
+
+#### 12.2 Retry and Dismiss: where and when
+
+The card's own rules decide, with no phone-only rule (`AgentActionCard.settledOffer` / `shownSettledOffer`):
+
+- **Retry.** Shown on a `failed` (or stuck `approved`) row that is not a session call and not superseded (`offersRetry` is false on an older Inbox-button row, AGENT-05).
+- **Dismiss** (decided, ask #1549 Q1 = A). Shown only on a session call whose outcome is unknown (`ConnectorCallProposal.awaitsDismissal`), next to its note "Check the connector to see whether the call ran, then dismiss this card." That is the only row Go's `approval dismiss` takes (`Registry.DismissSessionCall`). On any other row Go refuses with `changed`.
+- **Today's phone Dismiss on an ordinary failed row does not work: Go refuses it.** The shipped phone card offers Dismiss on every failed row (`InboxApprovalModel.canDismiss = failed && mayDecide`), and Go answers every such press `changed`, shown as "Couldn't dismiss it: this card changed — look again." Following the card's rule removes that button. Ordinary failed rows stay non-dismissable, as on the Mac (ask #1549, Q1 = A).
+- **Which surfaces show them:**
+  - **The phone Inbox** gains both. `services.retry` and `services.dismiss` send `inbox.act`.
+  - **The Mac** (Inbox, chat, target chat, automation editor) already shows both through `MacAgentActionCard`. The model additions below default to today's behaviour, so the Mac does not change visibly; the existing `approval-*` DesignShots must stay the same.
+  - **The phone chat** gains them too, in this task (ask #1553, Q3 = B). The relay's chat approval answer (`chat_action_answer`) carries only `approve` and `reject` today, so it gains `retry` and `dismiss` (§12.9).
+
+#### 12.3 Verbs and grants
+
+| Button | `inbox.act` | Idempotent | Grant from the phone |
+|---|---|---|---|
+| Approve | `approval` `approve` + `args_sha256` (no `patch`) | no | `permissions` |
+| Reject | `approval` `reject` | yes | none |
+| Retry | `approval` `retry` | no | `permissions` |
+| Dismiss | `approval` `dismiss` | yes | `permissions` |
+
+Every press goes through `InboxCenter.press`, then `HubTransport`, then the outbox as `inbox_act`, with one `request_id` per press (§6–§7). Asks #1349 and #1459 set the grants.
+
+Without the `permissions` grant:
+- Approve is replaced by the line "Approve on the Mac" ("Approve on your tower" on a server hub, through `TowerHost`), and Reject stays live.
+- Retry is replaced by "Retry on the Mac", and Dismiss by "Dismiss on the Mac".
+- A `save_automation` shows "Open Draft — on your Mac" in place of Approve, with Reject, whatever the grants.
+- A proposal the Mac's Edit… changes shows "Edit on your Mac" as its line.
+
+#### 12.4 The card's model additions (Phase B)
+
+Every addition defaults to today's behaviour. The strings live in the phone's text models (`TowerText`/`InboxPhoneText`), with tests. Colours go only through `Tone`/`PhoneTone`, with no row separators.
+
+- `ChatApprovalState.approveNote: String?`: Approve is not offered on this device, and the note stands in its place. Reject follows `canAnswer` as before.
+- `ChatApprovalState.settledNote: String?`: Retry and Dismiss are not offered on this device, and the note stands in their place.
+- `ChatApprovalState.line` is drawn on a settled row with an offer too, not only on a pending one. `inFlight` disables the settled buttons and shows the spinner, as it does for the pending ones. The Mac and the phone chat pass no line there, so they do not change.
+- `ChatApprovalState.undelivered: (line, retryTitle)?` with `ChatApprovalServices.resend`: on a Not delivered row, the line shows in red and the press's named Retry ("Retry Approve") becomes the row's only button. It re-sends the same outbox action (§7).
+- On the phone, the external retry note on a failed row ("Retrying re-sends the request — check Jira for a duplicate first.") is drawn in the secondary tone through a new `ChatUIStyle` hook. The phone's rule is that orange means only "waiting for you". The Mac's style keeps its orange, so the Mac does not change.
+- The Inbox-button stuck row ("Didn't finish" with **Try again**, or progress while creating) is drawn by the phone through `decisionOverride`, as the Mac does. It comes from `InboxApprovalModel.targetRow`'s rule, which moves with it.
+
+#### 12.5 Every state (frame names in brackets)
+
+| State | The card draws |
+|---|---|
+| Pending, with the grant [`pending`] | Approve, Reject |
+| Pending, without the grant [`pending`] | "Approve on the Mac", Reject |
+| Failed [`failed`] | Header "Failed" in red, the row's error, the external retry note in the secondary tone (orange is only for what waits on you), **Retry** |
+| Failed, without the grant [`failed`] | The same with "Retry on the Mac" and no button |
+| Sending: Approve, Reject, Retry or Dismiss on its way [`sending`, `dismiss`] (ask #1549, Q2 = A) | Buttons off with a spinner, and the line "Approving…", "Rejecting…", "Retrying…" or "Dismissing…" |
+| Waiting to send, while the hub is away (`busy` while `MacReachability` is not online) [`sending`] | Buttons off, and the line "Waiting to send — it applies when <hub name> wakes." |
+| Refused [`refused`] | The tower's sentence in red (`gestureError`), for example "This proposal changed on the Mac — look again before approving." The buttons are live again; a new press is a new request. `args_changed` redraws the card from the next publish. |
+| Not delivered [`refused`] | "Not delivered — <hub name> didn't get it." in red, and **Retry Approve** alone |
+| Didn't confirm (`outcome_unknown`) [`refused`] | Buttons off, and the line "Didn't confirm — check on the Mac." until Refresh. It is never sent again. |
+| Approved and running [`settled`] | Header "Executing…" with a spinner and no buttons |
+| Done, or `already` [`settled`] | Header "Done" in green with the result link and no buttons. On `ok` and on `ok` with `already: true`, the card hides at once (§7's optimistic hide); this frame is what a publish still carrying it would draw. |
+| Outcome unknown [`dismiss`] | The dismiss note and **Dismiss**; without the grant, "Dismiss on the Mac" |
+| Dismissed [`settled`] | No buttons. It is hidden on `ok`, like Done. |
+| Recipe draft, Inbox-button task stuck [`mac-only`] | "Open Draft — on your Mac" with Reject; "Didn't finish" with **Try again** |
+| Narrow [every `-narrow`] | The same rows, wrapped. At the largest text size the shared header today truncates the title beside its status ("Use a clau…", see `chat-approval-dismiss-narrow`). In Phase B the phone's `PhoneChatStyle.approvalHeader` puts the status under the title when both do not fit on one line (`ViewThatFits`). **This is a visible change on every phone surface that draws the card: the phone Inbox and the phone chat.** A long title with a long status ("Use a claude.ai connector" · "Chat session ended — outcome unknown") now stacks at every text size, and at the largest size the title is no longer cut. The Mac's `DesignKitChatStyle` is untouched. Shot pair: `chat-approval-header-today` and `chat-approval-header-stacked`. |
+
+#### 12.6 Failure modes
+
+- **The hub is away.** The press queues in the outbox, and the card shows "Waiting to send". It is sent with the same `request_id` once the hub wakes. Test: an `InboxCenter` test with a queued `inbox_act` row and an asleep reachability.
+- **Not delivered.** The outbox gave up, and the card shows its named Retry alone. Test: a replica `inbox_act` failed row with `.outbox` retry.
+- **Refused.** The card shows the tower's sentence from `inboxfeed.Sentence`. Tests: a state-model test for `changed`, `args_changed`, `not_permitted` and `unsupported`.
+- **`already`.** It is treated like `ok`. Test: an existing `InboxCenter` hide test, extended to an approval.
+- **No grant.** The notes appear, and the press is never sent. Test: a state-model test. The hub's no-grant refusal test already exists (§6).
+- **An older hub.**
+  - A hub without the `inbox` capability shows no tab (§6).
+  - A hub without `args_display` gets the summary body. Test: a decode test with no field.
+  - A hub that refuses `approval dismiss` or `retry` as `unsupported` gets that sentence.
+- **The hub stops mid-way on Approve or Retry.** These are non-idempotent, so the result is `unknown`, shown as "Didn't confirm". It is never re-sent.
+- **Who writes the same rows.** The `agent_actions` row of `a…` has four writers: the Mac over the socket (`inbox.act`), the hub (`inbox_act`), the CLI (`actions …`) and the daemon's apply or the chat session. The first decision wins. A later one answers `already` (approved, running, applied or failed) or `changed` (rejected or dismissed), and the card redraws from the next publish. Go already covers this with the race tests (§9); the phone adds a state test for each answer.
+
+#### 12.7 Shots
+
+After the build, `make mobile-shots SHOTS_ONLY=inbox-approval` renders these names from the real card (the `MockRow`s are gone) and they are compared by eye with this folder. The Mac's `approval-*` DesignShots are rendered before and after and must match. The phone chat's frames (`chat-approval-failed`, `-dismiss`, `-sending`, `-refused`, `-unconfirmed`, §12.9) render from the same test and are compared the same way. `ScreenshotTourTests`' `inbox-*` §3 frame is updated to the new card. Mockup §3 in `docs/design/mockups/mobile-inbox/index.html` now shows these frames, so they are the one source of truth for the approval card. After the build (PR #1006) the seven frames whose stand-in rows differed from the real card were re-rendered from it. They show the chosen busy look (ask #1549 Q2 = A): the disabled Retry or Dismiss stays next to the spinner, with its line under it.
+
+#### 12.8 Decided questions (asks #1549, #1553)
+
+The owner answered every open question. Phase B follows these answers.
+
+- **Q1. Dismiss on an ordinary failed proposal: A** (ask #1549). Dismiss is offered only where Go accepts it, on a session call whose outcome is unknown, as on the Mac. Ordinary failed rows get Retry only. Today's phone Dismiss on such a row is refused by Go, and it goes away.
+- **Q2. What a press on its way looks like: A** (ask #1549). The chat card's look: the buttons are disabled and a line sits under them ("Approving…"). This reverses the #1170 T15 fix (`InboxApprovalCard.busyVerb`, `testApprovingShowsOnlyTheBusyButton`), and that test is retired with the card.
+- **Q3. Retry and Dismiss in the phone chat: B, in this task** (ask #1553: "Расширить в этой же задаче"). See §12.9.
+
+#### 12.9 The phone chat's card gains Retry and Dismiss (ask #1553)
+
+The phone chat draws the same `AgentActionCard` (`ChatConversationView.approvals`). Today it wires only `decide`. It gains `retry` and `dismiss`, under the same rule as the Inbox (§12.2): Retry on a failed or approved row that is not a session call, and Dismiss only on a session call whose outcome is unknown.
+
+- **Hub verb.** `chat_action_answer` keeps its kind and its params `{action_id, decision, args_sha256}`. `decision` gains `retry` and `dismiss` beside `approve` and `reject`. One kind keeps one grant check, one main-chat check (`ConversationExists`; a Discuss chat's action is `not_found`) and one ledger. A new kind would duplicate all three.
+- **The Go handler** (`internal/hub/actions/handlers/chat_action_answer.go`) makes the same registry calls as `inbox.act`'s approval verbs. The calls do not move. They stay in `internal/inboxfeed/act_approval.go`, which the approval-writers guard `TestApprovalWriters_CalledOnlyThroughTheRegistry` (`cmd/inbox_approvals_test.go`) already allows, and that guard is unchanged. `inboxfeed` exports one function for each verb (`inboxfeed.RetryAction`, `inboxfeed.DismissAction`). They carry the status checks and the registry calls that `inbox.act`'s approval retry and dismiss use. The hub handler calls them, so the rules cannot drift.
+  - `retry`: the row must be `failed` or `approved` and not session-applied. A session call is refused `not_supported` with "This runs only in its chat on the Mac". An `executing` or `applied` row answers `not_pending` with its status ("Already approved"). Otherwise `Registry.Apply` runs in `chatAsync("chat_action_apply")` after the answer, as approve does today, and the answer is `applied {status: "approved"}`. Two applies never both run the tool, because `Apply` claims the row.
+  - `dismiss`: `Registry.DismissSessionCall`. `ErrBadTransition` (not a session call with an unknown outcome) answers `changed` with "The action changed — look again". A repeated Dismiss on a row already dismissed answers `already`, with the row's dismissed state (`applied {status: "failed", dismissed: true, already: true}`), and writes nothing. That is how `inbox.act` reports an already-applied press. The phone shows no error: the card already reads dismissed, or does so after the next feed.
+- **Idempotency.** The kind stays in `NonIdempotentKinds`, claimed begun as today. A hub that stops mid-way answers `outcome_unknown` for every decision. The card then shows "Didn't confirm — check on the Mac." and never re-sends; the feed shows what happened.
+- **Grants.** Retry and Dismiss need `chat` and `permissions`, the rule `chat_action_answer` already has, matching the Inbox (ask #1459). Without `permissions`, the card shows "Retry on the Mac" or "Dismiss on the Mac" in place of the button (`settledNote`, §12.4); on a server hub it says "on your tower".
+- **Capability gate.** `wire.HeartbeatCapabilities` gains `chat_actions: "retry_dismiss"`.
+  - A hub without the key is older: it would refuse the new decisions with `invalid_params`. The phone then offers no Retry or Dismiss in the chat and shows the same "Retry on the Mac" or "Dismiss on the Mac" note.
+  - An older phone never sends the new decisions, so a newer hub changes nothing for it.
+- **The chat feed** (`chatengine.FeedAction`) gains `dismissed_at`, so a dismissed session call stops offering Dismiss on the phone (`awaitsDismissal` reads it). An older Mac engine sends none. Dismiss then stays until the row leaves, and a second press answers `applied` (idempotent).
+- **The Mac chat** already shows Retry and Dismiss (`ChatApprovalServices.mac`: `feed.retry`, `feed.dismiss` through `watchtower actions …` with owner-confirm). Nothing changes there. The Mac's chat card reads its rows, not the feed, so `dismissed_at` in the feed changes nothing on the Mac.
+- **States** (frames `chat-approval-*`, light/dark/narrow):
+
+| State | The chat card draws |
+|---|---|
+| Failed, with the grant [`chat-approval-failed`] | Header "Failed", the error, the retry note in the secondary tone, **Retry** |
+| Failed, without the grant or on an older hub [`chat-approval-failed`] | "Retry on the Mac", no button |
+| Outcome unknown [`chat-approval-dismiss`] | The dismiss note and **Dismiss**; without the grant or on an older hub, "Dismiss on the Mac" |
+| Dismissed [`chat-approval-dismiss`] | No buttons (the feed's `dismissed_at`) |
+| On its way [`chat-approval-sending`] | Buttons off, spinner, and the chat's line "Sending your answer…" |
+| The hub is away [`chat-approval-sending`] | Buttons off and no line, as for the chat's Approve and Reject today. Chat answers never queue (ask #1570) |
+| Refused [`chat-approval-refused`] | The hub's sentence in red ("The action changed — look again", "Already approved", "This runs only in its chat on the Mac"). Buttons are live again; the feed redraws the row |
+| Couldn't send [`chat-approval-refused`] | "Couldn't send that. Try again." in red, Retry live |
+| Didn't confirm [`chat-approval-unconfirmed`] | "Didn't confirm — check on the Mac.", buttons off until the feed moves |
+| Done, after a Retry [Inbox `settled`] | Header "Done" with the result, no buttons |
+
+- **Failure modes.**
+  - The relay is away: nothing is sent and the buttons stay off (no Waiting to send or Not delivered in the chat, ask #1570).
+  - The answer is lost: "Couldn't send that. Try again."
+  - Refusal: the hub's sentence.
+  - `not_pending` on Retry (already run elsewhere): "Already approved", and the feed shows the row's state.
+  - No grant: the notes appear and nothing is sent.
+  - Older hub: the capability is absent and the notes appear.
+  - The hub stops mid-way: `outcome_unknown`, shown as "Didn't confirm".
+- **Writers of the same rows.** One `agent_actions` row has these writers:
+  - the phone chat (`chat_action_answer`);
+  - the phone Inbox (`inbox_act` on `a<id>`, for a chat action that sits in Needs approval);
+  - the Mac (`watchtower actions …` from the chat card, and `inbox.act` from the Inbox);
+  - the CLI;
+  - the daemon's apply;
+  - the chat session.
+
+  `Registry.Apply` claims the row, so only one apply runs the tool. A later Retry answers `not_pending` or `already`. `DismissAgentAction` is conditional (`dismissed_at = ''`), and a second Dismiss answers `already`. Tests: a hub handler race of `retry` against `inbox_act retry` on one row (one runs, the other answers already or not_pending), and `dismiss` twice.
+
+#### 12.10 Decided: the chat's Retry and Dismiss do not queue (ask #1570)
+
+- **Q4: A** (ask #1570). The chat's Retry and Dismiss work like its Approve and Reject today. While the hub is away the buttons are off and nothing queues, because a queued Retry would run a tool later, when nobody is looking at the chat. The owner approved the contract extension as specified in the same ask: `retry` and `dismiss` in `chat_action_answer`, the `chat_actions` capability and `dismissed_at` in the chat feed.
+
+No question in §12 is open. Phase B follows §12.1–§12.10.
+
+## Promises → tasks → tests
+
+| Promise | Stage / task | Test |
+|---|---|---|
+| One contract for Go and Swift | 0 / generator | `make gen-interface-check` in CI; generated golden decode tests |
+| Exactly once on both transports | 0 / ledger | ledger kill tests (§9); hub replay suite |
+| The Mac reaches the tower over the socket | 0 / socket | `tower.ping` end to end; peer-uid test; `hello` mismatch test |
+| Stopping sync keeps the tower up | 0 / pause | daemon pause test across a restart; tray Pause/Resume test; paused daemon before onboarding |
+| Changes reach the Mac fast | 0 / change watch | own-write event at commit; foreign write ≤ 0.5 s p95; poll stops with the last watch |
+| The request ledger stays bounded | 0 / ledger | daemon prune test with the hub off |
+| Reconnecting is honest | 0 / `TowerClient` | `TowerClientTests` (drop, return, never returns) |
+| Go builds the Mac's Inbox list exactly | 1 / core + parity | `inbox_feed_cases.json` |
+| Needs approval picks the Mac's card | 1 / core | APPROVAL-01 guards moved to Go |
+| One writer for every Inbox row | 1 / Go writers + guard | `inbox_writes.json`; Core guard test over the moved tables |
+| Other screens write through the tower | 1 / screens | the same guard test; a per-screen refusal test |
+| The Mac Inbox looks the same | 1 / Mac switch | DesignShot before and after |
+| The Mac's new states are honest | 1 / Mac switch | screen-model tests; DesignShot `inbox-feed-*` |
+| Fast enough | 0 and 1 / benchmarks | socket round trip; `BenchmarkInboxFeedBuild` |
+| Races between writers | 1 / Go writers | two-connection race per verb |
+| The phone sees the same folders and rows | 2 / hub sources | sources tests over the Go golden; Kit mirror tests |
+| Same blocks drawn | 2 / phone renderer | Kit `ArtifactBlocksTests` fixture through `PhoneArtifactView` snapshots |
+| Native actions per ref kind | 2 / hub + phone | `inbox_act` handler tests per verb; `InboxRefRowModelTests` |
+| Approve pins args and needs `permissions` | 2 / hub | mismatch and no-grant tests |
+| Phone states and copy | 2 / phone | `InboxTabStateTests`; `TowerText` tests |
+| Policy off | 2 / hub sources | policy test |
+| No Swift chat writer left | 3 / chat switch | Core guard test over `chat_*` |
+| Chat UX no worse | 3 / benchmarks | `BenchmarkPersistStart`; stub-provider timing |
+| A send survives a crash; a dead session is cleaned up | 3 / `--persist`, `chat.recover` | CHAT-01 guard; kill tests; sweep test |
+| Chat contracts kept | 3 / chat switch | CHAT-01/02/03/05 and LIVE-01 guards, moved with their names |
+| Shots match the mockup | 1 and 2 | DesignShot `inbox-feed-*`; `ScreenshotTourTests` `inbox-*` |
+| The phone Inbox draws ChatUI's approval card (§12.1) | 2 / #2018 | `InboxTabWiringTests.testNeedsApprovalDrawsTheSharedCard`; `ChatAgentActionInboxTests` (the action built from the feed's `Approval`) |
+| Retry is offered on a failed, unsuperseded row and sends `approval retry` (§12.2–12.3) | 2 / #2018 | ChatUI `AgentActionCardDecisionTests` (`settledOffer`, `offersRetry`); `InboxApprovalServicesTests.testRetrySendsApprovalRetry` |
+| Dismiss only where Go accepts it, ask #1549 Q1 = A (§12.2) | 2 / #2018 | `AgentActionCardDecisionTests.testDismissOnlyOnUnknownOutcome`; `InboxApprovalServicesTests.testNoDismissOnAnOrdinaryFailedRow` |
+| Grants: Approve, Retry and Dismiss need `permissions`; Reject does not (§12.3) | 2 / #2018 | `InboxApprovalStateTests` (approveNote, settledNote, Reject live); Go `ActGrant` tests (existing) |
+| Feed fields `args_display`, `args_complete`, `external`, with the older-hub summary fallback (§12.1) | 2 / #2018 | Go `inboxfeed` approval-card golden (`inbox_feed_cases.json`); `GoldenRoundTripTests`; `ChatAgentActionInboxTests.testNoArgsDisplayFallsBackToTheSummary` |
+| Refusal, busy, waiting, not delivered, didn't confirm and settled states (§12.5) | 2 / #2018 | `InboxApprovalStateTests` (one case per state); ChatUI `ChatApprovalStateTests` (new fields default off); `make mobile-shots SHOTS_ONLY=inbox-approval` against the mockups |
+| The Mac does not change (§12.2, §12.9) | 2 / #2018 | The Mac's DesignShots before and after, unchanged: `ApprovalCardShotFixtures` (`approval-plain-pending`, `approval-jira-pending`, `approval-connector-dismiss`, `approval-failed-retry-note`, `approval-in-flight`, `approval-gesture-error`, `approval-rejected`, the rest of that list) and `inbox-decision-card`, `inbox-chat-decision-card` |
+| The phone header stacks when title and status do not fit (§12.5) | 2 / #2018 | `chat-approval-header-today` / `-stacked` against the mockup; `ScreenshotTourTests` `iphone-chat-approval-*` and the Inbox `inbox-*` §3 frame re-baselined for the header change |
+| The phone chat card offers Retry and Dismiss by the card's rule (§12.9) | 2 / #2018 | `ChatConversationApprovalTests.testRetryAndDismissWired`; `ChatApprovalCardModelTests` (settledNote without the grant or capability) |
+| `chat_action_answer` takes `retry` and `dismiss` (§12.9) | 2 / #2018 | Go `chat_action_answer_test.go`: retry runs Apply after the answer, session call refused, `not_pending` on applied, dismiss only an unknown outcome, dismiss twice, main chats only, `permissions` required |
+| One rule for the Inbox's and the chat's retry and dismiss (§12.9) | 2 / #2018 | `inboxfeed` tests of `RetryAction`/`DismissAction`; `inbox.act` approval tests unchanged; the guard `TestApprovalWriters_CalledOnlyThroughTheRegistry` unchanged |
+| A repeated Dismiss answers `already` and writes nothing (§12.9) | 2 / #2018 | Go `TestChatActionAnswer_DismissTwiceAnswersAlready`; phone `ChatApprovalCardModelTests.testAlreadyDismissedShowsNoError` |
+| Capability gate `chat_actions` (§12.9) | 2 / #2018 | hub heartbeat test; Kit `HeartbeatCapabilities` decode with and without the key; phone test: no key, no Retry or Dismiss |
+| The chat feed's `dismissed_at` (§12.9) | 2 / #2018 | `chatengine` feed golden; ChatWire payload decode with and without the field |
+| Race: chat retry against Inbox retry on one row, one runs the tool (§12.9) | 2 / #2018 | Go handler race test |
+| The chat's Retry and Dismiss states (§12.9) | 2 / #2018 | `ChatApprovalCardModelTests` (one case per state); `make mobile-shots SHOTS_ONLY=inbox-approval` (`chat-approval-*`) against the mockups |
+
+## Decisions
+
+**From the owner:**
+- The phone Inbox is for clearing it on the go — ask #1326.
+- The phone shows every section, as an adapted copy of the Mac's Inbox — ask #1326.
+- The Inbox gets a separate tab — ask #1326.
+- The hub builds ready cards (approach A) — ask #1332.
+- Only the Go hub publishes them — ask #1332.
+- The Inbox works the same on the Mac and the phone, with all logic and writes on the tower — ask #1348, with the perimeter from ask #1356.
+- Legacy entries stay until C, and plan items can be checked from the phone — ask #1348.
+- The work is staged: the core with the Mac on it, then the phone, then the chat writes — ask #1356. Stage 0 (the interface) follows from ask #1362.
+- The tab sits second, after Now — ask #1349.
+- The badge counts only what waits on the owner — ask #1349.
+- Approve and Retry from the phone need the `permissions` grant — ask #1349. Dismiss on an approval, Make a Task and a target or card button press need it too, as the code ships (AGENT-07 owner gestures) — ask #1459.
+- Management, chat and agent stay on the Mac, and v1 has no push — ask #1349.
+- The Desktop's chat writes move to Go in this work, on condition that the UX gets no worse — ask #1361.
+- The clients share the contract, the client and the screen models, and keep their own views — ask #1362.
+- A generator writes the Swift types from Go — ask #1362.
+- The Mac reaches the core over the daemon's socket. The daemon always runs, and on request only sync stops — ask #1362. This replaces the CLI read from ask #1356.
+- The Inbox moves, and so does every screen that writes the same rows; those screens move their writes only — ask #1362.
+- The phone Inbox draws ChatUI's approval card at once, and the card gains Retry and Dismiss (§12) — ask #1469, on the one card for every surface from ask #1409.
+- From the phone, Approve, Retry and Dismiss on an approval need the `permissions` grant; without it the card says to act on the Mac (§12.3) — ask #1459.
+- Dismiss only where Go accepts it, on a session call whose outcome is unknown, as on the Mac; a press on its way shows the chat card's disabled buttons and a line (§12.8) — ask #1549.
+- The phone chat's approval card gains Retry and Dismiss in this same task (§12.9) — ask #1553.
+- The chat's Retry and Dismiss do not queue while the hub is away, and the contract extension (`retry`/`dismiss` in `chat_action_answer`, the `chat_actions` capability, `dismissed_at` in the chat feed) is approved as specified (§12.9, §12.10) — ask #1570.
+
+**Decided by the agent:**
+- The tray gets Pause Sync / Resume Sync; every existing restart stays (config changes, resets, a new binary, quit, a crash), with the "Reconnecting…" line delayed by 1 s. A live config reload is not part of this work. This applies ask #1362.
+- The app starts the daemon at launch; until onboarding finishes it runs with the start argument `--no-sync`, which is separate from the owner's pause (`sync.paused`) and never changes it.
+- The daemon owns its own change watch (own writes at commit, foreign writes by a 250 ms `data_version` poll), independent of the hub. The poll runs only while a client has a watch open, that is while an Inbox window is on screen (the Mac closes the watch when the window is hidden or the app goes to the tray). One `PRAGMA data_version` read is a page-cache lookup with no I/O, so four a second is negligible; a daemon test checks the poll stops when the last watch closes.
+- Edit… on the Mac sends a `patch` with the approval.
+- A warm `ai session` claims leases as `desktop` with the app launch id; the daemon never releases a `desktop` lease.
+- On a version mismatch, the Desktop restarts a daemon it started from its own CLI.
+- One ledger, `tower_requests`, gives exactly-once delivery for both transports.
+- Over the socket, approve and retry wait for the tool (capped at 120 s); over the hub they return after the decision. The `reply` press always returns once its run is queued. No write transaction is held across the tool.
+- Run Now reuses the `automation_run` function and is non-idempotent.
+- Make a Task on a track is a `ref` verb over the existing propose path; from the phone it needs `permissions` (ask #1459).
+- On the phone, Thread briefs become a list document and Messages a notice card. Stopped tracks stay inside the tracks card.
+- `workbench_only` maps to `policy_off`. A missing key means an older hub, and the copy names the hub.
+- The Mac's warm `ai session` saves its own turn (`--persist`), and the hub runner does not run Mac turns. This applies ask #1361.
+- Speed is a gate: the socket feed takes at most 100 ms median, a write at most 15 ms, and the chat start is no slower.
+- Reply needs `typing`; approval dismiss, Make a Task and button presses need `permissions` (ask #1459); the other Inbox actions need no grant, as for board writes.
+- Legacy entries are typed sections for the Mac and block projections for the phone.
+- CatchUp, digests, chat-made ideas and `targets.status` writes move with the rest, because they write the same rows — ask #1362 ("everyone who writes the same rows").
+- The phone gets at most 300 cards, with Needs approval and Waiting for me first.
+- §12: Retry and Dismiss follow the card's own rule (`settledOffer`). Dismiss is offered only where Go's `approval dismiss` accepts it, a session call with an unknown outcome — ask #1549 (Q1 = A).
+- §12.9: The phone chat's card gains Retry and Dismiss in this task — ask #1553 (Q3 = B). The Mac does not change; every model addition defaults to today's behaviour.
+- §12: The Inbox feed's `Approval` carries `args_display`, `args_complete` and `external`, so the phone Inbox draws the same per-tool body as the phone chat. An older hub falls back to the summary — ask #1549.
+- §12: Reject from the phone needs no grant (`ActGrant`), so without `permissions` Approve becomes a note and Reject stays live. The phone chat keeps its own no-grant look (no buttons).
+- §12: Busy, Waiting to send and Didn't confirm are lines under disabled buttons, the chat's look — ask #1549 (Q2 = A). This reverses the #1170 T15 phone fix (only the pressed button stays, `testApprovingShowsOnlyTheBusyButton`).
+- §12: On the phone the external retry note uses the secondary tone, not orange, because orange means only "waiting for you" there. The Mac keeps orange.
+- §12.9: `chat_action_answer` gains the decisions `retry` and `dismiss` instead of a new kind (one grant check, main-chat check and ledger) — approved, ask #1570. The registry calls stay in `internal/inboxfeed`; the hub handler calls the exported `inboxfeed.RetryAction`/`DismissAction`, and the guard `TestApprovalWriters_CalledOnlyThroughTheRegistry` is unchanged (controller ruling).
+- §12.9: A repeated chat Dismiss answers `already` with no write, as `inbox.act` does (controller ruling).
+- §12.9: Chat Retry and Dismiss stay in `NonIdempotentKinds`. `outcome_unknown` shows "Didn't confirm — check on the Mac." and is never re-sent.
+- §12.9: The capability `chat_actions: "retry_dismiss"` gates them (approved, ask #1570). An older hub shows "Retry on the Mac" or "Dismiss on the Mac".
+- §12.9: The chat feed gains `dismissed_at` (approved, ask #1570).
+- §12.10: The chat's Retry and Dismiss do not queue while the hub is away; their buttons are off — ask #1570 (Q4 = A).
+- §12.5: The phone's approval header puts the status under the title when both do not fit on one line, instead of cutting the title. This visibly changes every phone surface that draws the card, the phone chat included; the Mac does not change (decided by the agent).
+
+## Left to the builder
+
+- The file split inside `internal/tower`, `internal/inboxfeed` and under `sources`.
+- The task order within each stage.
+- The phone's file layout inside `Features/Inbox/`.
+- Fixture locations, next to their Go owners.
+- The exact list of write commands for §5.2, taken from the grep of call sites. The guard test proves the list is complete.
+- The generator's reflection details, as long as the rules in §2.2 hold.

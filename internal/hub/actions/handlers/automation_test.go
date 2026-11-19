@@ -222,6 +222,7 @@ func TestNudgeTableCoversEveryRegisteredKind(t *testing.T) {
 	registered := append([]string{"ask_answer", "automation_run"}, boardKinds...)
 	registered = append(registered, "permission_answer", "session_interrupt", "session_report_request", "session_chat_request")
 	registered = append(append(registered, inputKinds...), startStopKinds...)
+	registered = append(registered, inboxActKind)
 	for k := range e.h.chatKinds() {
 		registered = append(registered, k)
 	}

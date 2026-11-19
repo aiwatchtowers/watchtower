@@ -3,9 +3,11 @@ import SwiftUI
 import WatchtowerCore
 
 /// The Workchat's field and round button (#711, spec §4): Return sends,
-/// Shift-Return adds a line; while the agent works the button is Stop, and
-/// Esc in the empty field stops too. A Stop that did not go says why above
-/// the field (`WorkchatModel.stopError`); while an agent without mid-turn
+/// Shift-Return adds a line; the button is Send whenever the field holds
+/// something, even while the agent works (#2065 §5), and Stop only with an
+/// empty field while it works; Esc stops exactly when the button is Stop. A
+/// pasted image or long text goes into the field as a token (#2065 §6). A Stop
+/// that did not go says why above the field (`WorkchatModel.stopError`); while an agent without mid-turn
 /// input works, one line says a message waits for the turn's end (U2).
 struct WorkchatComposer: View {
     @Bindable var model: WorkchatModel
@@ -15,6 +17,8 @@ struct WorkchatComposer: View {
     var autoFocus = false
     /// Each new value puts the keyboard in the field, caret at the end.
     var focusRequest: UUID?
+    /// ⌥↓ opens or closes the live steps list (#2065 spec §3): true = handled; false or nil = the stock key.
+    var onToggleSteps: (() -> Bool)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -39,7 +43,10 @@ struct WorkchatComposer: View {
                     placeholder: Self.placeholder,
                     hasPendingContent: !model.attachments.isEmpty,
                     autoFocus: autoFocus,
-                    focusRequest: focusRequest
+                    focusRequest: focusRequest,
+                    sendWhileStreaming: true,
+                    inlinePastes: true,
+                    livePastes: model.pastes.mapValues(\.kind)
                 ),
                 onSend: send,
                 onStop: stop,
@@ -50,7 +57,10 @@ struct WorkchatComposer: View {
                 attachmentError: model.attachmentError,
                 onAttachFiles: { model.attach(files: $0) },
                 onPasteData: { await model.attach(data: $0, name: $1) },
-                onRemoveAttachment: { model.removeAttachment($0) }
+                onRemoveAttachment: { model.removeAttachment($0) },
+                onInlinePaste: { await model.paste($0) },
+                onInlinePasteDropped: { model.pasteNotInserted($0) },
+                onOptionArrowDown: onToggleSteps
             )
             .macComposerStyle()
         }
@@ -70,12 +80,16 @@ struct WorkchatComposer: View {
     }
 
     private func escape() {
-        Self.escape(working: working, draft: model.draft, stop: stop)
+        Self.escape(working: working, draft: model.draft, hasAttachments: !model.attachments.isEmpty, stop: stop)
     }
 
-    /// Esc in the empty field while the agent works is Stop; with text in the field, or while idle, nothing.
-    static func escape(working: Bool, draft: String, stop: () -> Void) {
-        if working && draft.isEmpty { stop() }
+    /// Esc is Stop exactly when the round button is (`ComposerButtonMode`): while the agent works and the field
+    /// holds nothing to send — no text after trimming (a paste token is text), no files. Otherwise nothing.
+    static func escape(working: Bool, draft: String, hasAttachments: Bool = false, stop: () -> Void) {
+        let canSend = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasAttachments
+        let mode = ComposerButtonMode.resolve(isStreaming: working, sendWhileStreaming: true, canSend: canSend,
+                                              canStop: true)
+        if case .stopButton = mode { stop() }
     }
 
     private func stop() {
@@ -112,13 +126,6 @@ struct WorkchatOutgoingBubble: View {
         }
     }
 
-    /// A line to an agent that takes lines while it works is held only for a
-    /// prompt, the owner's typing or the settle after the previous line; any
-    /// other waits for the agent to stop.
-    static func queuedCaption(holdsUntilIdle: Bool) -> String {
-        holdsUntilIdle ? "Queued · sends when the agent stops ·" : "Queued · sends in a moment ·"
-    }
-
     private var isPending: Bool {
         line.state == .queued || line.state == .sending
     }
@@ -133,34 +140,27 @@ struct WorkchatOutgoingBubble: View {
         }
     }
 
+    /// `WorkchatOutgoing.caption`, with the state's link after it; the send
+    /// time where it has none.
     @ViewBuilder
     private var caption: some View {
-        switch line.state {
-        case .sending:
-            Text("Sending…")
-        case .queued:
+        let text = WorkchatOutgoing.caption(
+            state: line.state, working: working, holdsUntilIdle: holdsUntilIdle, sentWhileBusy: line.sentWhileBusy
+        )
+        if let text {
             HStack(spacing: Spacing.small) {
-                Text(Self.queuedCaption(holdsUntilIdle: holdsUntilIdle))
-                Button("Cancel", action: onCancel).buttonStyle(.link)
+                Text(text)
+                switch line.state {
+                case .queued:
+                    Button("Cancel", action: onCancel).buttonStyle(.link)
+                case .typed, .copied:
+                    Button("Show in Terminal", action: onShowTerminal).buttonStyle(.link)
+                case .sending, .sent, .notSent:
+                    EmptyView()
+                }
             }
-        case .typed:
-            HStack(spacing: Spacing.small) {
-                Text("Typed into the terminal, not sent: press Return there ·")
-                Button("Show in Terminal", action: onShowTerminal).buttonStyle(.link)
-            }
-        case .copied:
-            HStack(spacing: Spacing.small) {
-                Text("Copied to the clipboard: the terminal does not accept pasted text ·")
-                Button("Show in Terminal", action: onShowTerminal).buttonStyle(.link)
-            }
-        case .notSent:
-            Text("Not sent: the session ended")
-        case .sent:
-            if line.sentWhileBusy && working {
-                Text("Queued · the agent reads it at its next step")
-            } else {
-                Text(line.sentAt, format: .dateTime.hour().minute())
-            }
+        } else {
+            Text(line.sentAt, format: .dateTime.hour().minute())
         }
     }
 }

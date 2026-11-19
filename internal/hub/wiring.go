@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -18,8 +19,11 @@ import (
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/inboxfeed"
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstart"
+	"watchtower/internal/tower"
+	"watchtower/internal/tower/api"
 )
 
 // transcriptAssetDir is meeting_transcript's own staging dir inside the
@@ -241,6 +245,7 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 		Now:            o.Clock,
 		ChatEngine:     chatReader,
 		ChatRouting:    o.ChatRouting,
+		InboxFeed:      towerInboxFeed(o.Tower),
 	})
 	if err != nil {
 		w.close()
@@ -315,6 +320,8 @@ func handlerDeps(o Options, st *state.Store, set *sources.Set, watches handlers.
 	deps := handlers.Deps{
 		DB: o.DB, Store: st, Sessions: port, RecordingsDir: o.RecordingsDir, Clock: o.Clock, Policy: o.mobileSync,
 		ChatWatches: watches, Sealer: sealer, LateEcho: lateEcho, ServerHost: hubKindOf(o.Desktop) == wire.HubKindServer,
+		Answerer: o.Answerer,
+		Tower:    o.Tower,
 	}
 	// Typed nils stay nil interfaces.
 	if set.Sessions != nil {
@@ -331,29 +338,40 @@ func handlerDeps(o Options, st *state.Store, set *sources.Set, watches handlers.
 	return deps
 }
 
-// sessionPort is o.Sessions, else the real port over session-host
-// (Task 15) on o.SessionStart with the database's file as its scope, else —
-// no socket given — noSessionHost.
+// sessionPort is o.Sessions, else NewSessionPort on o.SessionStart (its
+// Clock defaulting to o.Clock).
 func (w *wiring) sessionPort(ctx context.Context, o Options) (handlers.SessionPort, error) {
 	if o.Sessions != nil {
 		return o.Sessions, nil
 	}
-	if o.SessionStart.Socket == "" {
+	sd := o.SessionStart
+	if sd.Clock == nil {
+		sd.Clock = o.Clock
+	}
+	port, err := NewSessionPort(ctx, o.DB, sd)
+	if p, ok := port.(*sessionstart.Port); ok {
+		w.port = p
+	}
+	return port, err
+}
+
+// NewSessionPort is the real port over session-host (Task 15) on sd with
+// d's file as its scope (a *sessionstart.Port, closed by its owner), else —
+// no socket given — a port with no session host: nothing is live, nothing
+// can be typed or started. The daemon builds one for the Answerer it shares
+// with Watchman while the hub is off.
+func NewSessionPort(ctx context.Context, d *db.DB, sd sessionstart.Deps) (handlers.SessionPort, error) {
+	if sd.Socket == "" {
 		log.Printf("hub: no session host (%s not set)", sessionhost.SocketEnv)
 		return noSessionHost{}, nil
 	}
-	d := o.SessionStart
-	d.DB = o.DB
-	path, err := mainFile(ctx, o.DB)
+	sd.DB = d
+	path, err := mainFile(ctx, d)
 	if err != nil {
 		return nil, fmt.Errorf("hub: the session host scope: %w", err)
 	}
-	d.DBPath = path
-	if d.Clock == nil {
-		d.Clock = o.Clock
-	}
-	w.port = sessionstart.NewPort(d, nil)
-	return w.port, nil
+	sd.DBPath = path
+	return sessionstart.NewPort(sd, nil), nil
 }
 
 // openWatch opens the data_version watch on a read-only handle of its own:
@@ -564,6 +582,9 @@ func (w *wiring) close() {
 		w.chat.OnTurnEnd(func(int64, string, string) {})
 	}
 	w.stopBackground(chatBackgroundBudget)
+	if w.handlers != nil {
+		w.handlers.ReleaseAnswerer()
+	}
 	if w.port != nil {
 		_ = w.port.Close()
 	}
@@ -605,5 +626,34 @@ func pruneRecordingJobs(o Options, st *state.Store) {
 	}
 	if n > 0 {
 		log.Printf("hub: %d recording jobs older than 31 days removed", n)
+	}
+}
+
+// towerInboxFeed is the phone Inbox's feed: inbox.feed through the daemon's
+// tower, as the Mac reads it (the same registration, its feature switches
+// included); nil without a tower.
+func towerInboxFeed(t *tower.Tower) sources.InboxFeed {
+	if t == nil {
+		return nil
+	}
+	return func(ctx context.Context, o inboxfeed.Options) (api.Feed, error) {
+		params, err := json.Marshal(api.FeedRequest{Limit: o.Limit, Clip: o.Clip, OmitMacOnly: o.OmitMacOnly})
+		if err != nil {
+			return api.Feed{}, err
+		}
+		resp := t.Call(ctx, api.Request{V: api.EnvelopeVersion, ID: "hub-inbox-feed", Command: "inbox.feed", Params: params},
+			tower.Origin{Transport: "hub"})
+		if resp.Status != api.StatusOK {
+			code := api.RefusalCode("")
+			if resp.Refusal != nil {
+				code = resp.Refusal.Code
+			}
+			return api.Feed{}, fmt.Errorf("hub: inbox.feed answered %s %s", resp.Status, code)
+		}
+		var feed api.Feed
+		if err := json.Unmarshal(resp.Result, &feed); err != nil {
+			return api.Feed{}, fmt.Errorf("hub: inbox.feed: %w", err)
+		}
+		return feed, nil
 	}
 }

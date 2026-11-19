@@ -301,6 +301,9 @@ func approvalPart(a FeedAction) Part {
 	if a.TurnID != "" {
 		payload["turn_id"] = a.TurnID
 	}
+	if a.DismissedAt != "" {
+		payload["dismissed_at"] = a.DismissedAt
+	}
 	var tail string
 	switch a.Status {
 	case "pending":

@@ -153,7 +153,7 @@ struct TargetsListView: View {
     /// Builds the VM once and (re)starts its observation: onDisappear stops it.
     private func initViewModel() {
         if viewModel == nil, let db = appState.databaseManager {
-            viewModel = TargetsViewModel(dbManager: db)
+            viewModel = TargetsViewModel(dbManager: db, tower: appState.screenTower)
         }
         viewModel?.startObserving()
     }
@@ -473,16 +473,7 @@ struct TargetsListView: View {
 
             Divider()
         }
-        Menu("Status") {
-            ForEach(
-                ["todo", "in_progress", "blocked", "done", "dismissed"],
-                id: \.self
-            ) { status in
-                Button(status.replacingOccurrences(of: "_", with: " ").capitalized) {
-                    Task { await vm.updateStatus(target, to: status) }
-                }
-            }
-        }
+        TargetStatusMenu(target: target, vm: vm)
         Menu("Priority") {
             ForEach(["high", "medium", "low"], id: \.self) { priority in
                 Button(priority.capitalized) {
@@ -570,6 +561,31 @@ struct TargetsListView: View {
             Text(target.periodStart)
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
+        }
+    }
+}
+
+/// A row's Status menu: the owner's status through `targets.set_status`
+/// (`TargetsViewModel.updateStatus`); a refusal stays on the row's state and
+/// in the list's error line.
+struct TargetStatusMenu: View {
+    let target: Target
+    let vm: TargetsViewModel
+
+    /// The statuses the menu offers, in order.
+    static let statuses = ["todo", "in_progress", "blocked", "done", "dismissed"]
+
+    static func title(_ status: String) -> String {
+        status.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    var body: some View {
+        Menu("Status") {
+            ForEach(Self.statuses, id: \.self) { status in
+                Button(Self.title(status)) {
+                    Task { await vm.updateStatus(target, to: status) }
+                }
+            }
         }
     }
 }

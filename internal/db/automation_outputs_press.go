@@ -1,7 +1,6 @@
 package db
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -185,15 +184,23 @@ func replyActionAt(p pressTarget, outputID int64, index int) (InboxAction, error
 // ErrOutputAutomationNotRunnable. The run's ReplyPayload is built from the
 // stored row and carries the row's content_hash.
 func (db *DB) PressInboxOutputAction(outputID int64, actionIndex int, contentHash string, now time.Time) (runID int64, err error) {
+	err = db.WithTx(func(tx *sql.Tx) (err error) {
+		runID, err = PressInboxOutputActionTx(tx, outputID, actionIndex, contentHash, now)
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	return runID, nil
+}
+
+// PressInboxOutputActionTx is PressInboxOutputAction in the caller's
+// transaction (inbox.act's reply press): the same checks and refusals, and
+// one queued run.
+func PressInboxOutputActionTx(tx *sql.Tx, outputID int64, actionIndex int, contentHash string, now time.Time) (runID int64, err error) {
 	if err := requireRunTime(now, fmt.Sprintf("pressing inbox card %d", outputID)); err != nil {
 		return 0, err
 	}
-	tx, err := db.Begin()
-	if err != nil {
-		return 0, fmt.Errorf("pressing inbox card %d: %w", outputID, err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
 	p, err := readPressTargetTx(tx, outputID)
 	if err != nil {
 		return 0, err
@@ -239,12 +246,8 @@ func (db *DB) PressInboxOutputAction(outputID int64, actionIndex int, contentHas
 	}
 	if n, err := res.RowsAffected(); err != nil || n != 1 {
 		// Unreachable inside one BEGIN IMMEDIATE transaction, kept as a guard:
-		// roll back and name what changed.
-		_ = tx.Rollback()
-		return 0, db.pressRaceError(outputID, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("pressing inbox card %d: %w", outputID, err)
+		// name what changed; the caller rolls back.
+		return 0, pressRaceErrorTx(tx, outputID, err)
 	}
 	return runID, nil
 }
@@ -257,17 +260,12 @@ func pressRefusal(p pressTarget, outputID int64) error {
 	return nil
 }
 
-// pressRaceError re-reads a card whose press update matched no row and
+// pressRaceErrorTx re-reads a card whose press update matched no row and
 // returns the precise refusal.
-func (db *DB) pressRaceError(outputID int64, cause error) error {
+func pressRaceErrorTx(tx *sql.Tx, outputID int64, cause error) error {
 	if cause != nil {
 		return fmt.Errorf("recording the press of inbox card %d: %w", outputID, cause)
 	}
-	tx, err := db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return fmt.Errorf("re-reading inbox card %d: %w", outputID, err)
-	}
-	defer func() { _ = tx.Rollback() }()
 	p, err := readPressTargetTx(tx, outputID)
 	if err != nil {
 		return err

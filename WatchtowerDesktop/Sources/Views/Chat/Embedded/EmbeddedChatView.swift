@@ -228,7 +228,7 @@ struct EmbeddedChatFeed<Accessory: View> {
     @ViewBuilder
     private func footer(lastAssistantID: Int64?) -> some View {
         let engine = engine
-        if showsEmptyState, engine.messages.isEmpty && !engine.isQueued {
+        if showsEmptyState, engine.messages.isEmpty && !engine.isQueued && engine.pendingOwnerText == nil {
             EmbeddedChatEmptyState(hint: engine.spec.emptyHint, prompts: engine.spec.starterPrompts) { prompt in
                 if prompt.sendsImmediately {
                     engine.send(prompt.text)
@@ -241,6 +241,12 @@ struct EmbeddedChatFeed<Accessory: View> {
             EmbeddedLiveRow(turn: streaming.live, item: streaming.item, partActions: partActions(lastAssistantID: nil),
                             rowActions: rowActions)
             extras(for: streaming.item, lastAssistantID: lastAssistantID)
+        }
+        // The owner's message at once, while its run writes it.
+        if let pending = engine.pendingOwnerText {
+            let message = ChatFeed.Message(id: -2, role: "user", text: pending, createdAt: .now)
+            ChatMessageRow(message: message, parts: ChatMessageParts.parts(for: message),
+                           context: ChatPartContext(message: message), rowActions: rowActions, isTurnRunning: true)
         }
         if let queued = engine.queuedText {
             let message = ChatFeed.Message(id: -1, role: "user", text: queued, createdAt: .now)
@@ -304,7 +310,7 @@ struct EmbeddedChatComposer: View {
                 ),
                 onSend: { engine.sendDraft() },
                 // Nothing stops a turn whose rows or end are being written.
-                onStop: engine.isFinishing || engine.isStarting ? nil : { engine.stop() },
+                onStop: engine.isFinishing ? nil : { engine.stop() },
                 onEscape: escape
             )
         )

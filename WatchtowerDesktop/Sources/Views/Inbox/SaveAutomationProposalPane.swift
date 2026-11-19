@@ -1,14 +1,17 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerInterface
 
 /// A pending `save_automation` proposal in the Inbox reading pane: what the
-/// recipe is, where it goes, when it runs and what it may do. The recipe is
+/// recipe is, where it goes, when it runs and what it may do, in the tower
+/// feed's words (`Card.approval`, `SaveAutomationProposalSummary`). The recipe is
 /// read and saved in the editor panel (**Open Draft**), where only the
 /// owner's press saves; **Reject** decides the proposal through the
 /// registry (`ActionStripViewModel.reject`, STRIP-03).
 struct SaveAutomationProposalPane: View {
     let action: AgentAction
-    let workbenchName: (Int64) -> String?
+    /// The proposal's approval card in the tower's feed; nil before it answers.
+    let approval: Approval?
     /// The proposal's "⚙ automation · run #n" label, when it has one.
     var contextLabel: String?
     /// A Reject of this proposal is under way.
@@ -20,7 +23,7 @@ struct SaveAutomationProposalPane: View {
 
     var body: some View {
         let model = SaveAutomationCardModel(action: action)
-        let summary = SaveAutomationProposalSummary(model: model, workbenchName: workbenchName)
+        let summary = SaveAutomationProposalSummary(approval: approval)
         VStack(alignment: .leading, spacing: Spacing.medium) {
             Text(contextLabel ?? "Assistant proposal")
                 .font(.caption)
@@ -30,9 +33,9 @@ struct SaveAutomationProposalPane: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             Grid(alignment: .leading, horizontalSpacing: Spacing.medium, verticalSpacing: Spacing.compact) {
-                line("For", summary.scope)
-                line("When", summary.when)
-                line("It may", summary.mayLine)
+                ForEach(Array(summary.lines.enumerated()), id: \.offset) { _, entry in
+                    line(entry.label, entry.value)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(Spacing.medium)

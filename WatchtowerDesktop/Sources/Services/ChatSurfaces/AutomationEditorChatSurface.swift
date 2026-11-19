@@ -35,9 +35,9 @@ enum AutomationEditorChatSurface {
     }
 
     /// The automation's conversation, created on first use.
-    static func conversationID(for automation: Automation, dbPool: DatabasePool) async throws -> Int64 {
+    static func conversationID(for automation: Automation, dbPool: DatabasePool, writes: ChatWrites) async throws -> Int64 {
         try await DatabaseEmbeddedChatStore.conversationID(
-            dbPool: dbPool, contextType: contextType, contextID: String(automation.id),
+            dbPool: dbPool, writes: writes, contextType: contextType, contextID: String(automation.id),
             title: "Automation: \(String(automation.name.prefix(60)))")
     }
 
@@ -55,9 +55,9 @@ enum AutomationEditorChatSurface {
 
     /// The new draft's conversation for an explicit context id (the panel's
     /// `AppState.draftContextID`), created on first use.
-    static func newConversationID(contextID: String, dbPool: DatabasePool) async throws -> Int64 {
+    static func newConversationID(contextID: String, dbPool: DatabasePool, writes: ChatWrites) async throws -> Int64 {
         try await DatabaseEmbeddedChatStore.conversationID(
-            dbPool: dbPool, contextType: draftContextType, contextID: contextID, title: "New automation")
+            dbPool: dbPool, writes: writes, contextType: draftContextType, contextID: contextID, title: "New automation")
     }
 
     /// The chat about `automation`. Its per-turn prompt re-reads the recipe

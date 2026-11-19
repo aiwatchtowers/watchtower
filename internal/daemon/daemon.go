@@ -130,6 +130,9 @@ type Daemon struct {
 	wakeCh              <-chan time.Duration // WatchWake: how long the machine slept
 	triggerCh           <-chan struct{}
 	automationWakeCh    <-chan struct{}  // AutomationWakeSignal watcher (WatchAutomationWake)
+	watchmanWakeCh      chan struct{}    // the twin's wake, ticked by every AutomationWakeSignal (forwardWakes)
+	watchmanTwin        WatchmanTwin     // nil = the twin worker is not wired (SetWatchmanTwin)
+	watchmanTwinCycle   chan struct{}    // each cycle's nudge to the twin worker (nudgeWatchmanTwin)
 	automationScheduler AutomationRunner // nil = automations not wired
 	automationExecutor  AutomationRunner
 	automationEvents    AutomationEvents // nil = no event automations
@@ -137,20 +140,22 @@ type Daemon struct {
 	planUsage           PlanUsageRunner  // nil = Claude plan limits not wired
 	planUsageDisable    func() error
 	specReviewLaunch    func(ctx context.Context, askID int64) error // nil = the spec review sweep is off
-	pidPath             string
-	db                  *db.DB
-	agentLog            *agentlogdb.DB // nil = agentlog.db did not open; the analytics phase skips
-	agentLogPath        string         // agentLog's file, for the move lock beside it
-	digestPipe          *digest.Pipeline
-	tracksPipe          *tracks.Pipeline
-	peoplePipe          *guide.Pipeline
-	briefingPipe        *briefing.Pipeline
-	inboxPipe           *inbox.Pipeline
-	ideasPipe           *ideas.Pipeline
-	memoryPipe          *memory.Pipeline
-	memoryOpen          func() (*memory.Pipeline, error)
-	memoryOpenFailed    memoryOpenFailure // the last one recorded (recordMemoryOpenFailure)
-	memoryNow           func() time.Time  // its clock, nil = time.Now; a seam for tests
+	// watchmanBacktestLaunch starts a detached backtest child; nil = the weekly backtest is off.
+	watchmanBacktestLaunch func(ctx context.Context, workbenchID int64) error
+	pidPath                string
+	db                     *db.DB
+	agentLog               *agentlogdb.DB // nil = agentlog.db did not open; the analytics phase skips
+	agentLogPath           string         // agentLog's file, for the move lock beside it
+	digestPipe             *digest.Pipeline
+	tracksPipe             *tracks.Pipeline
+	peoplePipe             *guide.Pipeline
+	briefingPipe           *briefing.Pipeline
+	inboxPipe              *inbox.Pipeline
+	ideasPipe              *ideas.Pipeline
+	memoryPipe             *memory.Pipeline
+	memoryOpen             func() (*memory.Pipeline, error)
+	memoryOpenFailed       memoryOpenFailure // the last one recorded (recordMemoryOpenFailure)
+	memoryNow              func() time.Time  // its clock, nil = time.Now; a seam for tests
 	// backfillResume is where a held Gmail/Jira history-backfill chunk's
 	// stage-1 drain got to, so its retry starts there (backfillStreams).
 	// In memory only: a restart re-drains the chunk once. Touched only by
@@ -291,6 +296,13 @@ type Daemon struct {
 	// runLoop starts no scheduled cycle while it says no. nil = always a
 	// full wake.
 	fullWake func() (caps uint32, full bool)
+
+	// watchmanUpkeep is phaseWatchmanUpkeep's state (watchman_upkeep.go).
+	watchmanUpkeep watchmanUpkeepState
+
+	// syncPaused reports whether sync is paused (SetSyncPaused): the owner's
+	// pause or --no-sync. nil = never.
+	syncPaused func() bool
 }
 
 // New creates a Daemon. Slack orchestrators are attached separately via
@@ -548,10 +560,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return fmt.Errorf("writing pid file: %w", err)
 		}
 		defer RemovePID(d.pidPath)
-		// The wake watcher is installed above: advertise it — only when the
-		// scheduler and executor will run, so the CLI never signals a daemon
-		// that would drop the wake (or, built before automations, has no
-		// handler for it).
+		// The wake watcher is installed above: advertise it — the automations
+		// wake only when the scheduler and executor will run, so the CLI never
+		// signals a daemon that would drop the wake (or, built before
+		// automations, has no handler for it); the Watchman wake always.
 		defer d.advertiseCaps()()
 	}
 
@@ -605,6 +617,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// before Run returns (and before the PID file is removed).
 	stopAutomations := d.startAutomations(ctx)
 	defer stopAutomations()
+	// Stopped before the runners (defers run last-in first-out): it calls
+	// their Wake.
+	stopWakes := d.startWakeForwarder(ctx)
+	defer stopWakes()
+	// The twin worker, woken by the forwarder: stopped (and its deciding
+	// items waited for) before the forwarder.
+	stopTwin := d.startWatchmanTwin(ctx)
+	defer stopTwin()
 	stopPlanUsage := d.startPlanUsage(ctx)
 	defer stopPlanUsage()
 
@@ -617,7 +637,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// The purge hold first (#601): a purged or half-purged account's
 	// calendar must not be refilled before the first cycle's purge phase.
 	d.refreshPurgeHold()
-	d.startupCalendarSync(ctx)
+	if d.isSyncPaused() {
+		d.logger.Println("sync paused: no startup calendar sync")
+	} else {
+		d.startupCalendarSync(ctx)
+	}
 
 	return d.runLoop(ctx, pollInterval)
 }
@@ -654,6 +678,12 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// First of all: this cycle's AI usage counts the calls other processes
 	// spooled since the last one.
 	d.phaseLLMLedger(ctx)
+	// Every cycle, before the fetches: the keep-awake hold while anything
+	// is handed to Watchman, the arm sidecar, the slept-through gaps.
+	d.phaseWatchmanUpkeep(ctx)
+	// The twin's pass (scan, then lease) runs on its own goroutine: the
+	// cycle only nudges it.
+	d.nudgeWatchmanTwin()
 	d.setSection(sectionSlackFetch)
 	d.markFetchProgress()
 	d.sampleLockStats(fetchCtx)
@@ -728,6 +758,8 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// Before the index, so this cycle's descriptions are searchable now.
 	d.aiPhase(ctx, "media", d.phaseMediaDescribe)
 	d.phaseKnowledgeIndex(ctx)
+	// Watchman's learning, profiles and weekly backtest (background AI).
+	d.phaseWatchmanAI(ctx)
 	// After the knowledge index: the fill is mechanical (no AI) and needs no
 	// fresh sync — Slack sync's own writes already reach the new index
 	// through the triggers — so it runs once the cycle's sync is done.

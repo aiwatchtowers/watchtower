@@ -4,6 +4,7 @@ import SwiftUI
 import ViewInspector
 import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerInterface
 import WatchtowerTestSupport
 
 /// Saved in place: a chat message behind a knowledge prefix becomes an active
@@ -22,6 +23,12 @@ final class ChatKnowledgeCenterTests: XCTestCase {
         TestDatabase.cleanup(path: path)
     }
 
+    /// A center whose writes go to a fake tower applying Go's writes to the pool.
+    private func knowledge() -> ChatKnowledgeCenter {
+        let tower = FakeChatTower(db: pool)
+        return ChatKnowledgeCenter(dbPool: pool) { tower }
+    }
+
     private func send(_ center: ChatKnowledgeCenter, _ text: String, message: Int64 = 11) async {
         center.ownerMessageSent(text: text, conversationID: 3, messageID: message)
         await center.waitForIdle()
@@ -32,7 +39,7 @@ final class ChatKnowledgeCenterTests: XCTestCase {
     }
 
     func testPrefixedDecisionIsSavedWithAChatMention() async throws {
-        let center = ChatKnowledgeCenter(dbPool: pool)
+        let center = knowledge()
         await send(center, "Решили: ship on Thursdays\nfrom next week")
         let idea = try XCTUnwrap(try ideas().first)
         XCTAssertEqual(center.mark(for: 11), .saved(kind: "decision", ideaID: Int64(idea.id)))
@@ -46,7 +53,7 @@ final class ChatKnowledgeCenterTests: XCTestCase {
     }
 
     func testFactIsSavedAsANote() async throws {
-        let center = ChatKnowledgeCenter(dbPool: pool)
+        let center = knowledge()
         await send(center, "fact: the staging db is reset nightly")
         let idea = try XCTUnwrap(try ideas().first)
         XCTAssertEqual(idea.kind, .note)
@@ -54,14 +61,14 @@ final class ChatKnowledgeCenterTests: XCTestCase {
     }
 
     func testEmptyBodyWritesNothing() async throws {
-        let center = ChatKnowledgeCenter(dbPool: pool)
+        let center = knowledge()
         await send(center, "decided:   ")
         XCTAssertEqual(center.mark(for: 11), .empty)
         XCTAssertEqual(try ideas(), [])
     }
 
     func testOrdinaryAndRememberMessagesAreIgnored() async throws {
-        let center = ChatKnowledgeCenter(dbPool: pool)
+        let center = knowledge()
         await send(center, "remember: answer short", message: 11)
         await send(center, "we decided: ship it", message: 12)
         XCTAssertNil(center.mark(for: 11))
@@ -72,7 +79,7 @@ final class ChatKnowledgeCenterTests: XCTestCase {
     }
 
     func testUndoDeletesTheUntouchedItem() async throws {
-        let center = ChatKnowledgeCenter(dbPool: pool)
+        let center = knowledge()
         await send(center, "decided: ship on Thursdays")
         await center.undo(messageID: 11)
         XCTAssertEqual(center.mark(for: 11), .undone)
@@ -84,7 +91,7 @@ final class ChatKnowledgeCenterTests: XCTestCase {
     /// A double press of Undo runs one delete: the second press must not find
     /// the row gone, read it as "changed" and open a deleted id.
     func testDoubleUndoRunsOnce() async throws {
-        let center = ChatKnowledgeCenter(dbPool: pool)
+        let center = knowledge()
         await send(center, "decided: ship on Thursdays")
         async let first: Void = center.undo(messageID: 11)
         async let second: Void = center.undo(messageID: 11)
@@ -94,7 +101,7 @@ final class ChatKnowledgeCenterTests: XCTestCase {
     }
 
     func testUndoAfterAnEditKeepsTheItem() async throws {
-        let center = ChatKnowledgeCenter(dbPool: pool)
+        let center = knowledge()
         await send(center, "decided: ship on Thursdays")
         let id = try XCTUnwrap(try ideas().first).id
         try await pool.write { db in
@@ -107,10 +114,10 @@ final class ChatKnowledgeCenterTests: XCTestCase {
     }
 
     func testMarksAreRebuiltOnReopenAndUndoStillWorks() async throws {
-        await send(ChatKnowledgeCenter(dbPool: pool), "факт: the release train leaves on Tuesdays")
+        await send(knowledge(), "факт: the release train leaves on Tuesdays")
         let id = try XCTUnwrap(try ideas().first).id
 
-        let reopened = ChatKnowledgeCenter(dbPool: pool)
+        let reopened = knowledge()
         await reopened.loadMark(conversationID: 3, messageID: 11)
         await reopened.loadMark(conversationID: 3, messageID: 12)
         XCTAssertEqual(reopened.mark(for: 11), .saved(kind: "note", ideaID: Int64(id)))
@@ -123,25 +130,10 @@ final class ChatKnowledgeCenterTests: XCTestCase {
 
     func testFailedWriteShowsItsReason() async throws {
         try await pool.write { try $0.execute(sql: "DROP TABLE idea_mentions") }
-        let center = ChatKnowledgeCenter(dbPool: pool)
+        let center = knowledge()
         await send(center, "decided: ship on Thursdays")
         guard case .failed? = center.mark(for: 11) else { return XCTFail("\(String(describing: center.mark(for: 11)))") }
         XCTAssertEqual(try ideas(), [], "the transaction rolled back")
-    }
-
-    /// The factory hands every stored owner message to both centers; each acts
-    /// on its own prefix (the main chat and every embedded engine go here).
-    func testFactoryFeedsTheKnowledgeCenter() async throws {
-        let factory = EmbeddedChatEngineFactory()
-        XCTAssertNil(factory.knowledgeCenter)
-        factory.dbPool = pool
-        let center = try XCTUnwrap(factory.knowledgeCenter)
-        factory.ownerMessageStored(text: "decided: ship on Thursdays", conversationID: 3, messageID: 11)
-        factory.ownerMessageStored(text: "remember: answer short", conversationID: 3, messageID: 12)
-        await center.waitForIdle()
-        guard case .saved? = center.mark(for: 11) else { return XCTFail("no mark") }
-        XCTAssertNil(center.mark(for: 12))
-        XCTAssertEqual(try ideas().count, 1)
     }
 
     private func engineSpec(contextType: String, conversationID: Int64) -> ChatSurfaceSpec {
@@ -156,6 +148,7 @@ final class ChatKnowledgeCenterTests: XCTestCase {
     /// another embedded chat (a target chat) still saves it.
     func testCodeQuestionEngineSavesNoKnowledge() async throws {
         let factory = EmbeddedChatEngineFactory()
+        factory.chatWrites = .fake(pool)
         factory.dbPool = pool
         let center = try XCTUnwrap(factory.knowledgeCenter)
 

@@ -45,7 +45,7 @@ final class TargetAssistantCenterTests: XCTestCase {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, text: "one")
-        let targets = TargetsViewModel(dbManager: manager)
+        let targets = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let center = makeCenter(limit: 4)
 
         let first = center.container(for: target, viewModel: targets, dbManager: manager)
@@ -58,7 +58,7 @@ final class TargetAssistantCenterTests: XCTestCase {
     func testEvictsTheLeastRecentlyUsedContainerBeyondTheLimit() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
-        let targets = TargetsViewModel(dbManager: manager)
+        let targets = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let center = makeCenter(limit: 2)
         let a = try makeTarget(manager, text: "a")
         let b = try makeTarget(manager, text: "b")
@@ -83,7 +83,7 @@ final class TargetAssistantCenterTests: XCTestCase {
     func testNeverEvictsAContainerWhileOneOfItsTabsIsStreaming() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
-        let targets = TargetsViewModel(dbManager: manager)
+        let targets = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let center = makeCenter(limit: 1)
         let busy = try makeTarget(manager, text: "busy")
         let other = try makeTarget(manager, text: "other")
@@ -113,7 +113,7 @@ final class TargetAssistantCenterTests: XCTestCase {
     func testDropRemovesTheContainer() throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
-        let targets = TargetsViewModel(dbManager: manager)
+        let targets = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let center = makeCenter(limit: 4)
         let target = try makeTarget(manager, text: "gone")
 

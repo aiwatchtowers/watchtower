@@ -12,12 +12,15 @@ import (
 type RecentWorkbenchSession struct {
 	ID, WorkbenchID                                  int64
 	Kind, FolderPath, AgentSessionID, TranscriptPath string
+	LastActiveAt                                     time.Time // zero when unparsable
+	ByAutomation                                     bool      // started by an automation run (automation_run_id set)
 }
 
 // ListWorkbenchTerminalSessionsSince lists the agent sessions (claude, codex)
 // bound to a workbench and active at or after since, oldest id first.
 func (db *DB) ListWorkbenchTerminalSessionsSince(since time.Time) ([]RecentWorkbenchSession, error) {
-	rows, err := db.Query(`SELECT id, project_id, kind, folder_path, claude_session_id, agent_transcript_path
+	rows, err := db.Query(`SELECT id, project_id, kind, folder_path, claude_session_id, agent_transcript_path, last_active_at,
+			automation_run_id IS NOT NULL
 		FROM terminal_sessions
 		WHERE project_id IS NOT NULL AND kind IN ('claude','codex') AND last_active_at >= ? AND `+NotDeletingSQL+`
 		ORDER BY id`, since.UTC().Format(time.RFC3339))
@@ -29,10 +32,12 @@ func (db *DB) ListWorkbenchTerminalSessionsSince(since time.Time) ([]RecentWorkb
 	for rows.Next() {
 		var s RecentWorkbenchSession
 		var sid, path sql.NullString
-		if err := rows.Scan(&s.ID, &s.WorkbenchID, &s.Kind, &s.FolderPath, &sid, &path); err != nil {
+		var active string
+		if err := rows.Scan(&s.ID, &s.WorkbenchID, &s.Kind, &s.FolderPath, &sid, &path, &active, &s.ByAutomation); err != nil {
 			return nil, fmt.Errorf("scanning recent workbench session: %w", err)
 		}
 		s.AgentSessionID, s.TranscriptPath = sid.String, path.String
+		s.LastActiveAt, _ = time.Parse(time.RFC3339, active) // zero on a malformed value, documented on the field
 		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {

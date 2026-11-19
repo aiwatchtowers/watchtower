@@ -56,6 +56,9 @@ final class SessionLineDelivery {
         /// by question id. It shares the session's order with `specReview`
         /// lines (`SpecReviewLineOrder`).
         case specReviewQuestion(Int64)
+        /// The owner's correction of a Watchman decision (the morning
+        /// journal's Correct…, spec 2026-11-16 §10), by item id.
+        case watchmanCorrection(Int64)
     }
 
     /// What became of a held line when the held lines were tried again.
@@ -372,12 +375,12 @@ extension SessionLineDelivery.LineKey {
         if case let .ask(id) = self { id } else { nil }
     }
 
-    /// The owner's own text — the phone's and the Workchat's — keeps its
-    /// format characters (emoji joiners); an answer's and a review's lines
-    /// are the app's own.
+    /// The owner's own text — the phone's, the Workchat's and a Watchman
+    /// correction — keeps its format characters (emoji joiners); an
+    /// answer's and a review's lines are the app's own.
     var keepsFormatCharacters: Bool {
         switch self {
-        case .input, .workchat: true
+        case .input, .workchat, .watchmanCorrection: true
         case .ask, .review, .specReview, .specReviewQuestion: false
         }
     }
@@ -404,13 +407,14 @@ extension SessionLineDelivery.LineKey {
         case .workchat: "Workchat"
         case .specReview: "SpecReviewLoop"
         case .specReviewQuestion: "SpecReviewThread"
+        case .watchmanCorrection: "WatchmanJournal"
         }
     }
 
     fileprivate var logNoun: String {
         switch self {
         case .ask: "answer"
-        case .input, .review, .workchat, .specReview, .specReviewQuestion: "line"
+        case .input, .review, .workchat, .specReview, .specReviewQuestion, .watchmanCorrection: "line"
         }
     }
 }

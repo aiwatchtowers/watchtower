@@ -205,8 +205,9 @@ func TestDaemon_AdvertisesAutomationWakeCapability(t *testing.T) {
 }
 
 // With the scheduler/executor never wired (the upgrade step failed closed),
-// the daemon starts neither and advertises no wake: the CLI then says it
-// could not wake it instead of signalling a daemon that would drop the wake.
+// the daemon starts neither and advertises no automations wake: the CLI then
+// says it could not wake it instead of signalling a daemon that would drop
+// the wake. The Watchman wake is still advertised.
 func TestDaemon_InactiveAutomationsAdvertiseNoWake(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var syncCount atomic.Int32
@@ -219,11 +220,53 @@ func TestDaemon_InactiveAutomationsAdvertiseNoWake(t *testing.T) {
 				return false
 			}
 			assert.FileExists(t, pidPath, "the daemon is running")
-			assert.NoFileExists(t, CapsPath(pidPath), "no wake advertised")
+			auto, err := HasCapability(pidPath, os.Getpid(), AutomationWakeCapability)
+			require.NoError(t, err)
+			assert.False(t, auto, "no automations wake advertised")
+			twin, err := HasCapability(pidPath, os.Getpid(), WatchmanWakeCapability)
+			require.NoError(t, err)
+			assert.True(t, twin, "the Watchman wake is")
 			return true
 		})
 		require.NoError(t, err)
 	})
+}
+
+// Every wake signal also ticks the twin's channel, with automations wired or
+// not; a burst collapses into the one tick already queued.
+func TestDaemon_WakeSignalTicksWatchman(t *testing.T) {
+	for _, wired := range []bool{true, false} {
+		synctest.Test(t, func(t *testing.T) {
+			var syncCount atomic.Int32
+			d, sched, _, wakeCh := newAutomationTestDaemon(t, &syncCount)
+			if !wired {
+				d.SetAutomations(nil, nil)
+			}
+			twin := make(chan struct{}, 1)
+			d.watchmanWakeCh = twin
+			var ticked atomic.Bool
+			relay := make(chan struct{}, 1)
+			go func() {
+				<-twin
+				ticked.Store(true)
+				relay <- struct{}{}
+			}()
+			sent := false
+			err := runDaemonUntil(t, d, func() bool {
+				if !sent && syncCount.Load() >= 1 {
+					wakeCh <- struct{}{}
+					sent = true
+				}
+				return ticked.Load()
+			}, relay)
+			require.NoError(t, err)
+			if wired {
+				assert.Equal(t, int32(1), sched.wakes.Load(), "the automations still get the wake")
+			} else {
+				assert.Zero(t, sched.wakes.Load())
+			}
+		})
+	}
 }
 
 func TestHasCapability_StaleOrMissingFileAdvertisesNothing(t *testing.T) {
@@ -244,6 +287,11 @@ func TestHasCapability_StaleOrMissingFileAdvertisesNothing(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(CapsPath(pidPath), []byte("42\nautomations-wake\n"), 0o600))
 	ok, err = HasCapability(pidPath, 42, AutomationWakeCapability)
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	require.NoError(t, os.WriteFile(CapsPath(pidPath), []byte("42\nautomations-wake\nwatchman-wake\n"), 0o600))
+	ok, err = HasCapability(pidPath, 42, WatchmanWakeCapability)
 	require.NoError(t, err)
 	assert.True(t, ok)
 }

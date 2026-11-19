@@ -165,6 +165,25 @@ extension XCTestCase {
         await clock.untilParked()
     }
 
+    /// `poll`, bounded: at most `maxYields` yields (no wall clock), then the test fails instead of hanging.
+    @MainActor
+    func pollBounded(
+        _ condition: () -> Bool,
+        _ message: @autoclosure () -> String = "condition not met",
+        maxYields: Int = 100_000,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        for _ in 0..<maxYields {
+            if condition() { return }
+            await Task.yield()
+        }
+        if !condition() {
+            XCTFail(message(), file: file, line: line)
+            throw CancellationError()
+        }
+    }
+
     /// Yields the main actor until `condition` holds: the environment's
     /// bootstrap and the observations deliver asynchronously (main-queue
     /// jobs queued before each yield run first), so tests must yield to let

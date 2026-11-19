@@ -38,7 +38,7 @@ final class DigestStarredChannelOwnerTests: XCTestCase {
             _ = try TestDatabase.insertSlackAccount(db, teamID: "T1", currentUserID: "1:U001")
             try TestDatabase.insertProfile(db, slackUserID: ProfileQueries.pendingOwnerKey, role: "EM")
         }
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         // Another writer (People, Profile settings, onboarding, Go) re-keys
         // the parked row after load().
@@ -65,7 +65,7 @@ final class DigestStarredChannelOwnerTests: XCTestCase {
         try await dbManager.dbPool.write { db in
             _ = try TestDatabase.insertGoogleAccount(db, email: "me@x.com")
         }
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         await vm.toggleStarredChannel("1:C1")

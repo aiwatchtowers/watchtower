@@ -53,3 +53,9 @@ func TestTierForSource_Media(t *testing.T) {
 		t.Errorf("TierForSource(media.summarize_link) = %q, want light", got)
 	}
 }
+
+func TestTierForSource_Watchman(t *testing.T) {
+	assert.Equal(t, TierLight, TierForSource(prompts.WatchmanLabel))
+	assert.Equal(t, TierStrong, TierForSource(prompts.WatchmanJudge))
+	assert.Equal(t, TierStrong, TierForSource(prompts.WatchmanDecide))
+}

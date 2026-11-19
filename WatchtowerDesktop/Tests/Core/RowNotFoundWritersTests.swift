@@ -17,51 +17,11 @@ final class RowNotFoundWritersTests: XCTestCase {
         let make: (Database) throws -> Int64
     }
 
-    private static func track(_ db: Database) throws -> Int64 {
-        try db.execute(sql: """
-            INSERT INTO tracks (assignee_user_id, text, context, category, ownership, priority, origin, instruction)
-            VALUES ('U1', 'watch', '', 'task', 'watching', 'medium', 'custom', 'watch for x')
-            """)
-        return db.lastInsertedRowID
-    }
-
     private static func note(_ db: Database) throws -> Int64 {
         try XCTUnwrap(MeetingNoteQueries.create(db, eventID: "evt", type: .note, text: "n", sortOrder: 0).id)
     }
 
-    private static func trackEvent(_ db: Database) throws -> Int64 {
-        let trackID = try track(db)
-        try db.execute(sql: "INSERT INTO track_events (track_id, summary) VALUES (?, 'e')", arguments: [trackID])
-        return db.lastInsertedRowID
-    }
-
-    private static func reminder(_ db: Database) throws -> Int64 {
-        try db.execute(sql: "INSERT INTO reminders (remind_at) VALUES ('2026-10-01T09:00:00Z')")
-        return db.lastInsertedRowID
-    }
-
     private let writers: [Writer] = [
-        Writer(name: "track.updatePriority", kind: "track", table: "tracks", run: {
-            try TrackQueries.updatePriority($0, id: Int($1), priority: "high")
-        }, make: track),
-        Writer(name: "track.updateOwnership", kind: "track", table: "tracks", run: {
-            try TrackQueries.updateOwnership($0, id: Int($1), ownership: "mine")
-        }, make: track),
-        Writer(name: "track.updateSubItems", kind: "track", table: "tracks", run: {
-            try TrackQueries.updateSubItems($0, id: Int($1), subItems: [])
-        }, make: track),
-        Writer(name: "track.dismiss", kind: "track", table: "tracks", run: {
-            try TrackQueries.dismiss($0, id: Int($1))
-        }, make: track),
-        Writer(name: "track.restore", kind: "track", table: "tracks", run: {
-            try TrackQueries.restore($0, id: Int($1))
-        }, make: track),
-        Writer(name: "track.setEnabled", kind: "track", table: "tracks", run: {
-            try TrackQueries.setEnabled($0, id: Int($1), enabled: false)
-        }, make: track),
-        Writer(name: "track.updateInstruction", kind: "track", table: "tracks", run: {
-            try TrackQueries.updateInstruction($0, id: Int($1), instruction: "watch for y")
-        }, make: track),
         Writer(name: "meetingNote.update", kind: "meeting note", table: "meeting_notes", run: {
             try MeetingNoteQueries.update($0, id: $1, text: "edited")
         }, make: note),
@@ -71,28 +31,6 @@ final class RowNotFoundWritersTests: XCTestCase {
         Writer(name: "meetingNote.setTaskID", kind: "meeting note", table: "meeting_notes", run: {
             try MeetingNoteQueries.setTaskID($0, noteID: $1, taskID: 7)
         }, make: note),
-        Writer(name: "trackEvent.setActionStatus", kind: "track event", table: "track_events", run: {
-            try TrackEventQueries.setActionStatus($0, id: Int($1), status: "dismissed")
-        }, make: trackEvent),
-        Writer(name: "idea.setStatus", kind: "idea", table: "ideas", run: {
-            try IdeaQueries.setStatus($0, id: Int($1), status: "active")
-        }, make: { try TestDatabase.insertIdea($0) }),
-        Writer(name: "idea.snooze", kind: "idea", table: "ideas", run: {
-            try IdeaQueries.snooze($0, id: Int($1), until: nil)
-        }, make: { try TestDatabase.insertIdea($0) }),
-        Writer(name: "idea.supersede", kind: "idea", table: "ideas", run: {
-            try IdeaQueries.supersede($0, id: Int($1), by: nil)
-        }, make: { try TestDatabase.insertIdea($0) }),
-        Writer(name: "idea.setRating", kind: "idea", table: "ideas", run: {
-            try IdeaQueries.setRating($0, id: Int($1), rating: 1, comment: "")
-        }, make: { try TestDatabase.insertIdea($0) }),
-        Writer(name: "idea.markConverted", kind: "idea", table: "ideas", run: {
-            let target = try TargetQueries.create($0, text: "t", periodStart: "2026-10-01", periodEnd: "2026-10-01")
-            try IdeaQueries.markConverted($0, id: Int($1), targetID: Int64(target))
-        }, make: { try TestDatabase.insertIdea($0) }),
-        Writer(name: "reminder.snooze", kind: "reminder", table: "reminders", run: {
-            try ReminderQueries.snooze($0, id: $1, until: "2026-10-02T09:00:00Z")
-        }, make: reminder),
         Writer(name: "chat.rename", kind: "chat", table: "chat_conversations", run: {
             try ChatConversationQueries.rename($0, id: $1, title: "renamed")
         }, make: { try TestDatabase.insertChatConversation($0) }),
@@ -136,36 +74,6 @@ final class RowNotFoundWritersTests: XCTestCase {
             XCTAssertNoThrow(try queue.write { try writer.run($0, id) }, writer.name)
             XCTAssertNoThrow(try queue.write { try writer.run($0, id) }, "\(writer.name) (repeat)")
         }
-    }
-
-    func testTrackPriority_OnADeletedTrack_LeavesNoFeedbackRow() throws {
-        let queue = try TestDatabase.create()
-        let id = try queue.write { db -> Int64 in
-            let id = try Self.track(db)
-            try db.execute(sql: "DELETE FROM tracks WHERE id = ?", arguments: [id])
-            return id
-        }
-        XCTAssertThrowsError(try queue.write { try TrackQueries.updatePriority($0, id: Int(id), priority: "high") })
-        XCTAssertEqual(try queue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM feedback") }, 0)
-    }
-
-    func testIdeaMerge_IntoADeletedIdea_NamesIt_AndMovesNoMention() throws {
-        let queue = try TestDatabase.create()
-        let (source, gone) = try queue.write { db -> (Int64, Int64) in
-            let source = try TestDatabase.insertIdea(db)
-            try TestDatabase.insertIdeaMention(db, ideaID: source)
-            let gone = try TestDatabase.insertIdea(db)
-            try db.execute(sql: "DELETE FROM ideas WHERE id = ?", arguments: [gone])
-            return (source, gone)
-        }
-
-        XCTAssertThrowsError(try queue.write { try IdeaQueries.merge($0, id: Int(source), into: Int(gone)) }) {
-            XCTAssertEqual($0 as? RowNotFoundError, RowNotFoundError(kind: "idea", id: gone))
-        }
-        let mentions = try queue.read {
-            try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM idea_mentions WHERE idea_id = ?", arguments: [source])
-        }
-        XCTAssertEqual(mentions, 1, "the mention stays on its idea")
     }
 
     func testCalendarSelection_OnACalendarTheSyncDropped_ThrowsNotFound() throws {

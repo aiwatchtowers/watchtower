@@ -51,6 +51,9 @@ var NudgeTable = map[string][]slices.Kind{
 	"chat_branch_select": chatSlices,
 	"chat_manage":        chatSlices,
 	"chat_action_answer": chatSlices,
+	// The phone Inbox (mobile Inbox spec §6): a write moves its cards and
+	// its folders' counts.
+	"inbox_act": {slices.KindInboxCard, slices.KindInboxFolder},
 	// The composer's pickers answer in the echo: nothing to republish
 	// (EchoOnlyKinds).
 	"chat_entity_search": {},

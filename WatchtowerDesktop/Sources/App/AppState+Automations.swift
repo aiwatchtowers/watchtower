@@ -203,7 +203,7 @@ extension AppState {
             workbench = (id, project.name, project.folderURL.lastPathComponent)
         }
         let provider = Constants.aiProviderID()
-        let conversationID = try await AutomationEditorChatSurface.newConversationID(contextID: contextID, dbPool: pool)
+        let conversationID = try await AutomationEditorChatSurface.newConversationID(contextID: contextID, dbPool: pool, writes: chatWrites)
         let box = PanelDraftBox()
         return makeAutomationEditorChat(
             conversationID: conversationID, pool: pool, provider: provider, panelDraftBox: box,

@@ -86,6 +86,8 @@ package final class AutomationsViewModel {
     /// The embedded chats' engines: a saved draft's engine is let go of
     /// before its conversation moves to the automation (`draftSaved`).
     @ObservationIgnored package weak var embeddedChats: EmbeddedChatCenter?
+    /// The chat writes (the tower): the saved draft's chat moves with them.
+    @ObservationIgnored package var chatWrites: ChatWrites = .notReady
     /// Drops the editor's draft by key (`AutomationEditorCenter.discard`):
     /// a saved draft's buffer is never listed or saved again.
     @ObservationIgnored package var discardEditorDraft: @MainActor (Int64) -> Void = { _ in }
@@ -561,7 +563,7 @@ package final class AutomationsViewModel {
         await embeddedChats?.releaseWhenIdle(key)
         do {
             _ = try await DatabaseEmbeddedChatStore.rekeyConversation(
-                dbPool: dbPool, conversationID: conversationID, toContextType: "automation",
+                writes: chatWrites, conversationID: conversationID, toContextType: "automation",
                 contextID: String(automationID))
         } catch {
             lastError = "Saved, but the draft's chat could not move to the automation: \(error.localizedDescription)"

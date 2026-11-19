@@ -60,7 +60,7 @@ func TestCodexHookSet_GoldenOrderAndTimeouts(t *testing.T) {
 		{"SessionStart", "", 10, 0}, {"UserPromptSubmit", "", 5, 0}, {"PermissionRequest", "", 5, 0},
 		{"PostToolUse", "", 5, 0}, {"SubagentStart", "", 5, 0}, {"SubagentStop", "", 5, 0},
 		{"Interrupt", "", 5, 0},
-		{"PreToolUse", "request_user_input", 5, 0}, {"Stop", "", 15, 0}, {"Stop", "", 30, 1},
+		{"PreToolUse", "request_user_input", 5, 0}, {"PreToolUse", "", 5, 1}, {"Stop", "", 15, 0}, {"Stop", "", 30, 1},
 	}
 	hooks := CodexHookSet("/usr/local/bin/watchtower")
 	got := make([]row, 0, len(hooks))
@@ -69,8 +69,9 @@ func TestCodexHookSet_GoldenOrderAndTimeouts(t *testing.T) {
 	}
 	assert.Equal(t, want, got)
 	assert.Equal(t, "/usr/local/bin/watchtower workbench session-state --agent codex", hooks[6].Command)
-	assert.Equal(t, "/usr/local/bin/watchtower workbench check --agent codex --stop-hook", hooks[8].Command)
-	assert.Equal(t, "/usr/local/bin/watchtower workbench ask-guard --agent codex --stop", hooks[9].Command)
+	assert.Equal(t, "/usr/local/bin/watchtower workbench watchman-guard --agent codex", hooks[8].Command)
+	assert.Equal(t, "/usr/local/bin/watchtower workbench check --agent codex --stop-hook", hooks[9].Command)
+	assert.Equal(t, "/usr/local/bin/watchtower workbench ask-guard --agent codex --stop", hooks[10].Command)
 
 	assertCodexLaunchArgsGolden(t)
 }
