@@ -493,9 +493,11 @@ package enum CompanyConnectionsPresentation {
         let personal = Set(companies.filter(\.personal).map(\.slug))
         let stored = sorted(companies.filter { !$0.personal })
         let storedSlugs = Set(stored.map(\.slug))
+        // A Linear API key is no company's app, whatever slug its row still carries.
+        let ownKey = { (a: AccountRef) in vendor == .linear && a.isAPIKey }
 
         var groups: [AccountGroup] = stored.compactMap { company in
-            let tied = mine.filter { $0.companySlug == company.slug }
+            let tied = mine.filter { $0.companySlug == company.slug && !ownKey($0) }
             var rows = tied.map(AccountRow.account)
             if company.vendors[vendor] != nil, !tied.contains(where: { !$0.isGone }) {
                 rows.append(.notConnected(vendor))
@@ -507,12 +509,12 @@ package enum CompanyConnectionsPresentation {
 
         var own: [AccountRow] = [], tokens: [AccountRow] = [], keys: [AccountRow] = []
         var shared: [AccountRow] = [], other: [AccountRow] = []
-        for a in mine where !storedSlugs.contains(a.companySlug) {
+        for a in mine where !storedSlugs.contains(a.companySlug) || ownKey(a) {
             if vendor == .google, personal.contains(a.companySlug) || (a.companySlug.isEmpty && ownProject(a)) {
                 own.append(.account(a))
             } else if vendor == .atlassian, a.isAPIToken {
                 tokens.append(.account(a))
-            } else if vendor == .linear, a.isAPIKey {
+            } else if ownKey(a) {
                 // A personal key signs in through no app: never the shared app's group.
                 keys.append(.account(a))
             } else if a.companySlug.isEmpty, a.sharedApp || a.error != codeUnknownClient {

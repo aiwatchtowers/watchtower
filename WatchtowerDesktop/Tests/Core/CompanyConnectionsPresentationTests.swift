@@ -322,6 +322,13 @@ final class CompanyConnectionsPresentationTests: XCTestCase {
         XCTAssertEqual(linearGroups[2].rows, [.account(linear[0])], "only the shared app's own workspaces")
         XCTAssertEqual(Pres.tag(linear[1]), "API key")
         XCTAssertNil(AccountGroup.Kind.apiKeys.lockKey, "no policy key stops a Linear API key")
+        // Re-authorised with a key, a row tied to Acme is on Acme's app no more: the keys group,
+        // and Acme's Linear shows Not connected.
+        let rekeyed = account(.linear, 4, "Acme", slug: "acme", authKind: "api_key")
+        let rekeyedGroups = Pres.groups(vendor: .linear, accounts: [rekeyed], companies: [acme]) { _ in true }
+        XCTAssertEqual(rekeyedGroups.map(\.kind), [.company("acme"), .apiKeys])
+        XCTAssertEqual(rekeyedGroups[0].rows, [.notConnected(.linear)])
+        XCTAssertEqual(rekeyedGroups[1].rows, [.account(rekeyed)])
         // A Jira row never reads as a Linear key, nor a Linear key as a Jira token.
         let keyedJira = Pres.groups(vendor: .atlassian, accounts: [account(.atlassian, 5, "x", authKind: "api_key")],
                                     companies: []) { _ in false }
