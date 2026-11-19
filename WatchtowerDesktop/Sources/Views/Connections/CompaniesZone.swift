@@ -37,8 +37,10 @@ struct CompaniesZone: View {
             if let problem = state.problem { problemRow(problem) }
             if model.codeFieldOpen || state.codeFieldOpen {
                 codeField
+                // A busy port keeps the field open: the setup stays reachable beside it.
+                if state.actions.contains(.setUpForCompany) { zoneButtons(only: [.setUpForCompany]) }
             } else if !state.actions.isEmpty {
-                zoneButtons
+                zoneButtons(only: state.actions)
             }
         }
     }
@@ -133,9 +135,9 @@ struct CompaniesZone: View {
         }
     }
 
-    private var zoneButtons: some View {
+    private func zoneButtons(only shown: [CompaniesZoneState.Action]) -> some View {
         HStack(spacing: Spacing.regular) {
-            ForEach(Array(state.actions.enumerated()), id: \.offset) { _, action in
+            ForEach(Array(shown.enumerated()), id: \.offset) { _, action in
                 Button(action.title) {
                     switch action {
                     case .setUpForCompany: actions.setUpForCompany()

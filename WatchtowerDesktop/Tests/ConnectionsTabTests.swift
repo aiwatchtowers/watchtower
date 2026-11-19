@@ -524,6 +524,8 @@ final class ConnectionsTabTests: XCTestCase {
         let busy = state(portBusy: true)
         XCTAssertNoThrow(try zone(busy).inspect().find(text: Pres.portBusyLine))
         XCTAssertNoThrow(try zone(busy).inspect().find(button: Pres.connect), "the code field opens with the line")
+        XCTAssertNoThrow(try zone(busy).inspect().find(button: CompaniesZoneState.Action.setUpForCompany.title),
+                         "a busy port never hides the way into the setup")
 
         let draft = state(draft: .inProgress(company: "Acme", step: "Atlassian", index: 3, count: 8))
         try zone(draft).inspect().find(button: "Continue setup").tap()
