@@ -30,11 +30,11 @@ Network/process work is outside SQL transactions. Context-aware reads and transa
 
 Migration 00115's Claude singleton/samples stay compatible. Migration 00176 adds `codex_plan_usage_status`, scoped `codex_plan_usage_samples`, and `plot_json TEXT NOT NULL DEFAULT '{}'` to both status tables. Samples are retained for 8 days.
 
-Codex publishes successful status and samples in one transaction. Claude retains samples-before-status; a status upsert publishes limits/fetched time/plot together. Reads select samples no later than published `fetched_at`, matching the current reset within ±60 seconds; Codex also requires the current scope. Repeated publication is idempotent. Errors retain last-good diagnostic data, while presentation gates prevent drawing an old forecast.
+Codex publishes successful status and samples in one transaction. Claude retains samples-before-status; a status upsert publishes limits/fetched time/plot together. Reads select samples no later than published `fetched_at`, matching the current reset within ±60 seconds and starting at the last early reset (below); Codex also requires the current scope. Repeated publication is idempotent. Errors retain last-good diagnostic data, while presentation gates prevent drawing an old forecast.
 
 ## Forecast contract
 
-The existing Go least-squares policy is reused: nonnegative rate, at least 15 minutes of observations, a 1-hour session lookback and 24 hours for other groups. Raw states remain `idle | collecting | safe | will_hit | hit`. A reset restarts collection.
+The existing Go least-squares policy is reused: nonnegative rate, at least 15 minutes of observations, a 1-hour session lookback and 24 hours for other groups. Raw states remain `idle | collecting | safe | will_hit | hit`. A reset restarts collection. A reset is either a new `resets_at` or an early reset: the provider sometimes resets a limit early and keeps `resets_at` unchanged, which shows as a drop of at least 5 percentage points (`resetDropPercent`) between consecutive samples of one window, since usage never falls inside a window. History and forecast start at the last such drop (inclusive), in `CurrentWindowSamples` and `project` on the Go side and `currentHistory(for:)` on the Desktop side. An early reset from below 5 % is not recognised; its few pre-reset samples only bias the fit until they leave the lookback.
 
 Go publishes schema-1 plot candidates with `fetched_at` and a map of limit key to nullable Line. Line has exactly `start_at`, `start_percent`, `end_at`, `end_percent`; its start equals the published snapshot. A will-hit line ends at 100% before reset; a safe line ends at reset. Swift validates and renders these points without extrapolating the rate.
 
