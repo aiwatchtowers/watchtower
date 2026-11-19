@@ -210,15 +210,15 @@ var watchmanNotHeld = ` AND NOT (kind = 'handover' AND error = ` + watchmanHeldS
 // retry named another ask, or none). released reports the release.
 func (db *DB) SettleWatchmanHandoversTx(tx *sql.Tx, sessionID, askID int64, now time.Time) (released bool, err error) {
 	if _, err := tx.Exec(`UPDATE watchman_items SET state = 'done', outcome = 'superseded', error = '', decided_at = ?
-		WHERE session_id = ? AND kind = 'handover' AND state = 'queued' AND error = `+watchmanHeldSQL+` AND ref_id != ?`,
-		wmTime(now), sessionID, askID); err != nil {
+		WHERE session_id = ? AND kind = 'handover' AND state = 'queued' AND error = ? AND ref_id != ?`,
+		wmTime(now), sessionID, WatchmanHandoverHeld, askID); err != nil {
 		return false, fmt.Errorf("closing session %d's other handovers: %w", sessionID, err)
 	}
 	if askID == 0 {
 		return false, nil
 	}
 	res, err := tx.Exec(`UPDATE watchman_items SET error = ''
-		WHERE ref_kind = 'ask' AND ref_id = ? AND kind = 'handover' AND state IN ('queued','deciding') AND error = `+watchmanHeldSQL, askID)
+		WHERE ref_kind = 'ask' AND ref_id = ? AND kind = 'handover' AND state IN ('queued','deciding') AND error = ?`, askID, WatchmanHandoverHeld)
 	if err != nil {
 		return false, fmt.Errorf("releasing the handover of ask %d: %w", askID, err)
 	}
