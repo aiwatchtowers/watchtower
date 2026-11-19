@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerChatText
 import WatchtowerCore
 import WatchtowerTestSupport
 
@@ -1178,5 +1179,289 @@ final class WorkchatModelTests: XCTestCase {
         await model.refreshPermission()
 
         XCTAssertNil(model.permission)
+    }
+
+    // MARK: - Paste tokens (#2065 §6)
+
+    private func imagePath(_ model: WorkchatModel, _ number: Int) throws -> String {
+        guard case let .image(path)? = model.pastes[number] else {
+            XCTFail("no image payload #\(number)")
+            throw CancellationError()
+        }
+        return path
+    }
+
+    func testPasteTokensNumberUpPerDraft() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        let long = (1...42).map { "line \($0)" }.joined(separator: "\n")
+
+        let image = await model.paste(.image(Data([1, 2]), name: "Pasted image.png"))
+        let text = await model.paste(.text(long))
+
+        XCTAssertEqual(image, "[Image #1]")
+        XCTAssertEqual(text, "[Pasted text #2 +42 lines]")
+        XCTAssertTrue(model.attachments.isEmpty, "a pasted image is a token, not a chip")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try imagePath(model, 1)), "saved at paste time")
+        XCTAssertEqual(model.pastes[2], .text(long))
+
+        model.draft = "see \(image ?? "") and \(text ?? "")"
+        await model.send()
+
+        XCTAssertTrue(model.pastes.isEmpty, "the send takes the payloads")
+        let next = await model.paste(.text("x"))
+        XCTAssertEqual(next, "[Pasted text #1 +1 lines]", "numbering starts again with a new draft")
+    }
+
+    func testPasteNumberSkipsHandTypedNumbers() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        model.draft = "like [Image #1] here "
+
+        let pasted = await model.paste(.image(Data([1]), name: "Pasted image.png"))
+        let label = try XCTUnwrap(pasted)
+        XCTAssertEqual(label, "[Image #2]")
+        model.draft += label
+        let path = try imagePath(model, 2)
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.first?.text, "like [Image #1] here \(WorkchatOutgoing.quoted(path))",
+                       "the hand-typed bracket text stays as typed")
+    }
+
+    func testPasteImageSaveFailureInsertsNoToken() async throws {
+        let session = try await liveSession()
+        let blocker = folder.appendingPathComponent("not-a-folder")
+        try Data([0]).write(to: blocker)
+        let clock = try XCTUnwrap(clock)
+        let model = WorkchatModel(
+            sessionID: session, control: try makeControl(), lineDelivery: delivery,
+            attachmentStore: WorkchatAttachmentStore(root: blocker), kind: { .claude }, now: { clock.now }
+        )
+
+        let label = await model.paste(.image(Data([1]), name: "Pasted image.png"))
+
+        XCTAssertNil(label)
+        XCTAssertTrue(model.pastes.isEmpty)
+        XCTAssertTrue(model.attachments.isEmpty)
+        let error = try XCTUnwrap(model.attachmentError)
+        XCTAssertTrue(error.hasPrefix("Could not save the pasted file: "), error)
+    }
+
+    func testSendExpandsTokens() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        _ = await model.paste(.image(Data([1]), name: "Pasted image.png"))
+        _ = await model.paste(.text("x\r\ny"))
+        let path = try imagePath(model, 1)
+        let draft = "fix [Image #1] see [Pasted text #2 +2 lines]"
+        model.draft = draft
+
+        await model.send()
+
+        let line = try XCTUnwrap(model.outgoing.first)
+        XCTAssertEqual(line.text, "fix \(WorkchatOutgoing.quoted(path)) see x\ny")
+        XCTAssertEqual(line.typedText, draft, "the tokenized draft")
+        XCTAssertEqual(line.attachmentPaths, [path])
+        XCTAssertEqual(line.state, .sent)
+        XCTAssertTrue(typedText.contains("see x"), "the expanded text goes to the terminal")
+    }
+
+    func testDroppedImageStaysChip() async throws {
+        let model = try makeModel(try await liveSession())
+        let file = folder.appendingPathComponent("shot.png")
+        try Data([9]).write(to: file)
+
+        model.attach(files: [file])
+
+        XCTAssertEqual(model.attachments.map(\.path), [file.path], "a dropped or picked image is a chip")
+        XCTAssertTrue(model.pastes.isEmpty, "no token")
+    }
+
+    func testDeletedTokenDropsItsPayload() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let model = try makeModel(session)
+        _ = await model.paste(.image(Data([1]), name: "Pasted image.png"))
+        _ = await model.paste(.text("secret\nstuff"))
+        model.draft = "only [Image #1]"
+
+        await model.send()
+
+        let line = try XCTUnwrap(model.outgoing.first)
+        XCTAssertFalse(line.text.contains("secret"), line.text)
+        model.cancel(line.id)
+        XCTAssertEqual(model.draft, "only [Image #1]")
+        XCTAssertEqual(Set(model.pastes.keys), [1], "the deleted token's payload is gone")
+    }
+
+    func testImageGoneRefusesSendKeepsDraft() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        _ = await model.paste(.image(Data([1]), name: "Pasted image.png"))
+        try FileManager.default.removeItem(atPath: try imagePath(model, 1))
+        model.draft = "fix [Image #1]"
+
+        await model.send()
+
+        XCTAssertTrue(model.outgoing.isEmpty)
+        XCTAssertEqual(typedText, "")
+        XCTAssertEqual(model.attachmentError, "Pasted image #1 is gone — paste it again")
+        XCTAssertEqual(WorkchatModel.imageGone(1), "Pasted image #1 is gone — paste it again")
+        XCTAssertEqual(model.draft, "fix [Image #1]")
+        XCTAssertNotNil(model.pastes[1])
+    }
+
+    func testNotSentRestoresTokenizedDraftAndPayloads() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let model = try makeModel(session)
+        _ = await model.paste(.text("x\ny"))
+        model.draft = "a [Pasted text #1 +2 lines]"
+        await model.send()
+        XCTAssertEqual(model.draft, "")
+        XCTAssertTrue(model.pastes.isEmpty)
+
+        processes[0].onExit?(0)
+        statuses[session] = nil
+        await delivery.deliverHeld()
+
+        XCTAssertEqual(model.outgoing.first?.state, .notSent)
+        XCTAssertEqual(model.draft, "a [Pasted text #1 +2 lines]")
+        XCTAssertEqual(model.pastes, [1: .text("x\ny")])
+    }
+
+    func testCancelRestoresTokenizedDraftAndPayloads() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let model = try makeModel(session)
+        _ = await model.paste(.text("x\ny"))
+        model.draft = "a [Pasted text #1 +2 lines]"
+        await model.send()
+        let first = try XCTUnwrap(model.outgoing.first?.id)
+
+        model.cancel(first)
+
+        XCTAssertTrue(model.outgoing.isEmpty)
+        XCTAssertEqual(model.draft, "a [Pasted text #1 +2 lines]")
+        XCTAssertEqual(model.pastes, [1: .text("x\ny")])
+
+        // A newer draft is kept.
+        await model.send()
+        let second = try XCTUnwrap(model.outgoing.first?.id)
+        model.draft = "newer"
+        model.cancel(second)
+        XCTAssertEqual(model.draft, "newer")
+        XCTAssertTrue(model.pastes.isEmpty)
+    }
+
+    /// Review Focus 4: a bracket text the owner typed has no payload: Backspace takes one character and it goes as
+    /// typed.
+    func testHandTypedTokenIsPlainText() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        model.draft = "[Image #1]"
+
+        XCTAssertNil(PasteTokens.deletionRange(backwardFrom: 10, in: model.draft, live: Set(model.pastes.keys)))
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.first?.text, "[Image #1]")
+        XCTAssertNil(model.attachmentError)
+    }
+
+    // MARK: - Paste tokens, fix round 1
+
+    /// Backspace takes the token and its payload; the same text typed again by hand is plain text (spec §6).
+    func testDeletedTokenPayloadDoesNotComeBack() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        let labelPasted = await model.paste(.image(Data([1]), name: "Pasted image.png"))
+        let label = try XCTUnwrap(labelPasted)
+        model.draft = "fix \(label)"
+        XCTAssertNotNil(model.pastes[1])
+
+        model.draft = "fix "
+        XCTAssertTrue(model.pastes.isEmpty, "the payload leaves with its token")
+        model.draft = "fix [Image #1]"
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.first?.text, "fix [Image #1]", "a retyped token is plain text")
+        XCTAssertEqual(model.outgoing.first?.attachmentPaths, [])
+        model.draft = "again "
+        let next = await model.paste(.text("x"))
+        XCTAssertEqual(next, "[Pasted text #1 +1 lines]")
+    }
+
+    /// A pruned number is not given out again within the draft.
+    func testPrunedNumberIsNotReused() async throws {
+        let model = try makeModel(try await liveSession())
+        let firstPasted = await model.paste(.text("a"))
+        let first = try XCTUnwrap(firstPasted)
+        model.draft = first
+        model.draft = ""
+        let second = await model.paste(.text("b"))
+        XCTAssertEqual(second, "[Pasted text #2 +1 lines]")
+    }
+
+    /// A hand-typed token of the other kind does not keep a payload of the same number live.
+    func testLiveNumbersAreKindAware() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        let labelPasted = await model.paste(.image(Data([1]), name: "Pasted image.png"))
+        let label = try XCTUnwrap(labelPasted)
+        model.draft = label
+
+        model.draft = "[Pasted text #1 +3 lines]"
+        XCTAssertTrue(model.pastes.isEmpty, "image #1 has no token of its kind left")
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.first?.text, "[Pasted text #1 +3 lines]")
+    }
+
+    func testPasteNumberIgnoresHugeHandTypedNumber() async throws {
+        let model = try makeModel(try await liveSession())
+        model.draft = "[Image #\(Int.max)] [Pasted text #2000000 +1 lines] [Image #4]"
+
+        let label = await model.paste(.text("x"))
+
+        XCTAssertEqual(label, "[Pasted text #5 +1 lines]")
+    }
+
+    /// The draft is trimmed around its tokens, not inside a pasted text.
+    func testPastedTextKeepsItsWhitespace() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        let code = "    indented()\n        deeper()\n\n"
+        let labelPasted = await model.paste(.text(code))
+        let label = try XCTUnwrap(labelPasted)
+        model.draft = "  \(label)  "
+
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.first?.text, code)
+    }
+
+    /// A draft holding only a whitespace paste is refused like an empty one.
+    func testWhitespaceOnlyPasteNotSent() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        let labelPasted = await model.paste(.text(" \n\t\n"))
+        let label = try XCTUnwrap(labelPasted)
+        model.draft = label
+
+        await model.send()
+
+        XCTAssertTrue(model.outgoing.isEmpty)
+        XCTAssertEqual(typedText, "")
+        XCTAssertEqual(model.draft, label)
     }
 }

@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import UniformTypeIdentifiers
+import WatchtowerChatText
 import WatchtowerCore
 
 /// What the Workchat asks of `SessionControl`: its gates and the permission
@@ -30,10 +31,18 @@ final class WorkchatModel {
     typealias Delivery = SessionLineDelivery.Delivery
 
     let sessionID: Int64
-    var draft = ""
+    /// Each change drops the paste payloads whose token left it (#2065 §6):
+    /// a deleted token never comes back live, even typed again by hand.
+    var draft = "" {
+        didSet { prunePastes() }
+    }
     /// Files and pasted images waiting to go with the next line, as the
     /// composer's chips; in memory only (negative ids, `path` absolute).
     private(set) var attachments: [ChatAttachment] = []
+    /// The draft's paste tokens' payloads by token number (#2065 §6): a pasted
+    /// long text, or the file a pasted image was saved to. A payload whose
+    /// token left the draft is dropped as the draft changes. In memory only.
+    private(set) var pastes: [Int: PastePayload] = [:]
     /// The lines sent from here and not yet shown by the feed, oldest first.
     private(set) var outgoing: [WorkchatOutgoing] = []
     /// Why the last attach did not take (a paste not saved, a path that
@@ -60,6 +69,14 @@ final class WorkchatModel {
     @ObservationIgnored private var attachmentCounter: Int64 = 0
     /// The chips of a line on its way, to bring back if it cannot go.
     @ObservationIgnored private var sentAttachments: [UUID: [ChatAttachment]] = [:]
+    /// The paste payloads of a line on its way, to bring back with its tokenized draft.
+    @ObservationIgnored private var sentPastes: [UUID: [Int: PastePayload]] = [:]
+    /// Paste numbers given out whose token the draft has not shown yet (the
+    /// field inserts it after `paste` returns): not pruned until it has.
+    @ObservationIgnored private var pendingPastes: Set<Int> = []
+    /// The last paste number given out in this draft: a pruned number is never
+    /// given out again, so an undone deletion cannot point at a new payload.
+    @ObservationIgnored private var lastPasteNumber = 0
     /// The session's kind, read each time it is needed: a pane restored at
     /// launch makes its model before the sessions load.
     @ObservationIgnored private let kind: @MainActor () -> TerminalSession.Kind?
@@ -103,19 +120,46 @@ final class WorkchatModel {
     /// #421, PROJ-12 amended): `\r\n` becomes `\n` and only the ends are
     /// trimmed; the echo is matched on collapsed whitespace. An empty or
     /// whitespace-only draft is not sent. The field clears at once; a line
-    /// that cannot go comes back to it.
+    /// that cannot go comes back to it. Paste tokens expand in place (#2065
+    /// §6): a text token to its text, an image token to its saved path; an
+    /// image whose file is gone refuses the send and keeps the draft.
     func send() async {
         // Line breaks stay (owner ask #421); only the ends are trimmed.
         let typed = draft.replacingOccurrences(of: "\r\n", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !typed.isEmpty || !attachments.isEmpty else { return }
+        let live = PasteTokens.liveNumbers(in: typed, kinds: pastes.mapValues(\.kind))
+        let sentPastes = pastes.filter { live.contains($0.key) }
+        let imagePaths = sentPastes.sorted { $0.key < $1.key }.compactMap { number, payload -> (Int, String)? in
+            guard case let .image(path) = payload else { return nil }
+            return (number, path)
+        }
+        if let gone = imagePaths.first(where: { !FileManager.default.fileExists(atPath: $0.1) }) {
+            attachmentError = Self.imageGone(gone.0)
+            return
+        }
+        // The draft is trimmed around its tokens; a pasted text keeps its own
+        // indentation and closing line breaks.
+        let expanded = PasteTokens.expand(typed, payloads: sentPastes, imagePath: WorkchatOutgoing.quoted)
+        let hasText = !expanded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // Only a whitespace paste: refused like an empty draft.
+        guard hasText || !attachments.isEmpty else { return }
         attachmentError = nil
-        let paths = attachments.map(\.path)
-        let text = ([typed].filter { !$0.isEmpty } + paths.map(Self.quoted)).joined(separator: "\n")
+        let chipPaths = attachments.map(\.path)
+        let text = ((hasText ? [expanded] : []) + chipPaths.map(WorkchatOutgoing.quoted)).joined(separator: "\n")
         draft = ""
+        pastes = [:]
+        pendingPastes = []
+        lastPasteNumber = 0
         let sent = attachments
         attachments = []
-        await deliver(text, typed: typed, paths: paths, attachments: sent)
+        await deliver(text, typed: typed, paths: chipPaths + imagePaths.map(\.1), attachments: sent,
+                      pastes: sentPastes)
+    }
+
+    /// Why a send was refused: a pasted image's saved file is gone (swept or deleted).
+    static func imageGone(_ number: Int) -> String {
+        "Pasted image #\(number) is gone — paste it again"
     }
 
     /// Sends `text` as a line of its own — a question card's answers in the feed — leaving the draft and its files
@@ -126,9 +170,16 @@ final class WorkchatModel {
         await deliver(typed, typed: typed, paths: [], attachments: [])
     }
 
-    private func deliver(_ text: String, typed: String, paths: [String], attachments sent: [ChatAttachment]) async {
+    private func deliver(
+        _ text: String,
+        typed: String,
+        paths: [String],
+        attachments sent: [ChatAttachment],
+        pastes sentPastes: [Int: PastePayload] = [:]
+    ) async {
         let id = UUID()
         sentAttachments[id] = sent
+        self.sentPastes[id] = sentPastes
         outgoing.append(WorkchatOutgoing(
             id: id, text: text, sentAt: now(), state: .sending, typedText: typed, attachmentPaths: paths
         ))
@@ -163,17 +214,64 @@ final class WorkchatModel {
     /// failed) and `attachmentError` says why; nothing is inserted instead.
     func attach(data: Data, name: String) async -> Bool {
         attachmentError = nil
+        guard let path = save(data, name: name) else { return false }
+        return addChip(path: path, name: name, size: Int64(data.count))
+    }
+
+    /// A pasted image or long text kept as an inline token (#2065 §6): returns
+    /// the token for the field to insert at the paste. The image is saved now
+    /// (as `attach(data:name:)`); a save that fails returns nil, keeps nothing
+    /// and says why (`attachmentError`). Numbers count up per draft, past any
+    /// number already in it, so a hand-typed `[Image #1]` is never taken over
+    /// (a hand-typed number above `PasteTokens.maxNumber` is ignored).
+    func paste(_ item: InlinePaste) async -> String? {
+        attachmentError = nil
+        let typed = PasteTokens.numbers(in: draft).filter { $0 <= PasteTokens.maxNumber }
+        let number = max(lastPasteNumber, pastes.keys.max() ?? 0, typed.max() ?? 0) + 1
+        switch item {
+        case let .text(text):
+            let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+            keep(.text(normalized), as: number)
+            return PasteTokens.textLabel(number, lines: PasteTokens.lineCount(normalized))
+        case let .image(data, name):
+            guard let path = save(data, name: name) else { return nil }
+            guard !path.contains(where: \.isNewline) else {
+                attachmentError = "Cannot attach “\(name)”: its path has a line break"
+                return nil
+            }
+            keep(.image(path: path), as: number)
+            return PasteTokens.imageLabel(number)
+        }
+    }
+
+    private func keep(_ payload: PastePayload, as number: Int) {
+        lastPasteNumber = number
+        pendingPastes.insert(number)
+        pastes[number] = payload
+    }
+
+    /// Drops each payload whose token (number and kind) the draft no longer
+    /// holds, unless its token has not been inserted yet.
+    private func prunePastes() {
+        guard !pastes.isEmpty else { return }
+        let live = PasteTokens.liveNumbers(in: draft, kinds: pastes.mapValues(\.kind))
+        pendingPastes.subtract(live)
+        let kept = pastes.filter { live.contains($0.key) || pendingPastes.contains($0.key) }
+        if kept.count != pastes.count { pastes = kept }
+    }
+
+    /// Saves pasted bytes under the session's folder; nil → not saved, and `attachmentError` says why.
+    private func save(_ data: Data, name: String) -> String? {
         guard let attachmentStore else {
             attachmentError = "Pasted files cannot be kept here"
-            return false
+            return nil
         }
         do {
-            let url = try attachmentStore.save(data, name: name, sessionID: sessionID)
-            return addChip(path: url.path, name: name, size: Int64(data.count))
+            return try attachmentStore.save(data, name: name, sessionID: sessionID).path
         } catch {
             NSLog("WorkchatModel: saving a pasted file for session %lld failed: %@", sessionID, String(describing: error))
             attachmentError = "Could not save the pasted file: \(error.localizedDescription)"
-            return false
+            return nil
         }
     }
 
@@ -197,22 +295,29 @@ final class WorkchatModel {
         return true
     }
 
-    /// A path with a space, a double quote or a backslash goes in double
-    /// quotes, with `\` and `"` escaped inside, as a shell reads it. A line
-    /// break never gets here (`addChip` refuses it).
-    private static func quoted(_ path: String) -> String {
-        guard path.contains(where: { $0 == " " || $0 == "\"" || $0 == "\\" }) else { return path }
-        let escaped = path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        return "\"\(escaped)\""
-    }
-
-    /// Drops a queued line before it goes. A line already on its way (its
-    /// retry under way) is not in the queue and stays.
+    /// Drops a queued line before it goes; its tokenized draft, paste payloads
+    /// and files come back into an empty field (#2065 §6). A line already on
+    /// its way (its retry under way) is not in the queue and stays.
     func cancel(_ id: UUID) {
-        guard outgoing.first(where: { $0.id == id })?.state == .queued else { return }
+        guard let line = outgoing.first(where: { $0.id == id }), line.state == .queued else { return }
         let dropped = lineDelivery.dropHeld(sessionID: sessionID) { $0 == .workchat(id) }
         guard !dropped.isEmpty else { return }
         outgoing.removeAll { $0.id == id }
+        restore(id, typed: line.typedText)
+    }
+
+    /// Puts a line that did not go back: its typed text and paste payloads
+    /// only into an empty field, its files only when no chips wait.
+    private func restore(_ id: UUID, typed: String) {
+        if draft.isEmpty {
+            let restored = sentPastes[id] ?? [:]
+            pastes.merge(restored) { _, restored in restored }
+            lastPasteNumber = max(lastPasteNumber, restored.keys.max() ?? 0)
+            draft = typed
+        }
+        if attachments.isEmpty, let chips = sentAttachments[id] { attachments = chips }
+        sentAttachments[id] = nil
+        sentPastes[id] = nil
     }
 
     /// The feed changed: a line whose owner entry it now shows leaves. A
@@ -378,14 +483,13 @@ final class WorkchatModel {
         switch state {
         case .sent, .typed, .copied:
             sentAttachments[id] = nil
+            sentPastes[id] = nil
             outgoing[index].deliveredAt = now()
             // The feed read that holds its echo may have come while it was
             // still on its way; no later read would bring it again.
             reconcile(with: lastEntries)
         case .notSent:
-            if draft.isEmpty { draft = outgoing[index].typedText }
-            if attachments.isEmpty, let chips = sentAttachments[id] { attachments = chips }
-            sentAttachments[id] = nil
+            restore(id, typed: outgoing[index].typedText)
         case .sending, .queued: break
         }
     }

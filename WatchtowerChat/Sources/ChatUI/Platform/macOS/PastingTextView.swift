@@ -6,11 +6,19 @@ import WatchtowerChatText
 
 /// Routes a user-initiated ⌘V (board #534): Finder files, images and PDF
 /// data become attachments; text inserts as always, and a long one is
-/// reported so the composer can offer to attach it instead.
+/// reported so the composer can offer to attach it instead. With
+/// `onInlinePaste` (the Workchat, #2065 §6) an image and a long text go in as
+/// the token it returns instead, and one Backspace removes a live token whole.
 public final class PastingTextView: NSTextView {
     var onPasteData: ((Data, String) async -> Bool)?
     var onAttachFiles: (([URL]) -> Void)?
     var onLongTextPaste: ((LongPaste) -> Void)?
+    /// Keeps a pasted image or long text and returns its token; nil → no inline tokens.
+    var onInlinePaste: ((InlinePaste) async -> String?)?
+    /// The kind of each token number with a payload (the owner's model): only a token of that number and kind is
+    /// deleted whole.
+    var livePastes: [Int: PasteKind] = [:]
+    private var inlinePastes: Bool { onInlinePaste != nil }
     /// Always `.general` in the app; tests pass a private named pasteboard.
     var pasteboard: NSPasteboard = .general
 
@@ -26,6 +34,11 @@ public final class PastingTextView: NSTextView {
             return
         case .attachImage:
             guard let image = PastedContent.imageAttachment(from: pasteboard) else { break }
+            if let onInlinePaste,
+               ComposerPasteRoute.route(isImage: true, characterCount: 0, inlinePastes: inlinePastes) == .token {
+                insertToken(for: .image(image.data, name: image.name), using: onInlinePaste)
+                return
+            }
             Task { _ = await onPasteData(image.data, image.name) }
             return
         case .attachPDF:
@@ -33,10 +46,46 @@ public final class PastingTextView: NSTextView {
             Task { _ = await onPasteData(pdf, PastedContent.pdfName) }
             return
         case .insertText(let offerAsFile):
+            if let onInlinePaste, let text = pasteboard.string(forType: .string),
+               ComposerPasteRoute.route(isImage: false, characterCount: text.count, inlinePastes: inlinePastes) == .token {
+                insertToken(for: .text(text), using: onInlinePaste)
+                return
+            }
             pasteText(sender, offerAsFile: offerAsFile)
             return
         }
         insertFromPasteboard(sender)
+    }
+
+    /// Hands the paste to the owner and puts the token it returns where the paste was made: over the selection
+    /// then, when the field has not changed meanwhile, otherwise at the caret. nil → nothing is inserted.
+    private func insertToken(for item: InlinePaste, using onInlinePaste: @escaping (InlinePaste) async -> String?) {
+        let target = selectedRange()
+        let before = string
+        Task { @MainActor [weak self] in
+            guard let label = await onInlinePaste(item), let self else { return }
+            let range = self.string == before ? target : self.selectedRange()
+            guard self.shouldChangeText(in: range, replacementString: label) else { return }
+            self.textStorage?.replaceCharacters(in: range, with: label)
+            self.didChangeText()
+            self.undoManager?.setActionName("Paste")
+            self.setSelectedRange(NSRange(location: range.location + (label as NSString).length, length: 0))
+        }
+    }
+
+    /// One Backspace right after a live paste token removes the whole token (#2065 §6); anything else is the
+    /// stock Backspace, a hand-typed bracket text included.
+    override public func deleteBackward(_ sender: Any?) {
+        let caret = selectedRange()
+        if inlinePastes, caret.length == 0, !hasMarkedText(),
+           let range = PasteTokens.deletionRange(backwardFrom: caret.location, in: string, kinds: livePastes),
+           shouldChangeText(in: range, replacementString: "") {
+            textStorage?.replaceCharacters(in: range, with: "")
+            didChangeText()
+            setSelectedRange(NSRange(location: range.location, length: 0))
+            return
+        }
+        super.deleteBackward(sender)
     }
 
     /// The stock text paste. In the app this is literally `super.paste`;

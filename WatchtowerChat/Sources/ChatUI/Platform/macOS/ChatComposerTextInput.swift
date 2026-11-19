@@ -17,6 +17,8 @@ struct ChatComposerTextInput: View {
     var onPasteData: ((Data, String) async -> Bool)?
     var onAttachFiles: (([URL]) -> Void)?
     var onLongTextPaste: ((LongPaste) -> Void)?
+    var onInlinePaste: ((InlinePaste) async -> String?)?
+    var livePastes: [Int: PasteKind] = [:]
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
     var autoFocus: Bool
@@ -44,6 +46,8 @@ struct ChatComposerTextInput: View {
                 onPasteData: onPasteData,
                 onAttachFiles: onAttachFiles,
                 onLongTextPaste: onLongTextPaste,
+                onInlinePaste: onInlinePaste,
+                livePastes: livePastes,
                 onCursorChange: onCursorChange,
                 onPickerKey: onPickerKey,
                 autoFocus: autoFocus,
@@ -73,6 +77,10 @@ public struct ExpandingTextInput: NSViewRepresentable {
     var onAttachFiles: (([URL]) -> Void)?
     /// A long text paste, after it was inserted: the inserted text.
     var onLongTextPaste: ((LongPaste) -> Void)?
+    /// Set: a pasted image or long text goes in as the token it returns (#2065 §6, `ComposerPasteRoute`).
+    var onInlinePaste: ((InlinePaste) async -> String?)?
+    /// The kind of each token number with a payload: one Backspace removes such a token whole.
+    var livePastes: [Int: PasteKind] = [:]
     /// The @/ pickers' input (Task 25/26): full text + caret on every change.
     var onCursorChange: ((String, Int) -> Void)?
     /// Offered Up/Down/Enter/Tab/Esc first while a picker may be open.
@@ -94,6 +102,8 @@ public struct ExpandingTextInput: NSViewRepresentable {
         onPasteData: ((Data, String) async -> Bool)? = nil,
         onAttachFiles: (([URL]) -> Void)? = nil,
         onLongTextPaste: ((LongPaste) -> Void)? = nil,
+        onInlinePaste: ((InlinePaste) async -> String?)? = nil,
+        livePastes: [Int: PasteKind] = [:],
         onCursorChange: ((String, Int) -> Void)? = nil,
         onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)? = nil,
         autoFocus: Bool = false,
@@ -108,6 +118,8 @@ public struct ExpandingTextInput: NSViewRepresentable {
         self.onPasteData = onPasteData
         self.onAttachFiles = onAttachFiles
         self.onLongTextPaste = onLongTextPaste
+        self.onInlinePaste = onInlinePaste
+        self.livePastes = livePastes
         self.onCursorChange = onCursorChange
         self.onPickerKey = onPickerKey
         self.autoFocus = autoFocus
@@ -139,6 +151,8 @@ public struct ExpandingTextInput: NSViewRepresentable {
         textView.onPasteData = onPasteData
         textView.onAttachFiles = onAttachFiles
         textView.onLongTextPaste = onLongTextPaste
+        textView.onInlinePaste = onInlinePaste
+        textView.livePastes = livePastes
 
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
@@ -174,6 +188,8 @@ public struct ExpandingTextInput: NSViewRepresentable {
         textView.onPasteData = onPasteData
         textView.onAttachFiles = onAttachFiles
         textView.onLongTextPaste = onLongTextPaste
+        textView.onInlinePaste = onInlinePaste
+        textView.livePastes = livePastes
         if textView.string != text {
             textView.string = text
             DispatchQueue.main.async {
