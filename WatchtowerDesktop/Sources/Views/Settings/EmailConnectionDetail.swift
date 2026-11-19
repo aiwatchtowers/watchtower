@@ -11,13 +11,6 @@ import WatchtowerCore
 /// IMAP mailboxes sign in with a password and keep their own section.
 struct EmailConnectionDetail: View {
     @Environment(AppState.self) private var appState
-    /// A Not connected row's Connect: that vendor's login through the company's app.
-    private var groupConnect: CompanyGroupConnect {
-        CompanyGroupConnect(disabled: sourceBlocked || appState.companyFlowBusy) { slug, vendor in
-            appState.reloginCompany(slug: slug, vendors: [vendor])
-        }
-    }
-
     /// The organization's policy forbids this source (#608): nothing new
     /// connects; existing accounts keep their data.
     private var sourceBlocked: Bool { !appState.managedPolicy.policy.sourceAllowed("imap") }
@@ -89,14 +82,14 @@ struct EmailConnectionDetail: View {
                     .foregroundStyle(.secondary)
             }
         }
-        CompanyAccountGroups(groups: groups, connect: groupConnect) { ref in
+        CompanyAccountGroups(groups: groups, connect: appState.companyGroupConnect(blocked: sourceBlocked)) { ref in
             if let account = vm.accounts.first(where: { $0.id == ref.accountID }) {
-                row(vm, account: account, status: appState.companyRowStatus(ref))
+                row(vm, account: account, ref: ref)
             }
         }
         if !imap.isEmpty {
             SettingsSection(title: Self.imapTitle) {
-                ForEach(imap) { account in row(vm, account: account, status: nil) }
+                ForEach(imap) { account in row(vm, account: account, ref: nil) }
             }
         }
         SettingsSection(title: CompanyConnectionsPresentation.addAccountTitle) {
@@ -113,8 +106,10 @@ struct EmailConnectionDetail: View {
         }
     }
 
-    private func row(_ vm: EmailAccountsViewModel, account: EmailAccount, status: RowStatus?) -> some View {
-        CompanyAccountRow(
+    /// `ref` is an Outlook account's presentation row; nil for an IMAP mailbox.
+    private func row(_ vm: EmailAccountsViewModel, account: EmailAccount, ref: AccountRef?) -> some View {
+        let status = ref.flatMap(appState.companyRowStatus)
+        return CompanyAccountRow(
             title: account.displayName,
             status: status,
             line: account.isOutlook ? "Outlook" : "IMAP \u{00B7} \(account.host)",
@@ -126,13 +121,9 @@ struct EmailConnectionDetail: View {
                     .fixedSize(horizontal: false, vertical: true))
                 : nil
         ) {
-            if let action = status?.action {
+            if let action = status?.action, let ref {
                 CompanyRowStatusButton(action: action, disabled: sourceBlocked || appState.companyFlowBusy) { action in
-                    if action == .relogin, !account.companySlug.isEmpty {
-                        appState.reloginCompany(slug: account.companySlug, vendors: [.microsoft])
-                    } else {
-                        appState.pasteCompanyCode()
-                    }
+                    appState.companyRowAction(action, account: ref)
                 }
             }
             Button("Rename…") {

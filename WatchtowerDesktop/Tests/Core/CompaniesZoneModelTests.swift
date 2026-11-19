@@ -117,6 +117,24 @@ final class CompaniesZoneModelTests: XCTestCase {
         XCTAssertEqual(model.companies, [], "the older read's answer is dropped")
     }
 
+    /// The race over the second read: an older reload still reading the
+    /// draft never brings back its "Setup in progress" over a newer read.
+    func testOlderDraftReadDoesNotOverwriteNewerRead() async throws {
+        let fake = FakeCLILineStream(replies: [list(draft: "ok")]) // the draft read gets a session
+        let model = CompaniesZoneModel { fake }
+        let first = Task { await model.reload() }
+        let draftRead = await fake.session(number: 1)
+        fake.enqueue(list(companies: "[]"))
+        await model.reload()
+        XCTAssertNil(model.draft)
+        draftRead.emit(#"{"state":"ok","draft":{"company":"Acme","services":["slack"],"step":"slack","slack":{}},"#
+            + #""bad_file":"","checked_vendors":[]}"#)
+        draftRead.exit(code: 0)
+        await first.value
+        XCTAssertNil(model.draft, "the older read's draft is dropped")
+        XCTAssertEqual(model.companies, [])
+    }
+
     // MARK: - Code field
 
     func testCodeFieldPasteError() async {

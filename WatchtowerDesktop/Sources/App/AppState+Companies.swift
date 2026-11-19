@@ -70,7 +70,9 @@ extension AppState {
         CompanyConnectionsPresentation.rowStatus(account, purgeLease: nil, companies: companyRefs)
     }
 
-    /// A company flow or another sign-in runs: no card or row starts a second one.
+    /// No card or row may start a company flow: none exists (no listener —
+    /// under XCTest, or before the database opened), or one or another
+    /// sign-in runs.
     var companyFlowBusy: Bool {
         companyConnect == nil || connectFlowRunning || slackAuthFlow.reconnecting
             || slackAccountsViewModel?.isConnecting == true
@@ -105,6 +107,30 @@ extension AppState {
     /// chain, no confirm (the owner's own press, §4.3).
     func reloginCompany(slug: String, vendors: [CompanyVendor]) {
         runCompanyFlow { await $0.relogin(slug: slug, vendors: vendors) }
+    }
+
+    /// A Not connected row's **Connect** in `vendor`'s detail.
+    func companyGroupConnect(blocked: Bool) -> CompanyGroupConnect {
+        CompanyGroupConnect(disabled: blocked || companyFlowBusy) { [weak self] slug, vendor in
+            self?.reloginCompany(slug: slug, vendors: [vendor])
+        }
+    }
+
+    /// A §4.3 status's own button on a row: **Re-login** after a Replace runs
+    /// the vendor's login through the company's new app (a chain of one);
+    /// **Paste a company code** opens the overview's code field, or `paste`
+    /// where the detail has a field of its own (Slack's connect section).
+    func companyRowAction(_ action: RowStatus.Action, account: AccountRef, paste: (() -> Void)? = nil) {
+        switch action {
+        case .relogin where !account.companySlug.isEmpty:
+            reloginCompany(slug: account.companySlug, vendors: [account.vendor])
+        case .connect where !account.companySlug.isEmpty:
+            reloginCompany(slug: account.companySlug, vendors: [account.vendor])
+        case .pasteCode, .relogin, .connect:
+            if let paste { paste() } else { pasteCompanyCode() }
+        case .pasteNewToken:
+            break // Jira's API-token rows (Task 27)
+        }
     }
 
     /// **Paste a company code** on a row: the overview's code field, opened.

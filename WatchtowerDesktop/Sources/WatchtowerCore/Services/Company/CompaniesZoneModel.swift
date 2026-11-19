@@ -63,14 +63,16 @@ package final class CompaniesZoneModel {
         case .failure(let failure):
             listError = failure.message
         case .success(let answer):
+            // The whole snapshot lands at once, and only if no newer read started meanwhile.
+            let draftRef = await readDraft(state: answer.draft.state)
+            guard mine == generation else { return }
             listError = nil
+            draft = draftRef
             companies = answer.companies.map(\.ref)
             slackClientIDs = answer.companies.reduce(into: [:]) { out, c in
                 if let id = c.vendors?["slack"]?.clientID, !id.isEmpty { out[c.slug] = id }
             }
             errors = answer.errors.map { CompanyFileError(file: $0.file, error: $0.error) }
-            draft = await readDraft(state: answer.draft.state)
-            guard mine == generation else { return }
         }
         hasRead = true
     }

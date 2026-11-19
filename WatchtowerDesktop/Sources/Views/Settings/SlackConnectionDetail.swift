@@ -34,13 +34,6 @@ final class SlackAuthFlowState {
 /// list (`slack_accounts` table, migration 00048) and the reaction commands.
 struct SlackConnectionDetail: View {
     @Environment(AppState.self) private var appState
-    /// A Not connected row's Connect: that vendor's login through the company's app.
-    private var groupConnect: CompanyGroupConnect {
-        CompanyGroupConnect(disabled: sourceBlocked || appState.companyFlowBusy) { slug, vendor in
-            appState.reloginCompany(slug: slug, vendors: [vendor])
-        }
-    }
-
     /// The organization's policy forbids this source (#608): nothing new
     /// connects; existing accounts keep their data.
     private var sourceBlocked: Bool { !appState.managedPolicy.policy.sourceAllowed("slack") }
@@ -343,9 +336,9 @@ struct SlackConnectionDetail: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                CompanyAccountGroups(groups: groups, connect: groupConnect) { ref in
+                CompanyAccountGroups(groups: groups, connect: appState.companyGroupConnect(blocked: sourceBlocked)) { ref in
                     if let account = vm.accounts.first(where: { $0.id == ref.accountID }) {
-                        workspaceRow(vm, account: account, status: appState.companyRowStatus(ref))
+                        workspaceRow(vm, account: account, ref: ref)
                     }
                 }
                 SettingsSection(title: CompanyConnectionsPresentation.addAccountTitle) {
@@ -394,8 +387,9 @@ struct SlackConnectionDetail: View {
 
     /// One workspace: its title and the §4.3 status of a company's account,
     /// the switch, Re-login (or the status's own action), Rename, Remove.
-    private func workspaceRow(_ vm: SlackAccountsViewModel, account: SlackAccount, status: RowStatus?) -> some View {
-        HStack {
+    private func workspaceRow(_ vm: SlackAccountsViewModel, account: SlackAccount, ref: AccountRef) -> some View {
+        let status = appState.companyRowStatus(ref)
+        return HStack {
             VStack(alignment: .leading, spacing: Spacing.tight) {
                 SlackAccountTitle(account: account, sharedAppAccountIDs: vm.sharedAppAccountIDs,
                                   lastSync: vm.lastSyncs[account.id])
@@ -430,10 +424,11 @@ struct SlackConnectionDetail: View {
                 // A company's account: Re-login runs through the company's app; a
                 // changed or unknown app asks for the company's code (A20: Slack's
                 // connect field takes it).
-                CompanyRowStatusButton(action: action, disabled: vm.isConnecting || appState.companyFlowBusy) { action in
-                    if action == .relogin, !account.companySlug.isEmpty {
-                        appState.reloginCompany(slug: account.companySlug, vendors: [.slack])
-                    } else {
+                CompanyRowStatusButton(
+                    action: action,
+                    disabled: vm.isConnecting || appState.companyFlowBusy || reloginBlocked(account.id) != nil
+                ) { action in
+                    appState.companyRowAction(action, account: ref) {
                         _ = appState.slackConnectFlow?.reconnect(.connectSection)
                     }
                 }

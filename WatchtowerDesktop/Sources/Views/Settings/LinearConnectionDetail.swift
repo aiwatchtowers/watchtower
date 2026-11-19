@@ -11,13 +11,6 @@ import WatchtowerCore
 /// the company's app.
 struct LinearConnectionDetail: View {
     @Environment(AppState.self) private var appState
-    /// A Not connected row's Connect: that vendor's login through the company's app.
-    private var groupConnect: CompanyGroupConnect {
-        CompanyGroupConnect(disabled: sourceBlocked || appState.companyFlowBusy) { slug, vendor in
-            appState.reloginCompany(slug: slug, vendors: [vendor])
-        }
-    }
-
     /// The organization's policy forbids this source (#608): nothing new
     /// connects; existing accounts keep their data.
     private var sourceBlocked: Bool { !appState.managedPolicy.policy.sourceAllowed("linear") }
@@ -94,7 +87,7 @@ struct LinearConnectionDetail: View {
                     .foregroundStyle(.secondary)
             }
         }
-        CompanyAccountGroups(groups: groups, connect: groupConnect) { ref in
+        CompanyAccountGroups(groups: groups, connect: appState.companyGroupConnect(blocked: sourceBlocked)) { ref in
             if let account = vm.accounts.first(where: { $0.id == Int64(ref.accountID) }) {
                 accountRow(vm, account: account, ref: ref)
             }
@@ -139,13 +132,15 @@ struct LinearConnectionDetail: View {
             .controlSize(.mini)
             .disabled(vm.isBusy || account.isPurged)
             if let action = status?.action, action == .pasteCode {
-                CompanyRowStatusButton(action: action, disabled: sourceBlocked) { _ in appState.pasteCompanyCode() }
+                CompanyRowStatusButton(action: action, disabled: sourceBlocked) { _ in
+                    appState.companyRowAction(action, account: ref)
+                }
             } else if !account.isOK || account.auth == "error" || status?.action == .relogin {
                 Button(RowStatus.Action.relogin.title) { relogin(vm, account: account) }
                     .buttonStyle(.kitSecondary)
                     .managedByOrganization(sourceBlocked)
                     .help(reloginBlocked(account.id) ?? "")
-                    .disabled(vm.isBusy || reloginBlocked(account.id) != nil || appState.companyFlowBusy)
+                    .disabled(vm.isBusy || reloginBlocked(account.id) != nil)
             }
             Button("Remove") { pendingRemoval = account }
                 .buttonStyle(.kitQuiet)
@@ -172,14 +167,13 @@ struct LinearConnectionDetail: View {
         }
     }
 
-    /// Re-login: an account of a stored company signs in again through the
-    /// company's app (the chain); an API-key account asks for a new key;
-    /// any other runs today's `linear` re-login.
+    /// Re-login: an API-key account asks for a new key; any other re-logs
+    /// this very workspace (`linear login --account`, which signs in through
+    /// its company's app when it has one) — never the add chain, which could
+    /// connect another workspace or refuse a purged one.
     private func relogin(_ vm: LinearAccountsViewModel, account: LinearAccount) {
         if account.usesAPIKey {
             replacingKeyFor = account
-        } else if !account.companySlug.isEmpty, appState.companyRefs.contains(where: { $0.slug == account.companySlug }) {
-            appState.reloginCompany(slug: account.companySlug, vendors: [.linear])
         } else {
             Task { await vm.relogin(account) }
         }

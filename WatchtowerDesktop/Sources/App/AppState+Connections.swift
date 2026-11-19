@@ -58,6 +58,9 @@ extension AppState {
     func refreshConnectionAccounts(now: Date = Date()) {
         connectionAccountsReadAt = now
         for service in ConnectionService.services { refreshAccounts(of: service) }
+        // The details group their accounts by the stored companies: a detail
+        // opened straight (a Reconnect hand-off) must not see none (#1887 C3).
+        reloadCompanies()
     }
 
     /// The badge's re-read on a sidebar click: at most once a minute.

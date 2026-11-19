@@ -50,6 +50,44 @@ final class LinearConnectionDetailTests: XCTestCase {
         await untilObserved { appState.companyConnect?.isRunning == false }
     }
 
+    /// A §4.3 status's button: Re-login after a Replace runs the account's
+    /// vendor through its company (Slack, Outlook alike); Paste a company
+    /// code opens the overview's field, or the detail's own field when given.
+    func testRowActionsRoute() async throws {
+        let (appState, fake) = Self.wired()
+        let changed = AccountRef(vendor: .microsoft, accountID: 3, label: "alice@example.com", companySlug: "acme",
+                                 status: "error", error: "company_changed_app")
+        appState.companyRowAction(.relogin, account: changed)
+        await fake.signal.until { fake.invocations.contains { $0.args.starts(with: ["company", "inspect"]) } }
+        XCTAssertEqual(fake.invocations.last?.args, ["company", "inspect", "--json", "--slug", "acme"])
+        fake.sessions.last?.exit(code: 1)
+        await untilObserved { appState.companyConnect?.isRunning == false }
+
+        let untied = AccountRef(vendor: .slack, accountID: 2, label: "acme-labs", companySlug: "", status: "error",
+                                error: "unknown_client")
+        var pastedHere = 0
+        appState.companyRowAction(.pasteCode, account: untied) { pastedHere += 1 }
+        XCTAssertEqual(pastedHere, 1)
+        XCTAssertFalse(appState.companiesZone.codeFieldOpen, "the detail's own field took it")
+
+        appState.openConnections(.linear)
+        appState.companyRowAction(.pasteCode, account: untied)
+        XCTAssertTrue(appState.companiesZone.codeFieldOpen)
+        XCTAssertNil(appState.selectedConnection, "the overview, where the field is")
+    }
+
+    /// The overview's code field reaches the connect flow's paste: a wrong
+    /// text stays under the field and nothing opens.
+    func testZoneCodeReachesPaste() async {
+        let (appState, _) = Self.wired()
+        appState.companiesZone.openCodeField()
+        appState.companiesZone.code = "hello"
+        appState.companiesZoneActions.submitCode()
+        await untilObserved { appState.companiesZone.codeError != nil }
+        XCTAssertEqual(appState.companiesZone.codeError, CompanyConnectFlowModel.codeInvalid)
+        XCTAssertEqual(appState.companyConnect?.phase, .idle)
+    }
+
     /// No company and no workspace: the plain empty line and Add.
     func testNoCompanyNoWorkspaceIsTheEmptyLine() throws {
         let (appState, _) = Self.wired()
