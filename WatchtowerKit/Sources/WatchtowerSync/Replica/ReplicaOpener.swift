@@ -93,11 +93,15 @@ public final class EnvelopeReplicaOpener: ReplicaOpening {
         return try openKeyboxFrame(envelope, context: Self.context(wireName)).keybox
     }
 
-    /// Sealed to this device's `dev_kx`, signed by `hub_sig`; the frame's payload is the RelayCoder `Keybox`.
+    /// Signed by `hub_sig` and sealed to one of this device's keys, tried in order (relay client Phase 5): the
+    /// offered ephemeral key, the current one, then `dev_kx`; the frame's payload is the RelayCoder `Keybox`.
     private func openKeyboxFrame(_ envelope: Data, context: EnvelopeContext) throws -> (frame: InnerFrame, keybox: Keybox) {
         let hubUUID = try WireBytes.hubUUID(hubID)
+        let ephemeral = try keys.hubLink(hubID).map { link in
+            try [link.offeredKX, link.currentKX].compactMap { try $0?.agreementKey() }
+        } ?? []
         let frame = try SealedBox.open(
-            envelope, envelopeClass: .keybox, recipient: try keys.identity().agreement,
+            envelope, envelopeClass: .keybox, recipients: ephemeral + [try keys.identity().agreement],
             info: SealedBox.keyboxInfo(hubID: hubUUID, deviceID: deviceID), context: context,
             verifier: try hubSigningKey()
         ).frame
@@ -150,8 +154,14 @@ public final class EnvelopeReplicaOpener: ReplicaOpening {
         return keys
     }
 
+    /// The p2h key of `epoch` by the link's rule (`storedRelayKeys(epoch:)`): the stored pair, else the static key.
+    /// An epoch whose keys are gone for good falls back to the static key: a row sealed before the link took part in
+    /// the ephemeral scheme still opens, and one sealed with a dropped pair fails as `authenticationFailed`.
     private func relayKey(epoch: UInt32) throws -> SymmetricKey {
         let link = try link()
+        do {
+            if let pair = try link.storedRelayKeys(epoch: epoch) { return SymmetricKey(data: pair.p2h) }
+        } catch SecureTransportError.epochKeysGone, SecureTransportError.epochKeysPending {}
         let hubPublic: Curve25519.KeyAgreement.PublicKey
         do { hubPublic = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: link.hubAgreementKey) } catch {
             throw KeyStoreError.corrupt("hub agreement key does not parse")

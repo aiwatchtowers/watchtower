@@ -1173,9 +1173,15 @@ final class WorkbenchBoardViewModel {
     }
 
     /// Returns once every write queued so far has landed or failed, its
-    /// reload and hooks done (tests; a synchronous caller queued it).
+    /// reload and hooks done (tests; a synchronous caller queued it) — and
+    /// every description save has settled its draft, which it does after its
+    /// write landed, in its own task.
     func writesSettled() async {
         await writes.idle()
+        while let saving = savingDescriptions.values.first {
+            _ = await saving.task.value
+            await writes.idle()
+        }
     }
 
     /// Every owner write goes through here, queued in the chain right away:

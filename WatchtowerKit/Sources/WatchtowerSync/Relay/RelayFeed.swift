@@ -17,10 +17,13 @@ public enum DesktopReachability: Equatable, Sendable {
 /// fans records out in-process —
 /// - `action` echoes → `ActionOutbox.applyEcho` (own still-`pending`
 ///   enqueues reflecting back are skipped),
-/// - `recording_upload` echoes → the `RecordingUploadAcking` seam,
+/// - `recording_upload` echoes → the `RecordingUploadAcking` seam, `chat_attachment` echoes → `ChatAttachmentAcking`,
 /// - hub `control` records (relay client Phase 1) → `resend_from` to
-///   `ActionOutbox.resendFrom`, `transport_switch_rejected` logged; both read
-///   once (`handled_controls`) and deleted. `transport_switched` and
+///   `ActionOutbox.resendFrom`, `transport_switch_rejected` to the rejection
+///   handler (relay client Phase 3b: the session's upgrade to the relay; with
+///   none set it is only logged); both read once (`handled_controls`) and
+///   deleted, a rejection only once its handler returned true (else it stays
+///   and is handed again at every later cycle, as a transport control). `transport_switched` and
 ///   `hub_on_relay` go to the transport handler (relay client Phase 3, which
 ///   ends Phase 1 Ruling 9): marked handled and deleted only once it returns
 ///   true, else left in the mailbox and handed again at every later cycle
@@ -64,6 +67,22 @@ public enum DesktopReachability: Equatable, Sendable {
 /// `SecureTransportError.keysUnavailable`: the cycle fails with the token
 /// untouched, so the same batch replays after unlock (Review Focus 1). An
 /// older version of an echo already seen is dropped by the rollback guard.
+///
+/// Weekly key rotation (relay client Phase 5, "The phone's rule for a relay
+/// key"): a record in an epoch above the phone's newest (`epochKeysPending`)
+/// is waited for as a lock is (the cycle throws `keysUnavailable`, the token
+/// stays), for at most `SecureTransport.keyboxWaitCap` from the first sighting
+/// (`relay_wait_since`); then the feed parks: no fetch until
+/// `resumeIfParked()` (a merge, a foreground) or a new feed (a launch), and
+/// `relay_feed_parked_since` tells Now. Nothing is skipped: every record is read
+/// in order once the keys come. While `SecureTransport.waitsForKeybox` is false
+/// (no key source) it stops at once, with no mark. A batch read with no pending
+/// record ends the wait and the mark; a resume alone keeps the mark. Hours the
+/// keychain stays locked count toward the cap, as the plan's hour from the first
+/// sighting does (F26: a phone locked between uses still parks and Now says so). A hub record in an epoch the phone will
+/// never hold is dropped (`epochGone`) and, once per batch, every unechoed
+/// action is queued again (`requeueUnechoedAfterDrop`), so a lost echo or a
+/// lost `resend_from` is recovered.
 public actor RelayFeed {
     /// The desktop refreshes its heartbeat every 15 min; the phone shows the
     /// Mac online while the heartbeat is UNDER 35 min (2100 s) old — one
@@ -81,6 +100,8 @@ public actor RelayFeed {
     /// (hub echoes are re-read from scratch only via token reset) — so the
     /// uploader must ship wired wherever the Record UI ships.
     private let uploads: (any RecordingUploadAcking)?
+    /// Receives `chat_attachment` echoes (`applied` / `failed`); nil drops them with a log line.
+    private let chatUploads: (any ChatAttachmentAcking)?
     /// Wraps CloudKitTransport.pull() at composition time; nil in tests
     /// (InMemoryCloudTransport has no engine to nudge).
     private let pull: (@Sendable () async throws -> Void)?
@@ -99,7 +120,11 @@ public actor RelayFeed {
     private let onHubOnRelay: (@Sendable () async -> Void)?
     /// Decides a `transport_switched` or `hub_on_relay` control (the session's transport follower); true = handled.
     private var transportHandler: (@Sendable (ControlPayload) async -> Bool)?
-    /// Transport controls the handler has not decided yet, by control id, with their record: handed again each cycle.
+    /// Decides a `transport_switch_rejected` (the session's upgrade to the relay); true = handled. With none set, a
+    /// rejection is read, logged and deleted (no switch was asked).
+    private var rejectionHandler: (@Sendable (ControlPayload) async -> Bool)?
+    /// Transport controls and rejections a handler has not decided yet, by control id, with their record: handed
+    /// again each cycle.
     private var undecided: [String: (control: ControlPayload, record: CloudRecord)] = [:]
     /// When a hub control is marked handled (its id is kept 15 days).
     private let now: @Sendable () -> Date
@@ -107,6 +132,16 @@ public actor RelayFeed {
     /// The currently-running cycle, if any. Concurrent `pollOnce` callers
     /// await this instead of starting their own — see `pollOnce`.
     private var inFlight: Task<Int, Error>?
+    /// Told when a caller joins the running cycle instead of starting one; tests replace it.
+    private var onJoin: @Sendable () -> Void = {}
+    /// Told when `pollFresh` waits out the running cycle instead of joining it; tests replace it.
+    private var onWaitOut: @Sendable () -> Void = {}
+    /// No fetch until `resumeIfParked()`: the feed waited its cap for a keybox, or has no key source (relay client
+    /// Phase 5). In memory only, so a launch reads again.
+    private var parked = false
+    /// Counts `resumeIfParked()` calls: a cycle parks only when none came while it read, so a merge's resume is never
+    /// undone by a read that started before the keys were there.
+    private var resumes = 0
     /// Unknown record kinds already warned about — log once per kind per feed
     /// instance (a newer desktop may ship kinds this build does not know).
     private(set) var loggedUnknownKinds: Set<String> = []
@@ -120,6 +155,7 @@ public actor RelayFeed {
         store: ReplicaStore,
         outbox: ActionOutbox,
         uploads: (any RecordingUploadAcking)? = nil,
+        chatUploads: (any ChatAttachmentAcking)? = nil,
         pull: (@Sendable () async throws -> Void)? = nil,
         onActionApplied: (@Sendable () async -> Void)? = nil,
         onHubOnRelay: (@Sendable () async -> Void)? = nil,
@@ -129,6 +165,7 @@ public actor RelayFeed {
         self.store = store
         self.outbox = outbox
         self.uploads = uploads
+        self.chatUploads = chatUploads
         self.pull = pull
         self.onActionApplied = onActionApplied
         self.onHubOnRelay = onHubOnRelay
@@ -140,7 +177,15 @@ public actor RelayFeed {
         transportHandler = handler
     }
 
+    /// Sets (or clears) the rejection handler: the session's upgrade to the relay (relay client Phase 3b Task 19).
+    public func setRejectionHandler(_ handler: (@Sendable (ControlPayload) async -> Bool)?) {
+        rejectionHandler = handler
+    }
+
     // MARK: - One cycle
+
+    func observeJoins(_ onJoin: @escaping @Sendable () -> Void) { self.onJoin = onJoin }
+    func observeWaitOuts(_ onWaitOut: @escaping @Sendable () -> Void) { self.onWaitOut = onWaitOut }
 
     /// One relay cycle: optional engine pull, read relay-zone changes since
     /// the persisted relay token, route every record, persist the new token.
@@ -155,18 +200,48 @@ public actor RelayFeed {
     @discardableResult
     public func pollOnce() async throws -> Int {
         if let inFlight {
+            onJoin()
             return try await inFlight.value
         }
-        let task = Task { try await self.performPoll() }
+        // The cycle clears itself on the actor before it ends, so a caller resuming from its result never finds it
+        // still in flight (`pollFresh`).
+        let task = Task {
+            defer { inFlight = nil }
+            return try await self.performPoll()
+        }
         inFlight = task
-        defer { inFlight = nil }
         return try await task.value
     }
 
+    /// One cycle begun after this call: what was buffered before it is routed by the time it returns. A running cycle
+    /// may have read its batch before that (a fetch's own pull buffered a control the cycle never saw), so it is waited
+    /// out, never joined; a cycle started after it ended began after this call and is joined. The count includes the
+    /// waited-out cycle's, which may have routed what this call's caller pulled.
+    @discardableResult
+    public func pollFresh() async throws -> Int {
+        var waitedOut = 0
+        if let running = inFlight {
+            onWaitOut()
+            // Only its end matters here: the cycle's own caller gets and reports its error.
+            waitedOut = (try? await running.value) ?? 0
+        }
+        return try await pollOnce() + waitedOut
+    }
+
     private func performPoll() async throws -> Int {
+        guard !parked else { return 0 }
+        let resumesAtStart = resumes
         try await pull?()
         let since = try store.relayToken()
-        let batch = try await transport.changes(in: .relay, since: since)
+        let batch: CloudChangeBatch
+        let epochGone: Int
+        do {
+            (batch, epochGone) = try await transport.relayChanges(since: since)
+        } catch SecureTransportError.epochKeysPending {
+            try waitForKeybox(resumesAtStart: resumesAtStart)
+            throw SecureTransportError.keysUnavailable
+        }
+        try store.endRelayWait()
         // Before the batch: a control the handler left undecided is handed again (the paying check answers now).
         await deleteRead(try await retryUndecided())
         // Monotonic stale-batch drop, mirroring ReplicaStore.apply — but
@@ -189,6 +264,8 @@ public actor RelayFeed {
             if let delete = outcome.delete { deletes.append(delete) }
         }
 
+        // Before the token moves: a requeue that fails replays the batch, so the drop is never lost.
+        if epochGone > 0 { try await outbox.requeueUnechoedAfterDrop() }
         if try store.setRelayToken(batch.newToken) {
             await deleteRead(deletes)
             await compactConsumedRelay(keepSince: batch.newToken)
@@ -202,6 +279,41 @@ public actor RelayFeed {
             Task { await onActionApplied() }
         }
         return echoes
+    }
+
+    // MARK: - Waiting for a keybox (relay client Phase 5)
+
+    /// A record of the batch waits for a keybox: the first sighting is recorded; past `keyboxWaitCap` the feed parks
+    /// and marks it. With no key source it parks at once, with no mark and no sighting. Never parks when a resume came
+    /// since this cycle started (`resumesAtStart`): the next cycle reads again. Synchronous on purpose: no suspension
+    /// between the check and the park, so a resume cannot land in between.
+    private func waitForKeybox(resumesAtStart: Int) throws {
+        guard resumes == resumesAtStart else { return }
+        guard transport.waitsForKeybox() else {
+            parked = true
+            logger.notice("relay feed stopped: a record waits for a keybox and none can come")
+            return
+        }
+        let since = try store.startRelayWait(at: now())
+        guard now().timeIntervalSince(since) >= SecureTransport.keyboxWaitCap else { return }
+        try store.markRelayFeedParked(at: now())
+        parked = true
+        logger.notice("relay feed parked: no keybox for a newer epoch within the wait cap")
+    }
+
+    /// Reads again after a park: the next cycle fetches. Called on a merge, a return to the foreground and when a
+    /// key source comes back. The parked mark and the wait's first sighting stay: a read with no pending record ends
+    /// both (`endRelayWait`); if the record still waits, the feed parks again after one read, the mark unchanged.
+    public func resumeIfParked() {
+        resumes += 1
+        parked = false
+    }
+
+    /// The phone's key source is gone (relay client Phase 5: a lapse, a lost slot, the hub's word that it runs without
+    /// this phone): the parked mark and the wait's first sighting go, so Now shows no parked row; with
+    /// `waitsForKeybox` false the feed then stops at a pending record with no mark (`waitForKeybox`).
+    public func keySourceGone() throws {
+        try store.endRelayWait()
     }
 
     /// Drops the consumed relay buffer (events at or below the token just
@@ -288,12 +400,28 @@ public actor RelayFeed {
             }
             try await uploads.applyEcho(upload)
             return Routed(echoes: 1)
+        case .chatAttachment:
+            return try await routeChatAttachment(record)
         case nil:
             if loggedUnknownKinds.insert(record.kind).inserted {
                 logger.warning("unknown relay record kind ignored: \(record.kind, privacy: .public)")
             }
         }
         return Routed()
+    }
+
+    /// A `chat_attachment` record: the hub's verdict goes to `chatUploads`; a pending one is our own upload
+    /// reflecting back.
+    private func routeChatAttachment(_ record: CloudRecord) async throws -> Routed {
+        guard let upload = decode(ChatAttachmentUploadPayload.self, from: record), upload.status != .pending else {
+            return Routed()
+        }
+        guard let chatUploads else {
+            logger.warning("chat attachment echo skipped, no consumer wired: \(record.recordName, privacy: .public)")
+            return Routed()
+        }
+        try await chatUploads.applyEcho(upload)
+        return Routed(echoes: 1)
     }
 
     /// Hands every undecided transport control to the handler again; returns the deletes of the ones it decided.
@@ -313,13 +441,17 @@ public actor RelayFeed {
         case other(handler: SideHandler)
     }
 
-    /// One `transport_switched` or `hub_on_relay` to the handler: marked handled and its delete returned once it
-    /// decided; else kept for the next cycle (nil).
+    /// One `transport_switched` or `hub_on_relay` to the transport handler (a `transport_switch_rejected` to the
+    /// rejection handler, wherever it was read): marked handled and its delete returned once it decided; else kept
+    /// for the next cycle (nil).
     private func decideTransport(
         _ control: ControlPayload, record: CloudRecord, reading: Reading = .own
     ) async throws -> ConditionalDelete? {
         let decided: Bool
         switch reading {
+        case _ where control.kind == .transportSwitchRejected:
+            decided = await rejectionHandler?(control) ?? false
+            if !decided, case .own = reading { undecided[control.id] = (control, record) }
         case .own:
             decided = await transportHandler?(control) ?? false
             if !decided { undecided[control.id] = (control, record) }
@@ -353,6 +485,10 @@ public actor RelayFeed {
             return Self.delete(record)
         }
         switch control.kind {
+        case .transportSwitchRejected where rejectionHandler != nil:
+            // A second copy (the other mailbox's, a re-read) is deleted unread.
+            if try store.isControlHandled(id: control.id) { return Self.delete(record) }
+            return try await decideTransport(control, record: record, reading: reading)
         case .resendFrom, .transportSwitchRejected:
             // A second copy of a control already handled is deleted unread.
             if try store.isControlHandled(id: control.id) { return Self.delete(record) }
@@ -366,7 +502,7 @@ public actor RelayFeed {
                     logger.warning("resend_from \(control.id, privacy: .public) without a seq dropped")
                 }
             } else {
-                // Phase 1 never asks for a switch, so there is nothing to stop waiting for.
+                // No rejection handler: nothing on this phone asks for a switch, so there is nothing to stop waiting for.
                 logger.notice("transport_switch_rejected \(control.id, privacy: .public) read; no switch was asked")
             }
             _ = try store.markControlHandled(id: control.id, at: now())
@@ -397,23 +533,27 @@ public actor RelayFeed {
         /// Every hub record was handled and everything left was deleted.
         case drained
         /// Something stays (a transport control the follower left undecided, a record that changed since it was
-        /// read, one without a known wire name): drained again on a later pass.
+        /// read, one without a known wire name, one waiting for its keybox): drained again on a later pass.
         case incomplete
         /// The transport refused the deletes (sim rule 16: a lapsed or forbidden relay account).
         case refused(TransportRefusal)
     }
 
     /// Rule 12: one controls-only pass over another transport's mailbox (`side`, already pulled by the caller):
-    /// every `transport_switched` and `hub_on_relay` there goes to `handler`, through the same read-once ledger as
-    /// this feed's own controls, and is deleted there once decided. Nothing else is read, written or deleted, and no
+    /// every `transport_switched` and `hub_on_relay` there goes to `handler`, and every `transport_switch_rejected`
+    /// to the rejection handler while one is set (an upgrade's request is answered in the mailbox the hub read it
+    /// in), through the same read-once ledger as this feed's own controls, and is deleted there once decided. Nothing else is read, written or deleted, and no
     /// change token is kept (each pass reads the whole mailbox; the ledger makes it idempotent). Returns how many
     /// controls it deleted.
     @discardableResult
     public func readControls(over side: SecureTransport, handler: @escaping SideHandler) async throws -> Int {
         var deletes: [ConditionalDelete] = []
+        // A record waiting for its epoch's keybox holds nothing back (relay client Phase 5): the controls behind it are
+        // read now, and it stays for a later pass, once its keys come (no token: each pass reads the whole mailbox).
         for record in try await side.relayHygieneScan().opened where record.kind == RelayRecordKind.control.rawValue {
             guard let control = decode(ControlPayload.self, from: record),
-                  control.kind == .transportSwitched || control.kind == .hubOnRelay else { continue }
+                  control.kind == .transportSwitched || control.kind == .hubOnRelay
+                    || (control.kind == .transportSwitchRejected && rejectionHandler != nil) else { continue }
             if let delete = try await read(control, record: record, reading: .other(handler: handler)) {
                 deletes.append(delete)
             }
@@ -428,7 +568,8 @@ public actor RelayFeed {
     /// phone's own leftovers included, except its `device` record when `keepingDeviceRecord` (CloudKit: both hubs'
     /// cleanup keeps that lane). Nothing is written there: a `resend_from` read there resends on this feed's own
     /// outbox, never on `side`. A record that does not open (another phone's on a shared CloudKit zone, a hello, or
-    /// one sealed in an epoch whose keys are gone) is counted in the log and skipped. A throw (a locked keychain, the
+    /// one sealed in an epoch whose keys are gone) is counted in the log and skipped. One sealed in an epoch whose keybox
+    /// has not come stays, unhandled, and keeps the drain `incomplete`. A throw (a locked keychain, the
     /// transport unreachable) leaves the rest for a later pass. An `applied` echo settled here fires
     /// `onActionApplied` once, after the deletes, as a poll does.
     public func drainMailbox(
@@ -438,8 +579,12 @@ public actor RelayFeed {
         if !scan.unopenable.isEmpty {
             logger.notice("left mailbox: \(scan.unopenable.count, privacy: .public) records do not open, skipped")
         }
+        if scan.pending > 0 {
+            logger.notice("left mailbox: \(scan.pending, privacy: .public) records wait for their keybox, kept")
+        }
         var deletes: [ConditionalDelete] = []
-        var complete = true
+        // A record waiting for its keybox stays, unhandled: the mailbox is not drained while it is there.
+        var complete = scan.pending == 0
         var appliedEcho = false
         for record in scan.opened {
             if record.sealed?.envelopeClass == .relayToPhone {
@@ -487,7 +632,9 @@ public actor RelayFeed {
         }
         guard let control = decode(ControlPayload.self, from: record) else { return (true, false) }
         let delete = try await read(control, record: record, reading: .other(handler: handler))
-        return (delete != nil || !(control.kind == .transportSwitched || control.kind == .hubOnRelay), false)
+        let decides = control.kind == .transportSwitched || control.kind == .hubOnRelay
+            || (control.kind == .transportSwitchRejected && rejectionHandler != nil)
+        return (delete != nil || !decides, false)
     }
 
     /// The control names `ours`: an absent id names nobody; while ours is unknown it cannot be told apart, so the

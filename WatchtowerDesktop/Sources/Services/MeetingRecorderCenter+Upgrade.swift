@@ -115,4 +115,53 @@ extension MeetingRecorderCenter {
         }
         return byName.keys.sorted { recoverySortKey($0) < recoverySortKey($1) }.compactMap { byName[$0] }
     }
+
+    /// Cancels Desktop's own processing of these phone recordings (audio
+    /// file names) before the Go hub adopts them (go hub plan 3 Task 22): a
+    /// queued job is withdrawn, a transcribing one cancelled, both awaited
+    /// until their tasks end; a failed job and a recovered entry are dropped.
+    /// A job whose save already started finishes (the save removes its row).
+    /// None of them is resumed, completed or offered again this run, and
+    /// their `pending_transcripts` rows stay until the Go hub took the
+    /// recordings (`forgetPhoneRecordings`) or gave them back
+    /// (`releasePhoneRecordings`). Idempotent: a second call finds nothing
+    /// left to stop.
+    func cancelPhoneRecordingJobs(audioNames: [String]) async {
+        let names = Self.phoneNames(audioNames)
+        guard !names.isEmpty else { return }
+        let withdrawn = withdrawPhoneRecordingJobs(names)
+        for task in withdrawn.cancelled + withdrawn.saving { await task.value }
+        // A save that failed leaves a failed job: it goes now too.
+        if !withdrawn.saving.isEmpty { _ = withdrawPhoneRecordingJobs(names) }
+    }
+
+    /// The Go hub took these recordings: their rows go (the audio moved
+    /// with them).
+    func forgetPhoneRecordings(audioNames: [String]) async {
+        guard let store = pendingStore else { return }
+        for name in Self.phoneNames(audioNames).sorted() {
+            do {
+                try await store.remove(recording: name)
+            } catch {
+                print("[MeetingRecorder] could not remove an adopted phone recording's row: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// The adoption failed for good: these recordings are Desktop's again,
+    /// offered like any recording found at launch.
+    func releasePhoneRecordings(audioNames: [String]) async {
+        let names = Self.phoneNames(audioNames)
+        guard !names.isEmpty, let store = pendingStore else { return }
+        uncancelPhoneRecordings(names)
+        let busy = Set(jobs.map(\.audioURL))
+        for entry in Self.recoverable(in: recordingsDirectory, store: store)
+        where names.contains(entry.audioURL.lastPathComponent) && !busy.contains(entry.audioURL) {
+            addRecoverable(entry)
+        }
+    }
+
+    private static func phoneNames(_ audioNames: [String]) -> Set<String> {
+        Set(audioNames.map { ($0 as NSString).lastPathComponent }.filter { !$0.isEmpty })
+    }
 }

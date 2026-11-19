@@ -1,4 +1,5 @@
 import XCTest
+import WatchtowerChatText
 @testable import WatchtowerCore
 
 /// `internal/chat/questions_contract.md` is the Go prompt's question-card

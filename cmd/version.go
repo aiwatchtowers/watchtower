@@ -6,10 +6,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/docs/guide"
+	"watchtower/internal/hub"
 )
 
 var (
-	Version   = "0.27.0"
+	Version   = "0.28.4"
 	Commit    = "unknown"
 	BuildDate = "unknown"
 	// BuildFlavor names the build profile the artifact was produced with
@@ -18,9 +19,12 @@ var (
 	BuildFlavor = ""
 )
 
-// The guide's links follow the release tag of a clean version (ldflags set
-// Version before any init runs).
-func init() { guide.Version = Version }
+// The guide's links follow the release tag of a clean version, and the hub's
+// heartbeat names the build flavor (ldflags set both before any init runs).
+func init() {
+	guide.Version = Version
+	hub.BuildFlavor = BuildFlavor
+}
 
 var versionCmd = &cobra.Command{
 	Use:   "version",

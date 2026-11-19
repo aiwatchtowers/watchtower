@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/pricing"
 )
 
 // testWorkbenchID stands for a workbench id; agentlog.db has no projects table.
@@ -278,7 +280,7 @@ func TestRepriceAgentLogEvents_SlicesAndPartialFailure(t *testing.T) {
 	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 1}, ExpectOffset: -1,
 		Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", pid)}, Events: evs})
 	require.NoError(t, err)
-	price := func(string, string, int64, int64, int64, int64, int64) (float64, bool) { return 1, true }
+	price := func(string, string, string, int64, int64, int64, int64, int64) (float64, bool) { return 1, true }
 	_, err = d.Exec(`CREATE TRIGGER test_fail_reprice BEFORE UPDATE OF price_version ON agent_log_events
 		WHEN NEW.key = 'md:r' BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END`)
 	require.NoError(t, err)
@@ -404,4 +406,125 @@ func TestUpsertAgentSubagent_WritesOnlyOnChange(t *testing.T) {
 	wrote, err = d.UpsertAgentSubagent(a)
 	require.NoError(t, err)
 	assert.False(t, wrote)
+}
+
+// Spec 2026-11-03 §4.7: a reprice prices each row by its session's agent; a
+// Claude row gets exactly its value before, a Codex row the Codex formula.
+func TestRepriceAgentLogEvents_PerAgent(t *testing.T) {
+	d := openTestDB(t)
+	pid := testWorkbenchID
+	claude := apiCall("s-claude", "m1:r1", 50)
+	claude.CacheReadTokens, claude.CacheWrite5mTokens, claude.PriceVersion = 30, 7, 1
+	claude.CostUSD, _ = pricing.Cost(claude.Name, "", claude.InputTokens, claude.OutputTokens, 30, 7, 0)
+	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 1}, ExpectOffset: -1,
+		Sessions: []AgentLogSession{agentSession("s-claude", "2026-10-01T10:00:00Z", pid)}, Events: []AgentLogEvent{claude}})
+	require.NoError(t, err)
+	cs := agentSession("s-codex", "2026-10-01T10:00:00Z", pid)
+	cs.Agent = "codex"
+	codex := AgentLogEvent{SessionUUID: "s-codex", Key: "api_call:codex:l/1", Kind: "api_call", TS: "2026-10-01T10:00:00Z",
+		Name: "gpt-5.6-sol", InputTokens: 300, OutputTokens: 20, CacheReadTokens: 600, CacheWrite5mTokens: 100,
+		CostEstimated: true, PriceVersion: 1, SrcPath: "/x/r.jsonl"}
+	_, err = d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/r.jsonl", Agent: "codex", ReadOffset: 1}, ExpectOffset: -1,
+		Sessions: []AgentLogSession{cs}, Events: []AgentLogEvent{codex}})
+	require.NoError(t, err)
+
+	price := func(agent, model, speed string, in, out, cr, cw5, cw1 int64) (float64, bool) {
+		if agent == "codex" {
+			return pricing.CodexCost(model, in, out, cr, cw5+cw1)
+		}
+		return pricing.Cost(model, speed, in, out, cr, cw5, cw1)
+	}
+	n, err := d.RepriceAgentLogEvents(2, price)
+	require.NoError(t, err)
+	assert.Equal(t, 2, n)
+	read := func(key string) (usd float64, est bool) {
+		require.NoError(t, d.QueryRow(`SELECT cost_usd, cost_estimated FROM agent_log_events WHERE key = ?`, key).Scan(&usd, &est))
+		return
+	}
+	usd, est := read("m1:r1")
+	assert.Equal(t, claude.CostUSD, usd, "a Claude row keeps exactly its value")
+	assert.False(t, est)
+	want, _ := pricing.CodexCost("gpt-5.6-sol", 300, 20, 600, 100)
+	usd, est = read("api_call:codex:l/1")
+	assert.InDelta(t, want, usd, 1e-12)
+	assert.Positive(t, usd)
+	assert.False(t, est, "a table model is priced, not estimated")
+}
+
+// Spec 2026-11-03 §4.7: a spawn link to a call stored by an earlier slice
+// sets spawned_agent_id on that row and touches nothing else; a spawn whose
+// call was never stored writes no row. A link whose session row does not
+// exist is skipped; a spawn link keeps the smaller depth.
+func TestApplyAgentLogBatch_SpawnLinkFillsStoredCall(t *testing.T) {
+	d := openTestDB(t)
+	pid := testWorkbenchID
+	s := agentSession("root", "2026-10-01T10:00:00Z", pid)
+	s.Agent = "codex"
+	call := AgentLogEvent{SessionUUID: "root", Key: "tool:codex:c1", Kind: "tool", TS: "2026-10-01T10:00:01Z",
+		Name: "spawn_agent", Outcome: "ok", SrcPath: "/x/r.jsonl", SrcOffset: 10}
+	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/r.jsonl", Agent: "codex", ReadOffset: 1}, ExpectOffset: -1,
+		Sessions: []AgentLogSession{s}, Events: []AgentLogEvent{call}})
+	require.NoError(t, err)
+
+	_, err = d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/r.jsonl", Agent: "codex", ReadOffset: 2}, ExpectOffset: 1,
+		Spawns: []AgentSpawn{{Key: "tool:codex:c1", AgentID: "child"}, {Key: "tool:codex:absent", AgentID: "other"}},
+		Subagents: []AgentSubagent{
+			{SessionUUID: "root", AgentID: "child", Depth: 2, SpawnLink: true},
+			{SessionUUID: "missing", AgentID: "orphan", Depth: 1, SpawnLink: true},
+		}})
+	require.NoError(t, err)
+	var spawned, ts, outcome string
+	var off int64
+	require.NoError(t, d.QueryRow(`SELECT spawned_agent_id, ts, outcome, src_offset FROM agent_log_events WHERE key = 'tool:codex:c1'`).
+		Scan(&spawned, &ts, &outcome, &off))
+	assert.Equal(t, "child", spawned)
+	assert.Equal(t, call.TS, ts)
+	assert.Equal(t, "ok", outcome)
+	assert.Equal(t, int64(10), off)
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM agent_log_events WHERE key = 'tool:codex:absent'`).Scan(&n))
+	assert.Zero(t, n, "a spawn whose call was never stored writes no row")
+
+	// A replayed spawn of the same child one level deeper, then one level up.
+	_, err = d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/r.jsonl", Agent: "codex", ReadOffset: 3}, ExpectOffset: 2,
+		Subagents: []AgentSubagent{{SessionUUID: "root", AgentID: "child", Depth: 3, SpawnLink: true},
+			{SessionUUID: "root", AgentID: "child", Depth: 1, SpawnLink: true}}})
+	require.NoError(t, err)
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM agent_log_subagents WHERE agent_id = 'orphan'`).Scan(&n))
+	assert.Zero(t, n, "a link never orphans")
+	links, err := d.CodexSubagents("root")
+	require.NoError(t, err)
+	assert.Equal(t, []AgentSubagent{{SessionUUID: "root", AgentID: "child", Depth: 1}}, links)
+}
+
+// A sub-agent batch (Lane) times only its own lane's tool rows: a forked
+// child replaying its parent's result under the same root session never
+// re-times the parent's call, but still fills a row left pending.
+func TestApplyAgentLogBatch_LaneTimesOnlyItsRows(t *testing.T) {
+	d := openTestDB(t)
+	s := agentSession("root", "2026-10-01T10:00:00Z", testWorkbenchID)
+	s.Agent = "codex"
+	mk := func(key string) AgentLogEvent {
+		return AgentLogEvent{SessionUUID: "root", Key: key, Kind: "tool", TS: "2026-10-01T10:00:01Z", Name: "Bash", Outcome: "pending"}
+	}
+	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/r.jsonl", Agent: "codex", ReadOffset: 1}, ExpectOffset: -1,
+		Sessions: []AgentLogSession{s}, Events: []AgentLogEvent{mk("tool:codex:a"), mk("tool:codex:b")},
+		ToolResults: []AgentToolResult{{ToolUseID: "codex:a", TS: "2026-10-01T10:00:02Z", Outcome: "ok"}}})
+	require.NoError(t, err)
+	_, err = d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/c.jsonl", Agent: "codex", ReadOffset: 1}, ExpectOffset: -1,
+		Lane: "child", ToolResults: []AgentToolResult{
+			{ToolUseID: "codex:a", TS: "2026-10-01T10:09:00Z", Outcome: "error", ErrorClass: "exit_code"},
+			{ToolUseID: "codex:b", TS: "2026-10-01T10:09:00Z", Outcome: "ok"},
+		}})
+	require.NoError(t, err)
+	read := func(key string) (outcome string, dur sql.NullInt64) {
+		require.NoError(t, d.QueryRow(`SELECT outcome, duration_ms FROM agent_log_events WHERE key = ?`, key).Scan(&outcome, &dur))
+		return
+	}
+	outcome, dur := read("tool:codex:a")
+	assert.Equal(t, "ok", outcome)
+	assert.Equal(t, int64(1000), dur.Int64, "the parent's call keeps its own timing")
+	outcome, dur = read("tool:codex:b")
+	assert.Equal(t, "ok", outcome, "a pending row is still filled")
+	assert.False(t, dur.Valid && dur.Int64 > 0, "never timed by another lane's copy")
 }

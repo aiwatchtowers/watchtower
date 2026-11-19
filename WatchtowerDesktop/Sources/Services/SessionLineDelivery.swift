@@ -109,6 +109,10 @@ final class SessionLineDelivery {
     /// made is not a read that tries the held lines again (PROJ-16: retried
     /// on each successful state read — not on its own).
     private var ownReads = 0
+    /// Every later try of the held lines not yet ended (a test seam:
+    /// `settled`).
+    private var retries: [Int: Task<Void, Never>] = [:]
+    private var retriesStarted = 0
     /// When a line was last submitted into each session.
     private var lastSubmit: [Int64: Date] = [:]
     /// The spec review lines' own order per session: a round's findings
@@ -176,8 +180,26 @@ final class SessionLineDelivery {
     /// again — unless a delivery's own read did it (each try would set off
     /// the next one without end).
     func statesRead() {
+        // Each read tells the hosts whether a dialog is up (Go `PromptHint`).
+        terminalCenter?.syncPromptHints()
         guard ownReads == 0 else { return }
-        Task { [weak self] in await self?.deliverHeld() }
+        deliverHeldLater()
+    }
+
+    /// `deliverHeld` in a task of its own.
+    private func deliverHeldLater() {
+        retriesStarted += 1
+        let id = retriesStarted
+        retries[id] = Task { [weak self] in
+            await self?.deliverHeld()
+            self?.retries[id] = nil
+        }
+    }
+
+    /// Returns once no later try of the held lines is left, one such a try
+    /// starts included (a test seam).
+    func settled() async {
+        while let retry = retries.values.first { await retry.value }
     }
 
     /// The launch's reattach of the session host's runs is done
@@ -254,7 +276,7 @@ final class SessionLineDelivery {
             // reason of their own wait for the next state read: retrying
             // them here would only hold them again, and again after that.
             if queues[sessionID]?.contains(where: \.behindAnother) == true {
-                Task { [weak self] in await self?.deliverHeld() }
+                deliverHeldLater()
             }
         }
         // A failed read leaves the last good state, which may miss a
@@ -279,19 +301,27 @@ final class SessionLineDelivery {
             NSLog("%@: session %lld: %@ dropped — it is over", key.logSource, sessionID, key.logNoun)
             return .noSession
         }
-        let reread: () async -> Bool = { [weak self] in await self?.ownRead() ?? false }
-        let result = await center.submitPrompt(line, sessionID: sessionID, keepingLineBreaks: key.keepsLineBreaks,
-                                               keepingFormatCharacters: key.keepsFormatCharacters,
-                                               delay: center.inputProfile(sessionID).submitSettle,
-                                               refresh: reread) { [weak self] in
+        // The session host types it (`Deliver`): the pre-check and the
+        // re-check after the pause are this side's, the paste, the pause,
+        // the run and the prompt state the host's.
+        let reread: @MainActor () async -> Bool = { [weak self] in await self?.ownRead() ?? false }
+        let result = await center.deliver(line, sessionID: sessionID, keepingLineBreaks: key.keepsLineBreaks,
+                                          keepingFormatCharacters: key.keepsFormatCharacters,
+                                          delay: center.inputProfile(sessionID).submitSettle,
+                                          holdIfPromptText: key.holdsOverPromptText,
+                                          refresh: reread) { [weak self] in
             self?.mayReturn(key: key, sessionID: sessionID) ?? false
         }
         switch result {
         case .submitted:
             lastSubmit[sessionID] = now()
             return .submitted
-        case .pasted: return .typed
+        // A delivery cut off mid-way may have typed the line: the owner
+        // checks the prompt and presses Return — never "no session", which
+        // would also send the answer to the brief.
+        case .pasted, .mayBeTyped: return .typed
         case .copied: return .copied
+        case .held: return .held
         case .noSession: return .noSession
         }
     }
@@ -350,6 +380,13 @@ extension SessionLineDelivery.LineKey {
         case .input, .workchat: true
         case .ask, .review, .specReview, .specReviewQuestion: false
         }
+    }
+
+    /// Only the phone's lines are held by the host, nothing written, while
+    /// the prompt holds text (PROJ-16); every other line is typed beside
+    /// it without its Return (PROJ-12).
+    var holdsOverPromptText: Bool {
+        if case .input = self { true } else { false }
     }
 
     /// Only the Workchat's lines keep their paragraphs (owner ask #421,

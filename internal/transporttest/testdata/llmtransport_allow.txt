@@ -27,6 +27,7 @@ internal/db/chat_routing.go | (*DB).SetChatRouting | "ollama" | 1 | permanent: v
 internal/externalmcp/discover.go | discoveryTransport | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 internal/externalmcp/importsrc.go | claudeCandidate | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 internal/hub/hub.go | FromEnv | "http" | 1 | permanent: URL scheme check, not an LLM transport
+internal/hub/origin.go | CheckRelayOrigin | "http" | 1 | permanent: URL scheme check (relay origin http only for loopback), not an LLM transport
 internal/mcpoauth/discovery.go | requireSecure | "http" | 1 | permanent: URL scheme check, not an LLM transport
 internal/media/linkrule/linkrule.go | NormalizeURL | "http" | 2 | permanent: URL scheme check, not an LLM transport
 internal/media/webfetch/fetch.go | webScheme | "http" | 1 | permanent: URL scheme check, not an LLM transport

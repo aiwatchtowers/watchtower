@@ -62,6 +62,8 @@ final class SharedRelaySession: @unchecked Sendable {
     private let parts: RelayParts?
     private let lock = NSLock()
     private var built: HostedRelaySession?
+    /// The built session's `relay_auth` signer: the device record's relay-id proof (Phase 3b Task 19).
+    private var signer: (any RelaySigner)?
 
     /// `parts` is called only for a configured origin, at most once. Parts that cannot be built (a build
     /// without its Keychain group) leave the relay off, logged: the app still boots on CloudKit.
@@ -107,9 +109,10 @@ final class SharedRelaySession: @unchecked Sendable {
         return try lock.withLock {
             if let built { return built }
             let identity = KeychainRelayIdentity(backend: parts.keychain, group: parts.keychainGroup)
+            let signer = try identity.signer()
             let client = HostedRelayClient(
                 origin: origin,
-                signer: try identity.signer(),
+                signer: signer,
                 kind: .phone,
                 attestor: RelayAttestor(attest: parts.attest, keys: identity, clock: parts.clock),
                 http: parts.http,
@@ -118,8 +121,30 @@ final class SharedRelaySession: @unchecked Sendable {
             )
             let session = HostedRelaySession(client: client)
             built = session
+            self.signer = signer
             return session
         }
+    }
+
+    /// Whether this phone already holds a `relay_auth` key. Reads the Keychain and creates nothing; false while `.off`.
+    func hasIdentity() throws -> Bool {
+        guard case .available = availability, let parts else { return false }
+        if isBuilt { return true }
+        return try KeychainRelayIdentity(backend: parts.keychain, group: parts.keychainGroup).existingSigner() != nil
+    }
+
+    /// The relay account on the session (built first, so the identity is created on first use); nil while `.off`.
+    func account() throws -> HostedRelayAccount? {
+        guard let session = try session(), let parts else { return nil }
+        return HostedRelayAccount(session: session, identity: KeychainRelayIdentity(backend: parts.keychain, group: parts.keychainGroup))
+    }
+
+    /// The device record's relay fields for `hubID` and `deviceID`, signed by this phone's `relay_auth` key (the
+    /// session is built first); nil while the relay is `.off`.
+    func relayIDProof(hubID: UUID, deviceID: UUID) throws -> RelayIDClaim? {
+        guard try session() != nil, let signer = lock.withLock({ signer }) else { return nil }
+        let proof = try RelayIDProof.sign(authPub: signer.publicKey, hubID: hubID, deviceID: deviceID, sign: signer.sign)
+        return RelayIDClaim(relayDeviceID: proof.relayDeviceID, authPub: proof.authPub, sig: proof.sig)
     }
 }
 
@@ -163,5 +188,16 @@ struct HostedRelayLinkOps: RelayLinkOps {
 
     func removeSlot(mac: String) async throws {
         try await pairing().removeSlot(mac: mac)
+    }
+
+    func addSlot(mac: String) async throws {
+        try await pairing().addSlot(mac: mac)
+    }
+
+    func relayIDProof(hubID: UUID, deviceID: UUID) throws -> RelayIDClaim {
+        guard let claim = try relay.relayIDProof(hubID: hubID, deviceID: deviceID) else {
+            throw HostedRelayPairing.Refusal.unreachable
+        }
+        return claim
     }
 }

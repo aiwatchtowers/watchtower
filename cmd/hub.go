@@ -3,18 +3,20 @@ package cmd
 import (
 	"errors"
 	"fmt"
-	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/config"
 	"watchtower/internal/hub"
+	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/hub/hostkind"
 	"watchtower/internal/hub/state"
 )
 
-// hubDirEnv names the hub state dir; phase 1 has no default (the live
-// app-support folder is phase 3's), so every hub verb needs it.
+// hubDirEnv names the test-mode hub state dir; unset, the verbs work in the
+// live hub's dir on a headless host (hub.Dir).
 const hubDirEnv = hub.EnvHubDir
 
 // hubCmd is the `watchtower hub …` parent (Go hub spec §10). This file holds
@@ -37,13 +39,69 @@ var hubLockWait = 3 * time.Second
 // that goes through the running hub never calls it).
 var hubOpenState = state.Open
 
-// hubDir is WATCHTOWER_HUB_DIR, required by every hub verb in phase 1.
+// hostProbe is this host's probe for the hub verbs and the daemon's hub (a
+// test seam).
+var hostProbe = hostkind.System
+
+// errHubDesktopHost is every write's refusal on a Mac whose mobile link the
+// Watchtower app's Swift hub still runs: its state waits for the adoption,
+// and a sidecar written first would make the adoption refuse it (never two
+// hubs, spec §12.1).
+var errHubDesktopHost = errors.New("Mobile on this Mac is run by the Watchtower app.") //nolint:staticcheck // ST1005: the owner's sentence
+
+// hubDir is the dir every hub verb works in: WATCHTOWER_HUB_DIR (test mode),
+// else the live hub's dir (a headless or a desktop host).
 func hubDir() (string, error) {
-	dir := os.Getenv(hubDirEnv)
-	if dir == "" {
-		return "", fmt.Errorf("%s is not set: the hub verbs need a hub state dir in this phase", hubDirEnv)
+	dir, _, _, err := hub.Dir(hostProbe())
+	return dir, err
+}
+
+// hubMobileHubDir is the Swift hub's MobileHub/ (looked at, never opened).
+func hubMobileHubDir() (string, error) {
+	support, err := config.AppSupportDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(support, "MobileHub"), nil
+}
+
+// hubWriteDir is hubDir for a write: on a desktop host refused while the
+// Swift hub's state waits for its adoption.
+func hubWriteDir() (string, error) {
+	dir, mode, host, err := hub.Dir(hostProbe())
+	if err != nil || mode != hub.ModeLive || host != hostkind.Desktop {
+		return dir, err
+	}
+	mobile, err := hubMobileHubDir()
+	if err != nil {
+		return "", err
+	}
+	waiting, err := hub.AwaitingAdoption(dir, mobile)
+	if err != nil {
+		return "", err
+	}
+	if waiting {
+		return "", errHubDesktopHost
 	}
 	return dir, nil
+}
+
+// hubRecordingsDir is where the hub keeps the phones' recordings: the Mac's
+// <app support>/recordings (the transcriber's folder) on a desktop host's
+// live hub, else <dir>/recordings.
+func hubRecordingsDir(dir string) (string, error) {
+	_, mode, host, err := hub.Dir(hostProbe())
+	if err != nil {
+		return "", err
+	}
+	if mode == hub.ModeLive && host == hostkind.Desktop {
+		support, err := config.AppSupportDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(support, "recordings"), nil
+	}
+	return handlers.RecordingsDirUnder(dir), nil
 }
 
 // hubWrite runs one write so the sidecar never has two writers: with the
@@ -53,15 +111,24 @@ func hubDir() (string, error) {
 // error class, from the hub or from direct) comes back as an error beside
 // the answer.
 func hubWrite(req hub.ControlRequest, direct func(dir string, st *state.Store) (hub.ControlAnswer, error)) (hub.ControlAnswer, error) {
-	dir, err := hubDir()
+	dir, err := hubWriteDir()
 	if err != nil {
 		return hub.ControlAnswer{}, err
 	}
+	return hubWriteAt(dir, req, func(lock *state.Lock) (hub.ControlAnswer, error) {
+		return hubWriteDirect(dir, lock, direct)
+	})
+}
+
+// hubWriteAt is hubWrite in dir with a direct step that gets the held lock
+// (and releases it) and opens what it needs itself: `hub adopt
+// --confirm-deleted` must not create a sidecar.
+func hubWriteAt(dir string, req hub.ControlRequest, direct func(lock *state.Lock) (hub.ControlAnswer, error)) (hub.ControlAnswer, error) {
 	deadline := time.Now().Add(hubLockWait)
 	for {
 		lock, err := state.AcquireLock(dir)
 		if err == nil {
-			a, err := hubWriteDirect(dir, lock, direct)
+			a, err := direct(lock)
 			if err != nil {
 				return a, err
 			}
@@ -114,20 +181,30 @@ func hubAnswerError(a hub.ControlAnswer) error {
 		return errors.New("no recording job with that upload id")
 	case hub.ErrClassJobState:
 		return errors.New("the recording job is not in a state that allows this")
+	case hub.ErrClassNoTranscriber:
+		return state.ErrNoTranscriber
 	case hub.ErrClassBadRequest:
 		return errors.New("the hub refused the request as malformed")
 	}
 	return fmt.Errorf("the hub refused the request (%s)", a.Error)
 }
 
-// hubTestWorkspaceOK is hub.FromEnv's workspace check, which the daemon's
-// hub passes before it writes anything: false means a hub started now would
-// be refused not_test_workspace, a reason no status file ever carries.
-func hubTestWorkspaceOK() bool {
+// hubOffReason is the reason the daemon's hub in mode would stay off before
+// it writes any status (hub.OffReason: not_test_workspace, disabled,
+// policy_off, no_relay_origin; on a desktop host hub.DesktopOffReason:
+// awaiting_adoption, adoption_failed, disabled, policy_off), a reason no
+// status file carries.
+func hubOffReason(dir string, mode hub.Mode, host hostkind.Kind) string {
+	if mode == hub.ModeLive && host == hostkind.Desktop {
+		mobile, err := hubMobileHubDir()
+		if err != nil {
+			return ""
+		}
+		return hub.DesktopOffReason(dir, mobile)
+	}
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		cfg = nil
 	}
-	_, _, err = hub.FromEnv(cfg, nil)
-	return !errors.Is(err, hub.ErrNotTestWorkspace)
+	return hub.OffReason(cfg, mode)
 }

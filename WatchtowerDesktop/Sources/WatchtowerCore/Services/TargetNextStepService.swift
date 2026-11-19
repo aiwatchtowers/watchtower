@@ -13,7 +13,7 @@ package struct TargetNextStepService {
 
     package func generate(targetID: Int) async throws -> TargetNextStep {
         let args = ["targets", "next-step", "\(targetID)"]
-        let data = try await runner.run(args: args)
+        let data = try await runner.runModel(args: args, origin: .owner)
         return try JSONDecoder().decode(TargetNextStep.self, from: data)
     }
 }

@@ -11,6 +11,8 @@ struct SideMailboxTiming {
     /// How long `stop()` waits for the running look (a hung engine fetch or relay call) before it cancels it and
     /// closes the transport anyway, as `HubSession.outboxDrainCap` bounds the outbox.
     var stopLookCap: Duration = .seconds(10)
+    /// Waits out `stopLookCap` (cancelled once the look ended); tests replace it.
+    var stopLookSleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
     static let live = Self()
 }
@@ -56,6 +58,10 @@ final class SideDrainLedger {
 /// - **rule 12:** on route `.relay`, once the relay has not answered for more than 60 s (from the session's first
 ///   unanswered fetch), the CloudKit `RelayZone` is read every 30 s for controls only, which go through the session's
 ///   own `TransportFollower`.
+/// - **an open request toward iCloud** (`LinkRecord.transportRequest`, relay client Phase 4 Task 5): the hub answers in
+///   the mailbox where it read the request, and a lapsed relay's refusal counts as an answer, so rule 12's outage test
+///   would never start; the CloudKit mailbox is read every `TransportFollowerPolicy.otherMailboxEvery` while the
+///   request is open, even when the relay answers.
 ///
 /// Its transport is the other route's, built by the factory (`HubSessionFactory.makeSide`, `TransportFactory`) on
 /// that route's own store: a relay one attaches to the process's one relay session and reads over HTTPS, so it never
@@ -80,6 +86,8 @@ final class SideMailboxReader {
     private let makeTransport: @MainActor (HubRoute) throws -> SideTransport
     /// The outage bookkeeping (`relayUnreachableSince`, `otherMailboxPolledAt`) the policy keeps.
     private var outage: FollowerState?
+    /// The last read of the iCloud mailbox for an open request toward iCloud (relay client Phase 4 Task 5).
+    private var requestPolledAt: Date?
     /// The other route's transport, sealed with the session's keys, once built.
     private var side: (route: HubRoute, built: SideTransport, secure: SecureTransport)?
     private var loopTask: Task<Void, Never>?
@@ -150,7 +158,7 @@ final class SideMailboxReader {
         loopTask?.cancel()
         loopTask = nil
         wake?.cancel()
-        if let running, !(await Self.wait(for: running, cap: timing.stopLookCap)) {
+        if let running, !(await Self.wait(for: running, cap: timing.stopLookCap, sleep: timing.stopLookSleep)) {
             Self.logger.notice("side mailbox look cut off at stop")
             running.cancel()
         }
@@ -158,7 +166,9 @@ final class SideMailboxReader {
     }
 
     /// Waits for `task` up to `cap`; false when the cap passed first.
-    private static func wait(for task: Task<Void, Never>, cap: Duration) async -> Bool {
+    private static func wait(
+        for task: Task<Void, Never>, cap: Duration, sleep: @escaping @Sendable (Duration) async -> Void
+    ) async -> Bool {
         // `decided`: the first watcher has answered; `ended`: it was the task, not the cap.
         let outcome = OSAllocatedUnfairLock(initialState: (decided: false, ended: false))
         var watchers: [Task<Void, Never>] = []
@@ -173,7 +183,7 @@ final class SideMailboxReader {
             }
             watchers.append(Task { await task.value; finish(true) })
             watchers.append(Task {
-                try? await Task.sleep(for: cap)
+                await sleep(cap)
                 finish(false)
             })
         }
@@ -204,9 +214,11 @@ final class SideMailboxReader {
         // Read again: the drain may have moved the hub (a switch decided there), or a stop came meanwhile.
         guard !stopped, let link = currentLink(), let other = link.otherRoute else { return }
         if link.transport == .relay, session.route == link.route {
-            await pollIfRelayDown(other, session: session)
+            let polled = await pollIfRelayDown(other, session: session)
+            if !polled { await pollForRequest(other, session: session) }
         } else {
             outage = nil
+            requestPolledAt = nil
         }
         guard !stopped, let link = currentLink() else { return }
         if !needsSide(link) { await closeSide() }
@@ -220,6 +232,7 @@ final class SideMailboxReader {
     /// The other transport stays open only for a drain still owed or an outage going on.
     private func needsSide(_ link: LinkRecord) -> Bool {
         if let other = link.otherRoute, drainOwed(link, HubSession.transportKind(of: other)) { return true }
+        if link.transportRequest?.awaitsAnswer == true, link.transport == .relay { return true }
         return link.transport == .relay && outage?.relayUnreachableSince != nil
     }
 
@@ -303,8 +316,10 @@ final class SideMailboxReader {
 
     // MARK: - Rule 12
 
-    private func pollIfRelayDown(_ cloudKit: HubRoute, session: HubSession) async {
-        guard let availability = await session.relayAvailability(), !stopped else { return }
+    /// true when it read the CloudKit mailbox.
+    @discardableResult
+    private func pollIfRelayDown(_ cloudKit: HubRoute, session: HubSession) async -> Bool {
+        guard let availability = await session.relayAvailability(), !stopped else { return false }
         let now = timing.now()
         let reachable = availability == .available
         // The outage starts at the session's first unanswered fetch when it knows one (never in the future).
@@ -313,13 +328,33 @@ final class SideMailboxReader {
         state.route = .relay
         let (next, commands) = TransportFollowerPolicy.decide(.relayReachable(reachable, at: at), state: state, now: now)
         outage = next
-        guard commands.contains(.pollOtherMailbox(on: .cloudKit)) else { return }
+        guard commands.contains(.pollOtherMailbox(on: .cloudKit)) else { return false }
         do {
-            guard let secure = try await pulled(cloudKit, whole: false) else { return }
+            guard let secure = try await pulled(cloudKit, whole: false) else { return false }
             let read = try await session.readOtherControls(over: secure, handler: handler(on: .cloudKit))
             Self.logger.notice("relay down: \(read, privacy: .public) controls read on CloudKit")
         } catch {
             Self.logger.notice("relay down: the CloudKit mailbox was not read: \(Self.describe(error), privacy: .public)")
+        }
+        return true
+    }
+
+    /// An open request toward iCloud: the CloudKit mailbox is read every `otherMailboxEvery`, the relay answering or
+    /// not; the controls found go to the follower, a rejection to the request.
+    private func pollForRequest(_ cloudKit: HubRoute, session: HubSession) async {
+        guard currentLink()?.transportRequest?.awaitsAnswer == true else {
+            requestPolledAt = nil
+            return
+        }
+        let now = timing.now()
+        if let polled = requestPolledAt, now.timeIntervalSince(polled) < TransportFollowerPolicy.otherMailboxEvery { return }
+        requestPolledAt = now
+        do {
+            guard let secure = try await pulled(cloudKit, whole: false) else { return }
+            let read = try await session.readOtherControls(over: secure, handler: handler(on: .cloudKit))
+            Self.logger.notice("a request toward iCloud is open: \(read, privacy: .public) controls read on CloudKit")
+        } catch {
+            Self.logger.notice("a request toward iCloud is open: the CloudKit mailbox was not read: \(Self.describe(error), privacy: .public)")
         }
     }
 

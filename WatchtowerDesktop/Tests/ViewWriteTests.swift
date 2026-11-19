@@ -11,8 +11,10 @@ import WatchtowerTestSupport
 @MainActor
 final class ViewWriteTests: XCTestCase {
     /// A view's `@State`, as a reference the closures and a `Binding` share
-    /// (touched only on the main actor, hence unchecked).
-    private final class ViewState: @unchecked Sendable {
+    /// (touched only on the main actor, hence unchecked). Observable so a
+    /// test can wait for `pending` to flip instead of sleeping.
+    @Observable
+    final class ViewState: @unchecked Sendable {
         var draft = "typed by the owner"
         var collecting = true
         var pending = false
@@ -94,10 +96,13 @@ final class ViewWriteTests: XCTestCase {
                 try db.execute(sql: Self.insertChannel)
             }, onSuccess: { state.draft = "" }, onFailure: { state.error = $0.localizedDescription })
         }
-        let start = Date()
-        try await Task.sleep(for: .milliseconds(200))
-        XCTAssertLessThan(Date().timeIntervalSince(start), 1.5, "the main actor kept running while the write waited")
-        XCTAssertTrue(state.pending)
+        // The write is now pending behind the held lock. This line runs on the
+        // main actor; a write blocking the main thread would hold it back for
+        // the whole 5 s busy wait, then fail — `pending` would be false and
+        // `error` set by the time it ran.
+        await untilObserved { state.pending }
+        XCTAssertTrue(state.pending, "the main actor kept running while the write waited")
+        XCTAssertNil(state.error, "the write is still waiting, not failed")
         XCTAssertEqual(state.draft, "typed by the owner", "nothing changes before the write lands")
 
         var secondRan = false

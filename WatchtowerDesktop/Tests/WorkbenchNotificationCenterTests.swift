@@ -131,6 +131,27 @@ final class WorkbenchNotificationCenterTests: XCTestCase {
         XCTAssertTrue(notifier.sent.isEmpty)
     }
 
+    /// Go hub 3 T9: a phone close the Go hub applied is an unclaimed status
+    /// write (history actor `owner`) with no `recordOwnerWrite`; the history
+    /// alone keeps it quiet. The agent's close, the control, is announced.
+    func testAHubWrittenOwnerCloseIsNotAnnouncedWithoutOnOwnerWrite() async throws {
+        let center = makeCenter()
+        await center.poll()
+        try await write { try $0.execute(sql: "UPDATE targets SET status = 'done' WHERE id = ?", arguments: [self.targetID]) }
+        await center.poll()
+        XCTAssertEqual(notifier.sent.map(\.title), [], "the owner's own phone edit is never announced")
+
+        try await write {
+            try $0.execute(sql: "UPDATE targets SET status = 'todo' WHERE id = ?", arguments: [self.targetID])
+        }
+        await center.poll()
+        try await write {
+            try $0.execute(sql: "UPDATE targets SET status = 'done', status_actor = 'agent' WHERE id = ?", arguments: [self.targetID])
+        }
+        await center.poll()
+        XCTAssertEqual(notifier.sent.map(\.title), ["Task 1 done"])
+    }
+
     func testDisabledOrQuietHoursSendNothingButStillAdvanceTheWatermark() async throws {
         let center = makeCenter()
         await center.poll()

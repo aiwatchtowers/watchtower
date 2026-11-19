@@ -36,7 +36,7 @@ func FuzzExtractPDF(f *testing.F) {
 	allowed := map[string]bool{StatusOK: true, StatusOCRUnavailable: true, StatusFailed: true, StatusTooLarge: true}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		x := &Extractor{TempDir: filepath.Join(t.TempDir(), "extract"), PDFHelper: testHelper()}
-		r := extractWithin(t, 30*time.Second, x, "application/pdf", "f.pdf", data)
+		r := extractWithin(t, x, "application/pdf", "f.pdf", data)
 		switch {
 		case errors.Is(r.err, errPDFHelperTimeout):
 			// transient: no status, retried by the engine

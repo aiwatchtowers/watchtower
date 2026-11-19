@@ -37,20 +37,10 @@ func peopleBackoffTestSetup(t *testing.T) (*Daemon, *db.DB, *erroringGenerator) 
 
 	database := db.OpenTestDB(t)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test-ws", Domain: "test-ws"}))
-	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "general", Type: "public"}))
 
 	now := time.Now()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	base := dayStart.Add(-3 * 24 * time.Hour)
-	for u, id := range []string{"U1", "U2"} {
-		require.NoError(t, database.UpsertUser(db.User{ID: id, Name: id, DisplayName: id}))
-		for i := range 4 {
-			ts := float64(base.Add(time.Duration(u*100+i) * time.Minute).Unix())
-			require.NoError(t, database.UpsertMessage(db.Message{
-				ChannelID: "C1", TS: fmt.Sprintf("%.6f", ts), UserID: id, Text: "msg",
-			}))
-		}
-	}
+	seedPeopleOwnerAndPartner(t, database, dayStart.Add(-3*24*time.Hour))
 	_, err := database.UpsertDigest(db.Digest{
 		ChannelID: "C1", Type: "channel",
 		PeriodFrom: float64(dayStart.Add(-4 * 24 * time.Hour).Unix()),
@@ -178,7 +168,7 @@ func TestDaemon_PeopleProviderDeferredPreservesPersistentMarkers(t *testing.T) {
 			require.True(t, d.lastPeople.IsZero())
 			_, err = os.Stat(d.lastPeoplePath())
 			require.ErrorIs(t, err, os.ErrNotExist)
-			for _, id := range []string{"U1", "U2"} {
+			for _, id := range []string{"1:U1", "1:U2"} {
 				card, err := database.GetLatestPeopleCard(id)
 				require.NoError(t, err)
 				require.Nil(t, card)

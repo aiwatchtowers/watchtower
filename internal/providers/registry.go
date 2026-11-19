@@ -36,6 +36,33 @@ type Provider struct {
 	KnownModels []string `json:"-"`
 	// Caps is what the provider's transport offers (capabilities.go).
 	Caps Capabilities `json:"capabilities"`
+	// ReportName is the provider's name on the `AI:` line of
+	// `watchtower diagnostics`, and ReportOption its option in the GitHub
+	// bug form's AI provider dropdown (.github/ISSUE_TEMPLATE/bug_report.yml).
+	// Both are pinned to internal/diagnostics/text.go by
+	// TestDiagnostics_ProviderNamesPinned.
+	ReportName   string `json:"-"`
+	ReportOption string `json:"-"`
+	// Subscription is set for a provider whose runs draw on the owner's own
+	// plan; the zero value for one with none (a model server). It feeds the background
+	// AI consent text of `watchtower ai background allow` (spec
+	// 2026-11-17-background-ai-consent-design.md §5.1).
+	Subscription Subscription `json:"-"`
+}
+
+// Subscription is how the consent text names a provider that runs on the
+// owner's own plan.
+type Subscription struct {
+	// AgentName is the agent the owner runs ("Claude Code").
+	AgentName string
+	// Plan is the plan its runs draw on ("your Claude subscription").
+	Plan string
+	// Usage completes "These runs use …": the plan and the limits the runs
+	// count toward.
+	Usage string
+	// Limit names whose usage limit a switch to the reserve follows
+	// ("Claude's").
+	Limit string
 }
 
 // registry order is the display order in UIs.
@@ -47,6 +74,15 @@ var registry = []Provider{
 		DefaultLight:  "haiku",
 		DefaultStrong: "opus",
 		KnownModels:   []string{"haiku", "sonnet", "opus"},
+		ReportName:    "Claude Code",
+		ReportOption:  "Claude Code",
+		Subscription: Subscription{
+			AgentName: "Claude Code",
+			Plan:      "your Claude subscription",
+			Usage: "your own Claude subscription and count toward its usage limits, " +
+				"the same as when you use Claude Code yourself",
+			Limit: "Claude's",
+		},
 	},
 	{
 		ID:          "codex",
@@ -58,6 +94,15 @@ var registry = []Provider{
 		// one pin away in Settings.
 		DefaultLight:  "gpt-5.6-luna",
 		DefaultStrong: "gpt-5.6-sol",
+		ReportName:    "Codex",
+		ReportOption:  "Codex",
+		Subscription: Subscription{
+			AgentName: "Codex",
+			Plan:      "your ChatGPT plan",
+			Usage: "your own ChatGPT plan and count toward its Codex usage limits, " +
+				"the same as when you use Codex yourself",
+			Limit: "Codex's",
+		},
 	},
 	{
 		ID:          "ollama",
@@ -66,7 +111,9 @@ var registry = []Provider{
 		// No default model on purpose: local installs vary too much for any
 		// literal to be likely installed. Unconfigured resolves to "" and the
 		// UI/CLI surfaces prompt the user to pick from the live list.
-		LiveModels: true,
+		LiveModels:   true,
+		ReportName:   "Ollama",
+		ReportOption: "Ollama (or another local server)",
 	},
 }
 
@@ -121,6 +168,17 @@ func All() []Provider {
 	out := make([]Provider, len(registry))
 	copy(out, registry)
 	return out
+}
+
+// Lookup returns the provider registered under id exactly; ok is false for
+// an unknown or empty id (ByID would fall back to claude).
+func Lookup(id string) (p Provider, ok bool) {
+	for _, r := range registry {
+		if r.ID == id {
+			return r, true
+		}
+	}
+	return Provider{}, false
 }
 
 // ByID looks a provider up by id. An unknown or empty id resolves to claude,

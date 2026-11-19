@@ -1,0 +1,19 @@
+{
+  "session": {"total_cost_usd": 0, "total_api_duration_ms": 0, "total_duration_ms": 12, "total_lines_added": 0, "total_lines_removed": 0, "model_usage": {}},
+  "subscription_type": "max",
+  "rate_limits_available": true,
+  "rate_limits": {
+    "five_hour": {"utilization": 12.5, "resets_at": "2026-11-18T15:30:00.123456789Z"},
+    "seven_day": {"utilization": 40, "resets_at": "2026-11-22T09:00:00Z"},
+    "seven_day_oauth_apps": null,
+    "seven_day_opus": {"utilization": 5, "resets_at": "2026-11-22T09:00:00Z"},
+    "seven_day_sonnet": null,
+    "model_scoped": [{"display_name": "Fable", "utilization": 130, "resets_at": "2026-11-22T09:00:00Z"}],
+    "extra_usage": {"is_enabled": false, "monthly_limit": null, "used_credits": null, "utilization": null},
+    "seven_day_breakdown": {"rows": [
+      {"key": "claude_code", "display_name": "Claude Code", "percent": 80},
+      {"key": "claude_ai", "display_name": "Claude.ai", "percent": 20}
+    ]}
+  },
+  "behaviors": null
+}

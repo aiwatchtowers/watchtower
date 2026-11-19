@@ -10,7 +10,8 @@
 # the checkout), starts `wrangler dev` there in its own process group on fresh state in
 # a temp dir — RELAY_ENV=dev from wrangler.jsonc (the /dev/* endpoints), attestation
 # off, a random session secret, the server origin the clients sign, the register rate
-# limit raised (a copy of wrangler.jsonc in the temp dir; see below) — waits for
+# limit raised (a copy of wrangler.jsonc in the temp dir; see below), the per-device ops
+# bucket raised (see below) — waits for
 # /healthz, then runs
 #
 #   WATCHTOWER_RELAY_INTEROP_URL=<origin> make kit-test FILTER='InteropTests'
@@ -169,13 +170,19 @@ swap(/("name": "REGISTER_LIMIT", "namespace_id": "1001", "simple": \{ "limit": )
 fs.writeFileSync(out, text);
 NODE
 
+# The per-device ops bucket (RELAY_OPS_PER_SECOND 50, RELAY_OPS_BURST 100) raised too: the
+# fake has no rate limit, and a twin on a fast machine spends the burst in about a second
+# (a pull per zone event on top of its own passes). Refused, its device's pass reads
+# nothing, the round looks quiet and the twin ends early, with the result depending on the
+# machine's pace (#1560).
 echo "relay-interop-kit: starting the stand on $ORIGIN" >&2
 set -m
 (cd "$WORKER" && exec env NO_COLOR=1 WRANGLER_SEND_METRICS=false CI=1 npx wrangler dev \
 	--config "$STATE/wrangler.jsonc" --port "$PORT" --ip 127.0.0.1 --inspector-port 0 --persist-to "$STATE/persist" \
 	--show-interactive-dev-session=false \
 	--var "RELAY_SESSION_SECRET:$SECRET" --var "RELAY_ATTEST_MODE:off" \
-	--var "RELAY_SERVER_ORIGIN:$ORIGIN") >>"$LOG" 2>&1 </dev/null &
+	--var "RELAY_SERVER_ORIGIN:$ORIGIN" \
+	--var "RELAY_OPS_PER_SECOND:100000" --var "RELAY_OPS_BURST:100000") >>"$LOG" 2>&1 </dev/null &
 WPID=$!
 set +m
 ready=0

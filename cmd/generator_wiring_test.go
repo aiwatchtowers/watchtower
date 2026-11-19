@@ -184,6 +184,7 @@ func TestNewQueryClientSkipsExternalConnectionsOnAutomationEditor(t *testing.T) 
 	}
 
 	assert.Empty(t, servers(tools.AutomationEditorSurface), "no external server on automation_editor")
+	assert.Empty(t, servers(tools.SurfaceTuning), "no external server on the tuning chat")
 	assert.Len(t, servers("main"), 1, "main still mounts the owner's connections")
 	assert.Len(t, servers("target"), 1, "target still mounts the owner's connections")
 
@@ -206,6 +207,7 @@ func TestNewQueryClientSkipsExternalConnectionsOnAutomationEditor(t *testing.T) 
 		return ""
 	}
 	assert.NotContains(t, override(tools.AutomationEditorSurface), `"trello"`, "no external server on automation_editor")
+	assert.NotContains(t, override(tools.SurfaceTuning), `"trello"`, "no external server on the tuning chat")
 	for _, surface := range []string{"main", "target"} {
 		got := override(surface)
 		assert.Contains(t, got, `"trello"={command="npx"`, surface)

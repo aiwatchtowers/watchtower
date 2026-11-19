@@ -71,24 +71,30 @@ var legacyDigestOffFeatureKeys = []string{
 // nine features off. Stamping on first contact closes that window: by the
 // time any product write can flip digest.enabled, the marker is already
 // there.
+//
+// The pending check runs once without the lock (the common, nothing-to-do
+// case writes nothing) and again inside WithWriteLock before the write. When
+// the lock itself cannot be taken, legacy comes from the first read, so the
+// fail-closed path still sees an install that needs the mapping.
 func MigrateFeatureGates(configPath string) (bool, error) {
-	v := viper.New()
-	v.SetConfigFile(configPath)
+	pending, legacy, err := FeatureMigrationPending(configPath)
+	if err != nil || !pending {
+		return false, err
+	}
+	err = WithWriteLock(configPath, func(lk *WriteLock) error {
+		var lockedErr error
+		legacy, lockedErr = migrateFeatureGatesLocked(lk, configPath)
+		return lockedErr
+	})
+	return legacy, err
+}
 
-	if err := v.ReadInConfig(); err != nil {
-		// Missing config file is not an error here — nothing to migrate.
-		var configNotFound viper.ConfigFileNotFoundError
-		if errors.As(err, &configNotFound) || os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("reading config: %w", err)
+func migrateFeatureGatesLocked(lk *WriteLock, configPath string) (bool, error) {
+	pending, legacy, err := FeatureMigrationPending(configPath)
+	if err != nil || !pending {
+		return false, err
 	}
 
-	if v.IsSet("features.migrated") {
-		return false, nil
-	}
-
-	legacy := v.IsSet("digest.enabled") && !v.GetBool("digest.enabled")
 	sets := map[string]bool{"features.migrated": true}
 	if legacy {
 		for _, key := range legacyDigestOffFeatureKeys {
@@ -99,7 +105,33 @@ func MigrateFeatureGates(configPath string) (bool, error) {
 	// legacy is returned even when the write fails: "this install needs the
 	// mapping and did not get it" is exactly the signal the daemon's
 	// fail-closed path (ApplyLegacyDigestOff) keys on.
-	return legacy, patchConfigYAML(configPath, sets, nil)
+	return legacy, patchConfigYAML(lk, configPath, sets, nil)
+}
+
+// FeatureMigrationPending is MigrateFeatureGates' read half: it reads the
+// config with a fresh viper and writes nothing. pending is true when the
+// features.migrated marker is absent (the next MigrateFeatureGates call
+// would write the file); legacy is true when that write would also apply the
+// digest.enabled=false mapping. A missing file is (false, false, nil); a
+// file that cannot be read is an error.
+func FeatureMigrationPending(configPath string) (pending, legacy bool, err error) {
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
+
+	if err := v.ReadInConfig(); err != nil {
+		// Missing config file is not an error here — nothing to migrate.
+		var configNotFound viper.ConfigFileNotFoundError
+		if errors.As(err, &configNotFound) || os.IsNotExist(err) {
+			return false, false, nil
+		}
+		return false, false, fmt.Errorf("reading config: %w", err)
+	}
+
+	if v.IsSet("features.migrated") {
+		return false, false, nil
+	}
+	return true, v.IsSet("digest.enabled") && !v.GetBool("digest.enabled"), nil
 }
 
 // ApplyLegacyDigestOff applies the legacy digest.enabled=false mapping to an
@@ -144,8 +176,9 @@ func ApplyLegacyDigestOff(cfg *Config) {
 // parsed.
 //
 // Each key in deletes is removed from the document; deletions are applied
-// after the sets, so a key named by both ends up absent.
-func patchConfigYAML(configPath string, sets map[string]bool, deletes []string) error {
+// after the sets, so a key named by both ends up absent. The caller holds
+// the write lock and made its decisions from a read inside it.
+func patchConfigYAML(lk *WriteLock, configPath string, sets map[string]bool, deletes []string) error {
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
@@ -181,7 +214,7 @@ func patchConfigYAML(configPath string, sets map[string]bool, deletes []string) 
 		return fmt.Errorf("encoding config: %w", err)
 	}
 
-	return writeFeatureMigrationConfigBytes([]byte(buf.String()), configPath)
+	return writeFeatureMigrationConfigBytes(lk, []byte(buf.String()), configPath)
 }
 
 // setYAMLPath finds or creates the mapping node at path within root and sets
@@ -260,8 +293,11 @@ func boolYAML(b bool) string {
 // with 0o600 permissions, then atomically renames it into place. Unexported
 // copy of cmd/config.go's writeConfigAtomic — internal/config cannot import
 // cmd, so this small helper is duplicated here rather than shared; cmd's
-// version is left as-is.
-func writeFeatureMigrationConfigBytes(data []byte, configPath string) error {
+// version is left as-is. It refuses a path lk does not cover.
+func writeFeatureMigrationConfigBytes(lk *WriteLock, data []byte, configPath string) error {
+	if !lk.Covers(configPath) {
+		return fmt.Errorf("writing config %s: %w", configPath, ErrWriteNotLocked)
+	}
 	dir := filepath.Dir(configPath)
 
 	oldMask := syscall.Umask(0o077)

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,19 +29,20 @@ func loggingExtractor(t *testing.T, ocr OCR) (*Extractor, *bytes.Buffer) {
 
 // TestPDFHelperTimeoutIsTransient: a helper killed at pdfHelperTimeout (the
 // library looping inside NewReader on a self-referencing /Prev) is an
-// error — a transient failure the engine retries — not a final failed.
+// error — a transient failure the engine retries — not a final failed. The
+// deadline passes once the helper says it runs: the helper loops for good,
+// so only the deadline can end it.
 func TestPDFHelperTimeoutIsTransient(t *testing.T) {
-	old := pdfHelperTimeout
-	pdfHelperTimeout = time.Second
-	t.Cleanup(func() { pdfHelperTimeout = old })
+	ready, waitReady := readyFIFO(t)
+	t.Setenv(pdfHelperReadyEnv, ready)
+	fire := manualHelperDeadline(t)
+	go func() { waitReady(); fire() }()
 	x := newExtractor(t, nil)
 	x.PDFHelper = testHelper()
-	start := time.Now()
-	r := extractWithin(t, 15*time.Second, x, "application/pdf", "prev.pdf", fixture(t, "prevloop.pdf"))
+	r := extractWithin(t, x, "application/pdf", "prev.pdf", fixture(t, "prevloop.pdf"))
 	require.Error(t, r.err)
 	assert.Contains(t, r.err.Error(), "timed out")
 	assert.Nil(t, r.secs)
-	assert.GreaterOrEqual(t, time.Since(start), time.Second, "it really was the timeout that ended it")
 	assertTempDirEmpty(t, x.TempDir)
 }
 
@@ -51,7 +51,7 @@ func TestPDFHelperTimeoutIsTransient(t *testing.T) {
 func TestPDFHelperCrashIsTransient(t *testing.T) {
 	x := newExtractor(t, nil)
 	x.PDFHelper = []string{"/bin/sh", "-c", "echo parser exploded >&2; exit 3", "sh"}
-	r := extractWithin(t, 10*time.Second, x, "application/pdf", "a.pdf", fixture(t, "sample.pdf"))
+	r := extractWithin(t, x, "application/pdf", "a.pdf", fixture(t, "sample.pdf"))
 	require.Error(t, r.err)
 	assert.Contains(t, r.err.Error(), "parser exploded")
 	assertTempDirEmpty(t, x.TempDir)
@@ -62,7 +62,7 @@ func TestPDFHelperCrashIsTransient(t *testing.T) {
 func TestPDFHelperGarbageIsFinalAndLogged(t *testing.T) {
 	x, logs := loggingExtractor(t, nil)
 	x.PDFHelper = []string{"/bin/echo", "not json"}
-	r := extractWithin(t, 10*time.Second, x, "application/pdf", "a.pdf", fixture(t, "sample.pdf"))
+	r := extractWithin(t, x, "application/pdf", "a.pdf", fixture(t, "sample.pdf"))
 	require.NoError(t, r.err)
 	assert.Equal(t, StatusFailed, r.status)
 	assert.Contains(t, logs.String(), "malformed output")
@@ -73,7 +73,7 @@ func TestPDFHelperGarbageIsFinalAndLogged(t *testing.T) {
 func TestPDFHelperStderrOnCleanRunIsLogged(t *testing.T) {
 	x, logs := loggingExtractor(t, nil)
 	x.PDFHelper = []string{"/bin/sh", "-c", `echo recovered a panic >&2; echo '{"ok":false}'`, "sh"}
-	r := extractWithin(t, 10*time.Second, x, "application/pdf", "a.pdf", fixture(t, "sample.pdf"))
+	r := extractWithin(t, x, "application/pdf", "a.pdf", fixture(t, "sample.pdf"))
 	require.NoError(t, r.err)
 	assert.Equal(t, StatusFailed, r.status)
 	assert.Contains(t, logs.String(), "recovered a panic")

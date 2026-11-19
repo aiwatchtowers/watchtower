@@ -4,6 +4,7 @@ import Observation
 import os
 import WatchtowerCore
 import WatchtowerSync
+import ChatUI
 
 @MainActor
 @Observable
@@ -45,10 +46,11 @@ final class AppState {
     /// binary store has been synced — see `initialize()`.
     let daemonManager = DaemonManager()
     let uiVisibility = UIVisibilityCenter() // board #731, `applyUIVisibility`
-    /// The organization policy forced through the MDM (#608). Read only once
-    /// `initialize()` starts it, so a test that never initializes never reads
-    /// this Mac's managed preferences.
+    /// The organization policy forced through the MDM (#608). Read only once `initialize()` starts it,
+    /// so a test that never initializes never reads this Mac's managed preferences.
     let managedPolicy: ManagedPolicyCenter
+    @ObservationIgnored private(set) lazy var backgroundAIRefresher = makeBackgroundAIRefresher() // #1886, started with the policy
+    var backgroundAIConsentSheet = BackgroundAIConsentSheet() // #1886, AppState+BackgroundAI
     var isDBAvailable: Bool { databaseManager != nil }
 
     /// Live per-feature readiness behind the tabs' empty states, here so a
@@ -57,10 +59,7 @@ final class AppState {
     /// `readinessEnvironmentOverride`, set before first use, replaces the
     /// live environment in tests.
     @ObservationIgnored private(set) lazy var readinessCenter = ReadinessCenter(
-        environment: readinessEnvironmentOverride
-            ?? LiveReadinessEnvironment(daemon: daemonManager, visibility: featureVisibility) {
-                Constants.activeWorkspaceDir()
-            }
+        environment: readinessEnvironmentOverride ?? makeLiveReadinessEnvironment()
     )
 
     /// The Home snapshot and the Getting ready memory, here so a read
@@ -245,12 +244,18 @@ final class AppState {
 
     @ObservationIgnored var modelCatalogLaunchOverride: (@MainActor () async -> Void)? // tests: no CLI at launch
 
-    /// Persistent chat ViewModels — survive tab switches.
+    /// The main chat's window state — survives tab switches. The chat itself
+    /// runs in the daemon's engine (unified chat spec §6.2).
     private(set) var chatViewModel: ChatViewModel?
-    private(set) var chatHistoryViewModel: ChatHistoryViewModel?
-    /// App-wide warm chat sessions (spec §1.4) — owns every running main-chat
-    /// turn, so turns survive navigation. Created once the DB is open.
-    private(set) var chatSessionPool: ChatSessionPool?
+    private(set) var chatPanelModel: ChatPanelModel?
+    /// The one connection to the engine (`chat.sock`), shared by the chat
+    /// window, the ⌘/ panel and the quit's `chat_shutdown`.
+    private(set) var chatClient: SocketChatClient?
+    /// Re-reads the Inbox strip when a chat's state changes (`followChatForActionStrip`).
+    @ObservationIgnored var chatActionStripWatch: Task<Void, Never>?
+    /// Every main chat's running turn, from the engine's list (`followChatForActionStrip`): the Inbox strip's
+    /// "the session still holds this call" for any chat, shown or not, Chat tab opened or not.
+    var chatRunningTurns: [Int64: String] = [:]
     /// Settings → Profile → claude.ai tools (#737); `AppState+Chat.swift`.
     @ObservationIgnored private(set) lazy var claudeAIConnectors = makeClaudeAIConnectors()
 
@@ -372,9 +377,23 @@ final class AppState {
     private(set) var planUsageCenter: PlanUsageCenter?
     /// The account purge ledger (board #601): red lines, Home banner, notices.
     var accountPurgeCenter: AccountPurgeCenter?
-    /// The live workbench sessions' agent states (board #312), polled while
-    /// a `claude` session runs, whatever tab is shown.
+    let fileVault = FileVaultWatch() // `fdesetup status` at launch and on activation (#1769)
+    /// The Slack Live probe's verdicts (Connections → Slack).
+    var slackLiveStatusCenter: SlackLiveStatusCenter?
+    /// The live workbench sessions' agent states (board #312), polled while a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
+    /// The Go hub over its control socket (heartbeat, view inputs, status; go hub plan 3 Task 14); none under XCTest.
+    var hubCenter: HubCenter? // set by replaceHubCenter (AppState+MobileSettings)
+    /// The one-time v1-host restart (go hub spec §8 p. 4b), made by `startHostRestart`; the
+    /// adoption awaits its `waitUntilSettled()` (order: migrate → compact → restart → adoption).
+    private(set) var hostRestart: HostRestartStep?
+    /// Builds the hub center for a workbench state (a seam for tests).
+    @ObservationIgnored var makeHubCenter: @MainActor ((any CLIRunnerProtocol)?) -> HubCenter? = { HubCenter.live(cli: $0) }
+    /// Phone recordings on the Go hub (go hub plan 3 Task 17); set by
+    /// `replaceHubCenter` through `replacePhoneRecordingQueue`.
+    @ObservationIgnored var phoneRecordingQueue: PhoneRecordingQueue?
+    /// "Keep this Mac awake for the iPhone" over the Go hub (Task 23).
+    @ObservationIgnored var hubKeepAwake: HubKeepAwake?
     /// Every line the app types into a workbench session's prompt — an
     /// ask's answer, later the phone's input (mobile POC spec §6.6) — with
     /// one queue per session (PROJ-12).
@@ -394,7 +413,6 @@ final class AppState {
     /// Which workbench session the owner is in (owner asks v2, Part 2),
     /// written for Go's Stop guard and read by the chat question escalation.
     private(set) var ownerPresenceCenter: OwnerPresenceCenter?
-    @ObservationIgnored let ownerAwayCenter = OwnerAwayCenter(box: OwnerAwayBox())
     /// Raises an unanswered Chat question into an owner ask (owner asks v2,
     /// Part 5); nil without a CLI runner.
     private(set) var chatQuestionEscalator: ChatQuestionEscalator?
@@ -406,25 +424,19 @@ final class AppState {
     /// Set by `navigateToWorkbench`; `WorkbenchesView` consumes and clears it.
     var pendingWorkbenchRoute: WorkbenchRoute?
 
-    /// The opt-in mobile hub (mobile POC spec §6.1): nil while
-    /// `mobileSyncEnabled` is off. Rebuilt whenever `initWorkbenches` re-runs,
-    /// because it holds the centers that function replaces.
-    private(set) var mobileHub: MobileHubService?
-    /// Why the hub's storage could not be opened, for Settings → Mobile.
-    private(set) var mobileHubInitError: String?
-    /// Where the toggle lives; tests pass a throwaway suite.
+    /// Where Mobile's Desktop-side settings live (the keep-awake switch, the
+    /// pre-hand-over toggle the Go hub takes once); tests pass a throwaway suite.
     @ObservationIgnored var mobileSyncDefaults: UserDefaults = .standard
-    /// The policy's `MobileSync` mode for the hub's background parts (#608).
-    @ObservationIgnored let mobileSyncPolicy = MobileSyncPolicyBox()
-    @ObservationIgnored private var policyOffWipeDone = false
-    /// Opens the hub's transport and sidecar; tests pass a stub.
-    @ObservationIgnored var makeMobileHubStorage: () throws -> MobileHubStorage = { try MobileHubStorage.live() }
-    /// Built once per run and kept across hub rebuilds and toggles.
-    @ObservationIgnored private var mobileHubStorage: MobileHubStorage?
-    @ObservationIgnored private(set) var mobileHubPool: DatabasePool?
-    /// Built with the first hub and kept across rebuilds, so a QR on screen
-    /// keeps its link when `initWorkbenches` replaces the hub.
-    @ObservationIgnored var mobileLinkCenter: MobileLinkCenter?
+    var hubAdoption: HubAdoptionDriver? // Mobile's hand-over to the Go hub (`startHubAdoption`)
+    @ObservationIgnored var hubAdoptionDeps: HubAdoptionDeps? // the hand-over's runner and keys; nil: the live ones
+    /// The hub's Desktop events' AppKit side, seamed for tests: whether the
+    /// app is in front, the PROJ-16 typing notice, and the main window
+    /// brought forward (`bringWorkbenchForward`).
+    @ObservationIgnored var appIsActive: @MainActor () -> Bool = { NSApp?.isActive == true }
+    @ObservationIgnored var postTypingRequestNotice: @MainActor (_ deviceID: String, _ name: String) -> Void = {
+        NotificationService.shared.sendMobileTypingRequestNotification(deviceID: $0, name: $1)
+    }
+    @ObservationIgnored var frontMainWindow: @MainActor (AppState) -> Void = { $0.frontLiveMainWindow() }
 
     /// Whether the user has completed onboarding (profile exists and onboarding_done == true).
     var profileComplete: Bool = true
@@ -487,12 +499,17 @@ final class AppState {
     @ObservationIgnored var launchDatabaseStepsRunning = false
     /// A restart the launch's database steps refused (`restoreDaemonStoppedForCompaction`).
     @ObservationIgnored var deferredRestartDuringLaunch = false
+    /// Quit or the data wipe is ending the chat and stopping the daemon:
+    /// every daemon start is refused (`shutdownChat(forGood:)`).
+    @ObservationIgnored var stoppingForGood = false
 
     /// Test seams for the two steps of finishing onboarding that spawn CLI
     /// children or ask macOS for permissions; nil runs the real thing
     /// (`daemonManager`, `wireAppDatabase`'s body).
     @ObservationIgnored var daemonControlOverride: (any DaemonControl)?
     @ObservationIgnored var wireAppDatabaseOverride: ((DatabaseManager) -> Void)?
+    /// `shutdownChat()`'s CLI fallback; tests record it instead.
+    @ObservationIgnored var chatShutdownCLI: @MainActor () async -> Void = { await DaemonManager.chatShutdownBounded() }
     /// Test seam: the readiness inputs without the live config, workspace
     /// directory and stamps.
     @ObservationIgnored var readinessEnvironmentOverride: (any ReadinessEnvironment)?
@@ -530,7 +547,10 @@ final class AppState {
         learnOnboardingFinishedAtLaunch = onboarding.currentStep == .complete
         self.workbenchDefaults = workbenchDefaults
         codeUsagesCenter = CodeUsagesCenter(defaults: workbenchDefaults)
-        self.onboardingGoals = onboardingGoals ?? .production(defaults: onboardingDefaults, featureManager: features)
+        self.onboardingGoals = onboardingGoals ?? .production(
+            defaults: onboardingDefaults,
+            featureManager: features
+        ) { [managedPolicy] in managedPolicy.policy }
         peopleRoster = PeopleRosterLoad(run: peopleRosterRun)
         self.migrateDatabase = migrateDatabase
         self.openDatabase = openDatabase
@@ -553,33 +573,48 @@ final class AppState {
         daemonManager.onSyncFinished = { [weak self] in
             Task { await self?.sidebarCountsViewModel?.refresh() }
         }
-        managedPolicy.onChange = { [weak self] in self?.managedPolicyChanged($0) }
-        managedPolicy.onRefresh = { [weak self] _ in self?.retryPolicyOffWipe() }
     }
 
-    /// Ensures chat ViewModels exist (lazy init, called from ChatView).
+    /// Ensures the chat's client and view models exist (lazy, from the Chat
+    /// tab, the ⌘/ panel or a link into a chat).
     func ensureChatViewModels() {
         guard let db = databaseManager, chatViewModel == nil else { return }
-        let cvm = makeMainChatViewModel(db)
-        // Once per launch, before anything is shown or listed.
-        cvm.cleanUpUntouchedConversations()
-        let hvm = ChatHistoryViewModel(dbManager: db)
-        hvm.reloadRows()
-        hvm.startObserving()
-        Self.wireChat(cvm, history: hvm)
-        wireActionStripRefresh(cvm, history: hvm)
+        let client = ensureChatClient(db)
+        let cvm = makeMainChatViewModel(db, client: client)
+        let panel = ChatPanelModel(list: cvm.list, workspace: db.dbPool.path)
+        Self.wireChat(cvm, panel: panel)
+        cvm.onStartDaemon = { [weak self] in self?.startChatDaemon() }
+        onboardingGoals.onProviderSwitched = { [weak cvm] provider in
+            cvm?.routing.selectProvider(AIProvider.fromConfig(provider).rawValue)
+        }
+        cvm.start()
         chatViewModel = cvm
-        chatHistoryViewModel = hvm
+        chatPanelModel = panel
     }
 
+    /// The engine's client for this workspace: `<workspace>/chat.sock` (or its
+    /// short fallback), the stopped marker beside it, and the app's start
+    /// chain for an outage (D11).
     @discardableResult
-    func ensureChatSessionPool(_ db: DatabaseManager) -> ChatSessionPool {
-        if let chatSessionPool { return chatSessionPool }
-        let pool = ChatSessionPool(dbPool: db.dbPool)
-        pool.holdAdmissionUntil { _ = await Constants.resolvedEnvironmentAsync() }
-        pool.startPolicy() // CHAT-03: an idle session dies within TTL + one 30 s poll.
-        chatSessionPool = pool
-        return pool
+    func ensureChatClient(_ db: DatabaseManager) -> SocketChatClient {
+        if let chatClient { return chatClient }
+        let workspace = (db.dbPool.path as NSString).deletingLastPathComponent
+        let client = SocketChatClient(
+            socketPath: ChatSocketPaths.socketPath(workspace: workspace, tempDir: NSTemporaryDirectory()),
+            markerPath: (workspace as NSString).appendingPathComponent(ChatReachabilityPolicy.stoppedMarkerName),
+            startDaemon: { @MainActor [weak self] in self?.startDaemonFromBanner() },
+            clock: SystemChatClientClock(),
+            partKinds: Array(ChatPartRegistry.registered)
+        )
+        chatClient = client
+        followChatForActionStrip(client)
+        return client
+    }
+
+    /// Retry / Start on the chat's state line: the start chain, and the client
+    /// tries at once.
+    func startChatDaemon() {
+        chatClient?.startDaemonNow()
     }
 
     /// The editor panel's chat for one automation: its engine comes from
@@ -744,12 +779,11 @@ final class AppState {
                     self?.agentAnalyticsCenter?.stop(); self?.coachCenter?.stop()
                     // The owner is in no session once the app is gone.
                     self?.ownerPresenceCenter?.clearForQuit()
-                    self?.ownerAwayCenter.stop()
                     // An escalate-question child gets SIGTERM.
                     self?.chatQuestionEscalator?.stop()
                     // Sessions waiting in the Undo batch were deleted in the
                     // quit's async phase (PROJ-17, `QuitCoordinator`).
-                    self?.mobileHub?.stop()
+                    self?.stopHubCenterForQuit()
                     self?.automationsViewModel?.stop()
                     self?.automationSessionCenter?.stop()
                     self?.homeCenter.endReading()
@@ -799,7 +833,7 @@ final class AppState {
         isLoading = true
         Constants.prewarmResolvedEnvironment()
         // Before anything a key decides starts (the mobile hub, the pickers).
-        managedPolicy.start(activation: NSApplication.didBecomeActiveNotification)
+        startPolicyAndConsentRefresh()
         // Text older versions handed the CLI through temp files (now stdin).
         Task.detached(priority: .utility) {
             StaleTempSweep.run(in: FileManager.default.temporaryDirectory)
@@ -1015,11 +1049,6 @@ final class AppState {
         needsOnboarding = !skipThisLaunch && onboarding.currentStep != .complete
     }
 
-    /// The route onboarding follows: the goals of the last Continue.
-    var onboardingRoute: OnboardingRoute {
-        onboardingGoals.route
-    }
-
     /// Settings' account changes (Add, Remove, re-login) while onboarding is
     /// on screen leave the daemon to its finish.
     var accountDaemonPolicy: DaemonRestartPolicy {
@@ -1043,6 +1072,10 @@ final class AppState {
     /// often it looks (a first start after an update runs migrations first).
     @ObservationIgnored var daemonStartWaitBound: Duration = .seconds(60)
     @ObservationIgnored var daemonStartPollInterval: Duration = .seconds(1)
+    /// The banner Start's wait clock: its `now` and its sleep between polls;
+    /// tests replace both with a clock that moves only when slept on.
+    @ObservationIgnored var daemonStartWaitNow: () -> ContinuousClock.Instant = { ContinuousClock.now }
+    @ObservationIgnored var daemonStartWaitSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// The banner's Start is waiting for the daemon (no second Start).
     var isStartingDaemon = false
     /// The down stretch (`DaemonManager.notRunningSince`) whose "isn't
@@ -1552,17 +1585,16 @@ final class AppState {
         applyUIVisibility(uiVisibility.isOnScreen)
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         initAccountPurges(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
+        initSlackLive(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)
         readinessCenter.start(pool: manager.dbPool)
         homeCenter.beginReading(pool: manager.dbPool)
         startLearn(pool: manager.dbPool)
-        // So the quit path always has a pool to close, even before the Chat
-        // tab was ever opened — `closeAll()` on an empty pool is a no-op, and
-        // creating the pool here only starts its idle-eviction poll; it never
-        // spawns a session process (that happens on select/prewarm/send).
-        ensureChatSessionPool(manager)
+        // The engine's client from launch, so the quit's `chat_shutdown` has a
+        // connection even before the Chat tab was ever opened.
+        ensureChatClient(manager)
     }
 
     /// Not marked `private` (the `initIdeas` precedent) so XCTest can mount
@@ -1787,16 +1819,12 @@ final class AppState {
             root: URL(fileURLWithPath: dbPool.path).deletingLastPathComponent()
                 .appendingPathComponent("workchat-attachments", isDirectory: true)
         )
-        // Settings → Workbench → Default agent (board #399, D1), read at each launch.
-        vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() }
+        vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() } // Settings → Workbench → Default agent (#399, D1)
+        vm.goSessionStart = cliRunner == nil ? nil : GoSessionStartWait() // Go starts new sessions (Go hub 3 Task 8)
         vm.managedPolicy = { [managedPolicy] in managedPolicy.policy }
         vm.automationsReady = { [weak self] in self?.automationsReady ?? false }
         wireCodeViewer(vm, dbPool: dbPool)
-        vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter, weak vm] in
-            codeQuestionCenter?.workbenchRemoved($0)
-            codeUsagesCenter?.workbenchRemoved($0)
-            vm?.reviewer?.workbenchRemoved($0)
-        }
+        wireWorkbenchRemoved(vm)
         vm.closeTerminal = { [weak self] projectID in
             guard let center = self?.terminalCenter else { return }
             let ids = center.sessionIDs(ofWorkbench: projectID)
@@ -1817,13 +1845,6 @@ final class AppState {
         reports.watchedWorkbenchID = { [weak vm] in vm?.selectedWorkbenchID }
         reports.agentState = { [weak agentStates] id in agentStates?.statuses[id]?.state }
         vm.sessionReports = reports
-        let specReviewLoop = SpecReviewLoopCenter(
-            dbPool: dbPool, delivery: lineDelivery, cli: WorkbenchCLI(runner: cliRunner ?? UnresolvedCLIRunner())
-        )
-        vm.specReviewLoop = specReviewLoop
-        let specReviewThreads = SpecReviewThreadCenter(
-            dbPool: dbPool, cli: WorkbenchCLI(runner: cliRunner ?? UnresolvedCLIRunner()), delivery: lineDelivery
-        )
         vm.sessionCleanup = SessionCleanupCenter.forWorkbenches(runner: cliRunner, terminals: terminalCenter)
         workbenchesViewModel?.stop()
         workbenchesViewModel = vm
@@ -1834,10 +1855,7 @@ final class AppState {
         sessionLineDelivery = lineDelivery
         sessionReportCenter?.stop()
         sessionReportCenter = reports
-        specReviewLoopCenter?.stop()
-        specReviewLoopCenter = specReviewLoop
-        specReviewThreadCenter?.stop()
-        specReviewThreadCenter = specReviewThreads
+        replaceSpecReviewCenters(dbPool: dbPool, cliRunner: cliRunner, lineDelivery: lineDelivery, workbenches: vm)
         replaceOwnerPresence(dbPool: dbPool, cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
         // The first poll also loads the list (onPolled → reload; off screen, once a window shows).
         notices.start()
@@ -1845,15 +1863,22 @@ final class AppState {
         vm.asks.start()
         agentStates.start()
         reports.start()
-        specReviewLoop.start()
+        specReviewLoopCenter?.start()
         ownerPresenceCenter?.start()
-        ownerAwayCenter.start()
         chatQuestionEscalator?.start()
+        replaceHubCenter(dbPool: dbPool, cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            vm.hostRestartListURL = HostRestartList.defaultURL() // the reattach leaves the restart's rows to it
+        }
         vm.startHostReattach()
+        // Board #1716: deleted sessions whose cleanup a quit or crash cut
+        // short are cleaned up again, once, after the reattach.
+        Task { [weak vm] in await vm?.requeueDeletingRowsAtLaunch() }
+        startHostRestart() // after the reattach: it stops what the reattach adopted
         // Old pasted Workchat files go once the reattach is done; the runs
         // live then keep theirs.
         Task { [weak vm] in await vm?.sweepAttachmentsAfterReattach() }
-        initMobileHub(dbPool: dbPool)
+        startHubAdoption() // after the restart step, which the hand-over awaits
         // Once: a setup re-run keeps the center and its launches in flight.
         if automationSessionCenter == nil {
             automationSessionCenter = makeAutomationSessionCenter(dbPool: dbPool, cliRunner: cliRunner)
@@ -1861,11 +1886,40 @@ final class AppState {
         syncAutomationSessionCenter()
     }
 
+    /// The spec review author loop and Discuss threads (#1121, #1036): the
+    /// previous centers stopped, new ones built over the session lines.
+    private func replaceSpecReviewCenters(
+        dbPool: DatabasePool,
+        cliRunner: (any CLIRunnerProtocol)?,
+        lineDelivery: SessionLineDelivery,
+        workbenches vm: WorkbenchesViewModel
+    ) {
+        let cli = WorkbenchCLI(runner: cliRunner ?? UnresolvedCLIRunner())
+        let loop = SpecReviewLoopCenter(dbPool: dbPool, delivery: lineDelivery, cli: cli)
+        vm.specReviewLoop = loop
+        specReviewLoopCenter?.stop()
+        specReviewLoopCenter = loop
+        specReviewThreadCenter?.stop()
+        specReviewThreadCenter = SpecReviewThreadCenter(dbPool: dbPool, cli: cli, delivery: lineDelivery)
+    }
+
+    /// Makes the v1-host restart step once per app run (a setup re-run that
+    /// rebuilds the workbenches keeps it; it reads the current ones) and
+    /// runs its launch check after the reattach. None under XCTest: a test
+    /// builds its own step.
+    private func startHostRestart() {
+        guard hostRestart == nil, ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+        let step = HostRestartStep(center: terminalCenter) { [weak self] in self?.workbenchesViewModel }
+        hostRestart = step
+        Task { await step.runIfNeeded() }
+    }
+
     /// Agent analytics (#298): the previous center stopped, a new one built.
-    private func replaceAgentAnalytics(cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel) {
+    func replaceAgentAnalytics(cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel) {
         let analytics = AgentAnalyticsCenter(runner: cliRunner ?? UnresolvedCLIRunner())
         let coach = CoachCenter(runner: cliRunner ?? UnresolvedCLIRunner())
         analytics.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }; coach.isTabOnScreen = analytics.isTabOnScreen
+        analytics.onAgentRefused = { [weak vm] in vm?.analyticsAgent[$0] = nil }
         agentAnalyticsCenter?.stop(); coachCenter?.stop()
         (agentAnalyticsCenter, vm.agentAnalytics, coachCenter, vm.coach) = (analytics, analytics, coach, coach)
     }
@@ -1877,63 +1931,6 @@ final class AppState {
         planUsageCenter = center
         syncPlanUsageFeatureState()
         center.start()
-    }
-
-    private static let mobileHubLogger = Logger(subsystem: Constants.bundleID, category: "MobileHub")
-
-    /// Tears down the previous hub and, while the toggle is on, builds and
-    /// starts a new one over the run's one transport and sidecar. Called at
-    /// the end of `initWorkbenches`. With the toggle off nothing is opened —
-    /// unless the organization's `MobileSync = off` must still wipe the
-    /// phone (`wipeHubForPolicyOff`).
-    func initMobileHub(dbPool: DatabasePool) {
-        let previous = mobileHub
-        previous?.dispose()
-        mobileHub = nil
-        mobileHubPool = dbPool
-        guard isMobileSyncEnabled else {
-            wipeHubForPolicyOff(dbPool: dbPool)
-            return
-        }
-        guard let hub = buildRunHub(dbPool: dbPool) else { return }
-        Task {
-            // The replaced hub's relay pass ends first: two never overlap.
-            await previous?.waitUntilStopped()
-            await hub.start()
-        }
-    }
-
-    /// `MobileSync = off` (#608) found the owner's toggle on and no hub
-    /// running (a profile installed while the app was quit): the hub is
-    /// built once and disabled, so what the phone held is removed. Once per
-    /// run; the toggle itself is kept.
-    func wipeHubForPolicyOff(dbPool: DatabasePool) {
-        guard mobileSyncPolicy.current == "off", mobileHub == nil, !policyOffWipeDone,
-              mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey),
-              let hub = buildRunHub(dbPool: dbPool) else { return }
-        policyOffWipeDone = true
-        hub.disable()
-    }
-
-    /// Builds the run's hub over its one storage (opened on first use) into
-    /// `mobileHub`; nil (the error kept) when it cannot be built.
-    private func buildRunHub(dbPool: DatabasePool) -> MobileHubService? {
-        do {
-            let storage = try mobileHubStorage ?? makeMobileHubStorage()
-            if mobileHubStorage == nil {
-                // Once per run, with the storage: CKSyncEngine learns of
-                // remote changes from pushes (the relay poll is the backstop).
-                storage.registerForPushes?()
-            }
-            mobileHubStorage = storage
-            mobileHub = try buildMobileHub(storage: storage, dbPool: dbPool)
-            mobileHubInitError = nil
-            return mobileHub
-        } catch {
-            mobileHubInitError = error.localizedDescription
-            Self.mobileHubLogger.error("mobile hub unavailable: \(error.localizedDescription, privacy: .public)")
-            return nil
-        }
     }
 
     /// The presence center and the question escalator for a rebuilt

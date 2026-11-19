@@ -108,7 +108,7 @@ final class SessionPlaceViewModelTests: XCTestCase {
             watchers.append(watcher)
             return watcher
         }
-        vm.gitPollSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.gitPollSleep = { _ in await parkUntilCancelled() }
         let center = NotificationCenter()
         vm.gitNotificationCenter = center
         return (vm, center, { watchers })
@@ -130,7 +130,7 @@ final class SessionPlaceViewModelTests: XCTestCase {
         let (vm, _, _) = makeVM(runner)
 
         await vm.startGitWatching(project: project)
-        await waitUntil { self.worktreeName(vm) == "mobile-a" }
+        await untilObserved { self.worktreeName(vm) == "mobile-a" }
         vm.stopGitWatching(projectID: project.id)
 
         XCTAssertEqual(runner.folderReads, [worktreeA])
@@ -148,12 +148,12 @@ final class SessionPlaceViewModelTests: XCTestCase {
         await vm.loadSessions(projectID: project.id)
         vm.gitStatus[project.id] = WorkbenchGitStatus(branch: "main")
         await vm.startGitWatching(project: project)
-        await waitUntil { self.worktreeName(vm) == "mobile-a" }
+        await untilObserved { self.worktreeName(vm) == "mobile-a" }
 
         XCTAssertTrue(vm.showsReviewButton(sessionID: sessionID, projectID: project.id), "the worktree is on feature/x")
         runner.setBranch("main", folder: worktreeA)
         await vm.sessionPlaces.refreshPlaces(workbenchID: project.id).value
-        await waitUntil { self.shownBranch(vm) == "main" }
+        await untilObserved { self.shownBranch(vm) == "main" }
         XCTAssertFalse(vm.showsReviewButton(sessionID: sessionID, projectID: project.id), "a clean main worktree has nothing to review")
         vm.stopGitWatching(projectID: project.id)
     }
@@ -163,7 +163,7 @@ final class SessionPlaceViewModelTests: XCTestCase {
         let runner = RoutingRunner(workbenchID: project.id)
         let (vm, _, _) = makeVM(runner)
         await vm.startGitWatching(project: project)
-        await waitUntil { self.worktreeName(vm) == "mobile-a" }
+        await untilObserved { self.worktreeName(vm) == "mobile-a" }
         vm.stopGitWatching(projectID: project.id)
 
         try await storeCwd(worktreeB, at: "2026-10-12 10:00:05.000")
@@ -190,14 +190,14 @@ final class SessionPlaceViewModelTests: XCTestCase {
         )
         let (vm, _, _) = makeVM(runner, agentStates: agentStates)
         await vm.startGitWatching(project: project)
-        await waitUntil { self.worktreeName(vm) == "mobile-a" }
+        await untilObserved { self.worktreeName(vm) == "mobile-a" }
 
         try await storeCwd(worktreeB, at: "2026-10-12 10:00:05.000")
         stamp.value = "2026-10-12 10:00:05.000"
         await agentStates.poll()
-        await waitUntil { self.worktreeName(vm) == "mobile-b" }
+        await untilObserved { self.worktreeName(vm) == "mobile-b" }
         await agentStates.poll()
-        await settle()
+        await vm.sessionPlaces.readsSettled()
         XCTAssertEqual(runner.folderReads, [worktreeA, worktreeB])
         vm.stopGitWatching(projectID: project.id)
     }
@@ -216,19 +216,19 @@ final class SessionPlaceViewModelTests: XCTestCase {
         )
         let (vm, _, _) = makeVM(runner, agentStates: agentStates)
         await vm.startGitWatching(project: project)
-        await waitUntil { self.worktreeName(vm) == "mobile-a" }
+        await untilObserved { self.worktreeName(vm) == "mobile-a" }
 
         try await storeCwd(worktreeB, at: "2026-10-12 10:00:05.000")
         await agentStates.poll()
-        await settle()
+        await vm.sessionPlaces.readsSettled()
         XCTAssertEqual(runner.folderReads, [worktreeA], "no change, no stamp: nothing is read")
 
         rows.value = [SessionAgentStateRow(id: sessionID, projectID: project.id, title: "s", agentState: nil,
                                            agentStateAt: nil, workbenchName: "acme", agentCwdAt: nil)]
         await agentStates.poll()
-        await waitUntil { self.worktreeName(vm) == "mobile-b" }
+        await untilObserved { self.worktreeName(vm) == "mobile-b" }
         await agentStates.poll()
-        await settle()
+        await vm.sessionPlaces.readsSettled()
         XCTAssertEqual(runner.folderReads, [worktreeA, worktreeB])
         vm.stopGitWatching(projectID: project.id)
     }
@@ -239,20 +239,20 @@ final class SessionPlaceViewModelTests: XCTestCase {
         let runner = RoutingRunner(workbenchID: project.id)
         let (vm, center, watchers) = makeVM(runner)
         await vm.startGitWatching(project: project)
-        await waitUntil { self.worktreeName(vm) == "mobile-a" }
+        await untilObserved { self.worktreeName(vm) == "mobile-a" }
         let watcher = try XCTUnwrap(watchers().first)
 
         watcher.onChange(GitRefsChange(mayMoveWorktrees: false))
-        await settle()
+        await vm.sessionPlaces.readsSettled()
         XCTAssertEqual(runner.folderReads, [worktreeA], "only the folder's own HEAD/index moved")
 
         runner.setBranch("feature/y", folder: worktreeA)
         watcher.onChange(GitRefsChange(mayMoveWorktrees: true))
-        await waitUntil { self.shownBranch(vm) == "feature/y" }
+        await untilObserved { self.shownBranch(vm) == "feature/y" }
 
         runner.setBranch("feature/z", folder: worktreeA)
         center.post(name: NSApplication.didBecomeActiveNotification, object: nil)
-        await waitUntil { self.shownBranch(vm) == "feature/z" }
+        await untilObserved { self.shownBranch(vm) == "feature/z" }
         XCTAssertEqual(runner.folderReads, [worktreeA, worktreeA, worktreeA])
         vm.stopGitWatching(projectID: project.id)
     }
@@ -267,23 +267,6 @@ final class SessionPlaceViewModelTests: XCTestCase {
             get { lock.withLock { stored } }
             set { lock.withLock { stored = newValue } }
         }
-    }
-
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
-    /// Lets queued main-actor tasks run.
-    private func settle() async {
-        for _ in 0..<20 { await Task.yield() }
-        try? await Task.sleep(for: .milliseconds(50))
     }
 
     // MARK: - Target branch and lanes (board #987)
@@ -320,7 +303,7 @@ final class SessionPlaceViewModelTests: XCTestCase {
         let (vm, _, _) = makeVM(RoutingRunner(workbenchID: project.id))
         vm.statLaneRoots = { roots in roots.intersection(onDisk.value) }
         await vm.startGitWatching(project: project)
-        await waitUntil { self.worktreeName(vm) == "mobile-a" }
+        await untilObserved { self.worktreeName(vm) == "mobile-a" }
         return vm
     }
 
@@ -373,7 +356,7 @@ final class SessionPlaceViewModelTests: XCTestCase {
         let gate = StatGate()
         vm.statLaneRoots = { roots in await gate.stat(roots) }
         let held = Task { await vm.loadSessionWork(projectID: self.project.id) }
-        await waitUntilAsync { await gate.waiting >= 1 }
+        await gate.untilWaiting(1)
         await gate.answerNext([laneA, laneB])
         await vm.loadSessionWork(projectID: project.id)
         XCTAssertEqual(try rowText(vm), "⎇ feature/codex-parity · 2 lanes")
@@ -388,14 +371,25 @@ final class SessionPlaceViewModelTests: XCTestCase {
     private actor StatGate {
         private var held: [CheckedContinuation<Set<String>, Never>] = []
         private var nextAnswer: Set<String>?
-        var waiting: Int { held.count }
+        private var waiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
         func stat(_ roots: Set<String>) async -> Set<String> {
             if let answer = nextAnswer {
                 nextAnswer = nil
                 return roots.intersection(answer)
             }
-            return await withCheckedContinuation { held.append($0) }
+            return await withCheckedContinuation {
+                held.append($0)
+                let due = waiters.filter { $0.count <= held.count }
+                waiters.removeAll { $0.count <= held.count }
+                due.forEach { $0.continuation.resume() }
+            }
+        }
+
+        /// Returns once `count` stats are held.
+        func untilWaiting(_ count: Int) async {
+            guard held.count < count else { return }
+            await withCheckedContinuation { waiters.append((count, $0)) }
         }
 
         func answerNext(_ answer: Set<String>) { nextAnswer = answer }
@@ -403,17 +397,6 @@ final class SessionPlaceViewModelTests: XCTestCase {
         func releaseAll(_ answer: Set<String>) {
             for continuation in held { continuation.resume(returning: answer) }
             held = []
-        }
-    }
-
-    private func waitUntilAsync(timeout: TimeInterval = 5, _ condition: @escaping () async -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !(await condition()) {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
         }
     }
 }

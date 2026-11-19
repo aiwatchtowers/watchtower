@@ -53,6 +53,55 @@ func RelayKey(own *ecdh.PrivateKey, peer *ecdh.PublicKey, linkNonce []byte, hub,
 	return key, nil
 }
 
+// EphemeralRelayKeyLength is the bytes of each ephemeral public key in the
+// wt/relay/v2/ transcript.
+const EphemeralRelayKeyLength = 32
+
+// EphemeralRelayKey is the weekly relay key of a phone that offered an
+// ephemeral key (wt/relay/v2/, relay client Phase 5):
+//
+//	ikm  = X25519(hub_eph, dev_eph) ‖ X25519(hub_kx, dev_kx)
+//	salt = linkNonce
+//	info = "wt/relay/v2/" ‖ dir ‖ 0x00 ‖ hub(16) ‖ device(16) ‖ epoch u32 BE ‖ hub_eph_pub(32) ‖ dev_eph_pub(32)
+//
+// HKDF-SHA256, 32 bytes. Either side calls it with its own private halves and
+// the peer's publics; hubEphPub and devEphPub always go in that order. An
+// all-zero shared secret (a low-order peer key) is refused by ECDH.
+func EphemeralRelayKey(ownEph *ecdh.PrivateKey, peerEph *ecdh.PublicKey, ownKX *ecdh.PrivateKey, peerKX *ecdh.PublicKey,
+	hubEphPub, devEphPub, linkNonce []byte, hub, device ID, epoch uint32, dir Direction) ([]byte, error) {
+	if len(hubEphPub) != EphemeralRelayKeyLength || len(devEphPub) != EphemeralRelayKeyLength {
+		return nil, fmt.Errorf("secure: ephemeral relay key: public keys of %d and %d bytes", len(hubEphPub), len(devEphPub))
+	}
+	ephShared, err := ownEph.ECDH(peerEph)
+	if err != nil {
+		return nil, fmt.Errorf("secure: ephemeral relay key agreement: %w", err)
+	}
+	defer clear(ephShared)
+	staticShared, err := ownKX.ECDH(peerKX)
+	if err != nil {
+		return nil, fmt.Errorf("secure: ephemeral relay key agreement: %w", err)
+	}
+	defer clear(staticShared)
+	ikm := make([]byte, 0, len(ephShared)+len(staticShared))
+	ikm = append(ikm, ephShared...)
+	ikm = append(ikm, staticShared...)
+	defer clear(ikm)
+	info := make([]byte, 0, 16+len(dir)+1+32+4+2*EphemeralRelayKeyLength)
+	info = append(info, "wt/relay/v2/"...)
+	info = append(info, dir...)
+	info = append(info, 0)
+	info = append(info, hub[:]...)
+	info = append(info, device[:]...)
+	info = binary.BigEndian.AppendUint32(info, epoch)
+	info = append(info, hubEphPub...)
+	info = append(info, devEphPub...)
+	key, err := hkdf.Key(sha256.New, ikm, linkNonce, string(info), 32)
+	if err != nil {
+		return nil, fmt.Errorf("secure: ephemeral relay key derivation: %w", err)
+	}
+	return key, nil
+}
+
 // RecordName is base32lower(HMAC-SHA256(metaKey, "wt/name/v1" ‖ zone u8 ‖
 // kind_len u8 ‖ kind ‖ id)[0..<16]), 26 characters. A kind above 255 bytes
 // is clamped, as in the Kit.

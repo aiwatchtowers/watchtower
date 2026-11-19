@@ -1,0 +1,31 @@
+{
+  "comment": "The iPhone chat's action params and the chat_attachment upload frame, as the phone writes them (iPhone chat spec §4.5). Go's TestChatActionsFixture runs every case through the hub's handlers (each one is applied against its seed: chat 1 with messages 1 (owner) and 2 (answer), an empty chat 2, an empty chat 3 with no turn (use_preferred is refused while a turn holds the chat: the cases above leave turns running in chats 1 and 2), a pending action 1 of chat 1 with args_json {\"text\":\"hi\"}); the Kit's ChatActionParamsTests encode the Kit params to these bytes. result_keys are the applied echo's result keys.",
+  "actions": [
+    {"name": "new_pinned", "kind": "chat_new", "params": {"client_key": "6F9619FF-8B86-4011-B42D-00C04FC964FF", "routing": {"mode": "pinned", "provider": "claude", "model": "opus"}}, "result_keys": ["conversation_id"]},
+    {"name": "new_auto_in_no_project", "kind": "chat_new", "params": {"client_key": "6F9619FF-8B86-4011-B42D-00C04FC96500", "project_id": null, "routing": {"mode": "auto"}}, "result_keys": ["conversation_id"]},
+    {"name": "turn_send", "kind": "chat_turn", "params": {"conversation_id": 2, "mode": "send", "text": "Summarize the rollout for @Alice", "attachment_ids": [], "routing": {"mode": "auto"}, "client_key": "6F1C2D3E-4A5B-4C6D-8E7F-901A2B3C4D5E", "compose": {"skill": "weekly-report", "mentions": [{"kind": "person", "id": "U0001", "label": "Alice"}], "quotes": []}}, "result_keys": ["assistant_message_id", "turn_id", "user_message_id"]},
+    {"name": "turn_regenerate", "kind": "chat_turn", "params": {"conversation_id": 1, "mode": "regenerate", "message_id": 2, "text": "", "attachment_ids": []}, "result_keys": ["assistant_message_id", "turn_id", "user_message_id"]},
+    {"name": "cancel", "kind": "chat_cancel", "params": {"conversation_id": 1, "turn_id": "9B2F6A3C-1D2E-4F50-8A6B-7C8D9E0F1A2B"}, "result_keys": []},
+    {"name": "feed_open", "kind": "chat_feed_request", "params": {"conversation_id": 1, "purpose": "open"}, "result_keys": []},
+    {"name": "feed_prefetch", "kind": "chat_feed_request", "params": {"conversation_id": 1, "purpose": "prefetch"}, "result_keys": []},
+    {"name": "feed_list_retry", "kind": "chat_feed_request", "params": {"conversation_id": 0, "purpose": "open"}, "result_keys": []},
+    {"name": "page", "kind": "chat_page", "params": {"conversation_id": 1, "before_message_id": 2}, "result_keys": []},
+    {"name": "search", "kind": "chat_search", "params": {"query": "payments rollout"}, "result_keys": []},
+    {"name": "read", "kind": "chat_read", "params": {"conversation_id": 1, "message_id": 2}, "result_keys": []},
+    {"name": "branch_select", "kind": "chat_branch_select", "params": {"message_id": 1}, "result_keys": []},
+    {"name": "manage_rename", "kind": "chat_manage", "params": {"conversation_id": 2, "op": "rename", "title": "Rollout notes"}, "result_keys": []},
+    {"name": "manage_pin", "kind": "chat_manage", "params": {"conversation_id": 2, "op": "pin"}, "result_keys": []},
+    {"name": "manage_use_preferred", "kind": "chat_manage", "params": {"conversation_id": 3, "op": "use_preferred"}, "result_keys": []},
+    {"name": "action_approve", "kind": "chat_action_answer", "params": {"action_id": 1, "decision": "approve", "args_sha256": "e7b995efa755c5ff3b84d2188b58cb4ae916a59470eb3761df8a814f11763500"}, "result_keys": ["status"]},
+    {"name": "entity_search_mention", "kind": "chat_entity_search", "params": {"query": "al", "kinds": []}, "result_keys": ["hits"]},
+    {"name": "entity_search_kinds", "kind": "chat_entity_search", "params": {"query": "pay", "kinds": ["channel", "jira"]}, "result_keys": ["hits"]},
+    {"name": "skills_list", "kind": "chat_skills_list", "params": {}, "result_keys": ["skills"]}
+  ],
+  "upload": {
+    "kind": "chat_attachment",
+    "record_id_prefix": "chatupload-",
+    "payload": {"upload_id": "C1D2E3F4-0000-4000-8000-000000000001", "conversation_id": 2, "name": "notes.md", "mime": "text/markdown", "size": 6, "device_id": "BBBBBBBB-0000-4000-8000-000000000002", "hub_id": "AAAAAAAA-0000-4000-8000-000000000001", "status": "pending"},
+    "echo_applied": {"upload_id": "C1D2E3F4-0000-4000-8000-000000000001", "conversation_id": 2, "name": "notes.md", "mime": "text/markdown", "size": 6, "device_id": "BBBBBBBB-0000-4000-8000-000000000002", "hub_id": "AAAAAAAA-0000-4000-8000-000000000001", "status": "applied", "attachment_id": 1},
+    "echo_failed": {"upload_id": "C1D2E3F4-0000-4000-8000-000000000001", "conversation_id": 2, "name": "notes.md", "mime": "text/markdown", "size": 6, "device_id": "BBBBBBBB-0000-4000-8000-000000000002", "hub_id": "AAAAAAAA-0000-4000-8000-000000000001", "status": "failed", "reason": "not_found", "error_message": "The file did not reach your Mac. Send it again."}
+  }
+}

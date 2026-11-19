@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/relay/client"
@@ -11,9 +13,10 @@ import (
 )
 
 // Errors of the hosted relay that the neutral transport errors do not cover.
-// The attestation errors also match transport.ErrForbidden: until the relay
-// admits hubs by a phone's vouch (Go hub design §7, relay ask #805) a hub that
-// registers as a Mac without App Attest is simply not let in.
+// The attestation errors also match transport.ErrForbidden. A hub never
+// attests (it registers as DEVICE_KIND_HUB with an empty attestation and is
+// admitted by a phone's vouch_hub, Go hub design §7), so it sees them only
+// from an old relay or, in a test, on a phone's vouch_hub.
 var (
 	// ErrAttestationRequired: the relay wants an attestation this hub cannot
 	// give (attestation is on and the hub is not exempt). Do not retry in a
@@ -23,14 +26,27 @@ var (
 	ErrAttestationFailed = fmt.Errorf("relay: attestation failed: %w", transport.ErrForbidden)
 	// ErrSlotLimit: the account's slots (or its replacements) are used up.
 	ErrSlotLimit = errors.New("relay: slot limit reached")
+	// ErrRelayInternal: the relay failed the op itself (UNSPECIFIED
+	// "internal error", #1872). It is transport.ErrUnavailable, a retry
+	// later; logs name it apart from an unreachable relay. It may come
+	// after the op ran in part, and for one op that throws as well as for a
+	// device object that fails every op, so the publisher does not take it
+	// as cycle-wide and the alert pusher settles it in flight.
+	ErrRelayInternal = fmt.Errorf("relay: internal error: %w", transport.ErrUnavailable)
 )
+
+// internalErrorMessage is the relay's message for an op it failed: in a 200
+// from the device object's own catch around one op (do/device/ops.ts), in a
+// 500 when the call to the device object threw (http/op.ts), in a 200 when a
+// public op such as login threw. It is the only signal of its own failure.
+const internalErrorMessage = "internal error"
 
 // MapError maps an error of the relay client to the transport errors (RC §7),
 // keeping the client's error in the chain (client.Code still reads it). A
 // protocol error the transport has no class for comes back wrapped as is; a
 // failure to reach the relay (no answer, a dropped connection) is
-// transport.ErrUnavailable; a cancelled or expired context is returned
-// unchanged.
+// transport.ErrUnavailable, and so is the relay's own failure of the op
+// (ErrRelayInternal); a cancelled or expired context is returned unchanged.
 func MapError(err error) error {
 	if err == nil {
 		return nil
@@ -47,6 +63,9 @@ func MapError(err error) error {
 	}
 	if class := classOf(pe.E.GetCode()); class != nil {
 		return fmt.Errorf("%w: %w", class, err)
+	}
+	if pe.E.GetCode() == relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED && pe.E.GetMessage() == internalErrorMessage {
+		return fmt.Errorf("%w: %w", ErrRelayInternal, err)
 	}
 	return fmt.Errorf("relay: %w", err)
 }
@@ -80,7 +99,53 @@ func classOf(code relayv1.ErrorCode) error {
 		return ErrAttestationFailed
 	case relayv1.ErrorCode_ERROR_CODE_SLOT_LIMIT, relayv1.ErrorCode_ERROR_CODE_SLOT_REPLACEMENT_LIMIT:
 		return ErrSlotLimit
+	case relayv1.ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED:
+		return transport.ErrNotVouched
 	default:
 		return nil
 	}
+}
+
+// CodeClass names the relay protocol error in err's chain by its code for a
+// log line ("relay_not_found"), never its message; "" when err carries none.
+// The hub's log classes fall back to it after their sentinels, so a code the
+// transport has no class for is still told apart (#1872).
+func CodeClass(err error) string {
+	var pe *client.Error
+	if !errors.As(err, &pe) {
+		return ""
+	}
+	return "relay_" + strings.ToLower(strings.TrimPrefix(pe.E.GetCode().String(), "ERROR_CODE_"))
+}
+
+// pushOffMessage is the relay's message for send_alert with no push provider
+// configured (ops.ts ERRORS.not_implemented, push.ts alertSender), the only
+// push-configuration signal it gives.
+const pushOffMessage = "not implemented"
+
+// mapAlertError is MapError for send_alert only: NOT_FOUND is a phone with no
+// push token (transport.ErrNoPushToken) and UNSPECIFIED "not implemented" a
+// relay with pushes off (transport.ErrPushOff). Every other answer, on this op
+// as on the others, goes through MapError.
+func mapAlertError(err error) error {
+	var pe *client.Error
+	if errors.As(err, &pe) {
+		switch code := pe.E.GetCode(); {
+		case code == relayv1.ErrorCode_ERROR_CODE_NOT_FOUND:
+			return fmt.Errorf("%w: %w", transport.ErrNoPushToken, err)
+		case code == relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED && pe.E.GetMessage() == pushOffMessage:
+			return fmt.Errorf("%w: %w", transport.ErrPushOff, err)
+		}
+	}
+	return MapError(err)
+}
+
+// RetryAfter is the wait a relay error asks for (Error.retry_after_s, sent
+// with RATE_LIMITED), 0 when err carries none.
+func RetryAfter(err error) time.Duration {
+	var pe *client.Error
+	if !errors.As(err, &pe) || pe.E.RetryAfterS == nil {
+		return 0
+	}
+	return time.Duration(pe.E.GetRetryAfterS()) * time.Second
 }

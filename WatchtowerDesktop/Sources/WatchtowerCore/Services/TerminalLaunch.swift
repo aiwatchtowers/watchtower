@@ -102,7 +102,9 @@ package struct TerminalLaunch: Equatable, Sendable {
     /// launch flags runs as `launch-args` resolved it (`codex`); without one
     /// there is no binary to run, and the launch exits 127 ("Codex was not
     /// found"). `automationRunID` reaches every agent launch, a resume
-    /// included, as `automationRunEnv`; a shell never carries it.
+    /// included, as `automationRunEnv`; a shell never carries it, nor
+    /// `originEnvironment` (the run's background AI admission,
+    /// `TerminalSession.agentOriginEnvironment`; Go `Mode.OriginEnv`).
     package static func make(
         shell: String?,
         folder: String,
@@ -110,7 +112,8 @@ package struct TerminalLaunch: Equatable, Sendable {
         rowID: Int64? = nil,
         codex: CodexLaunchArgs? = nil,
         setup: String? = nil,
-        automationRunID: Int64? = nil
+        automationRunID: Int64? = nil,
+        originEnvironment: [String] = []
     ) -> Self {
         let executable = shell.flatMap { $0.hasPrefix("/") ? $0 : nil } ?? fallbackShell
         guard let agent = mode.agent else {
@@ -134,6 +137,7 @@ package struct TerminalLaunch: Equatable, Sendable {
         if let prompt = command.prompt { launch.environment.append("\(firstPromptEnv)=\(prompt)") }
         if let setupText { launch.environment.append("\(setupCommandEnv)=\(setupText)") }
         if let automationRunID { launch.environment.append("\(automationRunEnv)=\(automationRunID)") }
+        launch.environment += originEnvironment
         return launch
     }
 

@@ -26,11 +26,12 @@ enum QuitCoordinator {
         hasBlockingWork: Bool,
         confirmQuit: () -> QuitChoice,
         keepsSessions: Bool = false,
-        closeChatSessions: @escaping () async -> Void = {},
+        shutdownChat: @escaping () async -> Void = {},
         closeTerminals: @escaping () async -> Void = {},
         detachTerminals: @escaping () async -> Void = {},
         stopDaemon: @escaping () async -> Void,
         finishPendingDeletes: @escaping () async -> Void = {},
+        stopBackgroundCleanups: @escaping () async -> Void = {},
         reply: @escaping (Bool) -> Void
     ) -> NSApplication.TerminateReply {
         let choice = hasBlockingWork
@@ -46,9 +47,15 @@ enum QuitCoordinator {
             // sessions kept or stopped. Bounded inside; awaited before the
             // reply.
             let deletes = Task { @MainActor in await finishPendingDeletes() }
-            // CHAT-03: every chat session gets `close`, then SIGTERM after
-            // its grace — bounded, and each keeps its partial text (CHAT-01).
-            await closeChatSessions()
+            // Board #1716: a deleted session's background cleanup still
+            // running gets SIGTERM to its process group, SIGKILL after 5 s —
+            // no cleanup outlives the app to race the next launch's, which
+            // queues the row again (it keeps `delete_requested_at`).
+            let cleanups = Task { @MainActor in await stopBackgroundCleanups() }
+            // CHAT-03: the engine ends every chat turn (partial kept,
+            // CHAT-01) and reaps every session — `close`, then SIGTERM after
+            // its grace — bounded; the CLI does it when the engine cannot.
+            await shutdownChat()
             if choice == .quitKeepingSessions {
                 // PROJ-20: hosted sessions keep running in the session host
                 // (no signal).
@@ -60,10 +67,21 @@ enum QuitCoordinator {
             }
             await stopDaemon()
             await deletes.value
+            await cleanups.value
             // Always let termination proceed: a stuck daemon must never trap
             // the user in a quit — the next launch adopts or replaces it.
             reply(true)
         }
         return .terminateLater
+    }
+
+    /// Spec §7: a stop that must end the chat asks the engine first
+    /// (`chat_shutdown` on `chat.sock`, `SocketChatClient.shutdown()`); when
+    /// it could not (unreachable, refused, past its bound) `watchtower chat
+    /// shutdown` ends the turns and reaps the sessions over their own
+    /// sockets and group files. Quit, the data wipe and Slack disconnect.
+    static func shutdownChat(engine: () async -> Bool, cli: () async -> Void) async {
+        if await engine() { return }
+        await cli()
     }
 }

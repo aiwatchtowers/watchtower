@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerSync
 
 /// One linked Mac in the switcher (multi-hub spec §5.6).
 struct HubListItem: Identifiable, Equatable {
@@ -24,6 +25,20 @@ struct HubListItem: Identifiable, Equatable {
     /// Why the hub cannot be opened, or why its last fetch failed (§6.3);
     /// nil after a good one.
     let problem: String?
+    /// "iCloud", "Relay · switched by this iPhone, Today 10:42", "Switching…": only while the relay is available
+    /// (`HubListModel.items(showsTransport:)`); nil otherwise, as the row was before Relay.
+    var transportLine: String?
+    /// The term's line of a relay-only link the relay refuses (relay client Phase 5, Task 17, S61,
+    /// `RelayBannerModel.termLine(surface: .macs)`), in the secondary tone; nil for every other Mac.
+    var termLine: String?
+    /// The newer of the session's and the row's last heartbeat; nil before
+    /// the first one (the switcher's "asleep · 40 min ago").
+    var lastHeartbeat: Date?
+
+    /// Its asks can still be answered from here: the Mac has not removed this
+    /// phone and its data opened. The chip's count and the list's line agree
+    /// on it (#1782).
+    var asksCount: Bool { !removedByMac && !unopened }
 
     /// The online dot: green only while online (`MacStatusRow`'s rule).
     var dotTone: PhoneTone { online ? .green : .secondary }
@@ -48,11 +63,11 @@ enum HubListModel {
     static let forgetAfterDays = 7
 
     /// The problem line of a hub whose session could not be built.
-    static let unopenedProblem = "Couldn't open this Mac's data on this iPhone"
+    static let unopenedProblem = "Couldn't open this tower's data on this iPhone"
     /// The name and problem line of a registry row that cannot be read (a
     /// newer build's link, a damaged value): its Mac's name is in it.
-    static let unreadableName = "Unknown Mac"
-    static let unreadableProblem = "Couldn't read this Mac's link on this iPhone"
+    static let unreadableName = "Unknown tower"
+    static let unreadableProblem = "Couldn't read this tower's link on this iPhone"
 
     /// The items in registry order. A hub's last heartbeat is the newer of
     /// its session's (fresh after every fetch) and its row's (kept across
@@ -70,6 +85,9 @@ enum HubListModel {
         unreadable: [String] = [],
         sessions: [String: HubSession],
         unopened unopenedHubIDs: Set<String> = [],
+        showsTransport: Bool = false,
+        subscriptionEnded: Bool = false,
+        termHold: RelayTermHold = .none,
         activeHubID: String?,
         now: Date
     ) -> [HubListItem] {
@@ -88,12 +106,19 @@ enum HubListModel {
                 flavor: flavor == "default" ? nil : flavor,
                 online: online,
                 offlineDays: offlineDays,
-                openAsks: session?.workbenchReplica.openAskCount ?? 0,
+                openAsks: session?.workbenchReplica.snapshot.openAskCount ?? 0,
                 isActive: row.hubID == activeHubID,
                 removedByMac: removed,
                 unopened: unopened,
                 canForget: removed || unopened || (offlineDays ?? 0) >= forgetAfterDays,
-                problem: unopened ? unopenedProblem : session?.lastFetchError
+                problem: unopened ? unopenedProblem : session?.lastFetchError,
+                transportLine: showsTransport ? MacsModel.transportLine(
+                    row.link, ownDeviceID: row.link.deviceID, inFlight: isSwitching(row.link),
+                    subscriptionEnded: subscriptionEnded, now: now
+                ) : nil,
+                termLine: showsTransport && !removed
+                    ? RelayBannerModel.termLine(for: row.link, surface: .macs, now: now, heldPurchase: termHold) : nil,
+                lastHeartbeat: heartbeat
             )
         }
         let taken = Set(rows.map(\.sortOrder))
@@ -114,15 +139,10 @@ enum HubListModel {
             .map(\.element.item)
     }
 
-    /// The open asks of every hub but the one on screen that can still
-    /// answer them (not one the Mac removed): the chip's count.
-    static func otherHubsOpenAsks(_ items: [HubListItem]) -> Int {
-        items.filter { !$0.isActive && !$0.removedByMac }.reduce(0) { $0 + $1.openAsks }
-    }
-
-    static func chipAccessibilityLabel(name: String, otherAsks: Int) -> String {
-        guard otherAsks > 0 else { return "\(name), Mac" }
-        return "\(name), Mac. \(otherAsks) \(otherAsks == 1 ? "ask" : "asks") waiting on other Macs"
+    /// An upgrade to the relay is under way (not refused, not done) or this phone's request is open.
+    static func isSwitching(_ link: LinkRecord) -> Bool {
+        if let upgrade = link.relayUpgrade, upgrade.step != .switched, upgrade.refusal == nil { return true }
+        return link.transportRequest?.isOpen == true
     }
 
     /// Add Mac is off at `HubRegistry.limit` linked Macs, those whose row

@@ -30,12 +30,15 @@ type SyncProgress struct {
 // Syncer performs incremental and full syncs of one Jira account's issues
 // into the local database. Every row it writes carries its accountID.
 type Syncer struct {
-	client           *Client
-	db               *db.DB
-	mapper           *UserMapper
-	logger           *log.Logger
-	boardIDs         []int
-	accountID        int64
+	client    *Client
+	db        *db.DB
+	mapper    *UserMapper
+	logger    *log.Logger
+	boardIDs  []int
+	accountID int64
+	// passClock reads the pass-start watermark's time; nil is time.Now. A
+	// test seam: the watermark test moves it forward during a pass.
+	passClock        func() time.Time
 	boardAnalyzer    *BoardAnalyzer     // optional, for config change detection
 	autoRefresh      bool               // when true, auto re-analyze boards with changed config
 	commentSyncLimit int                // max changed issues fetched for comments per project sync pass (0 = disabled)
@@ -61,6 +64,14 @@ func NewSyncer(client *Client, database *db.DB, mapper *UserMapper, boardIDs []i
 		deletionsDueAt: map[string]time.Time{},
 		deletionsKept:  map[string]map[string]time.Time{},
 	}
+}
+
+// passNow is the moment a project pass starts, in UTC.
+func (s *Syncer) passNow() time.Time {
+	if s.passClock != nil {
+		return s.passClock().UTC()
+	}
+	return time.Now().UTC()
 }
 
 // AccountID returns the Jira account this syncer writes for.
@@ -415,7 +426,7 @@ func (s *Syncer) syncProject(ctx context.Context, boardID int, projectKey string
 	// the issue reader, the changelog and the comment pass can take longer
 	// than the JQL's 2-minute overlap, and an issue updated after the reader's
 	// last page but before a finish-time stamp would never be asked for again.
-	passStart := time.Now().UTC()
+	passStart := s.passNow()
 	jql := buildIncrementalJQL(projectKey, lastSyncedAt, passStart)
 
 	n, changedKeys, err := s.syncWithJQL(ctx, jql, boardID)

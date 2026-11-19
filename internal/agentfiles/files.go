@@ -134,11 +134,8 @@ func listSubagentFiles(dir, sessionDir string) []TranscriptFile {
 // description and the rest are never read into memory as fields (AGENTLOG-01).
 // A missing, special or invalid file gives zero values.
 func readSubagentMeta(path string) (agentType string, depth int, finished *bool) {
-	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() || fi.Size() > maxMetaBytes {
-		return "", 0, nil
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
+	raw, ok := readMetaFile(path)
+	if !ok {
 		return "", 0, nil
 	}
 	var m struct {
@@ -154,6 +151,16 @@ func readSubagentMeta(path string) (agentType string, depth int, finished *bool)
 
 // maxMetaBytes bounds a subagent meta file; real ones are a few hundred bytes.
 const maxMetaBytes = 1 << 20
+
+// readMetaFile reads a subagent meta file: false when it is missing, not a
+// regular file (a symlink included: Lstat, AGENTLOG-04) or over maxMetaBytes.
+func readMetaFile(path string) ([]byte, bool) {
+	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() || fi.Size() > maxMetaBytes {
+		return nil, false
+	}
+	raw, err := os.ReadFile(path)
+	return raw, err == nil
+}
 
 // StatTranscript is the file at path as a TranscriptFile; false when it is
 // not a regular file (a symlink included: Lstat, AGENTLOG-04).

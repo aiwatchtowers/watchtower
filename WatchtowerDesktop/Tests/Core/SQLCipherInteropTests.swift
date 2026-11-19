@@ -98,18 +98,44 @@ final class SQLCipherInteropTests: XCTestCase {
     }
 
     /// A timed-out process is stopped with its whole group: a child it
-    /// started (as `go build` starts compilers) does not outlive it.
+    /// started (as `go build` starts compilers) does not outlive it. Driven
+    /// by events, not a clock: the script hands over its child's pid through
+    /// a FIFO once the child runs, and the child's exit arrives as a kqueue
+    /// `NOTE_EXIT` (a zombie waiting for launchd to reap it has exited).
     func testTimeoutReapsTheWholeGroup() throws {
-        let pidFile = tempDir.appendingPathComponent("child.pid")
-        XCTAssertThrowsError(try Self.runProcess(
-            URL(fileURLWithPath: "/bin/sh"), ["-c", "sleep 30 & echo $! > \"$0\"; wait", pidFile.path],
-            cwd: tempDir, env: nil, timeout: 1))
-        let child = try XCTUnwrap(pid_t(String(contentsOf: pidFile, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)))
-        let alive = kill(child, 0)
-        let err = errno
-        XCTAssertEqual(alive, -1, "the grandchild still runs")
-        XCTAssertEqual(err, ESRCH)
+        let fifo = tempDir.appendingPathComponent("child.pid")
+        XCTAssertEqual(mkfifo(fifo.path, 0o600), 0, "mkfifo: \(String(cString: strerror(errno)))")
+        let process = try GroupProcess.spawn(
+            URL(fileURLWithPath: "/bin/sh"), ["-c", "sleep 30 & echo $! > \"$0\"; wait", fifo.path],
+            cwd: tempDir, env: ProcessInfo.processInfo.environment,
+            stdout: tempDir.appendingPathComponent("out"), stderr: tempDir.appendingPathComponent("err"))
+        Self.live.add(process)
+        // A throw below must not leave the group running (a no-op once stopped).
+        defer {
+            process.terminateGroup()
+            Self.live.remove(process)
+        }
+        // Opening the FIFO waits for the script to open it for writing.
+        let reader = try FileHandle(forReadingFrom: fifo)
+        defer { try? reader.close() }
+        let written = try XCTUnwrap(String(bytes: try reader.readToEnd() ?? Data(), encoding: .utf8))
+        let child = try XCTUnwrap(pid_t(written.trimmingCharacters(in: .whitespacesAndNewlines)))
+
+        let queue = kqueue()
+        XCTAssertGreaterThanOrEqual(queue, 0)
+        defer { close(queue) }
+        var watch = kevent(
+            ident: UInt(child), filter: Int16(EVFILT_PROC), flags: UInt16(EV_ADD | EV_ONESHOT),
+            fflags: NOTE_EXIT, data: 0, udata: nil)
+        XCTAssertEqual(kevent(queue, &watch, 1, nil, 0, nil), 0, "the grandchild runs until the timeout")
+        // `runProcess`'s timeout path, with the timeout already past.
+        XCTAssertFalse(process.waitOrTerminateGroup(timeout: 0), "the script still waits for its child")
+
+        // No timeout: the exit event is the wait (a hang is the lane watchdog's).
+        var exited = kevent()
+        XCTAssertEqual(kevent(queue, nil, 0, &exited, 1, nil), 1, "the grandchild outlived its group")
+        XCTAssertEqual(exited.ident, UInt(child))
+        XCTAssertNotEqual(exited.fflags & NOTE_EXIT, 0)
     }
 
     /// Go writes, GRDB searches and writes, Go reads GRDB's table back.
@@ -228,8 +254,7 @@ final class SQLCipherInteropTests: XCTestCase {
             executable, args, cwd: cwd, env: env ?? ProcessInfo.processInfo.environment, stdout: outURL, stderr: errURL)
         live.add(process)
         defer { live.remove(process) }
-        guard process.wait(timeout: timeout) else {
-            process.terminateGroup()
+        guard process.waitOrTerminateGroup(timeout: timeout) else {
             throw InteropError("\(executable.lastPathComponent) \(args.joined(separator: " ")) timed out after \(Int(timeout)) s")
         }
         return ProcessResult(status: process.exitStatus, stdout: readLog(outURL), stderr: readLog(errURL))
@@ -281,6 +306,16 @@ private final class GroupProcess: @unchecked Sendable {
 
     func wait(timeout: TimeInterval) -> Bool {
         exited.wait(timeout: .now() + timeout) == .success
+    }
+
+    /// Up to `timeout` for the process to exit; past it, its whole group is
+    /// stopped. Returns whether it exited by itself.
+    func waitOrTerminateGroup(timeout: TimeInterval) -> Bool {
+        guard wait(timeout: timeout) else {
+            terminateGroup()
+            return false
+        }
+        return true
     }
 
     /// SIGINT to the group (go cancels its child processes on an

@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -200,8 +199,7 @@ func TestBatchIncompleteRunKeepsStderr(t *testing.T) {
 	const why = "stream disconnected before completion: 503 Service Unavailable"
 	_, _, qerr := NewClient("gpt-x", "", fakeCodexScript(t, stdout, why, 0)).QuerySync(context.Background(), "sys", "hi", "")
 	_, _, _, gerr := NewCodexGenerator("gpt-x", "gpt-x", fakeCodexScript(t, stdout, why, 0)).Generate(context.Background(), "sys", "hi", "")
-	_, _, _, werr := digest.WithCallTimeout(NewCodexGenerator("gpt-x", "gpt-x", fakeCodexScript(t, stdout, why, 0)), time.Minute).
-		Generate(context.Background(), "sys", "hi", "")
+	werr := generateBounded(t, NewCodexGenerator("gpt-x", "gpt-x", fakeCodexScript(t, stdout, why, 0)), "sys", "hi")
 	for _, err := range []error{qerr, gerr, werr} {
 		require.ErrorIs(t, err, errNoTurnCompleted)
 		assert.Contains(t, logredact.Full(err), why)

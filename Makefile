@@ -36,9 +36,9 @@ JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 PURGE_DEFAULT ?= $(WATCHTOWER_PURGE_DEFAULT)
 # Comma-separated, no spaces: hosts the media pass never fetches (corp build).
 LINK_FETCH_DENY_HOSTS ?= $(WATCHTOWER_LINK_FETCH_DENY_HOSTS)
-LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS)"
+LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS) -X watchtower/internal/hub/identity.KeychainBuildFlag=false"
 
-.PHONY: golangci-version-check build test test-verbose test-cover cover-packages test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check relay-go relay-proto relay-interop relay-interop-kit relay-interop-kit-hub
+.PHONY: golangci-version-check build bridge-build test test-verbose test-cover cover-packages test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test chattext-test chat-test e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check cloudkit-subscriptions-deployed relay-go relay-proto relay-interop relay-interop-kit relay-interop-kit-hub hub-smoke hub-staging
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -48,6 +48,11 @@ app dmg:
 
 app-dev:
 	./scripts/build-app.sh --dev $(VERSION)
+
+# The CloudKit bridge helper alone (debug, unsigned: no iCloud), for a quick
+# compile check; `make app` builds, embeds and signs the release one.
+bridge-build:
+	cd WatchtowerDesktop && swift build --product WatchtowerCloudBridge
 
 # `make app` builds into build.next/ and swaps it into build/ at the end; while
 # the app runs from build/ the swap is deferred until you quit it and run
@@ -140,11 +145,14 @@ test-race:
 # Inner-loop Swift tests: make test-swift FILTER=SomeTestClass runs only that
 # class (a regex alternation works too: FILTER='ClassA|ClassB' — the recipe
 # single-quotes it so the | never reaches the shell); without FILTER the full
-# suite runs as before, followed by the mobile Kit suite (kit-test), so the
-# gate covers both packages.
+# suite runs as before, followed by the mobile Kit suite (kit-test), the chat
+# text package (chattext-test) and the chat package (chat-test), so the
+# gate covers every package.
 test-swift:
 	cd WatchtowerDesktop && caffeinate -i swift test $(if $(FILTER),--filter '$(FILTER)',)
 	$(if $(FILTER),,caffeinate -i $(MAKE) kit-test)
+	$(if $(FILTER),,caffeinate -i $(MAKE) chattext-test)
+	$(if $(FILTER),,caffeinate -i $(MAKE) chat-test)
 
 # Inner-loop tests for the shared mobile Kit package (WatchtowerSync +
 # WatchtowerKit): make kit-test FILTER=SomeTestClass (a regex alternation
@@ -152,6 +160,17 @@ test-swift:
 # no ML stack.
 kit-test:
 	cd WatchtowerKit && swift test $(if $(FILTER),--filter '$(FILTER)',)
+
+# Inner-loop tests for WatchtowerChatText (the chat text helpers shared by the
+# Mac and the phone, no GRDB, no ML stack): make chattext-test FILTER=SomeTestClass.
+chattext-test:
+	cd WatchtowerChatText && swift test $(if $(FILTER),--filter '$(FILTER)',)
+
+# Inner-loop tests for WatchtowerChat (ChatWire: the chat wire models, operations
+# and stores; ChatUI: the chat views and models; both shared by the Mac and the
+# phone, no ML stack): make chat-test FILTER=SomeTestClass.
+chat-test:
+	cd WatchtowerChat && swift test $(if $(FILTER),--filter '$(FILTER)',)
 
 # The Kit E2E vectors the Go hub's golden tests read: padding, envelope, kdf,
 # hpke-envelope and asset .json in WatchtowerKit/Tests/Fixtures/e2e
@@ -169,6 +188,11 @@ e2e-vectors:  ## regenerate the Kit E2E vectors (expected XCTFail "regenerated")
 SIM ?= iPhone 18 Pro
 MOBILE_PROJ := WatchtowerMobile/WatchtowerMobile.xcodeproj
 MOBILE_DEST := platform=iOS Simulator,name=$(SIM)
+# Explicit precompiled modules go stale between the build and test xcodebuild runs
+# sharing DerivedData (SQLCipher-<hash>.pcm, then "missing required module
+# 'GRDBSQLCipher'"), so every phone xcodebuild turns them off (#1822).
+# MOBILE_XCB_EXTRA adds more xcodebuild arguments (e.g. -derivedDataPath).
+MOBILE_XCB := SWIFT_ENABLE_EXPLICIT_MODULES=NO $(MOBILE_XCB_EXTRA)
 MOBILE_BUNDLE_ID := com.aiwatchtowers.watchtower.mobile
 # make mobile-test MOBILE_FILTER=SomeTestClass runs only that class; an
 # alternation (MOBILE_FILTER='ClassA|ClassB') becomes one -only-testing per class.
@@ -180,16 +204,19 @@ mobile-gen:
 
 mobile-build:
 	xcodebuild build -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
-		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO
+		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO $(MOBILE_XCB)
 
 # The test host shares one on-disk replica with the simulator's installed app
 # (spec §10), so the recipe boots the simulator and uninstalls the app first:
 # a stale replica would fail ReplicaWiringTests' exact counts.
+# Signed to run locally with test-only simulated entitlements, not unsigned: storekitd refuses SKTestSession
+# otherwise (StoreKitRelayStoreTests; see WatchtowerMobile/StoreKitTesting.entitlements).
 mobile-test:
 	xcrun simctl boot "$(SIM)" 2>/dev/null || true
 	xcrun simctl uninstall "$(SIM)" $(MOBILE_BUNDLE_ID) 2>/dev/null || true
 	xcodebuild test -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
-		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO $(MOBILE_ONLY)
+		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- \
+		CODE_SIGN_ENTITLEMENTS="$(CURDIR)/WatchtowerMobile/StoreKitTesting.entitlements" $(MOBILE_XCB) $(MOBILE_ONLY)
 
 # Build, boot the simulator, install and launch: the mobile app-dev.
 mobile-run: mobile-build
@@ -204,13 +231,18 @@ mobile-run: mobile-build
 # set by eye; nothing asserts pixels. xcodebuild hands TEST_RUNNER_-prefixed
 # variables to the test process with the prefix stripped.
 SHOTS_DIR ?= build/mobile-shots
+# SHOTS_ONLY=relay-phase4 runs only the relay client Phase 4 frames (S01 upward), into the same folder;
+# SHOTS_ONLY=relay-phase5 only the Phase 5 frames (S58 upward).
+# SHOTS_ONLY=chat only the Chats tab's frames (C1a upward, iPhone chat mockups 1a–1j).
+# SHOTS_ONLY=spec-review only the Sessions tab with a session in Spec review (board #1945).
+SHOTS_ONLY ?=
 mobile-shots:
 	xcrun simctl boot "$(SIM)" 2>/dev/null || true
 	xcrun simctl uninstall "$(SIM)" $(MOBILE_BUNDLE_ID) 2>/dev/null || true
 	mkdir -p "$(SHOTS_DIR)"
-	TEST_RUNNER_WATCHTOWER_SHOTS_DIR="$(abspath $(SHOTS_DIR))" xcodebuild test -project $(MOBILE_PROJ) \
-		-scheme WatchtowerMobile -destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO \
-		-only-testing:WatchtowerMobileTests/ScreenshotTourTests
+	TEST_RUNNER_WATCHTOWER_SHOTS_ONLY="$(SHOTS_ONLY)" TEST_RUNNER_WATCHTOWER_SHOTS_DIR="$(abspath $(SHOTS_DIR))" xcodebuild test -project $(MOBILE_PROJ) \
+		-scheme WatchtowerMobile -destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO $(MOBILE_XCB) \
+		-only-testing:WatchtowerMobileTests/ScreenshotTourTests$(if $(filter relay-phase5,$(SHOTS_ONLY)),/testTheRelayPhase5Shots,$(if $(filter chat,$(SHOTS_ONLY)),/testTheChatShots,$(if $(filter spec-review,$(SHOTS_ONLY)),/testTheSpecReviewShots,$(if $(SHOTS_ONLY),/testTheRelayPhase4Shots))))
 
 # The Desktop style guide's shots (WatchtowerDesktop/Tests/DesignShots, #719):
 # every DesignShotCatalog entry in light and dark mode as PNGs, written to
@@ -238,6 +270,9 @@ design-gallery:
 # three numbers: git describe's v0.15.0-12-g<sha>-dirty gives 0.15.0, and a
 # release's make testflight VERSION=0.16.0 gives 0.16.0, the same number its
 # make app VERSION=0.16.0 stamps on the Mac. Override with MOBILE_VERSION=x.y.z.
+# make mobile-archive on its own is dark (no relay origin): it is the build for
+# App Store review. MOBILE_ARCHIVE_SETTINGS is empty here; only
+# mobile-testflight fills it, with the staging origin (ask #1156).
 MOBILE_ARCHIVE := build/WatchtowerMobile.xcarchive
 MOBILE_EXPORT := build/WatchtowerMobile-export
 ifndef MOBILE_BUILD_NUMBER
@@ -266,7 +301,8 @@ mobile-archive:
 	xcodebuild archive -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
 		-configuration Release -destination 'generic/platform=iOS' \
 		-archivePath $(MOBILE_ARCHIVE) $(MOBILE_ARCHIVE_AUTH) \
-		CURRENT_PROJECT_VERSION=$(MOBILE_BUILD_NUMBER) MARKETING_VERSION=$(MOBILE_VERSION)
+		CURRENT_PROJECT_VERSION=$(MOBILE_BUILD_NUMBER) MARKETING_VERSION=$(MOBILE_VERSION) \
+		$(MOBILE_ARCHIVE_SETTINGS)
 	xcodebuild -exportArchive -archivePath $(MOBILE_ARCHIVE) \
 		-exportOptionsPlist WatchtowerMobile/ExportOptions.plist \
 		-exportPath $(MOBILE_EXPORT) $(MOBILE_ARCHIVE_AUTH)
@@ -282,10 +318,17 @@ mobile-archive:
 # with destination=upload; the key (Admin role) also lets xcodebuild mint the
 # certificates and profiles the archive and the App Store export need.
 # Fails when CloudKit Production lacks record types or fields Development has
-# (deployed only by hand in the CloudKit Console; cktool cannot). Needs a
-# management token saved once: xcrun cktool save-token --type management.
+# (deployed only by hand in the CloudKit Console; cktool cannot), and until
+# the owner records the query subscription types as deployed
+# (make cloudkit-subscriptions-deployed; cktool cannot read them, #1749).
+# Needs a management token saved once: xcrun cktool save-token --type management.
 cloudkit-check:
 	bash scripts/cloudkit-schema-check.sh
+
+# Records that the query subscription types cloudkit-check lists were deployed
+# to Production (cktool cannot read them; see the script's header).
+cloudkit-subscriptions-deployed:
+	bash scripts/cloudkit-schema-check.sh --subscriptions-deployed
 
 -include $(HOME)/.appstoreconnect/watchtower.mk
 ASC_KEY_ID ?=
@@ -293,8 +336,19 @@ ASC_ISSUER_ID ?=
 ASC_KEY_PATH ?= $(HOME)/.appstoreconnect/private_keys/AuthKey_$(ASC_KEY_ID).p8
 ASC_AUTH = -allowProvisioningUpdates -authenticationKeyPath "$(ASC_KEY_PATH)" \
 	-authenticationKeyID "$(ASC_KEY_ID)" -authenticationKeyIssuerID "$(ASC_ISSUER_ID)"
+# Every TestFlight build talks to the staging relay (ask #1156): the origin
+# comes from RELAY_TESTFLIGHT_ORIGIN_FILE, a file outside the repo holding one
+# https://host[:port] line, read and checked by scripts/testflight-relay-origin.sh.
+# A missing or malformed file fails the upload; RELAY_TESTFLIGHT_DARK=1 uploads
+# a dark build on purpose. The command-line setting beats project.yml's
+# Release "" for the archive action. Never send a TestFlight build to App Store
+# review: it carries the staging origin; review gets a separate, dark
+# make mobile-archive.
+RELAY_TESTFLIGHT_ORIGIN_FILE ?= $(HOME)/.config/watchtower/relay-testflight-origin
+RELAY_TESTFLIGHT_DARK ?=
 testflight: mobile-testflight
 mobile-testflight:
+	@bash scripts/testflight-relay-origin.sh "$(RELAY_TESTFLIGHT_ORIGIN_FILE)" "$(RELAY_TESTFLIGHT_DARK)" > /dev/null
 	@if [ -z "$(ASC_KEY_ID)" ] || [ -z "$(ASC_ISSUER_ID)" ]; then \
 		echo "error: ASC_KEY_ID and ASC_ISSUER_ID are not set."; \
 		echo "  Put them in ~/.appstoreconnect/watchtower.mk:"; \
@@ -308,7 +362,9 @@ mobile-testflight:
 		exit 1; \
 	fi
 	@if [ -z "$(SKIP_CLOUDKIT_CHECK)" ]; then bash scripts/cloudkit-schema-check.sh; fi
-	$(MAKE) mobile-archive MOBILE_BUILD_NUMBER=$(MOBILE_BUILD_NUMBER) MOBILE_VERSION=$(MOBILE_VERSION) MOBILE_ARCHIVE_AUTH='$(ASC_AUTH)'
+	origin=$$(bash scripts/testflight-relay-origin.sh "$(RELAY_TESTFLIGHT_ORIGIN_FILE)" "$(RELAY_TESTFLIGHT_DARK)") && \
+	$(MAKE) mobile-archive MOBILE_BUILD_NUMBER=$(MOBILE_BUILD_NUMBER) MOBILE_VERSION=$(MOBILE_VERSION) MOBILE_ARCHIVE_AUTH='$(ASC_AUTH)' \
+		MOBILE_ARCHIVE_SETTINGS="WATCHTOWER_RELAY_ORIGIN=$$origin"
 	cp WatchtowerMobile/ExportOptions.plist build/ExportOptions-upload.plist
 	plutil -replace destination -string upload build/ExportOptions-upload.plist
 	xcodebuild -exportArchive -archivePath $(MOBILE_ARCHIVE) \
@@ -328,12 +384,16 @@ test-swift-strict-pool:
 
 # Shell-level tests for build-app.sh and the app-swap/app-install scripts. They
 # extract marked blocks or run the scripts in a temp tree against stubbed
-# binaries — no real build, no codesign.
+# binaries — no real build, no codesign. The self-hosted runner setup needs
+# sudo, so it gets only a syntax check.
 test-scripts:
 	@rc=0; for t in scripts/tests/test-*.sh; do \
 	  echo "==> $$t"; \
 	  bash "$$t" || rc=1; \
-	done; exit $$rc
+	done; \
+	echo "==> bash -n scripts/ci-runner/setup-mac-runner.sh"; \
+	bash -n scripts/ci-runner/setup-mac-runner.sh || rc=1; \
+	exit $$rc
 
 # Copies the hosted relay's Go client + proto into internal/hub/transport/relay,
 # pinned to REF (default: the commit in that dir's VERSION). Refuses a dirty or
@@ -353,9 +413,27 @@ relay-proto:
 # interop) against the relay's local stand: `wrangler dev` from
 # $(RELAY)/worker in its own process group (needs Node and `npm ci` there),
 # killed and waited for on exit, failure and signal. Any relay dir works; it
-# warns when a git checkout is not at the vendored client's pin.
+# warns when a git checkout is not at the vendored client's pin. KIT=1
+# (macOS) runs the Kit suite's GoHubInteropTests against a live headless hub
+# on the stand instead (see the script's header).
+KIT ?=
 relay-interop:
-	bash scripts/relay-interop.sh "$(RELAY)"
+	KIT="$(KIT)" bash scripts/relay-interop.sh "$(RELAY)"
+
+# The headless hub smoke test (cmd/hub_headless_smoke_test.go, build tag
+# smoke): builds the binary, runs `sync --daemon` against an in-process fake
+# relay and session host, pairs a Go phone from the terminal-free `hub pair`
+# stream, starts a stub claude session and types one line into it. Live mode
+# on Linux, the test workspace mode on darwin. CI runs it on amd64 and arm64.
+hub-smoke:
+	go test -tags smoke ./cmd -run TestHeadlessSmoke -timeout 5m
+
+# The relay client Phase 5 staging run's headless hub (ask #1077): the binary
+# with a 10-minute relay epoch (or WATCHTOWER_RELAYSTAGING_EPOCH) and 30-minute
+# retention, for a test host only. No release path builds it
+# (internal/hub/identity TestNoReleasePathSetsRelayStaging).
+hub-staging:
+	go build -tags relaystaging $(LDFLAGS) -o $(BINARY_NAME)-staging .
 
 # Runs the mobile Kit's relay interop tests (the *InteropTests classes of
 # WatchtowerKit, which skip without WATCHTOWER_RELAY_INTEROP_URL) against the
@@ -400,10 +478,15 @@ lint: golangci-version-check
 lint-diff: golangci-version-check
 	golangci-lint run --new-from-rev origin/main ./...
 
+# kit-lint-guard covers the Desktop's Views/App, the phone's Features and the
+# shared chat views (WatchtowerChat/Sources/ChatUI); each package's own
+# .swiftlint.yml carries the kit_* rules for its views.
 lint-swift:
 	bash scripts/kit-lint-guard.sh
 	cd WatchtowerDesktop && swiftlint lint --strict --baseline .swiftlint-baseline.json
 	cd WatchtowerKit && swiftlint lint --strict
+	cd WatchtowerChatText && swiftlint lint --strict
+	cd WatchtowerChat && swiftlint lint --strict
 	cd WatchtowerMobile && swiftlint lint --strict
 
 lint-all: lint lint-swift

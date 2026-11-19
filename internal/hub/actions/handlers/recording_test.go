@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,6 +94,30 @@ func TestRecordingReceivedWhenTranscriberFresh(t *testing.T) {
 	// a retry of the same upload is answered received, nothing queued twice
 	if out := e.h.IntakeRecording(context.Background(), e.upload("u-1", plain)); out.Status != wire.StatusReceived {
 		t.Fatalf("retry %+v", out)
+	}
+}
+
+// TestRecordingKeepsItsOriginNotItsTitle: the queued job keeps the
+// upload's event id and start (ids and a time); an id past the cap is not
+// an id and is dropped.
+func TestRecordingKeepsItsOriginNotItsTitle(t *testing.T) {
+	e := newRecEnv(t)
+	e.beat(e.now.Add(-10 * time.Second))
+	started := time.Unix(1_800_000_000, 0)
+	in := e.upload("u-1", []byte("audio"))
+	in.Origin = state.RecordingOrigin{EventID: "evt-1", StartedAt: started}
+	if out := e.h.IntakeRecording(context.Background(), in); out.Status != wire.StatusReceived {
+		t.Fatalf("outcome %+v", out)
+	}
+	job, err := e.store.RecordingJob("u-1")
+	if err != nil || job.EventID != "evt-1" || !job.StartedAt.Equal(started) {
+		t.Fatalf("job %+v %v", job, err)
+	}
+	in = e.upload("u-2", []byte("audio"))
+	in.Origin = state.RecordingOrigin{EventID: strings.Repeat("x", state.MaxRecordingEventID+1)}
+	_ = e.h.IntakeRecording(context.Background(), in)
+	if job, err := e.store.RecordingJob("u-2"); err != nil || job.EventID != "" || !job.StartedAt.IsZero() {
+		t.Fatalf("job %+v %v", job, err)
 	}
 }
 

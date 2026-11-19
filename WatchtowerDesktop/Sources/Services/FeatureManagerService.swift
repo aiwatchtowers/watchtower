@@ -465,4 +465,8 @@ struct UnresolvedCLIRunner: CLIRunnerProtocol {
     func run(args: [String]) async throws -> Data {
         throw CLIRunnerError.binaryNotFound
     }
+
+    func runModel(args: [String], origin: CLIOrigin, timeout: TimeInterval?, stdin: Data?) async throws -> Data {
+        throw CLIRunnerError.binaryNotFound
+    }
 }

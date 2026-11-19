@@ -3,6 +3,7 @@ import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
 @testable import WatchtowerCore
+@testable import ChatUI
 
 /// A card with blocks in today's Inbox (spec "Today's Inbox", "Press
 /// address"): the reading pane's choice by `ArtifactDocument.decode`, the

@@ -39,7 +39,17 @@ final class HeldCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
         try await run(args: args)
     }
 
+    /// Refuses a model command as `ProcessCLIRunner` does (#1886 Task 18).
     func run(args: [String]) async throws -> Data {
+        try CLIRunnerError.refuseModelCommand(args)
+        return try await hold(args)
+    }
+
+    func runModel(args: [String], origin _: CLIOrigin, timeout _: TimeInterval?, stdin _: Data?) async throws -> Data {
+        try await hold(args)
+    }
+
+    private func hold(_ args: [String]) async throws -> Data {
         lock.withLock { recorded.append(args) }
         started.release()
         await finish.wait()
@@ -49,16 +59,11 @@ final class HeldCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
 }
 
 extension XCTestCase {
-    /// Waits for `cli`'s first `run` to begin, failing (instead of hanging
-    /// the suite) if it never does — e.g. when a regression makes the code
-    /// under test skip the CLI call.
+    /// Waits for `cli`'s first `run` to begin — the runner's own signal, no
+    /// clock and no deadline (a regression that skips the CLI call is a hang
+    /// the lane watchdog reports).
     @MainActor
-    func awaitStarted(_ cli: HeldCLIRunner, timeout: TimeInterval = 5) async {
-        let started = expectation(description: "CLI run started")
-        Task {
-            await cli.started.wait()
-            started.fulfill()
-        }
-        await fulfillment(of: [started], timeout: timeout)
+    func awaitStarted(_ cli: HeldCLIRunner) async {
+        await cli.started.wait()
     }
 }

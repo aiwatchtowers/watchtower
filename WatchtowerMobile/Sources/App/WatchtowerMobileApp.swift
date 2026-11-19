@@ -13,7 +13,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     /// app's boot state owns the root. Read through the root, since the link
     /// flow replaces its environment.
     @MainActor static weak var root: AppRoot? {
-        didSet { openPendingTap() }
+        didSet {
+            openPendingTap()
+            deliverPendingPushToken()
+        }
     }
 
     /// A tap that launched the app arrives before the root exists; it opens once the root does.
@@ -23,6 +26,29 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         guard let root, let tap = pendingTap else { return }
         pendingTap = nil
         root.open(tap)
+    }
+
+    /// An APNs token arriving before the root exists; it goes on once the root does.
+    @MainActor private static var pendingPushToken: Data?
+
+    /// The relay's copy of the token (`RelayPushRegistrar`): nothing while the relay is off.
+    @MainActor static func pushTokenArrived(_ token: Data) {
+        guard let root else {
+            pendingPushToken = token
+            return
+        }
+        root.relayPush?.tokenArrived(token)
+    }
+
+    @MainActor private static func deliverPendingPushToken() {
+        guard root != nil, let token = pendingPushToken else { return }
+        pendingPushToken = nil
+        pushTokenArrived(token)
+    }
+
+    /// Which sessions a silent push is for: a payload with `ck` is CloudKit's, anything else the relay's.
+    static func pushScope(_ userInfo: [AnyHashable: Any]) -> PushOrigin? {
+        PushRouting.origin(ofRemoteNotification: userInfo, cloudKit: TransportFactory.cloudKit.wake)
     }
 
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppDelegate")
@@ -65,29 +91,53 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         return true
     }
 
+    // The completion-handler forms, not the async ones: an async delegate method's @objc thunk calls UIKit's
+    // completion from the cooperative pool, and UIKit asserts it runs on the main thread (a tap aborted the app).
+    // Each completion goes through `MainThread.run`, after the work it waits for.
+
     /// A work alert arriving in the foreground: a banner and sound, unless its screen is already on top.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification
-    ) async -> UNNotificationPresentationOptions {
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
         let destination = AlertDestination.destination(userInfo: notification.request.content.userInfo)
-        return await MainActor.run {
-            AlertDestination.foregroundOptions(for: destination, onScreen: Self.root?.env.navigation.alertOnScreen)
+        MainThread.run {
+            completionHandler(
+                AlertDestination.foregroundOptions(for: destination, onScreen: Self.root?.env.navigation.alertOnScreen))
         }
     }
 
     /// A tap on a work alert opens its screen.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse
-    ) async {
-        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
-              let destination = AlertDestination.destination(userInfo: response.notification.request.content.userInfo)
-        else { return }
-        await MainActor.run {
-            Self.pendingTap = destination
-            Self.openPendingTap()
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let destination = AlertDestination.tapped(
+            actionIdentifier: response.actionIdentifier, userInfo: response.notification.request.content.userInfo)
+        Self.receiveTap(destination, open: { Self.openTap($0) }, completion: completionHandler)
+    }
+
+    /// A tap's screen opens (`open`), then `completion` runs, both on the main thread, from whatever thread
+    /// the tap arrives on.
+    nonisolated static func receiveTap(
+        _ destination: AlertDestination?,
+        open: @escaping @MainActor (AlertDestination) -> Void,
+        completion: @escaping () -> Void
+    ) {
+        MainThread.run {
+            if let destination {
+                open(destination)
+            }
+            completion()
         }
+    }
+
+    /// Opens now, or once the root exists.
+    @MainActor private static func openTap(_ destination: AlertDestination) {
+        pendingTap = destination
+        openPendingTap()
     }
 
     /// The scene became active: the first activation of a process not yet
@@ -99,6 +149,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     private func recordColdLaunch(_ event: EnergyEvent?) {
         guard countsLaunch, let event else { return }
         BatteryDiagnostics.shared.counter.record(event)
+    }
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        Task { @MainActor in Self.pushTokenArrived(deviceToken) }
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: any Error) {
+        RelayPushRegistrar.logRegistrationFailure(error)
     }
 
     func application(
@@ -118,7 +176,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         let arrivedAt = Date()
         let inForeground = application.applicationState == .active
         // Read before the hop: the payload is not Sendable.
-        let scope = TransportFactory.cloudKit.wake.origin(ofRemoteNotification: userInfo)
+        let scope = Self.pushScope(userInfo)
         Task { @MainActor in
             guard let env = Self.root?.env else {
                 Self.logger.warning("remote notification with no environment (degraded boot?)")
@@ -451,7 +509,7 @@ struct DemoTourBanner: View {
             Image(systemName: "play.rectangle")
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
-            Text("Demo: sample Macs and data")
+            Text("Demo: sample towers and data")
                 .font(.subheadline)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button("Exit Demo", action: exit)

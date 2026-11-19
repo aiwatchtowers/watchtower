@@ -147,12 +147,12 @@ func InstallCodex(ctx context.Context, o WorkbenchInstallOptions, srv func() (co
 		errs = append(errs, err)
 	}
 	var sk SkillStatus
-	if err := skillDirsInside(o.Folder, o.codexSkillsDir(), workbenchSkill(), flowSkill()); err != nil {
+	if err := skillDirsInside(o.Folder, o.codexSkillsDir(), o.coreSkill(), o.flowSkill()); err != nil {
 		errs = append(errs, err)
 	} else {
 		var flow SkillStatus
 		var pairErrs []error
-		sk, flow, st.SingleFileLayout, pairErrs = installSkillPair(o.codexSkillsDir(), o.PresetNone)
+		sk, flow, st.SingleFileLayout, pairErrs = installSkillPair(o.codexSkillsDir(), o)
 		st.FlowState = flow.State
 		errs = append(errs, pairErrs...)
 	}
@@ -184,12 +184,12 @@ func RemoveCodex(_ context.Context, o WorkbenchInstallOptions) (SkillStatus, err
 	}
 	var errs []error
 	var sk SkillStatus
-	err := skillDirsInside(o.Folder, o.codexSkillsDir(), workbenchSkill(), flowSkill())
+	err := skillDirsInside(o.Folder, o.codexSkillsDir(), o.coreSkill(), o.flowSkill())
 	if err == nil {
-		if sk, err = removeSkill(o.codexSkillsDir(), workbenchSkill()); err != nil {
+		if sk, err = removeSkill(o.codexSkillsDir(), o.coreSkill()); err != nil {
 			errs = append(errs, err)
 		}
-		if _, err := removeSkill(o.codexSkillsDir(), flowSkill()); err != nil {
+		if _, err := removeSkill(o.codexSkillsDir(), o.flowSkill()); err != nil {
 			errs = append(errs, err)
 		}
 		removeIfEmpty(o.codexSkillsDir())
@@ -221,9 +221,12 @@ func StatusCodex(ctx context.Context, o WorkbenchInstallOptions, resolve func() 
 		return CodexStatus{}, codexFolderGone(o)
 	}
 	var st CodexStatus
-	sk, err := statusSkill(o.codexSkillsDir(), workbenchSkill())
+	sk, err := statusSkill(o.codexSkillsDir(), o.coreSkill())
 	if err != nil {
 		return CodexStatus{}, err
+	}
+	if o.OverlaysUnread {
+		sk = keptState(sk)
 	}
 	st.SkillState = sk.State
 	st.GroupPrompt = skillKnowsGroupPrompt(sk.Path)

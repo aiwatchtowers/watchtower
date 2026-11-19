@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// The bar over an html/htm file in the Files pane (#535): Source | Preview,
 /// and Reload, Present and Open in Browser. The preview shows the file as it

@@ -24,6 +24,13 @@ const (
 
 var flagSessionHostSocket string
 
+// Test seams: leaving the session and building the server. Production
+// always runs unix.Setsid and sessionhost.NewServer.
+var (
+	sessionHostSetsid    = unix.Setsid
+	newSessionHostServer = sessionhost.NewServer
+)
+
 var sessionHostCmd = &cobra.Command{
 	Use:   "session-host --socket PATH",
 	Short: "Own workbench terminal sessions so they survive an app restart",
@@ -57,7 +64,7 @@ func runSessionHost(cmd *cobra.Command, _ []string) error {
 	}
 	// Leave the launching app's session so its exit does not reach us. A
 	// process already leading a group cannot do this; it carries on.
-	if _, err := unix.Setsid(); err != nil {
+	if _, err := sessionHostSetsid(); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "session-host: setsid: %v\n", err)
 	}
 	defer sessionhost.DiscardHangup()()
@@ -72,7 +79,7 @@ func runSessionHost(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	logOut := cmd.ErrOrStderr()
-	srv := sessionhost.NewServer(sessionhost.Options{IdleExit: sessionHostIdleExit, RingSize: sessionHostRingSize,
+	srv := newSessionHostServer(sessionhost.Options{IdleExit: sessionHostIdleExit, RingSize: sessionHostRingSize,
 		CodexWatch: openCodexWatchStore,
 		Logf:       func(format string, args ...any) { fmt.Fprintf(logOut, format+"\n", args...) }})
 	if err := srv.Serve(ctx, l); err != nil {

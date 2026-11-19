@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import ViewInspector
 import WatchtowerCore
+import WatchtowerTestSupport
 @testable import WatchtowerDesktop
 
 /// An engine load failing in the button rendering tests — local so a failure
@@ -85,18 +86,10 @@ final class DictationButtonViewTests: XCTestCase {
         )
     }
 
-    /// The `MeetingRecorderTestCase.waitUntil` shape, local — this class
-    /// extends plain `XCTestCase`.
+    /// Yields the main actor until `condition` holds — no deadline (a wait
+    /// that never ends is the lane watchdog's to report).
     private func waitUntil(_ what: String, _ condition: @escaping () -> Bool) async {
-        for _ in 0..<400 {
-            if condition() { return }
-            await Task.yield()
-        }
-        for _ in 0..<200 {
-            if condition() { return }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-        XCTFail("timed out waiting for \(what)")
+        while !condition() { await Task.yield() }
     }
 
     private func makeButton(targetID: String = "t", center: DictationCenter) -> DictationButton {
@@ -212,10 +205,10 @@ final class DictationButtonViewTests: XCTestCase {
         )
         var result: DictationCleanResult?
         center.start(targetID: "t", mode: .idea, onLiveText: { _ in }, onResult: { result = $0 })
-        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        await untilObserved { center.phase == .recording && !center.isEngineLoading }
         recorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
-        await waitUntil("cleaning") { center.phase == .cleaning }
+        await untilObserved { center.phase == .cleaning }
 
         let sut = makeButton(center: center)
         XCTAssertNoThrow(try sut.inspect().find(text: "Cleaning…"),
@@ -228,7 +221,7 @@ final class DictationButtonViewTests: XCTestCase {
     func testFailedShowsRetryAffordance() async throws {
         let center = try makeCenter { _ in throw ButtonStubError() }
         center.start(targetID: "t", mode: .idea, onLiveText: { _ in }, onResult: { _ in })
-        await waitUntil("failed") {
+        await untilObserved {
             if case .failed = center.phase { return true }
             return false
         }
@@ -253,7 +246,7 @@ final class DictationButtonViewTests: XCTestCase {
                          "the badge must ride the recording capsule while the engine loads")
 
         gate.release()
-        await waitUntil("engine loaded") { !center.isEngineLoading }
+        await untilObserved { !center.isEngineLoading }
 
         XCTAssertThrowsError(try sut.inspect().find(text: "Loading model…"),
                              "the badge must disappear once the engine is loaded")

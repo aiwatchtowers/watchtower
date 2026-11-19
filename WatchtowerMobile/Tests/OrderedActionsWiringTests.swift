@@ -1,8 +1,9 @@
 import CryptoKit
 import Foundation
+import os
 import WatchtowerE2ETesting
 import WatchtowerKit
-import WatchtowerSync
+@testable import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
 
@@ -86,6 +87,13 @@ final class OrderedActionsWiringTests: XCTestCase {
         await fetch(env)
         XCTAssertEqual(try env.store.pendingActions().first?.delivery, .sent)
         try await poll({ env.outboxBacklog == .empty }, "nothing waits, and the last flush went through")
+
+        // A parked feed (relay client Phase 5, S58) brings the written action into the session's backlog, and a
+        // read with no pending record takes it out again.
+        try env.store.markRelayFeedParked(at: Date())
+        try await poll({ env.outboxBacklog.parked?.sent == 1 }, "the session's backlog carries the parked feed")
+        try env.store.endRelayWait()
+        try await poll({ env.outboxBacklog == .empty }, "the merge ends it")
     }
 
     /// Every fetch sweeps (not only the boot's): a phone that stays up still withdraws an action the Mac never
@@ -120,7 +128,7 @@ final class OrderedActionsWiringTests: XCTestCase {
             _ = await env.refresh(.pull)
             fetched.fulfill()
         }
-        await fulfillment(of: [fetched], timeout: 5)
+        await fulfillment(of: [fetched])
         XCTAssertEqual(try env.store.pendingActions().first?.delivery, .queued, "the save still hangs")
 
         await transport.releaseHeldSave()
@@ -137,19 +145,22 @@ final class OrderedActionsWiringTests: XCTestCase {
         await transport.holdNextSave()
         addTeardownBlock { await transport.releaseHeldSave() }
         try await env.boardWriter.setStatus(.done, on: try target(415))
-        let deadline = Date().addingTimeInterval(5)
-        while await transport.conditionalSaves.count == savesBefore, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        await transport.untilSaveHeld()
         let held = await transport.conditionalSaves.count
         XCTAssertGreaterThan(held, savesBefore, "the enqueue's own flush is held in its save")
 
+        // The cap never runs out here; its wait starting means shutDown() reached the drain.
+        let drainWaits = AsyncStream.makeStream(of: Void.self)
+        env.outboxDrainSleep = { _ in
+            drainWaits.continuation.yield()
+            await untilCancelled()
+        }
         var shutDown = false
         let shutting = Task {
             await env.shutDown()
             shutDown = true
         }
-        try await Task.sleep(for: .milliseconds(200))
+        for await _ in drainWaits.stream { break }
         XCTAssertFalse(shutDown, "the outbox's flush is still running")
 
         await transport.releaseHeldSave()
@@ -162,15 +173,13 @@ final class OrderedActionsWiringTests: XCTestCase {
     func testAHungSaveDoesNotHoldShutDownPastTheCap() async throws {
         let transport = SwitchableTransport()
         let env = try await orderedSession(over: transport)
-        env.outboxDrainCap = .milliseconds(100)
+        let caps = OSAllocatedUnfairLock<[Duration]>(initialState: [])
+        env.outboxDrainSleep = { cap in caps.withLock { $0.append(cap) } } // the cap runs out at once
         let savesBefore = await transport.conditionalSaves.count
         await transport.holdNextSave()
         addTeardownBlock { await transport.releaseHeldSave() }
         try await env.boardWriter.setStatus(.done, on: try target(415))
-        let deadline = Date().addingTimeInterval(5)
-        while await transport.conditionalSaves.count == savesBefore, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        await transport.untilSaveHeld()
         let held = await transport.conditionalSaves.count
         XCTAssertGreaterThan(held, savesBefore, "the enqueue's own flush is held in its save")
 
@@ -179,7 +188,8 @@ final class OrderedActionsWiringTests: XCTestCase {
             await env.shutDown()
             returned.fulfill()
         }
-        await fulfillment(of: [returned], timeout: 3)
+        await fulfillment(of: [returned])
+        XCTAssertEqual(caps.withLock { $0 }, [env.outboxDrainCap], "shutDown() waited out its drain cap")
         XCTAssertEqual(try env.store.pendingActions().first?.delivery, .queued, "the save still hangs")
     }
 
@@ -278,7 +288,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         let keys = try TestPhone.keys()
         let env = try await orderedSession(over: transport, keys: keys)
 
-        env.keysMerged(newestEpochRaised: false)
+        await env.keysMerged(newestEpochRaised: false, droppedNewestPair: false)
         await env.epochAckWork?.value
         await env.outbox.drain()
         let adopted = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
@@ -288,10 +298,10 @@ final class OrderedActionsWiringTests: XCTestCase {
         link.epochs.append(EpochKeys(
             epoch: 2, dataKey: Data(repeating: 2, count: 32), alertKey: Data(repeating: 3, count: 32)))
         try keys.store.saveHubLink(link)
-        env.keysMerged(newestEpochRaised: true)
+        await env.keysMerged(newestEpochRaised: true, droppedNewestPair: false)
         await env.epochAckWork?.value
         await env.outbox.drain()
-        env.keysMerged(newestEpochRaised: true)
+        await env.keysMerged(newestEpochRaised: true, droppedNewestPair: false)
         await env.epochAckWork?.value
         await env.outbox.drain()
 
@@ -351,6 +361,32 @@ final class OrderedActionsWiringTests: XCTestCase {
         let acks = try await phoneControls(in: transport).filter { $0.kind == .epochAck }.compactMap(\.epoch)
         XCTAssertEqual(acks.max(), 2, "the boot acknowledged the raise")
         XCTAssertEqual(acks.filter { $0 == 2 }.count, 1)
+    }
+
+    // MARK: - Action timings
+
+    /// A slice stored while the keys were locked opens in `indexStoredRows` (a key arrived): that pass is where the
+    /// timing sees it, so the effect is stamped there (relay client Phase 4, Task 14).
+    func testALateIndexedSliceStampsTheActionTimingEffect() async throws {
+        let transport = SwitchableTransport()
+        let phoneKeys = try TestE2E.phoneStore()
+        let env = try await orderedSession(
+            over: transport, keys: PhoneKeys(store: phoneKeys, hubID: hubID))
+        let written = Date()
+        try env.store.latencyWritten(
+            actionID: "a", kind: "board_target_status", transport: .cloudKit, at: written)
+        try env.store.latencyAnswered(actionID: "a", applied: true, at: written)
+
+        phoneKeys.isLocked = true
+        try await TestPhone.hub(over: transport.inner).save([CloudRecord(
+            recordName: SliceKind.workbench.recordName(id: "1"), zone: .data, kind: SliceKind.workbench.rawValue,
+            modifiedAt: written, payload: Data("{\"id\":1}".utf8))])
+        await fetch(env)
+        XCTAssertEqual(try env.store.latencySamples(since: .distantPast), [], "stored but not opened yet")
+
+        phoneKeys.isLocked = false
+        env.indexStoredRows()
+        XCTAssertEqual(try env.store.latencySamples(since: .distantPast).count, 1)
     }
 
     // MARK: - Helpers
@@ -461,6 +497,7 @@ private actor SwitchableTransport: ConditionalTransport {
     /// The next conditional save waits here until released.
     private var holdsNextSave = false
     private var heldSave: CheckedContinuation<Void, Never>?
+    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
     private(set) var conditionalSaves: [ConditionalSave] = []
 
     func refuse(_ refusal: TransportRefusal?) {
@@ -469,6 +506,12 @@ private actor SwitchableTransport: ConditionalTransport {
 
     func holdNextSave() {
         holdsNextSave = true
+    }
+
+    /// Returns once a conditional save waits in the hold.
+    func untilSaveHeld() async {
+        if heldSave != nil { return }
+        await withCheckedContinuation { heldWaiters.append($0) }
     }
 
     func releaseHeldSave() {
@@ -493,7 +536,11 @@ private actor SwitchableTransport: ConditionalTransport {
         conditionalSaves += items
         if holdsNextSave {
             holdsNextSave = false
-            await withCheckedContinuation { heldSave = $0 }
+            await withCheckedContinuation {
+                heldSave = $0
+                heldWaiters.forEach { $0.resume() }
+                heldWaiters.removeAll()
+            }
         }
         if let refusal {
             return items.map { _ in .refused(refusal) }

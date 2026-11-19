@@ -5,7 +5,6 @@ import (
 	"context"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,6 +17,12 @@ import (
 // the production CLI's hidden command does.
 func TestMain(m *testing.M) {
 	if len(os.Args) == 3 && os.Args[1] == "pdf-helper" {
+		if ready := os.Getenv(pdfHelperReadyEnv); ready != "" {
+			// The test waits for this line, then ends the helper's deadline.
+			if err := os.WriteFile(ready, []byte("ready\n"), 0o600); err != nil {
+				os.Exit(2)
+			}
+		}
 		if err := ServePDFHelper(os.Stdout, os.Stderr, os.Args[2]); err != nil {
 			os.Exit(1)
 		}
@@ -25,6 +30,10 @@ func TestMain(m *testing.M) {
 	}
 	os.Exit(m.Run())
 }
+
+// pdfHelperReadyEnv names a FIFO the helper writes "ready" to before it
+// parses (readyFIFO).
+const pdfHelperReadyEnv = "WT_TEST_PDF_HELPER_READY"
 
 // testHelper is the PDFHelper argv prefix that runs this test binary.
 func testHelper() []string { return []string{os.Args[0], "pdf-helper"} }
@@ -35,22 +44,11 @@ type extractResult struct {
 	err    error
 }
 
-// extractWithin runs Extract in a goroutine and fails the test — instead
-// of hanging it — when it has not returned within d.
-func extractWithin(t *testing.T, d time.Duration, x *Extractor, mediaType, name string, data []byte) extractResult {
+// extractWithin runs Extract. A hang is go test -timeout's to report.
+func extractWithin(t *testing.T, x *Extractor, mediaType, name string, data []byte) extractResult {
 	t.Helper()
-	done := make(chan extractResult, 1)
-	go func() {
-		secs, status, err := x.Extract(context.Background(), mediaType, name, bytes.NewReader(data))
-		done <- extractResult{secs, status, err}
-	}()
-	select {
-	case r := <-done:
-		return r
-	case <-time.After(d):
-		t.Fatalf("Extract(%s) did not return within %s", name, d)
-		return extractResult{}
-	}
+	secs, status, err := x.Extract(context.Background(), mediaType, name, bytes.NewReader(data))
+	return extractResult{secs, status, err}
 }
 
 // TestPDFKidsLoopFailsFast: a page tree whose /Kids points back at itself
@@ -59,7 +57,7 @@ func TestPDFKidsLoopFailsFast(t *testing.T) {
 	for _, helper := range [][]string{nil, testHelper()} {
 		x := newExtractor(t, nil)
 		x.PDFHelper = helper
-		r := extractWithin(t, 10*time.Second, x, "application/pdf", "loop.pdf", fixture(t, "kidsloop.pdf"))
+		r := extractWithin(t, x, "application/pdf", "loop.pdf", fixture(t, "kidsloop.pdf"))
 		require.NoError(t, r.err)
 		assert.Equal(t, StatusFailed, r.status, "helper=%v", helper)
 		assert.Nil(t, r.secs)
@@ -72,8 +70,8 @@ func TestPDFViaHelperMatchesInProcess(t *testing.T) {
 		in := newExtractor(t, nil)
 		out := newExtractor(t, nil)
 		out.PDFHelper = testHelper()
-		a := extractWithin(t, 30*time.Second, in, "application/pdf", name, fixture(t, name))
-		b := extractWithin(t, 30*time.Second, out, "application/pdf", name, fixture(t, name))
+		a := extractWithin(t, in, "application/pdf", name, fixture(t, name))
+		b := extractWithin(t, out, "application/pdf", name, fixture(t, name))
 		require.NoError(t, b.err, name)
 		assert.Equal(t, a, b, name)
 		assertTempDirEmpty(t, out.TempDir)

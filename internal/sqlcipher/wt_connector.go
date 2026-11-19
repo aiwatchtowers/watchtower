@@ -10,6 +10,14 @@ package sqlcipher
 static int wt_key(sqlite3 *db, const void *key, int n) {
 	return sqlite3_key_v2(db, "main", key, n);
 }
+
+// sqlite3_db_config is variadic, so cgo needs this wrapper. It returns the
+// setting SQLite reports back, or -1 when the call itself fails.
+static int wt_no_ckpt_on_close(sqlite3 *db) {
+	int out = -1;
+	int rv = sqlite3_db_config(db, SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, 1, &out);
+	return rv == SQLITE_OK ? out : -1;
+}
 */
 import "C"
 
@@ -38,7 +46,21 @@ type Connector struct {
 	Path   string
 	Params string
 	Key    func() ([]byte, error)
+	// NoCheckpointOnClose turns on SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE and
+	// sets PRAGMA wal_autocheckpoint = 0 on every connection, so neither a
+	// commit nor the last close copies the WAL into the main file. A reader
+	// that must leave the main file byte-identical sets it; Connect fails
+	// with ErrNoCheckpointGuard when SQLite does not report it on.
+	NoCheckpointOnClose bool
 }
+
+// ErrNoCheckpointGuard is returned by Connect when NoCheckpointOnClose is
+// set and SQLite does not report SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE as on.
+var ErrNoCheckpointGuard = errors.New("sqlcipher: no-checkpoint-on-close not confirmed")
+
+// confirmNoCkpt reads the value SQLite reports for the setting; a seam so a
+// test (which cannot use cgo) can force the failure path.
+var confirmNoCkpt = func(out int) bool { return out == 1 }
 
 var _ driver.Connector = (*Connector)(nil)
 
@@ -67,7 +89,33 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		}
 		key = k
 	}
-	return driverInstance.open(c.DSN(), key)
+	conn, err := driverInstance.open(c.DSN(), key)
+	if err != nil || !c.NoCheckpointOnClose {
+		return conn, err
+	}
+	sc, ok := conn.(*SQLiteConn)
+	if !ok {
+		_ = conn.Close()
+		return nil, fmt.Errorf("%w (unexpected connection type %T)", ErrNoCheckpointGuard, conn)
+	}
+	if err := noCheckpointOnClose(ctx, sc); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// noCheckpointOnClose turns off the close-time and automatic checkpoints on
+// one fresh connection.
+func noCheckpointOnClose(ctx context.Context, conn *SQLiteConn) error {
+	out := int(C.wt_no_ckpt_on_close(conn.db))
+	if !confirmNoCkpt(out) {
+		return fmt.Errorf("%w (sqlite reported %d)", ErrNoCheckpointGuard, out)
+	}
+	if _, err := conn.exec(ctx, "PRAGMA wal_autocheckpoint = 0", nil); err != nil {
+		return fmt.Errorf("%w (wal_autocheckpoint: %w)", ErrNoCheckpointGuard, err)
+	}
+	return nil
 }
 
 // Driver is the registered "sqlite3" driver.

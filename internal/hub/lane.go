@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"watchtower/internal/db"
 	hubslices "watchtower/internal/hub/slices"
 )
 
@@ -23,12 +24,14 @@ var stateChangeKinds = []hubslices.Kind{
 }
 
 // sessionFacts is what the workbench hooks last wrote of one session, with
-// its open asks: the Swift SessionAgentStateCenter's statuses.
+// its visible open asks and its spec review loop round: the Swift
+// SessionAgentStateCenter's statuses. A queue or a reveal of the loop moves
+// the asks between the count and the round (#1945).
 type sessionFacts struct {
 	workbench                                              int64
 	state, stateAt, finishedAt, failedAt, bgAt, questionAt string
 	background                                             int64
-	openAsks                                               int
+	openAsks, specRound                                    int
 }
 
 // stateLane is the hub's fast lane for session states (the Swift FastLane's
@@ -130,14 +133,19 @@ func (l *stateLane) stateChanged(ctx context.Context, workbenches []int64) {
 	}
 }
 
-// readSessionFacts is every session's hook facts and open asks.
+// readSessionFacts is every session's hook facts, its open asks the owner
+// sees (the spec review author loop's are hidden, db.AskInSpecLoopSQL) and its
+// loop round; a row being deleted (#1716) is left out, as if it were gone.
 func readSessionFacts(ctx context.Context, d *sql.DB) (map[int64]sessionFacts, error) {
+	//nolint:gosec // G202: the concatenations are package constants (db.NotDeletingSQL and the like); every value is a bound arg.
 	rows, err := d.QueryContext(ctx, `
 SELECT t.id, COALESCE(t.project_id, 0), COALESCE(t.agent_state, ''), COALESCE(t.agent_state_at, ''),
        COALESCE(t.finished_at, ''), COALESCE(t.agent_failed_at, ''), COALESCE(t.agent_background, -1),
        COALESCE(t.agent_background_at, ''), COALESCE(t.chat_question_at, ''),
-       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open')
-FROM terminal_sessions t`)
+       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open' AND NOT `+db.AskInSpecLoopSQL("a")+`),
+       `+db.SpecLoopRoundSQL("t.id")+`
+FROM terminal_sessions t
+WHERE t.`+db.NotDeletingSQL)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +155,7 @@ FROM terminal_sessions t`)
 		var id int64
 		var f sessionFacts
 		if err := rows.Scan(&id, &f.workbench, &f.state, &f.stateAt, &f.finishedAt, &f.failedAt, &f.background,
-			&f.bgAt, &f.questionAt, &f.openAsks); err != nil {
+			&f.bgAt, &f.questionAt, &f.openAsks, &f.specRound); err != nil {
 			return nil, err
 		}
 		out[id] = f

@@ -113,4 +113,37 @@ final class HomeQueriesCoachTests: XCTestCase {
         XCTAssertEqual(p.after, "One\nTwo")
         XCTAssertEqual(CoachHomeRow.lines(p).shown, [.added("One"), .added("Two")])
     }
+
+    func testRowReaderReadsChatColumns() throws {
+        let (row, conv) = try db.write { d -> (Row?, Int64) in
+            try d.execute(sql: "INSERT INTO chat_conversations (title, created_at, updated_at) VALUES ('', 0, 0)")
+            let conv = d.lastInsertedRowID
+            try d.execute(sql: """
+                INSERT INTO coach_proposals (fingerprint, kind, destination, title, why, metric, after_text,
+                                             sources, status, created_at, origin, skill, conversation_id,
+                                             written_branch, measure_from)
+                VALUES ('f', 'add', 'claude_skill_user', 't', 'w', 'corrections', 'x', 1, 'open',
+                        '2026-11-01T09:00:00Z', 'chat', 'review-pr', ?, 'main', '2026-11-02T09:00:00Z')
+                """, arguments: [conv])
+            return (try Row.fetchOne(d, sql: "SELECT * FROM coach_proposals"), conv)
+        }
+        let p = CoachProposal(row: try XCTUnwrap(row))
+        XCTAssertEqual(p.origin, "chat")
+        XCTAssertEqual(p.skill, "review-pr")
+        XCTAssertEqual(p.conversationID, conv)
+        XCTAssertEqual(p.writtenBranch, "main")
+        XCTAssertEqual(p.measureFrom, "2026-11-02T09:00:00Z")
+        XCTAssertNil(p.folderBranch)
+    }
+
+    func testRowReaderDefaultsOfAWeeklyRow() throws {
+        _ = try db.write { d in try proposal(d, "weekly", workbench: nil) }
+        let row = try db.read { try Row.fetchOne($0, sql: "SELECT * FROM coach_proposals") }
+        let p = CoachProposal(row: try XCTUnwrap(row))
+        XCTAssertEqual(p.origin, "weekly")
+        XCTAssertEqual(p.skill, "")
+        XCTAssertNil(p.conversationID)
+        XCTAssertEqual(p.writtenBranch, "")
+        XCTAssertNil(p.measureFrom)
+    }
 }

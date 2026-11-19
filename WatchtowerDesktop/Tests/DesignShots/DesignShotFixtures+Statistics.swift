@@ -15,7 +15,7 @@ enum StatisticsShotFixtures {
             return AnyView(AgentAnalyticsOverviewView(
                 state: .overview(overview, staleError: nil), period: .constant(.week),
                 actions: AgentAnalyticsActions(turnOn: {}, openSession: { _ in }, openTarget: { _ in },
-                                               openFile: { _ in }, openAsks: {}, discuss: { _ in },
+                                               openFile: { _ in }, openAsks: {}, tune: {},
                                                asksWaiting: true)
             ).detailBackground())
         } catch {

@@ -3,8 +3,6 @@ package ai
 import (
 	"context"
 	"os/exec"
-	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 
@@ -24,15 +22,9 @@ func TestConfigureChild_AlwaysGroup(t *testing.T) {
 	assert.True(t, cmd.SysProcAttr.Setpgid, "the child leads its own process group")
 	assert.Equal(t, GroupKillGrace, cmd.WaitDelay)
 
-	dir := t.TempDir()
-	pidFile := filepath.Join(dir, "pid")
-	script := "trap '' INT\n(trap '' INT; exec sleep 60) >/dev/null 2>&1 </dev/null &\n" +
-		"echo $$ > " + pidFile + ".tmp; mv " + pidFile + ".tmp " + pidFile + "\nwait\n"
-	t.Cleanup(func() {
-		if pid := readPid(pidFile); pid > 0 {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-		}
-	})
+	setGroupKillGrace(t, 10*time.Millisecond) // the group ignores SIGINT: the timer ends it
+	g := newGroupFIFO(t)
+	script := "trap '' INT\n" + g.open() + "(trap '' INT; echo $$ >&3; exec sleep 2147483647) >/dev/null 2>&1 </dev/null &\nwait\n"
 	c := NewClient("m", "", "") // no process-group setter exists any more
 	c.claudeCmd = writeMockClaude(t, script)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -42,13 +34,8 @@ func TestConfigureChild_AlwaysGroup(t *testing.T) {
 		_, _, err := c.QuerySync(ctx, "sys", "hi", "")
 		done <- err
 	}()
-	pgid := waitPid(t, pidFile)
+	g.waitPID(t)
 	cancel()
-	select {
-	case err := <-done:
-		require.Error(t, err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("QuerySync did not return")
-	}
-	requireGroupGone(t, pgid)
+	require.Error(t, <-done)
+	g.waitGone(t)
 }

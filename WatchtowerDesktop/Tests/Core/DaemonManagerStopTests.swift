@@ -26,25 +26,24 @@ final class DaemonManagerStopTests: XCTestCase {
     }
 
     func testHungSubprocessIsBoundedAndLeavesNoChildBehind() async throws {
-        let pidPath = FileManager.default.temporaryDirectory
+        let fifo = FileManager.default.temporaryDirectory
             .appendingPathComponent("daemon-stop-pid-\(UUID().uuidString)").path
-        pidFile = pidPath
+        XCTAssertEqual(mkfifo(fifo, 0o600), 0)
+        pidFile = fifo
         // `$$` survives the exec, so the recorded pid IS the sleeping process.
-        let script = try makeScript("echo $$ > \(pidPath)\nexec sleep 100")
+        // Writing to the fifo blocks until the test reads it: the pid is in
+        // hand before the watchdog runs out, on any machine load.
+        let script = try makeScript("echo $$ > \(fifo)\nexec sleep 100")
+        // The timeout runs out once the child has reported its pid; the
+        // SIGTERM grace never does.
+        let clock = WatchdogClock(timeoutAfterReading: fifo)
 
-        let elapsed = await ContinuousClock().measure {
-            await DaemonManager.stopDaemonBounded(timeout: .seconds(2), cliPath: script)
-        }
+        await DaemonManager.stopDaemonBounded(timeout: .seconds(2), cliPath: script, sleep: clock.sleep)
 
-        // The watchdog is deliberately generous: on a loaded machine (the full
-        // suite) a shorter one fires before `sh` has even reached its first
-        // line, and the pid assertion below then has nothing to read. What the
-        // bound has to prove is that the caller is released nowhere near the
-        // script's 100 s, not that it is released in milliseconds.
-        XCTAssertLessThan(elapsed, .seconds(6), "a hung `sync stop` must not hold the caller")
-
-        let recorded = try String(contentsOfFile: pidPath, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Returning at all proves the bound: the child would run for 100 s,
+        // and only the watchdog's timeout running out could release us.
+        XCTAssertEqual(clock.durations, [.seconds(2), .milliseconds(250)], "timeout, then the SIGTERM grace")
+        let recorded = clock.read.trimmingCharacters(in: .whitespacesAndNewlines)
         let pid = try XCTUnwrap(pid_t(recorded))
         XCTAssertNotEqual(kill(pid, 0), 0, "the terminated child must be gone, not left running")
     }
@@ -54,20 +53,83 @@ final class DaemonManagerStopTests: XCTestCase {
     /// the watchdog's timeout.
     func testFastExitReturnsWellBeforeTheTimeout() async throws {
         let script = try makeScript("exit 0")
+        let clock = WatchdogClock() // the timeout never runs out
 
-        let elapsed = await ContinuousClock().measure {
-            await DaemonManager.stopDaemonBounded(timeout: .seconds(12), cliPath: script)
-        }
+        await DaemonManager.stopDaemonBounded(timeout: .seconds(12), cliPath: script, sleep: clock.sleep)
 
-        XCTAssertLessThan(elapsed, .seconds(1), "a prompt stop must not wait out the watchdog")
+        // The timeout never ran out, so only the child's exit released us;
+        // no SIGTERM grace was waited.
+        XCTAssertTrue(clock.durations.allSatisfy { $0 == .seconds(12) }, "\(clock.durations)")
+        XCTAssertLessThanOrEqual(clock.durations.count, 1, "a prompt stop must not wait out the watchdog")
     }
 
     /// No CLI resolved (dev run without the binary): nothing to spawn, nothing
     /// to wait for.
     func testMissingCLIPathIsANoOp() async {
-        let elapsed = await ContinuousClock().measure {
-            await DaemonManager.stopDaemonBounded(timeout: .seconds(12), cliPath: nil)
+        let clock = WatchdogClock()
+        await DaemonManager.stopDaemonBounded(timeout: .seconds(12), cliPath: nil, sleep: clock.sleep)
+        XCTAssertEqual(clock.durations, [], "nothing waited")
+    }
+}
+
+/// The watchdog's `sleep` seam, no real time involved. With a fifo, the
+/// first wait (the timeout) reads it to its end and then runs out; every
+/// other wait never runs out and returns only when the race cancels it.
+private final class WatchdogClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private let fifo: String?
+    private var recorded: [Duration] = []
+    private var fifoText = ""
+
+    init(timeoutAfterReading fifo: String? = nil) {
+        self.fifo = fifo
+    }
+
+    var durations: [Duration] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+
+    /// What the child wrote to the fifo.
+    var read: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return fifoText
+    }
+
+    var sleep: @Sendable (Duration) async -> Void {
+        { [self] duration in
+            lock.lock()
+            recorded.append(duration)
+            let first = recorded.count == 1
+            lock.unlock()
+            if first, let fifo {
+                let text = await Self.readToEnd(fifo)
+                lock.lock()
+                fifoText = text
+                lock.unlock()
+                return
+            }
+            await Self.untilCancelled()
         }
-        XCTAssertLessThan(elapsed, .milliseconds(500))
+    }
+
+    /// Suspends until the task is cancelled.
+    private static func untilCancelled() async {
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        for await _ in stream {}
+        continuation.finish()
+    }
+
+    /// Reads `fifo` to its end on a thread of its own: opening it blocks until
+    /// the child opens it for writing, and that must not hold a pool thread.
+    private static func readToEnd(_ fifo: String) async -> String {
+        await withCheckedContinuation { continuation in
+            Thread {
+                let data = FileHandle(forReadingAtPath: fifo)?.readDataToEndOfFile() ?? Data()
+                continuation.resume(returning: String(bytes: data, encoding: .utf8) ?? "")
+            }.start()
+        }
     }
 }

@@ -13,4 +13,11 @@ public protocol LiveTransport: CloudSyncTransport, Sendable {
     func setEventHandler(_ handler: (@Sendable (TransportEvent) -> Void)?) async
     func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) async
     func setEngineFetchedHandler(_ handler: (@Sendable () -> Void)?) async
+    /// The app became active (live link R6): bring the live connection up before the return's fetch reads.
+    func wake() async
+}
+
+extension LiveTransport {
+    /// Nothing to wake: a transport with no socket of its own (CloudKit).
+    public func wake() async {}
 }

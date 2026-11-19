@@ -17,16 +17,37 @@ final class PeopleViewModel {
     private(set) var starredPeopleIDs: Set<String> = []
     private(set) var currentUserID: String?
     private(set) var currentProfile: UserProfile?
+    /// Stays empty in practice: nothing writes `user_interactions` any more
+    /// (#1769, A15) and People → Connections shows only the org links. Kept
+    /// because the OWNER-01 guards pin which id the graph is keyed by.
     private(set) var interactions: [UserInteraction] = []
+    /// People whose cards the owner stopped (#1769, A14).
+    private(set) var stoppedPeopleIDs: Set<String> = []
+    /// The last Stop card / Make cards again failure, shown on that
+    /// person's view.
+    /// Stop card / Make cards again failures by user id, each shown on
+    /// that person's view until it succeeds or is dismissed.
+    private(set) var cardActionErrors: [String: String] = [:]
+    /// Why the last read of the cards failed; the list shows it with Retry.
+    /// Only a successful read clears it, never a write (star, connections),
+    /// whose errors go to `errorMessage`.
+    var loadError: String? { fullLoadError ?? windowLoadError }
+    /// A failed `load()` (cards, profile, stars, stopped people); only a
+    /// successful `load()` clears it.
+    private var fullLoadError: String?
+    /// A failed `loadWindow(at:)`; a successful window read or `load()` clears it.
+    private var windowLoadError: String?
     private let dbManager: DatabaseManager
+    @ObservationIgnored private let cliRunner: (any CLIRunnerProtocol)?
     private var observationTask: Task<Void, Never>?
     /// One pending star write per person (board #670).
     let pendingWrites = PendingWrites()
     /// Every write of this view model, in order (board #670).
     @ObservationIgnored let writes = SerialWrites()
 
-    init(dbManager: DatabaseManager) {
+    init(dbManager: DatabaseManager, cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault()) {
         self.dbManager = dbManager
+        self.cliRunner = cliRunner
     }
 
     /// Start observing the people_cards table for live updates.
@@ -55,9 +76,15 @@ final class PeopleViewModel {
 
     func load() {
         isLoading = true
+        // Keep the window the owner is looking at when it still exists.
+        let wanted = availableWindows.indices.contains(selectedWindow) ? availableWindows[selectedWindow] : nil
         do {
             let result = try dbManager.dbPool.read { db in
                 let windows = try PeopleCardQueries.fetchAvailableWindows(db)
+                let index = wanted.flatMap { want in
+                    windows.firstIndex { $0.from == want.from && $0.to == want.to }
+                } ?? 0
+                let selected = windows.indices.contains(index) ? windows[index] : nil
                 let users = try UserQueries.fetchAll(db, activeOnly: false)
 
                 var nameMap: [String: String] = [:]
@@ -68,7 +95,7 @@ final class PeopleViewModel {
 
                 let cards: [PeopleCard]
                 let cs: PeopleCardSummary?
-                if let window = windows.first {
+                if let window = selected {
                     cards = try PeopleCardQueries.fetchForWindow(
                         db, from: window.from, to: window.to
                     )
@@ -90,13 +117,14 @@ final class PeopleViewModel {
 
                 // Load interactions for social graph
                 var ints: [UserInteraction] = []
-                if let uid, let window = windows.first {
+                if let uid, let window = selected {
                     ints = try InteractionQueries.fetchForUser(
                         db, userID: uid, periodFrom: window.from, periodTo: window.to
                     )
                 }
 
-                return (cards, windows, nameMap, cs, starred, uid, profile, ints)
+                let stopped = try PeopleCardQueries.fetchExcludedIDs(db)
+                return (cards, windows, nameMap, cs, starred, uid, profile, ints, stopped, index)
             }
             cards = result.0
             availableWindows = result.1
@@ -106,10 +134,13 @@ final class PeopleViewModel {
             currentUserID = result.5
             currentProfile = result.6
             interactions = result.7
-            errorMessage = nil
+            stoppedPeopleIDs = result.8
+            selectedWindow = result.9
+            fullLoadError = nil
+            windowLoadError = nil
         } catch {
             cards = []
-            errorMessage = error.localizedDescription
+            fullLoadError = error.localizedDescription
         }
         isLoading = false
     }
@@ -137,8 +168,9 @@ final class PeopleViewModel {
             cards = result.0
             cardSummary = result.1
             interactions = result.2
+            windowLoadError = nil
         } catch {
-            errorMessage = error.localizedDescription
+            windowLoadError = error.localizedDescription
         }
     }
 
@@ -161,15 +193,68 @@ final class PeopleViewModel {
             return "No data"
         }
         let w = availableWindows[selectedWindow]
-        let from = Date(timeIntervalSince1970: w.from)
-        let to = Date(timeIntervalSince1970: w.to)
-        let fmt = DateFormatter()
-        fmt.dateFormat = "MMM d"
-        return "\(fmt.string(from: from)) – \(fmt.string(from: to))"
+        return PeopleCardCopy.period(from: Date(timeIntervalSince1970: w.from), to: Date(timeIntervalSince1970: w.to))
     }
 
-    var redFlagCount: Int {
-        cards.filter { $0.hasRedFlags }.count
+    // MARK: - Stop card for this person (#1769, A14)
+
+    /// The owner stopped this person's card: no card is made for them.
+    func isCardStopped(_ userID: String) -> Bool {
+        stoppedPeopleIDs.contains(userID)
+    }
+
+    /// The stopped people by name, for the list's Stopped cards section.
+    var stoppedPeople: [String] {
+        stoppedPeopleIDs.sorted {
+            userName(for: $0).localizedCaseInsensitiveCompare(userName(for: $1)) == .orderedAscending
+        }
+    }
+
+    /// The failure of this person's last Stop card / Make cards again.
+    func cardActionError(for userID: String) -> String? {
+        cardActionErrors[userID]
+    }
+
+    func dismissCardActionError(for userID: String) {
+        cardActionErrors[userID] = nil
+    }
+
+    /// Stop card or Make cards again for this person is running: its button waits.
+    func isStopPending(_ userID: String) -> Bool {
+        pendingWrites.isPending("stop:\(userID)")
+    }
+
+    /// Runs `watchtower people exclude`: the CLI deletes the person's cards
+    /// and records the exclusion in one transaction.
+    func stopCard(userID: String) async {
+        await pendingWrites.run("stop:\(userID)") { await setCardStopped(userID: userID, stopped: true) }
+    }
+
+    /// Runs `watchtower people include`: the next people run may make a card.
+    func makeCardsAgain(userID: String) async {
+        await pendingWrites.run("stop:\(userID)") { await setCardStopped(userID: userID, stopped: false) }
+    }
+
+    /// The CLI's `--json` answer.
+    private struct ExcludeAnswer: Decodable {
+        let ok: Bool
+    }
+
+    /// No optimistic flip: a failure says why and leaves the card as the
+    /// database has it.
+    private func setCardStopped(userID: String, stopped: Bool) async {
+        do {
+            guard let runner = cliRunner else { throw CLIRunnerError.binaryNotFound }
+            let args = ["people", stopped ? "exclude" : "include", "--user", userID, "--json"]
+            let data = try await writes.runThrowing { try await runner.run(args: args) }
+            // The CLI answers ok or exits non-zero; an answer that does not
+            // decode is a failure too.
+            _ = try JSONDecoder().decode(ExcludeAnswer.self, from: data)
+            cardActionErrors[userID] = nil
+            load()
+        } catch {
+            cardActionErrors[userID] = PeopleCardCopy.actionFailed(stopping: stopped, error.localizedDescription)
+        }
     }
 
     // MARK: - Starred People Management

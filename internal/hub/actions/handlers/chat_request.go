@@ -15,7 +15,7 @@ import (
 const ChatWatchLength = 5 * time.Minute
 
 const (
-	chatTimeoutMessage = "The Mac did not answer in time — check the chat on the Mac"
+	chatTimeoutMessage = "Your tower did not answer in time — check the chat there"
 	chatUnknownSession = "unknown_session"
 	// requestTimeout is the request handlers' own deadline (one DB read).
 	requestTimeout = 10 * time.Second

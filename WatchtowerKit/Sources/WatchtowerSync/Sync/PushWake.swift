@@ -4,6 +4,8 @@ import Foundation
 public enum PushOrigin: Equatable, Sendable {
     case `private`
     case shared
+    /// The hosted relay's silent push (no `ck`, no `e`).
+    case hostedRelay
 }
 
 /// Where a work alert's sealed envelope comes from.
@@ -59,12 +61,12 @@ public protocol PushWake: Sendable {
 }
 
 extension HubRoute {
-    /// The push origin of the route's database; nil for a hosted relay.
+    /// The push origin of the route's database; `.hostedRelay` for a relay route.
     public var pushOrigin: PushOrigin? {
         switch self {
         case .cloudKit(.private): return .private
         case .cloudKit(.shared): return .shared
-        case .hostedRelay: return nil
+        case .hostedRelay: return .hostedRelay
         }
     }
 }

@@ -11,6 +11,7 @@ final class FakeLinkClock: LinkClock, @unchecked Sendable {
     private var sleptTotal: TimeInterval = 0
     private var monotonic: TimeInterval = 0
     private var isParked = false
+    private var parkedSleeps = 0
 
     init(now: Date) {
         current = now
@@ -22,6 +23,9 @@ final class FakeLinkClock: LinkClock, @unchecked Sendable {
         get { lock.withLock { isParked } }
         set { lock.withLock { isParked = newValue } }
     }
+
+    /// Sleeps that parked (each waits for its task's cancel).
+    var parks: Int { lock.withLock { parkedSleeps } }
 
     func now() -> Date { lock.withLock { current } }
 
@@ -43,10 +47,9 @@ final class FakeLinkClock: LinkClock, @unchecked Sendable {
     func sleep(for duration: Duration) async throws {
         try Task.checkCancellation()
         if parked {
-            // Bounded by the test: it cancels the task, and Task.sleep throws.
-            while true {
-                try await Task.sleep(for: .milliseconds(5))
-            }
+            lock.withLock { parkedSleeps += 1 }
+            // Ends when the test cancels the task.
+            try await sleepUntilCancelled()
         }
         let seconds = Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
         lock.withLock {
@@ -240,17 +243,41 @@ final class FakeLinkHost: LinkHost {
 
     /// When true, `prepare` waits until its task is cancelled (the app
     /// killed while the sync stack restarts).
-    var parksPrepare = false
+    var parksPrepare = false {
+        didSet { unpark() }
+    }
     /// Thrown by `prepare` (the sync stack could not restart).
     var prepareError: (any Error)?
+
+    /// Calls held by a `parks…` flag; a flag set false resumes them all.
+    private var parkWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Waits while `held` is true, re-checked each time a `parks…` flag changes; ends early when the task is
+    /// cancelled (the app killed mid-call).
+    private func park(while held: () -> Bool) async {
+        await withTaskCancellationHandler {
+            while held(), !Task.isCancelled {
+                await withCheckedContinuation { parkWaiters.append($0) }
+            }
+        } onCancel: {
+            Task { @MainActor in self.unpark() }
+        }
+    }
+
+    private func unpark() {
+        let waiters = parkWaiters
+        parkWaiters = []
+        waiters.forEach { $0.resume() }
+    }
 
     func prepare(route: HubRoute, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport {
         log.append("prepare \(Self.describe(route))")
         prepared.append(route)
         preparedHubIDs.append(hubID)
         preparedFresh.append(fresh)
-        while parksPrepare {
-            try await Task.sleep(for: .milliseconds(5))
+        if parksPrepare {
+            await park { self.parksPrepare }
+            try Task.checkCancellation()
         }
         if let prepareError { throw prepareError }
         let transport = transport(for: route)
@@ -261,17 +288,17 @@ final class FakeLinkHost: LinkHost {
         return transport
     }
 
-    /// When true, `fetchKeybox` waits until it is set false again (a link
-    /// flow held mid-check).
-    var parksFetchGrant = false
+    /// When true, `fetchKeybox` waits until it is set false again or its task
+    /// is cancelled (a link flow held mid-check).
+    var parksFetchGrant = false {
+        didSet { unpark() }
+    }
     /// The hub of each `fetchKeybox`, in call order.
     private(set) var grantHubIDs: [String] = []
 
     func fetchKeybox(hubID: String, deviceID: String) async -> Keybox? {
         grantHubIDs.append(hubID)
-        while parksFetchGrant {
-            try? await Task.sleep(for: .milliseconds(5))
-        }
+        await park { self.parksFetchGrant }
         return await storedKeybox(hubID: hubID, deviceID: deviceID)
     }
 
@@ -286,11 +313,43 @@ final class FakeLinkHost: LinkHost {
     private(set) var keyMergeHubIDs: [String] = []
     /// Whether each merge raised the newest epoch, in call order.
     private(set) var keyMergeRaised: [Bool] = []
+    /// Whether each merge dropped the newest epoch's relay pair, in call order.
+    private(set) var keyMergeDropped: [Bool] = []
+    /// How many keybox merges the flow asked for.
+    private(set) var mergeCalls = 0
+    /// When true, `mergeKeybox` waits until it is set false again or its task is cancelled, before it reads the link
+    /// (a merge held mid-way; a cancelled merge goes on to its write, as a merge past its last suspension does).
+    var parksMerge = false {
+        didSet { unpark() }
+    }
 
-    func keysMerged(hubID: String, newestEpochRaised: Bool) {
+    /// As the session's merge on a link that does not reseal (`HubSession.mergeKeybox`): `merging` inside one
+    /// `updateHubLink` of `keys`; nil when no link is stored.
+    /// The reseal each merge asked for, in call order.
+    private(set) var mergeReseals: [KeyboxMergeReseal] = []
+
+    func mergeKeybox(
+        _ keyboxKeys: KeyboxKeys, hubID: String, now: Date, reseal: KeyboxMergeReseal
+    ) async throws -> KeyboxMerge? {
+        mergeCalls += 1
+        mergeReseals.append(reseal)
+        await park { self.parksMerge }
+        guard let keys, let hub = UUID(uuidString: hubID), let device = try keys.deviceID() else { return nil }
+        let identity = try keys.identity()
+        var merged: KeyboxMerge?
+        guard try keys.updateHubLink(hubID, { current in
+            let merge = try current.merging(keyboxKeys, identity: identity, hubID: hub, deviceID: device, now: now)
+            merged = merge
+            return merge.keys
+        }) != nil else { return nil }
+        return merged
+    }
+
+    func keysMerged(hubID: String, newestEpochRaised: Bool, droppedNewestPair: Bool) async {
         keyMerges += 1
         keyMergeHubIDs.append(hubID)
         keyMergeRaised.append(newestEpochRaised)
+        keyMergeDropped.append(droppedNewestPair)
     }
 
     func linked(_ record: LinkRecord, device: LinkedDevice) async throws {
@@ -360,7 +419,8 @@ final class FakeLinkHost: LinkHost {
         }
         return LocalWipe(
             notSent: notSentCount, stoppedRecording: stopsRecording && keepRecordings, problem: recordingProblem,
-            farewellKept: farewell != nil && keepsFarewell
+            farewellKept: farewell != nil && keepsFarewell,
+            farewellOut: farewell != nil && !keepsFarewell
         )
     }
 

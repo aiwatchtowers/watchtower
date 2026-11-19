@@ -212,7 +212,7 @@ final class RelayAttestorTests: XCTestCase {
         clock.advance(by: .seconds(4))
         XCTAssertEqual(clock.now(), Date(timeIntervalSince1970: 1_004))
         clock.advance(by: .seconds(1))
-        await fulfillment(of: [woke], timeout: 2)
+        await fulfillment(of: [woke])
         try await task.value
 
         let cancelled = Task { try await clock.sleep(for: .seconds(60)) }

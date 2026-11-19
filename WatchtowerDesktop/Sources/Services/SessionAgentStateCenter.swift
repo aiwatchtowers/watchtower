@@ -81,13 +81,25 @@ final class SessionAgentStateCenter {
     /// after two failed staleness probes (#411), each with the run and the
     /// report stamp it was judged for; set before `onChange`, so the mobile
     /// hub's fast lane copies it with the statuses. Empty once stopped.
-    @ObservationIgnored private(set) var displayOver: [Int64: ShownOverCount] = [:]
+    @ObservationIgnored private(set) var displayOver: [Int64: ShownOverCount] = [:] {
+        didSet { if displayOver != oldValue { onDisplayOverChange?(displayOver) } }
+    }
+    /// Every change of `displayOver` (the Go hub's `desktop_view`,
+    /// `HubCenter.follow`). One subscriber.
+    @ObservationIgnored var onDisplayOverChange: (([Int64: ShownOverCount]) -> Void)?
     /// Reads overlap (the poll, a refresh): only one started after the last
     /// applied read is applied, so a slow older read never undoes a newer one.
     @ObservationIgnored private var readsStarted = 0
     @ObservationIgnored private var readApplied = 0
     /// A read error is logged once per streak of failures.
     @ObservationIgnored private var failing = false
+    /// Every `refresh` read not yet ended (a test seam: `settled`).
+    @ObservationIgnored private var refreshes: [Int: Task<Void, Never>] = [:]
+    @ObservationIgnored private var refreshesStarted = 0
+    /// How the loop waits between reads (tests: a clock they tick by hand;
+    /// settable for a center `AppState.initWorkbenches` builds). Read when
+    /// the loop starts.
+    @ObservationIgnored var sleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
     init(
         dbPool: DatabasePool,
@@ -115,6 +127,20 @@ final class SessionAgentStateCenter {
 
     /// Whether the 1 s loop is running (a test seam).
     var isPolling: Bool { pollTask != nil }
+
+    /// Returns once no `refresh` read and no staleness probe is left, those
+    /// a settled probe starts included (a test seam).
+    func settled() async {
+        while true {
+            if let read = refreshes.values.first {
+                await read.value
+            } else if let probe = prober?.anyInFlight {
+                await probe.value
+            } else {
+                return
+            }
+        }
+    }
 
     /// Follows the terminal center's live `claude` sessions and app
     /// activation from now on. Banners a previous process left are removed:
@@ -151,7 +177,12 @@ final class SessionAgentStateCenter {
     /// One read now, live session or not: the Workbench tab appeared, or an
     /// ask was answered.
     func refresh() {
-        Task { await poll() }
+        refreshesStarted += 1
+        let id = refreshesStarted
+        refreshes[id] = Task {
+            await poll()
+            refreshes[id] = nil
+        }
     }
 
     /// One read of the stored states. Returns whether it succeeded — then
@@ -232,11 +263,11 @@ final class SessionAgentStateCenter {
             return
         }
         if pollTask == nil {
-            pollTask = Task { [weak self, interval] in
+            pollTask = Task { [weak self, interval, sleep] in
                 while !Task.isCancelled {
                     guard let self else { return }
                     await self.poll()
-                    try? await Task.sleep(for: interval)
+                    await sleep(interval)
                 }
             }
         }

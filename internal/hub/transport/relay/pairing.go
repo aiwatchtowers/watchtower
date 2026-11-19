@@ -42,8 +42,8 @@ func (t *Transport) WatchPairZone(ctx context.Context, slot string) error {
 // WatchZone subscribes a mailbox zone of a phone linked after Connect
 // (Connect subscribes the zones it was given), so its records come as zone
 // events; the subscription is renewed after every reconnect. While
-// disconnected it is subscribed on the next connect; nil then. An error
-// before Connect.
+// disconnected it is subscribed on the next connect: transport.ErrWatchQueued
+// then. An error before Connect.
 func (t *Transport) WatchZone(ctx context.Context, zone string) error {
 	if zone == "" || isPairZone(zone) {
 		return errors.New("relay: not a mailbox or data zone")
@@ -54,10 +54,20 @@ func (t *Transport) WatchZone(ctx context.Context, zone string) error {
 	if conn == nil {
 		return errors.New("relay: watching a zone before Connect")
 	}
-	if err := conn.Subscribe(ctx, zone); err != nil && !errors.Is(err, client.ErrDisconnected) {
-		return fmt.Errorf("relay: subscribe zone: %w", MapError(err))
+	return watchResult(conn.Subscribe(ctx, zone))
+}
+
+// watchResult is WatchZone's answer for the client's Subscribe result err:
+// disconnected, the client keeps the zone for its next connect —
+// transport.ErrWatchQueued, no confirmation from the relay.
+func watchResult(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, client.ErrDisconnected):
+		return transport.ErrWatchQueued
 	}
-	return nil
+	return fmt.Errorf("relay: subscribe zone: %w", MapError(err))
 }
 
 // SetHubReaders names the phones that may read the hub's data zone (their
@@ -69,7 +79,18 @@ func (t *Transport) SetHubReaders(ctx context.Context, phones []string) error {
 	}}}); err != nil {
 		return fmt.Errorf("relay: set_hub_readers: %w", err)
 	}
+	t.mu.Lock()
+	t.readers = append([]string{}, phones...)
+	t.mu.Unlock()
 	return nil
+}
+
+// Readers is the reader list of the last set_hub_readers the relay
+// accepted (nil before one): the phones it lets this hub push to.
+func (t *Transport) Readers() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return slices.Clone(t.readers)
 }
 
 // SetLinkedReaders is link.Center.SyncReaders' setter on the hosted relay:
@@ -84,6 +105,12 @@ func (t *Transport) SetLinkedReaders(ctx context.Context, linked []string) error
 	if err != nil {
 		return fmt.Errorf("relay: readers: account state: %w", err)
 	}
+	return t.SetReadersFrom(ctx, st, linked)
+}
+
+// SetReadersFrom is SetLinkedReaders over an account state the caller read
+// (the hub runtime reads it through its one account-state door).
+func (t *Transport) SetReadersFrom(ctx context.Context, st *relayv1.AccountState, linked []string) error {
 	slotted := map[string]bool{}
 	for _, p := range st.GetPhones() {
 		slotted[p.GetPhoneDeviceId()] = true

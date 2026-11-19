@@ -204,6 +204,9 @@ final class ReviewChangesModel {
     private(set) var waitingFor: String?
     /// When the running stream last printed a complete line (any line counts), on `streamClock`.
     var lastStreamLine: Date? { run?.lastLine }
+    /// Complete stream lines read so far, all runs; observed so a test can
+    /// wait for a line (`lastStreamLine` reads the unobserved run).
+    private(set) var streamLinesRead = 0
     /// The one overview process of this session (tech spec §3.7).
     @ObservationIgnored private var run: OverviewRun?
     @ObservationIgnored private var silenceWatch: Task<Void, Never>?
@@ -1356,6 +1359,7 @@ final class ReviewChangesModel {
                 guard run?.id == runID else { return }
                 let now = streamClock.now
                 run?.lastLine = now
+                streamLinesRead += 1
                 if let end = apply(event) { outcome = end }
             }
         } catch {

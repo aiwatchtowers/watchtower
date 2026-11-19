@@ -188,6 +188,46 @@ func MoveWorkAlertsForRotation(tx *sql.Tx) error {
 	return nil
 }
 
+// askAlertRecordPrefix is the slice_state record name prefix of the
+// ask_alert kind (slices.KindAskAlert + "-"; state cannot import slices).
+const askAlertRecordPrefix = "ask_alert-"
+
+// WipeSyncState is HubSyncState.wipeSyncState, the CloudKit reset after an
+// iCloud account change or a hub zone deleted on the server (ask #969 Q3:
+// as the Swift hub did), in one transaction: every slice_state row goes,
+// so the next publish cycle republishes the whole window into the new zone;
+// the change tokens of mailboxes go (the old account's RelayZone; none for
+// a zone deletion, whose relay buffer survived: re-reading it would echo
+// what was answered again); and the sync generation is bumped. Of the work
+// alerts, a row of the wiped generation seen at or after alertsSeenSince
+// whose alert has no slice_state row (no cycle recorded its save) is
+// forgotten, so the next cycle notes it in the new generation and
+// publishes it; a row whose alert was published keeps its old generation,
+// so the new zone gets no alert for it (spec §4.7). The exactly-once
+// ledger, the hub id, enabled_at and the keys stay.
+func (s *Store) WipeSyncState(ctx context.Context, alertsSeenSince time.Time, mailboxes ...string) error {
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		gen, err := syncGeneration(tx)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM work_alerts WHERE generation = ? AND seen_at >= ? AND NOT EXISTS (
+			SELECT 1 FROM slice_state WHERE record_name = ? || work_alerts.key)`,
+			gen, toReal(alertsSeenSince), askAlertRecordPrefix); err != nil {
+			return fmt.Errorf("forgetting unpublished work alerts: %w", err)
+		}
+		if _, err := tx.Exec(`DELETE FROM slice_state`); err != nil {
+			return fmt.Errorf("wiping the published state: %w", err)
+		}
+		for _, z := range mailboxes {
+			if _, err := tx.Exec(`DELETE FROM zone_tokens WHERE zone = ?`, z); err != nil {
+				return fmt.Errorf("wiping a zone token: %w", err)
+			}
+		}
+		return SetMetaTx(tx, MetaSyncGeneration, strconv.FormatInt(gen+1, 10))
+	})
+}
+
 // ErrCorruptMeta is a hub_meta value that does not parse as its key's type.
 var ErrCorruptMeta = errors.New("state: unreadable hub_meta value")
 

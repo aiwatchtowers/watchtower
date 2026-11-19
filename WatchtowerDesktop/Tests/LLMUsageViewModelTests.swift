@@ -1,6 +1,7 @@
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// Answers each call from a queue of results (the last one repeats) and
 /// records the argv and timeout. No process is spawned.

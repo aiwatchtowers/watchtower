@@ -35,13 +35,13 @@ final class RelaySlotsModelTests: XCTestCase {
 
     func testTheScreenNamesEachMacAndOffersRemove() {
         let screen = model(RelaySlotsState(macs: [linkedMac, unknownMac, finishingMac]))
-        XCTAssertEqual(screen.title, "Your subscription already has 3 Macs. Remove one to add this Mac over Relay.")
-        XCTAssertEqual(screen.rows.map(\.name), ["Work Mac", "A Mac not on this iPhone", "build-box"])
+        XCTAssertEqual(screen.title, "Your subscription already has 3 towers. Remove one to add this tower over Relay.")
+        XCTAssertEqual(screen.rows.map(\.name), ["Work Mac", "A tower not on this iPhone", "build-box"])
         XCTAssertEqual(screen.rows.map(\.sub), [nil, nil, "Finishing link"])
         XCTAssertEqual(screen.rows.map(\.kind), [.linkedHere(hubID: "hub-work"), .unknown, .finishing(hubID: "hub-build")])
         XCTAssertEqual(screen.rows.map(\.action.title), ["Remove", "Remove", "Remove"])
         XCTAssertEqual(screen.footnote, "Up to 5 replacements in 30 days.")
-        XCTAssertEqual(RelaySlotsModel.navigationTitle, "Add Mac")
+        XCTAssertEqual(RelaySlotsModel.navigationTitle, "Add tower")
         XCTAssertFalse(screen.isLoading)
     }
 
@@ -50,7 +50,7 @@ final class RelaySlotsModelTests: XCTestCase {
         let unlink = try XCTUnwrap(RelaySlotsModel.ask(for: rows[0]))
         XCTAssertEqual(unlink.title, "Unlink Work Mac?")
         XCTAssertEqual(unlink.confirm, "Unlink")
-        XCTAssertNil(RelaySlotsModel.ask(for: rows[1]), "a Mac not on this iPhone only frees its slot")
+        XCTAssertNil(RelaySlotsModel.ask(for: rows[1]), "a tower not on this iPhone only frees its slot")
         let cancel = try XCTUnwrap(RelaySlotsModel.ask(for: rows[2]))
         XCTAssertEqual(cancel.title, "Cancel the link to build-box? It frees its Relay slot.")
         XCTAssertEqual([cancel.confirm, cancel.keep], ["Cancel Link", "Keep Trying"])
@@ -80,7 +80,7 @@ final class RelaySlotsModelTests: XCTestCase {
         XCTAssertEqual(removing.rows.map(\.action.title), ["Removing…", "Remove", "Remove"])
         XCTAssertEqual(removing.rows.map(\.isDisabled), [false, true, true])
         let failed = model(RelaySlotsState(macs: [linkedMac, unknownMac, finishingMac], failed: linkedMac))
-        XCTAssertEqual(failed.title, "Couldn't remove the Mac. Try again.")
+        XCTAssertEqual(failed.title, "Couldn't remove the tower. Try again.")
         XCTAssertEqual(failed.rows.map(\.action.title), ["Try Again", "Remove", "Remove"])
         XCTAssertEqual(failed.rows.map(\.isDisabled), [false, false, false])
     }

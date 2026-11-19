@@ -51,6 +51,13 @@ final class SharedAlertPoster {
         "hub.\(hubID).sharedAlerts.seen"
     }
 
+    /// A hub on the relay has no poster (its alerts are pushed): the seen list goes, so the return's first fetch is a
+    /// first fetch and the alerts pushed meanwhile never arrive as a burst. Idempotent: the relay session calls it at
+    /// each build. An alert raised in the move's window stays unposted on this phone, a limit of the best-effort path.
+    static func forgetSeen(hubID: String, defaults: UserDefaults) {
+        defaults.removeObject(forKey: postedDefaultsKey(hubID: hubID))
+    }
+
     /// Opens and posts the alerts not seen yet. The seen list is read, updated and saved before the first post, with
     /// no suspension between, so two fetches ending together never post one alert twice.
     func postNew(enabled: Bool) async {

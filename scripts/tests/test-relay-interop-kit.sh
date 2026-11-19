@@ -1,15 +1,19 @@
 #!/bin/bash
-# Tests for scripts/relay-interop-kit.sh's CI mode (relay client Phase 3 Task 14):
-# RELAY_INTEROP_CI=1 prints `relay-interop: passed=N skipped=M failed=K` as the
-# last line of stdout, once, on success and failure; a run where no test passed
-# or failed exits 1; WATCHTOWER_CHECKOUT must be a Watchtower checkout. The whole
-# script runs against stubs that fake the stand: `npx` "starts" and sleeps,
-# `curl` answers /healthz once it has started, `make` prints canned XCTest
-# output. Every stub is on PATH; nothing real is built or started.
+# Tests for scripts/relay-interop.sh KIT=1 (Go hub phase 2, Task 12): the
+# owner's half of the Kit phone's pairing with a headless hub.
+#
+# No stand, no CLI build, no Kit: `npx` (the stand), `curl` (its /healthz and
+# /dev/account), the watchtower CLI (RELAY_INTEROP_WATCHTOWER) and the Kit
+# suite (RELAY_INTEROP_KIT_CMD) are stubs that record what they were asked
+# and the pid of every process they leave running. Checks: the pairing url
+# reaches pair.url, a matching code is confirmed and the phone gets its
+# grants, a wrong code and no code in time are refused with a failing exit,
+# and no started process outlives the script (exit, failure and SIGTERM).
+# Runs on the dev Mac and in the Linux CI job alike.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SUT="$SCRIPT_DIR/../relay-interop-kit.sh"
+INTEROP="$SCRIPT_DIR/../relay-interop.sh"
 
 FAILURES=0
 note_fail() {
@@ -20,152 +24,170 @@ note_fail() {
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-# setup <case>: a fake relay checkout, a fake Watchtower checkout ($C/wt) and the
-# stubs under $WORK_DIR/<case>. Sets C.
+# setup <case>: a fresh fake relay checkout, stub dir and log dir under
+# $WORK_DIR/<case>; sets C (the case dir).
 setup() {
 	C="$WORK_DIR/$1"
-	mkdir -p "$C/relay/worker/node_modules/wrangler" "$C/stub" \
-		"$C/wt/WatchtowerKit/Sources/WatchtowerRelayProto"
+	mkdir -p "$C/relay/worker/node_modules/wrangler" "$C/stub" "$C/log"
 	echo '{}' >"$C/relay/worker/package.json"
 	echo '{}' >"$C/relay/worker/wrangler.jsonc"
-	: >"$C/wt/Makefile"
-	echo "0000000000000000000000000000000000000000 pin" >"$C/wt/WatchtowerKit/Sources/WatchtowerRelayProto/VERSION"
-	: >"$C/make.out"
-	printf '#!/bin/bash\necho $$ > "%s/stand.pid"\ntouch "%s/started"\nexec sleep 300\n' "$C" "$C" >"$C/stub/npx"
-	printf '#!/bin/bash\ncat "%s/make.out"\nexit "${MAKE_RC:-0}"\n' "$C" >"$C/stub/make"
-	printf '#!/bin/bash\necho abc\n' >"$C/stub/openssl"
-	printf '#!/bin/bash\nexit 0\n' >"$C/stub/node"
-	printf '#!/bin/bash\nexit 1\n' >"$C/stub/lsof"
-	printf '#!/bin/bash\ncase " $* " in *" -w "*) echo 400; exit 0 ;; esac\n[ -e "%s/started" ]\n' "$C" >"$C/stub/curl"
+	local log="$C/log"
+
+	# npx wrangler dev: marks the stand up and stays until stopped.
+	cat >"$C/stub/npx" <<EOF
+#!/bin/bash
+echo \$\$ >> '$log/pids'
+: > '$log/up'
+exec sleep 300
+EOF
+	# curl: /healthz answers once the stand is up; /dev/account is 400.
+	cat >"$C/stub/curl" <<EOF
+#!/bin/bash
+for a in "\$@"; do
+	case "\$a" in
+	*/healthz) [ -e '$log/up' ]; exit \$? ;;
+	*/dev/account) printf 400; exit 0 ;;
+	esac
+done
+exit 7
+EOF
+	# The CLI. It runs under env -i, so its paths are baked in.
+	cat >"$C/stub/watchtower" <<EOF
+#!/bin/bash
+echo "\$*" >> '$log/calls'
+case "\$1 \${2:-}" in
+"session-host "*) echo \$\$ >> '$log/pids'; : > "\$3"; exec sleep 300 ;;
+"sync --daemon") echo \$\$ >> '$log/pids'; exec sleep 300 ;;
+"hub status") echo '{"state":"running","reason":"","relay_device_id":"r1"}' ;;
+"workbench create") printf '{\n  "id": 7\n}\n' ;;
+"hub pair")
+	echo \$\$ >> '$log/pids'
+	echo '{"event":"qr","url":"https://relay.example.com/link?v=4&k=abc#x","expires_at":"2026-11-01T00:10:00Z"}'
+	echo '{"event":"waiting"}'
+	echo '{"event":"sas","device_id":"dev1","name":"Phone","code":"4821"}'
+	read -r line
+	echo "\$line" > '$log/confirm'
+	case "\$line" in
+	*true*) echo '{"event":"linked","device_id":"dev1"}' ;;
+	*) echo '{"event":"refused","reason":"not_confirmed"}' ;;
+	esac
+	;;
+esac
+exit 0
+EOF
+	# The Kit suite: copies pair.url, writes STUB_PHONE_CODE to pair.sas and
+	# copies pair.result; with no code it waits until stopped.
+	cat >"$C/stub/kit" <<EOF
+#!/bin/bash
+echo \$\$ >> '$log/pids'
+env | grep '^WT_' | sort > '$log/kitenv'
+for i in \$(seq 1 100); do [ -s "\$WT_HUB_INTEROP_DIR/pair.url" ] && break; sleep 0.2; done
+cp "\$WT_HUB_INTEROP_DIR/pair.url" '$log/url'
+cp "\$WT_HUB_INTEROP_DIR/hub.json" '$log/hub.json'
+[ -n "\${STUB_PHONE_CODE:-}" ] || exec sleep 300
+printf '%s\n' "\$STUB_PHONE_CODE" > "\$WT_HUB_INTEROP_DIR/pair.sas.tmp"
+mv "\$WT_HUB_INTEROP_DIR/pair.sas.tmp" "\$WT_HUB_INTEROP_DIR/pair.sas"
+for i in \$(seq 1 100); do [ -s "\$WT_HUB_INTEROP_DIR/pair.result" ] && break; sleep 0.2; done
+cp "\$WT_HUB_INTEROP_DIR/pair.result" '$log/result' 2>/dev/null
+exit 0
+EOF
 	chmod +x "$C/stub/"*
 }
 
-# xc <tests> <skipped> <failures>: an XCTest total line.
-xc() {
-	local i
-	for ((i = 0; i < ${4:-$3}; i++)); do
-		printf "Test Case '-[T t%d]' failed (0.1 seconds).\n" "$i"
-	done
-	printf '\t Executed %s tests, with %s tests skipped and %s failures (0 unexpected) in 0.1 (0.1) seconds\n' "$1" "$2" "$3"
-}
-
-# run_sut <ci 0|1> [env...] -- [args...]: stdout and stderr kept apart.
-# Sets RC, OUT (stdout) and ERR (stderr).
-run_sut() {
-	local ci="$1" envs=()
-	shift
-	while [ $# -gt 0 ] && [ "$1" != -- ]; do
-		envs+=("$1")
-		shift
-	done
-	shift
-	[ "$ci" = 1 ] && envs+=(RELAY_INTEROP_CI=1)
-	OUT="$(env PATH="$C/stub:$PATH" WATCHTOWER_CHECKOUT="$C/wt" RELAY_INTEROP_PORT=18996 \
-		${envs[@]+"${envs[@]}"} bash "$SUT" "$@" 2>"$C/err" </dev/null)"
+# run_interop [env...]: runs the script KIT=1 against the case's stubs in
+# the foreground; sets RC.
+run_interop() {
+	env PATH="$C/stub:$PATH" KIT=1 RELAY_INTEROP_PORT=18999 RELAY_INTEROP_HUB_MODE=test \
+		RELAY_INTEROP_WATCHTOWER="$C/stub/watchtower" RELAY_INTEROP_KIT_CMD="$C/stub/kit" \
+		"$@" bash "$INTEROP" "$C/relay" >"$C/out" 2>&1 </dev/null
 	RC=$?
-	ERR="$(cat "$C/err")"
 }
 
-# expect_summary <case> <rc> <counts>: the exit code, the summary line as the
-# last line of stdout and only once, and the stand's process gone.
-expect_summary() {
-	[ "$RC" -eq "$2" ] || note_fail "$1: exit $RC, want $2 ($ERR)"
-	[ "${OUT##*$'\n'}" = "relay-interop: $3" ] || note_fail "$1: last stdout line is not '$3': $OUT"
-	[ "$(printf '%s\n' "$OUT" | grep -c '^relay-interop: passed=')" -eq 1 ] || note_fail "$1: summary not printed exactly once: $OUT"
-	if [ -e "$C/stand.pid" ] && kill -0 "$(cat "$C/stand.pid")" 2>/dev/null; then
-		note_fail "$1: the stand process is still alive"
-	fi
+# assert_reaped <what>: no pid any stub recorded is still alive.
+assert_reaped() {
+	local pid
+	[ -s "$C/log/pids" ] || {
+		note_fail "$1: no stub recorded a pid"
+		return
+	}
+	while read -r pid; do
+		if kill -0 "$pid" 2>/dev/null; then
+			note_fail "$1: pid $pid ($(ps -o command= -p "$pid" 2>/dev/null)) outlived the script"
+			kill -KILL "$pid" 2>/dev/null
+		fi
+	done <"$C/log/pids"
 }
 
-setup ci-zero
-run_sut 1 -- "$C/relay"
-expect_summary ci-zero 1 "passed=0 skipped=0 failed=0"
-case "$ERR" in *"no test ran"*) ;; *) note_fail "ci-zero: no 'no test ran' message: $ERR" ;; esac
+assert_file() { # <what> <file> <expected content>
+	local got
+	got="$(cat "$2" 2>/dev/null)"
+	[ "$got" = "$3" ] || note_fail "$1: got '$got', want '$3'"
+}
 
-setup ci-all-skipped
-xc 4 4 0 >"$C/make.out"
-run_sut 1 -- "$C/relay"
-expect_summary ci-all-skipped 1 "passed=0 skipped=4 failed=0"
+show_out() {
+	echo "--- script output ($1)"
+	tail -n 30 "$C/out"
+}
 
-setup ci-pass
-{ xc 5 2 0; xc 5 2 0; } >"$C/make.out"
-run_sut 1 -- "$C/relay"
-expect_summary ci-pass 0 "passed=3 skipped=2 failed=0"
-case "$ERR" in *"Executed 5 tests"*) ;; *) note_fail "ci-pass: the test output is not on stderr: $ERR" ;; esac
+# 1. The phone's code matches: confirmed, grants given, the result written.
+setup match
+run_interop STUB_PHONE_CODE=4821
+[ "$RC" -eq 0 ] || {
+	note_fail "match: exit $RC, want 0"
+	show_out match
+}
+assert_file "match: pair.url (Go's \\u0026 unescaped)" "$C/log/url" 'https://relay.example.com/link?v=4&k=abc#x'
+assert_file "match: confirm" "$C/log/confirm" '{"confirm":true}'
+assert_file "match: pair.result" "$C/log/result" '{"event":"linked","device_id":"dev1"}'
+grep -qx 'hub allow dev1 typing' "$C/log/calls" || note_fail "match: no typing grant"
+grep -qx 'hub allow dev1 start_sessions' "$C/log/calls" || note_fail "match: no start_sessions grant"
+grep -q '"workbench_id":7' "$C/log/hub.json" || note_fail "match: hub.json has no workbench_id 7: $(cat "$C/log/hub.json" 2>/dev/null)"
+grep -q '"mode":"test"' "$C/log/hub.json" || note_fail "match: hub.json has no mode"
+grep -qx 'WT_RELAY_INTEROP_URL=http://127.0.0.1:18999' "$C/log/kitenv" || note_fail "match: the Kit suite got no WT_RELAY_INTEROP_URL"
+grep -q '^WT_HUB_INTEROP_DIR=/' "$C/log/kitenv" || note_fail "match: the Kit suite got no WT_HUB_INTEROP_DIR"
+for c in 'workspace init --headless --name hubtest-kit' 'config set hub.relay_origin http://127.0.0.1:18999' 'hub enable' 'sync stop'; do
+	grep -qx "$c" "$C/log/calls" || note_fail "match: the hub never ran '$c'"
+done
+assert_reaped match
 
-setup ci-fail
-xc 5 1 2 >"$C/make.out"
-run_sut 1 MAKE_RC=1 -- "$C/relay"
-expect_summary ci-fail 1 "passed=2 skipped=1 failed=2"
+# 2. A wrong code: refused, no grants, a failing exit.
+setup wrong
+run_interop STUB_PHONE_CODE=1111
+[ "$RC" -ne 0 ] || note_fail "wrong: exit 0, want non-zero"
+assert_file "wrong: confirm" "$C/log/confirm" '{"confirm":false}'
+if grep -q 'hub allow' "$C/log/calls"; then note_fail "wrong: grants given to a refused phone"; fi
+grep -q 'does not match' "$C/out" || note_fail "wrong: no mismatch line"
+assert_reaped wrong
 
-# A run that fails without a counted test failure still exits non-zero.
-setup ci-build-error
-echo "error: build failed" >"$C/make.out"
-run_sut 1 MAKE_RC=1 -- "$C/relay"
-expect_summary ci-build-error 1 "passed=0 skipped=0 failed=0"
+# 3. No code in time: refused, the waiting Kit suite stopped, a failing exit.
+setup timeout
+run_interop RELAY_INTEROP_PAIR_TIMEOUT=2
+[ "$RC" -ne 0 ] || note_fail "timeout: exit 0, want non-zero"
+assert_file "timeout: confirm" "$C/log/confirm" '{"confirm":false}'
+grep -q 'no code from the phone in 2 s' "$C/out" || {
+	note_fail "timeout: no timeout line"
+	show_out timeout
+}
+assert_reaped timeout
 
-# A refusal still ends with the summary line and keeps its own exit code.
-setup ci-usage
-run_sut 1 --
-expect_summary ci-usage 2 "passed=0 skipped=0 failed=0"
-
-setup ci-not-a-worker
-rm "$C/relay/worker/wrangler.jsonc"
-run_sut 1 -- "$C/relay"
-expect_summary ci-not-a-worker 1 "passed=0 skipped=0 failed=0"
-
-# WATCHTOWER_CHECKOUT must be a Watchtower checkout.
-setup bad-checkout
-rm "$C/wt/Makefile"
-run_sut 1 -- "$C/relay"
-expect_summary bad-checkout 1 "passed=0 skipped=0 failed=0"
-case "$ERR" in *"is not a Watchtower checkout"*) ;; *) note_fail "bad-checkout: no refusal message: $ERR" ;; esac
-[ ! -e "$C/started" ] || note_fail "bad-checkout: started the stand"
-
-setup no-kit-dir
-rm -r "$C/wt/WatchtowerKit"
-run_sut 1 -- "$C/relay"
-expect_summary no-kit-dir 1 "passed=0 skipped=0 failed=0"
-
-setup missing-checkout-dir
-run_sut 1 WATCHTOWER_CHECKOUT="$C/nowhere" -- "$C/relay"
-expect_summary missing-checkout-dir 1 "passed=0 skipped=0 failed=0"
-
-# Without CI mode: no summary line, and the tests' output stays on stdout.
-setup no-ci
-xc 2 0 0 >"$C/make.out"
-run_sut 0 -- "$C/relay"
-[ "$RC" -eq 0 ] || note_fail "no-ci: exit $RC, want 0 ($ERR)"
-case "$OUT" in *"relay-interop: passed="*) note_fail "no-ci: printed a summary: $OUT" ;; esac
-case "$OUT" in *"Executed 2 tests"*) ;; *) note_fail "no-ci: the test output is not on stdout: $OUT" ;; esac
-
-# A TERM while the run hangs (a cancelled or timed-out CI job): the stand and the
-# run are killed, the partial output reaches stderr, and the summary is still
-# the last line of stdout with a non-zero exit.
-setup term-mid-run
-
-printf '#!/bin/bash\necho "partial output from make"\n[ -n "${WATCHTOWER_RELAY_INTEROP_URL:-}" ] || exit 0\necho $$ > "%s/make.pid"\ntouch "%s/make.started"\nexec sleep 300\n' "$C" "$C" >"$C/stub/make"
-env PATH="$C/stub:$PATH" RELAY_INTEROP_CI=1 WATCHTOWER_CHECKOUT="$C/wt" RELAY_INTEROP_PORT=18996 \
-	bash "$SUT" "$C/relay" >"$C/out" 2>"$C/err" </dev/null &
-SUT_PID=$!
-for _ in $(seq 1 100); do
-	[ -e "$C/make.started" ] && break
+# 4. SIGTERM while the pairing waits: every started process is stopped.
+setup term
+env PATH="$C/stub:$PATH" KIT=1 RELAY_INTEROP_PORT=18999 RELAY_INTEROP_HUB_MODE=test \
+	RELAY_INTEROP_WATCHTOWER="$C/stub/watchtower" RELAY_INTEROP_KIT_CMD="$C/stub/kit" \
+	bash "$INTEROP" "$C/relay" >"$C/out" 2>&1 </dev/null &
+SPID=$!
+for _ in $(seq 1 150); do
+	[ -s "$C/log/url" ] && break
 	sleep 0.1
 done
-[ -e "$C/make.started" ] || note_fail "term-mid-run: the run never started"
-kill -TERM "$SUT_PID" 2>/dev/null
-wait "$SUT_PID"
+[ -s "$C/log/url" ] || note_fail "term: the Kit stub never saw pair.url"
+kill -TERM "$SPID"
+wait "$SPID"
 RC=$?
-OUT="$(cat "$C/out")"
-ERR="$(cat "$C/err")"
-[ "$RC" -ne 0 ] || note_fail "term-mid-run: exit 0 after TERM"
-expect_summary term-mid-run "$RC" "passed=0 skipped=0 failed=0"
-case "$ERR" in *"partial output from make"*) ;; *) note_fail "term-mid-run: the run's output is not on stderr: $ERR" ;; esac
-if kill -0 "$(cat "$C/make.pid")" 2>/dev/null; then
-	note_fail "term-mid-run: the test run is still alive"
-fi
+[ "$RC" -eq 143 ] || note_fail "term: exit $RC, want 143"
+assert_reaped term
 
-if [ "$FAILURES" -ne 0 ]; then
+if [ "$FAILURES" -gt 0 ]; then
 	echo "test-relay-interop-kit: $FAILURES failure(s)"
 	exit 1
 fi

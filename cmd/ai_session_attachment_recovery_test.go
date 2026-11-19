@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
@@ -73,7 +72,7 @@ func TestAISessionAttachmentNewTurnRecoveryChecksAvailableCandidate(t *testing.T
 				backend, err := routedSessionBackend(cmd, cfg, database, filepath.Join(dir, "chat.db"), conv, "", nil, 0, nil, func() {})
 				require.NoError(t, err)
 				t.Cleanup(func() { _ = backend.Close() })
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				_, err = backend.Start(ctx)
 				require.NoError(t, err)

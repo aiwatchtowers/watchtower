@@ -13,6 +13,12 @@ import (
 // as goose v1; anything else must first be migrated by the previous release.
 const legacySchemaTip = 73
 
+// beforeUpgradeBegin runs once the transition is due, right before its write
+// transaction begins, with the transition's handle; a variable so a test
+// can see the handle's busy timeout and release a lock it holds only once
+// the transition is about to wait for it.
+var beforeUpgradeBegin = func(*sql.DB) {}
+
 // RunSchemaUpgrade is the one-shot transition from the legacy migration
 // engine (PRAGMA user_version + manual switch in migrate()) to goose.
 //
@@ -69,6 +75,7 @@ func RunSchemaUpgrade(dbPath string) error {
 			userVersion, legacySchemaTip, legacySchemaTip)
 	}
 
+	beforeUpgradeBegin(raw)
 	tx, err := raw.Begin()
 	if err != nil {
 		return fmt.Errorf("beginning transition tx: %w", err)

@@ -1,0 +1,76 @@
+name: Linux build
+
+# The Linux tarballs of the watchtower CLI for a headless hub (Go hub phase 2,
+# Task 2): linux/amd64 and linux/arm64 (a Raspberry Pi), built natively —
+# internal/sqlcipher is cgo and links libcrypto.so.3, so nothing cross-compiles.
+# Its own workflow, not a release.yml job: release.yml only gates the tag (the
+# notarized macOS build stays local, scripts/build-app.sh), and these artifacts
+# must be dispatchable alone for the smoke test and the Pi.
+#
+# Runners are ubuntu-22.04 on purpose (ask #881: native runners, not a
+# container): the build host's glibc is the binary's floor (GLIBC_FLOOR in
+# scripts/build-linux.sh). When GitHub retires the 22.04 image the floor is
+# revisited then.
+#
+# A pull request touching the build runs it too, so both native builds are
+# proven before a merge; a PR run only uploads workflow artifacts.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/linux-build.yml
+      - scripts/build-linux.sh
+      - scripts/check-glibc.sh
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      # One architecture's failure must not hide the other's.
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: amd64
+          - runner: ubuntu-22.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.9"
+
+      # libssl-dev for the cgo SQLCipher build (libcrypto.so.3); binutils for
+      # check-glibc.sh's objdump and readelf.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev binutils
+
+      # A tag builds as itself (v<X.Y.Z>, which must pin RELAY_ORIGIN); a
+      # branch dispatch or a pull request builds as dev-<sha>, whose relay
+      # origin may be empty.
+      - name: Build
+        env:
+          RELAY_ORIGIN: ${{ vars.RELAY_ORIGIN }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            version="$GITHUB_REF_NAME"
+          else
+            version="dev-${GITHUB_SHA::12}"
+          fi
+          bash scripts/build-linux.sh "$version" dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: watchtower-linux-${{ matrix.arch }}
+          path: dist/watchtower-*-linux-${{ matrix.arch }}.tar.gz*
+          if-no-files-found: error
+          retention-days: 30

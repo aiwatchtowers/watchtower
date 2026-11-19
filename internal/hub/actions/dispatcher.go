@@ -35,6 +35,18 @@ const (
 	// past the next expected action_seq. A skip only gives up actions the
 	// phone lost after a resend_from, never a jump across the counter.
 	MaxSkipAhead = 1 << 16
+	// ResendAskAgainAfter is how old a gap's resend_from must be before
+	// another action read ahead of that gap asks again: the ask or the
+	// phone's skip_to may be lost for good (a relay TTL, a purge). Nothing
+	// reads a mailbox on a timer for this, so an idle phone costs nothing.
+	ResendAskAgainAfter = 10 * time.Minute
+	// HandlerTimeout bounds one handler call. The handler runs apart from
+	// the pass's cancellation (a stopped pass lets the record in flight
+	// finish), so this cap is what keeps a hub stop bounded. The Swift
+	// processor had no action timeout (only the 300 s recording ingest);
+	// two minutes is the runtime's per-pass operation timeout (opTimeout)
+	// and well above the handlers' own 30 s DefaultTimeout.
+	HandlerTimeout = 2 * time.Minute
 )
 
 // NonIdempotentKinds are claimed begun before their handler runs, so a hub
@@ -42,10 +54,11 @@ const (
 var NonIdempotentKinds = []string{
 	"board_comment_add", "board_comment_reply", "board_target_create", "session_start", "session_input",
 	"session_finish_request", "permission_answer", "session_interrupt", "automation_run",
+	"chat_new", "chat_turn", "chat_action_answer", "chat_manage",
 }
 
 // ReceivedEchoKinds get a non-final received echo before their handler runs.
-var ReceivedEchoKinds = []string{"session_start", "session_input", "board_target_create"}
+var ReceivedEchoKinds = []string{"session_start", "session_input", "board_target_create", "chat_turn"}
 
 // RefusedKinds are the pre-POC Today/task kinds: failed unsupported_in_poc,
 // never dispatched, even with a handler registered.
@@ -105,6 +118,8 @@ type Dispatcher struct {
 	kinds      map[string]registration
 	recordings RecordingIntaker
 	recNudges  []string
+	chatFiles  ChatAttachmentIntaker
+	chatNudges []string
 }
 
 // NewDispatcher returns an empty dispatcher: every kind is unsupported until

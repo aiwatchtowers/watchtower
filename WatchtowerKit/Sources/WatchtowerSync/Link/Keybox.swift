@@ -26,6 +26,18 @@ public struct KeyboxKeys: Codable, Equatable, Sendable {
     public let previousEpoch: UInt32?
     public let previousDataKey: String?
     public let previousAlertKey: String?
+    /// The ephemeral pair of this epoch's `wt/relay/v2/` relay keys; nil means the static `wt/relay/v1/` keys (no
+    /// offer, or a hub that predates Phase 5).
+    public let relayKX: KeyboxRelayKX?
+    /// `relayKX` of `previousEpoch`.
+    public let previousRelayKX: KeyboxRelayKX?
+
+    // convertFromSnakeCase maps "relay_kx" -> "relayKx".
+    enum CodingKeys: String, CodingKey {
+        case epoch, dataKey, alertKey, metaKey, previousEpoch, previousDataKey, previousAlertKey
+        case relayKX = "relayKx"
+        case previousRelayKX = "previousRelayKx"
+    }
 
     public init(
         epoch: UInt32,
@@ -34,7 +46,9 @@ public struct KeyboxKeys: Codable, Equatable, Sendable {
         metaKey: String,
         previousEpoch: UInt32? = nil,
         previousDataKey: String? = nil,
-        previousAlertKey: String? = nil
+        previousAlertKey: String? = nil,
+        relayKX: KeyboxRelayKX? = nil,
+        previousRelayKX: KeyboxRelayKX? = nil
     ) {
         self.epoch = epoch
         self.dataKey = dataKey
@@ -43,5 +57,20 @@ public struct KeyboxKeys: Codable, Equatable, Sendable {
         self.previousEpoch = previousEpoch
         self.previousDataKey = previousDataKey
         self.previousAlertKey = previousAlertKey
+        self.relayKX = relayKX
+        self.previousRelayKX = previousRelayKX
+    }
+}
+
+/// The ephemeral pair of one epoch's relay keys (relay client Phase 5): the hub's drawn `hub_eph` public and the
+/// phone's offered `dev_eph` public it answers, unpadded base64url of 32 bytes each. The phone finds its private
+/// half by `devicePub`.
+public struct KeyboxRelayKX: Codable, Equatable, Sendable {
+    public let hubPub: String
+    public let devicePub: String
+
+    public init(hubPub: String, devicePub: String) {
+        self.hubPub = hubPub
+        self.devicePub = devicePub
     }
 }

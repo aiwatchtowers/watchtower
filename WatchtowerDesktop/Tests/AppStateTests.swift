@@ -1,4 +1,5 @@
 import XCTest
+import Observation
 import GRDB
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -376,14 +377,30 @@ final class AppStateTests: XCTestCase {
     }
 
     /// Launch with this suite and DB: the state `initialize()` derives after
-    /// the DB opened (or, with `db: nil`, failed to).
-    private func launch(_ defaults: UserDefaults, db: DatabaseManager?) async -> AppState {
+    /// the DB opened (or, with `db: nil`, failed to). `backgroundRuns` is the
+    /// background AI answer in a private config.yaml (nil = not answered), so
+    /// the route never depends on this Mac's own config.
+    private func launch(
+        _ defaults: UserDefaults, db: DatabaseManager?, backgroundRuns: String? = "allowed"
+    ) async -> AppState {
         let appState = AppState(onboardingDefaults: defaults, featureManager: Self.noFeatures())
+        appState.sharedConfig = consentConfig(backgroundRuns)
         appState.wireAppDatabaseOverride = { _ in }
         appState.databaseManager = db
         await appState.refreshConnectedSources()
         await appState.reconcileOnboarding(dbPool: db?.dbPool)
         return appState
+    }
+
+    private func consentConfig(_ backgroundRuns: String?) -> ConfigService {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("wt-launch-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("config.yaml").path
+        if let backgroundRuns {
+            try? "ai: {background_runs: \(backgroundRuns)}\n".write(toFile: path, atomically: true, encoding: .utf8)
+        }
+        return ConfigService(configPath: path)
     }
 
     private func screen(_ appState: AppState) -> NavigationRoot.Screen {
@@ -520,6 +537,40 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(done, true)
     }
 
+    /// Parked on the removed About you with the background AI answer still
+    /// due (#1886): Connect's Continue goes to the consent step, not done.
+    func testLaunchOnTheRemovedAboutYouStepUnansweredGoesThroughConsent() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("aboutYou", forKey: OnboardingStateMachineV2.stepKey)
+        defaults.set(["workCommunication"], forKey: OnboardingGoalsModel.goalsKey)
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+
+        let appState = await launch(defaults, db: dbManager, backgroundRuns: nil)
+        XCTAssertEqual(appState.onboarding.currentStep, .connect)
+        XCTAssertTrue(appState.onboardingRoute.consentPrompt)
+
+        await appState.leaveOnboardingStep(.connect, route: appState.onboardingRoute) {}
+        XCTAssertEqual(appState.onboarding.currentStep, .aiConsent)
+        XCTAssertTrue(appState.needsOnboarding)
+    }
+
+    /// Relaunched on Connect with Development-only goals and the answer due:
+    /// the consent step is still ahead (its answer runs the completion
+    /// sequence), so launch settles there instead of back at Goals.
+    func testLaunchOnSkippedConnectUnansweredSettlesOnConsent() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(OnboardingV2Step.connect.rawValue, forKey: OnboardingStateMachineV2.stepKey)
+        defaults.set(["development"], forKey: OnboardingGoalsModel.goalsKey)
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+
+        let appState = await launch(defaults, db: dbManager, backgroundRuns: nil)
+
+        XCTAssertEqual(appState.onboarding.currentStep, .aiConsent)
+        XCTAssertEqual(screen(appState), .onboarding)
+    }
+
     /// Parked on the removed About you with Development-only goals: Connect
     /// does not apply to them, so the install resumes at Goals, still
     /// onboarding.
@@ -583,7 +634,7 @@ final class AppStateTests: XCTestCase {
         appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
 
         XCTAssertFalse(appState.onboardingGoals.isCustomizingFeatures)
-        XCTAssertEqual(appState.onboardingGoals.cliCheck, .checking)
+        XCTAssertEqual(appState.onboardingGoals.agentChoice, OnboardingAgentChoice())
         XCTAssertNil(appState.onboardingStepError)
     }
 
@@ -591,16 +642,15 @@ final class AppStateTests: XCTestCase {
 
     /// Records each people-load launch; finishes at once.
     @MainActor
-    private final class RosterLaunches {
+    @Observable
+    final class RosterLaunches {
         var accounts: [Int] = []
     }
 
-    /// Spins the main actor until `condition` holds (bounded).
-    private func waitUntil(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
-        for _ in 0..<2000 where !condition() {
-            await Task.yield()
-        }
-        XCTAssertTrue(condition(), "condition not reached", file: file, line: line)
+    /// Waits until `condition` holds, re-checking on every change of the
+    /// observable state it reads — no deadline.
+    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
+        await untilObserved(condition)
     }
 
     private func onboardingAppState(_ launches: RosterLaunches) -> AppState {
@@ -645,7 +695,8 @@ final class AppStateTests: XCTestCase {
         await appState.peopleRoster.waitForCompletion()
         await vm.refreshAsync()
         await vm.refreshAsync()
-        for _ in 0..<50 { await Task.yield() }
+        // A load these refreshes started would run here, to its end.
+        await appState.peopleRoster.waitForCompletion()
 
         XCTAssertEqual(launches.accounts, [Int(id)])
     }
@@ -954,11 +1005,14 @@ final class AppStateTests: XCTestCase {
         appState.daemonControlOverride = daemon
 
         let reset = Task { try await appState.resetLLMData(workspaceDir: dir) }
-        for _ in 0..<10_000 where !daemon.isRestartParked { await Task.yield() }
-        XCTAssertTrue(daemon.isRestartParked)
+        await untilObserved { daemon.isRestartParked }
         appState.startDaemonFromBanner()
-        for _ in 0..<50 { await Task.yield() }
+        // The main executor is FIFO: a job enqueued now runs behind the banner
+        // item's first turn, which — were it not queued behind the reset —
+        // would find the daemon stopped (the reset's stop) and start it.
+        await Task { @MainActor in }.value
         XCTAssertEqual(daemon.starts, 0, "the Start waits for the reset")
+        XCTAssertFalse(daemon.running, "the reset's restart is still parked")
         daemon.releaseRestart()
         try await reset.value
         await appState.daemonStartChain?.value
@@ -1099,7 +1153,6 @@ final class AppStateTests: XCTestCase {
         try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
         await vm.refreshAsync()
         await appState.leaveOnboardingStep(.purpose, route: route) {}
-        for _ in 0..<50 { await Task.yield() }
         XCTAssertEqual(daemon.restarts, 1, "the second restart waits for the first")
 
         daemon.releaseRestart()
@@ -1107,6 +1160,7 @@ final class AppStateTests: XCTestCase {
         daemon.releaseRestart()
         await appState.daemonStartChain?.value
         XCTAssertEqual(daemon.restarts, 2)
+        XCTAssertEqual(daemon.mostRestartsAtOnce, 1, "never two restarts at once")
     }
 
     // MARK: - #296 review
@@ -1444,15 +1498,29 @@ final class AppStateTests: XCTestCase {
         appState.needsOnboarding = true
         // Hold the read back so onboarding ends while it is in flight.
         let pool = try XCTUnwrap(dbManager?.dbPool)
+        let release = DispatchSemaphore(value: 0)
+        let (held, hold) = AsyncStream<Void>.makeStream()
         let barrier = Task.detached {
-            try pool.barrierWriteWithoutTransaction { _ in Thread.sleep(forTimeInterval: 0.3) }
+            try pool.barrierWriteWithoutTransaction { _ in
+                hold.yield()
+                release.wait()
+            }
         }
-        try await Task.sleep(for: .milliseconds(50))
-        let refresh = Task { await appState.refreshConnectedSources() }
-        try await Task.sleep(for: .milliseconds(50))
+        var holds = held.makeAsyncIterator()
+        _ = await holds.next() // the barrier holds the database
+        // The refresh runs to its read (its first suspension) before the
+        // test goes on: the read is in flight while onboarding ends.
+        var refresh: Task<Void, Never>?
+        await withCheckedContinuation { (started: CheckedContinuation<Void, Never>) in
+            refresh = Task { @MainActor in
+                started.resume()
+                await appState.refreshConnectedSources()
+            }
+        }
         appState.needsOnboarding = false
+        release.signal()
         _ = try await barrier.value
-        await refresh.value
+        await refresh?.value
         await appState.featureSuggestionCheck?.value
 
         XCTAssertTrue(appState.featureVisibility.connectedSources.jira, "the read did land")
@@ -1512,7 +1580,8 @@ final class AppStateTests: XCTestCase {
         OnboardingGoalsModel(
             defaults: defaults,
             systemLanguage: "English",
-            checkCLI: { .ready(provider: "claude") },
+            checkAgents: { OnboardingAgentCheckResult(statuses: [.claude: .ready, .codex: .notInstalled]) },
+            configuredProvider: { "claude" },
             actions: OnboardingGoalsActions(
                 initWorkspace: {
                     spy.calls.append("workspace init")
@@ -1647,7 +1716,8 @@ final class AppStateTests: XCTestCase {
         OnboardingGoalsModel(
             defaults: defaults,
             systemLanguage: "English",
-            checkCLI: { .ready(provider: "claude") },
+            checkAgents: { OnboardingAgentCheckResult(statuses: [.claude: .ready, .codex: .notInstalled]) },
+            configuredProvider: { "claude" },
             actions: OnboardingGoalsActions(
                 initWorkspace: { spy.calls.append("workspace init") },
                 setLanguage: { spy.calls.append("language \($0)") },
@@ -1831,7 +1901,7 @@ extension AppStateTests {
         let read = expectation(description: "the launch read the catalog")
         appState.modelCatalogLaunchOverride = { read.fulfill() }
         appState.loadModelCatalogAtLaunch()
-        await fulfillment(of: [read], timeout: 5)
+        await fulfillment(of: [read])
         XCTAssertTrue(appState.aiModelCatalog === AIModelCatalog.shared, "one catalog for every surface")
     }
 

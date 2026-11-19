@@ -44,6 +44,29 @@ final class RelaySimSwitchInteropTests: RelaySimSwitchTwins {
     }
 }
 
+/// What the stand's config promises the scenarios (`scripts/relay-interop-kit.sh`).
+final class RelayStandConfigInteropTests: HostedRelayScenarioCase {
+    override func makeBackend() throws -> RelayBackend {
+        try RelayBackend.standFromEnvironment()
+    }
+
+    /// One device's ops are not rate limited on the stand: the fake has no rate limit, so a scenario that
+    /// runs on both must not depend on the pace of the machine. With the relay's default bucket (100 ops of
+    /// burst, 50 a second) a twin on a fast machine is refused partway (#1560): its device's pass reads
+    /// nothing, the round looks quiet and the twin ends early.
+    func testOneDeviceIsNotRateLimited() async throws {
+        let phone = try await makeClient(kind: .phone, seed: 60)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<16 {
+                group.addTask {
+                    for _ in 0..<25 { _ = try await phone.accountState() }
+                }
+            }
+            try await group.waitForAll()
+        }
+    }
+}
+
 /// The production socket seam against the stand (the Task 5 review's interop checklist):
 /// it opens, a refused upgrade is `.http(status: 401)`, the relay's 4000/4001 close codes
 /// survive (R13), and an idle socket outlives the 40 s an intermediary might cut it at, kept

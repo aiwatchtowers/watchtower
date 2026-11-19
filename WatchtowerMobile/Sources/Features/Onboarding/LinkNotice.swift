@@ -30,11 +30,14 @@ enum LinkNotice: Equatable {
     case finishingInBackground(macName: String)
     /// A confirmed Relay link waits for the owner (its Settings → Macs row has Try Again and Cancel).
     case needsOwner(macName: String, reason: PromotedLink.Reason)
+    /// A relay-only link the relay kept refusing ended at its term (relay client Phase 5, Task 17, S60), with the wipe's
+    /// "Not sent" count.
+    case relayEnded(macName: String, notSent: Int)
 
     /// The notices about a Relay link have an OK button; the others a close or Scan button.
     var dismissTitle: String? {
         switch self {
-        case .macOnRelay, .finishingInBackground, .needsOwner: "OK"
+        case .macOnRelay, .finishingInBackground, .needsOwner, .relayEnded: "OK"
         case .removed, .stale, .notSent, .recordingKept, .recordingsProblem, .encryptionReScan: nil
         }
     }
@@ -59,26 +62,29 @@ enum LinkNotice: Equatable {
             Self.notSentText(count)
         case let .recordingKept(macName, notSent):
             (macName.map { "The link to \($0) ended during a recording. It's saved on this iPhone and goes to \($0) after you link it again" }
-                ?? "The link ended during a recording. It's saved on this iPhone and goes to your Mac after you link it again")
+                ?? "The link ended during a recording. It's saved on this iPhone and goes to your tower after you link it again")
                 + (notSent > 0 ? ". \(Self.notSentText(notSent))" : "")
         case let .recordingsProblem(problem, notSent):
             problem + (notSent > 0 ? ". \(Self.notSentText(notSent))" : "")
         case .encryptionReScan:
-            "Watchtower now encrypts your data. Scan the code on your Mac again."
+            "Watchtower now encrypts your data. Scan the code on your tower again."
         case let .macOnRelay(macName):
             "\(macName) runs over Relay — \(LinkFailure.macOnRelayHint)"
         case let .finishingInBackground(macName):
             "\(macName) will finish linking in the background. \(Self.seeMacs)"
         case let .needsOwner(macName, reason):
             "\(reason.message(macName: macName)) \(Self.seeMacs)"
+        case let .relayEnded(macName, notSent):
+            "The link to \(macName) ended after 21 days without Relay. Link it again to see its data."
+                + (notSent > 0 ? " \(Self.notSentText(notSent))" : "")
         }
     }
 
-    private static let seeMacs = "See Settings → Macs."
+    private static let seeMacs = "See Settings → Towers."
 
     private static func notSentText(_ count: Int) -> String {
         count == 1
-            ? "Not sent: 1 item was still waiting for your Mac"
-            : "Not sent: \(count) items were still waiting for your Mac"
+            ? "Not sent: 1 item was still waiting for your tower"
+            : "Not sent: \(count) items were still waiting for your tower"
     }
 }

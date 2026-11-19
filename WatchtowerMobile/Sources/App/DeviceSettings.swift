@@ -180,6 +180,7 @@ final class DeviceSettings {
         }
         lastWrite = write
         await write.value
+        await sendAfterWrite?()
     }
 
     /// Deletes `hubID`'s Workbench choices and its shared-alert seen list (its link was removed).
@@ -191,6 +192,7 @@ final class DeviceSettings {
         defaults.removeObject(forKey: keys.lastDeviceWrite)
         // A link made again starts with a silent first fetch.
         defaults.removeObject(forKey: SharedAlertPoster.postedDefaultsKey(hubID: hubID))
+        defaults.removeObject(forKey: BoardFoldStore.key(hubID: hubID))
     }
 
     func setTypingRequested(_ value: Bool) async {
@@ -236,6 +238,34 @@ final class DeviceSettings {
         }
     }
 
+    /// Whether the `device` record says the alerts switch is off (`work_alerts_off`), which the hub needs to skip a
+    /// relay alert: set while the relay is available (`AppEnvironment.add`). With an empty origin the record is
+    /// today's, byte for byte.
+    @ObservationIgnored var reportsWorkAlertsOff = false
+
+    /// Sends the queue on after a saved record, on a relay route, where a save only queues (`HubSession`); nil
+    /// elsewhere. Runs outside the write chain, after the choice is saved: a send can hang on a dead network.
+    @ObservationIgnored var sendAfterWrite: (@MainActor () async -> Void)?
+
+    /// The alerts switch moved: the hub hears it in a new `device` record. A failed write is logged and clears the
+    /// last write's stamp, so the next return to the foreground sends it (`touchIfStale`); the switch stays as set, its
+    /// truth being the phone's. Any other write says it too. Returns whether a write ran: the caller then sends it,
+    /// since a relay route's save only queues.
+    @discardableResult
+    func sendWorkAlertsChange() async -> Bool {
+        guard reportsWorkAlertsOff, linkedDevice != nil else { return false }
+        let prior = lastWrite
+        let write = Task { [weak self] in
+            await prior?.value
+            guard let self, await writeDeviceRecord() != nil else { return }
+            Self.logger.warning("alerts switch not sent; the next return to the foreground tries again")
+            defaults.removeObject(forKey: keys.lastDeviceWrite)
+        }
+        lastWrite = write
+        await write.value
+        return true
+    }
+
     /// The `device` record for the current choices, or nil while unlinked.
     func devicePayload() -> DevicePayload? {
         linkedDevice.map { devicePayload(for: $0, linkNonce: nil, unlinked: false, now: now()) }
@@ -257,7 +287,8 @@ final class DeviceSettings {
             startSessions: startSessions,
             permissionsRequested: permissionsRequested,
             seenAt: unlinked ? nil : now,
-            updatedAt: now
+            updatedAt: now,
+            workAlertsOff: reportsWorkAlertsOff && !workAlerts
         )
     }
 
@@ -273,12 +304,14 @@ final class DeviceSettings {
         let generation = (generations[setting] ?? 0) + 1
         generations[setting] = generation
         let prior = lastWrite
+        var saved = false
         let write = Task { [weak self] in
             await prior?.value
             guard let self else { return }
             let failure = await self.writeDeviceRecord()
             guard let failure else {
                 apply(true)
+                saved = true
                 if errorSetting == setting {
                     errorSetting = nil
                     lastError = nil
@@ -292,6 +325,7 @@ final class DeviceSettings {
         }
         lastWrite = write
         await write.value
+        if saved { await sendAfterWrite?() }
     }
 
     /// Saves the device record for the current choices. Returns why the
@@ -305,7 +339,7 @@ final class DeviceSettings {
             return nil
         } catch {
             Self.logger.error("device record write failed: \(error.localizedDescription, privacy: .public)")
-            return "Couldn't update your Mac: \(error.localizedDescription)"
+            return "Couldn't update your tower: \(error.localizedDescription)"
         }
     }
 }

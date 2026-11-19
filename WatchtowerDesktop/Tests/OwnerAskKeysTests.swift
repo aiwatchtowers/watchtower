@@ -54,11 +54,8 @@ final class OwnerAskKeysTests: XCTestCase {
     /// The stored ask once its answer is written (the answer reloads the
     /// open asks last).
     private func answered(_ vm: WorkbenchesViewModel, _ ask: OwnerAsk) async throws -> OwnerAsk? {
-        let deadline = Date().addingTimeInterval(5)
-        while vm.asks.openAsks[project]?.contains(where: { $0.id == ask.id }) == true, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
         let project = project
+        await untilObserved { vm.asks.openAsks[project]?.contains { $0.id == ask.id } != true }
         return try await pool.read { try OwnerAskQueries.ask($0, id: ask.id, projectID: project) }
     }
 
@@ -155,8 +152,7 @@ final class OwnerAskKeysTests: XCTestCase {
         held.wait()
 
         let first = try XCTUnwrap(vm.asks.pressKey(on: ask, shift: false))
-        let deadline = Date().addingTimeInterval(5)
-        while !vm.asks.isAnswering(ask.id), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        await untilObserved { vm.asks.isAnswering(ask.id) }
         XCTAssertNil(vm.asks.pressKey(on: ask, shift: true), "the buttons are off while the first answer is written")
         release.signal()
         await first.value
@@ -182,7 +178,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// A field and read-only text beside the drawer (a target comment, a
     /// chat transcript), and in the drawer a field of its own and read-only
     /// text (a review's document).
-    func testTheCatcherTakesTheKeysOnlyWhileNoFieldHasTheKeyboard() throws {
+    func testTheCatcherTakesTheKeysOnlyWhileNoFieldHasTheKeyboard() async throws {
         var keys: [Bool] = []
         var outsideSent = 0
         var insideSent = 0
@@ -209,7 +205,7 @@ final class OwnerAskKeysTests: XCTestCase {
         window.contentView = host
         defer { window.close() }
         host.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        await mainQueueTurn()
         let views = textViews(in: host)
         let outside = try XCTUnwrap(views.first { $0.isEditable && $0.convert($0.bounds, to: nil).minX < 200 })
         let inside = try XCTUnwrap(views.first { $0.isEditable && $0.convert($0.bounds, to: nil).minX >= 200 })
@@ -241,7 +237,7 @@ final class OwnerAskKeysTests: XCTestCase {
 
     /// A ⌘↩ held past leaving a margin comment: its auto-repeat reaches
     /// the catcher with nothing focused and must not answer the ask.
-    func testAHeldKeysRepeatAnswersNothing() throws {
+    func testAHeldKeysRepeatAnswersNothing() async throws {
         var keys: [Bool] = []
         let host = NSHostingView(rootView: Color.clear.frame(width: 200, height: 100)
             .background(OwnerAskKeyCatcher { keys.append($0) }))
@@ -251,7 +247,7 @@ final class OwnerAskKeysTests: XCTestCase {
         window.contentView = host
         defer { window.close() }
         host.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        await mainQueueTurn()
 
         window.makeFirstResponder(nil)
         XCTAssertNil(OwnerAskKeyCatcher.answerKey(try key(window, .command, repeat: true)))
@@ -275,7 +271,7 @@ final class OwnerAskKeysTests: XCTestCase {
         let shown: DrawerShown
     }
 
-    private func page(_ vm: WorkbenchesViewModel, _ ask: OwnerAsk) throws -> Page {
+    private func page(_ vm: WorkbenchesViewModel, _ ask: OwnerAsk) async throws -> Page {
         let shown = DrawerShown()
         let terminal = TerminalLike(frame: NSRect(x: 0, y: 0, width: 200, height: 400))
         let drawer = NSHostingView(rootView: RemovableDrawer(shown: shown, vm: vm, ask: ask).frame(width: 320, height: 400))
@@ -287,7 +283,7 @@ final class OwnerAskKeysTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.contentView = content
         drawer.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        await mainQueueTurn()
         let catcher = try XCTUnwrap(catchers(in: drawer).first)
         XCTAssertTrue(window.makeFirstResponder(terminal))
         return Page(window: window, terminal: terminal, drawer: drawer, catcher: catcher, shown: shown)
@@ -301,9 +297,10 @@ final class OwnerAskKeysTests: XCTestCase {
     /// A left click at `point` as the app sees it: the catcher's monitor
     /// first, then AppKit handling it — giving the keyboard to `taker`
     /// when the click hit a view that takes it — then the main queue's next
-    /// turn, which comes before any key the owner presses. Waits by
-    /// sleeping: this test runs on the main queue, which a nested run loop
-    /// does not drain.
+    /// turn, which comes before any key the owner presses. Waits for that
+    /// turn itself: the main queue is FIFO, so a turn queued after the
+    /// click's runs after it (a nested run loop would not drain it: this
+    /// test runs on the main queue).
     private func click(_ page: Page, at point: NSPoint, taker: NSResponder? = nil) async throws {
         let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [],
                                                      timestamp: ProcessInfo.processInfo.systemUptime,
@@ -311,7 +308,13 @@ final class OwnerAskKeysTests: XCTestCase {
                                                      eventNumber: 0, clickCount: 1, pressure: 1))
         page.catcher.clicked(event)
         if let taker { XCTAssertTrue(page.window.makeFirstResponder(taker)) }
-        try await Task.sleep(for: .milliseconds(50))
+        await mainQueueTurn()
+    }
+
+    /// Runs every main-queue block already queued (the main queue is FIFO):
+    /// the turn a step under test queued has run when this returns.
+    private func mainQueueTurn() async {
+        await withCheckedContinuation { done in DispatchQueue.main.async { done.resume() } }
     }
 
     /// The drawer's host taking it down for real (`dismantleNSView`), then
@@ -326,14 +329,13 @@ final class OwnerAskKeysTests: XCTestCase {
     /// runner the dismantle can land in the turn that resumes the test, so
     /// a fixed sleep let the test move on — unhide the lender — before the
     /// hand-back ran. The main queue is FIFO: a turn queued after the
-    /// catcher is seen gone runs after that hand-back.
+    /// catcher is seen gone runs after that hand-back. No deadline: the
+    /// wait ends on SwiftUI's update, turn by turn, never on a clock.
     private func catcherGone(in host: NSView) async throws {
-        let deadline = Date().addingTimeInterval(5)
         repeat {
-            try await Task.sleep(for: .milliseconds(10))
-        } while !catchers(in: host).isEmpty && Date() < deadline
-        XCTAssertTrue(catchers(in: host).isEmpty, "the catcher is gone")
-        await withCheckedContinuation { done in DispatchQueue.main.async { done.resume() } }
+            await mainQueueTurn()
+        } while !catchers(in: host).isEmpty
+        await mainQueueTurn()
     }
 
     private static let inDrawer = NSPoint(x: 360, y: 200)
@@ -344,7 +346,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// takes no focus), and ⌘↩ right after answers — no click in a field.
     func testAClickOnAnOptionThenCommandReturnAnswers() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
         XCTAssertFalse(page.window.performKeyEquivalent(with: try key(page.window, .command)), "the terminal's ⌘↩")
 
@@ -360,7 +362,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// Marking a check's step with the mouse, then ⌘↩: sent.
     func testAClickOnAStepThenCommandReturnSendsTheCheck() async throws {
         let (vm, ask) = try await makeVM("check", payload: Self.checklist)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
 
         try await click(page, at: Self.inDrawer)
@@ -375,7 +377,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// presses nothing.
     func testAClickLeavesADisabledButtonOff() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
 
         try await click(page, at: Self.inDrawer)
@@ -387,7 +389,7 @@ final class OwnerAskKeysTests: XCTestCase {
     func testAClickOnTheTerminalKeepsItsCommandReturn() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
         vm.asks.editDraft(ask.id) { $0.picks["a"] = .init(labels: ["Yes"]) }
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
 
         try await click(page, at: Self.onTerminal, taker: page.terminal)
@@ -400,7 +402,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// terminal keeps the keyboard.
     func testADragOnTheResizeHandleKeepsTheTerminalsKeyboard() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
         let edge = page.catcher.convert(page.catcher.bounds, to: nil).minX
 
@@ -414,7 +416,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// the document) leaves it there; the field's ⌘↩ is its own.
     func testAClickInTheDrawerLeavesItsFieldTheKeyboard() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
         let field = try XCTUnwrap(textViews(in: page.drawer).first { $0.isEditable })
 
@@ -427,7 +429,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// not the control — gets the keyboard back when the drawer goes.
     func testAControlInTheDrawerTakingTheKeyboardLetsGoAndTheTerminalGetsItBack() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
         let control = TerminalLike(frame: NSRect(x: 340, y: 190, width: 40, height: 20))
         page.window.contentView?.addSubview(control)
@@ -443,7 +445,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// the click lends its keyboard and the drawer going hands it back.
     func testACoveredTerminalGetsTheKeyboardBack() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
         let container = TerminalContainerView(frame: page.drawer.frame)
         let covered = TerminalLike(frame: container.bounds)
@@ -464,7 +466,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// not the whole text selected.
     func testATextFieldGetsTheKeyboardBackWithItsCaret() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 22))
         field.stringValue = "Draft title"
@@ -485,7 +487,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// the click in the drawer takes it, so ⌘↩ answers, not sends that comment.
     func testAClickInTheDrawerTakesTheKeyboardFromAFieldBesideIt() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
         let comment = NSTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 40))
         page.window.contentView?.addSubview(comment)
@@ -502,7 +504,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// moved out of the drawer is never taken.
     func testTheAnsweredSessionsTerminalEndsWithTheKeyboard() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
         let sessionTerminal = TerminalLike(frame: NSRect(x: 0, y: 0, width: 10, height: 10))
         page.window.contentView?.addSubview(sessionTerminal)
@@ -513,7 +515,7 @@ final class OwnerAskKeysTests: XCTestCase {
         try await removeDrawer(page)
         XCTAssertTrue(page.window.firstResponder === sessionTerminal)
 
-        let other = try self.page(vm, ask)
+        let other = try await self.page(vm, ask)
         defer { other.window.close() }
         let moved = TerminalLike(frame: NSRect(x: 0, y: 0, width: 10, height: 10))
         other.window.contentView?.addSubview(moved)
@@ -525,7 +527,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// back to the terminal a click in it took it from.
     func testTheDrawerGoingHandsTheKeyboardBack() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
 
         try await click(page, at: Self.inDrawer)
@@ -540,7 +542,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// this terminal's agent.
     func testTheDrawerMovingToAnotherHostHandsNothingBack() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
 
         try await click(page, at: Self.inDrawer)
@@ -555,7 +557,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// workbench's, not the first catcher's.
     func testTheDrawerClosingInItsNextHostHandsTheKeyboardBack() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
 
         try await click(page, at: Self.inDrawer)
@@ -575,8 +577,8 @@ final class OwnerAskKeysTests: XCTestCase {
         next.frame = page.drawer.frame
         page.window.contentView?.addSubview(next)
         next.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertFalse(catchers(in: next).isEmpty)
+        while catchers(in: next).isEmpty { await mainQueueTurn() }
+        await mainQueueTurn()
 
         vm.asks.closeDrawer(projectID: project)
         nextShown.isOn = false
@@ -587,7 +589,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// loan: a later drawer closing with nothing focused hands nothing back.
     func testARefusedHandBackDoesNotCarryOver() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
         let monaco = TerminalLike(frame: NSRect(x: 0, y: 0, width: 10, height: 10))
         page.window.contentView?.addSubview(monaco)
@@ -605,7 +607,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// The same for a hand-back refused because the lender was hidden.
     func testAHandBackRefusedToAHiddenLenderDoesNotCarryOver() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
 
         try await click(page, at: Self.inDrawer)
@@ -621,7 +623,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// The owner put the keyboard somewhere since: left alone.
     func testTheDrawerGoingLeavesAKeyboardTakenSince() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
         let other = TerminalLike(frame: NSRect(x: 0, y: 0, width: 10, height: 10))
         page.window.contentView?.addSubview(other)
@@ -636,7 +638,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// option) keeps the loan: the terminal still gets it back.
     func testAClickOutsideTakingNoKeyboardKeepsTheLoan() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
         defer { page.window.close() }
 
         try await click(page, at: Self.inDrawer)
@@ -650,7 +652,7 @@ final class OwnerAskKeysTests: XCTestCase {
     /// nothing back, and nothing breaks.
     func testTheDrawerGoingAfterTheTerminalsWindowHandsNothingBack() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)
-        let page = try page(vm, ask)
+        let page = try await page(vm, ask)
 
         try await click(page, at: Self.inDrawer)
         page.window.close()

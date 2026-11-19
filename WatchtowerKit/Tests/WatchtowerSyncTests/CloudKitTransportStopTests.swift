@@ -78,7 +78,7 @@ final class CloudKitTransportStopTests: XCTestCase {
     func testStopClearsTheThrottleSoARestartSendsAtOnce() async throws {
         let transport = await CloudKitTransport.testing(store: try .inMemory()) { _ in
             // The retry never fires: only stop()/start() may end the throttle.
-            try? await Task.sleep(for: .seconds(3_600))
+            await untilCancelled()
         }
         try await transport.save([record("workbench-1")])
         await transport.handleSendError(CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 600.0]))
@@ -117,7 +117,7 @@ final class CloudKitTransportSendNowTests: XCTestCase {
         let engine = FakeSyncEngine()
         let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine) { _ in
             // The retry never fires inside the test: the wait stays open.
-            try? await Task.sleep(for: .seconds(3_600))
+            await untilCancelled()
         }
         addTeardownBlock { await transport.retryTask?.cancel() }
         try await transport.save([record("terminal_session-1")])

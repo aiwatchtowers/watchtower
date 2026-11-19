@@ -94,7 +94,7 @@ text: Automation cards land in the **Inbox** folder unless you move them; report
 area: automations
 level: basics
 kind: tip
-since: next
+since: 0.28.0
 action: nav:inbox
 replaces: [automations-results]
 changed: Cards now land in an Inbox folder instead of the Automations filter.

@@ -7,7 +7,7 @@ import XCTest
 final class ActionReasonTests: XCTestCase {
     private func echo(reason: String) throws -> ActionRequestPayload {
         let json = #"{"created_at":1700000000,"id":"A1","kind":"session_input","params":{},"status":"failed","#
-            + #""reason":"\#(reason)","error_message":"Codex sessions can't take messages from the phone yet. Type it on the Mac."}"#
+            + #""reason":"\#(reason)","error_message":"Codex sessions can't take messages from the phone yet. Type it on your tower."}"#
         return try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: Data(json.utf8))
     }
 
@@ -23,7 +23,20 @@ final class ActionReasonTests: XCTestCase {
         XCTAssertNil(decoded.reason)
         XCTAssertEqual(decoded.status, .failed)
         XCTAssertEqual(
-            decoded.errorMessage, "Codex sessions can't take messages from the phone yet. Type it on the Mac."
+            decoded.errorMessage, "Codex sessions can't take messages from the phone yet. Type it on your tower."
         )
+    }
+
+    /// The chat reasons (moved here with the chat models' move to ChatWire, #1822 T6).
+    func testChatReasonsMapAndAnOldCodeStaysNil() {
+        XCTAssertEqual(ActionReason(rawValue: "conversation_busy"), .conversationBusy)
+        XCTAssertEqual(ActionReason(rawValue: "attachment_missing"), .attachmentMissing)
+        XCTAssertEqual(ActionReason(rawValue: "changed"), .changed)
+        XCTAssertEqual(ChatActionReason(.conversationBusy), .conversationBusy)
+        XCTAssertEqual(ChatActionReason(.attachmentMissing), .attachmentMissing)
+        XCTAssertEqual(ChatActionReason(.changed), .actionChanged)
+        XCTAssertEqual(ChatActionReason(.notSupported), .notSupported)
+        XCTAssertNil(ChatActionReason(.writeFailed))
+        XCTAssertNil(ChatActionReason(nil))
     }
 }

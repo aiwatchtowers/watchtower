@@ -6,7 +6,8 @@ import WatchtowerSync
 /// `WatchtowerSignal` query subscription (`AskAlertSubscription`, D14) pushes "A session is waiting" with mutable
 /// content; this extension fetches the sealed `ask_alert` the signal names (20 s bound), opens it with
 /// `AlertOpener` over the shared alert group's material only, and sets the title and body. Any failure delivers the
-/// content-free notification unchanged. Thin glue: fetch → open → `WorkAlertContent` → copy its fields; any failure leaves the generic body.
+/// content-free notification unchanged. A hosted-relay push carries the envelope inline (`e`): no fetch, no network.
+/// Thin glue: fetch → open → `WorkAlertContent` → copy its fields; any failure leaves the generic body.
 final class NotificationService: UNNotificationServiceExtension {
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "NotifyService")
     private static let fetchTimeout: TimeInterval = 20
@@ -24,7 +25,7 @@ final class NotificationService: UNNotificationServiceExtension {
             self.contentHandler = contentHandler
             original = request.content
         }
-        guard let source = CloudKitPushWake().alertSource(for: request.content.userInfo) else {
+        guard let source = PushRouting.alertSource(for: request.content.userInfo, cloudKit: CloudKitPushWake()) else {
             deliver(nil)
             return
         }
@@ -61,7 +62,7 @@ final class NotificationService: UNNotificationServiceExtension {
                 logger.notice("ask alert not filled: no alert material for its hub")
                 return nil
             }
-            guard let envelope = try await CloudKitPushWake().envelope(for: source, timeout: fetchTimeout),
+            guard let envelope = try await PushRouting.envelope(for: source, timeout: fetchTimeout, cloudKit: CloudKitPushWake()),
                   let payload = AlertOpener(material: material).open(wireName: source.wireName, envelope: envelope)
             else { return nil }
             let filled = content.mutableCopy() as? UNMutableNotificationContent ?? UNMutableNotificationContent()

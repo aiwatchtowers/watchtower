@@ -11,34 +11,27 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"watchtower/internal/oauthpage"
+	"watchtower/internal/oauthpage/oauthpagetest"
 
 	"github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// syncBuffer is a goroutine-safe wrapper around bytes.Buffer.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (sb *syncBuffer) Write(p []byte) (int, error) {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	return sb.buf.Write(p)
-}
-
-func (sb *syncBuffer) String() string {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	return sb.buf.String()
+// captureBrowserURL replaces the browser opener for the test and returns the
+// channel each opened URL is sent on.
+func captureBrowserURL(t *testing.T) <-chan string {
+	t.Helper()
+	urls := make(chan string, 4)
+	old := getOpenBrowserFunc()
+	setOpenBrowserFunc(func(u string) { urls <- u })
+	t.Cleanup(func() { setOpenBrowserFunc(old) })
+	return urls
 }
 
 // insecureClient is an HTTP client that skips TLS verification (for self-signed certs).
@@ -71,10 +64,7 @@ func simulateCallback(redirectURI, state, code, errMsg string) {
 }
 
 func TestLogin_HappyPath(t *testing.T) {
-	var capturedURL atomic.Value
-	oldOpen := getOpenBrowserFunc()
-	setOpenBrowserFunc(func(u string) { capturedURL.Store(u) })
-	defer func() { setOpenBrowserFunc(oldOpen) }()
+	browserURL := captureBrowserURL(t)
 
 	oldExchange := exchangeToken
 	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
@@ -115,9 +105,7 @@ func TestLogin_HappyPath(t *testing.T) {
 		}{r, err}
 	}()
 
-	require.Eventually(t, func() bool { v := capturedURL.Load(); return v != nil && v.(string) != "" }, 3*time.Second, 10*time.Millisecond)
-
-	parsed, err := url.Parse(capturedURL.Load().(string))
+	parsed, err := url.Parse(<-browserURL)
 	require.NoError(t, err)
 	state := parsed.Query().Get("state")
 	redirectURI := parsed.Query().Get("redirect_uri")
@@ -130,21 +118,19 @@ func TestLogin_HappyPath(t *testing.T) {
 	// Verify user_scope is used (not scope)
 	assert.NotEmpty(t, parsed.Query().Get("user_scope"))
 	assert.Empty(t, parsed.Query().Get("scope"))
+	assert.NotContains(t, strings.Split(parsed.Query().Get("user_scope"), ","), "emoji:read",
+		"the login never asks an existing app for emoji:read (ask #1464)")
 
 	simulateCallback(redirectURI, state, "test-auth-code", "")
 
-	select {
-	case res := <-resultCh:
-		require.NoError(t, res.err)
-		require.NotNil(t, res.result)
-		assert.Equal(t, "xoxp-test-token", res.result.AccessToken)
-		assert.Equal(t, "T12345", res.result.TeamID)
-		assert.Equal(t, "Test Team", res.result.TeamName)
-		assert.Equal(t, "U12345", res.result.UserID)
-		assert.Equal(t, "channels:read,chat:write", res.result.Scope, "the granted scopes are carried for the token file")
-	case <-time.After(5 * time.Second):
-		t.Fatal("Login did not complete in time")
-	}
+	res := <-resultCh
+	require.NoError(t, res.err)
+	require.NotNil(t, res.result)
+	assert.Equal(t, "xoxp-test-token", res.result.AccessToken)
+	assert.Equal(t, "T12345", res.result.TeamID)
+	assert.Equal(t, "Test Team", res.result.TeamName)
+	assert.Equal(t, "U12345", res.result.UserID)
+	assert.Equal(t, "channels:read,chat:write", res.result.Scope, "the granted scopes are carried for the token file")
 
 	assert.Contains(t, out.String(), "Opening browser")
 }
@@ -163,7 +149,7 @@ func TestLogin_AppReturn_SuccessPageLinksBack(t *testing.T) {
 	defer func() { exchangeToken = oldExchange }()
 
 	cfg := OAuthConfig{ClientID: "test-client-id", ClientSecret: "test-client-secret"}
-	out := &syncBuffer{}
+	out := &oauthpagetest.Output{}
 
 	resultCh := make(chan error, 1)
 	go func() {
@@ -171,20 +157,7 @@ func TestLogin_AppReturn_SuccessPageLinksBack(t *testing.T) {
 		resultCh <- err
 	}()
 
-	var authorizeURL string
-	require.Eventually(t, func() bool {
-		s := out.String()
-		idx := strings.Index(s, "https://")
-		if idx == -1 {
-			return false
-		}
-		end := strings.IndexAny(s[idx:], "\n ")
-		if end == -1 {
-			end = len(s) - idx
-		}
-		authorizeURL = s[idx : idx+end]
-		return authorizeURL != ""
-	}, 3*time.Second, 10*time.Millisecond)
+	authorizeURL := out.WaitURL("https://")
 
 	parsed, err := url.Parse(authorizeURL)
 	require.NoError(t, err)
@@ -209,12 +182,8 @@ func TestLogin_AppReturn_SuccessPageLinksBack(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, oauthpage.Success("Slack", true), string(body))
 
-	select {
-	case err := <-resultCh:
-		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("Login did not complete in time")
-	}
+	err = <-resultCh
+	require.NoError(t, err)
 }
 
 // A callback carrying the wrong state — a stray or hostile local request,
@@ -222,10 +191,7 @@ func TestLogin_AppReturn_SuccessPageLinksBack(t *testing.T) {
 // redirect that follows still completes it, and the stray code is never
 // exchanged.
 func TestLogin_WrongStateCallbackIsIgnored(t *testing.T) {
-	var capturedURL atomic.Value
-	oldOpen := getOpenBrowserFunc()
-	setOpenBrowserFunc(func(u string) { capturedURL.Store(u) })
-	defer func() { setOpenBrowserFunc(oldOpen) }()
+	browserURL := captureBrowserURL(t)
 
 	var exchanged atomic.Value
 	oldExchange := exchangeToken
@@ -246,9 +212,7 @@ func TestLogin_WrongStateCallbackIsIgnored(t *testing.T) {
 		resultCh <- err
 	}()
 
-	require.Eventually(t, func() bool { v := capturedURL.Load(); return v != nil && v.(string) != "" }, 3*time.Second, 10*time.Millisecond)
-
-	parsed, err := url.Parse(capturedURL.Load().(string))
+	parsed, err := url.Parse(<-browserURL)
 	require.NoError(t, err)
 	redirectURI := parsed.Query().Get("redirect_uri")
 
@@ -256,28 +220,18 @@ func TestLogin_WrongStateCallbackIsIgnored(t *testing.T) {
 	simulateCallback(redirectURI, "wrong-state", "", "access_denied")
 	simulateCallback(redirectURI, "wrong-state", "stray-code", "")
 
-	select {
-	case err := <-resultCh:
-		t.Fatalf("Login ended on a wrong-state callback: %v", err)
-	case <-time.After(200 * time.Millisecond):
-	}
-
+	// Each stray request has been answered. Had one ended the login, the
+	// result below would carry its error (or the stray code) instead of the
+	// real redirect's success.
 	simulateCallback(redirectURI, parsed.Query().Get("state"), "real-code", "")
 
-	select {
-	case err := <-resultCh:
-		require.NoError(t, err)
-		assert.Equal(t, "real-code", exchanged.Load())
-	case <-time.After(5 * time.Second):
-		t.Fatal("Login did not complete in time")
-	}
+	err = <-resultCh
+	require.NoError(t, err)
+	assert.Equal(t, "real-code", exchanged.Load())
 }
 
 func TestLogin_UserDenied(t *testing.T) {
-	var capturedURL atomic.Value
-	oldOpen := getOpenBrowserFunc()
-	setOpenBrowserFunc(func(u string) { capturedURL.Store(u) })
-	defer func() { setOpenBrowserFunc(oldOpen) }()
+	browserURL := captureBrowserURL(t)
 
 	oldExchange := exchangeToken
 	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
@@ -295,21 +249,15 @@ func TestLogin_UserDenied(t *testing.T) {
 		resultCh <- err
 	}()
 
-	require.Eventually(t, func() bool { v := capturedURL.Load(); return v != nil && v.(string) != "" }, 3*time.Second, 10*time.Millisecond)
-
-	parsed, err := url.Parse(capturedURL.Load().(string))
+	parsed, err := url.Parse(<-browserURL)
 	require.NoError(t, err)
 	redirectURI := parsed.Query().Get("redirect_uri")
 
 	simulateCallback(redirectURI, parsed.Query().Get("state"), "", "access_denied")
 
-	select {
-	case err := <-resultCh:
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "access_denied")
-	case <-time.After(5 * time.Second):
-		t.Fatal("Login did not complete in time")
-	}
+	err = <-resultCh
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "access_denied")
 }
 
 func TestLogin_Timeout(t *testing.T) {
@@ -344,10 +292,7 @@ func TestLogin_PortBusy(t *testing.T) {
 		}
 	}()
 
-	var capturedURL atomic.Value
-	oldOpen := getOpenBrowserFunc()
-	setOpenBrowserFunc(func(u string) { capturedURL.Store(u) })
-	defer func() { setOpenBrowserFunc(oldOpen) }()
+	browserURL := captureBrowserURL(t)
 
 	oldExchange := exchangeToken
 	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
@@ -376,9 +321,7 @@ func TestLogin_PortBusy(t *testing.T) {
 		}{r, err}
 	}()
 
-	require.Eventually(t, func() bool { v := capturedURL.Load(); return v != nil && v.(string) != "" }, 3*time.Second, 10*time.Millisecond)
-
-	parsed, err := url.Parse(capturedURL.Load().(string))
+	parsed, err := url.Parse(<-browserURL)
 	require.NoError(t, err)
 	redirectURI := parsed.Query().Get("redirect_uri")
 	state := parsed.Query().Get("state")
@@ -387,13 +330,9 @@ func TestLogin_PortBusy(t *testing.T) {
 
 	simulateCallback(redirectURI, state, "code", "")
 
-	select {
-	case res := <-resultCh:
-		require.NoError(t, res.err)
-		assert.Equal(t, "xoxp-fallback", res.result.AccessToken)
-	case <-time.After(5 * time.Second):
-		t.Fatal("Login did not complete in time")
-	}
+	res := <-resultCh
+	require.NoError(t, res.err)
+	assert.Equal(t, "xoxp-fallback", res.result.AccessToken)
 }
 
 func TestJoinScopes(t *testing.T) {
@@ -503,24 +442,22 @@ func TestLogin_SkipBrowserOpen(t *testing.T) {
 	defer func() { exchangeToken = oldExchange }()
 
 	cfg := OAuthConfig{ClientID: "id", ClientSecret: "secret"}
-	var out syncBuffer
+	out := &oauthpagetest.Output{}
 
 	resultCh := make(chan struct {
 		result *OAuthResult
 		err    error
 	}, 1)
 	go func() {
-		r, err := Login(context.Background(), cfg, &out, LoginOptions{SkipBrowserOpen: true})
+		r, err := Login(context.Background(), cfg, out, LoginOptions{SkipBrowserOpen: true})
 		resultCh <- struct {
 			result *OAuthResult
 			err    error
 		}{r, err}
 	}()
 
-	// Wait for the server to be ready by checking output
-	require.Eventually(t, func() bool {
-		return strings.Contains(out.String(), "Authorize URL")
-	}, 3*time.Second, 10*time.Millisecond)
+	// Login prints the URL, then the waiting line.
+	out.WaitFor("Waiting for authorization callback")
 
 	assert.False(t, browserOpened, "browser should not be opened when SkipBrowserOpen is true")
 	assert.Contains(t, out.String(), "Authorize URL")
@@ -540,20 +477,13 @@ func TestLogin_SkipBrowserOpen(t *testing.T) {
 
 	simulateCallback(redirectURI, state, "test-code", "")
 
-	select {
-	case res := <-resultCh:
-		require.NoError(t, res.err)
-		assert.Equal(t, "xoxp-skip-browser", res.result.AccessToken)
-	case <-time.After(5 * time.Second):
-		t.Fatal("Login did not complete in time")
-	}
+	res := <-resultCh
+	require.NoError(t, res.err)
+	assert.Equal(t, "xoxp-skip-browser", res.result.AccessToken)
 }
 
 func TestLogin_EmptyTokenFromExchange(t *testing.T) {
-	var capturedURL atomic.Value
-	oldOpen := getOpenBrowserFunc()
-	setOpenBrowserFunc(func(u string) { capturedURL.Store(u) })
-	defer func() { setOpenBrowserFunc(oldOpen) }()
+	browserURL := captureBrowserURL(t)
 
 	oldExchange := exchangeToken
 	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
@@ -576,29 +506,20 @@ func TestLogin_EmptyTokenFromExchange(t *testing.T) {
 		resultCh <- err
 	}()
 
-	require.Eventually(t, func() bool { v := capturedURL.Load(); return v != nil && v.(string) != "" }, 3*time.Second, 10*time.Millisecond)
-
-	parsed, err := url.Parse(capturedURL.Load().(string))
+	parsed, err := url.Parse(<-browserURL)
 	require.NoError(t, err)
 	redirectURI := parsed.Query().Get("redirect_uri")
 	state := parsed.Query().Get("state")
 
 	simulateCallback(redirectURI, state, "code", "")
 
-	select {
-	case err := <-resultCh:
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "no user access token")
-	case <-time.After(5 * time.Second):
-		t.Fatal("Login did not complete in time")
-	}
+	err = <-resultCh
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no user access token")
 }
 
 func TestLogin_ExchangeError(t *testing.T) {
-	var capturedURL atomic.Value
-	oldOpen := getOpenBrowserFunc()
-	setOpenBrowserFunc(func(u string) { capturedURL.Store(u) })
-	defer func() { setOpenBrowserFunc(oldOpen) }()
+	browserURL := captureBrowserURL(t)
 
 	oldExchange := exchangeToken
 	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
@@ -615,29 +536,20 @@ func TestLogin_ExchangeError(t *testing.T) {
 		resultCh <- err
 	}()
 
-	require.Eventually(t, func() bool { v := capturedURL.Load(); return v != nil && v.(string) != "" }, 3*time.Second, 10*time.Millisecond)
-
-	parsed, err := url.Parse(capturedURL.Load().(string))
+	parsed, err := url.Parse(<-browserURL)
 	require.NoError(t, err)
 	redirectURI := parsed.Query().Get("redirect_uri")
 	state := parsed.Query().Get("state")
 
 	simulateCallback(redirectURI, state, "code", "")
 
-	select {
-	case err := <-resultCh:
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "exchanging code")
-	case <-time.After(5 * time.Second):
-		t.Fatal("Login did not complete in time")
-	}
+	err = <-resultCh
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exchanging code")
 }
 
 func TestLogin_EmptyCode(t *testing.T) {
-	var capturedURL atomic.Value
-	oldOpen := getOpenBrowserFunc()
-	setOpenBrowserFunc(func(u string) { capturedURL.Store(u) })
-	defer func() { setOpenBrowserFunc(oldOpen) }()
+	browserURL := captureBrowserURL(t)
 
 	oldExchange := exchangeToken
 	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
@@ -655,9 +567,7 @@ func TestLogin_EmptyCode(t *testing.T) {
 		resultCh <- err
 	}()
 
-	require.Eventually(t, func() bool { v := capturedURL.Load(); return v != nil && v.(string) != "" }, 3*time.Second, 10*time.Millisecond)
-
-	parsed, err := url.Parse(capturedURL.Load().(string))
+	parsed, err := url.Parse(<-browserURL)
 	require.NoError(t, err)
 	redirectURI := parsed.Query().Get("redirect_uri")
 	state := parsed.Query().Get("state")
@@ -674,13 +584,9 @@ func TestLogin_EmptyCode(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	select {
-	case err := <-resultCh:
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "no authorization code")
-	case <-time.After(5 * time.Second):
-		t.Fatal("Login did not complete in time")
-	}
+	err = <-resultCh
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no authorization code")
 }
 
 func TestOpenBrowserFunc_NoOp(t *testing.T) {
@@ -703,6 +609,21 @@ func TestUserScopes(t *testing.T) {
 	assert.Contains(t, UserScopes, "team:read")
 	assert.Contains(t, UserScopes, "chat:write", "send_slack_message posts with the user token")
 	assert.Greater(t, len(UserScopes), 10)
+}
+
+func TestLoginScopes_OmitEmojiRead(t *testing.T) {
+	// Owner decision (ask #1464): the login never asks existing apps for
+	// emoji:read; every other manifest scope is requested, in manifest order.
+	assert.Contains(t, UserScopes, "emoji:read", "the manifest keeps emoji:read")
+	assert.NotContains(t, LoginScopes, "emoji:read")
+	assert.Equal(t, len(UserScopes)-1, len(LoginScopes))
+	want := make([]string, 0, len(UserScopes))
+	for _, s := range UserScopes {
+		if s != "emoji:read" {
+			want = append(want, s)
+		}
+	}
+	assert.Equal(t, want, LoginScopes)
 }
 
 func TestDefaultRedirectPort(t *testing.T) {
@@ -751,10 +672,7 @@ func TestOpenBrowser_Direct(t *testing.T) {
 func TestCallbackHandler_ErrorResponse(t *testing.T) {
 	// Test that the callback handler returns the error page HTML when
 	// Slack returns an error parameter
-	var capturedURL atomic.Value
-	oldOpen := getOpenBrowserFunc()
-	setOpenBrowserFunc(func(u string) { capturedURL.Store(u) })
-	defer func() { setOpenBrowserFunc(oldOpen) }()
+	browserURL := captureBrowserURL(t)
 
 	oldExchange := exchangeToken
 	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
@@ -772,9 +690,7 @@ func TestCallbackHandler_ErrorResponse(t *testing.T) {
 		resultCh <- err
 	}()
 
-	require.Eventually(t, func() bool { v := capturedURL.Load(); return v != nil && v.(string) != "" }, 3*time.Second, 10*time.Millisecond)
-
-	parsed, err := url.Parse(capturedURL.Load().(string))
+	parsed, err := url.Parse(<-browserURL)
 	require.NoError(t, err)
 	redirectURI := parsed.Query().Get("redirect_uri")
 
@@ -792,21 +708,14 @@ func TestCallbackHandler_ErrorResponse(t *testing.T) {
 		assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
 	}
 
-	select {
-	case err := <-resultCh:
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "user_denied")
-	case <-time.After(5 * time.Second):
-		t.Fatal("Login did not complete in time")
-	}
+	err = <-resultCh
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "user_denied")
 }
 
 func TestCallbackHandler_SuccessResponse(t *testing.T) {
 	// Test that the callback handler returns success page HTML
-	var capturedURL atomic.Value
-	oldOpen := getOpenBrowserFunc()
-	setOpenBrowserFunc(func(u string) { capturedURL.Store(u) })
-	defer func() { setOpenBrowserFunc(oldOpen) }()
+	browserURL := captureBrowserURL(t)
 
 	oldExchange := exchangeToken
 	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
@@ -835,9 +744,7 @@ func TestCallbackHandler_SuccessResponse(t *testing.T) {
 		}{r, err}
 	}()
 
-	require.Eventually(t, func() bool { v := capturedURL.Load(); return v != nil && v.(string) != "" }, 3*time.Second, 10*time.Millisecond)
-
-	parsed, err := url.Parse(capturedURL.Load().(string))
+	parsed, err := url.Parse(<-browserURL)
 	require.NoError(t, err)
 	redirectURI := parsed.Query().Get("redirect_uri")
 	state := parsed.Query().Get("state")
@@ -856,20 +763,13 @@ func TestCallbackHandler_SuccessResponse(t *testing.T) {
 		assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
 	}
 
-	select {
-	case res := <-resultCh:
-		require.NoError(t, res.err)
-		assert.Equal(t, "xoxp-ok", res.result.AccessToken)
-	case <-time.After(5 * time.Second):
-		t.Fatal("Login did not complete in time")
-	}
+	res := <-resultCh
+	require.NoError(t, res.err)
+	assert.Equal(t, "xoxp-ok", res.result.AccessToken)
 }
 
 func TestLogin_WithExpiresIn(t *testing.T) {
-	var capturedURL atomic.Value
-	oldOpen := getOpenBrowserFunc()
-	setOpenBrowserFunc(func(u string) { capturedURL.Store(u) })
-	defer func() { setOpenBrowserFunc(oldOpen) }()
+	browserURL := captureBrowserURL(t)
 
 	oldExchange := exchangeToken
 	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
@@ -899,25 +799,19 @@ func TestLogin_WithExpiresIn(t *testing.T) {
 		}{r, err}
 	}()
 
-	require.Eventually(t, func() bool { v := capturedURL.Load(); return v != nil && v.(string) != "" }, 3*time.Second, 10*time.Millisecond)
-
-	parsed, err := url.Parse(capturedURL.Load().(string))
+	parsed, err := url.Parse(<-browserURL)
 	require.NoError(t, err)
 	redirectURI := parsed.Query().Get("redirect_uri")
 	state := parsed.Query().Get("state")
 
 	simulateCallback(redirectURI, state, "code", "")
 
-	select {
-	case res := <-resultCh:
-		require.NoError(t, res.err)
-		assert.Equal(t, "xoxp-with-expiry", res.result.AccessToken)
-		assert.Equal(t, 7200, res.result.ExpiresIn)
-		assert.Equal(t, "U555", res.result.UserID)
-		assert.Equal(t, "T555", res.result.TeamID)
-	case <-time.After(5 * time.Second):
-		t.Fatal("Login did not complete in time")
-	}
+	res := <-resultCh
+	require.NoError(t, res.err)
+	assert.Equal(t, "xoxp-with-expiry", res.result.AccessToken)
+	assert.Equal(t, 7200, res.result.ExpiresIn)
+	assert.Equal(t, "U555", res.result.UserID)
+	assert.Equal(t, "T555", res.result.TeamID)
 }
 
 type recordingTransport struct{ hit atomic.Bool }

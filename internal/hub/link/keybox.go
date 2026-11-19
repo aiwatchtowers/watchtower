@@ -33,6 +33,7 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 		reason  string
 		others  []pendingDevice
 		linked  bool
+		asks    bool
 	)
 	err := c.st.WithTx(context.Background(), func(tx *sql.Tx) error {
 		p, found, err := pendingTx(tx, device)
@@ -67,6 +68,10 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 			return err
 		}
 		linked = true
+		if err := tx.QueryRow(`SELECT typing_requested AND NOT typing_allowed FROM devices WHERE device_id = ? COLLATE NOCASE`,
+			p.deviceID).Scan(&asks); err != nil {
+			return err
+		}
 		rest, err := pendingDevicesTx(tx)
 		if err != nil {
 			return err
@@ -93,6 +98,9 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 	case linked:
 		log.Printf("hub link: linked phone %s, %d other requests refused", request.deviceID, len(others))
 		c.emit(PairEvent{Kind: EventLinked, DeviceID: request.deviceID, Name: request.name})
+		if asks {
+			c.typingAsks = append(c.typingAsks, TypingAsk{DeviceID: strings.ToUpper(request.deviceID), Name: displayName(request.name)})
+		}
 		for _, o := range others {
 			c.emit(PairEvent{Kind: EventRefused, DeviceID: o.deviceID, Name: o.name, Reason: wire.RefusedUsedCode})
 		}
@@ -108,9 +116,25 @@ func (c *Center) Confirm(device, code string, ok bool) error {
 // code is marked used by it, its row written with its keys and link nonce —
 // a re-link keeps the owner's grants and decision time and restarts its
 // action order — and its refusal, revoked row, rollback marks and held
-// actions are forgotten (they belong to the old link nonce's relay keys).
+// actions are forgotten (they belong to the old link nonce's relay keys). The
+// hello's relay id is its own claim, unproven (protocol §5.7): it is stored
+// only when no other row holds it, so a hello never takes an id from another
+// phone. The database cannot tell a proven id from a claimed one, so a held id
+// is safe either way, and the link goes through without it; a proven device
+// record (takeRelayID) is what moves an id.
 func linkPending(tx *sql.Tx, p pendingDevice, now time.Time) error {
 	id := strings.ToUpper(p.deviceID)
+	if p.relayDeviceID != "" {
+		var holders int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM devices WHERE relay_device_id = ? AND device_id <> ? COLLATE NOCASE`,
+			p.relayDeviceID, id).Scan(&holders); err != nil {
+			return err
+		}
+		if holders > 0 {
+			log.Printf("hub link: link request of %s names a relay id: %s", id, relayIDTaken)
+			p.relayDeviceID = ""
+		}
+	}
 	d := state.Device{
 		ID: id, Name: p.name, Scope: p.scope, LinkedAt: now, SigningKey: p.signingKey, AgreementKey: p.agreementKey,
 		LinkNonce: p.linkNonce, TypingRequested: p.typingRequested, StartSessionsAllowed: p.startSessions,
@@ -128,6 +152,12 @@ func linkPending(tx *sql.Tx, p pendingDevice, now time.Time) error {
 	}
 	if err := state.LinkDevice(tx, d); err != nil {
 		return err
+	}
+	// The iCloud user the participant sweep spares (CloudKit only; state.LinkDevice writes it empty).
+	if p.userRecordName != "" {
+		if _, err := tx.Exec(`UPDATE devices SET user_record_name = ? WHERE device_id = ?`, p.userRecordName, id); err != nil {
+			return err
+		}
 	}
 	if decided.Valid {
 		if _, err := tx.Exec(`UPDATE devices SET decided_at = ? WHERE device_id = ?`, decided.Float64, id); err != nil {

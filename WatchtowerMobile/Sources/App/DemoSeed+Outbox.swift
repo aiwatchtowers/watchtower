@@ -51,6 +51,35 @@ extension DemoSeed {
         setClock(now)
     }
 
+    /// The parked feed of relay client Phase 5 (S58), for the screenshot tour only: `sent` actions written and not
+    /// yet answered (the demo has no hub to answer them), then, with `waiting`, three queued behind a flush that
+    /// stopped (no network). The parked mark itself is the feed's to write; the tour sets it.
+    static func loadParkedDemo(
+        outbox: ActionOutbox,
+        sent: Int,
+        waiting: Bool,
+        refuse: @Sendable (TransportRefusal?) async -> Void
+    ) async throws {
+        try await outbox.enableOrderedActions()
+        let workbench = acmeID
+        await refuse(nil)
+        for target in [416, 415].prefix(sent) {
+            try await enqueue(
+                outbox, .boardTargetStatus, SliceKind.workbenchTarget.recordName(id: "\(target)"),
+                BoardTargetStatusParams(workbenchID: workbench, status: .done, fromStatus: .todo))
+        }
+        guard waiting else { return }
+        await refuse(.unreachable)
+        try await enqueue(
+            outbox, .boardCommentAdd, SliceKind.workbenchTarget.recordName(id: "415"),
+            BoardCommentAddParams(workbenchID: workbench, body: "Menu wording looks right."))
+        try await enqueue(
+            outbox, .sessionInput, SliceKind.terminalSession.recordName(id: "10"), SessionInputParams(text: "Run the tests again"))
+        try await enqueue(
+            outbox, .boardTargetStatus, SliceKind.workbenchTarget.recordName(id: "421"),
+            BoardTargetStatusParams(workbenchID: workbench, status: .done, fromStatus: .blocked))
+    }
+
     /// One action, then the flush it asked for, so each lands in its state before the next.
     private static func enqueue(_ outbox: ActionOutbox, _ kind: ActionKind, _ entity: String, _ params: some ActionParams) async throws {
         _ = try await outbox.enqueue(kind: kind, entityRecordName: entity, params: try params.wireParams())

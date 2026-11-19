@@ -338,3 +338,23 @@ func TestBuiltinRecipes_DescriptionIsOneSentence(t *testing.T) {
 		}
 	}
 }
+
+// TestBuiltin_EveryPrimitiveDeclaresAI: every engine primitive a built-in
+// calls, a builtin: entry may name or a capability maps declares whether it
+// calls a model (spec §4.2), so a new primitive cannot slip past the
+// background-AI pause undeclared.
+func TestBuiltin_EveryPrimitiveDeclaresAI(t *testing.T) {
+	var names []string
+	for _, e := range All() {
+		names = append(names, e.Primitives...)
+	}
+	names = append(names, automations.BuiltinPrimitiveNames...)
+	for p := range automations.PrimitiveCapability {
+		names = append(names, p)
+	}
+	for _, p := range names {
+		if _, ok := automations.PrimitiveUsesAI[p]; !ok {
+			t.Errorf("primitive %q has no automations.PrimitiveUsesAI entry", p)
+		}
+	}
+}

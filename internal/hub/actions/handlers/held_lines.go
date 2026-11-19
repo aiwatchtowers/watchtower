@@ -117,7 +117,7 @@ type heldEnvelope struct {
 
 // unreadableHeldMessage is the echo of a held line whose sealed text no
 // longer opens (the hub's identity was recreated).
-const unreadableHeldMessage = "The Mac could not read this held message — send it again"
+const unreadableHeldMessage = "Your tower could not read this held message — send it again"
 
 // errHeldUnreadable is a verdict on a held row's bytes: they do not open or
 // parse, now or later.
@@ -371,7 +371,7 @@ func (h *Handlers) startHeldLines() {
 		case l.typing:
 			h.finishLine(l, true, failed(reasonOutcomeUnknown, restartedTypingMessage))
 		case h.standingFailure(l.phone()) != "":
-			h.finishLine(l, false, lineFailure(h.standingFailure(l.phone())))
+			h.finishLine(l, false, h.lineFailure(h.standingFailure(l.phone()), l.req.Device))
 		}
 	}
 }
@@ -387,7 +387,7 @@ func (h *Handlers) Revoked(device string) {
 	}
 	for _, l := range rows {
 		if !l.typing && strings.EqualFold(l.req.Device.String(), device) {
-			h.finishLine(l, false, lineFailure(inputReasonDeviceNotAllowed))
+			h.finishLine(l, false, h.lineFailure(inputReasonDeviceNotAllowed, l.req.Device))
 		}
 	}
 }

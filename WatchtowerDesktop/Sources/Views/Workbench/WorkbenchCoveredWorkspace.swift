@@ -18,7 +18,11 @@ struct WorkbenchCoveredWorkspace: View {
         ZStack {
             // An ask filed outside the app has no terminal to sit beside:
             // its drawer takes the page's trailing edge.
-            OwnerAskDrawerHost(vm: vm, ask: vm.asks.drawerAsk(projectID: project.id).flatMap { $0.sessionID == nil ? $0 : nil }) {
+            // So does a session-less closed list (outside the app, automations; #1713).
+            OwnerAskDrawerHost(
+                vm: vm, ask: vm.asks.drawerAsk(projectID: project.id).flatMap { $0.sessionID == nil ? $0 : nil },
+                closedList: vm.asks.drawerClosedList(projectID: project.id).flatMap { $0.sessionID == nil ? $0 : nil }
+            ) {
                 WorkspaceAreaView(vm: vm, project: project)
             }
             .opacity(covered ? 0 : 1)

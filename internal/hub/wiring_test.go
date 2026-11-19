@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -33,13 +34,21 @@ import (
 	"watchtower/internal/workbenchgit"
 )
 
+// afterTests runs, last first, once every test is done: what outlives one
+// test (the interop run's shared hub, interop_test.go).
+var afterTests []func()
+
 // TestMain seeds new database files from the migrated template.
 func TestMain(m *testing.M) {
 	if err := db.InitTestFileTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	for i := len(afterTests) - 1; i >= 0; i-- {
+		afterTests[i]()
+	}
+	os.Exit(code)
 }
 
 // fileDB is a watchtower.db file with one workbench.
@@ -71,63 +80,65 @@ VALUES (?, 'custom', 'project', '2026-09-29', '2026-09-29', 'todo', 'medium', 'm
 // data_version watch, swept the crash leftovers at start, and keeps the
 // transcripts' stale-asset sweep inside their own directory.
 func TestHubPublishesTheDatabaseSourcesOnChange(t *testing.T) {
-	policytest.Set(t, map[string]any{"MobileSync": policy.MobileAllowed})
-	dir := shortDir(t)
-	setMeta(t, dir, state.MetaEnabled, "1")
-	linkPhoneDirectly(t, dir)
-	d, project := fileDB(t)
-	addTarget(t, d, project, "First")
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, map[string]any{"MobileSync": policy.MobileAllowed})
+		dir := shortDir(t)
+		setMeta(t, dir, state.MetaEnabled, "1")
+		linkPhoneDirectly(t, dir)
+		d, project := fileDB(t)
+		addTarget(t, d, project, "First")
 
-	assets := filepath.Join(dir, assetDirName)
-	recordings := filepath.Join(dir, "recordings")
-	leftovers := []string{
-		filepath.Join(assets, ".asset-crash"),
-		filepath.Join(recordings, ".upload.sealed"),
-		filepath.Join(assets, transcriptAssetDir, "stale.asset"),
-	}
-	kept := filepath.Join(assets, "other.asset") // not the transcripts' dir
-	for _, p := range append(leftovers, kept) {
-		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		assets := filepath.Join(dir, assetDirName)
+		recordings := filepath.Join(dir, "recordings")
+		leftovers := []string{
+			filepath.Join(assets, ".asset-crash"),
+			filepath.Join(recordings, ".upload.sealed"),
+			filepath.Join(assets, transcriptAssetDir, "stale.asset"),
+		}
+		kept := filepath.Join(assets, "other.asset") // not the transcripts' dir
+		for _, p := range append(leftovers, kept) {
+			if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		r := newBubbleRig(t, dir)
+		o := r.options()
+		o.DB, o.RecordingsDir = d, recordings
+		var mu sync.Mutex
+		var steps []string
+		o.trace = func(s string) { mu.Lock(); steps = append(steps, s); mu.Unlock() }
+		r.start(o)
+		r.waitState(StateRunning, "")
+
+		s, err := ReadStatus(dir)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
+		data := transport.DataZone(s.RelayDeviceID)
+		count := func() int { return len(liveRecords(t, r.fake, data)) }
+		eventually(t, "the target published", func() bool { return count() >= 4 }) // grant, heartbeat, workbench, target
+		before := count()
+		addTarget(t, d, project, "Second")
+		eventually(t, "the second target published by the watch", func() bool { return count() == before+1 })
+
+		for _, p := range leftovers {
+			if _, err := os.Stat(p); !os.IsNotExist(err) {
+				t.Errorf("%s survived the start (stat: %v)", filepath.Base(p), err)
+			}
 		}
-	}
-
-	r := newRig(t, dir)
-	o := r.options()
-	o.DB, o.RecordingsDir = d, recordings
-	var mu sync.Mutex
-	var steps []string
-	o.trace = func(s string) { mu.Lock(); steps = append(steps, s); mu.Unlock() }
-	r.start(o)
-	r.waitState(StateRunning, "")
-
-	s, err := ReadStatus(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data := transport.DataZone(s.RelayDeviceID)
-	count := func() int { return len(liveRecords(t, r.fake, data)) }
-	eventually(t, 10*time.Second, "the target published", func() bool { return count() >= 4 }) // grant, heartbeat, workbench, target
-	before := count()
-	addTarget(t, d, project, "Second")
-	eventually(t, 10*time.Second, "the second target published by the watch", func() bool { return count() == before+1 })
-
-	for _, p := range leftovers {
-		if _, err := os.Stat(p); !os.IsNotExist(err) {
-			t.Errorf("%s survived the start (stat: %v)", filepath.Base(p), err)
+		if _, err := os.Stat(kept); err != nil {
+			t.Errorf("an asset outside the transcripts' dir was removed: %v", err)
 		}
-	}
-	if _, err := os.Stat(kept); err != nil {
-		t.Errorf("an asset outside the transcripts' dir was removed: %v", err)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(steps) == 0 || steps[0] != "seeded" || steps[len(steps)-1] != "publisher" {
-		t.Fatalf("start steps %v, want the report seeded before the publisher", steps)
-	}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(steps) == 0 || steps[0] != "seeded" || steps[len(steps)-1] != "publisher" {
+			t.Fatalf("start steps %v, want the report seeded before the publisher", steps)
+		}
+	})
 }
 
 // TestReportIsSeededBeforeTheTimelineFirstObserves pins T8's ordering: the
@@ -136,55 +147,59 @@ func TestHubPublishesTheDatabaseSourcesOnChange(t *testing.T) {
 // start cycle reads the timeline's Items; the lane observes only after its
 // baseline read).
 func TestReportIsSeededBeforeTheTimelineFirstObserves(t *testing.T) {
-	policytest.Set(t, nil)
-	dir := shortDir(t)
-	setMeta(t, dir, state.MetaEnabled, "1")
-	d, _ := fileDB(t)
-	r := newRig(t, dir)
-	o := r.options()
-	o.DB = d
-	var mu sync.Mutex
-	var steps []string
-	o.trace = func(s string) { mu.Lock(); steps = append(steps, s); mu.Unlock() }
-	r.start(o)
-	r.waitState(StateRunning, "")
-	mu.Lock()
-	defer mu.Unlock()
-	if want := []string{"seeded", "runners", "lane", "watch", "publisher"}; !slices.Equal(steps, want) {
-		t.Fatalf("start steps %v, want %v", steps, want)
-	}
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		dir := shortDir(t)
+		setMeta(t, dir, state.MetaEnabled, "1")
+		d, _ := fileDB(t)
+		r := newBubbleRig(t, dir)
+		o := r.options()
+		o.DB = d
+		var mu sync.Mutex
+		var steps []string
+		o.trace = func(s string) { mu.Lock(); steps = append(steps, s); mu.Unlock() }
+		r.start(o)
+		r.waitState(StateRunning, "")
+		mu.Lock()
+		defer mu.Unlock()
+		if want := []string{"seeded", "runners", "lane", "watch", "publisher"}; !slices.Equal(steps, want) {
+			t.Fatalf("start steps %v, want %v", steps, want)
+		}
+	})
 }
 
 // Every Deps field the runner-fed requests need is set: a nil Windows,
 // ChatWatches or Reports would answer applied and do nothing.
 func TestHandlerDepsCarryTheRunnerSeams(t *testing.T) {
-	d, _ := fileDB(t)
-	st, err := state.Open(filepath.Join(t.TempDir(), "hub"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	id, err := identity.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	kr, err := identity.NewKeyring(id, st, time.Now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	watches := handlers.NewChatWatchRegistry()
-	set, err := sources.All(sources.Config{DB: d, Store: st, Watches: watches, Sealer: kr, Mode: policy.MobileWorkbenchOnly})
-	if err != nil {
-		t.Fatal(err)
-	}
-	late := func(context.Context, actions.Request, actions.Outcome) error { return nil }
-	deps := handlerDeps(Options{DB: d, RecordingsDir: t.TempDir()}, st, set, watches, kr, noSessionHost{}, late)
-	if deps.Windows == nil || deps.ChatWatches == nil || deps.Reports == nil {
-		t.Fatalf("runner seams: windows %v, watches %v, reports %v", deps.Windows != nil, deps.ChatWatches != nil, deps.Reports != nil)
-	}
-	if deps.Sealer == nil || deps.LateEcho == nil || deps.Sessions == nil || deps.DB == nil || deps.Store == nil {
-		t.Fatal("held lines need the sealer and the late echo")
-	}
+	bubble(t, func(t *testing.T) {
+		d, _ := fileDB(t)
+		st, err := state.Open(filepath.Join(t.TempDir(), "hub"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		id, err := identity.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		kr, err := identity.NewKeyring(id, st, time.Now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		watches := handlers.NewChatWatchRegistry()
+		set, err := sources.All(sources.Config{DB: d, Store: st, Watches: watches, Sealer: kr, Mode: policy.MobileWorkbenchOnly})
+		if err != nil {
+			t.Fatal(err)
+		}
+		late := func(context.Context, actions.Request, actions.Outcome) error { return nil }
+		deps := handlerDeps(Options{DB: d, RecordingsDir: t.TempDir()}, st, set, watches, kr, noSessionHost{}, late)
+		if deps.Windows == nil || deps.ChatWatches == nil || deps.Reports == nil {
+			t.Fatalf("runner seams: windows %v, watches %v, reports %v", deps.Windows != nil, deps.ChatWatches != nil, deps.Reports != nil)
+		}
+		if deps.Sealer == nil || deps.LateEcho == nil || deps.Sessions == nil || deps.DB == nil || deps.Store == nil {
+			t.Fatal("held lines need the sealer and the late echo")
+		}
+	})
 }
 
 // laneCalls records what a lane told.
@@ -197,48 +212,52 @@ type laneCalls struct {
 }
 
 func TestStateLaneTellsTheRunnersAndDeliversHeld(t *testing.T) {
-	d, project := fileDB(t)
-	res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path) VALUES (?, 'shell', 'Session', '/tmp/hubtest-acme')`, project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	session, _ := res.LastInsertId()
-	c := &laneCalls{}
-	l := newStateLane(d.DB, time.Now)
-	l.observe = func(context.Context, time.Time) error { c.mu.Lock(); c.observed++; c.mu.Unlock(); return nil }
-	l.changed = []func(int64){func(wb int64) { c.mu.Lock(); c.changed = append(c.changed, wb); c.mu.Unlock() }}
-	l.nudge = func(k ...hubslices.Kind) { c.mu.Lock(); c.nudged = append(c.nudged, k); c.mu.Unlock() }
-	l.held = func(context.Context) { c.mu.Lock(); c.delivered++; c.mu.Unlock() }
-	ctx := context.Background()
+	bubble(t, func(t *testing.T) {
+		d, project := fileDB(t)
+		res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path) VALUES (?, 'shell', 'Session', '/tmp/hubtest-acme')`, project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		session, _ := res.LastInsertId()
+		c := &laneCalls{}
+		l := newStateLane(d.DB, time.Now)
+		l.observe = func(context.Context, time.Time) error { c.mu.Lock(); c.observed++; c.mu.Unlock(); return nil }
+		l.changed = []func(int64){func(wb int64) { c.mu.Lock(); c.changed = append(c.changed, wb); c.mu.Unlock() }}
+		l.nudge = func(k ...hubslices.Kind) { c.mu.Lock(); c.nudged = append(c.nudged, k); c.mu.Unlock() }
+		l.held = func(context.Context) { c.mu.Lock(); c.delivered++; c.mu.Unlock() }
+		ctx := context.Background()
 
-	l.once(ctx) // the baseline
-	if c.observed != 0 || len(c.changed) != 0 || len(c.nudged) != 0 || c.delivered != 1 {
-		t.Fatalf("baseline told %+v", c)
-	}
-	l.once(ctx) // nothing changed
-	if c.observed != 0 || c.delivered != 2 {
-		t.Fatalf("an unchanged read told %+v", c)
-	}
-	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = '2026-10-31T10:00:00.000Z' WHERE id = ?`, session); err != nil {
-		t.Fatal(err)
-	}
-	l.once(ctx)
-	if c.observed != 1 || !slices.Equal(c.changed, []int64{project}) || len(c.nudged) != 1 || c.delivered != 3 {
-		t.Fatalf("a state change told %+v", c)
-	}
-	if !slices.Equal(c.nudged[0], stateChangeKinds) {
-		t.Fatalf("nudged %v", c.nudged[0])
-	}
+		l.once(ctx) // the baseline
+		if c.observed != 0 || len(c.changed) != 0 || len(c.nudged) != 0 || c.delivered != 1 {
+			t.Fatalf("baseline told %+v", c)
+		}
+		l.once(ctx) // nothing changed
+		if c.observed != 0 || c.delivered != 2 {
+			t.Fatalf("an unchanged read told %+v", c)
+		}
+		if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = '2026-10-31T10:00:00.000Z' WHERE id = ?`, session); err != nil {
+			t.Fatal(err)
+		}
+		l.once(ctx)
+		if c.observed != 1 || !slices.Equal(c.changed, []int64{project}) || len(c.nudged) != 1 || c.delivered != 3 {
+			t.Fatalf("a state change told %+v", c)
+		}
+		if !slices.Equal(c.nudged[0], stateChangeKinds) {
+			t.Fatalf("nudged %v", c.nudged[0])
+		}
+	})
 }
 
 // The workbench_only filter is the sources' list plus the hub's own kinds.
 func TestWorkbenchOnlyIsTheSourcesList(t *testing.T) {
-	for _, k := range hubslices.AllKinds {
-		want := k == hubslices.KindHeartbeat || k == hubslices.KindDeviceGrant || slices.Contains(sources.WorkbenchOnlyKinds, k)
-		if workbenchOnly(k) != want {
-			t.Errorf("%s: workbenchOnly = %v", k, !want)
+	bubble(t, func(t *testing.T) {
+		for _, k := range hubslices.AllKinds {
+			want := k == hubslices.KindHeartbeat || k == hubslices.KindDeviceGrant || slices.Contains(sources.WorkbenchOnlyKinds, k)
+			if workbenchOnly(k) != want {
+				t.Errorf("%s: workbenchOnly = %v", k, !want)
+			}
 		}
-	}
+	})
 }
 
 // wiringRig is a hub runtime with just enough to build and start the wiring
@@ -307,164 +326,178 @@ func (g *gate) open() { g.once.Do(func() { close(g.release) }) }
 // through the runners' OnChange, within the debounce, long before the 60 s
 // full diff; the publisher's start cycle ran before either existed.
 func TestRunnerResultsPublishWithoutTheFullDiff(t *testing.T) {
-	d, project := fileDB(t)
-	res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
+	bubble(t, func(t *testing.T) {
+		d, project := fileDB(t)
+		res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
 VALUES (?, 'claude', 'Session', '/tmp/hubtest-acme', '00000000-0000-4000-8000-000000000002')`, project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	session, _ := res.LastInsertId()
-
-	reportGate, gitGate := newGate(), newGate()
-	var mu sync.Mutex
-	networkRuns := 0
-	o := Options{
-		DB:        d,
-		runnerGap: 200 * time.Millisecond,
-		reportFetch: func(ctx context.Context, _, sessionID int64, network bool) (sessionreport.Report, error) {
-			select {
-			case <-reportGate.release:
-			case <-ctx.Done():
-				return sessionreport.Report{}, ctx.Err()
-			}
-			mu.Lock()
-			defer mu.Unlock()
-			rep := sessionreport.Report{Session: sessionreport.Session{ID: sessionID, Title: "Session"}}
-			if network {
-				networkRuns++
-				rep.PRNote = "fetched"
-			}
-			return rep, nil
-		},
-		gitFetch: func(ctx context.Context, _ int64) (workbenchgit.Status, error) {
-			select {
-			case <-gitGate.release:
-			case <-ctx.Done():
-				return workbenchgit.Status{}, ctx.Err()
-			}
-			st := workbenchgit.Status{StatusOK: true, Git: true, GitAvailable: true}
-			st.Branch, st.Changes = "feature/acme", 2
-			return st, nil
-		},
-	}
-	h, w := wiringRig(t, o)
-	// The runners work only while a phone is linked.
-	p, err := hubtest.New(hubtest.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := h.st.WithTx(context.Background(), func(tx *sql.Tx) error { return state.LinkDevice(tx, p.Device()) }); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(reportGate.open)
-	t.Cleanup(gitGate.open)
-	h.pub = hubslices.NewPublisher(hubslices.Config{
-		Store: h.st, Transport: memfake.New(transport.KindRelay, nil), Sealer: secure.NewSealer(h.kr),
-		DataZone: "data/hubtest-acme", Sources: w.set.Sources,
-	})
-	runWiring(t, h, w)
-	eventually(t, 5*time.Second, "the start cycle", func() bool { _, ok := h.pub.LastPublishAt(); return ok })
-	hashes := func(kind string) map[string]state.SliceRecord {
-		got, err := h.st.SliceHashes(kind)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return got
-	}
-	if n := len(hashes("session_report")); n != 0 {
-		t.Fatalf("a report published before any run: %d", n)
-	}
-	workbench := hashes("workbench")
-	if len(workbench) != 1 {
-		t.Fatalf("workbench records %d", len(workbench))
-	}
+		session, _ := res.LastInsertId()
 
-	// The runners' minimum gap between passes (5 s in production, the Swift
-	// HubRunnerWake) is 200 ms here, so a request right after a pass runs
-	// soon; the publish then follows within the debounce — far under the
-	// 60 s hubslices.FullDiffEvery the result waited for before.
-	const prompt = 3 * time.Second
-	reportGate.open()
-	eventually(t, prompt, "the first report published", func() bool { return len(hashes("session_report")) == 1 })
-	first := hashes("session_report")
+		reportGate, gitGate := newGate(), newGate()
+		var mu sync.Mutex
+		networkRuns := 0
+		o := Options{
+			DB:        d,
+			runnerGap: 200 * time.Millisecond,
+			reportFetch: func(ctx context.Context, _, sessionID int64, network bool) (sessionreport.Report, error) {
+				select {
+				case <-reportGate.release:
+				case <-ctx.Done():
+					return sessionreport.Report{}, ctx.Err()
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				rep := sessionreport.Report{Session: sessionreport.Session{ID: sessionID, Title: "Session"}}
+				if network {
+					networkRuns++
+					rep.PRNote = "fetched"
+				}
+				return rep, nil
+			},
+			gitFetch: func(ctx context.Context, _ int64) (workbenchgit.Status, error) {
+				select {
+				case <-gitGate.release:
+				case <-ctx.Done():
+					return workbenchgit.Status{}, ctx.Err()
+				}
+				st := workbenchgit.Status{StatusOK: true, Git: true, GitAvailable: true}
+				st.Branch, st.Changes = "feature/acme", 2
+				return st, nil
+			},
+		}
+		h, w := wiringRig(t, o)
+		// The runners work only while a phone is linked.
+		p, err := hubtest.New(hubtest.Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := h.st.WithTx(context.Background(), func(tx *sql.Tx) error { return state.LinkDevice(tx, p.Device()) }); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(reportGate.open)
+		t.Cleanup(gitGate.open)
+		h.pub = hubslices.NewPublisher(hubslices.Config{
+			Store: h.st, Transport: memfake.New(transport.KindRelay, nil), Sealer: secure.NewSealer(h.kr),
+			DataZone: "data/hubtest-acme", Sources: w.set.Sources,
+		})
+		runWiring(t, h, w)
+		eventually(t, "the start cycle", func() bool { _, ok := h.pub.LastPublishAt(); return ok })
+		hashes := func(kind string) map[string]state.SliceRecord {
+			got, err := h.st.SliceHashes(kind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return got
+		}
+		if n := len(hashes("session_report")); n != 0 {
+			t.Fatalf("a report published before any run: %d", n)
+		}
+		workbench := hashes("workbench")
+		if len(workbench) != 1 {
+			t.Fatalf("workbench records %d", len(workbench))
+		}
 
-	if !w.set.Report.RequestReport(session) {
-		t.Fatal("the request was refused")
-	}
-	eventually(t, prompt, "the requested report published", func() bool {
-		for name, r := range hashes("session_report") {
-			if r.Hash != first[name].Hash {
-				return true
+		// The runners' minimum gap between passes (5 s in production, the Swift
+		// HubRunnerWake) is 200 ms here, so a request right after a pass runs
+		// soon; the publish then follows within the debounce — far under the
+		// 60 s hubslices.FullDiffEvery the result waited for before.
+		const prompt = 3 * time.Second
+		// soon waits for cond and fails when it took longer than prompt on
+		// the bubble's clock.
+		soon := func(what string, cond func() bool) {
+			t.Helper()
+			start := time.Now()
+			eventually(t, what, cond)
+			if d := time.Since(start); d > prompt {
+				t.Fatalf("%s after %v, want within %v", what, d, prompt)
 			}
 		}
-		return false
-	})
-	mu.Lock()
-	if networkRuns != 1 {
-		t.Errorf("network runs %d, want the phone's one", networkRuns)
-	}
-	mu.Unlock()
+		reportGate.open()
+		soon("the first report published", func() bool { return len(hashes("session_report")) == 1 })
+		first := hashes("session_report")
 
-	gitGate.open()
-	eventually(t, prompt, "the workbench republished with its git status", func() bool {
-		for name, r := range hashes("workbench") {
-			if r.Hash != workbench[name].Hash {
-				return true
-			}
+		if !w.set.Report.RequestReport(session) {
+			t.Fatal("the request was refused")
 		}
-		return false
+		soon("the requested report published", func() bool {
+			for name, r := range hashes("session_report") {
+				if r.Hash != first[name].Hash {
+					return true
+				}
+			}
+			return false
+		})
+		mu.Lock()
+		if networkRuns != 1 {
+			t.Errorf("network runs %d, want the phone's one", networkRuns)
+		}
+		mu.Unlock()
+
+		gitGate.open()
+		soon("the workbench republished with its git status", func() bool {
+			for name, r := range hashes("workbench") {
+				if r.Hash != workbench[name].Hash {
+					return true
+				}
+			}
+			return false
+		})
 	})
 }
 
 // A Seed that fails at start gates the timeline (its Items fail and the lane
 // does not observe) until a retry succeeds; the rest starts at once.
 func TestAFailedSeedGatesTheTimelineUntilARetrySucceeds(t *testing.T) {
-	d, _ := fileDB(t)
-	var mu sync.Mutex
-	var steps []string
-	o := Options{DB: d, trace: func(s string) { mu.Lock(); steps = append(steps, s); mu.Unlock() }}
-	h, w := wiringRig(t, o)
-	report := w.seed
-	fails := 1
-	w.seed = func(ctx context.Context) error {
-		mu.Lock()
-		defer mu.Unlock()
-		if fails > 0 {
-			fails--
-			return errors.New("sidecar busy")
+	bubble(t, func(t *testing.T) {
+		d, _ := fileDB(t)
+		var mu sync.Mutex
+		var steps []string
+		o := Options{DB: d, trace: func(s string) { mu.Lock(); steps = append(steps, s); mu.Unlock() }}
+		h, w := wiringRig(t, o)
+		report := w.seed
+		fails := 1
+		w.seed = func(ctx context.Context) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if fails > 0 {
+				fails--
+				return errors.New("sidecar busy")
+			}
+			return report(ctx)
 		}
-		return report(ctx)
-	}
-	var timeline hubslices.Source
-	for _, src := range w.set.Sources {
-		if src.Kind() == "session_timeline" {
-			timeline = src
+		var timeline hubslices.Source
+		for _, src := range w.set.Sources {
+			if src.Kind() == "session_timeline" {
+				timeline = src
+			}
 		}
-	}
-	observed := 0
-	inner := w.lane.observe
-	w.lane.observe = func(ctx context.Context, at time.Time) error {
+		observed := 0
+		inner := w.lane.observe
+		w.lane.observe = func(ctx context.Context, at time.Time) error {
+			mu.Lock()
+			observed++
+			mu.Unlock()
+			return inner(ctx, at)
+		}
+		runWiring(t, h, w)
 		mu.Lock()
-		observed++
+		if len(steps) == 0 || steps[0] != "seed_failed" {
+			t.Fatalf("steps %v", steps)
+		}
 		mu.Unlock()
-		return inner(ctx, at)
-	}
-	runWiring(t, h, w)
-	mu.Lock()
-	if len(steps) == 0 || steps[0] != "seed_failed" {
-		t.Fatalf("steps %v", steps)
-	}
-	mu.Unlock()
-	if _, err := timeline.Items(context.Background()); !errors.Is(err, errNotSeeded) {
-		t.Fatalf("timeline Items before the seed = %v", err)
-	}
-	if err := w.lane.observe(context.Background(), time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	eventually(t, 5*time.Second, "the retried seed", w.isSeeded)
-	if _, err := timeline.Items(context.Background()); err != nil {
-		t.Fatalf("timeline Items after the seed = %v", err)
-	}
+		if _, err := timeline.Items(context.Background()); !errors.Is(err, errNotSeeded) {
+			t.Fatalf("timeline Items before the seed = %v", err)
+		}
+		if err := w.lane.observe(context.Background(), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, "the retried seed", w.isSeeded)
+		if _, err := timeline.Items(context.Background()); err != nil {
+			t.Fatalf("timeline Items after the seed = %v", err)
+		}
+	})
 }
 
 // revokePort is a session host with one live run that holds every line
@@ -484,50 +517,127 @@ func (revokePort) Deliver(context.Context, handlers.DeliverRequest) (handlers.De
 // device_not_allowed as soon as its typing is taken away — not at the next
 // session-state read (pushed out to an hour here).
 func TestRevokingTypingFailsAHeldLineAtOnce(t *testing.T) {
-	d, project := fileDB(t)
-	res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
+	bubble(t, func(t *testing.T) {
+		d, project := fileDB(t)
+		res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
 VALUES (?, 'claude', 'Session', '/tmp/hubtest-acme', '00000000-0000-4000-8000-000000000001')`, project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	session, _ := res.LastInsertId()
-	e := runEndToEnd(t, "", func(o *Options) {
-		o.DB, o.Sessions, o.laneBackstop = d, revokePort{}, time.Hour
-	})
-	c, err := Dial(e.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = c.Close() }()
-	allow := func(on bool) {
-		t.Helper()
-		a, err := c.Do(ControlRequest{Op: OpAllow, Device: e.phone.ID().String(), Grant: string(link.GrantTyping), On: on})
-		if err != nil || !a.OK {
-			t.Fatalf("allow typing %v: %+v, %v", on, a, err)
-		}
-	}
-	allow(true)
-	a := e.phone.NewAction("session_input")
-	id := strconv.FormatInt(session, 10)
-	a.EntityID = &id
-	a.Params["text"] = json.RawMessage(`"hello"`)
-	seq, err := e.phone.Queue(a)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := e.phone.Send(seq); err != nil {
-		t.Fatal(err)
-	}
-	echo := func() wire.ActionRequest {
-		if _, err := e.phone.Sync(); err != nil {
+		if err != nil {
 			t.Fatal(err)
 		}
-		return e.phone.Echoes[seq]
+		session, _ := res.LastInsertId()
+		e := runEndToEnd(t, "", func(o *Options) {
+			o.DB, o.Sessions, o.laneBackstop = d, revokePort{}, time.Hour
+		})
+		c := e.rig.dial()
+		defer func() { _ = c.Close() }()
+		allow := func(on bool) {
+			t.Helper()
+			a, err := c.Do(ControlRequest{Op: OpAllow, Device: e.phone.ID().String(), Grant: string(link.GrantTyping), On: on})
+			if err != nil || !a.OK {
+				t.Fatalf("allow typing %v: %+v, %v", on, a, err)
+			}
+		}
+		allow(true)
+		a := e.phone.NewAction("session_input")
+		id := strconv.FormatInt(session, 10)
+		a.EntityID = &id
+		a.Params["text"] = json.RawMessage(`"hello"`)
+		seq, err := e.phone.Queue(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := e.phone.Send(seq); err != nil {
+			t.Fatal(err)
+		}
+		echo := func() wire.ActionRequest {
+			if _, err := e.phone.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			return e.phone.Echoes[seq]
+		}
+		eventually(t, "the line held", func() bool { return echo().Status == wire.StatusHeld })
+		allow(false)
+		eventually(t, "the held line failed device_not_allowed", func() bool {
+			got := echo()
+			return got.Status == wire.StatusFailed && got.Reason != nil && *got.Reason == "device_not_allowed"
+		})
+	})
+}
+
+// livePort is a session host whose one session runs (Runs lists it, Live
+// reads it): the sources' liveness and the handlers' come from it.
+type livePort struct {
+	noSessionHost
+	session int64
+	at      time.Time
+}
+
+func (p livePort) Live(_ context.Context, id int64) (handlers.LiveRun, bool, error) {
+	if id != p.session {
+		return handlers.LiveRun{}, false, nil
 	}
-	eventually(t, 15*time.Second, "the line held", func() bool { return echo().Status == wire.StatusHeld })
-	allow(false)
-	eventually(t, 5*time.Second, "the held line failed device_not_allowed", func() bool {
-		got := echo()
-		return got.Status == wire.StatusFailed && got.Reason != nil && *got.Reason == "device_not_allowed"
+	return handlers.LiveRun{SessionID: id, Run: 1, Agent: "claude", StartedAt: p.at}, true, nil
+}
+
+func (p livePort) Runs(context.Context) (map[int64]time.Time, error) {
+	return map[int64]time.Time{p.session: p.at}, nil
+}
+
+// TestSourcesSeeTheSessionHostsLiveness: the sources' liveness is the
+// port's host list, so a pending permission request of a running session
+// is published (sealed: its summary is in no frame); a port that cannot list
+// leaves nothing live.
+func TestSourcesSeeTheSessionHostsLiveness(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		d, project := fileDB(t)
+		res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
+VALUES (?, 'claude', 'Session', '/tmp/hubtest-acme', '00000000-0000-4000-8000-000000000003')`, project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		session, _ := res.LastInsertId()
+		summary := "wt-permission-summary-of-the-live-session"
+		if _, err := d.Exec(`INSERT INTO permission_requests (terminal_session_id, workbench_id, tool_name, summary, status, created_at)
+VALUES (?, ?, 'Bash', ?, 'pending', ?)`, session, project, summary, time.Now().UTC().Format(time.RFC3339)); err != nil {
+			t.Fatal(err)
+		}
+
+		h, w := wiringRig(t, Options{DB: d, Sessions: livePort{session: session, at: time.Now().Add(-time.Minute)},
+			liveEvery: 50 * time.Millisecond})
+		if w.live == nil {
+			t.Fatal("a port that lists runs gave the sources no liveness")
+		}
+		p, err := hubtest.New(hubtest.Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := h.st.WithTx(context.Background(), func(tx *sql.Tx) error { return state.LinkDevice(tx, p.Device()) }); err != nil {
+			t.Fatal(err)
+		}
+		fake := memfake.New(transport.KindRelay, nil)
+		h.pub = hubslices.NewPublisher(hubslices.Config{
+			Store: h.st, Transport: fake, Sealer: secure.NewSealer(h.kr), DataZone: "data/hubtest-acme", Sources: w.set.Sources,
+		})
+		runWiring(t, h, w)
+		eventually(t, "the permission request published", func() bool {
+			got, err := h.st.SliceHashes("permission_request")
+			return err == nil && len(got) == 1
+		})
+		if live := w.live.get(); !live.Settled || len(live.Runs) != 1 {
+			t.Fatalf("liveness %+v", live)
+		}
+		for i, f := range fake.Frames() {
+			if _, err := secure.ParseHeader(f); err != nil {
+				t.Fatalf("frame %d is not an envelope: %v", i, err)
+			}
+			if bytes.Contains(f, []byte(summary)) {
+				t.Fatalf("frame %d carries the summary in the clear", i)
+			}
+		}
+
+		_, none := wiringRig(t, Options{DB: d, Sessions: revokePort{}})
+		if none.live != nil {
+			t.Fatal("a port that cannot list runs gave the sources a liveness")
+		}
 	})
 }

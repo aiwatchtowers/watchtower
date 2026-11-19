@@ -96,10 +96,10 @@ final class RecordingUploadWiringTests: XCTestCase {
         try await poll { model.snapshot.recording(recording.id) != nil && model.snapshot.heartbeat != nil }
         let row = try XCTUnwrap(model.snapshot.recording(recording.id))
         let heartbeat = model.snapshot.heartbeat
-        XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: heartbeat, now: Date()).label, "Sending to your Mac")
+        XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: heartbeat, now: Date()).label, "Sending to your tower")
         let asleep = PhoneUploadStage(recording: row, heartbeat: heartbeat, now: Date().addingTimeInterval(3_600))
         XCTAssertEqual(asleep, .waitingForMac)
-        XCTAssertEqual(asleep.label, "Waiting for the Mac to wake")
+        XCTAssertEqual(asleep.label, "Waiting for the tower to wake")
         XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: nil, now: Date()), .waitingForMac)
     }
 
@@ -149,7 +149,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         try await poll { asleep.isBootstrapped }
         let row = try XCTUnwrap(try asleep.store.phoneRecording(id: id))
         XCTAssertEqual(row.state, .uploading)
-        XCTAssertEqual(row.uploadAttempts, 1, "no re-save while the Mac sleeps")
+        XCTAssertEqual(row.uploadAttempts, 1, "no re-save while the tower sleeps")
         let model = asleep.phoneRecordings
         try await poll { model.snapshot.heartbeat != nil }
         XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: model.snapshot.heartbeat, now: asleepAt), .waitingForMac)
@@ -157,7 +157,7 @@ final class RecordingUploadWiringTests: XCTestCase {
 
         let awake = try launch(Date().addingTimeInterval(RecordingUploader.retryDelays[0] + 1))
         try await poll { awake.isBootstrapped }
-        XCTAssertEqual(try awake.store.phoneRecording(id: id)?.uploadAttempts, 2, "the Mac is online: re-saved")
+        XCTAssertEqual(try awake.store.phoneRecording(id: id)?.uploadAttempts, 2, "the tower is online: re-saved")
     }
 
     // MARK: - Ack
@@ -176,14 +176,14 @@ final class RecordingUploadWiringTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sealed.path), "and its sealed copy")
         let row = try XCTUnwrap(try wired.env.store.phoneRecording(id: recording.id))
         XCTAssertEqual(row.state, .delivered)
-        XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: nil, now: Date()).label, "Sent to your Mac")
+        XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: nil, now: Date()).label, "Sent to your tower")
     }
 
     func testFailedEchoKeepsTheFileAndOffersRetry() async throws {
         let wired = try await makeWired()
         let recording = try await recordAndStop(wired)
 
-        try await echo(recording, status: .failed, error: "The Mac could not save the recording.", in: wired.transport)
+        try await echo(recording, status: .failed, error: "The tower could not save the recording.", in: wired.transport)
         await wired.env.refresh(.pull)
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path), "failed → the only copy is kept")
@@ -191,7 +191,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         let sealed = try XCTUnwrap(row.sealedFileURL(in: wired.directory))
         XCTAssertTrue(FileManager.default.fileExists(atPath: sealed.path), "and its sealed copy, for Retry")
         let stage = PhoneUploadStage(recording: row, heartbeat: nil, now: Date())
-        XCTAssertEqual(stage, .failed("The Mac could not save the recording.", retryable: true))
+        XCTAssertEqual(stage, .failed("The tower could not save the recording.", retryable: true))
         XCTAssertTrue(stage.offersRetry)
 
         await wired.env.recorder.retry(id: recording.id)
@@ -229,7 +229,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         let row = try XCTUnwrap(try wired.env.store.phoneRecording(id: id))
         XCTAssertTrue(FileManager.default.fileExists(atPath: row.fileURL(in: wired.directory).path), "the plain audio stays")
         let sealed = try XCTUnwrap(row.sealedFileURL(in: wired.directory))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: sealed.path), "the sealed copy waits for the Mac")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealed.path), "the sealed copy waits for the tower")
         XCTAssertNotEqual(try Data(contentsOf: sealed), Data(repeating: 0x5A, count: 256), "the copy is ciphertext")
         await gate.release()
         await relink.value
@@ -260,7 +260,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         XCTAssertNotNil(try wired.env.store.phoneRecording(id: recording.id)?.sealedPath)
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path),
-            "ask #89 A: the plain audio stays until the Mac confirms it"
+            "ask #89 A: the plain audio stays until the tower confirms it"
         )
         let uploads = try await relayUploads(in: wired.transport, .demo)
         XCTAssertEqual(uploads.map(\.id), [recording.id])
@@ -390,7 +390,11 @@ final class RecordingUploadWiringTests: XCTestCase {
         XCTAssertTrue(uploads.isEmpty, "a background launch uploads nothing")
 
         env.setActive(true)
-        try await poll({ (try? env.store.phoneRecordings().allSatisfy { $0.state == .uploading }) == true }, "no pass on activation")
+        let pass = try XCTUnwrap(env.uploadRetryPass, "no pass on activation")
+        await pass.value
+        let states = try env.store.phoneRecordings().map(\.state)
+        XCTAssertEqual(states.count, 2)
+        XCTAssertTrue(states.allSatisfy { $0 == .uploading })
         uploads = try await relayUploads(in: transport)
         XCTAssertEqual(Set(uploads.map(\.id)), Set(ids))
     }

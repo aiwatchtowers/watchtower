@@ -3,6 +3,7 @@ package sessionstart
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,14 +15,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/db"
 	"watchtower/internal/gittest"
 	"watchtower/internal/workbenchcheck"
 	"watchtower/internal/workbenchgit"
 )
 
-// TestMain keeps git's background maintenance out of the test repositories.
+// TestMain keeps git's background maintenance out of the test repositories
+// and installs the db schema template cache for the in-memory databases.
 func TestMain(m *testing.M) {
 	gittest.DisableBackgroundGit()
+	if err := db.InitTestTemplate(); err != nil {
+		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
+		os.Exit(1)
+	}
 	os.Exit(m.Run())
 }
 

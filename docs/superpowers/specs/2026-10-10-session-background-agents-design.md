@@ -454,6 +454,100 @@ Go, `internal/devpack`: `TestInstallStateHooksAddsSubagentStopAndStart` (was `�
 (the `…AllFive…` guard with the sixth entry, same strictness); the PROJ-04 malformed-event guard extended to
 `SubagentStart`.
 
+## 12. Nested agents and implementers waiting on them (board #1710, amendment 2026-11-10)
+
+**Problem.** Live session #179 read "2 agents working" while six background implementers were alive. Each
+implementer launched its own background reviewers, ended its turn to wait for them (a `SubagentStop`, so its turn
+read *closed* and §11.3 dropped it as "finished"), and was resumed when a reviewer reported (a new `SubagentStart`
+with the same `agent_id`, often 30–40 ms after its stop). After the main agent's Stop the count only went down, so
+each resume and each new reviewer was lost. Appendix D has the capture.
+
+### 12.1 The signal (Appendix D)
+
+- Nested agents fire `SubagentStart`/`SubagentStop` on the main session's row and **are** listed in the main
+  session's `background_tasks` (2.1.322, interactive and `-p`); no hook input names an agent's parent.
+- A waiting implementer may be missing from a list while it waits (D.2 at 12.81 s) and is listed again once
+  resumed.
+- Claude Code writes `<session>/subagents/agent-<id>.meta.json` beside each subagent transcript; a nested agent's
+  carries `parentAgentId` (and `spawnDepth: 2`); a top-level one carries none. The meta `finished` key follows each
+  turn end (it read `true` on an implementer that was waiting on a reviewer), so it is not a "done" signal and is
+  not read.
+
+### 12.2 The count
+
+Parents come from the meta files of the session the hook's `transcript_path` names
+(`agentfiles.SubagentsDir`/`SubagentParent`: Lstat, regular file, ≤ 1 MiB, only `parentAgentId` decoded, plain ids
+only, walks capped at 8 and loop-safe). Without them (no path, no files, Codex) every rule below reduces to §11.3.
+
+```
+count(tasks, turns, except, parents) =
+    #(subagent or workflow entries, not except, whose turn is not closed)                 -- §11.3
+  + #(open turns no entry lists, not except, with a listed subagent above them)           -- nested work
+  + #(agents above any counted agent that are not counted themselves, each once)           -- waiting parents
+  + min(#(other open unlisted turns, not except, not counted as waiting parents), #(teammate entries))  -- §11.3
+```
+
+`agentsInTurn(turns, parents)` (a `SubagentStart`, which has no list) = the open turns + the agents above them,
+each once.
+
+- A subagent waiting for its own background agents counts while one of them is in a turn or listed and not closed,
+  listed itself or not; the stopping agent (`except`) counts as such a parent although never through its own turn.
+- A finished subagent the list still carries (§11.3, #543) has no working agent below it and still does not count.
+- A nested agent whose `SubagentStop` was lost counts only while a listed subagent is above it; once its
+  implementer is collected it falls into the teammate cap (0 with no teammates).
+
+### 12.3 Who writes what
+
+| Writer | Writes | Guard |
+|---|---|---|
+| Stop hook (`workbench check --stop-hook`, sync) | `agent_background` = count, with its `waiting` (§4.2) | the state write's guards |
+| `SubagentStop` (async state hook) | its turn end in `agent_turns`; `LowerTerminalBackground` to `min(stored, count)` | `waiting`, count > 0, report older than its stamp |
+| `SubagentStart` (async state hook) | its turn start; **new** `RaiseTerminalBackground`: `max(stored, agentsInTurn)` and `agent_background_at` = its stamp | `waiting`, count NOT NULL (0 rises again; NULL never starts), report older than its stamp |
+| subagent `PostToolUse` (async) | heartbeat: `agent_background_at` only | as before |
+| `workbench session-probe` | NULLs both (compare-and-clear on `agent_background_at`) | as before |
+| Desktop | nothing (reads only; display-only "over" after two failed probes) | — |
+
+Races: every report carries its hook's start stamp and is refused when `agent_background_at` is newer, so of two
+reports the later-stamped one wins whatever their commit order; `agent_turns` stamps only move forward. The start
+always stamps, so a resume whose start lands before the stop of the turn it follows makes that older stop a no-op
+instead of lowering past the live agent (test `TestProj11_NestedAgentsAndWaitingImplementersCount`). It voids
+any other agent's stop stamped before it as well: that turn end is still recorded in `agent_turns`, and the count
+follows it from the next report.
+
+### 12.4 Failure modes
+
+- **Hook killed mid-write / lock timeout:** each write is one statement or one transaction; nothing partial lands.
+  A lost start leaves its agent out until the next report that sees it (a listed agent with no turn counts, §11.3);
+  a lost stop keeps its turn open, bounded by the list (above) and by the next Stop. A lost raise leaves the
+  previous count. An unreadable meta file is "no parent" (the §11.3 rule).
+- **Session restart / new run / conversation switch:** `MarkTerminalAgentRun`, `ClearTerminalAgentState` and
+  `SetTerminalClaudeSessionID` clear the count and the turns as before; a late hook of the previous run is held
+  back by the run mark (turns) and finds the count NULL (no raise).
+- **`SubagentStop` never arrives:** a start can raise with a stale open turn until the next listing report; with no
+  further report the staleness probe (§10) asks the registry after 30 minutes and ends the count when Claude Code
+  no longer reports work.
+- **The main agent wakes:** its prompt or tool result NULLs the count; its next Stop re-snapshots.
+
+### 12.5 Decisions
+
+| # | Decision | Source |
+|---|---|---|
+| 1 | Count what is really working: waiting implementers and nested agents in their turn | ask #1195 (owner) |
+| 2 | Parentage from `parentAgentId` in the subagent meta files; nothing else from them is read | decided by agent |
+| 3 | A `SubagentStart` raises a count the Stop started (0 included) and stamps the report; only the Stop starts one; the `SubagentStop` still only lowers | decided by agent; guard change `TestProj11_SubagentStartNeverStartsOrRaisesTheCount` → `…NeverStartsTheCount` + `…RaisesACountedWaiting` filed as ask #1198 |
+| 4 | The start's count has no list: open turns plus their parents, `max` with the stored count (keeps workflows and listed agents with no turn) | decided by agent |
+| 5 | Codex unchanged: its start records the turn only, its count stays `codexBackgroundCount` | decided by agent |
+| 6 | No migration, no Desktop or phone change: the count still arrives in `agent_background` | decided by agent |
+
+### 12.6 Limits (v1)
+
+- The start's count includes teammates in their turn without the teammate cap and any open turn whose stop was
+  lost; the next listing report corrects it.
+- Two reports stamped in one order but computed in the other (the newer one committed first, before the older
+  one's turn was recorded) can leave the count one off until the next report — the §11.5 limit, unchanged.
+- A waiting implementer between "its last reviewer reported" and "its resume landed" (tens of ms) is not counted;
+  the Desktop's 120 s grace covers a drop to 0.
+
 ## Appendix A — sources and quotes
 
 Hooks reference: https://code.claude.com/docs/en/hooks · Subagents: https://code.claude.com/docs/en/sub-agents
@@ -708,3 +802,38 @@ inputs list **both** subagents, the second one's included although the first had
 a finished subagent only when the main agent takes its completion notification (the following `Stop` listed
 none). Under the 2026-10-10 rule the second `SubagentStop` counted 1 and left the count there until the main
 agent woke: the #543 tail (3).
+
+## Appendix D — Nested agents (observed, Claude Code 2.1.322, 2026-11-10)
+
+Captured for board #1710 with a throwaway command hook logging every `Stop`, `SubagentStart` and `SubagentStop`
+input (`--settings` on a scratch file, `--setting-sources project,local`, a scratch folder, `haiku`). Ids below are
+shortened placeholders.
+
+D.1 `claude -p`: the main agent launches background `parent`, which launches background `child` and ends its turn.
+`parent`'s `SubagentStop` lists both; the main agent takes `parent`'s completion and its next Stop lists only
+`child`; `parent` is never resumed under `-p` (the child's result went to the main agent).
+
+D.2 Interactive (driven over a pty): the main agent launches `P`; `P` launches `C1` and `C2` and ends its turn to
+wait. Seconds from the first hook:
+
+| t (s) | Event | `background_tasks` (subagent ids) |
+|---|---|---|
+| 0.00 | `SubagentStart` P | — |
+| 0.83 | `Stop` | P |
+| 1.91 | `SubagentStop`, `agent_type: ""` (internal agent) | P |
+| 3.28 | `SubagentStart` C1, `SubagentStart` C2 | — |
+| 5.85 | `SubagentStop` P (waiting for its children) | P, C1, C2 |
+| 12.81 | `SubagentStop` C1 | C1, C2 (P missing) |
+| 12.81 | `SubagentStart` P (resumed by C1's result) | — |
+| 12.89 | `SubagentStop` C2 | P, C2 |
+| 15.40 / 15.44 | `SubagentStop` P / `SubagentStart` P (resumed by C2's result) | P / — |
+| 19.00 / 19.05 | `SubagentStop` P / `SubagentStart` P | P / — |
+| 19.89 | `Stop` | P |
+| 22.63 | `SubagentStop` P (done) | P |
+| 23.49 | `Stop` | (empty) |
+
+So: nested agents are listed in the main session's list; `SubagentStart` carries no list (`agent_id`,
+`agent_type`, `prompt_id`, `transcript_path`); a waiting parent's turn closes and its resume opens a new one under
+the same id; the main agent is not woken by a waiting parent's turn end in an interactive session. Under §11.3 the
+count went 1 → 1 → 1 → 1 → 0 at 15.40 while three agents were alive at 5.85. The live session's meta files
+(`subagents/agent-<id>.meta.json`) carried `parentAgentId` and `spawnDepth: 2` for each reviewer.

@@ -110,13 +110,14 @@ if [[ -n "$MERGE_DIR" ]]; then
     OUTPUT="$(cat "${files[@]}" | merged_line "$SPREAD_PKG" "$n")"
 else
 
-# CI seconds per package (go-test log, 2026-11-10, every package on one
-# runner). CMD_WEIGHT is cmd's share in the same units, fitted to a sharded
-# run (2026-11-10: cmd's slices took ~100 s of wall where weight 560 of other
-# packages took ~190 s), plus make test-scripts, which CI runs in cmd's shard:
-# the heaviest, so shard 1.
-CMD_WEIGHT=350
-COVER_WEIGHTS="automations 125 transporttest 70 daemon 69 codex 35 jira 31 chat 27 confluenceedit 24 kb 24 sync 22 tools 22 ideas 17 automations/builtin 15 memory 15 hub/slices/sources 14 ai 13 hub 12 agentlogdb 12 agentlog 12 coach 11 sessioncleanup 10"
+# CI seconds per package (go-test log, 2026-11-18, the unsharded run on the
+# owner's Mac runner, GOMAXPROCS=8: "ok <pkg> <s>s"; packages under 15 s take
+# the default, their median rounded up). CMD_WEIGHT is cmd's share in the same
+# units: its CMD_SHARDS slices' seconds together (4 x ~260 s), plus the steps
+# CI runs only in cmd's shard (make test-scripts ~110 s, make hub-smoke
+# ~90 s). It is the heaviest, so shard 1, and alone there.
+CMD_WEIGHT=1240
+COVER_WEIGHTS="workbenchcheck 118 sessioncleanup 113 automations 104 workbenchgit 94 transporttest 90 hub/adopt 89 daemon 87 tools 74 sessionreport 67 diagnostics 57 devpack 45 agentreport 44 chat 40 sessionstart 40 kb 39 codex 39 hub/switcher 38 hub 36 hub/slices/sources 35 agentlog 34 coach 34 hub/actions 34 memory 31 reviewdiff 29 ai 27 hub/actions/handlers 24 sync 21 reviewmap 17 chatengine 17 ideas 16 confluenceedit 16 digest 15"
 COVER_WEIGHT_DEFAULT=3
 
 ALL_PKGS="$(go list ./...)"

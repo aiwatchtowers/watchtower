@@ -8,8 +8,10 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"watchtower/internal/hub/logreason"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
@@ -31,29 +33,167 @@ type Config struct {
 	HubRelayID string
 	Clock      func() time.Time
 	Nudge      func(kinds []string)
+	// Links applies the phones' device records (device_record.go); nil
+	// leaves them alone.
+	Links Links
+	// Switch is the hub's transport switcher (control.go); nil on a hub
+	// with one transport, which rejects every transport_switch.
+	Switch Switch
+	// Hello takes the hellos of CloudKit's shared RelayZone (the link
+	// lane's, link.Center.HandleCloudKitHello). An error leaves the page
+	// to be read again next pass (a hello re-read decides nothing new).
+	// Set, the zone is read on every pass even with no phone linked yet,
+	// so a first phone's hello is seen. nil leaves hellos alone.
+	Hello func(ctx context.Context, rec transport.Stored) error
+	// HelloWanted, when set, says whether the zone is worth that read
+	// while no phone is linked (link.Center.WantsHellos: a code open or a
+	// link urgent); nil reads it on every pass.
+	HelloWanted func() bool
+	// Contact, when set, is told each phone contact a pass admits (the
+	// Swift RelayProcessor's noteContact, keep-awake ask #614): an action
+	// that passed the gates (now) and a linked phone's device record (its
+	// seen_at, else updated_at, never later than now). A refused action, an
+	// unlink and a record nobody here holds a key for are no contact.
+	Contact func(at time.Time)
+	// Latency takes the hub-side timing stamps (internal/hub/measure); nil
+	// records none. It is called after the deciding transaction committed,
+	// never inside one.
+	Latency Latency
+	// EpochFor, when set, is the epoch a phone's echoes and controls are
+	// sealed in (identity.Keyring.PhoneEpoch: a phone that offered a relay
+	// key gets its acked epoch while the hub retains it); 0, or nil, the
+	// current one. An explicit epoch (SealControlFor's) wins.
+	EpochFor func(device string) (uint32, error)
 }
 
-// Processor reads the phones' mailboxes and applies their actions. Pass and
-// FlushControls are single-flight: one runs at a time.
+// Latency is the processor's side of the latency samples (measure.Recorder):
+// an action of kind action applied on its first read, with the time the
+// processor reached its record, the time its outcome committed, the
+// transport and the slice kinds it nudged; and a mailbox event for a
+// phone's write, from its arrival to the start of the pass it triggers.
+type Latency interface {
+	Applied(transport, action string, readAt, appliedAt time.Time, kinds []string)
+	EventRead(transport string, arrivedAt, readAt time.Time)
+}
+
+// Processor reads the phones' mailboxes and applies their actions. Passes
+// may run at once (the runtime's event lane next to its backstop pass): a
+// mailbox's read → apply → token move holds that mailbox's lock (boxLock),
+// so two readers never read one mailbox at once and its token only moves
+// forward; mu is held only while a page's records are applied (the ledger,
+// the handlers, the queue steps), never across a mailbox write (a claim
+// lets go of it for its received echo's) nor a mailbox read but one: the
+// read back of held uploads a restart left (recoverHeld); a queue's flush
+// lock (flushLock) keeps that queue's writes in order, and another queue's
+// write goes on. Lock order: run, a mailbox's lock, mu, a queue's flush lock.
 type Processor struct {
 	cfg Config
 	mu  sync.Mutex
+	// run is held shared by every pass and FlushControls, exclusively by
+	// Hygiene and by PauseFor (which only waits for the running ones).
+	run sync.RWMutex
+	// boxMu guards zones, the per-zone mailbox locks (boxLock), and
+	// queues, the per-queue flush locks (flushLock).
+	boxMu  sync.Mutex
+	zones  map[string]*sync.Mutex
+	queues map[string]*sync.Mutex
+	// boxWait, when set (tests), is called when a mailbox's lock is found
+	// held, before waiting for it.
+	boxWait func(zone string)
+	// queueWait, when set (tests), is called when a queue's flush lock is
+	// found held, before waiting for it.
+	queueWait func(queue string)
+	// muWait, when set (tests), is called when a pass finds mu held, before
+	// waiting for it.
+	muWait func()
+	// failLog keeps a mailbox read that fails every pass to one line per
+	// logreason.RepeatEvery per phone and reason (#1873).
+	failLog *logreason.Limiter
 	// fault, when set (tests), is called at named points; an error stops
-	// the pass there as a crash would: "opened" after a record opened and
-	// before any decision commits, "done" inside the done transaction just
-	// before its commit (the transaction then rolls back).
+	// the pass there as a crash would: "opened" (then "opened <device> <wire name>")
+	// after a record opened and before any decision commits, "done" inside
+	// the done transaction just before its commit (the transaction then
+	// rolls back), "drain <device>" as a phone's held actions are drained.
 	fault func(point string) error
 	// held is the uploads answered held, tried again each pass (recording.go).
 	held map[string]*heldUpload
+	// batch, when set (tests), replaces BatchLimit as a pass's budget.
+	batch int
+	// paused (any PauseFor reason held) is read under mu by every
+	// transport-facing entry; holds is the reasons held (holdMu).
+	paused atomic.Bool
+	holdMu sync.Mutex
+	holds  map[string]bool
+	// strikes holds, per record version of a shared zone, the failures of
+	// its content (shared.go); guarded by mu.
+	strikes map[string]*strikeEntry
+	// staleSeen is the record versions answered on standby (standby.go):
+	// zone and wire name → RecordSeq; guarded by mu.
+	staleSeen map[string]uint64
+	// oldSeen is the record versions answered resend_from for an epoch the
+	// hub no longer holds (epoch.go): zone and wire name → RecordSeq;
+	// guarded by mu.
+	oldSeen map[string]uint64
+	// unread is the phones' own mailbox zones whose last read stopped on an
+	// error (a claim whose done transaction failed among them): their next
+	// event is read with Pull, never skipped as the hub's own writes, so the
+	// hub's own received echo of a begun action is read back and settled
+	// outcome_unknown (ownReceived). Guarded by mu; in memory only (a
+	// restart forgets the own writes too).
+	unread map[string]bool
+}
+
+// SetPaused pauses the processor (spec §7.3, a headless hub with no paying
+// phone) or ends the pause. A paused Pass, FlushControls and Hygiene read
+// and write nothing and return at once; a LateEcho records its outcome and
+// queues the echo, which the first pass after the pause writes. The ledger,
+// the held actions and the control queue stay as they are. SetPaused(true)
+// returns once a pass already running has ended. SetPaused holds and
+// releases the admission gate's own reason ("") of PauseFor/ResumeFor.
+func (p *Processor) SetPaused(on bool) {
+	if on {
+		p.PauseFor("")
+	} else {
+		p.ResumeFor("")
+	}
+}
+
+// PauseFor holds the processor for reason. Holds are a set: it runs again
+// only once every reason was released, so one pauser (the transport switch)
+// never lifts another's (the admission gate). It returns once a pass already
+// running has ended.
+func (p *Processor) PauseFor(reason string) {
+	p.holdMu.Lock()
+	if p.holds == nil {
+		p.holds = map[string]bool{}
+	}
+	p.holds[reason] = true
+	p.paused.Store(true)
+	p.holdMu.Unlock()
+	p.run.Lock()
+	p.run.Unlock() //nolint:staticcheck // SA2001: only waits for the running passes
+	p.mu.Lock()
+	p.mu.Unlock() //nolint:staticcheck // SA2001: only waits for a running late echo
+}
+
+// ResumeFor releases reason's hold; the processor runs again once no
+// reason holds it. Releasing a reason that holds nothing does nothing.
+func (p *Processor) ResumeFor(reason string) {
+	p.holdMu.Lock()
+	defer p.holdMu.Unlock()
+	delete(p.holds, reason)
+	p.paused.Store(len(p.holds) > 0)
 }
 
 // PassReport counts one pass: phone records read (opened), actions applied
 // (a final outcome committed, handler or not), repeats echoed again, actions
 // held, echoes queued, queued rows written, and phone records left for the
-// next pass by BatchLimit (> 0 means "run again now").
+// next pass by BatchLimit (> 0 means "run again now"). OwnEcho marks an
+// event pass that did nothing: the event stood only for the hub's own writes.
 type PassReport struct {
 	Read, Applied, Repeats, Held, Echoed, ControlsWritten int
 	Remaining                                             int
+	OwnEcho                                               bool
 }
 
 // NewProcessor returns a processor over c.
@@ -61,16 +201,25 @@ func NewProcessor(c Config) *Processor {
 	if c.Clock == nil {
 		c.Clock = time.Now
 	}
-	return &Processor{cfg: c}
+	return &Processor{cfg: c, failLog: logreason.NewLimiter(logreason.RepeatEvery, c.Clock)}
 }
 
-// mailbox is one linked phone's mailbox, read under one link: link is the
-// link's nonce (a re-link changes it) and linkedAt keys the ledger.
+// mailbox is one linked phone's mailbox, read under one link: zone is where
+// its records live (its own relay/<hub>/<phone>, or the one shared mailbox on
+// CloudKit), queue its control_queue key (the zone, or zone@<device> in a
+// shared mailbox, so one phone's flush never meets another's rows), link the
+// link's nonce (a re-link changes it) and linkedAt keys the ledger. shared
+// marks the shared mailbox (CloudKit's RelayZone, shared.go); there oldQueues is
+// the key its queue had as a phone's own zone, moved to queue before a flush
+// (a phone's own zone keeps its key: none).
 type mailbox struct {
-	id       secure.ID
-	zone     string
-	link     string
-	linkedAt time.Time
+	id        secure.ID
+	zone      string
+	queue     string
+	shared    bool
+	oldQueues []string
+	link      string
+	linkedAt  time.Time
 }
 
 // ledger is an action's relay_processed key: its plain name scoped to this
@@ -92,16 +241,19 @@ func (b mailbox) ledgerKey(plain string, seq uint64) string {
 	return b.ledger(plain)
 }
 
-// mailboxes lists the linked phones with a relay device id, oldest link
-// first.
+// mailboxes lists the linked phones that have a mailbox, oldest link first:
+// on CloudKit every linked phone (the shared RelayZone needs no relay device
+// id), elsewhere the phones with a relay device id.
 func (p *Processor) mailboxes() ([]mailbox, error) {
 	devices, err := p.cfg.Store.Devices()
 	if err != nil {
 		return nil, err
 	}
+	shared := transport.SharedMailboxZone(p.cfg.HubRelayID)
 	var out []mailbox
 	for _, d := range devices {
-		if d.RelayDeviceID == "" {
+		zone, ok := p.mailboxZone(d)
+		if !ok {
 			continue
 		}
 		id, err := secure.ParseID(d.ID)
@@ -109,9 +261,68 @@ func (p *Processor) mailboxes() ([]mailbox, error) {
 			log.Printf("hub: a linked device id is not a UUID")
 			continue
 		}
-		out = append(out, mailbox{id: id, zone: transport.MailboxZone(p.cfg.HubRelayID, d.RelayDeviceID), link: d.LinkNonce, linkedAt: d.LinkedAt})
+		b := mailbox{id: id, zone: zone, queue: zone, link: d.LinkNonce, linkedAt: d.LinkedAt}
+		if zone == shared {
+			b.queue, b.shared = shared+"@"+id.String(), true
+			// With a switcher the relay mailbox's queue is the relay
+			// processor's own, never moved here.
+			if d.RelayDeviceID != "" && p.cfg.Switch == nil {
+				b.oldQueues = []string{transport.MailboxZone(p.cfg.HubRelayID, d.RelayDeviceID)}
+			}
+		}
+		out = append(out, b)
 	}
 	return out, nil
+}
+
+// mailboxZone is d's mailbox zone: the transport's (transport.SharedMailbox)
+// or relay/<hub>/<relay device id>; ok is false for a phone without a relay
+// device id on a transport other than CloudKit.
+func (p *Processor) mailboxZone(d state.Device) (string, bool) {
+	sm, named := p.cfg.Transport.(transport.SharedMailbox)
+	switch {
+	case named && p.cfg.Transport.Kind() == transport.KindCloudKit:
+		return sm.MailboxFor(p.cfg.HubRelayID, d.RelayDeviceID), true
+	case d.RelayDeviceID == "":
+		return "", false
+	case named:
+		return sm.MailboxFor(p.cfg.HubRelayID, d.RelayDeviceID), true
+	}
+	return transport.MailboxZone(p.cfg.HubRelayID, d.RelayDeviceID), true
+}
+
+// zoneGroup is one mailbox zone and the phones whose mailbox it is: one on
+// the hosted relay, every phone of the hub on CloudKit's shared RelayZone.
+type zoneGroup struct {
+	zone   string
+	shared bool
+	boxes  []mailbox
+}
+
+// byZone groups boxes by zone, in the order the zones first appear.
+func byZone(boxes []mailbox) []zoneGroup {
+	var out []zoneGroup
+	at := map[string]int{}
+	for _, b := range boxes {
+		i, ok := at[b.zone]
+		if !ok {
+			i = len(out)
+			at[b.zone] = i
+			out = append(out, zoneGroup{zone: b.zone, shared: b.shared})
+		}
+		out[i].boxes = append(out[i].boxes, b)
+	}
+	return out
+}
+
+// box is the phone of g whose device id is id.
+func (g zoneGroup) box(id secure.ID) (mailbox, bool) {
+	for _, b := range g.boxes {
+		if b.id == id {
+			return b, true
+		}
+	}
+	return mailbox{}, false
 }
 
 // pass carries one pass's counters and budget.
@@ -119,47 +330,302 @@ type pass struct {
 	report PassReport
 	budget int
 	nudges []string
+	// resent is the phones asked resend_from this pass for an action in an
+	// epoch the hub no longer holds (epoch.go): one ask per phone per pass.
+	resent map[secure.ID]bool
 }
 
 // Pass reads every linked phone's mailbox from its stored change token,
-// handles each record, then writes the control queue. It is called on each
-// transport event and by the runtime's backstop timer. A zone's token is
+// handles each record, then writes the control queue. It is called by the
+// runtime's backstop timer and for each transport event PassEvent does not
+// narrow to one mailbox. A zone's token is
 // stored only once every record of the page was handled, so a pass that
 // stops (an error, a crash, the batch limit) re-reads from the old token
 // and the ledger makes the re-read safe.
 func (p *Processor) Pass(ctx context.Context) (PassReport, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	ps := &pass{budget: BatchLimit}
+	p.run.RLock()
+	defer p.run.RUnlock()
+	return p.passAll(ctx)
+}
+
+// passAll is Pass; p.run is held.
+func (p *Processor) passAll(ctx context.Context) (PassReport, error) {
+	ps := p.newPass()
+	if p.paused.Load() {
+		return ps.report, nil
+	}
 	boxes, err := p.mailboxes()
 	if err != nil {
 		return ps.report, err
 	}
-	var errs []error
-	for _, b := range boxes {
-		// Held actions that are next in line first: a drain an earlier
-		// pass left at the batch limit (or a crash) resumes here.
-		err := p.drainHeld(ctx, b, ps)
-		if err == nil {
-			err = p.retryUploads(ctx, b, ps)
+	return p.passBoxes(ctx, boxes, ps)
+}
+
+// EventPuller is a transport that reads a zone event itself (the hosted
+// relay's PullEvent): only that zone, from its stored token, skipping the
+// hub's own writes and taking a record the event carries inline without a
+// read; apply sees each page as in Puller.Pull. OwnWrites reports, with no
+// relay op, that ev stands only for the hub's own writes after the stored token.
+type EventPuller interface {
+	PullEvent(ctx context.Context, ev transport.Event, apply func(transport.Batch) error) error
+	OwnWrites(ev transport.Event) bool
+}
+
+// PassEvent is the pass a transport's zone event asks for. On a transport
+// that reads events itself (EventPuller), an event naming one linked phone's
+// own mailbox reads that mailbox only (its held actions next in line first,
+// as Pass does), then writes the control queues — or, when the event stands
+// only for the hub's own writes, does nothing (OwnEcho); a mailbox whose last
+// read stopped on an error is read with Pull, its own writes not skipped
+// (Processor.unread). Every other event — and
+// every other transport — runs Pass. The runtime's backstop timer still runs
+// Pass over every mailbox. An event's read takes only its mailbox's lock, so
+// a backstop pass reading another mailbox never holds it up.
+func (p *Processor) PassEvent(ctx context.Context, ev transport.Event) (PassReport, error) {
+	p.run.RLock()
+	defer p.run.RUnlock()
+	ep, ok := p.cfg.Transport.(EventPuller)
+	if !ok || ev.Zone == "" {
+		if !p.paused.Load() {
+			p.eventRead(ev, p.cfg.Clock()) // no own-write check here: every such event is read
 		}
-		if err == nil {
-			err = p.readMailbox(ctx, b, ps)
-		}
-		if errors.Is(err, errRelinked) {
-			log.Printf("hub: device %s was re-linked or unlinked during a pass: its mailbox is read again next pass", b.id)
-			continue
-		}
-		if err != nil {
-			// One phone's failure never holds back the other phones.
-			log.Printf("hub: reading device %s's mailbox: %s", b.id, errClass(err))
-			errs = append(errs, err)
-		}
+		return p.passAll(ctx)
 	}
+	ps := p.newPass()
+	if p.paused.Load() {
+		return ps.report, nil
+	}
+	boxes, err := p.mailboxes()
+	if err != nil {
+		return ps.report, err
+	}
+	i := slices.IndexFunc(boxes, func(b mailbox) bool { return !b.shared && b.zone == ev.Zone })
+	if i < 0 {
+		p.eventRead(ev, p.cfg.Clock())
+		return p.passBoxes(ctx, boxes, ps)
+	}
+	b := boxes[i]
+	own, readAt, err := p.readEvent(ctx, ep, ev, b, ps)
+	if own {
+		// Nothing was written but by the hub: nothing to read, apply or
+		// write. The token moves past these seqs with the next read.
+		ps.report.OwnEcho = true
+		return ps.report, nil
+	}
+	if !readAt.IsZero() {
+		// A phone wrote: timed to the start of its read (or inline apply).
+		// An event an earlier read already took reads nothing: no sample.
+		p.eventRead(ev, readAt)
+	}
+	// Only b's queue: another mailbox's write (the backstop's, maybe slow)
+	// never holds the lane; the passes write the other queues.
+	p.nudge(ps)
+	written, _, ferr := p.flushQueue(ctx, b)
+	ps.report.ControlsWritten = written
+	return ps.report, errors.Join(append(p.passError(b, err, nil), ferr)...)
+}
+
+// readEvent reads what ev stands for in b's own mailbox, under its mailbox
+// lock: own is an event of the hub's own writes only (nothing read); readAt
+// is when a read that reached the mailbox (a page, maybe empty, or the
+// inline record) started, zero when nothing was read. A mailbox whose last
+// read stopped on an error is read with Pull, its own writes not skipped
+// (Processor.unread).
+func (p *Processor) readEvent(ctx context.Context, ep EventPuller, ev transport.Event, b mailbox, ps *pass) (own bool, readAt time.Time, err error) {
+	defer p.boxLock(b.zone)()
+	p.lockMu()
+	unread := p.unread[b.zone]
+	p.mu.Unlock()
+	if !unread && ep.OwnWrites(ev) {
+		return true, time.Time{}, nil
+	}
+	err = p.readBox(ctx, b, ps, func(apply func(transport.Batch) error) error {
+		start := p.cfg.Clock() // after the held drain: the read itself
+		seen := func(batch transport.Batch) error {
+			readAt = start
+			return apply(batch)
+		}
+		if unread {
+			return p.pull(ctx, b.zone, seen)
+		}
+		return ep.PullEvent(ctx, ev, seen)
+	})
+	return false, readAt, err
+}
+
+// finish ends a pass: the nudge of the kinds it applied first, then the
+// control queues, so the slices' save starts ahead of the echoes' (live
+// link R4).
+func (p *Processor) finish(ctx context.Context, ps *pass, errs []error) (PassReport, error) {
+	p.nudge(ps)
 	written, _, err := p.flushAll(ctx)
 	ps.report.ControlsWritten = written
-	p.nudge(ps)
 	return ps.report, errors.Join(append(errs, err)...)
+}
+
+// eventRead stamps ev's arrival → readAt, the start of the read it triggers
+// for a phone's write (live link R7's event_read); never inside a
+// transaction.
+func (p *Processor) eventRead(ev transport.Event, readAt time.Time) {
+	if p.cfg.Latency != nil {
+		p.cfg.Latency.EventRead(string(p.cfg.Transport.Kind()), ev.ArrivedAt, readAt)
+	}
+}
+
+// boxLock locks mailbox zone for one read → apply → token move and returns
+// its unlock: the event lane and the backstop pass never read one mailbox
+// at once, so its token only moves forward, while another mailbox's read
+// goes on.
+func (p *Processor) boxLock(zone string) (unlock func()) {
+	m := p.keyed(&p.zones, zone)
+	if !m.TryLock() {
+		if p.boxWait != nil {
+			p.boxWait(zone)
+		}
+		m.Lock()
+	}
+	return m.Unlock
+}
+
+// flushLock locks control queue key for one write of its rows and returns
+// its unlock: rows of one queue go out in order, another queue's go on.
+func (p *Processor) flushLock(queue string) (unlock func()) {
+	m := p.keyed(&p.queues, queue)
+	if !m.TryLock() {
+		if p.queueWait != nil {
+			p.queueWait(queue)
+		}
+		m.Lock()
+	}
+	return m.Unlock
+}
+
+// keyed is locks' mutex for key, made on first use.
+func (p *Processor) keyed(locks *map[string]*sync.Mutex, key string) *sync.Mutex {
+	p.boxMu.Lock()
+	defer p.boxMu.Unlock()
+	if *locks == nil {
+		*locks = map[string]*sync.Mutex{}
+	}
+	m := (*locks)[key]
+	if m == nil {
+		m = &sync.Mutex{}
+		(*locks)[key] = m
+	}
+	return m
+}
+
+// readBox reads b's own mailbox through read, its held actions next in line
+// first, and notes how the read ended. b's mailbox lock is held; p.mu is
+// taken for the held actions and for each page's apply, not for the read.
+func (p *Processor) readBox(ctx context.Context, b mailbox, ps *pass, read func(apply func(transport.Batch) error) error) error {
+	err := p.locked(func() error { return p.drainHeldActive(ctx, b, ps) })
+	if err == nil {
+		err = p.readMailboxWith(ctx, b, ps, read)
+	}
+	p.lockMu()
+	p.noteRead(b.zone, err)
+	p.mu.Unlock()
+	return err
+}
+
+// lockMu takes p.mu for a pass's apply.
+func (p *Processor) lockMu() {
+	if !p.mu.TryLock() {
+		if p.muWait != nil {
+			p.muWait()
+		}
+		p.mu.Lock()
+	}
+}
+
+// locked runs f under p.mu.
+func (p *Processor) locked(f func() error) error {
+	p.lockMu()
+	defer p.mu.Unlock()
+	return f()
+}
+
+// noteRead records how the read of mailbox zone ended (Processor.unread);
+// p.mu is held.
+func (p *Processor) noteRead(zone string, err error) {
+	if err == nil {
+		delete(p.unread, zone)
+		return
+	}
+	if p.unread == nil {
+		p.unread = map[string]bool{}
+	}
+	p.unread[zone] = true
+}
+
+// ReadsEvents reports whether PassEvent can narrow an event to one mailbox
+// (the transport is an EventPuller); otherwise it is Pass.
+func (p *Processor) ReadsEvents() bool {
+	_, ok := p.cfg.Transport.(EventPuller)
+	return ok
+}
+
+// newPass is a pass with its budget (BatchLimit, or the test's).
+func (p *Processor) newPass() *pass {
+	ps := &pass{budget: BatchLimit}
+	if p.batch > 0 {
+		ps.budget = p.batch
+	}
+	return ps
+}
+
+// passBoxes is Pass over boxes, each zone under its mailbox lock; p.run is
+// held.
+func (p *Processor) passBoxes(ctx context.Context, boxes []mailbox, ps *pass) (PassReport, error) {
+	var errs []error
+	for _, g := range p.withHelloZone(byZone(boxes), false) {
+		errs = p.readZone(ctx, g, ps, errs)
+	}
+	return p.finish(ctx, ps, errs)
+}
+
+// readZone reads g under its mailbox lock, adding what stopped a phone to
+// errs.
+func (p *Processor) readZone(ctx context.Context, g zoneGroup, ps *pass, errs []error) []error {
+	defer p.boxLock(g.zone)()
+	if g.shared { // CloudKit's one RelayZone: read once for every phone (shared.go)
+		return append(errs, p.passShared(ctx, g, ps)...)
+	}
+	for _, b := range g.boxes {
+		// Held actions that are next in line first: a drain an earlier
+		// pass left at the batch limit (or a crash) resumes here.
+		errs = p.passError(b, p.readBox(ctx, b, ps, func(apply func(transport.Batch) error) error {
+			return p.pull(ctx, b.zone, apply)
+		}), errs)
+	}
+	return errs
+}
+
+// passError logs the error that stopped b's phone and adds it to errs (nil
+// adds nothing). The batch limit and a re-link are no errors: the rest is
+// read next pass (Remaining counts the first).
+func (p *Processor) passError(b mailbox, err error, errs []error) []error {
+	if err == nil {
+		return errs
+	}
+	switch {
+	case errors.Is(err, errBudget):
+		return errs
+	case errors.Is(err, errRelinked):
+		log.Printf("hub: device %s was re-linked or unlinked during a pass: its mailbox is read again next pass", b.id)
+		return errs
+	}
+	// One phone's failure never holds back the other phones.
+	p.failLog.Printf("hub: reading device %s's mailbox: %s", b.id, logreason.With(errClass(err), err))
+	return append(errs, err)
+}
+
+// contact tells Config.Contact of a phone contact at at.
+func (p *Processor) contact(at time.Time) {
+	if p.cfg.Contact != nil {
+		p.cfg.Contact(at)
+	}
 }
 
 func (p *Processor) nudge(ps *pass) {
@@ -219,15 +685,18 @@ func (p *Processor) pull(ctx context.Context, zone string, apply func(transport.
 	}
 }
 
-// readMailbox pulls b's changes page by page. After TOKEN_EXPIRED the whole
-// mailbox comes again from 0 (Batch.Reset): every surviving action is then a
-// repeat. The processor mirrors nothing per zone (held actions are the
-// hub's own state, not a copy of the mailbox), so a Reset drops nothing. A
-// pull stopped by the batch limit or by a re-link stores no token for the
-// page: the rest of it (a re-linked phone's new records included) is read
-// again next pass.
-func (p *Processor) readMailbox(ctx context.Context, b mailbox, ps *pass) error {
-	err := p.pull(ctx, b.zone, func(batch transport.Batch) error {
+// readMailboxWith hands each page read gives of b's own mailbox (the hosted
+// relay's Pull: page by page) to handle, under p.mu.
+// After TOKEN_EXPIRED the whole mailbox comes again from 0 (Batch.Reset):
+// every surviving action is then a repeat. The processor mirrors nothing per
+// zone (held actions are the hub's own state, not a copy of the mailbox), so
+// a Reset drops nothing. A pull stopped by the batch limit or by a re-link
+// stores no token for the page: the rest of it (a re-linked phone's new
+// records included) is read again next pass.
+func (p *Processor) readMailboxWith(ctx context.Context, b mailbox, ps *pass, read func(apply func(transport.Batch) error) error) error {
+	err := read(func(batch transport.Batch) error {
+		p.lockMu()
+		defer p.mu.Unlock()
 		for i, rec := range batch.Changed {
 			if ps.budget <= 0 {
 				ps.report.Remaining += len(batch.Changed) - i
@@ -248,17 +717,35 @@ func (p *Processor) readMailbox(ctx context.Context, b mailbox, ps *pass) error 
 	return nil
 }
 
-// handle opens one mailbox record and routes it. A record that does not
-// open as this phone's (no linked key, another phone's, the hub's own echo,
-// rolled back) is dropped with no answer (D9).
+// handle opens one mailbox record of b's phone and routes it. A record that
+// does not open as this phone's (no linked key, another phone's, the hub's
+// own echo, rolled back) is dropped with no answer (D9). In the shared
+// mailbox, where readShared has routed the record by its sender, a name
+// naming another device than its sender is dropped too (sender_mismatch,
+// protocol §7.5 point 1). A device record is read on both transports, under
+// the same check; the hosted relay's own mailboxes keep their phase-1 handling
+// of every other kind.
 func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored, ps *pass) error {
+	// The latency samples' read time: when the processor reached this record,
+	// so an earlier record's handler time in the same page is not counted.
+	readAt := p.cfg.Clock()
 	opened, err := p.cfg.Opener.FromPhone(b.zone, rec.Name, rec.Envelope)
 	if err != nil {
 		if !droppable(err) {
 			return err
 		}
-		if errors.Is(err, secure.ErrWrongClass) { // the hub's own records come back through the feed
-			return p.ownReceived(ctx, b, rec, ps)
+		if errors.Is(err, secure.ErrEpochNotAccepted) {
+			return p.oldEpochAction(ctx, b, rec, ps)
+		}
+		if errors.Is(err, secure.ErrWrongClass) && !b.shared { // the hub's own records come back through the feed
+			o, err := p.cfg.Opener.OwnEcho(b.zone, rec.Name, rec.Envelope)
+			if err != nil {
+				if droppable(err) {
+					return nil
+				}
+				return err
+			}
+			return p.ownReceived(ctx, b, rec, o, ps)
 		}
 		log.Printf("hub: dropped a mailbox record of device %s: %s", b.id, errClass(err))
 		return nil
@@ -267,25 +754,64 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 		log.Printf("hub: dropped a record of device %s found in device %s's mailbox", opened.Sender, b.id)
 		return nil
 	}
+	if b.shared && !namesItsSender(opened) {
+		log.Printf("hub: dropped a record of device %s: sender_mismatch", b.id)
+		return nil
+	}
 	if p.fault != nil {
 		if err := p.fault("opened"); err != nil {
+			return err
+		}
+		if err := p.fault("opened " + b.id.String() + " " + rec.Name); err != nil {
+			return err
+		}
+	}
+	if p.standby() {
+		if p.onStandby(ctx, b, rec, opened) {
+			return nil
+		}
+	} else if opened.Frame.Kind == kindAction {
+		// Sim rule 16: a lapsed phone's action is left to it (it was told
+		// hub_on_relay over CloudKit). One sent before its last lapse is
+		// answered expired by apply; an upload is answered failed by
+		// settleUpload, so the phone keeps the audio.
+		if lapsed, err := p.lapsed(b, orderedSeq(b, opened)); err != nil || lapsed {
 			return err
 		}
 	}
 	switch opened.Frame.Kind {
 	case kindAction:
 		ps.report.Read++
-		err = p.action(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq)}, opened, ps)
+		err = p.action(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq), at: rec.ServerAt, readAt: readAt}, opened, ps)
 	case kindControl:
 		ps.report.Read++
 		err = p.phoneControl(ctx, b, rec, opened, ps)
 	case kindRecordingUpload:
 		ps.report.Read++
-		err = p.recordingUpload(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq)}, opened, rec.AttachmentID, ps)
+		err = p.recordingUpload(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq), at: rec.ServerAt}, opened, rec.AttachmentID, ps)
+	case KindChatAttachment:
+		ps.report.Read++
+		err = p.chatAttachment(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq), at: rec.ServerAt}, opened, rec.AttachmentID, ps)
+	case kindDevice:
+		if !b.shared && !namesItsSender(opened) { // the shared mailbox checked this above
+			log.Printf("hub: dropped a device record of device %s: sender_mismatch", b.id)
+			return nil
+		}
+		ps.report.Read++
+		err = p.handleDeviceRecord(ctx, b, rec, opened)
 	default:
-		// device records belong to another lane; an unknown kind has no work
-		// (the Kit's RelayRecordKind decoding).
+		// An unknown kind has no work (the Kit's RelayRecordKind decoding).
 		return nil
 	}
 	return err
+}
+
+// ownEcho opens the hub's own record read back from b's mailbox: in the
+// shared mailbox under b's key only (OwnEchoFor), in a phone's own mailbox
+// as phase 1 did (OwnEcho).
+func (p *Processor) ownEcho(b mailbox, name string, env []byte) (secure.Opened, error) {
+	if b.shared {
+		return p.cfg.Opener.OwnEchoFor(b.id, name, env)
+	}
+	return p.cfg.Opener.OwnEcho(b.zone, name, env)
 }

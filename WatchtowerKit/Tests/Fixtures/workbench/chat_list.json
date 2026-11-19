@@ -1,0 +1,12 @@
+{
+  "conversations": [
+    {"id": 3, "title": "Payments rollout", "pinned": true, "updated_at": 1700000300, "project": {"id": 1, "name": "Acme launch"}, "state": "answering", "last_line": "The rollout slipped to Friday.", "lease_owner": "hub", "turn_id": "turn-2", "last_answer_at": 1700000010, "unread": true},
+    {"id": 2, "title": "Weekly notes", "pinned": false, "updated_at": 1700000200, "state": "waiting", "last_line": "", "pending_tool": "send_slack_message"},
+    {"id": 1, "title": "Hiring plan", "pinned": false, "updated_at": 1700000100.5, "state": "unread", "last_line": "Three roles open this quarter.", "last_answer_at": 1700000090, "unread": true}
+  ],
+  "models": [
+    {"display_name": "Claude", "images": true, "model": "opus", "pdf": true, "provider": "claude"},
+    {"display_name": "Codex", "images": true, "model": "gpt-5.6-sol", "pdf": false, "provider": "codex"}
+  ],
+  "projects": [{"id": 1, "name": "Acme launch"}]
+}

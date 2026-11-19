@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
@@ -188,6 +189,13 @@ func runSpecReviewRun(cmd *cobra.Command, _ []string) error {
 	// SIGINT/SIGTERM cancel the model call, which kills its process group.
 	ctx, stop := notifyShutdownContext(parent, stderrLogf)
 	defer stop()
+	// A reviewer the daemon sweep relaunched is background work: paused, it
+	// leaves the row queued for the sweep, before it claims it (D20 of
+	// #1886). The owner's launch is never refused here.
+	if err := aiconsent.Check(ctx); errors.Is(err, aiconsent.ErrPaused) {
+		fmt.Fprintf(cmd.ErrOrStderr(), "spec-review: ask %d: %v; the review stays queued\n", id, err)
+		return nil
+	}
 	if err := specreview.Run(ctx, deps, id); err != nil {
 		return fmt.Errorf("spec review of ask %d: %w", id, err)
 	}
@@ -248,7 +256,7 @@ func runSpecReviewStart(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("locating the watchtower binary: %w", err)
 	}
 	// A failed launch leaves the row queued: the daemon sweep starts it.
-	if err := LaunchSpecReview(exe, id, filepath.Join(cfg.WorkspaceDir(), "logs")); err != nil {
+	if err := LaunchSpecReview(exe, id, filepath.Join(cfg.WorkspaceDir(), "logs"), processOriginEnv()); err != nil {
 		return fmt.Errorf("launching spec review of ask %d: %w", id, err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "spec review of ask %d started\n", id)

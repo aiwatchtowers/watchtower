@@ -1,3 +1,4 @@
+import ChatWire
 import Foundation
 import Testing
 import Yams
@@ -58,6 +59,227 @@ struct ConfigServiceTests {
         try service.save()
         let saved = try String(contentsOfFile: path, encoding: .utf8)
         #expect(saved.contains("enabled: true"))
+    }
+
+    @Test("Save takes the config lock, then re-reads and writes inside it")
+    func testSaveHoldsConfigLockAroundReadAndWrite() throws {
+        let path = makeTempConfig("sync: {workers: 2}")
+        let recorder = RecordingConfigFileAccess()
+        let service = ConfigService(configPath: path, fileAccess: recorder.access)
+        service.syncWorkers = 4
+        try service.save()
+        #expect(recorder.events == ["lock", "read(locked)", "write(locked)", "unlock"])
+        #expect(ConfigService(configPath: path).syncWorkers == 4)
+    }
+
+    @Test("Save keeps keys another writer set after this instance loaded the file")
+    func testSaveKeepsKeysWrittenByOthers() throws {
+        let path = makeTempConfig("sync: {workers: 2}")
+        let service = ConfigService(configPath: path)
+        // `watchtower ai background allow` and `jira login` write behind the loaded instance.
+        try ConfigFileLock.withLock(configPath: path) { token in
+            try ConfigFileWriter.writeConfigFile(
+                "sync: {workers: 2}\nai: {background_runs: allowed}\njira: {enabled: true}\n",
+                configPath: path, token: token
+            )
+        }
+        service.syncWorkers = 5
+        try service.save()
+        let yaml = try #require(try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any])
+        #expect((yaml["ai"] as? [String: Any])?["background_runs"] as? String == "allowed")
+        #expect((yaml["jira"] as? [String: Any])?["enabled"] as? Bool == true)
+        #expect((yaml["sync"] as? [String: Any])?["workers"] as? Int == 5)
+    }
+
+    @Test("Save never writes ai.background_runs: the answer survives a Settings save")
+    func testSaveKeepsBackgroundRunsKey() throws {
+        let path = makeTempConfig("ai: {background_runs: allowed, model: old-model}\n")
+        let service = ConfigService(configPath: path)
+        #expect(service.backgroundRuns == "allowed")
+        #expect(!service.backgroundRunsUnreadable)
+        service.aiModel = "new-model"
+        try service.save()
+        let yaml = try #require(try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any])
+        let ai = try #require(yaml["ai"] as? [String: Any])
+        #expect(ai["background_runs"] as? String == "allowed")
+        #expect(ai["model"] as? String == "new-model")
+        #expect(service.backgroundRuns == "allowed")
+    }
+
+    @Test("ai.background_runs reads raw, absent as nil; an unreadable file is flagged, a missing one is not")
+    func testBackgroundRunsRead() throws {
+        #expect(ConfigService(configPath: makeTempConfig("ai: {background_runs: paused}\n")).backgroundRuns == "paused")
+        #expect(ConfigService(configPath: makeTempConfig("ai: {background_runs: maybe}\n")).backgroundRuns == "maybe")
+        let absent = ConfigService(configPath: makeTempConfig("ai: {model: m}\n"))
+        #expect(absent.backgroundRuns == nil)
+        #expect(!absent.backgroundRunsUnreadable)
+        let broken = ConfigService(configPath: makeTempConfig("ai: [unclosed\n"))
+        #expect(broken.backgroundRuns == nil)
+        #expect(broken.backgroundRunsUnreadable)
+        let scalar = ConfigService(configPath: makeTempConfig("just a string\n"))
+        #expect(scalar.backgroundRunsUnreadable)
+        let missing = ConfigService(configPath: makeTempConfig("") + ".missing")
+        #expect(missing.backgroundRuns == nil)
+        #expect(!missing.backgroundRunsUnreadable)
+    }
+
+    @Test("A mixed-case AI section: the answer reads as Go reads it, and a Save keeps it (no shadow `ai` map)")
+    func testSaveKeepsBackgroundRunsInMixedCaseAISection() throws {
+        let path = makeTempConfig("AI: {Background_Runs: paused, model: old-model}\nsync: {workers: 2}\n")
+        let service = ConfigService(configPath: path)
+        #expect(service.backgroundRuns == "paused")
+        #expect(service.aiModel == "old-model")
+        service.syncWorkers = 5
+        service.aiModel = "new-model"
+        try service.save()
+        let yaml = try #require(try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any])
+        #expect(yaml["ai"] == nil, "no second, lowercase ai map")
+        let ai = try #require(yaml["AI"] as? [String: Any])
+        #expect(ai["Background_Runs"] as? String == "paused")
+        #expect(ai["model"] as? String == "new-model")
+        #expect(ConfigService(configPath: path).backgroundRuns == "paused")
+    }
+
+    @Test("Keys set twice in different case are ambiguous: the answer reads unreadable (paused), as in Go")
+    func testAmbiguousKeyCaseIsUnreadable() throws {
+        for yaml in [
+            "AI: {background_runs: allowed}\nAi: {background_runs: paused}\n",
+            "ai: {background_runs: allowed}\nAI: {model: m}\n",
+            "ai: {Background_Runs: allowed, BACKGROUND_RUNS: paused}\n"
+        ] {
+            let service = ConfigService(configPath: makeTempConfig(yaml))
+            #expect(service.backgroundRuns == nil, "\(yaml)")
+            #expect(service.backgroundRunsUnreadable, "\(yaml)")
+        }
+    }
+
+    @Test("Save refuses an ambiguous or non-mapping AI section instead of overwriting it")
+    func testSaveRefusesAmbiguousOrNonMappingAISection() throws {
+        for yaml in [
+            "AI: [one, two]\nsync: {workers: 2}\n",
+            "AI: just text\nsync: {workers: 2}\n",
+            "AI: {background_runs: paused}\nAi: {model: m}\nsync: {workers: 2}\n"
+        ] {
+            let path = makeTempConfig(yaml)
+            let service = ConfigService(configPath: path)
+            service.syncWorkers = 5
+            #expect(throws: ConfigUnreadableError.self, "\(yaml)") { try service.save() }
+            #expect(try String(contentsOfFile: path, encoding: .utf8) == yaml, "nothing written")
+        }
+    }
+
+    @Test("A config.yaml that cannot be reached or read is unreadable, never absent")
+    func testBackgroundRunsUnreadableFileOrDirectory() throws {
+        let path = makeTempConfig("ai: {background_runs: paused}\n")
+        let dir = (path as NSString).deletingLastPathComponent
+        let fm = FileManager.default
+        defer {
+            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir)
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        }
+        let service = ConfigService(configPath: path)
+        #expect(service.backgroundRuns == "paused")
+
+        try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: path)
+        service.reloadBackgroundRuns()
+        #expect(service.backgroundRunsUnreadable, "an unreadable file")
+        #expect(ConfigService(configPath: path).backgroundRunsUnreadable)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+
+        try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: dir)
+        service.reloadBackgroundRuns()
+        #expect(service.backgroundRuns == nil)
+        #expect(service.backgroundRunsUnreadable, "a directory this process cannot enter")
+        let fresh = ConfigService(configPath: path)
+        #expect(fresh.backgroundRunsUnreadable)
+        #expect(fresh.parseError != nil)
+    }
+
+    @Test("savedAIProvider follows the file, not the unsaved provider edit")
+    func testSavedAIProviderIgnoresEdits() throws {
+        let path = makeTempConfig("ai: {provider: claude}\n")
+        let service = ConfigService(configPath: path)
+        #expect(service.savedAIProvider == "claude")
+        service.aiProvider = "codex"
+        #expect(service.savedAIProvider == "claude", "an unsaved edit is not what runs")
+        try service.save()
+        #expect(service.savedAIProvider == "codex")
+        #expect(!service.hasUnsavedEdits, "the saved provider is bookkeeping, not a setting")
+    }
+
+    @Test("reloadBackgroundRuns picks up a provider changed on disk and keeps the unsaved provider edit")
+    func testReloadBackgroundRunsRefreshesSavedProvider() throws {
+        let path = makeTempConfig("ai: {provider: claude}\n")
+        let clean = ConfigService(configPath: path)
+        let edited = ConfigService(configPath: path)
+        edited.aiProvider = "ollama"
+        try ConfigFileLock.withLock(configPath: path) { token in
+            try ConfigFileWriter.writeConfigFile("ai: {provider: codex, background_runs: allowed}\n", configPath: path, token: token)
+        }
+        for service in [clean, edited] { service.reloadBackgroundRuns() }
+        #expect(clean.savedAIProvider == "codex")
+        #expect(edited.savedAIProvider == "codex")
+        #expect(edited.aiProvider == "ollama", "the unsaved edit stays")
+        #expect(clean.aiProvider == "claude", "only the answer and the saved provider are re-read")
+
+        try ConfigFileLock.withLock(configPath: path) { token in
+            try ConfigFileWriter.writeConfigFile("ai: [unclosed\n", configPath: path, token: token)
+        }
+        clean.reloadBackgroundRuns()
+        #expect(clean.savedAIProvider == "codex", "an unreadable file keeps the last one")
+    }
+
+    @Test("reloadBackgroundRuns picks up an answer written behind the instance and keeps unsaved edits")
+    func testReloadBackgroundRunsKeepsEdits() throws {
+        let path = makeTempConfig("ai: {model: m}\n")
+        let service = ConfigService(configPath: path)
+        service.aiModel = "edited"
+        try ConfigFileLock.withLock(configPath: path) { token in
+            try ConfigFileWriter.writeConfigFile("ai: {model: m, background_runs: allowed}\n", configPath: path, token: token)
+        }
+        service.reloadBackgroundRuns()
+        #expect(service.backgroundRuns == "allowed")
+        #expect(service.aiModel == "edited")
+
+        let clean = ConfigService(configPath: path)
+        try ConfigFileLock.withLock(configPath: path) { token in
+            try ConfigFileWriter.writeConfigFile("ai: {model: m, background_runs: paused}\n", configPath: path, token: token)
+        }
+        clean.reloadBackgroundRuns()
+        #expect(clean.backgroundRuns == "paused")
+        #expect(!clean.hasUnsavedEdits, "the answer is not a Settings edit")
+
+        try ConfigFileLock.withLock(configPath: path) { token in
+            try ConfigFileWriter.writeConfigFile("ai: [unclosed\n", configPath: path, token: token)
+        }
+        clean.reloadBackgroundRuns()
+        #expect(clean.backgroundRuns == nil)
+        #expect(clean.backgroundRunsUnreadable)
+    }
+
+    /// #1886 (C2): config.yaml gone means not answered, as Go reads it; a
+    /// save from the last reload's snapshot never writes the cached answer back.
+    @Test("Save after config.yaml was deleted does not write the cached background AI answer back")
+    func testSaveAfterTheFileWentDropsTheCachedAnswer() throws {
+        let path = makeTempConfig("AI: {provider: claude, Background_Runs: allowed}\nsync: {poll_interval: 5m}\n")
+        let service = ConfigService(configPath: path)
+        #expect(service.backgroundRuns == "allowed")
+        try FileManager.default.removeItem(atPath: path)
+        try service.save()
+        let text = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(!text.lowercased().contains("background_runs"), "\(text)")
+        #expect(text.contains("poll_interval"), "the rest of the snapshot is kept")
+    }
+
+    @Test("Save over a config that exists but does not parse throws and writes nothing")
+    func testSaveRefusesUnparsableConfig() throws {
+        let path = makeTempConfig("ai: {background_runs: allowed}\nsync: {workers: 2}\n")
+        let service = ConfigService(configPath: path)
+        let broken = "ai: {background_runs: allowed\nsync: [unclosed\n"
+        try broken.write(toFile: path, atomically: true, encoding: .utf8)
+        service.syncWorkers = 7
+        #expect(throws: ConfigUnreadableError.self) { try service.save() }
+        #expect(try String(contentsOfFile: path, encoding: .utf8) == broken)
     }
 
     @Test("Reserve starts off and independent models survive switches and Saves", arguments: ["claude", "codex"])

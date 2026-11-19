@@ -12,6 +12,7 @@ import (
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/hub/actions"
+	"watchtower/internal/hub/wire"
 	"watchtower/internal/sessionagent"
 )
 
@@ -19,10 +20,8 @@ import (
 const (
 	// StartBriefLimit is the phone's task description cap for a start
 	// without a target, in characters.
-	StartBriefLimit        = 4000
-	startNotAllowedMessage = "This phone is not allowed to start sessions. " +
-		"On the Mac: Watchtower → Settings → Mobile → allow typing, then starting sessions."
-	startTimeoutMessage = "The Mac did not finish this in time — check the session on the Mac"
+	StartBriefLimit     = 4000
+	startTimeoutMessage = "Your tower did not finish this in time — check the session there"
 )
 
 // Start refusals the session port answers with (WorkbenchesViewModel's
@@ -57,8 +56,10 @@ var startStopKinds = []string{"session_start", "session_stop"}
 // the port's to add after either. open_existing answers the target's session
 // when it has one. With no entity (#1189) it is New Session: mode new, the
 // phone's brief required (1–StartBriefLimit characters after trimming).
-// bring_forward is checked and has nothing to bring forward: the hub has no
-// window. applied carries {session_id, stage: starting}.
+// bring_forward true, once the start is applied, tells Deps.BringForward the
+// workbench and the session (Desktop brings them forward; a headless host
+// has no window and ignores it); false moves nothing on the Mac's screen.
+// applied carries {session_id, stage: starting}.
 //
 // session_stop (entity the session id) is a host Stop request on a live
 // board session; one that is not live is applied with no request.
@@ -75,10 +76,22 @@ func (h *Handlers) startSession(ctx context.Context, r actions.Request) actions.
 	workbenchID, okWB := intParam(r, "workbench_id")
 	mode, okMode := stringParam(r, "mode")
 	planFirst, okPlan := boolParam(r, "plan_first")
-	_, okForward := boolParam(r, "bring_forward")
+	bringForward, okForward := boolParam(r, "bring_forward")
 	if !okWB || !okMode || !okPlan || !okForward {
 		return failed(reasonInvalidParams, "session_start needs a workbench_id, mode, plan_first and bring_forward")
 	}
+	out := h.startOne(ctx, r, workbenchID, mode, planFirst)
+	if bringForward && h.d.BringForward != nil && out.Status == wire.StatusApplied {
+		if id, ok := out.Result["session_id"].(int64); ok {
+			h.d.BringForward(workbenchID, id)
+		}
+	}
+	return out
+}
+
+// startOne is startSession past the common parameters: a target's start, or
+// New Session without one.
+func (h *Handlers) startOne(ctx context.Context, r actions.Request, workbenchID int64, mode string, planFirst bool) actions.Outcome {
 	if r.Action.EntityID == nil {
 		return h.startUntargeted(ctx, r, workbenchID, mode, planFirst)
 	}
@@ -99,7 +112,7 @@ func (h *Handlers) startSession(ctx context.Context, r actions.Request) actions.
 	}
 	mayStart, typing := h.startGrant(r)
 	if !mayStart {
-		return failed(reasonDeviceNotAllowed, startNotAllowedMessage)
+		return failed(reasonDeviceNotAllowed, h.startNotAllowed(startNotAllowedLead, r.Device))
 	}
 	if refusal := h.startScope(ctx, targetID, workbenchID); refusal != nil {
 		return *refusal
@@ -135,14 +148,14 @@ func (h *Handlers) startUntargeted(ctx context.Context, r actions.Request, workb
 		return failed(reasonInvalidParams, "The task description is longer than "+strconv.Itoa(StartBriefLimit)+" characters")
 	}
 	if mayStart, typing := h.startGrant(r); !mayStart || !typing {
-		return failed(reasonDeviceNotAllowed, startNotAllowedMessage)
+		return failed(reasonDeviceNotAllowed, h.startNotAllowed(startNotAllowedLead, r.Device))
 	}
 	exists, err := h.workbenchExists(ctx, workbenchID)
 	if err != nil {
 		return failed(reasonWriteFailed, "Could not read the workbench: "+err.Error())
 	}
 	if !exists {
-		return failed(reasonNotFound, "This workbench no longer exists on the Mac")
+		return failed(reasonNotFound, "This workbench no longer exists on your tower")
 	}
 	return h.launch(ctx, StartRequest{Workbench: workbenchID, Brief: brief, PlanFirst: planFirst})
 }
@@ -165,9 +178,9 @@ func (h *Handlers) launch(ctx context.Context, req StartRequest) actions.Outcome
 	case errors.Is(err, ErrStartNotOnBoard):
 		return failed(reasonNotOnBoard, "That target is not on a workbench board")
 	case errors.Is(err, ErrStartInProgress):
-		return failed(reasonConflict, "A session for this target is being started on the Mac")
+		return failed(reasonConflict, "A session for this target is being started on your tower")
 	case errors.Is(err, ErrStartCleaningUp):
-		return failed(reasonConflict, "This session is being cleaned up on the Mac")
+		return failed(reasonConflict, "This session is being cleaned up on your tower")
 	}
 	return failed(reasonWriteFailed, err.Error())
 }
@@ -192,13 +205,13 @@ func (h *Handlers) startScope(ctx context.Context, targetID, workbenchID int64) 
 		return &o
 	}
 	if !exists {
-		o := failed(reasonNotFound, "This workbench no longer exists on the Mac")
+		o := failed(reasonNotFound, "This workbench no longer exists on your tower")
 		return &o
 	}
 	var project sql.NullInt64
 	err = h.d.DB.QueryRowContext(ctx, `SELECT project_id FROM targets WHERE id = ?`, targetID).Scan(&project)
 	if errors.Is(err, sql.ErrNoRows) {
-		o := failed(reasonNotFound, "This target no longer exists on the Mac")
+		o := failed(reasonNotFound, "This target no longer exists on your tower")
 		return &o
 	}
 	if err != nil {

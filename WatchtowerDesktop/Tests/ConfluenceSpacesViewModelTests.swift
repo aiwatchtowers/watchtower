@@ -63,6 +63,34 @@ private final class ScriptedConfluenceCLI: CLIRunnerProtocol, @unchecked Sendabl
 
     init(pool: DatabasePool) { self.pool = pool }
 
+    /// Waiters for a state of the calls; `waitLock` is always taken before
+    /// `lock` (a check reads the counters under `lock`), never after.
+    private let waitLock = NSLock()
+    private var callWaiters: [(met: (ScriptedConfluenceCLI) -> Bool, continuation: CheckedContinuation<Void, Never>)] = []
+
+    /// Returns once `met` holds for the calls (re-checked after each one).
+    func untilCalls(_ met: @escaping (ScriptedConfluenceCLI) -> Bool) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            waitLock.lock()
+            if met(self) {
+                waitLock.unlock()
+                continuation.resume()
+            } else {
+                callWaiters.append((met, continuation))
+                waitLock.unlock()
+            }
+        }
+    }
+
+    /// After a call changed the counters, outside `lock`.
+    private func callsChanged() {
+        waitLock.lock()
+        let ready = callWaiters.filter { $0.met(self) }.map(\.continuation)
+        callWaiters.removeAll { $0.met(self) }
+        waitLock.unlock()
+        ready.forEach { $0.resume() }
+    }
+
     func armSelectGate() { gateArmed = true }
 
     func openSelectGate() {
@@ -76,6 +104,7 @@ private final class ScriptedConfluenceCLI: CLIRunnerProtocol, @unchecked Sendabl
 
     func run(args: [String]) async throws -> Data {
         lock.withLock { recorded.append(args) }
+        callsChanged()
         guard args.first == "confluence", args.count >= 2 else { return Data() }
         switch args[1] {
         case "spaces":
@@ -85,6 +114,7 @@ private final class ScriptedConfluenceCLI: CLIRunnerProtocol, @unchecked Sendabl
                 let json = call < spacesQueue.count ? spacesQueue[call] : spacesJSON
                 return (call, json, gatedSpacesCalls.contains(call))
             }
+            callsChanged()
             if gated { await waitForSpacesRelease(call) }
             if let spacesError { throw CLIRunnerError.nonZeroExit(code: 1, stderr: spacesError) }
             return Data(json.utf8)
@@ -440,7 +470,7 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
         }
         let task = Task { [weak viewVM] in await viewVM?.setSelected("ENG", true) }
         // Let the select reach the CLI, then "navigate away".
-        guard await waitUntil("select call", { cli.selectCount == 1 }) else { return }
+        await cli.untilCalls { $0.selectCount == 1 }
         weak var weakVM = viewVM
         viewVM = nil
         XCTAssertNotNil(weakVM, "AppState keeps the VM alive after the view lets go")
@@ -527,20 +557,6 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
 
     // MARK: - Fix round 1
 
-    /// Spins the main actor until `condition` holds (the CLI fake runs off
-    /// the main actor); fails after 5 s instead of hanging.
-    private func waitUntil(_ what: String, _ condition: () -> Bool) async -> Bool {
-        let deadline = Date().addingTimeInterval(5)
-        while !condition() {
-            guard Date() < deadline else {
-                XCTFail("timed out waiting for \(what)")
-                return false
-            }
-            try? await Task.sleep(for: .milliseconds(2))
-        }
-        return true
-    }
-
     private func makeVM(
         cli: ScriptedConfluenceCLI,
         pool: DatabasePool,
@@ -615,9 +631,9 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
         let vm = ConfluenceSpacesViewModel(accountID: acct, dbPool: pool, runner: cli)
 
         let first = Task { await vm.load() }
-        guard await waitUntil("first spaces call", { cli.spacesCalls == 1 }) else { return }
+        await cli.untilCalls { $0.spacesCalls == 1 }
         let second = Task { await vm.load() }
-        guard await waitUntil("second spaces call", { cli.spacesCalls == 2 }) else { return }
+        await cli.untilCalls { $0.spacesCalls == 2 }
 
         cli.releaseSpaces(0)
         await first.value
@@ -640,9 +656,9 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
         let vm = ConfluenceSpacesViewModel(accountID: acct, dbPool: pool, runner: cli)
 
         let first = Task { await vm.load() }
-        guard await waitUntil("first spaces call", { cli.spacesCalls == 1 }) else { return }
+        await cli.untilCalls { $0.spacesCalls == 1 }
         let second = Task { await vm.load() }
-        guard await waitUntil("second spaces call", { cli.spacesCalls == 2 }) else { return }
+        await cli.untilCalls { $0.spacesCalls == 2 }
 
         cli.releaseSpaces(1)
         await second.value
@@ -667,7 +683,7 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
         await vm.load()
 
         let first = Task { await vm.setSelected("ENG", true) }
-        guard await waitUntil("select call", { cli.selectCount == 1 }) else { return }
+        await cli.untilCalls { $0.selectCount == 1 }
         XCTAssertTrue(vm.busyKeys.contains("ENG"))
 
         await vm.setSelected("ENG", true)

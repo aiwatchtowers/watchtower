@@ -34,15 +34,15 @@ final class AgentActionCardViewConfluenceLinkTests: XCTestCase {
         let action = try row { db in
             try TestDatabase.insertAgentAction(db, tool: "edit_confluence_page", external: true, argsJSON: args)
         }
-        XCTAssertEqual(AgentActionCardView.summaryLines(for: action), ["Page: Confluence page · edits version 7"])
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        XCTAssertEqual(MacAgentActionCard.summaryLines(for: action), ["Page: Confluence page · edits version 7"])
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertEqual(try view.inspect().find(ViewType.Link.self).labelView().text().string(),
                        "Open “Confluence page” in Confluence ↗")
     }
 
     func testConfluenceEditCardRendersPageLinkLocatorsAndRemovals() throws {
-        let view = AgentActionCardView(action: try confluenceRow(), inFlight: false,
-                                       onApprove: {}, onReject: {}, onRetry: {})
+        let view = MacAgentActionCard(action: try confluenceRow(), inFlight: false,
+                                      onApprove: {}, onReject: {}, onRetry: {})
         let link = try view.inspect().find(ViewType.Link.self)
         XCTAssertEqual(try link.url(), URL(string: "https://example.atlassian.net/wiki/spaces/ENG/pages/98765/Rollout"))
         XCTAssertNoThrow(try view.inspect().find(text: "text in Plan"))
@@ -55,8 +55,8 @@ final class AgentActionCardViewConfluenceLinkTests: XCTestCase {
     /// generic result-url link would repeat the preview's page link).
     func testAppliedConfluenceEditNamesTheNewVersionAndLinksOnce() throws {
         let result = #"{"page_id":"98765","title":"Rollout plan","url":"https://example.atlassian.net/wiki/spaces/ENG/pages/98765/Rollout","version":8}"#
-        let view = AgentActionCardView(action: try confluenceRow(status: "applied", resultJSON: result),
-                                       inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        let view = MacAgentActionCard(action: try confluenceRow(status: "applied", resultJSON: result),
+                                      inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertNoThrow(try view.inspect().find(text: "Saved as version 8"))
         XCTAssertEqual(try view.inspect().findAll(ViewType.Link.self).count, 1)
     }
@@ -69,8 +69,8 @@ final class AgentActionCardViewConfluenceLinkTests: XCTestCase {
         let action = try row { db in
             try TestDatabase.insertAgentAction(db, tool: "edit_confluence_page", external: true, argsJSON: args)
         }
-        XCTAssertNil(try XCTUnwrap(AgentActionCardView.confluenceEdit(for: action)).pageURL)
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        XCTAssertNil(try XCTUnwrap(MacAgentActionCard.confluenceEdit(for: action)).pageURL)
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertThrowsError(try view.inspect().find(ViewType.Link.self))
     }
 }

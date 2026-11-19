@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// Why Go would refuse a stored answer: the Swift twin of `asks.ParseAnswer`
 /// then `asks.ValidateAnswer` (internal/asks/answer.go), checked in the same

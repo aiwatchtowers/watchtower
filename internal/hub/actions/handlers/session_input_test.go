@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/agentkind"
@@ -533,7 +534,7 @@ func TestProj16_CodexSessionRefusedAsNotSupported(t *testing.T) {
 	for _, r := range []actions.Request{le.input(sid, "Also update the changelog"), le.finish(sid)} {
 		out := le.send(le.h, r)
 		wantOutcome(t, out, wire.StatusFailed, reasonNotSupported)
-		if want := "Codex sessions can't take messages from the phone yet. Type it on the Mac."; out.Message != want {
+		if want := "Codex sessions can't take messages from the phone yet. Type it on your tower."; out.Message != want {
 			t.Fatalf("message = %q, want %q", out.Message, want)
 		}
 	}
@@ -544,7 +545,7 @@ func TestProj16_CodexSessionRefusedAsNotSupported(t *testing.T) {
 }
 
 // not_found keeps its meaning: a session id with no board row (deleted) is
-// still "no longer exists on the Mac", whatever the capability table says.
+// still "no longer exists on your tower", whatever the capability table says.
 func TestProj16_DeletedSessionStillNotFound(t *testing.T) {
 	le := newLineEnv(t)
 	sid := le.agentSession("codex")
@@ -1300,39 +1301,42 @@ func TestTheRelayEchoesHeldThenTheLaterOutcomeAndKeepsIt(t *testing.T) {
 // the phone was answered outcome_unknown, so the line is never typed later
 // and that echo is never replaced. The phone's own re-send is typed once.
 func TestASlowFirstTryHeldAfterItsDeadlineIsNeverTyped(t *testing.T) {
-	le := newLineEnv(t)
-	le.timeout = 50 * time.Millisecond
-	h := le.register()
-	sid := le.liveSession()
-	le.setState(sid, "stopped")
-	release := make(chan struct{})
-	le.port.onDeliver = func(DeliverRequest) { <-release }
-	le.lp.setResult(DeliverResult{Outcome: DeliverHeld, Reason: inputReasonPromptHasText})
-	first := le.input(sid, "Ship it")
+	// The handler's 50 ms deadline runs out on a synctest bubble's clock.
+	synctest.Test(t, func(t *testing.T) {
+		le := newLineEnv(t)
+		le.timeout = 50 * time.Millisecond
+		h := le.register()
+		sid := le.liveSession()
+		le.setState(sid, "stopped")
+		release := make(chan struct{})
+		le.port.onDeliver = func(DeliverRequest) { <-release }
+		le.lp.setResult(DeliverResult{Outcome: DeliverHeld, Reason: inputReasonPromptHasText})
+		first := le.input(sid, "Ship it")
 
-	out := le.send(h, first)
+		out := le.send(h, first)
 
-	wantOutcome(t, out, wire.StatusFailed, reasonOutcomeUnknown)
-	close(release)
-	h.lines.tries.Wait()
-	if n := le.heldRowsOf(h); n != 0 {
-		t.Fatalf("%d held lines after the deadline", n)
-	}
+		wantOutcome(t, out, wire.StatusFailed, reasonOutcomeUnknown)
+		close(release)
+		h.lines.tries.Wait()
+		if n := le.heldRowsOf(h); n != 0 {
+			t.Fatalf("%d held lines after the deadline", n)
+		}
 
-	le.port.onDeliver = nil
-	le.lp.setResult(DeliverResult{Outcome: DeliverSubmitted})
-	again := le.send(h, le.input(sid, "Ship it"))
-	le.clock.advance(busyAfterSubmit)
-	le.setState(sid, "stopped")
-	h.DeliverHeld(context.Background())
-	le.register().DeliverHeld(context.Background())
+		le.port.onDeliver = nil
+		le.lp.setResult(DeliverResult{Outcome: DeliverSubmitted})
+		again := le.send(h, le.input(sid, "Ship it"))
+		le.clock.advance(busyAfterSubmit)
+		le.setState(sid, "stopped")
+		h.DeliverHeld(context.Background())
+		le.register().DeliverHeld(context.Background())
 
-	wantLine(t, again, deliverySubmitted, false)
-	if n := len(le.port.lines()); n != 2 {
-		t.Fatalf("%d deliveries, want the timed-out try and the re-send only", n)
-	}
-	settled(h)
-	wantEchoes(t, le, first)
+		wantLine(t, again, deliverySubmitted, false)
+		if n := len(le.port.lines()); n != 2 {
+			t.Fatalf("%d deliveries, want the timed-out try and the re-send only", n)
+		}
+		settled(h)
+		wantEchoes(t, le, first)
+	})
 }
 
 // A sealer that cannot open for a moment (a locked keyring) keeps every

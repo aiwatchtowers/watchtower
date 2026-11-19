@@ -1,0 +1,16 @@
+[Unit]
+Description=Watchtower daemon (workbenches and the phone hub)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/acme/.local/bin/watchtower --config /home/acme/wt/config.yaml --workspace acme sync --daemon
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+UMask=0077
+Environment=PATH=/home/acme/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

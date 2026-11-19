@@ -2,26 +2,31 @@ package sessionstate
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"watchtower/internal/db"
 )
 
 type fixtureRow struct {
-	Kind              string  `json:"kind"`
-	AgentState        *string `json:"agent_state"`
-	AgentStateAt      *string `json:"agent_state_at"`
-	FinishedAt        *string `json:"finished_at"`
-	AgentFailedAt     *string `json:"agent_failed_at"`
-	AgentBackground   *int    `json:"agent_background"`
-	AgentBackgroundAt *string `json:"agent_background_at"`
-	OpenAsks          int     `json:"open_asks"`
-	OpenQuestionAsks  int     `json:"open_question_asks"`
-	OpenReviewAsks    int     `json:"open_review_asks"`
-	RunStartedAt      string  `json:"run_started_at"`
+	Kind                  string  `json:"kind"`
+	AgentState            *string `json:"agent_state"`
+	AgentStateAt          *string `json:"agent_state_at"`
+	FinishedAt            *string `json:"finished_at"`
+	AgentFailedAt         *string `json:"agent_failed_at"`
+	AgentBackground       *int    `json:"agent_background"`
+	AgentBackgroundAt     *string `json:"agent_background_at"`
+	AgentBackgroundShells *int    `json:"agent_background_shells"`
+	OpenAsks              int     `json:"open_asks"`
+	OpenQuestionAsks      int     `json:"open_question_asks"`
+	OpenReviewAsks        int     `json:"open_review_asks"`
+	SpecReviewRound       int     `json:"spec_review_round"`
+	RunStartedAt          string  `json:"run_started_at"`
 }
 
 type fixtureCase struct {
@@ -33,6 +38,8 @@ type fixtureCase struct {
 		Idle          bool   `json:"idle"`
 		Working       bool   `json:"working"`
 		NeedsApproval bool   `json:"needs_approval"`
+		// BackgroundShells is the shell count shown (absent = 0).
+		BackgroundShells int `json:"background_shells"`
 	} `json:"expect"`
 }
 
@@ -58,8 +65,9 @@ func TestStatusFixtures(t *testing.T) {
 				ID: 1, Kind: c.Row.Kind, AgentState: c.Row.AgentState, AgentStateAt: c.Row.AgentStateAt,
 				FinishedAt: c.Row.FinishedAt, AgentFailedAt: c.Row.AgentFailedAt,
 				AgentBackground: c.Row.AgentBackground, AgentBackgroundAt: c.Row.AgentBackgroundAt,
-				OpenAsks: c.Row.OpenAsks, OpenQuestionAsks: c.Row.OpenQuestionAsks,
-				OpenReviewAsks: c.Row.OpenReviewAsks, RunStartedAt: c.Row.RunStartedAt,
+				AgentBackgroundShells: c.Row.AgentBackgroundShells,
+				OpenAsks:              c.Row.OpenAsks, OpenQuestionAsks: c.Row.OpenQuestionAsks,
+				OpenReviewAsks: c.Row.OpenReviewAsks, SpecReviewRound: c.Row.SpecReviewRound, RunStartedAt: c.Row.RunStartedAt,
 			}
 			s := Resolve(r, now)
 			if string(s) != c.Expect.State {
@@ -76,6 +84,9 @@ func TestStatusFixtures(t *testing.T) {
 			}
 			if got := NeedsApproval(s); got != c.Expect.NeedsApproval {
 				t.Errorf("NeedsApproval = %v, want %v", got, c.Expect.NeedsApproval)
+			}
+			if got := BackgroundShells(r, now); got != c.Expect.BackgroundShells {
+				t.Errorf("BackgroundShells = %d, want %d", got, c.Expect.BackgroundShells)
 			}
 		})
 	}
@@ -101,6 +112,56 @@ func TestLoadReadsRowAndOpenAsks(t *testing.T) {
 	}
 	if _, err := Load(context.Background(), d, 99); err == nil {
 		t.Error("missing session: want error")
+	}
+}
+
+// A session whose only open asks sit in the spec review author loop has no
+// visible ask and reads the highest loop round (#1945).
+func TestLoadReadsSpecReviewRound(t *testing.T) {
+	d := openTestDB(t)
+	mustExec(t, d, `INSERT INTO projects(id,name,folder_path) VALUES (1,'wb','/tmp/wb')`)
+	mustExec(t, d, `INSERT INTO terminal_sessions(id,project_id,kind,title,folder_path,claude_session_id)
+		VALUES (7,1,'claude','t','/tmp/wb','sid')`)
+	for i, round := range []int{1, 3} {
+		mustExec(t, d, `INSERT INTO owner_asks(id,project_id,session_id,kind,title,doc_path) VALUES (?,1,7,'review','a','x.md')`, i+1)
+		mustExec(t, d, `INSERT INTO spec_reviews(ask_id,status,queued_at,loop,round) VALUES (?,'running','2026-10-01T00:00:00Z','author',?)`, i+1, round)
+	}
+	r, err := Load(context.Background(), d, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.OpenAsks != 0 || r.OpenQuestionAsks != 0 || r.OpenReviewAsks != 0 || r.SpecReviewRound != 3 {
+		t.Errorf("row = %+v", r)
+	}
+	// A revealed loop (owner) is a visible ask again and no round.
+	mustExec(t, d, `UPDATE spec_reviews SET loop = 'owner'`)
+	if r, err = Load(context.Background(), d, 7); err != nil || r.OpenAsks != 2 || r.SpecReviewRound != 0 {
+		t.Errorf("revealed: %+v %v", r, err)
+	}
+}
+
+func TestSpecReviewSessionTakesInput(t *testing.T) {
+	waiting, at := "waiting", "2026-10-31T11:30:00.000Z"
+	r := Row{ID: 1, Kind: "claude", AgentState: &waiting, AgentStateAt: &at,
+		RunStartedAt: "2026-10-31T11:00:00.000Z", SpecReviewRound: 1}
+	if s := Resolve(r, time.Now()); s != StateSpecReview || !IsIdle(r, s) {
+		t.Errorf("state %q idle %v", s, IsIdle(r, s))
+	}
+}
+
+// A session being deleted (delete_requested_at, #1716) reads as missing,
+// so the status the phone's actions resolve never counts it.
+func TestWorkbenchStatus_IgnoresDeletingRow(t *testing.T) {
+	d := openTestDB(t)
+	mustExec(t, d, `INSERT INTO projects(id,name,folder_path) VALUES (1,'wb','/tmp/wb')`)
+	mustExec(t, d, `INSERT INTO terminal_sessions(id,project_id,kind,title,folder_path,claude_session_id,agent_state,agent_state_at)
+		VALUES (7,1,'claude','t','/tmp/wb','sid','working','2026-10-31T11:30:00.000Z')`)
+	if _, err := Load(context.Background(), d, 7); err != nil {
+		t.Fatalf("live row: %v", err)
+	}
+	mustExec(t, d, `UPDATE terminal_sessions SET delete_requested_at = '2026-11-10T12:00:00Z' WHERE id = 7`)
+	if _, err := Load(context.Background(), d, 7); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("deleting row err = %v, want sql.ErrNoRows", err)
 	}
 }
 

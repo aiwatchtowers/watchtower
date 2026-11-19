@@ -43,7 +43,7 @@ final class BriefingViewModel {
         defer { isGenerating = false }
 
         do {
-            _ = try await cli.run(args: ["briefing", "generate"])
+            _ = try await cli.runModel(args: ["briefing", "generate"], origin: .owner)
         } catch {
             generateError = error.localizedDescription
         }

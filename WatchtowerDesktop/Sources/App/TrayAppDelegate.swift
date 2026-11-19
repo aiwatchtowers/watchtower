@@ -1,6 +1,4 @@
 import AppKit
-import CloudKit
-import os
 import ServiceManagement
 import WatchtowerCore
 
@@ -191,29 +189,6 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    // MARK: - CloudKit pushes (the mobile hub)
-
-    /// The hub registered for remote notifications
-    /// (`MobileHubStorage.registerForPushes`); the token is CloudKit's
-    /// business, only the outcome is logged.
-    func application(_ application: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        Self.pushLogger.notice("registered for CloudKit pushes")
-    }
-
-    func application(_ application: NSApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
-        Self.pushLogger.error("push registration failed: \(error.localizedDescription, privacy: .public)")
-    }
-
-    /// A silent CloudKit push (the CKSyncEngine's database subscription):
-    /// the hub's relay loop pulls now instead of after its wait, so a
-    /// linking phone's `device` record or a phone action is read at once.
-    func application(_ application: NSApplication, didReceiveRemoteNotification userInfo: [String: Any]) {
-        guard managesLifecycle, CKNotification(fromRemoteNotificationDictionary: userInfo) != nil else { return }
-        AppState.shared.mobileHub?.wakeRelay()
-    }
-
-    private static let pushLogger = Logger(subsystem: Constants.bundleID, category: "CloudKitPush")
-
     /// The one quit entry point for the surfaces we own (Cmd+Q via the
     /// replaced `.appTermination` command, tray "Quit Watchtower"). SwiftUI's
     /// scene layer vetoes app termination while any scene has a presented
@@ -274,12 +249,16 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             hasBlockingWork: plan.prompt != nil,
             keepsSessions: plan.keepsSessions,
             confirmQuit: { plan.prompt.map { plan.choice(button: Self.runQuitAlert($0)) } ?? .cancel },
-            closeChatSessions: {
+            shutdownChat: {
+                // First: no new turn and no daemon start from here on.
+                await app.beginStopForGood()
                 await app.observedProviderConnection?.cancelAndWait()
                 // An embedded chat's reply keeps all it streamed: its writes
                 // await the writer (board #670), so the quit waits for them.
                 await app.embeddedChatCenter.finishAllAsPartialForQuit()
-                await app.chatSessionPool?.closeAll()
+                // The engine ends every chat turn (partial kept) and reaps the
+                // sessions (`chat_shutdown`), else `watchtower chat shutdown`.
+                await app.shutdownChat()
             },
             closeTerminals: {
                 // Not reported stopped: the next launch reconciles them.
@@ -293,10 +272,11 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             stopDaemon: { await Self.stopDaemonForQuit(app) },
             finishPendingDeletes: {
                 await Self.finishAllPendingDeletes(
-                    chats: { _ = await app.chatHistoryViewModel?.commitPendingDeleteForQuit() },
+                    chats: { await app.chatPanelModel?.list.commitPendingDelete() },
                     sessions: { await Self.finishPendingDeletes(app.workbenchesViewModel) }
                 )
             },
+            stopBackgroundCleanups: { await Self.stopBackgroundCleanups(app.workbenchesViewModel) },
             reply: { ok in sender.reply(toApplicationShouldTerminate: ok) }
         )
     }
@@ -341,6 +321,14 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The quit's board #1716 step: deleted sessions' background cleanups
+    /// stop (their process groups SIGTERM, SIGKILL after 5 s) and no other
+    /// starts; their rows keep `delete_requested_at` for the next launch.
+    @MainActor
+    static func stopBackgroundCleanups(_ workbenches: WorkbenchesViewModel?) async {
+        await workbenches?.stopAutoCleanupForQuit()
+    }
+
     /// The terminate decision, extracted from `applicationShouldTerminate` so
     /// the `managesLifecycle` gate is pinned by tests without a live
     /// NSApplication: a duplicate instance must quit immediately and must
@@ -351,11 +339,12 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         hasBlockingWork: Bool,
         keepsSessions: Bool = false,
         confirmQuit: () -> QuitChoice,
-        closeChatSessions: @escaping () async -> Void = {},
+        shutdownChat: @escaping () async -> Void = {},
         closeTerminals: @escaping () async -> Void = {},
         detachTerminals: @escaping () async -> Void = {},
         stopDaemon: @escaping () async -> Void,
         finishPendingDeletes: @escaping () async -> Void = {},
+        stopBackgroundCleanups: @escaping () async -> Void = {},
         reply: @escaping (Bool) -> Void
     ) -> NSApplication.TerminateReply {
         guard managesLifecycle else { return .terminateNow }
@@ -363,11 +352,12 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             hasBlockingWork: hasBlockingWork,
             confirmQuit: confirmQuit,
             keepsSessions: keepsSessions,
-            closeChatSessions: closeChatSessions,
+            shutdownChat: shutdownChat,
             closeTerminals: closeTerminals,
             detachTerminals: detachTerminals,
             stopDaemon: stopDaemon,
             finishPendingDeletes: finishPendingDeletes,
+            stopBackgroundCleanups: stopBackgroundCleanups,
             reply: reply
         )
     }

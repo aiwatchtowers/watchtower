@@ -65,9 +65,8 @@ extension FakeHostedRelay {
             return try registerPush(push, session)
         case .sendAlert(let alert):
             return try sendAlert(alert, session)
-        case .submitTransaction:
-            _ = try requirePhone(session)
-            throw RelayFailure(.unspecified, "not implemented")
+        case .submitTransaction(let submit):
+            return try submitTransaction(submit.signedTransaction, by: requirePhone(session))
         case .getAccountState:
             return accountState(session)
         case .vouchHub(let vouch):
@@ -263,6 +262,8 @@ extension FakeHostedRelay {
         let hex = op.token.count.isMultiple(of: 2) && op.token.allSatisfy(\.isHexDigit)
         guard op.env != .unspecified, !op.token.isEmpty, op.token.count <= 200, hex else { throw RelayFailure.invalid }
         state.pushPhones.insert(session.deviceID)
+        let environment: RelayPushEnvironment = op.env == .sandbox ? .sandbox : .production
+        state.pushRegistrations.append(PushRegistration(phoneDeviceID: session.deviceID, token: op.token, environment: environment))
         return Self.okResponse()
     }
 
@@ -341,29 +342,184 @@ extension FakeHostedRelay {
     /// data zone only after the Mac names it a reader again (re-pairing by QR).
     public func moveSubscription(fromPhone: String, toPhone: String) throws {
         try locked {
-            guard let fromID = accountOfPhone(fromPhone), let toID = accountOfPhone(toPhone), fromID != toID,
-                  var from = state.accounts[fromID]
-            else { throw RelayStandError.notFound }
-            let entitlement = from.entitlement
-            let until = from.until
-            let macs = from.macs.sorted()
-            for mac in macs {
-                from.revocations.append(Account.Revocation(macID: mac, at: now, delivered: !state.holdRevocations))
-                dropHubReader(fromPhone, of: mac)
+            guard let fromID = accountOfPhone(fromPhone), let toID = accountOfPhone(toPhone), fromID != toID else {
+                throw RelayStandError.notFound
             }
-            from.macs = []
-            from.pairings = [:]
-            from.entitlement = .none
-            from.until = nil
-            from.expiredAt = nil
-            from.moved = true
-            state.accounts[fromID] = from
-            sendControl(.subscriptionMoved, "", to: fromPhone)
-            applyEntitlement(entitlement, until: until, to: toID)
-            for mac in macs where state.accounts[toID].map({ $0.macs.count < state.limits.maxMacSlots }) == true {
-                state.accounts[toID]?.macs.insert(mac)
-            }
+            try moveEntitlement(fromAccount: fromID, toAccount: toID)
         }
+    }
+
+    /// `moveSubscription`'s body, with the lock held; the subscriptions owned by `fromID` follow.
+    /// `grant` is what the new account ends with; nil copies the old holder's entitlement.
+    func moveEntitlement(
+        fromAccount fromID: String, toAccount toID: String, grant: (kind: Relay_V1_EntitlementKind, until: Date?)? = nil
+    ) throws {
+        guard var from = state.accounts[fromID] else { throw RelayStandError.notFound }
+        let fromPhone = from.phoneID
+        for (otid, subscription) in state.subscriptions where subscription.owner == fromID {
+            state.subscriptions[otid]?.owner = toID
+        }
+        let entitlement = from.entitlement
+        let until = from.until
+        let macs = from.macs.sorted()
+        for mac in macs {
+            from.revocations.append(Account.Revocation(macID: mac, at: now, delivered: !state.holdRevocations))
+            dropHubReader(fromPhone, of: mac)
+        }
+        from.macs = []
+        from.pairings = [:]
+        from.entitlement = .none
+        from.until = nil
+        from.expiredAt = nil
+        from.moved = true
+        state.accounts[fromID] = from
+        sendControl(.subscriptionMoved, "", to: fromPhone)
+        applyEntitlement(grant?.kind ?? entitlement, until: grant != nil ? grant?.until : until, to: toID)
+        for mac in macs where state.accounts[toID].map({ $0.macs.count < state.limits.maxMacSlots }) == true {
+            state.accounts[toID]?.macs.insert(mac)
+        }
+    }
+}
+
+// MARK: - Subscriptions (`submit_transaction`)
+
+extension FakeHostedRelay {
+    /// One App Store subscription (Worker `do/subscription.ts`), by original transaction id.
+    struct Subscription {
+        struct Transfer {
+            let at: Date
+            let from: String
+            let to: String
+            let signedDate: Date
+        }
+
+        /// The account it was first linked to (the `appAccountToken` every restore keeps).
+        let original: String
+        /// The account it is linked to now.
+        var owner: String
+        /// The `signedDate` of the last applied payload.
+        var lastSigned: Date
+        var transfers: [Transfer] = []
+    }
+
+    /// A restore or a move needs a payload this fresh (README "Subscriptions").
+    static let transferFreshness: TimeInterval = 10 * 60
+    /// Moves allowed inside `RelayTTL.replacementWindow`.
+    static let transfersPer30Days = 3
+    /// What an activating payload grants: the fake has no `expiresDate` to read.
+    static let subscriptionPeriod: TimeInterval = 30 * 86_400
+
+    /// A transaction payload for `submit_transaction`: base64url of a JSON object. Any other string is
+    /// `INVALID_TRANSACTION`. Not signed: the fake checks no certificate, and the real relay refuses it.
+    public static func fakeJWS(originalTransactionID: String, appAccountToken: String, signedDate: Date) -> String {
+        let object: [String: Any] = [
+            "originalTransactionId": originalTransactionID,
+            "appAccountToken": appAccountToken,
+            "signedDate": Int64((signedDate.timeIntervalSince1970 * 1000).rounded())
+        ]
+        // A literal dictionary of strings and an integer always serializes.
+        let json = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
+        let standard = json.base64EncodedString()
+        let urlSafe = standard.replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+        return urlSafe.replacingOccurrences(of: "=", with: "")
+    }
+
+    private struct Payload {
+        let originalTransactionID: String
+        let appAccountToken: String
+        let signedDate: Date
+    }
+
+    private static func payload(of jws: String) -> Payload? {
+        var base64 = jws.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        base64 += String(repeating: "=", count: (4 - base64.count % 4) % 4)
+        guard let data = Data(base64Encoded: base64),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let otid = object["originalTransactionId"] as? String, !otid.isEmpty,
+              let token = object["appAccountToken"] as? String,
+              let signed = object["signedDate"] as? NSNumber
+        else { return nil }
+        return Payload(
+            originalTransactionID: otid, appAccountToken: token.lowercased(),
+            signedDate: Date(timeIntervalSince1970: signed.doubleValue / 1000))
+    }
+
+    /// README "Subscriptions": the token must be the caller's account or the account the subscription
+    /// was first linked to. A first link, or a payload for a subscription the caller holds, activates
+    /// the account but never downgrades a paying one; a payload older than the last applied changes
+    /// nothing on a held subscription and is refused on a link. Another account's subscription moves
+    /// to the caller on a fresh payload (at most 3 in 30 days), and the answer is `UNAVAILABLE` while
+    /// the old account's revocation is not delivered; a retry of the same payload counts once.
+    func submitTransaction(_ jws: String, by accountID: String) throws -> Relay_V1_Response {
+        guard state.billingConfigured else { throw RelayFailure(.unspecified, "not implemented") }
+        let invalid = RelayFailure(.invalidTransaction, "invalid transaction")
+        guard let payload = Self.payload(of: jws) else { throw invalid }
+        let otid = payload.originalTransactionID
+        let token = payload.appAccountToken
+        guard token == accountID || token == state.subscriptions[otid]?.original else { throw invalid }
+        guard let subscription = state.subscriptions[otid] else {
+            guard token == accountID else { throw invalid }
+            state.subscriptions[otid] = Subscription(original: token, owner: accountID, lastSigned: payload.signedDate)
+            activate(accountID)
+            return entitlementResponse(accountID)
+        }
+        // A retry of the payload that moved it: no second move, only the wait for the delivery.
+        if let last = subscription.transfers.last, last.to == accountID, last.signedDate == payload.signedDate {
+            return try delivered(from: last.from, answering: accountID)
+        }
+        if subscription.owner == accountID {
+            if payload.signedDate > subscription.lastSigned {
+                state.subscriptions[otid]?.lastSigned = payload.signedDate
+                activate(accountID)
+            }
+            return entitlementResponse(accountID)
+        }
+        try transferSubscription(otid, to: accountID, payload: payload)
+        return try delivered(from: subscription.owner, answering: accountID)
+    }
+
+    /// `UNAVAILABLE` while the old account's revocation is not delivered, else the caller's entitlement.
+    private func delivered(from oldID: String, answering accountID: String) throws -> Relay_V1_Response {
+        guard state.accounts[oldID]?.revocations.contains(where: { !$0.delivered }) != true else {
+            throw RelayFailure(.unavailable, "unavailable")
+        }
+        return entitlementResponse(accountID)
+    }
+
+    private func transferSubscription(_ otid: String, to accountID: String, payload: Payload) throws {
+        guard let subscription = state.subscriptions[otid] else { return }
+        let invalid = RelayFailure(.invalidTransaction, "invalid transaction")
+        guard abs(now.timeIntervalSince(payload.signedDate)) <= Self.transferFreshness,
+              payload.signedDate > subscription.lastSigned
+        else { throw invalid }
+        let windowStart = now.addingTimeInterval(-RelayTTL.replacementWindow)
+        guard subscription.transfers.filter({ $0.at > windowStart }).count < Self.transfersPer30Days else {
+            throw RelayFailure(.transferLimit, "transfer limit")
+        }
+        // Worker `transfer` applies the live transaction: a paying caller keeps what it has, any other ends active.
+        let caller = state.accounts[accountID]
+        let grant = caller?.paying == true
+            ? (kind: caller?.entitlement ?? .active, until: caller?.until)
+            : (kind: Relay_V1_EntitlementKind.active, until: Optional(now.addingTimeInterval(Self.subscriptionPeriod)))
+        try moveEntitlement(fromAccount: subscription.owner, toAccount: accountID, grant: grant)
+        state.subscriptions[otid]?.owner = accountID
+        state.subscriptions[otid]?.lastSigned = payload.signedDate
+        state.subscriptions[otid]?.transfers.append(
+            Subscription.Transfer(at: now, from: subscription.owner, to: accountID, signedDate: payload.signedDate))
+    }
+
+    /// A submit activates an account that is not paying and never downgrades one that is.
+    private func activate(_ accountID: String) {
+        guard let account = state.accounts[accountID], !account.paying else { return }
+        applyEntitlement(.active, until: now.addingTimeInterval(Self.subscriptionPeriod), to: accountID)
+    }
+
+    private func entitlementResponse(_ accountID: String) -> Relay_V1_Response {
+        var response = Relay_V1_Response()
+        let account = state.accounts[accountID]
+        response.entitlement.state = account?.entitlement ?? .none
+        response.entitlement.untilMs = account?.until.map(Self.ms) ?? 0
+        return response
     }
 }
 

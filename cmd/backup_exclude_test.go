@@ -8,9 +8,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,13 +39,19 @@ func recordBackupExclude(t *testing.T, errs []error) (calls *[][]string, stderr 
 }
 
 // backupRootAndAS returns the two BACKUP-01 folders under the current HOME,
-// spelled out literally (not through backupDirs).
+// spelled out literally (not through backupDirs). The support folder is the
+// macOS one on darwin; on another OS running these tests (the Linux CI job,
+// with the GOOS seam set to darwin) it is that OS's AppSupportDir,
+// <data root>/.support.
 func backupRootAndAS(t *testing.T) (root, as string) {
 	t.Helper()
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
-	return filepath.Join(home, ".local", "share", "watchtower"),
-		filepath.Join(home, "Library", "Application Support", "Watchtower")
+	root = filepath.Join(home, ".local", "share", "watchtower")
+	if runtime.GOOS == "darwin" {
+		return root, filepath.Join(home, "Library", "Application Support", "Watchtower")
+	}
+	return root, filepath.Join(root, ".support")
 }
 
 func TestBackupDirs_DataRootAndAppSupport(t *testing.T) {
@@ -69,7 +75,7 @@ func TestBackup01_WorkspaceInitApplies(t *testing.T) {
 		return inner(dirs)
 	}
 
-	_, err := initWorkspace(configPath, "", "default")
+	_, err := initWorkspace(configPath, "", "default", false)
 	require.NoError(t, err)
 	require.Len(t, *calls, 1)
 	assert.Equal(t, []string{root, as}, (*calls)[0])
@@ -90,7 +96,7 @@ func TestBackup01_DBMigrateApplies(t *testing.T) {
 func TestBackup01_DaemonStartApplies(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
 	root, as := backupRootAndAS(t)
-	_, err := initWorkspace(configPath, "", "default")
+	_, err := initWorkspace(configPath, "", "default", false)
 	require.NoError(t, err)
 	cfg, err := config.Load(configPath)
 	require.NoError(t, err)
@@ -103,12 +109,7 @@ func TestBackup01_DaemonStartApplies(t *testing.T) {
 	cancel()
 	done := make(chan error, 1)
 	go func() { done <- runSyncDaemon(ctx, cfg, database, log.New(io.Discard, "", 0), nil) }()
-	select {
-	case err := <-done:
-		require.NoError(t, err)
-	case <-time.After(60 * time.Second):
-		t.Fatal("the daemon did not stop on a cancelled context")
-	}
+	require.NoError(t, <-done, "the daemon stops on a cancelled context")
 	require.Len(t, *calls, 1)
 	assert.Equal(t, []string{root, as}, (*calls)[0])
 }
@@ -128,11 +129,17 @@ func TestApplyBackupExclusion_MakeDirFailureLoggedExitZero(t *testing.T) {
 	calls, stderr := recordBackupExclude(t, nil)
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
-	// A file where the Library folder belongs makes MakePrivateDir fail.
-	require.NoError(t, os.WriteFile(filepath.Join(home, "Library"), []byte("x"), 0o600))
+	_, as := backupRootAndAS(t)
+	// A file where the Library folder belongs makes MakePrivateDir fail; off
+	// darwin, a file where the support folder belongs.
+	blocker := filepath.Join(home, "Library")
+	if runtime.GOOS != "darwin" {
+		blocker = as
+	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(blocker), 0o700))
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
 
 	require.NoError(t, dbMigrateCmd.RunE(dbMigrateCmd, nil))
-	_, as := backupRootAndAS(t)
 	assert.Equal(t, 1, strings.Count(stderr.String(), "backup exclusion: "+as+": "), stderr.String())
 	assert.Len(t, *calls, 1, "Apply still runs for the other folder")
 }

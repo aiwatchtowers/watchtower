@@ -5,15 +5,15 @@ import WatchtowerSync
 /// The fixed texts of the board writes (spec §6.3, §9).
 enum BoardWriteText {
     static let groupCaption = "A group's status follows its sub-tasks"
-    static let waitingForMac = "Waiting for your Mac"
+    static let waitingForMac = "Waiting for your tower"
     static let sending = "Sending…"
     /// Shown when the Mac refused a change without saying why.
-    static let genericFailure = "Your Mac could not make this change"
+    static let genericFailure = "Your tower could not make this change"
 
     /// Why a write could not even be queued.
     static func sendError(_ error: Error) -> String {
         if case ActionOutboxError.notLinked? = error as? ActionOutboxError {
-            return "This phone is not linked to a Mac yet."
+            return "This phone is not linked to a tower yet."
         }
         return error.localizedDescription
     }
@@ -99,7 +99,7 @@ struct BoardWriteRow: Equatable, Identifiable {
             conflictCurrent = nil
         case .failed:
             if pending.reason == .conflict, let label, case let .string(current)? = pending.result?["current"] {
-                state = .conflict(prompt: "Changed on the Mac to \(label(current)) — apply anyway?")
+                state = .conflict(prompt: "Changed on your tower to \(label(current)) — apply anyway?")
                 conflictCurrent = current
             } else {
                 let message = pending.errorMessage.flatMap { $0.isEmpty || $0 == ActionOutbox.noMessageFallback ? nil : $0 }

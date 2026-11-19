@@ -21,15 +21,16 @@ final class ReplicaWiringTests: XCTestCase {
         .heartbeat: 1,
         .deviceGrant: 1,
         .workbench: 3,
-        .terminalSession: 10,
+        .terminalSession: 11,
         .ownerAsk: 6,
-        .workbenchTarget: 13,
+        .workbenchTarget: 16,
         .workbenchComment: 3,
         .sessionReport: 3,
         .sessionTimeline: 5,
         .sessionChat: 2,
         .calendarEvent: 6,
-        .meetingTranscript: 1
+        .meetingTranscript: 1,
+        .chatList: 1
     ]
 
     /// A booted demo environment also has the job of the demo phone
@@ -153,14 +154,14 @@ final class ReplicaWiringTests: XCTestCase {
         XCTAssertFalse(root.showsOnboarding)
         XCTAssertEqual(env.session(DemoSeed.secondary.hubID)?.hubName, "Home Mac")
 
-        try await poll(timeout: 20, {
+        try await poll({
             env.sessions.values.allSatisfy { !$0.workbenchReplica.snapshot.workbenches.isEmpty }
-        }, "both Macs hydrated")
+        }, "both towers hydrated")
         XCTAssertEqual(env.workbenchReplica.snapshot.workbenches.map(\.name).sorted(), ["Acme", "Acme Website", "Notes"])
         let home = try XCTUnwrap(env.session(DemoSeed.secondary.hubID))
         XCTAssertEqual(home.workbenchReplica.snapshot.workbenches.map(\.name), ["Home Lab"])
-        XCTAssertEqual(home.workbenchReplica.openAskCount, 1)
-        XCTAssertEqual(env.openAskTotal, env.workbenchReplica.openAskCount + 1)
+        XCTAssertEqual(home.workbenchReplica.waitingCount, 1)
+        XCTAssertEqual(env.openAskTotal, env.workbenchReplica.waitingCount + 1)
 
         env.activate(DemoSeed.secondary.hubID)
         XCTAssertEqual(env.workbenchReplica.snapshot.workbenches.map(\.name), ["Home Lab"], "a switch shows the other Mac")
@@ -259,13 +260,13 @@ final class ReplicaWiringTests: XCTestCase {
 
     // MARK: - Transport choice
 
-    /// The unsigned test host (CODE_SIGNING_ALLOWED=NO) has no iCloud
+    /// The test host has no iCloud
     /// entitlement, so `AppEnvironment.demoSingle()` runs the demo transport and is
     /// linked to the demo device.
-    func testUnsignedHostProbesFalseAndBootsDemo() async throws {
+    func testHostWithoutICloudProbesFalseAndBootsDemo() async throws {
         XCTAssertFalse(
             CloudKitTransport.entitlementPresent(),
-            "an unsigned simulator host must probe false, or the demo path is dead"
+            "a simulator host without iCloud must probe false, or the demo path is dead"
         )
         let env = try managed(AppEnvironment.demoSingle(recordingsDirectory: try makeRecordingsDirectory()))
         XCTAssertEqual(env.backend, .inMemoryDemo)

@@ -309,6 +309,24 @@ final class SessionControlTests: XCTestCase {
         XCTAssertEqual(denied, .applied("denied"), "a deny always may")
     }
 
+    /// A summary Go did not flag but the phone's cap cuts (more than
+    /// `phoneSummaryCap` graphemes) was never seen whole on the phone: Allow
+    /// is refused `clipped`; one at the cap is not. The cap is Go's
+    /// `sources.PermissionMaxSummary` (pinned from Go by
+    /// `TestPermissionMaxSummaryMatchesTheDesktopCap`).
+    func testAnswerAllowBlockedForASummaryOverThePhoneCap() async throws {
+        XCTAssertEqual(SessionControl.phoneSummaryCap, 2000)
+        let session = try await liveSession()
+        let thumb = "👍🏽" // one grapheme, several scalars: the cap counts graphemes
+        let over = try await request(session, summary: String(repeating: thumb, count: SessionControl.phoneSummaryCap + 1))
+        let atCap = try await request(session, summary: String(repeating: thumb, count: SessionControl.phoneSummaryCap))
+
+        let refused = try await makeControl().answerPermission(requestID: over, sessionID: session, allow: true, decidedBy: "Mac")
+        XCTAssertEqual(refused, .allowBlocked(.clipped))
+        let allowed = try await makeControl().answerPermission(requestID: atCap, sessionID: session, allow: true, decidedBy: "Mac")
+        XCTAssertEqual(allowed, .applied("allowed"))
+    }
+
     func testAnswerNotPendingWhenAnsweredMeanwhile() async throws {
         let session = try await liveSession()
         let id = try await request(session, status: "answered_on_mac")

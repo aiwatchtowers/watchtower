@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/automations"
@@ -109,19 +110,13 @@ func (s *sessFixture) launch(t *testing.T, runID, stepID int64) int64 {
 	return id
 }
 
-// waitReason waits (real time) until run id waits with reason.
+// waitReason lets the test's synctest bubble settle and wants run id
+// waiting with reason then. Bubble only.
 func (s *sessFixture) waitReason(t *testing.T, id int64, reason string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		r := s.run(t, id)
-		if r.Status == db.RunWaiting && r.WaitingReason == reason {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("run %d never waited for %s (is %s/%s)", id, reason, r.Status, r.WaitingReason)
-		}
-		time.Sleep(5 * time.Millisecond)
+	synctest.Wait()
+	if r := s.run(t, id); r.Status != db.RunWaiting || r.WaitingReason != reason {
+		t.Fatalf("run %d = %s/%s once settled; want waiting for %s", id, r.Status, r.WaitingReason, reason)
 	}
 }
 
@@ -163,65 +158,74 @@ func (s *sessFixture) sessionStep(t *testing.T, runID int64) db.AutomationRunSte
 const sessScript = `return JSON.stringify(session({prompt: "Review PR 7 and file findings with ask_owner"}))`
 
 func TestSession_WaitsForAppThenSessionThenFinish(t *testing.T) {
-	s := newSessFixture(t, "claude")
-	runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "", sessScript))
-	var args map[string]string
-	if err := json.Unmarshal([]byte(p.ArgsJSON), &args); err != nil {
-		t.Fatalf("args_json %q: %v", p.ArgsJSON, err)
-	}
-	wantTitle := "⚙ PR review · run #" + strconv.FormatInt(runID, 10)
-	if args["prompt"] != "Review PR 7 and file findings with ask_owner" || args["agent"] != "claude" || args["title"] != wantTitle {
-		t.Fatalf("args = %v; want the prompt, agent claude, title %q", args, wantTitle)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		s := newSessFixture(t, "claude")
+		runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "", sessScript))
+		var args map[string]string
+		if err := json.Unmarshal([]byte(p.ArgsJSON), &args); err != nil {
+			t.Fatalf("args_json %q: %v", p.ArgsJSON, err)
+		}
+		wantTitle := "⚙ PR review · run #" + strconv.FormatInt(runID, 10)
+		if args["prompt"] != "Review PR 7 and file findings with ask_owner" || args["agent"] != "claude" || args["title"] != wantTitle {
+			t.Fatalf("args = %v; want the prompt, agent claude, title %q", args, wantTitle)
+		}
 
-	// No running blip between app and session: sample the run's status from
-	// before the attach until its reason is session.
-	before := s.run(t, runID).ActiveMS
-	stopWatch := s.watchNonWaiting(runID)
-	sess := s.launch(t, runID, p.StepID)
-	s.waitReason(t, runID, db.WaitSession)
-	if got := stopWatch(); got != "" {
-		t.Fatalf("the run left waiting between app and session: %s", got)
-	}
-	if after := s.run(t, runID).ActiveMS; after != before {
-		t.Fatalf("active_ms %d → %d across the reason change; want unchanged", before, after)
-	}
-	if st := s.sessionStep(t, runID); st.Status != automations.StepWaiting || st.SessionID != sess || st.FinishedAt != nil {
-		t.Fatalf("step = %+v; want still waiting, naming session %d", st, sess)
-	}
+		// No running blip between app and session: sample the run's status from
+		// before the attach until its reason is session.
+		before := s.run(t, runID).ActiveMS
+		stopWatch := s.watchNonWaiting(t, runID)
+		sess := s.launch(t, runID, p.StepID)
+		s.waitReason(t, runID, db.WaitSession)
+		if got := stopWatch(); got != "" {
+			t.Fatalf("the run left waiting between app and session: %s", got)
+		}
+		if after := s.run(t, runID).ActiveMS; after != before {
+			t.Fatalf("active_ms %d → %d across the reason change; want unchanged", before, after)
+		}
+		if st := s.sessionStep(t, runID); st.Status != automations.StepWaiting || st.SessionID != sess || st.FinishedAt != nil {
+			t.Fatalf("step = %+v; want still waiting, naming session %d", st, sess)
+		}
 
-	s.setSession(t, sess, `finished_at = '2026-10-14T12:30:00.000Z', finish_summary = 'Two findings filed'`)
-	r := s.finish(t, runID, db.RunSucceeded, "")
-	checkFinishedSession(t, summaryObject(t, r), sess)
-	if st := s.sessionStep(t, runID); st.Status != automations.StepOK || st.SessionID != sess || st.FinishedAt == nil ||
-		st.Permission != "session:start" {
-		t.Fatalf("step = %+v; want ok, finished, session %d, permission session:start", st, sess)
-	}
+		s.setSession(t, sess, `finished_at = '2026-10-14T12:30:00.000Z', finish_summary = 'Two findings filed'`)
+		r := s.finish(t, runID, db.RunSucceeded, "")
+		checkFinishedSession(t, summaryObject(t, r), sess)
+		if st := s.sessionStep(t, runID); st.Status != automations.StepOK || st.SessionID != sess || st.FinishedAt == nil ||
+			st.Permission != "session:start" {
+			t.Fatalf("step = %+v; want ok, finished, session %d, permission session:start", st, sess)
+		}
+	})
 }
 
-// watchNonWaiting samples the run's status until the returned stop is
-// called, which returns every non-waiting status seen meanwhile.
-func (s *sessFixture) watchNonWaiting(runID int64) (stop func() string) {
-	seen := make(chan string, 1)
-	done := make(chan struct{})
-	go func() {
-		statuses := ""
-		for {
-			select {
-			case <-done:
-				seen <- statuses
-				return
-			default:
-			}
-			if r, err := s.d.GetAutomationRun(runID); err == nil && r.Status != db.RunWaiting {
-				statuses += r.Status + " "
-			}
-			time.Sleep(time.Millisecond)
-		}
-	}()
+// watchNonWaiting records every status change of the run (a trigger on
+// the test database, so no change is missed) until the returned stop is
+// called, which returns every non-waiting status written meanwhile.
+func (s *sessFixture) watchNonWaiting(t *testing.T, runID int64) (stop func() string) {
+	t.Helper()
+	if _, err := s.d.Exec(`CREATE TABLE IF NOT EXISTS test_run_status_log (run_id INTEGER, status TEXT);
+		DELETE FROM test_run_status_log;
+		CREATE TRIGGER IF NOT EXISTS test_run_status_log AFTER UPDATE OF status ON automation_runs
+		BEGIN INSERT INTO test_run_status_log (run_id, status) VALUES (NEW.id, NEW.status); END;`); err != nil {
+		t.Fatal(err)
+	}
 	return func() string {
-		close(done)
-		return <-seen
+		rows, err := s.d.Query(`SELECT status FROM test_run_status_log WHERE run_id = ? AND status != ? ORDER BY rowid`,
+			runID, db.RunWaiting)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		statuses := ""
+		for rows.Next() {
+			var st string
+			if err := rows.Scan(&st); err != nil {
+				t.Fatal(err)
+			}
+			statuses += st + " "
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return statuses
 	}
 }
 
@@ -259,21 +263,23 @@ func TestSession_ErrorDeletedStopped(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := newSessFixture(t, "claude")
-			runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "", sessScript))
-			sess := s.launch(t, runID, p.StepID)
-			s.waitReason(t, runID, db.WaitSession)
-			tc.end(t, s, p.StepID, sess)
-			out := summaryObject(t, s.finish(t, runID, db.RunSucceeded, ""))
-			if out["status"] != tc.status || out["session_id"] != float64(sess) {
-				t.Fatalf("script got %v; want status %s for session %d", out, tc.status, sess)
-			}
-			if got, _ := out["error"].(string); got != tc.errMsg {
-				t.Fatalf("error = %q; want %q", got, tc.errMsg)
-			}
-			if st := s.sessionStep(t, runID); st.Status != automations.StepOK || st.FinishedAt == nil || st.SessionID != sess {
-				t.Fatalf("step = %+v; want closed ok naming session %d", st, sess)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				s := newSessFixture(t, "claude")
+				runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "", sessScript))
+				sess := s.launch(t, runID, p.StepID)
+				s.waitReason(t, runID, db.WaitSession)
+				tc.end(t, s, p.StepID, sess)
+				out := summaryObject(t, s.finish(t, runID, db.RunSucceeded, ""))
+				if out["status"] != tc.status || out["session_id"] != float64(sess) {
+					t.Fatalf("script got %v; want status %s for session %d", out, tc.status, sess)
+				}
+				if got, _ := out["error"].(string); got != tc.errMsg {
+					t.Fatalf("error = %q; want %q", got, tc.errMsg)
+				}
+				if st := s.sessionStep(t, runID); st.Status != automations.StepOK || st.FinishedAt == nil || st.SessionID != sess {
+					t.Fatalf("step = %+v; want closed ok naming session %d", st, sess)
+				}
+			})
 		})
 	}
 }
@@ -281,90 +287,102 @@ func TestSession_ErrorDeletedStopped(t *testing.T) {
 // R-P5-3: a turn that ends without finish_session (PROJ-11's idle Stopped)
 // is no end — the run keeps waiting until the Desktop reports one.
 func TestSession_IdleTurnKeepsTheRunWaiting(t *testing.T) {
-	s := newSessFixture(t, "claude")
-	runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "", sessScript))
-	sess := s.launch(t, runID, p.StepID)
-	s.waitReason(t, runID, db.WaitSession)
-	s.setSession(t, sess, `agent_state = 'waiting', agent_state_at = '2026-10-14T12:30:00.000Z'`)
-	if done, err := automations.SessionReady(s.d, runID, p.StepID); err != nil || done {
-		t.Fatalf("ready = (%v, %v) on an idle turn; want still waiting", done, err)
-	}
-	s.waitReason(t, runID, db.WaitSession)
-	s.cancel(t, runID)
+	synctest.Test(t, func(t *testing.T) {
+		s := newSessFixture(t, "claude")
+		runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "", sessScript))
+		sess := s.launch(t, runID, p.StepID)
+		s.waitReason(t, runID, db.WaitSession)
+		s.setSession(t, sess, `agent_state = 'waiting', agent_state_at = '2026-10-14T12:30:00.000Z'`)
+		if done, err := automations.SessionReady(s.d, runID, p.StepID); err != nil || done {
+			t.Fatalf("ready = (%v, %v) on an idle turn; want still waiting", done, err)
+		}
+		s.waitReason(t, runID, db.WaitSession)
+		s.cancel(t, runID)
+	})
 }
 
 func TestSession_LaunchFailedThrowsNotAvailable(t *testing.T) {
-	s := newSessFixture(t, "codex")
-	runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "",
-		`try { session({prompt: "Check the deploy"}); return "launched" } catch (e) { return e.name + "|" + e.message }`))
-	if ok, err := s.d.EndAutomationSessionStep(p.StepID, db.SessionStepLaunchFailed, "Codex was not found"); err != nil || !ok {
-		t.Fatalf("end = (%v, %v)", ok, err)
-	}
-	r := s.finish(t, runID, db.RunSucceeded, "")
-	if r.Summary != "NotAvailable|Codex was not found" {
-		t.Fatalf("script got %q; want NotAvailable with the Desktop's reason", r.Summary)
-	}
-	if st := s.sessionStep(t, runID); st.Status != automations.StepError || st.FinishedAt == nil ||
-		!strings.Contains(st.Error, "Codex was not found") {
-		t.Fatalf("step = %+v; want closed error with the reason", st)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		s := newSessFixture(t, "codex")
+		runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "",
+			`try { session({prompt: "Check the deploy"}); return "launched" } catch (e) { return e.name + "|" + e.message }`))
+		if ok, err := s.d.EndAutomationSessionStep(p.StepID, db.SessionStepLaunchFailed, "Codex was not found"); err != nil || !ok {
+			t.Fatalf("end = (%v, %v)", ok, err)
+		}
+		r := s.finish(t, runID, db.RunSucceeded, "")
+		if r.Summary != "NotAvailable|Codex was not found" {
+			t.Fatalf("script got %q; want NotAvailable with the Desktop's reason", r.Summary)
+		}
+		if st := s.sessionStep(t, runID); st.Status != automations.StepError || st.FinishedAt == nil ||
+			!strings.Contains(st.Error, "Codex was not found") {
+			t.Fatalf("step = %+v; want closed error with the reason", st)
+		}
+	})
 }
 
 func TestSession_WaitNoneReturnsAfterLaunch(t *testing.T) {
-	s := newSessFixture(t, "claude")
-	runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "",
-		`var r = session({prompt: "Check the deploy", wait: "none"}); log("after launch"); return JSON.stringify(r)`))
-	sess := s.launch(t, runID, p.StepID)
-	out := summaryObject(t, s.finish(t, runID, db.RunSucceeded, ""))
-	if len(out) != 1 || out["session_id"] != float64(sess) {
-		t.Fatalf("script got %v; want only {session_id: %d}", out, sess)
-	}
-	if got := stepStatusesOf(s.steps(t, runID)); got != "session:ok,log:ok" {
-		t.Fatalf("steps = %s; want the session step ok, then the script went on", got)
-	}
-	if st := s.sessionStep(t, runID); st.SessionID != sess {
-		t.Fatalf("step session = %d; want %d", st.SessionID, sess)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		s := newSessFixture(t, "claude")
+		runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "",
+			`var r = session({prompt: "Check the deploy", wait: "none"}); log("after launch"); return JSON.stringify(r)`))
+		sess := s.launch(t, runID, p.StepID)
+		out := summaryObject(t, s.finish(t, runID, db.RunSucceeded, ""))
+		if len(out) != 1 || out["session_id"] != float64(sess) {
+			t.Fatalf("script got %v; want only {session_id: %d}", out, sess)
+		}
+		if got := stepStatusesOf(s.steps(t, runID)); got != "session:ok,log:ok" {
+			t.Fatalf("steps = %s; want the session step ok, then the script went on", got)
+		}
+		if st := s.sessionStep(t, runID); st.SessionID != sess {
+			t.Fatalf("step session = %d; want %d", st.SessionID, sess)
+		}
+	})
 }
 
 func TestSession_AgentDefaultAndPermission(t *testing.T) {
 	const catchScript = `try { return JSON.stringify(session(OPTS)) } catch (e) { return e.name + "|" + e.needed }`
 	t.Run("default codex is not admitted by session:start@claude", func(t *testing.T) {
-		s := newSessFixture(t, "codex")
-		a := s.seedSession(t, []string{"session:start@claude"}, "", strings.Replace(catchScript, "OPTS", `{prompt: "x"}`, 1))
-		id := s.enqueue(t, a, db.TriggerManual)
-		s.step(t, 1)
-		if r := s.wantRun(t, id, db.RunSucceeded, ""); r.Summary != "PermissionDenied|session:start@codex" {
-			t.Fatalf("script got %q; want PermissionDenied needing session:start@codex", r.Summary)
-		}
-		if st := s.sessionStep(t, id); st.Status != automations.StepDenied || st.Permission != "session:start@codex" {
-			t.Fatalf("step = %+v; want denied needing session:start@codex", st)
-		}
-		if pending, _ := s.d.PendingAutomationSessionSteps(); len(pending) != 0 {
-			t.Fatalf("a denied call left a request for the Desktop: %+v", pending)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			s := newSessFixture(t, "codex")
+			a := s.seedSession(t, []string{"session:start@claude"}, "", strings.Replace(catchScript, "OPTS", `{prompt: "x"}`, 1))
+			id := s.enqueue(t, a, db.TriggerManual)
+			s.step(t, 1)
+			if r := s.wantRun(t, id, db.RunSucceeded, ""); r.Summary != "PermissionDenied|session:start@codex" {
+				t.Fatalf("script got %q; want PermissionDenied needing session:start@codex", r.Summary)
+			}
+			if st := s.sessionStep(t, id); st.Status != automations.StepDenied || st.Permission != "session:start@codex" {
+				t.Fatalf("step = %+v; want denied needing session:start@codex", st)
+			}
+			if pending, _ := s.d.PendingAutomationSessionSteps(); len(pending) != 0 {
+				t.Fatalf("a denied call left a request for the Desktop: %+v", pending)
+			}
+		})
 	})
 	for _, tc := range []struct{ opts, agent string }{{`{prompt: "x"}`, "codex"}, {`{prompt: "x", agent: "claude"}`, "claude"}} {
 		t.Run("session:start admits "+tc.agent, func(t *testing.T) {
-			s := newSessFixture(t, "codex")
-			runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "", strings.Replace(catchScript, "OPTS", tc.opts, 1)))
-			if !strings.Contains(p.ArgsJSON, `"agent":"`+tc.agent+`"`) {
-				t.Fatalf("args = %s; want agent %s", p.ArgsJSON, tc.agent)
-			}
-			if st := s.sessionStep(t, runID); st.Name != tc.agent {
-				t.Fatalf("step name = %q; want %s", st.Name, tc.agent)
-			}
-			s.cancel(t, runID)
+			synctest.Test(t, func(t *testing.T) {
+				s := newSessFixture(t, "codex")
+				runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "", strings.Replace(catchScript, "OPTS", tc.opts, 1)))
+				if !strings.Contains(p.ArgsJSON, `"agent":"`+tc.agent+`"`) {
+					t.Fatalf("args = %s; want agent %s", p.ArgsJSON, tc.agent)
+				}
+				if st := s.sessionStep(t, runID); st.Name != tc.agent {
+					t.Fatalf("step name = %q; want %s", st.Name, tc.agent)
+				}
+				s.cancel(t, runID)
+			})
 		})
 	}
 	t.Run("session:start@codex admits an explicit codex", func(t *testing.T) {
-		s := newSessFixture(t, "claude")
-		runID, p := s.startSession(t, s.seedSession(t, []string{"session:start@codex"}, "",
-			strings.Replace(catchScript, "OPTS", `{prompt: "x", agent: "codex"}`, 1)))
-		if !strings.Contains(p.ArgsJSON, `"agent":"codex"`) {
-			t.Fatalf("args = %s; want agent codex", p.ArgsJSON)
-		}
-		s.cancel(t, runID)
+		synctest.Test(t, func(t *testing.T) {
+			s := newSessFixture(t, "claude")
+			runID, p := s.startSession(t, s.seedSession(t, []string{"session:start@codex"}, "",
+				strings.Replace(catchScript, "OPTS", `{prompt: "x", agent: "codex"}`, 1)))
+			if !strings.Contains(p.ArgsJSON, `"agent":"codex"`) {
+				t.Fatalf("args = %s; want agent codex", p.ArgsJSON)
+			}
+			s.cancel(t, runID)
+		})
 	})
 }
 
@@ -448,47 +466,53 @@ func TestSession_Validation(t *testing.T) {
 }
 
 func TestSession_PauseExcludedFromActiveTime(t *testing.T) {
-	s := newSessFixture(t, "claude")
-	runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "", sessScript))
-	s.clock.Advance(2 * time.Hour)
-	sess := s.launch(t, runID, p.StepID)
-	s.waitReason(t, runID, db.WaitSession)
-	s.setSession(t, sess, `finished_at = '2026-10-14T14:00:00.000Z', finish_summary = 'done'`)
-	r := s.finish(t, runID, db.RunSucceeded, "")
-	if r.ActiveMS >= (5 * time.Minute).Milliseconds() {
-		t.Fatalf("active_ms = %d; want the 2 h of waiting excluded from the 5-minute budget", r.ActiveMS)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		s := newSessFixture(t, "claude")
+		runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "", sessScript))
+		s.clock.Advance(2 * time.Hour)
+		sess := s.launch(t, runID, p.StepID)
+		s.waitReason(t, runID, db.WaitSession)
+		s.setSession(t, sess, `finished_at = '2026-10-14T14:00:00.000Z', finish_summary = 'done'`)
+		r := s.finish(t, runID, db.RunSucceeded, "")
+		if r.ActiveMS >= (5 * time.Minute).Milliseconds() {
+			t.Fatalf("active_ms = %d; want the 2 h of waiting excluded from the 5-minute budget", r.ActiveMS)
+		}
+	})
 }
 
 func TestSession_PauseTimeoutExpires(t *testing.T) {
-	s := newSessFixture(t, "claude")
-	runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "pause_timeout_hours: 1\n", sessScript))
-	s.clock.Advance(61 * time.Minute)
-	s.finish(t, runID, db.RunExpired, db.ErrKindExpired)
-	if st := s.sessionStep(t, runID); st.Status != automations.StepError || st.FinishedAt == nil {
-		t.Fatalf("step = %+v; want closed error", st)
-	}
-	if pending, _ := s.d.PendingAutomationSessionSteps(); len(pending) != 0 {
-		t.Fatalf("an expired run still asks the Desktop for a session: %+v", pending)
-	}
-	if ok, err := s.d.AttachAutomationSessionStep(p.StepID, 1); err != nil || ok {
-		t.Fatalf("attach after expiry = (%v, %v); want false", ok, err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		s := newSessFixture(t, "claude")
+		runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "pause_timeout_hours: 1\n", sessScript))
+		s.clock.Advance(61 * time.Minute)
+		s.finish(t, runID, db.RunExpired, db.ErrKindExpired)
+		if st := s.sessionStep(t, runID); st.Status != automations.StepError || st.FinishedAt == nil {
+			t.Fatalf("step = %+v; want closed error", st)
+		}
+		if pending, _ := s.d.PendingAutomationSessionSteps(); len(pending) != 0 {
+			t.Fatalf("an expired run still asks the Desktop for a session: %+v", pending)
+		}
+		if ok, err := s.d.AttachAutomationSessionStep(p.StepID, 1); err != nil || ok {
+			t.Fatalf("attach after expiry = (%v, %v); want false", ok, err)
+		}
+	})
 }
 
 func TestSession_PauseTimeoutExpiresWhileWaitingForSession(t *testing.T) {
-	s := newSessFixture(t, "claude")
-	runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "pause_timeout_hours: 1\n", sessScript))
-	s.launch(t, runID, p.StepID)
-	s.waitReason(t, runID, db.WaitSession)
-	s.clock.Advance(61 * time.Minute)
-	s.finish(t, runID, db.RunExpired, db.ErrKindExpired)
-	if st := s.sessionStep(t, runID); st.Status != automations.StepError || st.FinishedAt == nil {
-		t.Fatalf("step = %+v; want closed error", st)
-	}
-	if ok, err := s.d.EndAutomationSessionStep(p.StepID, db.SessionStepStopped, ""); err != nil || ok {
-		t.Fatalf("late session-ended = (%v, %v); want false", ok, err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		s := newSessFixture(t, "claude")
+		runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "pause_timeout_hours: 1\n", sessScript))
+		s.launch(t, runID, p.StepID)
+		s.waitReason(t, runID, db.WaitSession)
+		s.clock.Advance(61 * time.Minute)
+		s.finish(t, runID, db.RunExpired, db.ErrKindExpired)
+		if st := s.sessionStep(t, runID); st.Status != automations.StepError || st.FinishedAt == nil {
+			t.Fatalf("step = %+v; want closed error", st)
+		}
+		if ok, err := s.d.EndAutomationSessionStep(p.StepID, db.SessionStepStopped, ""); err != nil || ok {
+			t.Fatalf("late session-ended = (%v, %v); want false", ok, err)
+		}
+	})
 }
 
 // readyWaiter answers every Wait at once.
@@ -540,53 +564,57 @@ func TestSession_NoRunIsNotAvailable(t *testing.T) {
 // working row) ends the wait at once with not_watched and the reason, by
 // default; the step is journalled ok and the run log carries the reason.
 func TestSessionWait_NotWatchedEndsAtOnceWithReason(t *testing.T) {
-	s := newSessFixture(t, "codex")
-	runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "", sessScript))
-	sess := s.launch(t, runID, p.StepID)
-	s.waitReason(t, runID, db.WaitSession)
-	s.setSession(t, sess, `kind = 'codex', agent_state = 'working', agent_state_at = '2026-10-14T12:30:00.000Z'`)
-	if done, err := automations.SessionReady(s.d, runID, p.StepID); err != nil || done {
-		t.Fatalf("ready = (%v, %v) on a watched working row; want still waiting", done, err)
-	}
-	s.setSession(t, sess, `agent_watch_issue = 'compressed', agent_watch_issue_at = '2026-10-14T12:30:02.000Z'`)
-	out := summaryObject(t, s.finish(t, runID, db.RunSucceeded, ""))
-	if out["status"] != "not_watched" || out["reason"] != "compressed" || out["summary"] != "" || out["session_id"] != float64(sess) {
-		t.Fatalf("script got %v; want {session_id %d, status not_watched, summary \"\", reason compressed}", out, sess)
-	}
-	if _, has := out["error"]; has {
-		t.Fatalf("script got an error key: %v", out)
-	}
-	st := s.sessionStep(t, runID)
-	if st.Status != automations.StepOK || st.FinishedAt == nil || !strings.Contains(st.ResultSummary, `"not_watched"`) {
-		t.Fatalf("step = %+v; want closed ok, journalled with not_watched (AUTO-11)", st)
-	}
-	var logs []string
-	for _, step := range s.steps(t, runID) {
-		if step.Kind == automations.StepKindLog {
-			logs = append(logs, step.ArgsJSON)
+	synctest.Test(t, func(t *testing.T) {
+		s := newSessFixture(t, "codex")
+		runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "", sessScript))
+		sess := s.launch(t, runID, p.StepID)
+		s.waitReason(t, runID, db.WaitSession)
+		s.setSession(t, sess, `kind = 'codex', agent_state = 'working', agent_state_at = '2026-10-14T12:30:00.000Z'`)
+		if done, err := automations.SessionReady(s.d, runID, p.StepID); err != nil || done {
+			t.Fatalf("ready = (%v, %v) on a watched working row; want still waiting", done, err)
 		}
-	}
-	if len(logs) != 1 || !strings.Contains(logs[0], "not watched") || !strings.Contains(logs[0], "compressed") {
-		t.Fatalf("log steps = %v; want one line naming the reason", logs)
-	}
+		s.setSession(t, sess, `agent_watch_issue = 'compressed', agent_watch_issue_at = '2026-10-14T12:30:02.000Z'`)
+		out := summaryObject(t, s.finish(t, runID, db.RunSucceeded, ""))
+		if out["status"] != "not_watched" || out["reason"] != "compressed" || out["summary"] != "" || out["session_id"] != float64(sess) {
+			t.Fatalf("script got %v; want {session_id %d, status not_watched, summary \"\", reason compressed}", out, sess)
+		}
+		if _, has := out["error"]; has {
+			t.Fatalf("script got an error key: %v", out)
+		}
+		st := s.sessionStep(t, runID)
+		if st.Status != automations.StepOK || st.FinishedAt == nil || !strings.Contains(st.ResultSummary, `"not_watched"`) {
+			t.Fatalf("step = %+v; want closed ok, journalled with not_watched (AUTO-11)", st)
+		}
+		var logs []string
+		for _, step := range s.steps(t, runID) {
+			if step.Kind == automations.StepKindLog {
+				logs = append(logs, step.ArgsJSON)
+			}
+		}
+		if len(logs) != 1 || !strings.Contains(logs[0], "not watched") || !strings.Contains(logs[0], "compressed") {
+			t.Fatalf("log steps = %v; want one line naming the reason", logs)
+		}
+	})
 }
 
 // A failure written before the watch issue ends the wait with error: the
 // ends are read deleted, finished, failed, then not watched.
 func TestSessionWait_FailureBeforeWatchIssueEndsWithError(t *testing.T) {
-	s := newSessFixture(t, "codex")
-	runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "", sessScript))
-	sess := s.launch(t, runID, p.StepID)
-	s.waitReason(t, runID, db.WaitSession)
-	s.setSession(t, sess, `kind = 'codex', agent_state = 'working', agent_failed_at = '2026-10-14T12:30:00.000Z', `+
-		`agent_error = 'usage_limit_exceeded', agent_watch_issue = 'missing'`)
-	out := summaryObject(t, s.finish(t, runID, db.RunSucceeded, ""))
-	if out["status"] != "error" || out["error"] != "usage_limit_exceeded" {
-		t.Fatalf("script got %v; want error usage_limit_exceeded", out)
-	}
-	if _, has := out["reason"]; has {
-		t.Fatalf("an error end carries a reason: %v", out)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		s := newSessFixture(t, "codex")
+		runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "", sessScript))
+		sess := s.launch(t, runID, p.StepID)
+		s.waitReason(t, runID, db.WaitSession)
+		s.setSession(t, sess, `kind = 'codex', agent_state = 'working', agent_failed_at = '2026-10-14T12:30:00.000Z', `+
+			`agent_error = 'usage_limit_exceeded', agent_watch_issue = 'missing'`)
+		out := summaryObject(t, s.finish(t, runID, db.RunSucceeded, ""))
+		if out["status"] != "error" || out["error"] != "usage_limit_exceeded" {
+			t.Fatalf("script got %v; want error usage_limit_exceeded", out)
+		}
+		if _, has := out["reason"]; has {
+			t.Fatalf("an error end carries a reason: %v", out)
+		}
+	})
 }
 
 // N6 has no opt-in flag: an unknown notWatched option is refused like any

@@ -1,0 +1,10 @@
+{
+  "tool_list_meta": {},
+  "discovery_scope": "global",
+  "schema_version": 1,
+  "tools": [
+    {"connector_id": "asdk_app_other", "connector_name": "Other", "tool_name": "slack_list_workspaces", "tool_namespace": "other", "server_name": "codex_apps"},
+    {"connector_id": "asdk_app_test", "connector_name": "Slack", "tool_name": "slack_search_channels", "tool_namespace": "slack", "server_name": "codex_apps"},
+    {"connector_id": "asdk_app_test", "connector_name": "Slack", "tool_name": "slack_list_workspaces", "tool_namespace": "slack", "server_name": "codex_apps"}
+  ]
+}

@@ -177,7 +177,7 @@ public struct LinkPayload: Codable, Equatable, Sendable {
     }
 
     /// Whether `authPub` is base64url of 32 non-zero bytes and `deviceID` is `RelayIDs.deviceID` of it.
-    static func relayIdentityIsCoherent(deviceID: String, authPub: String) -> Bool {
+    public static func relayIdentityIsCoherent(deviceID: String, authPub: String) -> Bool {
         guard let key = decodeBase64URL(authPub), key.count == 32, !key.allSatisfy({ $0 == 0 }) else { return false }
         return RelayIDs.deviceID(publicKey: key) == deviceID
     }

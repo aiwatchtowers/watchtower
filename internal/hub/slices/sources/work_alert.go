@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/hub/platform"
+	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
@@ -28,15 +29,17 @@ const (
 
 // WorkAlertConfig wires the work alerts. Away nil is "always away" (no
 // console, as on linux); Live nil is "nothing live, not settled" (liveOf);
-// Hidden (nil = none) is the sessions waiting in the
-// Desktop's Undo batch (PROJ-17), which never alert; Now nil is time.Now.
+// View (nil = none) is the Desktop's view (TerminalSessionOptions.View): the
+// sessions waiting in its Undo batch (PROJ-17), which never alert and take
+// no window slot, and the counts it shows over, which read as stopped; Now
+// nil is time.Now.
 type WorkAlertConfig struct {
-	DB     *db.DB
-	Store  *state.Store
-	Away   platform.Away
-	Live   func() Liveness
-	Hidden func() map[int64]bool
-	Now    func() time.Time
+	DB    *db.DB
+	Store *state.Store
+	Away  platform.Away
+	Live  func() Liveness
+	View  func() (hidden map[int64]bool, displayOver map[int64]ShownOver)
+	Now   func() time.Time
 }
 
 // WorkAlert is the ask_alert slice (WorkAlertSlice, workbench-remote spec
@@ -58,21 +61,6 @@ func WorkAlert(c WorkAlertConfig) slices.Source {
 type workAlertSource struct{ c WorkAlertConfig }
 
 func (*workAlertSource) Kind() slices.Kind { return slices.KindAskAlert }
-
-// workAlertPayload is the Kit's WorkAlertPayload: titles only, never chat
-// text.
-type workAlertPayload struct {
-	Event         string `json:"event"`
-	Key           string `json:"key"`
-	WorkbenchID   int64  `json:"workbench_id"`
-	WorkbenchName string `json:"workbench_name"`
-	SessionID     *int64 `json:"session_id,omitempty"`
-	AskID         *int64 `json:"ask_id,omitempty"`
-	RequestID     *int64 `json:"request_id,omitempty"`
-	Title         string `json:"title"`
-	Body          string `json:"body"`
-	Quick         bool   `json:"quick"`
-}
 
 // The candidate events (WorkAlertPolicy.Event).
 const (
@@ -126,14 +114,17 @@ func (s *workAlertSource) Items(ctx context.Context) ([]slices.Item, error) {
 	if err != nil {
 		return nil, err
 	}
-	hidden := map[int64]bool{}
-	if c.Hidden != nil {
-		hidden = c.Hidden()
+	var (
+		hidden map[int64]bool
+		over   map[int64]ShownOver
+	)
+	if c.View != nil {
+		hidden, over = c.View()
 	}
 	var rd alertReads
 	if err := readTx(ctx, c.DB, func(tx *sql.Tx) error {
 		var err error
-		rd, err = s.read(ctx, tx, liveOf(c.Live), hidden, stamp)
+		rd, err = s.read(ctx, tx, liveOf(c.Live), hidden, over, stamp)
 		return err
 	}); err != nil {
 		return nil, err
@@ -224,7 +215,9 @@ func (s *workAlertSource) Items(ctx context.Context) ([]slices.Item, error) {
 // read is the pass's database half: the published workbenches, their open
 // asks, the pending requests and the terminal_session window's sessions,
 // outside the hidden sessions.
-func (s *workAlertSource) read(ctx context.Context, tx *sql.Tx, live Liveness, hidden map[int64]bool, now time.Time) (alertReads, error) {
+func (s *workAlertSource) read(ctx context.Context, tx *sql.Tx, live Liveness, hidden map[int64]bool,
+	over map[int64]ShownOver, now time.Time,
+) (alertReads, error) {
 	rd := alertReads{names: map[int64]string{}}
 	refs, err := publishedRefs(ctx, tx)
 	if err != nil || len(refs) == 0 {
@@ -248,17 +241,16 @@ func (s *workAlertSource) read(ctx context.Context, tx *sql.Tx, live Liveness, h
 		}
 	}
 	// The terminal_session slice's own window and states (Swift reads
-	// TerminalSessionSlice.publishedSessions the same way).
+	// TerminalSessionSlice.publishedSessions the same way): the hidden
+	// sessions are left out before the window, a count shown over is over.
 	published, err := TerminalSessions(s.c.DB, TerminalSessionOptions{
 		Liveness: func() Liveness { return live }, Now: func() time.Time { return now },
+		View: func() (map[int64]bool, map[int64]ShownOver) { return hidden, over },
 	}).published(ctx, tx)
 	if err != nil {
 		return rd, err
 	}
 	for _, p := range published {
-		if hidden[p.id] {
-			continue
-		}
 		a := alertSession{id: p.id, workbenchID: p.workbenchID, title: p.title, kind: p.state.kind,
 			openAsks: p.state.openAsks, pendingRequest: waiting[p.id]}
 		if p.stateAt != nil {
@@ -299,7 +291,7 @@ func (s *workAlertSource) awaySince(ctx context.Context, stamp time.Time) (time.
 func coverKey(key string) string { return "cover-" + key }
 
 // alertPayload is WorkAlertSlice.payload.
-func alertPayload(c alertCandidate, workbenchName string, quick bool) workAlertPayload {
+func alertPayload(c alertCandidate, workbenchName string, quick bool) secure.WorkAlertFields {
 	workbench, _ := clipText(workbenchName, alertMaxWorkbench)
 	session, _ := clipText(c.title, alertMaxSession)
 	title := workbench
@@ -307,7 +299,7 @@ func alertPayload(c alertCandidate, workbenchName string, quick bool) workAlertP
 		title = workbench + " · " + session
 	}
 	body, _ := clipText(c.body, alertMaxBody)
-	return workAlertPayload{
+	return secure.WorkAlertFields{
 		Event: c.event, Key: c.key, WorkbenchID: c.workbenchID, WorkbenchName: workbench,
 		SessionID: c.sessionID, AskID: c.askID, RequestID: c.requestID, Title: title, Body: body, Quick: quick,
 	}
@@ -364,7 +356,7 @@ func stopOf(k sessionKind) (event, body string, ok bool) {
 		return eventSessionStopped, "Waiting for you", true
 	case kindFailed:
 		return eventSessionFailed, "Failed", true
-	case kindNotStarted, kindRunning, kindWorking, kindNeedsApproval, kindWaitingOnAsk, kindBackground, kindReadyToCheck:
+	case kindNotStarted, kindRunning, kindWorking, kindNeedsApproval, kindWaitingOnAsk, kindBackground, kindReadyToCheck, kindSpecReview:
 	}
 	return "", "", false
 }
@@ -440,4 +432,38 @@ func openAlertAsks(ctx context.Context, tx *sql.Tx, names map[int64]string, hidd
 		return nil, fmt.Errorf("reading open asks: %w", err)
 	}
 	return out, nil
+}
+
+// The chat_answer alert (iPhone chat spec §4.7): the event, its three kinds
+// and their fixed bodies (never chat text, D14). The alert key is
+// chat:<turn_id>:<kind>.
+const (
+	EventChatAnswer = "chat_answer"
+
+	ChatAlertAnswer   = "answer"
+	ChatAlertStopped  = "stopped"
+	ChatAlertApproval = "approval"
+)
+
+// chatAlertBodies is the fixed body of each kind.
+var chatAlertBodies = map[string]string{
+	ChatAlertAnswer:   "Answer ready",
+	ChatAlertStopped:  "The answer stopped",
+	ChatAlertApproval: "Waiting for your approval",
+}
+
+// ChatAlertKey is the push ledger key of one (turn, kind).
+func ChatAlertKey(turnID, kind string) string { return "chat:" + turnID + ":" + kind }
+
+// ChatAlert is the chat_answer alert of one turn: the conversation's title
+// (clipped like a session's) and the kind's fixed body. ok is false for an
+// unknown kind.
+func ChatAlert(conv int64, turnID, kind, convTitle string) (key string, f secure.WorkAlertFields, ok bool) {
+	body, ok := chatAlertBodies[kind]
+	if !ok {
+		return "", secure.WorkAlertFields{}, false
+	}
+	title, _ := clipText(convTitle, alertMaxSession)
+	key = ChatAlertKey(turnID, kind)
+	return key, secure.WorkAlertFields{Event: EventChatAnswer, Key: key, Title: title, Body: body, ConversationID: conv}, true
 }

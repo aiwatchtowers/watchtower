@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestAttachPayloads_ChildReadsEachFD(t *testing.T) {
@@ -76,11 +75,5 @@ func TestAttachPayloads_UnreadPayloadDoesNotHang(t *testing.T) {
 	}
 	cleanup()
 	_ = cmd.Wait()
-	done := make(chan struct{})
-	go func() { waitPayloadWriters(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("payload writer still blocked after the child exited")
-	}
+	waitPayloadWriters() // a writer still blocked after the child exited hangs here, until go test -timeout
 }

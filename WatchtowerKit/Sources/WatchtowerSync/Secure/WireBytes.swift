@@ -2,6 +2,10 @@ import Foundation
 
 public enum E2EError: Error, Equatable {
     case badHubID(String)
+    /// An X25519 agreement gave the all-zero secret (a low-order peer key).
+    case allZeroSharedSecret
+    /// An ephemeral public key of the `wt/relay/v2/` transcript is not 32 bytes.
+    case badEphemeralPublicKey
 }
 
 /// Byte-level helpers shared by the E2E envelope, key derivation and the

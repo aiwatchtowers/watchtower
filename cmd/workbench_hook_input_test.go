@@ -139,7 +139,7 @@ func TestParseHookEvent_ClaudeFixtureValues(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Stop", stop.Event)
 	assert.True(t, stop.BackgroundTasks.Present)
-	n, ok := backgroundAgents(stop.BackgroundTasks, nil, "")
+	n, ok := backgroundAgents(stop.BackgroundTasks, nil, "", nil)
 	assert.True(t, ok)
 	assert.Equal(t, int64(2), n)
 
@@ -258,7 +258,7 @@ func TestParseHookEvent_CodexDropsClaudeOnlyFields(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, codexFixtureWants["stop"], ev)
-	_, ok := backgroundAgents(ev.BackgroundTasks, nil, "")
+	_, ok := backgroundAgents(ev.BackgroundTasks, nil, "", nil)
 	assert.False(t, ok, "no count from a codex payload")
 
 	claude, err := parseHookEvent(agentkind.Claude, []byte(raw))

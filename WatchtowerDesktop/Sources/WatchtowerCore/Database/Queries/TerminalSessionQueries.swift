@@ -21,6 +21,20 @@ package enum TerminalSessionQueryError: LocalizedError, Equatable {
 package enum TerminalSessionQueries {
     private static let now = "strftime('%Y-%m-%dT%H:%M:%SZ','now')"
 
+    /// A `TerminalSession` read's columns: the row, plus its automation
+    /// run's trigger (`automationRunTrigger`) and whether that run was
+    /// claimed (`automationRunClaimed`: out of the queue with a start time,
+    /// and not the paused hold's cancel; Go `sessionstart.runClaimed`) for
+    /// the origin its agent and its AI title carry. `table` is the row's
+    /// table name or alias.
+    package static func sessionColumns(_ table: String = "terminal_sessions") -> String {
+        let run = "FROM automation_runs r WHERE r.id = \(table).automation_run_id"
+        let claimed = "r.status <> 'queued' AND r.started_at IS NOT NULL "
+            + "AND NOT (r.status = 'cancelled' AND r.error = '\(CLIRunnerError.backgroundAIPausedText)')"
+        return "\(table).*, (SELECT r.trigger \(run)) AS automation_run_trigger, "
+            + "(SELECT \(claimed) \(run)) AS automation_run_claimed"
+    }
+
     package struct NewSession: Sendable {
         package var projectID: Int64?
         package var kind: TerminalSession.Kind
@@ -85,7 +99,36 @@ package enum TerminalSessionQueries {
     }
 
     package static func fetch(_ db: Database, id: Int64) throws -> TerminalSession? {
-        try TerminalSession.fetchOne(db, sql: "SELECT * FROM terminal_sessions WHERE id = ?", arguments: [id])
+        try TerminalSession.fetchOne(db, sql: "SELECT \(sessionColumns()) FROM terminal_sessions WHERE id = ?", arguments: [id])
+    }
+
+    /// Where a start Go runs (`workbench session start`, Go hub 3 Task 8)
+    /// stands for its row, as the row says it. Read-only: Go writes it.
+    /// (Deliberately not part of `TerminalSession`: only a start reads it.)
+    package struct GoStartRow: Equatable, Sendable {
+        /// Go recorded the start's failure (`agent_failed_at` set): its
+        /// `agent_error` ("" when none); nil while none is recorded.
+        package var failure: String?
+        /// The owner's line about the place (`start_notice`, 00184); nil = none.
+        package var notice: String?
+
+        package init(failure: String? = nil, notice: String? = nil) {
+            self.failure = failure
+            self.notice = notice
+        }
+    }
+
+    /// nil when the row is gone (deleted, or a start whose failure could not
+    /// even be recorded).
+    package static func goStartRow(_ db: Database, id: Int64) throws -> GoStartRow? {
+        guard let row = try Row.fetchOne(
+            db, sql: "SELECT agent_failed_at, agent_error, start_notice FROM terminal_sessions WHERE id = ?",
+            arguments: [id]
+        ) else { return nil }
+        let failedAt: String? = row["agent_failed_at"]
+        let reason: String? = row["agent_error"]
+        let notice: String? = row["start_notice"]
+        return GoStartRow(failure: failedAt == nil ? nil : reason ?? "", notice: notice?.isEmpty == false ? notice : nil)
     }
 
     /// Whether row `id`'s agent called `finish_session` and has not worked
@@ -100,7 +143,10 @@ package enum TerminalSessionQueries {
     package static func fetchForWorkbench(_ db: Database, projectID: Int64) throws -> [TerminalSession] {
         try TerminalSession.fetchAll(
             db,
-            sql: "SELECT * FROM terminal_sessions WHERE project_id = ? ORDER BY last_active_at DESC, id DESC",
+            sql: """
+                SELECT \(sessionColumns()) FROM terminal_sessions WHERE project_id = ? AND delete_requested_at IS NULL
+                ORDER BY last_active_at DESC, id DESC
+                """,
             arguments: [projectID]
         )
     }
@@ -110,14 +156,20 @@ package enum TerminalSessionQueries {
     package static func fetchAllWorkbenchSessions(_ db: Database) throws -> [TerminalSession] {
         try TerminalSession.fetchAll(
             db,
-            sql: "SELECT * FROM terminal_sessions WHERE project_id IS NOT NULL ORDER BY last_active_at DESC, id DESC"
+            sql: """
+                SELECT \(sessionColumns()) FROM terminal_sessions WHERE project_id IS NOT NULL AND delete_requested_at IS NULL
+                ORDER BY last_active_at DESC, id DESC
+                """
         )
     }
 
     package static func fetchStandalone(_ db: Database) throws -> [TerminalSession] {
         try TerminalSession.fetchAll(
             db,
-            sql: "SELECT * FROM terminal_sessions WHERE project_id IS NULL ORDER BY last_active_at DESC, id DESC"
+            sql: """
+                SELECT \(sessionColumns()) FROM terminal_sessions WHERE project_id IS NULL AND delete_requested_at IS NULL
+                ORDER BY last_active_at DESC, id DESC
+                """
         )
     }
 
@@ -152,7 +204,7 @@ package enum TerminalSessionQueries {
         let targets = try Row.fetchAll(db, sql: """
             SELECT l.session_id, l.target_id FROM terminal_session_targets l
             JOIN terminal_sessions s ON s.id = l.session_id
-            WHERE s.project_id = ? ORDER BY l.session_id, l.target_id
+            WHERE s.project_id = ? AND s.delete_requested_at IS NULL ORDER BY l.session_id, l.target_id
             """, arguments: [projectID])
         for row in targets {
             links[row["session_id"], default: SessionWorkLinks()].linkedTargetIDs.append(row["target_id"])
@@ -163,7 +215,7 @@ package enum TerminalSessionQueries {
                         THEN json_extract(s.agent_turns, '$.since') END AS run_start
             FROM terminal_session_worktrees w
             JOIN terminal_sessions s ON s.id = w.session_id
-            WHERE s.project_id = ? ORDER BY w.session_id, seen_at, w.root
+            WHERE s.project_id = ? AND s.delete_requested_at IS NULL ORDER BY w.session_id, seen_at, w.root
             """, arguments: [projectID])
         for row in worktrees {
             let id: Int64 = row["session_id"]
@@ -176,7 +228,10 @@ package enum TerminalSessionQueries {
     package static func fetchForTarget(_ db: Database, targetID: Int64) throws -> [TerminalSession] {
         try TerminalSession.fetchAll(
             db,
-            sql: "SELECT * FROM terminal_sessions WHERE target_id = ? ORDER BY last_active_at DESC, id DESC",
+            sql: """
+                SELECT \(sessionColumns()) FROM terminal_sessions WHERE target_id = ? AND delete_requested_at IS NULL
+                ORDER BY last_active_at DESC, id DESC
+                """,
             arguments: [targetID]
         )
     }
@@ -194,13 +249,15 @@ package enum TerminalSessionQueries {
         let marks = liveIDs.isEmpty ? "NULL" : databaseQuestionMarks(count: liveIDs.count)
         let cwdAt = try hasAgentCwd(db) ? "s.agent_cwd_at" : "NULL"
         let watchIssue = try hasColumn(db, "agent_watch_issue") ? "s.agent_watch_issue" : "NULL"
+        let shells = try hasColumn(db, "agent_background_shells") ? "s.agent_background_shells" : "NULL"
         let open = OwnerAskQueries.notInSpecLoop("a")
         return try SessionAgentStateRow.fetchAll(
             db,
             sql: """
                 SELECT s.id, s.project_id, s.kind, s.title, s.agent_state, s.agent_state_at, p.name AS workbench_name,
                        s.finished_at, s.finish_summary, s.agent_failed_at, s.agent_error,
-                       s.agent_background, s.agent_background_at, s.chat_question, s.chat_question_at,
+                       s.agent_background, s.agent_background_at, \(shells) AS agent_background_shells,
+                       s.chat_question, s.chat_question_at,
                        \(cwdAt) AS agent_cwd_at, \(watchIssue) AS agent_watch_issue,
                        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND \(open)) AS open_asks,
                        (SELECT MIN(a.id) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND \(open))
@@ -208,10 +265,13 @@ package enum TerminalSessionQueries {
                        (SELECT COUNT(*) FROM owner_asks a
                         WHERE a.session_id = s.id AND a.status = 'open' AND \(open) AND a.kind = 'question') AS open_question_asks,
                        (SELECT COUNT(*) FROM owner_asks a
-                        WHERE a.session_id = s.id AND a.status = 'open' AND \(open) AND a.kind = 'review') AS open_review_asks
+                        WHERE a.session_id = s.id AND a.status = 'open' AND \(open) AND a.kind = 'review') AS open_review_asks,
+                       (SELECT COALESCE(MAX(sr.round), 0) FROM spec_reviews sr JOIN owner_asks a2 ON a2.id = sr.ask_id
+                        WHERE a2.session_id = s.id AND a2.status = 'open' AND sr.loop = 'author') AS spec_review_round
                 FROM terminal_sessions s
                 LEFT JOIN projects p ON p.id = s.project_id
-                WHERE (s.kind IN \(AgentKind.sqlKinds) AND s.project_id IS NOT NULL) OR s.id IN (\(marks))
+                WHERE s.delete_requested_at IS NULL
+                  AND ((s.kind IN \(AgentKind.sqlKinds) AND s.project_id IS NOT NULL) OR s.id IN (\(marks)))
                 ORDER BY s.id
                 """,
             arguments: StatementArguments(liveIDs)
@@ -241,7 +301,7 @@ package enum TerminalSessionQueries {
                        CASE WHEN json_valid(agent_turns) AND json_type(agent_turns, '$.since') = 'text'
                             THEN json_extract(agent_turns, '$.since') END AS run_start
                 FROM terminal_sessions
-                WHERE project_id = ? AND agent_cwd IS NOT NULL
+                WHERE project_id = ? AND agent_cwd IS NOT NULL AND delete_requested_at IS NULL
                 """,
             arguments: [projectID]
         )
@@ -307,12 +367,17 @@ package enum TerminalSessionQueries {
     /// The per-conversation columns a conversation change clears, as Go's
     /// `SetTerminalClaudeSessionID` and `SetTerminalAgentSessionID` clear
     /// them: the turn order, the background agent count, the agent turns and
-    /// the chat question. The working directory (`agent_cwd`) stays.
-    private static let conversationResetColumns = """
-        agent_turn_end = NULL, agent_tool_run = 0,
-        agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL,
-        agent_turns = NULL
-        """
+    /// the chat question. The working directory (`agent_cwd`) stays. The
+    /// background shell count (migration 00186, board #1712) goes too where
+    /// the column exists.
+    private static func conversationResetColumns(_ db: Database) throws -> String {
+        let shells = try hasColumn(db, "agent_background_shells") ? "agent_background_shells = NULL, " : ""
+        return """
+            agent_turn_end = NULL, agent_tool_run = 0,
+            agent_background = NULL, agent_background_at = NULL, \(shells)chat_question = NULL, chat_question_at = NULL,
+            agent_turns = NULL
+            """
+    }
 
     /// "Start fresh": a new Claude session id under the same named row. The
     /// old conversation's columns go with it, the same write as Go's
@@ -323,7 +388,7 @@ package enum TerminalSessionQueries {
         try db.execute(
             sql: """
                 UPDATE terminal_sessions SET claude_session_id = ?, agent_transcript_path = NULL,
-                \(conversationResetColumns)
+                \(try conversationResetColumns(db))
                 WHERE id = ?
                 """,
             arguments: [uuid, id]
@@ -342,7 +407,7 @@ package enum TerminalSessionQueries {
         try db.execute(
             sql: """
                 UPDATE terminal_sessions SET claude_session_id = NULL, agent_transcript_path = NULL,
-                \(conversationResetColumns)
+                \(try conversationResetColumns(db))
                 WHERE id = ? AND kind = 'codex'
                 """,
             arguments: [id]
@@ -376,5 +441,46 @@ package enum TerminalSessionQueries {
 
     package static func delete(_ db: Database, id: Int64) throws {
         try db.execute(sql: "DELETE FROM terminal_sessions WHERE id = ?", arguments: [id])
+    }
+
+    // MARK: Deleting rows (board #1716, PROJ-17)
+
+    /// The rows the owner deleted whose background cleanup has not finished
+    /// (`delete_requested_at` set) — of workbench `projectID`, or of every
+    /// workbench with nil; oldest delete first. Only the background cleanup
+    /// and the finished group's Not fully cleaned rows read them.
+    package static func fetchDeleting(_ db: Database, projectID: Int64?) throws -> [TerminalSession] {
+        if let projectID {
+            return try TerminalSession.fetchAll(db, sql: """
+                SELECT \(sessionColumns()) FROM terminal_sessions WHERE project_id = ? AND delete_requested_at IS NOT NULL
+                ORDER BY delete_requested_at, id
+                """, arguments: [projectID])
+        }
+        return try TerminalSession.fetchAll(db, sql: """
+            SELECT \(sessionColumns()) FROM terminal_sessions WHERE project_id IS NOT NULL AND delete_requested_at IS NOT NULL
+            ORDER BY delete_requested_at, id
+            """)
+    }
+
+    /// Marks rows `ids` deleted when the Undo window ends (or at quit): they
+    /// leave every list and wait for their background cleanup. The Desktop
+    /// is the column's only writer. A row already marked keeps its moment.
+    package static func markDeleteRequested(_ db: Database, ids: [Int64], at: Date) throws {
+        let stamp = ISO8601DateFormatter().string(from: at)
+        for id in ids {
+            try db.execute(
+                sql: "UPDATE terminal_sessions SET delete_requested_at = ? WHERE id = ? AND delete_requested_at IS NULL",
+                arguments: [stamp, id]
+            )
+        }
+    }
+
+    /// Resume of a Not fully cleaned row: it is an ordinary finished session
+    /// again. A row with no delete request is left as it is.
+    package static func clearDeleteRequested(_ db: Database, id: Int64) throws {
+        try db.execute(
+            sql: "UPDATE terminal_sessions SET delete_requested_at = NULL WHERE id = ? AND delete_requested_at IS NOT NULL",
+            arguments: [id]
+        )
     }
 }

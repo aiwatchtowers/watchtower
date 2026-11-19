@@ -11,6 +11,8 @@ public struct WorkAlertPayload: Codable, Equatable, Sendable {
         case ask, permission
         case sessionStopped = "session_stopped"
         case sessionFailed = "session_failed"
+        /// An AI chat turn ended or waits for approval (iPhone chat spec §4.7); carries `conversationID`.
+        case chatAnswer = "chat_answer"
     }
 
     public let event: Event
@@ -21,6 +23,8 @@ public struct WorkAlertPayload: Codable, Equatable, Sendable {
     public let sessionID: Int64?
     public let askID: Int64?
     public let requestID: Int64?
+    /// The conversation of a `chat_answer`; nil for every other event.
+    public let conversationID: Int64?
     /// The notification's title: workbench name, then the session title when there is one.
     public let title: String
     public let body: String
@@ -35,6 +39,7 @@ public struct WorkAlertPayload: Codable, Equatable, Sendable {
         sessionID: Int64?,
         askID: Int64?,
         requestID: Int64?,
+        conversationID: Int64? = nil,
         title: String,
         body: String,
         quick: Bool
@@ -46,6 +51,7 @@ public struct WorkAlertPayload: Codable, Equatable, Sendable {
         self.sessionID = sessionID
         self.askID = askID
         self.requestID = requestID
+        self.conversationID = conversationID
         self.title = title
         self.body = body
         self.quick = quick
@@ -58,6 +64,23 @@ public struct WorkAlertPayload: Codable, Equatable, Sendable {
         case sessionID = "session_id"
         case askID = "ask_id"
         case requestID = "request_id"
+        case conversationID = "conversation_id"
+    }
+
+    /// `workbench_id` and `workbench_name` default for a `chat_answer`, which has no workbench.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        event = try c.decode(Event.self, forKey: .event)
+        key = try c.decode(String.self, forKey: .key)
+        workbenchID = try c.decodeIfPresent(Int64.self, forKey: .workbenchID) ?? 0
+        workbenchName = try c.decodeIfPresent(String.self, forKey: .workbenchName) ?? ""
+        sessionID = try c.decodeIfPresent(Int64.self, forKey: .sessionID)
+        askID = try c.decodeIfPresent(Int64.self, forKey: .askID)
+        requestID = try c.decodeIfPresent(Int64.self, forKey: .requestID)
+        conversationID = try c.decodeIfPresent(Int64.self, forKey: .conversationID)
+        title = try c.decode(String.self, forKey: .title)
+        body = try c.decode(String.self, forKey: .body)
+        quick = try c.decode(Bool.self, forKey: .quick)
     }
 }
 

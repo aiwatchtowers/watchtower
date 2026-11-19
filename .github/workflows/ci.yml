@@ -8,6 +8,9 @@ on:
   # `gate` job's push-vs-pull_request dedupe below, since its event_name
   # isn't "push") when a PR's pull_request-triggered run never materializes.
   workflow_dispatch:
+  # The nightly race pass (go-test-race); a scheduled run starts nothing else.
+  schedule:
+    - cron: "17 2 * * *"
 
 # One live run per branch and event: rapid successive pushes (or PR syncs)
 # cancel their stale predecessors. Cross-event dedupe (push vs pull_request
@@ -31,7 +34,17 @@ jobs:
   #            docs/guide/reference/keyboard-shortcuts.md counts as code, since
   #            KeyboardShortcutCatalogTests reads it.
   #   mobile — the iPhone app, the Kit it builds on, the Makefile or this file.
-  # A push (main included) and workflow_dispatch always run everything.
+  # A push (main included) and workflow_dispatch always run everything; the
+  # nightly schedule runs only the race pass (code, mobile and guide false).
+  # It also picks where the jobs run (scripts/ci-pick-runner.sh): the
+  # owner's Mac when its self-hosted wt-general runners are online (set up by
+  # scripts/ci-runner/setup-mac-runner.sh), else the GitHub-hosted runners —
+  # always for a fork PR, without the RUNNER_STATUS_TOKEN secret, and on any
+  # API error. Its `linux` and `macos` outputs are each job's runs-on; a job's
+  # steps branch on runner.environment where the Mac differs. Swift Test and
+  # Mobile App need a window server, which the Mac's runners lack, and the
+  # race pass is too heavy to share the Mac with the owner's own work: those
+  # always run in the cloud.
   gate:
     name: Dedupe gate
     runs-on: ubuntu-24.04
@@ -41,9 +54,11 @@ jobs:
       pull-requests: read
     outputs:
       run: ${{ steps.check.outputs.run }}
-      code: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' || steps.filter.outputs.guide_input == 'true' }}
-      mobile: ${{ github.event_name != 'pull_request' || steps.filter.outputs.mobile == 'true' }}
-      guide: ${{ github.event_name != 'pull_request' || steps.filter.outputs.guide == 'true' }}
+      code: ${{ github.event_name != 'schedule' && (github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' || steps.filter.outputs.guide_input == 'true') }}
+      mobile: ${{ github.event_name != 'schedule' && (github.event_name != 'pull_request' || steps.filter.outputs.mobile == 'true') }}
+      guide: ${{ github.event_name != 'schedule' && (github.event_name != 'pull_request' || steps.filter.outputs.guide == 'true') }}
+      linux: ${{ steps.pick.outputs.linux || '"ubuntu-24.04"' }}
+      macos: ${{ steps.pick.outputs.macos || '"macos-26"' }}
     steps:
       # every: a file counts for a filter only when it matches all of its
       # patterns, which is what the `!` exclusions need.
@@ -60,15 +75,29 @@ jobs:
             guide_input:
               - 'docs/guide/reference/keyboard-shortcuts.md'
             mobile:
-              - '{WatchtowerMobile/**,WatchtowerKit/**,Makefile,.github/workflows/ci.yml}'
+              - '{WatchtowerMobile/**,WatchtowerKit/**,WatchtowerChatText/**,WatchtowerChat/**,Makefile,.github/workflows/ci.yml}'
             guide:
               - 'docs/guide/**'
 
-      # Only the gate script: the job stays a few seconds long.
+      # Only the gate scripts: the job stays a few seconds long.
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: scripts/ci-dedupe-gate.sh
+          sparse-checkout: |
+            scripts/ci-dedupe-gate.sh
+            scripts/ci-pick-runner.sh
           sparse-checkout-cone-mode: false
+
+      # scripts/ci-pick-runner.sh, tested by scripts/tests/test-ci-pick-runner.sh.
+      # Never fails the gate: anything unexpected — the script's own error
+      # included (continue-on-error, then the outputs' cloud defaults above) —
+      # keeps every job in the cloud.
+      - id: pick
+        continue-on-error: true
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          RUNNER_STATUS_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
+        run: bash scripts/ci-pick-runner.sh
 
       # scripts/ci-dedupe-gate.sh, tested by scripts/tests/test-ci-dedupe-gate.sh.
       - id: check
@@ -84,18 +113,22 @@ jobs:
     name: Guide Check
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.guide == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+          # The Mac's ci user keeps its GOCACHE between jobs; the action's
+          # cache would only add a restore and a save to every job there.
+          cache: ${{ runner.environment == 'github-hosted' }}
 
       # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
       # macOS build uses CommonCrypto); install it explicitly so a runner
       # image change cannot break the cgo build quietly.
       - name: Install libssl-dev
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Guide check
@@ -107,25 +140,33 @@ jobs:
     name: Go Lint
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+          # The Mac's ci user keeps its GOCACHE between jobs; the action's
+          # cache would only add a restore and a save to every job there.
+          cache: ${{ runner.environment == 'github-hosted' }}
 
       # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
       # macOS build uses CommonCrypto); install it explicitly so a runner
       # image change cannot break the cgo build quietly.
       - name: Install libssl-dev
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
           version: "v2.11.4"
-          args: --timeout=5m
+          # The Mac's cores are shared with the other jobs and the owner's
+          # own work: a slow lint there is not a broken one.
+          args: --timeout=${{ runner.environment == 'self-hosted' && '10m' || '5m' }}
+          # The Mac keeps golangci-lint's own cache in the ci user's home.
+          skip-cache: ${{ runner.environment == 'self-hosted' }}
 
   # Blocks live-install data (real Slack/Google/Jira ids, corp domains,
   # personal emails) in the lines this change adds. The private denylist
@@ -134,8 +175,8 @@ jobs:
   leak-check:
     name: Leak Check
     needs: gate
-    if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-24.04
+    if: needs.gate.outputs.run == 'true' && github.event_name != 'schedule'
+    runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -185,17 +226,39 @@ jobs:
           fi
           bash scripts/leak-check.sh "$range"
 
+  # Always on ubuntu, also while the owner's Mac takes every other job: the
+  # only per-run check of the Linux build (internal/sqlcipher on OpenSSL,
+  # Linux-only Go files). A few minutes, off the critical path.
+  go-build-linux:
+    name: Go Build (Linux)
+    needs: gate
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.9"
+
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
+
+      - name: Build and vet
+        run: go build ./... && go vet ./...
+
   # Three parallel jobs over disjoint package slices (`make test-cover
   # SHARD=K/3`: packages dealt by measured weight — the split lives in
-  # scripts/coverage-gate.sh). Unsharded the suite took 7-13 min on one
-  # 4-vCPU runner (2026-11-10), CPU-bound. Every threshold is per package, so
-  # each shard checks the packages it ran; internal/db (~600 CPU-s) runs a
-  # third on each shard and go-coverage checks it on the merged profiles.
+  # scripts/coverage-gate.sh). Unsharded the suite took ~14 min on the Mac
+  # (2026-11-19), CPU-bound. Every threshold is per package, so each shard
+  # checks the packages it ran; internal/db runs a third on each shard and
+  # go-coverage checks it on the merged profiles.
   go-test:
     name: Go Test (${{ matrix.shard }}/3)
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     strategy:
       # Every shard reports: one shard's failure must not hide another's.
       fail-fast: false
@@ -204,26 +267,40 @@ jobs:
     # A hang must fail the job, not run to GitHub's 6 h default; the race
     # pass runs in go-test-race.
     timeout-minutes: 60
+    # On the Mac the three shards share its 16 cores: 6 each (go test's -p
+    # follows GOMAXPROCS too) instead of the unsharded job's 8, so three of
+    # them stay near the core count and the timing-bound tests keep their
+    # margins (all three at 8 beside other work pushed the load past 200 in a
+    # local trial, 2026-11-19, and git- and hook-timing tests failed). Empty
+    # in the cloud, where the runtime ignores it. CMD_SHARDS: cmd, alone in
+    # shard 1, runs as 6 slices there (its tests are serial within a slice).
+    env:
+      GOMAXPROCS: ${{ contains(needs.gate.outputs.linux, 'self-hosted') && '6' || '' }}
+      CMD_SHARDS: 6
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+          # The Mac's ci user keeps its GOCACHE between jobs; the action's
+          # cache would only add a restore and a save to every job there.
+          cache: ${{ runner.environment == 'github-hosted' }}
 
       # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
       # macOS build uses CommonCrypto); install it explicitly so a runner
       # image change cannot break the cgo build quietly.
       - name: Install libssl-dev
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Build
         run: go build ./...
 
       # The shell suite over scripts/build-app.sh — it stubs `ps` and never
-      # builds, so it rides this Linux job rather than paying for a macOS one.
-      # Seconds long, so it runs before the coverage gate: earlier signal, no
-      # cost. One shard runs it.
+      # builds, so it rides this job (Linux in the cloud) rather than paying
+      # for a macOS one. Seconds long, so it runs before the coverage gate:
+      # earlier signal, no cost. One shard runs it.
       - name: Test (shell scripts)
         if: matrix.shard == 1
         run: make test-scripts
@@ -234,6 +311,14 @@ jobs:
       - name: Test + coverage gate
         timeout-minutes: 25
         run: make test-cover SHARD=${{ matrix.shard }}/3
+
+      # The headless hub smoke test, live mode (build tag smoke, so the
+      # coverage run above never includes it). On the shard that runs cmd:
+      # its build shares cmd's compiled dependencies.
+      - name: Hub smoke test
+        if: matrix.shard == 1
+        timeout-minutes: 10
+        run: make hub-smoke
 
       # This shard's internal/db profile, for go-coverage.
       - uses: actions/upload-artifact@v4
@@ -247,8 +332,8 @@ jobs:
   # (`coverage-gate.sh --merge`: awk over the files, no Go, no build).
   go-coverage:
     name: Go Coverage (merged)
-    needs: go-test
-    runs-on: ubuntu-24.04
+    needs: [gate, go-test]
+    runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -267,15 +352,48 @@ jobs:
       - name: Coverage gate (merged)
         run: ./scripts/coverage-gate.sh --merge coverage-in
 
+  # The Go hub on linux/arm64 (a Raspberry Pi; Go hub phase 2, Task 2): the
+  # build and the packages a headless host leans on, on a native arm64 runner
+  # (the cgo SQLCipher build cannot cross-compile). The tarballs themselves
+  # come from linux-build.yml on ubuntu-22.04 for the glibc floor.
+  go-linux-arm64:
+    name: Go (linux/arm64)
+    needs: gate
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.9"
+
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test (hub, session host)
+        run: go test ./internal/hub/... ./internal/sessionhost/... ./internal/sessionstart/...
+
+      # The headless hub smoke test, live mode on linux/arm64.
+      - name: Hub smoke test
+        timeout-minutes: 10
+        run: make hub-smoke
+
   # The race pass, split across three parallel jobs: grown past one job's
   # budget (2026-10-19: ~7.7k CPU-s on a 4-vCPU runner, the 40-minute step
   # timed out; two shards then put tools, kb and db on one runner and timed
   # out at 25 m), each shard runs ~a third of the packages (`make test-race
   # SHARD=K/3` — the split and how to rebalance it live there).
   # The race-instrumented suite is many times slower, so the race pass runs
-  # only on pushes to main (i.e. per merged PR — a one-PR bisect window), on
-  # a manual workflow_dispatch (so a branch can prove it before merging), and
-  # in the release workflow, keeping feature-branch CI fast. -timeout is per
+  # only nightly (the schedule above, on main — a one-day bisect window; the
+  # owner moved it off every main push, #1705), on a manual
+  # workflow_dispatch (so a branch can prove it before merging), and in the
+  # release workflow, keeping per-PR CI fast. -timeout is per
   # package: a package whose tests open in-memory DBs must install
   # db.InitTestTemplate (pinned by
   # TestInitTestTemplate_EveryInMemoryPackageInstallsIt), since a fresh goose
@@ -285,7 +403,10 @@ jobs:
   go-test-race:
     name: Go Test (race ${{ matrix.shard }}/3)
     needs: gate
-    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
+    if: needs.gate.outputs.run == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    # Always in the cloud: three race shards next to the other jobs and the
+    # owner's own work oversubscribed the Mac (2026-11-10, run 42908094668:
+    # load average ~500 on 16 cores) and its timing-bound tests failed.
     runs-on: ubuntu-24.04
     strategy:
       # Both shards report: one shard's race must not hide the other's.
@@ -317,7 +438,7 @@ jobs:
     name: Code index changes
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     permissions:
       contents: read
       pull-requests: read
@@ -343,13 +464,14 @@ jobs:
   # build's); Go Test above stays untagged and compiles only the Go, Swift and
   # Python grammars. Skipped — neutral, not failed — when the change leaves the
   # index, its walk, go.mod/go.sum, the Makefile and this workflow alone (a
-  # docs-only PR). ubuntu ships gcc, so cgo works; setup-go caches the grammar
+  # docs-only PR). ubuntu ships gcc and the Mac clang, so cgo works; setup-go
+  # (in the cloud) or the ci user's GOCACHE (on the Mac) keeps the grammar
   # builds after the first cold run.
   codeindex-full:
     name: Code Index (full grammars)
     needs: [gate, codeindex-changes]
     if: needs.gate.outputs.run == 'true' && needs.codeindex-changes.outputs.codeindex == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -357,11 +479,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+          # The Mac's ci user keeps its GOCACHE between jobs; the action's
+          # cache would only add a restore and a save to every job there.
+          cache: ${{ runner.environment == 'github-hosted' }}
 
       # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
       # macOS build uses CommonCrypto); install it explicitly so a runner
       # image change cannot break the cgo build quietly.
       - name: Install libssl-dev
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Test (full grammar set)
@@ -374,8 +500,9 @@ jobs:
     name: Swift Lint + Kit Test
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
-    # macos-26 + Xcode 26.4.1: the Kit tests run on Swift Test's toolchain.
-    runs-on: macos-26
+    # macos-26 + Xcode 26.4.1 in the cloud, the Mac's Xcode (DEVELOPER_DIR in
+    # its runners' .env) there: the Kit tests run on Swift Test's toolchain.
+    runs-on: ${{ fromJSON(needs.gate.outputs.macos) }}
     timeout-minutes: 30
     defaults:
       run:
@@ -383,15 +510,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # On the Mac the runner's .env sets DEVELOPER_DIR (the action needs sudo).
       - uses: maxim-lobanov/setup-xcode@v1
+        if: runner.environment == 'github-hosted'
         with:
           xcode-version: "26.4.1"
 
+      # The Mac's ci user cannot write to Homebrew; its setup script puts
+      # swiftlint on the runners' PATH.
       - name: Install SwiftLint
-        run: brew install swiftlint
+        run: command -v swiftlint >/dev/null || brew install swiftlint
 
       # The design kit's rules have no inline swiftlint:disable (the
-      # baseline only absorbs legacy code); same check as `make lint-swift`.
+      # baseline only absorbs legacy code) under the Desktop's views, the
+      # phone's features and the shared chat views (WatchtowerChat ChatUI);
+      # same check as `make lint-swift`.
       - name: Kit lint guard
         run: bash ../scripts/kit-lint-guard.sh
 
@@ -400,6 +533,15 @@ jobs:
 
       - name: SwiftLint (mobile Kit)
         working-directory: WatchtowerKit
+        run: swiftlint lint --strict
+
+      - name: SwiftLint (chat text package)
+        working-directory: WatchtowerChatText
+        run: swiftlint lint --strict
+
+      # ChatUI's views are held to the kit_* rules by the package's config.
+      - name: SwiftLint (chat package)
+        working-directory: WatchtowerChat
         run: swiftlint lint --strict
 
       # The iPhone app has its own config: the `orange_outside_phone_tone`
@@ -414,6 +556,18 @@ jobs:
         working-directory: WatchtowerKit
         run: swift test
 
+      - name: Test (chat text package)
+        timeout-minutes: 10
+        working-directory: WatchtowerChatText
+        run: swift test
+
+      # ChatWire (the chat wire models, operations and stores) and ChatUI (the
+      # shared chat views and models, CHAT-06's Swift guard) — unified chat.
+      - name: Test (chat package)
+        timeout-minutes: 15
+        working-directory: WatchtowerChat
+        run: swift test
+
   swift-test:
     name: Swift Test
     needs: gate
@@ -422,6 +576,8 @@ jobs:
     # 0.31.6 (via speech-swift) declares swift-tools-version 6.3, which Xcode
     # 26.3 (Swift 6.2.4, the newest on macos-15) cannot load on a cold SPM
     # resolve — the job only passed on macos-15 while a warm cache hid it.
+    # Always in the cloud: its AppKit tests (mouse events, key windows) need a
+    # window server, which the Mac's runners lack (scripts/ci-runner/README.md).
     runs-on: macos-26
     # A hang must fail the job, not run to GitHub's 6 h default (seen
     # 2026-10-02: a pool-starved test run sat 45+ min). Measured ~8 min, up to
@@ -480,6 +636,12 @@ jobs:
       # recompiling it — a checkout touches every file, so without it the
       # restored products are thrown away. A changed file, or a dependent of a
       # changed API in another module, still recompiles (checked 2026-10-14).
+      # Across modules the driver sees WatchtowerCore (and, for the test
+      # target, WatchtowerDesktop) as one source file: a top-level change
+      # there (a new, removed or renamed type, extension or free function,
+      # even a private one) recompiles every file that imports it, ~1,800
+      # files and ~8 min here; a change inside a type's body or a function
+      # body recompiles only its users (checked 2026-11-10, Swift 6.3).
       - name: Build
         run: swift build --build-tests -Xswiftc -enable-incremental-file-hashing
 
@@ -514,7 +676,7 @@ jobs:
       # classes (see the script): serially the suite took ~5 min (2026-10-13).
       # LANE_TIMEOUT: the script kills a lane hung past it and prints its log
       # (the step's own timeout would kill the script with every log unread).
-      # Two phases (shards, then the timing-bound classes) fit the step's 25.
+      # One phase of lanes; a lane's 10 minutes fit the step's 25.
       - name: Test
         timeout-minutes: 25
         env:
@@ -582,6 +744,8 @@ jobs:
     name: Mobile App
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.mobile == 'true'
+    # Always in the cloud: on the Mac's runners, with no window server, a
+    # simulator never finishes booting ("Waiting on System App").
     runs-on: macos-26
     # A cold SPM resolve plus the simulator boot; the suite itself is minutes.
     timeout-minutes: 45
@@ -600,7 +764,8 @@ jobs:
         with:
           xcode-version: "26.4.1"
 
-      # Unsigned: Base.xcconfig and the recipe set CODE_SIGNING_ALLOWED=NO.
+      # Build is unsigned (CODE_SIGNING_ALLOWED=NO). Test signs to run locally with
+      # StoreKitTesting.entitlements, which needs no team or keychain on the runner.
       - name: Build
         run: make mobile-build SIM="$SIM"
 

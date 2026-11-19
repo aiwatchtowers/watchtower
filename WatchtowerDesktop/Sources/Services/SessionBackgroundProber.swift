@@ -81,6 +81,13 @@ final class SessionBackgroundProber {
     /// Whether a probe of `sessionID` is running (a test seam).
     func isProbing(_ sessionID: Int64) -> Bool { inFlight[sessionID] != nil }
 
+    /// A probe or turn check in flight, if any (a test seam: awaiting each
+    /// in turn until none is left settles them all).
+    var anyInFlight: Task<Void, Never>? { inFlight.values.first?.task }
+
+    /// The probe of `sessionID` running now, to await its end (a test seam).
+    func probeTask(_ sessionID: Int64) -> Task<Void, Never>? { inFlight[sessionID]?.task }
+
     /// The sessions whose count shows as over after failed probes. Drops the
     /// bookkeeping of every count that is no longer the row's — the session
     /// stopped, started again or reported anew.
@@ -108,7 +115,9 @@ final class SessionBackgroundProber {
                   let count = Self.count(of: row, live: status.state.live, startedAt: startedAt[row.id]),
                   let reported = SessionAgentStatus.parseStamp(count.stamp),
                   showsCount(status, overShown: (entries[row.id]?.failures ?? 0) >= Self.failuresShownOver),
-                  policy.needsProbe(count: agents, lastReport: reported, now: now) else { continue }
+                  policy.needsProbe(
+                      count: agents, shells: row.agentBackgroundShells ?? 0, lastReport: reported, now: now
+                  ) else { continue }
             var entry = entries[row.id].flatMap { $0.count == count ? $0 : nil }
                 ?? Entry(count: count, lastProbe: .distantPast, failures: 0)
             let retrying = entry.failures > 0 && entry.failures < Self.failuresShownOver

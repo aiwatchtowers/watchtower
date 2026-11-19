@@ -12,7 +12,7 @@ enum RecorderNotices {
         post(
             id: "recording-cap-notice",
             title: "Recording stops in 5 minutes",
-            body: "Recordings stop at 3 hours. It is saved and sent to your Mac."
+            body: "Recordings stop at 3 hours. It is saved and sent to your tower."
         )
     }
 
@@ -21,7 +21,7 @@ enum RecorderNotices {
         post(
             id: "recording-auto-finish-notice",
             title: "Recording saved",
-            body: "It was paused for 60 minutes, so it was finished automatically and sent to your Mac."
+            body: "It was paused for 60 minutes, so it was finished automatically and sent to your tower."
         )
     }
 

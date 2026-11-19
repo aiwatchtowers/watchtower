@@ -22,7 +22,6 @@ import (
 	"watchtower/internal/oauthpage"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 var (
@@ -704,11 +703,14 @@ func accountUsesConfluenceWrite(workspaceDir string, accountID int64, warn io.Wr
 // enableJiraPhase flips the global jira.enabled daemon-phase switch on in
 // config.yaml (the per-account on/off lives on the jira_accounts row).
 func enableJiraPhase() error {
-	v := viper.New()
-	v.SetConfigFile(flagConfig)
-	_ = v.ReadInConfig()
-	v.Set("jira.enabled", true)
-	return writeConfigAtomic(v, flagConfig)
+	return config.WithWriteLock(flagConfig, func(lk *config.WriteLock) error {
+		v, err := readConfigForWrite(flagConfig)
+		if err != nil {
+			return err
+		}
+		v.Set("jira.enabled", true)
+		return writeConfigAtomic(lk, v, flagConfig)
+	})
 }
 
 // jiraLogin is jira.Login; a var so tests can script the OAuth outcome.
@@ -1683,14 +1685,17 @@ func runJiraFeaturesReset(cmd *cobra.Command, _ []string) error {
 	// One scalar key per toggle in a single write, for the reason setJiraFeatureToggle
 	// documents: the struct has no yaml tags, so writing it produces keys no
 	// reader can see.
-	v := viper.New()
-	v.SetConfigFile(flagConfig)
-	_ = v.ReadInConfig()
-	for _, name := range featureNames {
-		ptr, _ := featureToggleRef(&defaults, name)
-		v.Set("jira.features."+jiraFeatureConfigKeys[name], ptr != nil && *ptr)
-	}
-	if err := writeConfigAtomic(v, flagConfig); err != nil {
+	if err := config.WithWriteLock(flagConfig, func(lk *config.WriteLock) error {
+		v, err := readConfigForWrite(flagConfig)
+		if err != nil {
+			return err
+		}
+		for _, name := range featureNames {
+			ptr, _ := featureToggleRef(&defaults, name)
+			v.Set("jira.features."+jiraFeatureConfigKeys[name], ptr != nil && *ptr)
+		}
+		return writeConfigAtomic(lk, v, flagConfig)
+	}); err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}
 

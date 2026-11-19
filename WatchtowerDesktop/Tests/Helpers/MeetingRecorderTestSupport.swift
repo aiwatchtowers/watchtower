@@ -400,23 +400,14 @@ class MeetingRecorderTestCase: XCTestCase {
         return recordingsDir.appendingPathComponent(row.recording)
     }
 
-    /// Yields the main actor until `condition` holds, polling against a
-    /// wall-clock deadline rather than a fixed iteration count, so a loaded
-    /// CI runner gets as much real time to make progress as an idle dev
-    /// machine. Bounded, so a regression that parks the queue forever fails
-    /// an assertion instead of hanging the suite — callers must not `await`
-    /// a Task that only completes on success unless this returned true.
+    /// Yields the main actor until `condition` holds, re-checked once per
+    /// main-actor turn (`untilTurn`): no clock and no deadline — a regression
+    /// that parks the queue forever is a hang the lane watchdog reports.
+    /// Always returns true; `what` names the wait for a reader of the hang.
     @discardableResult
     func waitUntil(_ what: String, _ condition: @escaping () -> Bool) async -> Bool {
-        let deadline: Duration = .seconds(5)
-        let start = ContinuousClock.now
-        repeat {
-            if condition() { return true }
-            await Task.yield()
-            try? await Task.sleep(for: .milliseconds(2))
-        } while ContinuousClock.now - start < deadline
-        XCTFail("timed out waiting for \(what)")
-        return false
+        await untilTurn { condition() }
+        return true
     }
 
     /// Runs every main-actor job already enqueued before returning: the main

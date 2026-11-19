@@ -84,14 +84,6 @@ final class InboxIdeaPaneTests: XCTestCase {
         try view.inspect().findAll(ViewType.Text.self).compactMap { try? $0.string() }
     }
 
-    private func waitUntil(_ what: String, timeout: TimeInterval = 5, _ condition: () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline { XCTFail("timed out waiting for \(what)"); return }
-            await Task.yield()
-        }
-    }
-
     // MARK: - Verdict buttons
 
     func testVerdictButtons() throws {
@@ -303,7 +295,7 @@ final class InboxIdeaPaneTests: XCTestCase {
             sent.fulfill()
         }
         try bar(idea, actions: actions).inspect().find(ViewType.Menu.self).find(button: "1 week").tap()
-        await fulfillment(of: [sent], timeout: 5)
+        await fulfillment(of: [sent])
         let week = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: 7, to: Date()))
         let parts = Calendar.current.dateComponents([.year, .month, .day], from: week)
         let expected = String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
@@ -345,7 +337,7 @@ final class InboxIdeaPaneTests: XCTestCase {
         // Same kind, still open, never itself; the hint first.
         XCTAssertEqual(IdeaMergeRow.eligible(all, for: idea, preselect: hint.id).map(\.id), [hint.id, other.id])
         try open.inspect().find(IdeaMergeRow.self).find(button: "Merge").tap()
-        await fulfillment(of: [merged], timeout: 5)
+        await fulfillment(of: [merged])
         XCTAssertEqual(into, hint.id)
 
         try open.inspect().find(button: "Cancel").tap()
@@ -378,7 +370,7 @@ final class InboxIdeaPaneTests: XCTestCase {
         row = .reverse
         let confirm = try bar(decision, actions: actions, row: binding).inspect().find(IdeaReverseRow.self)
         try confirm.find(button: "Reverse").tap()
-        await fulfillment(of: [done], timeout: 5)
+        await fulfillment(of: [done])
         XCTAssertEqual(reversed, 1)
         XCTAssertNil(row)
     }
@@ -396,7 +388,7 @@ final class InboxIdeaPaneTests: XCTestCase {
         let open = bar(idea, actions: actions, row: binding)
         XCTAssertNoThrow(try open.inspect().find(text: "Delete this idea?"))
         try open.inspect().find(IdeaDeleteRow.self).find(button: "Delete").tap()
-        await fulfillment(of: [deleted], timeout: 5)
+        await fulfillment(of: [deleted])
         try open.inspect().find(IdeaDeleteRow.self).find(button: "Cancel").tap()
         XCTAssertNil(row)
 
@@ -445,16 +437,19 @@ final class InboxIdeaPaneTests: XCTestCase {
         let to = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-15T12:00:00Z"))
         var range = InboxIdeaBackfillRange(from: from, to: to)
         let row = InboxIdeaBackfillRow(ideas: ideas, range: Binding(get: { range }, set: { range = $0 })) {}
+        let (calls, call) = AsyncStream<Void>.makeStream()
+        cli.onRun = { _ in call.yield() }
 
         try row.inspect().find(button: "Find Ideas").tap()
 
         XCTAssertEqual(ideas.backfillFrom, from)
         XCTAssertEqual(ideas.backfillTo, to)
-        await waitUntil("the mining run to reach the CLI") { !cli.invocations.isEmpty }
+        var started = calls.makeAsyncIterator()
+        _ = await started.next() // the mining run reached the CLI
         let args = try XCTUnwrap(cli.invocations.first)
         XCTAssertEqual(Array(args.prefix(2)), ["ideas", "mine"])
         XCTAssertTrue(args.contains("--from") && args.contains("--to"))
-        await waitUntil("the run to end") { !ideas.isBackfilling }
+        await untilObserved { !self.ideas.isBackfilling } // the run ended
 
         // Reopened, the row starts from the range that ran.
         XCTAssertEqual(InboxIdeaBackfillRange.initial(ideas), InboxIdeaBackfillRange(from: from, to: to))

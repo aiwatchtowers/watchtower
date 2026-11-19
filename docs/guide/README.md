@@ -31,7 +31,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Calendar events are missing](troubleshooting/calendar-events-missing.md) — a hidden Calendar tab, sync banners and unselected calendars
 - [Recording or transcript problems](troubleshooting/recording-or-transcript-problems.md) — macOS permissions, no call audio, failed transcription and missing recaps
 - [A Workbench session or ask is stuck](troubleshooting/workbench-session-or-ask-stuck.md) — an answer that did not reach the agent, a session with no state
-- [The iPhone is not syncing](troubleshooting/iphone-not-syncing.md) — "Mac offline", pairing across builds, codes and iCloud
+- [The iPhone is not syncing](troubleshooting/iphone-not-syncing.md) — "<tower> · offline", pairing across builds, codes and iCloud
 - [Plan limits and high cost](troubleshooting/plan-limits-or-high-cost.md) — subscription warnings, rate limits and how to spend fewer tokens
 - [An automation run stopped at a limit](troubleshooting/automation-run-limits.md) — what the per-run call, output and session limits mean and what to do when a run cannot finish
 - [Known issues](troubleshooting/known-issues.md) — where the app does something other than its screen says, with workarounds
@@ -83,6 +83,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Codex](features/workbench/codex.md) — run Codex instead of Claude Code in a workbench
 - [Agent analytics](features/agent-analytics.md) — tokens, cost and tool use of the agent sessions in a workbench, on the Analytics view or from the command line
 - [Agent coach](features/agent-coach.md) — weekly suggestions to improve your instructions, prompts and agent settings, each applied only when you accept it
+- [Tuning chat](features/tuning-chat.md) — ask why your agents or Watchtower's prompts cost or fail, and accept the edit the chat proposes to a prompt, skill or instruction file
 
 ## Automations & AI
 
@@ -111,9 +112,12 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 
 - [iPhone](features/iphone.md) — answer asks, edit the Workbench board, start sessions and record meetings from your phone, through your own iCloud
 - [iPhone: permission prompts and interrupts](features/iphone-agent-prompts.md) — allow or deny a Claude Code permission prompt and interrupt a working agent from your phone
+- [iPhone: AI chat](features/iphone-chat.md) — ask and read your AI chats from the phone; a turn started there is answered by your Mac. Needs Relay, which isn't in the current version of Watchtower for iPhone
 - [iPhone: the workchat](features/iphone-workbench.md) — follow a session's chat, answer what waits on you and write to the agent from your phone, even while it works
 - [iPhone: changes that are not delivered](features/iphone-not-delivered.md) — what Waiting to send and Not delivered mean on the phone, Retry and Dismiss All
 - [iPhone: work alerts](features/iphone-alerts.md) — alerts when work stops while you are away from your Mac; tap one to open its ask or session
+- [iPhone: Relay](features/iphone-relay.md) — Relay isn't in the current version of Watchtower for iPhone.
+- [Headless host](features/headless-host.md) — run your workbenches on a Linux box or a Mac without the app, as a service. Relay isn't in the current version of Watchtower for iPhone, and a host links a phone only over Relay
 - [Menu bar and updates](features/menu-bar-and-updates.md) — what the menu shows, what closing and quitting do, and how updates arrive
 - [Claude Code integration](features/claude-code-integration.md) — let your coding agent query Watchtower through a read-only MCP server and three skills
 

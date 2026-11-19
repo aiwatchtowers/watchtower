@@ -5,19 +5,37 @@ import GRDB
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// A process that records what was typed into it.
+/// A process that records what was typed into it — by the stand-in session
+/// host (`FakeHostDelivery`), the only way a line reaches it.
 @MainActor
 private final class LineProbeSession: TerminalSessionProcess {
     let view = NSView()
     let pid: pid_t = 0
     var onExit: ((Int32?) -> Void)?
-    var onOwnerInput: (([UInt8]) -> Void)?
+    /// The center's owner-input callback (`FakeHostDelivery.ownerInputRelay`).
+    private var centerOwnerInput: (([UInt8]) -> Void)?
+    var onOwnerInput: (([UInt8]) -> Void)? {
+        get { host.ownerInputRelay(to: centerOwnerInput) }
+        set { centerOwnerInput = newValue }
+    }
+    var onDeliveryEvent: ((SessionHostDeliveryEvent) -> Void)?
     var bracketedPasteMode = true
     private(set) var inputs: [[UInt8]] = []
+    let host = FakeHostDelivery()
 
-    func start(_ launch: TerminalLaunch) {}
+    init() {
+        host.write = { [weak self] in self?.inputs.append($0) }
+        host.bracketedPaste = { [weak self] in self?.bracketedPasteMode ?? false }
+        host.event = { [weak self] in self?.onDeliveryEvent?($0) }
+    }
+
+    func start(_ launch: TerminalLaunch) { host.newRun() }
     func detach() {}
     func sendInput(_ bytes: [UInt8]) { inputs.append(bytes) }
+
+    func deliver(_ line: SessionDeliverLine, check: @escaping @MainActor () async -> DeliverCheckReply) async -> DeliverOutcome {
+        await host.deliver(line, check: check)
+    }
 }
 
 /// The state reads' outcome, switched by a test.
@@ -62,13 +80,11 @@ final class SessionLineDeliveryTests: XCTestCase {
         center = TerminalCenter(
             makeProcess: { [weak self] in
                 let process = LineProbeSession()
+                process.host.pause = { [weak self] _ in await self?.onPause?() }
                 self?.processes.append(process)
                 return process
             },
-            signaller: ProcessGroupSignaller(
-                signal: { _, _ in }, isAlive: { _ in false },
-                sleep: { [weak self] _ in await self?.onPause?() }
-            )
+            signaller: ProcessGroupSignaller(signal: { _, _ in }, isAlive: { _ in false }, sleep: { _ in })
         )
         center.shell = { "/bin/zsh" }
         center.copyToClipboard = { _ in }
@@ -88,7 +104,11 @@ final class SessionLineDeliveryTests: XCTestCase {
     private func makeVM(agentStates: SessionAgentStateCenter? = nil) -> WorkbenchesViewModel {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
                                       terminalCenter: center, agentStates: agentStates)
-        vm.asks.holdSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.asks.holdSleep = { _ in
+            let (stream, continuation) = AsyncStream<Never>.makeStream()
+            for await _ in stream {} // ends only when its task is cancelled
+            continuation.finish()
+        }
         if agentStates == nil {
             vm.lineDelivery.hasHookState = { _ in true }
             vm.lineDelivery.refreshStates = { true }
@@ -198,7 +218,8 @@ final class SessionLineDeliveryTests: XCTestCase {
 
         XCTAssertEqual(sent, .submitted)
         XCTAssertEqual(answered, .queued)
-        await waitUntil { self.typed.count == 4 }
+        await vm.lineDelivery.settled()
+        XCTAssertEqual(typed.count, 4)
         guard typed.count == 4 else { return }
         XCTAssertTrue(typedText[0].contains(Self.otherLine))
         XCTAssertFalse(typedText[0].contains("Ask #"), "the lines never share a paste")
@@ -206,7 +227,7 @@ final class SessionLineDeliveryTests: XCTestCase {
         XCTAssertTrue(typedText[2].contains("Ask #\(askID) "))
         XCTAssertFalse(typedText[2].contains(Self.otherLine))
         XCTAssertEqual(typed[3], [0x0D])
-        await waitUntil { vm.asks.answerNotices[askID] == .delivered(.submitted) }
+        XCTAssertEqual(vm.asks.answerNotices[askID], .delivered(.submitted))
     }
 
     /// The other way round: a line sent during an answer's pause is queued
@@ -228,7 +249,8 @@ final class SessionLineDeliveryTests: XCTestCase {
 
         XCTAssertEqual(delivery, .submitted)
         XCTAssertEqual(queued, .queued)
-        await waitUntil { events == [.tried(.submitted)] }
+        await vm.lineDelivery.settled()
+        XCTAssertEqual(events, [.tried(.submitted)])
         XCTAssertEqual(typed.count, 4)
         guard typed.count == 4 else { return }
         XCTAssertTrue(typedText[0].contains("Ask #\(askID) "))
@@ -260,8 +282,10 @@ final class SessionLineDeliveryTests: XCTestCase {
 
         XCTAssertEqual(delivery, .held)
         XCTAssertEqual(vm.lineDelivery.heldKeys(sessionID: s.id), [.input("action-3")])
-        try await Task.sleep(for: .milliseconds(700))
-        XCTAssertTrue(typed.isEmpty, "no timer sends it")
+        // No later try was booked: once every booked retry has ended,
+        // nothing but a read sends it.
+        await vm.lineDelivery.settled()
+        XCTAssertTrue(typed.isEmpty, "no booked retry sends it")
         XCTAssertTrue(events.isEmpty)
         let failed = await agentStates.poll()
         XCTAssertFalse(failed)
@@ -272,7 +296,8 @@ final class SessionLineDeliveryTests: XCTestCase {
 
         XCTAssertTrue(read)
         // No hook state this run: pasted, the owner presses Return.
-        await waitUntil { events == [.tried(.typed)] }
+        await vm.lineDelivery.settled()
+        XCTAssertEqual(events, [.tried(.typed)])
         XCTAssertEqual(typed.count, 1)
         XCTAssertTrue(typedText.first?.contains(Self.otherLine) == true)
         XCTAssertFalse(typed.contains([0x0D]))
@@ -332,16 +357,5 @@ final class SessionLineDeliveryTests: XCTestCase {
         XCTAssertEqual(typed[1], [0x0D])
         XCTAssertTrue(typedText[2].contains("Ask #\(newerID) "))
         XCTAssertEqual(typed[3], [0x0D])
-    }
-
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
     }
 }

@@ -741,6 +741,52 @@ struct InstructionForgetResult: Decodable, Equatable {
     let removed: Bool
 }
 
+/// `watchtower workbench session start --json` (Go hub 3 Task 8): the row Go
+/// wrote, answered at once (instant start, #942) — `state` is `starting`
+/// while a detached finish places and launches it, or `running` for a
+/// reopened one. Exactly the four pinned keys.
+struct SessionStartResult: Decodable, Equatable {
+    let sessionID: Int64
+    let state: String
+    let folderPath: String
+    let worktreeBranch: String
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case sessionID = "session_id"
+        case state
+        case folderPath = "folder_path"
+        case worktreeBranch = "worktree_branch"
+    }
+}
+
+/// What a Desktop start asks `workbench session start` for. `brief` (the
+/// first prompt) goes over stdin, never argv; nil or blank sends none (Go
+/// then gives a target its work-on prompt).
+struct SessionStartRequest: Equatable {
+    var workbenchID: Int64
+    var targetID: Int64?
+    var agent: AgentKind
+    var place: WorktreeChoice
+    var title: String?
+    var brief: String?
+    var automationRunID: Int64?
+
+    var args: [String] {
+        var args = ["workbench", "session", "start", "--workbench", String(workbenchID)]
+        if let targetID { args += ["--target", String(targetID)] }
+        args += ["--agent", agent.rawValue, "--place", place.rawValue]
+        if let title, !title.isEmpty { args += ["--title", title] }
+        if let automationRunID { args += ["--automation-run", String(automationRunID)] }
+        if stdin != nil { args.append("--brief-stdin") }
+        return args + ["--json"]
+    }
+
+    var stdin: Data? {
+        guard let brief, !brief.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return Data(brief.utf8)
+    }
+}
+
 /// A `WorkbenchCLI` call's own refusals, beyond the runner's errors.
 enum WorkbenchCLIError: LocalizedError, Equatable {
     /// `launch-args` found no binary for the agent (exit 3).
@@ -958,6 +1004,8 @@ struct WorkbenchCLI {
 
     /// Every review call prints one envelope; a refusal is `ok: false` with
     /// `error` at exit 0, not a throw.
+    /// The generic entry refuses a model command (`overview`, `lessons
+    /// propose`): those go through `reviewModel`.
     func review(_ args: [String], timeout: TimeInterval? = nil) async throws -> ReviewEnvelope {
         let full = ["workbench", "review"] + args + ["--json"]
         let data: Data
@@ -966,6 +1014,16 @@ struct WorkbenchCLI {
         } else {
             data = try await runner.run(args: full)
         }
+        return try Self.decodeReview(data)
+    }
+
+    /// `review` for the subcommands that call a model; `origin` has no default.
+    func reviewModel(_ args: [String], origin: CLIOrigin, timeout: TimeInterval?) async throws -> ReviewEnvelope {
+        let full = ["workbench", "review"] + args + ["--json"]
+        return try Self.decodeReview(try await runner.runModel(args: full, origin: origin, timeout: timeout, stdin: nil))
+    }
+
+    private static func decodeReview(_ data: Data) throws -> ReviewEnvelope {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(ReviewEnvelope.self, from: data)
@@ -1009,8 +1067,10 @@ struct WorkbenchCLI {
     /// `cachedOnly` reads only a cached overview and never calls the model (Quick mode, board #585).
     func reviewOverview(projectID: Int64, roundID: Int64, cachedOnly: Bool = false) async throws -> ReviewEnvelope {
         let args = ["overview", "--workbench", String(projectID), "--round", String(roundID)]
-        if cachedOnly { return try await review(args + ["--cached-only"]) }
-        return try await review(args, timeout: Self.reviewAITimeout)
+        // `overview` is a model command even when it only reads the cache
+        // (the shared list names the path); both follow the owner's review.
+        if cachedOnly { return try await reviewModel(args + ["--cached-only"], origin: .owner, timeout: nil) }
+        return try await reviewModel(args, origin: .owner, timeout: Self.reviewAITimeout)
     }
 
     /// Undoes one hunk of the round's diff in the working tree (never the index).
@@ -1029,12 +1089,52 @@ struct WorkbenchCLI {
         let workbench = ["--workbench", String(projectID)]
         switch action {
         case .propose:
-            return try await review(["lessons", "propose"] + workbench, timeout: Self.reviewAITimeout)
+            return try await reviewModel(["lessons", "propose"] + workbench, origin: .owner, timeout: Self.reviewAITimeout)
         case .accept(let id):
             return try await review(["lessons", "accept"] + workbench + ["--lesson", String(id)])
         case .dismiss(let id):
             return try await review(["lessons", "dismiss"] + workbench + ["--lesson", String(id)])
         }
+    }
+
+    /// Starts a workbench agent session in Go (`workbench session start`):
+    /// the row is written and answered at once, then placed and launched in
+    /// the session host by a detached finish (Go hub 3 Task 8). A missing
+    /// agent binary (exit `GoSessionStartContract.agentNotFoundExit`) is
+    /// `WorkbenchCLIError.agentNotFound`; a call past `timeout` seconds is
+    /// ended and thrown as the runner's timeout.
+    func sessionStart(_ r: SessionStartRequest, timeout: TimeInterval = 30) async throws -> SessionStartResult {
+        // Owner origin: this call starts no model. A session carrying
+        // `--automation-run` takes its run's origin in Go
+        // (`sessionstart.originEnv`): a background run's agent is admitted
+        // as `run:<id>`, an owner-triggered run's carries none (spec §2.2).
+        let data: Data
+        do {
+            if let stdin = r.stdin {
+                let runner = runner
+                data = try await withThrowingTaskGroup(of: Data.self) { group in
+                    group.addTask { try await runner.runModel(args: r.args, origin: .owner, timeout: nil, stdin: stdin) }
+                    group.addTask {
+                        try await Task.sleep(for: .seconds(timeout))
+                        throw CLIRunnerError.nonZeroExit(code: -1, stderr: "timed out after \(Int(timeout)) s")
+                    }
+                    defer { group.cancelAll() }
+                    guard let first = try await group.next() else { throw CancellationError() }
+                    return first
+                }
+            } else {
+                data = try await runner.runModel(args: r.args, origin: .owner, timeout: timeout, stdin: nil)
+            }
+        } catch CLIRunnerError.nonZeroExit(code: GoSessionStartContract.agentNotFoundExit, _) {
+            throw WorkbenchCLIError.agentNotFound(r.agent)
+        }
+        return try JSONDecoder().decode(SessionStartResult.self, from: data)
+    }
+
+    /// Stops session `sessionID` in the session host (`workbench session
+    /// stop`, the host's Stop request: no worktree cleanup).
+    func sessionStop(sessionID: Int64) async throws {
+        _ = try await runner.run(args: ["workbench", "session", "stop", "--session", String(sessionID), "--json"])
     }
 
     /// Makes a session worktree named `name` (Go slugs it and cuts `wt/<slug>`)
@@ -1193,7 +1293,7 @@ struct WorkbenchCLI {
         var args = ["workbench", "spec-review", "start", "--ask", String(askID)]
         if force { args.append("--force") }
         do {
-            _ = try await runner.run(args: args)
+            _ = try await runner.runModel(args: args, origin: .owner)
         } catch CLIRunnerError.nonZeroExit(code: 3, _) {
             throw WorkbenchCLIError.specReviewRunning
         }

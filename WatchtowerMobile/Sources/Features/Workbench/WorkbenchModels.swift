@@ -261,12 +261,22 @@ struct SessionSection: Equatable, Identifiable {
     var id: String { title }
 }
 
-/// Level 2 of the Workbench tab: the branch and board counts, then the
-/// sessions in the Desktop sessions panel's order (spec §5.5, mockup 2):
-/// Waiting for you, Working, Ready to check, Not running, then "▸ N
-/// finished" folded; asks whose session is not listed wait on top, and the
-/// closed asks fold at the end.
+/// Level 2 of the Workbench tab: the branch and board counts (the Board
+/// segment shows them), then the sessions split as Now splits them (#1788):
+/// Waiting for you (an ask, an approval, a verdict to give), Working, then
+/// Ended in the last day and "▸ N older" folded; asks whose session is not
+/// listed wait on top, and the closed asks fold at the end.
 struct WorkbenchMenuModel {
+    /// An ended session stays in Ended this long after it ended
+    /// (`endedAt`, Now's former window for ended sessions); older ones fold.
+    static let endedWindow: TimeInterval = 24 * 3_600
+
+    /// When an ended session ended: its state's time, else its last
+    /// activity, the time Now's ended rows use (`NowWaitingRow(ended:)`).
+    static func endedAt(_ session: TerminalSessionState) -> Date {
+        session.stateAt ?? session.lastActiveAt
+    }
+
     let id: Int64
     let title: String
     /// The branch, "detached", or nil when the Mac has none yet.
@@ -274,10 +284,11 @@ struct WorkbenchMenuModel {
     let boardCounts: [BoardCountItem]
     /// The non-empty sections, in the panel's order; rows newest first.
     let sections: [SessionSection]
-    /// Finished with no open ask, newest first: the folded group.
-    let finished: [SessionRowModel]
-    /// "6 finished"; nil when none.
-    let finishedLabel: String?
+    /// Ended sessions older than `endedWindow`, newest first: the folded
+    /// group.
+    let older: [SessionRowModel]
+    /// "6 older"; nil when none.
+    let olderLabel: String?
     /// Open asks whose session this list does not show (none, or another
     /// workbench's), newest first.
     let unattachedAsks: [WaitingCardModel]
@@ -288,8 +299,10 @@ struct WorkbenchMenuModel {
     let sessionsEmptyText: String?
 
     /// `asOf`: the Mac's last contact while it is asleep
-    /// (`MacReachability.asOf`), so live rows stop counting.
-    init?(workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, now: Date, asOf: Date?) {
+    /// (`MacReachability.asOf`), so live rows stop counting. `typing`:
+    /// whether this phone may type into the hub's sessions, which makes a
+    /// live failed session wait for Continue.
+    init?(workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, now: Date, asOf: Date?, typing: PhoneTyping = .off) {
         guard let workbench = snapshot.workbench(workbenchID) else { return nil }
         id = workbench.id
         title = workbench.name
@@ -299,15 +312,27 @@ struct WorkbenchMenuModel {
         let sessions = snapshot.sessions
             .filter { $0.workbenchID == workbenchID }
             .sorted { $0.lastActiveAt != $1.lastActiveAt ? $0.lastActiveAt > $1.lastActiveAt : $0.id > $1.id }
-        var grouped: [Group: [SessionRowModel]] = [:]
+        var bySection: [Group: [TerminalSessionState]] = [:]
         for session in sessions {
-            grouped[Group(session), default: []].append(SessionRowModel(session, now: now, asOf: asOf))
+            var group = Group(session, continues: SessionInputModel.waitsToContinue(session, in: snapshot, typing: typing))
+            if group == .ended, now.timeIntervalSince(Self.endedAt(session)) > Self.endedWindow {
+                group = .older
+            }
+            bySection[group, default: []].append(session)
         }
+        // Ended and older read newest end first; the rest keep the panel's last-activity order.
+        for group in [Group.ended, .older] {
+            bySection[group]?.sort {
+                let (lhs, rhs) = (Self.endedAt($0), Self.endedAt($1))
+                return lhs != rhs ? lhs > rhs : $0.id > $1.id
+            }
+        }
+        let grouped = bySection.mapValues { $0.map { SessionRowModel($0, now: now, asOf: asOf) } }
         sections = Group.listed.compactMap { group in
             grouped[group].map { SessionSection(title: group.title, tone: group.tone, rows: $0) }
         }
-        finished = grouped[.finished] ?? []
-        finishedLabel = finished.isEmpty ? nil : "\(finished.count) finished"
+        older = grouped[.older] ?? []
+        olderLabel = older.isEmpty ? nil : "\(older.count) older"
         let listed = Set(sessions.map(\.id))
         unattachedAsks = snapshot.openAsks(in: workbenchID)
             .filter { $0.sessionID.map { !listed.contains($0) } ?? true }
@@ -319,22 +344,29 @@ struct WorkbenchMenuModel {
         sessionsEmptyText = sessions.isEmpty ? "No sessions yet" : nil
     }
 
-    /// Where a session sits in the list, by the Mac's state: the owner's
-    /// move (an ask, an approval, a finished session's open ask, a stopped
-    /// or failed turn), the agent's, a verdict, not running, or done.
+    /// Where a session sits in the list, by the Mac's state (#1788, Now's
+    /// split): the owner's move (an open ask of any state, an approval, a
+    /// verdict on a check, a failed turn this phone can continue), the
+    /// agent's, or ended. A stopped or failed session with nothing open and
+    /// no Continue from this phone is Ended (its caption keeps the colour).
+    /// `older` is Ended past the window.
     private enum Group: CaseIterable {
-        case waiting, working, readyToCheck, notRunning, finished
+        case waiting, working, ended, older
 
-        static let listed: [Self] = [.waiting, .working, .readyToCheck, .notRunning]
+        static let listed: [Self] = [.waiting, .working, .ended]
 
-        init(_ session: TerminalSessionState) {
+        /// `continues`: `SessionInputModel.waitsToContinue`.
+        init(_ session: TerminalSessionState, continues: Bool) {
+            if continues {
+                self = .waiting
+                return
+            }
             switch session.stateKind {
-            case .waitingOnAsk, .needsApproval, .stopped, .failed: self = .waiting
-            case .finished: self = session.openAsks > 0 ? .waiting : .finished
-            case .readyToCheck: self = .readyToCheck
+            case .waitingOnAsk, .needsApproval, .readyToCheck: self = .waiting
+            case _ where session.openAsks > 0: self = .waiting
             case .working, .running: self = .working
-            case .notStarted: self = .notRunning
-            default: self = session.live ? .working : .notRunning
+            case .finished, .stopped, .failed, .notStarted: self = .ended
+            default: self = session.live ? .working : .ended
             }
         }
 
@@ -342,9 +374,8 @@ struct WorkbenchMenuModel {
             switch self {
             case .waiting: "Waiting for you"
             case .working: "Working"
-            case .readyToCheck: "Ready to check"
-            case .notRunning: "Not running"
-            case .finished: "Finished"
+            case .ended: "Ended"
+            case .older: "Older"
             }
         }
 
@@ -358,7 +389,7 @@ struct WorkbenchMenuModel {
             .map { ToneUse(element: "workbench \(id) \($0.title) header", tone: $0.tone, role: .waiting) }
             + boardCounts.map { ToneUse(element: "workbench \(id) \($0.text)", tone: $0.tone, role: $0.role) }
             + unattachedAsks.map(\.toneUse)
-            + (sections.flatMap(\.rows) + finished).flatMap(\.toneUses)
+            + (sections.flatMap(\.rows) + older).flatMap(\.toneUses)
     }
 }
 

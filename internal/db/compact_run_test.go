@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"watchtower/internal/db/lockmetrics"
 )
 
 // sparseFixture is compactFixture with rows messages carrying an 8 KiB
@@ -332,12 +334,12 @@ func TestCompact_RecordFailureCounts(t *testing.T) {
 // A reader holding an open read transaction (an MCP server, a hook) does
 // not make the compaction fail or hang: VACUUM commits beside it and the
 // final checkpoint, which cannot pass the reader's snapshot, reports busy
-// after the busy timeout instead of failing.
+// after the busy timeout instead of failing. The engine waits that timeout
+// for real, so it is cut to testCompactBusy (TestCompact_BusyIsNotCounted
+// pins that Compact's handle waits compactBusy).
 func TestCompact_ConcurrentReaderDoesNotFail(t *testing.T) {
 	path := sparseFixture(t, 500)
-	prevBusy := compactBusy
-	compactBusy = 2 * time.Second
-	t.Cleanup(func() { compactBusy = prevBusy })
+	useTestCompactBusy(t)
 
 	reader, err := OpenExisting(path, compactCheckBusy)
 	if err != nil {
@@ -353,21 +355,12 @@ func TestCompact_ConcurrentReaderDoesNotFail(t *testing.T) {
 		t.Fatalf("SELECT: %v", err)
 	}
 
-	start := time.Now()
 	res, err := Compact(context.Background(), path, CompactOptions{Version: "1.0.0"})
-	elapsed := time.Since(start)
 	if err != nil || !res.Compacted {
 		t.Fatalf("got (%+v, %v), want compacted", res, err)
 	}
 	if !res.CheckpointBusy {
 		t.Fatalf("got %+v, want checkpoint_busy: the final checkpoint cannot pass the reader", res)
-	}
-	// The reader pins the final checkpoint, so Compact waits out the busy
-	// timeout. It must be the shortened one, not the production compactBusy:
-	// any run shorter than that proves it (a wall-clock margin on top of 2 s
-	// flaked under -race on CI).
-	if elapsed >= prevBusy {
-		t.Fatalf("Compact took %v beside a reader, want under the production busy timeout %v", elapsed, prevBusy)
 	}
 	if err := tx.Rollback(); err != nil {
 		t.Fatal(err)
@@ -377,14 +370,23 @@ func TestCompact_ConcurrentReaderDoesNotFail(t *testing.T) {
 	}
 }
 
-// A VACUUM that gives up on another process's write lock fails as busy and
-// is not counted against the failure cap: the file is fine, the next launch
-// tries again.
+// testCompactBusy replaces compactBusy in the tests where the engine waits
+// it out: short, and unlike any other busy timeout of the package.
+const testCompactBusy = 3 * time.Millisecond
+
+func useTestCompactBusy(t *testing.T) {
+	t.Helper()
+	prev := compactBusy
+	compactBusy = testCompactBusy
+	t.Cleanup(func() { compactBusy = prev })
+}
+
+// A VACUUM that gives up on another process's write lock fails as busy,
+// after compactBusy (the lock metrics name the wait), and is not counted
+// against the failure cap: the file is fine, the next launch tries again.
 func TestCompact_BusyIsNotCounted(t *testing.T) {
 	path := compactFixture(t)
-	prevBusy := compactBusy
-	compactBusy = 200 * time.Millisecond
-	t.Cleanup(func() { compactBusy = prevBusy })
+	useTestCompactBusy(t)
 
 	writer, err := OpenExistingRW(path, compactCheckBusy)
 	if err != nil {
@@ -403,6 +405,15 @@ func TestCompact_BusyIsNotCounted(t *testing.T) {
 	}
 	if !strings.Contains(res.Error, "busy") || res.Failures != 0 || res.GaveUp {
 		t.Fatalf("got %+v, want error saying busy, failures 0", res)
+	}
+	if os.Getenv("WATCHTOWER_DBLOCK_THRESHOLD_MS") != "off" {
+		waited := false
+		for _, e := range lockEvents(t, path) {
+			waited = waited || e.Kind == lockmetrics.KindBusy && e.BusyTimeoutMS == testCompactBusy.Milliseconds()
+		}
+		if !waited {
+			t.Fatalf("no busy event with Compact's busy timeout %v in %+v", testCompactBusy, lockEvents(t, path))
+		}
 	}
 	if err := tx.Rollback(); err != nil {
 		t.Fatal(err)

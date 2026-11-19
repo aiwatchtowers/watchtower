@@ -9,40 +9,117 @@ import WatchtowerSync
 /// `Changes.resync`, so the relay skips its tombstone floor on the middle pages (relay README
 /// "Changes"); a pull from a stored cursor never does. A socket's pull comes from a zone event
 /// the device's `HostedRelaySession` routed to this transport (its two zones only).
+/// The owed zones are read at once (live link R6): their `changes` go out together, pipelined on the socket, the
+/// data zone (the kinds' slices) first. A pull cancelled midway (the app left) keeps every page it stored: the next
+/// pull reads each zone from its stored cursor.
 extension HostedRelayTransport {
     /// Pulls `zones`, joining the pull in flight (which then pulls them too before it ends).
     func pullZones(_ zones: Set<CloudZoneID>) async throws {
+        // A pull cancelled by its caller ends without reading what it owes, its catch path clearing the owed set:
+        // a new caller waits for it to end, then owes its zones to a fresh pull.
+        while let ending = pullTask, ending.isCancelled {
+            _ = await ending.result
+        }
         zonesToPull.formUnion(zones)
-        if let pullTask { return try await pullTask.value }
-        let task = Task { try await self.drainPulls() }
+        let task = pullTask ?? Task { try await self.drainPulls() }
         pullTask = task
-        try await task.value
+        // A caller cancelled (the app left mid-read, `HubSession.setActive(false)`) stops the pull it waits on.
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
-    /// Pulls the owed zones until none is owed. The last check and the end of the pull are one
-    /// step on the actor, so a caller that joins is always served.
+    /// Buffers a zone event's own records in place of a `changes` read (live link R1); true when `zone` needs no
+    /// read for this event. Only while no pull is in flight (a pull reads from the cursor this would move), no
+    /// resync or first load is owed, and the transport is neither stopped nor held; an event at the cursor is
+    /// already read, one below it is a read (the relay may have rebuilt the zone). The records must be the writes up to `seq`, contiguous by `record_seq`, starting no later
+    /// than the cursor's next seq: any gap, a tombstone, a record-less event (a deletion, an over-budget save, a
+    /// phone over its traffic budget, a folded buffer) is a read. So is a record with an attachment: the read
+    /// downloads it. Synchronous on the actor: nothing runs between the cursor check and the page's transaction.
+    func applyInline(zone: CloudZoneID, seq: UInt64, records: [Relay_V1_Record]) -> Bool {
+        guard seq > 0, pullTask == nil, held() == nil else { return false }
+        do {
+            let cursor = try store.relayCursor(zone: zone)
+            guard cursor > 0, try !store.relayResyncPending(zone) else { return false }
+            if seq == cursor { return true }
+            // Below the cursor is not a continuation (R3): the read tells a rebuilt zone (`TOKEN_EXPIRED`).
+            guard seq > cursor else { return false }
+            guard let first = records.first?.recordSeq, first > 0, first <= cursor + 1,
+                  records.enumerated().allSatisfy({ offset, record in
+                      record.recordSeq == first + UInt64(offset) && !record.deleted && record.attachmentID.isEmpty
+                  }),
+                  records.last?.recordSeq == seq
+            else { return false }
+            let changed = records.filter { $0.recordSeq > cursor }.map { Self.cloudRecord($0, zone: zone) }
+            try store.bufferRelayPage(zone: zone, changed: changed, deleted: [], newSeq: seq, resync: false)
+        } catch {
+            Self.logger.error("relay inline records not buffered, reading instead, \(Self.kind(zone), privacy: .public)")
+            return false
+        }
+        engineFetchedHandler?()
+        return true
+    }
+
+    /// Pulls the owed zones until none is owed, each pass reading its zones concurrently. The last check and the
+    /// end of the pull are one step on the actor, so a caller that joins is always served. A zone that fails does
+    /// not stop the others' reads; the pull then throws the first failure.
     private func drainPulls() async throws {
         var buffered = false
         do {
             while !zonesToPull.isEmpty {
                 let zones = CloudZoneID.allCases.filter(zonesToPull.contains)
                 zonesToPull.removeAll()
-                for zone in zones {
-                    let pulled = try await pullZone(zone)
-                    buffered = buffered || pulled
-                }
+                let (pulled, failure) = await pullConcurrently(zones)
+                buffered = buffered || pulled
+                if let failure { throw failure }
             }
         } catch {
             zonesToPull.removeAll()
             pullTask = nil
+            traffic.logPass(to: Self.logger)
             if buffered { engineFetchedHandler?() }
             throw error
         }
         pullTask = nil
+        traffic.logPass(to: Self.logger)
         if buffered { engineFetchedHandler?() }
     }
 
-    /// Pages `zone` from its cursor to the end; true when it buffered anything.
+    /// Reads `zones` concurrently; whether any buffered, and the first failure. Only the starts are in order (the
+    /// data zone first): each zone's first request is handed over for sending before the next zone starts.
+    private func pullConcurrently(_ zones: [CloudZoneID]) async -> (buffered: Bool, failure: (any Error)?) {
+        await withTaskGroup(of: Result<Bool, any Error>.self) { group in
+            for zone in zones {
+                let started = Latch()
+                group.addTask {
+                    defer { started.fire() }
+                    do {
+                        let pulled = try await HostedRelayClient.$submitted.withValue({ started.fire() }, operation: {
+                            try await self.pullZone(zone)
+                        })
+                        return .success(pulled)
+                    } catch {
+                        return .failure(error)
+                    }
+                }
+                await started.wait()
+            }
+            var buffered = false
+            var failure: (any Error)?
+            for await result in group {
+                switch result {
+                case .success(let pulled): buffered = buffered || pulled
+                case .failure(let error): failure = failure ?? error
+                }
+            }
+            return (buffered, failure)
+        }
+    }
+
+    /// Pages `zone` from its cursor to the end; true when it buffered anything. A cancelled pull stores no page
+    /// past the cancel.
     private func pullZone(_ zone: CloudZoneID) async throws -> Bool {
         try gate()
         if try store.relayResyncStalled(zone) {
@@ -53,6 +130,14 @@ extension HostedRelayTransport {
         }
         var resync = try store.relayResyncPending(zone)
         var since = try store.relayCursor(zone: zone)
+        var isLoad = try store.relayResyncIsLoad(zone)
+        var restarted = false
+        if !resync, since == 0 {
+            // A zone's first pull is a load like a resync: persisted, so a failure midway or a restart shows it
+            // as unfinished (`dataLoadComplete`) and the next pull resumes it from the stored cursor.
+            try store.beginRelayResync(zone, load: true)
+            (resync, isLoad) = (true, true)
+        }
         var fromZero = resync || since == 0
         var buffered = false
         while true {
@@ -64,8 +149,16 @@ extension HostedRelayTransport {
             energy?.record(zone == .data ? .dataZonePoll : .relayZonePoll)
             let page: Relay_V1_ChangesResult
             do {
-                page = try await call(zone) { try await self.client.changes(request) }
+                page = try await call(zone) { try await self.session.changes(request) }
             } catch HostedRelayError.server(code: .tokenExpired, _) where since > 0 {
+                if resync, isLoad, !restarted {
+                    // A load, not a resync after TOKEN_EXPIRED: the first pull restarts from 0 at once, as it
+                    // always did (once per pull; a second refusal stalls like a resync).
+                    restarted = true
+                    try store.beginRelayResync(zone, load: true)
+                    (fromZero, since) = (true, 0)
+                    continue
+                }
                 if resync {
                     // The relay refused a flagged middle page of the resync (README: a `since_seq`
                     // above the zone's seq still expires, e.g. a zone rebuilt mid-resync): starting
@@ -80,6 +173,8 @@ extension HostedRelayTransport {
                 (resync, fromZero, since) = (true, true, 0)
                 continue
             }
+            try Task.checkCancellation()
+            recordPageTraffic(page)
             if page.more, page.newSeq <= since {
                 Self.logger.error("relay pull: a page that does not move, \(Self.kind(zone), privacy: .public)")
                 throw HostedRelayError.undecodable(status: 200)
@@ -107,6 +202,15 @@ extension HostedRelayTransport {
         }
         await resubscribeIfRefused(zone)
         return buffered
+    }
+
+    /// The replica has a sweep pending and wants the whole data zone again (a route return onto a store whose
+    /// cursor is above 0): starts a load from 0 unless one is running (it is resumed at its cursor, so a restart
+    /// midway does not begin again). Nothing to do while the cursor is 0: the first pull is the load.
+    nonisolated public func restartDataLoadIfIdle() throws {
+        if try store.relayResyncPending(.data) { return }
+        guard try store.relayCursor(zone: .data) > 0 else { return }
+        try store.beginRelayResync(.data, load: true)
     }
 
     /// The next pull reads `zone` from 0 again, as a `TOKEN_EXPIRED` resync does (what the server no longer holds
@@ -150,6 +254,13 @@ extension HostedRelayTransport {
         return CloudRecord(
             recordName: record.name, zone: zone, kind: WireKind.envelope, modifiedAt: at, payload: record.envelope,
             assetFileURL: asset, origin: RecordOrigin(author: nil, serverAt: at), recordSeq: record.recordSeq)
+    }
+
+    /// Counts a `changes` page that came back (the debug meter; nothing in Release).
+    private func recordPageTraffic(_ page: Relay_V1_ChangesResult) {
+        #if DEBUG
+        traffic.recordPage(bytes: (try? page.serializedData().count) ?? 0)
+        #endif
     }
 
     /// Re-reads `zone` after a refused write (R6, R8); a failure is only logged.

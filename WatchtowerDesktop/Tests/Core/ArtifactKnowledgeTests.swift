@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import WatchtowerTestSupport
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 @MainActor
 final class ArtifactKnowledgeTests: XCTestCase {
@@ -40,7 +41,7 @@ final class ArtifactKnowledgeTests: XCTestCase {
             try ChatArtifactQueries.saveVersion(db, conversationID: conversation, messageID: message, draft: draft, edited: false)
             return (conversation, message)
         }
-        let model = ArtifactPanelModel(db: dbQueue, conversationID: conversation, key: "q3")
+        let model = ArtifactPanelModel(db: dbQueue, writer: DatabaseArtifactWriter(db: dbQueue), conversationID: conversation, key: "q3")
         var changes = 0
         model.onKnowledgeChanged = { changes += 1 }
         XCTAssertEqual(model.knowledgeState, .add)
@@ -82,7 +83,7 @@ final class ArtifactKnowledgeTests: XCTestCase {
             try ChatArtifactQueries.keep(db, conversationID: conversation, artifactKey: "q3", version: 1)
             return conversation
         }
-        let model = ArtifactPanelModel(db: dbQueue, conversationID: conversation, key: "q3")
+        let model = ArtifactPanelModel(db: dbQueue, writer: DatabaseArtifactWriter(db: dbQueue), conversationID: conversation, key: "q3")
         var changes = 0
         model.onKnowledgeChanged = { changes += 1 }
         XCTAssertEqual(model.knowledgeState, .update)
@@ -103,7 +104,7 @@ final class ArtifactKnowledgeTests: XCTestCase {
             try ChatArtifactQueries.saveVersion(db, conversationID: conversation, messageID: db.lastInsertedRowID, draft: draft, edited: false)
             return conversation
         }
-        let model = ArtifactPanelModel(db: dbQueue, conversationID: conversation, key: "mail")
+        let model = ArtifactPanelModel(db: dbQueue, writer: DatabaseArtifactWriter(db: dbQueue), conversationID: conversation, key: "mail")
         XCTAssertNil(model.knowledgeState)
     }
 }

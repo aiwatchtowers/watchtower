@@ -14,41 +14,51 @@ import XCTest
 final class DaemonManagerRestartTests: XCTestCase {
     func testDiesAtStepThreeProceeds() async {
         var calls = 0
+        let clock = FakePollClock()
         let outcome = await DaemonManager.waitForPidDeath(
             isAlive: {
                 calls += 1
                 return calls < 3
             },
             step: .milliseconds(1),
-            deadline: .seconds(60)
+            deadline: .seconds(60),
+            now: clock.now,
+            sleep: clock.sleep
         )
 
         XCTAssertEqual(outcome, .died)
         XCTAssertEqual(calls, 3, "must stop polling the instant isAlive reports death")
+        XCTAssertEqual(clock.sleeps, [.milliseconds(1), .milliseconds(1)], "one step between checks")
     }
 
     func testNeverDiesTimesOut() async {
+        let clock = FakePollClock()
         let outcome = await DaemonManager.waitForPidDeath(
             isAlive: { true },
             step: .milliseconds(1),
-            deadline: .milliseconds(20)
+            deadline: .milliseconds(20),
+            now: clock.now,
+            sleep: clock.sleep
         )
 
         XCTAssertEqual(outcome, .timedOut)
+        XCTAssertEqual(clock.sleeps.count, 20, "gives up exactly when the deadline has passed")
     }
 
     /// The degenerate arm: already dead on the very first check must return
     /// immediately, never sleeping once.
     func testAlreadyDeadReturnsImmediately() async {
-        let elapsed = await ContinuousClock().measure {
-            _ = await DaemonManager.waitForPidDeath(
-                isAlive: { false },
-                step: .seconds(60),
-                deadline: .seconds(60)
-            )
-        }
+        let clock = FakePollClock()
+        let outcome = await DaemonManager.waitForPidDeath(
+            isAlive: { false },
+            step: .seconds(60),
+            deadline: .seconds(60),
+            now: clock.now,
+            sleep: clock.sleep
+        )
 
-        XCTAssertLessThan(elapsed, .seconds(1))
+        XCTAssertEqual(outcome, .died)
+        XCTAssertEqual(clock.sleeps, [], "never slept")
     }
 
     func testStopTimedOutMessageNamesThePid() {
@@ -70,6 +80,20 @@ final class DaemonManagerRestartTests: XCTestCase {
 
     func testCLINotFoundHasAMessage() {
         XCTAssertFalse((DaemonRestartError.cliNotFound.errorDescription ?? "").isEmpty)
+    }
+}
+
+/// A clock that moves only when the poll sleeps: each sleep advances it by
+/// the slept duration, at once.
+private final class FakePollClock {
+    private var instant = ContinuousClock.now
+    private(set) var sleeps: [Duration] = []
+
+    func now() -> ContinuousClock.Instant { instant }
+
+    func sleep(_ duration: Duration) async {
+        sleeps.append(duration)
+        instant = instant.advanced(by: duration)
     }
 }
 

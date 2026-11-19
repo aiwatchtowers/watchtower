@@ -13,7 +13,11 @@ const (
 	ReasonWorkbenchFolder    = "workbench_folder"
 	ReasonLocked             = "locked"
 	ReasonUncommittedChanges = "uncommitted_changes"
-	ReasonProcessRunning     = "process_running"
+	// ReasonIgnoredFiles: git-ignored files that are not a cache or
+	// Watchtower's integration (a plan ledger, notes); the first one's path
+	// is in detail (#1878).
+	ReasonIgnoredFiles   = "ignored_files"
+	ReasonProcessRunning = "process_running"
 	// ReasonProcessUnknown: a process of the current user whose cwd the
 	// scan could not see; it may be working inside, so the worktree stays.
 	ReasonProcessUnknown      = "process_unknown"
@@ -47,14 +51,14 @@ const (
 	recentOwnerWindow = 7 * 24 * time.Hour
 )
 
-// nestedScanBudget bounds W9's walk of one worktree; over it the worktree
-// is kept (check_failed).
+// nestedScanBudget bounds W9's walk of one worktree, and W10's; over it
+// the worktree is kept (check_failed).
 const nestedScanBudget = 20 * time.Second
 
 // worktreeCatch returns the reason a worktree is kept, "" to let it pass.
 type worktreeCatch func(ctx context.Context, b *builder, w worktree) (reason, detail string, err error)
 
-// worktreeCatches is W1–W9 in order (spec §5); the sweep swaps W2 for the
+// worktreeCatches is W1–W10 in order (spec §5; W10 #1878); the sweep swaps W2 for the
 // recent-owner rule, and a prunable worktree (its directory is gone) meets
 // the folder, ownership and unpushed catches: pruning drops its HEAD, which
 // may be the only ref to its commits.
@@ -67,7 +71,7 @@ func (b *builder) worktreeCatches(w worktree) []worktreeCatch {
 		return []worktreeCatch{catchClaudeHome, catchFolders, own, catchUnpushed}
 	}
 	return []worktreeCatch{catchClaudeHome, catchFolders, own, catchLocked, catchUncommitted, catchProcesses,
-		catchSessionInIt, catchUnpushed, catchOperation, catchNested}
+		catchSessionInIt, catchUnpushed, catchOperation, catchNested, catchIgnoredWork}
 }
 
 // catchClaudeHome keeps anything under the owner's ~/.claude, and every
@@ -160,6 +164,17 @@ func catchUncommitted(ctx context.Context, b *builder, w worktree) (string, stri
 	return ReasonUncommittedChanges, "", nil
 }
 
+// catchIgnoredWork is W10: git-ignored files that are not regenerable
+// (ignored.go, #1878). It runs after W9 so a nested worktree or repository
+// keeps its own reason; the sweep runs it too.
+func catchIgnoredWork(ctx context.Context, b *builder, w worktree) (string, string, error) {
+	first, err := b.ignoredWork(ctx, w.Root, nestedScanBudget)
+	if err != nil || first == "" {
+		return "", "", err
+	}
+	return ReasonIgnoredFiles, "ignored file: " + first, nil
+}
+
 // catchProcesses is W5: a process inside that is not an orphan of this
 // session. The sweep never terminates, so an orphan blocks it too.
 func catchProcesses(_ context.Context, b *builder, w worktree) (string, string, error) {
@@ -191,7 +206,14 @@ func procLabel(p Proc) string {
 
 // catchSessionInIt is W6: the caller works inside, or another session whose
 // agent works inside is live or reported within inUseWindow and is not
-// finished.
+// finished. A session being deleted (delete_requested_at set) whose
+// terminal is not live never counts — the planned row or any other (spec
+// 2026-11-10 §3, ask #1389): a delete never sets finished_at, so its last
+// report stays fresh, yet its terminal is closed and it works there no
+// more; two deleted rows of one worktree would otherwise keep each other.
+// A live terminal still counts, deleting or not, and a row not being
+// deleted — the planned one included, in a Clean Up screen plan or a
+// headless --session N — keeps W6 as before.
 func catchSessionInIt(_ context.Context, b *builder, w worktree) (string, string, error) {
 	reason, detail := "", ""
 	for _, a := range b.activity {
@@ -200,6 +222,9 @@ func catchSessionInIt(_ context.Context, b *builder, w worktree) (string, string
 		}
 		if b.req.CallerSessionID != 0 && a.ID == b.req.CallerSessionID {
 			return ReasonYouAreInIt, "", nil
+		}
+		if a.DeleteRequested && !b.live[a.ID] {
+			continue
 		}
 		if b.live[a.ID] || (!a.Finished && !a.ReportedAt.IsZero() && b.now.Sub(a.ReportedAt) <= inUseWindow) {
 			reason, detail = ReasonSessionInIt, a.Title
@@ -305,12 +330,17 @@ func catchCheckedOut(_ context.Context, b *builder, br branchRef) (string, strin
 }
 
 // catchOwnBranch is B3: observed by the session and born after it, or the
-// placed row's own worktree_branch (owned by record, spec 2026-10-14 §9).
+// placed row's own worktree_branch (owned by record, spec 2026-10-14 §9). A
+// §2c candidate another worktree's unreadable HEAD log left undecided is
+// created_unknown (auto cleanup spec 2026-11-10 §2c).
 func catchOwnBranch(_ context.Context, b *builder, br branchRef) (string, string, error) {
 	if b.seen.placedBranch != "" && br.Name == b.seen.placedBranch { // observePlacement set it only when born no later than the row
 		return "", "", nil
 	}
 	if !b.seen.branches[br.Name] {
+		if b.seen.unknown[br.Name] {
+			return ReasonCreatedUnknown, "", nil
+		}
 		return ReasonNotThisSession, "", nil
 	}
 	birth, known := b.repo.branchBirth(br.Name)

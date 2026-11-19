@@ -18,7 +18,8 @@ import PackageDescription
 //   types of its WatchtowerRelayProto target (relay.proto pinned in
 //   Sources/WatchtowerRelayProto/VERSION, `make relay-proto`).
 // - WatchtowerHostedRelayTesting: the fake relay the client's tests and the
-//   phone's tests run on.
+//   phone's tests run on, and LoopbackCloudTransport (the Kit phone's iCloud
+//   leg in the Go hub's interop run).
 //   These hosted relay products are linked by the phone only (R3): the
 //   Desktop never links them, and WatchtowerSync/WatchtowerKit never import
 //   SwiftProtobuf, the proto or DeviceCheck (SeamBoundaryTests).
@@ -89,6 +90,7 @@ let package = Package(
             name: "WatchtowerHostedRelayTesting",
             dependencies: [
                 "WatchtowerHostedRelay",
+                "WatchtowerSync",
                 "WatchtowerRelayProto",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
             ]
@@ -98,6 +100,7 @@ let package = Package(
             dependencies: [
                 "WatchtowerHostedRelay",
                 "WatchtowerHostedRelayTesting",
+                "WatchtowerE2ETesting",
                 "WatchtowerRelayProto",
                 "WatchtowerSync",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),

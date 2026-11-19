@@ -7,10 +7,16 @@ package struct CodexSessionAgent: SessionAgent {
     package init() {}
 
     package var subscriptionUsage: SubscriptionUsagePolicy {
-        SubscriptionUsagePolicy(title: "Codex", signInApplication: "Codex",
+        SubscriptionUsagePolicy(title: "Codex",
                                 statusTable: "codex_plan_usage_status", samplesTable: "codex_plan_usage_samples",
                                 storage: .identityScoped, defaultQuotaBucket: "codex", layout: .grouped, tint: "teal", icon: "terminal",
-                                suppliesSurfaceBreakdown: false, sendsNotifications: false)
+                                suppliesSurfaceBreakdown: false, sendsNotifications: false,
+                                messages: SubscriptionUsageMessages(
+                                    cliMissing: "Install Codex, then retry.",
+                                    unsupportedCLI: "Update Codex to read subscription limits, then retry.",
+                                    noCredentials: "Open Codex and sign in, then retry.",
+                                    unsupportedAuth: "Sign in to Codex with a ChatGPT account, then retry.",
+                                    cloudProviders: [:]))
     }
 
     package var kind: AgentKind { .codex }
@@ -83,5 +89,28 @@ package struct CodexSessionAgent: SessionAgent {
     /// `$CODEX_HOME` when absolute, else `~/.codex` (`CodexRollout.home`).
     package func transcriptHome(environment: [String: String]) -> URL? {
         CodexRollout.home(environment: environment)
+    }
+
+    /// install.sh links `~/.local/bin/codex` to
+    /// `~/.codex/packages/standalone/current/bin/codex` (rust-v0.166); the
+    /// installer is also its update.
+    package var setup: AgentSetup {
+        AgentSetup(
+            productName: "Codex CLI",
+            installCommand: "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+            signInArguments: ["login"],
+            loginHelpArguments: ["login", "--help"],
+            loginHelp: .text("Usage: codex login"),
+            installDocsURL: "https://github.com/openai/codex",
+            pathKey: "codex_path",
+            nativeRoots: [".codex/packages/standalone/"],
+            updates: [
+                .native: .literal("curl -fsSL https://chatgpt.com/codex/install.sh | sh"),
+                // Homebrew ships it as a cask only (`brew info --formula codex`
+                // finds none, 2026-11-10): a Cellar copy has no update here.
+                .homebrewCask: .literal("brew upgrade --cask codex"),
+                .npm: .literal("npm install -g @openai/codex@latest")
+            ]
+        )
     }
 }

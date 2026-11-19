@@ -59,6 +59,18 @@ func MarkDone(tx *sql.Tx, record, outcome string, echo []byte, doneSeq *uint64, 
 	return nil
 }
 
+// MarkSkippedIfAbsent records a passed-over record as done with outcome and
+// its stored echo, leaving a row that already exists as it is: a record the
+// hub began or decided keeps its own answer. PruneLedger clears it with the
+// rest.
+func MarkSkippedIfAbsent(tx *sql.Tx, record, outcome string, echo []byte, at time.Time) error {
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO relay_processed (record_name, phase, outcome, updated_at, echo)
+		VALUES (?, 'done', ?, ?, ?)`, record, outcome, toReal(at), echo); err != nil {
+		return fmt.Errorf("marking a skipped relay record: %w", err)
+	}
+	return nil
+}
+
 // PruneLedger removes done rows last updated before cutoff and reports how
 // many went (relay hygiene). Begun rows stay: they answer outcome_unknown.
 func (s *Store) PruneLedger(cutoff time.Time) (int64, error) {
@@ -111,9 +123,19 @@ func RecordSeen(tx *sql.Tx, wire, sender string, epoch uint32, seq uint64) error
 // RelaySeen reads the rollback mark for (wire, sender); ok is false when none
 // was recorded.
 func (s *Store) RelaySeen(wire, sender string) (epoch uint32, seq uint64, ok bool, err error) {
+	return relaySeen(s.db.QueryRow(`SELECT epoch, seq FROM relay_seen WHERE wire_name = ? AND sender_id = ? COLLATE NOCASE`,
+		wire, sender))
+}
+
+// RelaySeenTx is RelaySeen in the caller's transaction.
+func RelaySeenTx(tx *sql.Tx, wire, sender string) (epoch uint32, seq uint64, ok bool, err error) {
+	return relaySeen(tx.QueryRow(`SELECT epoch, seq FROM relay_seen WHERE wire_name = ? AND sender_id = ? COLLATE NOCASE`,
+		wire, sender))
+}
+
+func relaySeen(row *sql.Row) (epoch uint32, seq uint64, ok bool, err error) {
 	var e, q int64
-	err = s.db.QueryRow(`SELECT epoch, seq FROM relay_seen WHERE wire_name = ? AND sender_id = ? COLLATE NOCASE`,
-		wire, sender).Scan(&e, &q)
+	err = row.Scan(&e, &q)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, 0, false, nil
 	}

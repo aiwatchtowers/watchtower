@@ -67,6 +67,12 @@ final class AgentToolsContractTests: XCTestCase {
         XCTAssertEqual(AgentToolsContract.promptBlock(surface: .target), try Self.goFixture("target"))
         XCTAssertEqual(AgentToolsContract.promptBlock(surface: .automationEditor),
                        try Self.goFixture("automation_editor"))
+        XCTAssertEqual(AgentToolsContract.promptBlock(surface: .tuning), try Self.goFixture("tuning"))
+    }
+
+    /// Every agent surface is a chat surface, in the Go list's order.
+    func testAgentSurfacesMatchTheChatSurfaceList() {
+        XCTAssertEqual(AgentSurface.allCases.map(\.rawValue), AssistantToolSurface.chatSurfaces)
     }
 
     /// The editor chat (spec 2026-10-14 §14.5, D11) names exactly the authoring

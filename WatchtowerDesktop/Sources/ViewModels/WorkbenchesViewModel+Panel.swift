@@ -159,6 +159,21 @@ extension WorkbenchesViewModel {
         }.count
     }
 
+    /// A phone start with "Bring the window forward" (mobile POC spec §6.5):
+    /// the workbench drilled into and the session the hub started put on
+    /// screen as Work on it puts one, the board kept (`.keeping(.board)`).
+    /// The hub launched it: nothing is started here. A session not listed
+    /// after a fresh read changes nothing.
+    func showPhoneStartedSession(_ sessionID: Int64, projectID: Int64) async {
+        let ticket = beginSwitch(projectID: projectID)
+        drill(into: projectID)
+        guard await loadSessions(projectID: projectID), isLatestSwitch(ticket, projectID: projectID),
+              terminalSessions[projectID]?.contains(where: { $0.id == sessionID }) == true else { return }
+        var updated = layout(projectID: projectID)
+        Self.revealTerminal(sessionID, keeping: .board, in: &updated)
+        setLayout(updated, projectID: projectID)
+    }
+
     /// A level-2 click on a session — or a pick in the collapsed header's
     /// switcher, or ⌘N — in the workbench on screen: it is opened (one not
     /// running starts) and put on screen like any panel click.

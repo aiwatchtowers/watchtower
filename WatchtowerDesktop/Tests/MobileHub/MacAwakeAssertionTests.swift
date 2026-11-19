@@ -58,32 +58,13 @@ final class MacAwakeAssertionTests: XCTestCase {
         XCTAssertTrue(assertion.isHolding)
     }
 
-    func testTheCompanionHoldsOnASessionAndRecentContactAndReleasesOnStop() async throws {
+    /// An assertion still held when its owner goes away is released.
+    func testDeinitReleasesAHeldAssertion() {
         let power = FakePower()
-        let assertion = MacAwakeAssertion(power: power)
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let companion = KeepAwakeCompanion(
-            assertion: assertion, enabled: { true }, liveBoardSessions: { 2 },
-            lastPhoneContact: { now.addingTimeInterval(-10) }, now: { now }
-        )
-        await companion.evaluate()
-        XCTAssertTrue(assertion.isHolding)
-        companion.stop()
-        XCTAssertFalse(assertion.isHolding)
+        var assertion: MacAwakeAssertion? = MacAwakeAssertion(power: power)
+        assertion?.update(hold: true)
+        XCTAssertTrue(power.released.isEmpty)
+        assertion = nil
         XCTAssertEqual(power.released, [1])
-    }
-
-    func testALiveShellAloneIsNotABoardSession() throws {
-        let (pool, path) = try TestDatabase.createPool()
-        defer { TestDatabase.cleanup(path: path) }
-        let (shell, agent) = try pool.write { db -> (Int64, Int64) in
-            let project = try TestDatabase.insertWorkbench(db)
-            return (
-                try SliceSeed.insertSession(db, projectID: project, kind: "shell"),
-                try SliceSeed.insertSession(db, projectID: project, kind: "claude")
-            )
-        }
-        XCTAssertEqual(KeepAwakeCompanion.liveBoardSessions(pool, liveIDs: [shell]), 0)
-        XCTAssertEqual(KeepAwakeCompanion.liveBoardSessions(pool, liveIDs: [shell, agent]), 1)
     }
 }

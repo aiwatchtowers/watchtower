@@ -98,7 +98,7 @@ final class AppRootWiringTests: XCTestCase {
     /// Sessions as the live factory lays them out (`paths`), each over a
     /// fresh in-memory transport, or a `CloudKitTransport` on the hub's
     /// persistent store (`persistentTransport`; no engine starts in the
-    /// unsigned test host). Every session gets its own hub's keys
+    /// test host, which has no iCloud entitlement). Every session gets its own hub's keys
     /// (`TestHub`); a hub id that is not a UUID gets none (key-less).
     private func makeFactory(persistentTransport: Bool = false) throws -> HubSessionFactory {
         let paths = try XCTUnwrap(paths)
@@ -309,13 +309,13 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false])
     }
 
-    /// A `CloudKitTransport` in a process without the iCloud entitlement (this unsigned host) gets no alert
+    /// A `CloudKitTransport` in a process without the iCloud entitlement (this test host) gets no alert
     /// subscription: neither its start nor its removal may build a `CKContainer`, which would kill the process.
     func testAnUnentitledCloudKitHubNeverTouchesCloudKitForItsAlertSubscription() async throws {
         let root = try makeRoot(links: [linkRecord()], persistentTransport: true)
         let first = try session(root, TestHub.acme)
         try await poll { first.isBootstrapped }
-        XCTAssertFalse(CloudKitTransport.entitlementPresent(), "the test host is unsigned")
+        XCTAssertFalse(CloudKitTransport.entitlementPresent(), "the test host has no iCloud entitlement")
         XCTAssertTrue(first.startsEngine)
         XCTAssertNil(first.alertRegistrar, "no live saver without the entitlement")
 
@@ -794,7 +794,7 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertTrue(linked(), "one look is not enough")
         clock.advance(by: LinkingViewModel.removalConfirmAfter)
         try await fetch(root, TestHub.acme)
-        XCTAssertEqual(root.linking.links.first?.state, .unlinkedByMac, "the Mac's Remove freezes the hub")
+        XCTAssertEqual(root.linking.links.first?.state, .unlinkedByMac, "the tower's Remove freezes the hub")
         XCTAssertEqual(root.linking.notice, .removed(macName: "Acme Mac"))
     }
 
@@ -1303,7 +1303,7 @@ final class AppRootWiringTests: XCTestCase {
         try await poll { first.recorder.phase == .saving && self.engine.finishCount == 1 }
 
         let removal = Task { await root.removeHub(TestHub.acme, keepRecordings: true, farewell: nil) }
-        try await Task.sleep(for: .milliseconds(50))
+        try await poll { (try? self.registry.row(TestHub.acme)) == nil } // the row goes before the first wait
         XCTAssertTrue(root.env.session(TestHub.acme) === first, "the removal waits for the save")
         engine.releaseFinish()
         let wipe = await removal.value
@@ -1371,9 +1371,9 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(root.env.unopenedHubIDs, [TestHub.acme])
         try await poll { root.env.activeSession.isLooping }
         let items = root.env.hubListItems(root.linking.links, now: Date())
-        let broken = try XCTUnwrap(items.first { $0.id == TestHub.acme }, "listed in the switcher and Settings → Macs")
+        let broken = try XCTUnwrap(items.first { $0.id == TestHub.acme }, "listed in the switcher and Settings → Towers")
         XCTAssertTrue(broken.unopened)
-        XCTAssertEqual(broken.problem, "Couldn't open this Mac's data on this iPhone")
+        XCTAssertEqual(broken.problem, "Couldn't open this tower's data on this iPhone")
         XCTAssertEqual(MacsModel.action(for: broken), .forget)
         XCTAssertNil(items.first { $0.id == TestHub.home }?.problem)
 
@@ -1434,7 +1434,7 @@ final class AppRootWiringTests: XCTestCase {
         try [TestHub.acme, TestHub.home].forEach { _ = try TestHub.keys($0, store: keyStore) }
 
         XCTAssertNil(root.env.activeHubID)
-        XCTAssertTrue(root.showsUnopenedMacs, "the Macs with Forget, not Welcome")
+        XCTAssertTrue(root.showsUnopenedMacs, "the towers with Forget, not Welcome")
         XCTAssertEqual(root.env.unopenedHubIDs, [TestHub.acme, TestHub.home])
         XCTAssertEqual(try registry.hubIDs(), [TestHub.acme, TestHub.home], "the links are kept")
 
@@ -1492,7 +1492,7 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(root.env.activeHubID, TestHub.acme)
         XCTAssertEqual(root.linking.unreadableHubIDs, [TestHub.home])
         let items = root.env.hubListItems(root.linking.links, unreadable: root.linking.unreadableHubIDs, now: Date())
-        let unreadable = try XCTUnwrap(items.first { $0.id == TestHub.home }, "listed in Settings → Macs")
+        let unreadable = try XCTUnwrap(items.first { $0.id == TestHub.home }, "listed in Settings → Towers")
         XCTAssertEqual(unreadable.name, HubListModel.unreadableName)
         XCTAssertEqual(unreadable.problem, HubListModel.unreadableProblem)
         XCTAssertTrue(unreadable.unopened)
@@ -1548,7 +1548,7 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertTrue(env.calendarReplica === removed.calendarReplica)
         XCTAssertTrue(env.phoneRecordings === removed.phoneRecordings)
         XCTAssertTrue(env.recorder === removed.recorder)
-        _ = env.workbenchReplica.openAskCount
+        _ = env.workbenchReplica.waitingCount
         _ = env.recorder.isPresented
         _ = env.heldRecordings
         _ = env.linkedDevice
@@ -1700,7 +1700,7 @@ final class AppRootWiringTests: XCTestCase {
         linkClock.release()
         await waitUntilParked(linkClock)
         try await poll { root.linking.linkCode != nil }
-        XCTAssertEqual(root.linking.linkCode, opened.sas, "the real host's keybox gives the phone the Mac's code")
+        XCTAssertEqual(root.linking.linkCode, opened.sas, "the real host's keybox gives the phone the tower's code")
         XCTAssertTrue(root.linking.macSeesPhone)
         let grant = DeviceGrant(
             deviceID: device.deviceID, hubID: hubID, name: device.name, scope: .private,
@@ -1717,7 +1717,7 @@ final class AppRootWiringTests: XCTestCase {
             await flow.value
             finished.fulfill()
         }
-        await fulfillment(of: [finished], timeout: 10)
+        await fulfillment(of: [finished])
         flow.cancel()
 
         XCTAssertEqual(root.linking.phase, .linked(macName: "Acme Mac"))
@@ -2023,7 +2023,7 @@ final class AppRootWiringTests: XCTestCase {
         let row = try XCTUnwrap(try root.env.store.phoneRecording(id: id))
         let sealed = try XCTUnwrap(row.sealedFileURL(in: recordings), "sealed at once")
         XCTAssertTrue(FileManager.default.fileExists(atPath: sealed.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: row.fileURL(in: recordings).path), "the plain audio waits for the Mac")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: row.fileURL(in: recordings).path), "the plain audio waits for the tower")
     }
 
     private func heartbeat(

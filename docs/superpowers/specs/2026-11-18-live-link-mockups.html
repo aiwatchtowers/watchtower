@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optimistic Board Writes</title>
+<style>
+/* iPhone frames of the Workbench board, one per state of a pending optimistic write (live link R5, #2002). */
+:root {
+  --page: #eceef1; --ink: #1d2128; --muted: #6b7280; --phone: #ffffff; --card: #f4f5f7;
+  --line: #d9dce1; --green: #1f8a4c; --gray: #8e8e93; --red: #d70015; --orange: #c75300; --callout: #2f6fd6;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --page: #15171b; --ink: #e7e9ee; --muted: #9aa1ad; --phone: #000; --card: #1c1c1e; --line: #353941;
+  --green: #4cc782; --gray: #8e8e93; --red: #ff6961; --orange: #ffb340; --callout: #6ea2ff; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --page: #15171b; --ink: #e7e9ee; --muted: #9aa1ad; --phone: #000; --card: #1c1c1e; --line: #353941;
+  --green: #4cc782; --gray: #8e8e93; --red: #ff6961; --orange: #ffb340; --callout: #6ea2ff; color-scheme: dark }
+body { background: var(--page); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; margin: 0; }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.6rem; margin: 0 0 6px; }
+h2 { font-size: 1.15rem; margin: 40px 0 14px; }
+.lede { color: var(--muted); margin: 0 0 20px; max-width: 72ch; line-height: 1.5; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 28px; }
+figure { margin: 0; }
+figcaption { margin-top: 10px; line-height: 1.45; font-size: 14px; }
+figcaption b { display: block; }
+.phone { background: var(--phone); border: 1px solid var(--line); border-radius: 34px; padding: 18px 14px; height: 470px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.10); font-size: 13px; overflow: hidden; }
+.nav { font-size: 26px; font-weight: 700; margin: 26px 2px 10px; }
+.nav.inline { font-size: 16px; text-align: center; margin: 26px 0 12px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; background: var(--card); border-radius: 99px; padding: 6px 12px; color: var(--muted); font-size: 12px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+.dot.gray { background: var(--gray); }
+.fresh { display: flex; align-items: flex-start; gap: 6px; color: var(--red); font-size: 12px; margin: 8px 2px 0; line-height: 1.35; }
+.sec { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin: 16px 2px 8px; }
+.sec.wait { color: var(--orange); }
+.card { background: var(--card); border-radius: 14px; padding: 12px; margin-bottom: 10px; }
+.card b { display: block; margin-bottom: 4px; }
+.card span { color: var(--muted); font-size: 12px; }
+.seg { display: flex; background: var(--card); border-radius: 8px; padding: 2px; margin: 10px 0; font-size: 12px; }
+.seg span { flex: 1; text-align: center; padding: 5px 0; border-radius: 6px; }
+.seg span.on { background: var(--phone); font-weight: 600; }
+.empty { text-align: center; color: var(--muted); margin-top: 80px; line-height: 1.5; }
+.empty b { color: var(--ink); display: block; font-size: 16px; }
+</style>
+<style>
+.pend { display:flex; align-items:center; gap:5px; color: var(--muted); font-size: 12px; margin-top: 6px; }
+.pend.err { color: var(--red); }
+.btn { display:inline-block; margin-top:6px; color: var(--callout); font-size: 12px; font-weight: 600; }
+.lane { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin: 14px 2px 8px; }
+.prio { float:right; color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body><div class="wrap">
+<h1>Optimistic writes on the phone (live link R5)</h1>
+<p class="lede">Spec: 2026-11-18-live-link-design.md, R5. The change shows in place at tap time; captions and their strings are the existing ones (BoardWriteModel): “Sending…”, “Waiting for your tower”, “Your tower could not make this change”. Neutral sample data.</p>
+<div class="grid"><figure><div class="phone"><div class="nav">Board</div><div class="lane">To Do</div><div class="card"><b>Fix login timeout</b><span>acme · medium</span><div class="pend">🕓 Sending…</div></div><div class="card"><b>Update onboarding copy</b><span>acme · low</span></div><div class="lane">In Progress</div><div class="card"><b>Relay probe on staging</b><span>acme · high</span></div></div><figcaption><b>1. New task, just tapped</b>The new card is in the lane at tap time, with the existing “Sending…” caption. No separate pending row.</figcaption></figure><figure><div class="phone"><div class="nav">Board</div><div class="lane">To Do</div><div class="card"><b>Update onboarding copy</b><span>acme · low</span></div><div class="lane">In Progress</div><div class="card"><b>Fix login timeout</b><span>acme · medium</span><div class="pend">🕓 Sending…</div></div><div class="card"><b>Relay probe on staging</b><span>acme · high</span></div></div><figcaption><b>2. Card moved, waiting for the slice</b>Moved to In Progress at tap time. The caption stays until the tower’s slice record for this task arrives (not on the echo).</figcaption></figure><figure><div class="phone"><div class="nav">Board</div><div class="lane">To Do</div><div class="card"><b>Update onboarding copy</b><span>acme · low</span></div><div class="lane">In Progress</div><div class="card"><b>Fix login timeout</b><span>acme · medium</span></div><div class="card"><b>Relay probe on staging</b><span>acme · high</span></div></div><figcaption><b>3. Confirmed</b>The slice record arrived: the caption goes, the card is the tower’s value. Nothing moves on screen.</figcaption></figure><figure><div class="phone"><div class="nav">Board</div><div class="lane">To Do</div><div class="card"><b>Update onboarding copy</b><span>acme · low</span></div><div class="lane">In Progress</div><div class="card"><b>Fix login timeout</b><span>acme · medium</span><div class="pend">🕓 Waiting for your tower</div></div><div class="card"><b>Relay probe on staging</b><span>acme · high</span></div></div><figcaption><b>4. Tower slow or offline</b>No echo while the tower’s heartbeat is stale: the existing “Waiting for your tower” caption in the muted tone, as today (orange stays reserved for what waits for you). After 10 min the overlay is dropped and today’s pending row takes over.</figcaption></figure><figure><div class="phone"><div class="nav">Board</div><div class="lane">To Do</div><div class="card"><b>Fix login timeout</b><span>acme · medium</span><div class="pend err">⚠︎ Your tower could not make this change</div><span class="btn">Dismiss</span></div><div class="card"><b>Update onboarding copy</b><span>acme · low</span></div><div class="lane">In Progress</div><div class="card"><b>Relay probe on staging</b><span>acme · high</span></div></div><figcaption><b>5. Refused</b>The tower refused the move: the card is back in To Do with the existing refusal line and Dismiss (red tone).</figcaption></figure><figure><div class="phone"><div class="nav">Now</div><div class="lane">Needs you</div><div class="card"><b>Approve the release notes?</b><span>ask · workbench</span><div class="pend">🕓 Sending… · Approved</div></div><div class="card"><b>Pick a version</b><span>ask · release</span></div></div><figcaption><b>6. Ask answered</b>An answered ask shows the answer at once with “Sending…” and leaves the list when the tower’s asks slice drops it (today’s AppliedAnswer folds into this).</figcaption></figure></div>
+</div></body></html>

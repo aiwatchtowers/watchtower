@@ -96,7 +96,7 @@ VALUES ('Feature', 'custom', 'project', '2026-09-29', '2026-09-29', 'todo', 'med
 		Store: st, Transport: tr, Sealer: secure.NewSealer(kr), DataZone: "data/hubtest-acme", Clock: pubFT.Now,
 		Sources: []slices.Source{sources.WorkbenchTargets(d, pubFT.Now)},
 	})
-	slices.SetRunClock(pub, pubFT.Now, pubFT.Timer)
+	slices.SetRunClock(pub, pubFT)
 
 	r, err := db.OpenExisting(path, time.Second)
 	if err != nil {
@@ -166,15 +166,8 @@ func (r *changeRig) write(text string) {
 	}
 }
 
-func waitArmed(t *testing.T, ft *slices.FakeTime, n int) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for ft.Armed() <= n {
-		if time.Now().After(deadline) {
-			t.Fatal("the loop never went back to sleep")
-		}
-		time.Sleep(time.Millisecond)
-	}
+func waitArmed(_ *testing.T, ft *slices.FakeTime, n int) {
+	ft.WaitArmed(n)
 }
 
 func TestAWriteByAnotherConnectionPublishesWithinOnePoll(t *testing.T) {

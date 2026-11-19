@@ -587,30 +587,6 @@ func TestRescan_OversizedFileHashesWholeFile(t *testing.T) {
 	}
 }
 
-// rescanWithin fails the test instead of hanging when a rescan blocks.
-func rescanWithin(t *testing.T, f *indexerFixture, d time.Duration) RescanReport {
-	t.Helper()
-	type result struct {
-		rep RescanReport
-		err error
-	}
-	done := make(chan result, 1)
-	go func() {
-		rep, err := f.ix.RescanPersonal(context.Background())
-		done <- result{rep, err}
-	}()
-	select {
-	case r := <-done:
-		if r.err != nil {
-			t.Fatalf("RescanPersonal: %v", r.err)
-		}
-		return r.rep
-	case <-time.After(d):
-		t.Fatalf("rescan still blocked after %s", d)
-		return RescanReport{}
-	}
-}
-
 func TestRescan_SymlinksAndSpecialFilesSkipped(t *testing.T) {
 	f := newIndexerFixture(t)
 	f.write(t, "real.md", recipeText("d", "1"))
@@ -631,7 +607,7 @@ func TestRescan_SymlinksAndSpecialFilesSkipped(t *testing.T) {
 	if err := syscall.Mkfifo(filepath.Join(f.dir, "pipe.md"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	rep := rescanWithin(t, f, 10*time.Second)
+	rep := f.rescan(t) // a rescan that opened the FIFO would block here (the package timeout)
 	wantCounts(t, rep, 1, 0, 0)
 	skipped := map[string]bool{}
 	for _, n := range rep.Skipped {

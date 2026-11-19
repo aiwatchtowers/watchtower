@@ -8,13 +8,15 @@ import WatchtowerRelayProto
 /// time from a `ManualRelayClock`, so TTLs run when the test advances it.
 /// "Vouched hubs" follows relay@bcca870 (`vouch_hub`, the pending vouch, `HUB_NOT_VOUCHED`
 /// and the hub gate; `FakeHostedRelay+Accounts.swift`).
+/// Zone events follow relay@771a99e (`ZoneChanged.records`, the frame budget, `HelloOk.capabilities`;
+/// `FakeHostedRelay+Network.swift`).
 ///
 /// The network seams (`http`, `sockets`, the blob store) are in `FakeHostedRelay+Network.swift`,
 /// the faults in `FakeHostedRelay+Faults.swift`.
 ///
-/// Not modelled: rate limits, phone traffic, App Store transactions
-/// (`submit_transaction` answers "not implemented", as a stand without App
-/// Store keys does), push (`send_alert` checks its rules and answers `Ok`; a stand
+/// Not modelled: rate limits, phone traffic, the App Store itself (`submit_transaction` runs the
+/// README's rules over `fakeJWS` payloads; with `billingConfigured = false` it answers "not
+/// implemented", as a stand without App Store keys does), push (`send_alert` checks its rules and answers `Ok`; a stand
 /// without an APNs key answers "not implemented" instead), the Hello timeout,
 /// session-expiry timers (an expired session ends a socket at its next frame or
 /// event, or through `expireSessions`), the attachment settle and orphan timers, the
@@ -100,7 +102,7 @@ public final class FakeHostedRelay: @unchecked Sendable {
         }
         response.id = request.id
         if case .error(let error) = response.result, error.code == .unauthenticated { status = 401 }
-        fanOut(since: before, inline: inlineRecord(response))
+        fanOut(since: before, saved: savedRecords(response))
         if let op = request.op, takeCrashAfter(Self.name(op)) { crashNow() }
         return (status, response)
     }
@@ -126,6 +128,25 @@ public final class FakeHostedRelay: @unchecked Sendable {
     public var holdRevocations: Bool {
         get { locked { state.holdRevocations } }
         set { locked { state.holdRevocations = newValue } }
+    }
+
+    /// On (the default): `submit_transaction` follows the README. Off: it answers `UNSPECIFIED`
+    /// "not implemented", as a stand without App Store keys does.
+    public var billingConfigured: Bool {
+        get { locked { state.billingConfigured } }
+        set { locked { state.billingConfigured = newValue } }
+    }
+
+    /// A push token the relay accepted.
+    public struct PushRegistration: Equatable, Sendable {
+        public let phoneDeviceID: String
+        public let token: String
+        public let environment: RelayPushEnvironment
+    }
+
+    /// Every `register_push` the relay accepted, in order.
+    public var pushRegistrations: [PushRegistration] {
+        locked { state.pushRegistrations }
     }
 
     public var limits: Limits {
@@ -274,6 +295,12 @@ extension FakeHostedRelay {
         var attestMode: AttestMode
         var limits = Limits()
         var holdRevocations = false
+        /// Off: `submit_transaction` answers "not implemented" (a stand without App Store keys).
+        var billingConfigured = true
+        /// By original transaction id (`submit_transaction`).
+        var subscriptions: [String: Subscription] = [:]
+        /// Every accepted `register_push`, in order.
+        var pushRegistrations: [PushRegistration] = []
         /// Phones that registered a push token (`send_alert` needs one).
         var pushPhones: Set<String> = []
         var log: [Relay_V1_Request.OneOf_Op] = []

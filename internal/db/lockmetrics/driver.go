@@ -103,11 +103,11 @@ var errUnmeasurable = errors.New("lockmetrics: the SQLite connection lacks a dri
 // schema, so an open can fail busy under another connection's exclusive
 // lock: that busy error is recorded like a statement's.
 func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
-	start := time.Now()
+	start := now()
 	dc, err := c.base.Connect(ctx)
 	if err != nil {
 		if c.measured {
-			(&conn{busyTimeoutMS: c.busyTimeoutMS}).recordBusy(err, time.Since(start), 0, nil)
+			(&conn{busyTimeoutMS: c.busyTimeoutMS}).recordBusy(err, now().Sub(start), 0, nil)
 		}
 		return nil, err
 	}
@@ -174,18 +174,18 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 		return c.base.BeginTx(ctx, opts)
 	}
 	if opts.ReadOnly || c.queryOnly {
-		start := time.Now()
+		start := now()
 		t, err := c.base.BeginTx(ctx, opts)
 		if err != nil {
-			c.recordBusy(err, time.Since(start), 0, nil)
+			c.recordBusy(err, now().Sub(start), 0, nil)
 		}
 		return t, err
 	}
 	c.tx = tx{c: c}
 	c.tx.npc = runtime.Callers(2, c.tx.pcs[:])
-	start := time.Now()
+	start := now()
 	t, err := c.base.BeginTx(ctx, opts)
-	begun := time.Now()
+	begun := now()
 	if err != nil {
 		c.recordBusy(err, begun.Sub(start), 0, c.tx.pcs[:c.tx.npc])
 		return nil, err
@@ -202,9 +202,9 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	if !c.measured {
 		return c.base.ExecContext(ctx, query, args)
 	}
-	start := time.Now()
+	start := now()
 	res, err := c.base.ExecContext(ctx, query, args)
-	took := time.Since(start)
+	took := now().Sub(start)
 	switch {
 	case err != nil:
 		c.recordBusy(err, took, 0, nil)
@@ -230,10 +230,10 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	if !c.measured {
 		return c.base.QueryContext(ctx, query, args)
 	}
-	start := time.Now()
+	start := now()
 	rows, err := c.base.QueryContext(ctx, query, args)
 	if err != nil {
-		c.recordBusy(err, time.Since(start), 0, nil)
+		c.recordBusy(err, now().Sub(start), 0, nil)
 		return nil, err
 	}
 	br, ok := rows.(baseRows)
@@ -273,7 +273,7 @@ func (r *firstStepRows) Next(dest []driver.Value) error {
 		return err
 	}
 	r.done = true
-	took := time.Since(r.start)
+	took := now().Sub(r.start)
 	switch {
 	case err != nil && !errors.Is(err, io.EOF):
 		r.c.recordBusy(err, took, 0, nil)
@@ -300,9 +300,9 @@ func (t *tx) Rollback() error { return t.end(t.base.Rollback) }
 // busy error (a COMMIT that could not get the lock) always, with the
 // COMMIT's own wait, a slow transaction otherwise.
 func (t *tx) end(finish func() error) error {
-	start := time.Now()
+	start := now()
 	err := finish()
-	done := time.Now()
+	done := now()
 	hold := done.Sub(t.begun)
 	t.c.inTx = false
 	pcs := t.pcs[:t.npc]

@@ -2,23 +2,43 @@ import SwiftUI
 
 /// A titled group of settings (style guide #719): the title, then the rows
 /// on one soft card, spaced apart with no dividers, and an optional footer
-/// note under the card.
+/// note under the card. `caption` is a note between the title and the card;
+/// `isBusy` puts a small spinner before the title (a read in flight over
+/// what the card shows).
 public struct SettingsSection<Content: View>: View {
     let title: String
+    var caption: String?
     var footer: String?
+    var isBusy = false
     @ViewBuilder let content: Content
 
-    public init(title: String, footer: String? = nil, @ViewBuilder content: () -> Content) {
+    public init(
+        title: String,
+        caption: String? = nil,
+        footer: String? = nil,
+        isBusy: Bool = false,
+        @ViewBuilder content: () -> Content
+    ) {
         self.title = title
+        self.caption = caption
         self.footer = footer
+        self.isBusy = isBusy
         self.content = content()
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: Spacing.compact) {
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
+            HStack(spacing: Spacing.regular) {
+                if isBusy { ProgressView().controlSize(.small) }
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            if let caption {
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             VStack(alignment: .leading, spacing: Spacing.regular) { content }
                 .padding(Spacing.medium)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -35,15 +55,19 @@ public struct SettingsSection<Content: View>: View {
 /// One setting: its title and an optional caption on the left, the control
 /// trailing. The row makes a `Toggle` a small switch (and the control small).
 /// It is one accessibility element labelled by the title (the caption is its
-/// hint), so the control's own label may be empty.
+/// hint), so the control's own label may be empty. `captionTone` colours a
+/// caption that reports a problem (a `Tone`, e.g. `Tone.error`); secondary
+/// otherwise.
 public struct SettingRow<Control: View>: View {
     let title: String
     var caption: String?
+    var captionTone: Color?
     @ViewBuilder let control: Control
 
-    public init(title: String, caption: String? = nil, @ViewBuilder control: () -> Control) {
+    public init(title: String, caption: String? = nil, captionTone: Color? = nil, @ViewBuilder control: () -> Control) {
         self.title = title
         self.caption = caption
+        self.captionTone = captionTone
         self.control = control()
     }
 
@@ -54,7 +78,7 @@ public struct SettingRow<Control: View>: View {
                 if let caption {
                     Text(caption)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(captionTone.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
                 }
             }
             Spacer(minLength: Spacing.medium)

@@ -102,6 +102,14 @@ package struct TerminalSession: Codable, FetchableRecord, Identifiable, Equatabl
     /// The automation run that started this session (00122); nil = the owner
     /// started it, or the run was deleted since.
     package var automationRunID: Int64?
+    /// That run's trigger (`automation_runs.trigger`, joined by
+    /// `TerminalSessionQueries`); nil without a run, or from a read that did
+    /// not join it.
+    package var automationRunTrigger: String?
+    /// Whether that run was claimed (under consent, for a background
+    /// trigger); nil without a run or from a read that did not join it
+    /// (optional so a row read without the join still decodes).
+    package var automationRunClaimed: Bool? // swiftlint:disable:this discouraged_optional_boolean
     // `closed_at` is a legacy column, no longer read or written: the Close
     // action was removed, so every row is just running or not running.
 
@@ -118,5 +126,29 @@ package struct TerminalSession: Codable, FetchableRecord, Identifiable, Equatabl
         case worktreeBranch = "worktree_branch"
         case worktreeBase = "worktree_base"
         case automationRunID = "automation_run_id"
+        case automationRunTrigger = "automation_run_trigger"
+        case automationRunClaimed = "automation_run_claimed"
+    }
+
+    /// Whether background work started this session: a run of a background
+    /// trigger (spec §2.2). The owner's own sessions and those of runs the
+    /// owner triggered (Run now, a button, a reply) are not. A run whose
+    /// trigger was not read counts as background (fail closed).
+    package var isBackgroundRunSession: Bool {
+        guard automationRunID != nil else { return false }
+        guard let automationRunTrigger else { return true }
+        return BackgroundAIConsent.backgroundRunTriggers.contains(automationRunTrigger)
+    }
+
+    /// The background AI origin the agent of this session carries (Go
+    /// `sessionstart.originEnv`): a claimed background run's session is
+    /// admitted as unit `run:<id>`, since its run was claimed under consent
+    /// and finishes even when the owner pauses meanwhile; an unclaimed one
+    /// (queued, or cancelled before it started, the paused hold included)
+    /// is background, not admitted; any other carries none.
+    package var agentOriginEnvironment: [String] {
+        guard isBackgroundRunSession, let automationRunID else { return [] }
+        guard automationRunClaimed == true else { return ["\(CLIOrigin.environmentKey)=background"] }
+        return BackgroundAIConsent.admittedEnvironment(unit: "run:\(automationRunID)")
     }
 }

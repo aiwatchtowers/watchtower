@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 
 	"watchtower/internal/automations"
 	"watchtower/internal/db"
@@ -204,32 +205,34 @@ func mustReturnAny(t *testing.T, script string, c sdkCase) string {
 // inbox card with its link and actions (CallBuffered, AUTO-04), so the
 // committed row carries them.
 func TestAuto08_ResumeRebuildsInboxCard(t *testing.T) {
-	w := newWriteFixture(t)
-	a := w.seedWorkbenchOutput(t, "deploy", []string{"ask:owner", "inbox:reply"}, "inbox",
-		`output.inbox({title: "filed", body: "b", link: "https://example.com/x", actions: `+fourActions+`});
+	synctest.Test(t, func(t *testing.T) {
+		w := newWriteFixture(t)
+		a := w.seedWorkbenchOutput(t, "deploy", []string{"ask:owner", "inbox:reply"}, "inbox",
+			`output.inbox({title: "filed", body: "b", link: "https://example.com/x", actions: `+fourActions+`});
 		const r = `+resumeAskCall+`; return 1`)
-	id := w.enqueue(t, a, db.TriggerManual)
-	w.stopWhileWaiting(t, id)
-	ask := w.onlyAsk(t, a.ProjectID)
+		id := w.enqueue(t, a, db.TriggerManual)
+		w.stopWhileWaiting(t, id)
+		ask := w.onlyAsk(t, a.ProjectID)
 
-	w.restart()
-	stop := runExecutor(t, w.exFixture)
-	defer stop()
-	w.waitStatus(t, id, db.RunWaiting)
-	w.answerAsk(t, ask.ID)
-	w.e.Wake()
-	if r := w.waitEnded(t, id); r.Status != db.RunSucceeded {
-		t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
-	}
-	outs, err := w.d.ListAutomationOutputs("inbox", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(outs) != 1 || outs[0].Link != "https://example.com/x" || len(outs[0].Actions) != 4 ||
-		outs[0].Actions[3].Kind != db.InboxActionReply || string(outs[0].Actions[3].Data) != `{"id":"A-1"}` ||
-		!outs[0].Actions[0].Primary {
-		t.Fatalf("committed outputs = %+v; want the one card with its link and four actions", outs)
-	}
+		w.restart()
+		stop := runExecutor(t, w.exFixture)
+		defer stop()
+		w.waitStatus(t, id, db.RunWaiting)
+		w.answerAsk(t, ask.ID)
+		w.e.Wake()
+		if r := w.waitEnded(t, id); r.Status != db.RunSucceeded {
+			t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+		}
+		outs, err := w.d.ListAutomationOutputs("inbox", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(outs) != 1 || outs[0].Link != "https://example.com/x" || len(outs[0].Actions) != 4 ||
+			outs[0].Actions[3].Kind != db.InboxActionReply || string(outs[0].Actions[3].Data) != `{"id":"A-1"}` ||
+			!outs[0].Actions[0].Primary {
+			t.Fatalf("committed outputs = %+v; want the one card with its link and four actions", outs)
+		}
+	})
 }
 
 // TestOutput_TargetActionNeedsTargetOutput (AUTO-02): a target action — on

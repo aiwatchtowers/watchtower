@@ -25,7 +25,7 @@ func (w *world) controls(kind string) []wire.Control {
 
 func (w *world) pending() int {
 	w.t.Helper()
-	rows, err := w.st.PendingControls(w.phone.Zone())
+	rows, err := w.st.PendingControls(w.queue(w.phone))
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestEchoOwedIsRetriedEveryPass(t *testing.T) {
 			if r := w.pass(); r.ControlsWritten != 0 {
 				t.Fatalf("pass %d %+v", i, r)
 			}
-			rows, err := w.st.PendingControls(w.phone.Zone())
+			rows, err := w.st.PendingControls(w.queue(w.phone))
 			if err != nil || len(rows) != 1 || rows[0].Attempts != i {
 				t.Fatalf("pass %d: queue %+v, %v", i, rows, err)
 			}
@@ -98,8 +98,12 @@ func TestControlRefusedForGoodIsDropped(t *testing.T) {
 	eachKind(t, func(t *testing.T, w *world) {
 		first := w.act("test_noop")
 		second := w.act("test_noop")
-		w.fake.FailNext("save", transport.ErrRecordTooLarge)
+		// Both echoes go out in one batch: the first one's record is refused
+		// for good, whatever batch carries it.
+		rr := &refuseRecord{Fake: w.fake, err: transport.ErrRecordTooLarge}
+		w.use(rr)
 		w.pass()
+		w.use(w.fake)
 		if w.pending() != 0 {
 			t.Fatalf("%d rows still queued: the queue stopped at a row refused for good", w.pending())
 		}
@@ -180,7 +184,9 @@ func TestEpochAckRecorded(t *testing.T) {
 	})
 }
 
-func TestTransportSwitchIsRejectedNotSupportedYet(t *testing.T) {
+// A hub without a switcher (headless, relay-only: Phase 2) keeps answering
+// every transport_switch "not supported yet".
+func TestTransportSwitchOnAHeadlessHubIsRejected(t *testing.T) {
 	eachKind(t, func(t *testing.T, w *world) {
 		target := wire.TransportCloudKit
 		if w.fake.Kind() == transport.KindCloudKit {
@@ -200,14 +206,14 @@ func TestTransportSwitchIsRejectedNotSupportedYet(t *testing.T) {
 		}
 		w.settle()
 		got := w.controls(wire.ControlSwitchRejected)
-		if len(got) != 1 || got[0].Reason == nil || *got[0].Reason != switchNotSupported ||
+		if len(got) != 1 || got[0].Reason == nil || *got[0].Reason != SwitchNotSupported ||
 			got[0].DeviceID == nil || !sameID(*got[0].DeviceID, w.phone.ID()) || got[0].RetryAfterS != nil {
 			t.Fatalf("rejections %+v", got)
 		}
 		if len(w.phone.Controls) != 1 {
 			t.Fatalf("controls %+v", w.phone.Controls)
 		}
-		if w.proc.cfg.Transport != w.fake {
+		if w.proc.cfg.Transport != w.tr {
 			t.Fatal("the hub's transport changed")
 		}
 		w.wantEmptyMailbox()
@@ -305,17 +311,25 @@ func TestHygieneSweepsStaleRecordsOnCloudKitOnly(t *testing.T) {
 	})
 }
 
-// failSave refuses the save call number n (1-based) with err.
-type failSave struct {
+// refuseRecord refuses, with err, every save that carries the record at
+// item index of the first save it sees (its wire name), as the relay refuses
+// a batch with a record it never takes (a record too large, a forbidden
+// write) every time.
+type refuseRecord struct {
 	*memfake.Fake
-	calls, n int
-	err      error
+	index int
+	err   error
+	name  string
 }
 
-func (f *failSave) Save(ctx context.Context, items []transport.SaveItem) ([]transport.Outcome, error) {
-	f.calls++
-	if f.calls == f.n {
-		return nil, f.err
+func (f *refuseRecord) Save(ctx context.Context, items []transport.SaveItem) ([]transport.Outcome, error) {
+	if f.name == "" && f.index < len(items) {
+		f.name = items[f.index].Record.WireName()
+	}
+	for _, it := range items {
+		if it.Record.WireName() == f.name {
+			return nil, f.err
+		}
 	}
 	return f.Fake.Save(ctx, items)
 }
@@ -328,8 +342,9 @@ func TestResendFromRefusedForGoodAsksTheGapAgain(t *testing.T) {
 			t.Fatal(err)
 		}
 		w.act("test_noop")
-		// The pass saves the held echo of 3, then resend_from(2): refuse that one for good.
-		w.proc.cfg.Transport = &failSave{Fake: w.fake, n: 2, err: transport.ErrForbidden}
+		// The pass saves the held echo of 3, then resend_from(2) (one batch):
+		// refuse that one for good.
+		w.use(&refuseRecord{Fake: w.fake, index: 1, err: transport.ErrForbidden})
 		w.pass()
 		if w.pending() != 0 {
 			t.Fatalf("%d rows still queued", w.pending())

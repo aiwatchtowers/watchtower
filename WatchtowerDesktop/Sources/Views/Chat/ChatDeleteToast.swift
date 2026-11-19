@@ -6,7 +6,7 @@ import WatchtowerCore
 /// in its own bar under the Chats panel's list. Undo brings the chat back
 /// and hands the keyboard to the panel, where ⌘Z does the same.
 struct ChatDeleteToast: View {
-    @Bindable var historyVM: ChatHistoryViewModel
+    @Bindable var historyVM: ChatPanelModel
 
     var body: some View {
         if let text = historyVM.pendingDeleteToast {

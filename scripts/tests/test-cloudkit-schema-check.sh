@@ -16,6 +16,8 @@
 #   - no team id anywhere                       → exit 1
 #   - an E2E record type missing from both      → exit 1, the type named
 #   - a leftover pre-E2E type only in Production → exit 0
+#   - no subscription-types stamp               → exit 1, the type and the steps named
+#   - --subscriptions-deployed writes the stamp  → the next check passes
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -45,6 +47,12 @@ done
 cp "$STUB_DIR/$env.ckdb" "$out"
 EOF
 chmod +x "$TMP/bin/xcrun"
+
+# The owner's subscription-types stamp, recorded through the script's own flag; every case below needs it.
+export CLOUDKIT_SUBSCRIPTION_STAMP="$TMP/stamp/subscription-types"
+OUT="$(bash "$SCRIPT" --subscriptions-deployed)"
+check "stamp written" "$OUT" "Recorded the deployed CloudKit subscription types"
+check "stamp content" "$(cat "$CLOUDKIT_SUBSCRIPTION_STAMP")" "WatchtowerSignal query create TRUEPREDICATE"
 
 DEV='DEFINE SCHEMA
 
@@ -133,6 +141,17 @@ run "$DEV
         payload         ENCRYPTED BYTES
     );"
 [ "$RC" = 0 ] || note_fail "leftover type: exit $RC: $OUT"
+
+# #1749: Production lacked the subscription type and cktool's export could not show it.
+run "$DEV" CLOUDKIT_SUBSCRIPTION_STAMP="$TMP/stamp/absent"
+[ "$RC" = 1 ] || note_fail "no stamp: exit $RC: $OUT"
+check "no stamp" "$OUT" "WatchtowerSignal query create TRUEPREDICATE"
+check "no stamp" "$OUT" "make cloudkit-subscriptions-deployed"
+check_not "no stamp" "$OUT" "Production holds everything"
+
+printf 'WatchtowerSignal query update TRUEPREDICATE\n' >"$TMP/stamp/old"
+run "$DEV" CLOUDKIT_SUBSCRIPTION_STAMP="$TMP/stamp/old"
+[ "$RC" = 1 ] || note_fail "changed subscription: exit $RC: $OUT"
 
 run "$DEV" STUB_NO_TOKEN=1
 [ "$RC" = 1 ] || note_fail "no token: exit $RC"

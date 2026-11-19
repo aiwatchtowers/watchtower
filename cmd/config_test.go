@@ -82,6 +82,37 @@ func TestConfigSet(t *testing.T) {
 }
 
 // workbench.default_agent takes claude or codex only (#399 n6).
+// TestConfigSetRelayOriginValidates: hub.relay_origin takes
+// https://host[:port] (http:// on a loopback host only); anything else is
+// refused unwritten.
+func TestConfigSetRelayOriginValidates(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: test\n"), 0o600))
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+	stderr := new(bytes.Buffer)
+	configSetCmd.SetOut(new(bytes.Buffer))
+	configSetCmd.SetErr(stderr)
+	defer configSetCmd.SetErr(nil)
+
+	for _, bad := range []string{"http://relay.example.com", "https://relay.example.com/v1", "https://relay.example.com?x=1", "relay.example.com"} {
+		err := configSetCmd.RunE(configSetCmd, []string{"hub.relay_origin", bad})
+		require.Error(t, err, bad)
+		assert.Contains(t, err.Error(), "nothing was written")
+		data, err := os.ReadFile(configPath)
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), "relay_origin", "%q was written", bad)
+	}
+	for _, ok := range []string{"http://127.0.0.1:8787", "https://relay.example.com"} {
+		require.NoError(t, configSetCmd.RunE(configSetCmd, []string{"hub.relay_origin", ok}))
+		cfg, err := config.Load(configPath)
+		require.NoError(t, err)
+		assert.Equal(t, ok, cfg.Hub.RelayOrigin)
+	}
+	assert.NotContains(t, stderr.String(), "not a recognized config key")
+}
+
 func TestConfigSet_DefaultAgentIsValidated(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: test\n"), 0o600))

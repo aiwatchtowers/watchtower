@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/config"
@@ -268,10 +269,11 @@ func newClaudeStub(t *testing.T, reply string) *claudeStub {
 		"if [ -f '" + dir + "/wait' ]; then while [ ! -f '" + dir + "/release' ]; do sleep 0.01; done; fi\n" +
 		"if [ -f '" + dir + "/sleep' ]; then trap '' INT; exec sleep 30; fi\n" +
 		"if [ -f '" + dir + "/fail' ]; then exit 1; fi\n" +
-		// A codex run in its own home: the run's rollout, written before
-		// the stream, and what the home held then.
+		// Capture the home before publishing turns: the watchdog may cancel
+		// the process as soon as the rollout reaches its cap.
 		"if [ -f '" + dir + "/rollout' ]; then r=\"$CODEX_HOME/sessions/2026/01/01\"; mkdir -p \"$r\"; " +
-		"cp '" + dir + "/rollout' \"$r/rollout-2026-01-01T00-00-00-x.jsonl\"; ls -R \"$CODEX_HOME\" > '" + dir + "/home-ls'; fi\n" +
+		": > \"$r/rollout-2026-01-01T00-00-00-x.jsonl\"; ls -R \"$CODEX_HOME\" > '" + dir + "/home-ls'; " +
+		"cp '" + dir + "/rollout' \"$r/rollout-2026-01-01T00-00-00-x.jsonl\"; fi\n" +
 		"cat '" + dir + "/reply'\n" +
 		"if [ -f '" + dir + "/hold' ]; then exec sleep 30; fi\n"
 	require.NoError(t, os.WriteFile(s.path, []byte(script), 0o700))
@@ -499,22 +501,13 @@ func TestAgent_CancelKillsCLIChild(t *testing.T) {
 		_, err := f.exec.ExecuteInline(context.Background(), id)
 		done <- err
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for stub.pid() == 0 {
-		require.True(t, time.Now().Before(deadline), "the stub never started")
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitFor(t, "the stub started", func() bool { return stub.pid() != 0 })
 	pid := stub.pid()
 	ok, err := f.d.CancelAutomationRun(id, time.Now())
 	require.NoError(t, err)
 	require.True(t, ok)
 	f.exec.Wake()
-	select {
-	case err := <-done:
-		require.NoError(t, err)
-	case <-time.After(15 * time.Second):
-		t.Fatal("the run did not end after its cancel")
-	}
+	require.NoError(t, <-done)
 	run, err := f.d.GetAutomationRun(id)
 	require.NoError(t, err)
 	assert.Equal(t, db.RunCancelled, run.Status)
@@ -568,8 +561,9 @@ func TestAgent_CodexChildBoundToRun(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(string(homeTOML), "[mcp_servers."), "no server of the owner's: %s", homeTOML)
 	assert.Contains(t, string(homeTOML), `"--surface", "automation", "--automation-run", "`+runID+`", "--automation-tools", "create_target,list_targets"`)
 	// codex starts MCP servers with a filtered environment: the run marker
-	// the server checks is passed through by name.
-	assert.Contains(t, string(homeTOML), `env_vars = ["`+automations.RunEnvMarker+`"]`)
+	// the server checks, and the run's AI origin (#1886), are passed through
+	// by name.
+	assert.Contains(t, string(homeTOML), `env_vars = ["`+automations.RunEnvMarker+`", "`+aiconsent.EnvOrigin+`", "`+aiconsent.EnvAdmitted+`"]`)
 	link, err := os.ReadFile(filepath.Join(stub.dir, "codex-auth-link"))
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(ownerHome, "auth.json"), strings.TrimSpace(string(link)))
@@ -648,10 +642,10 @@ func TestAgent_RoutingQuotaAfterProposalNeverRestartsChild(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(claude.dir, "wait"), nil, 0o600))
 	id := f.enqueue(t, db.TriggerManual)
 	done := make(chan error, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _, err := f.exec.ExecuteInline(ctx, id); done <- err }()
-	require.Eventually(t, func() bool { return claude.pid() > 0 }, 5*time.Second, 10*time.Millisecond)
+	waitFor(t, "the claude stub started", func() bool { return claude.pid() > 0 })
 	// The child's bound server may already have proposed an action when quota
 	// arrives. Persist that receipt while the real fake child is still running.
 	action, err := f.d.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{"text":"pending"}`, Surface: "automation", ContextType: "automation_run", ContextID: strconv.FormatInt(id, 10)})

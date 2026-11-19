@@ -1,0 +1,469 @@
+package actions
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"database/sql"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"testing"
+
+	"watchtower/internal/hub/hubtest"
+	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/wire"
+)
+
+// Go twins of the Swift hub's device-record tests (RelayProcessor →
+// MobileLinkCenter.handleDevice: MobileLinkCenterTests+Permissions,
+// +StartSessions and the typing-request tests), on CloudKit's shared mailbox;
+// the hosted relay's path is in device_record_relay_test.go.
+
+// onShared runs fn on the shared CloudKit mailbox.
+func onShared(t *testing.T, fn func(t *testing.T, w *world)) {
+	t.Helper()
+	fn(t, newWorld(t, kindShared))
+}
+
+// rewrite is the phone's own device record with the toggles given.
+func (w *world) rewrite(d wire.DevicePayload) {
+	w.t.Helper()
+	d.DeviceID = w.phone.ID().String()
+	if d.Scope == "" {
+		d.Scope = "private"
+	}
+	if d.Name == "" {
+		d.Name = "Test Phone"
+	}
+	d.UpdatedAt = wire.Time{Time: w.clock()}
+	if _, err := w.phone.WriteDeviceRecord(d, ""); err != nil {
+		w.t.Fatal(err)
+	}
+	w.pass()
+}
+
+func TestDeviceRecordUnlinkedUnlinks(t *testing.T) {
+	onShared(t, func(t *testing.T, w *world) {
+		epoch, err := w.keys.CurrentEpoch()
+		if err != nil {
+			t.Fatal(err)
+		}
+		unlinked := true
+		w.rewrite(wire.DevicePayload{Unlinked: &unlinked})
+		if _, linked, err := w.st.Device(w.phone.ID().String()); err != nil || linked {
+			t.Fatalf("still linked: %v %v", linked, err)
+		}
+		if now, err := w.keys.CurrentEpoch(); err != nil || now != epoch+1 {
+			t.Fatalf("epoch %d → %d (%v): an unlink rotates", epoch, now, err)
+		}
+		// Read again (a resync), the record unlinks nothing more.
+		if r := w.pass(); r.Applied != 0 {
+			t.Fatalf("pass %+v", r)
+		}
+	})
+}
+
+// A request is stored for the owner and is never a grant; it decides
+// nothing (decided_at stays), and the phone's start-sessions toggle is only
+// its opt-out, never the owner's grant.
+func TestDeviceRecordRequestsAreNotGrants(t *testing.T) {
+	onShared(t, func(t *testing.T, w *world) {
+		on := true
+		w.rewrite(wire.DevicePayload{TypingRequested: true, PermissionsRequested: &on, StartSessions: true,
+			Name: "Ana's\niPhone", UserRecordName: "_user-a"})
+		d := w.device(w.phone)
+		if !d.TypingRequested || d.TypingAllowed || !d.PermissionsRequested || d.PermissionsAllowed {
+			t.Fatalf("requests became grants: %+v", d)
+		}
+		if !d.StartSessionsAllowed || d.StartSessionsGranted {
+			t.Fatalf("start sessions: %+v", d)
+		}
+		if d.Name != "Ana's iPhone" {
+			t.Fatalf("name %q", d.Name)
+		}
+		var decided sql.NullFloat64
+		var user string
+		if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+			return tx.QueryRow(`SELECT decided_at, user_record_name FROM devices WHERE device_id = ?`,
+				w.phone.ID().String()).Scan(&decided, &user)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if decided.Valid {
+			t.Fatalf("a request decided at %v", decided.Float64)
+		}
+		if user == "_user-a" { // the payload's claim only checks the record's creator
+			t.Fatalf("user_record_name taken from the payload")
+		}
+		grants, err := w.links.Grants()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, g := range grants {
+			if g.DeviceID == w.phone.ID().String() &&
+				(g.TypingAllowed || g.PermissionsAllowed != nil || (g.StartSessionsGranted != nil && *g.StartSessionsGranted)) {
+				t.Fatalf("grant %+v", g)
+			}
+		}
+	})
+}
+
+// The phone's toggle going from on to off revokes that grant; a rewrite for
+// another toggle keeps it.
+func TestDeviceRecordToggleOffRevokesTheGrant(t *testing.T) {
+	onShared(t, func(t *testing.T, w *world) {
+		on, off := true, false
+		w.rewrite(wire.DevicePayload{TypingRequested: true, PermissionsRequested: &on, StartSessions: true})
+		device := w.phone.ID().String()
+		for _, g := range []link.Grant{link.GrantTyping, link.GrantPermissions} {
+			if err := w.links.Allow(device, g, true); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Another toggle changes: both grants stay.
+		w.rewrite(wire.DevicePayload{TypingRequested: true, PermissionsRequested: &on, StartSessions: false})
+		if d := w.device(w.phone); !d.TypingAllowed || !d.PermissionsAllowed || d.StartSessionsAllowed {
+			t.Fatalf("after the start toggle: %+v", d)
+		}
+		w.rewrite(wire.DevicePayload{TypingRequested: false, PermissionsRequested: &on})
+		if d := w.device(w.phone); d.TypingAllowed || d.TypingRequested || !d.PermissionsAllowed {
+			t.Fatalf("after typing off: %+v", d)
+		}
+		w.rewrite(wire.DevicePayload{PermissionsRequested: &off})
+		if d := w.device(w.phone); d.PermissionsAllowed || d.PermissionsRequested {
+			t.Fatalf("after permissions off: %+v", d)
+		}
+	})
+}
+
+// A device record carrying a link nonce asks for a link, which only a hello
+// makes: it changes nothing.
+func TestDeviceRecordWithACodeIsIgnored(t *testing.T) {
+	onShared(t, func(t *testing.T, w *world) {
+		nonce := "a-code"
+		w.rewrite(wire.DevicePayload{LinkNonce: &nonce, TypingRequested: true, Name: "Renamed"})
+		if d := w.device(w.phone); d.TypingRequested || d.Name != "Test Phone" {
+			t.Fatalf("device %+v", d)
+		}
+	})
+}
+
+// A device record not written in the link's scope changes nothing: an
+// unlink in it does not unlink, a rewrite does not rename (Swift
+// handleLinkedRewrite's guard runs before the unlink).
+func TestDeviceRecordInAnotherScopeIsIgnored(t *testing.T) {
+	onShared(t, func(t *testing.T, w *world) {
+		epoch, err := w.keys.CurrentEpoch()
+		if err != nil {
+			t.Fatal(err)
+		}
+		unlinked := true
+		w.rewrite(wire.DevicePayload{Scope: "shared", Unlinked: &unlinked})
+		w.rewrite(wire.DevicePayload{Scope: "shared", Name: "Renamed", TypingRequested: true})
+		d := w.device(w.phone) // still linked
+		if d.Name != "Test Phone" || d.TypingRequested {
+			t.Fatalf("device %+v", d)
+		}
+		if now, err := w.keys.CurrentEpoch(); err != nil || now != epoch {
+			t.Fatalf("epoch %d → %d (%v)", epoch, now, err)
+		}
+	})
+}
+
+// ownerMailbox is the shared mailbox on a transport that names the Mac's
+// iCloud user (transport.CloudUser), as the CloudKit bridge does.
+type ownerMailbox struct {
+	sharedMailbox
+	owner string
+}
+
+func (o ownerMailbox) OwnerUser(context.Context) (string, error) { return o.owner, nil }
+func (ownerMailbox) AccountStatus(context.Context) (transport.Account, error) {
+	return transport.AccountAvailable, nil
+}
+func (ownerMailbox) EnsureShares(context.Context) (string, string, error)       { return "", "", nil }
+func (ownerMailbox) SetPublicLink(context.Context, bool) error                  { return nil }
+func (ownerMailbox) RemoveParticipants(context.Context, string, []string) error { return nil }
+func (ownerMailbox) Participants(context.Context, string) ([]transport.Participant, error) {
+	return nil, nil
+}
+
+// The device record's CloudKit creator (Swift LinkedDevice.accepts(creator:)
+// and creatorMatches): in shared scope the phone's own user — the one stored
+// at the link and named in the record — and in private scope the Mac's user
+// (no creator, the current-user name, or the owner's name). Another creator
+// is refused before an unlink or a rewrite.
+func TestDeviceRecordCreatorCheck(t *testing.T) {
+	const owner, phoneUser = "_owner-user", "_phone-user"
+	for _, tc := range []struct {
+		name, scope, stored, creator string
+		ok                           bool
+	}{
+		{"private/no creator", wire.ScopePrivate, owner, "", true},
+		{"private/current user", wire.ScopePrivate, owner, transport.CurrentUserCreator, true},
+		{"private/owner", wire.ScopePrivate, owner, owner, true},
+		{"private/stranger", wire.ScopePrivate, owner, "_stranger", false},
+		{"private/the phone's user", wire.ScopePrivate, owner, phoneUser, false},
+		{"shared/phone user", wire.ScopeShared, phoneUser, phoneUser, true},
+		{"shared/stranger", wire.ScopeShared, phoneUser, "_stranger", false},
+		{"shared/owner", wire.ScopeShared, phoneUser, transport.CurrentUserCreator, false},
+		{"shared/no creator", wire.ScopeShared, phoneUser, "", false},
+	} {
+		for _, unlink := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/unlink=%v", tc.name, unlink), func(t *testing.T) {
+				w := newWorld(t, kindShared)
+				w.proc.cfg.Transport = ownerMailbox{sharedMailbox{w.fake}, owner}
+				if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+					_, err := tx.Exec(`UPDATE devices SET scope = ?, user_record_name = ? WHERE device_id = ?`,
+						tc.scope, tc.stored, w.phone.ID().String())
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				w.phone.Creator = tc.creator
+				d := wire.DevicePayload{Scope: tc.scope, UserRecordName: phoneUser, Name: "Renamed"}
+				if unlink {
+					on := true
+					d.Unlinked = &on
+				}
+				w.rewrite(d)
+				_, linked, err := w.st.Device(w.phone.ID().String())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if unlink {
+					if linked == tc.ok {
+						t.Fatalf("linked %v after an unlink by creator %q", linked, tc.creator)
+					}
+					return
+				}
+				if renamed := w.device(w.phone).Name == "Renamed"; renamed != tc.ok {
+					t.Fatalf("renamed %v by creator %q", renamed, tc.creator)
+				}
+			})
+		}
+	}
+}
+
+// flakyOwner is ownerMailbox whose owner read fails while down is set.
+type flakyOwner struct {
+	ownerMailbox
+	down *bool
+}
+
+func (f flakyOwner) OwnerUser(ctx context.Context) (string, error) {
+	if *f.down {
+		return "", transport.ErrUnavailable
+	}
+	return f.ownerMailbox.OwnerUser(ctx)
+}
+
+// proofRecord is a device record for ph naming a rename and a proven relay
+// id; it returns the payload and the id.
+func proofRecord(t *testing.T, w *world, ph *hubtest.Phone, name string) (wire.DevicePayload, string) {
+	t.Helper()
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := key.Public().(ed25519.PublicKey)
+	id := identity.RelayDeviceID(pub)
+	return wire.DevicePayload{DeviceID: ph.ID().String(), Name: name, Scope: wire.ScopePrivate, StartSessions: true,
+		UpdatedAt:     wire.Time{Time: w.clock()},
+		RelayDeviceID: id, RelayAuthPub: base64.RawURLEncoding.EncodeToString(pub),
+		RelayIDSig: base64.RawURLEncoding.EncodeToString(ed25519.Sign(key, link.RelayIDProofMessage(w.keys.HubID(), ph.ID(), id)))}, id
+}
+
+// A failed owner read is no decision: the record stays unmarked, the pass
+// reports the failure by class, and the next pass applies the record in full
+// (name and relay id proof), the proof not stripped by the replay guard. A
+// failing record holds back its own phone's later records only; another
+// phone's record in the same page applies.
+func TestDeviceRecordOwnerReadFailureIsRetried(t *testing.T) {
+	const owner = "_owner-user"
+	w := newWorld(t, kindShared)
+	down := true
+	w.proc.cfg.Transport = flakyOwner{ownerMailbox{sharedMailbox{w.fake}, owner}, &down}
+	other := w.addPhone()
+	w.phone.Creator = owner // a real user name: the owner read decides
+	w.setStoredUser(w.phone, owner)
+	before := w.device(w.phone).RelayDeviceID
+	d, id := proofRecord(t, w, w.phone, "Renamed")
+	if _, err := w.phone.WriteDeviceRecord(d, ""); err != nil {
+		t.Fatal(err)
+	}
+	laterSeq, err := w.phone.Act("test_noop") // the same phone's record behind it
+	if err != nil {
+		t.Fatal(err)
+	}
+	od := wire.DevicePayload{DeviceID: other.ID().String(), Name: "Other Renamed", Scope: wire.ScopePrivate,
+		UpdatedAt: wire.Time{Time: w.clock()}}
+	if _, err := other.WriteDeviceRecord(od, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.proc.Pass(w.ctx); !errors.Is(err, link.ErrOwnerUnreadable) {
+		t.Fatalf("a failed owner read was not reported: %v", err)
+	}
+	if got := w.device(w.phone); got.Name != "Test Phone" || got.RelayDeviceID != before {
+		t.Fatalf("applied on a failed owner read: %+v", got)
+	}
+	if got := w.device(other).Name; got != "Other Renamed" {
+		t.Fatalf("one phone's failure held back another's record: %q", got)
+	}
+	w.wantCalls() // the failing phone's later action waits behind it
+	down = false
+	w.pass()
+	got := w.device(w.phone)
+	if got.Name != "Renamed" || got.RelayDeviceID != id {
+		t.Fatalf("the retry did not apply in full: name %q relay %q", got.Name, got.RelayDeviceID)
+	}
+	w.wantCalls(noops(laterSeq)...)
+	// The record is decided now: a re-read (token reset) replays no proof, so
+	// a relay id moved away meanwhile is not taken back.
+	if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE devices SET relay_device_id = NULL WHERE device_id = ?`, w.phone.ID().String())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.st.SetZoneToken(w.mailbox, 0); err != nil {
+		t.Fatal(err)
+	}
+	w.pass()
+	if got := w.device(w.phone).RelayDeviceID; got != "" {
+		t.Fatalf("the decided record's proof was replayed: %q", got)
+	}
+}
+
+// A creator that really is not the owner stays a refusal: marked, not retried.
+// Marked is shown by a re-read while the owner read fails on a cold cache: an
+// unmarked record would error then, a marked one is left alone.
+func TestDeviceRecordCreatorMismatchIsMarked(t *testing.T) {
+	w := newWorld(t, kindShared)
+	down := false
+	w.proc.cfg.Transport = flakyOwner{ownerMailbox{sharedMailbox{w.fake}, "_owner-user"}, &down}
+	w.phone.Creator = "_stranger"
+	w.setStoredUser(w.phone, "_stranger")
+	before := w.device(w.phone).RelayDeviceID
+	d, _ := proofRecord(t, w, w.phone, "Renamed")
+	if _, err := w.phone.WriteDeviceRecord(d, ""); err != nil {
+		t.Fatal(err)
+	}
+	w.pass()
+	if got := w.device(w.phone); got.Name != "Test Phone" || got.RelayDeviceID != before {
+		t.Fatalf("a stranger's record applied: %+v", got)
+	}
+	if err := w.links.AccountChanged(w.ctx, w.proc.cfg.Transport.(transport.Shares)); err != nil { // cold owner cache
+		t.Fatal(err)
+	}
+	down = true
+	if err := w.st.SetZoneToken(w.mailbox, 0); err != nil {
+		t.Fatal(err)
+	}
+	w.pass() // fatal on an error: the refusal was marked
+}
+
+// A persistent owner-read failure is bounded like a content error: held for
+// MaxRecordStrikes passes over StrikeWindow, then the record is passed over,
+// still unmarked, and the phones' later records flow. When the read works
+// again, the next read of the zone applies it in full.
+func TestDeviceRecordOwnerReadFailureIsPassedOverAfterTheStrikes(t *testing.T) {
+	const owner = "_owner-user"
+	w := newWorld(t, kindShared)
+	down := true
+	w.proc.cfg.Transport = flakyOwner{ownerMailbox{sharedMailbox{w.fake}, owner}, &down}
+	other := w.addPhone()
+	w.phone.Creator = owner
+	w.setStoredUser(w.phone, owner)
+	d, id := proofRecord(t, w, w.phone, "Renamed")
+	if _, err := w.phone.WriteDeviceRecord(d, ""); err != nil {
+		t.Fatal(err)
+	}
+	laterSeq, err := w.phone.Act("test_noop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSeq, err := other.Act("test_noop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 * MaxRecordStrikes { // quick nudges: under the time floor
+		_, _ = w.proc.Pass(w.ctx)
+	}
+	if tok, _ := w.st.ZoneToken(w.mailbox); tok != 0 {
+		t.Fatalf("passed over before the time floor: token %d", tok)
+	}
+	w.advance(StrikeWindow)
+	if _, err := w.proc.Pass(w.ctx); err != nil {
+		t.Fatalf("pass after the bound: %v", err)
+	}
+	if tok, _ := w.st.ZoneToken(w.mailbox); tok == 0 {
+		t.Fatal("the token did not move past the passed-over record")
+	}
+	w.wantCalls(noops(otherSeq, laterSeq)...)
+	if got := w.device(w.phone).Name; got != "Test Phone" {
+		t.Fatalf("a passed-over record applied: %q", got)
+	}
+	down = false // healed: the next read of the zone (a resync) applies it in full
+	if err := w.st.SetZoneToken(w.mailbox, 0); err != nil {
+		t.Fatal(err)
+	}
+	w.pass()
+	if got := w.device(w.phone); got.Name != "Renamed" || got.RelayDeviceID != id {
+		t.Fatalf("the resync did not apply in full: name %q relay %q", got.Name, got.RelayDeviceID)
+	}
+}
+
+// A transport that answers no owner at all (no error) is held like a failed
+// read: the creator cannot be checked yet.
+func TestDeviceRecordEmptyOwnerIsRetried(t *testing.T) {
+	w := newWorld(t, kindShared)
+	down := false
+	w.proc.cfg.Transport = flakyOwner{ownerMailbox{sharedMailbox{w.fake}, ""}, &down}
+	w.phone.Creator = "_phone-user"
+	w.setStoredUser(w.phone, "_phone-user")
+	d, _ := proofRecord(t, w, w.phone, "Renamed")
+	if _, err := w.phone.WriteDeviceRecord(d, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.proc.Pass(w.ctx); !errors.Is(err, link.ErrOwnerUnreadable) {
+		t.Fatalf("an empty owner was decided: %v", err)
+	}
+}
+
+// On standby a device record takes the same path: an unreadable owner holds it
+// undecided and the pass reports it (a refusal would mark it).
+func TestDeviceRecordOwnerReadFailureOnStandbyIsRetried(t *testing.T) {
+	w := newWorld(t, kindShared)
+	down := true
+	w.proc.cfg.Transport = flakyOwner{ownerMailbox{sharedMailbox{w.fake}, "_owner-user"}, &down}
+	w.withSwitch(&fakeSwitch{active: "elsewhere"})
+	w.phone.Creator = "_owner-user"
+	w.setStoredUser(w.phone, "_owner-user")
+	d, _ := proofRecord(t, w, w.phone, "Renamed")
+	if _, err := w.phone.WriteDeviceRecord(d, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.proc.Pass(w.ctx); !errors.Is(err, link.ErrOwnerUnreadable) {
+		t.Fatalf("standby decided on a failed owner read: %v", err)
+	}
+	down = false
+	w.pass()
+	if got := w.device(w.phone).Name; got != "Renamed" {
+		t.Fatalf("standby retry: %q", got)
+	}
+}
+
+// setStoredUser sets the user record name stored at ph's link.
+func (w *world) setStoredUser(ph *hubtest.Phone, user string) {
+	w.t.Helper()
+	if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE devices SET user_record_name = ? WHERE device_id = ?`, user, ph.ID().String())
+		return err
+	}); err != nil {
+		w.t.Fatal(err)
+	}
+}

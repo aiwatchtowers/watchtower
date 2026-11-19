@@ -63,7 +63,7 @@ func (x *Extractor) parsePDF(ctx context.Context, path string) ([]pdfPage, bool,
 // unreadable PDF (ok false) — a verdict, logged. What a clean helper run
 // wrote to stderr (recovered parser panics) is logged too.
 func (x *Extractor) runPDFHelper(ctx context.Context, path string) ([]pdfPage, bool, error) {
-	cctx, cancel := context.WithTimeout(ctx, pdfHelperTimeout)
+	cctx, cancel := helperDeadline(ctx, pdfHelperTimeout)
 	defer cancel()
 	argv := x.PDFHelper
 	args := append(append([]string(nil), argv[1:]...), path)

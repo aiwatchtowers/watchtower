@@ -139,6 +139,41 @@ final class AgentReportDecodingTests: XCTestCase {
         XCTAssertFalse(base.sameReport(as: try variant(["old_format_sessions": 9])))
         XCTAssertFalse(base.sameReport(as: try variant(["enabled": false])))
         XCTAssertFalse(base.sameReport(as: try variant(["hints": []])))
+        XCTAssertFalse(base.sameReport(as: try variant(["agent": "codex"])), "another filter's report")
+        XCTAssertFalse(base.sameReport(as: try variant(["agents": ["claude", "codex"]])))
+        XCTAssertFalse(base.sameReport(as: try variant(["agent_filter": ["claude", "codex"]])))
+    }
+
+    /// The agent filter's keys (#1517, Task 4.4); an older CLI sends none.
+    func testAgentKeys() throws {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("agent-report-overview")) as? [String: Any])
+        json["agent"] = "all"
+        json["agents"] = ["claude", "codex"]
+        json["agent_filter"] = ["claude", "codex"]
+        var context = try XCTUnwrap(json["context"] as? [String: Any])
+        context["agents"] = ["claude"]
+        json["context"] = context
+        let ov = try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(ov.agent, "all")
+        XCTAssertEqual(ov.agents, ["claude", "codex"])
+        XCTAssertEqual(ov.agentFilter, ["claude", "codex"])
+        XCTAssertEqual(ov.context?.agents, ["claude"])
+        XCTAssertNotNil(ov.skills?.agents)
+        XCTAssertNotNil(ov.trouble?.agents)
+
+        for key in ["agent", "agents", "agent_filter"] { json[key] = nil }
+        for block in ["context", "skills", "trouble"] {
+            var value = try XCTUnwrap(json[block] as? [String: Any])
+            value["agents"] = nil
+            json[block] = value
+        }
+        let old = try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(old.agent)
+        XCTAssertNil(old.agents)
+        XCTAssertNil(old.agentFilter)
+        XCTAssertNil(old.context?.agents)
+        XCTAssertNil(old.skills?.agents)
+        XCTAssertNil(old.trouble?.agents)
     }
 
     func testContextSkillsAndTroubleFieldsDecode() throws {

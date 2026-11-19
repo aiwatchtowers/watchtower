@@ -9,11 +9,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"watchtower/internal/oauthpage"
+
+	"watchtower/internal/oauthpage/oauthpagetest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -288,25 +288,6 @@ func TestGetOpenBrowserFunc_NotNil(t *testing.T) {
 	assert.NotNil(t, getOpenBrowserFunc())
 }
 
-// syncTestBuffer is a mutex-guarded buffer so the Login goroutine can write the
-// authorize URL while the test reads it.
-type syncTestBuffer struct {
-	mu  sync.Mutex
-	buf strings.Builder
-}
-
-func (b *syncTestBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncTestBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
 // runLoginCaptureSuccessBody drives a full Login(opts) with a mocked token
 // endpoint and browser, POSTing the OAuth callback back to the loopback server,
 // and returns the HTML body served on the success page. The slack.TestLogin_
@@ -333,7 +314,7 @@ func runLoginCapture(t *testing.T, opts LoginOptions) (authorizeURL, successBody
 	jiraTokenEndpoint = tokenSrv.URL
 	defer func() { jiraTokenEndpoint = prev }()
 
-	out := &syncTestBuffer{}
+	out := &oauthpagetest.Output{}
 	opts.SkipBrowserOpen = true // print the authorize URL instead of opening a browser
 	resultCh := make(chan error, 1)
 	go func() {
@@ -341,19 +322,7 @@ func runLoginCapture(t *testing.T, opts LoginOptions) (authorizeURL, successBody
 		resultCh <- err
 	}()
 
-	require.Eventually(t, func() bool {
-		s := out.String()
-		idx := strings.Index(s, "https://")
-		if idx == -1 {
-			return false
-		}
-		end := strings.IndexAny(s[idx:], "\n ")
-		if end == -1 {
-			return false
-		}
-		authorizeURL = s[idx : idx+end]
-		return authorizeURL != ""
-	}, 3*time.Second, 10*time.Millisecond)
+	authorizeURL = out.WaitURL("https://")
 
 	parsed, err := url.Parse(authorizeURL)
 	require.NoError(t, err)
@@ -377,12 +346,8 @@ func runLoginCapture(t *testing.T, opts LoginOptions) (authorizeURL, successBody
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 
-	select {
-	case err := <-resultCh:
-		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("Login did not complete in time")
-	}
+	err = <-resultCh
+	require.NoError(t, err)
 	return authorizeURL, string(body)
 }
 

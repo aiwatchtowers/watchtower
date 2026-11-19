@@ -907,4 +907,23 @@ extension TransportStoreTests {
         XCTAssertEqual(try store.relayCursor(zone: .relay), 0)
         XCTAssertTrue(try store.relayResyncPending(.relay))
     }
+
+    func testAWriteOnlyOpenDoesNotSweepTheStash() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("store-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("t.sqlite").path
+        let stash = dir.appendingPathComponent("transport-assets")
+        try FileManager.default.createDirectory(at: stash, withIntermediateDirectories: true)
+        let file = stash.appendingPathComponent("fresh-asset")
+        try Data("x".utf8).write(to: file)
+
+        let writeOnly = try TransportStore.withoutStashSweep { try TransportStore(path: path) }
+        try writeOnly.close()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "a stash a running engine just wrote survives")
+
+        let normal = try TransportStore(path: path)
+        try normal.close()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "the launch sweep still runs by default")
+    }
 }

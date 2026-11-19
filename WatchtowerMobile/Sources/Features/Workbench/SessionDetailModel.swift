@@ -57,7 +57,7 @@ struct SessionDetailModel {
             MilestoneRow(index: index, milestone: milestone, knownTargets: targetIDs, now: now, calendar: calendar)
         }
         timelineEmptyText = milestones.isEmpty ? "No milestones yet" : nil
-        timelineMoreText = (timeline?.milestonesMore).flatMap { $0 > 0 ? "\($0) earlier on your Mac" : nil }
+        timelineMoreText = (timeline?.milestonesMore).flatMap { $0 > 0 ? "\($0) earlier on your tower" : nil }
     }
 
     /// The agent's product name, from Go's agent kind registry (the Kit's

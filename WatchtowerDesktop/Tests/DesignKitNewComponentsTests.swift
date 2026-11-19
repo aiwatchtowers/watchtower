@@ -75,6 +75,11 @@ final class DesignKitNewComponentsTests: XCTestCase {
         XCTAssertEqual(KitRow.fill(isSelected: true, isHovered: true), Fill.selected)
         XCTAssertEqual(KitRow.fill(isSelected: true, isHovered: false), Fill.selected)
         XCTAssertEqual(KitRow.fill(isSelected: false, isHovered: true), Fill.hover)
+        XCTAssertEqual(KitRow.fill(isSelected: false, isHovered: true, tint: Tone.warning),
+                       Tone.warning.opacity(ChipTint.fillOpacity), "a tint holds under the pointer")
+        XCTAssertEqual(KitRow.fill(isSelected: false, isHovered: false, tint: Tone.warning),
+                       Tone.warning.opacity(ChipTint.fillOpacity))
+        XCTAssertEqual(KitRow.fill(isSelected: true, isHovered: false, tint: Tone.warning), Fill.selected)
         XCTAssertEqual(KitRow.fill(isSelected: false, isHovered: false), .clear)
     }
 
@@ -86,6 +91,26 @@ final class DesignKitNewComponentsTests: XCTestCase {
 
         let shown = PanelSplit(isPanelShown: true, width: width) { Text("main") } panel: { Text("panel") }
         XCTAssertNoThrow(try shown.inspect().find(text: "panel"))
+    }
+
+    /// The edge line stands vertical at the panel's leading edge: a hairline
+    /// wide `Rectangle`, not a `Divider`, which lies flat in an overlay.
+    func testPanelSplitEdgeLineIsVertical() throws {
+        let width = PanelSplitWidth(key: "DesignKitNewComponentsTests.panelWidth", range: 200...400, ideal: 260)
+        let shown = PanelSplit(isPanelShown: true, width: width) { Text("main") } panel: { Text("panel") }
+        XCTAssertNoThrow(try shown.inspect().find(ViewType.Shape.self, where: Self.isHairlineWide))
+        XCTAssertThrowsError(try shown.inspect().find(ViewType.Divider.self))
+
+        let lineless = PanelSplit(isPanelShown: true, width: width, showsEdgeLine: false) {
+            Text("main")
+        } panel: {
+            Text("panel")
+        }
+        XCTAssertThrowsError(try lineless.inspect().find(ViewType.Shape.self, where: Self.isHairlineWide))
+    }
+
+    private static func isHairlineWide(_ view: InspectableView<ViewType.Shape>) -> Bool {
+        (try? view.fixedWidth()) == Stroke.hairline
     }
 
     /// A caller's own `.focused` binding still works on a kit field: setting

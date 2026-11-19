@@ -81,6 +81,22 @@ until the next morning's hour.
      (`FeatureManagerSection.cascadeMessage`). The launch is not decoupled
      (owner, ask #307), so token spend changes only when the owner turns Slack
      Digests on;
+  3c. `backgroundAIPaused(managed:)` (#1886, D15 of the spec,
+     [background-ai-consent.md](background-ai-consent.md)) — no content, the
+     feature `usesBackgroundAI` (digests, stream digests, tracks, people
+     cards, briefing, day plan, ideas, memory; never Slack sync, Inbox,
+     knowledge index, calendar, Jira, Linear) and `ReadinessInputs.backgroundAI`
+     is not allowed; `managed` = paused by the organization. Line
+     "Paused — background AI is off" with **Allow background AI…**
+     (`EmptyStateAction.allowBackgroundAI` → `presentBackgroundAIConsent()`),
+     or "Off — your organization turned background AI off" with no button. A
+     tab whose own primary action is the owner's (`.tabAction`, Catch-Up's
+     **Build a recap**) keeps that action and draws no paused line
+     (`FeatureEmptyState.ownerActionLeads`). `honoringOwner` keeps the state
+     (it is not a promise). The readiness inputs read `AppState.backgroundAI`
+     under observation, so an answer or a profile change re-evaluates at once,
+     without the 30 s tick (spec D15 places it after `needsDigests`, before
+     `daemonStopped`);
   4. `daemonStopped` (#577, owner ask #307 q4) — the daemon is not running and
      has been seen down for `daemonDownGrace` (30 s) or longer
      (`ReadinessInputs.daemonNotRunningSince` = `DaemonManager.notRunningSince`,
@@ -407,6 +423,18 @@ feed, Workbench, links and numbers — what needs the owner now. It composes
 nothing: no AI call, no DB write; every zone reads existing tables (the feed's
 Done/Hide is the one writer), and Getting ready reads P1's readiness.
 
+### Background AI card (2026-11-18, #1886)
+
+While background AI is paused or forbidden, `HomeContent` draws one card from
+`HomeBackgroundAICard.make(AppState.backgroundAI)` (Core; nil while allowed),
+after the purge banner and above the Getting ready zone, outside
+`GettingReadyPolicy` and independent of its snapshot, so the zone's Hide never
+removes it. Paused (owner or not answered): "Background AI is paused" with
+**Allow background AI…** (opens the consent sheet). Organization: "Background
+AI is off", the Managed badge and no action. It stays until the state turns
+allowed; no sheet or alert comes back by itself (D10). See
+[background-ai-consent.md](background-ai-consent.md).
+
 ### Purge banner (2026-10-21, #601)
 
 `AccountPurgeBanner` (`Views/Home/AccountPurgeBanner.swift`) sits above
@@ -510,6 +538,14 @@ the zone and the memory to persist out. Rules, first match wins:
    the knowledge-index card) is never complete: it stays until a source
    connects.
 7. Otherwise → shown, `firstShownAt` set once.
+
+**Background AI paused (#1886).** Cards of features in `backgroundAIPaused`
+are left out of the zone: Home's one Background AI card speaks for them.
+While any feature is paused the zone never writes `completedAt` (rule 6 does
+not fire); it stays shown with its other cards, Connect rows and Hide, and
+with nothing left to show it hides without completing, so the AI cards come
+back once background AI is allowed (`GettingReadyTests.testPausedHoldsCompletion`,
+`testPausedLeavesAIFeatureCardsOut`).
 
 The zone is compact (owner, ask #432, 2026-10-19): a `HomeZone` titled
 GETTING READY with "N of M ready" — the zone's one counter —, one row per

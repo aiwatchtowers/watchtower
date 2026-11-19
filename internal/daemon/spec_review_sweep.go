@@ -3,9 +3,11 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"syscall"
 	"time"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/db"
 	"watchtower/internal/specreview"
 )
@@ -24,8 +26,9 @@ const (
 )
 
 // SetSpecReviewLaunch wires the launcher of the independent spec reviewer
-// (cmd.LaunchSpecReview with the binary and log dir); nil = no sweep.
-func (d *Daemon) SetSpecReviewLaunch(f func(askID int64) error) {
+// (cmd.LaunchSpecReview with the binary, the log dir and ctx's origin env);
+// nil = no sweep.
+func (d *Daemon) SetSpecReviewLaunch(f func(ctx context.Context, askID int64) error) {
 	d.specReviewLaunch = f
 }
 
@@ -44,7 +47,10 @@ var specReviewBeforeRelaunch func(askID int64)
 // longer ago than the reviewer's timeout plus a grace, is failed — an overdue
 // reviewer that still runs is stopped first (SIGTERM to its process group).
 // The author loops and the threads' questions to the author are swept first,
-// with or without a launcher.
+// with or without a launcher. A relaunch starts the reviewer agent, so while
+// background AI is paused the queued rows are left whole — not re-queued,
+// claimed or failed, no attempt spent (D20 of #1886), read again before each
+// row; allowed, each relaunch runs admitted as the unit "review:<ask id>".
 func (d *Daemon) phaseSpecReviewSweep(ctx context.Context) {
 	if d.db == nil || ctx.Err() != nil {
 		return
@@ -77,7 +83,9 @@ func (d *Daemon) phaseSpecReviewSweep(ctx context.Context) {
 	}
 	launched := 0
 	for _, id := range queued {
-		if ctx.Err() != nil || launched >= specReviewMaxRelaunch {
+		// Read before every row: a pause written mid-loop holds the rows
+		// after it (no re-queue, no attempt spent).
+		if ctx.Err() != nil || launched >= specReviewMaxRelaunch || !d.consentNow().Allowed() {
 			return
 		}
 		if specReviewBeforeRelaunch != nil {
@@ -92,7 +100,7 @@ func (d *Daemon) phaseSpecReviewSweep(ctx context.Context) {
 		}
 		if ok {
 			launched++
-			if err := d.specReviewLaunch(id); err != nil {
+			if err := d.specReviewLaunch(aiconsent.WithAdmitted(ctx, fmt.Sprintf("review:%d", id)), id); err != nil {
 				d.logger.Printf("spec review sweep: launching ask %d: %v", id, err)
 			}
 			continue

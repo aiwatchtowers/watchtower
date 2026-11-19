@@ -1,9 +1,11 @@
 import CryptoKit
 import Foundation
 
-/// The phone's `SecureKeyProvider` over its `PhoneKeyStore` for one linked hub. Relay keys are derived on demand
-/// from the device's `identity().agreement`, the stored hub agreement key, the link nonce and the epoch, and cached
-/// in memory for this provider's life: a provider belongs to one link (a re-link builds a new one).
+/// The phone's `SecureKeyProvider` over its `PhoneKeyStore` for one linked hub. An epoch's relay key follows the
+/// link's rule (`HubLinkKeys.storedRelayKeys(epoch:)`, read on every call): a stored ephemeral pair, else the
+/// static key derived on demand from the device's `identity().agreement`, the stored hub agreement key, the link
+/// nonce and the epoch. Only static keys are cached in memory, for this provider's life: a provider belongs to one
+/// link (a re-link builds a new one); a stored pair can be dropped or replaced, so it is never cached.
 /// Hub-only calls throw `SecureTransportError.wrongRole`; a locked keychain surfaces as `KeyStoreError.locked`.
 public final class PhoneKeyProvider: SecureKeyProvider, @unchecked Sendable {
     public let role: SecureRole
@@ -62,8 +64,37 @@ public final class PhoneKeyProvider: SecureKeyProvider, @unchecked Sendable {
     public func relayKey(_ direction: RelayDirection, deviceID: UUID, epoch: UInt32) throws -> SymmetricKey {
         guard deviceID == self.deviceID else { throw SecureTransportError.wrongRole }
         let cacheKey = "\(direction.rawValue)/\(epoch)"
+        let link: HubLinkKeys
+        do {
+            link = try self.link()
+        } catch KeyStoreError.locked {
+            // While locked, a static key derived earlier still opens (a background wake on a locked phone). The rule
+            // is read from the Keychain whenever it can be, so a cached static key never shadows a stored pair.
+            if let cached = lock.withLock({ relayKeys[cacheKey] }) { return cached }
+            throw KeyStoreError.locked
+        }
+        if let pair = try link.storedRelayKeys(epoch: epoch) { return SymmetricKey(data: pair.key(direction)) }
+        return try staticKey(direction, epoch: epoch, link: link)
+    }
+
+    /// The static `wt/relay/v1/` key of `epoch`, whatever the link holds (the `hub_on_relay` exception). A locked
+    /// keychain answers a key derived earlier, else throws `locked`.
+    public func staticRelayKey(_ direction: RelayDirection, deviceID: UUID, epoch: UInt32) throws -> SymmetricKey {
+        guard deviceID == self.deviceID else { throw SecureTransportError.wrongRole }
+        let link: HubLinkKeys
+        do {
+            link = try self.link()
+        } catch KeyStoreError.locked {
+            if let cached = lock.withLock({ relayKeys["\(direction.rawValue)/\(epoch)"] }) { return cached }
+            throw KeyStoreError.locked
+        }
+        return try staticKey(direction, epoch: epoch, link: link)
+    }
+
+    /// The static key, cached (the cache holds static keys only: a stored pair is read from the link each time).
+    private func staticKey(_ direction: RelayDirection, epoch: UInt32, link: HubLinkKeys) throws -> SymmetricKey {
+        let cacheKey = "\(direction.rawValue)/\(epoch)"
         if let cached = lock.withLock({ relayKeys[cacheKey] }) { return cached }
-        let link = try link()
         let identity = try store.identity()
         let key = try KeyDerivation.relayKey(
             agreementPrivate: identity.agreement, peerPublic: try hubAgreementPublicKey(link),
@@ -97,6 +128,14 @@ public final class PhoneKeyProvider: SecureKeyProvider, @unchecked Sendable {
     public func linkNonce() throws -> Data { try link().linkNonce }
 
     public func deviceAgreement() throws -> Curve25519.KeyAgreement.PrivateKey { try store.identity().agreement }
+
+    /// The offered ephemeral key, the current one, then `dev_kx`. Before the link is stored only `dev_kx`.
+    public func keyboxRecipients() throws -> [Curve25519.KeyAgreement.PrivateKey] {
+        let ephemeral = try store.hubLink(hubID).map { link in
+            try [link.offeredKX, link.currentKX].compactMap { try $0?.agreementKey() }
+        } ?? []
+        return ephemeral + [try store.identity().agreement]
+    }
 
     /// The `afterFirstUnlock` copy; absent (no link) is `keysUnavailable`.
     public func hubSigningPublicKey() throws -> Curve25519.Signing.PublicKey {

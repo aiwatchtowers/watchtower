@@ -39,6 +39,7 @@ final class HubContractFixtureTests: XCTestCase {
             XCTAssertEqual(grant.revoked, kit["revoked"] as? Bool, name)
             XCTAssertEqual(grant.mayStartSessions, kit["may_start_sessions"] as? Bool, name)
             XCTAssertEqual(grant.permissionsAllowed, kit["permissions_allowed"] as? Bool, name)
+            XCTAssertEqual(grant.chatAllowed, kit["chat_allowed"] as? Bool, name)
             XCTAssertEqual(grant.name, kit["name"] as? String, name)
             XCTAssertEqual(grant.scope.rawValue, kit["scope"] as? String, name)
             XCTAssertEqual(grant.typingAllowed, kit["typing_allowed"] as? Bool, name)
@@ -49,6 +50,53 @@ final class HubContractFixtureTests: XCTestCase {
             XCTAssertEqual(grant.orderedActions, ordered, name)
             XCTAssertEqual(grant.runsOrderedActions, (ordered ?? 0) >= 1, name)
         }
+    }
+
+    /// The heartbeat's hub kind (#1783): an older hub sends none and reads as a Mac; `server` and a kind this
+    /// build does not know do not. Every case decodes, and `hub_kind` re-encodes exactly as the Go hub writes it.
+    func testHeartbeatCasesReadTheHubKind() throws {
+        let cases = try XCTUnwrap(load()["heartbeat"])
+        XCTAssertTrue(cases.contains { $0["name"] as? String == "hub_kind_server" })
+        for fixtureCase in cases {
+            let name = try XCTUnwrap(fixtureCase["name"] as? String)
+            let json = try XCTUnwrap(fixtureCase["json"] as? [String: Any], name)
+            let heartbeat = try RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: bytes(json))
+            let kit = try XCTUnwrap(fixtureCase["kit"] as? [String: Any], name)
+            XCTAssertEqual(heartbeat.isMac, kit["is_mac"] as? Bool, name)
+            XCTAssertEqual(heartbeat.hubKind?.rawValue, json["hub_kind"] as? String, name)
+            let encoded = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: RelayCoder.makeEncoder().encode(heartbeat)) as? [String: Any], name)
+            XCTAssertEqual(encoded["hub_kind"] as? String, json["hub_kind"] as? String, name)
+            // The capabilities: recordings is on unless "off"; chat is offered only on an explicit "on" (D4).
+            XCTAssertEqual(heartbeat.recordingsOffered, kit["recordings_offered"] as? Bool, name)
+            XCTAssertEqual(heartbeat.chatOffered, (kit["chat"] as? String) == "on", name)
+            XCTAssertEqual(heartbeat.capabilities?.chat, kit["chat"] as? String, name)
+            XCTAssertEqual(heartbeat.capabilities?.chatReason, kit["chat_reason"] as? String, name)
+            // #1873: stuck_since reads as a date and re-encodes as the hub wrote it; absent unless a kind is stuck.
+            XCTAssertEqual(heartbeat.stuckSince?.timeIntervalSince1970, kit["stuck_since"] as? Double, name)
+            XCTAssertEqual(encoded["stuck_since"] as? Double, json["stuck_since"] as? Double, name)
+            // #1886: background_ai is optional; an unknown value reads as nil.
+            XCTAssertEqual(heartbeat.backgroundAI?.rawValue, kit["background_ai"] as? String, name)
+            XCTAssertEqual(encoded["background_ai"] as? String, json["background_ai"] as? String, name)
+            // Re-encoded, the capabilities this build knows are what the hub wrote (an unknown key is dropped).
+            let known = (json["capabilities"] as? [String: Any])?.filter { ["recordings", "chat", "chat_reason"].contains($0.key) }
+            XCTAssertEqual(encoded["capabilities"] as? NSDictionary, known as NSDictionary?, name)
+        }
+    }
+
+    /// The chat capability fixture cases are there, and an absent `capabilities` object is not a chat host.
+    func testHeartbeatChatCapabilityIsAnExplicitOn() throws {
+        let cases = try XCTUnwrap(load()["heartbeat"])
+        let names = cases.compactMap { $0["name"] as? String }
+        XCTAssertTrue(names.contains("chat_on") && names.contains("chat_off_runner_down"))
+        let older = HeartbeatPayload(
+            updatedAt: Date(), appVersion: "1", hubID: "h", macName: "m", flavor: .default, lastPublishAt: nil,
+            lastRelayAt: nil, relayBacklog: 0, accounts: [], enabledAt: Date(), ownerUser: "", sharing: .none)
+        XCTAssertFalse(older.chatOffered)
+        XCTAssertTrue(older.recordingsOffered)
+        let reason = HeartbeatCapabilities(chat: "off", chatReason: "desktop_too_old")
+        XCTAssertEqual(reason.chatOffReason, .desktopTooOld)
+        XCTAssertEqual(HeartbeatCapabilities(chat: "off", chatReason: "from_the_future").chatOffReason?.isKnown, false)
     }
 
     /// Equal as JSON objects (key order and number spelling aside).
@@ -113,6 +161,41 @@ final class HubContractFixtureTests: XCTestCase {
         let decoded = try RelayCoder.makeDecoder().decode(ControlPayload.self, from: bytes(try XCTUnwrap(unknown["json"])))
         XCTAssertFalse(decoded.kind.isKnown)
         XCTAssertEqual(decoded.kind.rawValue, "future_control")
+    }
+
+    /// `epoch_ack` with and without the phone's next relay key offer (`next_kx`), byte-compatible with Go.
+    func testEpochAckCasesCarryTheOptionalOffer() throws {
+        let cases = try XCTUnwrap(load()["epoch_ack"])
+        XCTAssertEqual(cases.compactMap { $0["name"] as? String }, ["epoch_ack_with_offer", "epoch_ack_without_offer"])
+        for fixtureCase in cases {
+            let name = try XCTUnwrap(fixtureCase["name"] as? String)
+            let control = try RelayCoder.makeDecoder().decode(ControlPayload.self, from: bytes(try XCTUnwrap(fixtureCase["json"])))
+            let kit = try XCTUnwrap(fixtureCase["kit"] as? [String: Any], name)
+            XCTAssertEqual(control.kind, .epochAck, name)
+            XCTAssertEqual(control.epoch, (kit["epoch"] as? NSNumber)?.uint32Value, name)
+            XCTAssertEqual(control.nextKX, kit["next_kx"] as? String, name)
+            try assertSameJSON(RelayCoder.makeEncoder().encode(control), try XCTUnwrap(fixtureCase["expect"]), name)
+        }
+    }
+
+    /// A keybox with `relay_kx` and `previous_relay_kx`, and an old-shape keybox that decodes with both nil.
+    func testKeyboxCasesCarryTheOptionalRelayKX() throws {
+        let cases = try XCTUnwrap(load()["keybox"])
+        XCTAssertEqual(cases.compactMap { $0["name"] as? String }, ["keybox_with_relay_kx", "keybox_old_shape"])
+        func pair(_ value: Any?) -> KeyboxRelayKX? {
+            guard let object = value as? [String: String], let hub = object["hub_pub"], let device = object["device_pub"]
+            else { return nil }
+            return KeyboxRelayKX(hubPub: hub, devicePub: device)
+        }
+        for fixtureCase in cases {
+            let name = try XCTUnwrap(fixtureCase["name"] as? String)
+            let keybox = try RelayCoder.makeDecoder().decode(Keybox.self, from: bytes(try XCTUnwrap(fixtureCase["json"])))
+            let kit = try XCTUnwrap(fixtureCase["kit"] as? [String: Any], name)
+            let keys = try XCTUnwrap(keybox.keys, name)
+            XCTAssertEqual(keys.relayKX, pair(kit["relay_kx"]), name)
+            XCTAssertEqual(keys.previousRelayKX, pair(kit["previous_relay_kx"]), name)
+            try assertSameJSON(RelayCoder.makeEncoder().encode(keybox), try XCTUnwrap(fixtureCase["expect"]), name)
+        }
     }
 
     private func linkCase(_ name: String) throws -> [String: Any] {
@@ -231,6 +314,56 @@ final class HubContractFixtureTests: XCTestCase {
         XCTAssertTrue(RelayIDs.isValid(try XCTUnwrap(decoded.relayDeviceID)))
     }
 
+    /// The "When work stops" switch in a device record (Open decision 1, option A): written only when true, an absent
+    /// or false value reads as on. `TestDevicePayloadCases` reads the same bytes through `wire.DevicePayload`.
+    func testDevicePayloadWorkAlertsOff() throws {
+        let fixtureCase = try XCTUnwrap(load()["device_payload"]?.first { $0["name"] as? String == "work_alerts_off" })
+        let payload = try RelayCoder.makeDecoder().decode(DevicePayload.self, from: bytes(try XCTUnwrap(fixtureCase["json"])))
+        XCTAssertTrue(payload.workAlertsOff)
+        let encoded = try XCTUnwrap(String(bytes: try RelayCoder.makeEncoder().encode(payload), encoding: .utf8))
+        XCTAssertEqual(encoded, fixtureCase["relay_coder"] as? String)
+
+        let on = DevicePayload(
+            deviceID: payload.deviceID, name: payload.name, model: payload.model, appVersion: payload.appVersion,
+            scope: payload.scope, userRecordName: payload.userRecordName, typingRequested: payload.typingRequested,
+            startSessions: payload.startSessions, updatedAt: payload.updatedAt, workAlertsOff: false
+        )
+        XCTAssertFalse(on.workAlertsOff)
+        let onBytes = try XCTUnwrap(String(bytes: try RelayCoder.makeEncoder().encode(on), encoding: .utf8))
+        XCTAssertFalse(onBytes.contains("work_alerts_off"), "written only when true")
+    }
+
+    /// A device record's relay identity (`relay_device_id`, `relay_auth_pub`, `relay_id_sig`), read and written as
+    /// the Go `wire.DevicePayload` does; an invalid id reads as none. `RelayIDProof.verify` gives each case's `proof`,
+    /// the verdict of the Go hub's `link.VerifyRelayIDProof`.
+    func testDevicePayloadRelayIDCases() throws {
+        let cases = try XCTUnwrap(load()["device_payload"])
+        XCTAssertEqual(cases.map { $0["name"] as? String }, [
+            "with_proven_relay_id", "without_relay_id", "invalid_relay_id_reads_as_none", "wrong_key", "bad_signature",
+            "other_hub", "work_alerts_off"
+        ])
+        for fixtureCase in cases {
+            let name = try XCTUnwrap(fixtureCase["name"] as? String)
+            let payload = try RelayCoder.makeDecoder().decode(DevicePayload.self, from: bytes(try XCTUnwrap(fixtureCase["json"])))
+            let kit = try XCTUnwrap(fixtureCase["kit"] as? [String: Any], name)
+            XCTAssertEqual(payload.relayDeviceID, kit["relay_device_id"] as? String, name)
+            let hubID = try XCTUnwrap(UUID(uuidString: try XCTUnwrap(fixtureCase["hub_id"] as? String)), name)
+            let deviceID = try XCTUnwrap(UUID(uuidString: payload.deviceID), name)
+            XCTAssertEqual(RelayIDProof.verify(payload, hubID: hubID, deviceID: deviceID), fixtureCase["proof"] as? Bool, name)
+            let encoded = try XCTUnwrap(String(bytes: try RelayCoder.makeEncoder().encode(payload), encoding: .utf8), name)
+            if name == "invalid_relay_id_reads_as_none" {
+                XCTAssertFalse(encoded.contains("relay_device_id"), name)
+            } else {
+                XCTAssertEqual(encoded, fixtureCase["relay_coder"] as? String, name)
+            }
+        }
+        let proven = try XCTUnwrap(cases.first)
+        let payload = try RelayCoder.makeDecoder().decode(DevicePayload.self, from: bytes(try XCTUnwrap(proven["json"])))
+        let pair = try relayPair(seed: proven["relay_auth_seed"])
+        XCTAssertEqual(payload.relayAuthPub, pair.pub)
+        XCTAssertEqual(payload.relayDeviceID, pair.id)
+    }
+
     /// The grant's relay fields; an absent `transports` reads as an iCloud-only hub.
     func testDeviceGrantRelayFieldsDecode() throws {
         let cases = try XCTUnwrap(load()["device_grant"])
@@ -285,5 +418,60 @@ final class HubContractFixtureTests: XCTestCase {
                 XCTAssertEqual(String(bytes: link, encoding: .utf8), fixtureCase["link_encoder"] as? String, name)
             }
         }
+    }
+
+    /// The phone's reading of `transport_switched.keybox` (phone contract
+    /// point 3): a string of unpadded base64url (RFC 4648 §5 alphabet
+    /// `A–Z a–z 0–9 - _`, no `=`) is the sealed keybox envelope; any other
+    /// value, or a string outside that alphabet, reads as no keybox.
+    private func switchKeybox(_ value: Any?) -> Data? {
+        guard let text = value as? String, !text.isEmpty else { return nil }
+        let alphabet = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+        guard text.unicodeScalars.allSatisfy(alphabet.contains) else { return nil }
+        var base64 = text.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        base64 += String(repeating: "=", count: (4 - base64.count % 4) % 4)
+        return Data(base64Encoded: base64)
+    }
+
+    func testTransportSwitchedCarriesTheKeyboxAsUnpaddedBase64URL() throws {
+        let cases = try XCTUnwrap(load()["transport_switched"])
+        XCTAssertEqual(cases.count, 4)
+        for fixtureCase in cases {
+            let name = try XCTUnwrap(fixtureCase["name"] as? String)
+            let json = try XCTUnwrap(fixtureCase["json"] as? [String: Any], name)
+            let kit = try XCTUnwrap(fixtureCase["kit"] as? [String: Any], name)
+            XCTAssertEqual(json["kind"] as? String, "transport_switched", name)
+            XCTAssertEqual(json["target"] as? String, kit["target"] as? String, name)
+            XCTAssertEqual((json["epoch"] as? NSNumber)?.uint32Value, (kit["epoch"] as? NSNumber)?.uint32Value, name)
+            let keybox = switchKeybox(json["keybox"])
+            if let want = kit["keybox"] as? String {
+                XCTAssertEqual(json["keybox"] as? String, want, name)
+                XCTAssertNotNil(keybox, name)
+                XCTAssertFalse(want.contains("="), "unpadded: \(name)")
+            } else {
+                XCTAssertNil(keybox, "an object or absent keybox reads as none: \(name)")
+            }
+            if name == "transport_marker" {
+                XCTAssertNil(json["device_id"], name)
+                XCTAssertNil(json["keybox"], name)
+            }
+        }
+        XCTAssertNil(switchKeybox("AQID=="), "padding is not the contract")
+        XCTAssertNil(switchKeybox("AQ+/"), "the standard alphabet is not the contract")
+    }
+
+    func testTransportSwitchRejectedReasonsArePinned() throws {
+        let cases = try XCTUnwrap(load()["transport_switch_rejected"])
+        var reasons: [String] = []
+        for fixtureCase in cases {
+            let name = try XCTUnwrap(fixtureCase["name"] as? String)
+            let json = try XCTUnwrap(fixtureCase["json"] as? [String: Any], name)
+            let kit = try XCTUnwrap(fixtureCase["kit"] as? [String: Any], name)
+            XCTAssertEqual(json["kind"] as? String, "transport_switch_rejected", name)
+            XCTAssertEqual(json["reason"] as? String, kit["reason"] as? String, name)
+            XCTAssertEqual((json["retry_after_s"] as? NSNumber)?.intValue, (kit["retry_after_s"] as? NSNumber)?.intValue, name)
+            reasons.append(try XCTUnwrap(kit["reason"] as? String, name))
+        }
+        XCTAssertEqual(Set(reasons), ["too_soon", "not_paying", "unavailable", "not supported yet"])
     }
 }

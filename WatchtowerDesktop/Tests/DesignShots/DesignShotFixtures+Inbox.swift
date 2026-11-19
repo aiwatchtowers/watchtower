@@ -4,6 +4,7 @@ import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
+@testable import ChatUI
 
 /// The Inbox read like mail (spec B1): a list with all three sections — a
 /// proposal, today's cards and an earlier card and reminder — and a selected
@@ -77,7 +78,7 @@ enum InboxShotFixtures {
             return AnyView(InboxSplitView(
                 vm: vm,
                 proposalCard: { action in
-                    AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+                    MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
                 },
                 onCardAction: { _ in }, onOpenAutomationRun: { _ in }, now: now,
                 // Labeled: two closure parameters precede it.
@@ -123,7 +124,7 @@ enum InboxShotFixtures {
             return AnyView(InboxSplitView(
                 vm: vm,
                 proposalCard: { action in
-                    AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+                    MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
                 },
                 saveProposal: { action in
                     SaveAutomationProposalPane(action: action, workbenchName: { _ in nil },

@@ -138,12 +138,9 @@ final class HubSwitcherTests: XCTestCase {
         let items = HubListModel.items(rows: rows, sessions: env.sessions, activeHubID: TestHub.acme, now: now)
 
         XCTAssertEqual(items.map(\.openAsks), [1, 2])
-        XCTAssertEqual(HubListModel.otherHubsOpenAsks(items), 2)
-        XCTAssertEqual(
-            HubListModel.chipAccessibilityLabel(name: "Acme Mac", otherAsks: 2),
-            "Acme Mac, Mac. 2 asks waiting on other Macs"
-        )
-        XCTAssertEqual(HubListModel.chipAccessibilityLabel(name: "Acme Mac", otherAsks: 0), "Acme Mac, Mac")
+        let chip = HubSwitcherChipModel(name: "Acme Mac", state: .online, items: items, now: now)
+        XCTAssertEqual(chip.otherAsks, "+2 questions on Home Mac")
+        XCTAssertEqual(chip.accessibilityLabel, "Acme Mac · online. +2 questions on Home Mac")
     }
 
     func testAddMacIsRefusedAtTheLimit() {
@@ -174,6 +171,30 @@ final class HubSwitcherTests: XCTestCase {
         XCTAssertEqual(env.navigation.tab, .calendar, "the tab is kept")
     }
 
+    /// A row's pick, run once the list is gone, puts that hub on screen; the
+    /// current hub changes nothing; Add Mac starts a scan.
+    func testAPickedRowSwitchesHubsAndAddMacScans() throws {
+        let base = try makeBase()
+        let env = try makeEnvironment([try makeSession(TestHub.acme, base: base), try makeSession(TestHub.home, base: base)])
+        env.activate(TestHub.acme)
+        var flow = HubSwitcherFlow()
+        var scans = 0
+
+        flow.open()
+        flow.choose(.activate(TestHub.home))
+        XCTAssertFalse(flow.showsList)
+        try HubSwitcherFlow.run(XCTUnwrap(flow.takePending()), env: env) { scans += 1 }
+        XCTAssertEqual(env.activeHubID, TestHub.home)
+
+        HubSwitcherFlow.run(.activate(TestHub.home), env: env) { scans += 1 }
+        HubSwitcherFlow.run(.activate("no-such-hub"), env: env) { scans += 1 }
+        XCTAssertEqual(env.activeHubID, TestHub.home, "the current hub or one with no session changes nothing")
+        XCTAssertEqual(scans, 0)
+
+        HubSwitcherFlow.run(.addMac, env: env) { scans += 1 }
+        XCTAssertEqual(scans, 1)
+    }
+
     // MARK: - Helpers
 
     private func makeBase() throws -> URL {
@@ -202,7 +223,7 @@ final class HubSwitcherTests: XCTestCase {
         let remoteFetch: (@Sendable (RemoteFetchDepth) async throws -> Void)? = remote.map { remote in
             { try await remote.fetch($0) }
         }
-        let sleep: @Sendable (Duration) async throws -> Void = { _ in try await Task.sleep(for: .seconds(3600)) }
+        let sleep: @Sendable (Duration) async throws -> Void = { _ in try await sleepUntilCancelled() }
         let session = try HubSession(
             transport: transport,
             replicaPath: paths.replicaPath(hubID),

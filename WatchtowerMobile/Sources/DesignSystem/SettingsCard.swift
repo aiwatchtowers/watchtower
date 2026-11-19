@@ -28,6 +28,8 @@ struct SettingsCard<Content: View>: View {
                 Text(footer)
                     .font(TypeScale.meta)
                     .foregroundStyle(.secondary)
+                    // A footer can carry a command to copy (#1783: `watchtower hub allow …`).
+                    .textSelection(.enabled)
                     .padding(.horizontal, Spacing.small)
                     .padding(.top, Spacing.compact)
             }

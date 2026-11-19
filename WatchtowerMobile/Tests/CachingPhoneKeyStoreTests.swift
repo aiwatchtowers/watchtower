@@ -42,6 +42,10 @@ final class CachingPhoneKeyStoreTests: XCTestCase {
         }
 
         func saveHubLink(_ keys: HubLinkKeys) throws { try inner.saveHubLink(keys) }
+        func updateHubLink(_ hubID: String, _ change: (HubLinkKeys) throws -> HubLinkKeys) throws -> HubLinkKeys? {
+            count("updateHubLink")
+            return try inner.updateHubLink(hubID, change)
+        }
         func removeHubLink(_ hubID: String) throws { try inner.removeHubLink(hubID) }
 
         func hubSigningKey(_ hubID: String) throws -> Curve25519.Signing.PublicKey? {
@@ -164,6 +168,32 @@ final class CachingPhoneKeyStoreTests: XCTestCase {
         try cache.removeHubLink(hubID)
         XCTAssertNil(try cache.hubLink(hubID))
         XCTAssertNil(try cache.hubSigningKey(hubID))
+    }
+
+    /// An atomic update (relay client Phase 5: the merge, the offer, the clear) goes to the Keychain under its
+    /// lock, and the stored link replaces the cached one: the next read serves it without a Keychain read.
+    func testUpdateWritesThroughTheCache() throws {
+        let (cache, counting, _) = try makeStore()
+        let before = try XCTUnwrap(try cache.hubLink(hubID))
+        XCTAssertNil(before.offeredKX)
+
+        let stored = try XCTUnwrap(try cache.updateHubLink(hubID) { $0.withOffer().0 })
+        let offer = try XCTUnwrap(stored.offeredKX)
+        XCTAssertEqual(counting.reads("updateHubLink"), 1)
+        XCTAssertEqual(try counting.inner.hubLink(hubID)?.offeredKX, offer, "written to the Keychain")
+        let reads = counting.reads("hubLink")
+        XCTAssertEqual(try cache.hubLink(hubID)?.offeredKX, offer, "the cache serves the stored link")
+        XCTAssertEqual(counting.reads("hubLink"), reads, "no Keychain read for it")
+
+        // A failed change leaves the Keychain as it was, and nothing stale is served.
+        struct Refused: Error {}
+        XCTAssertThrowsError(try cache.updateHubLink(hubID) { _ in throw Refused() })
+        XCTAssertEqual(try cache.hubLink(hubID)?.offeredKX, offer)
+
+        // A removed link stays removed.
+        try cache.removeHubLink(hubID)
+        XCTAssertNil(try cache.updateHubLink(hubID) { $0.withOffer().0 })
+        XCTAssertNil(try cache.hubLink(hubID))
     }
 
     /// The measured case: opening every row of a replica read reads the hub link once, not once per row.

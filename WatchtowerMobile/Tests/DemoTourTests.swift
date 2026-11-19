@@ -24,9 +24,9 @@ final class DemoTourTests: XCTestCase {
     }
 
     private func hydrated(_ root: AppRoot) async throws {
-        try await poll(timeout: 20, {
+        try await poll({
             root.env.sessions.values.allSatisfy { !$0.workbenchReplica.snapshot.workbenches.isEmpty }
-        }, "both demo Macs hydrated")
+        }, "both demo towers hydrated")
     }
 
     /// The tour seeds from its own directory and suite: the live replica

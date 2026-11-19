@@ -5,18 +5,53 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"time"
 )
 
 // hub_meta keys of the Desktop heartbeat (spec §8 p. 4a): the last beat and
-// whether any ever arrived. The same signal is "desktop host" for the
-// clipboard fallback and "transcriber present" for recordings.
+// the first one (protocol §9; desktop_seen_at replaces Plan 1b's
+// desktop_seen flag, which a sidecar may still hold). The same signal is
+// "desktop host" for the clipboard fallback and "transcriber present" for
+// recordings. MetaRecordings is the owner's recording switch, "on" | "off".
 const (
-	MetaDesktopAt   = "desktop_at"
-	MetaDesktopSeen = "desktop_seen"
+	MetaDesktopAt     = "desktop_at"
+	MetaDesktopSeen   = "desktop_seen"
+	MetaDesktopSeenAt = "desktop_seen_at"
+	MetaRecordings    = "recordings"
 )
+
+// The switch's stored values.
+const (
+	RecordingsOn  = "on"
+	RecordingsOff = "off"
+)
+
+// ErrNoTranscriber refuses turning recordings on where no Desktop
+// transcriber heartbeat ever arrived (a headless host never publishes on).
+var ErrNoTranscriber = errors.New("this host has no transcriber")
+
+// HeldUploadMaxAge is how long an upload may stay held after its first
+// hold: then it gets the final failed/expired.
+const HeldUploadMaxAge = 7 * 24 * time.Hour
+
+// held_uploads.outcome values: how a hold ended.
+const (
+	HeldReceived     = "received"
+	HeldNotSupported = "not_supported"
+	HeldExpired      = "expired"
+	HeldFailed       = "failed" // any other final failure (its class is in relay_processed)
+)
+
+// HeldUpload is one unsettled held_uploads row: ids and the first hold.
+type HeldUpload struct {
+	UploadID, DeviceID string
+	HeldAt             time.Time
+}
 
 // DesktopFreshFor is how long a heartbeat counts as fresh (Desktop beats every
 // 30 s).
@@ -30,42 +65,191 @@ const (
 	RecordingFailed  = "failed"
 )
 
+// The phases of a claimed job Desktop reports (RecordingProgress).
+const (
+	PhaseTranscribing = "transcribing"
+	PhaseDiarizing    = "diarizing"
+	PhaseSummarizing  = "summarizing"
+)
+
 // Errors of the job verbs.
 var (
 	ErrNoRecordingJob = errors.New("state: no such recording job")
 	ErrJobState       = errors.New("state: the recording job is not in a state that allows this")
+	// ErrBadProgress refuses an unknown phase, a percent outside 0...100 or a
+	// percent with a phase other than transcribing.
+	ErrBadProgress = errors.New("state: not a recording progress")
 )
 
-// RecordingJob is one queue row: ids, status, error class and times.
+// RecordingJob is one queue row: ids, status, error class, Desktop's phase
+// and percent of a claimed job, and times.
 type RecordingJob struct {
 	UploadID     string
 	DeviceID     string
 	Status       string
 	TranscriptID *int64
 	ErrorClass   string
-	CreatedAt    time.Time
-	ClaimedAt    time.Time
-	FinishedAt   time.Time
+	Phase        string // "" until Desktop reported one
+	Percent      *int   // only while transcribing
+	RecordingOrigin
+	CreatedAt  time.Time
+	ClaimedAt  time.Time
+	FinishedAt time.Time
 }
 
-// Heartbeat records a Desktop heartbeat at now and returns it.
+func realMeta(t time.Time) string { return strconv.FormatFloat(toReal(t), 'f', 3, 64) }
+
+// Heartbeat records a Desktop heartbeat at now; the first one also sets
+// desktop_seen_at, which nothing clears.
 func (s *Store) Heartbeat(now time.Time) error {
 	return s.write(func(tx *sql.Tx) error {
-		if err := SetMetaTx(tx, MetaDesktopAt, strconv.FormatFloat(toReal(now), 'f', 3, 64)); err != nil {
+		if err := SetMetaTx(tx, MetaDesktopAt, realMeta(now)); err != nil {
 			return err
 		}
-		return SetMetaTx(tx, MetaDesktopSeen, "1")
+		if _, ok, err := MetaTx(tx, MetaDesktopSeenAt); err != nil || ok {
+			return err
+		}
+		return SetMetaTx(tx, MetaDesktopSeenAt, realMeta(now))
 	})
+}
+
+// carryDesktopSeen gives a Plan 1b sidecar (desktop_seen = "1", no
+// desktop_seen_at) its desktop_seen_at from desktop_at, once (Open).
+func (s *Store) carryDesktopSeen() error {
+	return s.write(func(tx *sql.Tx) error {
+		if _, ok, err := MetaTx(tx, MetaDesktopSeenAt); err != nil || ok {
+			return err
+		}
+		if seen, ok, err := MetaTx(tx, MetaDesktopSeen); err != nil || !ok || seen != "1" {
+			return err
+		}
+		at, ok, err := MetaTx(tx, MetaDesktopAt)
+		if err != nil || !ok {
+			return err
+		}
+		return SetMetaTx(tx, MetaDesktopSeenAt, at)
+	})
+}
+
+// DesktopSeenAt is the first Desktop heartbeat; ok is false when none ever
+// arrived (a Plan 1b flag counts once an Open carried it over).
+func (s *Store) DesktopSeenAt() (time.Time, bool, error) {
+	raw, ok, err := s.Meta(MetaDesktopSeenAt)
+	if err != nil || !ok {
+		return time.Time{}, false, err
+	}
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("reading the first Desktop heartbeat: %w", err)
+	}
+	return fromReal(f), true, nil
+}
+
+// Recordings is the recording switch: the stored value when the owner set
+// one (stored), else on iff a Desktop heartbeat ever arrived.
+func (s *Store) Recordings() (on, stored bool, err error) {
+	v, ok, err := s.Meta(MetaRecordings)
+	if err != nil {
+		return false, false, err
+	}
+	if ok {
+		return v != RecordingsOff, true, nil
+	}
+	_, seen, err := s.DesktopSeenAt()
+	return seen, false, err
+}
+
+// SetRecordings stores the switch. On is ErrNoTranscriber (nothing stored)
+// when no Desktop heartbeat ever arrived.
+func (s *Store) SetRecordings(on bool) error {
+	return s.write(func(tx *sql.Tx) error {
+		if !on {
+			return SetMetaTx(tx, MetaRecordings, RecordingsOff)
+		}
+		_, seenAt, err := MetaTx(tx, MetaDesktopSeenAt)
+		if err != nil {
+			return err
+		}
+		if !seenAt {
+			return ErrNoTranscriber
+		}
+		return SetMetaTx(tx, MetaRecordings, RecordingsOn)
+	})
+}
+
+// HoldUpload records that uploadID was answered held at. An unsettled row
+// keeps its first hold's time; a settled one (the phone sent the upload
+// again) is held anew from at.
+func HoldUpload(tx *sql.Tx, uploadID, deviceID string, at time.Time) error {
+	_, err := tx.Exec(`INSERT INTO held_uploads (upload_id, device_id, held_at) VALUES (?, ?, ?)
+		ON CONFLICT(upload_id) DO UPDATE SET device_id = excluded.device_id, held_at = excluded.held_at,
+			outcome = NULL, settled_at = NULL
+		WHERE held_uploads.outcome IS NOT NULL`, uploadID, deviceKey(deviceID), toReal(at))
+	if err != nil {
+		return fmt.Errorf("holding a recording upload: %w", err)
+	}
+	return nil
+}
+
+// SettleHeldUpload ends uploadID's hold with outcome (HeldReceived,
+// HeldNotSupported, HeldExpired or HeldFailed; the column's CHECK refuses
+// anything else). An upload not held, or settled already, is left as it is.
+func SettleHeldUpload(tx *sql.Tx, uploadID, outcome string, at time.Time) error {
+	_, err := tx.Exec(`UPDATE held_uploads SET outcome = ?, settled_at = ? WHERE upload_id = ? AND outcome IS NULL`,
+		outcome, toReal(at), uploadID)
+	if err != nil {
+		return fmt.Errorf("settling a held recording upload: %w", err)
+	}
+	return nil
+}
+
+// HeldAt is the first hold of an upload still held; ok is false when it is
+// not held (never, or settled).
+func (s *Store) HeldAt(uploadID string) (time.Time, bool, error) {
+	var at float64
+	err := s.db.QueryRow(`SELECT held_at FROM held_uploads WHERE upload_id = ? AND outcome IS NULL`, uploadID).Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("reading a held upload: %w", err)
+	}
+	return fromReal(at), true, nil
+}
+
+// HeldUploads lists the unsettled held uploads, first held first.
+func (s *Store) HeldUploads() ([]HeldUpload, error) {
+	rows, err := s.db.Query(`SELECT upload_id, device_id, held_at FROM held_uploads
+		WHERE outcome IS NULL ORDER BY held_at, upload_id`)
+	if err != nil {
+		return nil, fmt.Errorf("reading the held uploads: %w", err)
+	}
+	defer rows.Close()
+	var out []HeldUpload
+	for rows.Next() {
+		var (
+			h  HeldUpload
+			at float64
+		)
+		if err := rows.Scan(&h.UploadID, &h.DeviceID, &at); err != nil {
+			return nil, fmt.Errorf("reading the held uploads: %w", err)
+		}
+		h.HeldAt = fromReal(at)
+		out = append(out, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the held uploads: %w", err)
+	}
+	return out, nil
 }
 
 // DesktopHost reports whether Desktop's heartbeat is fresh (89 s old yes,
 // 91 s old no) and whether any heartbeat ever arrived (stays true).
 func (s *Store) DesktopHost(now time.Time) (fresh, everSeen bool, err error) {
-	seen, ok, err := s.Meta(MetaDesktopSeen)
+	_, everSeen, err = s.DesktopSeenAt()
 	if err != nil {
 		return false, false, err
 	}
-	everSeen = ok && seen == "1"
 	if !everSeen {
 		return false, false, nil
 	}
@@ -106,12 +290,42 @@ func (s *Store) HasRecording(uploadID string) (bool, error) {
 	return n > 0, nil
 }
 
+// RecordingOrigin is where a phone recording came from: the calendar event
+// it was recorded for (an opaque calendar id, "" for a voice note) and when
+// it started (zero when the phone did not say). Ids and a time only: the
+// phone's title is content and is never stored; Desktop derives it from the
+// Mac's calendar.
+type RecordingOrigin struct {
+	EventID   string
+	StartedAt time.Time
+}
+
+// recordingEventIDRE is the shape of a stored event id: a calendar id's charset
+// (no spaces, so no free text) and at most 256 bytes; anything else is not an
+// id and is dropped.
+var recordingEventIDRE = regexp.MustCompile(`^[A-Za-z0-9_.:@-]{1,256}$`)
+
+// MaxRecordingEventID caps a stored event id.
+const MaxRecordingEventID = 256
+
 // QueueRecording adds a queued job; a second call for the same upload keeps
 // the first row.
 func (s *Store) QueueRecording(uploadID, deviceID string, now time.Time) error {
+	return s.QueueRecordingFrom(uploadID, deviceID, RecordingOrigin{}, now)
+}
+
+// QueueRecordingFrom is QueueRecording with the recording's origin.
+func (s *Store) QueueRecordingFrom(uploadID, deviceID string, o RecordingOrigin, now time.Time) error {
+	var event, started any
+	if recordingEventIDRE.MatchString(o.EventID) {
+		event = o.EventID
+	}
+	if !o.StartedAt.IsZero() {
+		started = toReal(o.StartedAt)
+	}
 	return s.write(func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT OR IGNORE INTO recording_jobs (upload_id, device_id, status, created_at)
-			VALUES (?, ?, 'queued', ?)`, uploadID, deviceKey(deviceID), toReal(now))
+		_, err := tx.Exec(`INSERT OR IGNORE INTO recording_jobs (upload_id, device_id, status, created_at, event_id, started_at)
+			VALUES (?, ?, 'queued', ?, ?, ?)`, uploadID, deviceKey(deviceID), toReal(now), event, started)
 		if err != nil {
 			return fmt.Errorf("queueing a recording: %w", err)
 		}
@@ -120,20 +334,29 @@ func (s *Store) QueueRecording(uploadID, deviceID string, now time.Time) error {
 }
 
 // ClaimRecording moves a queued job to claimed (Desktop took it). A claimed
-// job claims again unchanged (Desktop restarted); a finished one is
-// ErrJobState.
+// job claims again unchanged (Desktop restarted). A job Desktop itself
+// failed (a DesktopFailureClasses class) claims again with its class, finish
+// and phase cleared: Desktop retries it, or the owner retried the
+// transcription on the Mac (the Swift hub's job went back to queued the same
+// way). Every other finished job — done, hub_moved, an adopted Swift
+// failure — is terminal: ErrJobState (Plan 1b).
 func (s *Store) ClaimRecording(uploadID string, now time.Time) (RecordingJob, error) {
 	err := s.write(func(tx *sql.Tx) error {
 		job, err := recordingJobTx(tx, uploadID)
 		if err != nil {
 			return err
 		}
-		switch job.Status {
-		case RecordingClaimed:
+		switch {
+		case job.Status == RecordingClaimed:
 			return nil
-		case RecordingQueued:
+		case job.Status == RecordingQueued:
 			_, err = tx.Exec(`UPDATE recording_jobs SET status = 'claimed', claimed_at = ? WHERE upload_id = ?`,
 				toReal(now), uploadID)
+			return err
+		case job.Status == RecordingFailed && DesktopFailureClasses[job.ErrorClass]:
+			_, err = tx.Exec(`UPDATE recording_jobs SET status = 'claimed', claimed_at = ?, error_class = NULL,
+					finished_at = NULL, phase = NULL, percent = NULL
+				WHERE upload_id = ?`, toReal(now), uploadID)
 			return err
 		}
 		return ErrJobState
@@ -183,7 +406,8 @@ func (s *Store) FinishRecording(uploadID string, transcriptID *int64, errClass s
 		if class != "" {
 			cls = class
 		}
-		_, err = tx.Exec(`UPDATE recording_jobs SET status = ?, transcript_id = ?, error_class = ?, finished_at = ?
+		_, err = tx.Exec(`UPDATE recording_jobs SET status = ?, transcript_id = ?, error_class = ?, finished_at = ?,
+				phase = NULL, percent = NULL
 			WHERE upload_id = ?`, status, transcriptID, cls, toReal(now), uploadID)
 		return err
 	})
@@ -191,6 +415,43 @@ func (s *Store) FinishRecording(uploadID string, transcriptID *int64, errClass s
 		return RecordingJob{}, err
 	}
 	return s.RecordingJob(uploadID)
+}
+
+// RecordingProgress stores Desktop's phase of a claimed job: transcribing
+// (with percent 0...100 when known), diarizing or summarizing. A percent with
+// another phase, an unknown phase or a percent out of range is
+// ErrBadProgress; a job not claimed is ErrJobState. A new phase drops the
+// old percent. A phase is no new activity: the job's times stay.
+func (s *Store) RecordingProgress(uploadID, phase string, percent *int) error {
+	switch phase {
+	case PhaseTranscribing:
+		if percent != nil && (*percent < 0 || *percent > 100) {
+			return ErrBadProgress
+		}
+	case PhaseDiarizing, PhaseSummarizing:
+		if percent != nil {
+			return ErrBadProgress
+		}
+	default:
+		return ErrBadProgress
+	}
+	return s.write(func(tx *sql.Tx) error {
+		job, err := recordingJobTx(tx, uploadID)
+		if err != nil {
+			return err
+		}
+		if job.Status != RecordingClaimed {
+			return ErrJobState
+		}
+		var pct any
+		if percent != nil {
+			pct = *percent
+		}
+		if _, err := tx.Exec(`UPDATE recording_jobs SET phase = ?, percent = ? WHERE upload_id = ?`, phase, pct, uploadID); err != nil {
+			return fmt.Errorf("storing a recording progress: %w", err)
+		}
+		return nil
+	})
 }
 
 func equalID(a, b *int64) bool {
@@ -211,26 +472,44 @@ func (s *Store) RecordingJob(uploadID string) (RecordingJob, error) {
 }
 
 func recordingJobTx(tx *sql.Tx, uploadID string) (RecordingJob, error) {
-	var (
-		j                 RecordingJob
-		tid               sql.NullInt64
-		class             sql.NullString
-		created           float64
-		claimed, finished sql.NullFloat64
-	)
-	err := tx.QueryRow(`SELECT upload_id, device_id, status, transcript_id, error_class, created_at, claimed_at, finished_at
-		FROM recording_jobs WHERE upload_id = ?`, uploadID).
-		Scan(&j.UploadID, &j.DeviceID, &j.Status, &tid, &class, &created, &claimed, &finished)
+	j, err := scanRecordingJob(tx.QueryRow(`SELECT `+recordingJobColumns+` FROM recording_jobs WHERE upload_id = ?`, uploadID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return RecordingJob{}, ErrNoRecordingJob
 	}
 	if err != nil {
 		return RecordingJob{}, fmt.Errorf("reading the recording queue: %w", err)
 	}
+	return j, nil
+}
+
+const recordingJobColumns = `upload_id, device_id, status, transcript_id, error_class, phase, percent, created_at, claimed_at, finished_at,
+	event_id, started_at`
+
+// scanRecordingJob reads one row of recordingJobColumns.
+func scanRecordingJob(r interface{ Scan(...any) error }) (RecordingJob, error) {
+	var (
+		j                          RecordingJob
+		tid, pct                   sql.NullInt64
+		class, phase, event        sql.NullString
+		created                    float64
+		claimed, finished, started sql.NullFloat64
+	)
+	if err := r.Scan(&j.UploadID, &j.DeviceID, &j.Status, &tid, &class, &phase, &pct, &created, &claimed, &finished,
+		&event, &started); err != nil {
+		return RecordingJob{}, err
+	}
+	j.EventID = event.String
+	if started.Valid {
+		j.StartedAt = fromReal(started.Float64)
+	}
 	if tid.Valid {
 		j.TranscriptID = &tid.Int64
 	}
-	j.ErrorClass = class.String
+	if pct.Valid {
+		v := int(pct.Int64)
+		j.Percent = &v
+	}
+	j.ErrorClass, j.Phase = class.String, phase.String
 	j.CreatedAt = fromReal(created)
 	if claimed.Valid {
 		j.ClaimedAt = fromReal(claimed.Float64)
@@ -250,8 +529,7 @@ func (s *Store) RecordingJobs(ctx context.Context) ([]RecordingJob, error) {
 		return nil, fmt.Errorf("reading the recording queue: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `SELECT upload_id, device_id, status, transcript_id, error_class, created_at, claimed_at, finished_at
-		FROM recording_jobs
+	rows, err := tx.QueryContext(ctx, `SELECT `+recordingJobColumns+` FROM recording_jobs
 		ORDER BY COALESCE(finished_at, claimed_at, created_at) DESC, upload_id`)
 	if err != nil {
 		return nil, fmt.Errorf("reading the recording queue: %w", err)
@@ -259,26 +537,9 @@ func (s *Store) RecordingJobs(ctx context.Context) ([]RecordingJob, error) {
 	defer rows.Close()
 	var out []RecordingJob
 	for rows.Next() {
-		var (
-			j                 RecordingJob
-			tid               sql.NullInt64
-			class             sql.NullString
-			created           float64
-			claimed, finished sql.NullFloat64
-		)
-		if err := rows.Scan(&j.UploadID, &j.DeviceID, &j.Status, &tid, &class, &created, &claimed, &finished); err != nil {
+		j, err := scanRecordingJob(rows)
+		if err != nil {
 			return nil, fmt.Errorf("reading the recording queue: %w", err)
-		}
-		if tid.Valid {
-			j.TranscriptID = &tid.Int64
-		}
-		j.ErrorClass = class.String
-		j.CreatedAt = fromReal(created)
-		if claimed.Valid {
-			j.ClaimedAt = fromReal(claimed.Float64)
-		}
-		if finished.Valid {
-			j.FinishedAt = fromReal(finished.Float64)
 		}
 		out = append(out, j)
 	}
@@ -297,4 +558,127 @@ func (j RecordingJob) UpdatedAt() time.Time {
 		return j.ClaimedAt
 	}
 	return j.CreatedAt
+}
+
+// ClassHubMoved is the error class of a phone recording that was being
+// transcribed when the Go hub adopted the Swift hub's state (ask #843): it
+// fails once, and the recording_job slice shows a fixed text for it.
+const ClassHubMoved = "hub_moved"
+
+// The classes Desktop finishes a phone recording with (Swift
+// PhoneRecordingQueue.FailureClass, a Go↔Swift dual path); the
+// recording_job slice shows a fixed sentence for each. The hub keeps the
+// job's audio (the only copy: the phone deleted its own on received) until
+// the 31-day prune.
+const (
+	ClassNoSpeech            = "no_speech"
+	ClassTranscriptionFailed = "transcription_failed"
+	ClassNotAudio            = "not_audio"
+	ClassUnreadable          = "unreadable"
+	ClassIngestFailed        = "ingest_failed"
+	ClassMissingAudio        = "missing_audio"
+)
+
+// DesktopFailureClasses are the classes above: only a job failed with one of
+// them claims again (ClaimRecording).
+var DesktopFailureClasses = map[string]bool{
+	ClassNoSpeech: true, ClassTranscriptionFailed: true, ClassNotAudio: true,
+	ClassUnreadable: true, ClassIngestFailed: true, ClassMissingAudio: true,
+}
+
+// RecordingJobKeptFor is how long a finished job (and its audio file) is
+// kept: the Swift hub's 31-day rule.
+const RecordingJobKeptFor = 31 * 24 * time.Hour
+
+// ImportRecordingJobTx adds one job taken over from the Swift hub inside the
+// caller's transaction. A job already there is kept as it is (ok false):
+// an adoption run again never changes it.
+func ImportRecordingJobTx(tx *sql.Tx, j RecordingJob) (ok bool, err error) {
+	var tid, finished any
+	if j.TranscriptID != nil {
+		tid = *j.TranscriptID
+	}
+	if !j.FinishedAt.IsZero() {
+		finished = toReal(j.FinishedAt)
+	}
+	var class any
+	if j.ErrorClass != "" {
+		class = ErrorClass(j.ErrorClass)
+	}
+	res, err := tx.Exec(`INSERT OR IGNORE INTO recording_jobs (upload_id, device_id, status, transcript_id, error_class, created_at, finished_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, j.UploadID, deviceKey(j.DeviceID), j.Status, tid, class, toReal(j.CreatedAt), finished)
+	if err != nil {
+		return false, fmt.Errorf("importing a recording job: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("importing a recording job: %w", err)
+	}
+	return n == 1, nil
+}
+
+// PruneRecordingJobs deletes every finished job that ended at or before
+// olderThan (the Swift hub's 31-day rule: rows only). The audio the hub
+// kept at <recordingsDir>/<upload_id>.m4a goes with a hub_moved job
+// (adoption) and with a job Desktop failed (DesktopFailureClasses: Desktop
+// keeps the hub's copy on a failure); a missing file is no error. Every
+// other job's audio is Desktop's and is never touched here. The file goes first, so a crash between the two
+// leaves a row the next prune finishes. It returns the rows deleted.
+func (s *Store) PruneRecordingJobs(recordingsDir string, olderThan time.Time) (int, error) {
+	jobs, err := s.finishedJobsBefore(olderThan)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, j := range jobs {
+		id := j.id
+		if (j.class == ClassHubMoved || DesktopFailureClasses[j.class]) && recordingsDir != "" && id != "" && filepath.Base(id) == id {
+			if err := os.Remove(filepath.Join(recordingsDir, id+".m4a")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return n, fmt.Errorf("removing a recording's audio: %w", err)
+			}
+		}
+		err := s.write(func(tx *sql.Tx) error {
+			_, err := tx.Exec(`DELETE FROM recording_jobs WHERE upload_id = ?`, id)
+			return err
+		})
+		if err != nil {
+			return n, fmt.Errorf("pruning the recording queue: %w", err)
+		}
+		n++
+	}
+	return n, nil
+}
+
+type finishedJob struct{ id, class string }
+
+// finishedJobsBefore lists the jobs finished at or before t.
+func (s *Store) finishedJobsBefore(t time.Time) ([]finishedJob, error) {
+	rows, err := s.db.Query(`SELECT upload_id, COALESCE(error_class, '') FROM recording_jobs
+		WHERE status IN ('done', 'failed') AND finished_at IS NOT NULL AND finished_at <= ?`, toReal(t))
+	if err != nil {
+		return nil, fmt.Errorf("reading the recording queue: %w", err)
+	}
+	defer rows.Close()
+	var ids []finishedJob
+	for rows.Next() {
+		var j finishedJob
+		if err := rows.Scan(&j.id, &j.class); err != nil {
+			return nil, fmt.Errorf("reading the recording queue: %w", err)
+		}
+		ids = append(ids, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the recording queue: %w", err)
+	}
+	return ids, nil
+}
+
+// RecordingQueueReady reports whether the sidecar has its recording_jobs
+// table yet (an adopted Swift file before its migrations has not).
+func (s *Store) RecordingQueueReady() (bool, error) {
+	var n int
+	if err := s.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'recording_jobs'`).Scan(&n); err != nil {
+		return false, fmt.Errorf("reading the recording queue: %w", err)
+	}
+	return n == 1, nil
 }

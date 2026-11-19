@@ -91,7 +91,7 @@ type Result struct {
 // non-nil only when nothing was done.
 func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error) {
 	res := Result{SessionID: r.SessionID, WorkbenchID: r.WorkbenchID, Mode: ModeApply, Sweep: r.Sweep,
-		Plan: Plan{Items: []Item{}}}
+		Plan: Plan{Items: []Item{}, Notes: []string{}}}
 	if r.Sweep && len(only) == 0 {
 		return res, ErrSweepNeedsItems
 	}
@@ -100,9 +100,10 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 		return res, err
 	}
 	b.walked = map[string]string{}
-	a := newApplier(b, b.evaluate(ctx), only)
+	p := b.evaluate(ctx)
+	a := newApplier(b, p, only)
 	a.run(ctx)
-	res.WorkbenchID, res.Plan = b.req.WorkbenchID, Plan{Items: a.items, DefaultBranch: b.repo.defaultBranch}
+	res.WorkbenchID, res.Plan = b.req.WorkbenchID, Plan{Items: a.items, DefaultBranch: b.repo.defaultBranch, Notes: p.Notes}
 	res.RemovedBytes, res.RemovedBytesKnown = removedBytes(a.items)
 	res.Summary = Summarize(a.items)
 	a.save(ctx, &res)
@@ -122,11 +123,14 @@ type applier struct {
 	self   int               // this process: never an orphan
 	walked map[string]string // W9 walks of the evaluation, reused until the final re-check
 	report *reporter         // the request's Observer; the re-checks' builders have none
+	// evidence is the plan's observed.evidence: which worktrees showed a
+	// branch was the session's (§2a, §2b, §2c).
+	evidence map[string][]string
 }
 
 func newApplier(b *builder, p Plan, only []string) *applier {
 	a := &applier{deps: b.deps, req: b.req, git: b.repo.git, folder: b.repo.folder, items: p.Items,
-		tips: map[string]string{}, self: b.self, walked: b.walked, report: b.report}
+		tips: map[string]string{}, self: b.self, walked: b.walked, report: b.report, evidence: b.seen.evidence}
 	a.req.NoSize, a.req.Observer, a.req.recheck = true, nil, true
 	for _, br := range b.repo.branches {
 		a.tips[br.Name] = br.Sha
@@ -533,6 +537,23 @@ func (a *applier) recheckBranch(ctx context.Context, it *Item) (string, bool) {
 		keepItem(it, ReasonMoved, fmt.Sprintf("was %s, now %s", short(a.tips[it.Name]), short(tip)))
 		return "", false
 	}
+	// The worktree that showed the branch was the session's may be one this
+	// apply just removed, its HEAD log or record match gone with it. The
+	// plan's evidence stands in for that worktree only: a fresh
+	// not_this_session or created_unknown wins, and the rest of §2c — the
+	// ref log, every other worktree's HEAD log — is read again now.
+	// A ledger branch whose worktree this apply removed reads as unproven
+	// now; that is the removal, not news, so only a HEAD log's own verdict
+	// (checkedOutOnly) counts here.
+	if a.ownedByRemoved(it.Name) && !b.seen.branches[it.Name] && !b.seen.checkedOutOnly[it.Name] &&
+		!b.seen.unknown[it.Name] {
+		switch owned, unknown := b.repo.recheckCreated(it.Name); {
+		case owned:
+			b.seen.branches[it.Name] = true
+		case unknown:
+			b.seen.unknown[it.Name] = true
+		}
+	}
 	// Every worktree left now stays: B2 keeps a branch checked out in any.
 	b.checkedOutIn, b.checkedOutStaying = map[string]string{}, map[string]string{}
 	for _, w := range b.repo.worktrees {
@@ -546,6 +567,17 @@ func (a *applier) recheckBranch(ctx context.Context, it *Item) (string, bool) {
 		return "", false
 	}
 	return tip, true
+}
+
+// ownedByRemoved: the plan owned branch name on the evidence of a worktree
+// this apply removed.
+func (a *applier) ownedByRemoved(name string) bool {
+	for _, root := range a.evidence[name] {
+		if it := a.find("worktree:" + root); it != nil && it.Done {
+			return true
+		}
+	}
+	return false
 }
 
 // notCheckedOutNow reads `git worktree list` once more right before the

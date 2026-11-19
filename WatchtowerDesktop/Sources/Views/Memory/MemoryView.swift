@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 // MARK: - MemoryView
 //

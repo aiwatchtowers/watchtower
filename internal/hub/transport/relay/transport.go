@@ -1,7 +1,8 @@
 // Package relay is the hub's transport over the hosted relay (Go hub design
 // §6.1, RC §7 hub half): records, change feeds and attachments over the
 // pinned copy of the relay's Go client (client/, relayv1/, see VERSION and
-// `make relay-go`), live events from its WebSocket.
+// `make relay-go`), live events from its WebSocket. Once connected, ops go
+// over that WebSocket too (live link R2), HTTPS only without one (send).
 //
 // The client already does RC §7's connection rules — login, ping/pong, close
 // codes, backoff, UNAVAILABLE retries, resubscribing one zone at a time after
@@ -10,11 +11,14 @@
 // TOKEN_EXPIRED resync, attachments through create_upload/get_download and
 // the error mapping (MapError).
 //
-// Until the relay admits hubs (DEVICE_KIND_HUB, vouch_hub; relay ask #805) the
-// hub registers as DEVICE_KIND_MAC with no attestation, which only a relay with
-// attestation off (the local stand) accepts; elsewhere it gets
-// ErrAttestationRequired. The hub does not count itself on the relay until the
-// account state shows it in a paying phone's slot (Admitted).
+// The hub registers as DEVICE_KIND_HUB with an empty attestation and logs in
+// with its Ed25519 signature only (relay proto README, "Vouched hubs"). It is
+// unvouched until a phone vouches for its key (vouch_hub) and puts it into a
+// slot: until then the relay opens only get_account_state, subscribe, its
+// pair/<slot> zones and close_pairing to it, and answers every other op
+// HUB_NOT_VOUCHED (transport.ErrNotVouched), also on an open socket. Vouched
+// reads that from the account state; the hub does not count itself on the
+// relay until the account state shows it in a paying phone's slot (Admitted).
 package relay
 
 import (
@@ -25,9 +29,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
@@ -36,9 +43,10 @@ import (
 	"watchtower/internal/hub/transport/relay/relayv1"
 )
 
-// DeviceKind is the kind the hub registers as: DEVICE_KIND_MAC until the
-// relay proto carries DEVICE_KIND_HUB (gap 1 of the relay hand-off).
-const DeviceKind = relayv1.DeviceKind_DEVICE_KIND_MAC
+// DeviceKind is the kind the Go hub registers as, in test and live mode
+// alike. The relay treats both hub kinds as one (DEVICE_KIND_MAC is the Swift
+// app's), so a hub an older build registered as a Mac stays the same device.
+const DeviceKind = relayv1.DeviceKind_DEVICE_KIND_HUB
 
 // eventBuffer is the Events channel's capacity. The pump never drops an
 // event: when the channel is full it waits (the client keeps folding zone
@@ -77,6 +85,9 @@ type Options struct {
 	// timeout). Relay ops go through the relay client's own HTTP client. The
 	// transport uses a copy with its own redirect rule (see checkRedirect).
 	HTTP *http.Client
+	// Connects (nil = none) sees the relay client's connects when the client
+	// was built over its HTTPClient (OnConnected).
+	Connects *ConnectWatch
 	// MaxAttachmentBytes caps one download (0 = MaxAttachmentBytes).
 	MaxAttachmentBytes int64
 }
@@ -98,12 +109,32 @@ type Transport struct {
 	conn       *client.Conn
 	closed     bool
 	account    *relayv1.AccountState
+	readers    []string // the last set_hub_readers the relay accepted (nil = none yet)
 	refreshing bool
 	refreshDue bool
-	wg         sync.WaitGroup
+	// accountKnown: account is a read the relay answered (false before the
+	// first read and after HUB_NOT_VOUCHED forgot it).
+	accountKnown bool
+	// observe sees every save's result per zone (ObserveSaves; nil = none).
+	observe func(zone string, err error)
+	// own is, per zone, the record seqs the hub's own saves got (ascending,
+	// at most ownCap): PullEvent skips them without a read.
+	own map[string][]uint64
+	wg  sync.WaitGroup
+	// recordCap and requestBudget are maxRecordBytes and saveRequestBudget
+	// (a test lowers them).
+	recordCap, requestBudget int
 }
 
-var _ transport.Transport = (*Transport)(nil)
+// ownCap bounds the own-write seqs kept per zone (a zone the hub writes but
+// never reads, the data zone, keeps only its last ones).
+const ownCap = 256
+
+var (
+	_ transport.Transport     = (*Transport)(nil)
+	_ transport.SharedMailbox = (*Transport)(nil)
+	_ transport.Alerts        = (*Transport)(nil)
+)
 
 // New returns a transport over c; Connect starts its live events.
 func New(c *client.Client, o Options) *Transport {
@@ -124,6 +155,7 @@ func New(c *client.Client, o Options) *Transport {
 	hc.CheckRedirect = checkRedirect
 	return &Transport{
 		c: c, o: o, http: hc, events: make(chan transport.Event, eventBuffer), done: make(chan struct{}),
+		recordCap: maxRecordBytes, requestBudget: saveRequestBudget,
 	}
 }
 
@@ -138,6 +170,10 @@ func (t *Transport) Events() <-chan transport.Event { return t.events }
 
 // Origin is the relay origin this transport was configured with.
 func (t *Transport) Origin() string { return t.o.Origin }
+
+// MailboxFor implements transport.SharedMailbox: on the relay each phone has
+// its own mailbox zone.
+func (t *Transport) MailboxFor(hub, phone string) string { return transport.MailboxZone(hub, phone) }
 
 // Connect registers the hub (idempotent), opens the WebSocket, subscribes
 // zones and reads the account state, then emits a zone event per zone so the
@@ -212,6 +248,7 @@ func (t *Transport) Close() error {
 // emit hands an event to the consumer, waiting for room; it gives up only
 // when the transport is closed.
 func (t *Transport) emit(ev transport.Event) {
+	ev.ArrivedAt = t.o.Clock()
 	select {
 	case t.events <- ev:
 	case <-t.done:
@@ -224,7 +261,7 @@ func (t *Transport) pump(conn *client.Conn) {
 	for ev := range conn.Events() {
 		switch {
 		case ev.Err != nil:
-			t.emit(transport.Event{Zone: ev.Err.Zone, Err: fmt.Errorf("relay: zone dropped: %w", MapError(ev.Err.Err))})
+			t.emit(transport.Event{Zone: ev.Err.Zone, Err: fmt.Errorf("relay: zone dropped: %w", t.noteError(MapError(ev.Err.Err)))})
 		case ev.GetZoneChanged() != nil:
 			zc := ev.GetZoneChanged()
 			resync := zc.GetSeq() == 0 && zc.Record == nil
@@ -232,13 +269,19 @@ func (t *Transport) pump(conn *client.Conn) {
 				// The client's marker after a reconnect (or a folded overflow).
 				t.refreshAccount()
 			}
-			t.emit(transport.Event{Zone: zc.GetZone(), Resync: resync})
+			t.emit(transport.Event{Zone: zc.GetZone(), Resync: resync, Seq: zc.GetSeq(), Inline: inlineOf(zc)})
 		case ev.GetControl() != nil:
 			c, ok := controlOf(ev.GetControl())
 			if !ok {
 				continue
 			}
-			if c.Kind != transport.PairingOpened {
+			switch c.Kind {
+			case transport.PairingOpened:
+			case transport.SlotAdded:
+				// Read before the event goes out, so its consumer sees the
+				// slot in Vouched: one read per SLOT_ADDED, never a poll.
+				t.readAccountNow()
+			default:
 				t.refreshAccount()
 			}
 			t.emit(transport.Event{Control: &c})
@@ -268,6 +311,8 @@ func controlOf(c *relayv1.Control) (transport.Control, bool) {
 		k = transport.PairingOpened
 	case relayv1.ControlKind_CONTROL_KIND_SESSION_EXPIRED:
 		k = transport.SessionExpired
+	case relayv1.ControlKind_CONTROL_KIND_SLOT_ADDED:
+		k = transport.SlotAdded
 	default:
 		return transport.Control{}, false
 	}
@@ -317,10 +362,27 @@ func (t *Transport) refreshAccount() {
 	}()
 }
 
+// readAccountNow reads the account state once, bounded by accountTimeout and
+// by the transport's close; a failure is reported as an event.
+func (t *Transport) readAccountNow() {
+	ctx, cancel := context.WithTimeout(context.Background(), accountTimeout)
+	defer cancel()
+	go func() {
+		select {
+		case <-t.done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	if _, err := t.AccountState(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		t.emit(transport.Event{Err: fmt.Errorf("relay: account state: %w", err)})
+	}
+}
+
 // AccountState reads the hub's account state (the phones holding it in a
-// slot) and keeps it for Admitted.
+// slot) and keeps it for Vouched and Admitted.
 func (t *Transport) AccountState(ctx context.Context) (*relayv1.AccountState, error) {
-	resp, err := t.c.Do(ctx, &relayv1.Request{Op: &relayv1.Request_GetAccountState{GetAccountState: &relayv1.GetAccountState{}}})
+	resp, err := t.send(ctx, &relayv1.Request{Op: &relayv1.Request_GetAccountState{GetAccountState: &relayv1.GetAccountState{}}})
 	if err != nil {
 		return nil, MapError(err)
 	}
@@ -329,31 +391,190 @@ func (t *Transport) AccountState(ctx context.Context) (*relayv1.AccountState, er
 		return nil, errors.New("relay: get_account_state: no account state in the answer")
 	}
 	t.mu.Lock()
-	t.account = st
+	t.account, t.accountKnown = st, true
 	t.mu.Unlock()
 	return st, nil
+}
+
+// Vouched reports whether the last account state shows the hub in any
+// phone's slot, paying or not: only then does the relay open the data zone,
+// the mailboxes and set_hub_readers to it. A HUB_NOT_VOUCHED answer to any op
+// clears it until an account state says otherwise.
+func (t *Transport) Vouched() bool {
+	return t.anyPhone(func(*relayv1.SlotHolder) bool { return true })
 }
 
 // Admitted reports whether the last account state shows the hub in a paying
 // phone's slot: only then does the hub count itself on the relay.
 func (t *Transport) Admitted() bool {
+	return t.anyPhone((*relayv1.SlotHolder).GetPaying)
+}
+
+// anyPhone: a phone of the last account state matches.
+func (t *Transport) anyPhone(match func(*relayv1.SlotHolder) bool) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for _, p := range t.account.GetPhones() {
-		if p.GetPaying() {
-			return true
+	return slices.ContainsFunc(t.account.GetPhones(), match)
+}
+
+// KnownAccountState is a copy of the last account state read and whether one
+// is known: false (and an empty state) before the first read and after
+// HUB_NOT_VOUCHED forgot it.
+func (t *Transport) KnownAccountState() (*relayv1.AccountState, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.accountKnown {
+		return &relayv1.AccountState{}, false
+	}
+	return proto.Clone(t.account).(*relayv1.AccountState), true
+}
+
+// LastAccountState is a copy of the last account state read (an empty one
+// before any read, or after HUB_NOT_VOUCHED).
+func (t *Transport) LastAccountState() *relayv1.AccountState {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.account == nil {
+		return &relayv1.AccountState{}
+	}
+	return proto.Clone(t.account).(*relayv1.AccountState)
+}
+
+// Connected reports whether the live connection is up now: false before
+// Connect, while the client reconnects and after Close.
+func (t *Transport) Connected() bool {
+	t.mu.Lock()
+	conn, closed := t.conn, t.closed
+	t.mu.Unlock()
+	return conn != nil && !closed && conn.Connected()
+}
+
+// ObserveSaves hands f every Save's result per zone, after the request: nil
+// for each item the relay saved, the item's refusal for a refused one, and
+// the call's error for each zone of a save the relay refused whole (a
+// quota). A failed precondition and a save refused before any request are
+// not reported. f must not call back into the transport.
+func (t *Transport) ObserveSaves(f func(zone string, err error)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.observe = f
+}
+
+// observed is the save observer (nil = none).
+func (t *Transport) observed() func(zone string, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.observe
+}
+
+// do runs one op (send) and maps its error with MapError.
+func (t *Transport) do(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
+	return t.doMapped(ctx, req, MapError)
+}
+
+// doMapped runs one op (send) and maps its error with mapErr.
+// HUB_NOT_VOUCHED means the hub is in no slot now, whatever the last account
+// state said.
+func (t *Transport) doMapped(ctx context.Context, req *relayv1.Request, mapErr func(error) error) (*relayv1.Response, error) {
+	resp, err := t.send(ctx, req)
+	if err != nil {
+		return nil, t.noteError(mapErr(err))
+	}
+	return resp, nil
+}
+
+// socketOpTimeout bounds one op over the WebSocket, as the relay client's
+// HTTPS timeout bounds one over HTTPS.
+const socketOpTimeout = 30 * time.Second
+
+// send runs one op over the open WebSocket, or over HTTPS without one
+// (before Connect, after Close; the sign-in ops, which make the socket's
+// session, never come here). A request the socket refused before writing
+// any of it (client.ErrNotSent: no socket while it reconnects) or the relay
+// refused UNAUTHENTICATED (the socket's session expired; HTTPS signs in
+// again) goes over HTTPS whatever its op: the relay never ran it. A socket
+// lost after the frame went out, or no answer within socketOpTimeout, leaves
+// the outcome unknown: an op safe to run twice (resendable) is sent again
+// over HTTPS, any other returns client.ErrDisconnected —
+// transport.ErrUnavailable after MapError — and its caller's retry re-reads
+// before writing again. The caller's own ctx ending returns its error. A
+// resendable op of a caller with a deadline waits on the socket at most half
+// of what the caller has left (socketBound), so a socket that never answers
+// still leaves the HTTPS resend its turn.
+func (t *Transport) send(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
+	t.mu.Lock()
+	conn := t.conn
+	if t.closed {
+		conn = nil
+	}
+	t.mu.Unlock()
+	if conn == nil {
+		return t.c.Do(ctx, req)
+	}
+	sctx, cancel := context.WithTimeout(ctx, socketBound(ctx, req, time.Now()))
+	defer cancel()
+	resp, err := conn.Send(sctx, req)
+	unknown := errors.Is(err, client.ErrDisconnected) || (err != nil && sctx.Err() != nil)
+	switch {
+	case errors.Is(err, client.ErrNotSent), client.Code(err) == relayv1.ErrorCode_ERROR_CODE_UNAUTHENTICATED:
+		return t.c.Do(ctx, req)
+	case unknown && ctx.Err() != nil:
+		return nil, ctx.Err()
+	case unknown && resendable(req):
+		return t.c.Do(ctx, req)
+	case unknown:
+		// Not sctx's DeadlineExceeded: MapError passes a ctx error through
+		// as the caller's own, and this is a relay that did not answer.
+		return nil, fmt.Errorf("relay: no answer over the websocket: %w", client.ErrDisconnected)
+	}
+	return resp, err
+}
+
+// socketBound is how long req may wait for its answer over the socket:
+// socketOpTimeout, or for a resendable op half of what ctx's deadline
+// leaves at now when that is less — the other half is the HTTPS resend's.
+func socketBound(ctx context.Context, req *relayv1.Request, now time.Time) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok || !resendable(req) {
+		return socketOpTimeout
+	}
+	return min(socketOpTimeout, deadline.Sub(now)/2)
+}
+
+// resendable reports whether req is safe to run twice: a read, or a save or
+// delete whose every item is conditional (run again, an item that landed the
+// first time comes back as a conflict on the hub's own record).
+func resendable(req *relayv1.Request) bool {
+	switch op := req.GetOp().(type) {
+	case *relayv1.Request_Changes, *relayv1.Request_GetAccountState, *relayv1.Request_GetDownload:
+		return true
+	case *relayv1.Request_Save:
+		for _, it := range op.Save.GetItems() {
+			if it.GetExpect() == nil {
+				return false
+			}
 		}
+		return true
+	case *relayv1.Request_Delete:
+		for _, it := range op.Delete.GetItems() {
+			if it.ExpectedSeq == nil {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }
 
-// do runs one op over HTTPS and maps its error.
-func (t *Transport) do(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
-	resp, err := t.c.Do(ctx, req)
-	if err != nil {
-		return nil, MapError(err)
+// noteError forgets the cached account state's slots on HUB_NOT_VOUCHED and
+// returns err.
+func (t *Transport) noteError(err error) error {
+	if errors.Is(err, transport.ErrNotVouched) {
+		t.mu.Lock()
+		t.account, t.accountKnown = &relayv1.AccountState{}, false
+		t.mu.Unlock()
 	}
-	return resp, nil
+	return err
 }
 
 // rereadZones asks the consumer to re-read zones after a refused write: the
@@ -392,80 +613,6 @@ func wireExpect(item *relayv1.SaveItem, e transport.Expect) error {
 		return fmt.Errorf("relay: unknown expect mode %d", e.Mode)
 	}
 	return nil
-}
-
-// Save implements transport.Transport. Before any I/O it refuses the whole
-// call with secure.ErrUnsealed when a record did not come from the Sealer or
-// carries an asset file outside Options.AssetDir. An asset in a pairing zone
-// is refused per item with transport.ErrForbidden (the relay allows none
-// there). Each other asset is uploaded first (create_upload, then a PUT of the
-// sealed file to the opaque URL), then the records are saved with their
-// attachment ids. A refused save also emits a zone event per zone in it.
-func (t *Transport) Save(ctx context.Context, items []transport.SaveItem) ([]transport.Outcome, error) {
-	assets := make([]*os.File, len(items))
-	defer func() {
-		for _, f := range assets {
-			if f != nil {
-				_ = f.Close()
-			}
-		}
-	}()
-	out := make([]transport.Outcome, len(items))
-	wire := make([]*relayv1.SaveItem, 0, len(items))
-	index := make([]int, 0, len(items)) // wire position → item index
-	for i, it := range items {
-		r := it.Record
-		if !r.Sealed() {
-			return nil, fmt.Errorf("relay: save item %d: %w", i, secure.ErrUnsealed)
-		}
-		w := &relayv1.SaveItem{Record: &relayv1.Record{
-			Zone: r.Zone(), Name: r.WireName(), Envelope: r.Envelope(), ClientModifiedAtMs: t.o.Clock().UnixMilli(),
-		}}
-		if err := wireExpect(w, it.Expect); err != nil {
-			return nil, fmt.Errorf("relay: save item %d: %w", i, err)
-		}
-		if p := r.AssetPath(); p != "" {
-			if isPairZone(r.Zone()) {
-				out[i] = transport.Outcome{Refused: fmt.Errorf("relay: attachment in a pairing zone: %w", transport.ErrForbidden)}
-				continue
-			}
-			f, err := t.openAsset(p)
-			if err != nil {
-				return nil, fmt.Errorf("relay: save item %d: %w", i, err)
-			}
-			assets[i] = f
-		}
-		wire = append(wire, w)
-		index = append(index, i)
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if len(wire) == 0 {
-		return out, nil
-	}
-	for k, w := range wire {
-		if f := assets[index[k]]; f != nil {
-			id, err := t.upload(ctx, w.GetRecord().GetZone(), f)
-			if err != nil {
-				return nil, fmt.Errorf("relay: save item %d: upload: %w", index[k], err)
-			}
-			w.Record.AttachmentId = id
-		}
-	}
-	resp, err := t.do(ctx, &relayv1.Request{Op: &relayv1.Request_Save{Save: &relayv1.Save{Items: wire}}})
-	if err != nil {
-		zones := make([]string, len(wire))
-		for k, w := range wire {
-			zones[k] = w.GetRecord().GetZone()
-		}
-		t.rereadZones(zones)
-		return nil, fmt.Errorf("relay: save: %w", err)
-	}
-	if err := saveOutcomes(resp.GetSave(), index, out); err != nil {
-		return nil, fmt.Errorf("relay: save: %w", err)
-	}
-	return out, nil
 }
 
 // saveOutcomes fills out from a save answer: saved records in request order,
@@ -538,6 +685,30 @@ func (t *Transport) Delete(ctx context.Context, zone string, items []transport.D
 	return out, nil
 }
 
+// SendAlert implements transport.Alerts: one send_alert of p's envelope to
+// the phone with relay device id phoneRelayID, nothing else in the request.
+// It refuses a Push the Sealer did not build with secure.ErrUnsealed, and an
+// empty phoneRelayID, before any I/O. A nil error is the relay's Ok (accepted, not delivered). The
+// errors are mapAlertError's (transport.ErrNoPushToken, ErrPushOff, then
+// MapError's classes); RetryAfter reads a RATE_LIMITED wait.
+func (t *Transport) SendAlert(ctx context.Context, phoneRelayID string, p secure.Push) error {
+	if !p.Sealed() {
+		return fmt.Errorf("relay: send_alert: %w", secure.ErrUnsealed)
+	}
+	if phoneRelayID == "" {
+		return errors.New("relay: send_alert: no phone device id")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := t.doMapped(ctx, &relayv1.Request{Op: &relayv1.Request_SendAlert{SendAlert: &relayv1.SendAlert{
+		PhoneDeviceId: phoneRelayID, Envelope: p.Envelope(),
+	}}}, mapAlertError); err != nil {
+		return fmt.Errorf("relay: send_alert: %w", err)
+	}
+	return nil
+}
+
 // stored maps a relay record (nil stays nil). ServerAt is the writer's
 // client_modified_at_ms: the relay keeps no server time per record, so a
 // writer's skewed clock skews it.
@@ -601,7 +772,7 @@ func (t *Transport) Pull(ctx context.Context, zone string, apply func(transport.
 		if err := apply(b); err != nil {
 			return err
 		}
-		if err := t.o.Store.SetZoneToken(zone, b.NewSeq); err != nil {
+		if err := t.setToken(zone, b.NewSeq); err != nil {
 			return err
 		}
 		since = b.NewSeq
@@ -609,6 +780,182 @@ func (t *Transport) Pull(ctx context.Context, zone string, apply func(transport.
 			return nil
 		}
 	}
+}
+
+// PullEvent reads what zone event ev stands for, from the zone's stored
+// token, without a changes read where the event already says it all (zone
+// seqs grow by one per write, so the seqs between the token and ev.Seq are
+// exactly the writes not read yet):
+//   - ev.Seq at or below the token: already read, nothing to do;
+//   - every seq after the token up to ev.Seq is one the hub's own Save got:
+//     the token moves to ev.Seq, nothing is read (the relay tells the writer
+//     of its own writes too);
+//   - the event carries its records inline (relay records_inline, or the
+//     old single record) and they cover every seq after the token up to
+//     ev.Seq that is not the hub's own: apply sees one page of those records
+//     (the own ones left out), then the token moves to ev.Seq.
+//
+// Anything else — a write the records do not cover (an event lost before
+// this one, a record too large to come inline), a delete, a resync marker
+// (Seq 0), a zone never read (token 0) — is Pull of that zone.
+//
+// Own seqs are noted when Save returns. An event can overtake that (a Save
+// from another goroutine whose event arrives first, a Save that failed as a
+// whole yet wrote): its seq is then not known as own and the zone is read —
+// a read too many, never a skip too many. A seq noted after the token passed
+// it is never looked at (firstForeign starts above the token) and goes with
+// the next setToken.
+func (t *Transport) PullEvent(ctx context.Context, ev transport.Event, apply func(transport.Batch) error) error {
+	zone := ev.Zone
+	since, err := t.o.Store.ZoneToken(zone)
+	if err != nil {
+		return err
+	}
+	if ev.Seq == 0 || since == 0 {
+		return t.Pull(ctx, zone, apply)
+	}
+	if ev.Seq <= since {
+		return nil
+	}
+	switch next := t.firstForeign(zone, since, ev.Seq); {
+	case next > ev.Seq:
+		return t.setToken(zone, ev.Seq)
+	case ev.Inline != nil && ev.Inline.NewSeq == ev.Seq:
+		if page, ok := t.inlinePage(zone, since, next, ev.Inline); ok {
+			if err := apply(page); err != nil {
+				return err
+			}
+			return t.setToken(zone, ev.Seq)
+		}
+	}
+	return t.Pull(ctx, zone, apply)
+}
+
+// inlinePage is the page PullEvent applies from in, an event's inline
+// records, for zone read up to since whose first seq after since that is not
+// the hub's own is next: in's records after since that are not the hub's own
+// writes. ok only when in's records are contiguous, start at or before next
+// and end at in.NewSeq, so they cover every write after the token the hub did
+// not make.
+func (t *Transport) inlinePage(zone string, since, next uint64, in *transport.Batch) (transport.Batch, bool) {
+	n := len(in.Changed)
+	if n == 0 || len(in.Deleted) != 0 || in.Changed[n-1].RecordSeq != in.NewSeq {
+		return transport.Batch{}, false
+	}
+	first := in.Changed[0].RecordSeq
+	if first == 0 || first > next {
+		return transport.Batch{}, false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	own := t.own[zone]
+	page := transport.Batch{NewSeq: in.NewSeq}
+	for i, s := range in.Changed {
+		if s.RecordSeq != first+uint64(i) {
+			return transport.Batch{}, false
+		}
+		if s.RecordSeq <= since {
+			continue
+		}
+		if _, found := slices.BinarySearch(own, s.RecordSeq); found {
+			continue
+		}
+		page.Changed = append(page.Changed, s)
+	}
+	return page, true
+}
+
+// OwnWrites reports whether every seq after zone's stored token up to ev.Seq
+// is one the hub's own Save got (no relay op: the token is the sidecar's).
+// False for a resync marker, a zone never read and an event already read.
+func (t *Transport) OwnWrites(ev transport.Event) bool {
+	if ev.Seq == 0 {
+		return false
+	}
+	since, err := t.o.Store.ZoneToken(ev.Zone)
+	if err != nil || since == 0 || ev.Seq <= since {
+		return false
+	}
+	return t.firstForeign(ev.Zone, since, ev.Seq) > ev.Seq
+}
+
+// setToken stores zone's token and forgets the own-write seqs it passed.
+func (t *Transport) setToken(zone string, seq uint64) error {
+	if err := t.o.Store.SetZoneToken(zone, seq); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	seqs := t.own[zone]
+	i, _ := slices.BinarySearch(seqs, seq+1)
+	if i == len(seqs) {
+		delete(t.own, zone)
+	} else {
+		t.own[zone] = seqs[i:]
+	}
+	return nil
+}
+
+// noteOwn remembers that the hub's own Save wrote zone's record at seq.
+func (t *Transport) noteOwn(zone string, seq uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.own == nil {
+		t.own = map[string][]uint64{}
+	}
+	seqs := t.own[zone]
+	i, found := slices.BinarySearch(seqs, seq)
+	if found {
+		return
+	}
+	seqs = slices.Insert(seqs, i, seq)
+	if len(seqs) > ownCap {
+		seqs = seqs[len(seqs)-ownCap:]
+	}
+	t.own[zone] = seqs
+}
+
+// firstForeign is the first seq in (since, upTo] the hub's own Save did not
+// get; upTo+1 when every one of them is its own.
+func (t *Transport) firstForeign(zone string, since, upTo uint64) uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	seqs := t.own[zone]
+	i, _ := slices.BinarySearch(seqs, since+1)
+	next := since + 1
+	for ; next <= upTo && i < len(seqs) && seqs[i] == next; i++ {
+		next++
+	}
+	return next
+}
+
+// inlineOf is the records a ZoneChanged carries — records (relay
+// records_inline), or the old single record of a relay before it — as one
+// page at the event's seq, oldest first, each with its RecordSeq; nil when it
+// carries none, a deletion, or records that are not contiguous up to the
+// event's seq (PullEvent then reads).
+func inlineOf(zc *relayv1.ZoneChanged) *transport.Batch {
+	recs := zc.GetRecords()
+	if len(recs) == 0 && zc.GetRecord() != nil {
+		recs = []*relayv1.Record{zc.GetRecord()}
+	}
+	seq := zc.GetSeq()
+	if len(recs) == 0 || uint64(len(recs)) > seq {
+		return nil
+	}
+	first := seq - uint64(len(recs)) + 1
+	b := &transport.Batch{NewSeq: seq}
+	for i, r := range recs {
+		if r.GetDeleted() || r.GetRecordSeq() != first+uint64(i) {
+			return nil
+		}
+		s := stored(r)
+		if s.Zone == "" {
+			s.Zone = zc.GetZone()
+		}
+		b.Changed = append(b.Changed, *s)
+	}
+	return b
 }
 
 // Download implements transport.Transport: get_download for the attachment

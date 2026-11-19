@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 import os
-import WatchtowerHostedRelay
+@testable import WatchtowerHostedRelay
 import WatchtowerHostedRelayTesting
 import WatchtowerRelayProto
 import XCTest
@@ -277,15 +277,15 @@ class HostedRelayScenarioCase: XCTestCase {
     }
 
     /// The Go `nextZoneEvent`: the seq of the next `zoneChanged` of `zone` (0 = record-less),
-    /// skipping other events; nil when none came within the probe's cap.
+    /// skipping other events; nil when the stream ended first.
     func nextZoneEvent(_ events: EventProbe, _ zone: String, file: StaticString = #filePath, line: UInt = #line) async -> UInt64? {
         while let event = await events.next(file: file, line: line) {
-            if case .zoneChanged(zone, let seq) = event { return seq }
+            if case .zoneChanged(zone, let seq, _) = event { return seq }
         }
         return nil
     }
 
-    /// Reads events until `wanted`; false when the stream ended or the cap passed first.
+    /// Reads events until `wanted`; false when the stream ended first.
     @discardableResult
     func waitFor(
         _ wanted: HostedRelayClientEvent, _ events: EventProbe, file: StaticString = #filePath, line: UInt = #line
@@ -296,7 +296,7 @@ class HostedRelayScenarioCase: XCTestCase {
         return false
     }
 
-    /// Spins (pumping the fake's clock) until `condition` holds, 5 s cap.
+    /// Spins (pumping the fake's clock) until `condition` holds, with no wall-clock cap.
     @discardableResult
     func eventually(file: StaticString = #filePath, line: UInt = #line, _ condition: @escaping () -> Bool) async -> Bool {
         let pump = pump
@@ -307,7 +307,34 @@ class HostedRelayScenarioCase: XCTestCase {
         }
     }
 
-    enum ScenarioFailure: Error {
+    /// Yields (pumping the fake's clock) until `condition`, for at most `turns` turns: a condition that never
+    /// comes fails the test instead of hanging the run. No wall-clock wait.
+    @discardableResult
+    func settle(
+        _ what: String,
+        turns: Int = 200_000,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ condition: () async -> Bool
+    ) async -> Bool {
+        for _ in 0..<turns {
+            if await condition() { return true }
+            pump()
+            await Task.yield()
+        }
+        XCTFail("never settled: \(what)", file: file, line: line)
+        return false
+    }
+
+    /// Spins (pumping the fake's clock) until `session`'s socket is live, with no wall-clock cap.
+    func waitUntilLive(_ session: HostedRelaySession) async {
+        while await session.connection?.isLive != true {
+            pump()
+            await Task.yield()
+        }
+    }
+
+        enum ScenarioFailure: Error {
         case unexpected(String)
     }
 }

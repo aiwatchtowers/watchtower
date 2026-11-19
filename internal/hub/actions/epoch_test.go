@@ -1,0 +1,256 @@
+package actions
+
+import (
+	"slices"
+	"testing"
+
+	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/wire"
+)
+
+// retire rotates the epoch and lets its grace run out; the phone takes the
+// new keys (its keybox) and so reseals in the new epoch.
+func (w *world) retire() {
+	w.t.Helper()
+	if err := w.keys.Rotate(identity.ReasonManual); err != nil {
+		w.t.Fatal(err)
+	}
+	w.advance(identity.PreviousEpochGrace)
+	kk, err := w.keys.KeyboxKeysFor(w.phone.ID())
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	if err := w.phone.Keep(kk); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+// Sim rule 14: an action sealed in an epoch the hub no longer holds gets
+// resend_from(last+1) once per record version and is left (not applied,
+// marked or deleted); the phone reseals it with the same action_seq and it
+// applies once.
+func TestOldEpochActionGetsResendFromOncePerRecordVersion(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		seq, err := w.phone.Queue(w.phone.NewAction("test_noop")) // sealed in epoch 1
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.retire()
+		if err := w.phone.WriteCopy(seq); err != nil { // the old bytes
+			t.Fatal(err)
+		}
+		w.pass()
+		w.pass() // the same record version: no second answer
+		w.wantCalls()
+		if name, _ := w.phone.Sealed(seq); !w.holds(name) {
+			t.Fatal("the old-epoch action was deleted")
+		}
+		w.sync(w.phone) // reads the answer and reseals
+		if got := w.controls(wire.ControlResendFrom); len(got) != 1 || *got[0].Seq != seq {
+			t.Fatalf("resend_from %+v, want one for %d", got, seq)
+		}
+		w.settle()
+		if !slices.Equal(w.phone.Resealed, []uint64{seq}) {
+			t.Fatalf("resealed %v", w.phone.Resealed)
+		}
+		w.wantCalls("test_noop:1")
+		w.wantEcho(seq, wire.StatusApplied, "")
+	})
+}
+
+// An old-epoch record that is no action still to apply (a stale copy of an
+// applied one, a control) is dropped with no answer, as before; so is any
+// old-epoch record on standby or from a lapsed phone.
+func TestOldEpochRecordThatIsNoNextActionIsDropped(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		done := w.act("test_noop")
+		w.settle()
+		w.retire()
+		if err := w.phone.WriteCopy(done); err != nil {
+			t.Fatal(err)
+		}
+		w.pass()
+		w.sync(w.phone)
+		if got := w.controls(wire.ControlResendFrom); len(got) != 0 {
+			t.Fatalf("a stale copy was answered: %+v", got)
+		}
+		w.wantCalls("test_noop:1")
+	})
+	for _, standby := range []bool{true, false} {
+		eachKind(t, func(t *testing.T, w *world) {
+			sw := &fakeSwitch{active: w.tr.Kind(), lapsed: !standby}
+			if standby {
+				sw.active = "elsewhere"
+			}
+			w.withSwitch(sw)
+			seq, err := w.phone.Queue(w.phone.NewAction("test_noop"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			w.retire()
+			if err := w.phone.WriteCopy(seq); err != nil {
+				t.Fatal(err)
+			}
+			w.pass()
+			w.sync(w.phone)
+			if got := w.controls(wire.ControlResendFrom); len(got) != 0 {
+				t.Fatalf("answered resend_from (standby %v)", standby)
+			}
+		})
+	}
+}
+
+// Sim rule 16: a lapsed phone's actions are left on the transport, never
+// applied or echoed; a hub write refused ENTITLEMENT_INACTIVE is reported
+// to the switcher and stays queued.
+func TestLapsedPhoneIsLeftAndARefusedWriteIsReported(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		sw := &fakeSwitch{active: w.tr.Kind(), lapsed: true}
+		w.withSwitch(sw)
+		seq := w.act("test_noop")
+		w.settle()
+		w.wantCalls()
+		if name, _ := w.phone.Sealed(seq); !w.holds(name) || len(w.phone.Echoes) != 0 {
+			t.Fatal("a lapsed phone's action was not left alone")
+		}
+
+		sw.lapsed = false
+		w.fake.RefuseWrites(w.phone.Zone(), transport.ErrEntitlementInactive)
+		w.fake.RefuseWrites(w.phone.Zone(), nil)
+		if err := w.phone.WriteCopy(seq); err != nil { // a new version is read
+			t.Fatal(err)
+		}
+		w.fake.RefuseWrites(w.phone.Zone(), transport.ErrEntitlementInactive)
+		w.pass() // applied; its echo is refused
+		w.wantCalls("test_noop:1")
+		if !slices.Contains(sw.inactive, w.phone.ID().String()) {
+			t.Fatalf("not reported: %v", sw.inactive)
+		}
+		if w.pending() == 0 {
+			t.Fatal("the refused echo left the queue")
+		}
+	})
+}
+
+// Sim rule 16: a lapse that commits after the record was read but before
+// its decision is honoured — the action is left, neither applied nor
+// echoed.
+func TestALapseCommittedMidPassIsHonoured(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		sw := &fakeSwitch{active: w.tr.Kind(), lapsedAt: 2} // read: not lapsed; decision: lapsed
+		w.withSwitch(sw)
+		seq := w.act("test_noop")
+		w.pass()
+		w.sync(w.phone)
+		w.wantCalls()
+		if name, _ := w.phone.Sealed(seq); !w.holds(name) || len(w.phone.Echoes) != 0 {
+			t.Fatal("the action was not left alone")
+		}
+		if sw.lapsedCalls < 2 {
+			t.Fatalf("the lapse was read %d times, want it again at the decision", sw.lapsedCalls)
+		}
+	})
+}
+
+// Sim rule 16: an action sent before the phone's last lapse (the phone was
+// told it is not delivered) gets an explicit final answer — expired — and
+// is never applied; the order moves on and the next action applies.
+func TestASkippedActionIsAnsweredExpired(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		sw := &fakeSwitch{active: w.tr.Kind(), skipped: true}
+		w.withSwitch(sw)
+		seq := w.act("test_noop")
+		w.settle()
+		w.wantCalls()
+		w.wantEcho(seq, wire.StatusExpired, "expired")
+		sw.skipped = false
+		w.act("test_noop")
+		w.settle()
+		w.wantCalls("test_noop:2")
+	})
+}
+
+// F21: a phone that offered a key and acked epoch e still opens its echoes
+// while its keybox for the next epoch is stuck: they are sealed in e (its
+// acked epoch, retained) rather than in the new epoch's keys it cannot hold.
+func TestEchoSealedInAckedEpochWhileKeyboxIsStuck(t *testing.T) {
+	w := relayWorld(t)
+	if _, err := w.phone.AckEpoch(1); err != nil {
+		t.Fatal(err)
+	}
+	w.settle()
+	if d := w.device(w.phone); d.KXOffer == nil {
+		t.Fatal("the offer was not stored")
+	}
+	if err := w.keys.Rotate(identity.ReasonManual); err != nil { // epoch 2, keys for the offer
+		t.Fatal(err)
+	}
+	if _, ok, _ := w.st.EpochRelayKeys(2, w.phone.ID().String()); !ok {
+		t.Fatal("the rotation derived no keys for the offer")
+	}
+	seq := w.act("test_noop") // the phone never got epoch 2's keybox
+	w.settle()
+	w.wantCalls("test_noop:1")
+	w.wantEcho(seq, wire.StatusApplied, "")
+	if got := w.phone.EchoEpochs[seq]; got != 1 {
+		t.Fatalf("echo sealed in epoch %d, want the acked 1", got)
+	}
+}
+
+// A phone that never offered gets today's sealing: the current epoch, with
+// static keys it derives for any epoch.
+func TestNeverOfferedPhoneSealsInCurrentEpoch(t *testing.T) {
+	w := relayWorld(t)
+	w.ackWithOffer("") // no usable offer: the ack counts, nothing stored
+	if err := w.keys.Rotate(identity.ReasonManual); err != nil {
+		t.Fatal(err)
+	}
+	seq := w.act("test_noop")
+	w.settle()
+	w.wantEcho(seq, wire.StatusApplied, "")
+	if got := w.phone.EchoEpochs[seq]; got != 2 {
+		t.Fatalf("echo sealed in epoch %d, want the current 2", got)
+	}
+}
+
+// An epoch_ack with an offer read after the hub rotated (its keybox reached
+// the phone first): a late echo that replaces a held echo sealed in the new
+// epoch is not sealed back in the acked one, which the phone's rollback guard
+// (epoch first) would drop as older.
+func TestALateAckDoesNotMoveALateEchoBackAnEpoch(t *testing.T) {
+	w := relayWorld(t)
+	w.phone.Guard = true
+	seen := heldThenLate(w)
+	if err := w.keys.Rotate(identity.ReasonManual); err != nil { // epoch 2: no offer yet, static
+		t.Fatal(err)
+	}
+	kk, err := w.keys.KeyboxKeysFor(w.phone.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.phone.Keep(kk); err != nil {
+		t.Fatal(err)
+	}
+	seq := w.act("session_input")
+	w.settle()
+	w.wantEcho(seq, wire.StatusHeld, "agent_busy")
+	if got := w.phone.EchoEpochs[seq]; got != 2 {
+		t.Fatalf("held echo in epoch %d, want 2", got)
+	}
+	if _, err := w.phone.AckEpoch(1); err != nil { // the ack of epoch 1, read only now
+		t.Fatal(err)
+	}
+	w.settle()
+	if d := w.device(w.phone); d.KXOffer == nil || d.AckedEpoch != 1 {
+		t.Fatalf("offer %x, acked %d", d.KXOffer, d.AckedEpoch)
+	}
+	if err := w.proc.LateEcho(w.ctx, *seen, Outcome{Status: wire.StatusApplied}); err != nil {
+		t.Fatal(err)
+	}
+	w.settle()
+	if len(w.phone.RolledBack) != 0 {
+		t.Fatalf("the phone's guard dropped %v", w.phone.RolledBack)
+	}
+	w.wantEcho(seq, wire.StatusApplied, "")
+}

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- WatchtowerCloudBridge.app, embedded at Watchtower.app/Contents/Helpers/ (Go hub spec §6.2).
+         scripts/build-app.sh copies this file and sets the two version keys; scripts/check-bridge-signing.sh
+         checks CFBundleIdentifier against the helper's provisioning profile. -->
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>WatchtowerCloudBridge</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.watchtower.desktop.cloudbridge</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>WatchtowerCloudBridge</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>0.0.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <!-- No Dock icon, no menu bar: the daemon launches and stops it. -->
+    <key>LSUIElement</key>
+    <true/>
+</dict>
+</plist>

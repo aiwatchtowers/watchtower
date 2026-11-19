@@ -111,7 +111,26 @@ gh release create "v<version>" \
     --title "Watchtower v<version>" \
     --notes "<release_notes>"
 ```
-3. Show the release URL to the user.
+3. **Headless hub artifacts — only from the Go hub's launch release on**
+   (before it, skip this step): the release build also wrote
+   `build/Watchtower-CLI-<version><flavor suffix>-arm64.zip` (the signed CLI
+   for a CLI-only Mac, already in `checksums.txt`; the flavor suffix is
+   `-<BUILD_FLAVOR>`, empty for the default build), and the tag's push started
+   the `linux-build` workflow, which builds the two Linux tarballs. The tag
+   build needs the repository variable `RELAY_ORIGIN` and `.env`'s
+   `WATCHTOWER_RELAY_ORIGIN_DEFAULT`; without them both builds refuse. Wait
+   for that run, download its artifacts and attach them (`gh run list
+   --branch` takes the tag name, `v<version>`, for a tag-triggered run):
+```bash
+run_id=$(gh run list --workflow linux-build.yml --branch "v<version>" --limit 1 --json databaseId --jq '.[0].databaseId')
+gh run watch "$run_id" --exit-status
+gh run download "$run_id" --dir build/linux
+gh release upload "v<version>" \
+    "build/Watchtower-CLI-<version><flavor suffix>-arm64.zip" \
+    build/linux/*/watchtower-v<version>-linux-*.tar.gz \
+    build/linux/*/watchtower-v<version>-linux-*.tar.gz.sha256
+```
+4. Show the release URL to the user.
 
 ## Step 9: Publish the iPhone app to TestFlight
 
@@ -123,7 +142,10 @@ make testflight VERSION=<version>
 ```
 
 It first runs `cloudkit-check` (CloudKit Production must carry every record
-type and field Development has — a TestFlight phone talks to Production), then
+type and field Development has — a TestFlight phone talks to Production — and
+the owner must have recorded the query subscription types as deployed, which
+cktool cannot read: `make cloudkit-subscriptions-deployed` after deploying
+them, #1749), then
 archives a Release build, stamps `MARKETING_VERSION=<version>` and a fresh
 build number (Unix time), and uploads it to App Store Connect.
 
@@ -134,9 +156,24 @@ the repo — never commit them):
 - `~/.appstoreconnect/private_keys/AuthKey_<KEY_ID>.p8` and
   `~/.appstoreconnect/watchtower.mk` with `ASC_KEY_ID` / `ASC_ISSUER_ID`
 - a CloudKit management token (`xcrun cktool save-token --type management`)
+- the subscription-types stamp
+  `~/.config/watchtower/cloudkit-subscription-types.<container>`, written by
+  `make cloudkit-subscriptions-deployed` once the owner has deployed the
+  listed query subscription types (the check prints the steps)
+- the staging relay's origin in `~/.config/watchtower/relay-testflight-origin`
+  (one `https://host[:port]` line; `RELAY_TESTFLIGHT_ORIGIN_FILE=<path>`
+  points elsewhere). Every TestFlight build talks to the staging relay
+  (ask #1156); a missing file fails the upload. Never pass
+  `RELAY_TESTFLIGHT_DARK=1` without the user's go-ahead.
+
+**A TestFlight build is never the App Store build.** It carries the staging
+relay origin, so never promote it to App Store review: a submission for review
+gets its own, dark `make mobile-archive` build.
 
 If a prerequisite is missing, or `cloudkit-check` reports a schema gap
-(deploy it to Production by hand in the CloudKit Console), stop this step and
+(deploy it to Production by hand in the CloudKit Console) or a missing
+subscription-types stamp (only the user can confirm the deploy; never write
+the stamp yourself), stop this step and
 tell the user exactly what is missing — the Mac release is already published
 and stays as is. Never pass `SKIP_CLOUDKIT_CHECK=1` without the user's go-ahead.
 

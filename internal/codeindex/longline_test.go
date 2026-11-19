@@ -6,49 +6,74 @@ import (
 	"bytes"
 	"fmt"
 	"slices"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
 )
 
-// longLineBound is a generous wall-clock bound for indexing a 1 MB file
-// written on one line (a minified bundle); linear work takes well under a
-// second (about 2 s under -race), the quadratic column scan it guards
-// against took 41 s, the JSON key signatures 4 m 50 s.
-const longLineBound = 5 * time.Second * raceSlowdown
+// growth is how much larger the big one-line file is than the small one,
+// and maxGrowth the most its indexing may cost more: linear work grows by
+// about growth (less, with fixed costs), quadratic work by growth² = 64 —
+// the column scan this guards against took 41 s on 1 MB, the JSON key
+// signatures 4 m 50 s.
+const (
+	growth    = 8
+	maxGrowth = 3 * growth
+)
 
-// oneLine builds a single-line source of about 1 MB from n copies of the
-// unit format (given the copy's index), between head and tail.
-func oneLine(head, unit, tail string) []byte {
+// oneLine builds a single-line source of about size bytes from copies of
+// the unit format (given the copy's index), between head and tail.
+func oneLine(size int, head, unit, tail string) []byte {
 	var b bytes.Buffer
 	b.WriteString(head)
-	for i := 0; b.Len() < 1<<20; i++ {
+	for i := 0; b.Len() < size; i++ {
 		fmt.Fprintf(&b, unit, i)
 	}
 	b.WriteString(tail)
 	return b.Bytes()
 }
 
-// A 1 MB one-line file with tens of thousands of symbols indexes in
-// linear time, its columns still exact.
+// cpuTime is the CPU time this process has used so far. Unlike the wall
+// clock it does not grow while other processes have the machine.
+func cpuTime(t *testing.T) time.Duration {
+	t.Helper()
+	var ru syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+		t.Fatal(err)
+	}
+	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
+}
+
+// A 1 MB one-line file (a minified bundle) with tens of thousands of
+// symbols indexes in linear time, its columns still exact. Linear is
+// measured as scaling, not as a wall-clock bound: the CPU time of a 1 MB
+// file against an 8× smaller one, so a loaded machine cannot fail it and
+// the fixed costs only lower the ratio.
 func TestRun_LongOneLineFileIsLinear(t *testing.T) {
 	cases := []struct {
-		rel  string
-		src  []byte
-		unit string
+		rel              string
+		head, unit, tail string
 	}{
-		{"min.go", oneLine("package p;", "func é%d() {};", ""), "func é%d() {};"},
-		{"min.json", oneLine("{", `"é%d":1,`, `"end":0}`), `"é%d":1,`},
+		{"min.go", "package p;", "func é%d() {};", ""},
+		{"min.json", "{", `"é%d":1,`, `"end":0}`},
 	}
 	for _, tc := range cases {
-		root := t.TempDir()
-		write(t, root, tc.rel, tc.src)
-		start := time.Now()
-		got := collect(t, root, nil, nil)
-		took := time.Since(start)
-		t.Logf("%s: %d bytes, %d symbols in %v", tc.rel, len(tc.src), len(got[tc.rel].Symbols), took)
-		if took > longLineBound {
-			t.Errorf("%s took %v, want under %v", tc.rel, took, longLineBound)
+		index := func(size int) (map[string]FileResult, []byte, time.Duration) {
+			root := t.TempDir()
+			src := oneLine(size, tc.head, tc.unit, tc.tail)
+			write(t, root, tc.rel, src)
+			start := cpuTime(t)
+			got := collect(t, root, nil, nil)
+			return got, src, cpuTime(t) - start
+		}
+		_, _, small := index(1 << 20 / growth)
+		got, src, big := index(1 << 20)
+		t.Logf("%s: %d bytes, %d symbols in %v CPU (%v for 1/%d of it)",
+			tc.rel, len(src), len(got[tc.rel].Symbols), big, small, growth)
+		if big > maxGrowth*max(small, time.Millisecond) {
+			t.Errorf("%s: %d× the input took %v CPU against %v, want under %d× (linear)",
+				tc.rel, growth, big, small, maxGrowth)
 		}
 		syms := got[tc.rel].Symbols
 		if len(syms) < 10000 {
@@ -61,7 +86,7 @@ func TestRun_LongOneLineFileIsLinear(t *testing.T) {
 		if _, err := fmt.Sscanf(last.Name, "é%d", &name); err != nil {
 			t.Fatalf("%s: symbol %+v", tc.rel, last)
 		}
-		prefix := string(tc.src[:bytes.Index(tc.src, fmt.Appendf(nil, tc.unit, name))])
+		prefix := string(src[:bytes.Index(src, fmt.Appendf(nil, tc.unit, name))])
 		want := len([]rune(prefix)) + bytes.IndexRune(fmt.Appendf(nil, tc.unit, name), 'é') + 1
 		if last.Line != 1 || last.Col != want {
 			t.Errorf("%s: %s at %d:%d, want 1:%d", tc.rel, last.Name, last.Line, last.Col, want)

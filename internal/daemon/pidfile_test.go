@@ -395,7 +395,7 @@ func TestResolveProcess_LegacyFormatRecentFileIsConfirmed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "daemon.pid")
 	require.NoError(t, os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o600))
 
-	pid, state, err := resolveProcess(path)
+	pid, state, err := resolveProcess(path, true)
 	require.NoError(t, err)
 	assert.Equal(t, os.Getpid(), pid)
 	assert.Equal(t, processConfirmedSame, state)
@@ -405,7 +405,7 @@ func TestResolveProcess_LegacyFormatStaleFileIsGone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "daemon.pid")
 	require.NoError(t, os.WriteFile(path, []byte("999999999"), 0o600))
 
-	pid, state, err := resolveProcess(path)
+	pid, state, err := resolveProcess(path, true)
 	require.NoError(t, err)
 	assert.Equal(t, 0, pid)
 	assert.Equal(t, processGone, state)
@@ -415,7 +415,7 @@ func TestResolveProcess_DeadProcessIsGoneAndFileRemoved(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "daemon.pid")
 	require.NoError(t, os.WriteFile(path, []byte("999999999 1700000000"), 0o600))
 
-	pid, state, err := resolveProcess(path)
+	pid, state, err := resolveProcess(path, true)
 	require.NoError(t, err)
 	assert.Equal(t, 0, pid)
 	assert.Equal(t, processGone, state)
@@ -545,7 +545,7 @@ func TestResolveProcess_LegacyUntaggedSlowStartupIsConfirmed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "daemon.pid")
 	writeTimestampedPID(t, path, helper.Process.Pid, stored.Unix()) // untagged
 
-	pid, state, err := resolveProcess(path)
+	pid, state, err := resolveProcess(path, true)
 	require.NoError(t, err)
 	assert.Equal(t, helper.Process.Pid, pid)
 	assert.Equal(t, processConfirmedSame, state)
@@ -577,15 +577,12 @@ func TestResolveProcess_ReaderErrorButProcessGoneOnRecheckIsGone(t *testing.T) {
 
 	stubProcessIdentity(t, func(p int) (processIdentity, error) {
 		_ = helper.Process.Kill()
-		_, _ = helper.Process.Wait()
-		for i := 0; i < 100 && syscall.Kill(pid, 0) == nil; i++ {
-			time.Sleep(10 * time.Millisecond)
-		}
+		_, _ = helper.Process.Wait() // reaped: the pid is gone once this returns
 		require.NotNil(t, syscall.Kill(pid, 0), "test setup: helper should be confirmed dead before the stub returns")
 		return processIdentity{}, errors.New("simulated read failure mid-race")
 	})
 
-	gotPid, state, err := resolveProcess(path)
+	gotPid, state, err := resolveProcess(path, true)
 	require.NoError(t, err)
 	assert.Equal(t, 0, gotPid)
 	assert.Equal(t, processGone, state)

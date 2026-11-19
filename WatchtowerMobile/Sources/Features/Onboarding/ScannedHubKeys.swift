@@ -88,30 +88,3 @@ struct ScannedHubKeys {
         return bytes
     }
 }
-
-/// Why a keybox's keys could not be stored.
-enum KeyboxKeysError: Error, Equatable {
-    case badKey
-}
-
-extension HubLinkKeys {
-    /// This link with a keybox's keys (spec §2.3): the meta key, the keybox's epoch and the one it just retired.
-    /// Epochs this link already holds stay unless newer ones push them out (`saveHubLink` keeps the newest
-    /// `maxEpochs`). Throws for a key that is not base64url of 32 bytes.
-    func adding(_ keys: KeyboxKeys) throws -> HubLinkKeys {
-        var byEpoch = Dictionary(epochs.map { ($0.epoch, $0) }) { _, new in new }
-        if let previous = keys.previousEpoch, let data = keys.previousDataKey, let alert = keys.previousAlertKey {
-            byEpoch[previous] = EpochKeys(epoch: previous, dataKey: try Self.key(data), alertKey: try Self.key(alert))
-        }
-        byEpoch[keys.epoch] = EpochKeys(epoch: keys.epoch, dataKey: try Self.key(keys.dataKey), alertKey: try Self.key(keys.alertKey))
-        var updated = self
-        updated.metaKey = try Self.key(keys.metaKey)
-        updated.epochs = Array(byEpoch.values.sorted { $0.epoch < $1.epoch }.suffix(Self.maxEpochs))
-        return updated
-    }
-
-    private static func key(_ text: String) throws -> Data {
-        guard let bytes = WireBytes.fromBase64URL(text), bytes.count == 32 else { throw KeyboxKeysError.badKey }
-        return bytes
-    }
-}

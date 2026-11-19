@@ -70,8 +70,8 @@ public final class InMemoryPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
     }
 
     /// A store whose device identity is `identity` (a fixed test pairing) instead of a fresh one.
-    public convenience init(identity: DeviceIdentityKeys) throws {
-        self.init()
+    public convenience init(identity: DeviceIdentityKeys, now: @escaping @Sendable () -> Date = { Date() }) throws {
+        self.init(now: now)
         _ = try backend.add(
             identity.signing.rawRepresentation, account: "identity.sig", access: .whenUnlocked, group: nil, dataProtection: true)
         _ = try backend.add(
@@ -93,6 +93,9 @@ public final class InMemoryPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
     public func existingIdentity() throws -> DeviceIdentityKeys? { try store.existingIdentity() }
     public func hubLink(_ hubID: String) throws -> HubLinkKeys? { try store.hubLink(hubID) }
     public func saveHubLink(_ keys: HubLinkKeys) throws { try store.saveHubLink(keys) }
+    public func updateHubLink(_ hubID: String, _ change: (HubLinkKeys) throws -> HubLinkKeys) throws -> HubLinkKeys? {
+        try store.updateHubLink(hubID, change)
+    }
     public func removeHubLink(_ hubID: String) throws { try store.removeHubLink(hubID) }
     public func hubSigningKey(_ hubID: String) throws -> Curve25519.Signing.PublicKey? { try store.hubSigningKey(hubID) }
     public func alertMaterial(_ hubID: String) throws -> AlertMaterial? { try store.alertMaterial(hubID) }
@@ -105,5 +108,6 @@ public final class InMemoryHubKeyStore: HubKeyStore, @unchecked Sendable {
     public init() {}
 
     public func hubIdentity(hubID: String) throws -> (keys: HubIdentityKeys, created: Bool) { try store.hubIdentity(hubID: hubID) }
+    public func existingHubIdentity(hubID: String) throws -> HubIdentityKeys? { try store.existingHubIdentity(hubID: hubID) }
     public func deleteHubIdentity(hubID: String) throws { try store.deleteHubIdentity(hubID: hubID) }
 }

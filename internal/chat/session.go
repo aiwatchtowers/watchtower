@@ -118,6 +118,9 @@ func (s *Session) Run(ctx context.Context, in io.Reader) error {
 				s.cancel()
 			case CommandClose:
 				return nil
+			case CommandAttach:
+				// Listen mode answers attach before a command reaches
+				// Run; on stdin it means nothing.
 			default:
 				_ = s.w.Emit(Event{Type: EventError, Code: CodeInternal, Message: fmt.Sprintf("unknown command %q", m.cmd.Type)})
 			}
@@ -269,6 +272,13 @@ func (s *Session) now() time.Time {
 		return s.Now()
 	}
 	return time.Now()
+}
+
+// busy: a turn runs (its terminal event has not gone out yet).
+func (s *Session) busy() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cur != nil && !s.cur.terminal
 }
 
 func (s *Session) cancel() {

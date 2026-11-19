@@ -79,7 +79,8 @@ final class ChatQuestionEscalator {
     /// The run in flight per session, with its token: a run `stop()`
     /// cancelled never clears a later one.
     private var inFlight: [Int64: (token: Int, task: Task<Void, Never>)] = [:]
-    private var runsStarted = 0
+    /// Runs started so far (read by tests as booked state).
+    private(set) var runsStarted = 0
     private var running = false
     private var cancelTick: (() -> Void)?
 
@@ -91,6 +92,15 @@ final class ChatQuestionEscalator {
 
     /// Whether a run for `sessionID` is in flight (a test seam).
     func isEscalating(_ sessionID: Int64) -> Bool { inFlight[sessionID] != nil }
+
+    /// Returns once no run is in flight, awaiting each run's own task (a
+    /// test seam; no clock). A run's end clears its entry (`finished`, or
+    /// `stop()` for a cancelled one).
+    func runsSettled() async {
+        while let task = inFlight.values.first?.task {
+            await task.value
+        }
+    }
 
     func start() {
         guard !running else { return }

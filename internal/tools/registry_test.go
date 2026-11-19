@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/stretchr/testify/assert"
@@ -518,16 +517,11 @@ func TestAgent05_ConcurrentApplyExecutesOnce(t *testing.T) {
 
 	<-entered // one Apply holds the claim and is inside Execute
 	// The winner cannot answer while it is blocked, so this is the loser. If
-	// nothing answers, the second Apply is blocked inside Execute too — which
-	// is exactly the defect, so say so instead of deadlocking the suite.
-	select {
-	case loser := <-results:
-		assert.ErrorIs(t, loser.err, ErrBadTransition)
-		assert.Nil(t, loser.row)
-	case <-time.After(5 * time.Second):
-		close(release)
-		t.Fatal("the second Apply reached Execute: the claim did not refuse it")
-	}
+	// nothing answers, the second Apply is blocked inside Execute too — the
+	// defect, which hangs here for go test -timeout to report.
+	loser := <-results
+	assert.ErrorIs(t, loser.err, ErrBadTransition)
+	assert.Nil(t, loser.row)
 
 	close(release)
 	winner := <-results
@@ -863,6 +857,29 @@ func TestList_FiltersBySurface(t *testing.T) {
 	assert.Len(t, reg.List("main"), 1)
 	assert.Empty(t, reg.List("target"))
 	assert.Error(t, reg.Register(newEchoTool(t, false, &executed)), "duplicate name")
+}
+
+// The tuning surface sees only the tools naming it (spec
+// 2026-11-03-tuning-chat-design D62): a surface-less tool, visible on every
+// other surface, is not listed there, so the MCP server never mounts it.
+func TestList_TuningSeesOnlyNamedTools(t *testing.T) {
+	reg := New(openDB(t))
+	schema, err := jsonschema.For[echoArgs](nil)
+	require.NoError(t, err)
+	exec := func(context.Context, *db.DB, Call) (any, error) { return "ok", nil }
+	require.NoError(t, reg.Register(&Tool{Name: "anywhere", Description: "x", InputSchema: schema,
+		Access: AccessRead, Execute: exec}))
+	require.NoError(t, reg.Register(&Tool{Name: "tuned", Description: "x", InputSchema: schema,
+		Access: AccessRead, Surfaces: []string{SurfaceTuning}, Execute: exec}))
+	names := func(surface string) []string {
+		var out []string
+		for _, tl := range reg.List(surface) {
+			out = append(out, tl.Name)
+		}
+		return out
+	}
+	assert.Equal(t, []string{"tuned"}, names(SurfaceTuning))
+	assert.Equal(t, []string{"anywhere"}, names("main"))
 }
 
 func TestAll_ReturnsEveryToolInRegistrationOrder(t *testing.T) {

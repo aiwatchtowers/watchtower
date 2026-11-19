@@ -8,13 +8,13 @@ Watchtower has no account, no cloud service and no analytics of its own. Three t
 - **Sign-ins.** OAuth tokens for Slack, Google, Jira and Linear are stored as separate files in that folder, readable only by your user. Quick Connection secrets are the same.
 - **Meeting transcription.** Audio is captured and transcribed on the Mac. The speech models are downloaded once, on first use, then run locally. Recording audio is deleted after 30 days (**Settings → Meetings → Delete audio after N days**); transcript text is kept.
 - **Knowledge search.** The index is local; only its image descriptions and link summaries use AI (below).
-- **Mechanical features.** Attention detection and Claude plan limits make no AI calls.
+- **Mechanical features.** Attention detection and Subscription plan limits make no AI calls.
 
-Removing an account deletes its sign-in file. With **Delete an account's data when its access is revoked** on, a revoked account's synced data is deleted after a 72-hour notice, and so is a source's that Watchtower has not reached for 30 days: see [Revoked access deletes an account's data](revoked-access.md).
+Removing an account deletes its sign-in file. **Delete an account's data when its access ends** (**Settings → System**, under **Privacy**) is on by default: a revoked account's synced data is deleted after a 72-hour notice, and so is a removed Slack workspace's. Turned off, synced data stays on this Mac until you delete it with **Reset All Data…**. Either way, briefings, recaps, ideas, memory, chats and meeting transcripts are kept: they mix several sources. See [Revoked access deletes an account's data](revoked-access.md).
 
 In **Settings → System**, **Reset & Regenerate…** deletes the AI-generated data (raw Slack data, config and profile stay) and **Reset All Data…** removes the config, the database folder, preferences and caches, then quits.
 
-Reset All Data leaves your meeting recordings in `~/Library/Application Support/Watchtower/recordings`, the iPhone-sync folder next to them (`MobileHub`), the sync keys in your Keychain and anything already in iCloud. Delete the recordings by hand. To clear iPhone data, turn off **Sync with iPhone** and remove the phone before you reset.
+Reset All Data leaves your meeting recordings in `~/Library/Application Support/Watchtower/recordings`, an older version's iPhone-sync folder next to them (`MobileHub`, with any `set-aside-<time>` folder in it) and anything already in iCloud. The Mac's iPhone-sync keys go with the database folder. If an older version's keys were not handed over yet, they stay in your Keychain under `com.watchtower` until the hand-over finishes; Reset All Data does not remove them. Delete the recordings by hand. To clear iPhone data, turn off **Mobile sync** and remove the phone before you reset.
 
 ## Watchtower stays out of Time Machine
 <!-- learn
@@ -46,7 +46,7 @@ Most of what Watchtower knows lives in the database; a few things are files besi
 
 - **Logs** name channels, people and meetings by id and record counts and errors, never message text, titles or AI answers. Log files from an earlier version may hold text until they rotate out.
 - **AI calls leave no session files.** Watchtower's own Claude and Codex calls write nothing to the agent's history folder; a chat picks up again from its saved messages. Workbench sessions are the agent's own and keep their history.
-- **Still files:** meeting recordings, chat attachments, target images, Memory's notes and sign-in files, readable only by your user. FileVault protects them at rest.
+- **Still files:** meeting recordings, chat attachments, target images, Memory's notes and sign-in files, readable only by your user. FileVault protects them at rest; when it is off, Settings → Privacy and Connections → Slack say so and open its settings.
 - **What you paste into a session's Workchat** is deleted when that session ends.
 
 ## What goes to your AI provider
@@ -57,10 +57,11 @@ Every AI feature sends the relevant text to the provider you chose in [AI provid
 - **Mail and Jira digests:** the text of new mail and changed issues and comments.
 - **Briefing, day plan, Catch Up:** your calendar, targets, digests and attention items.
 - **Meeting recaps and the meeting chat:** the transcript, unless the recording is [private](../features/meeting-recording-private-and-export.md).
-- **Chats:** your question plus whatever the assistant reads to answer it, such as messages, mail, tickets or memory notes. It reads them through Watchtower's local tools, and what a tool returns is sent to the provider.
+- **Chats:** your question plus whatever the assistant reads to answer it, such as messages, mail, tickets or memory notes. It reads them through Watchtower's local tools, and what a tool returns is sent to the provider. With [Live Slack](sources-and-accounts.md#live-slack-through-your-claude-or-chatgpt-account) on, the assistant can also read Slack through your Claude or ChatGPT account's own Slack connector; what it reads that way stays in that chat and is not kept anywhere else.
 - **Asking with ⌘/:** the same as Chats, plus a short note on the tab you are on, its empty-state status line and the selected item's title. The note is sent with that message only and is not stored.
 - **Automations:** a confirmed automation sends data to the provider on its own schedule whenever its recipe calls `llm()` or `agent()`.
 - **Knowledge search:** new images (strong model) and the text of public pages that synced Slack or Confluence links point to (light model). See [Images and links](../features/search-and-knowledge.md#images-and-links).
+- **Agent coach and tuning chat:** the numbers from a workbench's **Analytics**, your Watchtower prompts, skills, instruction files and allow rules, and for the coach your spec and code review findings and comments and the lines you sent to agents and chats. The tuning chat reads no Slack, mail, Jira, Linear or meeting text.
 - **Workbench sessions:** run by Claude Code or Codex in your folder, so they go to that agent's provider. Anything that agent reads or writes is its provider's concern.
 
 With **Ollama / Local** on a server on your own machine, the text never leaves it. Point it at a remote server and it goes there.
@@ -69,28 +70,30 @@ With **Ollama / Local** on a server on your own machine, the text never leaves i
 
 Slack is read-only. The assistant sends or edits something only after you approve it, unless you gave a confirmed automation an automatic grant for that action. A Quick Connection (an outside tool server you add) receives what the assistant sends it when you use it in chat, and what a confirmed automation sends it through `mcp()` on its schedule.
 
-Other network traffic: calls to each source's own service, Knowledge search opening public links like a browser visit (the site sees your Mac's address; a tracking link can tell its author), a version check against GitHub every 6 hours, and a read of your Claude plan limits from Anthropic using Claude Code's sign-in.
+Other network traffic: calls to each source's own service, Knowledge search opening public links like a browser visit (the site sees your Mac's address; a tracking link can tell its author), a version check against GitHub every 6 hours, a read of your Claude plan limits from Anthropic using Claude Code's sign-in, and a read of your Codex limits through the Codex tool's own sign-in.
 
 ## What goes to iCloud
 <!-- learn
 id: privacy-iphone-encrypted
 title: iPhone sync is end-to-end encrypted
-text: **Sync with iPhone** goes through your own iCloud, sealed with keys only your Mac and paired phones hold.
+text: **Mobile sync** goes through your own iCloud, sealed with keys only your Mac and paired phones hold.
 area: iphone
 level: next
 kind: feature
 since: 0.24.0
 -->
 
-Nothing, unless you turn on **Sync with iPhone** in **Settings → Mobile**. It is off by default.
+Nothing, unless you turn on **Mobile sync** in **Settings → Mobile**. It is off by default.
 
 When it is on, your Mac publishes a trimmed view of its data to your own iCloud (CloudKit) for your iPhone app: Workbench boards with their targets and comments, sessions and their reports, asks, a session's chat (only while the phone has it open), calendar events, meeting transcripts and recaps, and the status of phone recordings (never tokens). The phone sends back actions and recordings.
 
 It is end-to-end encrypted.
 
-Records are sealed with keys held only by your Mac and your paired phones, so iCloud holds ciphertext. A few payload-free alert signals are the exception.
+Records are sealed with keys held only by your Mac and your paired phones, so iCloud holds ciphertext. A few payload-free alert signals are the exception. Relay isn't in the current version of Watchtower for iPhone. Over Relay, the same sealed records go through the relay, and a work alert reaches the phone as a push that carries only an encrypted envelope: the relay and Apple's push service see the word **Watchtower**, never the alert's title or text. The Mac keeps its keys in a file readable only by your user, `~/.local/share/watchtower/.hub/identity.key`. An older version kept them in the Keychain; the update moves them into that file and then deletes the Keychain items.
 
-A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** or **Forget** on the phone (Settings → Macs) deletes that Mac's data from the phone. Removing the phone on the Mac freezes it there: what it already synced stays readable until you tap **Forget**.
+**Diagnostics** in **Settings → Mobile** shows how long the Mac took to apply phone actions. Those timings hold no content, are kept for 7 days on the Mac and never leave it.
+
+A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** or **Forget** on the phone (Settings → Towers) deletes its data from the phone. Removing the phone on the Mac freezes it there: what it already synced stays readable until you tap **Forget**. Turning off **Mobile sync** deletes the records your Mac published and unlinks every phone; after you turn it back on, link each phone again. If the delete fails, **Settings → Mobile** says so and the Mac tries again while sync stays off. To unlink one phone only, remove it.
 
 ## How much an assistant can read in one session
 <!-- learn
@@ -139,6 +142,15 @@ Inbox items made from a deleted message or mail stay, with their text removed. I
 ## When your company manages the Mac
 
 A company's configuration profile can restrict sources, iPhone sync, Quick Connections, AI providers and claude.ai tools. Such controls show **Managed by your organization**; nothing is deleted because of a rule. See [Managed by your organization](managed-by-your-organization.md).
+
+## On a Linux host or a Mac without the app
+<!-- learn: none -->
+
+A [headless host](../features/headless-host.md) keeps the same promise: everything it sends your phone is end-to-end encrypted, and the relay carries only ciphertext. Its key is a file in `~/.local/share/watchtower/.hub`, readable only by your user, as on the Mac: keep the box's disk and your account to yourself. A few things differ from the Mac app.
+
+- **No audit line in a system log on Linux.** There the content-free read line described above is not written. The read limits still hold.
+- **No organization policy on Linux.** A configuration profile exists only on macOS, so nothing is managed on a Linux host.
+- **The service holds no secret.** Its logs carry ids, counts and errors, as Watchtower's logs do on the Mac.
 
 ## Related
 

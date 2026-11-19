@@ -6,35 +6,48 @@ import (
 	"watchtower/internal/providers/caps"
 )
 
+// InvalidValueError is the error AIConfig.Validate returns for a value it
+// rejects. Its message is the same text the plain errors it replaced carried;
+// the type lets a caller (watchtower diagnostics) tell "the config holds an
+// invalid value" from "the config could not be read" without parsing text.
+type InvalidValueError struct{ Msg string }
+
+func (e *InvalidValueError) Error() string { return e.Msg }
+
+func invalidValue(format string, args ...any) error {
+	return &InvalidValueError{Msg: fmt.Sprintf(format, args...)}
+}
+
 // Validate checks configuration, never policy: reading a managed installation
 // must preserve the owner's values even when policy currently forbids them.
+// Every error it returns is an *InvalidValueError.
 func (a AIConfig) Validate() error {
 	preferred := a.ConfiguredProviderID()
 	if preferred == "" {
 		preferred = DefaultAIProvider
 	}
 	if !KnownAIProvider(preferred) {
-		return fmt.Errorf("unknown AI provider %q", preferred)
+		return invalidValue("unknown AI provider %q", preferred)
 	}
 	for id := range a.Providers {
 		if !KnownAIProvider(id) {
-			return fmt.Errorf("unknown AI provider bucket %q", id)
+			return invalidValue("unknown AI provider bucket %q", id)
 		}
 	}
 	reserve := a.Fallback.Provider
 	if reserve != "" {
 		if !KnownAIProvider(reserve) {
-			return fmt.Errorf("unknown fallback provider %q", reserve)
+			return invalidValue("unknown fallback provider %q", reserve)
 		}
 		if reserve == preferred {
-			return fmt.Errorf("fallback provider must differ from preferred provider")
+			return invalidValue("fallback provider must differ from preferred provider")
 		}
 		if !inAnyPair(reserve) {
-			return fmt.Errorf("fallback provider must be claude or codex")
+			return invalidValue("fallback provider must be claude or codex")
 		}
 	}
 	if a.Fallback.Enabled && (reserve == "" || !caps.Pairs(preferred, reserve)) {
-		return fmt.Errorf("enabled fallback requires a Claude/Codex pair")
+		return invalidValue("enabled fallback requires a Claude/Codex pair")
 	}
 	return nil
 }

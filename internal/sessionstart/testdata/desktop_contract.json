@@ -1,0 +1,13 @@
+{
+  "lock": [
+    {"db_path": "/data/acme/watchtower.db", "workbench": 7, "want": "/data/acme/workbench-7.place.lock"},
+    {"db_path": "/tmp/x y/w.db", "workbench": 12, "want": "/tmp/x y/workbench-12.place.lock"}
+  ],
+  "agent_not_found": [
+    {"agent": "claude", "want": "claude was not found"},
+    {"agent": "codex", "want": "codex was not found"}
+  ],
+  "move_failed_prefix": "Could not move the session into its worktree: ",
+  "setup_not_run_prefix": "The worktree setup command did not run — run it in the terminal: ",
+  "agent_not_found_exit": {"code": 3, "error": "agent_not_found"}
+}

@@ -1,3 +1,5 @@
+import CryptoKit
+import WatchtowerE2ETesting
 import XCTest
 @testable import WatchtowerSync
 
@@ -58,6 +60,26 @@ final class KeyboxTests: XCTestCase {
         XCTAssertEqual(decoded, keybox)
     }
 
+    /// The ephemeral relay key pairs (Phase 5) travel as `relay_kx` / `previous_relay_kx`, and a keybox of a hub
+    /// that predates them decodes with both nil.
+    func testRelayKXRoundTripsAndAnOldKeyboxDecodesWithout() throws {
+        let withKX = KeyboxKeys(
+            epoch: 4, dataKey: "a", alertKey: "b", metaKey: "c", previousEpoch: 3, previousDataKey: "d",
+            previousAlertKey: "e", relayKX: KeyboxRelayKX(hubPub: "h1", devicePub: "d1"),
+            previousRelayKX: KeyboxRelayKX(hubPub: "h0", devicePub: "d0"))
+        let encoded = try RelayCoder.makeEncoder().encode(Keybox(grant: grant, keys: withKX))
+        let json = try XCTUnwrap(String(data: encoded, encoding: .utf8))
+        XCTAssertTrue(json.contains(#""relay_kx":{"device_pub":"d1","hub_pub":"h1"}"#), json)
+        XCTAssertTrue(json.contains(#""previous_relay_kx":{"device_pub":"d0","hub_pub":"h0"}"#), json)
+        XCTAssertEqual(try RelayCoder.makeDecoder().decode(Keybox.self, from: encoded).keys, withKX)
+
+        let old = try RelayCoder.makeEncoder().encode(Keybox(grant: grant, keys: keys))
+        XCTAssertFalse(try XCTUnwrap(String(data: old, encoding: .utf8)).contains("relay_kx"))
+        let decoded = try XCTUnwrap(try RelayCoder.makeDecoder().decode(Keybox.self, from: old).keys)
+        XCTAssertNil(decoded.relayKX)
+        XCTAssertNil(decoded.previousRelayKX)
+    }
+
     func testGrantStatesTravelAsOptionalFlags() throws {
         let waiting = DeviceGrant(
             deviceID: "d", hubID: "h", name: "n", scope: .shared, linked: false, typingAllowed: false,
@@ -113,5 +135,42 @@ final class KeyboxTests: XCTestCase {
         XCTAssertEqual(record.kind, "hello")
         XCTAssertEqual(record.zone, .relay)
         XCTAssertEqual(record.payload, data)
+    }
+
+    // MARK: - Opening with candidates (relay client Phase 5, Task 8)
+
+    /// A link holding an offered and a current ephemeral key; the keybox sealed to `recipient` opens through the
+    /// transport (`transport_switched`'s keybox) and through the replica (the zone's keybox).
+    private func assertOpens(sealedTo recipient: (HubLinkKeys) throws -> Curve25519.KeyAgreement.PublicKey) async throws {
+        let store = try TestE2E.phoneStore()
+        let offered = EphemeralKey.generate()
+        let current = EphemeralKey.generate()
+        let link = try XCTUnwrap(store.updateHubLink(TestE2E.hubID.uuidString) { link in
+            var copy = link
+            copy.offeredKX = offered
+            copy.currentKX = current
+            return copy
+        })
+        let sealed = try EphemeralLink.sealedKeybox(to: try recipient(link), keys: keys)
+        let transport = TestE2E.phoneTransport(try TestE2E.phone(store: store))
+
+        let viaTransport = try await transport.openKeybox(sealed: sealed, deviceID: TestE2E.deviceID)
+        let viaReplica = try TestE2E.opener(store: store).openKeybox(
+            wireName: Keybox.recordName(deviceID: TestE2E.deviceID.uuidString), envelope: sealed)
+
+        XCTAssertEqual(viaTransport.keys, keys)
+        XCTAssertEqual(viaReplica, viaTransport)
+    }
+
+    func testAKeyboxSealedToTheOfferOpens() async throws {
+        try await assertOpens { try XCTUnwrap($0.offeredKX).agreementKey().publicKey }
+    }
+
+    func testAKeyboxSealedToCurrentOpens() async throws {
+        try await assertOpens { try XCTUnwrap($0.currentKX).agreementKey().publicKey }
+    }
+
+    func testAKeyboxSealedToDevKXOpens() async throws {
+        try await assertOpens { _ in TestE2E.deviceIdentity.agreement.publicKey }
     }
 }

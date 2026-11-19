@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import WatchtowerHostedRelay
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -23,7 +24,7 @@ final class FetchCadenceWiringTests: XCTestCase {
     }
 
     /// A booted demo environment whose safety poll waits on its first sleep.
-    private func makeWired() async throws -> Wired {
+    private func makeWired(wake: (@Sendable () async -> Void)? = nil) async throws -> Wired {
         let sleeper = TickSleeper()
         let clock = MutableClock()
         let remote = RemoteFetchRecorder()
@@ -36,6 +37,7 @@ final class FetchCadenceWiringTests: XCTestCase {
             recordingsDirectory: try makeRecordingsDirectory(),
             now: { clock.now },
             remoteFetch: { try await remote.fetch($0) },
+            wake: wake,
             sleep: { try await sleeper.sleep($0) },
             energy: counter
         )
@@ -100,6 +102,67 @@ final class FetchCadenceWiringTests: XCTestCase {
         try await poll({ wired.remote.depths.count == 2 && wired.sleeper.waitingCount == 1 }, "the return fetches at once")
         XCTAssertEqual(wired.remote.depths.last, .full)
         XCTAssertEqual(wired.counter.counts(daysAgo: 0)[.fetchForeground], 1)
+    }
+
+    /// Live link R6/R7: the return to the foreground wakes the transport (the socket's ping, a parallel redial)
+    /// before its fetch reads the zones, and the span from becoming active to all zones read is one `wake_ms` row.
+    func testSetActiveWakesSessionBeforeFetch() async throws {
+        let steps = StepLog()
+        let wired = try await makeWired { await steps.append("wake") }
+        steps.fetches = { wired.remote.depths.count }
+        wired.env.setActive(false)
+        wired.clock.advance(SessionCadence.foregroundRefetchAfter(role: .active) + 1)
+        wired.remote.holding = true
+        let fetchesBefore = wired.remote.depths.count
+
+        wired.env.setActive(true)
+        try await poll({ wired.remote.heldCount == 1 }, "the return did not fetch")
+        XCTAssertEqual(steps.all, ["wake after \(fetchesBefore) fetches"], "the wake ran before the fetch")
+        XCTAssertEqual(wired.remote.depths.count, fetchesBefore + 1)
+        wired.clock.advance(0.8)
+        wired.remote.release()
+
+        try await poll({ ((try? wired.env.store.wakeSamples(since: .distantPast)) ?? []).count == 1 }, "no wake sample")
+        let sample = try XCTUnwrap(try wired.env.store.wakeSamples(since: .distantPast).first)
+        XCTAssertEqual(sample.wakeMs, 800)
+        XCTAssertEqual(sample.transport, .cloudKit)
+    }
+
+    /// The app leaves again while the return's wake still runs, and that wake does not stop on cancel: the fetch is
+    /// cancelled anyway, nothing is read and no `wake_ms` sample is recorded; the next return is not held behind it.
+    func testLeavingDuringTheWakeCancelsTheReturnsFetch() async throws {
+        let steps = StepLog()
+        let wired = try await makeWired {
+            // The first wake never returns until the test ends, whatever happens to its task.
+            if await steps.append("wake") == 1 { await steps.park() }
+        }
+        defer { steps.unpark() }
+        steps.fetches = { wired.remote.depths.count }
+        wired.env.setActive(false)
+        wired.clock.advance(SessionCadence.foregroundRefetchAfter(role: .active) + 1)
+        let fetchesBefore = wired.remote.depths.count
+
+        wired.env.setActive(true)
+        try await poll({ steps.all.count == 1 && steps.parked }, "the return did not wake")
+        wired.env.setActive(false)
+        // A push now queues behind the running fetch: it is answered only because leaving ended that fetch.
+        let push = Task { await wired.env.handlePush(inForeground: false) }
+        var answered = false
+        for _ in 0..<20_000 where !answered {
+            answered = wired.remote.depths.count > fetchesBefore
+            await Task.yield()
+        }
+        guard answered else {
+            steps.unpark()
+            return XCTFail("the push waited behind the cancelled fetch")
+        }
+        _ = await push.value
+        wired.clock.advance(SessionCadence.foregroundRefetchAfter(role: .active) + 1)
+        wired.env.setActive(true)
+
+        try await poll({ ((try? wired.env.store.wakeSamples(since: .distantPast)) ?? []).count == 1 }, "the next return was held")
+        XCTAssertEqual(wired.remote.depths.count, fetchesBefore + 2, "the push's fetch and the return's: the cancelled one read nothing")
+        XCTAssertEqual(steps.all, ["wake after \(fetchesBefore) fetches", "wake after \(fetchesBefore + 1) fetches"])
     }
 
     // MARK: - Pushes
@@ -217,6 +280,34 @@ final class FetchCadenceWiringTests: XCTestCase {
 
         XCTAssertEqual(wired.remote.pushCount, 0, "the later full fetch already covered the push")
         XCTAssertEqual(wired.remote.fullCount, 3, "the launch, the pull and the link fetch")
+    }
+
+    /// A return's full fetch cancelled by a short leave (Control Center, a system alert) is still owed: the next
+    /// return fetches in full even when a lighter fetch (a push's) made the last sync recent meanwhile.
+    func testAReturnsFetchCancelledByLeavingIsStillOwed() async throws {
+        let wired = try await makeWired()
+        wired.env.setActive(false)
+        wired.clock.advance(SessionCadence.foregroundRefetchAfter(role: .active) + 1)
+        wired.remote.holding = true
+        wired.env.setActive(true)
+        try await poll({ wired.remote.heldCount == 1 }, "the return did not fetch")
+
+        wired.env.setActive(false)
+        wired.remote.release()
+        // A push's light fetch behind the cancelled one makes the last sync recent.
+        let outcome = await wired.env.handlePush(inForeground: false)
+        XCTAssertEqual(outcome, .noData)
+        XCTAssertEqual(wired.remote.pushCount, 1)
+        let fullBefore = wired.remote.fullCount
+
+        wired.clock.advance(1)
+        wired.env.setActive(true)
+        var fetched = false
+        for _ in 0..<20_000 where !fetched {
+            fetched = wired.remote.fullCount == fullBefore + 1
+            await Task.yield()
+        }
+        XCTAssertTrue(fetched, "the return after a cancelled full fetch read nothing")
     }
 
     func testAQuickReturnAppliesWhatTheEngineBufferedWithoutFetching() async throws {
@@ -422,7 +513,7 @@ final class FetchCadenceWiringTests: XCTestCase {
         PushCompletion.serve(
             AppEnvironment.single(env, defaults: try makeDefaults()), arrivedAt: arrivedAt, inForeground: false,
             startWork: BackgroundWork.starter(runner: tasks, suspension: suspension) { true },
-            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) },
+            sleep: { _ in try await sleepUntilCancelled() },
             completion: { completions.append($0) }
         )
         XCTAssertEqual(tasks.begun, ["silent-push-fetch"])
@@ -446,6 +537,87 @@ final class FetchCadenceWiringTests: XCTestCase {
         try await poll({ remote.fullCount == 1 && sleeper.waitingCount == 1 }, "the first activation did not fetch in full")
     }
 
+    // MARK: - Pushes by transport (relay client Phase 4 Task 13)
+
+    private func routedSession(_ hubID: String, route: HubRoute, remote: RemoteFetchRecorder) throws -> HubSession {
+        let session = try HubSession(
+            transport: InMemoryCloudTransport(),
+            replicaPath: try makeReplicaPath(),
+            hubID: hubID,
+            defaults: try makeDefaults(),
+            recordingsDirectory: try makeRecordingsDirectory(),
+            route: route,
+            remoteFetch: { try await remote.fetch($0) },
+            sleep: { _ in try await sleepUntilCancelled() }
+        )
+        addTeardownBlock { @MainActor in session.stop() }
+        return session
+    }
+
+    /// One CloudKit hub and one relay hub, booted.
+    private func mixedHubs() async throws -> (env: AppEnvironment, cloud: RemoteFetchRecorder, relay: RemoteFetchRecorder) {
+        let cloud = RemoteFetchRecorder()
+        let relay = RemoteFetchRecorder()
+        let env = AppEnvironment(backend: .live, defaults: try makeDefaults())
+        env.add(try routedSession(TestHub.acme, route: .cloudKit(.private), remote: cloud))
+        env.add(try routedSession(TestHub.home, route: .hostedRelay(macDeviceID: "mac-home"), remote: relay))
+        await env.waitForBoot()
+        return (env, cloud, relay)
+    }
+
+    func testARelayPushReachesOnlyRelaySessions() async throws {
+        let hubs = try await mixedHubs()
+        _ = await hubs.env.handlePush(inForeground: false, scope: .hostedRelay)
+        XCTAssertEqual(hubs.relay.pushCount, 1)
+        XCTAssertEqual(hubs.cloud.pushCount, 0, "a relay push leaves the CloudKit hub alone")
+    }
+
+    func testACloudKitPushReachesOnlyItsScope() async throws {
+        let hubs = try await mixedHubs()
+        _ = await hubs.env.handlePush(inForeground: false, scope: .private)
+        XCTAssertEqual(hubs.cloud.pushCount, 1)
+        XCTAssertEqual(hubs.relay.pushCount, 0, "a CloudKit push leaves the relay hub alone")
+        _ = await hubs.env.handlePush(inForeground: false, scope: .shared)
+        XCTAssertEqual(hubs.cloud.pushCount, 1, "another database's push")
+        XCTAssertEqual(hubs.relay.pushCount, 0)
+    }
+
+    /// A push's fetch logs in when it must; a refused App Attest assertion is a failed fetch, and the data waits for
+    /// the next open (a real background assertion is manual check M4).
+    func testAFailedLoginIsAFailedFetch() async throws {
+        let clock = ManualRelayClock(now: Date())
+        let fake = FakeHostedRelay(attest: .enforce(exemptDeviceIDs: []), clock: clock)
+        let parts = RelayParts(
+            attest: SpyAppAttest(supported: true), keychain: InMemoryKeychainBackend(), keychainGroup: nil, http: fake.http,
+            sockets: fake.sockets, clock: clock
+        )
+        let relay = SharedRelaySession(config: RelayConfig.parse(fake.origin)) { parts }
+        let transport = try TransportFactory.live(relay: relay).make(
+            .hostedRelay(macDeviceID: "mac-acme"), try TransportStore(path: ":memory:"), TestHub.acme, nil
+        )
+        let session = try HubSession(
+            transport: InMemoryCloudTransport(),
+            replicaPath: try makeReplicaPath(),
+            hubID: TestHub.acme,
+            defaults: try makeDefaults(),
+            recordingsDirectory: try makeRecordingsDirectory(),
+            route: .hostedRelay(macDeviceID: "mac-acme"),
+            remoteFetch: { depth in
+                guard case let .push(since, pollOnFallback) = depth else { return }
+                try await transport.fetchForPush(since: since, grace: 0, pollOnFallback: pollOnFallback)
+            },
+            sleep: { _ in try await sleepUntilCancelled() }
+        )
+        addTeardownBlock { @MainActor in session.stop() }
+        await session.waitForBoot()
+
+        let env = AppEnvironment(backend: .live, defaults: try makeDefaults())
+        env.add(session)
+        let outcome = await env.handlePush(inForeground: false, scope: .hostedRelay)
+        XCTAssertEqual(outcome, .failed)
+        XCTAssertEqual(outcome.backgroundFetchResult, .failed)
+    }
+
     /// A push launch whose scene turns active while the boot still runs:
     /// the activation cannot start the loop yet, so the boot's end starts
     /// it with the owed full fetch at once, not a poll interval later.
@@ -459,7 +631,7 @@ final class FetchCadenceWiringTests: XCTestCase {
         PushCompletion.serve(
             AppEnvironment.single(env, defaults: try makeDefaults()), arrivedAt: arrivedAt, inForeground: false,
             startWork: BackgroundWork.starter(runner: tasks, suspension: suspension) { true },
-            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) },
+            sleep: { _ in try await sleepUntilCancelled() },
             completion: { completions.append($0) }
         )
         try await poll({ remote.heldCount == 1 }, "the launch fetch never began")
@@ -511,5 +683,34 @@ final class RemoteFetchRecorder {
         let all = held
         held = []
         all.forEach { $0.resume() }
+    }
+}
+
+/// The order of what a test's hooks saw.
+@MainActor
+final class StepLog {
+    private(set) var all: [String] = []
+    /// How many fetches had begun, read at each step.
+    var fetches: (() -> Int)?
+
+    private var parkedWake: CheckedContinuation<Void, Never>?
+
+    /// Appends `step`; how many steps there are now.
+    @discardableResult
+    func append(_ step: String) -> Int {
+        all.append("\(step) after \(fetches?() ?? -1) fetches")
+        return all.count
+    }
+
+    var parked: Bool { parkedWake != nil }
+
+    /// Waits until `unpark()`, cancelled or not.
+    func park() async {
+        await withCheckedContinuation { parkedWake = $0 }
+    }
+
+    func unpark() {
+        parkedWake?.resume()
+        parkedWake = nil
     }
 }

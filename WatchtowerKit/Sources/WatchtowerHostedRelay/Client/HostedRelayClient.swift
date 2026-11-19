@@ -9,6 +9,9 @@ import WatchtowerRelayProto
 /// this actor's memory only and is never logged or put in an error.
 public actor HostedRelayClient {
     static let logger = Logger(subsystem: "WatchtowerKit", category: "HostedRelay")
+    /// Called when a request is handed over for sending (its frame queued on the socket in order, or its HTTPS post
+    /// begun): a pull sends one zone's first read before it starts the next zone's (live link R6).
+    @TaskLocal static var submitted: (@Sendable () -> Void)?
 
     /// `UNAVAILABLE` retry (proto README "Errors"): 0.5 s doubling to 8 s, at most 30 s in total.
     static let unavailableFirstDelay = Duration.milliseconds(500)
@@ -278,6 +281,8 @@ public actor HostedRelayClient {
         let status: Int
         let body: Data
         do {
+            // The op itself, not the login it may need first.
+            if token != nil { Self.submitted?() }
             (status, body) = try await http.post(opURL, body: try request.serializedData(), headers: headers)
         } catch {
             if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
@@ -292,6 +297,15 @@ public actor HostedRelayClient {
             throw HostedRelayError.undecodable(status: status)
         }
         if case .error(let error) = response.result {
+            // The relay's failed dispatch is HTTP 5xx with a readable UNSPECIFIED error: "retry with backoff".
+            if (500..<600).contains(status), error.code == .unspecified {
+                Self.logger.error("relay \(Self.name(op), privacy: .public): HTTP \(status), failed on the relay")
+                throw HostedRelayError.undecodable(status: status)
+            }
+            if error.code == .unspecified, error.message == Self.notImplementedMessage {
+                Self.logger.error("relay \(Self.name(op), privacy: .public): not implemented, HTTP \(status)")
+                throw NotImplemented()
+            }
             Self.logger.error("relay \(Self.name(op), privacy: .public): \(String(describing: error.code), privacy: .public), HTTP \(status)")
             throw Self.error(error)
         }
@@ -311,6 +325,15 @@ public actor HostedRelayClient {
         guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
         parts.scheme = parts.scheme?.lowercased() == "http" ? "ws" : "wss"
         return parts.url ?? url
+    }
+
+    /// What a relay without the op's backing (no App Store keys, no APNs key) answers as `UNSPECIFIED`.
+    static let notImplementedMessage = "not implemented"
+
+    /// `UNSPECIFIED` with `notImplementedMessage` over HTTPS: the relay does not run this op. Carries
+    /// nothing of the answer.
+    public struct NotImplemented: Error, Equatable, Sendable {
+        public init() {}
     }
 
     /// A relay `Response.error` as the error the client throws (`post`'s mapping).

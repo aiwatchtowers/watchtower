@@ -209,7 +209,7 @@ func TestConnectSlackAccount_NewRowRefusesATeamAlreadyConnected(t *testing.T) {
 // login path can repair a moved account #1 and still refuses the other team.
 func TestReusableSlackWorkspace_UsesTheHomeTeam(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
-	_, err := initWorkspace(configPath, "", "default")
+	_, err := initWorkspace(configPath, "", "default", false)
 	require.NoError(t, err)
 	cfg, err := config.Load(configPath)
 	require.NoError(t, err)

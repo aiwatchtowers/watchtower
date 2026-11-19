@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- `make mobile-test` only: a simulator test build's simulated entitlements, which the host never enforces.
+	     Never used by a device, archive or Release build. storekitd in the iOS 26.4 simulator refuses
+	     SKTestSession's OctaneSaveConfigurationRequest without this key, so the local configuration never loads. -->
+	<key>com.apple.appstored.octane</key>
+	<true/>
+</dict>
+</plist>

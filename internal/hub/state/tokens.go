@@ -22,15 +22,19 @@ func (s *Store) ZoneToken(zone string) (uint64, error) {
 
 // SetZoneToken stores zone's change token (0 after TOKEN_EXPIRED).
 func (s *Store) SetZoneToken(zone string, since uint64) error {
+	return s.write(func(tx *sql.Tx) error { return SetZoneTokenTx(tx, zone, since) })
+}
+
+// SetZoneTokenTx is SetZoneToken in the caller's transaction (the transport
+// switch rewinds the new transport's mailboxes with its announce).
+func SetZoneTokenTx(tx *sql.Tx, zone string, since uint64) error {
 	v, err := u64(since)
 	if err != nil {
 		return err
 	}
-	return s.write(func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`INSERT INTO zone_tokens (zone, since_seq) VALUES (?, ?)
-			ON CONFLICT(zone) DO UPDATE SET since_seq = excluded.since_seq`, zone, v); err != nil {
-			return fmt.Errorf("writing a zone token: %w", err)
-		}
-		return nil
-	})
+	if _, err := tx.Exec(`INSERT INTO zone_tokens (zone, since_seq) VALUES (?, ?)
+		ON CONFLICT(zone) DO UPDATE SET since_seq = excluded.since_seq`, zone, v); err != nil {
+		return fmt.Errorf("writing a zone token: %w", err)
+	}
+	return nil
 }

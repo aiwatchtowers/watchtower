@@ -11,8 +11,10 @@ package enum Constants {
     package static let databasePath = NSString("~/.local/share/watchtower").expandingTildeInPath
     package static let bundleID = "com.watchtower.desktop"
     package static let configDir = NSString("~/.config/watchtower").expandingTildeInPath
-    /// UserDefaults key of the opt-in mobile hub toggle (Settings → Mobile,
-    /// off by default in every flavor; mobile POC spec §6.1).
+    /// UserDefaults key of the Swift hub's opt-in toggle (mobile POC spec
+    /// §6.1). Read once by the hand-over to the Go hub, which takes it as
+    /// `hub_meta.enabled`, then removed (go hub plan 3 Task 22); Mobile's
+    /// on/off is `watchtower hub status --json` since.
     package static let mobileSyncEnabledKey = "mobileSyncEnabled"
     /// Settings → Mobile → "Keep this Mac awake for the iPhone"; absent reads on (ask #614).
     package static let mobileKeepAwakeKey = "mobileKeepAwake"

@@ -115,7 +115,9 @@ enum BuiltinShotFixtures {
             vm.select(id)
             let item = try XCTUnwrap(vm.items.first { $0.id == id })
             loaded(vm.builtinCard(item.automation))
-            return AnyView(AutomationsView(vm: vm, hooks: hooks))
+            return AnyView(AutomationsView(
+                vm: vm, hooks: hooks, backgroundAI: .allowedByOwner, onAllowBackgroundAI: {}, policyBlocked: { _ in false }
+            ))
         } catch {
             return failure(error)
         }

@@ -27,6 +27,9 @@ final class TargetsViewModel {
 
     private let dbManager: DatabaseManager
     private(set) var observationTask: Task<Void, Never>?
+    /// The observation delivered its baseline: a write from now on reaches
+    /// the VM (tests wait on it); false again after `stopObserving()`.
+    private(set) var observationLive = false
     /// Optional injected runner for tests; production uses ProcessCLIRunner.makeDefault().
     private let cliRunner: CLIRunnerProtocol?
 
@@ -53,7 +56,15 @@ final class TargetsViewModel {
                 return "\(count)|\(latest)"
             }
             do {
-                for try await _ in observation.values(in: dbPool).dropFirst() {
+                var baseline = true
+                for try await _ in observation.values(in: dbPool) {
+                    // The first value is the baseline (`load()` read it); from
+                    // here on every change reaches the VM.
+                    if baseline {
+                        baseline = false
+                        if !Task.isCancelled { self?.observationLive = true }
+                        continue
+                    }
                     // A released VM ends the loop, so its observer leaves the pool
                     // at the next change even if no view called stopObserving().
                     guard !Task.isCancelled, let self else { break }
@@ -67,6 +78,7 @@ final class TargetsViewModel {
     func stopObserving() {
         observationTask?.cancel()
         observationTask = nil
+        observationLive = false
     }
 
     func load() {

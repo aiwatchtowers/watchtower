@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ecdh"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -157,6 +158,127 @@ func TestKitVectors_KDF(t *testing.T) {
 	}
 	if len(confirmNonce) != ConfirmNonceLength {
 		t.Errorf("confirm nonce %d bytes, want %d", len(confirmNonce), ConfirmNonceLength)
+	}
+}
+
+// fixtureEphemerals are the fixture's ephemeral relay keys (Phase 5): the
+// hub's drawn hub_eph and the phone's offered dev_eph, fixed as in the Kit's
+// KDFVectors.
+func fixtureEphemerals(t *testing.T) (hubEph, devEph *ecdh.PrivateKey) {
+	t.Helper()
+	x := func(seed []byte) *ecdh.PrivateKey {
+		k, err := ecdh.X25519().NewPrivateKey(seed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return k
+	}
+	return x(run(0x81, 0xA0)), x(run(0x91, 0xB0))
+}
+
+// ephemeralKey is the hub side of the wt/relay/v2/ derivation.
+func ephemeralKey(t *testing.T, k keys, hubEph, devEph *ecdh.PrivateKey, dir Direction, epoch uint32) []byte {
+	t.Helper()
+	key, err := EphemeralRelayKey(hubEph, devEph.PublicKey(), k.hubKX, k.devKX.PublicKey(),
+		hubEph.PublicKey().Bytes(), devEph.PublicKey().Bytes(), linkNonce, fixtureHubID, k.deviceID, epoch, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+func TestEphemeralRelayKeyMatchesKitVectors(t *testing.T) {
+	var fx struct {
+		EphemeralRelayKeys struct {
+			HubEphemeralPublic    string            `json:"hubEphemeralPublic"`
+			DeviceEphemeralPublic string            `json:"deviceEphemeralPublic"`
+			Keys                  map[string]string `json:"keys"`
+		} `json:"ephemeralRelayKeys"`
+	}
+	loadFixture(t, "kdf.json", &fx)
+	k := fixtureKeys(t)
+	hubEph, devEph := fixtureEphemerals(t)
+	got := fx.EphemeralRelayKeys
+	if pub := hex.EncodeToString(hubEph.PublicKey().Bytes()); pub != got.HubEphemeralPublic {
+		t.Errorf("hub ephemeral public: got %s, fixture %s", pub, got.HubEphemeralPublic)
+	}
+	if pub := hex.EncodeToString(devEph.PublicKey().Bytes()); pub != got.DeviceEphemeralPublic {
+		t.Errorf("device ephemeral public: got %s, fixture %s", pub, got.DeviceEphemeralPublic)
+	}
+	if len(got.Keys) != 4 {
+		t.Fatalf("fixture holds %d ephemeral relay keys, want 4", len(got.Keys))
+	}
+	for _, epoch := range []uint32{1, 2} {
+		for _, dir := range []Direction{PhoneToHub, HubToPhone} {
+			name := fmt.Sprintf("%s/%d", dir, epoch)
+			if key := hex.EncodeToString(ephemeralKey(t, k, hubEph, devEph, dir, epoch)); key != got.Keys[name] {
+				t.Errorf("ephemeral relay key %s: got %s, fixture %s", name, key, got.Keys[name])
+			}
+		}
+	}
+}
+
+func TestEphemeralRelayKeyAgreesAndBindsEveryInput(t *testing.T) {
+	k := fixtureKeys(t)
+	hubEph, devEph := fixtureEphemerals(t)
+	hubSide := ephemeralKey(t, k, hubEph, devEph, PhoneToHub, 1)
+
+	phoneSide, err := EphemeralRelayKey(devEph, hubEph.PublicKey(), k.devKX, k.hubKX.PublicKey(),
+		hubEph.PublicKey().Bytes(), devEph.PublicKey().Bytes(), linkNonce, fixtureHubID, k.deviceID, 1, PhoneToHub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(hubSide, phoneSide) {
+		t.Error("the hub and the phone derive different keys")
+	}
+	if bytes.Equal(hubSide, relayKey(t, k, PhoneToHub, 1)) {
+		t.Error("the ephemeral key equals the static wt/relay/v1/ key")
+	}
+	if bytes.Equal(hubSide, ephemeralKey(t, k, hubEph, devEph, HubToPhone, 1)) {
+		t.Error("the two directions share a key")
+	}
+	if bytes.Equal(hubSide, ephemeralKey(t, k, hubEph, devEph, PhoneToHub, 2)) {
+		t.Error("two epochs share a key")
+	}
+	other, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(hubSide, ephemeralKey(t, k, other, devEph, PhoneToHub, 1)) {
+		t.Error("a new hub ephemeral keeps the key")
+	}
+	if bytes.Equal(hubSide, ephemeralKey(t, k, hubEph, other, PhoneToHub, 1)) {
+		t.Error("a new device ephemeral keeps the key")
+	}
+}
+
+func TestEphemeralRelayKeyRefusesAllZeroSharedSecrets(t *testing.T) {
+	k := fixtureKeys(t)
+	hubEph, devEph := fixtureEphemerals(t)
+	// u = 0 is a low-order point: X25519 with it is all zero.
+	zero, err := ecdh.X25519().NewPublicKey(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]func() ([]byte, error){
+		"ephemeral": func() ([]byte, error) {
+			return EphemeralRelayKey(hubEph, zero, k.hubKX, k.devKX.PublicKey(),
+				hubEph.PublicKey().Bytes(), zero.Bytes(), linkNonce, fixtureHubID, k.deviceID, 1, PhoneToHub)
+		},
+		"static": func() ([]byte, error) {
+			return EphemeralRelayKey(hubEph, devEph.PublicKey(), k.hubKX, zero,
+				hubEph.PublicKey().Bytes(), devEph.PublicKey().Bytes(), linkNonce, fixtureHubID, k.deviceID, 1, PhoneToHub)
+		},
+	}
+	for name, derive := range cases {
+		if key, err := derive(); err == nil || key != nil {
+			t.Errorf("%s: an all-zero shared secret derived %x, err %v", name, key, err)
+		}
+	}
+	// The transcript's ephemeral publics are 32 bytes each.
+	if _, err := EphemeralRelayKey(hubEph, devEph.PublicKey(), k.hubKX, k.devKX.PublicKey(),
+		hubEph.PublicKey().Bytes()[:31], devEph.PublicKey().Bytes(), linkNonce, fixtureHubID, k.deviceID, 1, PhoneToHub); err == nil {
+		t.Error("a 31-byte hub ephemeral public was accepted")
 	}
 }
 

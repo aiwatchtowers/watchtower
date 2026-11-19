@@ -3,18 +3,23 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
+	"watchtower/internal/chatengine"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/actions/handlers"
-	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/wire"
+	"watchtower/internal/sessionhost"
+	"watchtower/internal/sessionstart"
 )
 
 // transcriptAssetDir is meeting_transcript's own staging dir inside the
@@ -22,6 +27,9 @@ import (
 // source's first call sweeps every *.asset in it, so nothing else may live
 // there.
 const transcriptAssetDir = "transcripts"
+
+// hostWarmBudget bounds the start's first reach of session-host.
+const hostWarmBudget = 10 * time.Second
 
 // reportKinds is what a stored report or summary changes: the report, its
 // timeline milestones and the terminal_session record's report_* fields.
@@ -31,12 +39,14 @@ var reportKinds = []slices.Kind{"session_report", "session_timeline", "terminal_
 // read never waits longer for a lock.
 const watchBusy = time.Second
 
-// errNoSessionHost answers a session action until the session-host port is
-// wired (Plan 1b Task 15).
+// errNoSessionHost answers a session action on a hub with no session-host
+// socket.
 var errNoSessionHost = errors.New("hub: no session host")
 
-// noSessionHost is the SessionPort until Task 15 wires session-host: no
-// session is live, and starting, typing into or stopping one fails.
+// noSessionHost is the SessionPort of a hub given no session-host socket
+// (Options.SessionStart.Socket ""; phase 1 never falls back to the
+// Desktop's host): no session is live, and starting, typing into or stopping
+// one fails.
 type noSessionHost struct{}
 
 func (noSessionHost) Live(context.Context, int64) (handlers.LiveRun, bool, error) {
@@ -70,6 +80,70 @@ type wiring struct {
 	// seed is the report runner's Seed; seeded is closed once it succeeded.
 	seed   func(context.Context) error
 	seeded chan struct{}
+	// port is the real session port the wiring built (nil when Options
+	// carried one, or no socket); closed with the wiring.
+	port *sessionstart.Port
+	// live is the sources' liveness over the port's host list (nil when the
+	// port cannot list: nothing is live).
+	live *liveness
+	// away nudges the work alerts when the owner leaves the Mac.
+	away *awayWatch
+	// chat is the daemon's chat engine (Options.ChatEngine; nil = chat off,
+	// runner_down). The hub uses it and never closes it: the daemon stops
+	// it after the hub.
+	chat *chatengine.Engine
+	// chatTimer republishes what only time changes (nil under
+	// workbench_only).
+	chatTimer *chatTimer
+	chatPush  *chatPushWatch
+	// bg is the chat's background work (turn-end pushes, approved actions'
+	// applies), started only through spawn: bgClosed, set under bgMu at
+	// close, refuses new work so no Add ever races the close's Wait. An
+	// apply runs to its end within chatBackgroundBudget.
+	bgMu     sync.Mutex
+	bgClosed bool
+	bg       sync.WaitGroup
+}
+
+// chatBackgroundBudget bounds the hub stop's wait for the chat's background
+// work (an approved action's apply, a cancelled title): as the runner's
+// close, the stop never waits longer.
+const chatBackgroundBudget = 30 * time.Second
+
+// spawn runs work on its own goroutine, tracked for the close; false once
+// the wiring is closing (work does not run).
+func (w *wiring) spawn(work func()) bool {
+	w.bgMu.Lock()
+	defer w.bgMu.Unlock()
+	if w.bgClosed {
+		return false
+	}
+	w.bg.Add(1)
+	go func() {
+		defer w.bg.Done()
+		work()
+	}()
+	return true
+}
+
+// stopBackground refuses new background work and waits for what runs, at
+// most budget (close cancels the titles first).
+func (w *wiring) stopBackground(budget time.Duration) {
+	w.bgMu.Lock()
+	w.bgClosed = true
+	w.bgMu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		w.bg.Wait()
+		close(done)
+	}()
+	t := time.NewTimer(budget)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-t.C:
+		log.Printf("hub: the chat's background work did not end within %s: stopping without it", budget)
+	}
 }
 
 // Seed retry at start: 1 s doubling to 10 s.
@@ -124,12 +198,40 @@ func (g gatedSource) Items(ctx context.Context) ([]slices.Item, error) {
 func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *actions.Dispatcher,
 	lateEcho func(context.Context, actions.Request, actions.Outcome) error,
 ) (*wiring, error) {
+	w := &wiring{}
+	// An open_existing start never reopens a session in the Desktop's Undo
+	// batch (PROJ-17), as the published sessions leave it out.
+	o.SessionStart.Hidden = func() map[int64]bool {
+		hidden, _ := h.sup.desktopView()
+		return hidden
+	}
+	port, err := w.sessionPort(context.Background(), o)
+	if err != nil {
+		return nil, err
+	}
+	// The sources see the same host list the handlers' Live reads; a port
+	// that cannot list (no session host) leaves nothing live.
+	var live func() sources.Liveness
+	if l, ok := port.(runLister); ok {
+		w.live = newLiveness(l, h.phoneLinked, o.liveEvery, func() { h.publishSoon(livenessKinds...) })
+		live = w.live.get
+	}
+	away := o.awayInput()
+	w.away = &awayWatch{away: away, active: h.phoneLinked, nudge: func() { h.publishSoon(slices.KindAskAlert) }}
 	home, _ := os.UserHomeDir()
 	watches := handlers.NewChatWatchRegistry()
+	// The daemon's chat engine first: the chat sources read it and the
+	// chat handlers call it.
+	dbPath, _ := mainFile(context.Background(), o.DB)
+	w.chat = h.useChatEngine(o, w.spawn)
+	var chatReader sources.ChatReader
+	if w.chat != nil {
+		chatReader = w.chat
+	}
 	set, err := sources.All(sources.Config{
-		DB: o.DB, Store: st, Watches: watches, Sealer: h.kr, Mode: mode,
+		DB: o.DB, Store: st, Watches: watches, Sealer: h.kr, Mode: mode, Live: live,
 		AssetDir: filepath.Join(o.Dir, assetDirName, transcriptAssetDir),
-		Home:     home, Away: platform.NewAway(), Active: h.phoneLinked,
+		Home:     home, Away: away, Active: h.phoneLinked, View: h.sup.desktopView,
 		OnChatChange:   func() { h.publishSoon(slices.KindSessionChat) },
 		OnReportChange: func() { h.publishSoon(reportKinds...) },
 		OnGitChange:    func() { h.publishSoon("workbench") },
@@ -137,16 +239,36 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 		GitFetch:       o.gitFetch,
 		RunnerGap:      o.runnerGap,
 		Now:            o.Clock,
+		ChatEngine:     chatReader,
+		ChatRouting:    o.ChatRouting,
 	})
 	if err != nil {
+		w.close()
 		return nil, err
 	}
-	w := &wiring{set: set}
-	port := o.Sessions
-	if port == nil {
-		port = noSessionHost{}
+	w.set = set
+	deps := handlerDeps(o, st, set, watches, h.kr, port, lateEcho)
+	deps.Chat = h.chatDeps(o, w, dbPath)
+	if set.ChatWatches != nil {
+		clock := o.Clock
+		if clock == nil {
+			clock = time.Now
+		}
+		w.chatTimer = &chatTimer{
+			watches: set.ChatWatches, fresh: o.DB.FreshChatLeases, grant: st.AnyChatPhone,
+			available: h.chatAvailable, now: clock, publish: h.publishSoon,
+		}
+		w.chatPush = newChatPushWatch(o.DB.DB, set.ChatWatches, h.onRelay, clock, h.chatPushEnqueue)
+		h.chatPush.Store(w.chatPush)
 	}
-	w.handlers = handlers.Register(d, handlerDeps(o, st, set, watches, h.kr, port, lateEcho))
+	deps.RecordingQueued = func(uploadID string) {
+		h.sup.notifyDesktop(ControlAnswer{Event: EventRecordingQueued, OK: true, UploadID: uploadID})
+	}
+	// A headless host has no Desktop watching: nobody hears it.
+	deps.BringForward = func(workbenchID, sessionID int64) {
+		h.sup.notifyDesktop(ControlAnswer{Event: EventBringForward, OK: true, WorkbenchID: workbenchID, SessionID: sessionID})
+	}
+	w.handlers = handlers.Register(d, deps)
 
 	w.lane = newStateLane(o.DB.DB, o.Clock)
 	if o.laneBackstop > 0 {
@@ -192,7 +314,7 @@ func handlerDeps(o Options, st *state.Store, set *sources.Set, watches handlers.
 ) handlers.Deps {
 	deps := handlers.Deps{
 		DB: o.DB, Store: st, Sessions: port, RecordingsDir: o.RecordingsDir, Clock: o.Clock, Policy: o.mobileSync,
-		ChatWatches: watches, Sealer: sealer, LateEcho: lateEcho,
+		ChatWatches: watches, Sealer: sealer, LateEcho: lateEcho, ServerHost: hubKindOf(o.Desktop) == wire.HubKindServer,
 	}
 	// Typed nils stay nil interfaces.
 	if set.Sessions != nil {
@@ -202,6 +324,31 @@ func handlerDeps(o Options, st *state.Store, set *sources.Set, watches handlers.
 		deps.Reports = set.Report
 	}
 	return deps
+}
+
+// sessionPort is o.Sessions, else the real port over session-host
+// (Task 15) on o.SessionStart with the database's file as its scope, else —
+// no socket given — noSessionHost.
+func (w *wiring) sessionPort(ctx context.Context, o Options) (handlers.SessionPort, error) {
+	if o.Sessions != nil {
+		return o.Sessions, nil
+	}
+	if o.SessionStart.Socket == "" {
+		log.Printf("hub: no session host (%s not set)", sessionhost.SocketEnv)
+		return noSessionHost{}, nil
+	}
+	d := o.SessionStart
+	d.DB = o.DB
+	path, err := mainFile(ctx, o.DB)
+	if err != nil {
+		return nil, fmt.Errorf("hub: the session host scope: %w", err)
+	}
+	d.DBPath = path
+	if d.Clock == nil {
+		d.Clock = o.Clock
+	}
+	w.port = sessionstart.NewPort(d, nil)
+	return w.port, nil
 }
 
 // openWatch opens the data_version watch on a read-only handle of its own:
@@ -266,6 +413,33 @@ func mainFile(ctx context.Context, d *db.DB) (string, error) {
 // publisher retries it, and the lane does not observe). Nothing else waits:
 // the device_grant and the other kinds keep publishing.
 func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
+	if w.chatPush != nil {
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			w.chatPush.run(ctx)
+		}()
+	}
+	if w.chatTimer != nil {
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			w.chatTimer.run(ctx)
+		}()
+	}
+	if w.port != nil {
+		// Ensure the host on start when none answers (a later call dials
+		// again if this fails).
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			wctx, cancel := context.WithTimeout(ctx, hostWarmBudget)
+			defer cancel()
+			if err := w.port.Warm(wctx); err != nil {
+				log.Printf("hub: session host not reached at start (%s)", errClass(err))
+			}
+		}()
+	}
 	if w.trySeed(ctx) {
 		h.trace("seeded")
 	} else {
@@ -276,6 +450,19 @@ func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
 			w.retrySeed(ctx)
 		}()
 	}
+	if w.live != nil {
+		// Before the runners: the first list settles the liveness soon.
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			w.live.run(ctx)
+		}()
+	}
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		w.away.run(ctx)
+	}()
 	h.trace("runners")
 	for _, r := range w.set.Runners {
 		h.wg.Add(1)
@@ -301,6 +488,12 @@ func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
 		_ = w.watch.Run(ctx, func(kinds ...slices.Kind) {
 			h.publishSoon(kinds...)
 			w.lane.kick()
+			if w.chatPush != nil {
+				w.chatPush.kick()
+			}
+			if w.live != nil {
+				w.live.kick() // a start or an exit wrote its row
+			}
 		})
 	}()
 }
@@ -323,10 +516,51 @@ func (w *wiring) retrySeed(ctx context.Context) {
 	}
 }
 
-// close releases the watch's handle once the goroutines are done.
+// useChatEngine hooks the daemon's chat engine (o.ChatEngine; nil = chat
+// off) into this hub: a turn's text, steps and end reach the phone's feed
+// and list (the publisher coalesces the per-event calls), and a turn's end
+// pushes through spawn (wiring.spawn: close waits for it). close unhooks
+// it; the engine itself, its sweep and its close are the daemon's.
+func (h *hubRuntime) useChatEngine(o Options, spawn func(func()) bool) *chatengine.Engine {
+	e := o.ChatEngine
+	if e == nil {
+		return nil
+	}
+	e.OnChange(func(int64) { h.publishSoon(slices.KindChatFeed, slices.KindChatList) })
+	e.OnTurnEnd(h.chatTurnEnded(spawn))
+	return e
+}
+
+// chatTurnEnded is the runner's OnTurnEnd: the chat_answer push (spec
+// §4.7) is a database read and the pusher's enqueue, so it runs off the
+// runner's goroutine (OnTurnEnd must not block) through spawn.
+func (h *hubRuntime) chatTurnEnded(spawn func(func()) bool) func(conv int64, turnID, status string) {
+	return func(conv int64, turnID, status string) {
+		p := h.chatPush.Load()
+		if p == nil {
+			return
+		}
+		if !spawn(func() { p.turnEnded(conv, turnID, status) }) {
+			log.Printf("hub: chat %d turn %s ended while the hub stops: no push", conv, turnID)
+		}
+	}
+}
+
+// close unhooks the chat engine (it keeps running: the daemon owns it) and
+// releases the watch's handle once the goroutines are done.
 func (w *wiring) close() {
 	if w == nil {
 		return
+	}
+	// Unhook the engine first, so no turn end spawns work any more; then
+	// the background work (spawn refuses anything later).
+	if w.chat != nil {
+		w.chat.OnChange(func(int64) {})
+		w.chat.OnTurnEnd(func(int64, string, string) {})
+	}
+	w.stopBackground(chatBackgroundBudget)
+	if w.port != nil {
+		_ = w.port.Close()
 	}
 	if w.watchConnClose != nil {
 		_ = w.watchConnClose()
@@ -336,13 +570,35 @@ func (w *wiring) close() {
 	}
 }
 
-// sweepTemps removes what a crash left in the recordings and asset dirs.
-func sweepTemps(o Options) {
-	n, err := handlers.SweepRecordingTemps(o.RecordingsDir, filepath.Join(o.Dir, assetDirName))
+// sweepTemps removes what a crash left in the recordings and asset dirs,
+// and the recording jobs (with their audio) finished more than 31 days ago.
+func sweepTemps(o Options, st *state.Store) {
+	dirs := []string{o.RecordingsDir, filepath.Join(o.Dir, assetDirName)}
+	if o.DB != nil {
+		// A chat attachment's sealed download a crash left (.<id>.sealed).
+		if path, err := mainFile(context.Background(), o.DB); err == nil {
+			dirs = append(dirs, chatFilesDir(path))
+		}
+	}
+	n, err := handlers.SweepRecordingTemps(dirs...)
 	if err != nil {
 		log.Printf("hub: sweeping temp files failed (%s)", errClass(err))
 	}
 	if n > 0 {
 		log.Printf("hub: %d temp files of an earlier run removed", n)
+	}
+	pruneRecordingJobs(o, st)
+}
+
+// pruneRecordingJobs drops the recording jobs finished more than 31 days ago
+// (a hub_moved job's kept audio with it): at start and on every
+// housekeeping tick.
+func pruneRecordingJobs(o Options, st *state.Store) {
+	n, err := st.PruneRecordingJobs(o.RecordingsDir, o.Clock().Add(-state.RecordingJobKeptFor))
+	if err != nil {
+		log.Printf("hub: pruning old recording jobs failed (%s)", errClass(err))
+	}
+	if n > 0 {
+		log.Printf("hub: %d recording jobs older than 31 days removed", n)
 	}
 }

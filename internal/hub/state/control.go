@@ -95,17 +95,90 @@ func (s *Store) ControlDone(id int64) error {
 
 // DropResendFrom removes a resend_from that can never be written and forgets
 // that its gap was asked (resend_requested_from = 0), in one transaction, so
-// the next held action asks for the gap again.
+// the next held action asks for the gap again. resend_requested_at stays: it
+// is what keeps a drain from asking again every pass while the refusal lasts.
 func (s *Store) DropResendFrom(id int64, device string) error {
 	return s.write(func(tx *sql.Tx) error {
 		if _, err := tx.Exec(`DELETE FROM control_queue WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("removing a control: %w", err)
 		}
-		if err := SetResendRequested(tx, device, 0); err != nil && !errors.Is(err, ErrNoDevice) {
+		if err := updateDevice(tx, device, 0, `UPDATE devices SET resend_requested_from = ? WHERE device_id = ? COLLATE NOCASE`); err != nil && !errors.Is(err, ErrNoDevice) {
 			return err
 		}
 		return nil
 	})
+}
+
+// OweOver moves device's queued echoes (kind echoKind) from queue from to
+// queue to, keeping their ids and so their order, to be written there over
+// whatever holds their names (expect none), and drops every other row of
+// from; a dropped resendKind row also forgets that its gap was asked
+// (resend_requested_from = 0). Relay sim rule 16: a phone whose relay
+// entitlement lapsed still gets the echoes it is owed, over CloudKit; the
+// controls queued for its relay mailbox are moot there. It returns how many
+// echoes moved.
+func OweOver(tx *sql.Tx, device, from, to, echoKind, resendKind string) (int64, error) {
+	if from == to {
+		return 0, nil
+	}
+	res, err := tx.Exec(`UPDATE control_queue SET mailbox = ?, expect = ?, expect_seq = NULL WHERE mailbox = ? AND kind = ?`,
+		to, ExpectNone, from, echoKind)
+	if err != nil {
+		return 0, fmt.Errorf("moving owed echoes: %w", err)
+	}
+	moved, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	res, err = tx.Exec(`DELETE FROM control_queue WHERE mailbox = ? AND kind = ?`, from, resendKind)
+	if err != nil {
+		return 0, fmt.Errorf("dropping controls: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return 0, err
+	} else if n > 0 {
+		if err := SetResendRequested(tx, device, 0, time.Time{}); err != nil && !errors.Is(err, ErrNoDevice) {
+			return 0, err
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM control_queue WHERE mailbox = ?`, from); err != nil {
+		return 0, fmt.Errorf("dropping controls: %w", err)
+	}
+	return moved, nil
+}
+
+// RekeyControls moves the rows queued under any of from to mailbox (a
+// phone whose queue key changed: its mailbox moved between its own zone and a
+// shared one), keeping their ids and so their order. It returns how many
+// moved; a store whose rows are all under mailbox already writes nothing.
+func (s *Store) RekeyControls(from []string, mailbox string) (int64, error) {
+	var n int64
+	for _, old := range from {
+		if old == mailbox {
+			continue
+		}
+		var pending bool
+		if err := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM control_queue WHERE mailbox = ?)`, old).Scan(&pending); err != nil {
+			return n, fmt.Errorf("listing controls: %w", err)
+		}
+		if !pending {
+			continue
+		}
+		var moved int64
+		err := s.write(func(tx *sql.Tx) error {
+			res, err := tx.Exec(`UPDATE control_queue SET mailbox = ? WHERE mailbox = ?`, mailbox, old)
+			if err != nil {
+				return fmt.Errorf("moving controls: %w", err)
+			}
+			moved, err = res.RowsAffected()
+			return err
+		})
+		if err != nil {
+			return n, err
+		}
+		n += moved
+	}
+	return n, nil
 }
 
 // ControlFailed counts a failed write and keeps its error class (a class
@@ -150,6 +223,15 @@ func Hold(tx *sql.Tx, device string, seq uint64, record string, envelope []byte)
 		return fmt.Errorf("holding an action: %w", err)
 	}
 	return nil
+}
+
+// HeldCount is how many actions of device are held (no envelope read).
+func (s *Store) HeldCount(device string) (int, error) {
+	var n int
+	if err := s.db.QueryRow(`SELECT count(*) FROM held_actions WHERE device_id = ? COLLATE NOCASE`, device).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting held actions: %w", err)
+	}
+	return n, nil
 }
 
 // HeldActions lists device's held actions in action_seq order.

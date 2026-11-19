@@ -16,6 +16,7 @@ import (
 
 	"watchtower/internal/agentloop"
 	"watchtower/internal/ai"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/builtin"
 	"watchtower/internal/codex"
@@ -151,7 +152,7 @@ func newAutomationAgentRunner(cfg *config.Config, configPath, dbPath string, dat
 	// Not providers.ByID(provider): an unknown id runs the in-process loop,
 	// never the default CLI child.
 	if providers.RunsChild(provider) {
-		return &cliAgentRunner{cfg: cfg, configPath: configPath, dbPath: dbPath, provider: provider}
+		return &cliAgentRunner{cfg: cfg, configPath: configPath, dbPath: dbPath, provider: provider, database: database}
 	}
 	return &runtimeBAgentRunner{cfg: cfg, database: database, reg: buildAutomationRegistry(cfg, database)}
 }
@@ -181,6 +182,9 @@ type cliAgentRunner struct {
 	provider   string // "claude" | "codex"
 	router     *providerrouting.Router
 	prepared   bool
+	// database is the slack:live bookkeeping's (the Slack Live status the
+	// connector calls write, the Codex connector id); nil = no Live.
+	database *db.DB
 }
 
 func (r *cliAgentRunner) Name() string { return r.provider }
@@ -231,13 +235,28 @@ func (r *cliAgentRunner) routingRequest(tier string) providerrouting.Request {
 		}}
 }
 
-func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) (automations.AgentResult, error) {
+func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) (res automations.AgentResult, err error) {
+	if err := aiconsent.Check(ctx); err != nil {
+		return automations.AgentResult{}, automations.PolicyError(err) // BGAI-01: nothing spawned, nothing metered
+	}
 	if !r.prepared {
 		selected, err := r.Prepare(ctx, req.Tier)
 		if err != nil {
 			return automations.AgentResult{}, err
 		}
 		return selected.Run(ctx, req)
+	}
+	// slack:live: the child may read Slack through the owner's connector;
+	// what it did is reported on every return, failures included.
+	var live *agentSlackLive
+	systemPrompt := automationAgentSystemPrompt
+	if req.SlackLive {
+		live = newAgentSlackLive(r.database, r.provider)
+		systemPrompt += agentSlackLivePromptLine
+		defer func() {
+			res.UsedSlackLive, res.SlackLiveDenied = live.result()
+			res.SlackLiveUnavailable = live.unavailableReason()
+		}()
 	}
 	if err := providers.Allowed(r.provider); err != nil {
 		return automations.AgentResult{}, automations.PolicyError(err) // #608: nothing spawned, nothing metered
@@ -252,13 +271,14 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	defer func() { _ = os.RemoveAll(readyDir) }()
 	readyFile := filepath.Join(readyDir, "ready")
 	mcpArgs := append(r.mcpArgs(req), "--automation-ready-file", readyFile)
-	env := automationAgentEnv(req.RunID)
+	env := automationAgentEnv(ctx, req.RunID)
 	newClient := wiringFor(r.provider).newAgentClient
 	if newClient == nil {
 		return automations.AgentResult{}, fmt.Errorf("agent(): provider %s runs no CLI child", r.provider)
 	}
 	client, cleanup, err := newClient(agentClientWiring{
 		cfg: r.cfg, dbPath: r.dbPath, model: model, mcpArgs: mcpArgs, env: env, tools: req.Tools,
+		database: r.database, live: live,
 	})
 	if err != nil {
 		return automations.AgentResult{}, err
@@ -272,7 +292,7 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	var observed agentUsageObserver
 	query := func(callCtx context.Context) error {
 		var callErr error
-		text, usage, callErr = client.QuerySync(callCtx, automationAgentSystemPrompt, req.Instruction, "")
+		text, usage, callErr = client.QuerySync(callCtx, systemPrompt, req.Instruction, "")
 		return callErr
 	}
 	if r.router == nil {
@@ -280,7 +300,7 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	} else {
 		route := r.routingRequest(req.Tier)
 		route.Preferred, route.Mode, route.Retry = r.provider, providerrouting.Pinned, providerrouting.Never
-		route.InputBytes = len(automationAgentSystemPrompt) + len(req.Instruction)
+		route.InputBytes = len(systemPrompt) + len(req.Instruction)
 		route.Hook = &observed
 		_, err = r.router.Run(ctx, route, func(callCtx context.Context, _ providerrouting.Attempt) (providerrouting.Result, error) {
 			callErr := query(callCtx)
@@ -296,7 +316,7 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 		// numbers cannot run unbounded (spec §7.5).
 		return automations.AgentResult{InputTokens: int64(len(req.Instruction)+3) / 4, Estimated: true}, err
 	}
-	res := agentResult(req.Instruction, text, usage)
+	res = agentResult(req.Instruction, text, usage)
 	if observed.seen {
 		res = observed.result
 		res.Text = text
@@ -352,8 +372,10 @@ func (r *cliAgentRunner) mcpArgs(req automations.AgentRequest) []string {
 
 // codexAgentServerEnv is what codex passes through to the agent's watchtower
 // server: codex starts MCP servers with a filtered environment, and the
-// server refuses to start without the run marker (mcpAutomationOptions).
-var codexAgentServerEnv = []string{automations.RunEnvMarker}
+// server refuses to start without the run marker (mcpAutomationOptions); the
+// run's AI origin (automationAgentEnv) goes along so the server's model calls
+// are the run's (#1886). Claude passes its own environment to the server.
+var codexAgentServerEnv = []string{automations.RunEnvMarker, aiconsent.EnvOrigin, aiconsent.EnvAdmitted}
 
 // codexAgentHome is the CODEX_HOME of one agent() codex child, a fresh 0700
 // temp folder the caller removes after the run (the returned remove), with
@@ -447,15 +469,18 @@ var automationAgentPassthrough = []string{
 
 // automationAgentEnv is an agent() child's environment besides PATH (the
 // clients append the rich PATH): automationAgentPassthrough from this process
-// when set (absent ones omitted), and the run marker (AGENT-07).
-func automationAgentEnv(runID int64) []string {
+// when set (absent ones omitted), the run marker (AGENT-07) and ctx's AI
+// origin (aiconsent.ChildEnv: none for an owner-triggered run, whose marker
+// names its trigger).
+func automationAgentEnv(ctx context.Context, runID int64) []string {
 	var env []string
 	for _, k := range automationAgentPassthrough {
 		if v := os.Getenv(k); v != "" {
 			env = append(env, k+"="+v)
 		}
 	}
-	return append(env, automations.RunEnvMarker+"="+strconv.FormatInt(runID, 10))
+	env = append(env, automations.RunEnvMarker+"="+strconv.FormatInt(runID, 10))
+	return append(env, aiconsent.ChildEnv(ctx)...)
 }
 
 // agentResult is a finished agent() loop: the provider's usage and cost
@@ -495,6 +520,9 @@ type runtimeBAgentRunner struct {
 func (r *runtimeBAgentRunner) Name() string { return "runtime-b" }
 
 func (r *runtimeBAgentRunner) Run(ctx context.Context, req automations.AgentRequest) (automations.AgentResult, error) {
+	if err := aiconsent.Check(ctx); err != nil {
+		return automations.AgentResult{}, automations.PolicyError(err) // BGAI-01
+	}
 	if err := providers.Allowed(r.cfg.AI.Provider); err != nil {
 		return automations.AgentResult{}, automations.PolicyError(err) // #608
 	}

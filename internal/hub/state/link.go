@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 )
 
@@ -20,7 +21,11 @@ func (s *Store) ReadTx(ctx context.Context, fn func(*sql.Tx) error) error {
 
 // LinkDevice writes d as a linked phone, replacing a row with the same id
 // (a re-pair); the id is stored uppercase. user_record_name, a CloudKit-only Swift column, is written
-// empty.
+// empty. A re-link (no row, or another link nonce) starts with no relay key
+// offer and no per-epoch relay keys: those were derived under the old nonce.
+// The same link written again keeps both. The owner's chat grant
+// (chat_allowed) is the row's own: a re-link keeps it (the owner turned Chat
+// off for this phone, it stays off), a new phone starts with the default on.
 func LinkDevice(tx *sql.Tx, d Device) error {
 	last, err := u64(d.LastAppliedActionSeq)
 	if err != nil {
@@ -30,6 +35,18 @@ func LinkDevice(tx *sql.Tx, d Device) error {
 	if err != nil {
 		return err
 	}
+	var (
+		oldNonce   sql.NullString
+		offer      []byte
+		offerEpoch int64
+		chat       = true
+	)
+	err = tx.QueryRow(`SELECT link_nonce, kx_offer, kx_offer_epoch, chat_allowed FROM devices WHERE device_id = ? COLLATE NOCASE`, d.ID).
+		Scan(&oldNonce, &offer, &offerEpoch, &chat)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("linking a device: %w", err)
+	}
+	relink := err != nil || oldNonce.String != d.LinkNonce
 	if _, err := tx.Exec(`DELETE FROM devices WHERE device_id = ? COLLATE NOCASE`, d.ID); err != nil {
 		return fmt.Errorf("linking a device: %w", err)
 	}
@@ -41,6 +58,20 @@ func LinkDevice(tx *sql.Tx, d Device) error {
 		last, d.Ordered, nullString(d.RelayDeviceID), resend, int64(d.AckedEpoch))
 	if err != nil {
 		return fmt.Errorf("linking a device: %w", err)
+	}
+	if !chat {
+		if _, err := tx.Exec(`UPDATE devices SET chat_allowed = 0 WHERE device_id = ? COLLATE NOCASE`, d.ID); err != nil {
+			return fmt.Errorf("linking a device: %w", err)
+		}
+	}
+	if relink {
+		return deleteRelayKeys(tx, d.ID)
+	}
+	if offer != nil {
+		if _, err := tx.Exec(`UPDATE devices SET kx_offer = ?, kx_offer_epoch = ? WHERE device_id = ? COLLATE NOCASE`,
+			offer, offerEpoch, d.ID); err != nil {
+			return fmt.Errorf("linking a device: %w", err)
+		}
 	}
 	return nil
 }

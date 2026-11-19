@@ -189,16 +189,23 @@ struct MainNavigationView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .detailBackground()
                     .safeAreaInset(edge: .top, spacing: 0) {
-                        if let banner = appState.daemonBanner {
-                            DaemonBannerView(
-                                banner: banner,
-                                onStart: { appState.startDaemonFromBanner() },
-                                onOpenLogs: { openWindow(id: "logs") },
-                                onDismiss: { appState.dismissDaemonBanner() }
-                            )
-                        } else if let notice = appState.databaseCompaction.notice {
-                            DatabaseCompactionNoticeView(text: notice) {
-                                appState.databaseCompaction.dismissNotice()
+                        VStack(spacing: 0) {
+                            // The one-time v1-host restart (go hub spec §8 p. 4b): above the rest.
+                            if let step = appState.hostRestart, let notice = step.notice {
+                                HostRestartNotice(notice: notice, onPress: { Task { await step.pressContinue() } },
+                                                  onSecondary: { Task { await step.pressSetAside() } })
+                            }
+                            if let banner = appState.daemonBanner {
+                                DaemonBannerView(
+                                    banner: banner,
+                                    onStart: { appState.startDaemonFromBanner() },
+                                    onOpenLogs: { openWindow(id: "logs") },
+                                    onDismiss: { appState.dismissDaemonBanner() }
+                                )
+                            } else if let notice = appState.databaseCompaction.notice {
+                                DatabaseCompactionNoticeView(text: notice) {
+                                    appState.databaseCompaction.dismissNotice()
+                                }
                             }
                         }
                     }
@@ -235,6 +242,8 @@ struct MainNavigationView: View {
         }
         // After a connect in the Connections tab: the related-features offer.
         .modifier(FeatureSuggestionPresenter(appState: appState))
+        // Background AI consent: the upgrade sheet and the owner's re-entry (#1886).
+        .modifier(BackgroundAIConsentPresenter(appState: appState))
         .onAppear { applyFeatureFallback() }
         .onChange(of: appState.featureVisibility.disabledFeatureIDs) { _, _ in applyFeatureFallback() }
         .onChange(of: appState.featureVisibility.connectedSources) { _, _ in applyFeatureFallback() }
@@ -352,13 +361,16 @@ struct MainNavigationView: View {
                     editor: appState.automationEditorCenter,
                     hooks: automationHooks(vm),
                     reactionDictionary: appState.reactionDictionaryViewModel,
-                    isApplyingFeatures: appState.featureManager.isApplying
-                ) { [appState] automation in
-                    AutomationPolicyBlock.isBlocked(
-                        automation, policy: appState.managedPolicy.policy,
-                        connections: appState.externalConnectionsViewModel?.connections
-                    )
-                }
+                    isApplyingFeatures: appState.featureManager.isApplying,
+                    backgroundAI: appState.backgroundAI,
+                    onAllowBackgroundAI: { appState.presentBackgroundAIConsent() },
+                    policyBlocked: { [appState] automation in
+                        AutomationPolicyBlock.isBlocked(
+                            automation, policy: appState.managedPolicy.policy,
+                            connections: appState.externalConnectionsViewModel?.connections
+                        )
+                    }
+                )
                 // The policy check needs the Quick Connections (#608).
                 .onAppear { appState.externalConnectionsViewModel?.refresh() }
             } else {

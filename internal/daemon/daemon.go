@@ -16,6 +16,7 @@ import (
 	gosync "sync"
 	"sync/atomic"
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/builtin"
 	"watchtower/internal/briefing"
@@ -135,7 +136,7 @@ type Daemon struct {
 	cycleEvents         AutomationEvents // this sync cycle's bus, nil = none (beginAutomationEvents); runSync and startupCalendarSync only
 	planUsage           PlanUsageRunner  // nil = Claude plan limits not wired
 	planUsageDisable    func() error
-	specReviewLaunch    func(askID int64) error // nil = the spec review sweep is off
+	specReviewLaunch    func(ctx context.Context, askID int64) error // nil = the spec review sweep is off
 	pidPath             string
 	db                  *db.DB
 	agentLog            *agentlogdb.DB // nil = agentlog.db did not open; the analytics phase skips
@@ -167,6 +168,13 @@ type Daemon struct {
 	externalSync     ExternalSyncRunner
 	mediaPipe        *media.Pipeline
 	dayPlanPipeline  DayPlanRunner
+
+	// consent reads the background-AI consent (SetConsent; nil =
+	// aiconsent.Current); consentLogged is the last state consentNow saw,
+	// for the once-per-change paused line. Read on the cycle's goroutine only.
+	consent       aiconsent.Reader
+	consentLogged aiconsent.State
+
 	// mbMu guards what the Morning brief's gate and primitives read and write
 	// (lastBriefing, the briefing/day-plan attempt counters, lastDayPlanDate,
 	// briefNoDataAt, mbOwner, mbNow): a primitive runs on the script's
@@ -189,6 +197,7 @@ type Daemon struct {
 	lastIdeas           time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours); ideasMu
 	lastCoach           time.Time // when the agent coach last ran (weekly, no catch-up)
 	lastCoachFailed     time.Time // when the coach's last run failed (retried a day later)
+	lastCoachCommits    time.Time // when the coach's daily commit check last ran (in memory: a restart checks again)
 	lastLLMPrune        time.Time // when phaseLLMLedger last pruned llm_calls (once per day)
 	lastIdeasLockSkip   time.Time // when phaseIdeas last LOGGED a lock-held skip (GB7 — throttles the log line, not the skip itself)
 	lastStreams         time.Time // when the stage-1 stream digests last ran (throttled by streams.interval_hours, decoupled from ideas.enabled)
@@ -253,6 +262,26 @@ type Daemon struct {
 	cycleSection    atomic.Int32
 	fetchProgressAt atomic.Int64
 	loopMono        func() time.Duration // runLoop's monotonic clock, nil = time.Since(monoEpoch); a seam for tests
+	// cycleEnded, a test seam, runs on the cycle's goroutine after each
+	// cycle's runSync returned, so a test waits for the cycle instead of a
+	// fixed run window; nil outside tests.
+	cycleEnded func()
+	// heartbeatBeat, a test seam, runs on the sync heartbeat's goroutine
+	// after each ticker beat's write, so a test waits for beats instead of
+	// sleeping through them; nil outside tests.
+	heartbeatBeat func()
+	// syncStartClock, a test seam, reads runSync's sync-start instant
+	// (INBOX-09), so a test moves it across a sync instead of sleeping
+	// through one; nil = time.Now.
+	syncStartClock func() time.Time
+	// slackCadences is each Slack account's adaptive cadence (slack_cadence.go),
+	// by account id; in memory, so a restart runs every account at once.
+	// slackCadenceBase is its level-0 interval, the loop's poll interval set
+	// by Run; zero (a test driving a phase directly) makes every run due.
+	// cadenceNow, a test seam, is its clock; nil = time.Now.
+	slackCadences    map[int64]*slackCadence
+	slackCadenceBase time.Duration
+	cadenceNow       func() time.Time
 	// fullWake reports the system capability bits and whether the Mac is in
 	// a full wake rather than a Power Nap DarkWake (SetFullWakeProbe);
 	// runLoop starts no scheduled cycle while it says no. nil = always a
@@ -525,6 +554,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if pollInterval < minPollInterval {
 		pollInterval = config.DefaultPollInterval
 	}
+	d.slackCadenceBase = pollInterval
 
 	// Always watched, whatever sync.sync_on_wake says: a sleep that
 	// interrupts a cycle cancels it (runLoop). Only when not already wired: a
@@ -623,6 +653,9 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// Every source sync below starts after this instant, so the data the
 	// inbox scans at the end of the cycle is complete up to it (INBOX-09).
 	syncStart := time.Now()
+	if d.syncStartClock != nil {
+		syncStart = d.syncStartClock()
+	}
 	d.cycleEvents = d.beginAutomationEvents()
 	var syncErr, inboxSyncErr error
 	d.observePhase(fetchCtx, automations.SlackSource(d.db), func() { syncErr, inboxSyncErr = d.phaseSlackSync(fetchCtx) })
@@ -676,12 +709,12 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 		d.logger.Printf("sync had errors, but running pipelines on existing data")
 	}
 
-	d.phaseChannelDigests(ctx)
+	d.aiPhase(ctx, "digests", d.phaseChannelDigests)
 	d.phaseUnsnooze()
 	d.phaseApprovalSweep(ctx)
 	d.phaseTranscriptAudioCleanup()
 	// Before the index, so this cycle's descriptions are searchable now.
-	d.phaseMediaDescribe(ctx)
+	d.aiPhase(ctx, "media", d.phaseMediaDescribe)
 	d.phaseKnowledgeIndex(ctx)
 	// After the knowledge index: the fill is mechanical (no AI) and needs no
 	// fresh sync — Slack sync's own writes already reach the new index
@@ -694,17 +727,22 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// Phases 2-4 run in parallel where possible:
 	//   Group A: Track my threads → inject track context → Rollups
 	//   Group B: People Cards (only depends on Phase 1 channel digests)
+	// The consent is read once, when the group starts. Paused, People cards
+	// do not start, and Track my threads skips its legacy tracks phase and
+	// the rollups (before any stamp, attempt or file write); only the
+	// built-in's slot runs there, gating itself (a queued Run Now still
+	// runs).
+	tracksCtx, peopleCtx, aiOK := ctx, ctx, d.consentNow().Allowed()
+	if aiOK {
+		tracksCtx = aiconsent.WithAdmitted(ctx, "phase:tracks")
+		peopleCtx = aiconsent.WithAdmitted(ctx, "phase:people")
+	}
 	var phasesWg gosync.WaitGroup
-	phasesWg.Add(2)
 	rollupNow := time.Now()
-	go func() {
-		defer phasesWg.Done()
-		d.phaseTrackMyThreads(ctx, rollupNow)
-	}()
-	go func() {
-		defer phasesWg.Done()
-		d.phasePeopleCards(ctx)
-	}()
+	phasesWg.Go(func() { d.phaseTrackMyThreads(tracksCtx, rollupNow, aiOK) })
+	if aiOK {
+		phasesWg.Go(func() { d.phasePeopleCards(peopleCtx) })
+	}
 	phasesWg.Wait()
 
 	// Auto-mark digests and tracks as read based on Slack read cursors.
@@ -717,22 +755,23 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	}
 	d.phaseInbox(ctx)
 	d.phaseWaitingForMe(ctx)
-	d.phaseStreamDigests(ctx)
+	d.aiPhase(ctx, "stream-digests", d.phaseStreamDigests)
 	d.phaseIdeaFinder(ctx)
-	d.phaseMemory(ctx)
-	d.phaseNextStep(ctx)
+	d.aiPhase(ctx, "memory", d.phaseMemory)
+	d.aiPhase(ctx, "next-step", d.phaseNextStep)
 	d.phaseMorningBrief(ctx, time.Now())
 
 	// Last, and alone: it shares the digest pipeline and the ideas lock with
 	// the forward phases above, so it must stay out of any parallel group.
 	// It fetches, so it runs on fetchCtx: a sleep cancels it (or, detected
 	// during the pipelines, skips it), while a trigger waits for it.
+	// Paused, it holds whole (D12): no fetch, no row change, no strike.
 	if fetchCtx.Err() == nil {
 		d.setSection(sectionBackfill)
-		d.phaseHistoryBackfill(fetchCtx)
+		d.aiPhase(fetchCtx, "history-backfill", d.phaseHistoryBackfill)
 		d.setSection(sectionPipelines)
 	}
-	d.phaseCoach(ctx)
+	d.coachPhases(ctx)
 	d.phaseSpecReviewSweep(ctx)
 }
 
@@ -775,7 +814,11 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 		return
 	}
 	errMsg := ""
-	if stats.err != nil {
+	switch {
+	case errors.Is(stats.err, aiconsent.ErrPaused):
+		// Refused by the backstop: a skip, not a failure.
+		d.logger.Printf("%s: skipped: background AI is paused", name)
+	case stats.err != nil:
 		errMsg = logredact.Full(stats.err)
 	}
 	if err := d.db.CompletePipelineRun(runID, stats.items, stats.inTok, stats.outTok, stats.cost, stats.totalAPI, stats.pFrom, stats.pTo, errMsg); err != nil {
@@ -909,6 +952,10 @@ func (d *Daemon) reapStalePipelineRuns() {
 // every other account's watermark for good; recordAuthResult marks its
 // status row (revoked, or the mismatch's Re-login error), and the error is
 // still logged and returned as the cycle's sync error.
+//
+// Each account runs only when its adaptive cadence says it is due
+// (slack_cadence.go); a manual trigger runs them all. When none is due the
+// phase writes nothing at all: no pipeline run, no last_sync.json.
 func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	if len(d.orchestrators) == 0 {
 		return nil, nil
@@ -916,21 +963,50 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	if !d.sourceAllowed("slack") {
 		return nil, nil
 	}
+	// The accounts whose Slack run is due (the adaptive cadence). A skipped
+	// account writes nothing, is no sync error and does not freeze the Inbox:
+	// detection reads when a message was stored, so what its later run
+	// stores is still found.
+	manual := isManualSync(ctx)
+	now := d.cadenceClock()
+	due := make([]*sync.Orchestrator, 0, len(d.orchestrators))
+	var skipped []int64
+	for _, o := range d.orchestrators {
+		if !d.slackCadence(o.AccountID()).due(now, manual) {
+			skipped = append(skipped, o.AccountID())
+			continue
+		}
+		due = append(due, o)
+	}
+	if len(skipped) > 0 {
+		d.logger.Printf("slack accounts %v: not due yet (adaptive cadence), skipping this cycle", skipped)
+	}
+	if len(due) == 0 {
+		return nil, nil
+	}
 	var firstErr error
 	var freezing []error
-	snaps := make([]sync.Snapshot, 0, len(d.orchestrators))
+	snaps := make([]sync.Snapshot, 0, len(due))
 	// Tracked like every other pipeline so the Slack sync finally shows up in
 	// pipeline_runs (and the Desktop's Pipeline Progress window) — it was the
 	// one phase that ran invisibly.
 	d.trackedPipelineRun("slack-sync", func() pipelineRunStats {
 		messages := 0
-		for _, o := range d.orchestrators {
+		for _, o := range due {
 			if d.purgeHeld("slack", o.AccountID()) {
 				continue
 			}
+			cadence := d.slackCadence(o.AccountID())
 			stopBeat := d.startSyncHeartbeat(o)
 			err := o.Run(ctx, sync.SyncOptions{})
 			stopBeat()
+			if out := o.RunOutcome(); err == nil || out.RateLimited {
+				// Anchored at the phase's start, not this account's: a slow
+				// account before it must not push it off the next tick.
+				cadence.after(out, d.slackCadenceBase, now)
+			} else {
+				cadence.retryNextCycle()
+			}
 			if from, ok := o.FirstSyncFrom(); ok {
 				d.startHistoryBackfill("slack", o.AccountID(), from)
 			}
@@ -1001,8 +1077,10 @@ func (d *Daemon) writeSyncProgress(p sync.SyncProgress) {
 // the caller can immediately publish a final state without racing it. A beat
 // whose progress moved, or that sees a Slack API call answered since the last
 // one (the read-state, deletion-sweep and reaction passes move no progress
-// counter), stamps the cycle's fetch progress (markFetchProgress), so a long
-// but moving Slack sync is never taken for a stalled one.
+// counter), or that finds the sync waiting out a Slack Retry-After hold
+// (Snapshot.RateLimitedUntil: no call is answered while it lasts), stamps the
+// cycle's fetch progress (markFetchProgress), so a long but moving Slack sync
+// is never taken for a stalled one.
 func (d *Daemon) startSyncHeartbeat(o *sync.Orchestrator) (stop func()) {
 	// Touched by write only: the call below, then the writer goroutine.
 	var last sync.Snapshot
@@ -1010,7 +1088,8 @@ func (d *Daemon) startSyncHeartbeat(o *sync.Orchestrator) (stop func()) {
 	write := func() {
 		snap := o.Progress().Snapshot()
 		answered := o.SlackCallsAnswered()
-		if snap != last || answered != lastAnswered {
+		held := snap.RateLimitedUntil.After(time.Now())
+		if snap != last || answered != lastAnswered || held {
 			last, lastAnswered = snap, answered
 			d.markFetchProgress()
 		}
@@ -1030,6 +1109,9 @@ func (d *Daemon) startSyncHeartbeat(o *sync.Orchestrator) (stop func()) {
 				return
 			case <-ticker.C:
 				write()
+				if d.heartbeatBeat != nil {
+					d.heartbeatBeat()
+				}
 			}
 		}
 	}()
@@ -1782,10 +1864,29 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 		return
 	}
 	if err := d.digestPipe.RunRollups(ctx); err != nil {
-		if !digest.ProviderDeferred(err) {
+		// A provider deferral or a background-AI-paused refusal is not an
+		// attempt.
+		if !digest.ProviderDeferred(err) && !errors.Is(err, aiconsent.ErrPaused) {
 			d.recordRollupAttempt(date)
 		}
 		d.logger.Printf("rollup error: %v", err)
+	}
+}
+
+// prunePreUpgradePeopleCards runs the one-time pass deleting people cards of
+// non-partners. It runs every cycle with no process-wide memo: the per-account
+// people_prune_done_at stamp is the only state, so a finished account costs
+// one SELECT over slack_accounts, and an account that was removed
+// during an earlier pass and reconnected later is pruned in the next cycle
+// (#2019), not after a restart. Accounts without a known owner stay pending.
+func (d *Daemon) prunePreUpgradePeopleCards(ctx context.Context) {
+	if d.db == nil {
+		return
+	}
+	if _, err := guide.PrunePreUpgradeCards(ctx, d.db, d.logger); err != nil {
+		if !isBenignShutdownErr(ctx, err) {
+			d.logger.Printf("people: %v", err)
+		}
 	}
 }
 
@@ -1800,6 +1901,9 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 // throttle window instead of skipping outright. Dual path with the Desktop's
 // readiness "Needs Slack Digests" (ReadinessFeature.runsOnlyWithDigests, #575).
 func (d *Daemon) phasePeopleCards(ctx context.Context) {
+	// The one-time upgrade prune runs whatever the generation gates say:
+	// stored cards of non-partners must go even when no card is made (A13).
+	d.prunePreUpgradePeopleCards(ctx)
 	if !d.config.People.Enabled || !d.config.Digest.Enabled {
 		return
 	}
@@ -1835,6 +1939,13 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 	if has, err := d.peoplePipe.HasData(ctx); err != nil {
 		d.logger.Printf("people: data check failed, running anyway: %v", err)
 	} else if !has {
+		// No Slack owner makes no cards, never cards for everyone (A13):
+		// say why, once a day.
+		if known, err := d.peoplePipe.OwnerKnown(); err != nil {
+			d.logger.Printf("people: owner check failed: %v", err)
+		} else if !known {
+			d.logSkipOnce(now, "people", "no Slack account with a known user, so no people cards (people cards are made only for the people you work with)")
+		}
 		// Current source eligibility can remove all input from an old window.
 		// Drop that empty descriptor without claiming success for newer data.
 		if err := d.peoplePipe.AcknowledgeWindow(ctx); err != nil {
@@ -1852,9 +1963,10 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 			if !isBenignShutdownErr(ctx, err) && !digest.ProviderDeferred(err) {
 				d.recordPeopleAttempt(date)
 			}
-		} else if d.peoplePipe.LastOutcome() == guide.OutcomeNoData {
+		} else if o := d.peoplePipe.LastOutcome(); o == guide.OutcomeNoData || o == guide.OutcomeNoOwner {
 			// No data despite the pre-check (a transient pre-check failure,
-			// or the window moved between the two): no stamp, retry.
+			// or the window moved between the two), or no owner yet: no
+			// stamp, retry.
 			d.logger.Printf("people: run found no data; not stamping")
 		} else {
 			if n > 0 {
@@ -2081,6 +2193,10 @@ func (d *Daemon) phaseStreamDigests(ctx context.Context) {
 // ledger, REACT-03), so an in-memory throttle is enough — a restart simply
 // re-polls and re-dispatches nothing already seen.
 func (d *Daemon) phaseReactionCommands(ctx context.Context) {
+	// A reaction from the owner's dictionary is the owner's gesture (D3):
+	// the poll and the runs it dispatches are owner-started, so they run
+	// while background AI is paused.
+	ctx = aiconsent.WithOwnerStarted(ctx)
 	if !d.config.ReactionCommands.Enabled {
 		// Nobody polls, so reactions placed now must not fire when the
 		// feature comes back: clear the event seed stamps (a no-op read when
@@ -2367,8 +2483,11 @@ func (d *Daemon) phaseBriefingAt(ctx context.Context, now time.Time) {
 			// A real failure (AI generate/parse/store error) reached this
 			// point — RunForDate's benign skips (no owner, handled above;
 			// "no data yet", (0, nil)) never consume budget; only a real
-			// error does.
-			d.recordBriefingAttempt(today)
+			// error does. A refusal because background AI is paused is
+			// deferred, not an attempt.
+			if !errors.Is(err, aiconsent.ErrPaused) {
+				d.recordBriefingAttempt(today)
+			}
 			d.logger.Printf("briefing error: %v", err)
 		} else if id > 0 {
 			d.logger.Printf("generated briefing (id=%d)", id)
@@ -2868,8 +2987,11 @@ func (d *Daemon) runDayPlanPhase(ctx context.Context, now time.Time, owner db.Ow
 			// shouldRunDayPlan already filtered out the "no owner"
 			// case before Run was ever called (see its own gate above), so
 			// every Run invocation reaching this point is a real attempt —
-			// any error here is a real failure and consumes budget.
-			d.recordDayPlanAttempt(date)
+			// any error here is a real failure and consumes budget —
+			// except a refusal because background AI is paused (deferred).
+			if !errors.Is(err, aiconsent.ErrPaused) {
+				d.recordDayPlanAttempt(date)
+			}
 			d.logger.Printf("dayplan: generation failed: %v", err)
 		} else {
 			d.lastDayPlanDate = date

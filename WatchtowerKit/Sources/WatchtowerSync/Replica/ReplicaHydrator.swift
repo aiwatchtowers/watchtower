@@ -50,10 +50,16 @@ public actor ReplicaHydrator {
     private let onTransportMarker: (@Sendable (TransportMarker) async -> Bool)?
     /// The marker the handler last decided (or that did not decode) in this hydrator.
     private var lastMarker: Data?
+    /// The clock of the timing stamps; tests replace it.
+    private var now: @Sendable () -> Date = { Date() }
     private var loopTask: Task<Void, Never>?
     /// The currently-running cycle, if any. Concurrent `hydrateOnce` callers
     /// await this instead of starting their own — see `hydrateOnce`.
     private var inFlight: Task<(applied: Int, deleted: Int), Error>?
+    /// Told when a caller joins the running cycle instead of starting one; tests replace it.
+    private var onJoin: @Sendable () -> Void = {}
+    /// Told when `hydrateFresh` waits out the running cycle instead of joining it; tests replace it.
+    private var onWaitOut: @Sendable () -> Void = {}
     private let logger = Logger(subsystem: "WatchtowerKit", category: "ReplicaHydrator")
 
     public init(
@@ -70,6 +76,11 @@ public actor ReplicaHydrator {
         self.onTransportMarker = onTransportMarker
     }
 
+    func useClock(_ now: @escaping @Sendable () -> Date) { self.now = now }
+
+    func observeJoins(_ onJoin: @escaping @Sendable () -> Void) { self.onJoin = onJoin }
+    func observeWaitOuts(_ onWaitOut: @escaping @Sendable () -> Void) { self.onWaitOut = onWaitOut }
+
     // MARK: - One cycle
 
     /// One hydration cycle: optional engine pull, read data-zone changes
@@ -85,21 +96,49 @@ public actor ReplicaHydrator {
     @discardableResult
     public func hydrateOnce() async throws -> (applied: Int, deleted: Int) {
         if let inFlight {
+            onJoin()
             return try await inFlight.value
         }
-        let task = Task { try await self.performHydration() }
+        // The cycle clears itself on the actor before it ends, so a caller resuming from its result never finds it
+        // still in flight (`hydrateFresh`).
+        let task = Task {
+            defer { inFlight = nil }
+            return try await self.performHydration()
+        }
         inFlight = task
-        defer { inFlight = nil }
         return try await task.value
+    }
+
+    /// One cycle begun after this call: what was buffered before it is applied by the time it returns. A running cycle
+    /// may have read its batch before that (a fetch's own pull buffered records the cycle never saw), so it is waited
+    /// out, never joined; a cycle started after it ended began after this call and is joined. The counts include the
+    /// waited-out cycle's, which may have applied what this call's caller pulled.
+    @discardableResult
+    public func hydrateFresh() async throws -> (applied: Int, deleted: Int) {
+        var waitedOut = (applied: 0, deleted: 0)
+        if let running = inFlight {
+            onWaitOut()
+            // Only its end matters here: the cycle's own caller gets and reports its error.
+            waitedOut = (try? await running.value) ?? waitedOut
+        }
+        let own = try await hydrateOnce()
+        return (own.applied + waitedOut.applied, own.deleted + waitedOut.deleted)
     }
 
     private func performHydration() async throws -> (applied: Int, deleted: Int) {
         try await pull?()
+        // Asked before and after the read: whole only if no load was running at either end, so a load that starts
+        // after the first answer cannot pass as complete.
+        let reporting = transport as? any InitialLoadReporting
+        let completeBefore = await reporting?.dataLoadComplete() ?? true
         let batch = try await transport.changes(in: .data, since: store.storedToken())
+        let completeAfter = await reporting?.dataLoadComplete() ?? true
+        let loadComplete = completeBefore && completeAfter
         // A locked keychain before the first unlock (or no link yet) throws
         // here: nothing of the batch is stored and the token is kept (F15).
-        let stored = try store.applyCounting(batch)
-        if stored != nil {
+        let applied = try store.applyCounting(batch, loadComplete: loadComplete)
+        let stored = applied?.stored
+        if applied?.tokenSaved == true {
             // Consumer-driven compaction of the CONSUMED data-zone buffer (see
             // CompactingTransport's retention note): safe here because the
             // replica is the ONLY data-zone consumer on this device and its
@@ -120,6 +159,8 @@ public actor ReplicaHydrator {
         // locked open on the first cycle after unlock. Only what this pass
         // indexed is reported, so a dropped stale batch reports nothing new.
         let indexed = try store.indexPending()
+        // The first slice of an effect kind ends an open action timing (relay client Phase 4).
+        store.stampLatencyEffects(of: indexed, at: now())
         if let onRecordsApplied, !indexed.isEmpty {
             onRecordsApplied(indexed)
         }

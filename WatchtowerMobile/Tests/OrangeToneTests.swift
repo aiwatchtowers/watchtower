@@ -1,3 +1,5 @@
+import ChatUI
+import ChatWire
 import WatchtowerKit
 import WatchtowerSync
 import XCTest
@@ -50,7 +52,8 @@ final class OrangeToneTests: XCTestCase {
             id: "a", kind: .sessionStop, entityRecordName: "terminal_session-10", params: [:], createdAt: now, seq: 1,
             delivery: .undelivered, reason: .noAnswer)
         uses += NowOutboxRows(
-            lastFlushStopped: true, queued: [queued], undelivered: [undelivered], snapshot: snapshot, now: now, calendar: .current
+            lastFlushStopped: true, queued: [queued], undelivered: [undelivered], snapshot: snapshot, now: now, calendar: .current,
+            parked: NowParkedRow(macName: "Acme Mac", sent: 2)
         )?.toneUses ?? []
         uses += NotDeliveredModel(
             items: [undelivered], snapshot: snapshot, macName: "Acme Mac", now: now, calendar: .current,
@@ -137,7 +140,7 @@ final class OrangeToneTests: XCTestCase {
                 eventID: event.id, snapshot: calendar, recordings: recordings, now: now, calendar: .current
             )).toneUses
         }
-        XCTAssertTrue(uses.contains { $0.tone == .purple }, "the demo shows a recording the Mac is transcribing")
+        XCTAssertTrue(uses.contains { $0.tone == .purple }, "the demo shows a recording the tower is transcribing")
         XCTAssertTrue(uses.contains { $0.tone == .red && $0.role == .recording })
         XCTAssertFalse(uses.contains { $0.tone == .orange })
     }
@@ -173,5 +176,20 @@ final class OrangeToneTests: XCTestCase {
         }
         XCTAssertFalse(uses.isEmpty)
         XCTAssertFalse(uses.contains { $0.tone == .orange }, "\(uses.filter { $0.tone == .orange }.map(\.element))")
+    }
+
+    /// iPhone chat spec §6.2: in the Chats list the waiting colour is only a chat waiting for the owner's approval;
+    /// answering, unread and read never draw it. The rows are `ChatUI`'s (unified chat T9): its waiting dot is the
+    /// only one in the warning tone.
+    func testTheChatListIsOrangeOnlyForAChatWaitingForApproval() throws {
+        let now = Date()
+        let list = try DemoSeed.Chat.list(now: now)
+        let waiting = list.conversations.filter { ChatListRowContent($0, now: now).dot == .waiting }
+        XCTAssertFalse(waiting.isEmpty, "the demo has a waiting chat, or this test proves nothing")
+        XCTAssertEqual(Set(waiting.map(\.id)), Set(list.conversations.filter { $0.state == .waiting }.map(\.id)))
+        for state in [ChatList.State.answering, .unread, .read] {
+            let row = ChatListRowContent(ChatList.Conversation(id: 1, title: "t", updatedAt: now, state: state), now: now)
+            XCTAssertNotEqual(row.dot, .waiting, state.rawValue)
+        }
     }
 }

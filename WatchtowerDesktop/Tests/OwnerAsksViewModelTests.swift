@@ -1,28 +1,54 @@
 import XCTest
 import AppKit
 import GRDB
+import Observation
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
 
 /// A process that runs a probe on every input, so a test can see what the
-/// DB held at the moment the line was typed.
+/// DB held at the moment the line was typed — by the stand-in session host
+/// (`FakeHostDelivery`), the only way a line reaches it.
 @MainActor
+@Observable
 private final class ProbedInputSession: TerminalSessionProcess {
     let view = NSView()
     let pid: pid_t = 0
     var onExit: ((Int32?) -> Void)?
-    var onOwnerInput: (([UInt8]) -> Void)?
+    /// The center's owner-input callback (`FakeHostDelivery.ownerInputRelay`).
+    private var centerOwnerInput: (([UInt8]) -> Void)?
+    var onOwnerInput: (([UInt8]) -> Void)? {
+        get { host.ownerInputRelay(to: centerOwnerInput) }
+        set { centerOwnerInput = newValue }
+    }
+    var onDeliveryEvent: ((SessionHostDeliveryEvent) -> Void)?
     var bracketedPasteMode = true
     private(set) var inputs: [[UInt8]] = []
     var onInput: (() -> Void)?
+    let host = FakeHostDelivery()
+    /// False: a v1-only host, the app types the line itself.
+    var hostDelivers = true
 
-    func start(_ launch: TerminalLaunch) {}
+    init() {
+        host.write = { [weak self] in self?.sendInput($0) }
+        host.bracketedPaste = { [weak self] in self?.bracketedPasteMode ?? false }
+        host.event = { [weak self] in self?.onDeliveryEvent?($0) }
+    }
+
+    func start(_ launch: TerminalLaunch) { host.newRun() }
     func detach() {}
     func sendInput(_ bytes: [UInt8]) {
         onInput?()
         inputs.append(bytes)
     }
+
+    func deliver(_ line: SessionDeliverLine, check: @escaping @MainActor () async -> DeliverCheckReply) async -> DeliverOutcome {
+        onDeliver?(line)
+        return await host.deliver(line, check: check)
+    }
+
+    /// Runs when the app asks the host to type a line.
+    var onDeliver: ((SessionDeliverLine) -> Void)?
 }
 
 @MainActor
@@ -51,9 +77,11 @@ final class OwnerAsksViewModelTests: XCTestCase {
         center = TerminalCenter(
             makeProcess: { [weak self] in
                 let process = ProbedInputSession()
+                process.host.pause = { [weak self] _ in await self?.onPause?() }
                 self?.processes.append(process)
                 return process
             },
+            // A v1-only host's pause is the app's own (`typeLocally`).
             signaller: ProcessGroupSignaller(
                 signal: { _, _ in }, isAlive: { _ in false },
                 sleep: { [weak self] _ in await self?.onPause?() }
@@ -76,7 +104,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults, terminalCenter: center)
         vm.asks.hasHookState = { _ in true }
         vm.asks.refreshStates = { true }
-        vm.asks.holdSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.asks.holdSleep = { _ in try? await parkUntilTaskCancelled() }
         return vm
     }
 
@@ -209,8 +237,12 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let (p, s, askID) = try await seed()
         center.start(s, fresh: true)
         var statusWhenTyped: String?
+        var statusWhenAsked: String?
         processes[0].onInput = { [pool] in
             statusWhenTyped = try? pool?.read { try String.fetchOne($0, sql: "SELECT status FROM owner_asks WHERE id = ?", arguments: [askID]) }
+        }
+        processes[0].onDeliver = { [pool] _ in
+            statusWhenAsked = try? pool?.read { try String.fetchOne($0, sql: "SELECT status FROM owner_asks WHERE id = ?", arguments: [askID]) }
         }
         let vm = makeVM()
         let ask = try await openAsk(vm, project: p, id: askID)
@@ -218,7 +250,17 @@ final class OwnerAsksViewModelTests: XCTestCase {
 
         await vm.asks.answer(ask)
 
+        XCTAssertEqual(statusWhenAsked, "answered", "stored before the host is asked to type it")
         XCTAssertEqual(statusWhenTyped, "answered")
+        // The host types it (PROJ-12, Go `TestProj12_AnAnswerLineIsPastedAsOneLineThenSubmittedWithItsOwnReturn`):
+        // one line, with its Return asked for after the answer's pause.
+        let asked = try XCTUnwrap(processes[0].host.lines.first)
+        XCTAssertEqual(processes[0].host.lines.count, 1)
+        XCTAssertFalse(asked.keepLineBreaks)
+        XCTAssertFalse(asked.keepFormat)
+        XCTAssertTrue(asked.submitIf)
+        XCTAssertFalse(asked.holdIfPromptText)
+        XCTAssertEqual(asked.settle, TerminalCenter.answerSubmitDelay)
         XCTAssertEqual(typed.count, 2)
         let pasteStart: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E]
         let pasteEnd: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]
@@ -275,6 +317,12 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(typed.count, 2, "delivered once")
     }
 
+    // MARK: - A v1-only session host: the app types the answer
+
+    // A host the update left running speaks v1: these guards pin the
+    // app's own typing (`TerminalCenter.typeLocally`) as before v2; a v2
+    // host's half is its Go twins (`internal/sessionhost`).
+
     /// PROJ-12 (amended 2026-10-04): a Return would submit what the owner
     /// half-typed in Claude Code's prompt with the answer, so over such text
     /// the line is only pasted — at once or after a hold. Keys answering the
@@ -283,6 +331,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let (p, s, askID) = try await seed()
         let otherID = try await fileAnotherAsk(project: p, sessionID: s.id)
         center.start(s, fresh: true)
+        processes[0].hostDelivers = false // a v1-only host: the app types
         let vm = makeVM()
         await vm.asks.load(projectID: p)
         let asks = try XCTUnwrap(vm.asks.openAsks[p])
@@ -317,6 +366,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
     func testAfterTheOwnersReturnOrADialogKeyTheLineIsSubmitted() async throws {
         let (p, s, askID) = try await seed()
         center.start(s, fresh: true)
+        processes[0].hostDelivers = false // a v1-only host: the app types
         let vm = makeVM()
         center.inputAnswersDialog = { _ in true }
         processes[0].onOwnerInput?(Array("1".utf8))
@@ -330,6 +380,28 @@ final class OwnerAsksViewModelTests: XCTestCase {
 
         XCTAssertEqual(delivery, .submitted)
         XCTAssertEqual(typed.last, [0x0D])
+    }
+
+    /// Board #388: the owner pressed Return while the line waited out its
+    /// pause — that sent it. No Return of ours follows into the empty
+    /// prompt, and no "press Return" bar is left behind.
+    func testTheOwnersReturnDuringThePauseSendsTheAnswer() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        processes[0].hostDelivers = false // a v1-only host: the app types
+        let vm = makeVM()
+        onPause = { [weak self] in self?.processes[0].onOwnerInput?([0x0D]) }
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertEqual(delivery, .submitted)
+        XCTAssertEqual(typed.count, 1, "the paste only")
+        XCTAssertFalse(typed.contains([0x0D]))
+        XCTAssertNil(center.answerHints[s.id])
+        XCTAssertFalse(center.pasteHints.contains(s.id))
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerSentNote)
     }
 
     /// PROJ-12 (amended 2026-10-04 and 2026-10-07, board #396): only the
@@ -453,27 +525,6 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertNil(center.answerHints[s.id])
     }
 
-    /// Board #388: the owner pressed Return while the line waited out its
-    /// pause — that sent it. No Return of ours follows into the empty
-    /// prompt, and no "press Return" bar is left behind.
-    func testTheOwnersReturnDuringThePauseSendsTheAnswer() async throws {
-        let (p, s, askID) = try await seed()
-        center.start(s, fresh: true)
-        let vm = makeVM()
-        onPause = { [weak self] in self?.processes[0].onOwnerInput?([0x0D]) }
-        let ask = try await openAsk(vm, project: p, id: askID)
-        pick(vm, askID)
-
-        let delivery = await vm.asks.answer(ask)
-
-        XCTAssertEqual(delivery, .submitted)
-        XCTAssertEqual(typed.count, 1, "the paste only")
-        XCTAssertFalse(typed.contains([0x0D]))
-        XCTAssertNil(center.answerHints[s.id])
-        XCTAssertFalse(center.pasteHints.contains(s.id))
-        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerSentNote)
-    }
-
     /// Board #387: a relaunch of the session while the line waits for its
     /// Return reuses the process object; the Return never goes into the new
     /// run, and the answer is left for that run's brief.
@@ -573,7 +624,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let (p, s, askID) = try await seed()
         center.start(s, fresh: true)
         let vm = makeVM()
-        let handOff = await center.submitPrompt("From a Watchtower code question", sessionID: s.id) { false }
+        let handOff = await center.deliver("From a Watchtower code question", sessionID: s.id) { false }
         XCTAssertEqual(handOff, .pasted)
         let ask = try await openAsk(vm, project: p, id: askID)
         pick(vm, askID)
@@ -644,11 +695,8 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let otherID = try await fileAnotherAsk(project: p, sessionID: s.id)
         center.start(s, fresh: true)
         let vm = makeVM()
-        var waits = 0
-        vm.asks.holdSleep = { _ in
-            waits += 1
-            try? await Task.sleep(for: .seconds(3600))
-        }
+        let holds = HandOpenedSleeps()
+        vm.asks.holdSleep = { _ in await holds.sleep() }
         await vm.asks.load(projectID: p)
         let asks = try XCTUnwrap(vm.asks.openAsks[p])
         pick(vm, askID)
@@ -670,7 +718,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         await waitUntil { vm.asks.answerNotices[otherID] == .delivered(.held) }
         XCTAssertEqual(vm.asks.answerNotices[otherID]?.text, OwnerAsksViewModel.answerHeldNote)
         XCTAssertEqual(center.answerHints[s.id], .held)
-        await waitUntil { waits == 1 }
+        await holds.untilCalled(1)
         XCTAssertEqual(typed.count, 1, "only the first line, no Return")
     }
 
@@ -748,15 +796,15 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let (p, s, askID) = try await seed()
         center.start(s, fresh: true)
         let vm = makeVM()
-        var wakes: [CheckedContinuation<Void, Never>] = []
-        vm.asks.holdSleep = { _ in await withCheckedContinuation { wakes.append($0) } }
+        let holds = HandOpenedSleeps()
+        vm.asks.holdSleep = { _ in await holds.sleep() }
         var approval = true
         vm.asks.needsApproval = { _ in approval }
         let ask = try await openAsk(vm, project: p, id: askID)
         pick(vm, askID)
         let delivery = await vm.asks.answer(ask)
         XCTAssertEqual(delivery, .held)
-        await waitUntil { wakes.count == 1 }
+        await holds.untilCalled(1)
 
         approval = false
         vm.asks.refreshStates = {
@@ -765,14 +813,16 @@ final class OwnerAsksViewModelTests: XCTestCase {
         }
         await vm.asks.deliverHeldAnswers()
         XCTAssertTrue(typed.isEmpty, "held again")
-        await waitUntil { wakes.count == 2 }
-        guard wakes.count == 2 else { return }
-        wakes[0].resume()
-        for _ in 0..<50 { await Task.yield() }
+        await holds.untilCalled(2)
+        let watches = vm.asks.holdWatches.sorted { $0.key < $1.key }.map(\.value)
+        guard watches.count == 2 else { return XCTFail("two hold watches, got \(watches.count)") }
+        holds.open()
+        await watches[0].value
 
         XCTAssertEqual(center.answerHints[s.id], .held)
-        wakes[1].resume()
-        await waitUntil { self.center.answerHints[s.id] == .stillHeld }
+        holds.open()
+        await watches[1].value
+        XCTAssertEqual(center.answerHints[s.id], .stillHeld)
     }
 
     /// A hold that ended before the wait is over never turns into "still
@@ -781,15 +831,15 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let (p, s, askID) = try await seed()
         center.start(s, fresh: true)
         let vm = makeVM()
-        var wakes: [CheckedContinuation<Void, Never>] = []
-        vm.asks.holdSleep = { _ in await withCheckedContinuation { wakes.append($0) } }
+        let holds = HandOpenedSleeps()
+        vm.asks.holdSleep = { _ in await holds.sleep() }
         var approval = true
         vm.asks.needsApproval = { _ in approval }
         let ask = try await openAsk(vm, project: p, id: askID)
         pick(vm, askID)
         let delivery = await vm.asks.answer(ask)
         XCTAssertEqual(delivery, .held)
-        await waitUntil { wakes.count == 1 }
+        await holds.untilCalled(1)
 
         approval = false
         await vm.asks.deliverHeldAnswers()
@@ -800,14 +850,16 @@ final class OwnerAsksViewModelTests: XCTestCase {
         pick(vm, other)
         let held = await vm.asks.answer(try XCTUnwrap(vm.asks.openAsks[p]?.first { $0.id == other }))
         XCTAssertEqual(held, .held)
-        await waitUntil { wakes.count == 2 }
-        guard wakes.count == 2 else { return }
-        wakes[0].resume()
-        for _ in 0..<50 { await Task.yield() }
+        await holds.untilCalled(2)
+        let watches = vm.asks.holdWatches.sorted { $0.key < $1.key }.map(\.value)
+        guard watches.count == 2 else { return XCTFail("two hold watches, got \(watches.count)") }
+        holds.open()
+        await watches[0].value
 
         XCTAssertEqual(center.answerHints[s.id], .held, "the first hold's wait does not mark the second")
-        wakes[1].resume()
-        await waitUntil { self.center.answerHints[s.id] == .stillHeld }
+        holds.open()
+        await watches[1].value
+        XCTAssertEqual(center.answerHints[s.id], .stillHeld)
     }
 
     func testCopiedShowsTheCopiedAnswerHint() async throws {
@@ -997,14 +1049,21 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(typed.count, 6)
         XCTAssertEqual(typed[5], [0x0D])
 
-        // Over the owner's half-typed text the line is only pasted.
+        // Over the owner's half-typed text the line is only pasted: the
+        // host's prompt holds the draft (its half is the Go twin
+        // `TestProj12_OverTheOwnersDraftSubmitPromptOnlyPastes`); the quick
+        // answer asks the host exactly as the drawer's did.
         processes[0].onOwnerInput?(Array("fix the".utf8))
+        processes[0].host.leftTyped = true
         let (third, thirdRow) = try await quickRow(vm, project: p, id: quickIDs[2])
         let thirdDelivery = await vm.answerQuick(third, with: thirdRow.answer(picking: "Yes"))
         XCTAssertEqual(thirdDelivery, .delivered(.typed))
         XCTAssertEqual(typed.count, 7, "the paste, no Return")
         XCTAssertNotEqual(typed.last, [0x0D])
         XCTAssertEqual(center.answerHints[s.id], .typed)
+        let shapes = processes[0].host.lines.map { [$0.keepLineBreaks, $0.keepFormat, $0.submitIf, $0.holdIfPromptText] }
+        XCTAssertEqual(Set(shapes), [[false, false, true, false]], "the drawer's and the banner's lines ask the host alike")
+        XCTAssertEqual(Set(processes[0].host.lines.map(\.settle)), [TerminalCenter.answerSubmitDelay])
     }
 
     /// PROJ-12 (spec 2026-10-10 Part 11.2): a Reply goes as the question's
@@ -1247,7 +1306,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         )
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
                                       terminalCenter: center, agentStates: states)
-        vm.asks.holdSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.asks.holdSleep = { _ in try? await parkUntilTaskCancelled() }
         await states.poll()
         let ask = try await openAsk(vm, project: p, id: askID)
         if askKind == "check" {
@@ -1337,7 +1396,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(vm.asks.loadErrors[p], "1 ask could not be read (#\(bad)).")
 
         await vm.asks.loadClosed(projectID: p, sessionID: nil)
-        XCTAssertNil(vm.asks.closedErrors[.init(projectID: p, sessionID: nil)], "nothing broken among the closed ones")
+        XCTAssertNil(vm.asks.closedUnreadable[.init(projectID: p, sessionID: nil)], "nothing broken among the closed ones")
         try await pool.write { d in
             try d.execute(sql: "UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = 'agent' WHERE id = ?", arguments: [bad])
         }
@@ -1345,7 +1404,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertNil(vm.asks.loadErrors[p], "the broken ask left the open list")
         await vm.asks.loadClosed(projectID: p, sessionID: nil)
         XCTAssertEqual(vm.asks.closedLists[.init(projectID: p, sessionID: nil)], [])
-        XCTAssertEqual(vm.asks.closedErrors[.init(projectID: p, sessionID: nil)], "1 ask could not be read (#\(bad)).")
+        XCTAssertEqual(vm.asks.closedUnreadable[.init(projectID: p, sessionID: nil)], "1 ask could not be read (#\(bad)).")
     }
 
     func testThePollReloadsOnlyWhenTheFingerprintChanges() async throws {
@@ -1393,7 +1452,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         vm.selectedWorkbenchID = p
         let notifications = NotificationCenter()
         vm.asks.notificationCenter = notifications
-        vm.asks.pollSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.asks.pollSleep = { _ in try? await parkUntilTaskCancelled() }
         vm.asks.start()
         defer { vm.asks.stop() }
 
@@ -1485,7 +1544,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         }
         if route {
             vm.reveal(.forAsk(projectID: p, sessionID: s.id, askID: askID))
-            for _ in 0 ..< 200 where vm.asks.drawerAskIDs[p] == nil { await Task.yield(); try? await Task.sleep(for: .milliseconds(10)) }
+            await untilObserved { vm.asks.drawerAskIDs[p] != nil }
         } else {
             await vm.showAsk(askID, projectID: p)
         }
@@ -1939,14 +1998,9 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertNil(vm.asks.drawerAskIDs[p])
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+    /// Waits until `condition` holds, re-checking on every change of the
+    /// observable state it reads — no deadline.
+    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
+        await untilObserved(condition)
     }
 }

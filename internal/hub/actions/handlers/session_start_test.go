@@ -173,7 +173,7 @@ func TestADeviceNotAllowedToStartSessionsFailsDeviceNotAllowed(t *testing.T) {
 	for _, g := range []struct{ allowed, granted bool }{{false, true}, {true, false}} {
 		le.setStartGrants(g.allowed, g.granted)
 		out := le.startOutcome(&target, startParams(le.wb, "new", false, nil))
-		if out.Status != wire.StatusFailed || out.Reason != reasonDeviceNotAllowed || out.Message != startNotAllowedMessage {
+		if out.Status != wire.StatusFailed || out.Reason != reasonDeviceNotAllowed || out.Message != startNotAllowedLead+macStartAllowStep {
 			t.Fatalf("%+v: %+v", g, out)
 		}
 	}
@@ -267,6 +267,46 @@ func TestBadParamsFailInvalidParams(t *testing.T) {
 	notATarget := le.action("session_start", &[]string{"abc"}[0], startParams(le.wb, "new", false, nil), le.device)
 	wantOutcome(t, le.h.sessionStartStop(context.Background(), notATarget), wire.StatusFailed, reasonInvalidParams)
 	wantStarts(t, le)
+}
+
+// twin of SessionStartHandlerTests.testBringForwardOnBringsTheWorkbenchForwardAndKeepsTheBoard:
+// bring_forward true, once the start is applied, tells Desktop the workbench
+// and the new session (it shows them in front, Work on it's focus).
+func TestBringForwardOnBringsTheWorkbenchForwardAndKeepsTheBoard(t *testing.T) {
+	le := startEnv(t)
+	type forward struct{ wb, session int64 }
+	var got []forward
+	le.h.d.BringForward = func(wb, session int64) { got = append(got, forward{wb, session}) }
+	target := le.target(le.wb, 0, "Ship it")
+	params := startParams(le.wb, "new", false, nil)
+	params["bring_forward"] = true
+
+	out := le.startOutcome(&target, params)
+
+	if out.Status != wire.StatusApplied || !slices.Equal(got, []forward{{le.wb, 42}}) {
+		t.Fatalf("outcome %+v, brought forward %v", out, got)
+	}
+	// A start that fails brings nothing forward.
+	got = nil
+	le.setStartGrants(false, false)
+	if out := le.startOutcome(&target, params); out.Status != wire.StatusFailed || len(got) != 0 {
+		t.Fatalf("refused start: outcome %+v, brought forward %v", out, got)
+	}
+}
+
+// twin of SessionStartHandlerTests.testBringForwardOffStartsInTheBackground:
+// nothing on the owner's screen moves.
+func TestBringForwardOffStartsInTheBackground(t *testing.T) {
+	le := startEnv(t)
+	called := false
+	le.h.d.BringForward = func(int64, int64) { called = true }
+	target := le.target(le.wb, 0, "Ship it")
+
+	out := le.startOutcome(&target, startParams(le.wb, "new", false, nil))
+
+	if out.Status != wire.StatusApplied || called {
+		t.Fatalf("outcome %+v, brought forward %v", out, called)
+	}
 }
 
 // MARK: - Stop

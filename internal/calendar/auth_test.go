@@ -1,7 +1,6 @@
 package calendar
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -13,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +20,7 @@ import (
 
 	"watchtower/internal/auth"
 	"watchtower/internal/oauthpage"
+	"watchtower/internal/oauthpage/oauthpagetest"
 )
 
 func TestTokenStore_RoundTrip(t *testing.T) {
@@ -368,25 +367,6 @@ func TestComplete_RejectsMissingVerifier(t *testing.T) {
 	assert.Contains(t, err.Error(), "missing PKCE code verifier")
 }
 
-// syncBuffer is a mutex-guarded io.Writer, used where a goroutine writes the
-// authorize URL while the test polls for it.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
 // TestLogin_ExchangeSendsVerifierMatchingChallenge is the end-to-end pin for
 // the flow `google login` actually runs: whatever code_challenge the browser
 // was sent, the token exchange must present its S256 preimage.
@@ -406,7 +386,7 @@ func TestLogin_ExchangeSendsVerifierMatchingChallenge(t *testing.T) {
 
 	resCh := make(chan *OAuthToken, 1)
 	errCh := make(chan error, 1)
-	out := &syncBuffer{}
+	out := &oauthpagetest.Output{}
 	go func() {
 		tok, err := Login(context.Background(), GoogleOAuthConfig{ClientID: "cid", ClientSecret: "secret"}, out,
 			LoginOptions{SkipBrowserOpen: true, AppReturn: true})
@@ -418,20 +398,7 @@ func TestLogin_ExchangeSendsVerifierMatchingChallenge(t *testing.T) {
 	}()
 
 	// Poll the output buffer for the printed authorize URL, then hit its callback.
-	var authorizeURL string
-	require.Eventually(t, func() bool {
-		s := out.String()
-		idx := strings.Index(s, "http")
-		if idx == -1 {
-			return false
-		}
-		end := strings.IndexAny(s[idx:], "\n ")
-		if end == -1 {
-			end = len(s) - idx
-		}
-		authorizeURL = s[idx : idx+end]
-		return authorizeURL != ""
-	}, 2*time.Second, 10*time.Millisecond)
+	authorizeURL := out.WaitURL("http")
 
 	u, err := url.Parse(authorizeURL)
 	require.NoError(t, err)
@@ -459,8 +426,6 @@ func TestLogin_ExchangeSendsVerifierMatchingChallenge(t *testing.T) {
 		assert.Equal(t, "at", tok.AccessToken)
 	case err := <-errCh:
 		t.Fatalf("Login returned error: %v", err)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for Login to complete")
 	}
 
 	select {

@@ -10,6 +10,11 @@ import WatchtowerKit
 /// partial and green when complete, the live sessions, and an optional
 /// meta line (open asks in the waiting tone, session count, PR) below the
 /// chips.
+///
+/// The board's compact card (`compact`, #1781) draws less: High as a red
+/// dot before `#number` and no other priority, the status chip only when
+/// asked (`statusChip`: the row's label differs from its lane's), and the
+/// meta on the number's line.
 struct BoardCardModel: Equatable {
     let numberText: String
     let title: String
@@ -24,30 +29,41 @@ struct BoardCardModel: Equatable {
     /// Whole-item meta (asks, sessions, PR); empty draws no line.
     let details: [MetaItem]
     let isDone: Bool
+    let isCompact: Bool
+    /// The compact card's High dot; nil otherwise.
+    let priorityDot: PhoneTone?
 
     /// `statusText` is the column's or status's label (the screen's
     /// `BoardRowModel.statusLabel`); `progress` is 0…1, nil for no bar.
     init(
-        number: Int64,
+        number: Int64?,
         title: String,
         status: WorkbenchTargetStatus,
         statusText: String,
         priority: WorkbenchTargetPriority,
+        unnumbered: String = "",
         counter: String? = nil,
         progress: Double? = nil,
         liveSessions: Int = 0,
-        details: [MetaItem] = []
+        details: [MetaItem] = [],
+        compact: Bool = false,
+        statusChip: Bool = true
     ) {
         let style = TargetStatusStyle.of(status)
-        numberText = "#\(number)"
+        // nil: a new target the phone just asked for, not numbered yet: `unnumbered` stands in.
+        numberText = number.map { "#\($0)" } ?? unnumbered
         self.title = title.isEmpty ? "Untitled" : title
         glyph = style.glyph
         tone = style.tone
         var chips: [PillItem] = []
-        if let priorityTone = PriorityMark.tone(priority) ?? (priority == .medium ? .gray : nil) {
+        if !compact, let priorityTone = PriorityMark.tone(priority) ?? (priority == .medium ? .gray : nil) {
             chips.append(PillItem(text: priority.rawValue.capitalized, tone: priorityTone, dot: true))
         }
-        chips.append(PillItem(text: statusText, tone: style.tone))
+        if statusChip {
+            chips.append(PillItem(text: statusText, tone: style.tone))
+        }
+        isCompact = compact
+        priorityDot = compact && priority == .high ? PriorityMark.tone(priority) : nil
         self.chips = chips
         self.counter = counter
         self.progress = progress.map { min(1, max(0, $0)) }
@@ -60,6 +76,7 @@ struct BoardCardModel: Equatable {
     var toneUses: [ToneUse] {
         [ToneUse(element: "board card \(numberText) status", tone: tone, role: .status)]
             + chips.map { ToneUse(element: "board card \(numberText) chip \($0.text)", tone: $0.tone, role: $0.dot ? .priority : .status) }
+            + (priorityDot.map { [ToneUse(element: "board card \(numberText) priority", tone: $0, role: .priority)] } ?? [])
             + details.map { ToneUse(element: "board card \(numberText) \($0.text)", tone: $0.tone, role: $0.role) }
             + (progress == nil ? [] : [ToneUse(element: "board card \(numberText) progress", tone: progressTone, role: .progress)])
     }
@@ -75,6 +92,9 @@ struct BoardCard: View {
     let model: BoardCardModel
     var isSelected = false
     var isDimmed = false
+    /// Room kept clear at the trailing edge, inside the card, for a control
+    /// laid over it (the board's fold chevron, #1781).
+    var trailingReserve: CGFloat = 0
 
     /// The chips' identities: their places, so a column titled like a
     /// priority word ("High") never collides with the priority chip.
@@ -93,7 +113,18 @@ struct BoardCard: View {
                     .strikethrough(model.isDone)
                     .foregroundStyle(model.isDone ? Color.secondary : Color.primary)
                 FlowRow {
-                    Text(model.numberText).font(TypeScale.time).foregroundStyle(.secondary)
+                    if let dot = model.priorityDot {
+                        HStack(spacing: Spacing.small) {
+                            Circle().fill(dot.color).frame(width: PhoneMetrics.priorityDot, height: PhoneMetrics.priorityDot)
+                            Text(model.numberText)
+                        }
+                        .font(TypeScale.time)
+                        .foregroundStyle(.secondary)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(model.numberText), High priority")
+                    } else {
+                        Text(model.numberText).font(TypeScale.time).foregroundStyle(.secondary)
+                    }
                     ForEach(Self.chipIDs(model), id: \.self) { Pill(item: model.chips[$0]) }
                     if let counter = model.counter {
                         Text(counter).font(TypeScale.time).foregroundStyle(.secondary)
@@ -106,8 +137,11 @@ struct BoardCard: View {
                         .font(TypeScale.meta)
                         .foregroundStyle(.secondary)
                     }
+                    if model.isCompact, !model.details.isEmpty {
+                        MetaLine(items: model.details).font(TypeScale.meta)
+                    }
                 }
-                if !model.details.isEmpty {
+                if !model.isCompact, !model.details.isEmpty {
                     MetaLine(items: model.details).font(TypeScale.meta)
                 }
                 if let progress = model.progress {
@@ -116,6 +150,7 @@ struct BoardCard: View {
                 }
             }
         }
+        .padding(.trailing, trailingReserve)
         .card(isSelected ? .highlighted : .plain)
         .opacity(isDimmed && !isSelected ? PhoneOpacity.dimmed : 1)
         .accessibilityElement(children: .combine)

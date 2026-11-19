@@ -626,7 +626,10 @@ package final class EmbeddedChatEngine {
     /// turn. A failed read sends the turn without them, logged.
     private func replayBlock(before turnID: String, prompt: String) -> String? {
         do {
-            return EmbeddedChatReplay.block(messages: try store.loadMessages(), before: turnID, prompt: prompt)
+            return EmbeddedChatReplay.block(
+                messages: try store.loadMessages(), before: turnID, prompt: prompt,
+                historyTools: spec.key.conversationID != nil && spec.toolAccess.readsChatHistory
+            )
         } catch {
             log("reading the history to replay: \(error)")
             return nil

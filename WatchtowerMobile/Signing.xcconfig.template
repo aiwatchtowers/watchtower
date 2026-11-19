@@ -17,8 +17,9 @@ DEVELOPMENT_TEAM =
 CODE_SIGN_STYLE = Automatic
 
 // Re-enable signing (Base.xcconfig disables it for the unsigned default).
-// Makefile simulator targets still pass CODE_SIGNING_ALLOWED=NO on the CLI,
-// so `make mobile-build`/`mobile-test` stay unsigned even with this file.
+// Command-line settings win over this file: `make mobile-build` passes
+// CODE_SIGNING_ALLOWED=NO and stays unsigned, and `make mobile-test` signs to run
+// locally with StoreKitTesting.entitlements. Neither uses this identity.
 CODE_SIGNING_ALLOWED = YES
 CODE_SIGNING_REQUIRED = YES
 
@@ -36,5 +37,5 @@ CODE_SIGN_IDENTITY = Apple Development
 // WATCHTOWER_RELAY_ORIGIN[config=Debug] = http:/$()/127.0.0.1:8787
 
 // Optional: the Debug App Attest environment (Base.xcconfig: development).
-// Release entitlements carry no App Attest key until Phase 4.
+// Release entitlements name production.
 // WT_APP_ATTEST_ENV = development

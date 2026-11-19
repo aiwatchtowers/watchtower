@@ -8,8 +8,8 @@ import WatchtowerCore
 /// invoked off whatever executor happens to run it, while `blockUntilCancelled`
 /// is armed from the test's MainActor context beforehand — `lock` is what
 /// actually protects the recorded invocations and the mutable
-/// cancellation-gate state below (a test's `waitUntil` polls `invocations`
-/// from the main actor while `run` appends from another executor); the
+/// cancellation-gate state below (a test reads `invocations` from the main
+/// actor while `run` appends from another executor); the
 /// plain-`var` config flags are set once before any concurrent access starts.
 package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let stdoutData: Data
@@ -49,6 +49,14 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
         return recordedTextFiles
     }
 
+    /// Each recorded call's origin, in order: the `runModel` origin, nil for
+    /// a generic `run`.
+    package var origins: [CLIOrigin?] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedOrigins
+    }
+
     /// What each `run(args:stdin:)` call sent on stdin, in order.
     package var stdinInputs: [Data] {
         lock.lock()
@@ -56,9 +64,17 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
         return recordedStdin
     }
 
+    /// Returns once at least `count` calls have been recorded — the fake's
+    /// own signal, no clock.
+    package func untilInvocations(_ count: Int) async {
+        await signal.until { [self] in invocations.count >= count }
+    }
+
     private let lock = NSLock()
+    private let signal = StateSignal()
     private var recordedStdin: [Data] = []
     private var recordedInvocations: [[String]] = []
+    private var recordedOrigins: [CLIOrigin?] = []
     private var recordedTextFiles: [String?] = []
     private var cancelWaiter: CheckedContinuation<Void, Never>?
     private var cancelled = false
@@ -68,12 +84,22 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
         self.shouldThrow = error
     }
 
+    /// Refuses a model command as `ProcessCLIRunner` does, so a service test
+    /// catches a call site that skips `runModel` (#1886 Task 18).
     package func run(args: [String]) async throws -> Data {
-        try await run(args: args, recordedStdin: nil)
+        try CLIRunnerError.refuseModelCommand(args)
+        return try await run(args: args, recordedStdin: nil, origin: nil)
     }
 
-    private func run(args: [String], recordedStdin stdin: Data?) async throws -> Data {
-        record(args, stdin: stdin)
+    package func runModel(
+        args: [String], origin: CLIOrigin, timeout _: TimeInterval?, stdin: Data?
+    ) async throws -> Data {
+        if let stdin { lock.withLock { recordedStdin.append(stdin) } }
+        return try await run(args: args, recordedStdin: stdin, origin: origin)
+    }
+
+    private func run(args: [String], recordedStdin stdin: Data?, origin: CLIOrigin?) async throws -> Data {
+        record(args, stdin: stdin, origin: origin)
         if let onRun { await onRun(args) }
         if blockUntilCancelled {
             await waitForCancellation()
@@ -86,14 +112,17 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
     }
 
     package func run(args: [String], stdin: Data) async throws -> Data {
+        try CLIRunnerError.refuseModelCommand(args)
         lock.withLock { recordedStdin.append(stdin) }
-        return try await run(args: args, recordedStdin: stdin)
+        return try await run(args: args, recordedStdin: stdin, origin: nil)
     }
 
-    private func record(_ args: [String], stdin: Data?) {
+    private func record(_ args: [String], stdin: Data?, origin: CLIOrigin?) {
+        defer { signal.changed() }  // after the lock is released
         lock.lock()
         defer { lock.unlock() }
         recordedInvocations.append(args)
+        recordedOrigins.append(origin)
         if let flag = args.firstIndex(of: "--text-file"), args.indices.contains(flag + 1) {
             let path = args[flag + 1]
             recordedTextFiles.append(path == "-" ? stdin.flatMap { String(bytes: $0, encoding: .utf8) }

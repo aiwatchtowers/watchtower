@@ -68,7 +68,7 @@ func TestTemplates_RunE2E(t *testing.T) {
 	t.Run("jira-state-report", testRunJiraStateReport)
 	t.Run("jira-state-report two projects", testRunJiraStateReportTwoProjects)
 
-	t.Run("team-performance-report", testRunTeamPerformanceReport)
+	t.Run("team-week-summary", testRunTeamWeekSummary)
 
 	t.Run("on-reaction", testRunOnReaction)
 }
@@ -124,7 +124,9 @@ func testRunNewMailSummary(t *testing.T) {
 	state := f.stateDump(t)
 
 	second := f.mailEvent(t, a, "c2")
+	before := time.Now()
 	f.step(t, 1)
+	after := time.Now()
 	f.wantRun(t, second, db.RunSucceeded, "")
 	if n := len(f.outputs(t)); n != 1 {
 		t.Fatalf("outputs after a run without newer mail = %d; want still 1", n)
@@ -136,12 +138,13 @@ func testRunNewMailSummary(t *testing.T) {
 	if len(reads) != 2 || !strings.Contains(reads[0].ArgsJSON, `"limit":1`) {
 		t.Fatalf("second list_emails steps = %+v; want the name probe, then one page", reads)
 	}
-	wantWindowSince(t, reads[1].ArgsJSON)
+	wantWindowSince(t, reads[1].ArgsJSON, before, after)
 }
 
 // wantWindowSince fails unless a list_emails call's since is the start of the
-// two-day window (not the newest message summed up).
-func wantWindowSince(t *testing.T, argsJSON string) {
+// two-day window (not the newest message summed up) of a run that read the
+// clock between before and after.
+func wantWindowSince(t *testing.T, argsJSON string, before, after time.Time) {
 	t.Helper()
 	var args struct {
 		Since string `json:"since"`
@@ -153,9 +156,10 @@ func wantWindowSince(t *testing.T, argsJSON string) {
 	if err != nil {
 		t.Fatalf("list_emails since %q: %v", args.Since, err)
 	}
-	// The window starts at a whole minute, up to a minute before now - 48 h.
-	if d := time.Since(since) - 48*time.Hour; d < -time.Minute || d > 2*time.Minute {
-		t.Fatalf("list_emails since = %s; want two days back", args.Since)
+	// The window starts at the whole minute of the run's now - 48 h.
+	lo, hi := before.Truncate(time.Minute).Add(-48*time.Hour), after.Truncate(time.Minute).Add(-48*time.Hour)
+	if since.Before(lo) || since.After(hi) {
+		t.Fatalf("list_emails since = %s; want two days back, in [%s, %s]", args.Since, lo, hi)
 	}
 }
 
@@ -692,10 +696,10 @@ func testRunJiraStateReportTwoProjects(t *testing.T) {
 	mustContain(t, "report input", calls[0].UserMessage, "OPS-7")
 }
 
-func testRunTeamPerformanceReport(t *testing.T) {
+func testRunTeamWeekSummary(t *testing.T) {
 	gen := &automationstest.FakeGenerator{Replies: []string{"## Summary\nA steady week."}}
 	f := newTplFixture(t, gen)
-	a := f.installTemplate(t, "team-performance-report", nil)
+	a := f.installTemplate(t, "team-week-summary", nil)
 	id := f.enqueue(t, a, db.TriggerSchedule)
 	f.step(t, 1)
 	f.wantRun(t, id, db.RunSucceeded, "")
@@ -891,7 +895,7 @@ func seedProductionSize(t *testing.T, d *db.DB, seeds ...string) {
 }
 
 // TestTemplates_ProductionSizeReports runs jira-state-report and
-// team-performance-report over production-size data through the executor:
+// team-week-summary over production-size data through the executor:
 // every tool result passes the 256 KiB cap, every llm() input the 200 KiB
 // cap, and the estimated tokens fit the recipes' budgets (the generator
 // reports no usage, so llm() estimates bytes/4).
@@ -920,11 +924,11 @@ func TestTemplates_ProductionSizeReports(t *testing.T) {
 			productionSizeOpsSeed, []string{`"key":"PAY-`, `"key":"OPS-`}},
 		{"jira-state-report &-heavy titles", "jira-state-report", map[string]string{"PROJECT": "PAY,OPS"},
 			ampOpsSeed, []string{`"key":"OPS-`, strings.Repeat(`\u0026`, 2)}},
-		{"team-performance-report", "team-performance-report", nil, "", []string{"PAY-300"}},
+		{"team-week-summary", "team-week-summary", nil, "", []string{"PAY-300"}},
 		// #665: Slack texts full of < and > (mentions, links) are 6 bytes a
 		// character in Go's JSON, so a script counting characters sends past
 		// the cap.
-		{"team-performance-report <>-heavy messages", "team-performance-report", nil,
+		{"team-week-summary <>-heavy messages", "team-week-summary", nil,
 			`UPDATE messages SET text = replace(hex(zeroblob(128)), '0', '<>')`, []string{strings.Repeat("\\u003c\\u003e", 2)}},
 	} {
 		t.Run(c.name, func(t *testing.T) {

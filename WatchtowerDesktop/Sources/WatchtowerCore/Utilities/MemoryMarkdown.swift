@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// Pure parsing helpers for vault markdown files: frontmatter split and
 /// wiki-link handling. Mirrors the Go side (internal/memory/node.go) — same
@@ -9,7 +10,7 @@ import Foundation
 package enum MemoryMarkdown {
 
     /// Custom URL scheme carrying wiki-link taps out of rendered markdown.
-    package static let linkScheme = "watchtower-memory"
+    package static let linkScheme = WatchtowerLinkScheme.memory
 
     // swiftlint:disable:next force_try
     private static let wikiLinkRegex = try! NSRegularExpression(

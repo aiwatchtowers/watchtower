@@ -103,6 +103,29 @@ final class CachingPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
         forget(keys.hubID)
     }
 
+    /// Forwarded, so the read, change and write run under the wrapped store's lock; the stored link then replaces
+    /// the cached one. It is cached only when no other drop or write ran meanwhile (their own forget wins).
+    func updateHubLink(_ hubID: String, _ change: (HubLinkKeys) throws -> HubLinkKeys) throws -> HubLinkKeys? {
+        let started = lock.withLock {
+            generation += 1
+            links[hubID] = nil
+            signingKeys[hubID] = nil
+            return generation
+        }
+        let updated: HubLinkKeys?
+        do {
+            updated = try wrapped.updateHubLink(hubID, change)
+        } catch {
+            forget(hubID)
+            throw error
+        }
+        lock.withLock {
+            links[hubID] = serving && generation == started ? updated : nil
+            generation += 1
+        }
+        return updated
+    }
+
     func removeHubLink(_ hubID: String) throws {
         forget(hubID)
         try wrapped.removeHubLink(hubID)

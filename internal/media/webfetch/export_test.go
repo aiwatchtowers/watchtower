@@ -1,6 +1,7 @@
 package webfetch
 
 import (
+	"context"
 	"net"
 	"net/http"
 )
@@ -31,4 +32,10 @@ func FailInterfaceAddrsForTest(err error) (restore func()) {
 	prev := interfaceAddrs
 	interfaceAddrs = func() ([]net.Addr, error) { return nil, err }
 	return func() { interfaceAddrs = prev }
+}
+
+// SetDialForTest makes the fetcher dial through dial instead of a socket
+// (bypassing the connect-time gate).
+func (f *Fetcher) SetDialForTest(dial func(ctx context.Context, network, addr string) (net.Conn, error)) {
+	f.dialForTest = dial
 }

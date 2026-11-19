@@ -107,6 +107,57 @@ final class KeychainRelayIdentityTests: XCTestCase {
         XCTAssertFalse(backend.calls.contains { $0.op == "add" || $0.op == "write" })
     }
 
+    func testAccountIDIsKeptAddOnlyAfterFirstUnlockAndNeverSynced() throws {
+        let backend = RecordingRelayKeychain()
+        let identity = KeychainRelayIdentity(backend: backend, group: group)
+        let id = UUID()
+
+        XCTAssertNil(try identity.accountID())
+        XCTAssertEqual(try identity.keepAccountID(id), id)
+        XCTAssertEqual(try identity.accountID(), id)
+
+        let adds = backend.calls.filter { $0.op == "add" }
+        XCTAssertEqual(adds.map(\.account), ["relay.account"])
+        XCTAssertEqual(adds.first?.access, .afterFirstUnlock)
+        XCTAssertEqual(adds.first?.group, group, "the private group, never the alerts group")
+        XCTAssertEqual(adds.first?.dataProtection, true)
+        XCTAssertFalse(backend.calls.contains { $0.op == "write" })
+        XCTAssertEqual(backend.item("relay.account", group: group), Data(id.uuidString.lowercased().utf8))
+    }
+
+    func testALostAccountIDRaceReadsTheWinner() throws {
+        let backend = RecordingRelayKeychain()
+        let winner = UUID()
+        backend.raceOnAdd("relay.account", planting: Data(winner.uuidString.utf8), group: group)
+        let identity = KeychainRelayIdentity(backend: backend, group: group)
+
+        XCTAssertEqual(try identity.keepAccountID(UUID()), winner)
+        XCTAssertEqual(backend.item("relay.account", group: group), Data(winner.uuidString.utf8), "never clobbered")
+    }
+
+    func testAnAccountIDThatIsNoUUIDIsCorruptAndKept() throws {
+        let backend = RecordingRelayKeychain()
+        backend.plant("relay.account", Data("not-a-uuid".utf8), group: group)
+        let identity = KeychainRelayIdentity(backend: backend, group: group)
+
+        XCTAssertThrowsError(try identity.accountID()) { error in
+            guard case KeyStoreError.corrupt = error else { return XCTFail("expected corrupt, got \(error)") }
+        }
+        XCTAssertEqual(backend.item("relay.account", group: group), Data("not-a-uuid".utf8))
+        XCTAssertFalse(backend.calls.contains { $0.op != "read" })
+    }
+
+    func testLockedAccountIDCreatesNothing() throws {
+        let backend = RecordingRelayKeychain()
+        backend.isLocked = true
+        let identity = KeychainRelayIdentity(backend: backend, group: group)
+
+        XCTAssertThrowsError(try identity.accountID()) { XCTAssertEqual($0 as? KeyStoreError, .locked) }
+        XCTAssertThrowsError(try identity.keepAccountID(UUID())) { XCTAssertEqual($0 as? KeyStoreError, .locked) }
+        backend.isLocked = false
+        XCTAssertNil(backend.item("relay.account", group: group))
+    }
+
     func testKeyIDRoundTripsAndNilDeletes() throws {
         let backend = RecordingRelayKeychain()
         let identity = KeychainRelayIdentity(backend: backend, group: group)

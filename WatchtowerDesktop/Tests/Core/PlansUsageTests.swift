@@ -169,7 +169,10 @@ final class PlansUsageTests: XCTestCase {
             "timeout": "The refresh timed out. Try again.", "cancelled": "Refresh cancelled.",
             "storage": "Couldn't read saved limits. Retry to reload.",
             "parse": "Couldn't read the subscription response. Retry to update.",
-            "network": "Couldn't update Codex limits. Retry to update."
+            "network": "Couldn't update Codex limits. Retry to update.",
+            "cloud_bedrock": "Couldn't update Codex limits. Retry to update.",
+            "cloud_vertex": "Couldn't update Codex limits. Retry to update.",
+            "cloud_foundry": "Couldn't update Codex limits. Retry to update."
         ]
         XCTAssertEqual(Set(errors.keys), Set(PlansOperationError.codes))
         for (code, expected) in errors { XCTAssertEqual(PlansPresentation.errorText(code, provider: .codex), expected, code) }

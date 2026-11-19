@@ -4,8 +4,9 @@ import WatchtowerHostedRelay
 import WatchtowerSync
 import XCTest
 
-/// The relay identity in the real Keychain (`SecItemKeychainBackend`). An unsigned simulator build has no Keychain
-/// entitlement and skips (F24); the behaviour of `KeychainRelayIdentity` is covered over a recording backend in the Kit.
+/// The relay identity in the real Keychain (`SecItemKeychainBackend`). `make mobile-test` signs the host, so this runs;
+/// a build with `CODE_SIGNING_ALLOWED=NO` has no Keychain entitlement and skips (F24). The behaviour of
+/// `KeychainRelayIdentity` is covered over a recording backend in the Kit.
 final class RelayKeychainDeviceTests: XCTestCase {
     /// Its own service, so the test never touches the app's items.
     private let backend = SecItemKeychainBackend(service: "com.aiwatchtowers.watchtower.relay.device-tests")
@@ -16,7 +17,7 @@ final class RelayKeychainDeviceTests: XCTestCase {
             do {
                 try backend.delete(account: account, group: nil)
             } catch {
-                // Nothing to clean when the Keychain refused every write (unsigned): not a failure of the test.
+                // Nothing to clean when the Keychain refused every write (no entitlement): not a failure of the test.
                 continue
             }
         }
@@ -29,7 +30,7 @@ final class RelayKeychainDeviceTests: XCTestCase {
         do {
             created = try identity.signer()
         } catch KeyStoreError.missingEntitlement {
-            throw XCTSkip("no Keychain entitlement in an unsigned build (F24)")
+            throw XCTSkip("no Keychain entitlement in this build (F24)")
         }
 
         let reread = try XCTUnwrap(KeychainRelayIdentity(backend: backend, group: nil).existingSigner())

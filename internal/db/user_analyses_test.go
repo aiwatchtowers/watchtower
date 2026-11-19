@@ -285,39 +285,39 @@ func TestComputeUserStats_VolumeChange(t *testing.T) {
 func TestComputeAllUserStats(t *testing.T) {
 	db := openTestDB(t)
 
-	require.NoError(t, db.UpsertUser(User{ID: "U1", Name: "alice"}))
-	require.NoError(t, db.UpsertUser(User{ID: "U2", Name: "bob"}))
-	require.NoError(t, db.UpsertUser(User{ID: "UBOT", Name: "bot", IsBot: true}))
-	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
+	require.NoError(t, db.UpsertUser(User{ID: "1:U1", Name: "alice"}))
+	require.NoError(t, db.UpsertUser(User{ID: "1:U2", Name: "bob"}))
+	require.NoError(t, db.UpsertUser(User{ID: "1:UBOT", Name: "bot", IsBot: true}))
+	require.NoError(t, db.UpsertChannel(Channel{ID: "1:C1", Name: "general", Type: "public"}))
 
 	// U1: 3 messages
 	for i := range 3 {
 		ts := "1500000.00000" + string(rune('1'+i))
-		require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: ts, UserID: "U1", Text: "msg from U1"}))
+		require.NoError(t, db.UpsertMessage(Message{ChannelID: "1:C1", TS: ts, UserID: "1:U1", Text: "msg from U1"}))
 	}
 
 	// U2: 2 messages
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000011", UserID: "U2", Text: "msg from U2"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000012", UserID: "U2", Text: "msg2 from U2"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "1:C1", TS: "1500000.000011", UserID: "1:U2", Text: "hi <@U1>"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "1:C1", TS: "1500000.000012", UserID: "1:U2", Text: "msg2 from U2"}))
 
 	// Bot: should be excluded
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000021", UserID: "UBOT", Text: "bot msg"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "1:C1", TS: "1500000.000021", UserID: "1:UBOT", Text: "bot msg"}))
 
-	stats, err := db.ComputeAllUserStats(1000000, 2000000, 1)
+	stats, err := db.ComputeAllUserStats(1000000, 2000000, 1, map[int64]string{1: "1:U1"})
 	require.NoError(t, err)
 	require.Len(t, stats, 2)
 
 	// minMessages=3 should filter out U2
-	stats, err = db.ComputeAllUserStats(1000000, 2000000, 3)
+	stats, err = db.ComputeAllUserStats(1000000, 2000000, 3, map[int64]string{1: "1:U1"})
 	require.NoError(t, err)
 	require.Len(t, stats, 1)
-	assert.Equal(t, "U1", stats[0].UserID)
+	assert.Equal(t, "1:U1", stats[0].UserID)
 }
 
 func TestComputeAllUserStats_Empty(t *testing.T) {
 	db := openTestDB(t)
 
-	stats, err := db.ComputeAllUserStats(1000000, 2000000, 1)
+	stats, err := db.ComputeAllUserStats(1000000, 2000000, 1, map[int64]string{1: "1:U1"})
 	require.NoError(t, err)
 	assert.Nil(t, stats)
 }
@@ -461,48 +461,48 @@ func TestGetPeriodSummary_NotFound(t *testing.T) {
 func TestComputeAllUserStats_WithThreadsHoursVolume(t *testing.T) {
 	db := openTestDB(t)
 
-	require.NoError(t, db.UpsertUser(User{ID: "U1", Name: "alice"}))
-	require.NoError(t, db.UpsertUser(User{ID: "U2", Name: "bob"}))
-	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
+	require.NoError(t, db.UpsertUser(User{ID: "1:U1", Name: "alice"}))
+	require.NoError(t, db.UpsertUser(User{ID: "1:U2", Name: "bob"}))
+	require.NoError(t, db.UpsertChannel(Channel{ID: "1:C1", Name: "general", Type: "public"}))
 
 	// U1: thread initiator — a parent message with reply_count > 0
 	require.NoError(t, db.UpsertMessage(Message{
-		ChannelID: "C1", TS: "1500000.000001", UserID: "U1",
+		ChannelID: "1:C1", TS: "1500000.000001", UserID: "1:U1",
 		Text: "starting a thread", ReplyCount: 3,
 	}))
 	// U1: regular messages at different hours
 	// ts 1500000 = 2017-07-14 02:40:00 UTC (hour 2)
 	// ts 1500036000 = 2017-07-14 12:40:00 UTC (hour 12)
 	require.NoError(t, db.UpsertMessage(Message{
-		ChannelID: "C1", TS: "1500036.000001", UserID: "U1",
+		ChannelID: "1:C1", TS: "1500036.000001", UserID: "1:U1",
 		Text: "afternoon message",
 	}))
 
 	// U2: reply in thread (thread_ts set = non-null)
 	require.NoError(t, db.UpsertMessage(Message{
-		ChannelID: "C1", TS: "1500000.000002", UserID: "U2",
+		ChannelID: "1:C1", TS: "1500000.000002", UserID: "1:U2",
 		Text: "reply", ThreadTS: sql.NullString{String: "1500000.000001", Valid: true},
 	}))
 	// U2: another message
 	require.NoError(t, db.UpsertMessage(Message{
-		ChannelID: "C1", TS: "1500000.000003", UserID: "U2",
+		ChannelID: "1:C1", TS: "1500000.000003", UserID: "1:U2",
 		Text: "another",
 	}))
 
 	// Previous window messages for volume change (window 1000000-2000000, prev 0-1000000)
 	require.NoError(t, db.UpsertMessage(Message{
-		ChannelID: "C1", TS: "500000.000001", UserID: "U1",
+		ChannelID: "1:C1", TS: "500000.000001", UserID: "1:U1",
 		Text: "old message",
 	}))
 
-	stats, err := db.ComputeAllUserStats(1000000, 2000000, 1)
+	stats, err := db.ComputeAllUserStats(1000000, 2000000, 1, map[int64]string{1: "1:U1"})
 	require.NoError(t, err)
 	require.Len(t, stats, 2)
 
 	// Find U1 stats
 	var u1Stats *UserStats
 	for i := range stats {
-		if stats[i].UserID == "U1" {
+		if stats[i].UserID == "1:U1" {
 			u1Stats = &stats[i]
 			break
 		}
@@ -518,7 +518,7 @@ func TestComputeAllUserStats_WithThreadsHoursVolume(t *testing.T) {
 	// Find U2 stats
 	var u2Stats *UserStats
 	for i := range stats {
-		if stats[i].UserID == "U2" {
+		if stats[i].UserID == "1:U2" {
 			u2Stats = &stats[i]
 			break
 		}

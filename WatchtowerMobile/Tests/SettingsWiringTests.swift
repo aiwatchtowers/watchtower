@@ -36,6 +36,18 @@ final class SettingsWiringTests: XCTestCase {
         )
     }
 
+    /// Relay client Phase 4 Task 15 (Open decision 11): the Battery section left Settings for the Diagnostics page.
+    func testBatteryLivesInDiagnostics() throws {
+        let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sources = tests.deletingLastPathComponent().appendingPathComponent("Sources/Features/Settings")
+        let settings = try String(contentsOf: sources.appendingPathComponent("SettingsView.swift"), encoding: .utf8)
+        let diagnostics = try String(contentsOf: sources.appendingPathComponent("DiagnosticsView.swift"), encoding: .utf8)
+        XCTAssertFalse(settings.contains("BatterySection"))
+        XCTAssertTrue(diagnostics.contains("BatterySection(report:"))
+        XCTAssertTrue(settings.contains("DiagnosticsView("))
+        XCTAssertEqual(SettingsView.diagnosticsTitle, "Diagnostics")
+    }
+
     // MARK: - Your Mac: online / offline / never connected
 
     func testHeartbeat2099SecondsOldIsOnline() {
@@ -56,7 +68,7 @@ final class SettingsWiringTests: XCTestCase {
     func testNoHeartbeatShowsNotConnectedYet() {
         let status = MacStatus(heartbeat: nil, now: Date())
         XCTAssertEqual(status, .notConnected)
-        XCTAssertEqual(status.title, "Your Mac has not connected yet")
+        XCTAssertEqual(status.title, "Your tower has not connected yet")
     }
 
     /// Bug 10 (design pass spec §3): the Mac's name on the left, its state
@@ -73,9 +85,9 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertEqual([offline.label, offline.value], ["Acme Mac", "Offline · seen 3 min. ago"])
         XCTAssertEqual(offline.tone, .secondary)
         let never = MacStatusRow(status: .notConnected, now: now, locale: english)
-        XCTAssertEqual([never.label, never.value], ["Mac", "Not connected"])
+        XCTAssertEqual([never.label, never.value], ["Tower", "Not connected"])
         XCTAssertEqual(never.tone, .secondary)
-        XCTAssertEqual(MacStatusRow(status: .online(macName: ""), now: now).label, "Mac", "an empty name reads Mac")
+        XCTAssertEqual(MacStatusRow(status: .online(macName: ""), now: now).label, "Tower", "an empty name reads Tower")
         XCTAssertEqual(online.toneUse.role, .mac)
     }
 
@@ -232,10 +244,10 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertEqual(WorkAlertsCopy.title, "When work stops")
         XCTAssertEqual(
             WorkAlertsCopy.footer(anyShared: false),
-            "Asks, approvals and finished or failed sessions, only while you're away from your Mac.")
+            "Asks, approvals and finished or failed sessions, only while you're away from your tower.")
         XCTAssertEqual(
             WorkAlertsCopy.footer(anyShared: true),
-            "Asks, approvals and finished or failed sessions, only while you're away from your Mac. "
+            "Asks, approvals and finished or failed sessions, only while you're away from your tower. "
                 + "Alerts may be late on this phone.")
     }
 
@@ -246,6 +258,83 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertFalse(settings.typingRequested)
         XCTAssertTrue(settings.startSessions)
         XCTAssertTrue(settings.workAlerts)
+    }
+
+    /// A saved record is sent on (a relay route's save only queues); a failed save sends nothing.
+    func testASavedRecordIsSentOnAndAFailedOneIsNot() async throws {
+        let transport = SpyTransport(failingSaves: [1])
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
+        settings.linkedDevice = device
+        var sent = 0
+        settings.sendAfterWrite = { sent += 1 }
+
+        await settings.setPermissionsRequested(true)
+        XCTAssertEqual(sent, 1)
+
+        await settings.setTypingRequested(true)
+        XCTAssertEqual(sent, 1, "the second save failed")
+        XCTAssertFalse(settings.typingRequested)
+    }
+
+    /// A send can hang on a dead network: the choice is saved before it, and it holds no other toggle back.
+    func testAToggleIsSavedBeforeItsSendAndASlowSendHoldsNoOtherToggle() async throws {
+        let defaults = try makeDefaults()
+        let reread: @MainActor () throws -> DeviceSettings = {
+            DeviceSettings(transport: try TestPhone.transport(), defaults: defaults, hubID: TestHub.acme)
+        }
+        let settings = DeviceSettings(transport: try TestPhone.transport(), defaults: defaults, hubID: TestHub.acme)
+        settings.linkedDevice = device
+        var savedAtSend: Bool? // swiftlint:disable:this discouraged_optional_boolean
+        var parked: [CheckedContinuation<Void, Never>] = []
+        let sends = AsyncStream.makeStream(of: Void.self)
+        settings.sendAfterWrite = {
+            if savedAtSend == nil { savedAtSend = try? reread().permissionsRequested }
+            await withCheckedContinuation {
+                parked.append($0)
+                sends.continuation.yield()
+            }
+        }
+        var arrived = sends.stream.makeAsyncIterator()
+
+        let first = Task { await settings.setPermissionsRequested(true) }
+        _ = await arrived.next()
+        XCTAssertEqual(savedAtSend, true, "saved before the send")
+
+        // The first send stays parked: the second toggle still reaches its own send, saved.
+        let second = Task { await settings.setTypingRequested(true) }
+        _ = await arrived.next()
+        XCTAssertTrue(try reread().typingRequested, "a slow send held the next toggle back")
+
+        parked.forEach { $0.resume() }
+        await first.value
+        await second.value
+    }
+
+    /// A later toggle's record carries the switch too, and a failed write of the switch is owed to the next return.
+    func testAFailedWorkAlertsWriteIsOwedToTheNextForeground() async throws {
+        let transport = SpyTransport(failingSaves: [1])
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
+        settings.linkedDevice = device
+        settings.reportsWorkAlertsOff = true
+        await settings.touchIfStale()
+        var saves = await transport.saves
+        XCTAssertEqual(saves.count, 1)
+
+        settings.workAlerts = false
+        await settings.sendWorkAlertsChange()
+        saves = await transport.saves
+        XCTAssertEqual(saves.count, 2)
+        XCTAssertNil(settings.lastError, "the switch is the phone's: a failed note to the hub is no error to show")
+
+        await settings.touchIfStale()
+        saves = await transport.saves
+        XCTAssertEqual(saves.count, 3, "the failed write leaves the record stale")
+        let last = try await deviceWrites(transport).last
+        XCTAssertEqual(last?.workAlertsOff, true)
+
+        await settings.setTypingRequested(true)
+        let typing = try await deviceWrites(transport).last
+        XCTAssertEqual(typing?.workAlertsOff, true, "any later write keeps saying it")
     }
 
     /// The spy counts every save call: the in-memory transport collapses
@@ -296,7 +385,29 @@ final class SettingsWiringTests: XCTestCase {
             typingAllowed: false, startSessionsAllowed: true, permissionsAllowed: true
         )
         XCTAssertEqual(SettingsView.permissionsCaption(grant: allowed), "Allowed")
-        XCTAssertEqual(SettingsView.permissionsCaption(grant: nil), "Waiting for your Mac to confirm")
+        XCTAssertEqual(SettingsView.permissionsCaption(grant: nil), "Waiting for your tower to confirm")
+    }
+
+    /// #1790: while permission answers are off (the default stays off) the
+    /// Workbench footer says what that costs; once on, the Mac's answer
+    /// replaces the hint.
+    func testTheWorkbenchFooterExplainsPermissionAnswersOff() {
+        XCTAssertEqual(
+            SettingsView.workbenchFooter(typing: false, start: false, permissions: false, grant: nil, host: .mac),
+            "Permission prompts stay on the tower: a session that needs your approval waits until you answer there."
+        )
+        let allowed = DeviceGrant(
+            deviceID: "d", hubID: "hub", name: "Phone", scope: .private, linked: true,
+            typingAllowed: true, startSessionsAllowed: true, permissionsAllowed: true
+        )
+        XCTAssertEqual(
+            SettingsView.workbenchFooter(typing: true, start: true, permissions: false, grant: allowed, host: .mac),
+            "Typing: Allowed\nStarting sessions: Allowed\n" + SettingsView.permissionsOffHint
+        )
+        XCTAssertEqual(
+            SettingsView.workbenchFooter(typing: true, start: false, permissions: true, grant: allowed, host: .mac),
+            "Typing: Allowed\nPermission prompts: Allowed"
+        )
     }
 
     /// The permission card's Turn On (#517) runs the phone's permissions
@@ -323,7 +434,7 @@ final class SettingsWiringTests: XCTestCase {
 
         let written = try await deviceWrites(transport)
         XCTAssertEqual(written.first?.permissionsRequested, true)
-        XCTAssertEqual(try card(nil).hint, .waitingForMac)
+        XCTAssertEqual(try card(nil).hint, .waitingForMac(.mac))
         let allowed = DeviceGrant(
             deviceID: device.deviceID, hubID: "hub", name: device.name, scope: .private, linked: true,
             typingAllowed: false, startSessionsAllowed: true, permissionsAllowed: true
@@ -624,18 +735,15 @@ final class SettingsWiringTests: XCTestCase {
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
 
         model.refreshFormatNotice()
-        XCTAssertEqual(model.formatNotice, "Update Watchtower on this iPhone: your Mac uses a newer format.")
+        XCTAssertEqual(model.formatNotice, "Update Watchtower on this iPhone: your tower uses a newer format.")
         XCTAssertEqual(store.newerFormatCount(), 1)
     }
 
-    /// Waits (bounded) until the spy has seen `count` save calls.
+    /// Waits until the spy has seen `count` save calls (no wall-clock cap).
     private func pollSaves(_ transport: SpyTransport, _ count: Int) async throws {
-        let deadline = Date().addingTimeInterval(5)
-        while await transport.saves.count < count, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await transport.untilSaves(count)
         let seen = await transport.saves.count
-        XCTAssertEqual(seen, count, "the spy did not see the save in time")
+        XCTAssertEqual(seen, count, "the spy saw more saves than expected")
     }
 
     /// Settings reads the hub's grant for this phone.
@@ -749,7 +857,7 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertEqual(try macsRegistry.rows().map(\.hubID), [TestHub.lab, TestHub.acme, TestHub.home])
         XCTAssertEqual(root.env.order, [TestHub.lab, TestHub.acme, TestHub.home])
         XCTAssertEqual(root.linking.links.map(\.hubID), [TestHub.lab, TestHub.acme, TestHub.home])
-        XCTAssertEqual(root.env.activeHubID, TestHub.acme, "the Mac on screen stays")
+        XCTAssertEqual(root.env.activeHubID, TestHub.acme, "the tower on screen stays")
     }
 
     func testUnlinkingAnInactiveMacRemovesOnlyIt() async throws {
@@ -834,6 +942,13 @@ private actor SpyTransport: CloudSyncTransport {
     private let holdSaves: Bool
     private var released: Set<Int> = []
     private var waiters: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var countWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    /// Returns once `count` save calls arrived.
+    func untilSaves(_ count: Int) async {
+        if saves.count >= count { return }
+        await withCheckedContinuation { countWaiters.append((count, $0)) }
+    }
 
     init(failingSaves: Set<Int> = [], holdSaves: Bool = false) {
         self.failingSaves = failingSaves
@@ -843,6 +958,9 @@ private actor SpyTransport: CloudSyncTransport {
     func save(_ records: [CloudRecord]) async throws {
         let index = saves.count
         saves.append(records)
+        let reached = countWaiters.filter { $0.count <= saves.count }
+        countWaiters.removeAll { $0.count <= saves.count }
+        reached.forEach { $0.continuation.resume() }
         inFlight += 1
         maxInFlight = max(maxInFlight, inFlight)
         defer { inFlight -= 1 }

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/db"
@@ -187,6 +188,36 @@ func TestGitRefresherASessionStateChangeRefreshesAtMostOncePer30Seconds(t *testi
 	}
 }
 
+// twin of HubRunnerWakeTests.testGitRefresherFallsBackToIdleAfterAFailedListing:
+// a pass whose listing fails waits idle, not the deferred request's time
+// again (by then in the past: a hot loop).
+func TestGitRefresherFallsBackToIdleAfterAFailedListing(t *testing.T) {
+	r := newGitRig(t)
+	wb := insertWorkbench(t, r.d, "acme", "/tmp/acme")
+	g := r.refresher(GitTiming{})
+	ctx := context.Background()
+	g.RefreshDue(ctx)
+	g.c.nextWait(r.clock(), StandardGitTiming.Idle)
+
+	r.advance(22 * time.Second)
+	g.SessionStateChanged(wb)
+	g.RefreshDue(ctx)
+	if w := g.c.nextWait(r.clock(), StandardGitTiming.Idle); w != 8*time.Second {
+		t.Fatalf("the loop waits for the deferred run: %v, want 8s", w)
+	}
+
+	r.advance(8 * time.Second)
+	failing, cancel := context.WithCancel(ctx)
+	cancel() // the listing's read fails
+	if got := g.RefreshDue(failing); len(got) != 0 {
+		t.Fatalf("a failed listing read %v", got)
+	}
+	r.advance(time.Second)
+	if w := g.c.nextWait(r.clock(), StandardGitTiming.Idle); w != StandardGitTiming.Idle {
+		t.Fatalf("after a failed listing the loop waits %v, want idle", w)
+	}
+}
+
 func TestGitRefresherForgetsAWorkbenchThatLeftAndRestoresACutPass(t *testing.T) {
 	r := newGitRig(t)
 	a := insertWorkbench(t, r.d, "a", "/tmp/a")
@@ -218,24 +249,26 @@ func TestGitRefresherForgetsAWorkbenchThatLeftAndRestoresACutPass(t *testing.T) 
 }
 
 func TestGitRefresherWithoutAPhoneReadsNothing(t *testing.T) {
-	r := newGitRig(t)
-	insertWorkbench(t, r.d, "acme", "/tmp/acme")
-	g := NewGitRefresher(r.d, GitRefresherOptions{
-		Timing: GitTiming{Every: time.Minute, MinSpacing: time.Second, Timeout: time.Second, Idle: 5 * time.Millisecond},
-		Fetch: func(context.Context, int64) (workbenchgit.Status, error) {
-			r.mu.Lock()
-			r.calls = append(r.calls, 0)
-			r.mu.Unlock()
-			return okStatus("main", false, 0), nil
-		},
-		Active: func() bool { return false },
+	synctest.Test(t, func(t *testing.T) {
+		r := newGitRig(t)
+		insertWorkbench(t, r.d, "acme", "/tmp/acme")
+		g := NewGitRefresher(r.d, GitRefresherOptions{
+			Timing: GitTiming{Every: time.Minute, MinSpacing: time.Second, Timeout: time.Second, Idle: 5 * time.Millisecond},
+			Fetch: func(context.Context, int64) (workbenchgit.Status, error) {
+				r.mu.Lock()
+				r.calls = append(r.calls, 0)
+				r.mu.Unlock()
+				return okStatus("main", false, 0), nil
+			},
+			Active: func() bool { return false },
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond) // bubble time: twelve idle wakes
+		defer cancel()
+		_ = g.Run(ctx)
+		if r.callCount() != 0 {
+			t.Fatal("the refresher read git with no phone linked")
+		}
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
-	defer cancel()
-	_ = g.Run(ctx)
-	if r.callCount() != 0 {
-		t.Fatal("the refresher read git with no phone linked")
-	}
 }
 
 // The default fetch reads the folder's status in-process.

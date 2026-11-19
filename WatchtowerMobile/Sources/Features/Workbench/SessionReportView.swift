@@ -30,7 +30,7 @@ struct SessionReportView: View {
                 ContentUnavailableView(
                     "Session not found",
                     systemImage: "terminal",
-                    description: Text("It was removed on your Mac.")
+                    description: Text("It was removed on your tower.")
                 )
             }
         }

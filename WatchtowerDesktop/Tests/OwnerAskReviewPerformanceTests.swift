@@ -66,13 +66,12 @@ final class OwnerAskReviewPerformanceTests: XCTestCase {
 
         let near = (doc.text as NSString).range(of: "Paragraph 2:")
         let deep = NSRange(location: text.length - 12, length: 5)
-        let start = Date()
-        // The body pass after the comment was added.
+        // The body pass after the comment was added. No clock: the work it
+        // must not do (a storage edit, more layout) is counted below.
         let again = DocumentAttributedString.make(doc, highlights: [:], activeThreadID: nil, typography: ReviewTypography.style)
         let replaced = coordinator.apply(again, contentID: "owner-ask/1", to: textView)
         coordinator.applyHighlights([near, deep], to: textView, force: replaced)
         let rects = DocumentTextView.Coordinator.visibleRects(of: [near, deep], in: textView)
-        let elapsed = Date().timeIntervalSince(start)
 
         XCTAssertTrue(again === text, "comments are not part of the text")
         XCTAssertFalse(replaced)
@@ -81,7 +80,6 @@ final class OwnerAskReviewPerformanceTests: XCTestCase {
         XCTAssertNotNil(rects[0], "a passage on screen gets its box")
         XCTAssertNil(rects[1], "a passage past the laid-out text waits instead of forcing layout")
         XCTAssertNotNil(layout.temporaryAttribute(.backgroundColor, atCharacterIndex: deep.location, effectiveRange: nil))
-        XCTAssertLessThan(elapsed, 0.5, "measured \(elapsed) s; a forced layout of this text takes seconds")
 
         coordinator.applyHighlights([near], to: textView, force: false)
         XCTAssertNil(layout.temporaryAttribute(.backgroundColor, atCharacterIndex: deep.location, effectiveRange: nil),

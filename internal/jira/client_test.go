@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -234,7 +233,7 @@ func TestSearchIssueKeys_IncompleteAfterMaxPages(t *testing.T) {
 	defer srv.Close()
 
 	c := makeTestClient(t, srv.URL)
-	c.rateLimiter = &RateLimiter{tokens: 1000, maxTokens: 1000, refillRate: 1000, lastRefill: time.Now()}
+	c.rateLimiter = unthrottledLimiter()
 	keys, complete, err := c.searchIssueKeys(context.Background(), "project = PROJ")
 	require.NoError(t, err)
 	assert.False(t, complete, "a listing that never reaches its last page is incomplete")

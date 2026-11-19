@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -272,11 +273,6 @@ type JiraConfig struct {
 	ChangelogIssuesPerSync int `mapstructure:"changelog_issues_per_sync"`
 }
 
-// AnalysisConfig holds settings for the people analysis pipeline.
-type AnalysisConfig struct {
-	LegacyMode bool `mapstructure:"legacy_mode"` // enable legacy people analytics (default: false)
-}
-
 // TargetsExtractConfig holds settings for the targets extraction phase.
 type TargetsExtractConfig struct {
 	Enabled        bool `mapstructure:"enabled"`
@@ -433,7 +429,6 @@ type Config struct {
 	Imap             ImapConfig                  `mapstructure:"imap"`
 	Jira             JiraConfig                  `mapstructure:"jira"`
 	Linear           LinearConfig                `mapstructure:"linear"`
-	Analysis         AnalysisConfig              `mapstructure:"analysis"`
 	DayPlan          DayPlanConfig               `mapstructure:"day_plan"`
 	Memory           MemoryConfig                `mapstructure:"memory"`
 	Targets          TargetsConfig               `mapstructure:"targets"`
@@ -442,6 +437,7 @@ type Config struct {
 	DB               DBConfig                    `mapstructure:"db"`
 	Workbench        WorkbenchConfig             `mapstructure:"workbench"`
 	Privacy          PrivacyConfig               `mapstructure:"privacy"`
+	Hub              HubConfig                   `mapstructure:"hub"`
 	ClaudePath       string                      `mapstructure:"claude_path"`
 	CodexPath        string                      `mapstructure:"codex_path"`
 
@@ -453,6 +449,14 @@ type Config struct {
 	// data directory at all, so ValidateWorkspace reports that instead of
 	// mistaking an unreadable directory for a fresh install.
 	workspaceLookupErr error
+}
+
+// HubConfig holds the Go hub's settings (Go hub phase 2).
+type HubConfig struct {
+	// RelayOrigin is the relay a live headless hub connects to
+	// (https://host[:port]); it overrides the build's default origin, and
+	// WATCHTOWER_RELAY_ORIGIN overrides it (hub.RelayOrigin). "" = unset.
+	RelayOrigin string `mapstructure:"relay_origin"`
 }
 
 // PrivacyConfig holds the owner's privacy switches.
@@ -479,6 +483,9 @@ type WorkbenchConfig struct {
 }
 
 // Load reads config from the given path, binds env vars, and returns the config.
+// The file is always read as YAML, whatever the path's extension: a --config
+// path naming a .json/.toml file (or none) is parsed as YAML too, as every
+// other config.yaml reader and writer does.
 func Load(configPath string) (*Config, error) {
 	v := viper.New()
 
@@ -597,8 +604,12 @@ func Load(configPath string) (*Config, error) {
 	// after RunSchemaUpgrade succeeds.
 	v.SetDefault("db.schema_format", 1)
 	v.SetDefault("workbench.default_agent", string(agentkind.Claude))
-	// Config file
+	// Config file. config.yaml is YAML by contract, whatever the path's
+	// extension (--config / WATCHTOWER_CONFIG_PATH may name any file): every
+	// reader and writer of it sets the type, so the format never follows
+	// the name.
 	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
 
 	if err := v.ReadInConfig(); err != nil {
 		// Missing config file is OK — use defaults
@@ -875,8 +886,9 @@ func (c *Config) DBPath() string {
 // RecordingsDir returns the meeting-recording directory scanned by the daemon
 // orphan cleanup: transcripts.recordings_dir when set, otherwise the Swift
 // recorder's default location ($HOME/Library/Application Support/Watchtower/
-// recordings, cf. MeetingRecorderCenter.recordingsDirectory). Returns "" when
-// the home directory cannot be determined.
+// recordings, cf. MeetingRecorderCenter.recordingsDirectory; off darwin
+// <data root>/.support/recordings, where a Linux host keeps none). Returns ""
+// when the home directory cannot be determined.
 func (c *Config) RecordingsDir() string {
 	if c.Transcripts.RecordingsDir != "" {
 		return c.Transcripts.RecordingsDir
@@ -890,11 +902,27 @@ func (c *Config) RecordingsDir() string {
 
 // AppSupportDir returns the Desktop's Application Support folder
 // (~/Library/Application Support/Watchtower): recordings, MobileHub, the CLI
-// copy and the session host's log.
+// copy and the session host's log. Off darwin it is <data root>/.support
+// (appSupportDirFor).
 func AppSupportDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("could not determine home directory: %w", err)
 	}
-	return filepath.Join(home, "Library", "Application Support", "Watchtower"), nil
+	root := "" // darwin depends on the home folder alone
+	if runtime.GOOS != "darwin" {
+		if root, err = DataRoot(); err != nil {
+			return "", err
+		}
+	}
+	return appSupportDirFor(runtime.GOOS, home, root), nil
+}
+
+// appSupportDirFor is AppSupportDir for goos: the macOS Library folder on
+// darwin, <dataRoot>/.support elsewhere (no macOS-shaped path on Linux).
+func appSupportDirFor(goos, home, dataRoot string) string {
+	if goos == "darwin" {
+		return filepath.Join(home, "Library", "Application Support", "Watchtower")
+	}
+	return filepath.Join(dataRoot, ".support")
 }

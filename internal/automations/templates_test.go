@@ -61,8 +61,8 @@ var specTemplates = []specTemplate{
 			outputs:     []string{"report", "briefing"},
 		},
 	}},
-	{"team-performance-report", automations.ScopePersonal, []string{"team-performance-report"}, map[string]wantTemplateRecipe{
-		"team-performance-report": {
+	{"team-week-summary", automations.ScopePersonal, []string{"team-week-summary"}, map[string]wantTemplateRecipe{
+		"team-week-summary": {
 			trigger:     scheduleTrigger("0 17 * * 5"),
 			permissions: []string{"jira:read@*", "people:read", "slack:read@*", "llm:strong"},
 			outputs:     []string{"report"},
@@ -184,7 +184,7 @@ func checkTemplateIndex(t *testing.T) {
 	}
 	slices.Sort(indexed)
 	slices.Sort(onDisk)
-	want := []string{"deploy-stage", "deploy-test", "jira-state-report", "new-mail-summary", "on-reaction", "pr-review-rounds", "release", "team-performance-report"}
+	want := []string{"deploy-stage", "deploy-test", "jira-state-report", "new-mail-summary", "on-reaction", "pr-review-rounds", "release", "team-week-summary"}
 	if !slices.Equal(indexed, want) || !slices.Equal(onDisk, want) {
 		t.Errorf("index.json names %v and templates/ holds %v; want exactly %v", indexed, onDisk, want)
 	}
@@ -348,13 +348,15 @@ func TestTemplate_NewMailSummaryKeepsPerAccountDone(t *testing.T) {
 	}
 
 	second := event("c2")
+	before := time.Now()
 	f.step(t, 1)
+	after := time.Now()
 	f.wantRun(t, second, db.RunSucceeded, "")
 	if n := f.count(t, "automation_outputs"); n != 1 {
 		t.Fatalf("outputs after the second run = %d; want still 1", n)
 	}
 	reads := f.reg.ReadCalls()
-	wantWindowSince(t, string(reads[len(reads)-1].Args))
+	wantWindowSince(t, string(reads[len(reads)-1].Args), before, after)
 }
 
 func hasKey(m map[string]int64, k string) bool {
@@ -411,5 +413,44 @@ func TestTemplates_OnReactionEmojiRule(t *testing.T) {
 	}
 	if err := automations.CheckTemplateParamForTest("PROJECT", "AC+ME"); err == nil {
 		t.Error("PROJECT=AC+ME: want refused")
+	}
+}
+
+// TestTemplate_TeamWeekSummary pins A27 (#1769): the gallery's team report is
+// "Team week summary" — it renders and parses, its prompt asks for what
+// moved, stuck work and decisions, and it has no rule about people's
+// performance: no red flags, no "overloaded", no one-on-one list.
+func TestTemplate_TeamWeekSummary(t *testing.T) {
+	files, err := automations.RenderTemplate("team-week-summary", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(files["team-week-summary"])
+	r, err := automations.ParseRecipe("team-week-summary", files["team-week-summary"], automations.Scope{Kind: automations.ScopePersonal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Name != "Team week summary" {
+		t.Errorf("name = %q; want Team week summary", r.Name)
+	}
+	var tpl automations.Template
+	for _, x := range automations.Templates() {
+		if x.Name == "team-week-summary" {
+			tpl = x
+		}
+	}
+	if tpl.Title != "Team week summary" {
+		t.Errorf("gallery title = %q; want Team week summary", tpl.Title)
+	}
+	for _, want := range []string{"What moved", "Where work is stuck", "Decisions"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prompt lacks %q", want)
+		}
+	}
+	lower := strings.ToLower(text + tpl.Description)
+	for _, banned := range []string{"performance", "red_flags", "redflags", "overloaded", "one-on-one", "per_assignee", "quiet"} {
+		if strings.Contains(lower, banned) {
+			t.Errorf("team-week-summary contains %q", banned)
+		}
 	}
 }
