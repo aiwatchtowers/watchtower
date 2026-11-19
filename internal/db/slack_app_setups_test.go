@@ -188,6 +188,26 @@ func TestBackfillSlackClientIDs_OnlyEmptyRows(t *testing.T) {
 	assert.Equal(t, "111.222", a.ClientID)
 }
 
+// A company's row (#1887) is never given the shared client id, even while
+// its own id is not recorded yet.
+func TestBackfillSlackClientIDs_SkipsCompanyRows(t *testing.T) {
+	d := openTestDB(t)
+	tied, err := d.CreateSlackAccount(SlackAccount{TeamID: "T0ACME", CompanySlug: "acme"})
+	require.NoError(t, err)
+	plain, err := d.CreateSlackAccount(SlackAccount{TeamID: "T0BETA"})
+	require.NoError(t, err)
+
+	n, err := d.BackfillSlackClientIDs("111.222")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n)
+	a, err := d.GetSlackAccount(tied)
+	require.NoError(t, err)
+	assert.Empty(t, a.ClientID)
+	a, err = d.GetSlackAccount(plain)
+	require.NoError(t, err)
+	assert.Equal(t, "111.222", a.ClientID)
+}
+
 func TestSlackAppSetups_PendingFillAndDelete(t *testing.T) {
 	d := openTestDB(t)
 	require.NoError(t, d.InsertSlackAppSetup(SlackAppSetup{TeamID: "T0ACME", TeamName: "Acme"}))

@@ -192,6 +192,18 @@ func (r *Registry) WaitingSince(id FlowID) (since time.Time, ok bool) {
 	return f.waitingSince, true
 }
 
+// Live returns the id of the flow that holds the registry's one slot — a
+// link waiting for its confirm and a callback being exchanged included —
+// and false when none does.
+func (r *Registry) Live() (FlowID, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.flow == nil {
+		return "", false
+	}
+	return r.flow.id, true
+}
+
 // Cancel ends the flow id, also while its code is being exchanged: the
 // exchange's request is aborted, and a grant Slack issued anyway is dropped.
 // It reports whether a live flow ended.

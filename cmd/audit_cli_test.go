@@ -213,6 +213,7 @@ var cliNoContentCommands = map[string]bool{
 	"company bridge":                   true, // the corp build's own clients and account ties, no synced content
 	"company check":                    true, // a sign-in or dry check of an app: ids and a result, no synced content
 	"company confirm":                  true,
+	"company connect":                  true, // sign-ins in turn: each service's state, no synced content
 	"company discover":                 true, // app ids and where they came from, no synced content
 	"company draft discard":            true,
 	"company draft save":               true,
