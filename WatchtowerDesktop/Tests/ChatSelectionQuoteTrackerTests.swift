@@ -238,7 +238,8 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
 
         feed.stub.range = NSRange(location: 30, length: 5)
         up(feed, atStub: CGPoint(x: 300, y: 50))
-        XCTAssertNotEqual(feed.tracker.selection?.rect, first.rect, "the same word elsewhere is measured where it now is")
+        let elsewhere = try XCTUnwrap(feed.tracker.selection, "the same word elsewhere is still offered")
+        XCTAssertNotEqual(elsewhere.rect, first.rect, "and measured where it now is")
 
         feed.stub.selected = "retry budget"
         up(feed, atStub: nil)
