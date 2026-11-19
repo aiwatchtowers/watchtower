@@ -409,7 +409,10 @@ func (s Store) save(slug string, b companybundle.Bundle, o saveOpts) error {
 		if cur, err = readFile(path, slug); err != nil {
 			return fmt.Errorf("%w: %s.json is unreadable (%v)", ErrSlugTaken, slug, err)
 		}
-		if cur.Company != n.Company && !o.rename {
+		// A file renamed since the caller read it is a change (try again),
+		// not another company's file.
+		renamedSince := o.check && o.prev != nil && o.prev.Company != cur.Company
+		if cur.Company != n.Company && !o.rename && !renamedSince {
 			return fmt.Errorf("%w: %s.json holds %q", ErrSlugTaken, slug, cur.Company)
 		}
 	}

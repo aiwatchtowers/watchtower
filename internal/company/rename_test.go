@@ -32,6 +32,8 @@ func TestCompanyStore_SaveRenamedKeepsSlug(t *testing.T) {
 
 	// Save keeps refusing another company's file: only SaveRenamed renames.
 	assert.ErrorIs(t, s.Save("acme", sample("Globex")), ErrSlugTaken)
+	// A writer that read the file before the rename is told it changed.
+	assert.ErrorIs(t, s.SaveIfUnchanged("acme", &a, sample("Acme")), ErrStoredChanged)
 }
 
 func TestCompanyStore_SaveRenamedRefusals(t *testing.T) {
