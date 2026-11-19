@@ -83,13 +83,23 @@ Depends on: Task 1.
   `ErrBaseDiffers` → `ErrChangedSince` with the diff) then `MarkCoachRolledBack(id, revertURL)`; OPEN →
   `RepoClosePR` then `MarkCoachRolledBack(id, "")`; CLOSED → `MarkCoachRolledBack(id, "")`; any seam error →
   refused, still `accepted`.
-- `SyncPRs(now) (int, error)` over `ListPRProposalsAwaitingMerge`: `RepoPRState` → MERGED →
-  `SetCoachMeasureFrom(id, mergedAt)`; CLOSED, or OPEN with `now − decided_at ≥ repoCommitWait` →
-  `SetCoachVerdict(id, "too_little_data", nil, now)`; a seam error skips the row. Only `coach sync-prs` calls it;
-  Accept and Rollback do not.
+- `SyncPRs(now) (int, error)` over `ListPRProposalsAwaitingMerge`, by `RepoPRState`:
+  - MERGED with `mergedAt − decided_at ≤ repoCommitWait` → `SetCoachMeasureFrom(id, mergedAt)`;
+  - MERGED later than that, or OPEN with `now − decided_at ≥ repoCommitWait` → `SetCoachVerdict(id,
+    "too_little_data", nil, now)` (the same 30-day rule as a working-copy edit, decided on `mergedAt`, not on when
+    the sync ran);
+  - CLOSED without merge → `MarkCoachRolledBack(id, "", now)`: the owner closing the PR is a rejection, shown as
+    rolled back (grey dot), not as missing data;
+  - a seam error skips the row.
+  Every decision uses `mergedAt`/`decided_at`, never the sync time, so a sync that runs late (the Coach tab not
+  opened for weeks) gives the same result as one that ran on time; only when it shows differs. Only `coach
+  sync-prs` calls it; Accept and Rollback do not.
 - Judge (`internal/coach/judge.go`): the final `too_little_data` for a repo row without `measure_from` (line ~80)
-  applies only when `PRURL == ""`; a PR row waits for `SyncPRs`. Test: a PR row 31 days after Accept with no
-  `measure_from` gets no verdict from the judge.
+  applies only when `PRURL == ""`; a PR row waits for `SyncPRs`. A PR row with `measure_from` is judged like any
+  other: `SyncPRs` sets `measure_from` only for a merge within `repoCommitWait`, so `committedInTime` holds for it.
+  Tests: a PR row 31 days after Accept with no `measure_from` gets no verdict from the judge; `SyncPRs` on a merge
+  at day 31 → `too_little_data` and no `measure_from`; on a merge at day 29 synced at day 40 → `measure_from` =
+  the merge time; CLOSED → `rolled_back`.
 - Tests with fake seams: spec §7's Accept, Rollback and sync lists; the old route's tests stay green.
 - Guard `TestCOACH01_NoGitWrites` (b): add `workbenchgit.OriginHost`, `IsGitHubFolder`, `GHReady`, `DefaultBase`,
   `Publish`, `PRState`, `ClosePR` as allowed **only in `cmd/coach*.go`** (still forbidden in the daemon and
@@ -115,7 +125,8 @@ Depends on: Tasks 2, 3.
 Depends on: Tasks 1, 4.
 
 - **Mockups first** (workbench rule): `DesignShotCatalog` entries for the accepted card in every state — PR open
-  (waiting for merge), PR merged and measuring, verdict given, reverted with a revert PR waiting, and the Accept
+  (waiting for merge), PR merged and measuring, verdict given, reverted with a revert PR waiting, PR closed without
+  merge (rolled back, "PR #N closed"), PR not merged in 30 days (`too_little_data`), and the Accept
   refusals (`no_gh` with its `gh auth login` line, `base_differs`, `push_failed`/`pr_failed`/`timeout` with Retry);
   shots committed to `docs/design/mockups/coach-repo-prs/` before the views change. After the change, the shots are
   taken again and compared with these.

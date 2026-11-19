@@ -101,8 +101,11 @@ one writer of `measure_from` for working-copy rows and never writes a PR row. `c
 runs when the Coach tab's accepted list or the tuning panel is shown, reads `RepoPRState` for each accepted PR row
 without `measure_from` and a verdict:
 
-- `MERGED`: `measure_from` = the PR's `mergedAt` (compare-and-set on `measure_from IS NULL`);
-- `CLOSED` without merge, or still `OPEN` 30 days after the Accept (`repoCommitWait`): final `too_little_data`;
+- `MERGED` within 30 days of the Accept (`repoCommitWait`): `measure_from` = the PR's `mergedAt`
+  (compare-and-set on `measure_from IS NULL`);
+- `MERGED` later, or still `OPEN` 30 days after the Accept: final `too_little_data`;
+- `CLOSED` without merge: `rolled_back` — closing the PR is the owner's rejection;
+- every rule reads `mergedAt` and the Accept time, never the sync time, so a late sync gives the same result;
 - `gh` failing: the row is left as it was.
 
 The weekly judge gives no final `too_little_data` to a PR row whose `measure_from` is empty (the daemon cannot see
