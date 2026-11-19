@@ -127,12 +127,15 @@ package final class SessionFeedStore: ObservableObject {
         var args = ["workbench", "session-feed", "--session", String(sessionID), "--json"]
         args += tailRead ? ["--tail", String(Self.tailSize)] : ["--after", cursor]
         let generation = liveGeneration
+        // The open this read started for: a newer pane's trace begun while it
+        // runs is not marked by it.
+        let trace = openTrace
         do {
-            openTrace?.mark(.spawn)
+            trace?.mark(.spawn)
             let data = try await read(args)
-            openTrace?.mark(.exit)
+            trace?.mark(.exit)
             let payload = try Self.decode(data)
-            openTrace?.mark(.decode)
+            trace?.mark(.decode)
             merge(payload.entries)
             mergeSubagents(payload.entries.filter { $0.kind == "subagent" } + payload.subagents)
             // Only a tail read prints `before`; an `--after` read leaves it.

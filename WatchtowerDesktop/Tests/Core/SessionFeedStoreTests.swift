@@ -670,6 +670,30 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls, 2)
     }
 
+    /// Runs `during` on the main actor while the read is in flight, then answers `{}`.
+    private final class DuringRunner: CLIRunnerProtocol, @unchecked Sendable {
+        let during: @MainActor () -> Void
+        init(during: @escaping @MainActor () -> Void) { self.during = during }
+        func run(args: [String]) async throws -> Data {
+            await during()
+            return Data("{}".utf8)
+        }
+    }
+
+    /// A read in flight when a newer pane starts its trace marks only the trace it started for (final fix).
+    func testReadInFlightDoesNotMarkANewerTrace() async throws {
+        var store: SessionFeedStore?
+        let runner = DuringRunner { store?.beginOpenTrace(reopen: true) }
+        store = SessionFeedStore(sessionID: 7, runner: runner)
+        let live = try XCTUnwrap(store)
+        await live.refresh()
+        let newer = try XCTUnwrap(live.openTrace)
+        newer.mark(.paint)
+        let report = try XCTUnwrap(newer.report)
+        XCTAssertTrue(report.contains("cli=-"), report)
+        XCTAssertTrue(report.contains("decode=-"), report)
+    }
+
     private final class SlowRunner: CLIRunnerProtocol, @unchecked Sendable {
         private let lock = NSLock()
         private var running = 0
