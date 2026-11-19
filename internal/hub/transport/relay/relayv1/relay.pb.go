@@ -609,8 +609,11 @@ func (x *Hello) GetSessionToken() string {
 }
 
 type HelloOk struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ConnectionId  string                 `protobuf:"bytes,1,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	ConnectionId string                 `protobuf:"bytes,1,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
+	// What this relay supports beyond the protocol version, so a client can rely on it:
+	// "records_inline" — ZoneChanged.records carries the records of the writes up to its seq.
+	Capabilities  []string `protobuf:"bytes,2,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -650,6 +653,13 @@ func (x *HelloOk) GetConnectionId() string {
 		return x.ConnectionId
 	}
 	return ""
+}
+
+func (x *HelloOk) GetCapabilities() []string {
+	if x != nil {
+		return x.Capabilities
+	}
+	return nil
 }
 
 // GoingAway announces a graceful server shutdown.
@@ -2139,8 +2149,20 @@ type ZoneChanged struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Zone  string                 `protobuf:"bytes,1,opt,name=zone,proto3" json:"zone,omitempty"`
 	Seq   uint64                 `protobuf:"varint,2,opt,name=seq,proto3" json:"seq,omitempty"`
-	// Present when the record is at most 64 KiB.
-	Record        *Record `protobuf:"bytes,3,opt,name=record,proto3,oneof" json:"record,omitempty"`
+	// Present when records holds exactly one record and its envelope is at most 64 KiB: the same
+	// record, kept for clients without "records_inline". The event may stand for more writes than
+	// that one record (a coalesced event), so a client applies it only when seq is its cursor + 1.
+	Record *Record `protobuf:"bytes,3,opt,name=record,proto3,oneof" json:"record,omitempty"`
+	// The device whose write this was; empty when the event stands for several writes or no write
+	// (a record-less catch-up). A device can skip its own writes by comparing it with its id.
+	Writer string `protobuf:"bytes,4,opt,name=writer,proto3" json:"writer,omitempty"`
+	// The records of the writes up to seq, oldest first, when they fit the frame budget: the sum over
+	// the records of envelope + name + zone + attachment id bytes + 32 is at most 256 KiB. A larger
+	// save comes as several events, split by record. Empty when they do not fit, for a deletion, or
+	// over a phone's traffic budget. The records are contiguous and the last one is at seq: a client
+	// whose cursor is seq minus their count applies them without a `changes` read; any other client
+	// reads `changes` as before.
+	Records       []*Record `protobuf:"bytes,5,rep,name=records,proto3" json:"records,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2192,6 +2214,20 @@ func (x *ZoneChanged) GetSeq() uint64 {
 func (x *ZoneChanged) GetRecord() *Record {
 	if x != nil {
 		return x.Record
+	}
+	return nil
+}
+
+func (x *ZoneChanged) GetWriter() string {
+	if x != nil {
+		return x.Writer
+	}
+	return ""
+}
+
+func (x *ZoneChanged) GetRecords() []*Record {
+	if x != nil {
+		return x.Records
 	}
 	return nil
 }
@@ -3878,9 +3914,10 @@ const file_relay_v1_relay_proto_rawDesc = "" +
 	"\x04kind\"W\n" +
 	"\x05Hello\x12)\n" +
 	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12#\n" +
-	"\rsession_token\x18\x02 \x01(\tR\fsessionToken\".\n" +
+	"\rsession_token\x18\x02 \x01(\tR\fsessionToken\"R\n" +
 	"\aHelloOk\x12#\n" +
-	"\rconnection_id\x18\x01 \x01(\tR\fconnectionId\"\v\n" +
+	"\rconnection_id\x18\x01 \x01(\tR\fconnectionId\x12\"\n" +
+	"\fcapabilities\x18\x02 \x03(\tR\fcapabilities\"\v\n" +
 	"\tGoingAway\"\xa7\t\n" +
 	"\aRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x126\n" +
@@ -3981,11 +4018,13 @@ const file_relay_v1_relay_proto_rawDesc = "" +
 	"\x05Event\x12:\n" +
 	"\fzone_changed\x18\x01 \x01(\v2\x15.relay.v1.ZoneChangedH\x00R\vzoneChanged\x12-\n" +
 	"\acontrol\x18\x02 \x01(\v2\x11.relay.v1.ControlH\x00R\acontrolB\x06\n" +
-	"\x04kind\"m\n" +
+	"\x04kind\"\xb1\x01\n" +
 	"\vZoneChanged\x12\x12\n" +
 	"\x04zone\x18\x01 \x01(\tR\x04zone\x12\x10\n" +
 	"\x03seq\x18\x02 \x01(\x04R\x03seq\x12-\n" +
-	"\x06record\x18\x03 \x01(\v2\x10.relay.v1.RecordH\x00R\x06record\x88\x01\x01B\t\n" +
+	"\x06record\x18\x03 \x01(\v2\x10.relay.v1.RecordH\x00R\x06record\x88\x01\x01\x12\x16\n" +
+	"\x06writer\x18\x04 \x01(\tR\x06writer\x12*\n" +
+	"\arecords\x18\x05 \x03(\v2\x10.relay.v1.RecordR\arecordsB\t\n" +
 	"\a_record\"L\n" +
 	"\aControl\x12)\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x15.relay.v1.ControlKindR\x04kind\x12\x16\n" +
@@ -4272,25 +4311,26 @@ var file_relay_v1_relay_proto_depIdxs = []int32{
 	25, // 48: relay.v1.Event.zone_changed:type_name -> relay.v1.ZoneChanged
 	26, // 49: relay.v1.Event.control:type_name -> relay.v1.Control
 	13, // 50: relay.v1.ZoneChanged.record:type_name -> relay.v1.Record
-	0,  // 51: relay.v1.Control.kind:type_name -> relay.v1.ControlKind
-	1,  // 52: relay.v1.Error.code:type_name -> relay.v1.ErrorCode
-	29, // 53: relay.v1.Attestation.app_attest:type_name -> relay.v1.AppAttest
-	30, // 54: relay.v1.Attestation.app_attest_assertion:type_name -> relay.v1.AppAttestAssertion
-	2,  // 55: relay.v1.RegisterDevice.device_kind:type_name -> relay.v1.DeviceKind
-	28, // 56: relay.v1.RegisterDevice.attestation:type_name -> relay.v1.Attestation
-	28, // 57: relay.v1.VouchHub.attestation:type_name -> relay.v1.Attestation
-	3,  // 58: relay.v1.GetChallenge.purpose:type_name -> relay.v1.ChallengePurpose
-	28, // 59: relay.v1.Login.attestation:type_name -> relay.v1.Attestation
-	57, // 60: relay.v1.Upload.headers:type_name -> relay.v1.Upload.HeadersEntry
-	4,  // 61: relay.v1.RegisterPushToken.env:type_name -> relay.v1.PushEnv
-	5,  // 62: relay.v1.EntitlementState.state:type_name -> relay.v1.EntitlementKind
-	53, // 63: relay.v1.AccountState.entitlement:type_name -> relay.v1.EntitlementState
-	56, // 64: relay.v1.AccountState.phones:type_name -> relay.v1.SlotHolder
-	65, // [65:65] is the sub-list for method output_type
-	65, // [65:65] is the sub-list for method input_type
-	65, // [65:65] is the sub-list for extension type_name
-	65, // [65:65] is the sub-list for extension extendee
-	0,  // [0:65] is the sub-list for field type_name
+	13, // 51: relay.v1.ZoneChanged.records:type_name -> relay.v1.Record
+	0,  // 52: relay.v1.Control.kind:type_name -> relay.v1.ControlKind
+	1,  // 53: relay.v1.Error.code:type_name -> relay.v1.ErrorCode
+	29, // 54: relay.v1.Attestation.app_attest:type_name -> relay.v1.AppAttest
+	30, // 55: relay.v1.Attestation.app_attest_assertion:type_name -> relay.v1.AppAttestAssertion
+	2,  // 56: relay.v1.RegisterDevice.device_kind:type_name -> relay.v1.DeviceKind
+	28, // 57: relay.v1.RegisterDevice.attestation:type_name -> relay.v1.Attestation
+	28, // 58: relay.v1.VouchHub.attestation:type_name -> relay.v1.Attestation
+	3,  // 59: relay.v1.GetChallenge.purpose:type_name -> relay.v1.ChallengePurpose
+	28, // 60: relay.v1.Login.attestation:type_name -> relay.v1.Attestation
+	57, // 61: relay.v1.Upload.headers:type_name -> relay.v1.Upload.HeadersEntry
+	4,  // 62: relay.v1.RegisterPushToken.env:type_name -> relay.v1.PushEnv
+	5,  // 63: relay.v1.EntitlementState.state:type_name -> relay.v1.EntitlementKind
+	53, // 64: relay.v1.AccountState.entitlement:type_name -> relay.v1.EntitlementState
+	56, // 65: relay.v1.AccountState.phones:type_name -> relay.v1.SlotHolder
+	66, // [66:66] is the sub-list for method output_type
+	66, // [66:66] is the sub-list for method input_type
+	66, // [66:66] is the sub-list for extension type_name
+	66, // [66:66] is the sub-list for extension extendee
+	0,  // [0:66] is the sub-list for field type_name
 }
 
 func init() { file_relay_v1_relay_proto_init() }

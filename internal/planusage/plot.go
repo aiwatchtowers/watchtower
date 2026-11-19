@@ -268,7 +268,8 @@ func BuildPlot(fetched time.Time, limits []WindowLimit, identityKnown bool, curr
 	return string(b), nil
 }
 
-// CurrentWindowSamples filters both history and sample eligibility consistently.
+// CurrentWindowSamples filters both history and sample eligibility consistently
+// and drops everything before the last early reset (see sinceLastReset).
 func CurrentWindowSamples(samples []db.PlanUsageSample, l WindowLimit, published time.Time) []db.PlanUsageSample {
 	out := []db.PlanUsageSample{}
 	if l.ResetsAt == nil {
@@ -283,5 +284,5 @@ func CurrentWindowSamples(samples []db.PlanUsageSample, l WindowLimit, published
 		}
 		out = append(out, s)
 	}
-	return out
+	return sinceLastReset(out)
 }

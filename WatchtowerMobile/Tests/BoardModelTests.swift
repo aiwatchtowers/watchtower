@@ -22,6 +22,25 @@ final class BoardModelTests: XCTestCase {
         return snapshot
     }
 
+    /// Live link R5: a live priority overlay changes the card in place with the pending caption; a moved card
+    /// leaves the Mac's column for its new status's lane.
+    @MainActor
+    func testAnOverlayChangesTheCardInPlace() throws {
+        let replica = try snapshot(column: "QA")
+        let book = OverlayBook(hubID: "hub")
+        book.add(book.overlay(actionID: "p1", entityID: 416, expected: .priority(.high), createdAt: now))
+        book.add(book.overlay(actionID: "s1", entityID: 416, expected: .status(.blocked), createdAt: now))
+        let shown = replica.applying(book.reconcile(with: replica, now: now))
+        XCTAssertEqual(shown.overlays.map(\.actionID), ["p1", "s1"])
+        let board = BoardModel(workbenchID: DemoSeed.acmeID, snapshot: shown, filter: .all, now: now)
+        let lane = try XCTUnwrap(board.lanes.first { $0.nodes.contains { $0.id == 416 } })
+        XCTAssertEqual(lane.title, "Blocked")
+        let node = try XCTUnwrap(lane.nodes.first { $0.id == 416 })
+        XCTAssertEqual(node.card.priorityDot, .red)
+        XCTAssertEqual(node.caption?.state, .sending(BoardWriteText.waitingForMac), "the demo board has no heartbeat")
+        XCTAssertTrue(node.opensDetail)
+    }
+
     func testRowShowsColumnTitle() throws {
         let withColumn = try snapshot(column: "QA")
         let target = try XCTUnwrap(withColumn.targets.first)

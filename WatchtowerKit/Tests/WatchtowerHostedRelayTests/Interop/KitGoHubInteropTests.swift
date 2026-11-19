@@ -177,7 +177,11 @@ final class KitGoHubInteropTests: HostedRelayScenarioCase {
         handoff.step = "unlink"
         handoff.write("farewell.sent", "")
         try await secure.save([try CloudRecordFactory.record(for: link.device(nonce: nil, unlinked: true), modifiedAt: Date())])
-        try await hubT.pull()
+        // Since the live link the hub may apply the farewell (and drop this phone as a reader) before this pull reads:
+        // FORBIDDEN here is the farewell taking effect, which the hub side checks.
+        do {
+            try await hubT.pull()
+        } catch HostedRelayError.server(code: .forbidden, _) {}
         _ = try await handoff.wait("farewell.ok", Self.goWait)
         try await pairing.removeSlot(mac: mac)
         let afterRemove = try await pairing.accountState().macs

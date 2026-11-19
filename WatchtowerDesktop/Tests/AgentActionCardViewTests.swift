@@ -2,6 +2,7 @@
 import ChatWire
 import XCTest
 import GRDB
+import os
 import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
@@ -366,21 +367,24 @@ final class AgentActionCardViewTests: XCTestCase {
         XCTAssertNoThrow(try plain.inspect().find(text: "build is green"))
     }
 
-    func testFailedSlackSendForWantOfTheGrantOffersReconnect() throws {
+    func testFailedSlackSendForWantOfTheGrantOffersReconnect() async throws {
         let error = "slack workspace Acme has not granted Watchtower permission to send messages — sign in again to grant send"
         let action = try row { db in
             try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: Self.slackArgs,
                                                status: "failed", error: error)
         }
-        let reconnected = expectation(description: "reconnect called with the pinned account")
+        // The card calls reconnect from its own task: wait for the call itself, not for a clock.
+        let signal = StateSignal()
+        let reconnectedIDs = OSAllocatedUnfairLock<[Int64]>(initialState: [])
         let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
                                       onReconnectSlack: { id in
-                                           XCTAssertEqual(id, 3)
-                                           reconnected.fulfill()
+                                           reconnectedIDs.withLock { $0.append(id) }
+                                           signal.changed()
                                            return .signedIn
                                        })
         try view.inspect().find(button: "Reconnect Slack").tap()
-        wait(for: [reconnected], timeout: 2)
+        await signal.until { reconnectedIDs.withLock { !$0.isEmpty } }
+        XCTAssertEqual(reconnectedIDs.withLock { $0 }, [3], "reconnect called once, with the pinned account")
         XCTAssertNoThrow(try view.inspect().find(button: "Retry"))
         // swiftlint:disable:next trailing_closure
         XCTAssertNoThrow(try view.inspect().find(textWhere: { text, _ in text.contains("already reached Slack") }))

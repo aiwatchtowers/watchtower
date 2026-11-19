@@ -54,10 +54,14 @@ extension BoardTargetDetailModel {
         let waiting = posted.filter { $0.isWaiting(in: snapshot.comments, now: now) }
         let threads = Self.threads(Self.comments(of: target, in: snapshot), canReply: !target.archived, now: now)
         let comments = threads.flatMap(\.rows)
+        // A comment or reply whose record already shows before its echo (live link R5) is drawn once, from the record.
+        let matched = Set(snapshot.matchedRecords.keys)
         let replies = BoardWriteRow.rows(in: snapshot, now: now) {
-            $0.action.kind == .boardCommentReply && Self.replyTarget(of: $0, in: snapshot) == target.id
+            $0.action.kind == .boardCommentReply && !matched.contains($0.id) && Self.replyTarget(of: $0, in: snapshot) == target.id
         }
-        let added = BoardWriteRow.rows(in: snapshot, now: now) { $0.action.kind == .boardCommentAdd && $0.entityRecordName == entity }
+        let added = BoardWriteRow.rows(in: snapshot, now: now) {
+            $0.action.kind == .boardCommentAdd && $0.entityRecordName == entity && !matched.contains($0.id)
+        }
         let rootNames = Set(threads.map { SliceKind.workbenchComment.recordName(id: String($0.rootID)) })
         var items: [ThreadItem] = []
         for group in threads {
