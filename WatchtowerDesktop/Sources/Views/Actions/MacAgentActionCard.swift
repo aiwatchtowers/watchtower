@@ -26,7 +26,7 @@ struct MacAgentActionCard: View {
     var onApproveEdited: ((String) -> Void)?
     /// Re-consents a Slack account whose token lacks the send grant and returns why it failed, nil on success. Nil
     /// hides the button.
-    var onReconnectSlack: ((Int64) async -> String?)?
+    var onReconnectSlack: ((Int64) async -> SlackReconnectOutcome)?
     /// Where the proposal came from, above the card — "⚙ <automation> · run #<n>". Nil shows nothing.
     var contextLabel: String?
     /// Opens what `contextLabel` names (the automation's card, run open). Nil renders the label as plain text.
@@ -228,7 +228,7 @@ extension ChatApprovalServices {
     static func mac(
         feed: AgentActionFeed,
         highlighted: ((AgentAction) -> Bool)? = nil,
-        reconnectSlack: @escaping (Int64) async -> String?,
+        reconnectSlack: @escaping (Int64) async -> SlackReconnectOutcome,
         sessionHolds: @escaping (AgentAction) -> Bool
     ) -> ChatApprovalServices {
         ChatApprovalServices(

@@ -73,17 +73,30 @@ func ensureLegacySlackAccount(ctx context.Context, cfg *config.Config, database 
 	// below must not depend on it.
 	identity, resolveErr := resolveSlackIdentity(ctx, legacyToken)
 
-	if err := store.Save(&watchtowerslack.Token{
-		AccessToken: legacyToken,
-		TeamID:      identity.TeamID,
-		TeamName:    identity.TeamName,
-		UserID:      identity.UserID,
-	}); err != nil {
+	// Under the account's token lock (review #1426); another process that
+	// migrated the token meanwhile wins, and this one leaves its file alone.
+	migrated := false
+	err = withSlackTokenLock(ctx, store, func() error {
+		if store.Exists() {
+			return nil
+		}
+		migrated = true
+		return store.Save(&watchtowerslack.Token{
+			AccessToken: legacyToken,
+			TeamID:      identity.TeamID,
+			TeamName:    identity.TeamName,
+			UserID:      identity.UserID,
+		})
+	})
+	if err != nil {
 		// Token file wasn't written -> wireSlackSyncers can't sync this
 		// account. Surface the error like Google's rename failure; a later
 		// call retries since the file still won't exist.
 		logger.Printf("slack: account %d: failed to migrate legacy token: %v", id, err)
 		return id, err
+	}
+	if !migrated {
+		return id, nil
 	}
 
 	if resolveErr == nil {

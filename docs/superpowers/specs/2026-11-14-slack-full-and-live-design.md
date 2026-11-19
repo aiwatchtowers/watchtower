@@ -35,7 +35,7 @@ Out of scope here: the screens — a separate spec with DesignShotCatalog mockup
 | D8 | The connect link starts the workspace app's OAuth on the clicker's own Watchtower (first hop through its loopback listener, fresh PKCE, no secret) and lands on localhost; no page of ours on the web | ask #1295, conversation 2026-11-14 (after ask #1301) |
 | D9 | The admin creates the app with one paste: a Slack app configuration token | ask #1295 |
 | D10 | Turns that used Live are marked and every consumer that makes chat text lasting skips them | ask #1296 |
-| D11 | Accounts on the retired shared app keep working until Slack stops them; the app offers Full or Live; synced data follows the purge rules | ask #1295 |
+| D11 | Accounts on the retired shared app keep working until Slack stops them; the app offers Full or Live; ~~synced data follows the purge rules~~ moving to Full re-binds the same account row, so its data stays with it and nothing is removed or purged (ask #1425) | ask #1295, ask #1425 |
 
 ## 1. The model
 
@@ -96,9 +96,11 @@ Inbox detection follows when a Slack message was stored (`messages.synced_at`), 
 2. `apps.manifest.create` with our manifest: the user scopes of today minus the unused write scopes, no bot user, PKCE on, token rotation on, the PKCE loopback redirect URL. The response gives `app_id` and `client_id`; the `client_secret` it also returns is dropped at once — nothing in this design ever uses it.
 3. Right away, with the same configuration token, `apps.manifest.update` writes the connect link into the app's description (5.2). The app id and client id are stored with the admin's account so a broken setup resumes (step 5).
 4. The admin connects like everyone else: the same PKCE login with user scopes (5.3).
-5. If the workspace requires approval and the creator is not an admin, Slack files an install request: Watchtower shows "Waiting for your admin's approval" and resumes from the stored `app_id` when the owner presses **Check again**. A failed `apps.manifest.update` (token expired in between) leaves the app working without the link in its description; Connections offers **Add the link to the app** with a fresh configuration token.
+5. If the workspace requires approval and the creator is not an admin, Slack files an install request: Watchtower shows "Waiting for your admin's approval" and resumes from the stored `app_id` when the owner presses **Check again**. *(As shipped in plan B: Slack documents no callback for an install request (spike Q5), so the setup's connect step stays on "Finish in your browser" with **Cancel**; the "Waiting for your admin's approval" row appears only if a later change can learn of the request.)* A failed `apps.manifest.update` (token expired in between) leaves the app working without the link in its description; Connections offers **Add the link to the app** with a fresh configuration token.
 
 After setup nothing depends on the admin or the admin's Mac: the app, its client id and its description live in the workspace.
+
+**Adopt (ask #1425).** A workspace that already has its own Watchtower app (a live account connected through a company app, e.g. the corp build's baked app) gets no second app: the setup answers `existing_app` and offers **Update the app** (`slack app adopt`), which reads the app's manifest with `apps.manifest.export`, adds our loopback redirect URL, any missing user scopes and the About link, keeps every other field (A20), and writes it back with `apps.manifest.update`. The token's owner must be one of the app's collaborators. See `docs/features/slack-full.md`.
 
 ### 5.2 The app's own page hands out the link (D4, D7)
 
@@ -110,7 +112,7 @@ The link is `http://127.0.0.1:18551/slack/connect?team=<T>&client=<client id>`. 
 
 - A Slack OAuth link cannot be fully static: PKCE needs a fresh `code_challenge` whose verifier only the Mac holds, and an authorize link without it would need the client secret for the exchange, which colleagues must not have. So the link's first hop is the Watchtower app's loopback listener: it checks the request, makes the PKCE pair, and redirects the browser to `https://slack.com/oauth/v2/authorize` for that client id with user scopes and `redirect_uri=http://127.0.0.1:18551/callback`. Slack sends the code back to the same listener, which exchanges it with the verifier, no secret.
 - The listener is new: the Desktop app keeps it open on 127.0.0.1:18551 while the app runs (today the redirect port is only intercepted inside the login web view). 18551 is the first port outside every OAuth range already in use (Slack 18491–18500, Calendar 18501–18510, Jira 18511–18520, Gmail 18521–18530, Outlook/IMAP and Linear 18531–18540, Quick Connections 18541–18550); `TestOAuthPortRanges_Disjoint` collects every listener's port range and asserts 18551 is in none of them and no new range overlaps another; the one existing overlap (Linear 18531–18535 inside Outlook/IMAP 18531–18540) is listed as a known exception in the test, not fixed here.
-- Port busy (another app holds 18551): the listener does not start, Connections → Slack shows "The connect link cannot reach Watchtower: port 18551 is busy", and the owner can paste the link into Watchtower instead; pasting runs the same flow. It answers `/slack/connect` and `/callback` only, GET only, checks `Host`, and never serves files.
+- Port busy (another app holds 18551): the listener does not start and Connections → Slack shows "The connect link cannot reach Watchtower: port 18551 is busy. Quit the app holding port 18551, then open Connections → Slack again to retry." ~~the owner can paste the link into Watchtower instead~~ Narrowed by plan B A9 (spike Q4: Slack matches the redirect port exactly): a pasted link or code cannot finish either while the port is busy; the way out is freeing the port. It answers `/slack/connect` and `/callback` only, GET only, checks `Host`, and never serves files.
 - Before redirecting to Slack, Watchtower comes to the front and asks "Connect workspace <team> through app <client id>?" — any web page can open a loopback URL, and nothing starts without the owner's press.
 - Watchtower not running or not installed: the browser shows "can't connect". The app's description says so next to the link ("open Watchtower first; no Watchtower yet — download it from <release page>").
 - The manifest's only redirect URL is `http://127.0.0.1:18551/callback` (the PKCE loopback form); nobody uses a client secret.
@@ -119,7 +121,7 @@ The link is `http://127.0.0.1:18551/slack/connect?team=<T>&client=<client id>`. 
 
 ### 5.4 MDM (D4)
 
-New managed key `SlackApps`: a list of `{team_id, client_id}` (POLICY-01: forced values only, a wrong type fails closed; POLICY-02: Go and Swift read it alike). Connections → Slack lists them with a one-click **Connect**. The corp build keeps its baked credentials until its admin moves to the key; nothing changes for it on day one.
+New managed key `SlackApps`: a list of `{team_id, client_id}` (POLICY-01: forced values only, a wrong type fails closed; POLICY-02: Go and Swift read it alike). Connections → Slack lists them with a one-click **Connect**. ~~The corp build keeps its baked credentials until its admin moves to the key; nothing changes for it on day one.~~ The corp build keeps its baked id until plan B Task 18; its admin first adopts the app (§5.1, **Update the app**), and its accounts are Full throughout: the corp app is a company app, never the shared one (ask #1425).
 
 ### 5.5 Tokens
 
@@ -127,8 +129,8 @@ PKCE refresh tokens expire after 30 days. The daemon refreshes a token when less
 
 ## 6. The retired shared app (D11)
 
-- The public build stops baking `DefaultClientID`/`DefaultClientSecret` for Slack; `WATCHTOWER_OAUTH_CLIENT_ID` stays for development.
-- An account connected through the shared app keeps syncing until Slack refuses its token. Connections shows a banner: "Move to Full (your workspace's app) or use Live". Moving to Full adds a new account row and soft-removes the old one (SLACK-01 unchanged); the old data then follows the purge lease (PURGE-01).
+- ~~The public build stops baking~~ Every build stops baking `DefaultClientID`/`DefaultClientSecret` for Slack (plan B Task 18; ask #1414, kept by ask #1425); `WATCHTOWER_OAUTH_CLIENT_ID` stays for development. An account is on the shared app iff its `client_id` equals `auth.RetiredSharedClientID`, the retired public app's id (one rule, no build flavor, ask #1425).
+- An account connected through the shared app keeps syncing until Slack refuses its token. Connections shows a banner: "Move to Full (your workspace's app) or use Live". ~~Moving to Full adds a new account row and soft-removes the old one (SLACK-01 unchanged); the old data then follows the purge lease (PURGE-01).~~ Moving to Full re-binds the same account row to the new client id: new token, same account id, messages, digests and sync position kept; nothing is soft-removed or purged, and SLACK-01 gets no new caller (ask #1425, «Перепривязать строку», which replaced ask #1414's new-row move).
 - Docs: `docs/features/slack-multi-account.md`, the guide's Slack pages.
 
 ## 7. Failures
@@ -183,14 +185,15 @@ PKCE refresh tokens expire after 30 days. The daemon refreshes a token when less
 | The connect link lives in the app's About page, nobody's Mac needed after setup | T7 | `TestAppSetup_WritesLinkToDescription` |
 | Link and MDM connect with PKCE, no secret | T8 | `TestSlackLinkConnect_*`, `policy_cases.json` |
 | Tokens refresh before expiry, one writer | T8 | `TestSlackRefresh_*` |
-| The shared app is retired, old accounts move | T9 | `TestSlack01_*` unchanged + `TestSharedAppBanner` |
+| The shared app is retired, old accounts move | T9 | ~~`TestSlack01_*` unchanged + `TestSharedAppBanner`~~ `TestSlackLinkConnect_Rebind*` (the move re-binds the row, ask #1425), `TestSlackAccountSharedApp_RetiredIDOnly`, `SlackModePresentationTests.testSharedAppBanner`; `TestSlack01_*` unchanged |
 | Screens show the mode and honest empty states | screens spec | that spec's tests |
 
 Tasks: T1 spike (`-in:` for a short list of excluded channels, PKCE + rotation via manifest, whether Slack renders a link in the app's `long_description` as clickable) — the plan depends on its result; T2 model + migration; T3 probe; T4 adaptive sync (D16); T5 chat; T6 automations; T7 admin setup and the description link; T8 link, MDM, tokens; T9 retirement, guide and feature notes.
 
 ## 10. Inventory touched
 
-- SLACK-01 — unchanged (the move to Full soft-removes).
+- SLACK-01 — unchanged and not on the move's path: the move to Full re-binds the row (ask #1425).
+- New: SLACKFULL-01 (nothing connects without the owner's press), SLACKFULL-02 (no Slack client secret or configuration token kept) — plan B A16, approved in ask #1414.
 - CHAT-02, CHAT-05 — unchanged; the connector policy table grows.
 - AUTO-01, AUTO-02 — unchanged; a new capability `slack:live`.
 - POLICY-01/02 — a new key `SlackApps`.

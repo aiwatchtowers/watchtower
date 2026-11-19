@@ -43,7 +43,7 @@ func TestProject(t *testing.T) {
 		{"will hit", at(10, 30), Limit{Group: "session", Percent: 70, ResetsAt: &reset},
 			series(reset, at(10, 0), 10*time.Minute, 40, 50, 60, 70), "will_hit", new(at(11, 0))},
 		{"decreasing floors to zero", at(10, 30), Limit{Group: "session", Percent: 30, ResetsAt: &reset},
-			series(reset, at(10, 0), 10*time.Minute, 60, 50, 40, 30), "safe", nil},
+			series(reset, at(10, 0), 10*time.Minute, 33, 32, 31, 30), "safe", nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -81,4 +81,40 @@ func TestProject_LookbackDropsOlderSamples(t *testing.T) {
 func TestLookback(t *testing.T) {
 	assert.Equal(t, time.Hour, lookback("session"))
 	assert.Equal(t, 24*time.Hour, lookback("weekly"))
+}
+
+func TestProject_EarlyResetKeepsPostResetPace(t *testing.T) {
+	reset := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	now := at(14, 0)
+	l := Limit{Group: "weekly", Percent: 32, ResetsAt: &reset}
+	start := at(0, 0)
+	// Climbs to 95 over a day, resets early (reset time unchanged), then 0 -> 32 in 4 h.
+	samples := series(reset, start.Add(-10*time.Hour), time.Hour, 80, 85, 90, 95)
+	samples = append(samples, series(reset, at(10, 0), time.Hour, 0, 8, 16, 24, 32)...)
+	p := project(now, l, samples)
+	assert.Equal(t, "will_hit", p.State)
+	assert.InDelta(t, 8, p.RatePerHour, 0.0001)
+	require.NotNil(t, p.HitAt)
+	assert.True(t, p.HitAt.Equal(now.Add(8*time.Hour+30*time.Minute)), p.HitAt.String())
+}
+
+func TestProject_SmallDropIsNotAReset(t *testing.T) {
+	reset := at(13, 0)
+	// 50 -> 46 is a drop of 4: same window, the fit still sees all samples.
+	samples := series(reset, at(10, 0), 10*time.Minute, 50, 46, 52, 58)
+	p := project(at(10, 30), Limit{Group: "session", Percent: 58, ResetsAt: &reset}, samples)
+	assert.Equal(t, "will_hit", p.State)
+	assert.InDelta(t, 18, p.RatePerHour, 0.01)
+}
+
+func TestSinceLastReset(t *testing.T) {
+	reset := at(13, 0)
+	assert.Equal(t, series(reset, at(10, 0), time.Minute, 10, 20, 30), sinceLastReset(series(reset, at(10, 0), time.Minute, 10, 20, 30)))
+	got := sinceLastReset(series(reset, at(10, 0), time.Minute, 90, 2, 40, 50, 10, 15))
+	require.Len(t, got, 2)
+	assert.Equal(t, 10.0, got[0].Percent)
+	assert.Empty(t, sinceLastReset(nil))
+	// exactly resetDropPercent is a reset; just under it is not
+	assert.Len(t, sinceLastReset(series(reset, at(10, 0), time.Minute, 20, 15, 16)), 2)
+	assert.Len(t, sinceLastReset(series(reset, at(10, 0), time.Minute, 20, 15.5, 16)), 3)
 }

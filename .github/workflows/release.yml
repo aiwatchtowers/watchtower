@@ -45,7 +45,7 @@ jobs:
         timeout-minutes: 20
         run: make test-codeindex-full
 
-      # Same pairing as ci.yml's Go Test job: the shell suite over
+      # As ci.yml's Go Test jobs, unsharded here: the shell suite over
       # scripts/build-app.sh runs first (seconds), then the coverage gate.
       - name: Test (shell scripts)
         run: make test-scripts

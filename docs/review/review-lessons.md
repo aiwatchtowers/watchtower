@@ -2833,6 +2833,14 @@ Entry format:
 - rule-gap (candidate, dim 9): *a `--stream` command writes its envelope as the last line on every return path, early refusals and usage errors included; a bare `return err` after the stream starts is the tell.*
 - outcome: TBD
 
+## 2026-11-10 — PR #751 ci/split-go-test (82103f968: Go Test as three `make test-cover SHARD=K/3` matrix jobs, cmd alone in shard 1 and weighted greedy split of the rest in `scripts/coverage-gate.sh`, threshold ownership per shard, new `test-coverage-gate-shards.sh`; the macOS editor bridge check started in the background before Swift Test and collected after it; 4 files +276/−29; panel: prosecutor (8) + codex (0); pr-review-toolkit specialists unavailable; judge verified by reading, ran the new shell test on bash 3.2 + BSD awk (PASS) and the real partition, 1+74+77 = 152 packages, no overlap) — verdict: approve
+
+- contested: F1 (the background bridge run overlapping the timing-bound SERIAL_CLASSES phase) was raised as major and downgraded to minor. The overlap needs the bridge run (~1 min normally, capped near 180 s, no cap on curl) to outlast the whole sharded phase. The real defect is in the collect step: a hang waits out the 10-minute step and never prints the log. Before this change the foreground step streamed its output. [6/8]
+- false-positive: F5 "the `!= *watchtower/cmd 100*` assertion can never fail". It fails if cmd's threshold is checked in the db shard, because the ✓ line contains that text. It duplicates the partition check but it is not vacuous. F8's release.yml half was also dismissed: line 48 already says "unsharded here". [7]
+- miss: no lane checked that renaming the `Go Test` check to `Go Test (K/3)` keeps required status checks working. Verified it does: main has no branch protection. **A CI job rename or matrix split checks branch protection and rulesets for required check names.** [8]
+- weak-dimension: 7. CI-only control flow (background steps, collect loops) has no harness, so its failure modes (hang, missing rc) can only be reviewed by reading.
+- rule-gap (candidate, CI): *a step that waits on a background CI run bounds its own wait below the step timeout, and prints the run's log on every exit path, timeout included.*
+
 ## 2026-11-10 — ci/self-hosted-mac (PR #750, board #1705: CI jobs on the owner's Mac when its self-hosted runners are online, else cloud; picker script + tests, setup script + README; CI YAML + shell only; panel: prosecutor (10) + codex (1); pr-review-toolkit specialists unavailable; judge verified 19291598e by reading, no runs) — verdict: changes-needed
 
 - contested: F2 "Linux/OpenSSL path no longer tested on PRs" raised major. Held minor plus Needs human. The owner chose "all jobs on the Mac" (asks #1184/#1187), release.yml still gates on ubuntu, and the Mac runs the CommonCrypto engine that actually ships. Only the doc drift and an unrecorded trade-off were defects. **When the owner has approved a topology, a reviewer flags the coverage it gives up as a documented trade-off, not as a blocker against the decision.** [2/8]
@@ -2840,6 +2848,7 @@ Entry format:
 - miss: no lane pointed out that the Mac path never ran. The PR body says so. Go Test, the race shards and Go Lint now run darwin-tagged code in CI for the first time (keychain, cgo policy reader, osascript), and lint covers darwin files instead of linux files. **A CI change that moves jobs to a new OS needs one green run on that OS before merge, not only the fallback path.** [6]
 - weak-dimension: 6. Both lanes reviewed the YAML's branching on `runner.environment` but not whether the suite passes on macOS.
 - rule-gap (candidate, dim 9): *self-hosted runners on a public repository ship with the fork-PR approval policy applied by the setup code itself, not by a README step.* The fix round in the working tree does this.
+
 - outcome: TBD
 
 ## 2026-11-10 — fix/1714-chat-table-wrap (#1714 / ask #1197: chat tables wrap instead of scrolling; `MarkdownTableColumns` in WatchtowerCore, `NSTextTable` run view, streaming `MarkdownTableGrid` Layout; 13 files; panel: prosecutor (5) + codex (0); pr-review-toolkit specialists unavailable; judge verified fabdd38f8 by reading, no runs) — verdict: approve
@@ -3200,6 +3209,16 @@ Entry format:
 - rule-gap (candidate, dim 6): *a screen with several entry points (onboarding step, upgrade sheet, Settings) waits for the same async inputs on every entry; a guard on one entry and not on the others is the tell.*
 - outcome: TBD
 
+## 2026-11-18 — feature/1709-planb-plan (e796eae2a: Slack Full plan B — company app via manifest (`slack app create/adopt/link/pending/status`), PKCE loopback connect on 18551 (`slack connect` + `connect serve` child), `slackauth.LoadFresh` token rotation under a per-account flock, migration 00196 client/app ids + A17 backfill, shared-app banner / Move to Full, Desktop setup sheet and flow model; final whole-branch review; panel: prosecutor (11) + codex (4, locations unverified by its wrapper) + style-guardian (sampled); pr-review-toolkit specialists unavailable; judge verified by reading, no runs) — verdict: changes-needed
+
+- contested: codex P1, `slackmode.Relogin` sending the corp build's baked id to `auth.Login` (https loopback, client secret, no `code_challenge`) after `adopt --enable-pkce` turned PKCE on for that same app. The routing is verified in code; whether Slack then refuses is live-only, but the plan's own Q4/PKCE notes say a loopback redirect on a PKCE app needs `code_challenge`. Held major, not blocker (owner ruled live checks after merge), with the sequencing (adopt before Task 18) sent to the owner. [6/8]
+- contested: prosecutor F1 (refresh loop when Slack returns the same refresh token with no lifetime). Real in code, but Q9 documents a new refresh token on every refresh, so it needs undocumented Slack behaviour. Held minor; the test pins the state after one refresh but never asserts the next read does not refresh. [4/7]
+- false-positive: codex P2-2 (`continue` on ErrReloginNeeded drops the account until daemon restart). Same shape as the pre-existing missing-token `continue`, and every Desktop re-login and connect restarts the daemon (`SlackAccountsViewModel` `.restart`, `connectFlowWroteAccount`). [8]
+- miss: no lane noticed that `docs/features/slack-full.md` names `Runner.EnablePKCEOnAdopt` (twice), which does not exist — the code is the `--enable-pkce` opt-in with result `needs_pkce_consent`, absent from the doc's result-kind list; nor that the owner-required list of live-unverified checks is not yet in the docs. [5/6]
+- weak-dimension: 8. A one-way external switch (PKCE on a Slack app) changes what every OTHER sign-in path to the same client id must send; the lanes checked the new connect path but only codex walked the old builtin path that keeps the same id.
+- rule-gap (candidate, dim 8): *a change that flips a one-way, server-side setting on an external app (PKCE, token rotation, redirect set) lists every sign-in/refresh path that still uses that client id and states whether each survives the flip; a legacy flow sharing the id with no matching change is the tell.*
+- outcome: TBD
+
 ## 2026-11-18 — feature/2017-files-polish (dd2d629c9: workbench FILES tree polished to the multi-folder mockup — root row with branch/dirty/↑↓ from `vm.gitStatus`, `CodeFilesRootLine` in Core, compact rows on Tone tints, `.kitIcon` header buttons, empty-folder note, five DesignShot states; 10 files +605/−120; panel: prosecutor (9) + codex (2); pr-review-toolkit specialists unavailable; judge verified by reading, reviewer's filtered test log green for the new suites, swiftlint 0) — verdict: changes-needed
 
 - contested: C1, the root row showing the last good git snapshot after a failed refresh. Kept as minor: keeping the last status is the VM's documented policy, and the header's branch button does the same — but it passes `staleError` and marks the status stale, while the new row drops the error and its own doc says "the read failed → right side empty". A new consumer of a cached-with-error pair must read both halves, as the sibling consumer does. [6]
@@ -3208,4 +3227,15 @@ Entry format:
 - miss: none late; codex alone raised the stale-status contradiction, and the prosecutor alone raised the fixture false-green. The two lanes did not overlap except on the keyboard reachability of the root row. [6/7]
 - weak-dimension: 7. A new fixture file copied a `do/catch` shape from the older fixtures that lack `XCTFail` instead of calling the shared failure helper.
 - rule-gap (candidate, dim 7/Design kit): *a DesignShot fixture's error path calls `DesignShotFixtures.failure` (XCTFail plus red text); a local `catch` that only returns a Text is the tell.*
+- outcome: TBD
+
+## 2026-11-19 — ci/split-go-test (PR #751: Go Test split into three coverage shards on the gate's runner, internal/db spread across them and merged by go-coverage, GOMAXPROCS 6 per shard on the Mac, editor bridge check moved beside Swift Test; panel: prosecutor (7) + codex (2); pr-review-toolkit specialists unavailable; judge verified by reading, no runs) — verdict: changes-needed
+
+- contested: F1, three Mac shards at GOMAXPROCS 6. Held major. GOMAXPROCS is per process, and shard 1 alone starts CMD_SHARDS=6 cmd processes plus a db slice, so "three of them stay near the core count" is wrong arithmetic. The same file records three race shards on the Mac reaching load ~500 and failing. The pending green Mac run is the merge condition, but one green run on a quiet machine does not settle it. [4/8]
+- contested: C1, the recursive delete of `$COVER_OUT` in coverage-gate.sh. CI never hits it, because each matrix job has its own checkout. Held major anyway: COVER_OUT is an env override, so the delete reaches whatever path a developer exports, and sequential local `SHARD=K/3` runs in one checkout wipe the earlier shards' profiles. The fix is one line: remove only `<db>.*of*.cov`. [9]
+- false-positive: none dismissed. F3 (cmd weight units) and F5 (unknown COVER_WEIGHTS names fall back to the default) only affect balance, never correctness, so they were downgraded to nits. [4]
+- miss: codex alone caught both script-level defects (C1 delete scope, C2 leading-zero SHARD skipping the missing-package check and giving an octal error on 08). The prosecutor read the shell for balance and docs, not for its inputs. [9]
+- weak-dimension: 9. In a shell script, check what every env-overridable path variable flows into (delete, move, redirects) and whether string compares (`== 1`) agree with the awk numeric parse of the same input.
+- rule-gap (candidate, dim 9): *a script that recursively deletes an env-overridable path removes only the files it owns (a glob of its own names), never the directory; and a value parsed numerically in one place is never compared as a string elsewhere.*
+- rule-gap (candidate, dim 4/8): *a CI change that adds concurrent jobs on the self-hosted Mac states its per-process thread arithmetic (processes x GOMAXPROCS) against the 16 cores, and merges only after a green Mac run.*
 - outcome: TBD

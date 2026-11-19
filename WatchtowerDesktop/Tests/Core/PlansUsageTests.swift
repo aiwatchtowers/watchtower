@@ -31,7 +31,8 @@ final class PlansUsageTests: XCTestCase {
         endpoints: Bool = true,
         // A nullable source policy is distinct from either boolean.
         // swiftlint:disable:next discouraged_optional_boolean
-        ordinary: Bool? = nil
+        ordinary: Bool? = nil,
+        samplesByKey: [String: [PlanUsageSample]]? = nil
     ) -> PlanUsageStatus {
         let fetched = now.addingTimeInterval(-age)
         var lines: [String: PlanUsageLine?] = [:]
@@ -50,7 +51,7 @@ final class PlansUsageTests: XCTestCase {
         return PlanUsageStatus(state: state, reason: "", plan: "plus", fetchedAt: fetched, lastError: "",
                                limits: limits, breakdown: [], provider: provider, identityKnown: known,
                                ordinaryUsageAllowed: ordinary,
-                               plot: endpoints ? PlanUsagePlot(fetchedAt: fetched, limits: lines) : nil, history: history,
+                               plot: endpoints ? PlanUsagePlot(fetchedAt: fetched, limits: lines) : nil, history: samplesByKey ?? history,
                                publicationIntegrity: .verified)
     }
 
@@ -68,6 +69,19 @@ final class PlansUsageTests: XCTestCase {
             XCTAssertEqual(result.drawable, expected == nil)
             XCTAssertEqual(result.line != nil, result.drawable)
         }
+    }
+
+    func testHistoryStartsAtLastEarlyReset() throws {
+        let value = limit()
+        let reset = try XCTUnwrap(value.resetsAt)
+        func sample(_ minutes: Double, _ percent: Double) -> PlanUsageSample {
+            PlanUsageSample(takenAt: now.addingTimeInterval(-minutes * 60), percent: percent, resetsAt: reset)
+        }
+        var status = snapshot([value], samplesByKey: [value.key: [sample(40, 90), sample(30, 95), sample(20, 2), sample(10, 8), sample(5, 4)]])
+        // 95 -> 2 is a reset; 8 -> 4 is a small dip inside the window.
+        XCTAssertEqual(status.currentHistory(for: value).map(\.percent), [2, 8, 4])
+        status = snapshot([value], samplesByKey: [value.key: [sample(20, 50), sample(10, 46)]])
+        XCTAssertEqual(status.currentHistory(for: value).map(\.percent), [50, 46])
     }
 
     func testWindowRawStateAndSampleGates() throws {

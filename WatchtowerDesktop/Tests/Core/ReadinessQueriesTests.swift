@@ -84,7 +84,7 @@ final class ReadinessQueriesTests: XCTestCase {
 
     func testEachTableFlipsItsFeature() throws {
         XCTAssertEqual(Set(tables.map(\.0)), Set(ReadinessFeature.allCases))
-        XCTAssertEqual(Set(ReadinessQueries.observedTables), Set(tables.map(\.1) + ["pipeline_runs", "jira_boards"]))
+        XCTAssertEqual(Set(ReadinessQueries.observedTables), Set(tables.map(\.1) + ["pipeline_runs", "jira_boards", "slack_live_status"]))
         for (feature, table) in tables {
             let queue = try TestDatabase.create()
             try insertMinimalRow(queue, into: table)

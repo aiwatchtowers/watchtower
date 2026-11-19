@@ -82,6 +82,10 @@ struct ConnectionSummary: Identifiable, Equatable {
     /// read failed with nothing listed): neither "not connected" nor a
     /// problem the badge counts.
     let unknown: Bool
+    /// A line that is not a problem (Slack: "Shared app retiring", screens
+    /// spec §5): shown over the plain status, never over a problem, and it
+    /// adds nothing to the badge.
+    let notice: String?
 
     var id: ConnectionService { service }
 
@@ -92,9 +96,16 @@ struct ConnectionSummary: Identifiable, Equatable {
     /// `accounts` nil = its view model is not loaded; `readError` is its
     /// last failed account read (never an action's failure), which with no
     /// account listed leaves the accounts unknown.
-    init(service: ConnectionService, accounts: [ConnectionAccountState]?, readError: String? = nil, blocked: Bool) {
+    init(
+        service: ConnectionService,
+        accounts: [ConnectionAccountState]?,
+        readError: String? = nil,
+        blocked: Bool,
+        notice: String? = nil
+    ) {
         self.service = service
         self.blocked = blocked
+        self.notice = notice
         unknown = accounts == nil || (accounts?.isEmpty == true && readError != nil)
         let accounts = accounts ?? []
         accountCount = accounts.count
@@ -115,6 +126,7 @@ struct ConnectionSummary: Identifiable, Equatable {
         if blocked { return SourceBlockedNotice.title }
         if unknown { return "Couldn't read accounts" }
         if let problemLine { return problemLine }
+        if let notice { return notice }
         switch status {
         case .connected: return "Connected"
         case .error: return "Needs attention"
@@ -145,7 +157,7 @@ extension ConnectionService {
     /// nil, the overview, for one that names several or none.
     init?(readinessSource source: ReadinessSource) {
         switch source {
-        case .slack: self = .slack
+        case .slack, .fullSlack: self = .slack
         case .calendar: self = .calendar
         case .jira, .jiraBoards: self = .jira
         case .linear: self = .linear

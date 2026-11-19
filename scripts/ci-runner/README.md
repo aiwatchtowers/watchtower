@@ -10,10 +10,27 @@ exactly as before. Nothing else changes for contributors.
   (tests: `scripts/tests/test-ci-pick-runner.sh`). It lists the repository's
   runners with the `RUNNER_STATUS_TOKEN` secret and outputs each job class's
   `runs-on`: `linux` and `macos` → `[self-hosted, wt-general]` while a
-  `wt-general` runner is online, else `ubuntu-24.04` / `macos-26`.
+  `wt-general` runner is online, else `ubuntu-24.04` / `macos-26`;
+  `swifttest` (Swift Test) → `[self-hosted, wt-swift]` while `wt-swift` is
+  online, else `macos-26`.
+- **Swift Test on the Mac** runs on the one `wt-swift` runner, so its
+  checkout keeps `WatchtowerDesktop/.build` warm between runs (no cache
+  restore or save; only a top-level change in a module rebuilds much), with
+  six test lanes. One runner on purpose: eight runners would keep eight cold
+  ~11 GB builds, and two Swift builds at once would take every core from the
+  other jobs. Concurrent runs' Swift Tests queue for it. The job sets
+  `WATCHTOWER_CI_NO_WINDOW_SERVER=1`: the four classes that need a window
+  server (`OwnerAskKeysTests`, `SessionsPanelKeyViewTests`,
+  `WorkbenchBackSwipeTests`, `ChatSelectionQuoteTrackerTests`) skip there when none is reachable
+  (`WindowServerTestGate`: the variable AND no CGSession — a dev machine or
+  a cloud runner never skips them). **Swift UI Tests** runs those four on
+  `macos-26` after every push to main, nightly and on `workflow_dispatch`
+  (not on pull requests).
 - Some jobs always run in the cloud:
-  - **Swift Test** and **Mobile App** (`macos-26`): they need a window
-    server, and the runners have none (see *Why not Swift Test* below);
+  - **Mobile App** (`macos-26`; on a pull request only when the gate's
+    `mobile` filter matches, always on a push): a simulator needs a window
+    server (see *Why not Swift Test* below);
+  - **Swift UI Tests** (`macos-26`, above);
   - **Go Test (race 1..3/3)** (`ubuntu-24.04`, nightly on main and on
     `workflow_dispatch` only): three race shards beside the other jobs and
     the owner's own work oversubscribed the Mac, and timing-bound tests
@@ -27,15 +44,14 @@ exactly as before. Nothing else changes for contributors.
   the live database. Eight general runners (`actions-runner-general-1..8`
   in `ci`'s home, named `wt-mac-general-N`, label `wt-general`) and one
   `wt-mac-swift` (`actions-runner-swift`, label `wt-swift`), each a
-  LaunchAgent in `ci`'s GUI session. No job asks for `wt-swift` while the
-  runners have no window server (below); it is kept registered for Swift
-  Test.
+  LaunchAgent that `ci`'s login loads into its Aqua (GUI) session.
 - Where a job differs on the Mac it checks `runner.environment`: no
   `apt-get`, no `setup-xcode` (the runners' `.env` sets `DEVELOPER_DIR`),
   no setup-go / golangci-lint caches (the `ci` user's own caches persist),
-  Go Lint's timeout is 10 minutes instead of 5, and Go Test runs with
-  `GOMAXPROCS=8` (half the cores; `go test -p` follows it), leaving the rest
-  to the jobs beside it and to the owner.
+  Go Lint's timeout is 10 minutes instead of 5, and Go Test's three
+  shards run with `GOMAXPROCS=4` each (`go test -p` follows it; about 5
+  busy cores a shard), leaving the rest to the jobs beside them and to the
+  owner.
 
 ## Why not Swift Test
 
@@ -61,6 +77,16 @@ with `ci` in the background is not enough: a job that needs a window server
 or a simulator (Swift Test, Mobile App) needs runners that run inside `ci`'s
 Aqua GUI session, which these do not (`cgsession=false`).
 
+The likely cause (2026-11-19): the runner's own `svc.sh` template sets
+`SessionCreate`, which starts the job in a new security session cut off from
+the window server, and the setup script started the runners with `sudo
+launchctl bootstrap gui/<uid>` rather than letting `ci`'s login load them.
+The setup script now drops `SessionCreate`, sets `LimitLoadToSessionType` =
+`Aqua` and `RunAtLoad`, and starts nothing itself: rerun it, then log `ci`
+out and in (*One-time setup*, step 3). Until a run proves a window server
+there, Swift Test skips the four classes on the Mac and Swift UI Tests
+covers them; Mobile App stays in the cloud.
+
 ## One-time setup (owner)
 
 1. **Close your home folder to other users** (the setup script refuses to go
@@ -81,17 +107,21 @@ Aqua GUI session, which these do not (`cgsession=false`).
    is missing, accepts the Xcode license (`/Applications/Xcode.app`; another
    one with `--xcode <path>`), downloads actions/runner (pinned version,
    checksum checked), registers the nine runners and installs their
-   LaunchAgents. Your own `xcode-select` choice is not touched: the runners
-   use `DEVELOPER_DIR`. Running it again is safe; it restarts the runners and
-   removes every other runner folder in `ci`'s home (`ci` is for these
-   runners only),
-   so run it while no job is running.
+   LaunchAgents (in `~ci/Library/LaunchAgents`, loaded only by `ci`'s login,
+   into its Aqua session). Your own `xcode-select` choice is not touched: the
+   runners use `DEVELOPER_DIR`. Running it again is safe; it removes every
+   other runner folder in `ci`'s home (`ci` is for these runners only), so
+   run it while no job is running. It never starts or restarts a runner:
+   after running it again, log `ci` out and in (step 3).
 
 3. **Log in as `ci` once and leave it logged in.** Turn on Fast User
    Switching (System Settings → Control Center → Fast User Switching), pick
    `ci` from the menu bar, log in, then switch back to your account — do not
    log out of `ci`. The runners start at that login. After a reboot they stay
-   offline (CI goes to the cloud) until `ci` logs in again.
+   offline (CI goes to the cloud) until `ci` logs in again. **After running
+   the setup script again** (for example to pick up the Aqua LaunchAgents of
+   2026-11-19): while no job runs, switch to `ci`, log it out (Apple menu →
+   Log Out), log in as `ci` again, then switch back to your account.
 
 4. **Keep the Mac awake on power:**
 
@@ -162,9 +192,9 @@ Aqua GUI session, which these do not (`cgsession=false`).
   vet` with OpenSSL), so a Linux build break still shows on the PR, but the
   Go tests run on Linux only in the release workflow. To test a branch on
   Linux, take the Mac offline (log out of `ci`) and re-run.
-- **The critical path stays in the cloud.** Swift Test (~8–12 min on
-  `macos-26`) is the longest job, so the Mac shortens the Go side of a run,
-  not its total.
+- **One Swift Test at a time.** The single `wt-swift` runner serves every
+  run's Swift Test in turn; a warm incremental build keeps each one short,
+  but a burst of pushes queues there.
 - **One home for every job.** Jobs share `ci`'s home and run eight at a
   time, so a test that writes to the real home (rather than a temp folder)
   sees what other jobs and earlier runs left there.

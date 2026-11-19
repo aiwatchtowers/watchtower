@@ -20,6 +20,7 @@ A full example with every key and placeholder values is in the repository at `do
 | `AllowAutomationShell` | boolean | `false` refuses automation recipes that run shell commands. |
 | `AllowedAIProviders` | array of `claude`, `codex`, `ollama` | The only providers any part of Watchtower may use. A configured provider outside the list fails each AI call with the policy error; it never switches to another provider by itself. |
 | `AllowClaudeAITools` | boolean | `false` turns off claude.ai publishing and connectors in the chat. |
+| `SlackApps` | array of dictionaries with `team_id` (`T…`) and `client_id` (the Client ID of your workspace's Watchtower app) | **Connections → Slack** lists each workspace under **Set up by your organization** with a one-press **Connect**. An entry with a missing or malformed id, or a second entry for the same `team_id`, is dropped. It only offers the connect; it never connects anyone. See [Slack Full](../features/slack-full.md). |
 | `PurgeRevokedData` | boolean | Forces [deleting a revoked account's data](../concepts/revoked-access.md) on or off. |
 | `AllowBackgroundAI` | boolean | `true` is your organization's consent to AI that runs in the background, so people are not asked; each person can still pause it for themselves. `false` keeps background AI off, whatever a person chose, and locks the switch in Settings. |
 

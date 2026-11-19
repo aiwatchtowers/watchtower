@@ -282,6 +282,10 @@ type Daemon struct {
 	slackCadences    map[int64]*slackCadence
 	slackCadenceBase time.Duration
 	cadenceNow       func() time.Time
+	// slackTokenFreshener reads an account's token fresh (a rotated token
+	// refreshed when due) for every account at the start of the Slack phase
+	// (SetSlackTokenFreshener); nil = tokens are used as wired.
+	slackTokenFreshener func(ctx context.Context, accountID int64) (accessToken string, err error)
 	// fullWake reports the system capability bits and whether the Mac is in
 	// a full wake rather than a Power Nap DarkWake (SetFullWakeProbe);
 	// runLoop starts no scheduled cycle while it says no. nil = always a
@@ -332,6 +336,14 @@ func (d *Daemon) wakeState() (caps uint32, full bool) {
 // An empty or nil slice disables the Slack sync phase.
 func (d *Daemon) SetOrchestrators(o []*sync.Orchestrator) {
 	d.orchestrators = o
+}
+
+// SetSlackTokenFreshener sets the per-cycle token read: fresh returns the
+// account's current access token ("" = none), refreshing a rotated one when
+// due. The Slack phase calls it for every account, due or not, and hands the
+// token to the account's client.
+func (d *Daemon) SetSlackTokenFreshener(fresh func(ctx context.Context, accountID int64) (string, error)) {
+	d.slackTokenFreshener = fresh
 }
 
 // SetLogger replaces the daemon's logger.
@@ -963,6 +975,7 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	if !d.sourceAllowed("slack") {
 		return nil, nil
 	}
+	relogin := d.freshenSlackTokens(ctx)
 	// The accounts whose Slack run is due (the adaptive cadence). A skipped
 	// account writes nothing, is no sync error and does not freeze the Inbox:
 	// detection reads when a message was stored, so what its later run
@@ -972,6 +985,9 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	due := make([]*sync.Orchestrator, 0, len(d.orchestrators))
 	var skipped []int64
 	for _, o := range d.orchestrators {
+		if relogin[o.AccountID()] {
+			continue // its sign-in is dead (freshenSlackTokens)
+		}
 		if !d.slackCadence(o.AccountID()).due(now, manual) {
 			skipped = append(skipped, o.AccountID())
 			continue

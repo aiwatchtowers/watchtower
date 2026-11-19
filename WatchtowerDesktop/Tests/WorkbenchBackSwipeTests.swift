@@ -6,6 +6,10 @@ import XCTest
 /// gestures count, and the monitor's lifetime.
 @MainActor
 final class WorkbenchBackSwipeTests: XCTestCase {
+    override func setUpWithError() throws {
+        try WindowServerTestGate.skipIfAbsent()
+    }
+
     func testAThreeFingerSwipeRightGoesBack() {
         XCTAssertTrue(WorkbenchBackSwipeCatcher.isBackSwipe(deltaX: 1, deltaY: 0))
         XCTAssertFalse(WorkbenchBackSwipeCatcher.isBackSwipe(deltaX: -1, deltaY: 0), "left is forward: nothing")

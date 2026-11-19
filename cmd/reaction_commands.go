@@ -24,15 +24,14 @@ import (
 // into a live client at run time, so a re-login mid-daemon is picked up on the
 // next poll; one account's missing token is skipped, never blocking the others.
 func reactionCommandsAccountsFn(database *db.DB, cfg *config.Config, logger *log.Logger) func(context.Context) ([]reactioncmd.Account, error) {
-	return func(context.Context) ([]reactioncmd.Account, error) {
+	return func(ctx context.Context) ([]reactioncmd.Account, error) {
 		accounts, err := database.ListEnabledSlackAccounts()
 		if err != nil {
 			return nil, err
 		}
 		var out []reactioncmd.Account
 		for _, acct := range accounts {
-			store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
-			token, err := store.Load()
+			token, err := loadSlackToken(ctx, cfg, database, acct.ID)
 			if err != nil || token == nil {
 				if logger != nil {
 					logger.Printf("reaction-commands: account %d: no usable token, skipping", acct.ID)

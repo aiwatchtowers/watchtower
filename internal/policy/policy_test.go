@@ -78,6 +78,7 @@ func TestPolicy01_WrongTypesFailClosed(t *testing.T) {
 		{KeyAllowedAIProviders, "claude", func(p Policy) bool { return !p.ProviderAllowed("claude") }},
 		{KeyAllowClaudeAITools, "yes", func(p Policy) bool { return !p.ClaudeAIToolsAllowed() }},
 		{KeyAllowBackgroundAI, "1", func(p Policy) bool { return p.Keys.AllowBackgroundAI != nil && !*p.Keys.AllowBackgroundAI }},
+		{KeySlackApps, "T01ABC", func(p Policy) bool { return len(p.SlackApps()) == 0 && p.SlackApps() != nil }},
 		{KeyPurgeRevokedData, 0, func(p Policy) bool { on, set := p.PurgeRevokedData(); return on && set }},
 	}
 	for _, c := range cases {
@@ -99,6 +100,7 @@ func TestPolicy_AbsentKeysRestrictNothing(t *testing.T) {
 	assert.True(t, p.ShellAllowed())
 	assert.True(t, p.ProviderAllowed("codex"))
 	assert.True(t, p.ClaudeAIToolsAllowed())
+	assert.Nil(t, p.SlackApps())
 	on, set := p.PurgeRevokedData()
 	assert.False(t, on)
 	assert.False(t, set)
