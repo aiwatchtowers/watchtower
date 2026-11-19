@@ -230,8 +230,8 @@ struct HomeBackgroundAICardView: View {
     }
 }
 
-/// Home's right column: the Workbench zone, the links zone, today in
-/// numbers and Learn Watchtower, in that order; a zone with nothing to show
+/// Home's right column: Watchman's row, the Workbench zone, the links zone,
+/// today in numbers and Learn Watchtower, in that order; a zone with nothing to show
 /// is left out (numbers show once their first read lands).
 struct HomeSideColumn: View {
     let snapshot: HomeSnapshot
@@ -245,6 +245,9 @@ struct HomeSideColumn: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.page) {
+            if let watchman = snapshot.watchman {
+                WatchmanHomeRow(counts: watchman) { onLink(.watchmanJournal) }
+            }
             if snapshot.showsWorkbench || coachNote != nil {
                 WorkbenchZoneView(
                     blocks: snapshot.workbench, coach: snapshot.coach, failed: snapshot.workbenchFailed,

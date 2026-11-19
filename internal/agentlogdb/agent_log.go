@@ -736,3 +736,28 @@ func (d *DB) UpsertAgentSubagent(a AgentSubagent) (bool, error) {
 	}
 	return true, nil
 }
+
+// OwnerTurnTimes returns when the owner typed a turn (kind owner_turn,
+// trigger owner) in the sessions of a workbench, at or after since, in no
+// particular order. Rows whose ts does not parse are left out.
+func (d *DB) OwnerTurnTimes(projectID int64, since time.Time) ([]time.Time, error) {
+	rows, err := d.Query(`SELECT e.ts FROM agent_log_events e
+		JOIN agent_log_sessions s ON s.session_uuid = e.session_uuid
+		WHERE s.project_id = ? AND e.kind = 'owner_turn' AND e.trigger = 'owner'
+			AND julianday(e.ts) >= julianday(?)`, projectID, since.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, fmt.Errorf("reading owner turns of workbench %d: %w", projectID, err)
+	}
+	defer rows.Close()
+	var out []time.Time
+	for rows.Next() {
+		var ts string
+		if err := rows.Scan(&ts); err != nil {
+			return nil, fmt.Errorf("scanning owner turn: %w", err)
+		}
+		if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+			out = append(out, t)
+		}
+	}
+	return out, rows.Err()
+}

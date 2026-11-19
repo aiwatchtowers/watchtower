@@ -411,6 +411,9 @@ final class AppState {
     /// The Analytics pane's `agents report` runs and Turn On (#298), and its coach (#1120).
     private(set) var agentAnalyticsCenter: AgentAnalyticsCenter?
     private(set) var coachCenter: CoachCenter?
+    /// Settings → Profile → Watchman (#1823), and the Inbox's Watchman entry (the morning journal).
+    private(set) var watchmanCenter: WatchmanCenter?
+    private(set) var watchmanJournal: WatchmanJournalViewModel?
     /// Which workbench session the owner is in (owner asks v2, Part 2),
     /// written for Go's Stop guard and read by the chat question escalation.
     private(set) var ownerPresenceCenter: OwnerPresenceCenter?
@@ -1578,6 +1581,10 @@ final class AppState {
         if let vm = workbenchesViewModel { replaceAgentAnalytics(cliRunner: ProcessCLIRunner.makeDefault(), workbenches: vm) }
         applyUIVisibility(uiVisibility.isOnScreen)
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
+        if watchmanCenter == nil { watchmanCenter = WatchmanCenter(runner: ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()) }
+        workbenchesViewModel?.watchman = watchmanCenter
+        watchmanCenter?.sessionTitle = { [weak self] in self?.workbenchesViewModel?.sessionTitle($0) } // the arm sheet's list
+        watchmanJournal = WatchmanJournalViewModel(pool: manager.dbPool, actions: watchmanJournalActions())
         initAccountPurges(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         initSlackLive(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         startDigestWatcher(dbPool: manager.dbPool)
@@ -1842,6 +1849,7 @@ final class AppState {
         reports.watchedWorkbenchID = { [weak vm] in vm?.selectedWorkbenchID }
         reports.agentState = { [weak agentStates] id in agentStates?.statuses[id]?.state }
         vm.sessionReports = reports
+        vm.watchman = watchmanCenter
         vm.sessionCleanup = SessionCleanupCenter.forWorkbenches(runner: cliRunner, terminals: terminalCenter)
         workbenchesViewModel?.stop()
         workbenchesViewModel = vm

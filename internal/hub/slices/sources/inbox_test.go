@@ -80,12 +80,18 @@ func marshalWire(t *testing.T, v any) []byte {
 // TestInboxSource_RecordsMatchTheGoGolden: over the feed fixture, one record
 // per folder (with its cut count) and one per card, each the fixture's
 // folder or card; a legacy card carries its typed section and its
-// projected document.
+// projected document. The phone's feed omits the Mac-only Watchman journal
+// card (Options.OmitMacOnly): a case whose expect has one is compared
+// without it; every other case is compared as it stands.
 func TestInboxSource_RecordsMatchTheGoGolden(t *testing.T) {
-	ran := 0
+	ran, journalCases := 0, 0
 	for _, c := range inboxCases(t) {
 		if c.Opts.Folder != nil || c.Opts.Limit != 0 || c.Opts.Day != "" {
 			continue // a request the phone never sends
+		}
+		if expect, dropped := withoutJournalCard(c.Expect); dropped {
+			c.Expect = expect
+			journalCases++
 		}
 		ran++
 		t.Run(c.Name, func(t *testing.T) {
@@ -150,10 +156,28 @@ func TestInboxSource_RecordsMatchTheGoGolden(t *testing.T) {
 	if ran < 10 {
 		t.Fatalf("only %d fixture cases ran", ran)
 	}
+	if journalCases != 1 {
+		t.Fatalf("%d fixture cases carry the journal card, want 1 (legacy_watchman_journal)", journalCases)
+	}
+}
+
+// withoutJournalCard is feed without its Watchman journal card, and whether
+// it had one.
+func withoutJournalCard(feed api.Feed) (api.Feed, bool) {
+	cards := make([]api.Card, 0, len(feed.Cards))
+	for _, c := range feed.Cards {
+		if c.Legacy == nil || c.Legacy.Kind != api.LegacyWatchman {
+			cards = append(cards, c)
+		}
+	}
+	dropped := len(cards) != len(feed.Cards)
+	feed.Cards = cards
+	return feed, dropped
 }
 
 // TestInboxSource_LimitAndClipOnThePhone: the feed is built as the phone
-// reads it (Limit 300, Clip), and the cut count rides on its folder.
+// reads it (Limit 300, Clip, no Mac-only cards), and the cut count rides on
+// its folder.
 func TestInboxSource_LimitAndClipOnThePhone(t *testing.T) {
 	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
 	var got []inboxfeed.Options
@@ -166,7 +190,8 @@ func TestInboxSource_LimitAndClipOnThePhone(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("%d builds for one cycle, want 1", len(got))
 	}
-	if o := got[0]; o.Limit != PhoneInboxLimit || PhoneInboxLimit != 300 || !o.Clip || !o.Now.Equal(now) || o.Folder != nil {
+	if o := got[0]; o.Limit != PhoneInboxLimit || PhoneInboxLimit != 300 || !o.Clip || !o.OmitMacOnly ||
+		!o.Now.Equal(now) || o.Folder != nil {
 		t.Fatalf("options %+v", o)
 	}
 	var rec struct {

@@ -54,6 +54,8 @@ package enum ModelCommands {
         ["tracks", "generate"],
         ["tracks", "scan"],
         ["tune"],
+        ["watchman", "backtest"],
+        ["watchman", "learn"],
         ["workbench", "review", "lessons", "propose"],
         ["workbench", "review", "overview"],
         ["workbench", "session", "start"],

@@ -18,4 +18,6 @@ var ChangeTables = []string{
 	"targets", "projects", "users", "channels",
 	// The owner (db.OwnerKnownTx): today's placeholder day card waits for one.
 	"slack_accounts", "google_accounts", "jira_accounts", "linear_accounts", "email_accounts",
+	// Watchman's journal card (db.WatchmanJournalSummaryTx).
+	"watchman_items", "watchman_workbenches",
 }

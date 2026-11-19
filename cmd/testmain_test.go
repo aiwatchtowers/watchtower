@@ -126,6 +126,11 @@ func TestMain(m *testing.M) {
 	askOwnerDesktop = func(context.Context, string, ownerconfirm.Request) (ownerconfirm.Reply, error) {
 		return ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil
 	}
+	// No cmd test may ask GitHub for a branch protection through a real gh;
+	// the arm tests that want one put a fake gh on PATH (withFakeGh).
+	watchmanProtectionRun = func(context.Context, string, string, ...string) ([]byte, error) {
+		return nil, errors.New("gh is stubbed out in cmd tests")
+	}
 	// No cmd test may call Slack: `slack remove` revokes at a refused local
 	// port unless a test points slackRevokeAPIURL at its own server.
 	slackRevokeAPIURL = "http://127.0.0.1:1/"

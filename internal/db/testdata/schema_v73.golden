@@ -634,6 +634,21 @@ CREATE INDEX idx_voice_samples_person_status ON voice_samples(person_id, status)
 index	idx_voice_samples_transcript
 CREATE INDEX idx_voice_samples_transcript ON voice_samples(transcript_id)
 
+index	idx_watchman_backtests_wb
+CREATE INDEX idx_watchman_backtests_wb ON watchman_backtests(workbench_id, id)
+
+index	idx_watchman_items_created
+CREATE INDEX idx_watchman_items_created ON watchman_items(created_at)
+
+index	idx_watchman_items_queue
+CREATE INDEX idx_watchman_items_queue ON watchman_items(state, not_before)
+
+index	idx_watchman_items_wb
+CREATE INDEX idx_watchman_items_wb ON watchman_items(workbench_id, created_at)
+
+index	idx_watchman_precedents_wb
+CREATE INDEX idx_watchman_precedents_wb ON watchman_precedents(workbench_id, category, decided_at)
+
 index	idx_workbench_board_columns_project
 CREATE INDEX idx_workbench_board_columns_project ON workbench_board_columns(project_id, status, position)
 
@@ -3618,6 +3633,169 @@ created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 PRIMARY KEY (entity_type, entity_id)
 )
 
+table	watchman_arming
+CREATE TABLE watchman_arming (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+scope TEXT NOT NULL CHECK (scope IN ('session','target')),
+ref_id INTEGER NOT NULL, -- session or target id
+armed_at TEXT NOT NULL, -- RFC 3339 UTC
+armed_by TEXT NOT NULL, -- 'desktop' | 'cli'
+UNIQUE (scope, ref_id)
+)
+
+table	watchman_backtest_rows
+CREATE TABLE watchman_backtest_rows (
+backtest_id INTEGER NOT NULL REFERENCES watchman_backtests(id) ON DELETE CASCADE,
+category TEXT NOT NULL,
+total INTEGER NOT NULL DEFAULT 0,
+agree INTEGER NOT NULL DEFAULT 0,
+wrong_high INTEGER NOT NULL DEFAULT 0,
+cost_usd REAL NOT NULL DEFAULT 0,
+baseline REAL NOT NULL DEFAULT 0, -- share of the most common owner choice among the hidden items
+status TEXT NOT NULL CHECK (status IN ('strong','weak','not_measured')), acceptable INTEGER NOT NULL DEFAULT 0, bad INTEGER NOT NULL DEFAULT 0, rec_baseline REAL NOT NULL DEFAULT 0, handed INTEGER NOT NULL DEFAULT 0,
+PRIMARY KEY (backtest_id, category)
+)
+
+table	watchman_backtests
+CREATE TABLE watchman_backtests (
+id INTEGER PRIMARY KEY,
+workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+started_at TEXT NOT NULL,
+finished_at TEXT,
+status TEXT NOT NULL CHECK (status IN ('running','done','failed')),
+error TEXT NOT NULL DEFAULT '',
+verdict TEXT NOT NULL DEFAULT '' CHECK (verdict IN ('','go','stop')),
+cost_usd REAL NOT NULL DEFAULT 0,
+progress TEXT NOT NULL DEFAULT ''
+)
+
+table	watchman_cursors
+CREATE TABLE watchman_cursors (
+workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+source TEXT NOT NULL,
+cursor TEXT NOT NULL DEFAULT '',
+updated_at TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (workbench_id, source)
+)
+
+table	watchman_extra_limits
+CREATE TABLE watchman_extra_limits (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+kind TEXT NOT NULL CHECK (kind IN ('command','tool')),
+pattern TEXT NOT NULL,
+created_at TEXT NOT NULL,
+UNIQUE (kind, pattern)
+)
+
+table	watchman_fts
+CREATE VIRTUAL TABLE watchman_fts USING fts5(
+situation, choice, owner_words,
+content='watchman_precedents', content_rowid='id',
+tokenize='porter unicode61 remove_diacritics 2'
+)
+
+table	watchman_fts_config
+CREATE TABLE 'watchman_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID
+
+table	watchman_fts_data
+CREATE TABLE 'watchman_fts_data'(id INTEGER PRIMARY KEY, block BLOB)
+
+table	watchman_fts_docsize
+CREATE TABLE 'watchman_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)
+
+table	watchman_fts_idx
+CREATE TABLE 'watchman_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID
+
+table	watchman_gaps
+CREATE TABLE watchman_gaps (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+started_at TEXT NOT NULL,
+ended_at TEXT NOT NULL
+)
+
+table	watchman_items
+CREATE TABLE "watchman_items" (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+session_id INTEGER,
+target_id INTEGER,
+kind TEXT NOT NULL CHECK (kind IN ('ask','review_doc','check','handover','permission','review_code','guard')),
+ref_kind TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round','guard')),
+ref_id INTEGER NOT NULL,
+state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','deciding','done')),
+outcome TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('','answered','handed','parked','owner_first','approved','changes','superseded')),
+attempts INTEGER NOT NULL DEFAULT 0,
+lease_until TEXT,
+not_before TEXT,
+question TEXT NOT NULL DEFAULT '', -- redacted, at most 2048 runes
+choice TEXT NOT NULL DEFAULT '',
+rationale TEXT NOT NULL DEFAULT '',
+precedent_ids TEXT NOT NULL DEFAULT '[]', -- JSON array of watchman_precedents ids
+confidence TEXT NOT NULL DEFAULT '',
+importance TEXT NOT NULL DEFAULT '',
+category TEXT NOT NULL DEFAULT '',
+unsure INTEGER NOT NULL DEFAULT 1 CHECK (unsure IN (0, 1)), -- every twin decision is journalled unsure (D43)
+park_reason TEXT NOT NULL DEFAULT '',
+delivery TEXT NOT NULL DEFAULT '',
+round_id INTEGER,
+cost_usd REAL NOT NULL DEFAULT 0,
+error TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL,
+decided_at TEXT,
+feedback TEXT NOT NULL DEFAULT '' CHECK (feedback IN ('','ok','corrected')), -- written by the Desktop only
+feedback_text TEXT NOT NULL DEFAULT '',
+feedback_at TEXT,
+check_done_at TEXT, owner_done_at TEXT, correction_sent_at TEXT, moves INTEGER,
+UNIQUE (ref_kind, ref_id, kind)
+)
+
+table	watchman_precedents
+CREATE TABLE "watchman_precedents" (
+id INTEGER PRIMARY KEY,
+workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+source TEXT NOT NULL CHECK (source IN ('ask','review','spec','permission','journal','turn','git')),
+source_key TEXT NOT NULL,
+category TEXT NOT NULL CHECK (category IN ('design','scope','ux_text','tests','review_code','review_doc','permission','finish')),
+situation TEXT NOT NULL DEFAULT '',
+choice TEXT NOT NULL DEFAULT '',
+owner_words TEXT NOT NULL DEFAULT '',
+decided_at TEXT NOT NULL,
+weight REAL NOT NULL DEFAULT 1,
+is_decision INTEGER, -- §9.1: NULL = not flagged yet (a candidate), 0/1 set by the learner's relabel pass
+parked INTEGER, -- §9.1: NULL/0 = usable, 1 = parked out of the backtest
+flags_at TEXT, -- §9.1: when the relabel pass tried the row (even if both flags stayed NULL)
+UNIQUE (workbench_id, source, source_key)
+)
+
+table	watchman_profile
+CREATE TABLE watchman_profile (
+workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+key TEXT NOT NULL, -- a category or 'sleep_window'
+text TEXT NOT NULL DEFAULT '',
+pinned INTEGER NOT NULL DEFAULT 0,
+version INTEGER NOT NULL DEFAULT 1,
+updated_at TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (workbench_id, key)
+)
+
+table	watchman_skipped_keys
+CREATE TABLE watchman_skipped_keys (
+workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+source TEXT NOT NULL,
+source_key TEXT NOT NULL,
+skipped_at TEXT NOT NULL,
+PRIMARY KEY (workbench_id, source, source_key)
+)
+
+table	watchman_workbenches
+CREATE TABLE watchman_workbenches (
+workbench_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+enabled_at TEXT NOT NULL,
+estimated_decisions INTEGER NOT NULL DEFAULT 0, -- taken at start; the learning progress's denominator
+unlabelled INTEGER NOT NULL DEFAULT 0, -- decisions seen but not placed in a category
+learned_through TEXT -- set when every source reports done on its backfill
+)
+
 table	workbench_board_columns
 CREATE TABLE workbench_board_columns (
 id INTEGER PRIMARY KEY,
@@ -4162,6 +4340,22 @@ CREATE TRIGGER trg_automations_enabled_watch_track AFTER UPDATE OF enabled ON au
 WHEN NEW.enabled <> OLD.enabled
 BEGIN
 UPDATE tracks SET enabled = NEW.enabled WHERE automation_id = NEW.id;
+END
+
+trigger	watchman_precedents_ad
+CREATE TRIGGER watchman_precedents_ad AFTER DELETE ON watchman_precedents BEGIN
+INSERT INTO watchman_fts(watchman_fts, rowid, situation, choice, owner_words) VALUES ('delete', OLD.id, OLD.situation, OLD.choice, OLD.owner_words);
+END
+
+trigger	watchman_precedents_ai
+CREATE TRIGGER watchman_precedents_ai AFTER INSERT ON watchman_precedents BEGIN
+INSERT INTO watchman_fts(rowid, situation, choice, owner_words) VALUES (NEW.id, NEW.situation, NEW.choice, NEW.owner_words);
+END
+
+trigger	watchman_precedents_au
+CREATE TRIGGER watchman_precedents_au AFTER UPDATE ON watchman_precedents BEGIN
+INSERT INTO watchman_fts(watchman_fts, rowid, situation, choice, owner_words) VALUES ('delete', OLD.id, OLD.situation, OLD.choice, OLD.owner_words);
+INSERT INTO watchman_fts(rowid, situation, choice, owner_words) VALUES (NEW.id, NEW.situation, NEW.choice, NEW.owner_words);
 END
 
 view	agent_log_session_totals
@@ -6936,6 +7130,149 @@ GROUP BY up.ancestor
 2	entity_name	TEXT	notnull=1	dflt=''	pk=0
 3	priority	TEXT	notnull=1	dflt='normal'	pk=0
 4	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
+## watchman_arming
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	scope	TEXT	notnull=1	dflt=NULL	pk=0
+2	ref_id	INTEGER	notnull=1	dflt=NULL	pk=0
+3	armed_at	TEXT	notnull=1	dflt=NULL	pk=0
+4	armed_by	TEXT	notnull=1	dflt=NULL	pk=0
+
+## watchman_backtest_rows
+0	backtest_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	category	TEXT	notnull=1	dflt=NULL	pk=2
+2	total	INTEGER	notnull=1	dflt=0	pk=0
+3	agree	INTEGER	notnull=1	dflt=0	pk=0
+4	wrong_high	INTEGER	notnull=1	dflt=0	pk=0
+5	cost_usd	REAL	notnull=1	dflt=0	pk=0
+6	baseline	REAL	notnull=1	dflt=0	pk=0
+7	status	TEXT	notnull=1	dflt=NULL	pk=0
+8	acceptable	INTEGER	notnull=1	dflt=0	pk=0
+9	bad	INTEGER	notnull=1	dflt=0	pk=0
+10	rec_baseline	REAL	notnull=1	dflt=0	pk=0
+11	handed	INTEGER	notnull=1	dflt=0	pk=0
+
+## watchman_backtests
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	workbench_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	started_at	TEXT	notnull=1	dflt=NULL	pk=0
+3	finished_at	TEXT	notnull=0	dflt=NULL	pk=0
+4	status	TEXT	notnull=1	dflt=NULL	pk=0
+5	error	TEXT	notnull=1	dflt=''	pk=0
+6	verdict	TEXT	notnull=1	dflt=''	pk=0
+7	cost_usd	REAL	notnull=1	dflt=0	pk=0
+8	progress	TEXT	notnull=1	dflt=''	pk=0
+
+## watchman_cursors
+0	workbench_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	source	TEXT	notnull=1	dflt=NULL	pk=2
+2	cursor	TEXT	notnull=1	dflt=''	pk=0
+3	updated_at	TEXT	notnull=1	dflt=''	pk=0
+
+## watchman_extra_limits
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	kind	TEXT	notnull=1	dflt=NULL	pk=0
+2	pattern	TEXT	notnull=1	dflt=NULL	pk=0
+3	created_at	TEXT	notnull=1	dflt=NULL	pk=0
+
+## watchman_fts
+0	situation		notnull=0	dflt=NULL	pk=0
+1	choice		notnull=0	dflt=NULL	pk=0
+2	owner_words		notnull=0	dflt=NULL	pk=0
+
+## watchman_fts_config
+0	k		notnull=1	dflt=NULL	pk=1
+1	v		notnull=0	dflt=NULL	pk=0
+
+## watchman_fts_data
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	block	BLOB	notnull=0	dflt=NULL	pk=0
+
+## watchman_fts_docsize
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	sz	BLOB	notnull=0	dflt=NULL	pk=0
+
+## watchman_fts_idx
+0	segid		notnull=1	dflt=NULL	pk=1
+1	term		notnull=1	dflt=NULL	pk=2
+2	pgno		notnull=0	dflt=NULL	pk=0
+
+## watchman_gaps
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	started_at	TEXT	notnull=1	dflt=NULL	pk=0
+2	ended_at	TEXT	notnull=1	dflt=NULL	pk=0
+
+## watchman_items
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	workbench_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	session_id	INTEGER	notnull=0	dflt=NULL	pk=0
+3	target_id	INTEGER	notnull=0	dflt=NULL	pk=0
+4	kind	TEXT	notnull=1	dflt=NULL	pk=0
+5	ref_kind	TEXT	notnull=1	dflt=NULL	pk=0
+6	ref_id	INTEGER	notnull=1	dflt=NULL	pk=0
+7	state	TEXT	notnull=1	dflt='queued'	pk=0
+8	outcome	TEXT	notnull=1	dflt=''	pk=0
+9	attempts	INTEGER	notnull=1	dflt=0	pk=0
+10	lease_until	TEXT	notnull=0	dflt=NULL	pk=0
+11	not_before	TEXT	notnull=0	dflt=NULL	pk=0
+12	question	TEXT	notnull=1	dflt=''	pk=0
+13	choice	TEXT	notnull=1	dflt=''	pk=0
+14	rationale	TEXT	notnull=1	dflt=''	pk=0
+15	precedent_ids	TEXT	notnull=1	dflt='[]'	pk=0
+16	confidence	TEXT	notnull=1	dflt=''	pk=0
+17	importance	TEXT	notnull=1	dflt=''	pk=0
+18	category	TEXT	notnull=1	dflt=''	pk=0
+19	unsure	INTEGER	notnull=1	dflt=1	pk=0
+20	park_reason	TEXT	notnull=1	dflt=''	pk=0
+21	delivery	TEXT	notnull=1	dflt=''	pk=0
+22	round_id	INTEGER	notnull=0	dflt=NULL	pk=0
+23	cost_usd	REAL	notnull=1	dflt=0	pk=0
+24	error	TEXT	notnull=1	dflt=''	pk=0
+25	created_at	TEXT	notnull=1	dflt=NULL	pk=0
+26	decided_at	TEXT	notnull=0	dflt=NULL	pk=0
+27	feedback	TEXT	notnull=1	dflt=''	pk=0
+28	feedback_text	TEXT	notnull=1	dflt=''	pk=0
+29	feedback_at	TEXT	notnull=0	dflt=NULL	pk=0
+30	check_done_at	TEXT	notnull=0	dflt=NULL	pk=0
+31	owner_done_at	TEXT	notnull=0	dflt=NULL	pk=0
+32	correction_sent_at	TEXT	notnull=0	dflt=NULL	pk=0
+33	moves	INTEGER	notnull=0	dflt=NULL	pk=0
+
+## watchman_precedents
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	workbench_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	source	TEXT	notnull=1	dflt=NULL	pk=0
+3	source_key	TEXT	notnull=1	dflt=NULL	pk=0
+4	category	TEXT	notnull=1	dflt=NULL	pk=0
+5	situation	TEXT	notnull=1	dflt=''	pk=0
+6	choice	TEXT	notnull=1	dflt=''	pk=0
+7	owner_words	TEXT	notnull=1	dflt=''	pk=0
+8	decided_at	TEXT	notnull=1	dflt=NULL	pk=0
+9	weight	REAL	notnull=1	dflt=1	pk=0
+10	is_decision	INTEGER	notnull=0	dflt=NULL	pk=0
+11	parked	INTEGER	notnull=0	dflt=NULL	pk=0
+12	flags_at	TEXT	notnull=0	dflt=NULL	pk=0
+
+## watchman_profile
+0	workbench_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	key	TEXT	notnull=1	dflt=NULL	pk=2
+2	text	TEXT	notnull=1	dflt=''	pk=0
+3	pinned	INTEGER	notnull=1	dflt=0	pk=0
+4	version	INTEGER	notnull=1	dflt=1	pk=0
+5	updated_at	TEXT	notnull=1	dflt=''	pk=0
+
+## watchman_skipped_keys
+0	workbench_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	source	TEXT	notnull=1	dflt=NULL	pk=2
+2	source_key	TEXT	notnull=1	dflt=NULL	pk=3
+3	skipped_at	TEXT	notnull=1	dflt=NULL	pk=0
+
+## watchman_workbenches
+0	workbench_id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	enabled_at	TEXT	notnull=1	dflt=NULL	pk=0
+2	estimated_decisions	INTEGER	notnull=1	dflt=0	pk=0
+3	unlabelled	INTEGER	notnull=1	dflt=0	pk=0
+4	learned_through	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## workbench_board_columns
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

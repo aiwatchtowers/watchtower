@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"watchtower/internal/db"
+	"watchtower/internal/askanswer"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/sessionstate"
@@ -125,16 +125,15 @@ func (h *Handlers) applyPermissionAnswer(ctx context.Context, r actions.Request)
 	if name == "" {
 		name = unnamedDevice
 	}
-	// One short write: the guard keeps an answer that landed since the read.
-	res, err := h.d.DB.ExecContext(ctx, `UPDATE permission_requests SET status = ?, decided_at = ?, decided_by = ?
-		WHERE id = ? AND terminal_session_id = ? AND status = 'pending'`,
-		decided, db.AgentStateStamp(h.d.Clock()), name, requestID, sessionID)
+	// One guarded write (askanswer): it keeps an answer that landed since the
+	// read.
+	closed, err := h.d.Answerer.ClosePermission(ctx, askanswer.PermissionDecision{
+		RequestID: requestID, SessionID: sessionID, Allow: allow, DecidedBy: name,
+	})
 	if err != nil {
 		return failed(reasonWriteFailed, err.Error())
 	}
-	if n, err := res.RowsAffected(); err != nil {
-		return failed(reasonWriteFailed, err.Error())
-	} else if n != 1 {
+	if !closed {
 		after, _, err := h.storedRequest(ctx, requestID, sessionID)
 		if err != nil {
 			return failed(reasonWriteFailed, err.Error())

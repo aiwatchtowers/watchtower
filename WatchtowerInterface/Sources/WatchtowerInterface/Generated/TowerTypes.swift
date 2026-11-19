@@ -1191,17 +1191,20 @@ public struct FeedRequest: Codable, Hashable, Sendable {
     public var folder: Int64?
     public var limit: Int?
     public var clip: Bool?
+    public var omitMacOnly: Bool?
     public var day: String?
 
     public init(
         folder: Int64? = nil,
         limit: Int? = nil,
         clip: Bool? = nil,
+        omitMacOnly: Bool? = nil,
         day: String? = nil
     ) {
         self.folder = folder
         self.limit = limit
         self.clip = clip
+        self.omitMacOnly = omitMacOnly
         self.day = day
     }
 
@@ -1209,6 +1212,7 @@ public struct FeedRequest: Codable, Hashable, Sendable {
         case folder
         case limit
         case clip
+        case omitMacOnly = "omit_mac_only"
         case day
     }
 }
@@ -1684,6 +1688,7 @@ public enum LegacyKind: Codable, Hashable, Sendable {
     case ideas
     case threadBriefs
     case messages
+    case watchman
     /// A value this build does not know (sent by a newer Watchtower).
     case unknown(String)
 
@@ -1694,6 +1699,7 @@ public enum LegacyKind: Codable, Hashable, Sendable {
         case "ideas": self = .ideas
         case "thread_briefs": self = .threadBriefs
         case "messages": self = .messages
+        case "watchman": self = .watchman
         default: self = .unknown(rawValue)
         }
     }
@@ -1705,6 +1711,7 @@ public enum LegacyKind: Codable, Hashable, Sendable {
         case .ideas: "ideas"
         case .threadBriefs: "thread_briefs"
         case .messages: "messages"
+        case .watchman: "watchman"
         case .unknown(let value): value
         }
     }

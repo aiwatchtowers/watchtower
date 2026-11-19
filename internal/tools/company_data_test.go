@@ -9,7 +9,6 @@ import (
 
 	"watchtower/internal/automations/authoring"
 	"watchtower/internal/tools"
-	"watchtower/internal/workbenchfiles"
 )
 
 // allReadCandidates is every tool the registry can mount that may be a read:
@@ -34,7 +33,7 @@ func allReadCandidates() []*tools.Tool {
 		authoring.NewGetAutomation(deps),
 	}
 	all = append(all, tools.AutomationReadTools()...)
-	all = append(all, tools.WorkbenchTools(workbenchfiles.Store{}, nil)...)
+	all = append(all, tools.WorkbenchTools(tools.WorkbenchDeps{})...)
 	all = append(all, tools.ReadTools()...)
 	all = append(all, tools.DependentReadTools(tools.ReadDeps{})...)
 	return all

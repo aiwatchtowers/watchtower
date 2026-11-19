@@ -143,6 +143,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(SlackFullLiveShotFixtures.shots)
     }
 
+    /// The Watchman spec's mockups (#1824).
+    func testWatchmanShotsRender() throws {
+        try renderShots(WatchmanShotFixtures.shots)
+    }
+
     /// Connections → Slack: the `slack-fl-pane-*` shots draw the real Slack
     /// mode section (`SlackModeSection`, screens spec §1), and its chip and
     /// summary say what the approved mockup said for the same frame.

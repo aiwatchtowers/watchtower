@@ -62,7 +62,7 @@ public enum InboxMacFolderRows {
                     cardID: card.id, briefID: item.id, kind: .result, title: item.title,
                     detail: applied.map { TowerText.threadBriefAgo($0, now: now) } ?? TowerText.threadBrief)
             }
-        case .morningBrief, .messages:
+        case .morningBrief, .messages, .watchman:
             return [InboxMacFolderRow(cardID: card.id, kind: .legacy, title: card.title, summary: card.preview,
                                       detail: card.sourceLine, unread: card.unread)]
         case .tracks, .ideas, .unknown:

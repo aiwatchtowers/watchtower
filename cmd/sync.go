@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"watchtower/internal/agentlogdb"
 	"watchtower/internal/aiconsent"
+	"watchtower/internal/askanswer"
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
@@ -38,6 +39,8 @@ import (
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/hub"
+	"watchtower/internal/hub/actions/handlers"
+	hubplatform "watchtower/internal/hub/platform"
 	"watchtower/internal/imap"
 	"watchtower/internal/inbox"
 	"watchtower/internal/inboxfeed"
@@ -53,6 +56,7 @@ import (
 	"watchtower/internal/prompts"
 	"watchtower/internal/providerhealth"
 	"watchtower/internal/providerrouting"
+	"watchtower/internal/sessionstart"
 	"watchtower/internal/skills"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/slackauth"
@@ -63,6 +67,7 @@ import (
 	"watchtower/internal/tower/commands"
 	"watchtower/internal/tracks"
 	"watchtower/internal/ui"
+	"watchtower/internal/watchmanact"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -1065,6 +1070,25 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 		}
 		return LaunchSpecReview(exe, askID, filepath.Join(cfg.WorkspaceDir(), "logs"), aiconsent.ChildEnv(ctx))
 	})
+	// While anything is handed to Watchman the daemon keeps the Mac awake
+	// under its own reason (daemon.WatchmanAwakeReason).
+	d.SetWatchmanAwake(hubplatform.NewAwake().Hold)
+	// Every armed session's worktree keeps Watchman's git hooks (spec §5 item 1).
+	d.SetWatchmanHooks(func(ctx context.Context, worktree string) error {
+		return watchmanact.EnsureHooks(ctx, worktree, cfg.WorkspaceDir())
+	})
+	// The twin worker: its own Answerer and session port, beside the hub's.
+	defer wireWatchmanTwin(d, cfg, database)()
+	// The weekly backtest is background work: the child carries its origin
+	// (BGAI-01), as the spec review sweep's does.
+	d.SetWatchmanBacktestLaunch(func(ctx context.Context, workbenchID int64) error {
+		exe, err := watchmanBacktestExe()
+		if err != nil {
+			return fmt.Errorf("locating the watchtower binary: %w", err)
+		}
+		return LaunchWatchmanBacktest(exe, workbenchID, cfg.ActiveWorkspace, flagConfig,
+			filepath.Join(cfg.WorkspaceDir(), "logs"), aiconsent.ChildEnv(ctx))
+	})
 	// Every pipeline is constructed unconditionally now (Task 3 demoted
 	// digest.enabled from a master switch to a per-phase gate) — each is a
 	// cheap struct, and the daemon's own phase methods gate execution on
@@ -1297,6 +1321,29 @@ func chatRoutingCatalog(cfg *config.Config) func(context.Context) *chatengine.Ro
 		health, _ := providerhealth.Installation() // nil: the status read fails, the catalog says so
 		return chatengine.ReadRoutingCatalog(ctx, cur, &providerrouting.Router{Health: health})
 	}
+}
+
+// watchmanHeldKey is the twin's held answer lines' key (its own ledger file
+// in the workspace; the hub's stays under askanswer.HeldMetaKey in its store).
+const watchmanHeldKey = "watchman_held_asks"
+
+// wireWatchmanTwin gives the daemon the twin worker (spec
+// 2026-11-16-watchman-design §§3, 4): an Answerer of its own over a session
+// port of its own — the hub, on or off, keeps its own — whose held lines
+// live in the workspace, and the session start of a handover the twin
+// continues (no arming: a new session is armed only through its target's).
+// The returned func closes the port.
+func wireWatchmanTwin(d *daemon.Daemon, cfg *config.Config, database *db.DB) (closePort func()) {
+	port := sessionstart.NewPort(sessionStartDeps(cfg, database), nil)
+	answerer := askanswer.New(askanswer.Deps{
+		DB: database, Sessions: port,
+		Held: watchmanact.FileHeldStore{Dir: cfg.WorkspaceDir()}, HeldKey: watchmanHeldKey,
+	})
+	d.SetWatchmanTwin(answerer, func(ctx context.Context, workbenchID, targetID int64, brief string) error {
+		_, err := port.Start(ctx, handlers.StartRequest{Workbench: workbenchID, Target: &targetID, Brief: brief})
+		return err
+	})
+	return func() { _ = port.Close() }
 }
 
 // openTowerReads opens the tower's read handle (tower.OpenReads). A handle

@@ -63,7 +63,7 @@ package enum InboxRecords {
             case .ideas: ideas.formUnion(ids)
             case .messages: messages.formUnion(ids)
             case .threadBriefs: briefs.formUnion(ids)
-            case .morningBrief, .unknown: break
+            case .morningBrief, .watchman, .unknown: break
             }
         }
     }
