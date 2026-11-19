@@ -94,6 +94,16 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(CoachRepoPRsShotFixtures.shots)
     }
 
+    /// The Workchat agents list and live steps spec's mockups (#2065).
+    func testWorkchatAgentsMockShotsRender() throws {
+        try renderShots(WorkchatAgentsMockShotFixtures.shots)
+    }
+
+    /// The same states on the built views (#2065), `workchat-agents-real-NN-…` beside each mockup.
+    func testWorkchatAgentsShotsRender() throws {
+        try renderShots(WorkchatAgentsShotFixtures.shots)
+    }
+
     func testWorkchatActivityShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("workchat-activity-") })
     }
@@ -136,6 +146,11 @@ final class DesignShotsTests: XCTestCase {
 
     func testSlackFullLiveShotsRender() throws {
         try renderShots(SlackFullLiveShotFixtures.shots)
+    }
+
+    /// The Watchman spec's mockups (#1824).
+    func testWatchmanShotsRender() throws {
+        try renderShots(WatchmanShotFixtures.shots)
     }
 
     /// Connections → Slack: the `slack-fl-pane-*` shots draw the real Slack

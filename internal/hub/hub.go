@@ -44,6 +44,7 @@ import (
 	"sync"
 	"time"
 
+	"watchtower/internal/askanswer"
 	"watchtower/internal/chatengine"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -151,6 +152,10 @@ type Options struct {
 	// port (sessionstart.Port) over SessionStart, whose DB and DBPath the
 	// runtime fills from DB.
 	Sessions handlers.SessionPort
+	// Answerer is the one answer path of asks and permission requests the
+	// handlers write through; the daemon passes the one it shares with
+	// Watchman, nil = the hub builds its own (tests).
+	Answerer *askanswer.Answerer
 	// SessionStart is what the real port starts sessions with: the host
 	// socket (FromEnv: WATCHTOWER_SESSION_HOST_SOCKET only — the phase-1
 	// test workspace never reaches the host the Desktop uses; "" leaves

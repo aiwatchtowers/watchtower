@@ -86,7 +86,9 @@ func (c *inboxFeedCache) take(ctx context.Context, k slices.Kind) (*api.Feed, er
 	now := c.now()
 	if age := now.Sub(c.builtAt); c.feed == nil || c.served[k] || age < 0 || age > inboxFeedReuse {
 		c.feed, c.served = nil, map[slices.Kind]bool{}
-		feed, err := c.build(ctx, inboxfeed.Options{Limit: PhoneInboxLimit, Clip: true, Now: now})
+		// OmitMacOnly: the phone has no journal pane, and the card must not
+		// take a slot under the limit.
+		feed, err := c.build(ctx, inboxfeed.Options{Limit: PhoneInboxLimit, Clip: true, OmitMacOnly: true, Now: now})
 		if err != nil {
 			return nil, err
 		}

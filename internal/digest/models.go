@@ -41,7 +41,11 @@ func TierForSource(source string) Tier {
 		"instructions.suggest",
 		// media.summarize_link: a fetched public page to a ≤1200-rune summary
 		// in a fixed JSON shape (the image twin media.describe stays strong)
-		"media.summarize_link":
+		"media.summarize_link",
+		// watchman.label: up to 20 past owner decisions to one of eight fixed
+		// categories each, a JSON array Go validates (the twin watchman.decide
+		// stays strong)
+		"watchman.label":
 		return TierLight
 	default:
 		// Strong by absence, among others: coach.propose (the agent coach's

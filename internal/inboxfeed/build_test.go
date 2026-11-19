@@ -247,10 +247,11 @@ func TestCardIDs_RoundTripAndNeverCollide(t *testing.T) {
 		IdeasCardID:                 {KindIdeas, 0, ""},
 		ThreadBriefCardID(7):        {KindThreadBrief, 7, ""},
 		MessagesCardID:              {KindMessages, 0, ""},
+		WatchmanCardID:              {KindWatchman, 0, ""},
 		OutputCardID(1234567890123): {KindOutput, 1234567890123, ""},
 	}
-	if len(cases) != 10 {
-		t.Fatalf("two kinds made the same id: %d distinct of 10", len(cases))
+	if len(cases) != 11 {
+		t.Fatalf("two kinds made the same id: %d distinct of 11", len(cases))
 	}
 	for id, want := range cases {
 		kind, num, date, err := ParseCardID(id)

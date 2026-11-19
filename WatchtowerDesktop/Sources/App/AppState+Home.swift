@@ -76,7 +76,7 @@ extension AppState {
     /// A Home click: a tab, or an item through the tab's own navigate helper.
     /// A tab hidden right now is left to `applyFeatureFallback` (Navigation),
     /// so a stale link lands on Home.
-    func openHomeLink(_ link: HomeLink) {
+    func openHomeLink(_ link: HomeLink) { // swiftlint:disable:this cyclomatic_complexity
         switch link {
         case .inbox: selectedDestination = .inbox
         case .permalink(let url): openPermalink(url)
@@ -93,6 +93,7 @@ extension AppState {
         case .connect(let source): performEmptyStateAction(.connect(source))
         case .turnOn(let featureID): performEmptyStateAction(.turnOn(featureID: featureID))
         case .usageWatchtower: openUsageWatchtower()
+        case .watchmanJournal: openInbox(InboxRoute(entry: .watchman))
         }
     }
 

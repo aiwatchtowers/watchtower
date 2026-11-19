@@ -236,6 +236,7 @@ func liveMarkers(live *Live, conv string) []Entry {
 	var out []Entry
 	for _, a := range live.Agents {
 		ref := a.Ref
+		ref.StartedAt = a.StartedAt
 		out = append(out, Entry{ID: ref.ToolUseID, Kind: KindSubagent, Subagent: &ref, At: a.StartedAt, Conversation: conv})
 	}
 	return out
@@ -243,24 +244,26 @@ func liveMarkers(live *Live, conv string) []Entry {
 
 // LocateAll finds the main transcripts of agentSessionIDs under the Claude
 // projects directory, searching the directories of folderRoots once. Ids
-// without a transcript are absent from the result.
+// without a transcript are absent from the result. It stats <dir>/<id>.jsonl
+// per id instead of listing the directories: a repository's slug prefix
+// matches every worktree's directory, thousands of files the open of one
+// pane must not touch. When several directories hold an id, the
+// lexicographically first path wins (the order a sorted listing gives).
 func LocateAll(projectsDir string, folderRoots []string, agentSessionIDs []string) map[string]string {
 	found := map[string]string{}
 	dirs, err := agentfiles.CandidateDirs(projectsDir, folderRoots)
 	if err != nil {
 		return found
 	}
-	files, err := agentfiles.ListTranscripts(dirs)
-	if err != nil {
-		return found
-	}
-	want := map[string]bool{}
 	for _, id := range agentSessionIDs {
-		want[id] = true
-	}
-	for _, f := range files {
-		if _, dup := found[f.SessionUUID]; !f.Subagent && want[f.SessionUUID] && !dup {
-			found[f.SessionUUID] = f.Path
+		if strings.ContainsAny(id, `/\`) {
+			continue // not a file name inside the directory
+		}
+		for _, dir := range dirs {
+			f, ok := agentfiles.StatTranscript(filepath.Join(dir, id+".jsonl"))
+			if prev, dup := found[id]; ok && (!dup || f.Path < prev) {
+				found[id] = f.Path
+			}
 		}
 	}
 	return found
@@ -279,4 +282,39 @@ func addCounts(dst, src map[string]int) {
 	for k, n := range src {
 		dst[k] += n
 	}
+}
+
+// TailPage returns the last n entries before the entry with id before (the end
+// of the feed when before is empty) and the id to pass as before for the next
+// older page, "" when the page starts at entry 0.
+func TailPage(entries []Entry, before string, n int) (page []Entry, nextBefore string, err error) {
+	if n < 1 {
+		return nil, "", fmt.Errorf("tail page size %d: must be at least 1", n)
+	}
+	end := len(entries)
+	if before != "" {
+		end = -1
+		matches := 0
+		for i := range entries {
+			if entries[i].ID == before {
+				if matches == 0 {
+					end = i
+				}
+				matches++
+			}
+		}
+		if end < 0 {
+			return nil, "", fmt.Errorf("before %q: no such entry", before)
+		}
+		if matches > 1 {
+			// legacy Codex ids ("L<offset>") can repeat across conversations
+			return nil, "", fmt.Errorf("before id %q is ambiguous (%d entries)", before, matches)
+		}
+	}
+	start := max(end-n, 0)
+	page = entries[start:end]
+	if start > 0 {
+		nextBefore = entries[start].ID
+	}
+	return page, nextBefore, nil
 }

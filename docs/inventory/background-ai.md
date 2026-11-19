@@ -92,3 +92,4 @@
 
 - 2026-11-18 (board #1886, ask #1452): BGAI-01..03 added.
 - 2026-11-18 (board #1886, ask #1452, review #1484): BGAI-01 gains the Desktop launch-site guards (`DesktopModelLaunchSitesTests`, Task 18): a strengthening, no guard weakened. Feature note: `docs/features/background-ai-consent.md`.
+- 2026-11-19 (Watchman phase 2 merged with main, Task 20): Watchman's learning, profiles and weekly backtest go through `aiPhase`, the twin leases nothing while paused, and `cmd/watchman_backtest.go` joins `bgaiSpawnRoots` (its child carries the phase's origin); `watchman learn`/`backtest` join `model_commands.json`. A strengthening, no guard weakened.

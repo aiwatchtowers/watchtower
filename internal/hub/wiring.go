@@ -320,7 +320,8 @@ func handlerDeps(o Options, st *state.Store, set *sources.Set, watches handlers.
 	deps := handlers.Deps{
 		DB: o.DB, Store: st, Sessions: port, RecordingsDir: o.RecordingsDir, Clock: o.Clock, Policy: o.mobileSync,
 		ChatWatches: watches, Sealer: sealer, LateEcho: lateEcho, ServerHost: hubKindOf(o.Desktop) == wire.HubKindServer,
-		Tower: o.Tower,
+		Answerer: o.Answerer,
+		Tower:    o.Tower,
 	}
 	// Typed nils stay nil interfaces.
 	if set.Sessions != nil {
@@ -332,29 +333,40 @@ func handlerDeps(o Options, st *state.Store, set *sources.Set, watches handlers.
 	return deps
 }
 
-// sessionPort is o.Sessions, else the real port over session-host
-// (Task 15) on o.SessionStart with the database's file as its scope, else —
-// no socket given — noSessionHost.
+// sessionPort is o.Sessions, else NewSessionPort on o.SessionStart (its
+// Clock defaulting to o.Clock).
 func (w *wiring) sessionPort(ctx context.Context, o Options) (handlers.SessionPort, error) {
 	if o.Sessions != nil {
 		return o.Sessions, nil
 	}
-	if o.SessionStart.Socket == "" {
+	sd := o.SessionStart
+	if sd.Clock == nil {
+		sd.Clock = o.Clock
+	}
+	port, err := NewSessionPort(ctx, o.DB, sd)
+	if p, ok := port.(*sessionstart.Port); ok {
+		w.port = p
+	}
+	return port, err
+}
+
+// NewSessionPort is the real port over session-host (Task 15) on sd with
+// d's file as its scope (a *sessionstart.Port, closed by its owner), else —
+// no socket given — a port with no session host: nothing is live, nothing
+// can be typed or started. The daemon builds one for the Answerer it shares
+// with Watchman while the hub is off.
+func NewSessionPort(ctx context.Context, d *db.DB, sd sessionstart.Deps) (handlers.SessionPort, error) {
+	if sd.Socket == "" {
 		log.Printf("hub: no session host (%s not set)", sessionhost.SocketEnv)
 		return noSessionHost{}, nil
 	}
-	d := o.SessionStart
-	d.DB = o.DB
-	path, err := mainFile(ctx, o.DB)
+	sd.DB = d
+	path, err := mainFile(ctx, d)
 	if err != nil {
 		return nil, fmt.Errorf("hub: the session host scope: %w", err)
 	}
-	d.DBPath = path
-	if d.Clock == nil {
-		d.Clock = o.Clock
-	}
-	w.port = sessionstart.NewPort(d, nil)
-	return w.port, nil
+	sd.DBPath = path
+	return sessionstart.NewPort(sd, nil), nil
 }
 
 // openWatch opens the data_version watch on a read-only handle of its own:
@@ -565,6 +577,9 @@ func (w *wiring) close() {
 		w.chat.OnTurnEnd(func(int64, string, string) {})
 	}
 	w.stopBackground(chatBackgroundBudget)
+	if w.handlers != nil {
+		w.handlers.ReleaseAnswerer()
+	}
 	if w.port != nil {
 		_ = w.port.Close()
 	}
@@ -617,7 +632,7 @@ func towerInboxFeed(t *tower.Tower) sources.InboxFeed {
 		return nil
 	}
 	return func(ctx context.Context, o inboxfeed.Options) (api.Feed, error) {
-		params, err := json.Marshal(api.FeedRequest{Limit: o.Limit, Clip: o.Clip})
+		params, err := json.Marshal(api.FeedRequest{Limit: o.Limit, Clip: o.Clip, OmitMacOnly: o.OmitMacOnly})
 		if err != nil {
 			return api.Feed{}, err
 		}

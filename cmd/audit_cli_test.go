@@ -428,6 +428,17 @@ var cliNoContentCommands = map[string]bool{
 	"watch add":                        true,
 	"watch list":                       true,
 	"watch remove":                     true,
+	"watchman arm":                     true, // arming state and the arm sheet's estimate only
+	"watchman backtest":                true,
+	"watchman disarm":                  true,
+	"watchman learn":                   true,
+	"watchman limits add":              true, // the owner's own extra limits
+	"watchman limits list":             true,
+	"watchman limits remove":           true,
+	"watchman profile":                 true,
+	"watchman profile set":             true,
+	"watchman profile unpin":           true,
+	"watchman status":                  true,
 	"workbench ask-guard":              true,
 	"workbench asks":                   true,
 	"workbench board":                  true,
@@ -473,6 +484,7 @@ var cliNoContentCommands = map[string]bool{
 	"workbench spec-review start":      true, // prints a status line only
 	"workbench show":                   true,
 	"workbench target add":             true,
+	"workbench watchman-guard":         true, // PreToolUse hook: a deny line only
 	"workbench worktree create":        true,
 	"workbench worktree ensure":        true,
 	"workbench worktree forget":        true,

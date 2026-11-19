@@ -84,7 +84,9 @@ final class InboxMacFolderRowsTests: XCTestCase {
         let ideas = try legacy("ideas", .ideas, title: "Idea finder", stamp: "0001-01-01T00:00:00Z")
         let messages = try legacy("messages", .messages, title: "Messages", source: "Mentions, DMs and replies",
                                   preview: "3 waiting")
-        let rows = InboxMacFolderRows.rows([brief, tracks, ideas, messages], approvals: false, now: now)
+        let watchman = try legacy("watchman", .watchman, title: "Watchman",
+                                  source: "Night of 15 Nov · 3 decided · 2 unsure", preview: "2 waiting", unread: true)
+        let rows = InboxMacFolderRows.rows([brief, tracks, ideas, messages, watchman], approvals: false, now: now)
         XCTAssertEqual(rows, [
             InboxMacFolderRow(cardID: "brief-2026-11-16", kind: .legacy, title: "Morning brief", summary: "today",
                               detail: "Your day · Mon 16 Nov", unread: true),
@@ -92,7 +94,9 @@ final class InboxMacFolderRowsTests: XCTestCase {
                               detail: "updated 6 min ago", unread: true),
             InboxMacFolderRow(cardID: "ideas", kind: .legacy, title: "Idea finder"),
             InboxMacFolderRow(cardID: "messages", kind: .legacy, title: "Messages", summary: "3 waiting",
-                              detail: "Mentions, DMs and replies")
+                              detail: "Mentions, DMs and replies"),
+            InboxMacFolderRow(cardID: "watchman", kind: .legacy, title: "Watchman", summary: "2 waiting",
+                              detail: "Night of 15 Nov · 3 decided · 2 unsure", unread: true)
         ])
     }
 

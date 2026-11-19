@@ -66,6 +66,10 @@ const (
 	CoachPropose               = "coach.propose"
 	MediaDescribe              = "media.describe"
 	MediaSummarizeLink         = "media.summarize_link"
+	WatchmanDecide             = "watchman.decide"
+	WatchmanJudge              = "watchman.judge"
+	WatchmanLabel              = "watchman.label"
+	WatchmanProfile            = "watchman.profile"
 )
 
 // Store loads, caches, and persists prompt templates.

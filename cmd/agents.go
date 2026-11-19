@@ -110,12 +110,8 @@ func runAgentsEnable(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 	defer al.Close()
-	if err := database.SetWorkbenchAgentAnalytics(flagAgentsWorkbench, true); err != nil {
+	if err := enableAgentAnalytics(cmd, database, al, path, flagAgentsWorkbench); err != nil {
 		return err
-	}
-	if err := moveAgentLogRows(cmd, database, al, path); err != nil {
-		return fmt.Errorf("%w; analytics stays on for workbench %d and the move retries on the next daemon start or agents scan",
-			err, flagAgentsWorkbench)
 	}
 	nudged := nudgeDaemon(cmd, cfg)
 	progress, err := al.ImportProgress(flagAgentsWorkbench)
@@ -132,6 +128,20 @@ func runAgentsEnable(cmd *cobra.Command, _ []string) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Agent analytics is on for workbench %d; %s (%s, %d files so far).\n",
 		flagAgentsWorkbench, next, importStateText(imp.State), imp.FilesStored)
+	return nil
+}
+
+// enableAgentAnalytics turns analytics on for a workbench and runs the
+// one-time move of the analytics rows out of watchtower.db (#849); the daemon
+// imports the history. `agents enable` and `watchman learn --start` share it.
+func enableAgentAnalytics(cmd *cobra.Command, database *db.DB, al *agentlogdb.DB, alPath string, workbenchID int64) error {
+	if err := database.SetWorkbenchAgentAnalytics(workbenchID, true); err != nil {
+		return err
+	}
+	if err := moveAgentLogRows(cmd, database, al, alPath); err != nil {
+		return fmt.Errorf("%w; analytics stays on for workbench %d and the move retries on the next daemon start or agents scan",
+			err, workbenchID)
+	}
 	return nil
 }
 

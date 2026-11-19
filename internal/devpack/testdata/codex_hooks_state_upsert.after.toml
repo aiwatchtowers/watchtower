@@ -21,6 +21,9 @@ trusted_hash = "sha256:83387573a2f500e8809a8c3a50feec424309bd4b76fc9407fc547637a
 [hooks.state."/<session-flags>/config.toml:pre_tool_use:0:0"]
 trusted_hash = "sha256:7aa8eeefcaf7c7bfa79b3a0d797534ad58a352b08ccbec373230fb407c869188"
 
+[hooks.state."/<session-flags>/config.toml:pre_tool_use:1:0"]
+trusted_hash = "sha256:334d9c628f80fa2c4d45f30b806af99492ed3f86ee7a93c547935af79af867ed"
+
 [hooks.state."/<session-flags>/config.toml:session_start:0:0"]
 trusted_hash = "sha256:92c451fe56f2895da8abf862592e22538f54f67611258a08ac1d900458071f22"
 

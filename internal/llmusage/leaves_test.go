@@ -37,8 +37,11 @@ var knownNonLLMExec = map[string]string{
 	"claude.loginShellPATHUntil":         "login shell `echo $PATH` for the usage reader, bounded by the poll",
 	"claude.usageProcess":                "claude -p get_usage control request: Claude Code's own usage read, no turn, no model call",
 	"claudesession.SystemProcs.Start":    "ps -o lstart",
+	"cmd.LaunchWatchmanBacktest":         "starts this binary's detached `watchman backtest`, whose own model calls record in that process",
 	"cmd.LaunchSpecReview":               "starts this binary's `workbench spec-review run`, whose reviewer call records in that process",
 	"cmd.execCommandRunner":              "claude mcp add/remove/get for the workbench install (MCP config, no model call)",
+	"cmd.execCommandOutput":              "gh api for Watchman's branch-protection check (no model call)",
+	"cmd.gitCurrentBranch":               "git rev-parse --abbrev-ref HEAD for the watchman-guard hook (no model call)",
 	"cmd.registerMCPWithClaudeCode":      "claude mcp add (MCP config, no model call)",
 	"cmd.runIntegrateRemove":             "claude mcp remove (MCP config, no model call)",
 	"cmd.runQuickSync":                   "runs this binary's `sync`, which records its own calls",
@@ -56,6 +59,8 @@ var knownNonLLMExec = map[string]string{
 	"extract.(*Extractor).runPDFHelper":  "our own PDF helper executable",
 	"extract.(*helperOCR).run":           "the Vision OCR helper",
 	"extract.runCodesign":                "codesign --verify of the OCR helper",
+	"watchman.ExecGit":                   "git (the Watchman git source reads history, no model call)",
+	"watchmanact.ExecRun":                "gh pr view / gh api for the twin's review Approve (the PR's base, the default branch) and git / gh reads of a permission's branch, no model call",
 	"gitbin.run":                         "git",
 	"hub.bridgeLauncher":                 "starts the CloudKit bridge helper (WatchtowerCloudBridge.app, no model call)",
 	"main.checkFiles":                    "diff -u for the tower interface generator's -check (internal/tower/gen), no model call",
@@ -67,6 +72,7 @@ var knownNonLLMExec = map[string]string{
 	"sessionhost.(*detached).launch":     "starts the watchtower session-host process on darwin (no model call)",
 	"sessionhost.systemdRunCommand":      "runs systemd-run to start session-host as a user unit (no model call)",
 	"cmd.workbenchSessionFinishSpawn":    "starts the detached `workbench session finish` that places and launches a session (no model call)",
+	"watchmanact.runGit":                 "git for Watchman's chaining hooks in an armed worktree (no model call)",
 	"sessionhost.startSession":           "the owner's interactive PTY, measured by agentlog",
 }
 

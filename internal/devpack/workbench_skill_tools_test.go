@@ -7,7 +7,6 @@ import (
 
 	"watchtower/internal/devpack"
 	"watchtower/internal/tools"
-	"watchtower/internal/workbenchfiles"
 )
 
 // Spec 2026-10-02 §4.3: the shipped skill speaks only the new vocabulary —
@@ -54,7 +53,7 @@ func TestWorkbenchSkill_NamesOnlyCurrentToolsAndServer(t *testing.T) {
 // of those, the workbench's own.
 func workbenchSessionTools() (session, workbench map[string]bool) {
 	session, workbench = map[string]bool{}, map[string]bool{}
-	for _, tool := range tools.WorkbenchTools(workbenchfiles.Store{}, nil) {
+	for _, tool := range tools.WorkbenchTools(tools.WorkbenchDeps{}) {
 		session[tool.Name], workbench[tool.Name] = true, true
 	}
 	for _, tool := range tools.ReadTools() {

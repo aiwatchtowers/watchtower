@@ -136,6 +136,14 @@ final class WorkbenchesViewModel {
     /// The agent coach (#1120): the Analytics pane's proposals. AppState
     /// wires its own; nil = a pane without the coach section.
     @ObservationIgnored weak var coach: CoachCenter?
+    /// Watchman (#1823): the session strip's Hand to Watchman / Take back.
+    /// AppState wires its own; nil = a strip without it.
+    @ObservationIgnored weak var watchman: WatchmanCenter?
+
+    /// A session's title on any workbench (the Watchman arm sheet's list).
+    func sessionTitle(_ id: Int64) -> String? {
+        terminalSessions.values.lazy.flatMap { $0 }.first { $0.id == id }?.title
+    }
     /// The Analytics pane's period per workbench (7 days until picked).
     var analyticsPeriod: [Int64: AgentAnalyticsCenter.Period] = [:]
     /// The Analytics pane's agent filter per workbench (All until picked;
@@ -641,6 +649,22 @@ final class WorkbenchesViewModel {
     /// lines survive pane switches; dropped with the session
     /// (`forgetProcessState`). Created during a view's body, hence not observed.
     @ObservationIgnored var workchatModels: [Int64: WorkchatModel] = [:]
+    /// The Workchat feed stores kept while the app runs (#2065), so a pane
+    /// shown again paints its entries at once and reads only after the
+    /// cursor; at most `keptFeedStores`, the least recently shown dropped
+    /// first (`feedStoreOrder`, oldest first; an open pane's store is
+    /// skipped), and dropped with the session
+    /// (`forgetProcessState`). A kept store off screen runs no CLI: only an
+    /// open pane's `follow` polls it. Created during a view's body, hence not
+    /// observed.
+    @ObservationIgnored var feedStores: [Int64: SessionFeedStore] = [:]
+    @ObservationIgnored var feedStoreOrder: [Int64] = []
+    /// Panes on screen per session: their stores are never dropped.
+    @ObservationIgnored var feedStorePanes: [Int64: Int] = [:]
+    static let keptFeedStores = 8
+    /// Workchat panes' in-memory toggles (the 👥 list's Done), kept for the
+    /// app's lifetime and never persisted (#2065).
+    let paneMemory = WorkchatPaneMemory()
     /// `<workspace>/workchat-attachments`, next to the open database.
     @ObservationIgnored var attachmentStore: WorkchatAttachmentStore?
     /// Branch review's reviewer (board #1025): set by the app with its

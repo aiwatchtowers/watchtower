@@ -15,14 +15,16 @@ public struct ChatFeedSelectionQuote {
     }
 }
 
-/// How the tracker listens: the notification center and the local event
-/// monitor, injectable so a test can see that `detach` stops both.
+/// How the tracker listens: the notification center, the local event
+/// monitor and the hop past the event's handling, injectable so a test can
+/// see that `detach` stops both and drive the monitor itself.
 struct ChatSelectionQuoteListening {
     var center: NotificationCenter = .default
-    var addMouseDownMonitor: (@escaping (NSEvent) -> NSEvent?) -> Any? = { handler in
-        NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown, handler: handler)
+    var addEventMonitor: (@escaping (NSEvent) -> NSEvent?) -> Any? = { handler in
+        NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .keyUp], handler: handler)
     }
     var removeMonitor: (Any) -> Void = { NSEvent.removeMonitor($0) }
+    var afterEvent: (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
 }
 
 /// Finds the passage the owner selected in an answer, and where it is.
@@ -32,14 +34,18 @@ struct ChatSelectionQuoteListening {
 /// span the run's paragraphs, and one `MarkdownTableTextView` (a run view)
 /// per table (§5c), so a selection may span its cells and rows and reads
 /// as tab-separated cells. Its other blocks and every other row are
-/// SwiftUI `Text` + `.textSelection(.enabled)`: on macOS such
-/// a `Text` is a selectable `NSTextField`, and selecting in it puts the
-/// window's field editor (an `NSTextView`) in it. Either way the selection
-/// is read from that text view through public AppKit: its text,
-/// `selectedRange()` and `firstRect(forCharacterRange:)`. Should SwiftUI
-/// stop backing the text this way, the chip simply never appears there and
-/// selection + ⌘C keep working (`ChatSelectionQuoteTrackerTests` pins the
-/// assumption).
+/// SwiftUI `Text` + `.textSelection(.enabled)` (a code block, say). Up to
+/// macOS 26 such a `Text` is a selectable `NSTextField`, and selecting in it
+/// puts the window's field editor (an `NSTextView`) in it; the selection is
+/// read from that text view through public AppKit: its text,
+/// `selectedRange()` and `firstRect(forCharacterRange:)`. From macOS 27
+/// SwiftUI backs it with its own text-interaction view instead: no text
+/// view, no selection notification, no character boxes. That view becomes
+/// the first responder and reports its selection through the public
+/// accessibility API, so once a mouse or key goes up the tracker reads the
+/// first responder's `accessibilitySelectedText()`, and the chip sits by
+/// the point the mouse went up (`ChatSelectionQuoteTrackerTests` pins both
+/// paths).
 ///
 /// Only a selection inside a finished answer's body counts: each such body
 /// carries an invisible region view (`ChatAnswerRegionMarker`), and the
@@ -66,6 +72,22 @@ public final class ChatSelectionQuoteTracker {
     @ObservationIgnored private let listening: ChatSelectionQuoteListening
     @ObservationIgnored private weak var anchor: NSView?
     @ObservationIgnored private weak var editor: NSTextView?
+    /// The macOS 27 path: the selectable `Text`'s own view, and the
+    /// selection's box in its coordinates.
+    @ObservationIgnored private weak var interaction: NSView?
+    @ObservationIgnored private var interactionBox: CGRect = .zero
+    /// The selection `interactionBox` was measured for: its text and range
+    /// (the same word twice in one `Text` is two selections).
+    @ObservationIgnored private var interactionMark: InteractionMark?
+    /// The macOS 27 passage "Ask about this" just took, still selected in
+    /// its `Text`: no chip for it again until the selection changes.
+    @ObservationIgnored private weak var quotedView: NSView?
+    @ObservationIgnored private var quotedMark: InteractionMark?
+
+    private struct InteractionMark: Equatable {
+        let text: String
+        let range: NSRange
+    }
     /// The answer region the current selection lies in.
     @ObservationIgnored private weak var region: NSView?
     @ObservationIgnored private let regions = NSHashTable<NSView>.weakObjects()
@@ -104,10 +126,18 @@ public final class ChatSelectionQuoteTracker {
                 MainActor.assumeIsolated { self?.refresh() }
             }
         ]
-        mouseMonitor = listening.addMouseDownMonitor { [weak self] event in
+        let afterEvent = listening.afterEvent
+        mouseMonitor = listening.addEventMonitor { [weak self] event in
             let window = event.window
-            let location = event.locationInWindow
-            let taken = MainActor.assumeIsolated { self?.handleMouseDown(in: window, at: location) ?? false }
+            guard MainActor.assumeIsolated({ window != nil && window === self?.anchor?.window }) else { return event }
+            let location = event.type == .keyUp ? nil : event.locationInWindow
+            guard event.type == .leftMouseDown else {
+                // After the window handled it: a click that clears the
+                // selection clears it on its way up.
+                afterEvent { MainActor.assumeIsolated { self?.selectionEnded(in: window, at: location) } }
+                return event
+            }
+            let taken = MainActor.assumeIsolated { self?.handleMouseDown(in: window, at: location ?? .zero) ?? false }
             return taken ? nil : event
         }
     }
@@ -138,6 +168,7 @@ public final class ChatSelectionQuoteTracker {
     /// "Ask about this": the passage joins the batch and the selection goes.
     func askAboutSelection() {
         guard let text = selection?.text else { return }
+        if let interaction { (quotedView, quotedMark) = (interaction, interactionMark) }
         clear()
         quote?.onQuote(text)
     }
@@ -156,6 +187,39 @@ public final class ChatSelectionQuoteTracker {
             return
         }
         editor = textView
+        interaction = nil
+        locateRegion()
+    }
+
+    /// A mouse or key went up in `window` (`locationInWindow` nil for a
+    /// key): a selection in a selectable SwiftUI `Text` that no text view
+    /// backs (macOS 27) is read from the first responder. A text view's
+    /// selection comes through its notification instead.
+    func selectionEnded(in window: NSWindow?, at locationInWindow: CGPoint?) {
+        guard let window, window === anchor?.window, !(window.firstResponder is NSTextView) else { return }
+        guard let view = window.firstResponder as? NSView, view.accessibilityRole() == .staticText,
+              let text = view.accessibilitySelectedText(), !text.isEmpty else {
+            quotedView = nil
+            if interaction != nil { clear() }
+            return
+        }
+        let mark = InteractionMark(text: text, range: view.accessibilitySelectedTextRange())
+        if view === quotedView, mark == quotedMark { return }
+        quotedView = nil
+        // The same selection (a ⌘C, a click on the scroller or blank
+        // space): the chip stays by the point it was measured at.
+        if view === interaction, mark == interactionMark {
+            refresh()
+            return
+        }
+        editor = nil
+        interaction = view
+        interactionMark = mark
+        interactionBox = Self.interactionBox(in: view, at: locationInWindow.map { view.convert($0, from: nil) })
+        locateRegion()
+    }
+
+    private func locateRegion() {
         region = nil
         stopObservingGeometry()
         guard let rect = currentRect(), let found = regionContaining(rect) else {
@@ -169,11 +233,10 @@ public final class ChatSelectionQuoteTracker {
 
     /// Re-measures the selection inside its region (scroll, reflow, resize).
     private func refresh() {
-        guard let editor, let anchor, let region, region.window === anchor.window,
+        guard let anchor, let region, region.window === anchor.window,
               let rect = currentRect(), Self.box(of: region, in: anchor).insetBy(dx: -2, dy: -2).contains(rect),
               rect.intersects(anchor.bounds),
-              let text = ChatQuoteReply.selectedText((editor as? MarkdownRunTextView)?.plainText ?? editor.string,
-                                                     selection: editor.selectedRange()) else {
+              let text = currentText() else {
             setSelection(nil)
             return
         }
@@ -181,9 +244,40 @@ public final class ChatSelectionQuoteTracker {
         setSelection(Selection(text: text, rect: rect, button: origin.map { CGRect(origin: $0, size: Self.buttonSize) }))
     }
 
+    private func currentText() -> String? {
+        if let editor {
+            return ChatQuoteReply.selectedText((editor as? MarkdownRunTextView)?.plainText ?? editor.string,
+                                               selection: editor.selectedRange())
+        }
+        guard let interaction, let window = interaction.window, window.firstResponder === interaction,
+              let text = interaction.accessibilitySelectedText() else { return nil }
+        return ChatQuoteReply.selectedText(text, selection: NSRange(location: 0, length: (text as NSString).length))
+    }
+
     private func currentRect() -> CGRect? {
-        guard let editor, let anchor else { return nil }
-        return Self.selectionRect(of: editor, in: anchor)
+        guard let anchor else { return nil }
+        if let editor { return Self.selectionRect(of: editor, in: anchor) }
+        guard let interaction, interaction.window === anchor.window else { return nil }
+        // A wide code block scrolled sideways may have moved the selection
+        // out of its own viewport.
+        let box = interactionBox.intersection(interaction.visibleRect.intersection(interaction.bounds))
+        guard !box.isEmpty else { return nil }
+        return anchor.convert(box, from: interaction)
+    }
+
+    /// Height of the box around the point the mouse went up: about a line.
+    static let pointBoxHeight: CGFloat = 16
+
+    /// The macOS 27 view reports no character boxes: the selection's box is
+    /// a line-high sliver at the point the mouse went up, kept inside the
+    /// view's visible part, or that whole part for a key.
+    static func interactionBox(in view: NSView, at point: CGPoint?) -> CGRect {
+        let visible = view.visibleRect.intersection(view.bounds)
+        guard let point, !visible.isEmpty else { return visible.isEmpty ? view.bounds : visible }
+        let height = min(pointBoxHeight, visible.height)
+        let x = min(max(point.x, visible.minX), visible.maxX - 1)
+        let y = min(max(point.y - height / 2, visible.minY), visible.maxY - height)
+        return CGRect(x: x, y: y, width: 1, height: height)
     }
 
     private func regionContaining(_ rect: CGRect) -> NSView? {
@@ -199,6 +293,8 @@ public final class ChatSelectionQuoteTracker {
 
     private func clear() {
         editor = nil
+        interaction = nil
+        interactionMark = nil
         region = nil
         stopObservingGeometry()
         setSelection(nil)
@@ -209,9 +305,9 @@ public final class ChatSelectionQuoteTracker {
         if selection != new { selection = new }
     }
 
-    /// Scrolling the feed (the region's own scroll view — never a code
-    /// block's or table's inner horizontal one) and a reflow of the thread
-    /// move the selection on screen.
+    /// Scrolling the feed (the region's own scroll view), a reflow of the
+    /// thread and, on the macOS 27 path, scrolling the code block the
+    /// selection is in move the selection on screen.
     private func observeGeometry(of region: NSView) {
         let center = listening.center
         region.postsFrameChangedNotifications = true
@@ -220,7 +316,11 @@ public final class ChatSelectionQuoteTracker {
                 MainActor.assumeIsolated { self?.refresh() }
             }
         ]
-        if let clip = region.enclosingScrollView?.contentView {
+        var clips = [region.enclosingScrollView?.contentView].compactMap { $0 }
+        if let inner = interaction?.enclosingScrollView?.contentView, !clips.contains(where: { $0 === inner }) {
+            clips.append(inner)
+        }
+        for clip in clips {
             clip.postsBoundsChangedNotifications = true
             observers.append(center.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: nil) { [weak self] _ in
                 MainActor.assumeIsolated { self?.refresh() }

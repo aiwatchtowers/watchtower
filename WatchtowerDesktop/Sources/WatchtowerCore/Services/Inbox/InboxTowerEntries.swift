@@ -154,6 +154,7 @@ package enum InboxTowerEntries {
         case .tracks?: return .legacyTracks
         case .ideas?: return .legacyIdeas
         case .messages?: return .legacyMessages
+        case .watchman?: return .watchman
         case .threadBriefs?, .unknown?, nil: return nil
         }
     }

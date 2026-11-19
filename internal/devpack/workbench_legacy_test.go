@@ -144,7 +144,7 @@ func assertLegacyHooksReplaced(t *testing.T, folder string, rep WorkbenchInstall
 		"SubagentStop":       {state},
 		"SubagentStart":      {state},
 		"PostToolUseFailure": {state},
-		"PreToolUse":         {WorkbenchAskGuardHookCommand(legacyBin, 7), state},
+		"PreToolUse":         {WorkbenchAskGuardHookCommand(legacyBin, 7), watchmanGuardSpec.command(legacyBin, 7), state},
 		"PermissionRequest":  {permissionWaitSpec.command(legacyBin, 7)},
 	}
 	if got := ourCommands(t, folder); !reflect.DeepEqual(got, want) {
@@ -168,9 +168,9 @@ func assertLegacyHooksReplaced(t *testing.T, folder string, rep WorkbenchInstall
 	afterHooks, beforeHooks := after["hooks"].(map[string]any), before["hooks"].(map[string]any)
 	// The owner's PreToolUse group stays first and as it was; ours (the
 	// ask guard's AskUserQuestion group, then the session state's "*"
-	// group) are added after it.
+	// group and the Watchman guard's "*" group) are added after it.
 	afterPre, beforePre := afterHooks["PreToolUse"].([]any), beforeHooks["PreToolUse"].([]any)
-	if len(afterPre) != 3 || !reflect.DeepEqual(afterPre[0], beforePre[0]) {
+	if len(afterPre) != 4 || !reflect.DeepEqual(afterPre[0], beforePre[0]) {
 		t.Fatalf("PROJ-04: the owner's PreToolUse hooks changed: %#v", afterPre)
 	}
 	settings := readTestFile(t, settingsFile(folder))

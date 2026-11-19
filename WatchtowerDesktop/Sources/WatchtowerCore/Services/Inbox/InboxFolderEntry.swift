@@ -4,8 +4,9 @@ import Foundation
 /// into folders"): an automation's artifact, a legacy entry over today's
 /// panes (ask #445: a Morning brief per date, Track my threads, Idea finder,
 /// and Messages while it stands in for Waiting for me), an open approval or
-/// a built-in upgrade notice (Needs approval), or a thread brief the
-/// `:brief:` reaction made (the root, 24 hours, ask #609).
+/// a built-in upgrade notice (Needs approval), a thread brief the
+/// `:brief:` reaction made (the root, 24 hours, ask #609), or Watchman's
+/// morning journal (the root, spec 2026-11-16 §10).
 package enum InboxFolderEntry: Identifiable, Equatable, Sendable {
     case artifact(AutomationOutputCard)
     case brief(AgentAction)
@@ -13,6 +14,8 @@ package enum InboxFolderEntry: Identifiable, Equatable, Sendable {
     case legacyTracks
     case legacyIdeas
     case legacyMessages
+    /// Watchman's journal: its own list of nights in the reading pane.
+    case watchman
     case approval(NeedsApprovalItem)
     case builtinNotice(BuiltinUpgradeNotice)
 
@@ -24,6 +27,7 @@ package enum InboxFolderEntry: Identifiable, Equatable, Sendable {
         case .legacyTracks: "tracks"
         case .legacyIdeas: "ideas"
         case .legacyMessages: "messages"
+        case .watchman: "watchman"
         case let .approval(item): "approval:\(item.key)"
         case let .builtinNotice(notice): "notice:\(notice.builtinID)"
         }
@@ -36,7 +40,7 @@ package enum InboxFolderEntry: Identifiable, Equatable, Sendable {
         case .legacyTracks: .tracks
         case .legacyIdeas: .ideas
         case .legacyMessages: .messages
-        case .artifact, .brief, .legacyDay, .approval, .builtinNotice: nil
+        case .artifact, .brief, .legacyDay, .watchman, .approval, .builtinNotice: nil
         }
     }
 

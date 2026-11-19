@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"watchtower/internal/agentfiles"
@@ -98,31 +100,83 @@ func newState(conv string, startOffset int64, sidechain bool) *state {
 	}
 }
 
+// Lines are decoded in batches: the top-level JSON decode of a record is pure
+// and most of a parse's cost, so a batch is decoded in parallel and then
+// handled in file order. A batch is bounded in lines and bytes.
+const (
+	decodeBatchLines = 512
+	decodeBatchBytes = 4 << 20
+	minParallelLines = 64
+)
+
+// pendingLine is one read line: raw is nil for an over-long line.
+type pendingLine struct {
+	raw []byte
+	n   int64
+	rec record
+	err error
+}
+
 func (st *state) run(r io.Reader, limit int) (*Result, error) {
-	res := st.res
 	br := bufio.NewReaderSize(r, 64<<10)
+	batch := make([]pendingLine, 0, decodeBatchLines)
+	size := 0
 	for {
 		raw, n, complete, err := agentfiles.NextLine(br, limit)
+		if complete {
+			batch = append(batch, pendingLine{raw: raw, n: n})
+			size += len(raw)
+		}
+		if !complete || len(batch) == decodeBatchLines || size >= decodeBatchBytes {
+			st.handleBatch(batch)
+			batch, size = batch[:0], 0
+		}
 		if !complete {
 			if err != nil && !errors.Is(err, io.EOF) {
 				return nil, fmt.Errorf("reading transcript: %w", err)
 			}
-			break
-		}
-		res.Offset += n
-		if raw == nil {
-			res.Skipped++
-		} else {
-			st.handle(raw)
+			return st.res, nil
 		}
 	}
-	return res, nil
 }
 
-func (st *state) handle(raw []byte) {
+// handleBatch decodes the batch's records, in parallel when it is large
+// enough to pay for it, then handles them in order.
+func (st *state) handleBatch(batch []pendingLine) {
+	decode := func(ls []pendingLine) {
+		for i := range ls {
+			if ls[i].raw != nil {
+				ls[i].err = json.Unmarshal(ls[i].raw, &ls[i].rec)
+			}
+		}
+	}
+	workers := min(runtime.GOMAXPROCS(0), len(batch)/minParallelLines)
+	if workers < 2 {
+		decode(batch)
+	} else {
+		var wg sync.WaitGroup
+		per := (len(batch) + workers - 1) / workers
+		for lo := 0; lo < len(batch); lo += per {
+			part := batch[lo:min(lo+per, len(batch))]
+			wg.Go(func() { decode(part) })
+		}
+		wg.Wait()
+	}
+	for i := range batch {
+		l := &batch[i]
+		st.res.Offset += l.n
+		if l.raw == nil {
+			st.res.Skipped++
+		} else {
+			st.handle(l.rec, l.err)
+		}
+		*l = pendingLine{} // drop the line's bytes once handled
+	}
+}
+
+func (st *state) handle(rec record, decodeErr error) {
 	res, conv := st.res, st.conv
-	var rec record
-	if err := json.Unmarshal(raw, &rec); err != nil {
+	if decodeErr != nil {
 		res.Unknown["<invalid>"]++
 		return
 	}

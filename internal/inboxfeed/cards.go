@@ -17,6 +17,8 @@ const (
 	TracksCardID   = "tracks"
 	IdeasCardID    = "ideas"
 	MessagesCardID = "messages"
+	// WatchmanCardID is Watchman's morning journal.
+	WatchmanCardID = "watchman"
 )
 
 // The kinds ParseCardID answers.
@@ -30,6 +32,7 @@ const (
 	KindIdeas       = "ideas"
 	KindThreadBrief = "thread-brief"
 	KindMessages    = "messages"
+	KindWatchman    = "watchman"
 )
 
 const (
@@ -66,6 +69,8 @@ func ParseCardID(id string) (kind string, num int64, date string, err error) {
 		return KindIdeas, 0, "", nil
 	case MessagesCardID:
 		return KindMessages, 0, "", nil
+	case WatchmanCardID:
+		return KindWatchman, 0, "", nil
 	}
 	if n, ok := strings.CutPrefix(id, threadBriefPrefix); ok {
 		num, perr := strconv.ParseInt(n, 10, 64)

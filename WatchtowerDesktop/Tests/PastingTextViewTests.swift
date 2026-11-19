@@ -33,6 +33,7 @@ final class PastingTextViewTests: XCTestCase {
         pasted = []
         attachedFiles = []
         longPastes = []
+        inlinePastes = []
     }
 
     override func tearDown() {
@@ -196,5 +197,129 @@ final class PastingTextViewTests: XCTestCase {
         }
         XCTAssertEqual(attachCalls, 0, "a stale paste is never attached")
         XCTAssertEqual(view.string, "!" + long)
+    }
+
+    // MARK: - Inline paste tokens (#2065 §6)
+
+    private var inlinePastes: [InlinePaste] = []
+
+    /// A view with `inlinePastes` on, its `onInlinePaste` answering `label` (nil: the paste is not taken).
+    private func makeInlineView(label: String?) -> PastingTextView {
+        let view = makeView()
+        view.onInlinePaste = { item in
+            self.inlinePastes.append(item)
+            return label
+        }
+        return view
+    }
+
+    func testInlineImagePasteInsertsTokenAtTheCaret() async throws {
+        let png = try onePixelPNG()
+        pasteboard.setData(png, forType: .png)
+        let view = makeInlineView(label: "[Image #1]")
+        view.string = "fix  now"
+        view.setSelectedRange(NSRange(location: 4, length: 0))
+
+        view.paste(nil)
+
+        let inserted = await eventually { view.string == "fix [Image #1] now" }
+        XCTAssertTrue(inserted, view.string)
+        XCTAssertTrue(pasted.isEmpty, "no chip")
+        guard case let .image(data, name)? = inlinePastes.first else { return XCTFail("no image paste") }
+        XCTAssertEqual(data, png)
+        XCTAssertEqual(name, "Pasted image.png")
+        XCTAssertEqual(view.selectedRange(), NSRange(location: 14, length: 0), "caret after the token")
+    }
+
+    func testInlineLongTextPasteInsertsTokenNoOffer() async throws {
+        let long = String(repeating: "x\n", count: PasteClassifier.longTextThreshold / 2)
+        pasteboard.setString(long, forType: .string)
+        let view = makeInlineView(label: "[Pasted text #1 +5000 lines]")
+
+        view.paste(nil)
+
+        let inserted = await eventually { view.string == "[Pasted text #1 +5000 lines]" }
+        XCTAssertTrue(inserted, String(view.string.prefix(40)))
+        XCTAssertTrue(longPastes.isEmpty, "no Attach-as-file offer")
+        guard case let .text(text)? = inlinePastes.first else { return XCTFail("no text paste") }
+        XCTAssertEqual(text, long)
+    }
+
+    func testInlineShortTextAndFinderFilesPasteAsBefore() {
+        pasteboard.setString("hello", forType: .string)
+        let view = makeInlineView(label: "[Pasted text #1 +1 lines]")
+        view.paste(nil)
+        XCTAssertEqual(view.string, "hello")
+
+        pasteboard.clearContents()
+        let urls = [URL(fileURLWithPath: "/tmp/a.png")]
+        pasteboard.writeObjects(urls as [NSURL])
+        view.paste(nil)
+        XCTAssertEqual(attachedFiles, [urls], "a Finder image stays a chip")
+        XCTAssertTrue(inlinePastes.isEmpty)
+        XCTAssertEqual(view.string, "hello")
+    }
+
+    func testRefusedInlinePasteInsertsNothing() async throws {
+        pasteboard.setData(try onePixelPNG(), forType: .png)
+        let view = makeInlineView(label: nil)
+        view.string = "fix"
+        view.setSelectedRange(NSRange(location: 3, length: 0))
+
+        view.paste(nil)
+
+        let asked = await eventually { !self.inlinePastes.isEmpty }
+        XCTAssertTrue(asked)
+        XCTAssertEqual(view.string, "fix")
+    }
+
+    /// A token the field cannot insert (the edit refused) is reported back, so its paste does not hold Send.
+    func testRefusedTokenInsertIsReported() async throws {
+        pasteboard.setData(try onePixelPNG(), forType: .png)
+        let view = makeInlineView(label: "[Image #1]")
+        var dropped: [String] = []
+        view.onInlinePasteDropped = { dropped.append($0) }
+        view.string = "fix"
+        view.isEditable = false
+
+        view.paste(nil)
+
+        let reported = await eventually { !dropped.isEmpty }
+        XCTAssertTrue(reported)
+        XCTAssertEqual(dropped, ["[Image #1]"])
+        XCTAssertEqual(view.string, "fix")
+    }
+
+    func testBackspaceDeletesALiveTokenWhole() {
+        let view = makeInlineView(label: nil)
+        view.livePastes = [1: .image]
+        view.string = "fix [Image #1]"
+        view.setSelectedRange(NSRange(location: 14, length: 0))
+
+        view.deleteBackward(nil)
+
+        XCTAssertEqual(view.string, "fix ")
+        XCTAssertEqual(view.selectedRange(), NSRange(location: 4, length: 0))
+    }
+
+    func testBackspaceOnAHandTypedTokenDeletesOneCharacter() {
+        let view = makeInlineView(label: nil)
+        view.string = "fix [Image #1]"
+        view.setSelectedRange(NSRange(location: 14, length: 0))
+
+        view.deleteBackward(nil)
+
+        XCTAssertEqual(view.string, "fix [Image #1")
+    }
+
+    func testBackspaceWithInlinePastesOffDeletesOneCharacter() {
+        let view = makeView()
+        view.livePastes = [1: .image]
+        view.string = "fix [Image #1]"
+        view.setSelectedRange(NSRange(location: 14, length: 0))
+
+        view.deleteBackward(nil)
+
+        XCTAssertEqual(view.string, "fix [Image #1")
     }
 }

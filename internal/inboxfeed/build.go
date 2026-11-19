@@ -39,6 +39,10 @@ type Options struct {
 	Limit int
 	// Clip clips each body to ClipBytes on a rune boundary.
 	Clip bool
+	// OmitMacOnly leaves out the cards only the Mac has a pane for —
+	// Watchman's morning journal — before Limit counts the cards (the
+	// hub's phone feed, FeedRequest.OmitMacOnly).
+	OmitMacOnly bool
 	// Day is a Morning brief day the client has open (FeedRequest.Day):
 	// listed while it has a briefing or a day plan.
 	Day string
@@ -48,8 +52,9 @@ type Options struct {
 	// turns Waiting for me and its Messages stand-in off.
 	DisabledFeatures []string
 	// Now is the moment the feed is read at. Its location is the owner's
-	// zone for the one date-only value the read compares (an idea's
-	// "not now" day); every stamp the feed carries is UTC.
+	// zone for the date-only value the read compares (an idea's "not now"
+	// day) and for Watchman's nights (12:00 to 12:00 there) on the journal
+	// card; every stamp the feed carries is UTC.
 	Now time.Time
 }
 
@@ -73,6 +78,9 @@ func Build(ctx context.Context, d *db.DB, o Options) (api.Feed, error) {
 		return api.Feed{}, err
 	}
 	s.legacy.openDay = o.Day
+	if o.OmitMacOnly {
+		s.legacy.watchman = nil
+	}
 	feed := compose(s, o)
 	feed.BuiltAt = o.Now.UTC().Format(stampLayout)
 	return feed, nil
