@@ -891,7 +891,7 @@ func TestCoachProposals_FolderBranch(t *testing.T) {
 
 	gitIn("switch", "-q", "-c", "topic/x")
 	accepted := insertRepoProposal(t, d, wb, "repo4")
-	require.NoError(t, d.MarkCoachAccepted(accepted, "Run tests.\n", "main", nil, 0, time.Now()))
+	require.NoError(t, d.MarkCoachAccepted(accepted, "Run tests.\n", "main", "", nil, 0, time.Now()))
 	open1 := insertRepoProposal(t, d, wb, "repo1")
 	open2, err := d.InsertChatCoachProposal(db.CoachProposal{Fingerprint: "repo2", Kind: "add",
 		Destination: coach.DestRepoAgentsMD, WorkbenchID: wb, Title: "Lint", Why: "Asked.",

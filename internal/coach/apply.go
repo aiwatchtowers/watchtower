@@ -139,7 +139,7 @@ func (a *Applier) accept(p db.CoachProposal, edited string) (string, error) {
 		if cur.Text == p.AfterText {
 			// The branch now, which may not be the one of the earlier write.
 			branch := a.writtenBranch(p)
-			if err := a.DB.MarkCoachAccepted(id, cur.Text, branch, baseline, n, now); err != nil {
+			if err := a.DB.MarkCoachAccepted(id, cur.Text, branch, "", baseline, n, now); err != nil {
 				return "", fmt.Errorf("accepting coach proposal %d: %w", id, err)
 			}
 			return branch, nil
@@ -158,7 +158,7 @@ func (a *Applier) accept(p db.CoachProposal, edited string) (string, error) {
 		return "", fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
 	}
 	branch := a.writtenBranch(p)
-	if err := a.DB.MarkCoachAccepted(id, w.result, branch, baseline, n, now); err != nil {
+	if err := a.DB.MarkCoachAccepted(id, w.result, branch, "", baseline, n, now); err != nil {
 		err = fmt.Errorf("accepting coach proposal %d: %w", id, err)
 		if uerr := w.undo(); uerr != nil {
 			return "", errors.Join(err, fmt.Errorf("restoring %s of coach proposal %d: %w", p.Destination, id, uerr))
@@ -221,7 +221,7 @@ func (a *Applier) Rollback(id int64, force bool) (string, error) {
 	}
 	// The destination is back; only the status is left. An accepted proposal
 	// can only move to rolled_back, so a failed CAS means another rollback won.
-	if err := a.DB.DecideCoachProposal(id, "accepted", "rolled_back", now); err != nil {
+	if err := a.DB.MarkCoachRolledBack(id, "", now); err != nil {
 		return "", fmt.Errorf("rolling back coach proposal %d: %w", id, err)
 	}
 	return "", nil
