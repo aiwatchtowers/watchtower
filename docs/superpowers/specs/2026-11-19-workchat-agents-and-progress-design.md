@@ -17,7 +17,7 @@ Board: #2065. Decisions: see the Decisions section.
 | C1 | Steps list open by default, the owner's toggle remembered per pane | author's call (D4 "on the fly") |
 | C2 | Done opens by itself when nothing works (else collapsed per D2) | author's call; mockups 03/05 showed the extra click |
 | C3 | Phone Working rows: type, description, "Running" — no action/timer | author's call; live data on the phone would change FEED-05 (guarded) |
-| C4 | Codex Done = what the 256 KiB live window shows | author's call; Codex feeds draw no agent cards today |
+| C4 | Codex Done = what the 4 MiB live window shows | author's call; Codex feeds draw no agent cards today |
 | C5 | Speed: both a tail read and a kept-alive store | author's call; the signposts verify the targets |
 | C6 | §5/§6 are Workchat-only (config flag); the AI chat is unchanged | author's call |
 
@@ -141,7 +141,7 @@ work for both.
   works (D2) and opens by itself when Working is empty or unknown (C2); a
   toggle by the owner is remembered per pane while the app runs and wins
   over the default. At most 5 rows show, the rest scroll. Codex: the list
-  holds what the 256 KiB live window shows (C4; Codex feeds draw no agent
+  holds what the 4 MiB live window shows (C4; Codex feeds draw no agent
   cards today either, so nothing is lost).
 - An agent that finishes moves from Working to Done on the next poll (3 s).
 - Clicking a row closes the popover and opens the subagent in place.
