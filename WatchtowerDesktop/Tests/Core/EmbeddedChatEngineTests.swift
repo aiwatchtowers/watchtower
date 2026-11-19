@@ -1273,12 +1273,16 @@ extension EmbeddedChatEngineTests {
             await engine.finished()
             let failure = ChatSessionError(turnID: nil, code: .rateLimit, message: "Quota reached",
                                            retryable: false, reason: "quota_exhausted")
-            ai.emit(.text(text), .failure(failure))
-            // The run wrote the typed error (Go ends an embedded turn at its
-            // error event), while the scripted process deliberately keeps
-            // stdout/EOF open.
-            let consumed = await waitForCondition { (try? self.rows().last?.errorCode) == "quota_exhausted" }
-            XCTAssertTrue(consumed)
+            // The run writes the typed error (Go ends an embedded turn at its
+            // error event) BEFORE the event reaches the engine, and the
+            // scripted process deliberately keeps stdout/EOF open. The save
+            // error behind it is a marker: events are consumed in order, so
+            // its banner means the engine has seen the failure. Stopping on
+            // the row alone could win the race against the event (under load
+            // it did) and end the turn as a plain stop.
+            ai.emit(.text(text), .failure(failure), .saveError("marker"))
+            await untilObserved { engine.bannerError != nil }
+            XCTAssertEqual(try rows().last?.errorCode, "quota_exhausted")
             XCTAssertTrue(engine.isStreaming)
             let beforeStop = try XCTUnwrap(try rows().last)
             let convID = conversationID
