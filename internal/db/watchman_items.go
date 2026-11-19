@@ -556,14 +556,15 @@ func (db *DB) DropWatchmanItem(id int64, lease time.Time) (bool, error) {
 }
 
 // ReleaseWatchmanItem hands a deciding item back to the queue as if this
-// attempt never ran (attempts-1, not_before kept): the worker stopped
-// (shutdown) or the item changed under it. costUSD, what the released
-// attempt's calls cost, is added to the item's cost. False when the lease is
-// stale.
-func (db *DB) ReleaseWatchmanItem(id int64, lease time.Time, costUSD float64) (bool, error) {
+// attempt never ran (attempts-1), not before notBefore — a short backoff, so
+// a release that repeats (a kind changed, a read that failed) cannot spin
+// the twin's wake-on-finish: the worker stopped (shutdown) or the item
+// changed under it. costUSD, what the released attempt's calls cost, is
+// added to the item's cost. False when the lease is stale.
+func (db *DB) ReleaseWatchmanItem(id int64, lease time.Time, costUSD float64, notBefore time.Time) (bool, error) {
 	res, err := db.Exec(`UPDATE watchman_items SET state = 'queued', lease_until = NULL, attempts = MAX(attempts - 1, 0),
-			cost_usd = cost_usd + ?
-		WHERE id = ? AND state = 'deciding' AND lease_until = ?`, costUSD, id, wmTime(lease))
+			cost_usd = cost_usd + ?, not_before = ?
+		WHERE id = ? AND state = 'deciding' AND lease_until = ?`, costUSD, wmTime(notBefore), id, wmTime(lease))
 	if err != nil {
 		return false, fmt.Errorf("releasing watchman item %d: %w", id, err)
 	}

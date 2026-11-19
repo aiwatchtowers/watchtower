@@ -29,6 +29,9 @@ const (
 	LeaseFor      = 10 * time.Minute
 	MaxAttempts   = 3
 	ProviderRetry = 15 * time.Minute
+	// ReleaseBackoff is how long a released item waits before it is leased
+	// again: a release that repeats cannot spin the wake-on-finish.
+	ReleaseBackoff = 30 * time.Second
 )
 
 // labelTimeout bounds the light-tier park check; an answer later than that
@@ -379,13 +382,17 @@ func (j *job) fail(ctx context.Context, err error) {
 	}
 }
 
-// release gives the item back to the queue as if this attempt never ran.
+// release gives the item back to the queue as if this attempt never ran,
+// leasable again after ReleaseBackoff (a wake is scheduled for then).
 func (j *job) release() {
 	log.Printf("watchman twin: item %d: released", j.it.ID)
 	// The released attempt's calls stay on the item's cost.
-	if _, err := j.t.d.DB.ReleaseWatchmanItem(j.it.ID, j.lease, j.outcome("").CostUSD); err != nil {
+	notBefore := j.now().Add(ReleaseBackoff)
+	if _, err := j.t.d.DB.ReleaseWatchmanItem(j.it.ID, j.lease, j.outcome("").CostUSD, notBefore); err != nil {
 		log.Printf("watchman twin: %v", err)
+		return
 	}
+	j.t.wakeAt(notBefore)
 }
 
 // requeue hands the item back to the queue, not before notBefore.

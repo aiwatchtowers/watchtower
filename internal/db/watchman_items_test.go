@@ -620,9 +620,13 @@ func TestReleaseWatchmanItem_GivesTheAttemptBack(t *testing.T) {
 	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
 	it, err := d.leaseAnyWatchmanItem(now, 10*time.Minute, wmAll)
 	require.NoError(t, err)
-	ok, err := d.ReleaseWatchmanItem(id, *it.LeaseUntil, 0.25)
+	ok, err := d.ReleaseWatchmanItem(id, *it.LeaseUntil, 0.25, now.Add(30*time.Second))
 	require.NoError(t, err)
 	require.True(t, ok)
+	again, err := d.leaseAnyWatchmanItem(now, 10*time.Minute, wmAll)
+	require.NoError(t, err)
+	require.Nil(t, again, "not leased again before the backoff")
+	now = now.Add(30 * time.Second)
 	var state string
 	var attempts int
 	var cost float64

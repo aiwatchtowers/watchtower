@@ -905,6 +905,12 @@ func TestTwin_HandoverMarkedWhileDecidingIsDecidedAsHandover(t *testing.T) {
 	if status, _ := e.askAnswer(askID); status != "open" {
 		t.Fatalf("ask = %s: answered as a question", status)
 	}
+	// Fix wave 2: a released item waits ReleaseBackoff, so a release that
+	// repeats cannot spin the wake-on-finish.
+	if n := e.run(); n != 0 {
+		t.Fatalf("RunOnce = %d right after the release, want the backoff kept", n)
+	}
+	e.pastBackoff()
 	e.run()
 	wantOutcome(t, e.item(itemID), OutcomeAnswered)
 	if got := e.decided[1]; got.Category != watchman.CategoryFinish {
@@ -1436,8 +1442,14 @@ func TestTwin_LostRaceReadErrorReleases(t *testing.T) {
 	if got.State != "queued" || got.Outcome != "" || got.Attempts != 0 {
 		t.Fatalf("item = %s/%q attempts %d, want released", got.State, got.Outcome, got.Attempts)
 	}
+	e.pastBackoff()
 	e.run()
 	wantOutcome(t, e.item(itemID), OutcomeAnswered)
+}
+
+// pastBackoff moves the twin's clock past a release's backoff.
+func (e *twinEnv) pastBackoff() {
+	e.twin.d.Clock = func() time.Time { return time.Now().Add(ReleaseBackoff + time.Second) }
 }
 
 // queueItem inserts a queued item as a wait point's writer would (the
