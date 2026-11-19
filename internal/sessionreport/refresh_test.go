@@ -448,7 +448,6 @@ func TestRefresh_OfflineKeepsGHBranchState(t *testing.T) {
 func TestRefresh_TheWallClockBoundsEachCall(t *testing.T) {
 	dir := newRepo(t)
 	d, id := newWorkbench(t, dir)
-	t.Setenv("PATH", t.TempDir()) // no gh: git alone answers (it is located by gitbin)
 	var mu sync.Mutex
 	var deadlines []bool
 	prev := run
