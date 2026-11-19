@@ -149,6 +149,23 @@ final class CompanySetupWizardEntryTests: XCTestCase {
         await model.next()
         XCTAssertEqual(model.publishRefusal, Model.publishWrongWorkspace)
         XCTAssertTrue(model.publishNeedsToken, "the rejected token is not sent again")
+        XCTAssertTrue(model.publishShowsToken)
+        model.slackToken = "x"
+        XCTAssertFalse(model.publishNeedsToken)
+        XCTAssertTrue(model.publishShowsToken, "the field stays while the new token is typed")
+    }
+
+    /// A resumed draft at Publish without the token: the field shows and stays while typed.
+    func testResumedPublishAsksForTheToken() async {
+        let cli = CompanyScriptedCLI()
+        cli.setups = acmeSetup
+        cli.on(["company", "draft", "show"], [#"{"state":"ok","draft":{"company":"Acme","services":["slack"],"#
+            + #""step":"publish","slack":{"app_id":"A0ACME"}},"bad_file":"","checked_vendors":["slack"]}"#])
+        let model = make(cli)
+        await model.open()
+        XCTAssertTrue(model.publishShowsToken)
+        model.slackToken = "x"
+        XCTAssertTrue(model.publishShowsToken)
     }
 
     /// An entry asked while the wizard's Slack run goes on waits for it, then

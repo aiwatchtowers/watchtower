@@ -11,13 +11,19 @@ private typealias Model = CompanySetupWizardModel
 struct CompanySetupServicesStep: View {
     let model: CompanySetupWizardModel
     let actions: CompanySetupActions
+    /// Opens the page's Discard confirmation.
+    let askDiscard: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
             if let unreadable = model.draftUnreadable {
                 WizardNotice(icon: "exclamationmark.triangle.fill", tone: Tone.warning, title: unreadable.title,
                              text: unreadable.body)
-                Button(Model.showInFinder) { actions.showFile(unreadable.file) }.buttonStyle(.kitQuiet)
+                HStack(spacing: Spacing.regular) {
+                    Button(Model.showInFinder) { actions.showFile(unreadable.file) }.buttonStyle(.kitQuiet)
+                    // Discard deletes the set-aside file and the secrets in it (§2.2).
+                    Button(Model.discardSetup) { askDiscard() }.buttonStyle(.kitQuiet)
+                }
             }
             WizardCaption(CompanyVendorGuide.servicesBody)
             VStack(alignment: .leading, spacing: Spacing.compact) {

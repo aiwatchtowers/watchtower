@@ -109,13 +109,21 @@ struct CompanySetupPage: View {
                 }
             }
             HStack(alignment: .top, spacing: Spacing.large) {
-                if !isNarrow { CompanySetupRail(model: model).frame(width: PaneWidth.sideListIdeal) }
+                if !isNarrow {
+                    CompanySetupRail(model: model)
+                        .frame(width: PaneWidth.sideListIdeal)
+                        .disabled(model.load != .ready)
+                }
                 VStack(alignment: .leading, spacing: Spacing.medium) {
                     // Narrow, the folded rail's line already names a vendor step.
                     if !isNarrow || model.current == .services { Text(stepTitle).font(.headline) }
-                    content
-                    // The drop warning carries its own Keep / Drop on Services.
-                    if model.dropWarning == nil || model.current != .services { footer }
+                    // Nothing acts before the draft and discovery are read (writeDraft refuses until then).
+                    Group {
+                        content
+                        // The drop warning carries its own Keep / Drop on Services.
+                        if model.dropWarning == nil || model.current != .services { footer }
+                    }
+                    .disabled(model.load != .ready)
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
@@ -130,7 +138,7 @@ struct CompanySetupPage: View {
     private var content: some View {
         switch model.current {
         case .services:
-            CompanySetupServicesStep(model: model, actions: actions)
+            CompanySetupServicesStep(model: model, actions: actions) { confirmDiscard = true }
         case let .vendor(vendor):
             CompanySetupVendorStep(model: model, vendor: vendor, selection: Binding(
                 get: { selection[vendor] ?? 0 },

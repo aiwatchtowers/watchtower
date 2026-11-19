@@ -58,6 +58,21 @@ final class CompanySetupPageTests: XCTestCase {
         XCTAssertEqual(quick, 1)
     }
 
+    /// An unreadable draft offers Discard setup next to Show file in Finder (it deletes the set-aside file).
+    func testUnreadableDraftOffersDiscard() async throws {
+        let cli = CompanyScriptedCLI()
+        cli.on(["company", "draft", "show"], [#"{"state":"unreadable","draft":null,"#
+            + #""bad_file":"draft.json.bad-20261118-0412","checked_vendors":[]}"#])
+        let model = Model(streamer: cli, slack: SlackAppSetupModel(streamer: cli, mode: .wizard))
+        await model.open()
+        var shown: [String] = []
+        let actions = CompanySetupActions(showFile: { shown.append($0) }, connectThisMac: nil)
+        let page = CompanySetupPage(model: model, actions: actions, layout: .wide)
+        try page.inspect().find(button: Model.showInFinder).tap()
+        XCTAssertEqual(shown, ["draft.json.bad-20261118-0412"])
+        XCTAssertNoThrow(try page.inspect().find(button: Model.discardSetup))
+    }
+
     /// A draft that cannot be read: the problem and Try again, never the steps.
     func testReadFailureOffersTryAgain() async throws {
         let cli = CompanyScriptedCLI()

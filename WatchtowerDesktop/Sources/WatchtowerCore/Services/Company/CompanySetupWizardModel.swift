@@ -166,6 +166,9 @@ package final class CompanySetupWizardModel {
     // Slack step
     /// The configuration token field. Memory only: never in the draft, never in argv.
     package var slackToken = ""
+    /// Publish asked for the token (none held, or the last one was refused):
+    /// its field stays while it is typed, though `publishNeedsToken` turns false.
+    package private(set) var publishTokenAsked = false
     /// The app chosen for reuse (Found, or a pasted settings link).
     package private(set) var slackReuse: (appID: String, clientID: String)?
     /// The pasted settings link (**We already have one**).
@@ -488,6 +491,7 @@ package final class CompanySetupWizardModel {
         publishSteps = []
         publishName = ""
         publishRefusal = nil
+        publishTokenAsked = false
         storageProblem = nil
         slackToken = ""
         slackReuse = nil
@@ -1330,6 +1334,7 @@ package final class CompanySetupWizardModel {
             draftUnreadableFile = nil
         case "token_expired":
             slackToken = ""
+            publishTokenAsked = true
             publishState = .tokenExpired
         case "network":
             publishState = .failed(result.message.isEmpty ? Self.publishNetworkFallback : result.message)
@@ -1349,10 +1354,12 @@ package final class CompanySetupWizardModel {
             return Self.companyRenamed(stored: draft.company, typed: publishName)
         case "token_missing":
             slackToken = ""
+            publishTokenAsked = true
             return Self.publishNeedsTokenLine
         case "wrong_workspace":
             // That token cannot write this app's page: the field asks for another.
             slackToken = ""
+            publishTokenAsked = true
             return Self.publishWrongWorkspace
         default:
             return Self.publishRefused(result.message.isEmpty ? result.reason : result.message)
@@ -1397,6 +1404,12 @@ package final class CompanySetupWizardModel {
     /// The name field's prefill on entering Publish.
     package func preparePublish() {
         if publishName.isEmpty { publishName = draft.company.isEmpty ? derivedName().name : draft.company }
+        if publishNeedsToken { publishTokenAsked = true }
+    }
+
+    /// Publish shows the token field: Slack is part of it and the token was asked for.
+    package var publishShowsToken: Bool {
+        isActive(.slack) && (publishTokenAsked || publishNeedsToken)
     }
 
     // MARK: The CLI

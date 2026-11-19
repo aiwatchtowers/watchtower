@@ -25,7 +25,7 @@ struct CompanySetupPublishStep: View {
             case let .failed(line):
                 summary
                 WizardProblem(text: line)
-                if model.publishNeedsToken { tokenField }
+                if model.publishShowsToken { tokenField }
             case .ready:
                 ready
             }
@@ -43,7 +43,7 @@ struct CompanySetupPublishStep: View {
             WizardCaption(model.isActive(.slack) ? Model.publishCaption : Model.publishCaptionNoSlack)
         }
         if let refusal = model.publishRefusal { WizardProblem(text: refusal) }
-        if model.publishNeedsToken {
+        if model.publishShowsToken {
             WizardCaption(Model.publishNeedsTokenLine)
             tokenField
         }
