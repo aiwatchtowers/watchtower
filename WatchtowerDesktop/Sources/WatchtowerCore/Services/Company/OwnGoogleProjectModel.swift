@@ -264,11 +264,12 @@ extension OwnGoogleProjectModel {
         "Connected \(email.isEmpty ? "your Google account" : email) through your own project"
     }
 
-    /// "Gmail was not approved on Google's consent screen, so it does not sync. Re-login the account to approve it."
+    /// "Gmail was not approved on Google's consent screen, so it does not sync. Connect again and approve every permission Google asks for."
     package static func notGrantedLine(_ services: [String]) -> String {
         let names = services.map { $0 == "gmail" ? "Gmail" : "Google Calendar" }.joined(separator: " and ")
         let (verb, rest) = services.count > 1 ? ("were", "they do not sync") : ("was", "it does not sync")
-        return "\(names) \(verb) not approved on Google's consent screen, so \(rest). Re-login the account to approve it."
+        return "\(names) \(verb) not approved on Google's consent screen, so \(rest). "
+            + "Connect again and approve every permission Google asks for."
     }
     package static let connectedBody = "The first sync starts now."
     package static let weeklyLine = "Google asks a project like this to sign in again every 7 days. "

@@ -546,8 +546,8 @@ func TestGoogleAccountsJSON_OwnProject(t *testing.T) {
 
 	// An unreadable company directory is an error, never "not own".
 	dir := filepath.Join(f.cfg.WorkspaceDir(), "company")
-	require.NoError(t, os.Chmod(dir, 0))
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	require.NoError(t, os.Rename(dir, dir+".moved"))
+	require.NoError(t, os.WriteFile(dir, []byte("not a directory"), 0o600))
 	buf.Reset()
 	require.Error(t, writeGoogleAccountsJSON(&buf, f.cfg.WorkspaceDir(), all))
 	assert.Empty(t, buf.String(), "no rows printed")

@@ -85,9 +85,9 @@ final class OwnGoogleProjectModelTests: XCTestCase {
         await m.connect()
         XCTAssertEqual(m.doneLines?.title, "Connected your Google account through your own project")
         XCTAssertEqual(m.notGrantedNote, "Gmail was not approved on Google's consent screen, so it does not sync. "
-            + "Re-login the account to approve it.")
+            + "Connect again and approve every permission Google asks for.")
         XCTAssertEqual(Model.notGrantedLine(["calendar", "gmail"]), "Google Calendar and Gmail were not approved on "
-            + "Google's consent screen, so they do not sync. Re-login the account to approve it.")
+            + "Google's consent screen, so they do not sync. Connect again and approve every permission Google asks for.")
         m.finish()
         XCTAssertNil(m.notGrantedNote)
     }
