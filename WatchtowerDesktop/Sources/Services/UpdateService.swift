@@ -204,12 +204,14 @@ final class UpdateService {
     /// Fold a check result into the state. An update already on offer is only
     /// replaced by a strictly newer one, and never by an error or an
     /// "up to date" — a transient failure must not hide a found update.
-    /// The requirement follows the offer: every found result re-reads it
-    /// (the channel may add or drop `min_version` on the same release), a
-    /// failure keeps it, and it goes when the offer goes.
+    /// The requirement is re-read from every successful check (the channel
+    /// may add or drop `min_version` on the same release) and judged against
+    /// the release that published it; "up to date" lifts it, a failure
+    /// keeps it (and retries a window a busy recorder held back).
     func applyCheckResult(_ result: CheckResult, previous: UpdateState, background: Bool) async {
         switch result {
         case .upToDate:
+            requiredMinVersion = nil
             if case .available = previous {
                 state = previous
                 return
@@ -217,11 +219,10 @@ final class UpdateService {
             state = .idle
             availableVersion = nil
             availableNotes = ""
-            requiredMinVersion = nil
         case .found(let offer):
             if case .available(let known, _, _) = previous, !Self.isNewer(offer.version, than: known) {
                 state = previous
-                updateRequirement(offer.minVersion, offered: known)
+                updateRequirement(offer.minVersion, offered: offer.version)
                 if background, isUpdateRequired { presentRequired() }
                 return
             }
@@ -231,6 +232,7 @@ final class UpdateService {
             await noteAvailable(version: offer.version, notes: offer.notes, background: background)
         case .failed(let message):
             NSLog("UpdateService: %@ update check failed: %@", background ? "background" : "manual", message)
+            if background, isUpdateRequired { presentRequired() }
             if case .available = previous {
                 state = previous
                 return
@@ -285,15 +287,13 @@ final class UpdateService {
             let context = GatedDownloadContext(
                 sha256: manifest.sha256, clientID: clientID, clientSecret: clientSecret
             )
-            // The corp manifest's notes are the GitHub release body, marker
-            // included: the manifest key wins, the marker is the fallback.
-            let notes = Self.splitMinVersionMarker(manifest.notes ?? "")
+            let notes = Self.gatedNotesAndMinVersion(manifest)
             return .found(Offer(
                 version: manifest.version,
                 notes: notes.notes,
                 downloadURL: feedURL.appendingPathComponent("dl/\(manifest.zipKey)"),
                 gated: context,
-                minVersion: manifest.minVersion ?? notes.minVersion
+                minVersion: notes.minVersion
             ))
         } catch {
             return .failed(error.localizedDescription)
@@ -379,20 +379,34 @@ final class UpdateService {
         guard Self.shouldAutoCheck(state: state) else {
             // A downloaded update waits for the user; a minimum published
             // meanwhile must still reach them, without touching the download.
-            if case .readyToInstall = state { await refreshRequirementOnly() }
-            if isUpdateRequired { presentRequired() }
+            if case .readyToInstall = state {
+                await refreshRequirementOnly()
+            } else if isUpdateRequired {
+                presentRequired()
+            }
             return
         }
         await checkForUpdates(background: true)
     }
 
-    /// Re-reads the channel's minimum for the downloaded offer and leaves
-    /// the state alone; only a found result changes the requirement.
+    /// Re-reads the channel's minimum for the downloaded offer. The download
+    /// stays unless a newer release is required that it cannot meet: then
+    /// that release replaces it on offer, as a fresh check would. A
+    /// requirement still standing re-opens the window.
     private func refreshRequirementOnly() async {
         let inFlight = state
         let result: CheckResult = if let fetchCheck { await fetchCheck() } else { await fetchFromChannel() }
-        guard state == inFlight, case .found(let offer) = result else { return }
-        updateRequirement(offer.minVersion, offered: availableVersion ?? offer.version)
+        if state == inFlight, case .found(let offer) = result {
+            let downloaded = availableVersion ?? offer.version
+            if case .required(let min) = Self.minVersionVerdict(
+                Self.parseMinVersion(offer.minVersion), offered: offer.version, running: runningVersion
+            ), Self.isNewer(min, than: downloaded) {
+                await applyCheckResult(result, previous: .idle, background: true)
+                return
+            }
+            updateRequirement(offer.minVersion, offered: offer.version)
+        }
+        if isUpdateRequired { presentRequired() }
     }
 
     /// Whether a background check may run now. Never while a check, download
@@ -466,7 +480,7 @@ final class UpdateService {
         let version = Constants.stripLeadingV(raw.trimmingCharacters(in: .whitespaces))
         let parts = version.split(separator: ".", omittingEmptySubsequences: false)
         let wellFormed = (1...3).contains(parts.count)
-            && parts.allSatisfy { !$0.isEmpty && $0.allSatisfy { ("0"..."9").contains($0) } }
+            && parts.allSatisfy { $0.allSatisfy { ("0"..."9").contains($0) } && Int($0) != nil }
         return wellFormed ? .valid(version) : .malformed(raw)
     }
 
@@ -481,6 +495,14 @@ final class UpdateService {
             .replacingOccurrences(of: #"^<!--\s*min_version:|-->\n?$"#, with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespaces)
         return (notes.replacingOccurrences(of: marker, with: "", options: .regularExpression), value)
+    }
+
+    /// The gated manifest's notes without the marker, and its minimum. The
+    /// corp manifest's notes are the GitHub release body, marker included:
+    /// the manifest key wins, the marker is the fallback.
+    nonisolated static func gatedNotesAndMinVersion(_ manifest: GatedManifest) -> (notes: String, minVersion: String?) {
+        let split = splitMinVersionMarker(manifest.notes ?? "")
+        return (split.notes, manifest.minVersion ?? split.minVersion)
     }
 
     enum MinVersionVerdict: Equatable {

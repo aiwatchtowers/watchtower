@@ -150,8 +150,12 @@ never by default. Builds before the one that shipped this feature ignore it.
   key wins over the marker).
 - Format: `X`, `X.Y` or `X.Y.Z`, digits only, optional leading `v`; it must
   not be newer than the release being published. Anything else is ignored
-  (the app logs it and requires nothing). To lift a requirement, remove the
-  marker (or the key) — the next successful check drops it.
+  (the app logs it and requires nothing).
+- The app reads the minimum from the **latest** release only. Every later
+  release must carry the same marker (or key) for as long as the minimum
+  should hold — a release published without it lifts the requirement for
+  every old build at its next check. To lift it on purpose, remove the marker
+  (or the key) from the latest release.
 
 ## Step 9: Publish the iPhone app to TestFlight
 

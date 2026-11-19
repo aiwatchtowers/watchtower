@@ -1312,6 +1312,8 @@ final class UpdateServiceRequiredVersionTests {
         #expect(UpdateService.parseMinVersion("soon") == .malformed("soon"))
         #expect(UpdateService.parseMinVersion("0.30.0-beta") == .malformed("0.30.0-beta"))
         #expect(UpdateService.parseMinVersion("1.2.3.4") == .malformed("1.2.3.4"))
+        // A component past Int would compare as nothing; it is malformed instead.
+        #expect(UpdateService.parseMinVersion("99999999999999999999") == .malformed("99999999999999999999"))
     }
 
     @Test("the release-notes marker is read and stripped from the notes shown")
@@ -1340,6 +1342,22 @@ final class UpdateServiceRequiredVersionTests {
         let number = try JSONDecoder().decode(GatedManifest.self, from: Data("{\(base),\"min_version\":30}".utf8))
         #expect(number.version == "0.31.0")
         #expect(UpdateService.parseMinVersion(number.minVersion) == .malformed("<not a string>"))
+    }
+
+    @Test("the gated manifest key wins over the marker its notes carry; the marker is the fallback")
+    func gatedPrecedence() throws {
+        func manifest(_ extra: String) throws -> GatedManifest {
+            let json = #"{"version":"0.31.0","zip_key":"Watchtower-0.31.0-corp-arm64.zip","sha256":"ab""# + extra + "}"
+            return try JSONDecoder().decode(GatedManifest.self, from: Data(json.utf8))
+        }
+        let notes = #","notes":"<!-- min_version: 0.29.5 -->\n- fix""#
+        let both = UpdateService.gatedNotesAndMinVersion(try manifest(notes + #","min_version":"0.30.0""#))
+        #expect(both.minVersion == "0.30.0")
+        #expect(both.notes == "- fix")
+        let markerOnly = UpdateService.gatedNotesAndMinVersion(try manifest(notes))
+        #expect(markerOnly.minVersion == "0.29.5")
+        #expect(markerOnly.notes == "- fix")
+        #expect(UpdateService.gatedNotesAndMinVersion(try manifest("")).minVersion == nil)
     }
 
     @Test("required only while the running build is older than the minimum and the offer meets it")
@@ -1474,6 +1492,56 @@ final class UpdateServiceRequiredVersionTests {
         #expect(svc.state == .downloading(progress: 0.4))
         #expect(svc.requiredMinVersion == "0.30.0")
         #expect(presented == 2)
+    }
+
+    @Test("ready to install: a required release the download cannot meet replaces it on offer")
+    func requirementMetOnlyByNewerRelease() async {
+        var presented = 0
+        let svc = service { presented += 1 }
+        await svc.applyCheckResult(found("v0.31.0", min: nil), previous: .idle, background: true)
+        svc.state = .readyToInstall(appPath: URL(fileURLWithPath: "/tmp/W.app"))
+        svc.fetchCheck = { self.found("v0.33.0", min: "0.32.0") }
+        svc.startPeriodicChecks { _ in throw CancellationError() }
+        await svc.periodicTask?.value
+        #expect(svc.requiredMinVersion == "0.32.0")
+        #expect(svc.state == .available(version: "v0.33.0", notes: "n", downloadURL: url))
+        #expect(presented == 2)
+    }
+
+    @Test("a kept newer offer does not make a minimum the publishing release misses required")
+    func minimumJudgedAgainstPublishingRelease() async {
+        var logs: [String] = []
+        let svc = service()
+        svc.log = { logs.append($0) }
+        await svc.applyCheckResult(found("v0.32.0", min: nil), previous: .idle, background: true)
+        await svc.applyCheckResult(found("v0.31.0", min: "0.32.0"), previous: svc.state, background: true)
+        #expect(svc.availableVersion == "v0.32.0")
+        #expect(!svc.isUpdateRequired)
+        #expect(logs == ["UpdateService: ignoring min_version 0.32.0 is newer than the offered v0.31.0"])
+    }
+
+    @Test("up to date lifts the requirement even while an offer is kept")
+    func upToDateLiftsRequirementOnKeptOffer() async {
+        let svc = service()
+        await svc.applyCheckResult(found("v0.31.0", min: "0.30.0"), previous: .idle, background: true)
+        let offered = svc.state
+        await svc.applyCheckResult(.upToDate, previous: offered, background: true)
+        #expect(svc.state == offered)
+        #expect(!svc.isUpdateRequired)
+    }
+
+    @Test("a window a busy recorder held back is shown by the next check even when it fails")
+    func requiredWindowRetriedOnFailedCheck() async {
+        var presented = 0
+        var busy = true
+        let svc = service { presented += 1 }
+        svc.isBusy = { busy }
+        await svc.applyCheckResult(found("v0.31.0", min: "0.30.0"), previous: .idle, background: true)
+        #expect(presented == 0)
+        busy = false
+        await svc.applyCheckResult(.failed("offline"), previous: svc.state, background: true)
+        #expect(presented == 1)
+        #expect(svc.isUpdateRequired)
     }
 
     @Test("ready to install: a pass learns a newly published minimum without touching the download")
