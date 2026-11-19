@@ -380,8 +380,53 @@ final class WorkchatModelTests: XCTestCase {
     }
 
     func testQueuedCaptionFollowsTheAgentKind() {
-        XCTAssertEqual(WorkchatOutgoingBubble.queuedCaption(holdsUntilIdle: true), "Queued · sends when the agent stops ·")
-        XCTAssertEqual(WorkchatOutgoingBubble.queuedCaption(holdsUntilIdle: false), "Queued · sends in a moment ·")
+        XCTAssertEqual(WorkchatOutgoing.caption(state: .queued, working: true, holdsUntilIdle: true),
+                       "Queued · sends when the agent stops ·")
+        XCTAssertEqual(WorkchatOutgoing.caption(state: .queued, working: true, holdsUntilIdle: false),
+                       "Queued · sends in a moment ·")
+    }
+
+    /// #2065 §5: a working Codex session keeps its hold — the line waits with
+    /// "sends when the agent stops" and Cancel drops it.
+    func testCodexHoldShowsQueuedCaptionWithCancel() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let clock = try XCTUnwrap(clock)
+        let model = WorkchatModel(
+            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { .codex }, now: { clock.now }
+        )
+        model.draft = "Also add the fixture"
+
+        await model.send()
+
+        let line = try XCTUnwrap(model.outgoing.last)
+        XCTAssertEqual(line.state, .queued)
+        XCTAssertTrue(model.holdsUntilIdle)
+        XCTAssertEqual(WorkchatOutgoing.caption(state: line.state, working: true, holdsUntilIdle: model.holdsUntilIdle),
+                       "Queued · sends when the agent stops ·")
+        model.cancel(line.id)
+        XCTAssertTrue(model.outgoing.isEmpty)
+    }
+
+    /// #2065 §5: background agents run, the main turn is over — the line is
+    /// submitted at once and reads as queued for the agent's next step.
+    func testBackgroundSendSubmitsAtOnce() async throws {
+        let session = try await liveSession()
+        setState(session, .background)
+        let model = try makeModel(session)
+        model.draft = "Also check the docs"
+
+        await model.send()
+
+        let line = try XCTUnwrap(model.outgoing.first)
+        XCTAssertEqual(line.state, .sent)
+        XCTAssertTrue(line.sentWhileBusy)
+        XCTAssertTrue(typedText.contains("Also check the docs"))
+        XCTAssertEqual(
+            WorkchatOutgoing.caption(state: line.state, working: true, holdsUntilIdle: model.holdsUntilIdle,
+                                     sentWhileBusy: line.sentWhileBusy),
+            "Queued · the agent reads it at its next step"
+        )
     }
 
     func testUnknownKindKeepsTheBusyHold() async throws {

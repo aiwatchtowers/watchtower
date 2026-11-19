@@ -56,6 +56,24 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
         self.sentWhileBusy = sentWhileBusy
     }
 
+    /// The caption under a line (spec §4's table, #2065 §5); nil where the
+    /// bubble shows the send time. `working`: the session's agent works now;
+    /// `holdsUntilIdle`: a queued line waits for the agent to stop
+    /// (`WorkchatModel.holdsUntilIdle`), otherwise only for a prompt, the
+    /// owner's typing or the settle after the previous line.
+    package static func caption(
+        state: State, working: Bool, holdsUntilIdle: Bool, sentWhileBusy: Bool = false
+    ) -> String? {
+        switch state {
+        case .sending: "Sending…"
+        case .queued: holdsUntilIdle ? "Queued · sends when the agent stops ·" : "Queued · sends in a moment ·"
+        case .typed: "Typed into the terminal, not sent: press Return there ·"
+        case .copied: "Copied to the clipboard: the terminal does not accept pasted text ·"
+        case .notSent: "Not sent: the session ended"
+        case .sent: sentWhileBusy && working ? "Queued · the agent reads it at its next step" : nil
+        }
+    }
+
     /// A submitted line with no echo this long stays a plain local bubble
     /// (a `/clear` writes no owner entry): the phone's rule.
     package static let echoWindow: TimeInterval = 90

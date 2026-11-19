@@ -23,6 +23,9 @@ public struct ChatComposerFieldConfig {
     public var focusRequest: UUID?
     /// Send is off whatever the field holds (the chat cannot be reached, or it is gone); the text stays.
     public var sendBlocked = false
+    /// The round button is Send whenever there is something to send, even while the agent works (Stop only with
+    /// nothing to send): the Workchat, whose agent takes a line mid-turn. false: Stop while streaming (the AI chat).
+    public var sendWhileStreaming = false
 
     public init(
         placeholder: String,
@@ -33,7 +36,8 @@ public struct ChatComposerFieldConfig {
         hasPendingContent: Bool = false,
         autoFocus: Bool = false,
         focusRequest: UUID? = nil,
-        sendBlocked: Bool = false
+        sendBlocked: Bool = false,
+        sendWhileStreaming: Bool = false
     ) {
         self.placeholder = placeholder
         self.maxHeight = maxHeight
@@ -44,6 +48,7 @@ public struct ChatComposerFieldConfig {
         self.autoFocus = autoFocus
         self.focusRequest = focusRequest
         self.sendBlocked = sendBlocked
+        self.sendWhileStreaming = sendWhileStreaming
     }
 }
 
@@ -170,12 +175,11 @@ public struct ChatComposerField: View {
                 ComposerAttachButton(help: attachHelp, action: onAttachMenu)
             }
             dictated(style.composerFieldBackground(AnyView(input)))
-            style.sendStopButton(isStreaming: isStreaming, active: buttonActive) {
-                if isStreaming {
-                    onStop?()
-                } else {
-                    onSend()
-                }
+            switch buttonMode {
+            case .send(let active):
+                style.sendStopButton(isStreaming: false, active: active, action: onSend)
+            case .stop(let active):
+                style.sendStopButton(isStreaming: true, active: active) { onStop?() }
             }
         }
         .padding(.horizontal, ComposerMetrics.rowInset)
@@ -275,7 +279,8 @@ public struct ChatComposerField: View {
             || config.hasPendingContent
     }
 
-    private var buttonActive: Bool {
-        isStreaming ? onStop != nil : canSend
+    private var buttonMode: ComposerButtonMode {
+        ComposerButtonMode.resolve(isStreaming: isStreaming, sendWhileStreaming: config.sendWhileStreaming,
+                                   canSend: canSend, canStop: onStop != nil)
     }
 }
