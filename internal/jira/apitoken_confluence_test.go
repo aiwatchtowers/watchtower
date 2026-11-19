@@ -26,6 +26,7 @@ func TestProbeConfluence(t *testing.T) {
 		{"scoped reads", true, http.StatusOK, true},
 		{"scoped without Confluence scopes", true, http.StatusUnauthorized, false},
 		{"forbidden", false, http.StatusForbidden, false},
+		{"no Confluence on the site", false, http.StatusNotFound, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var paths []string
@@ -50,6 +51,18 @@ func TestProbeConfluence(t *testing.T) {
 			assert.Equal(t, []string{want}, paths)
 		})
 	}
+
+	t.Run("no verdict", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		t.Cleanup(srv.Close)
+		prev, prevCheck := apiGatewayRoot, probeSiteCheck
+		apiGatewayRoot, probeSiteCheck = srv.URL, func(string) error { return nil }
+		t.Cleanup(func() { apiGatewayRoot, probeSiteCheck = prev, prevCheck })
+		_, err := ProbeConfluence(context.Background(), nil, "cloud-x", srv.URL, testCreds(false))
+		require.Error(t, err, "a 503 is no verdict")
+	})
 
 	t.Run("not reached", func(t *testing.T) {
 		prevCheck := probeSiteCheck

@@ -205,3 +205,17 @@ func TestJiraAPIToken_ConfluenceProbed(t *testing.T) {
 	assert.Zero(t, h.confluenceProbes)
 	assert.NotContains(t, out.String(), "confluence")
 }
+
+// A Confluence check with no verdict (unreachable, 429, 5xx) is never read
+// as "no Confluence": the command fails before anything is stored.
+func TestJiraAPIToken_ConfluenceUnknownStoresNothing(t *testing.T) {
+	h := newAPITokenHarness(t)
+	h.confluenceErr = &url.Error{Op: "Get", URL: "https://acme.atlassian.net/wiki/api/v2/spaces", Err: context.DeadlineExceeded}
+	flags := addTokenFlags()
+	flags["json"] = "true"
+	flags["with-confluence"] = "true"
+	cmd, out := newTokenCmd(t, jiraAddCmd, flags, cmdTestAPIToken)
+	require.NoError(t, runJiraAdd(cmd, nil))
+	assert.JSONEq(t, `{"result":"network","detail":"the request timed out"}`, out.String())
+	assert.Empty(t, h.accounts(t))
+}

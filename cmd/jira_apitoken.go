@@ -293,21 +293,22 @@ func checkAPIToken(cmd *cobra.Command, site, wantCloudID string, creds jira.APIT
 // confirmConfluence probes Confluence with a checked token when Confluence was
 // asked for (wanted): the Confluence scopes stay in creds.Scope only when the
 // token reads Confluence, so a Jira-only scoped token never claims a grant it
-// lacks. A probe that could not run counts as no access (warned on stderr):
-// the site connects with Jira, and a new token with Confluence asks again.
-// The second value is nil when Confluence was not asked for.
-func confirmConfluence(cmd *cobra.Command, cloudID, site string, creds jira.APITokenCreds, wanted bool) (jira.APITokenCreds, *bool) {
+// lacks. A probe with no verdict (unreachable, 429, 5xx) fails the whole
+// command before anything is stored, so a transient failure never drops
+// working Confluence access: the person tries again. The second value is nil
+// when Confluence was not asked for.
+func confirmConfluence(cmd *cobra.Command, cloudID, site string, creds jira.APITokenCreds, wanted bool) (jira.APITokenCreds, *bool, error) {
 	if !wanted {
-		return creds, nil
+		return creds, nil, nil
 	}
 	ok, err := jiraProbeConfluence(cmd.Context(), nil, cloudID, site, creds)
 	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v — connecting Jira only\n", err)
+		return jira.APITokenCreds{}, nil, err
 	}
 	if !ok {
 		creds.Scope = jira.JiraScopes
 	}
-	return creds, &ok
+	return creds, &ok, nil
 }
 
 // addJiraAPITokenAccount is `jira add --api-token-stdin`: everything is
@@ -350,7 +351,10 @@ func connectJiraAPITokenAccount(cmd *cobra.Command, cfg *config.Config, database
 	if err != nil {
 		return none, err
 	}
-	creds, confluence := confirmConfluence(cmd, cloudID, site, creds, opts.WithConfluence)
+	creds, confluence, err := confirmConfluence(cmd, cloudID, site, creds, opts.WithConfluence)
+	if err != nil {
+		return none, err
+	}
 
 	if _, err := ensureLegacyJiraAccount(cfg, database, jiraCmdLogger(cmd)); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy account seed failed: %v\n", err)
@@ -425,7 +429,10 @@ func replaceJiraAPIToken(cmd *cobra.Command, cfg *config.Config, database *db.DB
 	if err != nil {
 		return none, err
 	}
-	creds, confluence := confirmConfluence(cmd, cloudID, account.SiteURL, creds, opts.WithConfluence)
+	creds, confluence, err := confirmConfluence(cmd, cloudID, account.SiteURL, creds, opts.WithConfluence)
+	if err != nil {
+		return none, err
+	}
 	unlock, err := store.Lock(cmd.Context())
 	if err != nil {
 		return none, err

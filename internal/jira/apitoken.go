@@ -280,9 +280,10 @@ func ProbeAPIToken(ctx context.Context, hc *http.Client, cloudID, site string, c
 // ProbeConfluence reports whether creds (as ProbeAPIToken returned them,
 // Scoped set) read Confluence on site: one GET of /wiki/api/v2/spaces?limit=1
 // at the base the token's kind calls — the same rule as Jira
-// (APITokenBaseURL). Only a 200 is access; any other answer (a Jira-only
-// scoped token gets 401/403) is none. A request that could not run is an
-// error. hc nil uses a 15 s client.
+// (APITokenBaseURL). A 200 is access; 401, 403 and 404 (a Jira-only scoped
+// token, a site without Confluence) are none. Any other answer (429, 5xx)
+// and a request that could not run are an error: no verdict either way.
+// hc nil uses a 15 s client.
 func ProbeConfluence(ctx context.Context, hc *http.Client, cloudID, site string, creds APITokenCreds) (bool, error) {
 	if err := probeSiteCheck(site); err != nil {
 		return false, err
@@ -303,7 +304,13 @@ func ProbeConfluence(ctx context.Context, hc *http.Client, cloudID, site string,
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-	return resp.StatusCode == http.StatusOK, nil
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+		return false, nil
+	}
+	return false, fmt.Errorf("checking Confluence access: %w", newHTTPStatusError(resp))
 }
 
 // probeSiteCheck is ValidateAPITokenSite; a var so the probe's tests can

@@ -38,6 +38,7 @@ type apiTokenHarness struct {
 	// noConfluence: the token reads no Confluence (a Jira-only scoped token).
 	noConfluence     bool
 	confluenceProbes int
+	confluenceErr    error
 	tenantAsks       []string
 	probes           []jira.APITokenCreds
 }
@@ -52,7 +53,7 @@ func newAPITokenHarness(t *testing.T) *apiTokenHarness {
 	t.Cleanup(func() { jiraTenantInfo, jiraProbeAPIToken, jiraProbeConfluence = origTenant, origProbe, origConfluence })
 	jiraProbeConfluence = func(context.Context, *http.Client, string, string, jira.APITokenCreds) (bool, error) {
 		h.confluenceProbes++
-		return !h.noConfluence, nil
+		return !h.noConfluence, h.confluenceErr
 	}
 	jiraTenantInfo = func(_ context.Context, _ *http.Client, site string) (string, error) {
 		h.tenantAsks = append(h.tenantAsks, site)
