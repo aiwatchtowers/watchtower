@@ -47,7 +47,7 @@ func TestSaveAuthResult_Success(t *testing.T) {
 		UserID:      "U456",
 	}
 
-	info, err := saveAuthResult(newSaveAuthResultCmd(), result)
+	info, err := saveAuthResult(newSaveAuthResultCmd(), result, "")
 	require.NoError(t, err)
 	assert.Equal(t, "my-test-team", info.Workspace)
 	assert.Equal(t, "T123", info.TeamID)
@@ -100,7 +100,7 @@ func TestSaveAuthResult_EmptyTeamName(t *testing.T) {
 		UserID:      "U101",
 	}
 
-	info, err := saveAuthResult(newSaveAuthResultCmd(), result)
+	info, err := saveAuthResult(newSaveAuthResultCmd(), result, "")
 	require.NoError(t, err)
 	// When team name sanitizes to empty, should use TeamID
 	assert.Equal(t, "T789", info.Workspace)
@@ -131,7 +131,7 @@ ai:
 		UserID:      "U001",
 	}
 
-	info, err := saveAuthResult(newSaveAuthResultCmd(), result)
+	info, err := saveAuthResult(newSaveAuthResultCmd(), result, "")
 	require.NoError(t, err)
 	assert.Equal(t, "new-team", info.Workspace)
 
@@ -165,7 +165,7 @@ func TestSaveAuthResult_WithExpiry(t *testing.T) {
 	}
 
 	// Should succeed but print warning to stderr
-	info, err := saveAuthResult(newSaveAuthResultCmd(), result)
+	info, err := saveAuthResult(newSaveAuthResultCmd(), result, "")
 	require.NoError(t, err)
 	assert.Equal(t, "expiry-team", info.Workspace)
 }

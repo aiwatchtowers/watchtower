@@ -348,9 +348,9 @@ private struct CodeTabView: View {
 enum GitMark {
     static func color(_ status: GitFileStatus) -> Color {
         switch status {
-        case .modified, .renamed: .orange
-        case .added, .untracked: .green
-        case .deleted, .conflicted: .red
+        case .modified, .renamed: Tone.warning
+        case .added, .untracked: Tone.success
+        case .deleted, .conflicted: Tone.error
         }
     }
 }

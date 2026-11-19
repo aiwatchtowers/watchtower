@@ -53,7 +53,7 @@ Follow a service restriction message even when a quota's forecast stays below it
 - **Claude Code missing or too old:** install or update Claude Code, then retry.
 - **Unsupported Codex tool:** update Codex, then retry. Watchtower does not start a login flow for you.
 - **Codex installed with npm shows no numbers:** Watchtower looks for Node.js in the usual nvm, Volta, fnm, local-bin and Homebrew folders when it reads the limits, so the app needs no special launch. If your Node.js lives in another folder, link it into one of those folders.
-- **Collecting data:** leave the reader running for at least fifteen minutes. A changed reset window or account starts a new history.
+- **Collecting data:** leave the reader running for at least fifteen minutes. A changed reset window or account starts a new history, and so does an early reset by the provider.
 - **Forecast needs an update:** refresh; the previous predicted hit time has passed.
 - **Saved limits could not be read:** retry. One provider's error leaves the other provider usable.
 

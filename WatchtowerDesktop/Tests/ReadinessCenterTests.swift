@@ -84,6 +84,78 @@ final class ReadinessCenterTests: XCTestCase {
         await waitUntil(center) { $0[.digests] == .ready }
     }
 
+    /// The Live probe is a CLI child (another process) the observation never
+    /// sees: `rereadDatabase()` — what a change of the Live center's
+    /// statuses calls — re-evaluates Off ↔ Live at once (screens spec §6).
+    func testLiveStatusChangeReevaluates() async throws {
+        let pool = try makePool()
+        let environment = FakeReadinessEnvironment()
+        environment.connected = .none
+        let ticks = HandOpenedSleeps()
+        let center = ReadinessCenter(environment: environment)
+        center.tickSleep = { _ in await ticks.sleep() }
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { !$0.isEmpty }
+        XCTAssertEqual(center.readiness(for: .digests), .needsSource(.slack))
+        XCTAssertEqual(center.readiness(for: .inbox), .needsSource(.anySource))
+
+        let probe = try DatabasePool(path: try XCTUnwrap(poolPaths.last))
+        try await probe.write { db in
+            try db.execute(sql: """
+                INSERT INTO slack_live_status (team_id, provider, status, error_class, connector_id, checked_at)
+                VALUES ('T1', 'claude', 'ok', '', '', '2026-11-18T09:00:00.000000000Z')
+                """)
+        }
+        await center.rereadDatabase()
+        XCTAssertEqual(center.readiness(for: .digests), .needsFullSlack)
+        XCTAssertEqual(center.readiness(for: .inbox), .needsFullSlack)
+
+        try await probe.write { db in
+            try db.execute(sql: """
+                INSERT INTO slack_live_status (team_id, provider, status, error_class, connector_id, checked_at)
+                VALUES ('', 'claude', 'not_connected', '', '', '2026-11-18T10:00:00.000000000Z')
+                """)
+        }
+        try probe.close()
+        await center.rereadDatabase()
+        XCTAssertEqual(center.readiness(for: .digests), .needsSource(.slack), "Live → Off")
+
+        environment.connected = ConnectedSources(slack: true)
+        center.refresh()
+        XCTAssertNotEqual(center.readiness(for: .digests), .needsFullSlack, "a synced account is Full")
+    }
+
+    /// A change of the Live verdicts after the first read (a chat or an
+    /// automation wrote the row) calls `onSlackLiveChange`, so the sidebar
+    /// re-reads; the first read and an unrelated change do not.
+    func testSlackLiveChangeCallsTheHook() async throws {
+        let pool = try makePool()
+        let ticks = HandOpenedSleeps()
+        let center = ReadinessCenter(environment: FakeReadinessEnvironment())
+        let calls = HookCalls()
+        center.onSlackLiveChange = { calls.count += 1 }
+        center.tickSleep = { _ in await ticks.sleep() }
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { !$0.isEmpty }
+        await center.rereadDatabase()
+        try insertDigest(pool)
+        await waitUntil(center) { $0[.digests] == .ready }
+        XCTAssertEqual(calls.count, 0, "the first read and a content change are not a Live change")
+
+        let chat = try DatabasePool(path: try XCTUnwrap(poolPaths.last))
+        try await chat.write { db in
+            try db.execute(sql: """
+                INSERT INTO slack_live_status (team_id, provider, status, error_class, connector_id, checked_at)
+                VALUES ('T1', 'claude', 'ok', '', '', '2026-11-18T09:00:00.000000000Z')
+                """)
+        }
+        try chat.close()
+        await center.rereadDatabase()
+        await untilObserved { calls.count == 1 }
+    }
+
     func testObservationStartsWithMissingTable() async throws {
         let pool = try makePool()
         try await pool.write { db in try db.execute(sql: "DROP TABLE stream_digests") }
@@ -263,6 +335,13 @@ final class ReadinessCenterTests: XCTestCase {
         await waitUntil(appState.readinessCenter) { !$0.isEmpty }
         XCTAssertEqual(appState.readinessCenter.readiness.count, ReadinessFeature.allCases.count)
     }
+}
+
+/// Counts hook calls; observable, so a test can wait on it.
+@MainActor
+@Observable
+private final class HookCalls {
+    var count = 0
 }
 
 @MainActor

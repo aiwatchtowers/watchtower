@@ -107,6 +107,18 @@ public struct AgentActionCard: View {
     /// send for neither.
     static let reconnectDoneNote = "Sign-in closed. Press Retry — if sending is still refused, Slack has not "
         + "allowed it for this workspace yet (its app settings or admin must)."
+    /// The sign-in moved to Connections → Slack (the connect flow in the browser, or its connect section).
+    static let reconnectHandedOffNote = "Finish connecting in your browser or in Connections → Slack, "
+        + "then press Retry."
+
+    /// The card's line after a Reconnect Slack.
+    static func reconnectNote(_ outcome: SlackReconnectOutcome) -> String {
+        switch outcome {
+        case .signedIn: reconnectDoneNote
+        case .handedOff: reconnectHandedOffNote
+        case let .failed(reason): "Reconnect failed: \(reason)"
+        }
+    }
 
     /// The shared human name (`ActionToolCatalog`) — the same words the Inbox cheat sheet and Settings use.
     static func title(for action: ChatAgentAction) -> String {
@@ -243,14 +255,14 @@ public struct AgentActionCard: View {
         }
     }
 
-    private func reconnectRow(_ accountID: Int64, _ reconnect: @escaping (Int64) async -> String?) -> some View {
+    private func reconnectRow(_ accountID: Int64, _ reconnect: @escaping (Int64) async -> SlackReconnectOutcome) -> some View {
         HStack(spacing: Spacing.regular) {
             Button("Reconnect Slack") {
                 Task {
                     reconnecting = true
-                    let failure = await reconnect(accountID)
+                    let outcome = await reconnect(accountID)
                     reconnecting = false
-                    slackMessage = failure.map { "Reconnect failed: \($0)" } ?? Self.reconnectDoneNote
+                    slackMessage = Self.reconnectNote(outcome)
                 }
             }
             .disabled(reconnecting)

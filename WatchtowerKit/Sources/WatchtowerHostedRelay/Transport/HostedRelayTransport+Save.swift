@@ -82,7 +82,7 @@ extension HostedRelayTransport {
             var save = Relay_V1_Save()
             save.items = [try await saveItem(record, expect: .none)]
             energy?.record(.sendBatch)
-            let result = try await call(record.zone) { try await self.client.save(save) }
+            let result = try await call(record.zone) { try await self.session.save(save) }
             guard Self.saveOutcomes(result, items: [record]) != nil, result.conflicts.isEmpty else {
                 Self.logger.error("relay flush: malformed save answer")
                 return .stopped(.transient(code: "malformed_answer"))
@@ -102,7 +102,7 @@ extension HostedRelayTransport {
             item.name = name
             delete.items = [item]
             energy?.record(.sendBatch)
-            _ = try await call(zone) { try await self.client.delete(delete) }
+            _ = try await call(zone) { try await self.session.delete(delete) }
             return .sent
         } catch {
             return plainFailure(error)
@@ -136,7 +136,7 @@ extension HostedRelayTransport {
             var save = Relay_V1_Save()
             for index in sending { save.items.append(try await saveItem(items[index].record, expect: items[index].expect)) }
             energy?.record(.sendBatch)
-            let result = try await call(.relay) { try await self.client.save(save) }
+            let result = try await call(.relay) { try await self.session.save(save) }
             if let answered = Self.saveOutcomes(result, items: sending.map { items[$0].record }) {
                 for (position, index) in sending.enumerated() { outcomes[index] = answered[position] }
             } else {
@@ -176,7 +176,7 @@ extension HostedRelayTransport {
         }
         do {
             energy?.record(.sendBatch)
-            let result = try await call(.relay) { try await self.client.delete(delete) }
+            let result = try await call(.relay) { try await self.session.delete(delete) }
             if let answered = Self.deleteOutcomes(result, zones: sending.map { items[$0].zone }) {
                 for (position, index) in sending.enumerated() { outcomes[index] = answered[position] }
             } else {

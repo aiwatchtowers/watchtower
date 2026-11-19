@@ -20,7 +20,7 @@ $(error build profile '$(ENV_FILE)' must set BUILD_FLAVOR)
 endif
 endif
 export ENV_FILE
-export WATCHTOWER_OAUTH_CLIENT_ID WATCHTOWER_OAUTH_CLIENT_SECRET WATCHTOWER_GOOGLE_CLIENT_ID WATCHTOWER_GOOGLE_CLIENT_SECRET WATCHTOWER_JIRA_CLIENT_ID WATCHTOWER_JIRA_CLIENT_SECRET WATCHTOWER_PURGE_DEFAULT WATCHTOWER_LINK_FETCH_DENY_HOSTS BUILD_FLAVOR
+export WATCHTOWER_OAUTH_CLIENT_ID WATCHTOWER_OAUTH_CLIENT_SECRET RETIRED_SLACK_CLIENT_ID WATCHTOWER_GOOGLE_CLIENT_ID WATCHTOWER_GOOGLE_CLIENT_SECRET WATCHTOWER_JIRA_CLIENT_ID WATCHTOWER_JIRA_CLIENT_SECRET WATCHTOWER_PURGE_DEFAULT WATCHTOWER_LINK_FETCH_DENY_HOSTS BUILD_FLAVOR
 
 BINARY_NAME := watchtower
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -36,7 +36,7 @@ JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 PURGE_DEFAULT ?= $(WATCHTOWER_PURGE_DEFAULT)
 # Comma-separated, no spaces: hosts the media pass never fetches (corp build).
 LINK_FETCH_DENY_HOSTS ?= $(WATCHTOWER_LINK_FETCH_DENY_HOSTS)
-LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS) -X watchtower/internal/hub/identity.KeychainBuildFlag=false"
+LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/auth.RetiredSharedClientID=$(RETIRED_SLACK_CLIENT_ID) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS) -X watchtower/internal/hub/identity.KeychainBuildFlag=false"
 
 .PHONY: golangci-version-check build bridge-build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test chattext-test chat-test interface-test gen-interface gen-interface-check e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check cloudkit-subscriptions-deployed relay-go relay-proto relay-interop relay-interop-kit relay-interop-kit-hub hub-smoke hub-staging
 
@@ -396,12 +396,16 @@ test-swift-strict-pool:
 
 # Shell-level tests for build-app.sh and the app-swap/app-install scripts. They
 # extract marked blocks or run the scripts in a temp tree against stubbed
-# binaries — no real build, no codesign.
+# binaries — no real build, no codesign. The self-hosted runner setup needs
+# sudo, so it gets only a syntax check.
 test-scripts:
 	@rc=0; for t in scripts/tests/test-*.sh; do \
 	  echo "==> $$t"; \
 	  bash "$$t" || rc=1; \
-	done; exit $$rc
+	done; \
+	echo "==> bash -n scripts/ci-runner/setup-mac-runner.sh"; \
+	bash -n scripts/ci-runner/setup-mac-runner.sh || rc=1; \
+	exit $$rc
 
 # Copies the hosted relay's Go client + proto into internal/hub/transport/relay,
 # pinned to REF (default: the commit in that dir's VERSION). Refuses a dirty or

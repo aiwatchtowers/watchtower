@@ -53,6 +53,7 @@ Per-feature notes — architecture, contracts, dual paths, v1 limits — live in
 - AI chat on the iPhone, over the relay — `iphone-chat.md`
 - Unified chat — one Go engine, `chat.sock`, shared ChatUI for the Mac and the iPhone — `unified-chat.md`
 - Go hub — `go-hub.md`
+- Live link — phone ↔ tower over one socket, optimistic apply — `live-link.md`
 - Code navigation in the workbench code viewer — `code-navigation.md`
 - Catch-Up — `catchup.md`
 - Meeting Transcriber — `meeting-transcriber.md`
@@ -62,6 +63,7 @@ Per-feature notes — architecture, contracts, dual paths, v1 limits — live in
 - Slack Multi-Account — `slack-multi-account.md`
 - Slack Live — the owner's own Claude/ChatGPT Slack connector — `slack-live.md`
 - Slack adaptive sync and Stop syncing — `slack-adaptive-sync.md`
+- Slack Full — entry into Full and the retired shared app — `slack-full.md`
 - Jira Multi-Account — `jira-multi-account.md`
 - Jira status history + time in status — `jira-changelog.md`
 - Jira custom fields discovery & mapping — `jira-custom-fields.md`

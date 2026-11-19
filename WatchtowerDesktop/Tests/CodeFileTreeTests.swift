@@ -35,6 +35,36 @@ final class CodeFileTreeTests: XCTestCase {
         XCTAssertTrue(tree.rows.contains { $0.entry.relPath == "src/inner/deep.go" && $0.depth == 2 })
     }
 
+    /// The root row (board #2017): closing it hides the tree and keeps the
+    /// open folders for when it reopens; creating an entry reopens it;
+    /// collapsing all folders leaves it open.
+    func testTheRootRowClosesAndReopensTheTree() {
+        let tree = CodeFileTree(root: root)
+        tree.loadIfNeeded()
+        tree.toggle("src")
+        XCTAssertTrue(tree.isRootExpanded)
+
+        tree.toggle("")
+        XCTAssertFalse(tree.isRootExpanded)
+        XCTAssertEqual(tree.rows, [])
+
+        tree.toggle("")
+        XCTAssertTrue(tree.rows.contains { $0.entry.relPath == "src/a.go" })
+
+        tree.toggle("")
+        tree.expand("b")
+        XCTAssertTrue(tree.isRootExpanded)
+        XCTAssertTrue(tree.rows.contains { $0.entry.relPath == "b" && $0.isExpanded })
+
+        tree.toggle("")
+        tree.expand("")
+        XCTAssertTrue(tree.isRootExpanded)
+
+        tree.collapseAll()
+        XCTAssertTrue(tree.isRootExpanded)
+        XCTAssertEqual(tree.rows.map(\.entry.name), ["b", "src", ".env", "file2.txt", "file10.txt"])
+    }
+
     func testRefreshReadsOnlyListedFolders() throws {
         let tree = CodeFileTree(root: root)
         tree.loadIfNeeded()

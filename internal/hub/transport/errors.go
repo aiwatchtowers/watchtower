@@ -38,4 +38,8 @@ var (
 	// ErrPushOff: the relay has no push provider configured (send_alert's
 	// UNSPECIFIED "not implemented").
 	ErrPushOff = errors.New("transport: relay pushes are off")
+	// ErrWatchQueued: a zone subscription the transport only queued for its
+	// next connect (it is disconnected). The zone is watched from then on,
+	// but nothing was heard from the relay: no sign it is reachable.
+	ErrWatchQueued = errors.New("transport: zone subscription queued for the next connect")
 )

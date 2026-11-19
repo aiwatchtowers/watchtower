@@ -221,6 +221,19 @@ final class RecordingRelayClock: RelayClock, @unchecked Sendable {
     func waitForSleep(_ duration: Duration) async {
         await waitForSleep { $0 == duration }
     }
+
+    /// How many sleeps of `duration` were asked for so far.
+    func sleeps(of duration: Duration) -> Int {
+        sleeps.filter { $0 == duration }.count
+    }
+
+    /// Suspends until exactly `count` sleeps of `duration` wait, each registered on the manual clock.
+    func waitForSleeps(_ duration: Duration, count: Int) async {
+        await spin {
+            let waiting = self.recorded.withLock { Array($0.waiting.values) }
+            return waiting.filter { $0 == duration }.count == count && self.manual.sleeperCount >= waiting.count
+        }
+    }
 }
 
 /// One phone client on a scripted relay, with every seam reachable.

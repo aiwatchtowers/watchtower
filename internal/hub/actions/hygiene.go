@@ -50,6 +50,8 @@ type HygieneReport struct {
 // stamp is written only after a run without errors, so a failed one is
 // retried at the next call.
 func (p *Processor) Hygiene(ctx context.Context) (HygieneReport, error) {
+	p.run.Lock() // no pass reads a mailbox while it is swept
+	defer p.run.Unlock()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.paused.Load() {

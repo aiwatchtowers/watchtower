@@ -20,8 +20,14 @@ extension FakeHostedRelay {
     static let closePolicyViolation = 1008
     static let closeUnsupportedVersion = 4000
     static let closeUnauthenticated = 4001
-    /// Worker `fanout.ts` `MAX_INLINE_RECORD_BYTES`: the largest envelope an event carries.
+    /// Worker `fanout.ts` `MAX_INLINE_RECORD_BYTES`: the largest envelope an event's single `record` carries.
     static let maxInlineRecordBytes = 64 << 10
+    /// Worker `fanout.ts` `MAX_INLINE_FRAME_BYTES`: the most framed bytes of the records one event carries.
+    static let maxInlineFrameBytes = 256 << 10
+    /// Worker `fanout.ts` `RECORD_OVERHEAD_BYTES`.
+    static let recordOverheadBytes = 32
+    /// Worker `ws.ts` `CAPABILITIES`.
+    static let capabilities = ["records_inline"]
 
     // MARK: - HTTPS
 
@@ -134,6 +140,12 @@ extension FakeHostedRelay {
                 response = respond(request, bearer: socket.token).response
                 // `crashAfterNext`: the op ran, the socket was cut before the answer.
                 if state.faults.crashed { return }
+                // `cutSocketAfterNext`: the op ran, this socket is cut before the answer.
+                if let op = request.op, takeCutAfter(Self.name(op)) {
+                    socket.cut()
+                    state.sockets.removeAll { $0 === socket }
+                    return
+                }
             }
             response.id = request.id
             var out = Relay_V1_Frame()
@@ -167,6 +179,7 @@ extension FakeHostedRelay {
         socket.hello = true
         var out = Relay_V1_Frame()
         out.helloOk.connectionID = socket.connectionID
+        if !state.faults.withoutRecordsInline { out.helloOk.capabilities = Self.capabilities }
         socket.deliver(out)
     }
 
@@ -204,37 +217,96 @@ extension FakeHostedRelay {
         return Dictionary(zones.map { ($0, state.zones[$0]?.lastSeq ?? 0) }) { first, _ in first }
     }
 
-    /// Worker `zone.ts` `save`/`delete`: a save whose call stored exactly one record inlines it
-    /// when its envelope fits 64 KiB; a delete never inlines its tombstone.
-    func inlineRecord(_ response: Relay_V1_Response) -> Relay_V1_Record? {
-        guard case .save(let result) = response.result, result.saved.count == 1, let saved = result.saved.first,
-              let stored = state.zones[saved.zone]?.records[saved.name], stored.seq == saved.recordSeq,
-              stored.envelope.count <= Self.maxInlineRecordBytes
-        else { return nil }
-        return Self.proto(stored, zone: saved.zone, envelope: true)
+    /// The records a save stored, as the zone holds them now, by zone and in request order; empty for any other
+    /// answer. A record written again later in the same call is left out (its zone's change is then bare).
+    func savedRecords(_ response: Relay_V1_Response) -> [String: [Relay_V1_Record]] {
+        guard case .save(let result) = response.result else { return [:] }
+        var out: [String: [Relay_V1_Record]] = [:]
+        for saved in result.saved {
+            guard let stored = state.zones[saved.zone]?.records[saved.name], stored.seq == saved.recordSeq else { continue }
+            out[saved.zone, default: []].append(Self.proto(stored, zone: saved.zone, envelope: true))
+        }
+        return out
     }
 
-    /// Worker `fanout.ts`: a `ZoneChanged` for every zone whose seq moved (with `inline` when it
-    /// is that zone's new record) to every socket past Hello subscribed to the zone whose session
-    /// still holds (else it ends, 4001) and may read it.
-    func fanOut(since before: [String: UInt64], inline: Relay_V1_Record?) {
+    /// Worker `fanout.ts` `recordFrameBytes`: what a record takes of an event's frame budget.
+    static func frameBytes(_ record: Relay_V1_Record) -> Int {
+        record.envelope.count + record.name.utf8.count + record.zone.utf8.count + record.attachmentID.utf8.count
+            + recordOverheadBytes
+    }
+
+    /// Worker `zone.ts` `announce`: the changes of one write to a zone whose seq went from `before` to `seq`.
+    /// When `saved` are exactly the writes after `before` (a save), they go out oldest first in chunks within the
+    /// frame budget, one change per chunk at its last record's seq; a record over the budget is a bare change of
+    /// its own. Any other write (a delete) is one bare change at `seq`.
+    static func changes(zone: String, before: UInt64, seq: UInt64, saved: [Relay_V1_Record]) -> [Relay_V1_ZoneChanged] {
+        func change(_ upTo: UInt64, _ records: [Relay_V1_Record]) -> Relay_V1_ZoneChanged {
+            var changed = Relay_V1_ZoneChanged()
+            changed.zone = zone
+            changed.seq = upTo
+            changed.records = records
+            return changed
+        }
+        let covers = UInt64(saved.count) == seq - before
+            && saved.enumerated().allSatisfy { $1.recordSeq == before + 1 + UInt64($0) }
+        guard covers else { return [change(seq, [])] }
+        var out: [Relay_V1_ZoneChanged] = []
+        var chunk: [Relay_V1_Record] = []
+        var bytes = 0
+        func flush() {
+            if let last = chunk.last { out.append(change(last.recordSeq, chunk)) }
+            chunk = []
+            bytes = 0
+        }
+        for record in saved {
+            let size = frameBytes(record)
+            if size > maxInlineFrameBytes {
+                flush()
+                out.append(change(record.recordSeq, []))
+                continue
+            }
+            if bytes + size > maxInlineFrameBytes { flush() }
+            chunk.append(record)
+            bytes += size
+        }
+        flush()
+        return out
+    }
+
+    /// Worker `ws.ts` `notify`: `change` as one socket gets it. With `records`, plus the single `record` when
+    /// there is exactly one and its envelope fits 64 KiB; bare for a device over its traffic budget. An older
+    /// relay (`setRecordsInline(false)`) sends only that single `record`.
+    private func event(_ change: Relay_V1_ZoneChanged, for socket: FakeRelaySocket) -> Relay_V1_Frame {
+        var changed = change
+        if state.faults.trafficOver.contains(socket.deviceID) {
+            changed.records = []
+        } else if change.records.count == 1, change.records[0].envelope.count <= Self.maxInlineRecordBytes {
+            changed.record = change.records[0]
+        }
+        if state.faults.withoutRecordsInline { changed.records = [] }
+        var frame = Relay_V1_Frame()
+        frame.event.zoneChanged = changed
+        return frame
+    }
+
+    /// Worker `fanout.ts`: the `ZoneChanged`s (`changes`) of every zone whose seq moved, `saved` being what the
+    /// write stored, to every socket past Hello subscribed to the zone whose session still holds (else it ends,
+    /// 4001) and may read it. Nothing waits here, so changes are never merged.
+    func fanOut(since before: [String: UInt64], saved: [String: [Relay_V1_Record]]) {
         for (name, old) in before.sorted(by: { $0.key < $1.key }) {
             guard let zone = state.zones[name], zone.lastSeq > old else { continue }
-            var changed = Relay_V1_ZoneChanged()
-            changed.zone = name
-            changed.seq = zone.lastSeq
-            if let inline, inline.zone == name, inline.recordSeq == zone.lastSeq {
-                changed.record = inline
+            var changes = Self.changes(zone: name, before: old, seq: zone.lastSeq, saved: saved[name] ?? [])
+            if state.faults.withoutRecordsInline, changes.count > 1 {
+                // The older relay: one event per write, at the zone's seq.
+                changes = Self.changes(zone: name, before: old, seq: zone.lastSeq, saved: [])
             }
-            var frame = Relay_V1_Frame()
-            frame.event.zoneChanged = changed
             for socket in state.sockets where socket.hello && socket.subscriptions.contains(name) {
                 guard let session = holding(socket.token) else {
                     expire(socket)
                     continue
                 }
                 guard (try? access(name, session, .read)) != nil else { continue }
-                socket.deliver(frame)
+                for change in changes { socket.deliver(event(change, for: socket)) }
             }
         }
     }

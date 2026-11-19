@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,6 +14,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/oauthpage"
+	"watchtower/internal/slackmode"
 
 	"github.com/spf13/cobra"
 )
@@ -71,6 +73,9 @@ func init() {
 }
 
 func runAuthLogin(cmd *cobra.Command, _ []string) error {
+	if err := refuseAuthLoginOffBuiltinApp(flagConfig); err != nil {
+		return err
+	}
 	oauthCfg, err := resolveOAuthConfig()
 	if err != nil {
 		return err
@@ -85,7 +90,7 @@ func runAuthLogin(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("oauth login: %w", err)
 	}
 
-	info, err := saveAuthResult(cmd, result)
+	info, err := saveAuthResult(cmd, result, oauthCfg.ClientID)
 	if err != nil {
 		return err
 	}
@@ -172,18 +177,11 @@ func runAuthLogout(cmd *cobra.Command, _ []string) error {
 
 // resolveOAuthConfig reads OAuth credentials from env or build-time defaults.
 func resolveOAuthConfig() (auth.OAuthConfig, error) {
-	clientID := os.Getenv("WATCHTOWER_OAUTH_CLIENT_ID")
-	clientSecret := os.Getenv("WATCHTOWER_OAUTH_CLIENT_SECRET")
-	if clientID == "" {
-		clientID = auth.DefaultClientID
-	}
-	if clientSecret == "" {
-		clientSecret = auth.DefaultClientSecret
-	}
-	if clientID == "" || clientSecret == "" {
+	cfg, ok := auth.BuiltinApp()
+	if !ok {
 		return auth.OAuthConfig{}, fmt.Errorf("OAuth credentials not configured. Set WATCHTOWER_OAUTH_CLIENT_ID and WATCHTOWER_OAUTH_CLIENT_SECRET environment variables, or use an official release build")
 	}
-	return auth.OAuthConfig{ClientID: clientID, ClientSecret: clientSecret}, nil
+	return cfg, nil
 }
 
 // authResultInfo holds the workspace info after saving config.
@@ -205,8 +203,9 @@ type authResultInfo struct {
 // Behaves as the legacy single-account alias: it seeds account #1 from any
 // pre-multi-account config token, then re-consents account #1 when one already
 // exists (like `slack login --account 1`) or creates it when none does (like
-// `slack add` with an empty label).
-func saveAuthResult(cmd *cobra.Command, result *auth.OAuthResult) (*authResultInfo, error) {
+// `slack add` with an empty label). clientID is the app the sign-in went
+// through (connectSlackAccount).
+func saveAuthResult(cmd *cobra.Command, result *auth.OAuthResult, clientID string) (*authResultInfo, error) {
 	if result.ExpiresIn > 0 {
 		fmt.Fprintf(os.Stderr, "Warning: token expires in %d seconds. Token rotation is not yet supported.\n", result.ExpiresIn)
 	}
@@ -257,11 +256,70 @@ func saveAuthResult(cmd *cobra.Command, result *auth.OAuthResult) (*authResultIn
 		isNewRow = true
 	}
 
-	if _, err := connectSlackAccount(cmd.Context(), cfg, database, id, result, isNewRow, cmd.ErrOrStderr()); err != nil {
+	if _, err := connectSlackAccount(cmd.Context(), cfg, database, id, result, isNewRow, clientID, cmd.ErrOrStderr()); err != nil {
 		return nil, err
 	}
 
 	return &authResultInfo{workspace, result.TeamID, result.UserID}, nil
+}
+
+// refuseAuthLoginOffBuiltinApp refuses `auth login` when the account it
+// re-consents (#1 of the active workspace) does not sign in through the
+// build's app (slackmode.Relogin connect or move): the legacy login would
+// overwrite a company app's client id and rotating token with the build's
+// (review m6). No workspace or database yet, or no account #1, lets it run.
+func refuseAuthLoginOffBuiltinApp(configPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		if errors.Is(err, config.ErrNoWorkspace) {
+			return nil
+		}
+		return err
+	}
+	if _, err := os.Stat(cfg.DBPath()); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+	acct, err := database.GetSlackAccount(1)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading slack account 1: %w", err)
+	}
+	return slackBuiltinSignInRefusal(acct, slackBuiltinClientID())
+}
+
+// slackBuiltinSignInRefusal refuses a sign-in through the build's app
+// (auth.Login, client id signInClientID) onto acct when acct is on another
+// app it must sign in again through (slackmode.Relogin connect or move):
+// saving the build's token would overwrite that app's client id and
+// rotating token. A removed row, or one with no client id yet, is open.
+// The auth login preflight and connectSlackAccount (under the token lock,
+// on the account it actually writes) both apply it.
+func slackBuiltinSignInRefusal(acct db.SlackAccount, signInClientID string) error {
+	if acct.Status == "removed" || acct.ClientID == "" || acct.ClientID == signInClientID {
+		return nil
+	}
+	switch slackmode.Relogin(acct, auth.RetiredSharedClientID, slackBuiltinClientID()) {
+	case slackmode.ReloginConnect:
+		return fmt.Errorf("slack account %d signs in through its workspace's own Slack app; "+
+			"run `watchtower slack login --account %d` instead", acct.ID, acct.ID)
+	case slackmode.ReloginMove:
+		return fmt.Errorf("slack account %d is on the retired shared Slack app; move it to its workspace's own app "+
+			"with the link or code from that app (`watchtower slack connect --code ...` or Connections → Slack)", acct.ID)
+	}
+	return nil
 }
 
 // slackLoginWorkspace returns the existing workspace a Slack login into team

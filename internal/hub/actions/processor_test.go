@@ -947,19 +947,30 @@ func TestPullerTransportOwnsTheCursor(t *testing.T) {
 
 // latencyCall is one Latency.Applied stamp.
 type latencyCall struct {
-	transport         string
+	transport, action string
 	readAt, appliedAt time.Time
 	kinds             []string
 }
 
 // fakeLatency records the stamps; probe (optional) runs inside each call.
 type fakeLatency struct {
-	calls []latencyCall
-	probe func()
+	calls  []latencyCall
+	events []eventReadCall
+	probe  func()
 }
 
-func (f *fakeLatency) Applied(transport string, readAt, appliedAt time.Time, kinds []string) {
-	f.calls = append(f.calls, latencyCall{transport, readAt, appliedAt, slices.Clone(kinds)})
+// eventReadCall is one Latency.EventRead stamp.
+type eventReadCall struct {
+	transport         string
+	arrivedAt, readAt time.Time
+}
+
+func (f *fakeLatency) EventRead(transport string, arrivedAt, readAt time.Time) {
+	f.events = append(f.events, eventReadCall{transport, arrivedAt, readAt})
+}
+
+func (f *fakeLatency) Applied(transport, action string, readAt, appliedAt time.Time, kinds []string) {
+	f.calls = append(f.calls, latencyCall{transport, action, readAt, appliedAt, slices.Clone(kinds)})
 	if f.probe != nil {
 		f.probe()
 	}
@@ -982,7 +993,7 @@ func TestAppliedActionGivesReadAppliedSample(t *testing.T) {
 		t.Fatalf("stamps %+v, want one", lat.calls)
 	}
 	c := lat.calls[0]
-	if c.transport != "relay" || !c.readAt.Equal(read) || c.appliedAt.Sub(c.readAt) != 40*time.Millisecond || !slices.Equal(c.kinds, []string{"owner_ask"}) {
+	if c.transport != "relay" || c.action != "ask_answer" || !c.readAt.Equal(read) || c.appliedAt.Sub(c.readAt) != 40*time.Millisecond || !slices.Equal(c.kinds, []string{"owner_ask"}) {
 		t.Fatalf("stamp %+v", c)
 	}
 	// A failed outcome is no apply: no stamp.
@@ -991,6 +1002,66 @@ func TestAppliedActionGivesReadAppliedSample(t *testing.T) {
 	w.pass()
 	if len(lat.calls) != 1 {
 		t.Fatalf("a failed action was stamped: %+v", lat.calls)
+	}
+}
+
+// TestProcessor_ReadAtPerRecord: two actions in one page; the second's read
+// time is when the processor reached it, so its read_applied leaves out the
+// first one's handler time.
+func TestProcessor_ReadAtPerRecord(t *testing.T) {
+	w := newWorld(t, transport.KindRelay)
+	lat := &fakeLatency{}
+	w.proc.cfg.Latency = lat
+	w.disp.Register("ask_answer", func(context.Context, Request) Outcome {
+		w.mu.Lock()
+		w.now = w.now.Add(40 * time.Millisecond)
+		w.mu.Unlock()
+		return Outcome{Status: wire.StatusApplied}
+	}, KindOptions{Nudges: []string{"owner_ask"}})
+	w.act("ask_answer")
+	w.act("ask_answer")
+	if r := w.pass(); r.Applied != 2 {
+		t.Fatalf("pass %+v, want both applied", r)
+	}
+	if len(lat.calls) != 2 {
+		t.Fatalf("stamps %+v, want two", lat.calls)
+	}
+	first, second := lat.calls[0], lat.calls[1]
+	if d := second.appliedAt.Sub(second.readAt); d != 40*time.Millisecond {
+		t.Fatalf("second read_applied %v, want 40ms (its own handler only)", d)
+	}
+	if second.readAt.Before(first.appliedAt) {
+		t.Fatalf("second read %v before the first applied %v: one read time per page", second.readAt, first.appliedAt)
+	}
+}
+
+// TestProcessor_EventReadOnlyForAForeignWrite: an event that stands only for
+// the hub's own writes reads nothing and records no event_read; an event for
+// a phone's write records arrival → the start of its read.
+func TestProcessor_EventReadOnlyForAForeignWrite(t *testing.T) {
+	w := newWorld(t, transport.KindRelay)
+	ep := &eventPuller{puller: &puller{Fake: w.fake, tokens: map[string]uint64{}}, own: true}
+	w.proc.cfg.Transport = ep
+	lat := &fakeLatency{}
+	w.proc.cfg.Latency = lat
+	arrived := w.clock()
+	w.mu.Lock()
+	w.now = w.now.Add(15 * time.Millisecond)
+	w.mu.Unlock()
+	w.act("test_noop")
+	if r, err := w.proc.PassEvent(w.ctx, transport.Event{Zone: w.phone.Zone(), ArrivedAt: arrived}); err != nil || !r.OwnEcho {
+		t.Fatalf("own-echo event pass %+v, %v", r, err)
+	}
+	if len(lat.events) != 0 {
+		t.Fatalf("an own-echo event was timed: %+v", lat.events)
+	}
+	ep.own = false
+	if _, err := w.proc.PassEvent(w.ctx, transport.Event{Zone: w.phone.Zone(), ArrivedAt: arrived}); err != nil {
+		t.Fatal(err)
+	}
+	want := []eventReadCall{{"relay", arrived, arrived.Add(15 * time.Millisecond)}}
+	if !slices.Equal(lat.events, want) {
+		t.Fatalf("event_read stamps %+v, want %+v", lat.events, want)
 	}
 }
 

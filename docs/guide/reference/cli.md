@@ -22,7 +22,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 
 | Command | What it does |
 |---|---|
-| `watchtower slack`, `auth` | Slack workspaces (`slack add` connects another; `auth login` connects the first; `slack backfill --account N --from D --to D` fetches up to 31 past days of one account again, with digests for channel days that had none; on a day that already has a digest for a channel, the fetched messages are saved and searchable but not digested; `slack live probe [--provider claude\|codex] [--json]` checks that your Claude or ChatGPT Slack connector can read, for [Live Slack](../concepts/sources-and-accounts.md#live-slack-through-your-claude-or-chatgpt-account)) |
+| `watchtower slack`, `auth` | Slack workspaces (`slack add` connects another; `auth login` connects the first; `slack backfill --account N --from D --to D` fetches up to 31 past days of one account again, with digests for channel days that had none; on a day that already has a digest for a channel, the fetched messages are saved and searchable but not digested; `slack live probe [--provider claude\|codex] [--json]` checks that your Claude or ChatGPT Slack connector can read, for [Live Slack](../concepts/sources-and-accounts.md#live-slack-through-your-claude-or-chatgpt-account); `slack connect --code T…:1234.5678` connects through your workspace's app while the app is not running; `slack app create\|adopt\|link\|pending\|status` runs [the company setup](../features/slack-full.md#set-up-slack-for-your-company), the configuration token read from standard input) |
 | `watchtower google`, `gmail` | Google accounts and Gmail |
 | `watchtower imap`, `outlook` | Other mailboxes |
 | `watchtower calendar`, `caldav` | Calendar events and CalDAV/ICS feeds |
@@ -101,7 +101,7 @@ Commands for a [headless host](../features/headless-host.md): a Linux box or a M
 | `watchtower hub status` | The hub's state and reason, its host kind and mode, and the number of phones |
 | `watchtower hub pair` | Link a phone from this terminal: a QR code, a link, then **Confirm code 1234 on your phone? [y/N]**. Scripts use `--json --stream` |
 | `watchtower hub phones` | Linked phones with their device ids and grants |
-| `watchtower hub diagnostics [--days N]` | How long the hub took to apply phone actions and save what they changed, p50 and p90 per step and transport over the last 1–7 days (7 by default), and how many alerts were dropped because too many were waiting. Timings only, kept on this machine; works without a running hub |
+| `watchtower hub diagnostics [--days N]` | How long the hub took to apply phone actions and save what they changed, p50 and p90 per step and transport (and per kind of action) over the last 1–7 days (7 by default), and how many alerts were dropped because too many were waiting. Timings only, kept on this machine; works without a running hub |
 | `watchtower hub allow <device> typing\|permissions\|start_sessions` | Let a phone type into sessions, answer permission prompts or start sessions; `--revoke` takes it back |
 | `watchtower hub unlink <device>` | Unlink a phone |
 | `watchtower hub name <name>` | The name phones show for this host (the hostname by default) |

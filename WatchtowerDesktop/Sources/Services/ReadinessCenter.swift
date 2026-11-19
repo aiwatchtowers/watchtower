@@ -59,13 +59,21 @@ final class ReadinessCenter {
         var runningBackfillStarts: [Date]
         var memoryHasRun: Bool
         var jiraBoardsSelected: Bool
+        /// The Slack Live verdicts behind `ReadinessInputs.slackLiveOnly`.
+        var slackLiveVerdicts: [String]
     }
 
     @ObservationIgnored private let environment: any ReadinessEnvironment
     @ObservationIgnored private let tickInterval: Duration
     @ObservationIgnored private var snapshot: DBSnapshot?
+    /// The pool `start` reads, for `rereadDatabase()`.
+    @ObservationIgnored private var pool: DatabasePool?
     @ObservationIgnored private var observationTask: Task<Void, Never>?
     @ObservationIgnored private var tickTask: Task<Void, Never>?
+    /// Called when a read finds the Slack Live verdicts changed (a chat or an
+    /// automation wrote `slack_live_status`): the sidebar's sources re-read,
+    /// so Catch-Up and Statistics follow the same Live the readiness does.
+    @ObservationIgnored var onSlackLiveChange: (@MainActor () async -> Void)?
     /// The tick's wait between re-reads; tests replace it to tick by hand.
     @ObservationIgnored var tickSleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// Bumped by `start`/`stop`: a value from an earlier observation is dropped.
@@ -84,6 +92,7 @@ final class ReadinessCenter {
     /// starts the tick. A second call restarts both.
     func start(pool: DatabasePool) {
         stop()
+        self.pool = pool
         let current = generation
         observationTask = Task { [weak self] in
             do {
@@ -97,7 +106,7 @@ final class ReadinessCenter {
                     .removeDuplicates()
                 for try await value in observation.values(in: pool) {
                     guard let self, self.generation == current else { return }
-                    self.snapshot = value
+                    self.apply(value)
                     self.refresh()
                 }
             } catch {
@@ -122,7 +131,24 @@ final class ReadinessCenter {
                    latestRuns: try ReadinessQueries.latestRuns(db),
                    runningBackfillStarts: try ReadinessQueries.runningBackfillStarts(db),
                    memoryHasRun: try ReadinessQueries.memoryHasRun(db),
-                   jiraBoardsSelected: try ReadinessQueries.jiraBoardsSelected(db))
+                   jiraBoardsSelected: try ReadinessQueries.jiraBoardsSelected(db),
+                   slackLiveVerdicts: try ReadinessQueries.slackLiveVerdicts(db))
+    }
+
+    /// Takes a fresh snapshot; a change of the Live verdicts after the first
+    /// read calls `onSlackLiveChange`.
+    private func apply(_ value: DBSnapshot) {
+        let liveChanged = snapshot.map { $0.slackLiveVerdicts != value.slackLiveVerdicts } ?? false
+        snapshot = value
+        if liveChanged, let onSlackLiveChange { Task { await onSlackLiveChange() } }
+    }
+
+    /// Re-reads the DB now instead of at the next tick: another process
+    /// wrote what the observation cannot see (the Live probe's
+    /// `slack_live_status`, screens spec §6). A no-op before `start`.
+    func rereadDatabase() async {
+        guard let pool else { return }
+        await reread(pool, generation: generation)
     }
 
     /// The tick's one-shot read: picks up the daemon's writes, and a table a
@@ -131,7 +157,7 @@ final class ReadinessCenter {
         do {
             let value = try await pool.read(Self.readSnapshot)
             guard generation == current else { return }
-            if value != snapshot { snapshot = value }
+            if value != snapshot { apply(value) }
         } catch {
             NSLog("ReadinessCenter: re-reading readiness: %@", error.localizedDescription)
         }
@@ -147,6 +173,7 @@ final class ReadinessCenter {
         tickTask?.cancel()
         tickTask = nil
         snapshot = nil
+        pool = nil
     }
 
     /// Re-reads the non-DB inputs and re-evaluates. A no-op until the first
@@ -198,6 +225,8 @@ final class ReadinessCenter {
             memoryHasRun: snapshot.memoryHasRun,
             backfillOff: environment.backfillDays.map { $0 <= 0 } ?? false,
             jiraBoardsSelected: snapshot.jiraBoardsSelected,
+            slackLiveOnly: SlackMode.derive(
+                full: environment.connected.slack, liveStatuses: snapshot.slackLiveVerdicts) == .live,
             backgroundAI: environment.backgroundAI
         )
     }

@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/db"
-	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/slackbackfill"
 	"watchtower/internal/sync"
 )
@@ -80,7 +79,7 @@ func runSlackBackfill(cmd *cobra.Command, _ []string) error {
 	case acct.Status == "revoked" || acct.Status == "purged":
 		return fmt.Errorf("slack account %d needs a Re-login first (status %s)", accountID, acct.Status)
 	}
-	token, err := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), accountID).Load()
+	token, err := loadSlackToken(cmd.Context(), cfg, database, accountID)
 	if err != nil {
 		return fmt.Errorf("loading the token of slack account %d: %w", accountID, err)
 	}

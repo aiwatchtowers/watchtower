@@ -4,5 +4,41 @@
   {"name": "live only", "full": false, "live": ["ok"], "want": "live"},
   {"name": "not connected", "full": false, "live": ["not_connected"], "want": "off"},
   {"name": "mixed statuses", "full": false, "live": ["not_connected", "ok"], "want": "live"},
-  {"name": "nothing", "full": false, "live": [], "want": "off"}
+  {"name": "nothing", "full": false, "live": [], "want": "off"},
+  {"name": "older ok, newer failed", "full": false, "probes": [
+    {"provider": "claude", "team": "T1", "status": "ok", "checked_at": "2026-11-17T10:00:00.000000000Z"},
+    {"provider": "claude", "team": "", "status": "not_connected", "checked_at": "2026-11-18T10:00:00.000000000Z"}
+  ], "want": "off"},
+  {"name": "older failed, newer ok", "full": false, "probes": [
+    {"provider": "claude", "team": "", "status": "needs_admin", "checked_at": "2026-11-17T10:00:00.000000000Z"},
+    {"provider": "claude", "team": "T1", "status": "ok", "checked_at": "2026-11-18T10:00:00.000000000Z"}
+  ], "want": "live"},
+  {"name": "two providers, one newest ok", "full": false, "probes": [
+    {"provider": "claude", "team": "", "status": "ok", "checked_at": "2026-11-17T10:00:00.000000000Z"},
+    {"provider": "claude", "team": "", "status": "unavailable", "checked_at": "2026-11-18T10:00:00.000000000Z"},
+    {"provider": "codex", "team": "", "status": "not_connected", "checked_at": "2026-11-17T09:00:00.000000000Z"},
+    {"provider": "codex", "team": "", "status": "ok", "checked_at": "2026-11-18T09:00:00.000000000Z"}
+  ], "want": "live"},
+  {"name": "two providers, both newest failed", "full": false, "probes": [
+    {"provider": "claude", "team": "", "status": "ok", "checked_at": "2026-11-17T10:00:00.000000000Z"},
+    {"provider": "claude", "team": "", "status": "unavailable", "checked_at": "2026-11-18T10:00:00.000000000Z"},
+    {"provider": "codex", "team": "", "status": "ok", "checked_at": "2026-11-17T09:00:00.000000000Z"},
+    {"provider": "codex", "team": "", "status": "no_plan", "checked_at": "2026-11-18T09:00:00.000000000Z"}
+  ], "want": "off"},
+  {"name": "same-instant batch, team rows absent, '' ok", "full": false, "probes": [
+    {"provider": "claude", "team": "", "status": "ok", "checked_at": "2026-11-18T10:00:00.000000000Z"},
+    {"provider": "claude", "team": "T2", "status": "not_connected", "checked_at": "2026-11-18T10:00:00.000000000Z"}
+  ], "want": "live"},
+  {"name": "same-instant batch, one team ok", "full": false, "probes": [
+    {"provider": "codex", "team": "", "status": "not_connected", "checked_at": "2026-11-18T10:00:00.000000000Z"},
+    {"provider": "codex", "team": "T1", "status": "ok", "checked_at": "2026-11-18T10:00:00.000000000Z"},
+    {"provider": "codex", "team": "T2", "status": "not_connected", "checked_at": "2026-11-18T10:00:00.000000000Z"}
+  ], "want": "live"},
+  {"name": "same-instant batch, all failed", "full": false, "probes": [
+    {"provider": "codex", "team": "", "status": "needs_admin", "checked_at": "2026-11-18T10:00:00.000000000Z"},
+    {"provider": "codex", "team": "T1", "status": "needs_admin", "checked_at": "2026-11-18T10:00:00.000000000Z"}
+  ], "want": "off"},
+  {"name": "full ignores a newer failed probe", "full": true, "probes": [
+    {"provider": "claude", "team": "", "status": "not_connected", "checked_at": "2026-11-18T10:00:00.000000000Z"}
+  ], "want": "full"}
 ]

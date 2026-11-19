@@ -759,6 +759,45 @@ final class AskFormTests: XCTestCase {
         XCTAssertEqual(AppliedAnswer(delivery: nil).text, "Answer saved on the tower")
     }
 
+    /// Live link R5: an answer adds an `ask_answer` overlay. Between the applied echo (which removes the row) and
+    /// the asks slice, Now keeps "Sending answer…" instead of offering the ask again, and the form shows the
+    /// delivery; the slice that closes the ask drops the overlay.
+    func testAnAnsweredAskStaysSendingUntilItsSliceArrives() async throws {
+        let store = try TestPhone.replica()
+        let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
+        let book = OverlayBook(hubID: "hub")
+        let drafts = AskDraftStore()
+        let answerer = AskAnswerer.sending(through: outbox, store: store, drafts: drafts, overlays: book)
+        await outbox.setAppliedObserver(HubSession.appliedObserver(
+            askAnswerer: answerer, sessionStarts: SessionStarter.sending(through: outbox, store: store), overlays: book))
+        let ask = try makeAsk(140, ["kind": "check", "payload": ["checklist": [["id": "1", "text": "Open"]]]])
+        let model = AskViewModel(askID: 140, drafts: drafts, answerer: answerer)
+        model.setNote("All good")
+        await model.send(ask)
+        XCTAssertEqual(book.overlays.map(\.kind), [.askAnswer])
+        XCTAssertEqual(book.overlays.first?.entityID, 140)
+        XCTAssertEqual(book.overlays.first?.expected, .askAnswer(label: nil), "a check has no option to name")
+
+        var echo = try XCTUnwrap(store.pendingActions().first).action
+        echo.status = .applied
+        echo.result = ["delivery": .string("held")]
+        try await outbox.applyEcho(echo)
+        try await poll { answerer.applied[140] != nil && book.overlays.first?.echo != nil }
+
+        let open = try replica([ask], store: store)
+        XCTAssertTrue(open.pending.isEmpty, "applied removed the row")
+        let shown = open.applying(book.reconcile(with: open, now: now))
+        XCTAssertEqual(NowModel(snapshot: shown, linked: true, now: now).waitingForYou.first { $0.id == .ask(140) }?.answer,
+                       .sending(NowAnswer.sendingText))
+        XCTAssertEqual(NowModel(snapshot: open, linked: true, now: now).waitingForYou.first { $0.id == .ask(140) }?.answer,
+                       NowAnswer.none, "without the overlay the ask would ask again")
+        XCTAssertEqual(try formOf(model, shown).status, .applied("Held until the session is free"))
+
+        let closed = try replica([try makeAsk(140, ["kind": "check", "status": "answered"])], store: store)
+        XCTAssertTrue(book.reconcile(with: closed, now: now).isEmpty)
+        XCTAssertTrue(book.overlays.isEmpty)
+    }
+
     /// An automation's ask (the Mac's `automationAnswerNote`); a delivery
     /// this build does not know shows the plain saved line.
     func testAnAutomationEchoSaysTheAutomationGoesOn() async throws {
@@ -908,9 +947,10 @@ final class AskFormTests: XCTestCase {
         let sent = Counter()
         let answerer = AskAnswerer(
             drafts: drafts,
-            enqueue: { _, _ in
+            enqueue: { _, _, _ in
                 sent.count += 1
                 await gate.wait()
+                return "action"
             },
             remove: { _ in }
         )

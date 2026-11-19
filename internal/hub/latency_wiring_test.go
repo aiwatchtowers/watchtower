@@ -96,6 +96,12 @@ func TestRuntimeRecordsLatencySamples(t *testing.T) {
 		if s[state.StepAppliedSaved] < 1 || s[state.StepAppliedSaved] > sent || s[state.StepReadSaved] != s[state.StepAppliedSaved] {
 			t.Fatalf("samples after %d actions: %+v, want 1..%d applied_saved with as many read_saved", sent, s, sent)
 		}
+		// The relay's mailbox events are timed arrival → read, and the
+		// credited apply's cycle end gives its nudge_saved (live link R7).
+		eventually(t, "event_read and nudge_saved samples", func() bool {
+			s = steps()
+			return s[state.StepEventRead] >= 1 && s[state.StepNudgeSaved] >= 1
+		})
 	})
 }
 
@@ -111,7 +117,7 @@ func TestMeasureLoopFlushesOnStop(t *testing.T) {
 		h := &hubRuntime{st: st}
 		h.lat = measure.New(st, nil)
 		now := time.Now()
-		h.lat.Applied("relay", now.Add(-5*time.Millisecond), now, nil)
+		h.lat.Applied("relay", "", now.Add(-5*time.Millisecond), now, nil)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // stopped before the first tick
 		h.measureLoop(ctx)

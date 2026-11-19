@@ -97,8 +97,8 @@ final class AppState {
     var settingsAnchor: SettingsAnchor?
     /// The Connections tab's open service (nil: the overview), so a link opens a service.
     var selectedConnection: ConnectionService?
-    /// A Slack connect in flight survives leaving the Connections tab (`SlackAuthFlowState`).
-    @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState()
+    @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState() // a connect survives leaving the tab
+    @ObservationIgnored private(set) lazy var slackAppSetup = SlackAppSetupModel { Self.slackLineStream() } // #1709 S3; no process under XCTest
     @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
     /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
     @ObservationIgnored weak var observedProviderConnection: ProviderConnection?
@@ -110,7 +110,7 @@ final class AppState {
     var isLoading: Bool = true
 
     /// Whether onboarding (Goals → Connect) is on screen.
-    var needsOnboarding: Bool = false
+    var needsOnboarding: Bool = false { didSet { if oldValue, !needsOnboarding { showPendingSlackConnect() } } }
 
     /// Persistent onboarding state machine — tracks which step the user is on across app restarts.
     let onboarding: OnboardingStateMachineV2
@@ -376,11 +376,11 @@ final class AppState {
     private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
     /// Claude plan limits (menu bar text, tray rows, Usage tab); nil until the database is open.
     private(set) var planUsageCenter: PlanUsageCenter?
-    /// The account purge ledger (board #601): red lines, Home banner, notices.
-    var accountPurgeCenter: AccountPurgeCenter?
+    var accountPurgeCenter: AccountPurgeCenter? // the account purge ledger (board #601): red lines, Home banner, notices
     let fileVault = FileVaultWatch() // `fdesetup status` at launch and on activation (#1769)
-    /// The Slack Live probe's verdicts (Connections → Slack).
-    var slackLiveStatusCenter: SlackLiveStatusCenter?
+    var slackLiveStatusCenter: SlackLiveStatusCenter? // the Slack Live probe's verdicts (Connections → Slack)
+    var slackConnectListener: SlackConnectListenerHost? // `slack connect serve` on 18551 (#1709); none under XCTest
+    var slackConnectFlow: SlackConnectFlowModel? // the connect flow on that listener (link, code, MDM, Reconnect)
     /// The live workbench sessions' agent states (board #312), polled while a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
     /// The Go hub over its control socket (heartbeat, view inputs, status; go hub plan 3 Task 14); none under XCTest.
@@ -1278,7 +1278,7 @@ final class AppState {
 
     /// A first run of onboarding opens Home, whatever the goals.
     private func landOnHome() {
-        selectedDestination = .home
+        if !showPendingSlackConnect() { selectedDestination = .home }
     }
 
     /// Called when onboarding flow completes successfully.
@@ -1531,7 +1531,7 @@ final class AppState {
         initEmailAccounts(dbPool: manager.dbPool)
         initCalendarAccounts(dbPool: manager.dbPool)
         initGoogleAccounts(dbPool: manager.dbPool)
-        initSlackAccounts(dbPool: manager.dbPool)
+        initSlackAccountsAndConnectFlow(dbPool: manager.dbPool)
         initJiraAccounts(dbPool: manager.dbPool)
         linearAccountsViewModel = .started { [weak self] in await self?.accountsChanged() }
     }
@@ -1668,7 +1668,7 @@ final class AppState {
     }
 
     func initSlackAccounts(dbPool: DatabasePool) {
-        let vm = SlackAccountsViewModel(dbPool: dbPool)
+        let vm = SlackAccountsViewModel(dbPool: dbPool, cliPath: Self.slackCLIPath, readsAccountFlags: !Self.runsUnderXCTest)
         vm.onAccountsChanged = { [weak self, weak vm] in
             if let vm { self?.slackAccountsDidChange(vm.accounts) }
             await self?.accountsChanged()

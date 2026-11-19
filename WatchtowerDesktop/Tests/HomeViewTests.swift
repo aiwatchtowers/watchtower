@@ -842,4 +842,21 @@ final class HomeViewTests: XCTestCase {
         let content = makeContent(appState.homeCenter.snapshot)
         XCTAssertThrowsError(try content.inspect().find(ViewType.ProgressView.self))
     }
+
+    /// Slack Live only (ask #1572): one row with one Connect workspace app
+    /// button; a policy that forbids Slack keeps the line, drops the button.
+    func testLiveOnlyRowButtonFollowsPolicy() throws {
+        var links: [HomeLink] = []
+        let row = GettingReadySourceRow(source: .fullSlack, features: [.digests, .tracks])
+        let line = GettingReadyZoneView.connectLine(row)
+        XCTAssertEqual(line, "Connect your workspace's app to get Digests and Track my threads — Live answers in Chats only.")
+        let allowed = makeContent(viewSnapshot(.shown(cards: [], sourceRows: [row]))) { links.append($0) }
+        try allowed.inspect().find(button: "Connect workspace app").tap()
+        XCTAssertEqual(links, [.connect(.fullSlack)])
+
+        let forbiddenRow = GettingReadySourceRow(source: .fullSlack, features: [.digests], offersConnect: false)
+        let forbidden = makeContent(viewSnapshot(.shown(cards: [], sourceRows: [forbiddenRow])))
+        XCTAssertNoThrow(try forbidden.inspect().find(text: GettingReadyZoneView.connectLine(forbiddenRow)))
+        XCTAssertThrowsError(try forbidden.inspect().find(button: "Connect workspace app"))
+    }
 }
