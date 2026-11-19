@@ -1070,3 +1070,31 @@ func TestCloseStaleWatchmanHandovers_ExpiredDecidingHold(t *testing.T) {
 	require.NoError(t, d.QueryRow(`SELECT state, error FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?`, live).Scan(&st, &e))
 	require.Equal(t, []string{"deciding", WatchmanHandoverHeld}, []string{st, e}, "a live lease is not stolen")
 }
+
+// A held handover of a session taken back is closed even when its arming
+// reads NULL: no target on the item or the session while another target is
+// armed (NULL IN a non-empty set is NULL, and NOT NULL never holds).
+func TestCloseStaleWatchmanHandovers_NullArmingClosed(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	other := insertWorkbenchTargetRow(t, d, wb, "Elsewhere")
+	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "target", RefID: other, ArmedAt: time.Now(), ArmedBy: "cli"}))
+	s := newTestSession(t, d, wb)
+	_, err := d.Exec(`UPDATE terminal_sessions SET target_id = NULL WHERE id = ?`, s)
+	require.NoError(t, err)
+	wmArmSession(t, d, s)
+	a := questionAsk(wb, "No target")
+	a.SessionID = nullID(s)
+	askID := mustInsertAsk(t, d, a)
+	_, _, err = d.PromoteWatchmanHandover(WatchmanItem{WorkbenchID: wb, SessionID: s, RefID: askID, Question: "q"}, true)
+	require.NoError(t, err)
+	_, err = d.DeleteWatchmanArming("session", s)
+	require.NoError(t, err)
+
+	n, err := d.CloseStaleWatchmanHandovers(time.Now())
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+	var st, out string
+	require.NoError(t, d.QueryRow(`SELECT state, outcome FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?`, askID).Scan(&st, &out))
+	require.Equal(t, []string{"done", "superseded"}, []string{st, out})
+}

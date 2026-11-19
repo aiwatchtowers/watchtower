@@ -755,11 +755,13 @@ const watchmanArmedTargets = `WITH RECURSIVE sub(id) AS (
 
 // watchmanHandoverArmed is a watchman_items row's arming as a handover
 // reads it, finished session or not: its session's own arming row, or an
-// armed target covering the item's target or its session's target.
-const watchmanHandoverArmed = `(watchman_items.session_id IN (SELECT ref_id FROM watchman_arming WHERE scope = 'session')
+// armed target covering the item's target or its session's target. It is
+// never NULL: a NULL session or target (none, or a session gone) is not
+// armed, so NOT of it holds too (CloseStaleWatchmanHandovers).
+const watchmanHandoverArmed = `COALESCE(watchman_items.session_id IN (SELECT ref_id FROM watchman_arming WHERE scope = 'session')
 	OR watchman_items.target_id IN (` + watchmanArmedTargets + `)
 	OR (SELECT ts.target_id FROM terminal_sessions ts WHERE ts.id = watchman_items.session_id AND ts.` + NotDeletingSQL + `)
-		IN (` + watchmanArmedTargets + `))`
+		IN (` + watchmanArmedTargets + `), 0)`
 
 // watchmanStartArmed authorises starting a handover's next session on the
 // item's target (its destination): the session's own arming row, or an armed
