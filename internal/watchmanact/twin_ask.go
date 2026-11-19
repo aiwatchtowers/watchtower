@@ -122,6 +122,20 @@ func (t *Twin) handle(ctx context.Context, it db.WatchmanItem) {
 		j.drop()
 		return
 	default: // answered or delivered before the twin took it
+		if it.Kind == "handover" {
+			// A handover beside the twin's own earlier answer to the ask
+			// (finish_session after the question was decided): decided
+			// without answering the ask again.
+			ours, err := t.d.DB.WatchmanAskAnsweredByTwin(it.RefID)
+			if err != nil {
+				j.fail(ctx, err)
+				return
+			}
+			if ours {
+				j.answered = true
+				break
+			}
+		}
 		j.finishAlone(j.outcome(OutcomeOwnerFirst))
 		return
 	}
@@ -352,8 +366,13 @@ func (j *job) park(ctx context.Context, reason string) {
 }
 
 // answerText answers the ask with one text (textAnswer) and finishes the
-// item with o; an ask a text cannot answer is finished without one.
+// item with o; an ask a text cannot answer is finished without one, and so
+// is a handover whose ask the twin already answered as a question (true
+// once finished: there is nothing more to write on the ask).
 func (j *job) answerText(ctx context.Context, p asks.Payload, text string, o db.WatchmanOutcome) bool {
+	if j.answered {
+		return j.finishAlone(o)
+	}
 	ans, ok := textAnswer(j.ask.Kind, p, text)
 	if !ok {
 		j.finishAlone(o)

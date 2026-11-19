@@ -164,8 +164,10 @@ func finishTicket(d *db.DB, session int64, a finishSessionArgs) (int64, error) {
 }
 
 // checkHandoverAsk: no id is no handover; an id must name an ask of this
-// workbench filed by this session, not withdrawn, about the ticket's subtree
-// when there is a ticket.
+// workbench filed by this session, not withdrawn and not a review (a review
+// ask is the owner's verdict on a document, never a handover — the twin
+// would decide it as one), about the ticket's subtree when there is a
+// ticket.
 func checkHandoverAsk(d *db.DB, workbenchID, session, ticket, askID int64) (bool, error) {
 	if askID == 0 {
 		return false, nil
@@ -182,6 +184,9 @@ func checkHandoverAsk(d *db.DB, workbenchID, session, ticket, askID int64) (bool
 		return false, &ValidationError{Msg: fmt.Sprintf("handover_ask_id: ask #%d was not filed by this session", askID)}
 	case ask.Status == "withdrawn":
 		return false, &ValidationError{Msg: fmt.Sprintf("handover_ask_id: ask #%d is withdrawn", askID)}
+	case ask.Kind == "review":
+		return false, &ValidationError{Msg: fmt.Sprintf("handover_ask_id: ask #%d is a review; "+
+			"file a question or check ask that says what is left and why", askID)}
 	case ticket == 0:
 		return true, nil
 	case !ask.TargetID.Valid:

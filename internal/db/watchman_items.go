@@ -215,25 +215,45 @@ func (db *DB) QueueWatchmanWaitPoint(it WatchmanItem) (id int64, inserted bool, 
 // write transaction; a seam for the race test.
 var watchmanHandoverBeforeWrite = func() {}
 
+// WatchmanHandoverHeld is the error of a handover item that waits for its
+// session's finish gate: finish_session promotes the ask before the Watchman
+// review gate runs and holds it there; the lease skips it until a finish
+// that passes clears it, so the twin never continues a session that has not
+// finished.
+const WatchmanHandoverHeld = "waiting for the session's finish check to pass"
+
+// watchmanNotHeld is the lease's filter of a held handover.
+var watchmanNotHeld = ` AND NOT (kind = 'handover' AND error = '` + strings.ReplaceAll(WatchmanHandoverHeld, "'", "''") + `')`
+
 // PromoteWatchmanHandover makes ask it.RefID the twin's handover in one write
-// transaction: a queued or deciding item of the ask, whatever its kind,
-// becomes kind handover (the twin deciding it as a question re-reads the
-// kind in its finish transaction and takes it again as a handover); with no
-// item at all a handover is inserted — only for an open ask that no
-// automation run filed, of an armed session no automation started
-// (QueueWatchmanWaitPoint's guards). A done item is left. So a scan or
-// writer racing it ends with exactly one handover row. it carries the
-// insert's workbench, session, target and question; promoted reports a
-// handover it wrote, inserted a new row.
-func (db *DB) PromoteWatchmanHandover(it WatchmanItem) (promoted, inserted bool, err error) {
+// transaction, held (WatchmanHandoverHeld) when held is true, released when
+// it is false: a queued or deciding item of the ask that is not a handover
+// yet, or a held one, becomes kind handover with that hold (the twin
+// deciding it as a question re-reads the kind in its finish transaction and
+// takes it again as a handover). With no item at all a handover is inserted —
+// only for an open ask that no automation run filed, of an armed session no
+// automation started (QueueWatchmanWaitPoint's guards). An ask the twin
+// already answered as a question (its item done, outcome answered) gets a
+// second row, the handover, beside it — the earlier answer stays in the
+// journal and the twin decides the handover without answering the ask
+// again. A handover released or done is left. So a scan or writer racing it
+// ends with exactly one handover row. it carries the insert's workbench,
+// session, target and question; promoted reports a handover it wrote,
+// inserted a new row.
+func (db *DB) PromoteWatchmanHandover(it WatchmanItem, held bool) (promoted, inserted bool, err error) {
 	watchmanHandoverBeforeWrite()
 	q := []rune(it.Question)
 	if len(q) > watchmanQuestionMax {
 		q = q[:watchmanQuestionMax]
 	}
+	hold := ""
+	if held {
+		hold = WatchmanHandoverHeld
+	}
 	err = db.WithTx(func(tx *sql.Tx) error {
-		res, err := tx.Exec(`UPDATE watchman_items SET kind = 'handover'
-			WHERE ref_kind = 'ask' AND ref_id = ? AND state IN ('queued','deciding') AND kind != 'handover'`, it.RefID)
+		res, err := tx.Exec(`UPDATE watchman_items SET kind = 'handover', error = ?
+			WHERE ref_kind = 'ask' AND ref_id = ? AND state IN ('queued','deciding')
+			  AND (kind != 'handover' OR error = ?)`, hold, it.RefID, WatchmanHandoverHeld)
 		if err != nil {
 			return err
 		}
@@ -248,14 +268,18 @@ func (db *DB) PromoteWatchmanHandover(it WatchmanItem) (promoted, inserted bool,
 		if armed == 0 {
 			return nil
 		}
-		res, err = tx.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, question, created_at)
-			SELECT ?, ?, ?, 'handover', 'ask', ?, ?, ?
-			WHERE NOT EXISTS (SELECT 1 FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?)
-			  AND EXISTS (SELECT 1 FROM owner_asks WHERE id = ? AND status = 'open' AND automation_run_id IS NULL)
-			  AND EXISTS (SELECT 1 FROM terminal_sessions WHERE id = ? AND automation_run_id IS NULL AND `+NotDeletingSQL+`)
+		// No row: an open ask. Only a done question the twin answered: that
+		// ask, answered or delivered.
+		res, err = tx.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, question, error, created_at)
+			SELECT ?1, ?2, ?3, 'handover', 'ask', ?4, ?5, ?6, ?7
+			WHERE NOT EXISTS (SELECT 1 FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?4
+			                  AND (kind = 'handover' OR state != 'done' OR outcome != 'answered'))
+			  AND EXISTS (SELECT 1 FROM owner_asks WHERE id = ?4 AND automation_run_id IS NULL
+			              AND CASE WHEN EXISTS (SELECT 1 FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?4)
+			                   THEN status IN ('answered','delivered') ELSE status = 'open' END)
+			  AND EXISTS (SELECT 1 FROM terminal_sessions WHERE id = ?2 AND automation_run_id IS NULL AND `+NotDeletingSQL+`)
 			ON CONFLICT(ref_kind, ref_id, kind) DO NOTHING`,
-			it.WorkbenchID, wmNullID(it.SessionID), wmNullID(it.TargetID), it.RefID, string(q), wmTime(time.Now()),
-			it.RefID, it.RefID, it.SessionID)
+			it.WorkbenchID, wmNullID(it.SessionID), wmNullID(it.TargetID), it.RefID, string(q), hold, wmTime(time.Now()))
 		if err != nil {
 			return err
 		}
@@ -268,6 +292,18 @@ func (db *DB) PromoteWatchmanHandover(it WatchmanItem) (promoted, inserted bool,
 		return false, false, fmt.Errorf("marking ask %d Watchman's handover: %w", it.RefID, err)
 	}
 	return promoted, inserted, nil
+}
+
+// WatchmanAskAnsweredByTwin reports whether the twin answered ask askID as a
+// question (a done item of the ask, not its handover, outcome answered).
+func (db *DB) WatchmanAskAnsweredByTwin(askID int64) (bool, error) {
+	var yes bool
+	err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?
+		AND kind != 'handover' AND state = 'done' AND outcome = 'answered')`, askID).Scan(&yes)
+	if err != nil {
+		return false, fmt.Errorf("reading the twin's answer of ask %d: %w", askID, err)
+	}
+	return yes, nil
 }
 
 // watchmanScanBeforeInsert runs between the scan's read and its inserts; a
@@ -446,7 +482,7 @@ func (db *DB) leaseWatchmanItem(now time.Time, lease time.Duration, eligible fun
 			}
 			res, err := db.Exec(`UPDATE watchman_items SET state = 'deciding', attempts = attempts + 1, lease_until = ?
 				WHERE id = ? AND kind = ? AND attempts = ?
-				  AND ((state = 'queued' AND (not_before IS NULL OR not_before <= ?)) OR (state = 'deciding' AND lease_until < ?))`+armed,
+				  AND ((state = 'queued' AND (not_before IS NULL OR not_before <= ?)) OR (state = 'deciding' AND lease_until < ?))`+watchmanNotHeld+armed,
 				wmTime(until), c.ID, c.Kind, c.Attempts, nowS, nowS)
 			if err != nil {
 				return nil, fmt.Errorf("leasing watchman item %d: %w", c.ID, err)
@@ -471,7 +507,7 @@ func (db *DB) leaseWatchmanItem(now time.Time, lease time.Duration, eligible fun
 // (created_at, id) cursor, oldest first.
 func (db *DB) watchmanLeaseCandidates(nowS, afterCreated string, afterID int64) ([]*WatchmanItem, error) {
 	rows, err := db.Query(`SELECT `+watchmanItemCols+` FROM watchman_items
-		WHERE ((state = 'queued' AND (not_before IS NULL OR not_before <= ?)) OR (state = 'deciding' AND lease_until < ?))
+		WHERE ((state = 'queued' AND (not_before IS NULL OR not_before <= ?)) OR (state = 'deciding' AND lease_until < ?))`+watchmanNotHeld+`
 		  AND (created_at > ? OR (created_at = ? AND id > ?))
 		ORDER BY created_at, id LIMIT ?`, nowS, nowS, afterCreated, afterCreated, afterID, watchmanLeaseScanMax)
 	if err != nil {
@@ -531,8 +567,10 @@ func (db *DB) FinishWatchmanItemTx(tx *sql.Tx, id int64, lease time.Time, o Watc
 // RequeueWatchmanItem hands a deciding item back to the queue, not before
 // notBefore, keeping errText; false when the lease is stale.
 func (db *DB) RequeueWatchmanItem(id int64, lease time.Time, notBefore time.Time, errText string) (bool, error) {
-	res, err := db.Exec(`UPDATE watchman_items SET state = 'queued', lease_until = NULL, not_before = ?, error = ?
-		WHERE id = ? AND state = 'deciding' AND lease_until = ?`, wmTime(notBefore), errText, id, wmTime(lease))
+	// A handover promoted and held meanwhile keeps its hold.
+	res, err := db.Exec(`UPDATE watchman_items SET state = 'queued', lease_until = NULL, not_before = ?,
+			error = CASE WHEN kind = 'handover' AND error = ? THEN error ELSE ? END
+		WHERE id = ? AND state = 'deciding' AND lease_until = ?`, wmTime(notBefore), WatchmanHandoverHeld, errText, id, wmTime(lease))
 	if err != nil {
 		return false, fmt.Errorf("requeueing watchman item %d: %w", id, err)
 	}

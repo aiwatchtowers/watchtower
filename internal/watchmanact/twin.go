@@ -198,6 +198,9 @@ type job struct {
 	dec    *watchman.Decision
 	// parked is the outcome of a park in progress (nil when not parking).
 	parked *db.WatchmanOutcome
+	// answered: a handover whose ask the twin already answered as a
+	// question; its decision finishes the item without writing the ask.
+	answered bool
 }
 
 func (j *job) now() time.Time { return j.t.d.Clock() }
@@ -272,8 +275,8 @@ func (j *job) finishTx(tx *sql.Tx, o db.WatchmanOutcome) error {
 }
 
 // finishAlone finishes the item without an answer (the owner answered first,
-// or an ask the twin cannot answer with a text).
-func (j *job) finishAlone(o db.WatchmanOutcome) {
+// or an ask the twin cannot answer with a text); true when it finished.
+func (j *job) finishAlone(o db.WatchmanOutcome) bool {
 	err := j.t.d.DB.WithTx(func(tx *sql.Tx) error { return j.finishTx(tx, o) })
 	switch {
 	case errors.Is(err, errKindChanged):
@@ -281,6 +284,7 @@ func (j *job) finishAlone(o db.WatchmanOutcome) {
 	case err != nil:
 		log.Printf("watchman twin: item %d: finishing: %v", j.it.ID, err)
 	}
+	return err == nil
 }
 
 // lostRace closes an item whose answer lost the compare-and-set: the owner

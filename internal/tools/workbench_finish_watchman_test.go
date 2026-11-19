@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"sync/atomic"
 	"testing"
 
@@ -188,17 +189,57 @@ func TestProj14_FinishArmedReadFailureRefuses(t *testing.T) {
 	assertNotFinished(t, fx.d, session, 0)
 }
 
-// A finish the review gate refuses leaves the handover ask an ordinary ask:
-// the agent keeps working and the twin answers it as a question.
-func TestFinishSession_RefusedFinishKeepsAskKind(t *testing.T) {
-	fx, wb, _, reg, _ := armedRepoSession(t)
+// A finish the review gate refuses still makes the ask its handover, held
+// (final review B-I1): the twin neither decides it as a question nor
+// continues a session that has not finished. A finish that passes once the
+// review approves releases it.
+func TestFinishSession_RefusedFinishHoldsTheHandover(t *testing.T) {
+	fx, wb, session, reg, wakes := armedRepoSession(t)
 	id := askID(t, mustApply(t, reg, wb, "ask_owner", `{"kind":"question","title":"Images later?",`+
 		`"questions":[{"question":"Leave images?","options":[{"label":"Yes"},{"label":"No"}]}],"reason":"r"}`))
-	_, err := proposeIn(t, reg, wb, "finish_session", fmt.Sprintf(`{"summary":"A done.","handover_ask_id":%d,"reason":"r"}`, id))
+	asked := wakes.Load()
+	finish := fmt.Sprintf(`{"summary":"A done.","handover_ask_id":%d,"reason":"r"}`, id)
+	_, err := proposeIn(t, reg, wb, "finish_session", finish)
 	assert.Equal(t, watchmanReviewingRefusal, refusal(t, err))
-	it, err := fx.d.WatchmanItemByRef("ask", id, "ask")
+	it, err := fx.d.WatchmanItemByRef("ask", id, "handover")
 	require.NoError(t, err)
-	assert.NotNil(t, it, "still an ordinary ask")
+	require.NotNil(t, it, "the ask is the handover already")
+	assert.Equal(t, "queued", it.State)
+	assert.Equal(t, db.WatchmanHandoverHeld, it.Error, "held while the finish is refused")
+	asAsk, err := fx.d.WatchmanItemByRef("ask", id, "ask")
+	require.NoError(t, err)
+	assert.Nil(t, asAsk, "no ordinary ask left to decide as a question")
+	assert.Equal(t, asked+1, wakes.Load(), "the review item's wake only")
+
+	// Refused again: still held, still one handover row.
+	_, err = proposeIn(t, reg, wb, "finish_session", finish)
+	refusal(t, err)
+	it, err = fx.d.WatchmanItemByRef("ask", id, "handover")
+	require.NoError(t, err)
+	assert.Equal(t, db.WatchmanHandoverHeld, it.Error)
+
+	sentRoundAt(t, fx.d, wb, session, "", true)
+	mustApply(t, reg, wb, "finish_session", finish)
+	it, err = fx.d.WatchmanItemByRef("ask", id, "handover")
+	require.NoError(t, err)
+	assert.Equal(t, "queued", it.State)
+	assert.Empty(t, it.Error, "released once the finish passed")
+	assert.Equal(t, asked+2, wakes.Load(), "the release wakes the twin")
+}
+
+// A review ask is the owner's verdict on a document, never a handover
+// (final review B-minor 1).
+func TestFinishSession_ReviewAskIsNoHandover(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	session := seedTerminalSession(t, fx.d, fx.a)
+	reg := askRegistry(t, fx.d, strconv.FormatInt(session, 10))
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/spec.md", "# Spec\n")
+	id := askID(t, mustApply(t, reg, fx.a, "ask_owner", `{"kind":"review","title":"Review","doc_path":"docs/spec.md","reason":"r"}`))
+	actions := countActions(t, fx.d)
+	_, err := proposeIn(t, reg, fx.a, "finish_session", fmt.Sprintf(`{"summary":"Done.","handover_ask_id":%d,"reason":"r"}`, id))
+	assert.Equal(t, fmt.Sprintf("handover_ask_id: ask #%d is a review; file a question or check ask that says what is left and why", id),
+		refusal(t, err))
+	assertNotFinished(t, fx.d, session, actions)
 }
 
 // The ask's own insert failed: the finish queues it directly as a handover.

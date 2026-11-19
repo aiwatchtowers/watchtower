@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -891,7 +892,7 @@ func TestTwin_HandoverMarkedWhileDecidingIsDecidedAsHandover(t *testing.T) {
 	e.decideFn = func(_ context.Context, it watchman.Item) (watchman.Decision, error) {
 		if first {
 			first = false
-			_, _, err := e.db.PromoteWatchmanHandover(db.WatchmanItem{WorkbenchID: e.wb, SessionID: e.session, RefID: askID, Question: "q"})
+			_, _, err := e.db.PromoteWatchmanHandover(db.WatchmanItem{WorkbenchID: e.wb, SessionID: e.session, RefID: askID, Question: "q"}, false)
 			e.must(err)
 			return decision("SQLite"), nil
 		}
@@ -1247,5 +1248,127 @@ func TestTwin_HandoverStartOfADeletingSessionViaTargetIsTakenBack(t *testing.T) 
 	e.run()
 	if n, got := e.startCount(), e.item(itemID).Error; n != 1 || got != startTakenBack {
 		t.Fatalf("starts = %d, error %q; want taken back", n, got)
+	}
+}
+
+// promoteHandover is finish_session's promotion of ask askID, held while
+// the review gate refuses, released once a finish passes.
+func (e *twinEnv) promoteHandover(askID int64, held bool) {
+	e.t.Helper()
+	_, _, err := e.db.PromoteWatchmanHandover(db.WatchmanItem{WorkbenchID: e.wb, SessionID: e.session, TargetID: e.target,
+		RefID: askID, Question: "Left: the CSV import"}, held)
+	e.must(err)
+}
+
+func continueDecision(context.Context, watchman.Item) (watchman.Decision, error) {
+	d := decision(HandoverContinue)
+	d.Category = watchman.CategoryFinish
+	return d, nil
+}
+
+// Final review B-I1: the handover ask of a finish the review gate refuses is
+// the handover at once, held — the twin decides nothing, not as a question
+// either; once the review approves and a finish passes, it is decided as the
+// handover and Continue starts the next session.
+func TestTwin_HandoverHeldUntilTheFinishPasses(t *testing.T) {
+	e := newTwinEnv(t)
+	askID, itemID := e.question("Left: the CSV import")
+	e.promoteHandover(askID, true) // finish_session refused by the review gate
+	if n := e.run(); n != 0 || e.decideCalls() != 0 {
+		t.Fatalf("RunOnce = %d, decisions %d; want the held handover left alone", n, e.decideCalls())
+	}
+	if it := e.item(itemID); it.State != "queued" || it.Error != db.WatchmanHandoverHeld {
+		t.Fatalf("item = %s/%q, want queued and held", it.State, it.Error)
+	}
+	if status, _ := e.askAnswer(askID); status != "open" {
+		t.Fatalf("ask = %s, want open", status)
+	}
+	e.promoteHandover(askID, true) // refused again
+	e.run()
+	if e.decideCalls() != 0 {
+		t.Fatal("decided while held")
+	}
+
+	e.decideFn = continueDecision
+	e.promoteHandover(askID, false) // the review approved: the finish passes
+	e.finishSession()
+	if n := e.run(); n != 1 {
+		t.Fatalf("RunOnce = %d, want the handover leased", n)
+	}
+	wantOutcome(t, e.item(itemID), OutcomeAnswered)
+	if got := e.decided[0]; got.Category != watchman.CategoryFinish {
+		t.Fatalf("decision = %+v, want the handover path", got)
+	}
+	if e.startCount() != 1 {
+		t.Fatalf("starts = %d, want the next session", e.startCount())
+	}
+	if _, ans := e.askAnswer(askID); ans.Answers[0].Other != HandoverContinue {
+		t.Fatalf("answer = %+v", ans)
+	}
+}
+
+// A held handover the twin was deciding as a question when it was promoted:
+// released (kind changed), it stays held after a failed attempt's requeue.
+func TestTwin_RequeueKeepsTheHold(t *testing.T) {
+	e := newTwinEnv(t)
+	askID, itemID := e.question("Left: the CSV import")
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		e.promoteHandover(askID, true)
+		return watchman.Decision{}, errors.New("model hiccup")
+	}
+	e.run()
+	if it := e.item(itemID); it.State != "queued" || it.Error != db.WatchmanHandoverHeld {
+		t.Fatalf("item = %s/%q, want queued and still held", it.State, it.Error)
+	}
+	if n := e.run(); n != 0 {
+		t.Fatalf("RunOnce = %d, want nothing leased", n)
+	}
+}
+
+// The twin answered the ask as a question before finish_session named it
+// the handover: a handover row joins it, decided without answering the ask
+// again; the earlier answer stays in the journal.
+func TestTwin_HandoverOfAnAskTheTwinAnswered(t *testing.T) {
+	e := newTwinEnv(t)
+	askID, itemID := e.question("Left: the CSV import")
+	e.run()
+	wantOutcome(t, e.item(itemID), OutcomeAnswered)
+	_, before := e.askAnswer(askID)
+	e.promoteHandover(askID, true)
+	h, err := e.db.WatchmanItemByRef("ask", askID, "handover")
+	e.must(err)
+	if h == nil || h.State != "queued" || h.Error != db.WatchmanHandoverHeld {
+		t.Fatalf("handover = %+v, want a held row beside the answered question", h)
+	}
+	if n := e.run(); n != 0 {
+		t.Fatal("a held handover was leased")
+	}
+	e.decideFn = continueDecision
+	e.promoteHandover(askID, false)
+	e.run()
+	wantOutcome(t, e.item(h.ID), OutcomeAnswered)
+	if e.startCount() != 1 {
+		t.Fatalf("starts = %d, want the next session", e.startCount())
+	}
+	if _, after := e.askAnswer(askID); !reflect.DeepEqual(after, before) {
+		t.Fatalf("ask answer = %+v, want the earlier %+v", after, before)
+	}
+	if first := e.item(itemID); first.Outcome != OutcomeAnswered || first.Choice != "SQLite" {
+		t.Fatalf("earlier item = %+v, want it kept", first)
+	}
+}
+
+// An ask the owner answered (no twin answer) gets no handover: nothing to
+// decide in his place.
+func TestTwin_HandoverOfAnOwnerAnsweredAskIsNotQueued(t *testing.T) {
+	e := newTwinEnv(t)
+	askID, itemID := e.question("Left: the CSV import")
+	_, err := e.db.Exec(`UPDATE owner_asks SET status = 'answered', answer = '{"answers":[]}' WHERE id = ?`, askID)
+	e.must(err)
+	e.run()
+	wantOutcome(t, e.item(itemID), OutcomeOwnerFirst)
+	e.promoteHandover(askID, false)
+	if h, err := e.db.WatchmanItemByRef("ask", askID, "handover"); err != nil || h != nil {
+		t.Fatalf("handover = %+v, %v; want none", h, err)
 	}
 }

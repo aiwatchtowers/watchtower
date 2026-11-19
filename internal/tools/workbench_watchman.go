@@ -63,13 +63,15 @@ func queueWatchmanAsk(d *db.DB, ask db.OwnerAsk, id int64, wake func()) {
 }
 
 // checkWatchmanGate is finish_session's gate for an armed session, after the
-// existing gates passed: watchmanReviewGate on the session's review place as
-// it stands, then — only once it passes — a handover ask becomes the twin's
-// handover (markWatchmanHandover), so a refused finish leaves it an ordinary
-// ask. An unarmed session (or an arming that cannot be read) passes
-// unchanged. No diff to review — no repository, an empty diff, a folder the
-// session left — passes; so does a snapshot that cannot be read (logged): the
-// finish stays as without Watchman.
+// existing gates passed. A handover ask becomes the twin's handover first,
+// held (markWatchmanHandover): so the twin does not decide it as an
+// ordinary question while the session is still at work. Then
+// watchmanReviewGate runs on the session's review place as it stands; a
+// refusal leaves the handover held, a pass releases it to be decided. An
+// unarmed session (or an arming that cannot be read) passes unchanged. No
+// diff to review — no repository, an empty diff, a folder the session left
+// — passes; so does a snapshot that cannot be read (logged): the finish
+// stays as without Watchman.
 func checkWatchmanGate(ctx context.Context, d *db.DB, p *db.Workbench, session, ticket int64, a finishSessionArgs, wake func()) error {
 	armed, err := d.WatchmanSessionArmed(session)
 	if err != nil {
@@ -79,11 +81,14 @@ func checkWatchmanGate(ctx context.Context, d *db.DB, p *db.Workbench, session, 
 	if !armed {
 		return nil
 	}
+	if a.HandoverAskID != 0 {
+		markWatchmanHandover(d, p.ID, session, ticket, a.HandoverAskID, true, nil)
+	}
 	if err := watchmanReviewOfChanges(ctx, d, p, session, ticket, a, wake); err != nil {
 		return err
 	}
 	if a.HandoverAskID != 0 {
-		markWatchmanHandover(d, p.ID, session, ticket, a.HandoverAskID, wake)
+		markWatchmanHandover(d, p.ID, session, ticket, a.HandoverAskID, false, wake)
 	}
 	return nil
 }
@@ -119,12 +124,15 @@ func watchmanReviewOfChanges(ctx context.Context, d *db.DB, p *db.Workbench, ses
 }
 
 // markWatchmanHandover makes handover ask askID the twin's handover item
-// (db.PromoteWatchmanHandover, one transaction): its queued item changes
-// kind — a queued one, or one the twin is deciding as a question (its finish
-// re-reads the kind, rolls back and decides it again as the handover) — and
-// with no item at all (its own insert failed earlier) an open ask is queued
-// as a handover. A done item is left. A failure is logged.
-func markWatchmanHandover(d *db.DB, workbenchID, session, ticket, askID int64, wake func()) {
+// (db.PromoteWatchmanHandover, one transaction), held or released: its
+// queued item changes kind — a queued one, or one the twin is deciding as a
+// question (its finish re-reads the kind, rolls back and decides it again as
+// the handover) — with no item at all (its own insert failed earlier) an
+// open ask is queued as a handover, and an ask the twin already answered as
+// a question gets a handover beside it. A released or done handover is left.
+// wake (nil while held) is called for a released handover. A failure is
+// logged.
+func markWatchmanHandover(d *db.DB, workbenchID, session, ticket, askID int64, held bool, wake func()) {
 	ask, err := d.GetOwnerAsk(workbenchID, askID)
 	if err != nil {
 		watchmanLog("ask %d was not marked Watchman's handover: %v", askID, err)
@@ -133,13 +141,13 @@ func markWatchmanHandover(d *db.DB, workbenchID, session, ticket, askID int64, w
 	if ask.TargetID.Valid {
 		ticket = ask.TargetID.Int64
 	}
-	_, inserted, err := d.PromoteWatchmanHandover(db.WatchmanItem{WorkbenchID: workbenchID, SessionID: session, TargetID: ticket,
-		RefID: askID, Question: watchman.ItemQuestion(db.WatchmanAskText(ask.Title, ask.Summary))})
+	promoted, _, err := d.PromoteWatchmanHandover(db.WatchmanItem{WorkbenchID: workbenchID, SessionID: session, TargetID: ticket,
+		RefID: askID, Question: watchman.ItemQuestion(db.WatchmanAskText(ask.Title, ask.Summary))}, held)
 	if err != nil {
 		watchmanLog("ask %d was not marked Watchman's handover: %v", askID, err)
 		return
 	}
-	if inserted && wake != nil {
+	if promoted && wake != nil {
 		wake()
 	}
 }
