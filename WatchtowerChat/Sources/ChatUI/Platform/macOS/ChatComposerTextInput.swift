@@ -21,6 +21,7 @@ struct ChatComposerTextInput: View {
     var livePastes: [Int: PasteKind] = [:]
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
+    var onOptionArrowDown: (() -> Bool)?
     var autoFocus: Bool
     var focusRequest: UUID?
     let onSubmit: () -> Void
@@ -50,6 +51,7 @@ struct ChatComposerTextInput: View {
                 livePastes: livePastes,
                 onCursorChange: onCursorChange,
                 onPickerKey: onPickerKey,
+                onOptionArrowDown: onOptionArrowDown,
                 autoFocus: autoFocus,
                 focusRequest: focusRequest,
                 onSubmit: onSubmit
@@ -85,6 +87,8 @@ public struct ExpandingTextInput: NSViewRepresentable {
     var onCursorChange: ((String, Int) -> Void)?
     /// Offered Up/Down/Enter/Tab/Esc first while a picker may be open.
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
+    /// ⌥↓ (the Workchat steps list): true = handled; false or nil = the stock key.
+    var onOptionArrowDown: (() -> Bool)?
     /// Makes the text view first responder once it is in its window.
     var autoFocus = false
     /// Each new value makes the text view first responder, caret at the end.
@@ -106,6 +110,7 @@ public struct ExpandingTextInput: NSViewRepresentable {
         livePastes: [Int: PasteKind] = [:],
         onCursorChange: ((String, Int) -> Void)? = nil,
         onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)? = nil,
+        onOptionArrowDown: (() -> Bool)? = nil,
         autoFocus: Bool = false,
         focusRequest: UUID? = nil,
         onSubmit: @escaping () -> Void
@@ -122,6 +127,7 @@ public struct ExpandingTextInput: NSViewRepresentable {
         self.livePastes = livePastes
         self.onCursorChange = onCursorChange
         self.onPickerKey = onPickerKey
+        self.onOptionArrowDown = onOptionArrowDown
         self.autoFocus = autoFocus
         self.focusRequest = focusRequest
         self.onSubmit = onSubmit
@@ -153,6 +159,7 @@ public struct ExpandingTextInput: NSViewRepresentable {
         textView.onLongTextPaste = onLongTextPaste
         textView.onInlinePaste = onInlinePaste
         textView.livePastes = livePastes
+        textView.onOptionArrowDown = onOptionArrowDown
 
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
@@ -190,6 +197,7 @@ public struct ExpandingTextInput: NSViewRepresentable {
         textView.onLongTextPaste = onLongTextPaste
         textView.onInlinePaste = onInlinePaste
         textView.livePastes = livePastes
+        textView.onOptionArrowDown = onOptionArrowDown
         if textView.string != text {
             textView.string = text
             DispatchQueue.main.async {

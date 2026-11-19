@@ -17,6 +17,8 @@ struct WorkchatComposer: View {
     var autoFocus = false
     /// Each new value puts the keyboard in the field, caret at the end.
     var focusRequest: UUID?
+    /// ⌥↓ opens or closes the live steps list (#2065 spec §3): true = handled; false or nil = the stock key.
+    var onToggleSteps: (() -> Bool)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -56,7 +58,8 @@ struct WorkchatComposer: View {
                 onAttachFiles: { model.attach(files: $0) },
                 onPasteData: { await model.attach(data: $0, name: $1) },
                 onRemoveAttachment: { model.removeAttachment($0) },
-                onInlinePaste: { await model.paste($0) }
+                onInlinePaste: { await model.paste($0) },
+                onOptionArrowDown: onToggleSteps
             )
             .macComposerStyle()
         }

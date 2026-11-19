@@ -20,6 +20,8 @@ struct ChatComposerTextInput: View {
     var livePastes: [Int: PasteKind] = [:]
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
+    /// The Mac's ⌥↓; the phone has no arrow keys.
+    var onOptionArrowDown: (() -> Bool)?
     var autoFocus: Bool
     var focusRequest: UUID?
     let onSubmit: () -> Void

@@ -19,6 +19,13 @@ package enum WorkchatLivePresentation {
     package static func doneTitle(_ count: Int) -> String { "Done · \(count)" }
     /// Done shows at most this many rows, the rest scroll.
     package static let maxDoneRows = 5
+    // The live steps of the current turn (#2065 spec §3).
+    /// The steps slot is this many rows tall from the moment it appears; more scroll.
+    package static let stepsVisibleRows = 6
+    package static func stepsHeight(rowHeight: CGFloat) -> CGFloat { CGFloat(stepsVisibleRows) * rowHeight }
+    /// The live line's accessibility hint while it toggles the steps.
+    package static func stepsToggleHint(open: Bool) -> String { open ? "Hide this turn’s steps" : "Show this turn’s steps" }
+    package static func turnSummary(_ count: Int) -> String { "This turn · \(count) \(count == 1 ? "step" : "steps")" }
 
     package struct Row: Equatable, Sendable {
         package var symbol: String
@@ -35,6 +42,21 @@ package enum WorkchatLivePresentation {
         package var agentsSymbol = "person.2"
         /// The badge counts finished agents only: tertiary on a faint capsule.
         package var agentsDimmed = false
+        /// The steps disclosure: "chevron.up" closed, "chevron.down" open, nil without a steps slot.
+        package var chevron: String?
+    }
+    package struct StepRow: Equatable, Identifiable, Sendable {
+        package var id: String
+        package var symbol: String
+        package var summary: String
+        /// The step's duration, or the running timer; nil without its times.
+        package var time: String?
+        package var running: Bool
+    }
+    package struct StepsSlot: Equatable, Sendable {
+        package var rows: [StepRow]
+        /// "This turn · N steps", counting the steps the cap cut.
+        package var title: String
     }
     package struct AgentRow: Equatable, Identifiable, Sendable {
         package var agent: SessionLiveAgent
@@ -72,7 +94,8 @@ package enum WorkchatLivePresentation {
         stateAt: Date?,
         now: Date,
         done: [SessionFeedSubagent] = [],
-        activityHidden: Bool = false
+        activityHidden: Bool = false,
+        stepsOpen: Bool = false
     ) -> Row? {
         guard working else {
             // Idle or ended: only the 👥 button, and only with finished agents to list.
@@ -102,8 +125,37 @@ package enum WorkchatLivePresentation {
             result.pulse = false
             result.retry = false
             result.warning = false
+        } else if let snapshot, let slot = stepsSlot(snapshot: snapshot, error: error, working: true, now: now) {
+            result.chevron = stepsOpen ? "chevron.down" : "chevron.up"
+            if stepsOpen {
+                // The list shows the newest step; the line sums up the turn.
+                result.symbol = "list.bullet"
+                result.text = slot.title
+                result.elapsed = elapsed(from: snapshot.turnAt ?? stateAt, now: now)
+                result.pulse = false
+            }
         }
         return result
+    }
+
+    /// The current turn's steps above the live line, or nil when the slot
+    /// hides: not working (stop, the host or session closed), no snapshot
+    /// (the pane passes none while a permission card shows), a failed or
+    /// stale read, the turn ended, or no steps yet. Stricter than `row`: a
+    /// snapshot without `observedAt` hides the list even before `loaded`,
+    /// since its freshness cannot be told.
+    package static func stepsSlot(snapshot: SessionFeedLive?, error: String?, working: Bool, now: Date) -> StepsSlot? {
+        guard working, error == nil, let snapshot, snapshot.turnActive, !snapshot.steps.isEmpty,
+              let observed = snapshot.observedAt, now.timeIntervalSince(observed) < staleAfter else { return nil }
+        let rows = snapshot.steps.map { step in
+            let running = step.completedAt == nil
+            let time = step.startedAt.flatMap { start in
+                (running ? now : step.completedAt).flatMap { elapsed(from: start, now: $0) }
+            }
+            return StepRow(id: step.id, symbol: WorkchatActivityPresenter.symbol(for: step.tool), summary: step.summary,
+                           time: time, running: running)
+        }
+        return StepsSlot(rows: rows, title: turnSummary(snapshot.steps.count + snapshot.stepsMore))
     }
 
     /// Busy for the live line and the 👥 list: the turn works, background

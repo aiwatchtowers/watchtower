@@ -187,7 +187,7 @@ struct SessionChatView: View {
                         .padding(.top, Spacing.compact)
                 }
                 WorkchatComposer(model: workchat, working: working, autoFocus: composerAutoFocus,
-                                 focusRequest: composerFocus)
+                                 focusRequest: composerFocus, onToggleSteps: toggleSteps)
             }
         }
         // Each hook write for the session reads its permission prompt again
@@ -240,15 +240,45 @@ struct SessionChatView: View {
     /// The tab's finished subagents, the 👥 list's Done.
     private var done: [SessionFeedSubagent] { WorkchatLivePresentation.done(from: store.subagents) }
 
+    private var paneKey: String { "session-\(sessionID)" }
+
+    /// A permission card (or the approval state before it is read) hides the step and the steps list.
+    private var activityHidden: Bool { permission != nil || !working }
+
+    /// ⌥↓ in the composer: the store and the session state are read when the
+    /// key goes down, not at the last render, so a list that went stale since
+    /// is never toggled unseen.
+    private var toggleSteps: () -> Bool {
+        let view = self, store = store, memory = vm.paneMemory, pane = paneKey
+        return {
+            Self.toggleSteps(memory: memory, pane: pane) {
+                WorkchatLivePresentation.stepsSlot(snapshot: view.activityHidden ? nil : store.live, error: store.liveError,
+                                                   working: view.busy, now: .now)
+            }
+        }
+    }
+
+    /// Toggles the pane's steps list only while it shows; false leaves ⌥↓ to
+    /// the text view (the caret moves as always).
+    static func toggleSteps(
+        memory: WorkchatPaneMemory,
+        pane: String,
+        slot: () -> WorkchatLivePresentation.StepsSlot?
+    ) -> Bool {
+        guard slot() != nil else { return false }
+        memory.toggleSteps(pane)
+        return true
+    }
+
     /// The caption row over the composer (or under the ended line): the agent's
     /// step and the 👥 list.
     private func liveLine(working: Bool) -> some View {
         WorkchatLiveLine(snapshot: store.live, error: store.liveError,
                          loaded: store.liveLoaded, working: working,
                          // An approval (its card, or the state before the card is read) hides the step only.
-                         activityHidden: permission != nil || !self.working,
+                         activityHidden: activityHidden,
                          stateAt: SessionFeedEntry.parseDate(vm.sessionStatuses[sessionID]?.at),
-                         done: done, paneKey: "session-\(sessionID)", memory: vm.paneMemory,
+                         done: done, paneKey: paneKey, memory: vm.paneMemory,
                          feedLoaded: store.feedLoaded, feedError: store.error,
                          onRetry: { Task { await store.poller.refresh() } },
                          onRetryList: { Task { await store.poller.refresh() } },

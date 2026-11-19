@@ -86,6 +86,9 @@ public struct ChatComposerField: View {
     var onRetryAttachment: ((Int64) -> Void)?
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
+    /// ⌥↓ in the Mac's field (the Workchat steps list), asked when the key goes down: true = handled; false or
+    /// nil = the key does what it always did.
+    var onOptionArrowDown: (() -> Bool)?
     /// The phone's paperclip: opens its attachment menu (the files come back through the shell, not `onAttachFiles`).
     var onAttachMenu: (() -> Void)?
 
@@ -115,7 +118,8 @@ public struct ChatComposerField: View {
         onRetryAttachment: ((Int64) -> Void)? = nil,
         onCursorChange: ((String, Int) -> Void)? = nil,
         onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)? = nil,
-        onInlinePaste: ((InlinePaste) async -> String?)? = nil
+        onInlinePaste: ((InlinePaste) async -> String?)? = nil,
+        onOptionArrowDown: (() -> Bool)? = nil
     ) {
         _text = text
         self.isStreaming = isStreaming
@@ -134,6 +138,7 @@ public struct ChatComposerField: View {
         self.onCursorChange = onCursorChange
         self.onPickerKey = onPickerKey
         self.onInlinePaste = onInlinePaste
+        self.onOptionArrowDown = onOptionArrowDown
     }
 
     /// The same field whose paperclip opens the shell's own attachment menu (the phone).
@@ -217,6 +222,7 @@ public struct ChatComposerField: View {
             livePastes: config.livePastes,
             onCursorChange: onCursorChange,
             onPickerKey: onPickerKey,
+            onOptionArrowDown: onOptionArrowDown,
             autoFocus: config.autoFocus,
             focusRequest: config.focusRequest,
             onSubmit: submit

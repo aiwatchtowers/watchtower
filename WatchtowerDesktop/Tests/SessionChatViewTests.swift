@@ -14,6 +14,26 @@ final class SessionChatViewTests: XCTestCase {
                          eventType: type)
     }
 
+    /// ⌥↓ re-reads the snapshot when the key goes down: one that went stale
+    /// since the last render leaves the list's state alone and the key to the caret.
+    func testOptionDownToggleChecksTheSnapshotAtKeyDown() {
+        let memory = WorkchatPaneMemory()
+        let observed = Date(timeIntervalSince1970: 1_800_000_000)
+        let live = SessionFeedLive(observedAt: observed, conversation: "c", turnActive: true,
+                                   steps: [SessionLiveAction(id: "t1", tool: "Read", summary: "a.go", startedAt: observed - 3)])
+        var now = observed + 1
+        let toggle = {
+            SessionChatView.toggleSteps(memory: memory, pane: "session-1") {
+                WorkchatLivePresentation.stepsSlot(snapshot: live, error: nil, working: true, now: now)
+            }
+        }
+        XCTAssertTrue(toggle(), "a fresh list toggles")
+        XCTAssertFalse(memory.stepsOpen("session-1"))
+        now = observed + WorkchatLivePresentation.staleAfter
+        XCTAssertFalse(toggle(), "stale now: the key moves the caret")
+        XCTAssertFalse(memory.stepsOpen("session-1"), "the hidden list's state is untouched")
+    }
+
     func testRowEqualityIgnoresClosures() {
         let entry = SessionFeedEntry(id: "a1", kind: "agent", text: "Hello **there**")
         let blocks = MarkdownDocument.parse(entry.text)

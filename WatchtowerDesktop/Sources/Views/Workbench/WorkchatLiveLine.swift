@@ -41,35 +41,20 @@ struct WorkchatLiveLine: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let now = referenceDate ?? context.date
+            let stepsOpen = memory.stepsOpen(paneKey)
             let row = WorkchatLivePresentation.row(snapshot: snapshot, error: error, loaded: loaded, working: working,
-                                                   stateAt: stateAt, now: now, done: done, activityHidden: activityHidden)
-            HStack(spacing: Spacing.compact) {
-                if let row {
-                    if row.activity {
-                        Image(systemName: row.symbol)
-                            .frame(width: IconSize.header)
-                            .symbolEffect(.pulse, isActive: row.pulse && !reduceMotion)
-                        Text(row.text).lineLimit(1).truncationMode(.middle).help(row.text)
-                        if row.retry { Button(WorkchatLivePresentation.retryTitle, action: onRetry).buttonStyle(.kitQuiet) }
-                    }
-                    Spacer(minLength: Spacing.compact)
-                    if let badge = row.agentsBadge {
-                        agentsButton(row: row, badge: badge, now: now)
-                    }
-                    if let elapsed = row.elapsed {
-                        Text(elapsed).monospacedDigit().accessibilityHidden(true)
-                    }
-                } else {
-                    Text(verbatim: " ").accessibilityHidden(true)
+                                                   stateAt: stateAt, now: now, done: done, activityHidden: activityHidden,
+                                                   stepsOpen: stepsOpen)
+            // A permission card hides the steps: the slot gets no snapshot then.
+            let steps = WorkchatLivePresentation.stepsSlot(snapshot: activityHidden ? nil : snapshot, error: error,
+                                                           working: working, now: now)
+            VStack(spacing: 0) {
+                if stepsOpen, let steps {
+                    // Another pane starts pinned to its newest step, not at this one's scroll.
+                    WorkchatStepsList(slot: steps).id(paneKey)
                 }
+                line(row: row, now: now)
             }
-            .font(.caption)
-            .foregroundStyle(row?.warning == true ? Tone.warning : .secondary)
-            .padding(.horizontal, Spacing.large)
-            .controlSize(.mini)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: ListLayout.lineMinHeight)
-            .onChange(of: row?.warning) { _, warning in if warning == true { agentsOpen = false } }
         }
         .onChange(of: snapshot?.conversation, initial: true) { _, conversation in
             guard let conversation else { return }
@@ -77,6 +62,59 @@ struct WorkchatLiveLine: View {
             lastConversation = conversation
         }
         .onChange(of: paneKey) { _, _ in agentsOpen = false; lastConversation = nil }
+    }
+
+    private func line(row: WorkchatLivePresentation.Row?, now: Date) -> some View {
+        HStack(spacing: Spacing.compact) {
+            if let row {
+                if row.activity {
+                    if row.chevron != nil {
+                        // The line opens and closes the steps above it (⌥↓ in the composer does too).
+                        Button { memory.toggleSteps(paneKey) } label: {
+                            activity(row).contentShape(Rectangle())
+                        }
+                        // The line itself is the control, as the mock draws it: no plate.
+                        .buttonStyle(.plain)
+                        .accessibilityHint(WorkchatLivePresentation.stepsToggleHint(open: row.chevron == "chevron.down"))
+                    } else {
+                        activity(row)
+                    }
+                    if row.retry { Button(WorkchatLivePresentation.retryTitle, action: onRetry).buttonStyle(.kitQuiet) }
+                }
+                Spacer(minLength: Spacing.compact)
+                if let badge = row.agentsBadge {
+                    agentsButton(row: row, badge: badge, now: now)
+                }
+                if let elapsed = row.elapsed {
+                    Text(elapsed).monospacedDigit().accessibilityHidden(true)
+                }
+            } else {
+                Text(verbatim: " ").accessibilityHidden(true)
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(row?.warning == true ? Tone.warning : .secondary)
+        .padding(.horizontal, Spacing.large)
+        .controlSize(.mini)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: ListLayout.lineMinHeight)
+        .onChange(of: row?.warning) { _, warning in if warning == true { agentsOpen = false } }
+    }
+
+    /// The chevron (with steps), the step or turn summary and its symbol.
+    private func activity(_ row: WorkchatLivePresentation.Row) -> some View {
+        HStack(spacing: Spacing.compact) {
+            if let chevron = row.chevron {
+                Image(systemName: chevron)
+                    .font(.system(size: IconSize.chevron, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: IconSize.header)
+            }
+            Image(systemName: row.symbol)
+                .frame(width: IconSize.header)
+                .symbolEffect(.pulse, isActive: row.pulse && !reduceMotion)
+            Text(row.text).lineLimit(1).truncationMode(.middle).help(row.text)
+        }
     }
 
     private func agentsButton(row: WorkchatLivePresentation.Row, badge: String, now: Date) -> some View {

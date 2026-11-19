@@ -19,8 +19,23 @@ public final class PastingTextView: NSTextView {
     /// deleted whole.
     var livePastes: [Int: PasteKind] = [:]
     private var inlinePastes: Bool { onInlinePaste != nil }
+    /// ⌥↓ goes here first (the Workchat steps list): true = handled; false or nil = the stock key.
+    var onOptionArrowDown: (() -> Bool)?
     /// Always `.general` in the app; tests pass a private named pasteboard.
     var pasteboard: NSPasteboard = .general
+
+    override public func keyDown(with event: NSEvent) {
+        if let onOptionArrowDown, !hasMarkedText(), Self.isOptionArrowDown(event), onOptionArrowDown() {
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    /// ↓ with ⌥ and no other modifier (the arrow keys carry `.numericPad` and `.function` themselves).
+    static func isOptionArrowDown(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.numericPad, .function])
+        return event.keyCode == 125 && modifiers == .option
+    }
 
     override public func paste(_ sender: Any?) {
         guard let onPasteData else {
