@@ -375,6 +375,9 @@ public struct ChatFeed: Decodable, Hashable, Sendable {
         public let result: [String: String]
         public let turnID: String
         public let argsComplete: Bool
+        /// When the owner dismissed a session call whose outcome is unknown; "" while not dismissed or from an
+        /// engine one version behind (mobile Inbox spec §12.9).
+        public let dismissedAt: String
 
         public init(
             id: Int64,
@@ -388,7 +391,8 @@ public struct ChatFeed: Decodable, Hashable, Sendable {
             error: String = "",
             result: [String: String] = [:],
             turnID: String = "",
-            argsComplete: Bool = false
+            argsComplete: Bool = false,
+            dismissedAt: String = ""
         ) {
             self.id = id
             self.tool = tool
@@ -402,6 +406,7 @@ public struct ChatFeed: Decodable, Hashable, Sendable {
             self.result = result
             self.turnID = turnID
             self.argsComplete = argsComplete
+            self.dismissedAt = dismissedAt
         }
 
         public init(from decoder: Decoder) throws {
@@ -418,13 +423,14 @@ public struct ChatFeed: Decodable, Hashable, Sendable {
             result = try c.decodeIfPresent([String: String].self, forKey: .result) ?? [:]
             turnID = try c.decodeIfPresent(String.self, forKey: .turnID) ?? ""
             argsComplete = try c.decodeIfPresent(Bool.self, forKey: .argsComplete) ?? false
+            dismissedAt = try c.decodeIfPresent(String.self, forKey: .dismissedAt) ?? ""
         }
 
         // convertFromSnakeCase maps "args_sha256" -> "argsSha256", "turn_id" -> "turnId".
         enum CodingKeys: String, CodingKey {
             case id, tool, title, argsDisplay
             case argsSHA256 = "argsSha256"
-            case status, reason, external, error, result, argsComplete
+            case status, reason, external, error, result, argsComplete, dismissedAt
             case turnID = "turnId"
         }
     }

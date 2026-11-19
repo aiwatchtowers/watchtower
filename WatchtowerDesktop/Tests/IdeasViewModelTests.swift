@@ -34,7 +34,7 @@ final class IdeasViewModelTests: XCTestCase {
             try TestDatabase.insertIdea(db, title: "Rejected but flagged", status: "rejected", needsReview: true)
         }
 
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(Set(vm.reviewItems.map(\.title)), ["Proposed", "Rejected but flagged"])
@@ -43,7 +43,7 @@ final class IdeasViewModelTests: XCTestCase {
     }
 
     func testLoadOnEmptyDBYieldsEmptyLists() throws {
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertTrue(vm.reviewItems.isEmpty)
@@ -57,7 +57,7 @@ final class IdeasViewModelTests: XCTestCase {
         let id = try await dbManager.dbPool.write {
             try TestDatabase.insertIdea($0, title: "Proposed", status: "proposed")
         }
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         let idea = try XCTUnwrap(vm.reviewItems.first)
         vm.select(idea.id)
@@ -77,7 +77,7 @@ final class IdeasViewModelTests: XCTestCase {
             let other = try TestDatabase.insertIdea(db, title: "Other", status: "proposed")
             return (selected, other)
         }
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         vm.select(Int(selectedIdeaID))
         let other = try XCTUnwrap(vm.reviewItems.first { $0.id == Int(otherID) })
@@ -94,7 +94,7 @@ final class IdeasViewModelTests: XCTestCase {
         let id = try await dbManager.dbPool.write {
             try TestDatabase.insertIdea($0, status: "proposed")
         }
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         let idea = try XCTUnwrap(vm.reviewItems.first)
 
@@ -108,7 +108,7 @@ final class IdeasViewModelTests: XCTestCase {
         let id = try await dbManager.dbPool.write {
             try TestDatabase.insertIdea($0, status: "active")
         }
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         let idea = try XCTUnwrap(vm.registryItems.first)
 
@@ -120,7 +120,7 @@ final class IdeasViewModelTests: XCTestCase {
     // MARK: - createManual()
 
     func testCreateManualAddsAnActiveOwnerIdeaToTheRegistry() async throws {
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         let newID = await vm.createManual(kind: "idea", title: "Ship it", essence: "Because it's ready")
@@ -143,7 +143,7 @@ final class IdeasViewModelTests: XCTestCase {
             try TestDatabase.insertIdea(db, kind: "decision", title: "Active decision", status: "active")
             try TestDatabase.insertIdea(db, kind: "idea", title: "An idea", status: "proposed")
         }
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
 
         vm.load()
 
@@ -153,7 +153,7 @@ final class IdeasViewModelTests: XCTestCase {
     }
 
     func testCreateManual_SwitchesSegmentAndSelects() async throws {
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         XCTAssertEqual(vm.kindMode, "idea")
 
@@ -166,7 +166,7 @@ final class IdeasViewModelTests: XCTestCase {
     }
 
     func testCreateManualIdeaSwitchesBackFromTheNotesSegment() async throws {
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.kindMode = "note"
         vm.load()
 
@@ -181,7 +181,7 @@ final class IdeasViewModelTests: XCTestCase {
     /// The Decisions ledger creates through this same VM; a decision has no
     /// segment on the Ideas tab, so creating one must leave it where it was.
     func testCreateManualDecisionLeavesSegmentAlone() async throws {
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         let result = await vm.createManual(kind: "decision", title: "Use SQLite", essence: "simple")
@@ -201,7 +201,7 @@ final class IdeasViewModelTests: XCTestCase {
             try TestDatabase.insertIdea(db, kind: "note", title: "Proposed note", status: "proposed")
             try TestDatabase.insertIdea(db, kind: "note", title: "Active note", status: "active")
         }
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
 
         vm.load()
         XCTAssertEqual(vm.reviewItems.map(\.title), ["Proposed idea"])
@@ -226,7 +226,7 @@ final class IdeasViewModelTests: XCTestCase {
             let survivor = try TestDatabase.insertIdea(db, title: "Keep this", status: "active")
             return (doomed, survivor)
         }
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         let doomed = try XCTUnwrap(vm.registryItems.first { $0.id == Int(doomedID) })
         vm.select(doomed.id)
@@ -252,7 +252,7 @@ final class IdeasViewModelTests: XCTestCase {
                 db, title: "Merged away", status: "merged", mergedIntoID: Int(survivor))
             return (survivor, merged)
         }
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         let survivor = try XCTUnwrap(vm.registryItems.first { $0.id == Int(survivorID) })
 
@@ -271,7 +271,7 @@ final class IdeasViewModelTests: XCTestCase {
         let ideaID = try await dbManager.dbPool.write {
             try TestDatabase.insertIdea($0, title: "Adopt the new onboarding flow", essence: "Cuts drop-off", status: "active")
         }
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         let idea = try XCTUnwrap(vm.registryItems.first)
 
@@ -300,7 +300,7 @@ final class IdeasViewModelTests: XCTestCase {
             try TestDatabase.insertIdea($0, title: "Weekly metrics email", status: "rejected",
                                         needsReview: true, reviewReason: "brought up again: slack C1|1.1")
         }
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(vm.reviewItems.map(\.title), ["Weekly metrics email"],
@@ -326,7 +326,7 @@ final class IdeasViewModelTests: XCTestCase {
             let survivor = try TestDatabase.insertIdea(db, title: "Canonical idea", status: "active")
             return (dropped, survivor)
         }
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let vm = IdeasViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         let flagged = try XCTUnwrap(vm.reviewItems.first { $0.id == Int(droppedID) })
 

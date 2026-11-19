@@ -18,6 +18,21 @@ final class DesignShotsTests: XCTestCase {
         super.tearDown()
     }
 
+    /// A fixture that never finishes fails its shot within its turns, by
+    /// name, instead of hanging the shots run.
+    func testAFixtureThatNeverFinishesFailsInsteadOfHanging() throws {
+        let gate = ShotGate()
+        let shot = DesignShot(name: "never-finishes", prepare: {
+            await gate.wait()
+            return AnyView(EmptyView())
+        }, size: NSSize(width: 10, height: 10))
+        XCTAssertThrowsError(try Self.prepared(shot, turns: 1_000)) { error in
+            XCTAssertEqual(String(describing: error),
+                           "the fixture of shot never-finishes did not finish within 1000 run-loop turns")
+        }
+        Task { await gate.open() } // the waiting fixture ends with the test
+    }
+
     /// Every background AI consent frame (#1886) has its shot.
     func testEveryBackgroundAIConsentFrameHasAShot() {
         let names = Set(BackgroundAIConsentShotFixtures.shots.map(\.name))
@@ -229,20 +244,55 @@ final class DesignShotsTests: XCTestCase {
         }
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
         for shot in shots {
+            let view = try Self.prepared(shot)
             // A zero height means "as tall as the content".
             var size = shot.size
             if size.height <= 0 {
-                size.height = ViewRenderProbe.fittingHeight(shot.make(), width: size.width)
+                size.height = ViewRenderProbe.fittingHeight(view, width: size.width)
             }
             let probe = ViewRenderProbe(size: size)
             for (suffix, name) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                 let appearance = try XCTUnwrap(NSAppearance(named: name))
-                let data = try probe.png(shot.make(), appearance)
+                let data = try probe.png(view, appearance)
                 let bitmap = try XCTUnwrap(NSBitmapImageRep(data: data))
                 XCTAssertGreaterThan(Self.distinctColours(bitmap, limit: 2), 1, "\(shot.name)-\(suffix) is blank")
                 try data.write(to: outputDir.appendingPathComponent("\(shot.name)-\(suffix).png"))
             }
         }
+    }
+
+    /// The most run-loop turns a shot's fixture may take (each a pass that
+    /// never waits, `before: .distantPast`): far above the slowest Inbox
+    /// fixture, and a count, never a clock.
+    static let preparationTurns = 50_000_000
+
+    /// A fixture that did not finish within its turns.
+    struct UnfinishedFixture: Error, CustomStringConvertible {
+        let shot: String
+        let turns: Int
+        var description: String { "the fixture of shot \(shot) did not finish within \(turns) run-loop turns" }
+    }
+
+    /// The shot's view: built at once, or its fixture's async work run to
+    /// its end first (an Inbox shot lists Go's feed). The main run loop turns
+    /// without waiting, at most `turns` times: a fixture that never finishes
+    /// fails its shot, naming it, instead of hanging the run. A test method
+    /// runs outside the main actor's executor, so the fixture's main-actor
+    /// work drains on these turns.
+    static func prepared(_ shot: DesignShot, turns: Int = preparationTurns) throws -> AnyView {
+        if let make = shot.make { return make() }
+        final class Box { var result: Result<AnyView, Error>? }
+        let box = Box()
+        Task { @MainActor in
+            do { box.result = .success(try await shot.prepare()) } catch { box.result = .failure(error) }
+        }
+        var left = turns
+        while box.result == nil, left > 0 {
+            RunLoop.main.run(mode: .default, before: .distantPast)
+            left -= 1
+        }
+        guard let result = box.result else { throw UnfinishedFixture(shot: shot.name, turns: turns) }
+        return try result.get()
     }
 
     /// Distinct raw RGBA values in `bitmap`, counting up to `limit` only.
@@ -343,6 +393,23 @@ extension DesignShotsTests {
     /// The big-branch review frames only (board #1025), for iterating on them.
     func testBigBranchReviewShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("big-branch-") })
+    }
+}
+
+/// A wait a test opens (the never-finishing fixture's).
+private actor ShotGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
     }
 }
 

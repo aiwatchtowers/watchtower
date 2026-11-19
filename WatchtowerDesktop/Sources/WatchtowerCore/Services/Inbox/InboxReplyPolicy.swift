@@ -18,9 +18,12 @@ package struct InboxReplyDraft: Equatable, Sendable {
     }
 }
 
-/// Reply from a row (inbox builder B, asks #445 and #451): which items have
-/// **Reply…**, the args `watchtower actions propose` gets for one, and
-/// whether an item's reply already waits in Needs approval.
+/// Reply from a row (inbox builder B, asks #445 and #451): the tool and
+/// args of the no-tower path (`ActionStripViewModel.towerWrites` nil, tests
+/// only) for `watchtower actions propose`. The tower path never reads it:
+/// Go builds the reply's tool and args (`inbox.act reply_propose`). Which
+/// rows draw **Reply…**, and whether a reply already waits, are Go's ref
+/// facts (`reply`, `reply_waiting`).
 package enum InboxReplyPolicy {
     /// The `context_type` a Reply proposal carries (Go `db.InboxItemContextType`).
     package static let contextType = "inbox_item"
@@ -77,14 +80,5 @@ package enum InboxReplyPolicy {
             "actions", "propose", "--tool", tool.rawValue, "--surface", "inbox",
             "--context", "\(contextType):\(itemID)", "--args", args, "--json"
         ]
-    }
-
-    /// `action` is a Reply to item `itemID` that is still open (pending,
-    /// approved or executing): Go's one-open-reply rule
-    /// (`db.InsertInboxReplyProposal`).
-    package static func isOpenReply(_ action: AgentAction, itemID: Int) -> Bool {
-        action.contextType == contextType && action.contextID == String(itemID)
-            && InboxReplyTool(rawValue: action.tool) != nil
-            && ["pending", "approved", "executing"].contains(action.status)
     }
 }

@@ -182,6 +182,8 @@ struct DecisionsListView: View {
                     sourceGlyphs(sources)
                 }
 
+                pressState(idea)
+
                 if expanded {
                     decisionExpandedContent(idea)
                 }
@@ -189,6 +191,17 @@ struct DecisionsListView: View {
             .padding(.leading, 8)
         }
         .padding(.vertical, 4)
+    }
+
+    /// The decision's last press through the tower (mockup §8); Retry repeats it.
+    @ViewBuilder
+    private func pressState(_ idea: Idea) -> some View {
+        let row = DigestViewModel.decisionRow(idea.id)
+        if let state = viewModel.presses.state(row) {
+            TowerRowState(state: state, busyLabel: viewModel.presses.label(row)) {
+                Task { await viewModel.presses.retry(row) }
+            }
+        }
     }
 
     @ViewBuilder

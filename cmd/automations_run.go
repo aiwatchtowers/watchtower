@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/inboxfeed"
 )
 
 // automationsDryRunGenerator is the generator a CLI dry run's llm() calls
@@ -85,33 +86,63 @@ func runAutomationsRun(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	q, err := queueRun(cfg, database, a, autoFlags.Since, autoFlags.RerunOf)
+	if err != nil {
+		return err
+	}
+	if q.slot {
+		return reportQueuedSlotRun(cmd, cfg, q.runID, q.coalesced)
+	}
+	return reportQueuedPollRun(cmd, cfg, q.runID, q.coalesced)
+}
+
+// queuedRun is what one `automations run` queued: its run, whether a run
+// already queued took it, and whether it runs at a slot of the daemon's next
+// sync (a built-in's with a slot, a watch's) rather than at the executor's
+// poll.
+type queuedRun struct {
+	runID     int64
+	coalesced bool
+	slot      bool
+}
+
+// queueRun queues a run of a now (AUTO-09: it only queues), as `automations
+// run` does, without reporting it: a built-in through queueBuiltinRun's
+// checks, a watch recipe through queueWatchRun's, any other recipe while it
+// is runnable. A refusal before anything is queued is a
+// *inboxfeed.CannotRunError, whose text is the CLI's message (inbox.act's
+// Run Now refuses with it).
+func queueRun(cfg *config.Config, database *db.DB, a *db.Automation, since string, rerunOf int64) (queuedRun, error) {
 	if a.IsBuiltin() {
-		if autoFlags.Since != "" {
-			return errors.New(msgSinceOnlyForWatch)
+		if since != "" {
+			return queuedRun{}, cannotRun(errors.New(msgSinceOnlyForWatch))
 		}
-		return queueBuiltinRun(cmd, cfg, database, a)
+		return queueBuiltinRun(cfg, database, a, rerunOf)
 	}
 	if isWatchRecipe(a) {
-		return queueWatchRun(cmd, cfg, database, a)
+		return queueWatchRun(cfg, database, a, since, rerunOf)
 	}
-	if autoFlags.Since != "" {
-		return errors.New(msgSinceOnlyForWatch)
+	if since != "" {
+		return queuedRun{}, cannotRun(errors.New(msgSinceOnlyForWatch))
 	}
 	if reason := notRunnableReason(a); reason != "" {
-		return fmt.Errorf("automation %d cannot run: %s", id, reason)
+		return queuedRun{}, cannotRun(fmt.Errorf("automation %d cannot run: %s", a.ID, reason))
 	}
-	trigger, err := runTrigger(database, a, autoFlags.RerunOf)
+	trigger, err := runTrigger(database, a, rerunOf)
 	if err != nil {
-		return err
+		return queuedRun{}, cannotRun(err)
 	}
 	runID, coalesced, err := database.EnqueueAutomationRun(db.EnqueueRequest{
-		AutomationID: id, Trigger: trigger, RerunOf: autoFlags.RerunOf, Now: time.Now(),
+		AutomationID: a.ID, Trigger: trigger, RerunOf: rerunOf, Now: time.Now(),
 	})
 	if err != nil {
-		return err
+		return queuedRun{}, err
 	}
-	return reportQueuedPollRun(cmd, cfg, runID, coalesced)
+	return queuedRun{runID: runID, coalesced: coalesced}, nil
 }
+
+// cannotRun marks err as queueRun's refusal: nothing was queued.
+func cannotRun(err error) error { return &inboxfeed.CannotRunError{Reason: err.Error()} }
 
 // reportQueuedPollRun wakes the executor (wakeAutomations, SIGUSR2) for a
 // run its poll takes — an owner recipe's, or a built-in's with no slot
@@ -293,15 +324,31 @@ const builtinDaemonNotRunningNote = "daemon not running; the run starts at its n
 // it at the built-in's slot of that cycle, never this process. A built-in
 // with no slot (Needs approval) is woken instead, as an owner recipe is:
 // the executor's poll takes its run.
-func queueBuiltinRun(cmd *cobra.Command, cfg *config.Config, database *db.DB, a *db.Automation) error {
+func queueBuiltinRun(cfg *config.Config, database *db.DB, a *db.Automation, rerunOf int64) (queuedRun, error) {
 	e, ok := builtinLookup(a.BuiltinID)
 	if !ok {
-		return fmt.Errorf("automation %d is the unknown built-in %q", a.ID, a.BuiltinID)
+		return queuedRun{}, cannotRun(fmt.Errorf("automation %d is the unknown built-in %q", a.ID, a.BuiltinID))
 	}
 	move, err := database.GetBuiltinMigration(e.ID)
 	if err != nil {
-		return err
+		return queuedRun{}, err
 	}
+	if err := builtinRunRefusal(cfg, e, move, a, rerunOf); err != nil {
+		return queuedRun{}, cannotRun(err)
+	}
+	runID, coalesced, err := database.EnqueueAutomationRun(db.EnqueueRequest{
+		AutomationID: a.ID, Trigger: db.TriggerManual, Now: time.Now(),
+	})
+	if err != nil {
+		return queuedRun{}, err
+	}
+	// No slot (Needs approval): the executor's poll takes the run, so wake
+	// it — never a full sync — and promise no sync.
+	return queuedRun{runID: runID, coalesced: coalesced, slot: e.Slot != ""}, nil
+}
+
+// builtinRunRefusal is why built-in e cannot run now (nil when it can).
+func builtinRunRefusal(cfg *config.Config, e builtin.Entry, move *db.BuiltinMigration, a *db.Automation, rerunOf int64) error {
 	switch {
 	case !e.RunNow:
 		return errors.New(e.NoRunNowNote)
@@ -318,21 +365,10 @@ func queueBuiltinRun(cmd *cobra.Command, cfg *config.Config, database *db.DB, a 
 	case !a.Confirmed():
 		return fmt.Errorf("%s cannot run: its edited copy is not confirmed yet — confirm it in Automations → Built in", e.Name)
 	}
-	if autoFlags.RerunOf != 0 {
+	if rerunOf != 0 {
 		return fmt.Errorf("%s has no reruns: run it again without --rerun-of", e.Name)
 	}
-	runID, coalesced, err := database.EnqueueAutomationRun(db.EnqueueRequest{
-		AutomationID: a.ID, Trigger: db.TriggerManual, Now: time.Now(),
-	})
-	if err != nil {
-		return err
-	}
-	if e.Slot == "" {
-		// No slot (Needs approval): the executor's poll takes the run, so
-		// wake it — never a full sync — and promise no sync.
-		return reportQueuedPollRun(cmd, cfg, runID, coalesced)
-	}
-	return reportQueuedSlotRun(cmd, cfg, runID, coalesced)
+	return nil
 }
 
 // msgSinceOnlyForWatch refuses `run --since` of an automation that is not a
@@ -345,32 +381,32 @@ const msgSinceOnlyForWatch = "--since is only for a watch"
 // other input already queued is refused, so no run executes with a Scan
 // from it was not given. Refused while the watch slot does not run
 // (tracks.enabled or digest.enabled off).
-func queueWatchRun(cmd *cobra.Command, cfg *config.Config, database *db.DB, a *db.Automation) error {
+func queueWatchRun(cfg *config.Config, database *db.DB, a *db.Automation, sinceArg string, rerunOf int64) (queuedRun, error) {
 	if reason := notRunnableReason(a); reason != "" {
-		return fmt.Errorf("automation %d cannot run: %s", a.ID, reason)
+		return queuedRun{}, cannotRun(fmt.Errorf("automation %d cannot run: %s", a.ID, reason))
 	}
 	if !cfg.Tracks.Enabled || !cfg.Digest.Enabled {
-		return errors.New(msgWatchesNeedTracksAndDigests) //nolint:staticcheck // ST1005: the feature's name
+		return queuedRun{}, cannotRun(errors.New(msgWatchesNeedTracksAndDigests)) //nolint:staticcheck // ST1005: the feature's name
 	}
-	if autoFlags.RerunOf != 0 {
-		return fmt.Errorf("%s has no reruns: run it again without --rerun-of", a.Name)
+	if rerunOf != 0 {
+		return queuedRun{}, cannotRun(fmt.Errorf("%s has no reruns: run it again without --rerun-of", a.Name))
 	}
 	in := automations.BuiltinInput{}
-	if autoFlags.Since != "" {
-		since, err := time.Parse(time.RFC3339, autoFlags.Since)
+	if sinceArg != "" {
+		since, err := time.Parse(time.RFC3339, sinceArg)
 		if err != nil {
-			return fmt.Errorf("invalid --since %q: want an RFC 3339 instant", autoFlags.Since)
+			return queuedRun{}, cannotRun(fmt.Errorf("invalid --since %q: want an RFC 3339 instant", sinceArg))
 		}
 		in.Since = since.UTC().Format(time.RFC3339)
 	}
 	runID, coalesced, err := builtin.EnqueueManual(database, a.ID, in, time.Now())
 	if errors.Is(err, builtin.ErrRunNowQueued) {
-		return fmt.Errorf("a scan of %s with another Scan from is already queued for the next sync (run #%d)", a.Name, runID)
+		return queuedRun{}, cannotRun(fmt.Errorf("a scan of %s with another Scan from is already queued for the next sync (run #%d)", a.Name, runID))
 	}
 	if err != nil {
-		return err
+		return queuedRun{}, err
 	}
-	return reportQueuedSlotRun(cmd, cfg, runID, coalesced)
+	return queuedRun{runID: runID, coalesced: coalesced, slot: true}, nil
 }
 
 // reportQueuedSlotRun wakes the daemon for a run queued for a slot of its

@@ -46,7 +46,7 @@ final class TargetAgentMutatorsTests: XCTestCase {
             try TargetQueries.create(db, text: "parent", periodStart: "2026-06-01", periodEnd: "2026-06-30")
         }
         let parent = try XCTUnwrap(fetchTarget(manager, id: parentID))
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let childIDResult = await vm.createChild(parent, text: "child", intent: "do x", priority: "high")
         let childID = try XCTUnwrap(childIDResult)

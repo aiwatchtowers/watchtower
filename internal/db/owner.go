@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -333,4 +334,23 @@ func (db *DB) ownerJiraFromUserMap(slackUserID string) (string, error) {
 		return "", fmt.Errorf("resolving owner jira id from user map: %w", err)
 	}
 	return id, nil
+}
+
+// OwnerKnownTx reports, inside the caller's transaction, whether
+// ResolveOwner finds an owner: any of its rungs is set (OWNER-01; the
+// Desktop's OwnerQueries.resolve(db).isKnown).
+func OwnerKnownTx(ctx context.Context, tx *sql.Tx) (bool, error) {
+	var known bool
+	err := tx.QueryRowContext(ctx, `SELECT
+		EXISTS (SELECT 1 FROM slack_accounts WHERE id = 1 AND status NOT IN ('removed', 'purged') AND current_user_id != '')
+		OR EXISTS (SELECT 1 FROM google_accounts WHERE email != '' AND status != 'purged')
+		OR EXISTS (SELECT 1 FROM jira_accounts
+			WHERE enabled = 1 AND status NOT IN ('removed', 'purged') AND owner_account_id != '')
+		OR EXISTS (SELECT 1 FROM linear_accounts
+			WHERE enabled = 1 AND status NOT IN ('removed', 'purged') AND owner_user_id != '')
+		OR EXISTS (SELECT 1 FROM email_accounts WHERE instr(email_address, '@') > 1)`).Scan(&known)
+	if err != nil {
+		return false, fmt.Errorf("resolving the owner: %w", err)
+	}
+	return known, nil
 }

@@ -1,26 +1,33 @@
 import Foundation
+import WatchtowerInterface
 
-/// A `save_automation` proposal in the Inbox reading pane: its title, where
-/// the recipe goes, when it runs and the first of what it may do. The whole
-/// recipe is read and saved in the editor (**Open Draft**).
+/// A pending `save_automation` proposal in the Inbox reading pane, as the
+/// tower's feed words it (`Card.approval`, Go `SummarizeSaveAutomation`):
+/// its title and its "For", "When" and "It may" lines. The whole recipe is
+/// read and saved in the editor (**Open Draft**).
 package struct SaveAutomationProposalSummary: Equatable, Sendable {
-    package let name: String
-    /// "Personal", or the workbench's name ("Workbench #3" when not known).
-    package let scope: String
-    package let when: String
-    /// The first two permissions in words, then "and N more"; "Nothing" with none.
-    package let mayLine: String
+    /// One line of the summary: its label ("For") and its value ("Personal").
+    package struct Line: Equatable, Sendable {
+        package let label: String
+        package let value: String
 
-    package init(model: SaveAutomationCardModel, workbenchName: (Int64) -> String?) {
-        name = model.title
-        scope = model.workbenchID.map { workbenchName($0) ?? "Workbench #\($0)" } ?? "Personal"
-        when = model.whenLine
-        let lines = model.permissions.map(AutomationCardPresentation.permissionLine)
-        let shown = lines.prefix(2).joined(separator: ", ")
-        mayLine = switch lines.count {
-        case 0: "Nothing"
-        case 1, 2: shown
-        default: "\(shown) and \(lines.count - 2) more"
+        package init(label: String, value: String) {
+            self.label = label
+            self.value = value
+        }
+    }
+
+    package let name: String
+    package let lines: [Line]
+
+    /// Go's title and summary lines; each "<label>: <value>" line is split
+    /// at its first ": ". No approval (no feed yet) draws nothing.
+    package init(approval: Approval?) {
+        name = approval?.title ?? ""
+        lines = (approval?.summary ?? "").split(separator: "\n", omittingEmptySubsequences: true).map { raw in
+            let text = String(raw)
+            guard let colon = text.range(of: ": ") else { return Line(label: "", value: text) }
+            return Line(label: String(text[..<colon.lowerBound]), value: String(text[colon.upperBound...]))
         }
     }
 }

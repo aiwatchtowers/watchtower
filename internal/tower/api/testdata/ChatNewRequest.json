@@ -1,0 +1,15 @@
+{
+  "request_id": "6f1c2d3e-0000-4000-8000-0000000000aa",
+  "project_id": 5,
+  "routing": {
+    "automatic": false,
+    "provider": "codex",
+    "model": "gpt-x"
+  },
+  "context": {
+    "type": "code_question",
+    "id": "1:a.go:3",
+    "title": "a.go:3",
+    "reuse": true
+  }
+}

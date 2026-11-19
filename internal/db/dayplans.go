@@ -396,40 +396,14 @@ func (db *DB) GetDayPlanItems(planID int64) ([]DayPlanItem, error) {
 }
 
 // UpdateItemStatus sets the status of a single day plan item.
+// A missing item is no error here, as before SetPlanItemStatusTx existed.
 func (db *DB) UpdateItemStatus(itemID int64, status string) error {
-	_, err := db.Exec(`UPDATE day_plan_items SET status = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, status, itemID)
-	if err != nil {
-		return fmt.Errorf("updating item %d status: %w", itemID, err)
-	}
-	return nil
+	return ignoreNoRow(db.WithTx(func(tx *sql.Tx) error { return SetPlanItemStatusTx(tx, itemID, status, false) }))
 }
 
 // UpdateItemOrder transactionally sets order_index for each item id.
 func (db *DB) UpdateItemOrder(planID int64, orderedIDs []int64) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("beginning transaction: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	for idx, id := range orderedIDs {
-		_, err = tx.Exec(`UPDATE day_plan_items SET order_index = ?,
-			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-			WHERE id = ? AND day_plan_id = ?`, idx, id, planID)
-		if err != nil {
-			return fmt.Errorf("updating order for item %d: %w", id, err)
-		}
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("committing UpdateItemOrder: %w", err)
-	}
-	return nil
+	return db.WithTx(func(tx *sql.Tx) error { return ReorderPlanItemsTx(tx, planID, orderedIDs) })
 }
 
 // DeleteDayPlanItem removes a single item by id.

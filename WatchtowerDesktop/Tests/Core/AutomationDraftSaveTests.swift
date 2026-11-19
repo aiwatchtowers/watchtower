@@ -46,7 +46,9 @@ final class AutomationDraftSaveTests: XCTestCase {
     }
 
     private func makeViewModel() -> AutomationsViewModel {
-        AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: runner))
+        let model = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: runner))
+        model.chatWrites = .fake(pool)
+        return model
     }
 
     /// An editor whose debounced checks never fire: the tests check by hand.

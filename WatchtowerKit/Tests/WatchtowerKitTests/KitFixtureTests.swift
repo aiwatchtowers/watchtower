@@ -39,12 +39,12 @@ final class KitFixtureTests: XCTestCase {
         )
     }
 
-    /// The 15 branch kinds, then `probe`, then the 16 workbench kinds and the 12 chat kinds
-    /// (pinned in WorkbenchMirrorFixtureTests).
+    /// The 15 branch kinds, then `probe`, then the 16 workbench kinds, the 12 chat kinds (pinned in
+    /// WorkbenchMirrorFixtureTests) and the phone Inbox's `inbox_act`.
     func testActionKindsKeepTheBranchKindsPlusProbe() {
         XCTAssertEqual(ActionKind.probe.rawValue, "probe")
         XCTAssertEqual(ActionKind.allCases.firstIndex(of: .probe), 15)
-        XCTAssertEqual(ActionKind.allCases.count, 44)
+        XCTAssertEqual(ActionKind.allCases.count, 45)
     }
 
     func testReasonCodesAreExactlyTheSpecList() {

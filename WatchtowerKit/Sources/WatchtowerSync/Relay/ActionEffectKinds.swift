@@ -38,7 +38,8 @@ public enum ActionEffectKinds {
         "chat_action_answer": chat,
         // Echo-only kinds (Go `handlers.EchoOnlyKinds`): the result is the echo, no slice follows, so no row opens.
         "chat_entity_search": [],
-        "chat_skills_list": []
+        "chat_skills_list": [],
+        "inbox_act": ["inbox_card", "inbox_folder"]
     ]
 
     public static func kinds(for actionKind: String) -> [String] {

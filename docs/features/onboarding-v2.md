@@ -162,9 +162,15 @@ parks under the no-owner key the first owner adopts. The writer keeps
 About you went: the six onboarding OWNER-01 guards write through them.
 
 **One daemon start.** The Connect sheets run in `DaemonRestartPolicy.deferred`.
+Before finish the daemon runs with `--no-sync` (mobile Inbox spec §3): a
+launch that opens the database starts it so, and on a fresh install
+(no workspace for the launch) the open for Connect (`openDatabaseForOnboarding`,
+not the one inside the finish) starts it; it serves the tower socket and runs no
+sync cycle, scheduled automation or plan-usage poll. Onboarding never writes or
+clears the owner's pause (`sync.paused`).
 Finish writes `onboarding_done` first, then brings the daemon up in the
 background (`OnboardingFinishPlan.bringUpDaemon`: start if none runs, else
-restart once), so Continue never waits on a slow restart. No one-shot
+restart once — without `--no-sync`), so Continue never waits on a slow restart. No one-shot
 `digest`/`tracks`/`people generate` runs: the daemon's first cycle does
 it; launch just ensures a daemon runs. The daemon syncs calendars once
 before that first cycle, so a calendar connected here shows events within

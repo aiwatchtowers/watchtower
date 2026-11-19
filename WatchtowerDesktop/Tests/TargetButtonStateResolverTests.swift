@@ -1,88 +1,96 @@
 import XCTest
 @testable import WatchtowerDesktop
 @testable import WatchtowerCore
+import WatchtowerInterface
 import WatchtowerTestSupport
 
-/// An Inbox target button's state from its newest proposal (spec "The
-/// Desktop button", every row of its table) and what a click then does.
+/// An Inbox target button's state (spec "The Desktop button", every row of
+/// its table): Go's state from the feed (`InboxTargetButton.detail`,
+/// decided in `internal/inboxfeed` `targetState`) with this Desktop's own
+/// processes laid over it, and what a click then does.
 final class TargetButtonStateResolverTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
-    private func stamp(_ secondsAgo: TimeInterval) -> String {
-        ISO8601DateFormatter().string(from: now.addingTimeInterval(-secondsAgo))
+    private func state(_ button: InboxTargetButton) -> ArtifactTargetButtonState {
+        TargetButtonStateResolver.state(button, now: now)
     }
 
-    private func proposal(
-        _ status: String,
-        decidedAgo: TimeInterval = 600,
-        dismissed: Bool = false,
-        error: String = "",
-        result: String = ""
-    ) throws -> InboxTargetButtonFacts.Proposal {
-        let pool = try TestDatabase.createPool()
-        defer { TestDatabase.cleanup(path: pool.1) }
-        let row = try pool.0.write { db -> AgentAction in
-            let id = try TestDatabase.insertAgentAction(
-                db, surface: "inbox", contextType: "automation_output", contextID: "5:0:abc",
-                status: status, resultJSON: result, error: error, decidedAt: stamp(decidedAgo))
-            if dismissed {
-                try db.execute(sql: "UPDATE agent_actions SET dismissed_at = ? WHERE id = ?",
-                               arguments: [stamp(10), id])
-            }
-            return try XCTUnwrap(AgentActionQueries.fetch(db, id: id))
-        }
-        return InboxTargetButtonFacts.Proposal(row)
+    private func button(
+        _ detail: String,
+        note: String = "",
+        untilIn seconds: TimeInterval? = nil,
+        proposal: Int64? = 7,
+        task: Int64? = nil,
+        inFlight: Bool = false,
+        pressError: String? = nil,
+        applyError: String? = nil
+    ) -> InboxTargetButton {
+        InboxTargetButton(detail: detail, note: note, until: seconds.map { now.addingTimeInterval($0) },
+                          proposalID: proposal, taskID: task, inFlight: inFlight,
+                          pressError: pressError, applyError: applyError)
     }
 
-    private func state(_ facts: InboxTargetButtonFacts) -> ArtifactTargetButtonState {
-        TargetButtonStateResolver.state(facts, now: now)
-    }
-
-    func testEveryRowOfTheTable() throws {
-        XCTAssertEqual(state(InboxTargetButtonFacts()), .idle)
-        XCTAssertEqual(state(InboxTargetButtonFacts(proposal: try proposal("pending"))), .waiting)
-        XCTAssertEqual(state(InboxTargetButtonFacts(proposal: try proposal("approved", decidedAgo: 30))), .creating)
-        XCTAssertEqual(state(InboxTargetButtonFacts(proposal: try proposal("executing", decidedAgo: 30))), .creating)
-        let applied = try proposal("applied", result: #"{"target_id":42}"#)
-        XCTAssertEqual(state(InboxTargetButtonFacts(proposal: applied, taskID: 42)), .created)
-        // The task deleted since: pressable again.
-        XCTAssertEqual(state(InboxTargetButtonFacts(proposal: applied, taskID: nil)), .idle)
-        XCTAssertEqual(state(InboxTargetButtonFacts(proposal: try proposal("rejected"))), .idle)
-        XCTAssertEqual(state(InboxTargetButtonFacts(proposal: try proposal("failed", error: "parent_id: task #3 is closed"))),
+    func testEveryRowOfTheTable() {
+        XCTAssertEqual(state(InboxTargetButton()), .idle)
+        XCTAssertEqual(state(button("idle")), .idle)
+        XCTAssertEqual(state(button("waiting")), .waiting)
+        XCTAssertEqual(state(button("creating", untilIn: 90)), .creating)
+        XCTAssertEqual(state(button("stuck")), .stuck)
+        XCTAssertEqual(state(button("created", task: 42)), .created)
+        XCTAssertEqual(state(button("failed", note: "parent_id: task #3 is closed")),
                        .failed(message: "parent_id: task #3 is closed"))
-        XCTAssertEqual(state(InboxTargetButtonFacts(proposal: try proposal("failed", dismissed: true))), .idle)
-        XCTAssertEqual(state(InboxTargetButtonFacts(pressError: "no such tool")), .proposeError(message: "no such tool"))
+        XCTAssertEqual(state(InboxTargetButton(pressError: "no such tool")), .proposeError(message: "no such tool"))
+        // A state this build does not know draws idle.
+        XCTAssertEqual(state(button("archived")), .idle)
     }
 
-    func testTargetButton_StuckOffersTryAgain() throws {
-        for status in ["approved", "executing"] {
-            // Two minutes after the approval with nothing of ours on it: stuck.
-            let old = try proposal(status, decidedAgo: TargetButtonStateResolver.targetButtonStuckAfter)
-            XCTAssertEqual(state(InboxTargetButtonFacts(proposal: old)), .stuck, status)
+    func testTargetButton_StuckOffersTryAgain() {
+        // Go's `until` passed with nothing of ours on it: stuck, by the Mac's clock.
+        XCTAssertEqual(state(button("creating", untilIn: 0)), .stuck)
+        XCTAssertEqual(state(button("creating")), .stuck, "no readable until")
+        for detail in ["creating", "stuck"] {
             // Our own apply still running: creating, however old.
-            XCTAssertEqual(state(InboxTargetButtonFacts(proposal: old, inFlight: true)), .creating, status)
-            // Under two minutes: creating.
-            let fresh = try proposal(status, decidedAgo: TargetButtonStateResolver.targetButtonStuckAfter - 1)
-            XCTAssertEqual(state(InboxTargetButtonFacts(proposal: fresh)), .creating, status)
-            // A Try again whose CLI failed without moving the row: failed, still Try again.
-            XCTAssertEqual(state(InboxTargetButtonFacts(proposal: old, applyError: "database is locked")),
-                           .failed(message: "database is locked"), status)
+            XCTAssertEqual(state(button(detail, untilIn: -600, inFlight: true)), .creating, detail)
+            // A Try again whose apply failed without moving the row: failed, still Try again.
+            XCTAssertEqual(state(button(detail, untilIn: -1, applyError: "database is locked")),
+                           .failed(message: "database is locked"), detail)
         }
+        // Before `until` the apply error waits: the row may still move.
+        XCTAssertEqual(state(button("creating", untilIn: 30, applyError: "database is locked")), .creating)
     }
 
-    func testFailedTryAgainErrorWinsOverTheRowError() throws {
-        let failed = try proposal("failed", error: "old reason")
-        XCTAssertEqual(state(InboxTargetButtonFacts(proposal: failed, applyError: "new reason")),
+    func testFailedTryAgainErrorWinsOverTheRowError() {
+        XCTAssertEqual(state(button("failed", note: "old reason", applyError: "new reason")),
                        .failed(message: "new reason"))
-        XCTAssertEqual(state(InboxTargetButtonFacts(proposal: try proposal("failed"))),
-                       .failed(message: "The task was not created."))
+        XCTAssertEqual(state(button("failed")), .failed(message: TargetButtonStateResolver.notCreated))
+        XCTAssertEqual(TargetButtonStateResolver.notCreated, "The task was not created.")
     }
 
     /// A propose that failed after a rejected or deleted-task row: the
     /// button is idle with the reason.
-    func testProposeErrorOverAnIdleRow() throws {
-        XCTAssertEqual(state(InboxTargetButtonFacts(proposal: try proposal("rejected"), pressError: "x")),
-                       .proposeError(message: "x"))
+    func testProposeErrorOverAnIdleRow() {
+        XCTAssertEqual(state(button("idle", pressError: "x")), .proposeError(message: "x"))
+        XCTAssertEqual(state(button("waiting", pressError: "x")), .waiting, "a newer row wins")
+    }
+
+    /// Go's state comes off the feed's action and approval card as sent.
+    func testStateFromTheFeed() throws {
+        let action = CardAction(index: 0, kind: "target", label: "Make a task", state: .pressed, detail: "creating",
+                                note: "", until: "2027-01-15T08:02:00Z")
+        let fromAction = InboxTargetButton(action: action)
+        XCTAssertEqual(fromAction.detail, "creating")
+        XCTAssertEqual(fromAction.until, ISO8601DateFormatter().date(from: "2027-01-15T08:02:00Z"))
+        XCTAssertEqual(InboxTargetButton(action: nil), InboxTargetButton())
+        XCTAssertEqual(InboxTargetButton.date("2027-01-15T08:02:00.5Z")?.timeIntervalSince1970,
+                       try XCTUnwrap(ISO8601DateFormatter().date(from: "2027-01-15T08:02:00Z")).timeIntervalSince1970 + 0.5)
+        XCTAssertNil(InboxTargetButton.date(""))
+
+        var approval = TestInboxFeeds.approval(title: "Create task")
+        XCTAssertNil(InboxTargetButton(approval: approval), "not a target button's row")
+        XCTAssertNil(InboxTargetButton(approval: nil))
+        approval.target = "failed"
+        approval.targetNote = "closed"
+        XCTAssertEqual(InboxTargetButton(approval: approval), InboxTargetButton(detail: "failed", note: "closed"))
     }
 
     // MARK: - What a click does
@@ -92,25 +100,21 @@ final class TargetButtonStateResolverTests: XCTestCase {
         body: "", priority: "medium", createdAt: Date(timeIntervalSince1970: 0))
     private let target = InboxCardAction.Target(title: "Sign off", intent: nil, parent: nil, hash: "abc")
 
-    private func click(_ facts: InboxTargetButtonFacts) -> InboxCardCommand? {
-        InboxCardPress.target(target, index: 0, card: card, facts: facts, state: state(facts))
+    private func click(_ button: InboxTargetButton) -> InboxCardCommand? {
+        InboxCardPress.target(target, index: 0, card: card, button: button, state: state(button))
     }
 
-    func testClickByState() throws {
-        XCTAssertEqual(click(InboxTargetButtonFacts()),
+    func testClickByState() {
+        XCTAssertEqual(click(InboxTargetButton()),
                        .proposeTarget(InboxTargetPress(card: card, index: 0, target: target)))
-        XCTAssertEqual(click(InboxTargetButtonFacts(pressError: "x")),
+        XCTAssertEqual(click(InboxTargetButton(pressError: "x")),
                        .proposeTarget(InboxTargetPress(card: card, index: 0, target: target)))
-        let pending = try proposal("pending")
-        XCTAssertEqual(click(InboxTargetButtonFacts(proposal: pending)), .openProposal(pending.id))
-        let stuck = try proposal("executing")
-        XCTAssertEqual(click(InboxTargetButtonFacts(proposal: stuck)), .tryAgainTarget(stuck.id))
-        let failed = try proposal("failed")
-        XCTAssertEqual(click(InboxTargetButtonFacts(proposal: failed)), .tryAgainTarget(failed.id))
-        XCTAssertNil(click(InboxTargetButtonFacts(proposal: try proposal("approved", decidedAgo: 5))))
+        XCTAssertEqual(click(button("waiting", proposal: 3)), .openProposal(3))
+        XCTAssertEqual(click(button("stuck", proposal: 4)), .tryAgainTarget(4))
+        XCTAssertEqual(click(button("failed", note: "closed", proposal: 5)), .tryAgainTarget(5))
+        XCTAssertNil(click(button("creating", untilIn: 60)))
         // The task by its `source_id`, not the result's id.
-        let applied = try proposal("applied", result: #"{"target_id":7}"#)
-        XCTAssertEqual(click(InboxTargetButtonFacts(proposal: applied, taskID: 42)), .openTarget(42))
+        XCTAssertEqual(click(button("created", task: 42)), .openTarget(42))
     }
 
     func testProposingHoldsTheClick() {
@@ -118,15 +122,25 @@ final class TargetButtonStateResolverTests: XCTestCase {
         XCTAssertNil(source.command(target, index: 0, card: card))
     }
 
-    /// The button reads its facts under exactly the drawn action's context.
-    func testTargetButton_RewriteNeverInheritsState() throws {
-        let pending = try proposal("pending")
+    /// The button reads its state under exactly the drawn action's context
+    /// and press index.
+    func testTargetButton_RewriteNeverInheritsState() {
+        let feedCard = TestInboxFeeds.artifact(5, actions: [
+            CardAction(index: 0, kind: "target", label: "Sign off", state: .pressed, detail: "waiting",
+                       note: "", until: "")
+        ])
         let source = InboxTargetButtonSource(
-            facts: { $0 == "5:0:abc" ? InboxTargetButtonFacts(proposal: pending) : InboxTargetButtonFacts() },
+            card: { $0 == 5 ? feedCard : nil },
+            button: { context, action in
+                var drawn = InboxTargetButton(action: action)
+                drawn.proposalID = context == "5:0:abc" ? 3 : nil
+                return drawn
+            },
             now: now)
         XCTAssertEqual(source.button(target, index: 0, card: card).state, .waiting)
+        XCTAssertEqual(source.button(target, index: 0, card: card).button.proposalID, 3)
         let rewritten = InboxCardAction.Target(title: "Sign off v2", intent: nil, parent: nil, hash: "def")
-        XCTAssertEqual(source.button(rewritten, index: 0, card: card).state, .idle)
+        XCTAssertNil(source.button(rewritten, index: 0, card: card).button.proposalID)
         XCTAssertEqual(source.button(target, index: 1, card: card).state, .idle)
     }
 }

@@ -1,0 +1,3466 @@
+[
+  {
+    "name": "outputs_read",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "outputs.read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000001",
+      "id": 1,
+      "content_hash": "h1"
+    },
+    "swift": {
+      "writer": "AutomationQueries.markOutputOpened",
+      "args": {
+        "id": 1,
+        "contentHash": "h1"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "read_at": "2026-11-16T10:00:00Z",
+            "done_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "outputs_read_already",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')",
+      "UPDATE automation_outputs SET read_at = '2026-11-16T09:30:00Z'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "outputs.read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000002",
+      "id": 1,
+      "content_hash": "h1"
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "read_at": "2026-11-16T09:30:00Z"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "outputs_done",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "outputs.done",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000003",
+      "id": 1,
+      "content_hash": "h1"
+    },
+    "swift": {
+      "writer": "AutomationQueries.markOutputDone",
+      "args": {
+        "id": 1,
+        "contentHash": "h1"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "done_at": "2026-11-16T10:00:00Z",
+            "dismissed_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "outputs_done_stale_hash",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "outputs.done",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000004",
+      "id": 1,
+      "content_hash": "h0"
+    },
+    "expect": {
+      "status": "refused",
+      "code": "changed",
+      "sentence": "Couldn't mark it done: this card changed — look again.",
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "done_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "outputs_dismiss",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "outputs.dismiss",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000005",
+      "id": 1,
+      "content_hash": "h1"
+    },
+    "swift": {
+      "writer": "AutomationQueries.dismissOutput",
+      "args": {
+        "id": 1,
+        "contentHash": "h1"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "dismissed_at": "2026-11-16T10:00:00Z",
+            "done_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "reminders_done",
+    "seed": [
+      "INSERT INTO reminders (id, note, remind_at) VALUES (1, 'Call back', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "reminders.done",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000006",
+      "id": 1
+    },
+    "swift": {
+      "writer": "ReminderQueries.markDone",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "reminders": [
+          {
+            "id": 1,
+            "status": "done",
+            "done_at": "*"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "reminders_done_already",
+    "seed": [
+      "INSERT INTO reminders (id, note, remind_at) VALUES (1, 'Call back', '2026-11-16T09:00:00Z')",
+      "UPDATE reminders SET status = 'done', done_at = '2026-11-16T09:10:00Z'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "reminders.done",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000007",
+      "id": 1
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "rows": {
+        "reminders": [
+          {
+            "id": 1,
+            "status": "done",
+            "done_at": "2026-11-16T09:10:00Z"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "reminders_snooze",
+    "seed": [
+      "INSERT INTO reminders (id, note, remind_at) VALUES (1, 'Call back', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "reminders.snooze",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000008",
+      "id": 1,
+      "until": "2026-11-16T11:00:00Z"
+    },
+    "swift": {
+      "writer": "ReminderQueries.snooze",
+      "args": {
+        "id": 1,
+        "until": "2026-11-16T11:00:00Z"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "reminders": [
+          {
+            "id": 1,
+            "status": "pending",
+            "remind_at": "2026-11-16T11:00:00Z"
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "reminders_done_missing",
+    "seed": [],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "reminders.done",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000009",
+      "id": 9
+    },
+    "expect": {
+      "status": "refused",
+      "code": "not_found",
+      "sentence": "Couldn't mark it done: it's no longer on the Mac.",
+      "rows": {
+        "reminders": []
+      }
+    }
+  },
+  {
+    "name": "briefing_read",
+    "seed": [
+      "INSERT INTO briefings (id, user_id, date, created_at) VALUES (1, 'U1', '2026-11-15', '2026-11-15T06:00:00Z')",
+      "INSERT INTO briefings (id, user_id, date, created_at) VALUES (2, 'U1', '2026-11-16', '2026-11-16T06:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "briefing.read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000010",
+      "ids": [
+        1,
+        2
+      ]
+    },
+    "swift": {
+      "writer": "BriefingQueries.markRead",
+      "args": {
+        "ids": [
+          1,
+          2
+        ]
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "briefings": [
+          {
+            "id": 1,
+            "read_at": "*"
+          },
+          {
+            "id": 2,
+            "read_at": "*"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "briefing_read_already",
+    "seed": [
+      "INSERT INTO briefings (id, user_id, date, created_at) VALUES (1, 'U1', '2026-11-15', '2026-11-15T06:00:00Z')",
+      "INSERT INTO briefings (id, user_id, date, created_at) VALUES (2, 'U1', '2026-11-16', '2026-11-16T06:00:00Z')",
+      "UPDATE briefings SET read_at = '2026-11-16T07:00:00Z'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "briefing.read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000011",
+      "ids": [
+        1,
+        2
+      ]
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "rows": {
+        "briefings": [
+          {
+            "id": 1,
+            "read_at": "2026-11-16T07:00:00Z"
+          },
+          {
+            "id": 2,
+            "read_at": "2026-11-16T07:00:00Z"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "inbox_items_read",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T07:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "inbox_items.read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000012",
+      "id": 1
+    },
+    "swift": {
+      "writer": "InboxQueries.markRead",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "inbox_items": [
+          {
+            "id": 1,
+            "read_at": "*"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "inbox_items_read_already",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T07:00:00Z')",
+      "UPDATE inbox_items SET read_at = '2026-11-16T08:00:00Z'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "inbox_items.read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000013",
+      "id": 1
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "rows": {
+        "inbox_items": [
+          {
+            "id": 1,
+            "read_at": "2026-11-16T08:00:00Z"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "tracks_read",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000014",
+      "ids": [
+        1
+      ]
+    },
+    "swift": {
+      "writer": "TrackQueries.markRead",
+      "args": {
+        "ids": [
+          1
+        ]
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "read_at": "*",
+            "has_updates": 0
+          }
+        ],
+        "digests": [
+          {
+            "id": 5,
+            "read_at": "*"
+          }
+        ],
+        "decision_reads": [
+          {
+            "digest_id": 5,
+            "decision_idx": 0
+          },
+          {
+            "digest_id": 5,
+            "decision_idx": 1
+          }
+        ],
+        "track_events": [
+          {
+            "id": 1,
+            "read_at": null
+          },
+          {
+            "id": 2,
+            "read_at": null
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "tracks_done",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.done",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000015",
+      "id": 1
+    },
+    "swift": {
+      "writer": "TrackDone",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "read_at": "*",
+            "has_updates": 0
+          }
+        ],
+        "digests": [
+          {
+            "id": 5,
+            "read_at": "*"
+          }
+        ],
+        "decision_reads": [
+          {
+            "digest_id": 5,
+            "decision_idx": 0
+          },
+          {
+            "digest_id": 5,
+            "decision_idx": 1
+          }
+        ],
+        "track_events": [
+          {
+            "id": 1,
+            "read_at": "*"
+          },
+          {
+            "id": 2,
+            "read_at": "*"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "tracks_stop",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.stop",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000016",
+      "ids": [
+        1
+      ]
+    },
+    "swift": {
+      "writer": "TrackQueries.dismiss",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "dismissed_at": "*"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "tracks_stop_already",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')",
+      "UPDATE tracks SET dismissed_at = '2026-11-16T08:00:00Z'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.stop",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000017",
+      "ids": [
+        1
+      ]
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "dismissed_at": "2026-11-16T08:00:00Z"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "tracks_stop_custom",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')",
+      "UPDATE tracks SET origin = 'custom', instruction = 'Watch the release' WHERE id = 1"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.stop",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000018",
+      "ids": [
+        1
+      ]
+    },
+    "swift": {
+      "writer": "CustomStop",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "dismissed_at": "*",
+            "enabled": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "tracks_restore",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')",
+      "UPDATE tracks SET dismissed_at = '2026-11-16T08:00:00Z'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.restore",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000019",
+      "id": 1
+    },
+    "swift": {
+      "writer": "TrackQueries.restore",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "dismissed_at": ""
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "tracks_priority",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.priority",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000020",
+      "id": 1,
+      "priority": "high"
+    },
+    "swift": {
+      "writer": "TrackQueries.updatePriority",
+      "args": {
+        "id": 1,
+        "value": "high"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "priority": "high",
+            "updated_at": "2026-11-15T09:00:00Z"
+          }
+        ],
+        "feedback": [
+          {
+            "entity_type": "track",
+            "entity_id": "1",
+            "rating": -1,
+            "comment": "priority corrected to high"
+          }
+        ]
+      }
+    },
+    "race": "skip"
+  },
+  {
+    "name": "tracks_priority_missing",
+    "seed": [],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.priority",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000021",
+      "id": 9,
+      "priority": "high"
+    },
+    "expect": {
+      "status": "refused",
+      "code": "not_found",
+      "sentence": "Couldn't change the priority: it's no longer on the Mac.",
+      "rows": {
+        "feedback": []
+      }
+    }
+  },
+  {
+    "name": "tracks_ownership",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.ownership",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000022",
+      "id": 1,
+      "ownership": "delegated"
+    },
+    "swift": {
+      "writer": "TrackQueries.updateOwnership",
+      "args": {
+        "id": 1,
+        "value": "delegated"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "ownership": "delegated",
+            "updated_at": "2026-11-15T09:00:00Z"
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "tracks_sub_items",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.sub_items",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000023",
+      "id": 1,
+      "index": 0,
+      "done": true
+    },
+    "swift": {
+      "writer": "TrackSubItem",
+      "args": {
+        "id": 1,
+        "index": 0,
+        "done": true
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "json_extract(sub_items, '$[0].status')": "done",
+            "json_extract(sub_items, '$[1].status')": "done",
+            "json_array_length(sub_items)": 2
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "tracks_sub_items_already",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.sub_items",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000024",
+      "id": 1,
+      "index": 1,
+      "done": true
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "json_extract(sub_items, '$[0].status')": "open",
+            "json_extract(sub_items, '$[1].status')": "done"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "tracks_enabled",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')",
+      "UPDATE tracks SET origin = 'custom', instruction = 'Watch the release' WHERE id = 1"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.enabled",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000025",
+      "id": 1,
+      "enabled": false
+    },
+    "swift": {
+      "writer": "TrackQueries.setEnabled",
+      "args": {
+        "id": 1,
+        "enabled": false
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "enabled": 0,
+            "updated_at": "*"
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "tracks_instruction",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')",
+      "UPDATE tracks SET origin = 'custom', instruction = 'Watch the release' WHERE id = 1"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.instruction",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000026",
+      "id": 1,
+      "instruction": "Watch the rollout"
+    },
+    "swift": {
+      "writer": "TrackQueries.updateInstruction",
+      "args": {
+        "id": 1,
+        "value": "Watch the rollout"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "instruction": "Watch the rollout"
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "tracks_instruction_not_custom",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.instruction",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000027",
+      "id": 1,
+      "instruction": "x"
+    },
+    "expect": {
+      "status": "refused",
+      "code": "not_found",
+      "sentence": "Couldn't save the instruction: it's no longer on the Mac.",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "instruction": ""
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "tracks_delete",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')",
+      "UPDATE tracks SET origin = 'custom', instruction = 'Watch the release' WHERE id = 1"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.delete",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000028",
+      "id": 1
+    },
+    "swift": {
+      "writer": "TrackQueries.delete",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [],
+        "track_events": []
+      }
+    }
+  },
+  {
+    "name": "tracks_delete_already",
+    "seed": [],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.delete",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000029",
+      "id": 1
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "rows": {
+        "tracks": []
+      }
+    }
+  },
+  {
+    "name": "tracks_event_status",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.event_status",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000030",
+      "event_id": 1,
+      "status": "dismissed"
+    },
+    "swift": {
+      "writer": "TrackEventQueries.setActionStatus",
+      "args": {
+        "id": 1,
+        "status": "dismissed"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "track_events": [
+          {
+            "id": 1,
+            "action_status": "dismissed"
+          },
+          {
+            "id": 2,
+            "action_status": "none"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "tracks_event_status_already",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')",
+      "UPDATE track_events SET action_status = 'dismissed' WHERE id = 1"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.event_status",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000031",
+      "event_id": 1,
+      "status": "dismissed"
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "rows": {
+        "track_events": [
+          {
+            "id": 1,
+            "action_status": "dismissed"
+          },
+          {
+            "id": 2,
+            "action_status": "none"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "tracks_event_read_one",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.events_read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000032",
+      "track_id": 1,
+      "event_id": 2
+    },
+    "swift": {
+      "writer": "TrackEventQueries.markRead",
+      "args": {
+        "id": 2
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "track_events": [
+          {
+            "id": 1,
+            "read_at": null
+          },
+          {
+            "id": 2,
+            "read_at": "*"
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "tracks_events_read_all",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates, sub_items) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1, '[{\"text\":\"Draft\",\"status\":\"open\"},{\"text\":\"Review\",\"status\":\"done\"}]')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 'closed', '2026-11-16T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "tracks.events_read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000033",
+      "track_id": 1
+    },
+    "swift": {
+      "writer": "TrackEventQueries.markAllRead",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "track_events": [
+          {
+            "id": 1,
+            "read_at": "*"
+          },
+          {
+            "id": 2,
+            "read_at": "*"
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "ideas_status",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.status",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000034",
+      "id": 1,
+      "status": "dropped"
+    },
+    "swift": {
+      "writer": "IdeaQueries.setStatus",
+      "args": {
+        "id": 1,
+        "status": "dropped"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "status": "dropped",
+            "needs_review": 0,
+            "review_reason": ""
+          },
+          {
+            "id": 2,
+            "status": "active"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ideas_status_already",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')",
+      "UPDATE ideas SET status = 'dropped', needs_review = 0, review_reason = '' WHERE id = 1"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.status",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000035",
+      "id": 1,
+      "status": "dropped"
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "status": "dropped",
+            "updated_at": "2026-11-15T09:30:00Z"
+          },
+          {
+            "id": 2,
+            "status": "active"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ideas_status_missing",
+    "seed": [],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.status",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000036",
+      "id": 9,
+      "status": "active"
+    },
+    "expect": {
+      "status": "refused",
+      "code": "not_found",
+      "sentence": "Couldn't update the idea: it's no longer on the Mac.",
+      "rows": {
+        "ideas": []
+      }
+    }
+  },
+  {
+    "name": "ideas_snooze",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.snooze",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000037",
+      "id": 1,
+      "until": "2026-12-01"
+    },
+    "swift": {
+      "writer": "IdeaQueries.snooze",
+      "args": {
+        "id": 1,
+        "until": "2026-12-01"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "status": "not_now",
+            "snooze_until": "2026-12-01",
+            "needs_review": 0
+          },
+          {
+            "id": 2,
+            "status": "active"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ideas_snooze_no_date",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.snooze",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000038",
+      "id": 1
+    },
+    "swift": {
+      "writer": "IdeaQueries.snooze",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "status": "not_now",
+            "snooze_until": ""
+          },
+          {
+            "id": 2,
+            "status": "active"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ideas_merge",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.merge",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000039",
+      "id": 1,
+      "into": 2
+    },
+    "swift": {
+      "writer": "IdeaQueries.merge",
+      "args": {
+        "id": 1,
+        "into": 2
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "status": "merged",
+            "merged_into_id": 2,
+            "needs_review": 0
+          },
+          {
+            "id": 2,
+            "status": "active"
+          }
+        ],
+        "idea_mentions": [
+          {
+            "id": 1,
+            "idea_id": 2
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ideas_merge_already",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')",
+      "UPDATE ideas SET status = 'merged', merged_into_id = 2, needs_review = 0 WHERE id = 1",
+      "UPDATE idea_mentions SET idea_id = 2"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.merge",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000040",
+      "id": 1,
+      "into": 2
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "status": "merged",
+            "merged_into_id": 2,
+            "needs_review": 0
+          },
+          {
+            "id": 2,
+            "status": "active"
+          }
+        ],
+        "idea_mentions": [
+          {
+            "id": 1,
+            "idea_id": 2
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ideas_merge_into_missing",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.merge",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000041",
+      "id": 1,
+      "into": 9
+    },
+    "expect": {
+      "status": "refused",
+      "code": "not_found",
+      "sentence": "Couldn't merge it: it's no longer on the Mac.",
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "status": "proposed"
+          },
+          {
+            "id": 2,
+            "status": "active"
+          }
+        ],
+        "idea_mentions": [
+          {
+            "id": 1,
+            "idea_id": 1
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ideas_supersede",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (1, 'decision', 'Ship Friday', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, seen_at, updated_at) VALUES (2, 'decision', 'Freeze Monday', 'active', 1, 'resurfaced', '2026-11-14T09:00:00Z', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, chat_born, updated_at) VALUES (3, 'decision', 'Chat draft', 'proposed', 1, '2026-11-15T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.supersede",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000042",
+      "id": 1
+    },
+    "swift": {
+      "writer": "IdeaQueries.supersede",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "status": "superseded",
+            "superseded_by_id": null
+          },
+          {
+            "id": 2,
+            "status": "active"
+          },
+          {
+            "id": 3,
+            "status": "proposed"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ideas_supersede_by",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (1, 'decision', 'Ship Friday', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, seen_at, updated_at) VALUES (2, 'decision', 'Freeze Monday', 'active', 1, 'resurfaced', '2026-11-14T09:00:00Z', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, chat_born, updated_at) VALUES (3, 'decision', 'Chat draft', 'proposed', 1, '2026-11-15T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.supersede",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000043",
+      "id": 1,
+      "by": 2
+    },
+    "swift": {
+      "writer": "IdeaQueries.supersede",
+      "args": {
+        "id": 1,
+        "by": 2
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "status": "superseded",
+            "superseded_by_id": 2
+          },
+          {
+            "id": 2,
+            "status": "active"
+          },
+          {
+            "id": 3,
+            "status": "proposed"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ideas_rating",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.rating",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000044",
+      "id": 2,
+      "rating": 1,
+      "comment": "useful"
+    },
+    "swift": {
+      "writer": "IdeaQueries.setRating",
+      "args": {
+        "id": 2,
+        "rating": 1,
+        "comment": "useful"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "owner_rating": 0,
+            "rating_comment": ""
+          },
+          {
+            "id": 2,
+            "owner_rating": 1,
+            "rating_comment": "useful"
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "ideas_create",
+    "seed": [],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.create",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000045",
+      "kind": "note",
+      "title": "Billing",
+      "essence": "Bill monthly"
+    },
+    "swift": {
+      "writer": "IdeaQueries.createManual",
+      "args": {
+        "kind": "note",
+        "title": "Billing",
+        "essence": "Bill monthly"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "result": {
+        "id": 1
+      },
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "kind": "note",
+            "title": "Billing",
+            "essence": "Bill monthly",
+            "status": "active",
+            "source": "owner",
+            "last_mention_at": "*"
+          }
+        ],
+        "idea_mentions": [
+          {
+            "idea_id": 1,
+            "source": "owner",
+            "quote": "Bill monthly",
+            "said_at": "*"
+          }
+        ]
+      }
+    },
+    "race": "skip"
+  },
+  {
+    "name": "ideas_delete_with_merged_and_chat",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')",
+      "UPDATE ideas SET status = 'merged', merged_into_id = 2 WHERE id = 1",
+      "INSERT INTO ideas (id, kind, title, status, similar_to_id, superseded_by_id) VALUES (3, 'idea', 'Other', 'active', 2, 1)",
+      "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (2, 2, 'owner', 'q2', '2026-11-15T09:00:00Z')",
+      "INSERT INTO chat_conversations (id, context_type, context_id, created_at, updated_at) VALUES (1, 'idea', '2', 1, 2)",
+      "INSERT INTO chat_messages (id, conversation_id, role, text, created_at) VALUES (1, 1, 'user', 'hi', 1)",
+      "INSERT INTO chat_conversations (id, context_type, context_id, created_at, updated_at) VALUES (2, 'idea', '3', 1, 2)"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.delete",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000046",
+      "id": 2
+    },
+    "swift": {
+      "writer": "IdeaQueries.delete",
+      "args": {
+        "id": 2
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "ideas": [
+          {
+            "id": 3,
+            "similar_to_id": null,
+            "superseded_by_id": null
+          }
+        ],
+        "idea_mentions": [],
+        "chat_messages": [],
+        "chat_conversations": [
+          {
+            "id": 2
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ideas_delete_already",
+    "seed": [],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.delete",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000047",
+      "id": 2
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "rows": {
+        "ideas": []
+      }
+    }
+  },
+  {
+    "name": "ideas_converted",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')",
+      "INSERT INTO targets (id, text, level, status, period_start, period_end, source_type) VALUES (4, 'From idea', 'day', 'todo', '2026-11-16', '2026-11-16', 'manual')",
+      "UPDATE ideas SET essence = 'Turn it on' WHERE id = 1"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.converted",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000048",
+      "id": 1,
+      "today": "2026-11-16"
+    },
+    "swift": {
+      "writer": "IdeaConvert",
+      "args": {
+        "id": 1,
+        "today": "2026-11-16"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "result": {
+        "target_id": 5
+      },
+      "rows": {
+        "targets": [
+          {
+            "id": 4,
+            "source_type": "manual"
+          },
+          {
+            "id": 5,
+            "source_type": "idea"
+          }
+        ],
+        "ideas": [
+          {
+            "id": 1,
+            "status": "converted",
+            "converted_target_id": 5,
+            "needs_review": 0
+          },
+          {
+            "id": 2,
+            "status": "active",
+            "converted_target_id": null,
+            "needs_review": 0
+          }
+        ],
+        "targets WHERE id = 5": [
+          {
+            "text": "Proposed idea",
+            "intent": "Turn it on",
+            "level": "day",
+            "period_start": "2026-11-16",
+            "period_end": "2026-11-16",
+            "status": "todo",
+            "source_id": "1",
+            "project_id": null,
+            "CAST(progress AS INTEGER)": 0
+          }
+        ],
+        "target_status_history": []
+      }
+    }
+  },
+  {
+    "name": "ideas_converted_already",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')",
+      "INSERT INTO targets (id, text, level, status, period_start, period_end, source_type) VALUES (4, 'From idea', 'day', 'todo', '2026-11-16', '2026-11-16', 'manual')",
+      "UPDATE ideas SET status = 'converted', converted_target_id = 4, needs_review = 0 WHERE id = 1"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.converted",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000049",
+      "id": 1,
+      "today": "2026-11-16"
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "result": {
+        "target_id": 4
+      },
+      "rows": {
+        "targets": [
+          {
+            "id": 4,
+            "source_type": "manual"
+          }
+        ],
+        "ideas": [
+          {
+            "id": 1,
+            "status": "converted",
+            "converted_target_id": 4,
+            "needs_review": 0
+          },
+          {
+            "id": 2,
+            "status": "active",
+            "converted_target_id": null,
+            "needs_review": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ideas_converted_bad_today",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')",
+      "INSERT INTO targets (id, text, level, status, period_start, period_end, source_type) VALUES (4, 'From idea', 'day', 'todo', '2026-11-16', '2026-11-16', 'manual')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.converted",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000050",
+      "id": 1,
+      "today": ""
+    },
+    "expect": {
+      "status": "refused",
+      "code": "unsupported",
+      "sentence": "Couldn't convert it: this card doesn't offer that here.",
+      "rows": {
+        "targets": [
+          {
+            "id": 4
+          }
+        ],
+        "ideas": [
+          {
+            "id": 1,
+            "status": "proposed"
+          },
+          {
+            "id": 2,
+            "status": "active"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ideas_converted_missing",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')",
+      "INSERT INTO targets (id, text, level, status, period_start, period_end, source_type) VALUES (4, 'From idea', 'day', 'todo', '2026-11-16', '2026-11-16', 'manual')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.converted",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000051",
+      "id": 9,
+      "today": "2026-11-16"
+    },
+    "expect": {
+      "status": "refused",
+      "code": "not_found",
+      "sentence": "Couldn't convert it: it's no longer on the Mac.",
+      "rows": {
+        "targets": [
+          {
+            "id": 4
+          }
+        ],
+        "ideas": [
+          {
+            "id": 1,
+            "status": "proposed"
+          },
+          {
+            "id": 2,
+            "status": "active"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ideas_decision_seen",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (1, 'decision', 'Ship Friday', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, seen_at, updated_at) VALUES (2, 'decision', 'Freeze Monday', 'active', 1, 'resurfaced', '2026-11-14T09:00:00Z', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, chat_born, updated_at) VALUES (3, 'decision', 'Chat draft', 'proposed', 1, '2026-11-15T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.decision_seen",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000052",
+      "id": 2
+    },
+    "swift": {
+      "writer": "IdeaQueries.markDecisionSeen",
+      "args": {
+        "id": 2
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "seen_at": null,
+            "needs_review": 0
+          },
+          {
+            "id": 2,
+            "seen_at": "*",
+            "needs_review": 0
+          },
+          {
+            "id": 3,
+            "seen_at": null,
+            "needs_review": 0
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "ideas_decisions_seen_all",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (1, 'decision', 'Ship Friday', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, seen_at, updated_at) VALUES (2, 'decision', 'Freeze Monday', 'active', 1, 'resurfaced', '2026-11-14T09:00:00Z', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, chat_born, updated_at) VALUES (3, 'decision', 'Chat draft', 'proposed', 1, '2026-11-15T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.decisions_seen_all",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000053"
+    },
+    "swift": {
+      "writer": "IdeaQueries.markAllDecisionsSeen",
+      "args": {}
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "seen_at": "*",
+            "needs_review": 0
+          },
+          {
+            "id": 2,
+            "seen_at": "*",
+            "needs_review": 0
+          },
+          {
+            "id": 3,
+            "seen_at": null,
+            "needs_review": 0
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "ideas_create_from_chat",
+    "seed": [],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.create_from_chat",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000054",
+      "conversation_id": 7,
+      "message_id": 9,
+      "kind": "decision",
+      "body": "Ship it\non Friday"
+    },
+    "swift": {
+      "writer": "IdeaQueries.createFromChat",
+      "args": {
+        "kind": "decision",
+        "body": "Ship it\non Friday",
+        "conversationID": 7,
+        "messageID": 9
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "result": {
+        "id": 1
+      },
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "kind": "decision",
+            "title": "Ship it",
+            "essence": "Ship it\non Friday",
+            "status": "active",
+            "source": "owner",
+            "chat_born": 1
+          }
+        ],
+        "idea_mentions": [
+          {
+            "idea_id": 1,
+            "source": "chat",
+            "ref": "chat:7:9",
+            "quote": "Ship it\non Friday"
+          }
+        ]
+      }
+    },
+    "race": "skip"
+  },
+  {
+    "name": "ideas_undo_chat",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, essence, status, source, chat_born, updated_at) VALUES (1, 'decision', 'Ship it', 'Ship it', 'active', 'owner', 1, '2026-11-16T09:00:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, ref, quote, said_at) VALUES (1, 1, 'chat', 'chat:7:9', 'Ship it', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.undo_chat",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000055",
+      "id": 1,
+      "created_updated_at": "2026-11-16T09:00:00Z"
+    },
+    "swift": {
+      "writer": "IdeaQueries.undoChatIdea",
+      "args": {
+        "id": 1,
+        "createdUpdatedAt": "2026-11-16T09:00:00Z"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "result": {
+        "undone": true
+      },
+      "rows": {
+        "ideas": [],
+        "idea_mentions": []
+      }
+    },
+    "race": "skip"
+  },
+  {
+    "name": "ideas_undo_chat_touched",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, essence, status, source, chat_born, updated_at) VALUES (1, 'decision', 'Ship it', 'Ship it', 'active', 'owner', 1, '2026-11-16T09:00:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, ref, quote, said_at) VALUES (1, 1, 'chat', 'chat:7:9', 'Ship it', '2026-11-16T09:00:00Z')",
+      "UPDATE ideas SET updated_at = '2026-11-16T09:30:00Z'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.undo_chat",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000056",
+      "id": 1,
+      "created_updated_at": "2026-11-16T09:00:00Z"
+    },
+    "swift": {
+      "writer": "IdeaQueries.undoChatIdea",
+      "args": {
+        "id": 1,
+        "createdUpdatedAt": "2026-11-16T09:00:00Z"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "result": {
+        "undone": false
+      },
+      "rows": {
+        "ideas": [
+          {
+            "id": 1
+          }
+        ],
+        "idea_mentions": [
+          {
+            "id": 1
+          }
+        ]
+      }
+    },
+    "race": "skip"
+  },
+  {
+    "name": "dayplan_done_cascades",
+    "seed": [
+      "INSERT INTO targets (id, text, level, status, period_start, period_end) VALUES (3, 'Ship the billing migration', 'day', 'todo', '2026-11-16', '2026-11-16')",
+      "INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T07:00:00Z')",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (1, 1, 'backlog', 'task', '3', 'Ship the release', 'pending', 0)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, title, status, order_index) VALUES (2, 1, 'backlog', 'manual', 'Write notes', 'pending', 1)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (3, 1, 'timeblock', 'calendar', 'ev1', 'Standup', 'pending', 2)"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "dayplan.done",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000057",
+      "item_id": 1,
+      "cascade": true
+    },
+    "swift": {
+      "writer": "DayPlanQueries.markItemDone",
+      "args": {
+        "id": 1,
+        "cascade": true
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "day_plan_items": [
+          {
+            "id": 1,
+            "status": "done"
+          },
+          {
+            "id": 2,
+            "status": "pending"
+          },
+          {
+            "id": 3,
+            "status": "pending"
+          }
+        ],
+        "targets": [
+          {
+            "id": 3,
+            "status": "done",
+            "CAST(progress AS INTEGER)": 1
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "dayplan_done_already",
+    "seed": [
+      "INSERT INTO targets (id, text, level, status, period_start, period_end) VALUES (3, 'Ship the billing migration', 'day', 'todo', '2026-11-16', '2026-11-16')",
+      "INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T07:00:00Z')",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (1, 1, 'backlog', 'task', '3', 'Ship the release', 'pending', 0)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, title, status, order_index) VALUES (2, 1, 'backlog', 'manual', 'Write notes', 'pending', 1)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (3, 1, 'timeblock', 'calendar', 'ev1', 'Standup', 'pending', 2)",
+      "UPDATE day_plan_items SET status = 'done' WHERE id = 1"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "dayplan.done",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000058",
+      "item_id": 1,
+      "cascade": true
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "rows": {
+        "day_plan_items": [
+          {
+            "id": 1,
+            "status": "done"
+          },
+          {
+            "id": 2,
+            "status": "pending"
+          },
+          {
+            "id": 3,
+            "status": "pending"
+          }
+        ],
+        "targets": [
+          {
+            "id": 3,
+            "status": "todo"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "dayplan_done_task_gone",
+    "seed": [
+      "INSERT INTO targets (id, text, level, status, period_start, period_end) VALUES (3, 'Ship the billing migration', 'day', 'todo', '2026-11-16', '2026-11-16')",
+      "INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T07:00:00Z')",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (1, 1, 'backlog', 'task', '3', 'Ship the release', 'pending', 0)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, title, status, order_index) VALUES (2, 1, 'backlog', 'manual', 'Write notes', 'pending', 1)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (3, 1, 'timeblock', 'calendar', 'ev1', 'Standup', 'pending', 2)",
+      "DELETE FROM targets WHERE id = 3"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "dayplan.done",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000059",
+      "item_id": 1,
+      "cascade": true
+    },
+    "swift": {
+      "writer": "DayPlanQueries.markItemDone",
+      "args": {
+        "id": 1,
+        "cascade": false
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "result": {
+        "note": "Updated the plan item only: target #3 no longer exists (it may have been deleted elsewhere)"
+      },
+      "rows": {
+        "day_plan_items": [
+          {
+            "id": 1,
+            "status": "done"
+          },
+          {
+            "id": 2,
+            "status": "pending"
+          },
+          {
+            "id": 3,
+            "status": "pending"
+          }
+        ],
+        "targets": []
+      }
+    }
+  },
+  {
+    "name": "dayplan_pending_cascades",
+    "seed": [
+      "INSERT INTO targets (id, text, level, status, period_start, period_end) VALUES (3, 'Ship the billing migration', 'day', 'todo', '2026-11-16', '2026-11-16')",
+      "INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T07:00:00Z')",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (1, 1, 'backlog', 'task', '3', 'Ship the release', 'pending', 0)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, title, status, order_index) VALUES (2, 1, 'backlog', 'manual', 'Write notes', 'pending', 1)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (3, 1, 'timeblock', 'calendar', 'ev1', 'Standup', 'pending', 2)",
+      "UPDATE day_plan_items SET status = 'done' WHERE id = 1",
+      "UPDATE targets SET status = 'done'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "dayplan.pending",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000060",
+      "item_id": 1,
+      "cascade": true
+    },
+    "swift": {
+      "writer": "DayPlanQueries.markItemPending",
+      "args": {
+        "id": 1,
+        "cascade": true
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "day_plan_items": [
+          {
+            "id": 1,
+            "status": "pending"
+          },
+          {
+            "id": 2,
+            "status": "pending"
+          },
+          {
+            "id": 3,
+            "status": "pending"
+          }
+        ],
+        "targets": [
+          {
+            "id": 3,
+            "status": "todo"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "dayplan_delete",
+    "seed": [
+      "INSERT INTO targets (id, text, level, status, period_start, period_end) VALUES (3, 'Ship the billing migration', 'day', 'todo', '2026-11-16', '2026-11-16')",
+      "INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T07:00:00Z')",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (1, 1, 'backlog', 'task', '3', 'Ship the release', 'pending', 0)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, title, status, order_index) VALUES (2, 1, 'backlog', 'manual', 'Write notes', 'pending', 1)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (3, 1, 'timeblock', 'calendar', 'ev1', 'Standup', 'pending', 2)"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "dayplan.delete",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000061",
+      "item_id": 2
+    },
+    "swift": {
+      "writer": "DayPlanQueries.deleteItem",
+      "args": {
+        "id": 2
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "day_plan_items": [
+          {
+            "id": 1
+          },
+          {
+            "id": 3
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "dayplan_delete_calendar_is_kept",
+    "seed": [
+      "INSERT INTO targets (id, text, level, status, period_start, period_end) VALUES (3, 'Ship the billing migration', 'day', 'todo', '2026-11-16', '2026-11-16')",
+      "INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T07:00:00Z')",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (1, 1, 'backlog', 'task', '3', 'Ship the release', 'pending', 0)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, title, status, order_index) VALUES (2, 1, 'backlog', 'manual', 'Write notes', 'pending', 1)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (3, 1, 'timeblock', 'calendar', 'ev1', 'Standup', 'pending', 2)"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "dayplan.delete",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000062",
+      "item_id": 3
+    },
+    "swift": {
+      "writer": "DayPlanQueries.deleteItem",
+      "args": {
+        "id": 3
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "rows": {
+        "day_plan_items": [
+          {
+            "id": 1
+          },
+          {
+            "id": 2
+          },
+          {
+            "id": 3
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "dayplan_reorder",
+    "seed": [
+      "INSERT INTO targets (id, text, level, status, period_start, period_end) VALUES (3, 'Ship the billing migration', 'day', 'todo', '2026-11-16', '2026-11-16')",
+      "INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T07:00:00Z')",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (1, 1, 'backlog', 'task', '3', 'Ship the release', 'pending', 0)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, title, status, order_index) VALUES (2, 1, 'backlog', 'manual', 'Write notes', 'pending', 1)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (3, 1, 'timeblock', 'calendar', 'ev1', 'Standup', 'pending', 2)"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "dayplan.reorder",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000063",
+      "plan_id": 1,
+      "ordered_ids": [
+        2,
+        1
+      ]
+    },
+    "swift": {
+      "writer": "DayPlanQueries.reorderBacklog",
+      "args": {
+        "planID": 1,
+        "orderedIDs": [
+          2,
+          1
+        ]
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "day_plan_items": [
+          {
+            "id": 1,
+            "order_index": 1
+          },
+          {
+            "id": 2,
+            "order_index": 0
+          },
+          {
+            "id": 3,
+            "order_index": 2
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "dayplan_add",
+    "seed": [
+      "INSERT INTO targets (id, text, level, status, period_start, period_end) VALUES (3, 'Ship the billing migration', 'day', 'todo', '2026-11-16', '2026-11-16')",
+      "INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T07:00:00Z')",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (1, 1, 'backlog', 'task', '3', 'Ship the release', 'pending', 0)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, title, status, order_index) VALUES (2, 1, 'backlog', 'manual', 'Write notes', 'pending', 1)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (3, 1, 'timeblock', 'calendar', 'ev1', 'Standup', 'pending', 2)"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "dayplan.add",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000064",
+      "plan_id": 1,
+      "kind": "timeblock",
+      "title": "Focus",
+      "start_time": "2026-11-16T13:00:00Z",
+      "end_time": "2026-11-16T14:00:00Z"
+    },
+    "swift": {
+      "writer": "DayPlanQueries.addManualItem",
+      "args": {
+        "planID": 1,
+        "kind": "timeblock",
+        "title": "Focus",
+        "startTime": "2026-11-16T13:00:00Z",
+        "endTime": "2026-11-16T14:00:00Z"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "result": {
+        "id": 4
+      },
+      "rows": {
+        "day_plan_items": [
+          {
+            "id": 1,
+            "source_type": "task",
+            "order_index": 0
+          },
+          {
+            "id": 2,
+            "source_type": "manual",
+            "order_index": 1
+          },
+          {
+            "id": 3,
+            "source_type": "calendar",
+            "order_index": 2
+          },
+          {
+            "id": 4,
+            "source_type": "manual",
+            "order_index": 3
+          }
+        ],
+        "day_plan_items WHERE id = 4": [
+          {
+            "kind": "timeblock",
+            "title": "Focus",
+            "start_time": "2026-11-16T13:00:00Z",
+            "end_time": "2026-11-16T14:00:00Z",
+            "status": "pending",
+            "tags": "[]"
+          }
+        ]
+      }
+    },
+    "race": "skip"
+  },
+  {
+    "name": "dayplan_add_no_times",
+    "seed": [
+      "INSERT INTO targets (id, text, level, status, period_start, period_end) VALUES (3, 'Ship the billing migration', 'day', 'todo', '2026-11-16', '2026-11-16')",
+      "INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T07:00:00Z')",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (1, 1, 'backlog', 'task', '3', 'Ship the release', 'pending', 0)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, title, status, order_index) VALUES (2, 1, 'backlog', 'manual', 'Write notes', 'pending', 1)",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (3, 1, 'timeblock', 'calendar', 'ev1', 'Standup', 'pending', 2)"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "dayplan.add",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000065",
+      "plan_id": 1,
+      "kind": "backlog",
+      "title": "Call"
+    },
+    "swift": {
+      "writer": "DayPlanQueries.addManualItem",
+      "args": {
+        "planID": 1,
+        "kind": "backlog",
+        "title": "Call"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "result": {
+        "id": 4
+      },
+      "rows": {
+        "day_plan_items": [
+          {
+            "id": 1,
+            "order_index": 0
+          },
+          {
+            "id": 2,
+            "order_index": 1
+          },
+          {
+            "id": 3,
+            "order_index": 2
+          },
+          {
+            "id": 4,
+            "order_index": 3
+          }
+        ],
+        "day_plan_items WHERE id = 4": [
+          {
+            "start_time": null,
+            "end_time": null
+          }
+        ]
+      }
+    },
+    "race": "skip"
+  },
+  {
+    "name": "targets_set_status",
+    "seed": [
+      "INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme-board')",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id) VALUES (1, 'Plan', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (2, 'Phase', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (3, 'Task', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 2)"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "targets.set_status",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000066",
+      "id": 3,
+      "status": "in_progress"
+    },
+    "swift": {
+      "writer": "WorkbenchQueries.updateTargetStatus",
+      "args": {
+        "id": 3,
+        "status": "in_progress"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "result": {
+        "rolled_up": [
+          1,
+          2
+        ]
+      },
+      "rows": {
+        "targets": [
+          {
+            "id": 1,
+            "status": "in_progress",
+            "status_actor": null
+          },
+          {
+            "id": 2,
+            "status": "in_progress",
+            "status_actor": null
+          },
+          {
+            "id": 3,
+            "status": "in_progress",
+            "status_actor": null
+          }
+        ],
+        "target_status_history": [
+          {
+            "target_id": 1,
+            "to_status": "todo",
+            "actor": "owner"
+          },
+          {
+            "target_id": 2,
+            "to_status": "todo",
+            "actor": "owner"
+          },
+          {
+            "target_id": 3,
+            "to_status": "todo",
+            "actor": "owner"
+          },
+          {
+            "target_id": 3,
+            "to_status": "in_progress",
+            "actor": "owner"
+          },
+          {
+            "target_id": 1,
+            "to_status": "in_progress",
+            "actor": "system"
+          },
+          {
+            "target_id": 2,
+            "to_status": "in_progress",
+            "actor": "system"
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "targets_set_status_rolls_up_two_ancestors",
+    "seed": [
+      "INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme-board')",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id) VALUES (1, 'Plan', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (2, 'Phase', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (3, 'Task', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 2)"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "targets.set_status",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000067",
+      "id": 3,
+      "status": "done"
+    },
+    "swift": {
+      "writer": "WorkbenchQueries.updateTargetStatus",
+      "args": {
+        "id": 3,
+        "status": "done"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "result": {
+        "rolled_up": [
+          1,
+          2
+        ]
+      },
+      "rows": {
+        "targets": [
+          {
+            "id": 1,
+            "status": "done",
+            "CAST(progress AS INTEGER)": 1
+          },
+          {
+            "id": 2,
+            "status": "done",
+            "CAST(progress AS INTEGER)": 1
+          },
+          {
+            "id": 3,
+            "status": "done",
+            "CAST(progress AS INTEGER)": 1
+          }
+        ],
+        "target_status_history": [
+          {
+            "target_id": 1,
+            "to_status": "todo",
+            "actor": "owner"
+          },
+          {
+            "target_id": 2,
+            "to_status": "todo",
+            "actor": "owner"
+          },
+          {
+            "target_id": 3,
+            "to_status": "todo",
+            "actor": "owner"
+          },
+          {
+            "target_id": 3,
+            "to_status": "done",
+            "actor": "owner"
+          },
+          {
+            "target_id": 1,
+            "to_status": "done",
+            "actor": "system"
+          },
+          {
+            "target_id": 2,
+            "to_status": "done",
+            "actor": "system"
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "targets_set_status_missing",
+    "seed": [],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "targets.set_status",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000068",
+      "id": 9,
+      "status": "done"
+    },
+    "expect": {
+      "status": "refused",
+      "code": "not_found",
+      "sentence": "Couldn't change the status: it's no longer on the Mac.",
+      "rows": {
+        "targets": []
+      }
+    }
+  },
+  {
+    "name": "targets_set_column",
+    "seed": [
+      "INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme-board')",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id) VALUES (1, 'Plan', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (2, 'Phase', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (3, 'Task', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 2)",
+      "INSERT INTO workbench_board_columns (id, project_id, status, title, description, position, created_at) VALUES (1, 1, 'in_progress', 'Spec', '', 0, '2026-11-16T09:00:00Z')",
+      "INSERT INTO workbench_board_columns (id, project_id, status, title, description, position, created_at) VALUES (2, 1, 'in_progress', 'Code', '', 1, '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "targets.set_column",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000069",
+      "id": 3,
+      "status": "in_progress",
+      "column_id": 2
+    },
+    "swift": {
+      "writer": "WorkbenchQueries.updateTargetColumn",
+      "args": {
+        "id": 3,
+        "status": "in_progress",
+        "columnID": 2
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "result": {
+        "rolled_up": [
+          1,
+          2
+        ]
+      },
+      "rows": {
+        "targets": [
+          {
+            "id": 1,
+            "status": "in_progress",
+            "board_column_id": null
+          },
+          {
+            "id": 2,
+            "status": "in_progress",
+            "board_column_id": null
+          },
+          {
+            "id": 3,
+            "status": "in_progress",
+            "board_column_id": 2
+          }
+        ],
+        "target_status_history": [
+          {
+            "target_id": 1,
+            "to_status": "todo",
+            "actor": "owner"
+          },
+          {
+            "target_id": 2,
+            "to_status": "todo",
+            "actor": "owner"
+          },
+          {
+            "target_id": 3,
+            "to_status": "todo",
+            "actor": "owner"
+          },
+          {
+            "target_id": 3,
+            "to_status": "in_progress",
+            "actor": "owner"
+          },
+          {
+            "target_id": 1,
+            "to_status": "in_progress",
+            "actor": "system"
+          },
+          {
+            "target_id": 2,
+            "to_status": "in_progress",
+            "actor": "system"
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "targets_set_column_same_status_no_history",
+    "seed": [
+      "INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme-board')",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id) VALUES (1, 'Plan', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (2, 'Phase', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (3, 'Task', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 2)",
+      "INSERT INTO workbench_board_columns (id, project_id, status, title, description, position, created_at) VALUES (1, 1, 'in_progress', 'Spec', '', 0, '2026-11-16T09:00:00Z')",
+      "INSERT INTO workbench_board_columns (id, project_id, status, title, description, position, created_at) VALUES (2, 1, 'in_progress', 'Code', '', 1, '2026-11-16T09:00:00Z')",
+      "UPDATE targets SET status = 'in_progress', board_column_id = 1, progress = 0.7 WHERE id = 3"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "targets.set_column",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000070",
+      "id": 3,
+      "status": "in_progress",
+      "column_id": 2
+    },
+    "swift": {
+      "writer": "WorkbenchQueries.updateTargetColumn",
+      "args": {
+        "id": 3,
+        "status": "in_progress",
+        "columnID": 2
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "result": {
+        "rolled_up": []
+      },
+      "rows": {
+        "targets": [
+          {
+            "id": 1,
+            "status": "in_progress"
+          },
+          {
+            "id": 2,
+            "status": "in_progress"
+          },
+          {
+            "id": 3,
+            "status": "in_progress"
+          }
+        ],
+        "targets WHERE id = 3": [
+          {
+            "board_column_id": 2,
+            "CAST(progress * 10 AS INTEGER)": 7,
+            "status_actor": null
+          }
+        ],
+        "target_status_history": [
+          {
+            "target_id": 1,
+            "to_status": "todo",
+            "actor": "owner"
+          },
+          {
+            "target_id": 2,
+            "to_status": "todo",
+            "actor": "owner"
+          },
+          {
+            "target_id": 3,
+            "to_status": "todo",
+            "actor": "owner"
+          },
+          {
+            "target_id": 3,
+            "to_status": "in_progress",
+            "actor": "owner"
+          },
+          {
+            "target_id": 1,
+            "to_status": "in_progress",
+            "actor": "system"
+          },
+          {
+            "target_id": 2,
+            "to_status": "in_progress",
+            "actor": "system"
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "targets_set_column_mismatch",
+    "seed": [
+      "INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme-board')",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id) VALUES (1, 'Plan', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (2, 'Phase', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (3, 'Task', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 2)",
+      "INSERT INTO workbench_board_columns (id, project_id, status, title, description, position, created_at) VALUES (1, 1, 'in_progress', 'Spec', '', 0, '2026-11-16T09:00:00Z')",
+      "INSERT INTO workbench_board_columns (id, project_id, status, title, description, position, created_at) VALUES (2, 1, 'in_progress', 'Code', '', 1, '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "targets.set_column",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000071",
+      "id": 3,
+      "status": "todo",
+      "column_id": 2
+    },
+    "expect": {
+      "status": "refused",
+      "code": "unsupported",
+      "sentence": "Couldn't move it: board column does not match the target.",
+      "rows": {
+        "targets WHERE id = 3": [
+          {
+            "status": "todo",
+            "board_column_id": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "targets_snooze",
+    "seed": [
+      "INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme-board')",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id) VALUES (1, 'Plan', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (2, 'Phase', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (3, 'Task', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 2)"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "targets.snooze",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000072",
+      "id": 3,
+      "until": "2026-11-20T09:00"
+    },
+    "swift": {
+      "writer": "TargetQueries.snoozeInstant",
+      "args": {
+        "id": 3,
+        "until": "2026-11-20T09:00"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "result": {
+        "rolled_up": []
+      },
+      "rows": {
+        "targets": [
+          {
+            "id": 1,
+            "status": "todo"
+          },
+          {
+            "id": 2,
+            "status": "todo"
+          },
+          {
+            "id": 3,
+            "status": "snoozed"
+          }
+        ],
+        "targets WHERE id = 3": [
+          {
+            "snooze_until": "2026-11-20T09:00",
+            "status_actor": null
+          }
+        ],
+        "target_status_history": [
+          {
+            "target_id": 1,
+            "to_status": "todo",
+            "actor": "owner"
+          },
+          {
+            "target_id": 2,
+            "to_status": "todo",
+            "actor": "owner"
+          },
+          {
+            "target_id": 3,
+            "to_status": "todo",
+            "actor": "owner"
+          },
+          {
+            "target_id": 3,
+            "to_status": "snoozed",
+            "actor": "owner"
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "targets_done_resolves_target_due",
+    "seed": [
+      "INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme-board')",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id) VALUES (1, 'Plan', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (2, 'Phase', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (3, 'Task', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 2)",
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, target_id, status) VALUES (1, '', '', '', 'target_due', 3, 'pending')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "targets.set_status",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000073",
+      "id": 3,
+      "status": "done"
+    },
+    "swift": {
+      "writer": "WorkbenchQueries.updateTargetStatus",
+      "args": {
+        "id": 3,
+        "status": "done"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "result": {
+        "rolled_up": [
+          1,
+          2
+        ]
+      },
+      "rows": {
+        "targets": [
+          {
+            "id": 1,
+            "status": "done"
+          },
+          {
+            "id": 2,
+            "status": "done"
+          },
+          {
+            "id": 3,
+            "status": "done"
+          }
+        ],
+        "inbox_items": [
+          {
+            "id": 1,
+            "status": "resolved",
+            "resolved_reason": "target_closed"
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "targets_work_on",
+    "seed": [
+      "INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme-board')",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id) VALUES (1, 'Plan', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (2, 'Phase', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (3, 'Task', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 2)"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "targets.work_on",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000074",
+      "id": 3
+    },
+    "swift": {
+      "writer": "WorkbenchQueries.markInProgressOnWorkOn",
+      "args": {
+        "id": 3
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "result": {
+        "moved": true,
+        "rolled_up": [
+          1,
+          2
+        ]
+      },
+      "rows": {
+        "targets": [
+          {
+            "id": 1,
+            "status": "in_progress"
+          },
+          {
+            "id": 2,
+            "status": "in_progress"
+          },
+          {
+            "id": 3,
+            "status": "in_progress"
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "targets_work_on_group_stays",
+    "seed": [
+      "INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme-board')",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id) VALUES (1, 'Plan', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (2, 'Phase', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 1)",
+      "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id, parent_id) VALUES (3, 'Task', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1, 2)"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "targets.work_on",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000075",
+      "id": 2
+    },
+    "swift": {
+      "writer": "WorkbenchQueries.markInProgressOnWorkOn",
+      "args": {
+        "id": 2
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "result": {
+        "moved": false
+      },
+      "rows": {
+        "targets": [
+          {
+            "id": 1,
+            "status": "todo"
+          },
+          {
+            "id": 2,
+            "status": "todo"
+          },
+          {
+            "id": 3,
+            "status": "todo"
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "catchup_acknowledge",
+    "seed": [
+      "INSERT INTO catchup_recaps (id, period_from, period_to, status) VALUES (1, 1794816000, 1794823200, 'ready')",
+      "INSERT INTO tracks (id, text, updated_at, has_updates) VALUES (1, 'In window', '2026-11-16T09:00:00Z', 1)",
+      "INSERT INTO tracks (id, text, updated_at, has_updates) VALUES (2, 'Before', '2026-11-16T07:00:00Z', 1)",
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T09:00:00Z')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, model) VALUES (5, 'C1', 1794819600, 1794823300, 'channel', 's', 'm')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "catchup.acknowledge",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000076",
+      "id": 1
+    },
+    "swift": {
+      "writer": "CatchUpQueries.acknowledge",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "catchup_recaps": [
+          {
+            "id": 1,
+            "acknowledged_at": "*"
+          }
+        ],
+        "tracks": [
+          {
+            "id": 1,
+            "read_at": "*",
+            "has_updates": 0
+          },
+          {
+            "id": 2,
+            "read_at": null,
+            "has_updates": 1
+          }
+        ],
+        "inbox_items": [
+          {
+            "id": 1,
+            "read_at": "*"
+          }
+        ],
+        "digests": [
+          {
+            "id": 5,
+            "read_at": "*"
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "catchup_acknowledge_not_ready",
+    "seed": [
+      "INSERT INTO catchup_recaps (id, period_from, period_to, status) VALUES (1, 1794816000, 1794823200, 'ready')",
+      "INSERT INTO tracks (id, text, updated_at, has_updates) VALUES (1, 'In window', '2026-11-16T09:00:00Z', 1)",
+      "INSERT INTO tracks (id, text, updated_at, has_updates) VALUES (2, 'Before', '2026-11-16T07:00:00Z', 1)",
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T09:00:00Z')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, model) VALUES (5, 'C1', 1794819600, 1794823300, 'channel', 's', 'm')",
+      "UPDATE catchup_recaps SET status = 'building'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "catchup.acknowledge",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000077",
+      "id": 1
+    },
+    "expect": {
+      "status": "refused",
+      "code": "changed",
+      "sentence": "Couldn't mark it caught up: this recap isn't ready.",
+      "rows": {
+        "catchup_recaps": [
+          {
+            "id": 1,
+            "acknowledged_at": null
+          }
+        ],
+        "tracks": [
+          {
+            "id": 1,
+            "read_at": null
+          },
+          {
+            "id": 2,
+            "read_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "catchup_acknowledge_missing",
+    "seed": [],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "catchup.acknowledge",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000078",
+      "id": 9
+    },
+    "expect": {
+      "status": "refused",
+      "code": "not_found",
+      "sentence": "Couldn't mark it caught up: it's no longer on the Mac.",
+      "rows": {
+        "catchup_recaps": []
+      }
+    }
+  },
+  {
+    "name": "digests_read_one",
+    "seed": [
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, model) VALUES (6, 'C2', 1, 2, 'channel', 's', 'm')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "digests.read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000079",
+      "ids": [
+        5
+      ]
+    },
+    "swift": {
+      "writer": "DigestViewModel.markDigestRead",
+      "args": {
+        "ids": [
+          5
+        ]
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "digests": [
+          {
+            "id": 5,
+            "read_at": "*"
+          },
+          {
+            "id": 6,
+            "read_at": null
+          }
+        ],
+        "decision_reads": [
+          {
+            "digest_id": 5,
+            "decision_idx": 0
+          },
+          {
+            "digest_id": 5,
+            "decision_idx": 1
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "digests_read_batch",
+    "seed": [
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, model) VALUES (6, 'C2', 1, 2, 'channel', 's', 'm')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "digests.read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000080",
+      "ids": [
+        5,
+        6
+      ]
+    },
+    "swift": {
+      "writer": "DigestViewModel.markDigestsRead",
+      "args": {
+        "ids": [
+          5,
+          6
+        ]
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "digests": [
+          {
+            "id": 5,
+            "read_at": "*"
+          },
+          {
+            "id": 6,
+            "read_at": "*"
+          }
+        ],
+        "decision_reads": [
+          {
+            "digest_id": 5,
+            "decision_idx": 0
+          },
+          {
+            "digest_id": 5,
+            "decision_idx": 1
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "digests_stream_read",
+    "seed": [
+      "INSERT INTO stream_digests (id, source, account_id, period_from, period_to) VALUES (1, 'gmail', 1, '2026-11-16T08:00:00Z', '2026-11-16T09:00:00Z')",
+      "INSERT INTO stream_digests (id, source, account_id, period_from, period_to) VALUES (2, 'jira', 1, '2026-11-16T08:00:00Z', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "digests.stream_read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000081",
+      "id": 1
+    },
+    "swift": {
+      "writer": "StreamDigestQueries.markRead",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "stream_digests": [
+          {
+            "id": 1,
+            "read_at": "*"
+          },
+          {
+            "id": 2,
+            "read_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "digests_stream_read_already",
+    "seed": [
+      "INSERT INTO stream_digests (id, source, account_id, period_from, period_to) VALUES (1, 'gmail', 1, '2026-11-16T08:00:00Z', '2026-11-16T09:00:00Z')",
+      "INSERT INTO stream_digests (id, source, account_id, period_from, period_to) VALUES (2, 'jira', 1, '2026-11-16T08:00:00Z', '2026-11-16T09:00:00Z')",
+      "UPDATE stream_digests SET read_at = '2026-11-16T09:30:00Z' WHERE id = 1"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "digests.stream_read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000082",
+      "id": 1
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "rows": {
+        "stream_digests": [
+          {
+            "id": 1,
+            "read_at": "2026-11-16T09:30:00Z"
+          },
+          {
+            "id": 2,
+            "read_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "digests_stream_read_missing",
+    "seed": [],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "digests.stream_read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000083",
+      "id": 9
+    },
+    "expect": {
+      "status": "refused",
+      "code": "not_found",
+      "sentence": "Couldn't mark it read: it's no longer on the Mac.",
+      "rows": {
+        "stream_digests": []
+      }
+    }
+  },
+  {
+    "name": "digests_decision_read",
+    "seed": [
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, model) VALUES (6, 'C2', 1, 2, 'channel', 's', 'm')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "digests.decision_read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000084",
+      "digest_id": 5,
+      "idx": 1
+    },
+    "swift": {
+      "writer": "DigestQueries.markDecisionRead",
+      "args": {
+        "digestID": 5,
+        "idx": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "decision_reads": [
+          {
+            "digest_id": 5,
+            "decision_idx": 1
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "digests_decisions_read_all",
+    "seed": [
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, model) VALUES (6, 'C2', 1, 2, 'channel', 's', 'm')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "digests.decisions_read_all",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000085",
+      "digest_id": 5
+    },
+    "swift": {
+      "writer": "DigestQueries.markAllDecisionsRead",
+      "args": {
+        "digestID": 5
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "decision_reads": [
+          {
+            "digest_id": 5,
+            "decision_idx": 0
+          },
+          {
+            "digest_id": 5,
+            "decision_idx": 1
+          }
+        ]
+      }
+    },
+    "race": "both"
+  }
+]

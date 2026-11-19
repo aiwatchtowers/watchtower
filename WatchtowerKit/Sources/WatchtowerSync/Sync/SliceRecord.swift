@@ -67,6 +67,13 @@ public enum SliceKind: String, Codable, CaseIterable, Sendable {
     case chatPage = "chat_page"
     /// One search's hits, `chat_search-<query hash>`.
     case chatSearch = "chat_search"
+    // The phone Inbox (mobile Inbox spec §6): `inbox.feed` built by the hub, published only while the
+    // organization's MobileSync policy allows company data.
+    /// One Inbox folder, `inbox_folder-<folder id>` (the generated `Folder` plus `more`, the cards the phone's limit
+    /// left out, and `card_ids`, its cards' ids in the feed's order).
+    case inboxFolder = "inbox_folder"
+    /// One Inbox card, `inbox_card-<card id>` (the generated `Card`; a legacy card's `blocks` from the hub).
+    case inboxCard = "inbox_card"
 
     public func recordName(id: String) -> String {
         "\(rawValue)-\(id)"

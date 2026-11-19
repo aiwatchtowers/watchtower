@@ -1,5 +1,6 @@
 import DesignKit
 import SwiftUI
+import WatchtowerInterface
 
 // The Components pages (spec §2.3): every kit component in each state that
 // can be shown without the mouse, then in a realistic composition. Hover
@@ -320,6 +321,15 @@ struct DisplayPage: View {
                     VStack(alignment: .leading, spacing: Spacing.medium) {
                         SectionHeader(title: "Sub-tasks", systemImage: "checklist", count: 3)
                         SectionHeader(title: "Description", systemImage: "text.alignleft")
+                    }
+                }
+                Sample("TowerRowState: a press through the tower — busy, refused with Retry, didn't confirm",
+                       usage: "TowerRowState(state: presses.state(row), busyLabel: \"Approving…\") { … retry … }") {
+                    VStack(alignment: .leading, spacing: Spacing.medium) {
+                        TowerRowState(state: .busy, busyLabel: "Approving…") {}
+                        TowerRowState(state: .refused("Couldn't approve it: this idea changed — look again."),
+                                      busyLabel: "Approving…") {}
+                        TowerRowState(state: .unknown, busyLabel: "Approving…") {}
                     }
                 }
             }

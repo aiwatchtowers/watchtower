@@ -496,14 +496,6 @@ final class TargetQueryTests: XCTestCase {
 
     // MARK: - updateStatus
 
-    func testUpdateStatus() throws {
-        let db = try TestDatabase.create()
-        _ = try db.write { try TestDatabase.insertTarget($0) }
-        try db.write { try TargetQueries.updateStatus($0, id: 1, status: "done") }
-        let target = try XCTUnwrap(db.read { try TargetQueries.fetchByID($0, id: 1) })
-        XCTAssertEqual(target.status, "done")
-    }
-
     // MARK: - updatePriority
 
     func testUpdatePriority() throws {
@@ -529,16 +521,6 @@ final class TargetQueryTests: XCTestCase {
     }
 
     // MARK: - snooze
-
-    func testSnooze() throws {
-        let db = try TestDatabase.create()
-        _ = try db.write { try TestDatabase.insertTarget($0) }
-        let snoozeDate = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: 3, to: Date()))
-        try db.write { try TargetQueries.snooze($0, id: 1, until: snoozeDate) }
-        let target = try XCTUnwrap(db.read { try TargetQueries.fetchByID($0, id: 1) })
-        XCTAssertEqual(target.status, "snoozed")
-        XCTAssertFalse(target.snoozeUntil.isEmpty)
-    }
 
     // MARK: - delete
 
@@ -653,7 +635,7 @@ final class TargetsViewModelTests: XCTestCase {
             try TestDatabase.insertTarget(db, text: "Low prio",
                                           periodStart: "2026-01-01", periodEnd: "2026-01-31", priority: "low")
         }
-        let vm = TargetsViewModel(dbManager: mgr)
+        let vm = TargetsViewModel(dbManager: mgr, tower: mgr.fakeTower)
         vm.load()
         XCTAssertFalse(vm.todayTargets.isEmpty, "high-priority target should be in todayTargets")
         XCTAssertFalse(vm.allTargets.isEmpty, "low-priority non-today target should be in allTargets")
@@ -671,7 +653,7 @@ final class TargetsViewModelTests: XCTestCase {
             try TestDatabase.insertTarget(db, text: "Day target", level: "day",
                                           periodStart: today, periodEnd: today)
         }
-        let vm = TargetsViewModel(dbManager: mgr)
+        let vm = TargetsViewModel(dbManager: mgr, tower: mgr.fakeTower)
         vm.levelFilter = "quarter"
         vm.load()
         let all = vm.todayTargets + vm.allTargets
@@ -686,7 +668,7 @@ final class TargetsViewModelTests: XCTestCase {
             try TestDatabase.insertTarget(db, text: "Done target",
                                           periodStart: "2026-04-01", periodEnd: "2026-04-30", status: "done")
         }
-        let vm = TargetsViewModel(dbManager: mgr)
+        let vm = TargetsViewModel(dbManager: mgr, tower: mgr.fakeTower)
         vm.load()
         XCTAssertTrue((vm.todayTargets + vm.allTargets).isEmpty, "done hidden by default")
         vm.showDone = true
@@ -705,7 +687,7 @@ final class TargetsViewModelTests: XCTestCase {
             try TestDatabase.insertTarget(db, text: "Month A", level: "month",
                                           periodStart: "2026-04-01", periodEnd: "2026-04-30")
         }
-        let vm = TargetsViewModel(dbManager: mgr)
+        let vm = TargetsViewModel(dbManager: mgr, tower: mgr.fakeTower)
         vm.load()
         let all = vm.todayTargets + vm.allTargets
         XCTAssertEqual(all.count, 3)
@@ -722,7 +704,7 @@ final class TargetsViewModelTests: XCTestCase {
             try TestDatabase.insertTarget(db, text: "Active",
                                           periodStart: today, periodEnd: today, priority: "high")
         }
-        let vm = TargetsViewModel(dbManager: mgr)
+        let vm = TargetsViewModel(dbManager: mgr, tower: mgr.fakeTower)
         vm.load()
         let target = try XCTUnwrap(vm.todayTargets.first)
         await vm.markDone(target)
@@ -737,7 +719,7 @@ final class TargetsViewModelTests: XCTestCase {
             try TestDatabase.insertTarget(db, text: "Deploy backend", periodStart: today, periodEnd: today)
             try TestDatabase.insertTarget(db, text: "Write docs", periodStart: today, periodEnd: today)
         }
-        let vm = TargetsViewModel(dbManager: mgr)
+        let vm = TargetsViewModel(dbManager: mgr, tower: mgr.fakeTower)
         vm.searchText = "backend"
         vm.load()
         let all = vm.todayTargets + vm.allTargets
@@ -750,7 +732,7 @@ final class TargetsViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         _ = try await mgr.dbPool.write { try TestDatabase.insertTarget($0) }
 
-        let vm = TargetsViewModel(dbManager: mgr)
+        let vm = TargetsViewModel(dbManager: mgr, tower: mgr.fakeTower)
         let fetchByIDResult = try await mgr.dbPool.read { try TargetQueries.fetchByID($0, id: 1) }
         let target = try XCTUnwrap(fetchByIDResult)
 

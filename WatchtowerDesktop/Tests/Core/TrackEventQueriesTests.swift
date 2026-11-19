@@ -54,8 +54,8 @@ final class TrackEventQueriesTests: XCTestCase {
             XCTAssertEqual(e.decodedAction?.status, "in_progress")
 
             XCTAssertEqual(try TrackEventQueries.unreadCount(db, trackId: 9), 1)
-            try TrackEventQueries.markRead(db, id: e.id)
-            try TrackEventQueries.setActionStatus(db, id: e.id, status: "applied")
+            try db.execute(sql: "UPDATE track_events SET read_at = '2026-11-16T09:00:00Z', action_status = 'applied' WHERE id = ?",
+                           arguments: [e.id])
             let after = try TrackEventQueries.fetchEvents(db, trackId: 9)
             XCTAssertFalse(after[0].isUnread)
             XCTAssertEqual(after[0].actionStatus, "applied")

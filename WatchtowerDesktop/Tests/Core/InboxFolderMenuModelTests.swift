@@ -1,5 +1,6 @@
 import XCTest
 import GRDB
+import WatchtowerInterface
 @testable import WatchtowerCore
 import WatchtowerTestSupport
 
@@ -66,6 +67,12 @@ final class InboxFolderMenuModelTests: XCTestCase {
                 #"{"revision":8,"folder":\#(Self.folderJSON(99))}"#
             }
         }
+    }
+
+    /// Go's feed over setUp's rows (the case mirrors them): the counts the
+    /// menu shows are the tower's.
+    private func towerFeed() throws -> Feed {
+        try FeedCaseTransport("desktop_folders_menu_tree", pool: XCTUnwrap(pool)).mirroredFeed()
     }
 
     private func setRevision(_ revision: Int64) throws {
@@ -418,8 +425,9 @@ final class InboxFolderMenuModelTests: XCTestCase {
 
     // MARK: - Delete, selection, hidden
 
-    func testDeleteSummaryCountsFromTheTree() async {
+    func testDeleteSummaryCountsFromTheTree() async throws {
         let model = await model(answering())
+        model.towerFeed = try towerFeed()
 
         model.askDelete(ids.release)
 
@@ -484,8 +492,9 @@ final class InboxFolderMenuModelTests: XCTestCase {
         XCTAssertFalse(model.content.visibleRows.contains { $0.id == ids.old })
     }
 
-    func testRowsCarryDepthsCountsAndCollapse() async {
+    func testRowsCarryDepthsCountsAndCollapse() async throws {
         let model = await model(answering())
+        model.towerFeed = try towerFeed()
 
         let rows = model.content.rows
         XCTAssertEqual(rows.first { $0.id == ids.deep }?.depth, 3)

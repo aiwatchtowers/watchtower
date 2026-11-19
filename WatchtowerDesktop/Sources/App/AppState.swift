@@ -3,6 +3,7 @@ import GRDB
 import Observation
 import os
 import WatchtowerCore
+import WatchtowerInterface
 import WatchtowerSync
 import ChatUI
 
@@ -507,6 +508,14 @@ final class AppState {
     /// children or ask macOS for permissions; nil runs the real thing
     /// (`daemonManager`, `wireAppDatabase`'s body).
     @ObservationIgnored var daemonControlOverride: (any DaemonControl)?
+    /// The Desktop's one tower client (`AppState+Tower`); tests set their own.
+    @ObservationIgnored lazy var towerClient: TowerClient = makeTowerClient()
+    /// The owner's pause, from `tower.hello` or the last Pause/Resume (the tray).
+    var syncPaused = false
+    /// Why the last Pause/Resume did not go through; the tray shows it.
+    var syncPauseError: String?
+    /// The tower's queued daemon start; a second Retry waits for it.
+    @ObservationIgnored var towerDaemonStart: Task<Void, Never>?
     @ObservationIgnored var wireAppDatabaseOverride: ((DatabaseManager) -> Void)?
     /// `shutdownChat()`'s CLI fallback; tests record it instead.
     @ObservationIgnored var chatShutdownCLI: @MainActor () async -> Void = { await DaemonManager.chatShutdownBounded() }
@@ -521,6 +530,9 @@ final class AppState {
     /// Test seam: the CLI a custom track's activity applies actions through
     /// (design shots have no installed CLI); nil finds the installed one.
     @ObservationIgnored var trackActionRunnerOverride: (any CLIRunnerProtocol)?
+    /// Test seam: finds the CLI Wipe LLM Data runs `watchtower db wipe-llm`
+    /// with (the installed one; nil: none installed).
+    @ObservationIgnored var findWipeLLMRunner: @MainActor () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() }
 
     /// `managedPolicyRead` reads the organization policy (design shots pass a
     /// fixture). `onboardingDefaults` backs the onboarding step and goals,
@@ -625,7 +637,7 @@ final class AppState {
               let automation = try await pool.read({ db in try AutomationQueries.fetchAutomation(db, id: automationID) })
         else { return nil }
         let provider = Constants.aiProviderID()
-        let conversationID = try await AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
+        let conversationID = try await AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool, writes: chatWrites)
         let box = PanelDraftBox()
         let prompts = await builtinDefaultPrompts(automation)
         return makeAutomationEditorChat(
@@ -680,7 +692,7 @@ final class AppState {
             // two VMs on one conversation.
             let container = self.targetAssistantCenter.container(
                 for: target,
-                viewModel: TargetsViewModel(dbManager: manager),
+                viewModel: TargetsViewModel(dbManager: manager, tower: screenTower),
                 dbManager: manager
             )
             return await container.readyChat()
@@ -751,6 +763,7 @@ final class AppState {
     /// (reinitializeAfterOnboarding), which must not stack observers.
     private func installLifecycleHooks() {
         targetAssistantCenter.embeddedChats = embeddedChatCenter
+        targetAssistantCenter.chatWrites = chatWrites
         startUIVisibility()
         if terminateObserver == nil {
             terminateObserver = NotificationCenter.default.addObserver(
@@ -856,39 +869,7 @@ final class AppState {
             // caches whatever path it first resolves.
             daemonManager.startPolling()
             loadModelCatalogAtLaunch()
-            do {
-                let manager = try await migrateCompactOpen().get()
-                ambiguousWorkspaces = []
-                // Before the splash hides, so Day Plan / Briefings never flash
-                // the no-owner state on an install that has one.
-                await wireOnboardingDatabase(manager)
-                await reconcileOnboarding(dbPool: manager.dbPool)
-                profileComplete = !needsOnboarding
-                // Pre-load sidebar badge counts so they're already visible when the splash hides.
-                // Skipped when onboarding is needed — the onboarding view replaces the sidebar entirely.
-                if !needsOnboarding {
-                    initAutomations(dbPool: manager.dbPool)
-                    sidebarCountsViewModel = await SidebarCountsViewModel.started(
-                        dbPool: manager.dbPool, disabledFeatures: featureVisibility.disabledFeatureIDs)
-                }
-                isLoading = false
-                // During onboarding only the account view models run (above):
-                // the rest (watchers that ask for notification permission,
-                // meeting reminders, polling) waits for completeOnboarding().
-                if !needsOnboarding {
-                    wireAppDatabase(manager)
-                    autoDownloadTranscriptionModel()
-                }
-                // The daemon's cycle generates everything itself: a launch
-                // needs nothing more than a running daemon.
-                if !needsOnboarding {
-                    // Ensure a fresh daemon is running (rebuild-safe): stop any existing
-                    // one (possibly from an older binary), then start the current binary.
-                    ensureDaemonRunning()
-                }
-            } catch {
-                await handleLaunchDatabaseFailure(error)
-            }
+            await openDatabaseAndStartDaemon()
             // Any launch that lands in onboarding (a fresh install, or one
             // relaunched before finishing it) may let the transcription
             // langset follow the Mac's languages; "Run setup again" from
@@ -1313,8 +1294,7 @@ final class AppState {
         // them now — otherwise the first run shows all-zero badges (incl. Catch-Up) until restart.
         if sidebarCountsViewModel == nil, sidebarCountsSetup == nil, let pool = databaseManager?.dbPool {
             sidebarCountsSetup = Task {
-                sidebarCountsViewModel = await SidebarCountsViewModel.started(
-                    dbPool: pool, disabledFeatures: featureVisibility.disabledFeatureIDs)
+                sidebarCountsViewModel = await startedSidebarCounts(pool)
                 // A feature load that landed during `started` found no view model.
                 sidebarCountsViewModel?.disabledFeatures = featureVisibility.disabledFeatureIDs
             }
@@ -1349,7 +1329,12 @@ final class AppState {
     /// Builds the Automations view model once and starts its poll (the
     /// sidebar badge reads it). Once: a second call (a setup re-run) keeps
     /// the in-flight runs and dry runs.
-    private func initAutomations(dbPool: DatabasePool) {
+    /// The sidebar's badge counts, started over `pool` (the launch's step).
+    func loadSidebarCounts(_ pool: DatabasePool) async {
+        sidebarCountsViewModel = await startedSidebarCounts(pool)
+    }
+
+    func initAutomations(dbPool: DatabasePool) {
         guard automationsViewModel == nil else { return }
         let runner: any CLIRunnerProtocol = ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()
         let cli = AutomationsCLI(runner: runner)
@@ -1378,6 +1363,7 @@ final class AppState {
         // A new draft the editor holds is a list row, cached draft rows or not.
         vm.openNewDrafts = { [weak editorCenter] in editorCenter?.openNewDraftNames ?? [:] }
         vm.embeddedChats = embeddedChatCenter
+        vm.chatWrites = chatWrites
         vm.discardEditorDraft = { [weak editorCenter] in editorCenter?.discard($0) }
         wireInboxRoute(vm)
         automationEditorCenter = editorCenter
@@ -1459,18 +1445,23 @@ final class AppState {
     /// people cards and the briefing at once instead of on their cadence.
     /// A failed restart is thrown for the Settings error line.
     func resetLLMData(workspaceDir: String? = Constants.activeWorkspaceDir()) async throws {
-        guard let db = databaseManager else { return }
+        guard databaseManager != nil else { return }
         let daemon = daemonControl
+        let runner = findWipeLLMRunner()
         // One item on the start queue: no other start lands mid-wipe.
         let failure = await enqueueDaemonStart { () -> (any Error)? in
-            await Self.stopWipeRestart(daemon: daemon, db: db, workspaceDir: workspaceDir)
+            await Self.stopWipeRestart(daemon: daemon, runner: runner, workspaceDir: workspaceDir)
         }.value
         if let failure { throw failure }
         daemonStartQueue.succeeded()
     }
 
+    /// The wipe is Go's (`watchtower db wipe-llm`, #1170 Task 12): the
+    /// Desktop deletes none of the tables Go owns itself. It runs while the
+    /// daemon is stopped, so nothing writes meanwhile; a missing CLI wipes
+    /// nothing and is reported after the restart.
     private static func stopWipeRestart(
-        daemon: any DaemonControl, db: DatabaseManager, workspaceDir: String?
+        daemon: any DaemonControl, runner: (any CLIRunnerProtocol)?, workspaceDir: String?
     ) async -> (any Error)? {
         // 1. Stop the daemon so nothing writes while the tables are wiped —
         // only once its process is really gone (a timeout wipes nothing).
@@ -1481,7 +1472,8 @@ final class AppState {
         do {
             try await daemon.waitUntilStopped()
             // 2. Wipe LLM-generated tables and the daemon's stamps.
-            try await db.wipeLLMData()
+            guard let runner else { throw CLIRunnerError.binaryNotFound }
+            _ = try await runner.run(args: ["db", "wipe-llm"])
             if let workspaceDir {
                 try DaemonStampFiles.clear(in: workspaceDir)
             }
@@ -1503,7 +1495,8 @@ final class AppState {
     /// If an old instance is already running (e.g. from a stale dev rebuild), stop it first,
     /// then start a fresh one. Paired with the QuitCoordinator daemon stop on app terminate
     /// so UI quit/launch cycles the daemon lifecycle. On the one start chain.
-    func ensureDaemonRunning() {
+    /// `noSync` starts it with `--no-sync` (before onboarding finishes).
+    func ensureDaemonRunning(noSync: Bool = false) {
         let daemon = daemonControl
         let manager = daemonManager
         let item = enqueueDaemonStart {
@@ -1513,7 +1506,7 @@ final class AppState {
                 await daemon.stopDaemonNow()
                 try? await Task.sleep(for: .milliseconds(500))
             }
-            if await daemon.startDetached() {
+            if await daemon.startDetached(noSync: noSync) {
                 self.daemonStartQueue.succeeded()
             } else if daemon.daemonIsRunning() {
                 // The old daemon is still there (still exiting, or it did not
@@ -1550,13 +1543,14 @@ final class AppState {
 
     /// The rest of the database wiring, once per process: on launch when no
     /// onboarding is pending, else at its completion.
-    private func wireAppDatabase(_ manager: DatabaseManager) {
+    func wireAppDatabase(_ manager: DatabaseManager) {
         guard !appDatabaseWired else { return }
         appDatabaseWired = true
         if let override = wireAppDatabaseOverride {
             override(manager)
             return
         }
+        embeddedChats.chatWrites = chatWrites
         embeddedChats.dbPool = manager.dbPool
         wireMeetingRecorderLoaders(dbPool: manager.dbPool)
         wireTargetBriefCenter()
@@ -1578,7 +1572,7 @@ final class AppState {
         initSecretaryProfile(dbManager: manager)
         initExternalConnections(dbPool: manager.dbPool)
         initReactionDictionary(dbPool: manager.dbPool)
-        initActionStrip(dbPool: manager.dbPool)
+        initActionStrip(dbPool: manager.dbPool, readsFromTower: true)
         startHostServices(databasePath: manager.dbPool.path) // before the workbenches: their reattach waits for it
         initWorkbenches(dbPool: manager.dbPool)
         if let vm = workbenchesViewModel { replaceAgentAnalytics(cliRunner: ProcessCLIRunner.makeDefault(), workbenches: vm) }
@@ -1605,11 +1599,11 @@ final class AppState {
 
     private func initDayPlan(dbPool: DatabasePool) {
         guard let runner = ProcessCLIRunner.makeDefault() else { return }
-        dayPlanViewModel = DayPlanViewModel(databasePool: dbPool, cliRunner: runner)
+        dayPlanViewModel = DayPlanViewModel(databasePool: dbPool, cliRunner: runner, tower: screenTower)
     }
 
     private func initCatchUp(dbPool: DatabasePool) {
-        let vm = CatchUpViewModel(dbPool: dbPool)
+        let vm = CatchUpViewModel(dbPool: dbPool, tower: screenTower)
         // Catch-Up builds recaps in a CLI child process, whose writes the sidebar's
         // ValueObservation cannot see, so the badge is refreshed explicitly once a
         // run (or an acknowledge) has finished. The counts VM is resolved at call
@@ -1626,17 +1620,17 @@ final class AppState {
 
     /// Not marked `private` (mirrors `initSecretaryProfile` below), leaving the
     /// same XCTest entry point open for `ideasViewModel`. The Inbox's idea
-    /// pane uses only its actions (the list is `InboxFeedQueries`'), so it
+    /// pane uses only its actions (the list is the tower feed's), so it
     /// observes and polls nothing.
     func initIdeas(dbManager: DatabaseManager) {
-        ideasViewModel = IdeasViewModel(dbManager: dbManager)
+        ideasViewModel = IdeasViewModel(dbManager: dbManager, tower: screenTower)
     }
 
     /// The Inbox's track pane uses its actions and its Slack links and
-    /// names, read once here (the list is `InboxFeedQueries`'); a write
+    /// names, read once here (the list is the tower feed's); a write
     /// through it reads them again.
     func initTracks(dbManager: DatabaseManager) {
-        let vm = TracksViewModel(dbManager: dbManager)
+        let vm = TracksViewModel(dbManager: dbManager, tower: screenTower)
         vm.load()
         tracksViewModel = vm
     }
@@ -1774,16 +1768,17 @@ final class AppState {
         reactionDictionaryViewModel = vm
     }
 
-    func initActionStrip(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)? = nil) {
+    /// `readsFromTower`: the app's Inbox reads the tower (`attachTowerInbox`).
+    func initActionStrip(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)? = nil, readsFromTower: Bool = false) {
         // A decision on an automation run's proposal wakes the daemon's
         // automations loop (spec §7.4); the runner resolves per call, like
         // the feed's own.
         let runner = InstalledCLIRunner()
         let controls = RecipeCustomTrackControls(
             cli: AutomationsCLI(runner: runner),
-            direct: DirectCustomTrackControls(dbPool: dbPool, scanService: TrackScanService(runner: runner)))
+            direct: DirectCustomTrackControls(tower: screenTower, scanService: TrackScanService(runner: runner)))
         customTrackControls = controls
-        let vm = ActionStripViewModel(dbPool: dbPool, cliRunner: cliRunner, customTrackControls: controls) {
+        let vm = ActionStripViewModel(dbPool: dbPool, cliRunner: cliRunner) {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
             try await AutomationsCLI(runner: runner).wake()
         }
@@ -1793,6 +1788,7 @@ final class AppState {
             await self?.sidebarCountsViewModel?.refresh()
         }
         vm.disabledFeatures = featureVisibility.disabledFeatureIDs
+        if readsFromTower { attachTowerInbox(vm) }
         Task { await vm.refresh() }
         actionStripViewModel = vm
         inboxArtifactMenu = makeInboxArtifactMenu(strip: vm)
@@ -1819,6 +1815,7 @@ final class AppState {
             root: URL(fileURLWithPath: dbPool.path).deletingLastPathComponent()
                 .appendingPathComponent("workchat-attachments", isDirectory: true)
         )
+        vm.tower = screenTower
         vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() } // Settings → Workbench → Default agent (#399, D1)
         vm.goSessionStart = cliRunner == nil ? nil : GoSessionStartWait() // Go starts new sessions (Go hub 3 Task 8)
         vm.managedPolicy = { [managedPolicy] in managedPolicy.policy }
@@ -1871,8 +1868,7 @@ final class AppState {
             vm.hostRestartListURL = HostRestartList.defaultURL() // the reattach leaves the restart's rows to it
         }
         vm.startHostReattach()
-        // Board #1716: deleted sessions whose cleanup a quit or crash cut
-        // short are cleaned up again, once, after the reattach.
+        // Board #1716: sessions whose delete cleanup a quit or crash cut short are cleaned again, once.
         Task { [weak vm] in await vm?.requeueDeletingRowsAtLaunch() }
         startHostRestart() // after the reattach: it stops what the reattach adopted
         // Old pasted Workchat files go once the reattach is done; the runs

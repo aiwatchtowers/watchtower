@@ -38,6 +38,9 @@ var actionKeys = []string{"label", "primary", "open", "chat", "agent", "reply", 
 type Options struct {
 	// BuiltIn admits action and reminder refs (built-in automations only).
 	BuiltIn bool
+	// PlanItemRefs admits plan_item refs: the hub's projection of the
+	// Inbox's legacy Morning brief (inboxlegacy) only, never a script.
+	PlanItemRefs bool
 	// AllowKind is the caller's permission check for an action of a db kind
 	// (the SDK: reply needs inbox:reply, target needs outputs: [target]);
 	// its error is returned unchanged. Nil admits every kind.

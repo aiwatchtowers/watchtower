@@ -1,33 +1,22 @@
 import Foundation
 import GRDB
+import WatchtowerInterface
 
-/// What one read of the menu sees: the tree, each folder's own count (the
-/// numbers the menu shows, whose visible sum is the sidebar badge), how
-/// many open artifacts each folder holds (Delete…'s summary), and what the
-/// folder's entries are composed from (`InboxFolderEntries`): each folder's
-/// artifacts with their row refs and the render-time check, Waiting for me's
-/// and Needs approval's built-ins, and Needs approval's own cards by key.
+/// What the folder menu shows: the tree (the owner's arrangement, read
+/// locally), and over it the tower's numbers (`InboxTowerEntries.folders`):
+/// each folder's own count (whose visible sum is the sidebar badge), how many
+/// artifacts each folder holds (Delete…'s summary), each card's row refs and
+/// which of them are shown and waiting. Waiting for me's and Needs
+/// approval's built-in states come from the local read.
 package struct InboxFolderMenuSnapshot: Equatable, Sendable {
     package let tree: InboxFolderTree
     package let counts: [Int64: Int]
     package let artifacts: [Int64: Int]
-    /// Each folder's open artifacts in the Inbox order. Never the
-    /// `needs-approval` built-in's: those are drawn only through the
-    /// approvals they show (`approvalArtifacts`), so a card of a closed
-    /// approval is never on screen (APPROVAL-01).
-    package let cards: [Int64: [AutomationOutputCard]]
     /// Each card's row refs (card id → refs).
     package let refs: [Int64: [InboxRef]]
     package let refState: InboxRefState
     package let waitingForMe: WaitingForMeState
     package let needsApproval: NeedsApprovalState
-    /// The `needs-approval` built-in's living cards by key (`action:<id>`,
-    /// `reminder:<id>`).
-    package let approvalArtifacts: [String: AutomationOutputCard]
-    /// The actions that wait on the owner now (`awaitingOwnerClause`, the
-    /// badge's own predicate): the open approvals among the strip's rows,
-    /// which also carry approved, running and recently decided ones.
-    package let openActions: Set<Int64>
     /// The `idea-finder` built-in is indexed (`InboxFolderQueries.ideaFinderPresent`).
     package let ideaFinderPresent: Bool
 
@@ -35,25 +24,19 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         tree: InboxFolderTree,
         counts: [Int64: Int] = [:],
         artifacts: [Int64: Int] = [:],
-        cards: [Int64: [AutomationOutputCard]] = [:],
         refs: [Int64: [InboxRef]] = [:],
         refState: InboxRefState = InboxRefState(),
         waitingForMe: WaitingForMeState = WaitingForMeState(automationID: nil, messagesStandIn: true),
         needsApproval: NeedsApprovalState = .absent,
-        approvalArtifacts: [String: AutomationOutputCard] = [:],
-        openActions: Set<Int64> = [],
         ideaFinderPresent: Bool = false
     ) {
         self.tree = tree
         self.counts = counts
         self.artifacts = artifacts
-        self.cards = cards
         self.refs = refs
         self.refState = refState
         self.waitingForMe = waitingForMe
         self.needsApproval = needsApproval
-        self.approvalArtifacts = approvalArtifacts
-        self.openActions = openActions
         self.ideaFinderPresent = ideaFinderPresent
     }
 
@@ -66,43 +49,12 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         let waitingForMe = try InboxFolderQueries.waitingForMe(
             db, featureOn: !disabledFeatures.contains(InboxFolderQueries.waitingForMeFeatureID))
         let needsApproval = try InboxFolderQueries.needsApproval(db)
-        // The stand-in rule (`WaitingForMeState`): a stale Waiting for me
-        // list never counts beside the Messages entry it gives way to.
-        var artifacts = waitingForMe.withoutStandInArtifacts(try InboxFolderQueries.artifactsByFolder(db, tree: tree))
-        var approvalArtifacts: [String: AutomationOutputCard] = [:]
-        if let approvalsID = needsApproval.automationID {
-            for card in artifacts.values.joined() where card.automationID == approvalsID {
-                if let key = card.outputKey { approvalArtifacts[key] = card }
-            }
-            artifacts = artifacts.mapValues { $0.filter { $0.automationID != approvalsID } }
-        }
-        let refs = InboxFolderCounts.refs(of: artifacts)
-        // Needs approval's cards are read too: their `action`/`reminder`
-        // rows draw only while the record is open (the row hooks' `isOpen`).
-        let approvalRefs = approvalArtifacts.values.flatMap { InboxRef.refs(blocksJSON: $0.blocksJSON) }
-        let refState = try InboxRefState.read(
-            db, refs: Array(refs.values.joined()) + approvalRefs, nowUTC: nowUTC)
-        let legacy = try ActionStripViewModel.legacyCounts(
-            db, nowUTC: nowUTC, tree: tree, messagesStandIn: waitingForMe.messagesStandIn)
-        let counts = InboxFolderCounts.counts(
-            tree: tree, artifacts: artifacts, refs: refs, refState: refState, legacy: legacy)
-        let openActions = Set(try openActionIDs(db))
-        return Self(tree: tree, counts: counts, artifacts: artifacts.mapValues(\.count), cards: artifacts,
-                    refs: refs, refState: refState, waitingForMe: waitingForMe, needsApproval: needsApproval,
-                    approvalArtifacts: approvalArtifacts, openActions: openActions,
+        // Counts, folder lists and ref states are the tower's feed's
+        // (`InboxTowerEntries.folders`): this read is the arrangement only.
+        return Self(tree: tree, waitingForMe: waitingForMe, needsApproval: needsApproval,
                     ideaFinderPresent: try InboxFolderQueries.ideaFinderPresent(db))
     }
 
-    /// The ids of the actions that wait on the owner; none on a database
-    /// without the table.
-    private static func openActionIDs(_ db: Database) throws -> [Int64] {
-        do {
-            return try Int64.fetchAll(
-                db, sql: "SELECT id FROM agent_actions WHERE \(AgentActionQueries.awaitingOwnerClause)")
-        } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error) {
-            return []
-        }
-    }
 }
 
 /// The Inbox's folder menu (spec "The Inbox screen" 1, "Writes: CLI only"):
@@ -117,6 +69,20 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
 @Observable
 package final class InboxFolderMenuModel {
     package private(set) var snapshot = InboxFolderMenuSnapshot(tree: .rootOnly)
+
+    /// The tower's last feed (mobile Inbox spec §5.1): with one, every
+    /// count, folder list and ref state the menu shows is Go's
+    /// (`InboxTowerEntries.folders`) over the last local read's tree and
+    /// records. Nil (no tower wired, tests) keeps the local read as is.
+    package var towerFeed: Feed? {
+        didSet {
+            guard towerFeed != oldValue, let localRead else { return }
+            snapshot = towerFeed.map { InboxTowerEntries.folders(localRead, feed: $0) } ?? localRead
+        }
+    }
+
+    /// The last local read, before the tower's numbers are laid over it.
+    @ObservationIgnored private var localRead: InboxFolderMenuSnapshot?
     /// The selected folder; nil is the root.
     package private(set) var selection: Int64?
     /// The root's ⋯ Show Hidden Folders.
@@ -229,7 +195,8 @@ package final class InboxFolderMenuModel {
     /// transaction): a selection, field or confirmation whose folder is gone
     /// goes with it.
     package func apply(_ read: InboxFolderMenuSnapshot) {
-        snapshot = read
+        localRead = read
+        snapshot = towerFeed.map { InboxTowerEntries.folders(read, feed: $0) } ?? read
         hasRead = true
         let tree = read.tree
         if let selected = selection, tree.folder(selected) == nil { selection = nil }

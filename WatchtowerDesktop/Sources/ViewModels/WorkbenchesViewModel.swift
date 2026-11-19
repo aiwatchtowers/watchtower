@@ -497,6 +497,9 @@ final class WorkbenchesViewModel {
     /// The owner changed something in a project (a comment, a status): the
     /// notification policy must not report it back (Task 18).
     var onOwnerWrite: ((Int64, WorkbenchSubject) -> Void)?
+    /// Where Work on It's status write goes (`targets.work_on`), set by
+    /// AppState; nil: the write fails with the daemon's sentence.
+    @ObservationIgnored var tower: (any TowerSending)?
     /// Closes every embedded terminal of a project (SIGHUP → SIGKILL).
     /// AppState wires it to `TerminalCenter.closeAll(where:)` over the
     /// project's sessions in initWorkbenches; a project with none is a no-op,

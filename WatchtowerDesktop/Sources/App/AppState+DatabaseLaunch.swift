@@ -48,6 +48,10 @@ extension AppState {
                 return error.localizedDescription
             case .success(let manager):
                 await wireOnboardingDatabase(manager)
+                // A fresh install now has the workspace its launch lacked:
+                // the daemon starts, without sync until onboarding finishes.
+                // An open inside the finish leaves it to the finish's start.
+                if !isFinishingOnboarding { startDaemonIfDown(caller: "openDatabaseForOnboarding") }
                 return nil
             }
         }
@@ -151,5 +155,41 @@ extension AppState {
         guard databaseCompaction.phase != .finished else { return }
         quitDuringCompaction = true
         await databaseCompaction.terminateForQuit()
+    }
+}
+
+extension AppState {
+    /// The launch's database steps, then the daemon (after the compaction
+    /// step; `--no-sync` until onboarding finishes). A fresh install has no
+    /// workspace yet: `openDatabaseForOnboarding` starts it.
+    func openDatabaseAndStartDaemon() async {
+        do {
+            let manager = try await migrateCompactOpen().get()
+            ambiguousWorkspaces = []
+            // Before the splash hides, so Day Plan / Briefings never flash
+            // the no-owner state on an install that has one.
+            await wireOnboardingDatabase(manager)
+            await reconcileOnboarding(dbPool: manager.dbPool)
+            profileComplete = !needsOnboarding
+            // Pre-load sidebar badge counts so they're already visible when the splash hides.
+            // Skipped when onboarding is needed — the onboarding view replaces the sidebar entirely.
+            if !needsOnboarding {
+                initAutomations(dbPool: manager.dbPool)
+                await loadSidebarCounts(manager.dbPool)
+            }
+            isLoading = false
+            // During onboarding only the account view models run (above):
+            // the rest (watchers that ask for notification permission,
+            // meeting reminders, polling) waits for completeOnboarding().
+            if !needsOnboarding {
+                wireAppDatabase(manager)
+                autoDownloadTranscriptionModel()
+            }
+            // The daemon's cycle generates everything itself: a launch needs
+            // nothing more than a fresh daemon of the current binary.
+            ensureDaemonRunning(noSync: daemonRunsWithoutSync)
+        } catch {
+            await handleLaunchDatabaseFailure(error)
+        }
     }
 }

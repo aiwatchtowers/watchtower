@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/inboxfeed"
 	"watchtower/internal/policy"
 )
 
@@ -71,6 +72,10 @@ type Config struct {
 	ChatEngine  ChatReader
 	ChatModels  func() []ChatModel
 	ChatRouting func(context.Context) *chatengine.RoutingCatalog
+
+	// InboxFeed (nil = no Inbox on the phone) builds the Inbox feed for
+	// inbox_folder and inbox_card (published only under "allowed").
+	InboxFeed InboxFeed
 }
 
 // Set is the hub's sources and what the runtime must start and tell.
@@ -123,7 +128,7 @@ var WorkbenchOnlyKinds = []slices.Kind{
 // session's MCP process, not the engine. spec_reviews feeds every kind whose
 // read hides the author loop's asks (askVisible) or reads the loop round
 // (db.SpecLoopRoundSQL): a queue or a reveal writes only that table (#1945).
-var ChangeTables = map[string][]slices.Kind{
+var ChangeTables = withInboxTables(map[string][]slices.Kind{
 	"projects":                 {"workbench"},
 	"automations":              {"workbench"},
 	"automation_runs":          {"workbench"},
@@ -141,6 +146,15 @@ var ChangeTables = map[string][]slices.Kind{
 	"meeting_transcripts":      {"calendar_event", "meeting_transcript"},
 	"meeting_recaps":           {"meeting_transcript"},
 	"agent_actions":            {slices.KindChatList, slices.KindChatFeed},
+})
+
+// withInboxTables adds inbox_folder and inbox_card to every table inbox.feed
+// reads (inboxfeed.ChangeTables, its registration's).
+func withInboxTables(m map[string][]slices.Kind) map[string][]slices.Kind {
+	for _, table := range inboxfeed.ChangeTables {
+		m[table] = append(m[table], slices.KindInboxFolder, slices.KindInboxCard)
+	}
+	return m
 }
 
 // All assembles the sources of a MobileSync scope (MDM POLICY-03, spec §9):
@@ -148,8 +162,9 @@ var ChangeTables = map[string][]slices.Kind{
 //     workbench_comment), terminal sessions, the timeline, asks, permission
 //     requests, alerts, the session chat and the report;
 //   - allowed: those plus calendar events, meeting transcripts, recording
-//     jobs and the AI chat (chat_list, chat_feed, chat_page, chat_search:
-//     company data, so never under workbench_only);
+//     jobs, the AI chat (chat_list, chat_feed, chat_page, chat_search) and
+//     the Inbox (inbox_folder, inbox_card, when InboxFeed is set): company
+//     data, so never under workbench_only;
 //   - any other mode (off, unknown): nothing; unknown modes fail closed on
 //     purpose, so a mistyped policy never widens what the phone sees.
 //
@@ -240,6 +255,9 @@ func All(c Config) (*Set, error) {
 		set.Sources = append(set.Sources,
 			ChatList(c.ChatEngine, ChatListOptions{Grant: c.Store.AnyChatPhone, Models: c.ChatModels, Routing: c.ChatRouting}),
 			ChatFeed(c.ChatEngine, feed), ChatPage(c.ChatEngine, feed), ChatSearch(c.ChatEngine, feed))
+		if c.InboxFeed != nil {
+			set.Sources = append(set.Sources, InboxSource(c.InboxFeed, now)...)
+		}
 	}
 	return set, nil
 }

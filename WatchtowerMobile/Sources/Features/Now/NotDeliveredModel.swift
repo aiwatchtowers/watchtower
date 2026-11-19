@@ -97,6 +97,8 @@ enum ActionSummary {
                 snapshot.workbenches.lazy.compactMap { $0.automations?.first { $0.id == id }?.name }.first
             }
             return "Run \(quoted(name, or: "an automation"))"
+        case .inboxAct:
+            return InboxPhoneText.verb(of: item.params).map(InboxPhoneText.inInbox) ?? InboxPhoneText.inboxAction
         default:
             return fallback
         }
