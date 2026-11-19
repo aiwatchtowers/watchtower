@@ -341,12 +341,10 @@ jobs:
     runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     timeout-minutes: 10
     steps:
+      # A full checkout, not a sparse one: the Mac's runners reuse their
+      # workspace, and the next job's checkout there came out without go.mod
+      # after a sparse one (2026-11-19).
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: |
-            scripts/coverage-gate.sh
-            coverage.thresholds
-          sparse-checkout-cone-mode: false
 
       - uses: actions/download-artifact@v4
         with:
