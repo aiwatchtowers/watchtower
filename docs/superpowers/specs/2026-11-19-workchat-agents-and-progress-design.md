@@ -1,6 +1,25 @@
-# Workchat: agents out of the dialog, live work progress, faster open
+# Workchat: agents out of the dialog, live progress, send while working, inline pastes, faster open
 
-Board: #2065. Decisions: ask #1601 (2026-11-19).
+Board: #2065. Decisions: see the Decisions section.
+
+## Decisions
+
+| # | Decision | Source |
+|---|---|---|
+| D1 | No agent cards in the feed, running or finished | owner, chat 2026-11-19 ("не должны торчать в общем потоке") |
+| D2 | Finished agents in a collapsed Done section of the 👥 list | ask #1601 |
+| D3 | The phone gets D1 + D2 in the same PR | ask #1601 |
+| D4 | Live steps of the current turn, shown on the fly, never in the feed | owner, chat 2026-11-19 ("на лету … не засоряя общение") |
+| D5 | Typing while the agent works sends/queues; Stop is not the only button | owner, chat 2026-11-19 |
+| D6 | The chat must not lock while background agents run | owner, chat 2026-11-19 |
+| D7 | Pastes go inline in the field as tokens, as in Claude Code | owner, chat 2026-11-19 |
+| D8 | Workchat opens faster | owner, chat 2026-11-19 |
+| C1 | Steps list open by default, the owner's toggle remembered per pane | author's call (D4 "on the fly") |
+| C2 | Done opens by itself when nothing works (else collapsed per D2) | author's call; mockups 03/05 showed the extra click |
+| C3 | Phone Working rows: type, description, "Running" — no action/timer | author's call; live data on the phone would change FEED-05 (guarded) |
+| C4 | Codex Done = what the 256 KiB live window shows | author's call; Codex feeds draw no agent cards today |
+| C5 | Speed: both a tail read and a kept-alive store | author's call; the signposts verify the targets |
+| C6 | §5/§6 are Workchat-only (config flag); the AI chat is unchanged | author's call |
 
 ## Intent
 
@@ -24,6 +43,9 @@ Workchat also opens noticeably slower than the terminal.
    steps of the current turn as they happen (tool + summary + time), without
    one line of it entering the feed.
 4. **Faster open.** Measure click → first painted feed, then cut it.
+5. **Send while working, never locked** (§5): with text in the field the
+   button is Send in every state; background agents never lock the line.
+6. **Inline pastes** (§6): images and long text go into the field as tokens.
 
 ## Non-goals
 
@@ -36,7 +58,9 @@ Workchat also opens noticeably slower than the terminal.
 
 ## Anti-goals
 
-- Anything that makes the feed jump or grow while the agent works.
+- Anything that makes the feed jump or grow while the agent works (step by
+  step). The steps slot appears once when a turn starts and goes once when it
+  ends, at fixed height — both moments already change the feed.
 - A second always-open panel that eats feed height.
 - Losing the way to a finished agent's report (ask #1601 kept it: Done).
 
@@ -47,19 +71,20 @@ Workchat also opens noticeably slower than the terminal.
 "N agents finished ›" line in the feed — still a trace in the dialog.
 
 **Live progress.** (a) **Picked:** the live line becomes a disclosure. Closed,
-it is today's one line (current tool, `· N more`, timer). Open, it shows the
-current turn's steps in a fixed-height, scrolling list just above the
-composer, newest at the bottom, pinned to the end. It closes by itself when
-the turn ends. (b) A steps block inside the feed like the AI chat's
+it is today's one line (current tool, `· N more`, timer). Open (the default),
+it shows the current turn's steps in a fixed-height, scrolling list above the
+live line, newest at the bottom, pinned to the end. The slot goes away when
+the turn ends and comes back, open or closed as the owner last left it, with
+the next turn. (b) A steps block inside the feed like the AI chat's
 "Working… · 4 steps" — that is exactly the clutter the owner rejected.
 (c) A side inspector panel — eats width, a second thing to manage.
 
-**Open speed.** Decided after the measurement (Task 1), from two candidates:
+**Open speed.** Both ship (C5); the measurement (Task 1) gives the before/after numbers:
 (a) a tail read — the first read returns only the last 60 entries plus a
 `before` cursor, earlier ones load on scroll-to-top (the window already grows
 there); (b) keep each session's feed store alive for the app's lifetime so
-reopening reads only the tail after the cursor. Both may ship; (a) helps the
-first open, (b) every reopen. Removing subagent rows (goal 1) shrinks the
+reopening reads only the tail after the cursor. (a) helps the first open,
+(b) every reopen. Removing subagent rows (goal 1) shrinks the
 work for both.
 
 ## Design
@@ -112,11 +137,12 @@ work for both.
   `finished` (sidecar `meta.json`, every conversation of the tab), title =
   type, subtitle = description. Order (builder call): markers with an `at`
   newest first, then meta-only markers (zero `at`) in the store's
-  first-seen order; no new Go field. Done opens expanded by itself when
-  Working is empty or unknown; at most 5 rows show, the rest scroll. Codex: the list holds what the
-  256 KiB live window shows (existing v1 limit; Codex feeds draw no agent
-  cards today either, so nothing is lost). Collapsed by default; the
-  open/closed state is remembered per pane while the app runs.
+  first-seen order; no new Go field. Done is collapsed while something
+  works (D2) and opens by itself when Working is empty or unknown (C2); a
+  toggle by the owner is remembered per pane while the app runs and wins
+  over the default. At most 5 rows show, the rest scroll. Codex: the list
+  holds what the 256 KiB live window shows (C4; Codex feeds draw no agent
+  cards today either, so nothing is lost).
 - An agent that finishes moves from Working to Done on the next poll (3 s).
 - Clicking a row closes the popover and opens the subagent in place.
 - Phone: the same two sections on a sheet from an agents button in the chat
@@ -132,19 +158,22 @@ work for both.
   last 40 steps. Read from the same 256 KiB tail `LiveOf` already scans; a
   turn longer than the tail shows what the tail holds and counts nothing
   for the part it never saw (stated as a v1 limit). Additive key only.
-- The live line gets a chevron when `steps` is non-empty. Click (or ⌥↓ with
-  the composer focused) toggles the list. Each row: tool symbol, summary
+- The live line gets a chevron when `steps` is non-empty. The list is
+  **open by default** (C1); a click on the line (or ⌥↓ with the composer
+  focused) toggles it, and that choice is remembered per pane while the app
+  runs (in memory). Each row: tool symbol, summary
   (one line, middle truncation), duration (`0:04`) or a running timer.
-  Height: up to 6 rows, then it scrolls; pinned to the newest unless the
-  owner scrolled up.
-- Placement: the list opens **above** the live line, as an inset that pushes
-  the feed up; the line the owner clicked does not move and the newest step
+  Height: **fixed at 6 rows** from the moment the slot appears (fewer steps
+  sit bottom-aligned), then it scrolls; pinned to the newest unless the
+  owner scrolled up. A new step never changes the slot's height.
+- Placement: the list opens **above** the live line, as an inset that takes
+  its fixed height from the feed once per turn; the line the owner clicked does not move and the newest step
   sits right next to it. The chevron points up when closed, down when open.
 - While the list is open the live line shows the turn's summary
   ("This turn · 8 steps", timer) instead of repeating the newest step.
-- It closes when the turn ends, the session stops working, the permission
-  card shows, or the conversation changes — the same rules that close the
-  agents popover today.
+- The slot is hidden when the turn ends, the session stops working, the
+  permission card shows, or the conversation changes; it comes back with the
+  next turn in the remembered open/closed state.
 - Subagent screen: the same disclosure over that subagent's own steps.
 
 ### 4. Measurement and speed
@@ -154,8 +183,15 @@ work for both.
   numbers for three sessions (small, ~300, ~950 entries) in this doc.
 - Measured so far (CLI only, installed build, 2026-11-19): 0.2–0.3 s warm
   for a tiny session, ~0.9–1.0 s for 300–950 entries.
+- Speed work (C5): (a) the first read is a tail read — `session-feed
+  --tail 60` returns the last 60 entries, the cursor and a `before` cursor;
+  scroll-to-top asks `--before C --tail 60` for the previous page (additive
+  CLI flags; `--after` reads are unchanged). (b) `WorkbenchesViewModel` keeps
+  each session's `SessionFeedStore` for the app's lifetime (it already keeps
+  `WorkchatModel` per session), so reopening paints the kept entries at once
+  and reads only after the cursor.
 - Target: first paint ≤ 300 ms on the 950-entry session on reopen, ≤ 500 ms
-  on first open. The task picks (a), (b) or both by what the signposts show.
+  on first open; the before/after numbers go into this doc.
 
 ### 5. Type while the agent works (owner, 2026-11-19)
 
@@ -202,6 +238,16 @@ Today a long text paste raises a bar offering to attach it as a file
   the draft (in memory, survive pane switches); a payload whose token was
   deleted is dropped; an image file whose token was deleted is swept by the
   existing attachment sweep.
+- The image is saved at paste time (today's `attach(data:name:)` path). A
+  save that fails inserts no token and shows today's `attachmentError`.
+  An image file gone by send time (swept, deleted) refuses the send with
+  "Pasted image #N is gone — paste it again", the draft kept as is.
+- An outgoing line keeps both forms: `typedText` = the draft **with tokens**
+  plus the token payloads, and the expanded text that goes to the terminal.
+  A `notSent` line or a Cancel of a queued line restores the tokenized draft
+  with its payloads (only into an empty field, as today). The echo is
+  matched on the **expanded** text (what the transcript records), with
+  today's collapsed-whitespace rule.
 - Same config gate as §5: Workchat on, AI chat unchanged.
 
 ## Failure and races
@@ -219,7 +265,9 @@ Today a long text paste raises a bar offering to attach it as a file
   it appears (existing v1 limit). Working and Done can disagree for one poll
   (live says finished, the list not re-read yet): Done wins on the next read;
   an agent is never shown in both — Working filters out ids present in Done.
-- **Tail read (if chosen):** an entry before the window is loaded only on
+- **Paste tokens on a failed or cancelled line:** the tokenized draft and
+  its payloads come back (§6); test per path (`notSent`, Cancel, image gone).
+- **Tail read:** an entry before the window is loaded only on
   scroll-to-top; an entry that grows inside the window upserts by id as now.
 
 ## Promises → tasks and tests
@@ -239,6 +287,18 @@ Today a long text paste raises a bar offering to attach it as a file
 | Paste tokens: insert, atomic delete, numbering | composer token model test |
 | Tokens expand on send (text inline, image → path) | `WorkchatModel.send` test |
 | Dropped token drops its payload | model test |
+| 👥 shown idle and ended, hidden with no subagents | presentation test per state |
+| Done auto-opens when Working is empty/unknown; owner toggle wins | presentation test |
+| Steps open by default, toggle (click, ⌥↓) remembered per pane | presentation + key-handler test |
+| Steps slot height fixed; hidden on turn end / stop / card / new conversation | presentation test |
+| `sendWhileStreaming` off: AI chat keeps Stop while streaming | composer button-state test |
+| Codex hold: Send button + "Queued · sends when the agent stops ·" + Cancel | `WorkchatModel` test |
+| `notSent` / Cancel restore the tokenized draft with payloads | `WorkchatModel` test |
+| Echo matched on the expanded text | `WorkchatModel` echo test |
+| Image gone at send refuses with the message, draft kept | `WorkchatModel` test |
+| `--tail` / `--before` pages, cursor kept | Go `feed_test` + `cmd` test |
+| Store kept per session; reopen paints kept entries | store/view-model test |
+| Phone: no agent rows in the feed; sheet sections | Kit/phone test |
 
 ## Mockups (DesignShotCatalog)
 
@@ -249,11 +309,16 @@ Rendered by `DesignShotsTests/testWorkchatAgentsMockShotsRender`
 10 feed without cards, 11 idle, 12 ended, 13 send while working,
 14 paste tokens. The real views are compared against these after the build.
 
-Registered in `DesignShotFixtures+WorkchatActivity.swift`: list with Working +
-Done collapsed; Done expanded; only Done (✓N badge); none (no button);
-unknown status (`?`, Done still listed); loading; error with Retry; steps
-open (busy, 6+ rows scrolling); steps open in a narrow pane; feed without
-cards next to the live line. Colours through `Tone`, no row separators.
+This Mac list is the one source of truth for the post-build comparison.
+Colours through `Tone`, no row separators.
+
+Phone (`WatchtowerMobile/Tests/Support/WorkchatAgentsMockups.swift`,
+rendered by `make mobile-shots SHOTS_ONLY=workchat-agents`,
+`ScreenshotTourTests/testTheWorkchatAgentsShots`). The sheet closes with an
+✕ button, not "Done" (the mock's "Done" clashes with the Done section; fix in
+the build). Working rows open the agent's chat (chevron). States: P1 chat without agent cards, toolbar agents button "2";
+P2 sheet Working (2) + Done · 9 collapsed; P3 only Done expanded, button
+"✓ 9"; P4 no agents, no button.
 
 ## Left to the builder
 
