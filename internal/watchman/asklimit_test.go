@@ -42,6 +42,26 @@ func TestAskParkedBy(t *testing.T) {
 		{"quoted main", "Should I rebase onto \"main\"?", LimitMainRef},
 		{"markdown feature branch", "Shall I merge `main` into `feature/x`?", ""},
 		{"quoted feature branch", "Ready to push the fix to 'feature/main-fix'?", ""},
+		// Final review A-M1: any PR merge, whatever its base, and a forced push.
+		{"merge the PR into a feature branch", "Shall I merge the PR into feature/watchman?", LimitMainRef},
+		{"merge pull request", "Can I merge pull request #12 now?", LimitMainRef},
+		{"merge by number", "Squash and merge #12?", LimitMainRef},
+		{"PR be merged", "Should the PR be merged once CI is green?", LimitMainRef},
+		{"land the PR", "Can I land this PR?", LimitMainRef},
+		{"gh pr merge", "Run gh pr merge 12 --squash?", LimitMainRef},
+		{"merge through the api", "Call the GitHub api to merge it?", LimitMainRef},
+		{"russian PR merge", "Смержить PR в feature/x?", LimitMainRef},
+		{"russian pull request merge", "Влить пулл-реквест?", LimitMainRef},
+		{"merge main into a branch, no PR", "Merge main into feature/x to pick up the fix?", ""},
+		{"PR review comments", "Should I address the PR review comments first?", ""},
+		{"force push", "Force-push the rebased branch?", LimitForcePush},
+		{"push --force", "Run git push --force origin feature/x?", LimitForcePush},
+		{"push --force-with-lease", "OK to push --force-with-lease after the rebase?", LimitForcePush},
+		{"push -f", "Can I git push -f origin feature/x?", LimitForcePush},
+		{"push a plus refspec", "Run git push origin +feature/x?", LimitForcePush},
+		{"russian force push", "Можно сделать форс-пуш ветки?", LimitForcePush},
+		{"plain push", "Push the branch to origin/feature/x?", ""},
+		{"push with a flag", "Run git push -u origin feature/x?", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
