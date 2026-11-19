@@ -16,6 +16,7 @@ import (
 	gosync "sync"
 	"sync/atomic"
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/builtin"
 	"watchtower/internal/briefing"
@@ -135,7 +136,7 @@ type Daemon struct {
 	cycleEvents         AutomationEvents // this sync cycle's bus, nil = none (beginAutomationEvents); runSync and startupCalendarSync only
 	planUsage           PlanUsageRunner  // nil = Claude plan limits not wired
 	planUsageDisable    func() error
-	specReviewLaunch    func(askID int64) error // nil = the spec review sweep is off
+	specReviewLaunch    func(ctx context.Context, askID int64) error // nil = the spec review sweep is off
 	pidPath             string
 	db                  *db.DB
 	agentLog            *agentlogdb.DB // nil = agentlog.db did not open; the analytics phase skips
@@ -167,27 +168,31 @@ type Daemon struct {
 	externalSync     ExternalSyncRunner
 	mediaPipe        *media.Pipeline
 	dayPlanPipeline  DayPlanRunner
+
+	// consent reads the background-AI consent (SetConsent; nil =
+	// aiconsent.Current); consentLogged is the last state consentNow saw,
+	// for the once-per-change paused line. Read on the cycle's goroutine only.
+	consent       aiconsent.Reader
+	consentLogged aiconsent.State
+
 	// mbMu guards what the Morning brief's gate and primitives read and write
 	// (lastBriefing, the briefing/day-plan attempt counters, lastDayPlanDate,
 	// briefNoDataAt, mbOwner, mbNow): a primitive runs on the script's
 	// goroutine, which can outlive the slot when the executor abandons it.
-	mbMu           gosync.Mutex
-	briefNoDataAt  time.Time       // when a sync brief last found no data (the no-data backoff)
-	builtinsSwept  bool            // sweepBuiltinRuns succeeded this process
-	builtins       *builtin.Runner // the built-ins' slot runner (SetBuiltins); nil = legacy phases
-	builtinActive  map[string]bool // by built-in id: false = its producers run as legacy phases
-	mbOwner        db.Owner        // phaseMorningBrief's owner for this cycle (day-plan gate)
-	mbNow          time.Time       // phaseMorningBrief's clock while its slot runs; zero = time.Now
-	lastJira       time.Time
-	linearSyncers  []linearAccountSyncer
-	purgeHold      map[purgeKey]bool // accounts purged or being purged; refreshed by phaseAccountPurge, read by the sync phases
-	policySkipMu   gosync.Mutex
-	policySkipping map[string]bool // sources the last check found forbidden by policy (sourceAllowed); logs once per change
-	lastLinear     time.Time
-	lastPeople     time.Time // when people cards last ran (once per day)
-	// peoplePruneDone memoizes a finished one-time people card prune
-	// (db.PrunePreUpgradePeopleCards) for this process.
-	peoplePruneDone     bool
+	mbMu                gosync.Mutex
+	briefNoDataAt       time.Time       // when a sync brief last found no data (the no-data backoff)
+	builtinsSwept       bool            // sweepBuiltinRuns succeeded this process
+	builtins            *builtin.Runner // the built-ins' slot runner (SetBuiltins); nil = legacy phases
+	builtinActive       map[string]bool // by built-in id: false = its producers run as legacy phases
+	mbOwner             db.Owner        // phaseMorningBrief's owner for this cycle (day-plan gate)
+	mbNow               time.Time       // phaseMorningBrief's clock while its slot runs; zero = time.Now
+	lastJira            time.Time
+	linearSyncers       []linearAccountSyncer
+	purgeHold           map[purgeKey]bool // accounts purged or being purged; refreshed by phaseAccountPurge, read by the sync phases
+	policySkipMu        gosync.Mutex
+	policySkipping      map[string]bool // sources the last check found forbidden by policy (sourceAllowed); logs once per change
+	lastLinear          time.Time
+	lastPeople          time.Time // when people cards last ran (once per day)
 	lastBriefing        time.Time // when briefing last ran (once per day)
 	lastIdeas           time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours); ideasMu
 	lastCoach           time.Time // when the agent coach last ran (weekly, no catch-up)
@@ -711,12 +716,12 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 		d.logger.Printf("sync had errors, but running pipelines on existing data")
 	}
 
-	d.phaseChannelDigests(ctx)
+	d.aiPhase(ctx, "digests", d.phaseChannelDigests)
 	d.phaseUnsnooze()
 	d.phaseApprovalSweep(ctx)
 	d.phaseTranscriptAudioCleanup()
 	// Before the index, so this cycle's descriptions are searchable now.
-	d.phaseMediaDescribe(ctx)
+	d.aiPhase(ctx, "media", d.phaseMediaDescribe)
 	d.phaseKnowledgeIndex(ctx)
 	// After the knowledge index: the fill is mechanical (no AI) and needs no
 	// fresh sync — Slack sync's own writes already reach the new index
@@ -729,17 +734,22 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// Phases 2-4 run in parallel where possible:
 	//   Group A: Track my threads → inject track context → Rollups
 	//   Group B: People Cards (only depends on Phase 1 channel digests)
+	// The consent is read once, when the group starts. Paused, People cards
+	// do not start, and Track my threads skips its legacy tracks phase and
+	// the rollups (before any stamp, attempt or file write); only the
+	// built-in's slot runs there, gating itself (a queued Run Now still
+	// runs).
+	tracksCtx, peopleCtx, aiOK := ctx, ctx, d.consentNow().Allowed()
+	if aiOK {
+		tracksCtx = aiconsent.WithAdmitted(ctx, "phase:tracks")
+		peopleCtx = aiconsent.WithAdmitted(ctx, "phase:people")
+	}
 	var phasesWg gosync.WaitGroup
-	phasesWg.Add(2)
 	rollupNow := time.Now()
-	go func() {
-		defer phasesWg.Done()
-		d.phaseTrackMyThreads(ctx, rollupNow)
-	}()
-	go func() {
-		defer phasesWg.Done()
-		d.phasePeopleCards(ctx)
-	}()
+	phasesWg.Go(func() { d.phaseTrackMyThreads(tracksCtx, rollupNow, aiOK) })
+	if aiOK {
+		phasesWg.Go(func() { d.phasePeopleCards(peopleCtx) })
+	}
 	phasesWg.Wait()
 
 	// Auto-mark digests and tracks as read based on Slack read cursors.
@@ -752,22 +762,23 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	}
 	d.phaseInbox(ctx)
 	d.phaseWaitingForMe(ctx)
-	d.phaseStreamDigests(ctx)
+	d.aiPhase(ctx, "stream-digests", d.phaseStreamDigests)
 	d.phaseIdeaFinder(ctx)
-	d.phaseMemory(ctx)
-	d.phaseNextStep(ctx)
+	d.aiPhase(ctx, "memory", d.phaseMemory)
+	d.aiPhase(ctx, "next-step", d.phaseNextStep)
 	d.phaseMorningBrief(ctx, time.Now())
 
 	// Last, and alone: it shares the digest pipeline and the ideas lock with
 	// the forward phases above, so it must stay out of any parallel group.
 	// It fetches, so it runs on fetchCtx: a sleep cancels it (or, detected
 	// during the pipelines, skips it), while a trigger waits for it.
+	// Paused, it holds whole (D12): no fetch, no row change, no strike.
 	if fetchCtx.Err() == nil {
 		d.setSection(sectionBackfill)
-		d.phaseHistoryBackfill(fetchCtx)
+		d.aiPhase(fetchCtx, "history-backfill", d.phaseHistoryBackfill)
 		d.setSection(sectionPipelines)
 	}
-	d.phaseCoach(ctx)
+	d.coachPhases(ctx)
 	d.phaseSpecReviewSweep(ctx)
 }
 
@@ -810,7 +821,11 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 		return
 	}
 	errMsg := ""
-	if stats.err != nil {
+	switch {
+	case errors.Is(stats.err, aiconsent.ErrPaused):
+		// Refused by the backstop: a skip, not a failure.
+		d.logger.Printf("%s: skipped: background AI is paused", name)
+	case stats.err != nil:
 		errMsg = logredact.Full(stats.err)
 	}
 	if err := d.db.CompletePipelineRun(runID, stats.items, stats.inTok, stats.outTok, stats.cost, stats.totalAPI, stats.pFrom, stats.pTo, errMsg); err != nil {
@@ -1856,7 +1871,9 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 		return
 	}
 	if err := d.digestPipe.RunRollups(ctx); err != nil {
-		if !digest.ProviderDeferred(err) {
+		// A provider deferral or a background-AI-paused refusal is not an
+		// attempt.
+		if !digest.ProviderDeferred(err) && !errors.Is(err, aiconsent.ErrPaused) {
 			d.recordRollupAttempt(date)
 		}
 		d.logger.Printf("rollup error: %v", err)
@@ -1864,20 +1881,20 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 }
 
 // prunePreUpgradePeopleCards runs the one-time pass deleting people cards of
-// non-partners until it reports done (accounts without a known owner keep it
-// pending, so it retries each cycle; done accounts are skipped by the DB).
+// non-partners. It runs every cycle with no process-wide memo: the per-account
+// people_prune_done_at stamp is the only state, so a finished account costs
+// one SELECT over slack_accounts, and an account that was removed
+// during an earlier pass and reconnected later is pruned in the next cycle
+// (#2019), not after a restart. Accounts without a known owner stay pending.
 func (d *Daemon) prunePreUpgradePeopleCards(ctx context.Context) {
-	if d.db == nil || d.peoplePruneDone {
+	if d.db == nil {
 		return
 	}
-	done, err := guide.PrunePreUpgradeCards(ctx, d.db, d.logger)
-	if err != nil {
+	if _, err := guide.PrunePreUpgradeCards(ctx, d.db, d.logger); err != nil {
 		if !isBenignShutdownErr(ctx, err) {
 			d.logger.Printf("people: %v", err)
 		}
-		return
 	}
-	d.peoplePruneDone = done
 }
 
 // phasePeopleCards (group B) generates per-user people cards from people_signals
@@ -2183,6 +2200,10 @@ func (d *Daemon) phaseStreamDigests(ctx context.Context) {
 // ledger, REACT-03), so an in-memory throttle is enough — a restart simply
 // re-polls and re-dispatches nothing already seen.
 func (d *Daemon) phaseReactionCommands(ctx context.Context) {
+	// A reaction from the owner's dictionary is the owner's gesture (D3):
+	// the poll and the runs it dispatches are owner-started, so they run
+	// while background AI is paused.
+	ctx = aiconsent.WithOwnerStarted(ctx)
 	if !d.config.ReactionCommands.Enabled {
 		// Nobody polls, so reactions placed now must not fire when the
 		// feature comes back: clear the event seed stamps (a no-op read when
@@ -2469,8 +2490,11 @@ func (d *Daemon) phaseBriefingAt(ctx context.Context, now time.Time) {
 			// A real failure (AI generate/parse/store error) reached this
 			// point — RunForDate's benign skips (no owner, handled above;
 			// "no data yet", (0, nil)) never consume budget; only a real
-			// error does.
-			d.recordBriefingAttempt(today)
+			// error does. A refusal because background AI is paused is
+			// deferred, not an attempt.
+			if !errors.Is(err, aiconsent.ErrPaused) {
+				d.recordBriefingAttempt(today)
+			}
 			d.logger.Printf("briefing error: %v", err)
 		} else if id > 0 {
 			d.logger.Printf("generated briefing (id=%d)", id)
@@ -2970,8 +2994,11 @@ func (d *Daemon) runDayPlanPhase(ctx context.Context, now time.Time, owner db.Ow
 			// shouldRunDayPlan already filtered out the "no owner"
 			// case before Run was ever called (see its own gate above), so
 			// every Run invocation reaching this point is a real attempt —
-			// any error here is a real failure and consumes budget.
-			d.recordDayPlanAttempt(date)
+			// any error here is a real failure and consumes budget —
+			// except a refusal because background AI is paused (deferred).
+			if !errors.Is(err, aiconsent.ErrPaused) {
+				d.recordDayPlanAttempt(date)
+			}
 			d.logger.Printf("dayplan: generation failed: %v", err)
 		} else {
 			d.lastDayPlanDate = date

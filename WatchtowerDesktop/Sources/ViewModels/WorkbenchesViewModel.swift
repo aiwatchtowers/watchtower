@@ -316,8 +316,8 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var gitHubRepositoryReads: Set<Int64> = []
     /// `git remote get-url origin` of a folder. A seam for tests.
     @ObservationIgnored var readOriginRemote: (URL) async -> String? = { await GitHubRemote.readOrigin(folder: $0) }
-    /// Runs `watchtower terminal title`; nil without a CLI. A seam for tests.
-    @ObservationIgnored var titleService: ((Int64) async throws -> TerminalTitleResult)?
+    /// Runs `watchtower terminal title` for a session row; nil without a CLI. A seam for tests.
+    @ObservationIgnored var titleService: ((TerminalSession) async throws -> TerminalTitleResult)?
     @ObservationIgnored var now: () -> Date = Date.init
 
     // Session state. Written only by WorkbenchesViewModel+Sessions.swift, which
@@ -699,7 +699,7 @@ final class WorkbenchesViewModel {
         asks = OwnerAsksViewModel(dbPool: dbPool, terminalCenter: terminalCenter, lineDelivery: lineDelivery, defaults: defaults)
         if let cli {
             let service = TerminalTitleService(runner: cli.runner)
-            titleService = { try await service.title(sessionID: $0) }
+            titleService = { try await service.title(session: $0) }
             terminalCenter?.codexLaunchArgs = { try await cli.launchArgs(agent: .codex, workbenchID: $0) }
             let automations = AutomationsCLI(runner: cli.runner)
             asks.wakeAutomations = { try await automations.wake() }

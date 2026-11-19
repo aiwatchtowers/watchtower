@@ -1415,4 +1415,11 @@ package struct InstalledCLIRunner: CLIRunnerProtocol {
         guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
         return try await runner.run(args: args)
     }
+
+    package func runModel(
+        args: [String], origin: CLIOrigin, timeout: TimeInterval?, stdin: Data?
+    ) async throws -> Data {
+        guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
+        return try await runner.runModel(args: args, origin: origin, timeout: timeout, stdin: stdin)
+    }
 }

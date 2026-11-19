@@ -41,6 +41,9 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
     /// When the oldest kind the hub still cannot publish whole (a failed save, a refused or oversized record)
     /// first failed (#1873); nil while every kind goes through, and from an older hub.
     public let stuckSince: Date?
+    /// Whether background AI runs on the hub's Mac (#1886); nil from an older hub and for a value this build does
+    /// not know.
+    public let backgroundAI: BackgroundAIStatus?
 
     /// Whether the phone offers recording: on unless the hub says `off` (an older hub, an absent key and an
     /// unknown value read as on).
@@ -55,8 +58,8 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
     /// kind; false for `server` and a kind this build does not know.
     public var isMac: Bool { hubKind == nil || hubKind == .mac }
 
-    // convertFromSnakeCase maps "hub_id" -> "hubId" (lowercase d), so the
-    // CodingKey stringValue must be "hubId" to round-trip.
+    // convertFromSnakeCase maps "hub_id" -> "hubId" (lowercase d) and "background_ai" -> "backgroundAi", so the
+    // CodingKey stringValues must be those to round-trip.
     enum CodingKeys: String, CodingKey {
         case updatedAt
         case appVersion
@@ -73,6 +76,7 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
         case hubKind
         case capabilities
         case stuckSince
+        case backgroundAI = "backgroundAi"
     }
 
     public init(
@@ -90,7 +94,8 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
         sharing: HubSharing,
         hubKind: HubKind? = nil,
         capabilities: HeartbeatCapabilities? = nil,
-        stuckSince: Date? = nil
+        stuckSince: Date? = nil,
+        backgroundAI: BackgroundAIStatus? = nil
     ) {
         self.updatedAt = updatedAt
         self.appVersion = appVersion
@@ -107,7 +112,38 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
         self.hubKind = hubKind
         self.capabilities = capabilities
         self.stuckSince = stuckSince
+        self.backgroundAI = backgroundAI
     }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        appVersion = try c.decode(String.self, forKey: .appVersion)
+        hubID = try c.decode(String.self, forKey: .hubID)
+        macName = try c.decode(String.self, forKey: .macName)
+        flavor = try c.decode(HubFlavor.self, forKey: .flavor)
+        lastPublishAt = try c.decodeIfPresent(Date.self, forKey: .lastPublishAt)
+        lastRelayAt = try c.decodeIfPresent(Date.self, forKey: .lastRelayAt)
+        relayBacklog = try c.decode(Int.self, forKey: .relayBacklog)
+        accounts = try c.decode([HeartbeatAccount].self, forKey: .accounts)
+        enabledAt = try c.decode(Date.self, forKey: .enabledAt)
+        ownerUser = try c.decode(String.self, forKey: .ownerUser)
+        sharing = try c.decode(HubSharing.self, forKey: .sharing)
+        hubKind = try c.decodeIfPresent(HubKind.self, forKey: .hubKind)
+        capabilities = try c.decodeIfPresent(HeartbeatCapabilities.self, forKey: .capabilities)
+        stuckSince = try c.decodeIfPresent(Date.self, forKey: .stuckSince)
+        // A value a newer hub adds reads as absent, never as a failed heartbeat.
+        backgroundAI = (try? c.decodeIfPresent(String.self, forKey: .backgroundAI)).flatMap(BackgroundAIStatus.init(rawValue:))
+    }
+}
+
+/// Whether background AI runs on the hub's Mac (#1886). rawValues are wire format.
+public enum BackgroundAIStatus: String, Equatable, Sendable, Codable {
+    case allowed
+    /// Paused by the owner, or not answered yet.
+    case paused
+    /// Paused by the organization's policy.
+    case organization
 }
 
 /// The heartbeat's `capabilities` object. Values are strings so one a newer hub adds never fails the heartbeat.

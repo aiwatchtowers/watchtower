@@ -281,7 +281,7 @@ The hub is Go (`internal/hub`, `Run`), started by the daemon. [go-hub.md](go-hub
 
 ### Recordings
 
-A phone upload becomes a job in the sidecar's queue; Desktop's `PhoneRecordingQueue` claims it (`hub recording claim`), transcribes it and finishes it (`hub recording finish`), reporting progress into the `recording_job` slice. The owner's switch is `hub recordings on|off` (the heartbeat's `capabilities.recordings`).
+A phone upload becomes a job in the sidecar's queue; Desktop's `PhoneRecordingQueue` claims it (`hub recording claim`), transcribes it and finishes it (`hub recording finish`), reporting progress into the `recording_job` slice. The owner's switch is `hub recordings on|off` (the heartbeat's `capabilities.recordings`). Protocol §9 also carries one optional additive heartbeat key, `background_ai` (`allowed`/`paused`/`organization`, #1886); older phones and hubs ignore it.
 
 ### Work alerts and pushes
 

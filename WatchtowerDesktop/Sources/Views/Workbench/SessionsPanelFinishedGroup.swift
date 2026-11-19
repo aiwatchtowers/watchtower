@@ -23,7 +23,7 @@ struct SessionsPanelSessionRow: View {
             actions: actions,
             openAsks: openAsks,
             reportLine: row.showsStateLabel ? reportLine : nil,
-            reportProgress: row.showsStateLabel && !showsSpecReviewLine
+            reportProgress: row.showsStateLabel
                 ? vm.reportProgress(sessionID: row.id, projectID: projectID) : nil,
             reportMergedProgress: vm.reportMergedProgress(sessionID: row.id, projectID: projectID),
             closedAsks: closedAsks > 0
@@ -49,20 +49,14 @@ struct SessionsPanelSessionRow: View {
     }
 
     /// The report line, or "Cleaning up…" while a Clean Up… apply runs on
-    /// this row (board #535), or the spec review
-    /// author loop's round while one of its asks is in the loop (#1121).
+    /// this row (board #535). The spec review round is in the state caption.
     private var reportLine: String? {
         if showsCleaningUp { return "Cleaning up…" }
-        if let line = vm.specReviewLine(sessionID: row.id) { return line }
         return vm.reportLine(sessionID: row.id, projectID: projectID)
     }
 
     private var showsCleaningUp: Bool {
         isCleaningUp || vm.sessionCleanup?.cleanupPhase(for: .session(row.id)) == .applying
-    }
-
-    private var showsSpecReviewLine: Bool {
-        !showsCleaningUp && vm.specReviewLine(sessionID: row.id) != nil
     }
 
     private var isCleaningUp: Bool { vm.cleaningUpSessions.contains(row.id) }

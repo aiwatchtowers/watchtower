@@ -15,6 +15,7 @@ import (
 
 	"github.com/dop251/goja"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/db"
@@ -43,6 +44,7 @@ type exOpts struct {
 	registry      func(d *db.DB) automations.ToolRegistry     // nil = fakeTools()
 	backends      func(f *exFixture, b *automations.Backends) // adjusts the executor's backends
 	fullWake      func() (uint32, bool)                       // ExecutorOptions.FullWake; nil = always awake
+	consent       aiconsent.Reader                            // ExecutorOptions.Consent; nil = aiconsent.Current
 }
 
 type exFixture struct {
@@ -111,6 +113,7 @@ func newExFixture(t *testing.T, o exOpts) *exFixture {
 				},
 				Logger:   log.New(f.logs, "", 0),
 				FullWake: o.fullWake,
+				Consent:  o.consent,
 			})
 	}
 	f.e = f.mk()

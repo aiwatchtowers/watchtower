@@ -13,7 +13,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -58,7 +59,8 @@
             "ollama"
           ],
           "AllowClaudeAITools": false,
-          "PurgeRevokedData": true
+          "PurgeRevokedData": true,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -79,7 +81,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -105,7 +108,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -134,7 +138,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -160,7 +165,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -191,7 +197,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -217,7 +224,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -238,7 +246,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -264,7 +273,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -290,7 +300,8 @@
           "AllowAutomationShell": false,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -316,7 +327,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": false,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -342,7 +354,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": true
+          "PurgeRevokedData": true,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -368,7 +381,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": false
+          "PurgeRevokedData": false,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -394,7 +408,8 @@
             "claude"
           ],
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -422,7 +437,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": [],
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -454,7 +470,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -480,7 +497,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -501,7 +519,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [
           "RetentionDays"
@@ -528,7 +547,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [
           "RequireDatabaseEncryption",
@@ -562,7 +582,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -585,7 +606,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": true
+          "PurgeRevokedData": true,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -628,7 +650,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -669,7 +692,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -705,13 +729,127 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": null
         },
         "reserved_not_enforced": [],
         "errors": [
           {
             "key": "AllowedQuickConnections",
             "problem": "invalid_entry"
+          }
+        ]
+      }
+    },
+    {
+      "name": "background_ai_true",
+      "raw": {
+        "AllowBackgroundAI": true
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": true
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "background_ai_false",
+      "raw": {
+        "AllowBackgroundAI": false
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": false
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "background_ai_as_string",
+      "raw": {
+        "AllowBackgroundAI": "yes"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": false
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowBackgroundAI",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    },
+    {
+      "name": "several_invalid_keys_keep_key_order",
+      "raw": {
+        "AllowBackgroundAI": "1",
+        "AllowedAIProviders": "claude",
+        "AllowAutomationShell": 1,
+        "AllowClaudeAITools": "x"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": false,
+          "AllowedAIProviders": [],
+          "AllowClaudeAITools": false,
+          "PurgeRevokedData": null,
+          "AllowBackgroundAI": false
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowAutomationShell",
+            "problem": "wrong_type"
+          },
+          {
+            "key": "AllowedAIProviders",
+            "problem": "wrong_type"
+          },
+          {
+            "key": "AllowClaudeAITools",
+            "problem": "wrong_type"
+          },
+          {
+            "key": "AllowBackgroundAI",
+            "problem": "wrong_type"
           }
         ]
       }

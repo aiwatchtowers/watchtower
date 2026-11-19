@@ -101,7 +101,49 @@ final class OnboardingStateMachineV2Tests: XCTestCase {
     func testIndicatorHidesEverySkippedStep() {
         XCTAssertEqual(OnboardingRoute(goals: [.meetings]).indicatorSteps, [.purpose, .connect])
         XCTAssertEqual(OnboardingRoute(goals: [.development]).indicatorSteps, [.purpose])
-        XCTAssertEqual(OnboardingV2Step.allCases.compactMap(\.indicatorTitle), ["Goals", "Connect"])
+        XCTAssertEqual(OnboardingV2Step.allCases.compactMap(\.indicatorTitle), ["Goals", "Connect", "Background AI"])
+    }
+
+    // MARK: - Background AI consent (#1886)
+
+    func testConsentStepSkippedWhenDecided() {
+        XCTAssertEqual(OnboardingRoute(goals: [.workCommunication]).step(after: .connect), .complete)
+        XCTAssertEqual(OnboardingRoute(goals: [.workCommunication], consentPrompt: false).step(after: .connect), .complete)
+        XCTAssertTrue(OnboardingRoute(goals: [.meetings], consentPrompt: false).skips(.aiConsent))
+        let asks = OnboardingRoute(goals: [.workCommunication], consentPrompt: true)
+        XCTAssertFalse(asks.skips(.aiConsent))
+        XCTAssertEqual(asks.step(after: .connect), .aiConsent)
+        XCTAssertEqual(asks.step(after: .aiConsent), .complete)
+        XCTAssertEqual(OnboardingRoute(goals: [.development], consentPrompt: true).step(after: .purpose), .aiConsent,
+                       "a Development-only route goes from Goals straight to the consent step")
+    }
+
+    func testParkedOnConnectResumesThroughConsent() {
+        defaults.set(OnboardingV2Step.connect.rawValue, forKey: Machine.stepKey)
+        let machine = Machine(defaults: defaults)
+        let route = OnboardingRoute(goals: [.tasksAndJira], consentPrompt: true)
+        machine.settle(route: route)
+        XCTAssertEqual(machine.currentStep, .connect)
+        machine.advance(route: route)
+        XCTAssertEqual(machine.currentStep, .aiConsent)
+        XCTAssertEqual(Machine(defaults: defaults).currentStep, .aiConsent, "persisted as aiConsent")
+        XCTAssertEqual(defaults.string(forKey: Machine.stepKey), "aiConsent")
+        machine.advance(route: route)
+        XCTAssertEqual(machine.currentStep, .complete)
+    }
+
+    func testUnknownRawValueStillStartsAtGoals() {
+        defaults.set("backgroundAI", forKey: Machine.stepKey)
+        XCTAssertEqual(Machine(defaults: defaults).currentStep, .purpose)
+        defaults.set("aiConsent", forKey: Machine.stepKey)
+        XCTAssertEqual(Machine(defaults: defaults).currentStep, .aiConsent)
+    }
+
+    func testIndicatorShowsBackgroundAI() {
+        XCTAssertEqual(OnboardingV2Step.aiConsent.indicatorTitle, "Background AI")
+        XCTAssertEqual(OnboardingRoute(goals: [.meetings], consentPrompt: true).indicatorSteps, [.purpose, .connect, .aiConsent])
+        XCTAssertEqual(OnboardingRoute(goals: [.development], consentPrompt: true).indicatorSteps, [.purpose, .aiConsent])
+        XCTAssertEqual(OnboardingRoute(goals: [.meetings]).indicatorSteps, [.purpose, .connect])
     }
 
     // MARK: - Settle on resume

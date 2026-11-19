@@ -377,14 +377,30 @@ final class AppStateTests: XCTestCase {
     }
 
     /// Launch with this suite and DB: the state `initialize()` derives after
-    /// the DB opened (or, with `db: nil`, failed to).
-    private func launch(_ defaults: UserDefaults, db: DatabaseManager?) async -> AppState {
+    /// the DB opened (or, with `db: nil`, failed to). `backgroundRuns` is the
+    /// background AI answer in a private config.yaml (nil = not answered), so
+    /// the route never depends on this Mac's own config.
+    private func launch(
+        _ defaults: UserDefaults, db: DatabaseManager?, backgroundRuns: String? = "allowed"
+    ) async -> AppState {
         let appState = AppState(onboardingDefaults: defaults, featureManager: Self.noFeatures())
+        appState.sharedConfig = consentConfig(backgroundRuns)
         appState.wireAppDatabaseOverride = { _ in }
         appState.databaseManager = db
         await appState.refreshConnectedSources()
         await appState.reconcileOnboarding(dbPool: db?.dbPool)
         return appState
+    }
+
+    private func consentConfig(_ backgroundRuns: String?) -> ConfigService {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("wt-launch-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("config.yaml").path
+        if let backgroundRuns {
+            try? "ai: {background_runs: \(backgroundRuns)}\n".write(toFile: path, atomically: true, encoding: .utf8)
+        }
+        return ConfigService(configPath: path)
     }
 
     private func screen(_ appState: AppState) -> NavigationRoot.Screen {
@@ -519,6 +535,40 @@ final class AppStateTests: XCTestCase {
             try Bool.fetchOne(db, sql: "SELECT onboarding_done FROM user_profile LIMIT 1")
         }
         XCTAssertEqual(done, true)
+    }
+
+    /// Parked on the removed About you with the background AI answer still
+    /// due (#1886): Connect's Continue goes to the consent step, not done.
+    func testLaunchOnTheRemovedAboutYouStepUnansweredGoesThroughConsent() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("aboutYou", forKey: OnboardingStateMachineV2.stepKey)
+        defaults.set(["workCommunication"], forKey: OnboardingGoalsModel.goalsKey)
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+
+        let appState = await launch(defaults, db: dbManager, backgroundRuns: nil)
+        XCTAssertEqual(appState.onboarding.currentStep, .connect)
+        XCTAssertTrue(appState.onboardingRoute.consentPrompt)
+
+        await appState.leaveOnboardingStep(.connect, route: appState.onboardingRoute) {}
+        XCTAssertEqual(appState.onboarding.currentStep, .aiConsent)
+        XCTAssertTrue(appState.needsOnboarding)
+    }
+
+    /// Relaunched on Connect with Development-only goals and the answer due:
+    /// the consent step is still ahead (its answer runs the completion
+    /// sequence), so launch settles there instead of back at Goals.
+    func testLaunchOnSkippedConnectUnansweredSettlesOnConsent() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(OnboardingV2Step.connect.rawValue, forKey: OnboardingStateMachineV2.stepKey)
+        defaults.set(["development"], forKey: OnboardingGoalsModel.goalsKey)
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+
+        let appState = await launch(defaults, db: dbManager, backgroundRuns: nil)
+
+        XCTAssertEqual(appState.onboarding.currentStep, .aiConsent)
+        XCTAssertEqual(screen(appState), .onboarding)
     }
 
     /// Parked on the removed About you with Development-only goals: Connect

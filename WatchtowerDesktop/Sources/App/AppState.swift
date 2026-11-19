@@ -47,10 +47,11 @@ final class AppState {
     /// binary store has been synced — see `initialize()`.
     let daemonManager = DaemonManager()
     let uiVisibility = UIVisibilityCenter() // board #731, `applyUIVisibility`
-    /// The organization policy forced through the MDM (#608). Read only once
-    /// `initialize()` starts it, so a test that never initializes never reads
-    /// this Mac's managed preferences.
+    /// The organization policy forced through the MDM (#608). Read only once `initialize()` starts it,
+    /// so a test that never initializes never reads this Mac's managed preferences.
     let managedPolicy: ManagedPolicyCenter
+    @ObservationIgnored private(set) lazy var backgroundAIRefresher = makeBackgroundAIRefresher() // #1886, started with the policy
+    var backgroundAIConsentSheet = BackgroundAIConsentSheet() // #1886, AppState+BackgroundAI
     var isDBAvailable: Bool { databaseManager != nil }
 
     /// Live per-feature readiness behind the tabs' empty states, here so a
@@ -59,10 +60,7 @@ final class AppState {
     /// `readinessEnvironmentOverride`, set before first use, replaces the
     /// live environment in tests.
     @ObservationIgnored private(set) lazy var readinessCenter = ReadinessCenter(
-        environment: readinessEnvironmentOverride
-            ?? LiveReadinessEnvironment(daemon: daemonManager, visibility: featureVisibility) {
-                Constants.activeWorkspaceDir()
-            }
+        environment: readinessEnvironmentOverride ?? makeLiveReadinessEnvironment()
     )
 
     /// The Home snapshot and the Getting ready memory, here so a read
@@ -848,8 +846,7 @@ final class AppState {
         isLoading = true
         Constants.prewarmResolvedEnvironment()
         // Before anything a key decides starts (the mobile hub, the pickers).
-        managedPolicy.start(activation: NSApplication.didBecomeActiveNotification)
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil { fileVault.start() }
+        startPolicyAndConsentRefresh()
         // Text older versions handed the CLI through temp files (now stdin).
         Task.detached(priority: .utility) {
             StaleTempSweep.run(in: FileManager.default.temporaryDirectory)
@@ -1031,11 +1028,6 @@ final class AppState {
         }
         onboarding.settle(route: route)
         needsOnboarding = !skipThisLaunch && onboarding.currentStep != .complete
-    }
-
-    /// The route onboarding follows: the goals of the last Continue.
-    var onboardingRoute: OnboardingRoute {
-        onboardingGoals.route
     }
 
     /// Settings' account changes (Add, Remove, re-login) while onboarding is

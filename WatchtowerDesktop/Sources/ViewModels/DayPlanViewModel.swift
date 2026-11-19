@@ -210,7 +210,7 @@ final class DayPlanViewModel {
         args += ["--date", target]
 
         do {
-            _ = try await cli.run(args: args)
+            _ = try await cli.runModel(args: args, origin: .owner)
             if target == currentDate { await reload() }
         } catch {
             generationError = error.localizedDescription

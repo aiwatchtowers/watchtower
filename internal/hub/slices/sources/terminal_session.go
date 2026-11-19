@@ -255,8 +255,8 @@ func (s *TerminalSessionSource) payload(p publishedSession, closedAsks int) sess
 }
 
 // counts is the workbench slice's session_counts over the published
-// sessions: working counts working, running and agents working (all green),
-// waiting counts waiting on an ask and ready to check, not_running counts
+// sessions: working counts working, running, agents working and spec review
+// (all green, #1945), waiting counts waiting on an ask and ready to check, not_running counts
 // not started.
 func (s *TerminalSessionSource) counts(ctx context.Context, tx *sql.Tx) (map[int64]sessionCounts, error) {
 	published, err := s.published(ctx, tx)
@@ -267,7 +267,7 @@ func (s *TerminalSessionSource) counts(ctx context.Context, tx *sql.Tx) (map[int
 	for _, p := range published {
 		c := out[p.workbenchID]
 		switch p.state.kind {
-		case kindWorking, kindRunning, kindBackground:
+		case kindWorking, kindRunning, kindBackground, kindSpecReview:
 			c.Working++
 		case kindWaitingOnAsk, kindReadyToCheck:
 			c.Waiting++
@@ -313,7 +313,8 @@ SELECT s.id, s.project_id, s.kind, s.title, s.target_id, s.created_at, s.last_ac
        (SELECT COUNT(*) FROM owner_asks a
         WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+` AND a.kind = 'question'),
        (SELECT COUNT(*) FROM owner_asks a
-        WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+` AND a.kind = 'review')
+        WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+` AND a.kind = 'review'),
+       `+db.SpecLoopRoundSQL("s.id")+`
 FROM terminal_sessions s
 WHERE s.project_id IS NOT NULL AND s.kind IN `+agentkind.SQLKinds()+` AND s.`+db.NotDeletingSQL+`
 ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
@@ -326,7 +327,7 @@ ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 		if err := r.Scan(&p.id, &p.workbenchID, &kind, &p.title, &target, &p.createdAt, &p.lastActiveAt,
 			&row.AgentState, &row.AgentStateAt, &row.FinishedAt, &p.finishSummary, &row.AgentFailedAt, &agentError,
 			&row.AgentBackground, &row.AgentBackgroundAt, &row.AgentBackgroundShells, &watchIssue,
-			&row.OpenAsks, &oldest, &row.OpenQuestionAsks, &row.OpenReviewAsks); err != nil {
+			&row.OpenAsks, &oldest, &row.OpenQuestionAsks, &row.OpenReviewAsks, &row.SpecReviewRound); err != nil {
 			return err
 		}
 		if !workbenches[p.workbenchID] || hidden[p.id] {
@@ -409,6 +410,7 @@ const (
 	kindFinished
 	kindBackground
 	kindReadyToCheck
+	kindSpecReview // an ask in the spec review author loop, turn over (#1945)
 )
 
 // sessionState is SessionSwitcherPresentation.State: the resolved kind with
@@ -418,6 +420,7 @@ type sessionState struct {
 	live                     bool
 	openAsks                 int
 	openQuestion, openReview int
+	specRound                int    // spec review round of kindSpecReview
 	err                      string // agent_error of a failed turn
 	oldestAskID              *int64 // nil without open asks
 	agents                   int    // background agents of a background session
@@ -449,7 +452,7 @@ func (st sessionState) notWatched() bool { return st.kind == kindWorking && st.w
 func resolveState(r sessionstate.Row, now time.Time, agentError string, oldest *int64) sessionState {
 	st := sessionState{
 		live: r.RunStartedAt != "", openAsks: r.OpenAsks,
-		openQuestion: r.OpenQuestionAsks, openReview: r.OpenReviewAsks,
+		openQuestion: r.OpenQuestionAsks, openReview: r.OpenReviewAsks, specRound: r.SpecReviewRound,
 	}
 	if r.OpenAsks > 0 {
 		st.oldestAskID = oldest
@@ -480,6 +483,8 @@ func resolveState(r sessionstate.Row, now time.Time, agentError string, oldest *
 		st.kind = kindReadyToCheck
 	case sessionstate.StateFinished:
 		st.kind = kindFinished
+	case sessionstate.StateSpecReview:
+		st.kind = kindSpecReview
 	}
 	return st
 }
@@ -511,6 +516,8 @@ func (st sessionState) wireKind() string {
 		return "finished"
 	case kindStopped:
 		return "stopped"
+	case kindSpecReview:
+		return "spec_review"
 	case kindFailed:
 		return "failed"
 	case kindNotStarted:
@@ -521,7 +528,7 @@ func (st sessionState) wireKind() string {
 // tone is SessionStatePresentation.color.
 func (st sessionState) tone() string {
 	switch st.kind {
-	case kindWorking, kindRunning, kindBackground:
+	case kindWorking, kindRunning, kindBackground, kindSpecReview:
 		return "green"
 	case kindWaitingOnAsk, kindNeedsApproval:
 		return "orange"
@@ -568,6 +575,8 @@ func (st sessionState) glyph() string {
 		return "checkmark"
 	case kindStopped:
 		return "pause.fill"
+	case kindSpecReview:
+		return "doc.text.magnifyingglass"
 	case kindFailed:
 		return "exclamationmark"
 	case kindRunning, kindNotStarted:
@@ -604,6 +613,11 @@ func (st sessionState) caption() string {
 		return "Finished"
 	case kindStopped:
 		return "Idle"
+	case kindSpecReview:
+		if st.specRound > 0 {
+			return "Spec review · round " + strconv.Itoa(st.specRound)
+		}
+		return "Spec review"
 	case kindBackground:
 		agents := "Agents working"
 		switch {
