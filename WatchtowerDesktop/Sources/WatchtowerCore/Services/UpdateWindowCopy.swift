@@ -29,7 +29,6 @@ package enum UpdateWindowCopy {
         "Version \(version) \(required ? "required" : "available")"
     }
 
-    package static let notesHeader = "What's New"
     package static let noNotes = "No release notes for this version."
     package static let later = "Later"
     package static let updateNow = "Update Now"

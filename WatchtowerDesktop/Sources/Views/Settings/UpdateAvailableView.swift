@@ -79,10 +79,10 @@ struct UpdateAvailableView: View {
         .card()
     }
 
+    /// The notes carry their own heading ("## What's New"), so the window
+    /// adds none.
     private var notes: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
-            Text(Copy.notesHeader)
-                .font(.subheadline.weight(.semibold))
             if releaseNotes.isEmpty {
                 Text(Copy.noNotes)
                     .foregroundStyle(.secondary)

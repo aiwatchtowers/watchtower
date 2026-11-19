@@ -38,7 +38,6 @@ final class UpdateWindowCopyTests: XCTestCase {
     }
 
     func testFixedLabels() {
-        XCTAssertEqual(Copy.notesHeader, "What's New")
         XCTAssertEqual(Copy.noNotes, "No release notes for this version.")
         XCTAssertEqual(Copy.later, "Later")
         XCTAssertEqual(Copy.updateNow, "Update Now")
