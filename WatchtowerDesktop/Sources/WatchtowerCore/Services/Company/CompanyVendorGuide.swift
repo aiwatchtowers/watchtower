@@ -132,8 +132,12 @@ package enum CompanyVendorGuide {
         let secret = CompanyFieldSpec(key: .clientSecret, label: "Client secret", secure: true, help: nil)
         switch v {
         case .slack:
+            // The Client ID too: Go adopts an app no account here is on only with it.
             return [CompanyFieldSpec(key: .slackSettingsLink, label: "App settings link", secure: false,
-                                     help: "Open the app on api.slack.com and copy the address of its settings page.")]
+                                     help: "Open the app on api.slack.com and copy the address of its settings page."),
+                    CompanyFieldSpec(key: .clientID, label: "Client ID", secure: false,
+                                     help: "Needed when no account on this Mac uses the app yet: Basic Information → App "
+                                         + "Credentials on api.slack.com.")]
         case .google, .atlassian:
             return [clientID, secret]
         case .linear:

@@ -135,6 +135,17 @@ extension CompanySetupWizardModel {
     package static let comparingApp = "Comparing them with Watchtower's"
     package static func readingApp(_ appID: String) -> String { "Reading app \(appID)'s settings" }
     package static func manifestDiffTitle(_ appID: String) -> String { "App \(appID)'s settings differ from Watchtower's" }
+    /// The diff found nothing to change.
+    package static func manifestSameTitle(_ appID: String) -> String { "App \(appID) already has Watchtower's settings" }
+    package static let manifestSameBody = "Using it changes nothing in it."
+    /// **Use <app>**: the found app's name (its label up to " · ").
+    package static func useApp(_ label: String) -> String {
+        "Use \(label.components(separatedBy: " · ").first ?? label)"
+    }
+
+    static func slackAppLabel(_ appID: String) -> String { "Watchtower · \(appID)" }
+    package static let discoveryFailed = "Watchtower could not look for the apps this Mac already knows. You can still "
+        + "create one or paste what identifies yours."
     package static let manifestDiffBody = "Watchtower will make these changes to the app. Nothing else in it changes."
     package static func diffLines(_ changes: SlackAppChanges?) -> [String] {
         guard let changes else { return [] }

@@ -59,7 +59,9 @@ final class CompanyVendorGuideTests: XCTestCase {
         XCTAssertEqual(Guide.notSure(.linear), "Not sure? Look in Linear → Settings → API → OAuth applications.")
         XCTAssertEqual(Guide.notSure(.microsoft), "Not sure? Look in the Microsoft Entra admin center → App registrations → "
             + "All applications.")
-        XCTAssertEqual(Guide.alreadyHaveFields(.slack).map(\.label), ["App settings link"])
+        XCTAssertEqual(Guide.alreadyHaveFields(.slack).map(\.label), ["App settings link", "Client ID"])
+        XCTAssertEqual(Guide.alreadyHaveFields(.slack).last?.help, "Needed when no account on this Mac uses the app yet: "
+            + "Basic Information → App Credentials on api.slack.com.")
         XCTAssertEqual(Guide.alreadyHaveFields(.slack).first?.help,
                        "Open the app on api.slack.com and copy the address of its settings page.")
         XCTAssertEqual(Guide.alreadyHaveFields(.google).map(\.label), ["Client ID", "Client secret"])

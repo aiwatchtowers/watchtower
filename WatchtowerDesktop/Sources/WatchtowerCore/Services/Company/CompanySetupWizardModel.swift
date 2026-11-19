@@ -125,6 +125,8 @@ package final class CompanySetupWizardModel {
     package private(set) var reached: Set<Step> = [.services]
     package private(set) var candidates: [CompanyCandidate] = []
     package private(set) var discovering = false
+    /// `company discover` failed: the vendor steps say so (never "nothing found").
+    package private(set) var discoveryFailed = false
     /// Services discovery found an app for (pre-ticked, "Found on this Mac").
     package private(set) var foundVendors: Set<CompanyVendor> = []
     package private(set) var phases: [CompanyVendor: VendorPhase] = [:]
@@ -164,7 +166,12 @@ package final class CompanySetupWizardModel {
     package private(set) var slackReuse: (appID: String, clientID: String)?
     /// The pasted settings link (**We already have one**).
     package var slackSettingsLink = ""
-    package private(set) var slackSettingsLinkInvalid = false
+    /// The app's Client ID (Basic Information), for an app no account here is on.
+    package var slackClientID = ""
+    /// The link field's error: typed, but not a settings link.
+    package var slackSettingsLinkInvalid: Bool {
+        !slackSettingsLink.trimmingCharacters(in: .whitespaces).isEmpty && Self.appID(fromSettingsLink: slackSettingsLink) == nil
+    }
     /// The last Slack run was started by this wizard (its problem shows).
     private var slackAttempt = false
     /// The running adopt confirms an app whose diff was shown.
@@ -334,8 +341,11 @@ package final class CompanySetupWizardModel {
         defer { discovering = false }
         guard let line = await lastJSONLine(["company", "discover", "--json"], stdin: nil),
               let found = try? JSONDecoder().decode(CompanyDiscoverResult.self, from: Data(line.utf8)) else {
+            // Not "nothing found": the steps say the look failed.
+            discoveryFailed = true
             return
         }
+        discoveryFailed = false
         candidates = found.candidates ?? []
         foundVendors = Set(candidates.compactMap { CompanyVendor(rawValue: $0.vendor) })
         // Pre-tick only a fresh setup: a resumed draft keeps its own choice.
@@ -366,8 +376,14 @@ package final class CompanySetupWizardModel {
     /// set-aside one go; the stored bundle and the accounts the checks made
     /// stay (§2.12).
     package func discard() async {
+        // A check waiting on its pre-check save is abandoned now, never started.
+        generation += 1
+        // After any save in flight: a save landing later would bring the draft back.
+        _ = await saving?.value
         guard await run(["company", "draft", "discard"], stdin: nil) else {
             storageProblem = Self.discardFailed
+            // The abandoned checks' answers land nowhere: their steps are open again.
+            for (v, state) in checks where state == .running { checks[v] = nil }
             return
         }
         reset()
@@ -399,7 +415,16 @@ package final class CompanySetupWizardModel {
         slackReuse = nil
         slackAttempt = false
         slackReused = false
+        slackSettingsLink = ""
+        slackClientID = ""
+        slackConfirming = false
+        hostField = ""
+        hostInvalid = false
+        googleFileProblem = false
+        alreadyHaveSelected = [:]
         dropWarning = nil
+        // A fresh setup pre-ticks what this Mac knows, as on a first open.
+        draft.services = CompanyVendor.allCases.filter(foundVendors.contains).map(\.rawValue)
     }
 
     /// Publish went through: Go deleted the draft, which stays deleted.
@@ -414,8 +439,22 @@ package final class CompanySetupWizardModel {
         reset()
     }
 
+    /// Saves run one after another (each a `company draft save` child): a
+    /// later save never lands before an earlier one, so the newest state wins.
+    @ObservationIgnored private var saving: Task<Bool, Never>?
+
     @discardableResult
     private func saveDraft() async -> Bool {
+        let previous = saving
+        let next = Task { [self] in
+            _ = await previous?.value
+            return await writeDraft()
+        }
+        saving = next
+        return await next.value
+    }
+
+    private func writeDraft() async -> Bool {
         guard load == .ready, !isPublished else { return false }
         var out = draft
         out.step = current.draftName
@@ -564,7 +603,7 @@ package final class CompanySetupWizardModel {
         if v == .slack, let record = slack.record(appID: draft.slack.appID) {
             found.removeAll { $0.appID == record.appID || (!record.clientID.isEmpty && $0.clientID == record.clientID) }
             found.insert(CompanyCandidate(vendor: "slack", clientID: record.clientID, appID: record.appID,
-                                          label: "Watchtower · \(record.appID)", source: "draft",
+                                          label: Self.slackAppLabel(record.appID), source: "draft",
                                           sourceLabel: Self.savedSetupSource(draft.company.isEmpty ? record.teamName : draft.company)), at: 0)
         }
         return found
@@ -622,7 +661,8 @@ package final class CompanySetupWizardModel {
         switch (v, key) {
         case (.slack, .slackSettingsLink):
             slackSettingsLink = value
-            slackSettingsLinkInvalid = false
+        case (.slack, .clientID):
+            slackClientID = value
         case (.google, .clientID): edit(\.google, .init()) { $0.clientID = value }
         case (.google, .clientSecret): edit(\.google, .init()) { $0.clientSecret = value }
         case (.atlassian, .clientID): edit(\.atlassian, .init()) { $0.clientID = value }
@@ -689,6 +729,8 @@ package final class CompanySetupWizardModel {
                 checks[v] = .failed(Self.nameNeeded)
                 return
             }
+            // Go marks the step only for a draft of this company: the name is
+            // saved with the draft before the check (and given back if it fails).
             draft.company = name
             if publishName.isEmpty { publishName = name }
             args.append("--app-return")
@@ -702,20 +744,22 @@ package final class CompanySetupWizardModel {
             return
         }
         checks[v] = .running
-        guard await saveDraft() else {
-            checks[v] = .failed(Self.draftSaveFailed)
+        let started = generation
+        guard await saveDraft(), generation == started else {
+            if generation == started { checks[v] = .failed(Self.draftSaveFailed) }
             return
         }
-        let started = generation
         let line = await lastJSONLine(args, stdin: stdin)
         // Discarded meanwhile: Go kept what the sign-in stored (the bundle,
         // the account); this setup's state is gone, so nothing lands here.
         guard generation == started else { return }
         guard let line, let result = try? JSONDecoder().decode(CompanyCheckResult.self, from: Data(line.utf8)) else {
             checks[v] = .failed(Self.checkStopped)
+            releaseUnstoredName()
             return
         }
         await finishCheck(v, result, values: values)
+        if checks[v] != .passed { releaseUnstoredName() }
     }
 
     /// The name a check stores the company under: the draft's (a check ran
@@ -729,6 +773,13 @@ package final class CompanySetupWizardModel {
     /// The step asks for the company name (nothing to derive it from yet).
     package func needsCompanyName(_ v: CompanyVendor) -> Bool {
         checks[v] == .failed(Self.nameNeeded)
+    }
+
+    /// No check stored the company yet (no slug): its name is not fixed, so
+    /// a failed check leaves Company name to what the person types (A2).
+    private func releaseUnstoredName() {
+        guard draft.slug.isEmpty else { return }
+        draft.company = ""
     }
 
     private func signInInput(_ v: CompanyVendor) -> Data? {
@@ -751,7 +802,8 @@ package final class CompanySetupWizardModel {
 
     private func finishCheck(_ v: CompanyVendor, _ result: CompanyCheckResult, values: [String]) async {
         let signedIn = result.result == "ok" || result.result == "forced"
-        if !result.slug.isEmpty, signedIn { draft.slug = result.slug }
+        // A sign-in stored the company under the slug; replace_needed found it stored there.
+        if !result.slug.isEmpty, signedIn || result.result == "replace_needed" { draft.slug = result.slug }
         if signedIn, !result.email.isEmpty { connectedAs[v] = result.email }
         // Values edited (or the service dropped) while it ran: the answer is
         // about values the step no longer holds. Go kept what the sign-in
@@ -819,6 +871,7 @@ package final class CompanySetupWizardModel {
         guard !appID.isEmpty else {
             // A client id with no App ID known here: the settings link names it.
             slackReuse = nil
+            slackClientID = c.clientID
             phases[.slack] = .existing
             return
         }
@@ -829,11 +882,12 @@ package final class CompanySetupWizardModel {
 
     /// **Continue** on **We already have one**: the settings link names the app.
     private func useSettingsLink() {
-        guard let appID = Self.appID(fromSettingsLink: slackSettingsLink) else {
-            slackSettingsLinkInvalid = true
-            return
-        }
-        slackReuse = (appID, "")
+        guard let appID = Self.appID(fromSettingsLink: slackSettingsLink) else { return }
+        // An app no account here is on is adopted by its Client ID too (Go AdoptWith).
+        let known = candidates.first { $0.vendor == "slack" && $0.appID == appID }?.clientID
+            ?? slack.records.first { $0.appID == appID }?.clientID ?? ""
+        let typed = slackClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        slackReuse = (appID, typed.isEmpty ? known : typed)
         slackAttempt = false
         phases[.slack] = .create
     }
@@ -888,6 +942,7 @@ package final class CompanySetupWizardModel {
     }
 
     /// The reused app's settings differ: what **Update the app** changes.
+    /// The reused app's diff; `lines` is empty when its settings already match.
     package var slackDiff: (appID: String, lines: [String])? {
         guard slackAttempt, !slack.isRunning, case .editing = slack.phase, case let .adopt(adopt) = slack.form,
               let confirm = adopt.confirm else { return nil }
@@ -1012,12 +1067,11 @@ package final class CompanySetupWizardModel {
             return Primary(title: Self.continueTitle, enabled: false)
         case .found:
             let first = candidates(for: .slack).first
-            let name = first.map { $0.label.components(separatedBy: " · ").first ?? $0.label } ?? ""
-            return Primary(title: "Use \(name)", enabled: true)
+            return Primary(title: Self.useApp(first?.label ?? ""), enabled: true)
         case .nothingFound:
             return Primary(title: Self.continueTitle, enabled: true)
         case .existing:
-            return Primary(title: Self.continueTitle, enabled: !slackSettingsLink.trimmingCharacters(in: .whitespaces).isEmpty)
+            return Primary(title: Self.continueTitle, enabled: Self.appID(fromSettingsLink: slackSettingsLink) != nil)
         case .create, .reuseSecret, .noOrgAccess:
             let token = !slackToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             return Primary(title: slackReuse == nil ? Self.createApp : Self.continueTitle, enabled: token)

@@ -484,6 +484,99 @@ final class CompanySetupWizardModelTests: XCTestCase {
         XCTAssertEqual(cli.calls(["slack", "app", "adopt"]).count, 1, "Try again does not repeat the same request")
     }
 
+    func testSettingsLinkAdoptsWithClientID() async {
+        let cli = ScriptedCLI()
+        let (model, _) = make(cli)
+        await model.open()
+        model.toggle(.slack)
+        await model.next()
+        model.alreadyHaveOne()
+        model.setField(.slack, .slackSettingsLink, "https://acme.slack.com/apps")
+        XCTAssertTrue(model.slackSettingsLinkInvalid)
+        XCTAssertFalse(model.primary.enabled, "Continue waits for a valid link")
+        model.setField(.slack, .slackSettingsLink, "https://api.slack.com/apps/A0ACME")
+        model.setField(.slack, .clientID, "1111.2222")
+        XCTAssertFalse(model.slackSettingsLinkInvalid)
+        await model.next()
+        model.slackToken = token
+        cli.on(["slack", "app", "adopt"], [confirmApp])
+        await model.next()
+        await untilObserved { model.slackDiff != nil }
+        XCTAssertEqual(cli.calls(["slack", "app", "adopt"]).first?.args.suffix(4), ["--app-id", "A0ACME", "--client-id", "1111.2222"])
+    }
+
+    func testMatchingAppShowsNoDiffLines() async {
+        let cli = ScriptedCLI()
+        let (model, _) = make(cli)
+        await model.open()
+        model.toggle(.slack)
+        await model.next()
+        model.alreadyHaveOne()
+        model.setField(.slack, .slackSettingsLink, "https://api.slack.com/apps/A0ACME")
+        await model.next()
+        model.slackToken = token
+        cli.on(["slack", "app", "adopt"], [#"{"result":"confirm_app","team_id":"T0ACME","app_id":"A0ACME","changes":{}}"#])
+        await model.next()
+        await untilObserved { model.slackDiff != nil }
+        XCTAssertEqual(model.slackDiff?.lines, [])
+        XCTAssertEqual(Model.manifestSameTitle("A0ACME"), "App A0ACME already has Watchtower's settings")
+    }
+
+    func testDiscoveryFailureIsNotNothingFound() async {
+        let cli = ScriptedCLI()
+        cli.on(["company", "discover"], [], exit: 1)
+        let (model, _) = make(cli)
+        await model.open()
+        XCTAssertTrue(model.discoveryFailed)
+        XCTAssertEqual(Model.discoveryFailed, "Watchtower could not look for the apps this Mac already knows. You can still "
+            + "create one or paste what identifies yours.")
+        let (fine, _) = make()
+        await fine.open()
+        XCTAssertFalse(fine.discoveryFailed)
+    }
+
+    func testDiscardStartsFresh() async {
+        let cli = ScriptedCLI()
+        cli.on(["company", "discover"], [#"{"candidates":[{"vendor":"linear","client_id":"lin","label":"lin","#
+            + #""source":"account","source_label":"Linear app — your connected account acme"}]}"#])
+        let (model, _) = make(cli)
+        await model.open()
+        model.hostField = "https://bad"
+        model.addHost()
+        model.toggle(.slack)
+        model.setField(.slack, .slackSettingsLink, "nope")
+        await model.discard()
+        XCTAssertEqual(model.hostField, "")
+        XCTAssertFalse(model.hostInvalid)
+        XCTAssertEqual(model.slackSettingsLink, "")
+        XCTAssertEqual(model.ticked, [.linear], "found apps are pre-ticked again")
+    }
+
+    func testFailedFirstCheckLeavesTheNameFree() async {
+        let draft = atlassianDraft.replacingOccurrences(of: #""company":"Acme""#, with: #""company":"""#)
+        let (model, cli) = await resume(draft)
+        cli.on(["company", "check", "atlassian"], [#"{"result":"rejected","code":"invalid_client"}"#])
+        await model.check(.atlassian)
+        XCTAssertTrue(cli.calls(["company", "check"]).first?.input.contains("\"company\":\"Acme\"") ?? false)
+        XCTAssertEqual(model.draft.company, "", "nothing was stored under the derived name")
+    }
+
+    func testDiscardDuringPreCheckSaveLandsNothing() async {
+        let (model, cli) = await resume(atlassianDraft)
+        cli.hold(["company", "draft", "save"])
+        let check = Task { await model.check(.atlassian) }
+        await cli.waitFor(["company", "draft", "save"])
+        let discard = Task { await model.discard() }
+        cli.release(["company", "draft", "save"], [])
+        await check.value
+        await discard.value
+        XCTAssertTrue(cli.calls(["company", "check"]).isEmpty, "the discarded setup is never checked")
+        let order = cli.calls.map { $0.args.prefix(3).joined(separator: " ") }
+        XCTAssertLessThan(order.lastIndex(of: "company draft save") ?? .max, order.lastIndex(of: "company draft discard") ?? -1,
+                          "the discard runs after the save in flight, so the draft stays deleted")
+        XCTAssertNil(model.checks[.atlassian])
+    }
+
     func testNotCollaboratorKeepsStepOpen() async {
         let cli = ScriptedCLI()
         let (model, _) = make(cli)
