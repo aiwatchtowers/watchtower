@@ -440,7 +440,9 @@ package final class CompanySetupWizardModel {
     /// Leaving the page (‹ Connections, another service or tab, quitting):
     /// the draft is saved at the current step. A running check goes on.
     package func leave() async {
-        guard load == .ready, hasDraft || touched else { return }
+        // A running Publish saved the draft before it began and deletes it on success:
+        // a save queued behind it would bring the draft back.
+        guard load == .ready, hasDraft || touched, publishState != .running else { return }
         await saveDraft()
         resumed = true
     }

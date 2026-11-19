@@ -128,6 +128,9 @@ final class CompanySetupWizardEntryTests: XCTestCase {
         model.back()
         model.goTo(.services)
         await model.discard()
+        let savesBefore = cli.calls(["company", "draft", "save"]).count
+        await model.leave()
+        XCTAssertEqual(cli.calls(["company", "draft", "save"]).count, savesBefore, "no save queued behind Publish's delete")
         XCTAssertEqual(model.current, .publish)
         XCTAssertTrue(cli.calls(["company", "draft", "discard"]).isEmpty, "no discard under a running Publish")
         cli.release(["company", "publish"], [#"{"result":"no_slack","slug":"acme","link":"l","code":"c"}"#])
