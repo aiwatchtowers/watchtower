@@ -261,8 +261,8 @@ func (db *DB) CloseStaleWatchmanHandovers(now time.Time) (int64, error) {
 // finish that names the ask again, hands it over after all — the same row,
 // so its created_at, cost and moves carry over and the superseded close is
 // not journalled apart; any other handover released or done is left. So
-// a scan or writer racing it ends with exactly one handover row. The
-// argument it carries the insert's workbench, session, target and
+// a scan or writer racing it ends with exactly one handover row. It
+// carries the insert's workbench, session, target and
 // question; promoted reports a handover it wrote, inserted a new row.
 func (db *DB) PromoteWatchmanHandover(it WatchmanItem, held bool) (promoted, inserted bool, err error) {
 	watchmanHandoverBeforeWrite()
