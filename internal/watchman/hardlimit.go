@@ -366,6 +366,9 @@ var wrapperFlags = map[string][]string{
 
 // wrapperOptional are the wrappers' options whose operand is optional: it
 // is only ever attached (xargs -i{} or --replace={}), never the next word.
+//
+// sudoBareHost: a sudo -h or --host with no attached host is unknown — sudo
+// 1.8 takes the next word as the host, 1.9 shows its help — so it parks.
 var wrapperOptional = map[string][]string{
 	"sudo":  {"-h", "--host"},
 	"xargs": {"-e", "-i", "-l", "--eof", "--replace", "--max-lines"},
@@ -411,7 +414,7 @@ func wrapperOption(opt, prog string) (name string, takesNext, known bool) {
 		case valued[match]:
 			return match, !attached, true
 		case slices.Contains(optional, match):
-			return match, false, true
+			return match, false, !(prog == "sudo" && !attached) // sudoBareHost
 		}
 		return "", false, true
 	}
@@ -424,7 +427,7 @@ func wrapperOption(opt, prog string) (name string, takesNext, known bool) {
 		case valued[short]:
 			return short, i == len(opt)-1, true
 		case slices.Contains(optional, short): // the rest of the word is its operand
-			return short, false, true
+			return short, false, !(prog == "sudo" && i == len(opt)-1) // sudoBareHost
 		case !slices.Contains(flags, short):
 			return "", false, false
 		}
