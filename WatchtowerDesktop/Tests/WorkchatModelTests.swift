@@ -1373,4 +1373,95 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertEqual(model.outgoing.first?.text, "[Image #1]")
         XCTAssertNil(model.attachmentError)
     }
+
+    // MARK: - Paste tokens, fix round 1
+
+    /// Backspace takes the token and its payload; the same text typed again by hand is plain text (spec §6).
+    func testDeletedTokenPayloadDoesNotComeBack() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        let labelPasted = await model.paste(.image(Data([1]), name: "Pasted image.png"))
+        let label = try XCTUnwrap(labelPasted)
+        model.draft = "fix \(label)"
+        XCTAssertNotNil(model.pastes[1])
+
+        model.draft = "fix "
+        XCTAssertTrue(model.pastes.isEmpty, "the payload leaves with its token")
+        model.draft = "fix [Image #1]"
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.first?.text, "fix [Image #1]", "a retyped token is plain text")
+        XCTAssertEqual(model.outgoing.first?.attachmentPaths, [])
+        model.draft = "again "
+        let next = await model.paste(.text("x"))
+        XCTAssertEqual(next, "[Pasted text #1 +1 lines]")
+    }
+
+    /// A pruned number is not given out again within the draft.
+    func testPrunedNumberIsNotReused() async throws {
+        let model = try makeModel(try await liveSession())
+        let firstPasted = await model.paste(.text("a"))
+        let first = try XCTUnwrap(firstPasted)
+        model.draft = first
+        model.draft = ""
+        let second = await model.paste(.text("b"))
+        XCTAssertEqual(second, "[Pasted text #2 +1 lines]")
+    }
+
+    /// A hand-typed token of the other kind does not keep a payload of the same number live.
+    func testLiveNumbersAreKindAware() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        let labelPasted = await model.paste(.image(Data([1]), name: "Pasted image.png"))
+        let label = try XCTUnwrap(labelPasted)
+        model.draft = label
+
+        model.draft = "[Pasted text #1 +3 lines]"
+        XCTAssertTrue(model.pastes.isEmpty, "image #1 has no token of its kind left")
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.first?.text, "[Pasted text #1 +3 lines]")
+    }
+
+    func testPasteNumberIgnoresHugeHandTypedNumber() async throws {
+        let model = try makeModel(try await liveSession())
+        model.draft = "[Image #\(Int.max)] [Pasted text #2000000 +1 lines] [Image #4]"
+
+        let label = await model.paste(.text("x"))
+
+        XCTAssertEqual(label, "[Pasted text #5 +1 lines]")
+    }
+
+    /// The draft is trimmed around its tokens, not inside a pasted text.
+    func testPastedTextKeepsItsWhitespace() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        let code = "    indented()\n        deeper()\n\n"
+        let labelPasted = await model.paste(.text(code))
+        let label = try XCTUnwrap(labelPasted)
+        model.draft = "  \(label)  "
+
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.first?.text, code)
+    }
+
+    /// A draft holding only a whitespace paste is refused like an empty one.
+    func testWhitespaceOnlyPasteNotSent() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        let labelPasted = await model.paste(.text(" \n\t\n"))
+        let label = try XCTUnwrap(labelPasted)
+        model.draft = label
+
+        await model.send()
+
+        XCTAssertTrue(model.outgoing.isEmpty)
+        XCTAssertEqual(typedText, "")
+        XCTAssertEqual(model.draft, label)
+    }
 }

@@ -31,13 +31,17 @@ final class WorkchatModel {
     typealias Delivery = SessionLineDelivery.Delivery
 
     let sessionID: Int64
-    var draft = ""
+    /// Each change drops the paste payloads whose token left it (#2065 §6):
+    /// a deleted token never comes back live, even typed again by hand.
+    var draft = "" {
+        didSet { prunePastes() }
+    }
     /// Files and pasted images waiting to go with the next line, as the
     /// composer's chips; in memory only (negative ids, `path` absolute).
     private(set) var attachments: [ChatAttachment] = []
     /// The draft's paste tokens' payloads by token number (#2065 §6): a pasted
     /// long text, or the file a pasted image was saved to. A payload whose
-    /// token left the draft is dropped at send. In memory only.
+    /// token left the draft is dropped as the draft changes. In memory only.
     private(set) var pastes: [Int: PastePayload] = [:]
     /// The lines sent from here and not yet shown by the feed, oldest first.
     private(set) var outgoing: [WorkchatOutgoing] = []
@@ -67,6 +71,12 @@ final class WorkchatModel {
     @ObservationIgnored private var sentAttachments: [UUID: [ChatAttachment]] = [:]
     /// The paste payloads of a line on its way, to bring back with its tokenized draft.
     @ObservationIgnored private var sentPastes: [UUID: [Int: PastePayload]] = [:]
+    /// Paste numbers given out whose token the draft has not shown yet (the
+    /// field inserts it after `paste` returns): not pruned until it has.
+    @ObservationIgnored private var pendingPastes: Set<Int> = []
+    /// The last paste number given out in this draft: a pruned number is never
+    /// given out again, so an undone deletion cannot point at a new payload.
+    @ObservationIgnored private var lastPasteNumber = 0
     /// The session's kind, read each time it is needed: a pane restored at
     /// launch makes its model before the sessions load.
     @ObservationIgnored private let kind: @MainActor () -> TerminalSession.Kind?
@@ -118,7 +128,7 @@ final class WorkchatModel {
         let typed = draft.replacingOccurrences(of: "\r\n", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !typed.isEmpty || !attachments.isEmpty else { return }
-        let live = PasteTokens.numbers(in: typed)
+        let live = PasteTokens.liveNumbers(in: typed, kinds: pastes.mapValues(\.kind))
         let sentPastes = pastes.filter { live.contains($0.key) }
         let imagePaths = sentPastes.sorted { $0.key < $1.key }.compactMap { number, payload -> (Int, String)? in
             guard case let .image(path) = payload else { return nil }
@@ -128,13 +138,19 @@ final class WorkchatModel {
             attachmentError = Self.imageGone(gone.0)
             return
         }
-        attachmentError = nil
+        // The draft is trimmed around its tokens; a pasted text keeps its own
+        // indentation and closing line breaks.
         let expanded = PasteTokens.expand(typed, payloads: sentPastes, imagePath: WorkchatOutgoing.quoted)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasText = !expanded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // Only a whitespace paste: refused like an empty draft.
+        guard hasText || !attachments.isEmpty else { return }
+        attachmentError = nil
         let chipPaths = attachments.map(\.path)
-        let text = ([expanded].filter { !$0.isEmpty } + chipPaths.map(WorkchatOutgoing.quoted)).joined(separator: "\n")
+        let text = ((hasText ? [expanded] : []) + chipPaths.map(WorkchatOutgoing.quoted)).joined(separator: "\n")
         draft = ""
         pastes = [:]
+        pendingPastes = []
+        lastPasteNumber = 0
         let sent = attachments
         attachments = []
         await deliver(text, typed: typed, paths: chipPaths + imagePaths.map(\.1), attachments: sent,
@@ -206,14 +222,16 @@ final class WorkchatModel {
     /// the token for the field to insert at the paste. The image is saved now
     /// (as `attach(data:name:)`); a save that fails returns nil, keeps nothing
     /// and says why (`attachmentError`). Numbers count up per draft, past any
-    /// number already in it, so a hand-typed `[Image #1]` is never taken over.
+    /// number already in it, so a hand-typed `[Image #1]` is never taken over
+    /// (a hand-typed number above `PasteTokens.maxNumber` is ignored).
     func paste(_ item: InlinePaste) async -> String? {
         attachmentError = nil
-        let number = max(pastes.keys.max() ?? 0, PasteTokens.numbers(in: draft).max() ?? 0) + 1
+        let typed = PasteTokens.numbers(in: draft).filter { $0 <= PasteTokens.maxNumber }
+        let number = max(lastPasteNumber, pastes.keys.max() ?? 0, typed.max() ?? 0) + 1
         switch item {
         case let .text(text):
             let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
-            pastes[number] = .text(normalized)
+            keep(.text(normalized), as: number)
             return PasteTokens.textLabel(number, lines: PasteTokens.lineCount(normalized))
         case let .image(data, name):
             guard let path = save(data, name: name) else { return nil }
@@ -221,9 +239,25 @@ final class WorkchatModel {
                 attachmentError = "Cannot attach “\(name)”: its path has a line break"
                 return nil
             }
-            pastes[number] = .image(path: path)
+            keep(.image(path: path), as: number)
             return PasteTokens.imageLabel(number)
         }
+    }
+
+    private func keep(_ payload: PastePayload, as number: Int) {
+        lastPasteNumber = number
+        pendingPastes.insert(number)
+        pastes[number] = payload
+    }
+
+    /// Drops each payload whose token (number and kind) the draft no longer
+    /// holds, unless its token has not been inserted yet.
+    private func prunePastes() {
+        guard !pastes.isEmpty else { return }
+        let live = PasteTokens.liveNumbers(in: draft, kinds: pastes.mapValues(\.kind))
+        pendingPastes.subtract(live)
+        let kept = pastes.filter { live.contains($0.key) || pendingPastes.contains($0.key) }
+        if kept.count != pastes.count { pastes = kept }
     }
 
     /// Saves pasted bytes under the session's folder; nil → not saved, and `attachmentError` says why.
@@ -276,8 +310,10 @@ final class WorkchatModel {
     /// only into an empty field, its files only when no chips wait.
     private func restore(_ id: UUID, typed: String) {
         if draft.isEmpty {
+            let restored = sentPastes[id] ?? [:]
+            pastes.merge(restored) { _, restored in restored }
+            lastPasteNumber = max(lastPasteNumber, restored.keys.max() ?? 0)
             draft = typed
-            pastes.merge(sentPastes[id] ?? [:]) { _, restored in restored }
         }
         if attachments.isEmpty, let chips = sentAttachments[id] { attachments = chips }
         sentAttachments[id] = nil

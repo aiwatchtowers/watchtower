@@ -4,6 +4,18 @@ import Foundation
 public enum PastePayload: Equatable, Sendable {
     case text(String)
     case image(path: String)
+
+    public var kind: PasteKind {
+        switch self {
+        case .text: .text
+        case .image: .image
+        }
+    }
+}
+
+/// Which token a payload stands behind: `[Pasted text #N …]` or `[Image #N]`.
+public enum PasteKind: Equatable, Sendable {
+    case text, image
 }
 
 /// A paste the composer hands to its owner to keep as a token: a long text, or an image's bytes and name.
@@ -20,6 +32,10 @@ public enum PasteTokens {
 
     public static func textLabel(_ n: Int, lines: Int) -> String { "[Pasted text #\(n) +\(lines) lines]" }
 
+    /// A token number above this is never one the composer gave out (a hand-typed `[Image #99999999999]`): the
+    /// next number ignores it, so it cannot overflow.
+    public static let maxNumber = 1_000_000
+
     /// The lines of a pasted text; a closing line break adds none.
     public static func lineCount(_ text: String) -> Int {
         var normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
@@ -35,6 +51,8 @@ public enum PasteTokens {
         let range: NSRange
         let number: Int
         let isImage: Bool
+
+        var kind: PasteKind { isImage ? .image : .text }
     }
 
     private static func matches(in text: String) -> [Match] {
@@ -52,6 +70,17 @@ public enum PasteTokens {
     /// there: the whole token. nil → an ordinary Backspace.
     public static func deletionRange(backwardFrom utf16Offset: Int, in text: String, live: Set<Int>) -> NSRange? {
         matches(in: text).first { NSMaxRange($0.range) == utf16Offset && live.contains($0.number) }?.range
+    }
+
+    /// Kind-aware `deletionRange`: only a token whose number has a payload of the token's own kind is removed whole
+    /// (a hand-typed `[Pasted text #1 +3 lines]` beside a live `[Image #1]` is plain text).
+    public static func deletionRange(backwardFrom utf16Offset: Int, in text: String, kinds: [Int: PasteKind]) -> NSRange? {
+        matches(in: text).first { NSMaxRange($0.range) == utf16Offset && kinds[$0.number] == $0.kind }?.range
+    }
+
+    /// The numbers in `kinds` whose token, of that kind, is in `text`: the payloads a draft still holds.
+    public static func liveNumbers(in text: String, kinds: [Int: PasteKind]) -> Set<Int> {
+        Set(matches(in: text).filter { kinds[$0.number] == $0.kind }.map(\.number))
     }
 
     /// The numbers of every token-shaped text in `text`, live or typed.

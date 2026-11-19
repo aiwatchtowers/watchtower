@@ -15,8 +15,9 @@ public final class PastingTextView: NSTextView {
     var onLongTextPaste: ((LongPaste) -> Void)?
     /// Keeps a pasted image or long text and returns its token; nil → no inline tokens.
     var onInlinePaste: ((InlinePaste) async -> String?)?
-    /// The token numbers that have a payload (the owner's model): only these are deleted whole.
-    var livePasteNumbers: Set<Int> = []
+    /// The kind of each token number with a payload (the owner's model): only a token of that number and kind is
+    /// deleted whole.
+    var livePastes: [Int: PasteKind] = [:]
     private var inlinePastes: Bool { onInlinePaste != nil }
     /// Always `.general` in the app; tests pass a private named pasteboard.
     var pasteboard: NSPasteboard = .general
@@ -77,7 +78,7 @@ public final class PastingTextView: NSTextView {
     override public func deleteBackward(_ sender: Any?) {
         let caret = selectedRange()
         if inlinePastes, caret.length == 0, !hasMarkedText(),
-           let range = PasteTokens.deletionRange(backwardFrom: caret.location, in: string, live: livePasteNumbers),
+           let range = PasteTokens.deletionRange(backwardFrom: caret.location, in: string, kinds: livePastes),
            shouldChangeText(in: range, replacementString: "") {
             textStorage?.replaceCharacters(in: range, with: "")
             didChangeText()

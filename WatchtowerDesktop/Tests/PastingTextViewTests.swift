@@ -275,7 +275,7 @@ final class PastingTextViewTests: XCTestCase {
 
     func testBackspaceDeletesALiveTokenWhole() {
         let view = makeInlineView(label: nil)
-        view.livePasteNumbers = [1]
+        view.livePastes = [1: .image]
         view.string = "fix [Image #1]"
         view.setSelectedRange(NSRange(location: 14, length: 0))
 
@@ -297,7 +297,7 @@ final class PastingTextViewTests: XCTestCase {
 
     func testBackspaceWithInlinePastesOffDeletesOneCharacter() {
         let view = makeView()
-        view.livePasteNumbers = [1]
+        view.livePastes = [1: .image]
         view.string = "fix [Image #1]"
         view.setSelectedRange(NSRange(location: 14, length: 0))
 

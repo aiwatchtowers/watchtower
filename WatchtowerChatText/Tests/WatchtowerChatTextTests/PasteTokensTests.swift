@@ -55,4 +55,16 @@ final class PasteTokensTests: XCTestCase {
         let out = PasteTokens.expand(text, payloads: [1: .text("t"), 2: .image(path: "/p.png")]) { $0 }
         XCTAssertEqual(out, text)
     }
+
+    /// A token is live only when its number has a payload of the token's own kind (fix round 1).
+    func testLiveNumbersAreKindAware() {
+        let text = "[Image #1] [Pasted text #1 +3 lines] [Pasted text #2 +1 lines]"
+        let kinds: [Int: PasteKind] = [1: .image, 2: .text]
+        XCTAssertEqual(PasteTokens.liveNumbers(in: text, kinds: kinds), [1, 2])
+        XCTAssertEqual(PasteTokens.liveNumbers(in: "[Pasted text #1 +3 lines]", kinds: kinds), [], "hand-typed, other kind")
+        XCTAssertEqual(PasteTokens.deletionRange(backwardFrom: 10, in: text, kinds: kinds), NSRange(location: 0, length: 10))
+        XCTAssertNil(PasteTokens.deletionRange(backwardFrom: 36, in: text, kinds: kinds), "a text token beside image #1")
+        XCTAssertEqual(PastePayload.image(path: "/p").kind, .image)
+        XCTAssertEqual(PastePayload.text("t").kind, .text)
+    }
 }

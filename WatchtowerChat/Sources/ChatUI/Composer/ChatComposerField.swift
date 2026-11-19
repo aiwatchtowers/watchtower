@@ -30,8 +30,9 @@ public struct ChatComposerFieldConfig {
     /// `ComposerPasteRoute`) through `onInlinePaste`: the Workchat. false: a chip and the "Attach as file" offer
     /// (the AI chat). A dropped or picked file is a chip either way.
     public var inlinePastes = false
-    /// The token numbers that have a payload (`inlinePastes`): one Backspace removes such a token whole.
-    public var livePasteNumbers: Set<Int> = []
+    /// The kind of each token number that has a payload (`inlinePastes`): one Backspace removes such a token of that
+    /// kind whole.
+    public var livePastes: [Int: PasteKind] = [:]
 
     public init(
         placeholder: String,
@@ -45,7 +46,7 @@ public struct ChatComposerFieldConfig {
         sendBlocked: Bool = false,
         sendWhileStreaming: Bool = false,
         inlinePastes: Bool = false,
-        livePasteNumbers: Set<Int> = []
+        livePastes: [Int: PasteKind] = [:]
     ) {
         self.placeholder = placeholder
         self.maxHeight = maxHeight
@@ -58,7 +59,7 @@ public struct ChatComposerFieldConfig {
         self.sendBlocked = sendBlocked
         self.sendWhileStreaming = sendWhileStreaming
         self.inlinePastes = inlinePastes
-        self.livePasteNumbers = livePasteNumbers
+        self.livePastes = livePastes
     }
 }
 
@@ -213,7 +214,7 @@ public struct ChatComposerField: View {
             onAttachFiles: attachableFiles,
             onLongTextPaste: { longPaste = $0 },
             onInlinePaste: config.inlinePastes ? onInlinePaste : nil,
-            livePasteNumbers: config.livePasteNumbers,
+            livePastes: config.livePastes,
             onCursorChange: onCursorChange,
             onPickerKey: onPickerKey,
             autoFocus: config.autoFocus,
