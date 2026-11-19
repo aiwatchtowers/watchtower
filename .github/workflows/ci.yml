@@ -55,11 +55,12 @@ jobs:
   # owner's Mac when its self-hosted wt-general runners are online (set up by
   # scripts/ci-runner/setup-mac-runner.sh), else the GitHub-hosted runners —
   # always for a fork PR, without the RUNNER_STATUS_TOKEN secret, and on any
-  # API error. Its `linux` and `macos` outputs are each job's runs-on; a job's
-  # steps branch on runner.environment where the Mac differs. Swift Test and
-  # Mobile App need a window server, which the Mac's runners lack, and the
+  # API error. Its `linux`, `macos` and `swifttest` outputs are each job's
+  # runs-on; a job's steps branch on runner.environment where the Mac differs.
+  # Mobile App needs a window server, which the Mac's runners lack, and the
   # race pass is too heavy to share the Mac with the owner's own work: those
-  # always run in the cloud.
+  # always run in the cloud (Swift Test skips its three window-server classes
+  # on the Mac; Swift UI Tests runs them in the cloud after a main push).
   gate:
     name: Dedupe gate
     runs-on: ubuntu-24.04
@@ -75,6 +76,7 @@ jobs:
       guide: ${{ github.event_name != 'schedule' && (github.event_name != 'pull_request' || steps.filter.outputs.guide == 'true') }}
       linux: ${{ steps.pick.outputs.linux || '"ubuntu-24.04"' }}
       macos: ${{ steps.pick.outputs.macos || '"macos-26"' }}
+      swifttest: ${{ steps.pick.outputs.swifttest || '"macos-26"' }}
     steps:
       # every: a file counts for a filter only when it matches all of its
       # patterns, which is what the `!` exclusions need.
@@ -618,9 +620,9 @@ jobs:
     # 0.31.6 (via speech-swift) declares swift-tools-version 6.3, which Xcode
     # 26.3 (Swift 6.2.4, the newest on macos-15) cannot load on a cold SPM
     # resolve — the job only passed on macos-15 while a warm cache hid it.
-    # Always in the cloud: its AppKit tests (mouse events, key windows) need a
-    # window server, which the Mac's runners lack (scripts/ci-runner/README.md).
-    runs-on: macos-26
+    # On the Mac (wt-swift, one runner) .build stays warm between runs: no
+    # cache restore or save, a checkout that keeps ignored files, 6 lanes.
+    runs-on: ${{ fromJSON(needs.gate.outputs.swifttest) }}
     # A hang must fail the job, not run to GitHub's 6 h default (seen
     # 2026-10-02: a pool-starved test run sat 45+ min). Measured ~8 min, up to
     # ~12; the margin is for a cold SPM cache.
@@ -628,11 +630,26 @@ jobs:
     # The key a main push saves its build under; prune-spm-cache keeps it.
     outputs:
       spm-key: ${{ steps.spm-key.outputs.key }}
+    # The Mac's runners have no window server: the three classes that need
+    # one skip there (WindowServerTestGate) and run in Swift UI Tests.
+    env:
+      WATCHTOWER_CI_NO_WINDOW_SERVER: ${{ contains(needs.gate.outputs.swifttest, 'self-hosted') && '1' || '' }}
     defaults:
       run:
         working-directory: WatchtowerDesktop
     steps:
+      # clean: false on the Mac keeps WatchtowerDesktop/.build (ignored), which
+      # the default `git clean -ffdx` would wipe.
       - uses: actions/checkout@v4
+        with:
+          clean: ${{ runner.environment == 'github-hosted' }}
+
+      # Untracked files a previous run's branch left behind would be compiled
+      # (SwiftPM builds every file in a target's folder); ignored ones stay.
+      - name: Remove untracked files
+        if: runner.environment == 'self-hosted'
+        working-directory: .
+        run: git clean -ffd
 
       # The runner's default toolchain (Xcode 16.4) predates the macOS 26 SDK, so
       # any reference to Speech's SpeechTranscriber/SpeechAnalyzer/AssetInventory/
@@ -641,7 +658,9 @@ jobs:
       # this image (non-default) and ships the macOS 26 SDK those declarations live
       # in; selecting it lets the file weak-link as designed without needing a
       # macOS-26 runner to execute the guarded code.
+      # On the Mac the runner's .env sets DEVELOPER_DIR (the action needs sudo).
       - uses: maxim-lobanov/setup-xcode@v1
+        if: runner.environment == 'github-hosted'
         with:
           xcode-version: "26.4.1"
 
@@ -651,6 +670,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+          # The Mac's ci user keeps its GOCACHE between jobs.
+          cache: ${{ runner.environment == 'github-hosted' }}
 
       # The build products of the latest main commit (saved below), so a run
       # recompiles only what differs from main instead of all of our own
@@ -659,11 +680,13 @@ jobs:
       # invalidated wholesale. Restore picks the newest entry for the same
       # dependencies, else any.
       - id: spm-key
+        if: runner.environment == 'github-hosted'
         env:
           KEY: ${{ runner.os }}-spm-v2-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}-${{ github.sha }}
         run: echo "key=$KEY" >> "$GITHUB_OUTPUT"
 
       - name: Restore SPM build
+        if: runner.environment == 'github-hosted'
         uses: actions/cache/restore@v4
         with:
           path: WatchtowerDesktop/.build
@@ -691,14 +714,15 @@ jobs:
       # drops the older main entries. Pull requests read main's entries but
       # never write their own.
       - name: Save SPM build
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: runner.environment == 'github-hosted' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
         with:
           path: WatchtowerDesktop/.build
           key: ${{ steps.spm-key.outputs.key }}
 
-      # Three concurrent xctest processes over round-robin slices of the test
-      # classes (see the script): serially the suite took ~5 min (2026-10-13).
+      # Three concurrent xctest processes (six on the Mac's 16 cores) over
+      # round-robin slices of the test classes (see the script): serially the
+      # suite took ~5 min (2026-10-13).
       # LANE_TIMEOUT: the script kills a lane hung past it and prints its log
       # (the step's own timeout would kill the script with every log unread).
       # One phase of lanes; a lane's 10 minutes fit the step's 25.
@@ -708,7 +732,7 @@ jobs:
           LANE_TIMEOUT: "600"
           # SQLCipherInteropTests fail instead of skipping without Go (#603).
           WATCHTOWER_REQUIRE_GO: "1"
-        run: ../scripts/swift-test-sharded.sh 3
+        run: ../scripts/swift-test-sharded.sh ${{ runner.environment == 'self-hosted' && 6 || 3 }}
 
       # The process-spawning suites again on a one-thread concurrency pool,
       # so blocking I/O that slips back onto pool threads fails here.
@@ -724,6 +748,43 @@ jobs:
         timeout-minutes: 10
         working-directory: .
         run: scripts/fetch-monaco.sh && make editor-bridge-check
+
+  # The classes Swift Test skips on the Mac's runners (no window server;
+  # WindowServerTestGate), in the cloud after every main push, nightly and on
+  # workflow_dispatch — not on pull requests, so they stay off macos-26's
+  # small queue there.
+  swift-ui-test:
+    name: Swift UI Tests
+    needs: gate
+    if: needs.gate.outputs.run == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: macos-26
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: WatchtowerDesktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.4.1"
+
+      # Main's latest build (Swift Test saves it); never saved from here.
+      - name: Restore SPM build
+        uses: actions/cache/restore@v4
+        with:
+          path: WatchtowerDesktop/.build
+          key: ${{ runner.os }}-spm-v2-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-spm-v2-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}-
+            ${{ runner.os }}-spm-v2-
+
+      - name: Build
+        run: swift build --build-tests -Xswiftc -enable-incremental-file-hashing
+
+      - name: Test
+        timeout-minutes: 10
+        run: swift test --skip-build --filter 'OwnerAskKeysTests|SessionsPanelKeyViewTests|WorkbenchBackSwipeTests'
 
   # Drops the main SPM build caches the latest main push replaced: one ~2 GB
   # entry against the repo's 10 GB cache. Its own job so actions: write (cache
@@ -766,7 +827,8 @@ jobs:
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.mobile == 'true'
     # Always in the cloud: on the Mac's runners, with no window server, a
-    # simulator never finishes booting ("Waiting on System App").
+    # simulator never finishes booting ("Waiting on System App"). On a pull
+    # request only when the gate's mobile filter matches.
     runs-on: macos-26
     # A cold SPM resolve plus the simulator boot; the suite itself is minutes.
     timeout-minutes: 45

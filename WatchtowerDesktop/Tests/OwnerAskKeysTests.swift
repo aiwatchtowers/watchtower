@@ -22,6 +22,7 @@ final class OwnerAskKeysTests: XCTestCase {
     nonisolated private static let checklist = #"{"checklist":[{"id":"1","text":"Launch"}]}"#
 
     override func setUpWithError() throws {
+        try WindowServerTestGate.skipIfAbsent()
         (pool, path) = try TestDatabase.createPool()
         project = try pool.write { try TestDatabase.insertWorkbench($0, folder: "/tmp/acme") }
     }
