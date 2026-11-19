@@ -44,7 +44,7 @@ Your reply does not close a mail item. Slack, Jira and calendar items resolve wh
 <!-- learn
 id: mail-connect-gmail
 title: Bring your Gmail in
-text: Add a Google account in **Connections** with **Gmail** on; mail to you joins Slack and Jira.
+text: Connect Gmail in **Connections → Google** through your company's Google project or your own; mail to you joins Slack and Jira.
 area: communication
 level: basics
 kind: feature
@@ -64,7 +64,7 @@ action: connect:imap
 -->
 
 1. Open **Connections**.
-2. For Gmail, use **Google**. With a [company setup](../start/company-setup.md), your company's group offers **Connect**. Otherwise click **Use my own Google project**: the page walks you through a Google Cloud project of your own (about ten minutes, once), then you drop its client JSON and click **Connect**. **Connect Google Calendar** adds Calendar alone through Watchtower's app.
+2. For Gmail, use **Google**. With a [company setup](../start/company-setup.md), your company's group offers **Connect**. Otherwise click **Use my own Google project**: the page walks you through a Google Cloud project of your own (about ten minutes, once), then you drop its client JSON and click **Connect**. **Connect Google Calendar** adds Calendar alone through Watchtower's app. **Connect Gmail** under **Email → Add Account** brings you here too, straight to the own-project page when no company setup has a Google app.
 3. For Outlook or another IMAP mailbox, use **Email** and click **Add Account**. Choose **Connect Outlook** or fill in the **IMAP** form (host, username, password; port, security and folder wait under **Advanced** with the usual 993, SSL and `INBOX`) and click **Test and Connect**.
 4. Wait for the next sync cycle, then check **Catch Up** or the next briefing.
 

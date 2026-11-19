@@ -117,6 +117,15 @@ extension AppState {
         )
     }
 
+    /// The Connect… menu's company entries (§2.1): the wizard page (at the
+    /// draft's step while one exists), or the zone's code field, opened.
+    func performConnectMenuCompanyAction(_ action: CompaniesZoneState.Action) {
+        switch action {
+        case .setUpForCompany: openCompanySetup()
+        case .connectWithCode: pasteCompanyCode()
+        }
+    }
+
     /// Re-reads the zone (on the overview's appear, after a flow).
     func reloadCompanies() {
         Task { await companiesZone.reload() }

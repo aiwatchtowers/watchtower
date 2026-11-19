@@ -103,7 +103,27 @@ enum CompanySetupShotFixtures {
         if let empty = token.first(where: { $0.0 == "empty" }) {
             shots.append(shot("token-empty-narrow", 380) { AtlassianTokenSheet(model: empty.1()) })
         }
-        return shots
+        return shots + gmailShots
+    }
+
+    /// Gmail off the shared Google app (D11): the Add Google Account sheet on
+    /// the public build (Gmail off, the note; and under the own-project
+    /// lock), and Email's Add Account sheet whose Gmail card leaves for
+    /// Connections → Google. Production views.
+    private static var gmailShots: [DesignShot] {
+        [
+            shot("googleSheet-shared", 480) { AddGoogleAccountView(offersGmail: false).environment(AppState.isolated()) },
+            shot("googleSheet-shared-locked", 480) {
+                AddGoogleAccountView(offersGmail: false).environment(lockedOwnProject())
+            },
+            shot("emailSheet-gmail", 480) { AddEmailAccountView().environment(AppState.isolated()) }
+        ]
+    }
+
+    private static func lockedOwnProject() -> AppState {
+        let appState = AppState.isolated(managedPolicy: ["AllowOwnGoogleProject": false])
+        appState.managedPolicy.refresh()
+        return appState
     }
 
     private static var policyShots: [DesignShot] {

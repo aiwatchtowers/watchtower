@@ -204,7 +204,7 @@ final class CompanySetupMockCopyTests: XCTestCase {
         let google = Pres.detailActions(.google, companies: [], empty: true).map(\.title)
         XCTAssertEqual(google, [Copy.connectCalendar, Copy.useOwnGoogle, Copy.pasteCode])
         let jira = Pres.detailActions(.atlassian, companies: [], empty: true).map(\.title)
-        XCTAssertEqual(jira, [Copy.connectTokenButton, Copy.pasteCode])
+        XCTAssertEqual(jira, [Copy.connectTokenButton, Copy.pasteCode, Copy.setUpForCompany]) // §2.1 entry
         XCTAssertEqual(Pres.detailActions(.atlassian, companies: [Self.acme], empty: false).map(\.title),
                        [Copy.connectCompanyAtlassian, Copy.connectTokenButton])
     }
@@ -388,6 +388,17 @@ final class CompanySetupMockCopyTests: XCTestCase {
         }
         for name in ["open", "refused", "newerVersion"] {
             XCTAssertTrue(names.contains("company-page-\(name)"), name)
+        }
+    }
+
+    /// The gaps closed after Task 30 (#2099): Jira's empty state with Set up
+    /// for my company (with and without the token), and Gmail off the shared
+    /// Google app (D11) on both sheets.
+    func testEntryPointAndGmailShots() {
+        let names = Set(CompanySetupShotFixtures.shots.map(\.name))
+        for name in ["jira-detail-empty", "jira-detail-empty-locked", "googleSheet-shared", "googleSheet-shared-locked",
+                     "emailSheet-gmail"] {
+            XCTAssertTrue(names.contains("company-\(name)"), name)
         }
     }
 

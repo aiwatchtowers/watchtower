@@ -26,6 +26,14 @@ package final class CompaniesZoneModel {
     /// No read has finished yet: the zone shows its loading line.
     package private(set) var hasRead = false
 
+    /// The last read listed every company file: it finished, `company list`
+    /// worked and no company file was damaged (the draft's own error aside,
+    /// as the zone counts it).
+    package var readEveryCompany: Bool {
+        hasRead && listError == nil
+            && errors.allSatisfy { $0.file == CompanyConnectionsPresentation.draftFile }
+    }
+
     /// **Connect with a company code** opened the field (or the port is busy).
     package private(set) var codeFieldOpen = false
     package var code = "" {
@@ -54,18 +62,21 @@ package final class CompaniesZoneModel {
     // MARK: - Reading
 
     /// Re-reads the companies and the draft; a newer call's answer wins.
-    package func reload() async {
+    /// False when a newer read superseded this one before it landed: the
+    /// snapshot is still the older one.
+    @discardableResult
+    package func reload() async -> Bool {
         generation += 1
         let mine = generation
         let listed = await lastJSON(["company", "list", "--json"], as: ListAnswer.self)
-        guard mine == generation else { return }
+        guard mine == generation else { return false }
         switch listed {
         case .failure(let failure):
             listError = failure.message
         case .success(let answer):
             // The whole snapshot lands at once, and only if no newer read started meanwhile.
             let draftRef = await readDraft(state: answer.draft.state)
-            guard mine == generation else { return }
+            guard mine == generation else { return false }
             listError = nil
             draft = draftRef
             companies = answer.companies.map(\.ref)
@@ -75,6 +86,7 @@ package final class CompaniesZoneModel {
             errors = answer.errors.map { CompanyFileError(file: $0.file, error: $0.error) }
         }
         hasRead = true
+        return true
     }
 
     private func readDraft(state: String) async -> CompanySetupDraftRef? {

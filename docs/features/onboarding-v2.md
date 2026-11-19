@@ -119,8 +119,11 @@ either way (`ConfluenceConnectStep.suggestsUntick`) unticks the box and shows
 "Atlassian showed an error page? Also connect Confluence is now off — press
 Connect to sign in to Jira only." until the next Connect. The Google card carries no scopes: connecting a
 Google account means mail and calendar both, whatever the goals (owner
-decision 2026-10-14, #740), so its sheet opens with Calendar and Gmail
-checked like Settings' Add Google sheet, and either can be unchecked there.
+decision 2026-10-14, #740), so its sheet opens with every service its client
+may ask for checked, like Settings' Add Google sheet, and either can be
+unchecked there. Since #1887 D11 the public build's shared Google app asks
+for Calendar only: Gmail starts off and disabled with a note (Gmail then
+connects in Connections → Google); a flavored build keeps both checked.
 A calendar granted this way makes the Calendar tab show (the source rule
 below; Calendar has no feature rule) and turns `calendar.enabled` on
 (`recordGoogleConnection`), with or without the Meetings goal; the goal

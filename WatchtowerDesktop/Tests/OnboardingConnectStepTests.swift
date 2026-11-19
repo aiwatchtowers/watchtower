@@ -14,11 +14,20 @@ final class OnboardingConnectStepTests: XCTestCase {
         XCTAssertEqual(OnboardingConnectStepView.jiraSheet().daemonPolicy, .deferred)
     }
 
-    /// Connecting Google means mail and calendar, whatever the goals (#740):
-    /// the one sheet onboarding and Settings share opens with both checked.
-    func testGoogleSheetOpensWithMailAndCalendarChecked() {
-        XCTAssertTrue(AddGoogleAccountView.initialScopes.calendar)
-        XCTAssertTrue(AddGoogleAccountView.initialScopes.gmail)
+    /// Connecting Google means every service its client may ask for,
+    /// whatever the goals (#740): the one sheet onboarding and Settings share
+    /// opens with them checked. Watchtower's shared app asks for Calendar
+    /// only (#1887 D11), so on the public build Gmail starts off; a flavored
+    /// build's client asks for both.
+    func testGoogleSheetOpensWithEveryOfferedServiceChecked() {
+        let shared = AddGoogleAccountView.initialScopes(offersGmail: false)
+        XCTAssertTrue(shared.calendar)
+        XCTAssertFalse(shared.gmail)
+        let flavored = AddGoogleAccountView.initialScopes(offersGmail: true)
+        XCTAssertTrue(flavored.calendar)
+        XCTAssertTrue(flavored.gmail)
+        // The test bundle is flavorless: the onboarding sheet is the shared path.
+        XCTAssertFalse(OnboardingConnectStepView.googleSheet().offersGmail)
     }
 
     /// Plan B A13: with no Slack app in the build the card opens the connect

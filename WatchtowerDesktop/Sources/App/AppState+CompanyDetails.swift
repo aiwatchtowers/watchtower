@@ -98,6 +98,8 @@ extension AppState {
             // Calendar only: the shared Google app requests no Gmail (D11).
             googleAccountsViewModel?.addAccount(calendar: true, gmail: false, clientID: "", clientSecret: "",
                                                 daemonPolicy: accountDaemonPolicy)
+        case .setUpForCompany:
+            openCompanySetup()
         default:
             break // the detail's own sheet or page
         }
@@ -132,5 +134,30 @@ extension AppState {
         case .jira: companyBanner(.atlassian)?.cardLine
         default: nil
         }
+    }
+
+    // MARK: Gmail (D11)
+
+    /// Whether the Add Google Account sheet may ask for Gmail: the build's
+    /// baked Google client is not Watchtower's shared app.
+    var sharedGoogleOffersGmail: Bool {
+        CompanyConnectionsPresentation.sharedGoogleOffersGmail(buildFlavor: CompanyBridgeLaunch.bundleFlavor)
+    }
+
+    /// Email → Add Account → **Connect Gmail** where the sheet cannot ask for
+    /// Gmail: the Google detail, opened on the own Google project page unless
+    /// a company's Google app, the policy (Google blocked, own projects
+    /// locked) or company files that could not be read make the detail the
+    /// way. The companies are read afresh first: the zone's last read may be
+    /// from before a link or the CLI stored a company, or never have run.
+    /// The caller closes its sheet first.
+    func connectGmail() async {
+        // A read superseded by a newer one leaves the older snapshot: unknown, so the detail.
+        let landed = await companiesZone.reload()
+        let route = CompanyConnectionsPresentation.gmailRoute(
+            companies: companyRefs, companiesKnown: landed && companiesZone.readEveryCompany,
+            googleAllowed: managedPolicy.policy.sourceAllowed("google"), locks: companyLocks)
+        if route == .ownProjectPage { ownGoogleProject.open() }
+        openConnections(.google)
     }
 }

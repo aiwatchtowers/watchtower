@@ -74,9 +74,11 @@ final class CompanyDetailPresentationTests: XCTestCase {
     }
 
     func testJiraActions() {
+        // §2.1: the empty state is also a way into the setup wizard.
         let empty = Pres.detailActions(.atlassian, companies: [], empty: true)
-        XCTAssertEqual(empty.map(\.title), ["Connect with an API token", "Paste a company code"])
-        XCTAssertEqual(empty.map(\.emphasis), [.prominent, .quiet])
+        XCTAssertEqual(empty.map(\.title), ["Connect with an API token", "Paste a company code", "Set up for my company"])
+        XCTAssertEqual(empty.map(\.kind), [.connectWithToken, .pasteCode, .setUpForCompany])
+        XCTAssertEqual(empty.map(\.emphasis), [.prominent, .quiet, .quiet])
         let add = Pres.detailActions(.atlassian, companies: [beta, acme], empty: false)
         XCTAssertEqual(add.map(\.title), ["Connect with Acme's Atlassian app", "Connect with Beta's Atlassian app",
                                           "Connect with an API token"])
@@ -90,7 +92,11 @@ final class CompanyDetailPresentationTests: XCTestCase {
         XCTAssertEqual(Pres.detailActions(.atlassian, companies: [acme], empty: false, locks: [.atlassianAPIToken])
             .map(\.kind), [.connectCompany(slug: "acme")])
         XCTAssertEqual(Pres.detailActions(.atlassian, companies: [], empty: true, locks: [.atlassianAPIToken]).map(\.kind),
-                       [.pasteCode])
+                       [.pasteCode, .setUpForCompany])
+        // The add section under connected sites is not the empty state: no wizard entry there.
+        XCTAssertFalse(Pres.detailActions(.atlassian, companies: [], empty: false).map(\.kind).contains(.setUpForCompany))
+        // Google's empty state has no wizard entry (§2.1 names Jira's only).
+        XCTAssertFalse(Pres.detailActions(.google, companies: [], empty: true).map(\.kind).contains(.setUpForCompany))
     }
 
     func testLocksFromPolicy() {

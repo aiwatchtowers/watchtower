@@ -64,6 +64,7 @@ enum CompanyDetailScenes {
             ("google-detail-locked", pane(.google, accounts: Array(googleAccounts.prefix(2)), locks: [.ownGoogleProject])),
             ("jira-detail", pane(.atlassian, accounts: jiraAccounts)),
             ("jira-detail-empty", pane(.atlassian, accounts: [], companies: [])),
+            ("jira-detail-empty-locked", pane(.atlassian, accounts: [], companies: [], locks: [.atlassianAPIToken])),
             ("jira-detail-loading", pane(.atlassian, accounts: [], loaded: false)),
             ("jira-detail-readFailed", pane(.atlassian, accounts: [], readError: "database is locked")),
             ("jira-detail-tokenError", pane(.atlassian, accounts: jiraTokenAccounts, lease: lease)),

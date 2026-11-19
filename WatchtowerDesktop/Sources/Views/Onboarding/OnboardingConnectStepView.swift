@@ -43,7 +43,8 @@ struct OnboardingConnectStepView: View {
         current ?? chosen
     }
 
-    /// Opens with Calendar and Gmail both checked, whatever the goals.
+    /// Opens with every service its client may ask for checked, whatever the
+    /// goals: Calendar, and Gmail only on a flavored build (D11).
     static func googleSheet() -> AddGoogleAccountView {
         AddGoogleAccountView(daemonPolicy: daemonPolicy)
     }
@@ -238,7 +239,8 @@ struct OnboardingConnectStepView: View {
             let account = appState.googleAccountsViewModel?.accounts.first
             sourceRow(
                 letter: "G", title: "Google",
-                subtitle: "Mail and calendar · for work communication and meetings",
+                subtitle: CompanyConnectionsPresentation.onboardingGoogleSubtitle(
+                    offersGmail: appState.sharedGoogleOffersGmail),
                 connected: account?.displayName,
                 available: appState.googleAccountsViewModel != nil,
                 error: appState.googleAccountsViewModel?.error,
