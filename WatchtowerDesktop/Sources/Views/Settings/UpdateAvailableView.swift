@@ -10,11 +10,18 @@ import ChatUI
 /// window mid-download loses nothing. After an update, the first launch of
 /// the new version opens it once on that version's notes
 /// (`UpdateService.installedRelease`) when no newer update is on offer.
+///
+/// A required update (`UpdateService.requiredMinVersion`) opens it on every
+/// background check and at launch, says why in one sentence, and offers no
+/// way to put it off: no Later, no Close, the window's close button is
+/// disabled — Quit Watchtower stays. Strings: `UpdateWindowCopy`.
 struct UpdateAvailableView: View {
     static let sceneID = "update-available"
 
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
+
+    private typealias Copy = UpdateWindowCopy
 
     private var service: UpdateService { appState.updateService }
 
@@ -23,49 +30,61 @@ struct UpdateAvailableView: View {
         service.availableVersion == nil ? service.installedRelease : nil
     }
 
-    private var title: String {
-        if let version = service.availableVersion { return "Watchtower \(version) is available" }
-        if let installed { return "What's New in Watchtower \(installed.version)" }
-        return "Watchtower is up to date"
-    }
+    private var required: Bool { service.isUpdateRequired }
 
     private var releaseNotes: String { installed?.notes ?? service.availableNotes }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: Spacing.large) {
             header
-            Divider()
+            if let minimum = service.requiredMinVersion {
+                requiredNotice(minimum: minimum)
+            }
             notes
-            Divider()
             footer
         }
-        .padding(20)
+        .padding(Spacing.page)
         .frame(width: 520)
         .frame(minHeight: 320, maxHeight: 560)
+        .controlSize(.small)
+        .background(WindowCloseLock(locked: required))
         .onDisappear { service.dismissInstalledRelease() }
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Spacing.medium) {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .frame(width: 48, height: 48)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(Copy.title(offered: service.availableVersion, installed: installed?.version, required: required))
                     .font(.headline)
-                Text(installed == nil ? "You have \(Constants.appVersion)." : "Watchtower was updated.")
+                Text(Copy.subtitle(running: service.runningVersion, showingInstalled: installed != nil))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
         }
     }
 
+    private func requiredNotice(minimum: String) -> some View {
+        Label {
+            Text(Copy.requiredReason(minimum: minimum))
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Tone.warning)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Spacing.medium)
+        .card()
+    }
+
+    /// The notes carry their own heading ("## What's New"), so the window
+    /// adds none.
     private var notes: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("What's New")
-                .font(.subheadline.weight(.semibold))
+        VStack(alignment: .leading, spacing: Spacing.regular) {
             if releaseNotes.isEmpty {
-                Text("No release notes for this version.")
+                Text(Copy.noNotes)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
@@ -84,19 +103,18 @@ struct UpdateAvailableView: View {
         case .available:
             HStack {
                 Spacer()
-                Button("Later") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Update Now") {
+                putOffButton(Copy.later)
+                Button(Copy.updateNow) {
                     Task { await downloadAndInstall() }
                 }
                 .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.kitPrimary)
             }
 
         case .downloading(let progress):
             HStack {
                 ProgressView(value: progress)
-                Text("Downloading...")
+                Text(Copy.downloading)
                     .foregroundStyle(.secondary)
             }
 
@@ -104,61 +122,86 @@ struct UpdateAvailableView: View {
             readyToInstallRow
 
         case .installing:
-            progressRow("Installing update...")
+            progressRow(Copy.installing)
 
         case .restarting:
-            progressRow("Restarting Watchtower...")
+            progressRow(Copy.restarting)
 
         case .restartRequired:
             HStack {
-                Label("Update installed — restart Watchtower to finish", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                Label(Copy.restartRequired, systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(Tone.success)
                 Spacer()
-                Button("Restart Now") {
+                Button(Copy.restartNow) {
                     Task { await service.relaunch() }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.kitPrimary)
             }
 
         case .error(let message):
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Update error", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
+            VStack(alignment: .leading, spacing: Spacing.regular) {
+                Label(Copy.errorTitle, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(Tone.error)
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Spacer()
-                    Button("Close") { dismiss() }
-                    Button("Retry") {
+                    putOffButton(Copy.close)
+                    Button(Copy.retry) {
                         Task { await service.checkForUpdates() }
                     }
+                    .buttonStyle(.kitSecondary)
                 }
             }
 
         case .idle, .checking:
             HStack {
                 Spacer()
-                Button("Close") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
+                if required {
+                    putOffButton(Copy.close)
+                    Button(Copy.checkAgain) {
+                        Task { await service.checkForUpdates() }
+                    }
+                    .buttonStyle(.kitSecondary)
+                    .disabled(service.state == .checking)
+                } else {
+                    Button(Copy.close) { dismiss() }
+                        .keyboardShortcut(.defaultAction)
+                        .buttonStyle(.kitSecondary)
+                }
             }
+        }
+    }
+
+    /// The way out of the window: `title` (Later, Close) for an optional
+    /// update; Quit Watchtower for a required one, which cannot be put off.
+    @ViewBuilder
+    private func putOffButton(_ title: String) -> some View {
+        if required {
+            Button(Copy.quit) { TrayAppDelegate.requestQuit() }
+                .buttonStyle(.kitQuiet)
+        } else {
+            Button(title) { dismiss() }
+                .keyboardShortcut(.cancelAction)
+                .buttonStyle(.kitSecondary)
         }
     }
 
     /// Install & Restart, under the same busy gate as `UpdateService.install()`.
     private var readyToInstallRow: some View {
         let busy = appState.meetingRecorderCenter.isBusy
-        return VStack(alignment: .trailing, spacing: 4) {
+        return VStack(alignment: .trailing, spacing: Spacing.small) {
             HStack {
-                Label("Ready to install", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                Label(Copy.readyToInstall, systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(Tone.success)
                 Spacer()
-                Button("Later") { dismiss() }
-                Button("Install & Restart") {
+                putOffButton(Copy.later)
+                Button(Copy.installAndRestart) {
                     Task { await service.install() }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.kitPrimary)
                 .disabled(busy)
             }
             if busy {
@@ -184,5 +227,32 @@ struct UpdateAvailableView: View {
         await service.downloadUpdate()
         guard case .readyToInstall = service.state, !appState.meetingRecorderCenter.isBusy else { return }
         await service.install()
+    }
+}
+
+/// Disables the hosting window's close button (and so ⌘W, which beeps on a
+/// window whose close button is disabled) while `locked`.
+private struct WindowCloseLock: NSViewRepresentable {
+    let locked: Bool
+
+    func makeNSView(context: Context) -> LockView { LockView() }
+
+    func updateNSView(_ nsView: LockView, context: Context) {
+        nsView.locked = locked
+    }
+
+    final class LockView: NSView {
+        var locked = false {
+            didSet { apply() }
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            apply()
+        }
+
+        private func apply() {
+            window?.standardWindowButton(.closeButton)?.isEnabled = !locked
+        }
     }
 }

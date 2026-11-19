@@ -624,6 +624,7 @@ enum DesignShotCatalog {
                 HubAdoptionShotFixtures.screen(.failed(reason: "swift_schema"))
             }
         ] + ProviderFallbackShotFixtures.shots
+        + SoftwareUpdateShotFixtures.shots // The Software Update window, required update included (#2096).
         + OnboardingAgentShotFixtures.shots
         + OnboardingStepLiveShotFixtures.shots
         + MobileSettingsShotFixtures.Frame.allCases.map { frame in

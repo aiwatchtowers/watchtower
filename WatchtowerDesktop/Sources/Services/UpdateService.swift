@@ -41,6 +41,22 @@ final class UpdateService {
         return false
     }
 
+    /// The version this app runs as. Instance property so tests can inject one.
+    var runningVersion: String = Constants.appVersion
+
+    /// The minimum version the channel requires when this build is older than
+    /// it (`min_version`, see "Required updates" below); nil when nothing is
+    /// required. Lives with the offer, like `availableVersion`: it survives
+    /// the download and install states and a failed check, and only a
+    /// successful check replaces or lifts it.
+    private(set) var requiredMinVersion: String?
+
+    var isUpdateRequired: Bool { requiredMinVersion != nil }
+
+    /// Where the service writes its diagnostics. Instance property so tests
+    /// can record them.
+    var log: (String) -> Void = { NSLog("%@", $0) }
+
     // MARK: - Channel Routing & Helpers
 
     nonisolated static func resolveChannel(
@@ -139,8 +155,18 @@ final class UpdateService {
     /// What one check of the channel found, before it touches any state.
     enum CheckResult: Equatable {
         case upToDate
-        case found(version: String, notes: String, downloadURL: URL, gated: GatedDownloadContext?)
+        case found(Offer)
         case failed(String)
+    }
+
+    /// A release the channel offers.
+    struct Offer: Equatable {
+        var version: String
+        var notes: String
+        var downloadURL: URL
+        var gated: GatedDownloadContext?
+        /// The channel's raw `min_version`, unvalidated.
+        var minVersion: String?
     }
 
     /// Fetches what the channel offers. Nil = the real network fetch; tests
@@ -178,9 +204,14 @@ final class UpdateService {
     /// Fold a check result into the state. An update already on offer is only
     /// replaced by a strictly newer one, and never by an error or an
     /// "up to date" — a transient failure must not hide a found update.
+    /// The requirement is re-read from every successful check (the channel
+    /// may add or drop `min_version` on the same release) and judged against
+    /// the release that published it; "up to date" lifts it, a failure
+    /// keeps it (and retries a window a busy recorder held back).
     func applyCheckResult(_ result: CheckResult, previous: UpdateState, background: Bool) async {
         switch result {
         case .upToDate:
+            requiredMinVersion = nil
             if case .available = previous {
                 state = previous
                 return
@@ -188,16 +219,20 @@ final class UpdateService {
             state = .idle
             availableVersion = nil
             availableNotes = ""
-        case let .found(version, notes, downloadURL, gated):
-            if case .available(let known, _, _) = previous, !Self.isNewer(version, than: known) {
+        case .found(let offer):
+            if case .available(let known, _, _) = previous, !Self.isNewer(offer.version, than: known) {
                 state = previous
+                updateRequirement(offer.minVersion, offered: offer.version)
+                if background, isUpdateRequired { presentRequired() }
                 return
             }
-            gatedDownload = gated
-            state = .available(version: version, notes: notes, downloadURL: downloadURL)
-            await noteAvailable(version: version, notes: notes, background: background)
+            gatedDownload = offer.gated
+            state = .available(version: offer.version, notes: offer.notes, downloadURL: offer.downloadURL)
+            updateRequirement(offer.minVersion, offered: offer.version)
+            await noteAvailable(version: offer.version, notes: offer.notes, background: background)
         case .failed(let message):
             NSLog("UpdateService: %@ update check failed: %@", background ? "background" : "manual", message)
+            if background, isUpdateRequired { presentRequired() }
             if case .available = previous {
                 state = previous
                 return
@@ -220,7 +255,7 @@ final class UpdateService {
     private func fetchPublic() async -> CheckResult {
         do {
             let release = try await fetchLatestRelease()
-            guard Self.isNewer(release.tagName, than: Constants.appVersion) else { return .upToDate }
+            guard Self.isNewer(release.tagName, than: runningVersion) else { return .upToDate }
 
             let expected = Self.expectedPublicAssetName(forTag: release.tagName)
             guard let asset = release.assets.first(where: { $0.name == expected }) else {
@@ -229,7 +264,9 @@ final class UpdateService {
             guard let url = URL(string: asset.browserDownloadURL) else {
                 return .failed("Invalid download URL")
             }
-            return .found(version: release.tagName, notes: release.body ?? "", downloadURL: url, gated: nil)
+            let body = Self.splitMinVersionMarker(release.body ?? "")
+            return .found(Offer(version: release.tagName, notes: body.notes, downloadURL: url, gated: nil,
+                                minVersion: body.minVersion))
         } catch {
             return .failed(error.localizedDescription)
         }
@@ -245,17 +282,19 @@ final class UpdateService {
             guard Self.zipKeyMatchesFlavor(manifest.zipKey, flavor: buildFlavor) else {
                 return .failed("Update manifest points at a different build flavor (\(manifest.zipKey))")
             }
-            guard Self.isNewer(manifest.version, than: Constants.appVersion) else { return .upToDate }
+            guard Self.isNewer(manifest.version, than: runningVersion) else { return .upToDate }
 
             let context = GatedDownloadContext(
                 sha256: manifest.sha256, clientID: clientID, clientSecret: clientSecret
             )
-            return .found(
+            let notes = Self.gatedNotesAndMinVersion(manifest)
+            return .found(Offer(
                 version: manifest.version,
-                notes: manifest.notes ?? "",
+                notes: notes.notes,
                 downloadURL: feedURL.appendingPathComponent("dl/\(manifest.zipKey)"),
-                gated: context
-            )
+                gated: context,
+                minVersion: notes.minVersion
+            ))
         } catch {
             return .failed(error.localizedDescription)
         }
@@ -337,8 +376,40 @@ final class UpdateService {
         // A What's New the last pass could not show (offline, busy recorder,
         // no window yet) is retried here; once seen this is a memo read.
         await showWhatsNewIfUpdated()
-        guard Self.shouldAutoCheck(state: state) else { return }
+        guard Self.shouldAutoCheck(state: state) else {
+            // A downloaded update waits for the user; a minimum published
+            // meanwhile must still reach them, without touching the download.
+            if case .readyToInstall = state {
+                await refreshRequirementOnly()
+            } else if isUpdateRequired {
+                presentRequired()
+            }
+            return
+        }
         await checkForUpdates(background: true)
+    }
+
+    /// Re-reads the channel's minimum for the downloaded offer. The download
+    /// stays unless a newer release is required that it cannot meet: then
+    /// that release replaces it on offer, as a fresh check would. "Up to
+    /// date" lifts the requirement; one still standing re-opens the window.
+    private func refreshRequirementOnly() async {
+        let inFlight = state
+        let result: CheckResult = if let fetchCheck { await fetchCheck() } else { await fetchFromChannel() }
+        if state == inFlight, result == .upToDate {
+            requiredMinVersion = nil
+        }
+        if state == inFlight, case .found(let offer) = result {
+            let downloaded = availableVersion ?? offer.version
+            if case .required(let min) = Self.minVersionVerdict(
+                Self.parseMinVersion(offer.minVersion), offered: offer.version, running: runningVersion
+            ), Self.isNewer(min, than: downloaded) {
+                await applyCheckResult(result, previous: .idle, background: true)
+                return
+            }
+            updateRequirement(offer.minVersion, offered: offer.version)
+        }
+        if isUpdateRequired { presentRequired() }
     }
 
     /// Whether a background check may run now. Never while a check, download
@@ -367,7 +438,11 @@ final class UpdateService {
     func noteAvailable(version: String, notes: String = "", background: Bool = true) async {
         availableVersion = version
         availableNotes = notes
-        presentOncePerVersion(version, background: background)
+        if isUpdateRequired {
+            if background { presentRequired() }
+        } else {
+            presentOncePerVersion(version, background: background)
+        }
         let last = defaults.string(forKey: Self.lastAnnouncedVersionKey)
         guard Self.shouldAnnounce(version: version, lastAnnounced: last) else { return }
         guard await announce(version) else { return }
@@ -383,6 +458,97 @@ final class UpdateService {
             guard let present = presentUpdateWindow, !isBusy(), present() else { return }
         }
         defaults.set(version, forKey: Self.lastPresentedVersionKey)
+    }
+
+    // MARK: - Required updates
+
+    /// A required update opens its window on every background check (and so
+    /// at every launch), not once per version — never over a busy recorder.
+    private func presentRequired() {
+        guard let present = presentUpdateWindow, !isBusy() else { return }
+        _ = present()
+    }
+
+    /// `min_version` as published: absent, a version, or anything else.
+    enum MinVersion: Equatable {
+        case absent
+        case valid(String)
+        case malformed(String)
+    }
+
+    /// The one accepted shape: `X`, `X.Y` or `X.Y.Z`, digits only, with an
+    /// optional leading `v` (dropped). A suffix such as `-beta` is malformed.
+    nonisolated static func parseMinVersion(_ raw: String?) -> MinVersion {
+        guard let raw else { return .absent }
+        let version = Constants.stripLeadingV(raw.trimmingCharacters(in: .whitespaces))
+        let parts = version.split(separator: ".", omittingEmptySubsequences: false)
+        let wellFormed = (1...3).contains(parts.count)
+            && parts.allSatisfy { $0.allSatisfy { ("0"..."9").contains($0) } && Int($0) != nil }
+        return wellFormed ? .valid(version) : .malformed(raw)
+    }
+
+    /// The marker a public release carries in its body:
+    /// `<!-- min_version: X.Y.Z -->`. GitHub hides HTML comments; the app
+    /// strips every marker from the notes it shows and returns the first
+    /// one's raw value.
+    nonisolated static func splitMinVersionMarker(_ notes: String) -> (notes: String, minVersion: String?) {
+        let marker = #"<!--\s*min_version:.*?-->\n?"#
+        guard let range = notes.range(of: marker, options: .regularExpression) else { return (notes, nil) }
+        let value = notes[range]
+            .replacingOccurrences(of: #"^<!--\s*min_version:|-->\n?$"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        return (notes.replacingOccurrences(of: marker, with: "", options: .regularExpression), value)
+    }
+
+    /// The gated manifest's notes without the marker, and its minimum. The
+    /// corp manifest's notes are the GitHub release body, marker included:
+    /// the manifest key wins, the marker is the fallback.
+    nonisolated static func gatedNotesAndMinVersion(_ manifest: GatedManifest) -> (notes: String, minVersion: String?) {
+        let split = splitMinVersionMarker(manifest.notes ?? "")
+        return (split.notes, manifest.minVersion ?? split.minVersion)
+    }
+
+    enum MinVersionVerdict: Equatable {
+        case notRequired
+        case required(String)
+        /// A minimum the app cannot honour; logged, and nothing is required.
+        case ignored(String)
+    }
+
+    /// Required only while the running build is older than the minimum and
+    /// the offered release meets it. A malformed minimum, or one no
+    /// published release meets, fails open.
+    nonisolated static func minVersionVerdict(_ minVersion: MinVersion, offered: String, running: String) -> MinVersionVerdict {
+        switch minVersion {
+        case .absent:
+            return .notRequired
+        case .malformed(let raw):
+            return .ignored("malformed min_version \"\(raw)\"")
+        case .valid(let min):
+            guard isNewer(min, than: running) else { return .notRequired }
+            guard !isNewer(min, than: offered) else {
+                return .ignored("min_version \(min) is newer than the offered \(offered)")
+            }
+            return .required(min)
+        }
+    }
+
+    /// Problems already logged this run, so a check every 6 h does not
+    /// repeat the same line.
+    private var loggedMinVersionProblems: Set<String> = []
+
+    private func updateRequirement(_ raw: String?, offered: String) {
+        switch Self.minVersionVerdict(Self.parseMinVersion(raw), offered: offered, running: runningVersion) {
+        case .notRequired:
+            requiredMinVersion = nil
+        case .required(let min):
+            requiredMinVersion = min
+        case .ignored(let problem):
+            requiredMinVersion = nil
+            if loggedMinVersionProblems.insert(problem).inserted {
+                log("UpdateService: ignoring \(problem)")
+            }
+        }
     }
 
     // MARK: - What's New after an update
@@ -481,12 +647,13 @@ final class UpdateService {
             case .disabled:
                 return ""
             case .publicGitHub:
-                return try await fetchReleaseNotes(tag: "v" + version)
+                return try await Self.splitMinVersionMarker(fetchReleaseNotes(tag: "v" + version)).notes
             case let .gated(feedURL, clientID, clientSecret):
                 let manifestURL = feedURL.appendingPathComponent("dl/manifest/\(buildFlavor).json")
                 let data = try await gatedGET(manifestURL, clientID: clientID, clientSecret: clientSecret)
                 let manifest = try JSONDecoder().decode(GatedManifest.self, from: data)
-                return Self.gatedNotes(manifestVersion: manifest.version, notes: manifest.notes, running: version)
+                let notes = manifest.notes.map { Self.splitMinVersionMarker($0).notes }
+                return Self.gatedNotes(manifestVersion: manifest.version, notes: notes, running: version)
             }
         } catch {
             NSLog("UpdateService: release notes fetch failed: %@", error.localizedDescription)
@@ -1136,11 +1303,31 @@ struct GatedManifest: Decodable {
     let size: Int?
     let publishedAt: String?
     let notes: String?
+    /// The oldest version still allowed to run (`UpdateService.parseMinVersion`).
+    /// A value that is not a string reads as malformed instead of breaking
+    /// the whole manifest.
+    let minVersion: String?
 
     enum CodingKeys: String, CodingKey {
         case version, sha256, size, notes
         case zipKey = "zip_key"
         case publishedAt = "published_at"
+        case minVersion = "min_version"
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(String.self, forKey: .version)
+        zipKey = try container.decode(String.self, forKey: .zipKey)
+        sha256 = try container.decode(String.self, forKey: .sha256)
+        size = try container.decodeIfPresent(Int.self, forKey: .size)
+        publishedAt = try container.decodeIfPresent(String.self, forKey: .publishedAt)
+        notes = try container.decodeIfPresent(String.self, forKey: .notes)
+        if !container.contains(.minVersion) || (try? container.decodeNil(forKey: .minVersion)) == true {
+            minVersion = nil
+        } else {
+            minVersion = (try? container.decode(String.self, forKey: .minVersion)) ?? "<not a string>"
+        }
     }
 }
 
