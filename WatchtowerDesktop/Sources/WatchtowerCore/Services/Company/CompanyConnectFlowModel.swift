@@ -444,6 +444,9 @@ package final class CompanyConnectFlowModel {
             row.state = .pending
             return row
         }
+        // The chain runs in the listener child; with port 18551 held by
+        // another app there is none (a pasted code still stored the bundle).
+        if host.state == .portBusy { return show(.problem(Self.portBusy(company))) }
         chainFlow = flow
         awaitingStart = true
         show(.chain)
@@ -723,6 +726,10 @@ package final class CompanyConnectFlowModel {
         + "Connections → Companies."
     package static let anotherRunning = "Another connection is running in Watchtower. Try again once it ends."
     static let listenerDown = "Watchtower's connect listener stopped. Open Connections and try again."
+    static func portBusy(_ company: String) -> String {
+        "\(company) is saved, but its services cannot connect while port 18551 is busy. Quit the app that holds it, "
+            + "then use Connect the rest in Connections."
+    }
     static let listenerDownReason = "Watchtower's connect listener stopped"
     static let noAnswer = "Watchtower's command line gave no answer"
     static let unreadableAnswer = "Watchtower's command line answered in a form this app does not read; update Watchtower"

@@ -374,6 +374,23 @@ final class CompanyConnectFlowModelTests: XCTestCase {
         XCTAssertEqual(rig.sent, [])
     }
 
+    /// Port 18551 held by another app: the code still stores the company,
+    /// the chain (which needs the listener child) says why it cannot run.
+    func testPortBusyStoresButSaysWhy() async {
+        let rig = await makeRig()
+        rig.child.emit(#"{"event":"port_busy","port":18551}"#)
+        await untilObserved { rig.host.state == .portBusy }
+        rig.fake.enqueue(inspect(vendors: ["google"]))
+        let error = await rig.model.paste(wire)
+        XCTAssertNil(error)
+        rig.fake.enqueue(stored)
+        await rig.model.connect()
+        XCTAssertEqual(rig.runs.last?.args.prefix(2), ["company", "confirm"])
+        XCTAssertEqual(rig.model.phase, .problem("Acme is saved, but its services cannot connect while port 18551 is "
+            + "busy. Quit the app that holds it, then use Connect the rest in Connections."))
+        XCTAssertFalse(rig.sent.contains { $0.contains("company_connect") })
+    }
+
     func testLinkWhileAnotherFlowRunsIsRefused() async {
         let rig = await makeRig()
         rig.model.externalBusy = { true }
