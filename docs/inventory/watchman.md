@@ -10,7 +10,7 @@
 > proposed change that would break a guard test or remove a contract must be
 > raised as a question before touching code.
 
-**Module:** `internal/watchman/` + `internal/watchmanact/` + `internal/askanswer/` (the answer write) + `internal/db/watchman*.go` + `internal/db/migrations/00197_watchman.sql` … `00205_watchman_items_owner_done.sql` + `internal/daemon/watchman*.go` + `cmd/watchman*.go` + `cmd/workbench_watchman_guard.go` + `internal/devpack/workbench_settings.go` (the guard's hook entry) + `internal/tools/workbench_watchman.go` (wait points, finish gate)
+**Module:** `internal/watchman/` + `internal/watchmanact/` + `internal/askanswer/` (the answer write) + `internal/db/watchman*.go` + `internal/db/migrations/00197_watchman.sql` … `00206_watchman_items_moves.sql` + `internal/daemon/watchman*.go` + `cmd/watchman*.go` + `cmd/workbench_watchman_guard.go` + `internal/devpack/workbench_settings.go` (the guard's hook entry) + `internal/tools/workbench_watchman.go` (wait points, finish gate)
 **Last full audit:** 2026-11-18 (phase 2: WATCHMAN-01, -02, -04, -05 added; -03 and -06 amended)
 **Owner approval:** spec `docs/superpowers/specs/2026-11-16-watchman-design.md` (ask #1385; contracts ask #1373; Sleep-only phase 2 ask #1578; D47 ask #1583, WATCHMAN-04 amendment ask #1591); plan `docs/superpowers/plans/2026-11-18-watchman-phase-2.md` (ask #1588); feature note `docs/features/watchman.md`.
 
