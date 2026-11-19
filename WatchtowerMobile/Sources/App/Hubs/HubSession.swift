@@ -978,33 +978,6 @@ final class HubSession {
         restartLoop(firstCycle: fullFetchOwed ? .foreground : nil)
     }
 
-    /// The outbox's one applied observer, shared by the app and the tests:
-    /// every applied echo goes to every consumer on the main actor, and
-    /// each keeps only its own kind. `overlays` takes it as it arrives: its
-    /// `confirm_ms` is tap → this echo.
-    nonisolated static func appliedObserver(
-        askAnswerer: AskAnswerer,
-        sessionStarts: SessionStarter,
-        sessionInputs: SessionInputSender? = nil,
-        boardWriter: BoardWriter? = nil,
-        chats: ChatsCenter? = nil,
-        inbox: InboxCenter? = nil,
-        overlays: OverlayBook? = nil
-    ) -> @Sendable (ActionRequestPayload) -> Void {
-        { [weak askAnswerer, weak sessionStarts, weak sessionInputs, weak boardWriter, weak chats, weak inbox, weak overlays] action in
-            let arrived = Date()
-            Task { @MainActor in
-                askAnswerer?.receiveApplied(action)
-                sessionStarts?.receiveApplied(action)
-                sessionInputs?.receiveApplied(action)
-                boardWriter?.receiveApplied(action)
-                chats?.receiveApplied(action)
-                inbox?.receiveApplied(action)
-                overlays?.receiveEcho(action, now: arrived)
-            }
-        }
-    }
-
     /// The device recorder: the microphone, recordings in Application
     /// Support, and local notifications for the 3-hour cap notice and the
     /// long-pause auto-finish (saved, or not saved).
