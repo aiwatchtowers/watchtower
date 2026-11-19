@@ -92,6 +92,7 @@
 		3243082FD9DDB28F137EE435 /* DemoSeed+Outbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16BCC6A51FF4BA83D1B72DE9 /* DemoSeed+Outbox.swift */; };
 		3303BBD59525B1A47B0450CC /* ContinueWaitsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49E5912AC83B65603D0202E2 /* ContinueWaitsTests.swift */; };
 		34189F736F2D9A072D45F977 /* AlertSubscriptionRegistrar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46FE4B06EBF72ED88325BDAC /* AlertSubscriptionRegistrar.swift */; };
+		3574DB58772E55BE88CF0937 /* ScreenshotTourTests+WorkchatAgents.swift in Sources */ = {isa = PBXBuildFile; fileRef = E581BCFF42446B16B62F53A7 /* ScreenshotTourTests+WorkchatAgents.swift */; };
 		367439AFE0CF39AEC536AE91 /* AskText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D4A928B7D44789719D76D58 /* AskText.swift */; };
 		3797D2F34049E3A69D4E55C2 /* SendGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33A9A8CE46252B64C968083D /* SendGuard.swift */; };
 		37BF7C5D0FE913FBD0EACC2D /* WorkbenchAutomationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE90B2DF231D47C2A8E03EA7 /* WorkbenchAutomationsView.swift */; };
@@ -772,6 +773,7 @@
 		E1E165BA99AF507DD1630888 /* FakeAppAttest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeAppAttest.swift; sourceTree = "<group>"; };
 		E34FE8AB2E6D5D3AE4DF1B07 /* WorkchatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkchatView.swift; sourceTree = "<group>"; };
 		E4E25A38357841D623051CAD /* RelayAccountFakes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayAccountFakes.swift; sourceTree = "<group>"; };
+		E581BCFF42446B16B62F53A7 /* ScreenshotTourTests+WorkchatAgents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ScreenshotTourTests+WorkchatAgents.swift"; sourceTree = "<group>"; };
 		E5938883927F0CCDE98C0790 /* DemoSeed+ChatConversation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoSeed+ChatConversation.swift"; sourceTree = "<group>"; };
 		E87EB2750CF04CA690B2E098 /* HubBootTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubBootTests.swift; sourceTree = "<group>"; };
 		E9403473D4755D9239D806F3 /* ChatSendTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSendTests.swift; sourceTree = "<group>"; };
@@ -1024,6 +1026,7 @@
 				78DCED28B8F3FC973EC75173 /* RouteStashTests.swift */,
 				BEDADC4689182E2C4442544B /* ScreenshotTourTests.swift */,
 				44C37CA6EDEB002A1CD8235C /* ScreenshotTourTests+Inbox.swift */,
+				E581BCFF42446B16B62F53A7 /* ScreenshotTourTests+WorkchatAgents.swift */,
 				78B56EB6F72D0F0CD748D395 /* SessionChatWiringTests.swift */,
 				FEC6D907F03F9B14B2029703 /* SessionDetailWiringTests.swift */,
 				8C60292582C6EF728807BF04 /* SessionInputSenderTests.swift */,
@@ -1969,6 +1972,7 @@
 				722176BF6A94A147EDBF9F7B /* RouteStashTests.swift in Sources */,
 				E63A4444EF067CDCA69793F2 /* ScreenshotHost.swift in Sources */,
 				166B0665DF185B926AAC9771 /* ScreenshotTourTests+Inbox.swift in Sources */,
+				3574DB58772E55BE88CF0937 /* ScreenshotTourTests+WorkchatAgents.swift in Sources */,
 				134678525F19FCE89171B6C6 /* ScreenshotTourTests.swift in Sources */,
 				089D0A2F676304B6CAD6B84B /* SessionChatWiringTests.swift in Sources */,
 				16EC22651D352689E7F327B5 /* SessionDetailWiringTests.swift in Sources */,
