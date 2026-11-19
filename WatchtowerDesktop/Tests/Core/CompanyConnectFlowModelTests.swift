@@ -285,12 +285,102 @@ final class CompanyConnectFlowModelTests: XCTestCase {
         await rig.model.connect()
         rig.emit(.busy(flow: "slack-flow"))
         XCTAssertEqual(rig.model.phase, .problem(Model.anotherRunning))
+        XCTAssertEqual(rig.sent.last, #"{"cmd":"company_dismiss","flow":"f1"}"#,
+                       "Go refused before releasing the held link: Desktop releases it")
 
         // A busy naming our own chain answers someone else's start: ignored.
         let other = await makeRig()
         await inChain(other)
         other.emit(.busy(flow: "f1"))
         XCTAssertEqual(other.model.phase, .chain)
+    }
+
+    /// The chain signs in through the company as Go stored it.
+    func testChainUsesTheConfirmedSlug() async {
+        let rig = await makeRig()
+        await linkConfirm(rig, inspect(vendors: ["slack"]))
+        rig.fake.enqueue(.init(lines: [#"{"result":"stored","slug":"acme-2","marked":[]}"#]))
+        await rig.model.connect()
+        XCTAssertEqual(rig.sent.last, #"{"cmd":"company_connect","flow":"f1","slug":"acme-2","vendors":["slack"]}"#)
+    }
+
+    /// Another confirm stored a different bundle between the read and Connect.
+    func testConnectThatNeedsReplaceShowsTheWarning() async {
+        let rig = await makeRig()
+        await linkConfirm(rig)
+        rig.fake.enqueue(.init(lines: [#"{"result":"needs_replace","slug":"acme","marked":[]}"#]))
+        rig.fake.enqueue(inspect(state: "changed", changes: changes))
+        await rig.model.connect()
+        guard case .replace = rig.model.phase else { return XCTFail("\(rig.model.phase)") }
+        XCTAssertEqual(rig.sent, [], "no chain; the link is still this flow's")
+    }
+
+    func testConfirmFailureIsShownAndTheZoneRereads() async {
+        let rig = await makeRig()
+        var changed = 0
+        rig.model.onCompaniesChanged = { changed += 1 }
+        await linkConfirm(rig)
+        rig.fake.enqueue(.init(lines: [], exitCode: 1, stderr: "stored acme, but marking its accounts failed"))
+        await rig.model.connect()
+        XCTAssertEqual(rig.model.phase,
+                       .problem("Watchtower could not store this company setup: stored acme, but marking its accounts failed."))
+        XCTAssertEqual(rig.sent, [#"{"cmd":"company_dismiss","flow":"f1"}"#])
+        XCTAssertEqual(changed, 1, "the file may be written: the zone re-reads")
+    }
+
+    func testReplaceFailureIsShown() async {
+        let rig = await makeRig()
+        var changed = 0
+        rig.model.onCompaniesChanged = { changed += 1 }
+        await linkConfirm(rig, inspect(state: "changed", changes: changes))
+        rig.fake.enqueue(.init(lines: [], exitCode: 1, stderr: "database is locked"))
+        await rig.model.replace()
+        XCTAssertEqual(rig.model.phase, .problem("Watchtower could not store this company setup: database is locked."))
+        XCTAssertEqual(rig.sent, [#"{"cmd":"company_dismiss","flow":"f1"}"#])
+        XCTAssertEqual(changed, 1)
+    }
+
+    func testUnreadableAnswerIsNotNoAnswer() async {
+        let rig = await makeRig()
+        rig.fake.enqueue(.init(lines: [#"{"company":42}"#]))
+        await rig.model.connectAll(slug: "acme")
+        XCTAssertEqual(rig.model.phase, .problem("Watchtower could not read this company setup: Watchtower's command line "
+            + "answered in a form this app does not read; update Watchtower."))
+    }
+
+    func testStoredCompanyRefusals() async {
+        let rig = await makeRig()
+        rig.model.externalBusy = { true }
+        await rig.model.connectRest(slug: "acme")
+        XCTAssertEqual(rig.model.phase, .problem(Model.anotherRunning))
+        XCTAssertEqual(rig.runs.count, 0)
+        rig.model.finish()
+
+        rig.model.externalBusy = { false }
+        rig.fake.enqueue(.init(lines: [#"{"refused":"personal","company":"","slug":"","state":"","forced":false,"#
+            + #""vendors":[],"connected":{},"changes":[],"forbidden":[],"details":{}}"#]))
+        await rig.model.relogin(slug: "mine", vendors: [.google])
+        XCTAssertEqual(rig.model.phase, .problem("Watchtower could not read this company setup: it holds your own "
+            + "Google project, not a company's apps."))
+        XCTAssertEqual(rig.sent, [])
+    }
+
+    func testConnectRestWithNothingLeftOpensNothing() async {
+        let rig = await makeRig()
+        rig.fake.enqueue(inspect(state: "same", connected: Self.allVendors))
+        await rig.model.connectRest(slug: "acme")
+        XCTAssertEqual(rig.model.phase, .idle)
+        XCTAssertFalse(rig.model.showsSheet)
+        XCTAssertEqual(rig.sent, [])
+    }
+
+    func testLinkWhileAnotherFlowRunsIsRefused() async {
+        let rig = await makeRig()
+        rig.model.externalBusy = { true }
+        rig.emit(.companyLink(flow: "f1", bundle: wire))
+        XCTAssertEqual(rig.sent, [#"{"cmd":"company_dismiss","flow":"f1"}"#])
+        XCTAssertEqual(rig.model.phase, .idle)
+        XCTAssertEqual(rig.runs.count, 0)
     }
 
     func testSharedGuardRefusesConnect() async {

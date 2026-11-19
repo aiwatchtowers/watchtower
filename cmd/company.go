@@ -62,6 +62,10 @@ var companyListCmd = &cobra.Command{
 	},
 }
 
+var companyInspectFlags struct {
+	slug string
+}
+
 var companyInspectCmd = &cobra.Command{
 	Use:   "inspect",
 	Short: "Show what a company link or code (on stdin), or a stored company (--slug), would connect, without storing it",
@@ -106,10 +110,6 @@ var companyInspectCmd = &cobra.Command{
 			}
 		})
 	},
-}
-
-var companyInspectFlags struct {
-	slug string
 }
 
 var companyConfirmFlags struct {
@@ -413,7 +413,7 @@ func inspectCompany(store company.Store, database *db.DB, wire, forced string) (
 func inspectStoredCompany(store company.Store, database *db.DB, slug, forced string) (companyInspectResult, error) {
 	entry, ok, err := store.Get(slug, forced)
 	if err != nil {
-		return companyInspectResult{}, err
+		return companyInspectResult{}, fmt.Errorf("reading company %s: %w", slug, err)
 	}
 	if !ok {
 		return companyInspectResult{}, fmt.Errorf("no company %s is stored (see 'watchtower company list')", slug)
@@ -424,7 +424,7 @@ func inspectStoredCompany(store company.Store, database *db.DB, slug, forced str
 		return companyRefused(pe), nil
 	}
 	if err != nil {
-		return companyInspectResult{}, err
+		return companyInspectResult{}, fmt.Errorf("encoding company %s: %w", slug, err)
 	}
 	return inspectCompany(store, database, wire, forced)
 }

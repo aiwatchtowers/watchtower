@@ -176,6 +176,9 @@ package final class SlackConnectFlowModel {
     /// The company flow's paste (A20): nil when it took a company link or
     /// code, else the field's error. Unset, such text is not a Slack code.
     @ObservationIgnored package var companyPaste: ((String) async -> String?)?
+    /// The company connect flow is open: a Slack link is refused like one
+    /// during our own flow.
+    @ObservationIgnored package var companyRunning: () -> Bool = { false }
 
     @ObservationIgnored private let host: SlackConnectListenerHost
     @ObservationIgnored private let now: () -> Date
@@ -327,7 +330,8 @@ package final class SlackConnectFlowModel {
             // and answers such a link `busy`; one it took before our `start`
             // reached it would refuse that start forever (no deadline, A22), so
             // a link that is not shown is always cancelled.
-            guard !isRunning else {
+            // A company flow open counts too (one flow at a time, #1887).
+            guard !isRunning, !companyRunning() else {
                 cancelledFlows.insert(flow)
                 host.send(.cancel(flow: flow))
                 return

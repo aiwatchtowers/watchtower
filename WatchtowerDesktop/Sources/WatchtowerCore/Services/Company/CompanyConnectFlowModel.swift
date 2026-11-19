@@ -263,15 +263,21 @@ package final class CompanyConnectFlowModel {
             switch result {
             case .failure(let failure):
                 dismissLink()
+                // Go may have stored the file before a later step failed
+                // (marking accounts): the zone re-reads either way.
+                onCompaniesChanged?()
                 show(.problem(Self.couldNotStore(failure.message)))
                 return
-            case .success("needs_replace"):
+            case .success(let confirmed) where confirmed.result == "needs_replace":
                 // Another confirm stored a different bundle meanwhile.
                 if let error = await open(wire: wire, slug: nil, variant: variant, linkFlow: linkFlow) {
                     show(.problem(error))
                 }
                 return
-            case .success:
+            case .success(let confirmed):
+                // The chain signs in through the company Go stored, under
+                // the slug it stored it (not the one read before).
+                if !confirmed.slug.isEmpty { slug = confirmed.slug }
                 self.wire = nil
                 onCompaniesChanged?()
             }
@@ -288,11 +294,13 @@ package final class CompanyConnectFlowModel {
         working = false
         dismissLink()
         self.wire = nil
+        // A failure may come after the file was written (marking accounts):
+        // the zone re-reads either way.
+        onCompaniesChanged?()
         switch result {
         case .failure(let failure):
             show(.problem(Self.couldNotStore(failure.message)))
         case .success:
-            onCompaniesChanged?()
             finish()
         }
     }
@@ -364,9 +372,10 @@ package final class CompanyConnectFlowModel {
         case .success(let value):
             inspected = value
         }
-        guard inspected.refused == nil else {
+        if let refused = inspected.refused {
             if let linkFlow { host.send(.companyDismiss(flow: linkFlow)) }
-            return Self.codeInvalid
+            // A pasted code is the field's error; a stored company names Go's reason.
+            return wire == nil ? Self.couldNotRead(Self.refusedReason(refused)) : Self.codeInvalid
         }
         apply(inspected)
         self.wire = wire
@@ -393,13 +402,15 @@ package final class CompanyConnectFlowModel {
         switch result {
         case .failure(let failure):
             show(.problem(Self.couldNotRead(failure.message)))
-        case .success(let inspected) where inspected.refused == nil:
+        case .success(let inspected):
+            if let refused = inspected.refused {
+                return show(.problem(Self.couldNotRead(Self.refusedReason(refused))))
+            }
             apply(inspected)
+            // Nothing left to run (all connected or locked): no sheet.
             let vendors = pick(rows.filter { !$0.forbidden })
             guard !vendors.isEmpty else { return finish() }
             startChain(vendors)
-        case .success:
-            show(.problem(Self.couldNotRead(Self.codeInvalid)))
         }
     }
 
@@ -464,7 +475,10 @@ package final class CompanyConnectFlowModel {
         case let .busy(flow):
             // Our company_connect's answer: another flow holds the child.
             // (A busy naming our chain answers someone else's start.)
-            guard awaitingStart, flow != chainFlow else { return }
+            guard awaitingStart, let ours = chainFlow, flow != ours else { return }
+            // Go refused before it released the company link this chain
+            // answered: release it, or every later link waits behind it.
+            host.send(.companyDismiss(flow: ours))
             chainFlow = nil
             awaitingStart = false
             show(.problem(Self.anotherRunning))
@@ -474,9 +488,10 @@ package final class CompanyConnectFlowModel {
     }
 
     /// A company link reached the listener: the confirm, unless a flow is
-    /// open — then the link is answered at once and the running sheet stays.
+    /// open here or in Slack's connect flow (the shared guard) — then the
+    /// link is answered at once and the running sheet stays.
     private func link(flow: String, wire: String) {
-        guard !isRunning else {
+        guard !isRunning, !externalBusy() else {
             host.send(.companyDismiss(flow: flow))
             reshow()
             return
@@ -502,19 +517,27 @@ package final class CompanyConnectFlowModel {
 
     /// The done phase. A Slack sign-in that finished just as Skip arrived is
     /// stored although the chain says skipped: Go's view of the company's
-    /// accounts upgrades such a row, so the sheet matches Connections.
+    /// accounts upgrades such a row, so the sheet matches Connections. Only
+    /// a skipped row: a cancelled or failed one ended by the person's or
+    /// the vendor's answer, whatever other account of the vendor is ok.
+    /// The read is best effort — if it fails, the chain's own states stand.
     private func chainEnded() {
         chainFlow = nil
         awaitingStart = false
         phase = .done
         onChainEnded?()
+        guard rows.contains(where: { if case .skipped = $0.state { true } else { false } }) else { return }
         let slug = slug
         Task { [weak self] in
-            guard let self, case .success(let inspected) = await runInspect(wire: nil, slug: slug),
-                  phase == .done, self.slug == slug else { return }
+            guard let self else { return }
+            let result = await runInspect(wire: nil, slug: slug)
+            guard case .success(let inspected) = result else {
+                if case .failure(let failure) = result { print("[CompanyConnect] re-reading \(slug) after the chain: \(failure.message)") }
+                return
+            }
+            guard phase == .done, self.slug == slug else { return }
             for index in rows.indices where inspected.connected[rows[index].vendor.rawValue] == true {
-                if case .connected = rows[index].state { continue }
-                rows[index].state = .connected(label: "")
+                if case .skipped = rows[index].state { rows[index].state = .connected(label: "") }
             }
         }
     }
@@ -595,8 +618,11 @@ package final class CompanyConnectFlowModel {
         }
     }
 
-    private struct Confirmed: Decodable {
+    /// `company confirm --json`: stored | unchanged | needs_replace, and
+    /// the slug the company is stored under.
+    struct Confirmed: Decodable {
         let result: String
+        let slug: String
     }
 
     static func inspectArgs(slug: String?) -> [String] {
@@ -611,9 +637,8 @@ package final class CompanyConnectFlowModel {
         await run(Self.inspectArgs(slug: slug), stdin: wire)
     }
 
-    private func runConfirm(wire: String, replace: Bool) async -> Result<String, CLIFailure> {
-        let result: Result<Confirmed, CLIFailure> = await run(Self.confirmArgs(source: variant, replace: replace), stdin: wire)
-        return result.map(\.result)
+    private func runConfirm(wire: String, replace: Bool) async -> Result<Confirmed, CLIFailure> {
+        await run(Self.confirmArgs(source: variant, replace: replace), stdin: wire)
     }
 
     struct CLIFailure: Error {
@@ -638,10 +663,14 @@ package final class CompanyConnectFlowModel {
         } catch {
             return .failure(CLIFailure(message: error.localizedDescription))
         }
-        guard let last, let value = try? JSONDecoder().decode(T.self, from: Data(last.utf8)) else {
-            return .failure(CLIFailure(message: Self.noAnswer))
+        guard let last else { return .failure(CLIFailure(message: Self.noAnswer)) }
+        do {
+            return .success(try JSONDecoder().decode(T.self, from: Data(last.utf8)))
+        } catch {
+            // A Go/Swift contract drift, not a missing answer.
+            print("[CompanyConnect] \(args.prefix(2).joined(separator: " ")): unreadable answer: \(error)")
+            return .failure(CLIFailure(message: Self.unreadableAnswer))
         }
-        return .success(value)
     }
 
     // MARK: - Input
@@ -690,10 +719,13 @@ package final class CompanyConnectFlowModel {
     package static let skipped = "Skipped"
     /// The code field's error (the Companies zone's words).
     package static let codeInvalid = CompanyConnectionsPresentation.codeInvalid
+    package static let pasteDuringOnboarding = "That is a company code. Finish this setup first, then paste it in "
+        + "Connections → Companies."
     package static let anotherRunning = "Another connection is running in Watchtower. Try again once it ends."
     static let listenerDown = "Watchtower's connect listener stopped. Open Connections and try again."
     static let listenerDownReason = "Watchtower's connect listener stopped"
     static let noAnswer = "Watchtower's command line gave no answer"
+    static let unreadableAnswer = "Watchtower's command line answered in a form this app does not read; update Watchtower"
 
     package static let cancelTitle = "Cancel"
     package static let connectTitle = "Connect"
@@ -703,7 +735,15 @@ package final class CompanyConnectFlowModel {
     package static let closeTitle = "Close"
     package static let replaceTitle = "Replace"
     package static let keepCurrentTitle = "Keep current"
-    package static let managedBadge = "Managed by your organization"
+
+    /// Go's refusal of a stored company (`company inspect --slug`'s `refused`).
+    static func refusedReason(_ code: String) -> String {
+        switch code {
+        case "personal": "it holds your own Google project, not a company's apps"
+        case "newer_version": "it needs a newer Watchtower"
+        default: "it is damaged (\(code))"
+        }
+    }
 
     static func couldNotRead(_ reason: String) -> String { "Watchtower could not read this company setup: \(clean(reason))." }
     static func couldNotStore(_ reason: String) -> String { "Watchtower could not store this company setup: \(clean(reason))." }

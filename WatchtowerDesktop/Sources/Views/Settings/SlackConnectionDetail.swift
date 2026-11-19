@@ -213,7 +213,7 @@ struct SlackConnectionDetail: View {
                     }
                 }
                 .buttonStyle(.kitSecondary)
-                .disabled(flow.reconnecting || flow.disconnecting || appState.slackConnectFlow?.isRunning == true)
+                .disabled(flow.reconnecting || flow.disconnecting || appState.connectFlowRunning)
                 .managedByOrganization(sourceBlocked)
 
                 if flow.reconnecting {
@@ -372,7 +372,7 @@ struct SlackConnectionDetail: View {
                                     ?? "Sign in to this workspace again (grants new permissions such as sending messages)"
                             )
                             .disabled(vm.isConnecting || reloginBlocked(account.id) != nil
-                                || appState.slackConnectFlow?.isRunning == true)
+                                || appState.connectFlowRunning)
                             Button("Rename…") {
                                 accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
                             }
@@ -444,7 +444,7 @@ struct SlackConnectionDetail: View {
 
         SlackWorkspacesAddRow(
             section: connectPresentation, blocked: sourceBlocked,
-            addDisabled: vm.isConnecting || appState.slackConnectFlow?.isRunning == true,
+            addDisabled: vm.isConnecting || appState.connectFlowRunning,
             add: { showAddSlackAccountSheet = true },
             openFold: {
                 connectExpanded = true

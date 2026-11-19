@@ -30,10 +30,19 @@ extension AppState {
             return slackConnectFlow?.isRunning == true || slackAuthFlow.reconnecting
                 || slackAccountsViewModel?.isConnecting == true
         }
-        slackConnectFlow?.companyPaste = { [weak flow] text in
-            await flow?.paste(text) ?? CompanyConnectFlowModel.codeInvalid
+        slackConnectFlow?.companyRunning = { [weak flow] in flow?.isRunning == true }
+        slackConnectFlow?.companyPaste = { [weak self, weak flow] text in
+            // Onboarding has no Connections tab to show the confirm on.
+            if self?.needsOnboarding == true { return CompanyConnectFlowModel.pasteDuringOnboarding }
+            return await flow?.paste(text) ?? CompanyConnectFlowModel.codeInvalid
         }
         return flow
+    }
+
+    /// A connect flow on the listener is open (Slack's or a company's): the
+    /// legacy Slack sign-ins (Reconnect, Re-login, Add workspace) wait.
+    var connectFlowRunning: Bool {
+        slackConnectFlow?.isRunning == true || companyConnect?.isRunning == true
     }
 
     /// The company sheet lives on the Connections tab, over whichever of its
