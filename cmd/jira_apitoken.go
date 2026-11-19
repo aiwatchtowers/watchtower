@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/url"
 	"strings"
 
@@ -60,7 +63,98 @@ func init() {
 	for _, c := range []*cobra.Command{jiraAddCmd, jiraLoginCmd} {
 		c.Flags().Bool("api-token-stdin", false, "connect with an Atlassian API token read from stdin (never an argument) instead of OAuth; with --email and, for add, --site")
 		c.Flags().String("email", "", "the Atlassian account email the API token belongs to (--api-token-stdin)")
+		c.Flags().Bool("json", false, "with --api-token-stdin: print the outcome as one JSON line (result ok, unauthorized, missing_scope, not_cloud, network, forbidden or failed)")
 	}
+}
+
+// Results of `--api-token-stdin --json` (#1887 C5): the Desktop's token
+// sheet shows one text per result, never Go's error wording.
+const (
+	apiTokenResultOK           = "ok"
+	apiTokenResultUnauthorized = "unauthorized"  // Atlassian refused the email and token
+	apiTokenResultMissingScope = "missing_scope" // the token lacks Scope
+	apiTokenResultNotCloud     = "not_cloud"     // not an https <name>.atlassian.net Cloud site
+	apiTokenResultNetwork      = "network"       // the check could not run; Detail says why
+	apiTokenResultForbidden    = "forbidden"     // the organization's policy refuses API tokens
+	apiTokenResultFailed       = "failed"        // anything else; Message is Go's error, the exit is non-zero
+)
+
+// apiTokenResult is the one JSON line of `jira add|login --api-token-stdin
+// --json`. Nothing in it is the token.
+type apiTokenResult struct {
+	Result    string `json:"result"`
+	AccountID int64  `json:"account_id,omitempty"`
+	Site      string `json:"site,omitempty"`
+	Email     string `json:"email,omitempty"`
+	Scope     string `json:"scope,omitempty"`
+	Detail    string `json:"detail,omitempty"`
+	Message   string `json:"message,omitempty"`
+}
+
+// finishAPITokenCommand reports an add or re-auth: with --json one line
+// (every expected outcome exits 0; a failure of another kind prints its
+// line and still returns the error), else the human text on success and the
+// error as it is.
+func finishAPITokenCommand(cmd *cobra.Command, res apiTokenResult, err error, text func()) error {
+	if asJSON, _ := cmd.Flags().GetBool("json"); !asJSON {
+		if err == nil {
+			text()
+		}
+		return err
+	}
+	if err == nil {
+		res.Result = apiTokenResultOK
+	} else {
+		res = classifyAPITokenError(err)
+	}
+	if encErr := json.NewEncoder(cmd.OutOrStdout()).Encode(res); encErr != nil {
+		return encErr
+	}
+	if res.Result == apiTokenResultFailed {
+		return err
+	}
+	return nil
+}
+
+// classifyAPITokenError maps an add or re-auth failure to its result.
+func classifyAPITokenError(err error) apiTokenResult {
+	var scope *jira.ScopeError
+	switch {
+	case errors.Is(err, jira.ErrAPITokenForbidden):
+		return apiTokenResult{Result: apiTokenResultForbidden}
+	case errors.Is(err, jira.ErrNotAtlassianCloud):
+		return apiTokenResult{Result: apiTokenResultNotCloud}
+	case errors.As(err, &scope):
+		return apiTokenResult{Result: apiTokenResultMissingScope, Scope: scope.Scope}
+	case errors.Is(err, jira.ErrAPITokenDead):
+		return apiTokenResult{Result: apiTokenResultUnauthorized}
+	}
+	if detail, ok := apiTokenNetworkDetail(err); ok {
+		return apiTokenResult{Result: apiTokenResultNetwork, Detail: detail}
+	}
+	return apiTokenResult{Result: apiTokenResultFailed, Message: err.Error()}
+}
+
+// apiTokenNetworkDetail reports a check that could not reach Atlassian and
+// says why in a few words ("the request timed out", "no such host").
+func apiTokenNetworkDetail(err error) (string, bool) {
+	var netErr net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
+		return "the request timed out", true
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return dnsErr.Err, true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Err != nil {
+		return opErr.Err.Error(), true
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr.Err != nil {
+		return urlErr.Err.Error(), true
+	}
+	return "", false
 }
 
 // newJiraClientForAccount builds a short-lived client (a CLI command, a
@@ -196,27 +290,40 @@ func checkAPIToken(cmd *cobra.Command, site, wantCloudID string, creds jira.APIT
 // checked on the network before a row or a file is written, so a refused or
 // unreachable check leaves nothing behind.
 func addJiraAPITokenAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB) error {
+	res, err := connectJiraAPITokenAccount(cmd, cfg, database)
+	return finishAPITokenCommand(cmd, res, err, func() {
+		out := cmd.OutOrStdout()
+		fmt.Fprintf(out, "\nJira Cloud connected with an API token as account %d!\n", res.AccountID)
+		fmt.Fprintf(out, "Site: %s\n", res.Site)
+		fmt.Fprintf(out, "\nRun 'watchtower jira boards --account %d' to see available boards.\n", res.AccountID)
+	})
+}
+
+// connectJiraAPITokenAccount is addJiraAPITokenAccount's work: the new
+// account's id, site and the email Atlassian named.
+func connectJiraAPITokenAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB) (apiTokenResult, error) {
+	var none apiTokenResult
 	if err := apiTokenPolicyRefusal(); err != nil {
-		return err
+		return none, err
 	}
 	if slug, _ := cmd.Flags().GetString("company"); slug != "" {
-		return errors.New("--company signs in through the company's Atlassian app; an API token is your own — drop one of them")
+		return none, errors.New("--company signs in through the company's Atlassian app; an API token is your own — drop one of them")
 	}
 	email, _ := cmd.Flags().GetString("email")
 	email = strings.TrimSpace(email)
 	if !strings.Contains(email, "@") {
-		return errors.New("--email is required with --api-token-stdin: the Atlassian account email the token belongs to")
+		return none, errors.New("--email is required with --api-token-stdin: the Atlassian account email the token belongs to")
 	}
 	siteFlag, _ := cmd.Flags().GetString("site")
 	site, err := normalizeJiraTokenSite(siteFlag)
 	if err != nil {
-		return err
+		return none, err
 	}
 	label, _ := cmd.Flags().GetString("label")
 	creds := jira.APITokenCreds{Email: email, Scope: apiTokenScope(jiraLoginOptionsFromFlags(cmd))}
 	cloudID, creds, me, err := checkAPIToken(cmd, site, "", creds)
 	if err != nil {
-		return err
+		return none, err
 	}
 
 	if _, err := ensureLegacyJiraAccount(cfg, database, jiraCmdLogger(cmd)); err != nil {
@@ -227,21 +334,26 @@ func addJiraAPITokenAccount(cmd *cobra.Command, cfg *config.Config, database *db
 		CloudID: cloudID, SiteURL: site, SiteName: host, Label: label, AuthKind: jira.AuthKindAPIToken,
 	})
 	if err != nil {
-		return fmt.Errorf("creating jira account: %w", err)
+		return none, fmt.Errorf("creating jira account: %w", err)
 	}
 	if err := jira.NewTokenStore(cfg.WorkspaceDir(), accountID).SaveAPIToken(creds); err != nil {
 		rollbackNewJiraAccount(cfg, database, accountID)
-		return err
+		return none, err
 	}
 	if err := finishAPITokenConnect(cmd, database, accountID, me); err != nil {
 		rollbackNewJiraAccount(cfg, database, accountID)
-		return err
+		return none, err
 	}
-	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "\nJira Cloud connected with an API token as account %d!\n", accountID)
-	fmt.Fprintf(out, "Site: %s\n", site)
-	fmt.Fprintf(out, "\nRun 'watchtower jira boards --account %d' to see available boards.\n", accountID)
-	return nil
+	return apiTokenResult{AccountID: accountID, Site: site, Email: apiTokenOwnerEmail(me, creds)}, nil
+}
+
+// apiTokenOwnerEmail is the email Atlassian named for the token, else the
+// one it was given with.
+func apiTokenOwnerEmail(me jira.Myself, creds jira.APITokenCreds) string {
+	if me.EmailAddress != "" {
+		return me.EmailAddress
+	}
+	return creds.Email
 }
 
 // reauthJiraAPIToken is `jira login --api-token-stdin`: a new token for an
@@ -249,14 +361,23 @@ func addJiraAPITokenAccount(cmd *cobra.Command, cfg *config.Config, database *db
 // tenant) before it replaces the old one; it clears the account's error and
 // stamps access_ok_at.
 func reauthJiraAPIToken(cmd *cobra.Command, cfg *config.Config, database *db.DB, account db.JiraAccount) error {
+	res, err := replaceJiraAPIToken(cmd, cfg, database, account)
+	return finishAPITokenCommand(cmd, res, err, func() {
+		fmt.Fprintf(cmd.OutOrStdout(), "\nJira account %d has a new API token.\n", account.ID)
+	})
+}
+
+// replaceJiraAPIToken is reauthJiraAPIToken's work.
+func replaceJiraAPIToken(cmd *cobra.Command, cfg *config.Config, database *db.DB, account db.JiraAccount) (apiTokenResult, error) {
+	var none apiTokenResult
 	if account.AuthKind != jira.AuthKindAPIToken {
-		return fmt.Errorf("jira account %d signs in with OAuth: run 'watchtower jira login --account %d' without --api-token-stdin, or connect a new site with 'watchtower jira add --api-token-stdin'", account.ID, account.ID)
+		return none, fmt.Errorf("jira account %d signs in with OAuth: run 'watchtower jira login --account %d' without --api-token-stdin, or connect a new site with 'watchtower jira add --api-token-stdin'", account.ID, account.ID)
 	}
 	if err := apiTokenPolicyRefusal(); err != nil {
-		return err
+		return none, err
 	}
 	if err := refuseLoginDuringPurge(database, "jira", account.ID); err != nil {
-		return err
+		return none, err
 	}
 	store := jira.NewTokenStore(cfg.WorkspaceDir(), account.ID)
 	prev, _ := store.LoadAPIToken() // only the email default; a damaged file is what the re-auth replaces
@@ -265,33 +386,32 @@ func reauthJiraAPIToken(cmd *cobra.Command, cfg *config.Config, database *db.DB,
 		email = prev.Email
 	}
 	if !strings.Contains(email, "@") {
-		return errors.New("--email is required: the Atlassian account email the token belongs to")
+		return none, errors.New("--email is required: the Atlassian account email the token belongs to")
 	}
 	// The OAuth re-login's carry-over: Confluence (and write) stay when the
 	// stored token had them or the account has spaces selected.
 	opts, _, err := jiraReloginOptions(cmd, cfg.WorkspaceDir(), database, account.ID)
 	if err != nil {
-		return err
+		return none, err
 	}
 	scope := apiTokenScope(opts)
 	_, creds, me, err := checkAPIToken(cmd, account.SiteURL, account.CloudID, jira.APITokenCreds{Email: email, Scope: scope})
 	if err != nil {
-		return err
+		return none, err
 	}
 	unlock, err := store.Lock(cmd.Context())
 	if err != nil {
-		return err
+		return none, err
 	}
 	err = store.SaveAPIToken(creds)
 	unlock()
 	if err != nil {
-		return err
+		return none, err
 	}
 	if err := finishAPITokenConnect(cmd, database, account.ID, me); err != nil {
-		return err
+		return none, err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "\nJira account %d has a new API token.\n", account.ID)
-	return nil
+	return apiTokenResult{AccountID: account.ID, Site: account.SiteURL, Email: apiTokenOwnerEmail(me, creds)}, nil
 }
 
 // finishAPITokenConnect records the person the token belongs to and marks

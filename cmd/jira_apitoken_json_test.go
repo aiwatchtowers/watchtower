@@ -1,0 +1,123 @@
+package cmd
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net"
+	"net/url"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/jira"
+	"watchtower/internal/policy/policytest"
+)
+
+// TestJiraAPIToken_JSONResults (#1887 C5): with --json, add and re-auth
+// print one line the Desktop's token sheet reads — a result per expected
+// outcome (exit 0), "failed" with Go's message (exit non-zero) otherwise —
+// and never the token.
+func TestJiraAPIToken_JSONResults(t *testing.T) {
+	timeout := &url.Error{Op: "Get", URL: "https://acme.atlassian.net/rest/api/3/myself", Err: context.DeadlineExceeded}
+	noHost := &url.Error{Op: "Get", URL: "https://acme.atlassian.net/_edge/tenant_info",
+		Err: &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: "acme.atlassian.net"}}}
+	refused := &url.Error{Op: "Get", URL: "https://acme.atlassian.net/rest/api/3/myself",
+		Err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: connection refused")}}
+	for _, c := range []struct {
+		name      string
+		tenantErr error
+		probeErr  error
+		want      apiTokenResult
+		fails     bool
+	}{
+		{name: "ok", want: apiTokenResult{Result: "ok", AccountID: 1, Site: "https://acme.atlassian.net", Email: "person@example.com"}},
+		{name: "unauthorized", probeErr: jira.ErrAPITokenDead, want: apiTokenResult{Result: "unauthorized"}},
+		{name: "scope", probeErr: &jira.ScopeError{Scope: "read:jira-work"}, want: apiTokenResult{Result: "missing_scope", Scope: "read:jira-work"}},
+		{name: "not cloud", tenantErr: jira.ErrNotAtlassianCloud, want: apiTokenResult{Result: "not_cloud"}},
+		{name: "timeout", probeErr: timeout, want: apiTokenResult{Result: "network", Detail: "the request timed out"}},
+		{name: "no host", tenantErr: noHost, want: apiTokenResult{Result: "network", Detail: "no such host"}},
+		{name: "refused", probeErr: refused, want: apiTokenResult{Result: "network", Detail: "connect: connection refused"}},
+		{name: "other", probeErr: errors.New("500 Internal Server Error"),
+			want: apiTokenResult{Result: "failed", Message: "checking the API token: 500 Internal Server Error"}, fails: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newAPITokenHarness(t)
+			h.tenantErr, h.probeErr = c.tenantErr, c.probeErr
+			flags := addTokenFlags()
+			flags["json"] = "true"
+			cmd, out := newTokenCmd(t, jiraAddCmd, flags, cmdTestAPIToken)
+			err := runJiraAdd(cmd, nil)
+			if c.fails {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			var got apiTokenResult
+			require.NoError(t, json.Unmarshal(out.Bytes(), &got), out.String())
+			assert.Equal(t, c.want, got)
+			assert.NotContains(t, out.String(), cmdTestAPIToken)
+			if c.want.Result != "ok" {
+				assert.Empty(t, h.accounts(t), "nothing is stored")
+			}
+		})
+	}
+
+	t.Run("policy", func(t *testing.T) {
+		h := newAPITokenHarness(t)
+		policytest.Set(t, map[string]any{"AllowAtlassianAPIToken": false})
+		flags := addTokenFlags()
+		flags["json"] = "true"
+		cmd, out := newTokenCmd(t, jiraAddCmd, flags, cmdTestAPIToken)
+		require.NoError(t, runJiraAdd(cmd, nil))
+		assert.JSONEq(t, `{"result":"forbidden"}`, out.String())
+		assert.Empty(t, h.tenantAsks)
+	})
+
+	t.Run("re-auth", func(t *testing.T) {
+		h := newAPITokenHarness(t)
+		a := addTokenAccount(t, h)
+		require.NoError(t, h.database.SetJiraAccountAuthState(a.ID, "error", jira.CodeAPITokenDead))
+		withJiraAccountFlag(t, a.ID)
+		const next = "ATATT-next-not-real" // leak-check:allow
+		cmd, out := newTokenCmd(t, jiraLoginCmd, map[string]string{"api-token-stdin": "true", "json": "true"}, next)
+		require.NoError(t, runJiraLogin(cmd, nil))
+		var got apiTokenResult
+		require.NoError(t, json.Unmarshal(out.Bytes(), &got), out.String())
+		assert.Equal(t, apiTokenResult{Result: "ok", AccountID: a.ID, Site: "https://acme.atlassian.net", Email: "person@example.com"}, got)
+		assert.NotContains(t, out.String(), next)
+
+		h.probeErr = jira.ErrAPITokenDead
+		cmd, out = newTokenCmd(t, jiraLoginCmd, map[string]string{"api-token-stdin": "true", "json": "true"}, next)
+		require.NoError(t, runJiraLogin(cmd, nil))
+		assert.JSONEq(t, `{"result":"unauthorized"}`, out.String())
+	})
+}
+
+// TestJiraAccountsJSON_PurgeLease (#1887 §6.3): `jira accounts --json`
+// carries each account's PURGE-01 lease day only while the lease counts —
+// purge on under a rule with leases, the account not stopped by the policy.
+func TestJiraAccountsJSON_PurgeLease(t *testing.T) {
+	h := newAPITokenHarness(t)
+	a := addTokenAccount(t, h)
+	require.NoError(t, h.database.SetJiraAccountAuthState(a.ID, "error", jira.CodeAPITokenDead))
+	_, err := h.database.Exec(`UPDATE jira_accounts SET access_ok_at = '2026-11-18T09:00:00Z' WHERE id = ?`, a.ID)
+	require.NoError(t, err)
+
+	lease := func() string {
+		t.Helper()
+		cmd, out := cmdWithFlags(t, jiraAccountsCmd, map[string]string{"json": "true"})
+		require.NoError(t, runJiraAccounts(cmd, nil))
+		var rows []jiraAccountJSON
+		require.NoError(t, json.Unmarshal(out.Bytes(), &rows), out.String())
+		require.Len(t, rows, 1)
+		return rows[0].PurgeLeaseAt
+	}
+
+	assert.Empty(t, lease(), "the default rule gives a live account no lease")
+	policytest.Set(t, map[string]any{"PurgeRevokedData": true})
+	assert.Equal(t, "2026-12-18T09:00:00Z", lease())
+	policytest.Set(t, map[string]any{"PurgeRevokedData": true, "AllowAtlassianAPIToken": false})
+	assert.Empty(t, lease(), "POLICY-03 holds a stopped token site's lease")
+}

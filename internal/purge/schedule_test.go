@@ -631,3 +631,32 @@ func TestPurge_VerifyHoldOnlyRevokedOrRemoved(t *testing.T) {
 		t.Fatalf("live accounts rescheduled under their lease, held ones not, got %+v", got.Schedule)
 	}
 }
+
+// TestLeaseDeadlines_OneSourceUnderTheRule: the deadlines a caller shows
+// (#1887 §6.3) are the planner's own — one source's live accounts, the
+// source's newest access + Lease, none under the default rule or for an
+// account the policy stops.
+func TestLeaseDeadlines_OneSourceUnderTheRule(t *testing.T) {
+	older, newer := t0.Add(-10*24*time.Hour), t0.Add(-2*24*time.Hour)
+	accounts := []db.PurgeAccount{
+		acct("jira", 1, "error", older),
+		acct("jira", 2, "ok", newer),
+		acct("slack", 1, "ok", older),
+	}
+	want := newer.Add(Lease)
+	got := LeaseDeadlines(accounts, setting(true), "jira")
+	if len(got) != 2 || !got[1].Equal(want) || !got[2].Equal(want) {
+		t.Fatalf("jira deadlines = %v, want both at %v", got, want)
+	}
+	if got := LeaseDeadlines(accounts, Rules(true, OriginDefault, nil), "jira"); len(got) != 0 {
+		t.Fatalf("the default rule gives a live account no lease, got %v", got)
+	}
+	if got := LeaseDeadlines(accounts, setting(false), "jira"); len(got) != 0 {
+		t.Fatalf("purge off: no lease, got %v", got)
+	}
+	held := AccountRules(true, OriginSetting, func(a db.PurgeAccount) bool { return a.ID != 1 })
+	got = LeaseDeadlines(accounts, held, "jira")
+	if _, ok := got[1]; ok || !got[2].Equal(want) {
+		t.Fatalf("a stopped account's lease is held, got %v", got)
+	}
+}

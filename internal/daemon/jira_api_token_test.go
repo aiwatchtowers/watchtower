@@ -55,12 +55,12 @@ func TestJiraAPIToken401IsErrorNotRevoked(t *testing.T) {
 func TestJiraAPIToken_PolicyStopHoldsLease(t *testing.T) {
 	token := db.PurgeAccount{Source: "jira", AuthKind: jira.AuthKindAPIToken}
 	oauth := db.PurgeAccount{Source: "jira", AuthKind: "oauth"}
-	assert.True(t, accountSyncAllowed(token))
+	assert.True(t, AccountSyncAllowed(token))
 
 	policytest.Set(t, map[string]any{"AllowAtlassianAPIToken": false})
-	assert.False(t, accountSyncAllowed(token))
-	assert.True(t, accountSyncAllowed(oauth))
+	assert.False(t, AccountSyncAllowed(token))
+	assert.True(t, AccountSyncAllowed(oauth))
 
 	policytest.Set(t, map[string]any{"AllowedSources": []any{"slack"}})
-	assert.False(t, accountSyncAllowed(oauth), "a forbidden source still holds every account")
+	assert.False(t, AccountSyncAllowed(oauth), "a forbidden source still holds every account")
 }
