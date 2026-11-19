@@ -238,19 +238,23 @@ fi
 # corp app's client id without a secret: that id only backfills old account rows (A17) and makes no
 # built-in app (auth.BuiltinApp needs id and secret), so Re-login runs the PKCE connect flow.
 RETIRED_SLACK_CLIENT_ID="${RETIRED_SLACK_CLIENT_ID:-}"
-RETIRED_CHECK_PUBLIC_RELEASE=false
-if ! $DEV_MODE && [ -n "$NOTARIZE_PROFILE" ] && { [ -z "$FLAVOR" ] || [ "$FLAVOR" = "dev" ]; }; then
-    RETIRED_CHECK_PUBLIC_RELEASE=true
+SLACK_RELEASE=false
+SLACK_PUBLIC_RELEASE=false
+if ! $DEV_MODE && [ -n "$NOTARIZE_PROFILE" ]; then
+    SLACK_RELEASE=true
+    if [ -z "$FLAVOR" ] || [ "$FLAVOR" = "dev" ]; then
+        SLACK_PUBLIC_RELEASE=true
+    fi
 fi
-if $RETIRED_CHECK_PUBLIC_RELEASE && [ -z "$RETIRED_SLACK_CLIENT_ID" ]; then
+if $SLACK_PUBLIC_RELEASE && [ -z "$RETIRED_SLACK_CLIENT_ID" ]; then
     echo "ERROR: a public release must set RETIRED_SLACK_CLIENT_ID (recognises accounts on the retired shared Slack app)" >&2
     exit 1
 fi
-if ! $DEV_MODE && [ -n "$NOTARIZE_PROFILE" ] && [ -n "${WATCHTOWER_OAUTH_CLIENT_SECRET:-}" ]; then
+if $SLACK_RELEASE && [ -n "${WATCHTOWER_OAUTH_CLIENT_SECRET:-}" ]; then
     echo "ERROR: a release must not set WATCHTOWER_OAUTH_CLIENT_SECRET (no build bakes a Slack app any more; drop it from the build profile)" >&2
     exit 1
 fi
-if $RETIRED_CHECK_PUBLIC_RELEASE && [ -n "${WATCHTOWER_OAUTH_CLIENT_ID:-}" ] \
+if $SLACK_PUBLIC_RELEASE && [ -n "${WATCHTOWER_OAUTH_CLIENT_ID:-}" ] \
     && [ "${WATCHTOWER_OAUTH_CLIENT_ID:-}" = "$RETIRED_SLACK_CLIENT_ID" ]; then
     echo "ERROR: a public release must not set WATCHTOWER_OAUTH_CLIENT_ID to RETIRED_SLACK_CLIENT_ID (the shared Slack app is retired; drop the id from the build profile)" >&2
     exit 1

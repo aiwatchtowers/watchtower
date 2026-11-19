@@ -68,6 +68,9 @@ run "corp release with a Slack secret fails" secretfail false corp notarize-prof
 run "public release baking the retired id fails" retiredfail false "" notarize-prof placeholder-id placeholder-id ""
 run "corp release with an id and no secret passes" pass false corp notarize-prof "" placeholder-corp-id ""
 run "public release with neither id nor secret passes" pass false "" notarize-prof placeholder-id "" ""
+run "dev-flavor release with a Slack secret fails" secretfail false dev notarize-prof placeholder-id "" placeholder-secret
+run "dev-flavor release baking the retired id fails" retiredfail false dev notarize-prof placeholder-id placeholder-id ""
+run "public release with the retired id and a secret fails on the secret first" secretfail false "" notarize-prof placeholder-id placeholder-id placeholder-secret
 run "--dev passes with a Slack secret" pass true "" notarize-prof "" placeholder-dev-id placeholder-secret
 run "non-release passes with a Slack secret" pass false "" "" "" placeholder-dev-id placeholder-secret
 
