@@ -3249,3 +3249,12 @@ Entry format:
 - weak-dimension: 7. A de-flake fix that relaxes an assertion (a list to a Set, a ratio to a skip, a finite deadline to 0) must say which documented property lost its last test, and where that property is now covered or will be.
 - rule-gap (candidate, dim 7): *a flake fix that weakens or removes an assertion names the contract that assertion pinned and either moves it to a deterministic seam in the same change or files the follow-up; a relaxed assertion with no named home for the property is the tell.*
 - outcome: TBD
+
+## 2026-11-20 — test/r6-wake-data-zone-first (a820f47df: live link R6 handover-order test `testWakeHandsTheDataZoneReadOverFirst`, recorded at the phone's socket through `RecordingRelaySocketDialer`/`StandOpLog`; test-only, 1 file +29/−3; panel: prosecutor (2, both fixed) + codex (1 minor, raised twice); pr-review-toolkit specialists unavailable; judge verified by reading, author's runs under CPU load 23/23 green) — verdict: approve
+
+- contested: codex's minor, that `waitUntilLive` has no turn cap and hangs instead of failing. Rejected for this PR. It is a pre-existing shared helper whose doc says "no wall-clock cap", other tests in the file already call it, and the owner's rule against real-time hang guards in tests argues against adding a deadline. The failure mode is a hang the CI job timeout catches, not a false green. [7]
+- false-positive: none. Both prosecutor findings (duplicating the existing recording dialer, and a comment that overstated what the latch-drop mutation catches) were real and are fixed in a820f47df. [9/7]
+- miss: none. This PR is the follow-up that the 2026-11-19 test/no-real-time-ci-flakes block asked for: the data-zone-first property lost its last test when the HTTPS assertion was relaxed to a Set, and it now has a deterministic seam at the socket write chain.
+- weak-dimension: none. The test's doc honestly says the latch wait is pinned only probabilistically, and the mutation results back that up.
+- rule-gap (evidence for the 2026-11-19 dim-7 candidate): the "relaxed assertion names its new home" pattern worked. The relaxed test's doc now points at the new test by name. Worth promoting.
+- outcome: TBD
