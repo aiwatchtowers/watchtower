@@ -178,8 +178,6 @@ final class WatchmanJournalViewModel {
     @ObservationIgnored private let tick: @Sendable (Duration) async -> Void
     /// Bumped by every read: an older reply never overwrites a newer one.
     @ObservationIgnored private var readToken = 0
-    /// The Watchman status read `watch` was given (the daemon line).
-    @ObservationIgnored private var readStatus: (() async -> Void)?
     /// Corrections stored this run, by item id (Retry's text before the
     /// reread has it).
     @ObservationIgnored private var storedCorrections: [Int64: String] = [:]
@@ -255,17 +253,17 @@ final class WatchmanJournalViewModel {
     /// `readStatus` rereads `watchman status` at the start and on every
     /// tick, so the daemon line follows a daemon that stops or starts
     /// while the journal is open.
+    /// The callback is held by this call only, never by the model (it
+    /// captures the app state, which holds the model).
     func watch(readStatus: (() async -> Void)? = nil) async {
-        self.readStatus = readStatus
         await load()
         await readStatus?()
-        await withTaskGroup(of: Void.self) { group in
-            if let pool { group.addTask { await self.observe(pool) } }
-            group.addTask { await self.rereadOnTick() }
-        }
+        let observer = pool.map { pool in Task { await self.observe(pool) } }
+        defer { observer?.cancel() }
+        await rereadOnTick(readStatus)
     }
 
-    private func rereadOnTick() async {
+    private func rereadOnTick(_ readStatus: (() async -> Void)?) async {
         while !Task.isCancelled {
             await tick(Self.tickInterval)
             guard !Task.isCancelled else { return }

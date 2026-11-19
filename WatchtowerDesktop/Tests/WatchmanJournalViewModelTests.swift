@@ -212,11 +212,36 @@ final class WatchmanJournalViewModelTests: XCTestCase {
         XCTAssertEqual(statusReads.value, 2, "no read after the pane left")
     }
 
+    /// The model never keeps the status callback (fix wave 2): it captures
+    /// the app state, which holds the model, so a stored one is a retain
+    /// cycle. Once the pane's task ends, what the callback captured goes.
+    func testWatchDoesNotKeepTheStatusCallback() async {
+        let ticker = ManualTick()
+        let snapshot = WatchmanJournalViewModel.Snapshot(nights: [], deciding: [])
+        let tick: @Sendable (Duration) async -> Void = { _ in await ticker.wait() }
+        let vm = WatchmanJournalViewModel(read: { snapshot }, calendar: calendar, tick: tick)
+        var owner: StatusOwner? = StatusOwner()
+        weak var weakOwner = owner
+        let task = Task { [owner] in await vm.watch { owner?.reads += 1 } }
+        await until { ticker.waiting == 1 }
+        owner = nil
+        task.cancel()
+        ticker.fire()
+        await task.value
+        XCTAssertNil(weakOwner, "the model kept the callback")
+        withExtendedLifetime(vm) {}
+    }
+
     /// Yields until `done` holds (no wall-clock wait).
     private func until(_ done: () -> Bool) async {
         for _ in 0..<10_000 where !done() { await Task.yield() }
         XCTAssertTrue(done())
     }
+}
+
+@MainActor
+private final class StatusOwner {
+    var reads = 0
 }
 
 @MainActor
