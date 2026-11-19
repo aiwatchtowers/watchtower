@@ -4,16 +4,18 @@ One person at a company sets Watchtower up once with the company's own apps for 
 
 ## Why a company sets it up once
 
-Watchtower ships no Google or Atlassian app of its own for company data: Gmail and Jira need an app your company owns. Setting one up per person would mean everyone repeating the same Cloud Console and developer-console steps. **Set up for my company** does it once and packs the result into a **company setup** that every colleague's Watchtower reads.
+Watchtower ships no Google or Atlassian app of its own for company data: Gmail and Jira need an app your company owns. Without a company setup, every colleague would repeat the same Cloud Console and developer-console steps.
 
 Nothing goes through a Watchtower server. The link opens your own Watchtower on `127.0.0.1`, and every sign-in happens between your Mac and the vendor.
 
 ## What a company setup holds
 <!-- learn: none -->
 
-A company setup carries the company's name and, for each service it uses, the app's ids: the Slack app, the Google OAuth client and its secret plus the Workspace domain, the Atlassian app and its secret plus the site, the Linear client id, the Microsoft client and tenant ids. It can also carry a **link deny list**: hosts whose links Watchtower never opens. It holds no sign-in of any person.
+A company setup carries the company's name and, for each service it uses, the app's ids: the Slack app, the Google OAuth client and its secret plus the Workspace domain, the Atlassian app and its secret plus the site, the Linear client id, the Microsoft client and tenant ids. It can also carry a **link deny list**: hosts whose links Watchtower never fetches to read into knowledge, such as your intranet. It holds no sign-in of any person.
 
 The Google and Atlassian secrets travel in clear, on purpose. Both apps only send a sign-in back to `127.0.0.1`, so a secret without the person's own consent reads nothing. If one leaks, rotate it and publish again.
+
+The company name is only what people see: renaming it at **Publish** after a check keeps every account tied to the company.
 
 Watchtower stores each company it was given in its data folder under `company/`, readable only by you. Several companies can sit side by side, for example if you consult for two.
 
@@ -36,9 +38,12 @@ action: nav:connections
 5. Optionally fill the **Link deny list**, then open **Publish**. Check the **Company name** (colleagues see "Connect <name>?") and press **Publish**. With Slack in the setup, paste a fresh configuration token: Watchtower writes the link and code to the About page of your Slack app and never stores the token.
 6. Publish shows the **Connect link**, the **Connect code** and a **Configuration profile for IT**. **Connect this Mac** connects whatever you have not signed in to yet.
 
-You can leave the page at any step: the progress is kept in a draft (secrets included, readable only by you) and the zone shows **Continue setup**. **Discard setup** deletes the draft; accounts you already connected stay. Changing the company name after a check renames only what people see; accounts stay tied to the company.
+You can leave the page at any step: the progress is kept in a draft (secrets included, readable only by you) and the zone shows **Continue setup**. **Discard setup** deletes the draft; accounts you already connected stay.
 
-You need no admin rights to start. Google's **Internal** app needs a project in your company's Google Cloud organization, and Microsoft 365 needs a tenant admin's consent: the steps give you a text or link to send them, and Microsoft shows **Waiting** without blocking Publish.
+## Do you need to be an admin
+<!-- learn: none -->
+
+No admin rights are needed to start. Google's **Internal** app needs a project in your company's Google Cloud organization, and Microsoft 365 needs a tenant admin's consent: the steps give you a text or link to send them, and Microsoft shows **Waiting** without blocking Publish.
 
 ## Connect with your company's link or code
 <!-- learn
@@ -71,11 +76,11 @@ The top of **Connections** lists each stored company as a card: how many of its 
 ## When it doesn't work
 
 - **The browser says it can't connect.** Watchtower was not running. Open it, then click the link again.
-- **"Company links cannot reach Watchtower: port 18551 is busy".** Another app holds the port. Paste the company code instead.
+- **"Company links cannot reach Watchtower: port 18551 is busy".** Another app holds the port. Paste the company code instead: it saves the company, but its sign-ins wait until you quit the app that holds the port and press **Connect the rest**.
 - **The browser shows "This link does not work".** The link is damaged, cut short or too long. Ask your admin for a fresh link or the code.
 - **"This link needs a newer Watchtower".** Update Watchtower from its menu, then open the link again.
 - **"Another link is waiting".** Answer the open question in Watchtower first.
-- **You clicked the link during setup.** The question waits until setup ends; a pasted code asks you to finish setup first.
+- **You clicked the link during Watchtower's first-run Setup.** The question waits until Setup ends; a pasted code asks you to finish Setup first.
 
 ## Related
 
