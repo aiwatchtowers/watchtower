@@ -441,9 +441,9 @@ type timedCard struct {
 // every unread one, and today's placeholder), Track my threads while a
 // track exists (stopped ones included), Idea finder while an idea exists
 // or its built-in is indexed, Messages while it stands in for Waiting for
-// me and has a message, each thread brief applied in the last 24 hours at
-// its own applied time (the Mac lists each as a root entry), and Watchman's
-// morning journal once Watchman was turned on, at its newest item's time.
+// me and has a message, Watchman's morning journal once Watchman was turned
+// on, at its newest item's time, and each thread brief applied in the last
+// 24 hours at its own applied time (the Mac lists each as a root entry).
 func (s *snapshot) legacyCards(folder int64) []timedCard {
 	l := s.legacy
 	var out []timedCard
@@ -461,12 +461,12 @@ func (s *snapshot) legacyCards(folder int64) []timedCard {
 		c, at := messagesCard(l, folder, s.refState)
 		out = append(out, timedCard{at, c})
 	}
+	if l.watchman != nil {
+		out = append(out, timedCard{l.watchman.UpdatedAt, watchmanCard(*l.watchman, l.now, folder)})
+	}
 	for _, b := range l.briefs {
 		c, at := threadBriefCard(b, folder)
 		out = append(out, timedCard{at, c})
-	}
-	if l.watchman != nil {
-		out = append(out, timedCard{l.watchman.UpdatedAt, watchmanCard(*l.watchman, l.now, folder)})
 	}
 	return out
 }

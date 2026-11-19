@@ -48,8 +48,9 @@ type Options struct {
 	// turns Waiting for me and its Messages stand-in off.
 	DisabledFeatures []string
 	// Now is the moment the feed is read at. Its location is the owner's
-	// zone for the one date-only value the read compares (an idea's
-	// "not now" day); every stamp the feed carries is UTC.
+	// zone for the date-only value the read compares (an idea's "not now"
+	// day) and for Watchman's nights (12:00 to 12:00 there) on the journal
+	// card; every stamp the feed carries is UTC.
 	Now time.Time
 }
 

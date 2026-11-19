@@ -90,10 +90,26 @@ func (c *inboxFeedCache) take(ctx context.Context, k slices.Kind) (*api.Feed, er
 		if err != nil {
 			return nil, err
 		}
+		feed = withoutMacOnlyCards(feed)
 		c.feed, c.builtAt = &feed, now
 	}
 	c.served[k] = true
 	return c.feed, nil
+}
+
+// withoutMacOnlyCards drops the cards the phone has no pane for: Watchman's
+// morning journal (the journal is the Mac's own pane). The card is never
+// counted, so the folders' counts stand.
+func withoutMacOnlyCards(feed api.Feed) api.Feed {
+	cards := make([]api.Card, 0, len(feed.Cards))
+	for _, c := range feed.Cards {
+		if c.Legacy != nil && c.Legacy.Kind == api.LegacyWatchman {
+			continue
+		}
+		cards = append(cards, c)
+	}
+	feed.Cards = cards
+	return feed
 }
 
 type inboxKindSource struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -80,13 +81,15 @@ func marshalWire(t *testing.T, v any) []byte {
 // TestInboxSource_RecordsMatchTheGoGolden: over the feed fixture, one record
 // per folder (with its cut count) and one per card, each the fixture's
 // folder or card; a legacy card carries its typed section and its
-// projected document.
+// projected document. The fixture's Watchman journal card is the Mac's only
+// (withoutMacOnlyCards), so the phone's records leave it out.
 func TestInboxSource_RecordsMatchTheGoGolden(t *testing.T) {
 	ran := 0
 	for _, c := range inboxCases(t) {
 		if c.Opts.Folder != nil || c.Opts.Limit != 0 || c.Opts.Day != "" {
 			continue // a request the phone never sends
 		}
+		c.Expect = withoutMacOnlyCards(c.Expect)
 		ran++
 		t.Run(c.Name, func(t *testing.T) {
 			now, err := time.Parse(time.RFC3339, c.Now)
@@ -395,5 +398,26 @@ func TestInboxSource_FoldersCarryTheirCardOrder(t *testing.T) {
 	}
 	if string(folders["2"]) != string(foldersAfter["2"]) {
 		t.Errorf("an untouched folder's record changed")
+	}
+}
+
+// The phone gets no Watchman journal card (it has no journal pane): not as a
+// card record, not in its folder's card ids; the other cards stand.
+func TestInboxSource_PhoneLeavesTheWatchmanJournalOut(t *testing.T) {
+	journal := api.Card{ID: inboxfeed.WatchmanCardID, FolderID: 1, CardKind: api.CardLegacy, Title: "Watchman",
+		Legacy: &api.LegacySection{Kind: api.LegacyWatchman, Items: []api.LegacyItem{}, Attention: []api.LegacyAttention{}}}
+	build := func(context.Context, inboxfeed.Options) (api.Feed, error) {
+		return api.Feed{V: 1, Folders: []api.Folder{{ID: 1, Kind: api.FolderRoot}},
+			Cards: []api.Card{{ID: "o1", FolderID: 1}, journal, {ID: "o2", FolderID: 1}}}, nil
+	}
+	folders, cards := inboxItems(t, InboxSource(build, nil))
+	if _, ok := cards[inboxfeed.WatchmanCardID]; ok || len(cards) != 2 {
+		t.Fatalf("card records %v", slices.Sorted(maps.Keys(cards)))
+	}
+	var rec struct {
+		CardIDs []string `json:"card_ids"`
+	}
+	if err := json.Unmarshal(folders["1"], &rec); err != nil || strings.Join(rec.CardIDs, ",") != "o1,o2" {
+		t.Fatalf("root card ids %v (%v)", rec.CardIDs, err)
 	}
 }

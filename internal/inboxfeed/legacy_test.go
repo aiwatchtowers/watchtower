@@ -281,9 +281,13 @@ func TestLegacy_WatchmanJournalCard(t *testing.T) {
 		item(7, "check", "done", "answered", 1, "NULL", "2026-11-16T05:00:00Z"),
 		item(8, "ask", "deciding", "", 1, "NULL", "2026-11-16T06:00:00Z"),
 		item(9, "ask", "done", "parked", 1, "NULL", "2026-11-14T22:00:00Z"), // an older night, still waiting
+		// Parked, then seen: feedback written, so it no longer waits and is
+		// one of the night's decisions.
+		item(10, "ask", "done", "parked", 1, "NULL", "2026-11-16T05:30:00Z"),
+		"UPDATE watchman_items SET feedback = 'ok' WHERE id = 10",
 	), Options{})
 	c := cardByID(t, feed, WatchmanCardID)
-	if c.Preview != "2 waiting" || !c.Unread || c.SourceLine != "Night of 15 Nov · 3 decided · 2 unsure" ||
+	if c.Preview != "2 waiting" || !c.Unread || c.SourceLine != "Night of 15 Nov · 4 decided · 3 unsure" ||
 		c.Stamp != "2026-11-16T06:00:00Z" || c.CardKind != api.CardLegacy || len(c.Legacy.Items) != 0 {
 		t.Errorf("journal card %+v", c)
 	}
@@ -298,5 +302,16 @@ func TestLegacy_WatchmanJournalCard(t *testing.T) {
 		WatchmanCardID)
 	if tonight.SourceLine != "Tonight · 1 decided · 1 unsure" || tonight.Preview != "" || tonight.Unread {
 		t.Errorf("tonight %+v", tonight)
+	}
+
+	// Nights run in Now's zone: 10:00 UTC is last night in UTC, but 13:00
+	// — tonight — at UTC+3.
+	at10 := append(base, item(1, "ask", "done", "answered", 1, "NULL", "2026-11-16T10:00:00Z"))
+	if got := cardByID(t, buildFeed(t, at10, Options{}), WatchmanCardID).SourceLine; got != "Night of 15 Nov · 1 decided · 1 unsure" {
+		t.Errorf("in UTC %q", got)
+	}
+	plus3 := testNow.In(time.FixedZone("UTC+3", 3*3600))
+	if got := cardByID(t, buildFeed(t, at10, Options{Now: plus3}), WatchmanCardID).SourceLine; got != "Tonight · 1 decided · 1 unsure" {
+		t.Errorf("at UTC+3 %q", got)
 	}
 }

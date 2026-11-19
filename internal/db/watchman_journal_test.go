@@ -54,6 +54,16 @@ func TestWatchmanJournalSummary_WaitingAndFailedHandovers(t *testing.T) {
 	require.Equal(t, time.Date(2026, 11, 16, 5, 0, 0, 0, time.UTC), s.UpdatedAt)
 }
 
+// An enable time that does not read, with no item yet, shows no card rather
+// than failing the Inbox.
+func TestWatchmanJournalSummary_UnreadableEnableTimeIsNoCard(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	_, err := d.Exec(`INSERT OR REPLACE INTO watchman_workbenches (workbench_id, enabled_at) VALUES (1, 'yesterday')`)
+	require.NoError(t, err)
+	require.Nil(t, wmJournalSummary(t, d, time.UTC))
+}
+
 // A night runs from 12:00 to 12:00 in the given zone.
 func TestWatchmanNightStart(t *testing.T) {
 	loc := time.FixedZone("UTC+3", 3*3600)

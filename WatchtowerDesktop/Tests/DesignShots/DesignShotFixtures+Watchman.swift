@@ -488,9 +488,10 @@ private struct TrayMenuShot: View {
 // MARK: - Inbox source list
 
 /// The real `InboxFolderContentList` of the Inbox root with Watchman's row
-/// beside Morning brief, Track my threads and Idea finder; its texts are the
-/// Go feed's journal card (`inboxfeed.watchmanCard`, pinned by
-/// `TestLegacy_WatchmanJournalCard`), its summary what waits for the owner.
+/// beside Morning brief, Track my threads and Idea finder; its literals
+/// mirror the format of the Go feed's journal card (`inboxfeed.watchmanCard`,
+/// pinned by `TestLegacy_WatchmanJournalCard`), not a feed read; its summary
+/// is what waits for the owner.
 private struct InboxEntryMock: View {
     var body: some View {
         let watchman = InboxFolderListRow(

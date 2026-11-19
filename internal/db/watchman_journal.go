@@ -12,7 +12,7 @@ import (
 // for the owner (alias-free columns): parked or handed back with no
 // feedback, or an answered handover whose next session failed to start for
 // good — and not marked done by the owner. The Desktop's
-// `WatchmanItem.waitingSQL` is its twin.
+// `WatchmanItem.waitsForOwner` is the same rule on one item.
 const WatchmanWaitingClause = `state = 'done' AND owner_done_at IS NULL AND ((outcome IN ('parked', 'handed') AND feedback = '')` +
 	` OR (kind = 'handover' AND outcome = 'answered' AND error != '' AND error NOT IN ('` +
 	WatchmanStartPending + `', '` + WatchmanStartClaimed + `')))`
@@ -45,7 +45,9 @@ func WatchmanNightStart(t time.Time, loc *time.Location) time.Time {
 }
 
 // WatchmanJournalSummaryTx reads the Inbox entry's summary inside tx, nights
-// in loc; nil while Watchman was never turned on and has no item. The
+// in loc; nil while Watchman was never turned on and has no item, or when
+// it has no item and its enable time does not read (no card rather than an
+// Inbox that fails). The
 // newest night counts its finished twin decisions the way the journal does:
 // not pending, waiting, owner-marked-done, owner-first, superseded or check
 // items.
@@ -61,11 +63,11 @@ func WatchmanJournalSummaryTx(ctx context.Context, tx *sql.Tx, loc *time.Locatio
 		if !enabled.Valid {
 			return nil, nil
 		}
-		at, err := watchmanJournalTime("enabled_at", enabled.String)
-		if err != nil {
-			return nil, err
+		// An unreadable enable time shows no card, as the Mac did.
+		if at, err := watchmanJournalTime("enabled_at", enabled.String); err == nil {
+			return &WatchmanJournalSummary{UpdatedAt: at}, nil
 		}
-		return &WatchmanJournalSummary{UpdatedAt: at}, nil
+		return nil, nil
 	}
 	at, err := watchmanJournalTime("created_at", newest.String)
 	if err != nil {
