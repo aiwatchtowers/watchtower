@@ -326,6 +326,7 @@ final class WatchmanCenter {
     /// `watchman arm`, then the status again. The scope's notice is the
     /// failure, or what the reply has to say (warnings, the D21 line, the
     /// sidecar note); an unreadable reply after exit 0 lets the status say.
+    /// A press while the scope's arm or Take back runs does nothing (nil).
     @discardableResult
     func arm(_ scope: WatchmanArmScope, only: [Int64] = []) async -> WatchmanArmReply? {
         // Every running session only ever as an explicit set.
@@ -333,7 +334,8 @@ final class WatchmanCenter {
             armNotices[scope] = WatchmanArmingCopy.nothingToHandOver
             return nil
         }
-        armingHere.insert(scope)
+        // One arm of a scope at a time, as one Take back.
+        guard armingHere.insert(scope).inserted else { return nil }
         armNotices[scope] = nil
         let onlyFlags = scope != .allRunning || only.isEmpty ? [] : ["--only", only.map(String.init).joined(separator: ",")]
         let outcome = await call(["watchman", "arm"] + scope.flags() + onlyFlags + ["--json"], timeout: Self.armTimeout)

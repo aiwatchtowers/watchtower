@@ -178,6 +178,8 @@ final class WatchmanJournalViewModel {
     @ObservationIgnored private let tick: @Sendable (Duration) async -> Void
     /// Bumped by every read: an older reply never overwrites a newer one.
     @ObservationIgnored private var readToken = 0
+    /// The Watchman status read `watch` was given (the daemon line).
+    @ObservationIgnored private var readStatus: (() async -> Void)?
     /// Corrections stored this run, by item id (Retry's text before the
     /// reread has it).
     @ObservationIgnored private var storedCorrections: [Int64: String] = [:]
@@ -250,8 +252,13 @@ final class WatchmanJournalViewModel {
     /// Reads now, again whenever this process changes the journal's tables
     /// and every `tickInterval` (the daemon's writes), until the calling
     /// task ends (the pane's `.task`: the journal left the screen).
-    func watch() async {
+    /// `readStatus` rereads `watchman status` at the start and on every
+    /// tick, so the daemon line follows a daemon that stops or starts
+    /// while the journal is open.
+    func watch(readStatus: (() async -> Void)? = nil) async {
+        self.readStatus = readStatus
         await load()
+        await readStatus?()
         await withTaskGroup(of: Void.self) { group in
             if let pool { group.addTask { await self.observe(pool) } }
             group.addTask { await self.rereadOnTick() }
@@ -263,6 +270,7 @@ final class WatchmanJournalViewModel {
             await tick(Self.tickInterval)
             guard !Task.isCancelled else { return }
             await load()
+            await readStatus?()
         }
     }
 

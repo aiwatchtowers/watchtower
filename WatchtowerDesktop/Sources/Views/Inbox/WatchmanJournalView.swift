@@ -6,10 +6,12 @@ import WatchtowerCore
 /// `splitWidth`. Reads while on screen (`WatchmanJournalViewModel.watch`).
 struct WatchmanJournalView: View {
     @Bindable var model: WatchmanJournalViewModel
+    /// Rereads `watchman status` (the daemon line) with the journal.
+    var readStatus: () async -> Void = {}
 
     var body: some View {
         WatchmanJournalContent(model: model, scrolls: true)
-            .task { await model.watch() }
+            .task { await model.watch(readStatus: readStatus) }
             .sheet(item: $model.correcting) { _ in WatchmanCorrectSheet(model: model) }
     }
 }

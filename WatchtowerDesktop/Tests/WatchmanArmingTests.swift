@@ -19,6 +19,9 @@ private final class ArmingRunner: CLIRunnerProtocol, @unchecked Sendable {
     /// that check is under way.
     private var checkGate: AsyncGate?
     let checkEntered = AsyncGate()
+    /// The same for the next arm (not a check).
+    private var armGate: AsyncGate?
+    let armEntered = AsyncGate()
 
     init(status: String) { statusJSON = status }
 
@@ -28,6 +31,7 @@ private final class ArmingRunner: CLIRunnerProtocol, @unchecked Sendable {
     func setStatus(_ json: String) { lock.withLock { statusJSON = json; statusError = nil } }
     func failStatus(_ error: Error) { lock.withLock { statusError = error } }
     func holdNextCheck(_ gate: AsyncGate) { lock.withLock { checkGate = gate } }
+    func holdNextArm(_ gate: AsyncGate) { lock.withLock { armGate = gate } }
 
     /// `key`: "check", "arm" or "disarm".
     func reply(_ key: String, _ json: String, exitCode: Int32 = 0, stderr: String = "") {
@@ -48,6 +52,13 @@ private final class ArmingRunner: CLIRunnerProtocol, @unchecked Sendable {
             return checkGate
         }) {
             checkEntered.release()
+            await gate.wait()
+        }
+        if args.dropFirst().first == "arm", !args.contains("--check"), let gate = lock.withLock({ () -> AsyncGate? in
+            defer { armGate = nil }
+            return armGate
+        }) {
+            armEntered.release()
             await gate.wait()
         }
         return lock.withLock {
@@ -179,6 +190,24 @@ final class WatchmanArmingTests: XCTestCase {
         center.sheet = nil
         await center.arm(.session(5))
         XCTAssertEqual(center.armNotices[.session(5)], line)
+    }
+
+    /// A second arm of a scope while its first runs is ignored (final
+    /// review D-3), as a second Take back is.
+    func testArmInFlightIgnoresASecondPress() async {
+        let runner = ArmingRunner(status: Self.unarmed)
+        let center = await center(runner)
+        let gate = AsyncGate()
+        runner.holdNextArm(gate)
+        let first = Task { await center.arm(.session(5)) }
+        await runner.armEntered.wait()
+        XCTAssertTrue(center.armingHere.contains(.session(5)))
+        let second = await center.arm(.session(5))
+        XCTAssertNil(second, "the second press arms nothing")
+        gate.release()
+        _ = await first.value
+        XCTAssertEqual(runner.verbs, [["watchman", "arm", "--session", "5", "--json"]])
+        XCTAssertFalse(center.armingHere.contains(.session(5)))
     }
 
     /// A CLI error: the control shows it and the strip stays unarmed.

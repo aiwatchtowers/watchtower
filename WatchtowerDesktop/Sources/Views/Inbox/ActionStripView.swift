@@ -502,8 +502,7 @@ struct ActionStripActionsView: View {
         case let .builtinNotice(notice)?: pane(.builtinNotice(notice))
         case .watchman?:
             if let watchmanJournal {
-                WatchmanJournalView(model: watchmanJournal)
-                    .task { await onReadWatchmanStatus() }
+                WatchmanJournalView(model: watchmanJournal, readStatus: onReadWatchmanStatus)
                     .onChange(of: watchmanDaemon, initial: true) { _, daemon in
                         watchmanJournal.daemon = daemon
                     }

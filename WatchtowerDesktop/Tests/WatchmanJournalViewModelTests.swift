@@ -191,6 +191,27 @@ final class WatchmanJournalViewModelTests: XCTestCase {
         XCTAssertEqual(reads.value, 3, "no read after the pane left")
     }
 
+    /// The daemon line follows the daemon while the journal is open (final
+    /// review D-1): the status is reread with the journal at the start and
+    /// on every tick, and no more once the pane left.
+    func testWatchRereadsTheStatusOnTick() async {
+        let ticker = ManualTick()
+        let snapshot = WatchmanJournalViewModel.Snapshot(nights: [night(decided: [item(1)])], deciding: [])
+        let statusReads = Counter()
+        let now = date("2026-11-17T09:00:00Z")
+        let tick: @Sendable (Duration) async -> Void = { _ in await ticker.wait() }
+        let vm = WatchmanJournalViewModel(read: { snapshot }, now: { now }, calendar: calendar, tick: tick)
+        let task = Task { await vm.watch(readStatus: { statusReads.bump() }) }
+        await until { ticker.waiting == 1 }
+        XCTAssertEqual(statusReads.value, 1, "read when the journal opens")
+        ticker.fire()
+        await until { statusReads.value == 2 && ticker.waiting == 1 }
+        task.cancel()
+        ticker.fire()
+        await task.value
+        XCTAssertEqual(statusReads.value, 2, "no read after the pane left")
+    }
+
     /// Yields until `done` holds (no wall-clock wait).
     private func until(_ done: () -> Bool) async {
         for _ in 0..<10_000 where !done() { await Task.yield() }
