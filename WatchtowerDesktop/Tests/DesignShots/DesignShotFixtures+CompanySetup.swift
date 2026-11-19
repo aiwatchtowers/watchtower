@@ -82,9 +82,9 @@ enum CompanySetupShotFixtures {
             + [shot("overview-companies-narrow", 420) { CompaniesZoneScenes.overview(.companies) }]
     }
 
-    /// Slack, Linear and Outlook (Task 25a), Google and Jira (Task 25b)
-    /// from the production sections and groups; the `-locked` and
-    /// `-tokenError` frames stay mocks until Tasks 26 and 27.
+    /// Slack, Linear and Outlook (Task 25a), Google and Jira (Task 25b,
+    /// Google's lock Task 26) from the production sections and groups;
+    /// Jira's `-locked` and `-tokenError` frames stay mocks until Task 27.
     private static var paneShots: [DesignShot] {
         let details = CompanyDetailScenes.panes
         return CompaniesZoneScenes.panes.map { name, view in shot(name, 640) { view } }
@@ -95,14 +95,13 @@ enum CompanySetupShotFixtures {
             }
     }
 
+    /// The own Google project page (Task 26, production) and the API token
+    /// sheet (mock until Task 27).
     private static var sheetShots: [DesignShot] {
-        let own = CompanySheetScenes.ownGoogle
         let token = CompanySheetScenes.token
-        var shots = own.map { name, blocks in shot("ownGoogle-\(name)", 640) { MockPage(back: Copy.backToGoogle, blocks: blocks) } }
+        var shots = OwnGoogleLive.scenes.map { name in shot("ownGoogle-\(name)", 640) { OwnGoogleLive.page(name) } }
+        shots.append(shot("ownGoogle-empty-narrow", 360) { OwnGoogleLive.page("empty") })
         shots += token.map { name, blocks in shot("token-\(name)", 520) { MockSheet(blocks: blocks) } }
-        if let empty = own.first(where: { $0.0 == "empty" }) {
-            shots.append(shot("ownGoogle-empty-narrow", 360) { MockPage(back: Copy.backToGoogle, blocks: empty.1) })
-        }
         if let empty = token.first(where: { $0.0 == "empty" }) {
             shots.append(shot("token-empty-narrow", 380) { MockSheet(blocks: empty.1) })
         }
@@ -117,11 +116,11 @@ enum CompanySetupShotFixtures {
     }
 }
 
-// MARK: - Detail panes left as mocks (Tasks 26 and 27)
+// MARK: - Detail panes left as mocks (Task 27)
 
-/// The Google and Jira frames whose states later tasks build: the policy
-/// locks (Tasks 26, 27) and the dead API token (Task 27). The rest of those
-/// details renders production views (`CompanyDetailScenes`).
+/// The Jira frames whose states Task 27 builds: the token lock and the dead
+/// API token. The rest of the details renders production views
+/// (`CompanyDetailScenes`).
 @MainActor
 enum CompanyPaneScenes {
     private static func ok(_ title: String, tag: String? = nil) -> MockBlock {
@@ -138,22 +137,7 @@ enum CompanyPaneScenes {
          .managedBadge]
     }
 
-    static var scenes: [(String, [MockPaneSection])] { googleScenes + jiraScenes }
-
-    private static var googleScenes: [(String, [MockPaneSection])] {
-        let acme = MockPaneSection(title: "Acme", caption: Copy.groupAcmeGoogle, blocks: [ok("alice@example.com")])
-        let paste = MockButton(title: Copy.pasteCode, kind: .quiet)
-        return [
-            ("google-detail-locked", [
-                acme,
-                MockPaneSection(title: Copy.groupOwnGoogle, caption: Copy.groupOwnGoogleCaption,
-                                blocks: [stopped("alice@example.net")] + lockBlocks(Copy.ownGoogleLocked)),
-                MockPaneSection(title: Copy.addAccountTitle, blocks: [
-                    .buttons(leading: [MockButton(title: Copy.connectCalendar), paste], trailing: [])
-                ])
-            ])
-        ]
-    }
+    static var scenes: [(String, [MockPaneSection])] { jiraScenes }
 
     private static var jiraScenes: [(String, [MockPaneSection])] {
         let acme = MockPaneSection(title: "Acme", caption: Copy.groupAcmeAtlassian,
@@ -183,36 +167,15 @@ enum CompanyPaneScenes {
     }
 }
 
-// MARK: - Own Google project page and API token sheet
+// MARK: - API token sheet (mock until Task 27)
 
 @MainActor
 enum CompanySheetScenes {
-    private static let ownHead = MockBlock.title(Copy.ownTitle, Copy.ownIntro)
-    private static let ownGuide = MockBlock.guide(Copy.ownGuide, extras: [:])
-    private static let ownFile = MockBlock.drop("client_secret_9876-home.json · project my-watchtower")
-
     private static func buttons(_ primary: String, disabled: Bool = false) -> MockBlock {
         .buttons(leading: [], trailing: [MockButton(title: Copy.cancel), MockButton(title: primary, kind: .primary, disabled: disabled)])
     }
 
-    /// The own-project page has no Cancel: leaving it is the way back.
-    private static func pageButton(_ primary: String, disabled: Bool = false) -> MockBlock {
-        .buttons(leading: [], trailing: [MockButton(title: primary, kind: .primary, disabled: disabled)])
-    }
-
     private static let doneButton = MockBlock.buttons(leading: [], trailing: [MockButton(title: Copy.done, kind: .primary)])
-
-    static var ownGoogle: [(String, [MockBlock])] {
-        [
-            ("empty", [ownHead, ownGuide, .drop(nil), .caption(Copy.ownUnverifiedNote), pageButton(Copy.connect, disabled: true)]),
-            ("ready", [ownHead, ownGuide, ownFile, .caption(Copy.ownUnverifiedNote), pageButton(Copy.connect)]),
-            ("checking", [ownHead, ownGuide, ownFile, .busy(Copy.checkingGoogle), pageButton(Copy.connect, disabled: true)]),
-            ("checkFailed", [ownHead, ownGuide, ownFile, .problem(Copy.googleRejected, nil), pageButton(Copy.tryAgain)]),
-            ("done", [.title(Copy.ownTitle, nil), .success(Copy.ownDoneTitle, Copy.ownDoneBody), doneButton]),
-            ("done-weekly", [.title(Copy.ownTitle, nil), .success(Copy.ownDoneTitle, Copy.ownDoneBody),
-                             .caption(Copy.ownWeeklyNote), doneButton])
-        ]
-    }
 
     private static let tokenHead = MockBlock.title(Copy.tokenTitle, Copy.tokenIntro)
     private static let tokenStep1: [MockBlock] = [

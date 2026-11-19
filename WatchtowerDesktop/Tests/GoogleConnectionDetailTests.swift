@@ -120,15 +120,85 @@ final class GoogleConnectionDetailTests: XCTestCase {
         XCTAssertTrue(appState.companiesZone.codeFieldOpen)
     }
 
-    /// Use my own Google project opens the add sheet with the custom client
-    /// shown and required: Gmail never goes to the shared app (D11).
-    func testOwnProjectSheetNeedsTheClient() throws {
+    /// §5.1: Use my own Google project opens its page in the detail, and
+    /// **‹ Google** leaves it.
+    func testUseOwnGoogleOpensThePage() async throws {
         let (appState, _) = LinearConnectionDetailTests.wired()
-        appState.googleAccountsViewModel = GoogleAccountsViewModel(dbPool: try pool(), daemon: FakeDaemonRestarter()) { nil }
-        let own = AddGoogleAccountView(requiresCustomClient: true).environment(appState)
-        XCTAssertTrue(try own.inspect().find(button: "Connect").isDisabled())
-        let plain = AddGoogleAccountView().environment(appState)
-        XCTAssertFalse(try plain.inspect().find(button: "Connect").isDisabled(), "onboarding's sheet is unchanged")
+        let vm = GoogleAccountsViewModel(dbPool: try pool(), daemon: FakeDaemonRestarter()) { nil }
+        appState.googleAccountsViewModel = vm
+        await vm.refreshAsync()
+
+        let view = detail(appState)
+        try view.inspect().find(button: CompanyBanner.Action.useOwnGoogle.title).tap()
+        XCTAssertTrue(appState.ownGoogleProject.isOpen)
+        XCTAssertNoThrow(try view.inspect().find(OwnGoogleProjectPage.self))
+        XCTAssertNoThrow(try view.inspect().find(text: OwnGoogleProjectModel.intro))
+        XCTAssertTrue(try view.inspect().find(button: OwnGoogleProjectModel.connectTitle).isDisabled(), "no JSON yet")
+
+        try view.inspect().find(button: OwnGoogleProjectModel.backTitle).tap()
+        XCTAssertFalse(appState.ownGoogleProject.isOpen)
+        XCTAssertNoThrow(try view.inspect().find(text: Pres.googleEmpty))
+    }
+
+    /// §5.4 with Go's `own_project` flag: an untied legacy own-credentials
+    /// account sits under "Your own Google project" (not the shared app),
+    /// stopped by the organization with no Re-login, then the lock card;
+    /// a company account is untouched; the page cannot open.
+    func testOwnProjectLockStopsItsRowsAndShowsTheCard() async throws {
+        let appState = AppState.isolated(managedPolicy: ["AllowOwnGoogleProject": false])
+        appState.managedPolicy.refresh()
+        let pool = try pool()
+        try await pool.write { db in
+            try db.execute(sql: "INSERT INTO google_accounts (id, email, gmail_enabled, status, error) "
+                + "VALUES (1, 'alice@example.net', 1, 'error', 'token expired')")
+        }
+        let cli = try Self.stubCLI(stdout: #"[{"id":1,"shared_gmail":false,"own_project":true}]"#, test: self)
+        let vm = GoogleAccountsViewModel(dbPool: pool, daemon: FakeDaemonRestarter(), cliPath: { cli.path },
+                                         readsAccountFlags: true)
+        appState.googleAccountsViewModel = vm
+        await vm.refreshAsync()
+
+        let groups = appState.companyAccountGroups(.google)
+        XCTAssertEqual(groups.map(\.kind), [.ownProject])
+        let ref = try XCTUnwrap(appState.companyAccountRefs.first)
+        XCTAssertTrue(appState.companyRowStoppedByPolicy(ref))
+        XCTAssertEqual(appState.companyRowStatus(ref)?.text, Pres.stoppedByPolicyLine)
+
+        let view = detail(appState)
+        XCTAssertNoThrow(try view.inspect().find(text: Pres.groupOwnGoogle))
+        XCTAssertNoThrow(try view.inspect().find(text: Pres.stoppedByPolicyLine))
+        XCTAssertNoThrow(try view.inspect().find(text: Pres.lockCard(.ownGoogleProject).text))
+        XCTAssertNoThrow(try view.inspect().find(button: ManagedPolicyHelp.label))
+        XCTAssertThrowsError(try view.inspect().find(button: RowStatus.Action.relogin.title), "Go refuses its sign-in")
+        XCTAssertThrowsError(try view.inspect().find(button: CompanyBanner.Action.useOwnGoogle.title))
+
+        appState.ownGoogleProject.open()
+        XCTAssertThrowsError(try view.inspect().find(OwnGoogleProjectPage.self), "the lock wins over an open page")
+    }
+
+    /// D11: a shared-app Gmail row that must sign in again offers the move to
+    /// an own project instead of a Re-login the shared app would refuse.
+    func testSharedGmailRowOffersTheMove() async throws {
+        let (appState, _) = LinearConnectionDetailTests.wired()
+        let pool = try pool()
+        try await pool.write { db in
+            try db.execute(sql: "INSERT INTO google_accounts (id, email, gmail_enabled, calendar_enabled, status) "
+                + "VALUES (1, 'bob@example.org', 1, 1, 'ok'), (2, 'carol@example.org', 1, 1, 'error')")
+        }
+        let cli = try Self.stubCLI(stdout: #"[{"id":1,"shared_gmail":true},{"id":2,"shared_gmail":true}]"#, test: self)
+        let vm = GoogleAccountsViewModel(dbPool: pool, daemon: FakeDaemonRestarter(), cliPath: { cli.path },
+                                         readsAccountFlags: true)
+        appState.googleAccountsViewModel = vm
+        await vm.refreshAsync()
+
+        let view = detail(appState)
+        XCTAssertThrowsError(try view.inspect().find(button: RowStatus.Action.relogin.title))
+        let moves = try view.inspect().findAll(ViewType.Button.self) {
+            try $0.labelView().text().string() == CompanyBanner.Action.useOwnGoogle.title
+        }
+        XCTAssertEqual(moves.count, 2, "the banner's and the stopped row's")
+        try moves[1].tap()
+        XCTAssertTrue(appState.ownGoogleProject.isOpen)
     }
 
     /// §5.4: under the lock, Use my own Google project is gone from the

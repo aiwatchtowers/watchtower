@@ -20,6 +20,8 @@ struct CompanyAccountsSections<Row: View>: View {
     var busy = false
     /// The last command's failure, under the buttons.
     var error: String?
+    /// The policy locks in force: their groups end with the lock card.
+    var locks: Set<LockKey> = []
     let perform: (DetailAction.Kind) -> Void
     let bannerAction: (CompanyBanner.Action) -> Void
     let tryAgain: () -> Void
@@ -49,7 +51,7 @@ struct CompanyAccountsSections<Row: View>: View {
                 buttons(emptyActions)
             }
         case .groups(let groups):
-            CompanyAccountGroups(groups: groups, connect: connect, row: row)
+            CompanyAccountGroups(groups: groups, connect: connect, locks: locks, row: row)
             SettingsSection(title: CompanyConnectionsPresentation.addAccountTitle) {
                 buttons(addActions)
             }

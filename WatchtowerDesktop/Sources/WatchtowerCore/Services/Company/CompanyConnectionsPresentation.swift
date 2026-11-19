@@ -491,7 +491,6 @@ package enum CompanyConnectionsPresentation {
         ownProject: (AccountRef) -> Bool
     ) -> [AccountGroup] {
         let mine = accounts.filter { $0.vendor == vendor }
-        let personal = Set(companies.filter(\.personal).map(\.slug))
         let stored = sorted(companies.filter { !$0.personal })
         let storedSlugs = Set(stored.map(\.slug))
         // A Linear API key is no company's app, whatever slug its row still carries.
@@ -511,7 +510,7 @@ package enum CompanyConnectionsPresentation {
         var own: [AccountRow] = [], tokens: [AccountRow] = [], keys: [AccountRow] = []
         var shared: [AccountRow] = [], other: [AccountRow] = []
         for a in mine where !storedSlugs.contains(a.companySlug) || ownKey(a) {
-            if vendor == .google, personal.contains(a.companySlug) || (a.companySlug.isEmpty && ownProject(a)) {
+            if isOwnGoogleProject(a, companies: companies, ownProject: ownProject) {
                 own.append(.account(a))
             } else if vendor == .atlassian, a.isAPIToken {
                 tokens.append(.account(a))
@@ -544,6 +543,16 @@ package enum CompanyConnectionsPresentation {
             groups.append(AccountGroup(kind: .other, title: groupUnknown, caption: groupUnknownCaption, rows: other))
         }
         return groups
+    }
+
+    /// A Google account on the person's own project (§4.2 group 2, the
+    /// §5.4 lock): tied to a personal bundle, or untied and flagged by
+    /// `ownProject` (Go's `own_project`, a legacy credentials file).
+    package static func isOwnGoogleProject(
+        _ a: AccountRef, companies: [CompanyRef], ownProject: (AccountRef) -> Bool
+    ) -> Bool {
+        guard a.vendor == .google else { return false }
+        return companies.contains { $0.personal && $0.slug == a.companySlug } || (a.companySlug.isEmpty && ownProject(a))
     }
 
     /// "Acme's Google project · example.com".

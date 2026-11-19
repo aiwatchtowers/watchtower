@@ -4,7 +4,10 @@ import WatchtowerCore
 /// Sheet for connecting a new Google account (Calendar and/or Gmail),
 /// presented from Connections → Google Accounts. Unlike the IMAP/CalDAV "Add"
 /// sheets, there's only one provider here — Google — so this is a single
-/// form rather than a stack of provider cards.
+/// form rather than a stack of provider cards. It signs in through
+/// Watchtower's app; a project of the person's own is the Google detail's
+/// **Use my own Google project** page (#1887 C4, which replaced this sheet's
+/// "Advanced: custom OAuth client"; the CLI's `--client-id` stays).
 struct AddGoogleAccountView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
@@ -15,15 +18,8 @@ struct AddGoogleAccountView: View {
     /// mid-setup (`DaemonRestartPolicy`). Settings keeps the default.
     let daemonPolicy: DaemonRestartPolicy
 
-    /// Opened as **Use my own Google project** (#1887, until Task 26's page):
-    /// the custom client shows from the start and Connect needs both halves,
-    /// so Gmail never goes to the shared app, which refuses it (D11).
-    let requiresCustomClient: Bool
-
-    init(daemonPolicy: DaemonRestartPolicy = .restart, requiresCustomClient: Bool = false) {
+    init(daemonPolicy: DaemonRestartPolicy = .restart) {
         self.daemonPolicy = daemonPolicy
-        self.requiresCustomClient = requiresCustomClient
-        _showAdvanced = State(initialValue: requiresCustomClient)
     }
 
     /// The sheet opens with both services checked on every surface,
@@ -32,9 +28,6 @@ struct AddGoogleAccountView: View {
 
     @State private var wantCalendar = Self.initialScopes.calendar
     @State private var wantGmail = Self.initialScopes.gmail
-    @State private var showAdvanced = false
-    @State private var clientID = ""
-    @State private var clientSecret = ""
     /// Set when Connect is tapped from THIS sheet, cleared on Cancel or once
     /// consumed by `onChange` below — guards the auto-dismiss so it only
     /// fires for a connect attempt this sheet actually started, not some
@@ -42,20 +35,7 @@ struct AddGoogleAccountView: View {
     /// while this one happens to still be around).
     @State private var connectAttempted = false
 
-    /// Custom-client fields must be BOTH empty or BOTH set — a secret typed
-    /// with no client ID would otherwise be silently dropped: `addAccount`
-    /// only treats the pair as a custom client when `clientID` is non-empty
-    /// (`hasCustomClient = !clientID.isEmpty`), so a lone secret gets thrown
-    /// away and the account connects with the build-time default OAuth
-    /// client instead, with no signal to the user that their secret was ignored.
-    private var customClientFieldsConsistent: Bool {
-        clientID.isEmpty == clientSecret.isEmpty
-    }
-
-    private var canConnect: Bool {
-        (wantCalendar || wantGmail) && customClientFieldsConsistent
-            && (!requiresCustomClient || !clientID.trimmingCharacters(in: .whitespaces).isEmpty)
-    }
+    private var canConnect: Bool { wantCalendar || wantGmail }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -70,24 +50,6 @@ struct AddGoogleAccountView: View {
 
             Toggle("Calendar", isOn: $wantCalendar)
             Toggle("Gmail", isOn: $wantGmail)
-
-            DisclosureGroup("Advanced: custom OAuth client", isExpanded: $showAdvanced) {
-                VStack(alignment: .leading, spacing: 8) {
-                    TextField("Client ID", text: $clientID)
-                        .textFieldStyle(.roundedBorder)
-                    SecureField("Client secret", text: $clientSecret)
-                        .textFieldStyle(.roundedBorder)
-                    if !clientSecret.isEmpty && clientID.isEmpty {
-                        Text("Client ID is required when a secret is provided.")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-                    Text("Needed when this account belongs to a different Google Workspace org than the built-in app.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.top, 4)
-            }
 
             Spacer()
 
@@ -147,8 +109,8 @@ struct AddGoogleAccountView: View {
         connectAttempted = vm?.addAccount(
             calendar: wantCalendar,
             gmail: wantGmail,
-            clientID: clientID.trimmingCharacters(in: .whitespaces),
-            clientSecret: clientSecret,
+            clientID: "",
+            clientSecret: "",
             daemonPolicy: daemonPolicy
         ) ?? false
     }

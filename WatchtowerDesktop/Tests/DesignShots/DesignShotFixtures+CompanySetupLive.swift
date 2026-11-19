@@ -176,7 +176,7 @@ enum CompanyWizardLive {
     }
 
     /// Runs `work` to its end on the main actor, turning the run loop meanwhile.
-    private static func run(_ work: @escaping @MainActor () async -> Void) {
+    static func run(_ work: @escaping @MainActor () async -> Void) {
         var done = false
         Task { @MainActor in
             await work()
@@ -186,7 +186,7 @@ enum CompanyWizardLive {
     }
 
     /// Starts `work` and turns the run loop until `condition` holds (a held run).
-    private static func start(_ work: @escaping @MainActor () async -> Void, until condition: () -> Bool) {
+    static func start(_ work: @escaping @MainActor () async -> Void, until condition: () -> Bool) {
         Task { @MainActor in await work() }
         spin(condition)
     }

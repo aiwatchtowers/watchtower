@@ -154,4 +154,48 @@ final class CompanyDetailPresentationTests: XCTestCase {
             XCTAssertThrowsError(try SharedAppFlags.accountIDs(Data(text.utf8), flag: SharedAppFlags.googleFlag), text)
         }
     }
+
+    /// One read gives every asked flag, each with its own ids (#1887 C4).
+    func testOwnProjectFlagReadWithSharedFlag() throws {
+        let google = #"[{"id":1,"shared_gmail":true,"own_project":false},{"id":2,"own_project":true},{"id":3}]"#
+        let flags = try SharedAppFlags.accountIDs(Data(google.utf8),
+                                                  flags: [SharedAppFlags.googleFlag, SharedAppFlags.ownProjectFlag])
+        XCTAssertEqual(flags, ["shared_gmail": [1], "own_project": [2]])
+    }
+
+    // MARK: - Own Google project (#1887 C4)
+
+    /// Go's own-project rule reaches the groups: an untied account flagged
+    /// `own_project` (a legacy credentials file) lands in "Your own Google
+    /// project", not under the shared app; a personal bundle's account too.
+    func testUntiedOwnProjectGroupsAsOwn() {
+        let legacy = AccountRef(vendor: .google, accountID: 7, label: "alice@example.net", companySlug: "",
+                                status: "ok", error: "")
+        let personal = CompanyRef(slug: "bob-example-org", name: "bob@example.org", personal: true, vendors: [:])
+        let tied = AccountRef(vendor: .google, accountID: 8, label: "bob@example.org", companySlug: "bob-example-org",
+                              status: "ok", error: "")
+        let own = { (a: AccountRef) in a.accountID == 7 }
+        let groups = Pres.groups(vendor: .google, accounts: [legacy, tied], companies: [personal], ownProject: own)
+        XCTAssertEqual(groups.map(\.kind), [.ownProject])
+        XCTAssertEqual(groups.first?.rows, [.account(legacy), .account(tied)])
+        XCTAssertTrue(Pres.isOwnGoogleProject(legacy, companies: [], ownProject: own))
+        XCTAssertTrue(Pres.isOwnGoogleProject(tied, companies: [personal]) { _ in false })
+        XCTAssertFalse(Pres.isOwnGoogleProject(legacy, companies: []) { _ in false }, "unflagged: the shared app's")
+        XCTAssertFalse(Pres.isOwnGoogleProject(account(.atlassian), companies: []) { _ in true })
+    }
+
+    /// D11: a shared-app Gmail row that must sign in again offers the move,
+    /// not a Re-login the shared app would refuse; under the §5.4 lock a
+    /// company code instead.
+    func testSharedGmailRowOffersTheMove() {
+        func row(_ status: String, shared: Bool = true) -> AccountRef {
+            AccountRef(vendor: .google, accountID: 2, label: "carol@example.com", companySlug: "", status: status,
+                       error: "", sharedApp: shared)
+        }
+        XCTAssertEqual(Pres.sharedGmailMove(row("error"), locks: []), .useOwnGoogle)
+        XCTAssertEqual(Pres.sharedGmailMove(row("revoked"), locks: [.ownGoogleProject]), .pasteCode)
+        XCTAssertNil(Pres.sharedGmailMove(row("ok"), locks: []), "a syncing row needs no move (the banner offers it)")
+        XCTAssertNil(Pres.sharedGmailMove(row("error", shared: false), locks: []), "its own Re-login works")
+        XCTAssertNil(Pres.sharedGmailMove(row("removed"), locks: []))
+    }
 }

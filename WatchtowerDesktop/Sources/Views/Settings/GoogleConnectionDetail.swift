@@ -15,44 +15,37 @@ struct GoogleConnectionDetail: View {
     private var sourceBlocked: Bool { !appState.managedPolicy.policy.sourceAllowed("google") }
     @Bindable var config: ConfigService
     @State private var saveError: String?
-    @State private var showAddGoogleAccountSheet = false
     @State private var googleAccountPendingRemoval: GoogleAccount?
     @State private var accountBeingRenamed: AccountRenameTarget?
 
+    private var ownProject: OwnGoogleProjectModel { appState.ownGoogleProject }
+    /// `AllowOwnGoogleProject = false` (§5.4).
+    private var ownProjectLocked: Bool { appState.companyLocks.contains(.ownGoogleProject) }
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Spacing.large) {
-                googleAccountsSections
-                calendarSettingsSection
-                gmailSettingsSection
-                if let saveError {
-                    // One caption for a failed autosave from either toggle.
-                    Text(saveError)
-                        .font(.caption)
-                        .foregroundStyle(Tone.error)
-                }
+        Group {
+            // §5.2: Use my own Google project is a page in this detail.
+            if ownProject.isOpen && !ownProjectLocked {
+                OwnGoogleProjectPage(model: ownProject)
+            } else {
+                detail
             }
-            .controlSize(.small)
-            .padding(Spacing.page)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .detailBackground()
         // A connect or Re-login turns the granted services' sync on from the
         // CLI (#740): show that instead of the switches this pane loaded.
         .onChange(of: appState.googleAccountsViewModel?.isConnecting ?? false) { wasConnecting, isConnecting in
             if wasConnecting && !isConnecting { config.adoptGoogleSyncSwitchesFromDisk() }
         }
-        // A company's Google sign-in (its chain) turns them on the same way.
+        // A company's Google sign-in (its chain) and the own project's turn them on the same way.
         .onChange(of: appState.companyConnect?.isRunning ?? false) { wasRunning, isRunning in
             if wasRunning && !isRunning { config.adoptGoogleSyncSwitchesFromDisk() }
         }
-        .sheet(isPresented: $showAddGoogleAccountSheet) {
-            // Use my own Google project: the add sheet with the custom client
-            // required, until Task 26's page replaces it.
-            AddGoogleAccountView(daemonPolicy: appState.accountDaemonPolicy, requiresCustomClient: true)
-                .environment(appState)
-                .marksAccountSheet(appState)
+        .onChange(of: ownProject.isRunning) { wasRunning, isRunning in
+            if wasRunning && !isRunning { config.adoptGoogleSyncSwitchesFromDisk() }
         }
+        // IT forbids own projects while the page is open: back to the lock card.
+        .onChange(of: ownProjectLocked, initial: true) { _, locked in ownProject.applyPolicy(allowed: !locked) }
+        .onDisappear { ownProject.close() }
         .accountRenameAlert($accountBeingRenamed) { target, name in
             Task { await appState.googleAccountsViewModel?.rename(accountID: target.id, to: name) }
         }
@@ -80,6 +73,26 @@ struct GoogleConnectionDetail: View {
         }
     }
 
+    private var detail: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.large) {
+                googleAccountsSections
+                calendarSettingsSection
+                gmailSettingsSection
+                if let saveError {
+                    // One caption for a failed autosave from either toggle.
+                    Text(saveError)
+                        .font(.caption)
+                        .foregroundStyle(Tone.error)
+                }
+            }
+            .controlSize(.small)
+            .padding(Spacing.page)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .detailBackground()
+    }
+
     /// The banner, then the accounts grouped by company (or the loading,
     /// read-failed or empty state), then Add an account.
     private var googleAccountsSections: some View {
@@ -94,6 +107,7 @@ struct GoogleConnectionDetail: View {
             blocked: sourceBlocked,
             busy: appState.companyDetailBusy(.google),
             error: vm?.error,
+            locks: appState.companyLocks,
             perform: perform,
             bannerAction: { action in
                 if action == .useOwnGoogle { perform(.useOwnGoogle) } else { appState.performCompanyBannerAction(action) }
@@ -107,11 +121,10 @@ struct GoogleConnectionDetail: View {
         )
     }
 
-    /// **Use my own Google project** opens the add sheet with its custom
-    /// client until Task 26's page replaces it.
+    /// **Use my own Google project** opens its page (§5.2).
     private func perform(_ kind: DetailAction.Kind) {
         if kind == .useOwnGoogle {
-            showAddGoogleAccountSheet = true
+            ownProject.open()
         } else {
             appState.performCompanyDetailAction(kind, vendor: .google)
         }
@@ -128,10 +141,22 @@ struct GoogleConnectionDetail: View {
             dot: statusColor(account),
             extra: AnyView(rowExtra(account, hasStatus: status != nil))
         ) {
-            if let action = status?.action, action == .pasteCode {
+            if appState.companyRowStoppedByPolicy(ref) {
+                // §5.4: Go refuses its sign-in; the data stays, nothing to press.
+                EmptyView()
+            } else if let action = status?.action, action == .pasteCode {
                 CompanyRowStatusButton(action: action, disabled: sourceBlocked) { _ in
                     appState.companyRowAction(action, account: ref)
                 }
+            } else if let move = CompanyConnectionsPresentation.sharedGmailMove(ref, locks: appState.companyLocks) {
+                // D11: the shared app no longer grants Gmail, so its Re-login cannot work;
+                // the own project's sign-in moves this address's row onto it.
+                Button(move.title) {
+                    if move == .useOwnGoogle { ownProject.open() } else { appState.performCompanyBannerAction(move) }
+                }
+                .buttonStyle(.kitSecondary)
+                .managedByOrganization(sourceBlocked)
+                .disabled(appState.companyDetailBusy(.google))
             } else if !account.isOK || status?.action == .relogin {
                 // `google login --account` signs in through the account's own client (its company's after a Replace).
                 Button(RowStatus.Action.relogin.title) {

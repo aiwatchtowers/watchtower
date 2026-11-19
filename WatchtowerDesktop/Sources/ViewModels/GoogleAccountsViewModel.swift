@@ -249,6 +249,14 @@ final class GoogleAccountsViewModel {
         }
     }
 
+    /// Another flow's `google add` connected an account (Use my own Google
+    /// project, #1887 C4): re-read the accounts and re-wire the daemon, as
+    /// this model's own connect does.
+    func accountAddedElsewhere(daemonPolicy: DaemonRestartPolicy) {
+        refresh()
+        daemonRestartTask = daemonPolicy.apply(using: daemon)
+    }
+
     func cancelConnect() {
         if let process = authProcess, process.isRunning {
             process.terminate()
