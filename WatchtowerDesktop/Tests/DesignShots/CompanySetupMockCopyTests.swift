@@ -140,7 +140,7 @@ final class CompanySetupMockCopyTests: XCTestCase {
         XCTAssertEqual(Copy.reloginNewLink, Pres.reloginNewLink)
         XCTAssertEqual(Copy.reloginUntied, Pres.reloginUntied)
         XCTAssertEqual(Copy.rowNotConnected, Pres.notConnectedStatus.text)
-        XCTAssertEqual(Copy.stoppedByPolicy, Pres.stoppedByPolicy)
+        XCTAssertEqual(Copy.stoppedByPolicy, Pres.stoppedByPolicyLine)
         XCTAssertEqual(Copy.tokenDead, Pres.tokenDead)
         XCTAssertEqual(Copy.tokenTag, Pres.tokenTag)
         XCTAssertEqual(Copy.sharedTag, Pres.sharedTag)

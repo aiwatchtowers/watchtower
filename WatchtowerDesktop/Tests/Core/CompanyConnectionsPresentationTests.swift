@@ -118,6 +118,9 @@ final class CompanyConnectionsPresentationTests: XCTestCase {
                        "Company links cannot reach Watchtower: port 18551 is busy. Paste the company code here instead.")
         XCTAssertTrue(state.codeFieldOpen)
         XCTAssertEqual(zone(companies: [acme], portBusy: true).portBusy, state.portBusy)
+        let withDraft = zone(draft: .unreadable, portBusy: true)
+        XCTAssertEqual(withDraft.portBusy, state.portBusy)
+        XCTAssertNotNil(withDraft.setup)
         XCTAssertFalse(zone().codeFieldOpen)
         XCTAssertEqual(Pres.codePlaceholder, "Company code")
         XCTAssertEqual(Pres.connect, "Connect")
@@ -127,7 +130,13 @@ final class CompanyConnectionsPresentationTests: XCTestCase {
         let damaged = [CompanyFileError(file: "acme.json", error: "unexpected end of JSON input")]
         let state = zone(errors: damaged)
         XCTAssertEqual(state.body, .readFailed("Could not read the company setups: acme.json is damaged."))
+        XCTAssertEqual(state.actions, [], "Try again is the only way out")
+        XCTAssertNil(state.setup)
         XCTAssertEqual(Pres.tryAgain, "Try again")
+        // `company list` failed as a whole: never "no company".
+        let listFailed = Pres.zone(companies: [], errors: [], draft: nil, accounts: [], portBusy: false, loading: false,
+                                   listError: "exit status 1")
+        XCTAssertEqual(listFailed.body, .readFailed("Could not read the company setups: exit status 1."))
         // Two files.
         let two = damaged + [CompanyFileError(file: "beta.json", error: "x")]
         XCTAssertEqual(zone(errors: two).body, .readFailed("Could not read the company setups: acme.json and beta.json are damaged."))
@@ -178,7 +187,7 @@ final class CompanyConnectionsPresentationTests: XCTestCase {
 
     func testUntiedRow() {
         let a = account(.slack, 2, "acme-labs", status: "error", error: "unknown_client")
-        XCTAssertEqual(Pres.rowStatus(a, purgeLease: nil),
+        XCTAssertEqual(Pres.rowStatus(a, purgeLease: nil, companies: []),
                        RowStatus(text: "Re-login needed — open your company's link", tone: .error, action: .pasteCode))
         let groups = Pres.groups(vendor: .slack, accounts: [a], companies: [acme]) { _ in false }
         let other = groups.first { $0.kind == .other }
@@ -212,20 +221,48 @@ final class CompanyConnectionsPresentationTests: XCTestCase {
             XCTAssertEqual(Pres.rowStatus(a, purgeLease: nil, companies: [acme])?.needsAttention, true, code)
         }
         XCTAssertFalse(Pres.notConnectedStatus.needsAttention)
-        XCTAssertFalse(Pres.rowStatus(account(.google, 1, "x"), purgeLease: nil, stoppedByPolicy: true)?.needsAttention ?? true)
+        XCTAssertFalse(Pres.rowStatus(account(.google, 1, "x"), purgeLease: nil, companies: [], stoppedByPolicy: true)?.needsAttention ?? true)
         // A plain ok account and an unrelated error keep today's status line.
-        XCTAssertNil(Pres.rowStatus(account(.google, 1, "x"), purgeLease: nil))
-        XCTAssertNil(Pres.rowStatus(account(.google, 1, "x", status: "error", error: "network down"), purgeLease: nil))
+        XCTAssertNil(Pres.rowStatus(account(.google, 1, "x"), purgeLease: nil, companies: []))
+        XCTAssertNil(Pres.rowStatus(account(.google, 1, "x", status: "error", error: "network down"), purgeLease: nil, companies: []))
         // The PDR scope hint keeps the account syncing: not attention, but it asks for the Re-login.
-        let pdr = Pres.rowStatus(account(.atlassian, 1, "x", slug: "acme", error: "pdr_scope_missing"), purgeLease: nil)
+        let pdr = Pres.rowStatus(account(.atlassian, 1, "x", slug: "acme", error: "pdr_scope_missing"), purgeLease: nil, companies: [])
         XCTAssertEqual(pdr, RowStatus(text: "Re-login to finish the setup", tone: .secondary, action: .relogin))
         XCTAssertFalse(pdr?.needsAttention ?? true)
     }
 
     func testStoppedByPolicyRow() {
         let a = account(.atlassian, 1, "beta.atlassian.net", status: "error", error: "api_token_dead", authKind: "api_token")
-        XCTAssertEqual(Pres.rowStatus(a, purgeLease: nil, stoppedByPolicy: true),
+        XCTAssertEqual(Pres.rowStatus(a, purgeLease: nil, companies: [], stoppedByPolicy: true),
                        RowStatus(text: "Stopped by your organization — data kept", tone: .gray, action: nil))
+        // A purged row's data is not kept: today's line stays.
+        let purged = account(.atlassian, 1, "beta.atlassian.net", status: "purged", authKind: "api_token")
+        XCTAssertNil(Pres.rowStatus(purged, purgeLease: nil, companies: [], stoppedByPolicy: true))
+    }
+
+    func testReplaceThatDroppedTheVendorAsksForTheNewLink() {
+        // A Replace whose new bundle has no Google block: no app to re-login with.
+        let noGoogle = CompanyRef(slug: "acme", name: "Acme", vendors: [.slack: ""])
+        let a = account(.google, 1, "alice@example.com", slug: "acme", status: "error", error: "company_changed_app")
+        XCTAssertEqual(Pres.rowStatus(a, purgeLease: nil, companies: [noGoogle]),
+                       RowStatus(text: "Re-login needed — your company changed its app; open the new link",
+                                 tone: .error, action: .pasteCode))
+    }
+
+    func testPDRHintOnlyOnAHealthyRow() {
+        for status in ["revoked", "error", "purged", "removed"] {
+            let a = account(.atlassian, 1, "x", slug: "acme", status: status, error: "pdr_scope_missing")
+            XCTAssertNil(Pres.rowStatus(a, purgeLease: nil, companies: [acme]), status)
+        }
+    }
+
+    func testRetiredSharedJiraStaysInSharedGroup() {
+        // The retired shared client is unknown to the build, yet the row stays in its group.
+        let a = account(.atlassian, 1, "old.atlassian.net", status: "error", error: "unknown_client", shared: true)
+        let groups = Pres.groups(vendor: .atlassian, accounts: [a], companies: []) { _ in false }
+        XCTAssertEqual(groups.map(\.kind), [.shared])
+        XCTAssertEqual(Pres.tag(a), "Shared app")
+        XCTAssertEqual(Pres.rowStatus(a, purgeLease: nil, companies: [])?.text, "Re-login needed — open your company's link")
     }
 
     func testGroupOrder() {
@@ -280,13 +317,13 @@ final class CompanyConnectionsPresentationTests: XCTestCase {
     func testDeadTokenRowAndLeaseNote() throws {
         let a = account(.atlassian, 2, "beta.atlassian.net", status: "error", error: "api_token_dead", authKind: "api_token")
         let utc = try XCTUnwrap(TimeZone(identifier: "UTC"))
-        let none = Pres.rowStatus(a, purgeLease: nil, zone: utc)
+        let none = Pres.rowStatus(a, purgeLease: nil, companies: [], zone: utc)
         XCTAssertEqual(none, RowStatus(text: "The API token stopped working (expired or revoked) — paste a new one",
                                        tone: .error, action: .pasteNewToken))
         XCTAssertNil(none?.note, "no lease counting, no note")
         XCTAssertEqual(RowStatus.Action.pasteNewToken.title, "Paste a new token")
         let due = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-12-18T10:00:00Z"))
-        XCTAssertEqual(Pres.rowStatus(a, purgeLease: due, zone: utc)?.note,
+        XCTAssertEqual(Pres.rowStatus(a, purgeLease: due, companies: [], zone: utc)?.note,
                        "Its data stays. If no new token comes, the 30-day rule deletes it on Dec 18, "
                            + "with a notice 72 hours before.")
         // The note belongs to the dead token only.
@@ -342,8 +379,8 @@ final class CompanyConnectionsPresentationTests: XCTestCase {
         let jira = account(.atlassian, 1, "old.atlassian.net", shared: true)
         XCTAssertNotNil(Pres.banner(.google, accounts: [google]))
         XCTAssertNotNil(Pres.banner(.atlassian, accounts: [jira]))
-        XCTAssertNil(Pres.rowStatus(google, purgeLease: nil))
-        XCTAssertNil(Pres.rowStatus(jira, purgeLease: nil))
+        XCTAssertNil(Pres.rowStatus(google, purgeLease: nil, companies: []))
+        XCTAssertNil(Pres.rowStatus(jira, purgeLease: nil, companies: []))
     }
 
     // MARK: - Locks
@@ -382,7 +419,7 @@ final class CompanyConnectionsPresentationTests: XCTestCase {
         XCTAssertEqual(Pres.groupUnknown, "Other accounts")
         XCTAssertEqual(Pres.tokenTag, "API token")
         XCTAssertEqual(Pres.sharedTag, "Shared app")
-        XCTAssertEqual(Pres.stoppedByPolicy, "Stopped by your organization — data kept")
+        XCTAssertEqual(Pres.stoppedByPolicyLine, "Stopped by your organization — data kept")
         XCTAssertEqual(Pres.reloginNewLink, "Re-login needed — your company changed its app; open the new link")
         XCTAssertEqual(Pres.reloginUntied, "Re-login needed — open your company's link")
         XCTAssertEqual(Pres.tokenDead, "The API token stopped working (expired or revoked) — paste a new one")

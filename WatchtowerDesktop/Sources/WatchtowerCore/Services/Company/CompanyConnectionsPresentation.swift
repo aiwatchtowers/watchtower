@@ -51,6 +51,7 @@ package struct AccountRef: Equatable, Sendable, Identifiable {
     package var id: String { "\(vendor.rawValue):\(accountID)" }
     package let vendor: CompanyVendor
     package let accountID: Int
+    /// The row's name; for Jira the site host, which the Atlassian banner names.
     package let label: String
     package let companySlug: String
     package let status: String
@@ -299,11 +300,11 @@ package struct LockCard: Equatable, Sendable {
 package enum CompanyConnectionsPresentation {
     // Account error codes Go writes (status 'error', never 'revoked'), and
     // the PDR hint that leaves the status as it is.
-    static let codeChangedApp = "company_changed_app"
-    static let codeInvalidClient = "invalid_client"
-    static let codeUnknownClient = "unknown_client"
-    static let codeAPITokenDead = "api_token_dead"
-    static let codePDRScopeMissing = "pdr_scope_missing"
+    private static let codeChangedApp = "company_changed_app"
+    private static let codeInvalidClient = "invalid_client"
+    private static let codeUnknownClient = "unknown_client"
+    private static let codeAPITokenDead = "api_token_dead"
+    private static let codePDRScopeMissing = "pdr_scope_missing"
     private static let draftFile = "draft.json"
 
     package static let companiesTitle = "Companies"
@@ -317,6 +318,7 @@ package enum CompanyConnectionsPresentation {
         + "About page or from your admin."
     package static let connect = "Connect"
     package static let tryAgain = "Try again"
+    private static let readFailedPrefix = "Could not read the company setups: "
     package static let draftUnreadable = "Your unfinished setup could not be read — start again"
 
     package static let groupOwnGoogle = "Your own Google project"
@@ -336,7 +338,7 @@ package enum CompanyConnectionsPresentation {
     package static let reloginNewLink = "Re-login needed — your company changed its app; open the new link"
     package static let reloginUntied = "Re-login needed — open your company's link"
     package static let pdrScopeMissing = "Re-login to finish the setup"
-    package static let stoppedByPolicy = "Stopped by your organization — data kept"
+    package static let stoppedByPolicyLine = "Stopped by your organization — data kept"
     package static let tokenDead = "The API token stopped working (expired or revoked) — paste a new one"
 
     package static let googleBannerTitle = "Gmail is leaving Watchtower's shared Google app"
@@ -377,18 +379,24 @@ package enum CompanyConnectionsPresentation {
         draft: CompanySetupDraftRef?,
         accounts: [AccountRef],
         portBusy: Bool,
-        loading: Bool
+        loading: Bool,
+        listError: String? = nil
     ) -> CompaniesZoneState {
         if loading {
             return CompaniesZoneState(setup: nil, portBusy: nil, body: .loading(companiesLoading), problem: nil, actions: [])
+        }
+        let busy = portBusy ? portBusyLine : nil
+        // `company list` itself failed: never "no company" (review-rules, absent vs. error).
+        if let listError {
+            return CompaniesZoneState(setup: nil, portBusy: busy, body: .readFailed("\(readFailedPrefix)\(listError)."),
+                                      problem: nil, actions: [])
         }
         let shown = sorted(companies.filter { !$0.personal })
         // The draft's read error is the draft's own state (`draft`), not a company file's.
         let damaged = errors.map(\.file).filter { $0 != draftFile }
         let problem = damaged.isEmpty ? nil
-            : "Could not read the company setups: \(list(damaged)) \(damaged.count == 1 ? "is" : "are") damaged."
+            : "\(readFailedPrefix)\(list(damaged)) \(damaged.count == 1 ? "is" : "are") damaged."
         let setup = draft.map(setupLine)
-        let busy = portBusy ? portBusyLine : nil
         // While a draft exists, Continue setup is the way into the wizard.
         let actions: [CompaniesZoneState.Action] = draft == nil ? [.setUpForCompany, .connectWithCode] : [.connectWithCode]
 
@@ -440,7 +448,8 @@ package enum CompanyConnectionsPresentation {
     private static func sorted(_ companies: [CompanyRef]) -> [CompanyRef] {
         companies.sorted {
             if $0.forced != $1.forced { return $0.forced }
-            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            let order = $0.name.localizedCaseInsensitiveCompare($1.name)
+            return order == .orderedSame ? $0.slug < $1.slug : order == .orderedAscending
         }
     }
 
@@ -480,11 +489,13 @@ package enum CompanyConnectionsPresentation {
                 own.append(.account(a))
             } else if vendor == .atlassian, a.isAPIToken {
                 tokens.append(.account(a))
-            } else if !a.companySlug.isEmpty || a.error == codeUnknownClient {
+            } else if a.companySlug.isEmpty, a.sharedApp || a.error != codeUnknownClient {
+                // The shared app's rows stay in its group until their Re-login (§4.2), even
+                // once its retired client is unknown.
+                shared.append(.account(a))
+            } else {
                 // Tied to a company no longer stored, or signed in through an unknown client.
                 other.append(.account(a))
-            } else {
-                shared.append(.account(a))
             }
         }
         if !own.isEmpty {
@@ -514,7 +525,7 @@ package enum CompanyConnectionsPresentation {
         }
         let raw = company.vendors[vendor] ?? ""
         let detail: String = switch vendor {
-        case .atlassian: raw.replacingOccurrences(of: "https://", with: "")
+        case .atlassian: URL(string: raw)?.host ?? raw
         case .microsoft: raw.isEmpty ? "" : "tenant \(raw)"
         default: raw
         }
@@ -551,25 +562,27 @@ package enum CompanyConnectionsPresentation {
     package static func rowStatus(
         _ a: AccountRef,
         purgeLease: Date?,
-        companies: [CompanyRef] = [],
+        companies: [CompanyRef],
         stoppedByPolicy: Bool = false,
         zone: TimeZone = .current
     ) -> RowStatus? {
-        if stoppedByPolicy {
-            return RowStatus(text: Self.stoppedByPolicy, tone: .gray, action: nil)
+        // A removed or purged row keeps today's line: its data is not kept.
+        if stoppedByPolicy, !a.isGone {
+            return RowStatus(text: stoppedByPolicyLine, tone: .gray, action: nil)
         }
-        if a.error == codePDRScopeMissing, !a.isGone {
+        if a.error == codePDRScopeMissing, a.status == "ok" {
             return RowStatus(text: pdrScopeMissing, tone: .secondary, action: .relogin)
         }
         guard a.status == "error" else { return nil }
         switch a.error {
-        case codeChangedApp:
-            // Without its stored bundle there is nothing to log in with: the new link is the way.
-            guard let company = companies.first(where: { $0.slug == a.companySlug && !a.companySlug.isEmpty }) else {
-                return RowStatus(text: reloginNewLink, tone: .error, action: .pasteCode)
+        case codeChangedApp, codeInvalidClient:
+            // A Replace re-logs through the stored bundle's app for this vendor; without
+            // one (no bundle, or the new one dropped the vendor) the new link is the way.
+            if a.error == codeChangedApp,
+               let company = companies.first(where: { !a.companySlug.isEmpty && $0.slug == a.companySlug }),
+               company.vendors[a.vendor] != nil {
+                return RowStatus(text: reloginChanged(company.name), tone: .error, action: .relogin)
             }
-            return RowStatus(text: reloginChanged(company.name), tone: .error, action: .relogin)
-        case codeInvalidClient:
             return RowStatus(text: reloginNewLink, tone: .error, action: .pasteCode)
         case codeUnknownClient:
             return RowStatus(text: reloginUntied, tone: .error, action: .pasteCode)
