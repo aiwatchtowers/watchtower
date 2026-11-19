@@ -2507,6 +2507,14 @@ CREATE TABLE IF NOT EXISTS slack_app_setups (
     created_at           TEXT NOT NULL,
     updated_at           TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tower_requests (
+    request_id  TEXT PRIMARY KEY,
+    command     TEXT NOT NULL,
+    state       TEXT NOT NULL CHECK (state IN ('begun','done')),
+    result_json TEXT NOT NULL DEFAULT '',
+    refusal_json TEXT NOT NULL DEFAULT '',
+    at          TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS watchman_workbenches (
     workbench_id       INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
     enabled_at         TEXT NOT NULL,
@@ -2996,6 +3004,7 @@ CREATE INDEX IF NOT EXISTS coach_proposals_conversation ON coach_proposals(conve
 CREATE INDEX IF NOT EXISTS skill_pack_overlays_skill ON skill_pack_overlays(skill, id);
 CREATE INDEX IF NOT EXISTS idx_messages_synced_at ON messages(CASE WHEN synced_at = 0 THEN ts_unix ELSE synced_at END);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_messages_client_key ON chat_messages(conversation_id, client_key) WHERE client_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tower_requests_at ON tower_requests(at);
 CREATE INDEX IF NOT EXISTS idx_watchman_backtests_wb ON watchman_backtests(workbench_id, id);
 CREATE INDEX IF NOT EXISTS idx_watchman_precedents_wb ON watchman_precedents(workbench_id, category, decided_at);
 CREATE INDEX IF NOT EXISTS idx_watchman_items_queue ON watchman_items(state, not_before);

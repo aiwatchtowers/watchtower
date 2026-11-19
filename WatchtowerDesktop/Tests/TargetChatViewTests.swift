@@ -48,7 +48,7 @@ final class TargetChatViewTests: XCTestCase {
         }
         let fetchByIDResult = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) }
         let target = try XCTUnwrap(fetchByIDResult)
-        let targets = TargetsViewModel(dbManager: manager)
+        let targets = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let assistant = TargetAssistantViewModel(
             target: target, viewModel: targets, dbManager: manager
         ) { conversationID in
@@ -78,7 +78,7 @@ final class TargetChatViewTests: XCTestCase {
         let replyID = try manager.dbPool.write { db in
             try ChatMessageQueries.insert(db, conversationID: conv, role: "assistant", text: "(proposed)", turnID: "t1")
         }
-        let chat = TargetChatViewModel(target: target, viewModel: TargetsViewModel(dbManager: manager),
+        let chat = TargetChatViewModel(target: target, viewModel: TargetsViewModel(dbManager: manager, tower: manager.fakeTower),
                                        dbManager: manager, conversationID: conv, aiService: MockClaudeService())
         chat.actionCards = (0..<count).map { index in
             TargetActionCard(messageID: UUID(chatRowID: replyID),
@@ -138,7 +138,7 @@ final class TargetChatViewTests: XCTestCase {
                                                          provider: nil, now: Date().timeIntervalSince1970)
         }
         try TestDatabase.insertAgentActionSync(manager.dbPool, conversationID: conv, turnID: "t9")
-        let chat = TargetChatViewModel(target: target, viewModel: TargetsViewModel(dbManager: manager),
+        let chat = TargetChatViewModel(target: target, viewModel: TargetsViewModel(dbManager: manager, tower: manager.fakeTower),
                                        dbManager: manager, conversationID: conv, aiService: MockClaudeService())
         defer { chat.stop() }
         chat.actionFeed.refresh()

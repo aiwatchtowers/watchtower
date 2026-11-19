@@ -19,6 +19,11 @@ package enum StreamEvent {
     case toolStart(ChatToolStart)
     case toolEnd(ChatToolEnd)
     case usage(ChatUsage)
+    /// `ai query --persist`: the turn's rows are on disk (no owner row: nil).
+    case started(ownerID: Int64?, assistantID: Int64)
+    /// `ai query --persist`: a write of the turn's reply failed (`save_error`);
+    /// Go's sentence ("Couldn't save the reply: …"), shown as is.
+    case saveError(String)
     case done
 
     /// The pre-`.error` fold: an error line as visible `[Error] …` text. Kept
@@ -28,6 +33,21 @@ package enum StreamEvent {
         if case .error(let message) = self { return .text("[Error] \(message)") }
         if case .failure(let failure) = self { return .text("[Error] \(failure.message)") }
         return self
+    }
+}
+
+/// `ai query --persist` (mobile Inbox spec §8): the turn's own process
+/// saves an embedded chat's turn — its owner row (`ownerText`, nil for a
+/// follow-up), the reply's rows and their end.
+package struct ChatQueryPersist: Equatable, Sendable {
+    package let conversationID: Int64
+    package let turnID: String
+    package let ownerText: String?
+
+    package init(conversationID: Int64, turnID: String, ownerText: String?) {
+        self.conversationID = conversationID
+        self.turnID = turnID
+        self.ownerText = ownerText
     }
 }
 
@@ -68,9 +88,46 @@ package protocol AIServiceProtocol: Sendable {
         readFolderAskID: Int64?,
         readFolderRoundID: Int64?
     ) -> AsyncThrowingStream<StreamEvent, Error>
+
+    /// The same run saving its turn (`--persist`); its first event is
+    /// `.started`. A double that does not model it runs without it (an
+    /// engine then fails the turn: nothing was saved).
+    func stream( // swiftlint:disable:this function_parameter_count
+        prompt: String,
+        systemPrompt: String?,
+        dbPath: String?,
+        model: String?,
+        provider: String?,
+        toolMode: ChatToolMode?,
+        readFolder: String?,
+        ownerInstructions: Bool,
+        purpose: String?,
+        readFolderAskID: Int64?,
+        readFolderRoundID: Int64?,
+        persist: ChatQueryPersist
+    ) -> AsyncThrowingStream<StreamEvent, Error>
 }
 
 extension AIServiceProtocol {
+    package func stream( // swiftlint:disable:this function_parameter_count
+        prompt: String,
+        systemPrompt: String?,
+        dbPath: String?,
+        model: String?,
+        provider: String?,
+        toolMode: ChatToolMode?,
+        readFolder: String?,
+        ownerInstructions: Bool,
+        purpose: String?,
+        readFolderAskID: Int64?,
+        readFolderRoundID: Int64?,
+        persist: ChatQueryPersist
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        stream(prompt: prompt, systemPrompt: systemPrompt, sessionID: nil, dbPath: dbPath, model: model,
+               provider: provider, toolMode: toolMode, readFolder: readFolder, ownerInstructions: ownerInstructions,
+               purpose: purpose, readFolderAskID: readFolderAskID, readFolderRoundID: readFolderRoundID)
+    }
+
     package func stream(
         prompt: String,
         systemPrompt: String?,

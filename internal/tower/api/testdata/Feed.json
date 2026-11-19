@@ -1,0 +1,185 @@
+{
+  "v": 1,
+  "built_at": "2026-11-16T12:00:00Z",
+  "folders": [
+    {
+      "id": 1,
+      "kind": "root",
+      "slug": "inbox",
+      "title": "Inbox",
+      "icon": "",
+      "position": 0,
+      "hidden": false,
+      "own_hidden": false,
+      "count": 3,
+      "waiting": 1
+    },
+    {
+      "id": 2,
+      "kind": "approvals",
+      "slug": "needs-approval",
+      "title": "Needs approval",
+      "icon": "",
+      "parent_id": 1,
+      "position": 0,
+      "hidden": false,
+      "own_hidden": false,
+      "count": 1,
+      "waiting": 1
+    },
+    {
+      "id": 10,
+      "kind": "owner",
+      "slug": "work",
+      "title": "Work",
+      "icon": "briefcase",
+      "parent_id": 1,
+      "position": 1,
+      "hidden": true,
+      "own_hidden": true,
+      "count": 0,
+      "waiting": 0
+    }
+  ],
+  "cards": [
+    {
+      "id": "o1",
+      "folder_id": 1,
+      "card_kind": "artifact",
+      "title": "Waiting for me",
+      "source_line": "Waiting for me",
+      "preview": "One thread waits.",
+      "stamp": "2026-11-16T11:50:00Z",
+      "living": true,
+      "unread": true,
+      "priority": "medium",
+      "pinned": true,
+      "automation": {
+        "id": 1,
+        "name": "Waiting for me",
+        "builtin_id": "waiting-for-me",
+        "run_id": 7
+      },
+      "blocks": "{\"v\":1,\"blocks\":[{\"type\":\"list\",\"rows\":[{\"title\":\"Answer colleague A\",\"ref\":{\"kind\":\"track\",\"id\":1}}]}]}",
+      "body": "One thread waits.",
+      "body_clipped": false,
+      "content_hash": "3f2a",
+      "actions": [
+        {
+          "index": 0,
+          "kind": "reply",
+          "label": "Reply",
+          "state": "enabled",
+          "detail": "ready",
+          "note": "",
+          "until": ""
+        }
+      ],
+      "ref_facts": [
+        {
+          "kind": "track",
+          "id": 1,
+          "open": true,
+          "waits": true,
+          "reply": false,
+          "reply_waiting": false,
+          "link": "",
+          "trigger_type": "",
+          "custom": true,
+          "linked_target_id": 4,
+          "idea_kind": "",
+          "idea_status": ""
+        }
+      ],
+      "link": "https://example.com/thread"
+    },
+    {
+      "id": "a5",
+      "folder_id": 2,
+      "card_kind": "approval_native",
+      "title": "Create the target",
+      "source_line": "Reactions",
+      "preview": "",
+      "stamp": "2026-11-16T10:00:00Z",
+      "living": false,
+      "unread": true,
+      "priority": "medium",
+      "pinned": false,
+      "blocks": "",
+      "body": "",
+      "body_clipped": false,
+      "content_hash": "9b1c",
+      "actions": [],
+      "ref_facts": [],
+      "approval": {
+        "tool": "create_target",
+        "title": "Create the target",
+        "summary": "Follow up with colleague A",
+        "args_sha256": "9b1c",
+        "status": "pending",
+        "error": "",
+        "proposer": "Reactions",
+        "reason": "Follow up",
+        "edit_on_mac": true,
+        "target": "",
+        "target_note": "",
+        "target_until": "",
+        "superseded": false,
+        "disclosure": "",
+        "recipe_text": "",
+        "diff": [],
+        "recipe_clipped": false,
+        "args_display": "{\n  \"text\": \"Follow up with colleague A\"\n}",
+        "args_complete": true,
+        "external": true
+      },
+      "link": ""
+    },
+    {
+      "id": "tracks",
+      "folder_id": 1,
+      "card_kind": "legacy",
+      "title": "Track my threads",
+      "source_line": "",
+      "preview": "",
+      "stamp": "2026-11-16T09:00:00Z",
+      "living": false,
+      "unread": true,
+      "priority": "medium",
+      "pinned": false,
+      "blocks": "",
+      "body": "",
+      "body_clipped": true,
+      "content_hash": "",
+      "actions": [],
+      "ref_facts": [],
+      "legacy": {
+        "kind": "tracks",
+        "items": [
+          {
+            "ref_kind": "track",
+            "id": 1,
+            "title": "Answer colleague A",
+            "subtitle": "#general",
+            "stamp": "2026-11-16T09:00:00Z",
+            "unread": true,
+            "stopped": false,
+            "date": "",
+            "preview": "1 new",
+            "high": false,
+            "done": false,
+            "end": ""
+          }
+        ],
+        "attention": []
+      },
+      "link": ""
+    }
+  ],
+  "more": [
+    {
+      "folder_id": 1,
+      "count": 42
+    }
+  ]
+}

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Watchman phase 1 storage (migration 00197): precedents mined from the
+// Watchman phase 1 storage (migration 00198): precedents mined from the
 // owner's past decisions, their FTS index, per-source cursors, the learned
 // profile and backtest results. Times are RFC 3339 UTC strings.
 

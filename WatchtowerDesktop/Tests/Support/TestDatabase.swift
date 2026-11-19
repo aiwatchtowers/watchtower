@@ -29,6 +29,7 @@ package enum TestDatabase {
             try db.execute(sql: schema)
             try db.execute(sql: "PRAGMA user_version = 5")
         }
+        TestDatabasePools.register(pool, path: path)
         return (pool, path)
     }
 
@@ -1057,5 +1058,22 @@ package enum TestDatabase {
             arguments: [email, label, clientID, calendarEnabled, gmailEnabled, status, error, createdAt, createdAt]
         )
         return db.lastInsertedRowID
+    }
+}
+
+/// The pools `TestDatabase.createPool` opened, by path, held weakly: a fake
+/// that plays a Go process writing the same file (`FakeChatSessionProcess`,
+/// `FakeEmbeddedPersist`) writes through the test's own pool, so its writes
+/// queue behind the test's instead of failing on SQLite's lock.
+package enum TestDatabasePools {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static let pools = NSMapTable<NSString, DatabasePool>.strongToWeakObjects()
+
+    static func register(_ pool: DatabasePool, path: String) {
+        lock.withLock { pools.setObject(pool, forKey: path as NSString) }
+    }
+
+    package static func pool(at path: String) -> DatabasePool? {
+        lock.withLock { pools.object(forKey: path as NSString) }
     }
 }

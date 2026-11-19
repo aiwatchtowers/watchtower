@@ -241,6 +241,16 @@ final class WatchtowerAIServiceTests: XCTestCase {
         XCTAssertNil(WatchtowerAIService.parseLine("not json"))
     }
 
+    /// `ai query --persist`'s `save_error` reaches the embedded chat with
+    /// Go's sentence as is (no prefix added on the Mac).
+    func testParseLineSaveErrorKeepsGosSentence() {
+        let line = #"{"type":"save_error","turn_id":"t1","message":"Couldn't save the reply: disk I/O error"}"#
+        guard case .saveError(let sentence) = WatchtowerAIService.parseLine(line) else {
+            return XCTFail("expected .saveError")
+        }
+        XCTAssertEqual(sentence, "Couldn't save the reply: disk I/O error")
+    }
+
     /// The provider's failure is a typed `.failure` with its own text and
     /// code, never reply text.
     func testParseLineErrorIsATypedFailure() {

@@ -115,10 +115,10 @@ enum SpecReviewThreadSurface {
 
     /// The thread's conversation, created on first use.
     static func conversationID(
-        workbenchID: Int64, rootAskID: Int64, itemKey: String, title: String, dbPool: DatabasePool
+        workbenchID: Int64, rootAskID: Int64, itemKey: String, title: String, dbPool: DatabasePool, writes: ChatWrites
     ) async throws -> Int64 {
         try await DatabaseEmbeddedChatStore.conversationID(
-            dbPool: dbPool, contextType: contextType,
+            dbPool: dbPool, writes: writes, contextType: contextType,
             contextID: SpecReviewThreadKey.contextID(workbenchID: workbenchID, rootAskID: rootAskID, itemKey: itemKey),
             title: "Spec review: \(String(title.prefix(60)))")
     }

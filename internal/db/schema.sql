@@ -3884,7 +3884,18 @@ CREATE TABLE IF NOT EXISTS chat_turn_leases (
     cancel_requested_at_ms INTEGER                               -- set by the other side's Stop
 );
 
--- Watchman (00197): precedents, profile and backtests of the phase-1 learning loop.
+-- Tower request ledger (00197). Go-written by internal/tower: the request ledger, exactly-once writes for the socket and the hub. Rows older than the hub ledger window (8 days) are pruned by the daemon.
+CREATE TABLE IF NOT EXISTS tower_requests (
+    request_id  TEXT PRIMARY KEY,                                  -- the client's UUID, kept across retries of one press
+    command     TEXT NOT NULL,                                     -- the tower command name (domain.verb)
+    state       TEXT NOT NULL CHECK (state IN ('begun','done')),   -- begun: a non-idempotent command is acting; done: its write committed
+    result_json TEXT NOT NULL DEFAULT '',                          -- the marshalled response a repeat returns ('' while begun or refused)
+    refusal_json TEXT NOT NULL DEFAULT '',                         -- a non-idempotent command's marshalled refusal on a done row ('' otherwise)
+    at          TEXT NOT NULL                                      -- last write, UTC %Y-%m-%dT%H:%M:%SZ
+);
+CREATE INDEX IF NOT EXISTS idx_tower_requests_at ON tower_requests(at);
+
+-- Watchman (00198): precedents, profile and backtests of the phase-1 learning loop.
 CREATE TABLE IF NOT EXISTS watchman_workbenches (
     workbench_id       INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
     enabled_at         TEXT NOT NULL,
@@ -3985,7 +3996,7 @@ CREATE TABLE IF NOT EXISTS watchman_skipped_keys (
     PRIMARY KEY (workbench_id, source, source_key)
 );
 
--- Watchman phase 2 (00201; spec §§2, 4, 6 and the phase-2 plan's item enums).
+-- Watchman phase 2 (00202; spec §§2, 4, 6 and the phase-2 plan's item enums).
 CREATE TABLE IF NOT EXISTS watchman_arming (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     scope    TEXT NOT NULL CHECK (scope IN ('session','target')),
@@ -4001,7 +4012,7 @@ CREATE TABLE IF NOT EXISTS watchman_items (
     session_id    INTEGER,
     target_id     INTEGER,
     kind          TEXT NOT NULL CHECK (kind IN ('ask','review_doc','check','handover','permission','review_code','guard')),
-    ref_kind      TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round','guard')),  -- 'guard': a guard hook denial, ref_id its own number (00204)
+    ref_kind      TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round','guard')),  -- 'guard': a guard hook denial, ref_id its own number (00205)
     ref_id        INTEGER NOT NULL,
     state         TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','deciding','done')),
     outcome       TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('','answered','handed','parked','owner_first','approved','changes','superseded')),
@@ -4029,7 +4040,7 @@ CREATE TABLE IF NOT EXISTS watchman_items (
     check_done_at TEXT,
     owner_done_at TEXT,       -- the owner marked a waiting item done (Desktop only)
     correction_sent_at TEXT,  -- the owner's correction reached a session (Desktop only)
-    moves         INTEGER,    -- review_code: times its diff moved after the decision (00206)
+    moves         INTEGER,    -- review_code: times its diff moved after the decision (00207)
     UNIQUE (ref_kind, ref_id, kind)
 );
 CREATE INDEX IF NOT EXISTS idx_watchman_items_queue ON watchman_items(state, not_before);

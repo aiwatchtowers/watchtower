@@ -14,22 +14,6 @@ package enum ChatConversationQueries {
         """)
     }
 
-    @discardableResult
-    package static func create(
-        _ db: Database, title: String = "", contextType: String? = nil, contextID: String? = nil, projectID: Int64? = nil
-    ) throws -> ChatConversation {
-        let now = Date().timeIntervalSince1970
-        try db.execute(sql: """
-            INSERT INTO chat_conversations (title, context_type, context_id, project_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, arguments: [title, contextType, contextID, projectID, now, now])
-        let rowID = db.lastInsertedRowID
-        guard let conversation = try fetchByID(db, id: rowID) else {
-            throw DatabaseError(message: "Failed to fetch newly created chat conversation")
-        }
-        return conversation
-    }
-
     package static func fetchByContext(_ db: Database, type: String, id: String) throws -> ChatConversation? {
         try ChatConversation.fetchOne(
             db,
@@ -81,33 +65,6 @@ package enum ChatConversationQueries {
         )
         guard let newest else { return nil }
         return Date(timeIntervalSince1970: newest)
-    }
-
-    /// Best-effort, unchecked: an automatic (first-turn / AI) title, not an
-    /// owner edit — a chat deleted meanwhile needs no title.
-    package static func updateTitle(_ db: Database, id: Int64, title: String) throws {
-        let now = Date().timeIntervalSince1970
-        try db.execute(sql: """
-            UPDATE chat_conversations SET title = ?, updated_at = ? WHERE id = ?
-        """, arguments: [title, now, id])
-    }
-
-    package static func setProviderModel(_ db: Database, id: Int64, provider: String, model: String?) throws {
-        try db.execute(
-            sql: "UPDATE chat_conversations SET provider = ?, model = ? WHERE id = ?",
-            arguments: [provider, model, id]
-        )
-    }
-
-    package static func touch(_ db: Database, id: Int64) throws {
-        let now = Date().timeIntervalSince1970
-        try db.execute(sql: """
-            UPDATE chat_conversations SET updated_at = ? WHERE id = ?
-        """, arguments: [now, id])
-    }
-
-    package static func delete(_ db: Database, id: Int64) throws {
-        try db.execute(sql: "DELETE FROM chat_conversations WHERE id = ?", arguments: [id])
     }
 
     /// An "untouched" main chat: standalone, in the landing's project (or

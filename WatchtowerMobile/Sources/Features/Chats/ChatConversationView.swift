@@ -235,20 +235,24 @@ struct ChatConversationView: View {
         let client = center.client
         let permissions = inputs.grant?.permissionsAllowed ?? false
         let host = inputs.host
+        let retryDismiss = inputs.heartbeat?.capabilities?.chatRetryAndDismiss == true
         return ChatPartActions(
             openURL: { openURL($0) },
             copy: { UIPasteboard.general.string = $0 },
             openArtifact: { artifact = $0 },
             openSources: { sources = $0 },
-            approvals: approvals(client: client, permissions: permissions, host: host)
+            approvals: approvals(client: client, permissions: permissions, host: host, retryDismiss: retryDismiss)
         )
     }
 
     /// The approval card's services on the phone (ask #1411): the hub's `chat_action_answer` and the card's state line
-    /// only — no editing (the relay answer has no patch), no Approve all, Dismiss or Retry.
-    private func approvals(client: RelayChatClient, permissions: Bool, host: TowerHost) -> ChatApprovalServices {
-        let conversation = conversation
-        return ChatApprovalServices(
+    /// — no editing (the relay answer has no patch), no Approve all. Retry and Dismiss (mobile Inbox spec §12.9, ask
+    /// #1553) go as `chat_action_answer` `retry` / `dismiss`; the card says where to do them instead without the grant
+    /// or the hub's `chat_actions` (`ChatApprovalCardModel.settledNote`).
+    static func approvals(
+        client: RelayChatClient, permissions: Bool, host: TowerHost, retryDismiss: Bool, runningTurnID: String?
+    ) -> ChatApprovalServices {
+        ChatApprovalServices(
             decide: { action, answer in
                 switch answer {
                 case .approve(nil): Task { await client.decide(action, .approve, permissions: permissions) }
@@ -257,9 +261,16 @@ struct ChatConversationView: View {
                 case .approve(_?): break
                 }
             },
-            state: { action in client.approvalCard(action, permissions: permissions, host: host).state },
-            sessionHoldsCall: { ConnectorCallProposal.sessionHolds($0, runningTurnID: conversation.runningTurnID) }
+            state: { action in client.approvalCard(action, permissions: permissions, host: host, retryDismiss: retryDismiss).state },
+            retry: { action in Task { await client.decide(action, .retry, permissions: permissions, retryDismiss: retryDismiss) } },
+            dismiss: { action in Task { await client.decide(action, .dismiss, permissions: permissions, retryDismiss: retryDismiss) } },
+            sessionHoldsCall: { ConnectorCallProposal.sessionHolds($0, runningTurnID: runningTurnID) }
         )
+    }
+
+    private func approvals(client: RelayChatClient, permissions: Bool, host: TowerHost, retryDismiss: Bool) -> ChatApprovalServices {
+        Self.approvals(client: client, permissions: permissions, host: host, retryDismiss: retryDismiss,
+                       runningTurnID: conversation.runningTurnID)
     }
 
     private func keepDraft() {

@@ -1,5 +1,6 @@
 import Foundation
 import WatchtowerCore
+import WatchtowerInterface
 
 /// The assistant tabs of ONE target: the conversation list, which tab is
 /// active, and one `TargetChatViewModel` per conversation the user has opened.
@@ -38,6 +39,7 @@ final class TargetAssistantViewModel {
 
     private let dbManager: DatabaseManager
     private let embeddedChats: EmbeddedChatCenter?
+    private let chatWrites: ChatWrites
     private let makeChat: ChatFactory
     private let firstTabTitle: String
     private var chats: [Int64: TargetChatViewModel] = [:]
@@ -59,10 +61,12 @@ final class TargetAssistantViewModel {
         target: Target,
         viewModel: TargetsViewModel,
         dbManager: DatabaseManager,
+        writes: ChatWrites,
         chatFactory: ChatFactory? = nil,
         embeddedChats: EmbeddedChatCenter? = nil
     ) {
         self.embeddedChats = embeddedChats
+        self.chatWrites = writes
         self.targetID = target.id
         self.dbManager = dbManager
         self.firstTabTitle = "Task: \(String(target.text.prefix(60)))"
@@ -71,6 +75,7 @@ final class TargetAssistantViewModel {
                 target: target,
                 viewModel: viewModel,
                 dbManager: dbManager,
+                writes: writes,
                 conversationID: conversationID,
                 center: embeddedChats
             )
@@ -184,13 +189,16 @@ final class TargetAssistantViewModel {
     }
 
     private func createConversation(title: String) async -> Int64? {
-        let pool = dbManager.dbPool
+        let (pool, chatWrites) = (dbManager.dbPool, chatWrites)
         let contextID = String(targetID)
         do {
             let conversation = try await writes.runThrowing {
-                try await pool.write { db in
-                    try ChatConversationQueries.create(db, title: title, contextType: "target", contextID: contextID)
+                let created: ChatNewResponse = try await chatWrites.perform(.chatNew) {
+                    ChatNewRequest(requestID: $0, context: ChatContext(type: "target", id: contextID, title: title))
                 }
+                guard let row = try await pool.read({ try ChatConversationQueries.fetchByID($0, id: created.conversationID) })
+                else { throw ChatContextGoneError() }
+                return row
             }
             // A `load` meanwhile may have read the new row already. Appending
             // keeps the list in creation order — the new tab is newest.
@@ -215,11 +223,11 @@ final class TargetAssistantViewModel {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               conversations.contains(where: { $0.id == conversationID }) else { return nil }
-        let pool = dbManager.dbPool
+        let chatWrites = chatWrites
         return writes.start { [weak self] in
             do {
-                try await pool.write { db in
-                    try ChatConversationQueries.updateTitle(db, id: conversationID, title: trimmed)
+                let _: ChatDone = try await chatWrites.perform(.chatSetTitle) {
+                    ChatSetTitleRequest(requestID: $0, conversationID: conversationID, title: trimmed)
                 }
             } catch {
                 self?.errorMessage = "Failed to rename the chat: \(error.localizedDescription)"
@@ -251,17 +259,17 @@ final class TargetAssistantViewModel {
         // A reply whose changes are being written cannot be stopped: its
         // rows go only once it has ended.
         await chats[conversationID]?.engine.finished()
-        let pool = dbManager.dbPool
+        let chatWrites = chatWrites
         do {
             try await writes.runThrowing {
-                try await pool.write { db in
-                    // Messages are deleted explicitly rather than left to the FK
-                    // cascade: `PRAGMA foreign_keys` is per-connection, so a closed
-                    // tab must never be able to leave orphaned rows behind.
-                    try ChatMessageQueries.deleteByConversation(db, conversationID: conversationID)
-                    try ChatConversationQueries.delete(db, id: conversationID)
+                // Go deletes the messages with the conversation, in one
+                // transaction (`chat.delete` scoped to target chats).
+                let _: ChatDone = try await chatWrites.perform(.chatDelete) {
+                    ChatDeleteRequest(requestID: $0, conversationID: conversationID, contextType: "target")
                 }
             }
+        } catch let error as ChatWriteError where error.isGone {
+            // Already gone: the tab closes.
         } catch {
             errorMessage = "Failed to close the chat: \(error.localizedDescription)"
             return

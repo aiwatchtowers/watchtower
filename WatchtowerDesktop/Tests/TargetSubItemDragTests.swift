@@ -139,7 +139,7 @@ final class TargetSubItemDragTests: XCTestCase {
             try TargetQueries.updateSubItems(db, id: id, subItems: items)
         }
         let target = try XCTUnwrap(fetchTarget(manager, id: id))
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         await vm.moveSubItem(target, from: IndexSet(integer: 0), to: 99)
         await vm.moveSubItem(target, from: IndexSet(integer: 7), to: 1)

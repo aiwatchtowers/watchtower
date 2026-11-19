@@ -82,7 +82,7 @@ struct WorkbenchBoardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             if viewModel == nil, let pool = appState.databaseManager?.dbPool {
-                let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: projectID)
+                let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: projectID, tower: appState.screenTower)
                 vm.onOwnerWrite = { [weak projects = appState.workbenchesViewModel] project, subject in
                     projects?.onOwnerWrite?(project, subject)
                 }

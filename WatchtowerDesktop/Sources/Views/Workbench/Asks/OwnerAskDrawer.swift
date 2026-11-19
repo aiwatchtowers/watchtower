@@ -364,6 +364,7 @@ struct OwnerAskDrawer: View {
         specReviewLoadedFor = nil
         guard specReviewApplies, let cli = vm.cli else { return }
         let model = SpecReviewModel(ask: ask, dbPool: vm.dbPool, cli: cli, asks: asks, chats: appState?.embeddedChatCenter,
+                                    chatWrites: appState?.chatWrites ?? .notReady,
                                     threadCenter: appState?.specReviewThreadCenter)
         await model.load()
         guard !Task.isCancelled else { return }

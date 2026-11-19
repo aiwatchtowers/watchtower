@@ -18,6 +18,10 @@ public enum ArtifactTone: String, CaseIterable, Equatable, Sendable {
 public enum ArtifactRefKind: String, Equatable, Sendable {
     case inboxItem = "inbox_item"
     case track, idea, reminder, action
+    /// A day plan item (`day_plan_items`). Only the hub's legacy-entry
+    /// projection writes it (mobile Inbox spec), so only the phone meets it;
+    /// the Mac draws its plan natively.
+    case planItem = "plan_item"
 }
 
 /// A list row's record: `{kind, id}`, id > 0.

@@ -4,14 +4,14 @@ import XCTest
 @testable import WatchtowerMobile
 
 /// The phone's tab bar (design pass spec §5, amending mobile POC spec §13
-/// A4; iPhone chat spec §6.1): Now, Workbench, Chats and Calendar, in that order; Settings is pushed from
-/// Now's gear.
+/// A4; iPhone chat spec §6.1; mobile Inbox spec §7): Now, Inbox, Workbench, Chats and Calendar, in that order;
+/// Settings is pushed from Now's gear.
 @MainActor
 final class RootTabTests: XCTestCase {
-    func testExactlyFourTabsInOrder() {
-        XCTAssertEqual(RootTabView.Tab.allCases.map(\.title), ["Now", "Workbench", "Chats", "Calendar"])
+    func testExactlyFiveTabsInOrder() {
+        XCTAssertEqual(RootTabView.Tab.allCases.map(\.title), ["Now", "Inbox", "Workbench", "Chats", "Calendar"])
         XCTAssertEqual(
-            RootTabView.Tab.allCases.map(\.systemImage), ["clock", "hammer", "bubble.left.and.bubble.right", "calendar"]
+            RootTabView.Tab.allCases.map(\.systemImage), ["clock", "tray", "hammer", "bubble.left.and.bubble.right", "calendar"]
         )
     }
 

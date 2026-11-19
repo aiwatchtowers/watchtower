@@ -176,6 +176,10 @@ func (d *Daemon) wakeAutomationExecutor() {
 	}
 }
 
+// WakeAutomations is wakeAutomationExecutor for the daemon's tower commands
+// (inbox.act's reply press, Run Now and reminder hook).
+func (d *Daemon) WakeAutomations() { d.wakeAutomationExecutor() }
+
 // installApprovalHook sets the database's approval hook to builtin.Fire with
 // the in-process executor wake, replacing a hook a tool registry built during
 // wiring may have set (cmd's SIGUSR2 wake, which would signal this process).
@@ -195,23 +199,26 @@ func (d *Daemon) automationsActive() bool {
 
 // startAutomations starts the scheduler and the executor as goroutines of
 // their own — never inside the sync loop, so a wake is served while a sync
-// runs and never triggers one. With nothing wired it starts nothing. The
-// returned stop cancels them and waits until both have returned (the
-// executor finishes or interrupts its in-flight runs first), so no goroutine
-// outlives Run.
+// runs and never triggers one. With nothing wired it starts nothing. While
+// sync is paused the scheduler is stopped (pause.go). The returned stop
+// cancels them and waits until both have returned (the executor finishes or
+// interrupts its in-flight runs first), so no goroutine outlives Run.
 func (d *Daemon) startAutomations(ctx context.Context) (stop func()) {
 	if !d.automationsActive() {
 		return func() {}
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	var wg gosync.WaitGroup
-	for name, r := range map[string]AutomationRunner{"scheduler": d.automationScheduler, "executor": d.automationExecutor} {
-		wg.Go(func() {
-			if err := r.Run(runCtx); err != nil {
-				d.logger.Printf("automations: %s stopped: %v", name, err)
-			}
-		})
-	}
+	// The scheduler runs only while sync is not paused (no scheduled run
+	// starts); the executor always does (Run Now, approval apply).
+	wg.Go(func() {
+		d.runUnlessPaused(runCtx, "automations: scheduler", d.automationScheduler.Run)
+	})
+	wg.Go(func() {
+		if err := d.automationExecutor.Run(runCtx); err != nil {
+			d.logger.Printf("automations: executor stopped: %v", err)
+		}
+	})
 	d.logger.Println("automations: scheduler and executor started")
 	return func() {
 		cancel()

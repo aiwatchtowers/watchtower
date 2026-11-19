@@ -213,8 +213,12 @@ func (v *validator) ref(path string, raw any) (*Ref, error) {
 		return nil, err
 	}
 	kind, _ := m["kind"].(string)
-	if !slices.Contains(refKinds, kind) {
-		return nil, v.errf("%s.kind must be one of %s", path, strings.Join(refKinds, ", "))
+	kinds := refKinds
+	if v.opts.PlanItemRefs {
+		kinds = append(slices.Clone(refKinds), RefPlanItem)
+	}
+	if !slices.Contains(kinds, kind) {
+		return nil, v.errf("%s.kind must be one of %s", path, strings.Join(kinds, ", "))
 	}
 	id, isInt := m["id"].(int64)
 	if !isInt || id <= 0 {

@@ -570,6 +570,9 @@ CREATE INDEX idx_terminal_sessions_project ON terminal_sessions(project_id, last
 index	idx_terminal_sessions_target
 CREATE INDEX idx_terminal_sessions_target ON terminal_sessions(target_id)
 
+index	idx_tower_requests_at
+CREATE INDEX idx_tower_requests_at ON tower_requests(at)
+
 index	idx_track_events_track
 CREATE INDEX idx_track_events_track ON track_events(track_id, created_at DESC)
 
@@ -3344,6 +3347,16 @@ surface TEXT NOT NULL,
 trust TEXT NOT NULL CHECK(trust IN ('ask','execute')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 PRIMARY KEY (tool, surface)
+)
+
+table	tower_requests
+CREATE TABLE tower_requests (
+request_id TEXT PRIMARY KEY,
+command TEXT NOT NULL,
+state TEXT NOT NULL CHECK (state IN ('begun','done')),
+result_json TEXT NOT NULL DEFAULT '',
+refusal_json TEXT NOT NULL DEFAULT '',
+at TEXT NOT NULL
 )
 
 table	track_events
@@ -6860,6 +6873,14 @@ GROUP BY up.ancestor
 1	surface	TEXT	notnull=1	dflt=NULL	pk=2
 2	trust	TEXT	notnull=1	dflt=NULL	pk=0
 3	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## tower_requests
+0	request_id	TEXT	notnull=0	dflt=NULL	pk=1
+1	command	TEXT	notnull=1	dflt=NULL	pk=0
+2	state	TEXT	notnull=1	dflt=NULL	pk=0
+3	result_json	TEXT	notnull=1	dflt=''	pk=0
+4	refusal_json	TEXT	notnull=1	dflt=''	pk=0
+5	at	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## track_events
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

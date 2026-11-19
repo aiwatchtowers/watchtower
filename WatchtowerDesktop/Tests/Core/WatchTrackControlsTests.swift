@@ -42,7 +42,7 @@ final class WatchTrackControlsTests: XCTestCase {
 
     private func controls(_ track: Track, runner: FakeCLIRunner) -> WatchTrackControls {
         let cli = AutomationsCLI(runner: runner)
-        let direct = DirectCustomTrackControls(dbPool: pool, scanService: TrackScanService(runner: runner))
+        let direct = DirectCustomTrackControls(tower: FakeScreenTower(), scanService: TrackScanService(runner: runner))
         return WatchTrackControls(track: track, cli: cli,
                                   controls: RecipeCustomTrackControls(cli: cli, direct: direct), reader: pool)
     }

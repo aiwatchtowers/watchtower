@@ -10,7 +10,7 @@
 > break a guard test or remove a contract must be raised as a question
 > before touching code.
 
-**Module:** `internal/inboxfolders/`; Needs approval's cards: `WatchtowerDesktop/Sources/WatchtowerCore/Services/Inbox/` (`NeedsApprovalSelection`, `InboxFolderEntries`, `InboxFolderMenuSnapshot`)
+**Module:** `internal/inboxfolders/`; Needs approval's cards: `internal/inboxfeed/` (`approvals.go`, `Build`); the Mac draws them from `inbox.feed` (`InboxTowerEntries`)
 **Last full audit:** 2026-11-06
 
 ## FOLDER-01 — Deleting a folder never deletes content
@@ -34,16 +34,20 @@
 **Observable:** Needs approval draws every open approval — an `agent_actions` row that waits on the owner (`AgentActionQueries.awaitingOwnerClause`, the Inbox badge's own predicate) and every due reminder (`status='pending' AND remind_at <= now`) — read in the same one `ActionStripViewModel.refresh()` read as the folder. Each is drawn by the `needs-approval` recipe's card only while all four hold: the `approval-cards` feature is on and the built-in is not stopped (`disabled_reason` empty), its latest finished run succeeded, its living card `action:<id>` / `reminder:<id>` exists, and that card's `written_at` is at or after the approval's last change (an action's latest of `created_at`, `decided_at`, `applied_at`; a reminder's latest of `created_at`, `remind_at` — Go's `OpenApproval.ChangedAt`). Otherwise today's native card draws it (`MacAgentActionCard` over `ChatUI.AgentActionCard`, `SaveAutomationProposalPane`, the reminder card), so an approval never waits on a run, a failed, stopped, capped (more than 50) or behind run never hides one, and a new one shows at once (native above the recipe's cards). The built-in's cards are drawn only through the open approvals they show: a card whose approval is closed (decided, applied, dismissed, done, gone) is drawn in no folder and counted in none, whatever the run did, even before the run removes it.
 
 **Test guards:**
-- Guard: `WatchtowerDesktop/Tests/Core/Approval01Tests.swift::test_APPROVAL_01_native_card_when_recipe_off`
-- Guard: `WatchtowerDesktop/Tests/Core/Approval01Tests.swift::test_APPROVAL_01_native_card_when_behind`
-- Guard: `WatchtowerDesktop/Tests/Core/Approval01Tests.swift::test_APPROVAL_01_closed_never_drawn`
-- Supporting: `WatchtowerDesktop/Tests/Core/NeedsApprovalSelectionTests.swift` (the four conditions, more than 50, mixed order, a closed approval's live artifact), `InboxFolderEntriesTests`, `ActionStripAutomationOutputTests::testRefreshIsAPureRead` (STRIP-02)
+- Guard: `internal/inboxfeed/approval01_test.go::TestApproval01_NativeCardWhenRecipeOff`
+- Guard: `internal/inboxfeed/approval01_test.go::TestApproval01_NativeCardWhenBehind`
+- Guard: `internal/inboxfeed/approval01_test.go::TestApproval01_ClosedNeverDrawn`
+- Supporting: `internal/inboxfeed/approvals_test.go` (more than 50, mixed order, settled rows uncounted), `internal/db/approvals_all_test.go`, the parity cases `internal/inboxfeed/testdata/inbox_feed_cases.json` (`approvals_*`), `internal/inboxfeed/strip_test.go::TestStrip02_RefreshIsAPureRead` (STRIP-02)
 
 **Why locked:** Approvals are the one place the assistant waits on the owner before it acts. If the recipe-drawn view could hide an open approval (off, failed, behind) the action would wait unseen; if it could show a closed one, the owner would approve or dismiss something already decided. Reading the records at render time, in the same read as the folder, and falling back to the native card keeps Needs approval exactly the set of open approvals whatever the built-in did.
 
 **Locked since:** 2026-11-08
 
 ## Changelog
+
+- 2026-11-17 (#1170 Task 11d-a, spec `2026-11-15-mobile-inbox-design.md` §4.1/§5.3, owner approved in ask #1368): APPROVAL-01 re-pointed to Go. The Mac lists Needs approval from `inbox.feed` (`inboxfeed.Build`). The Swift builder (`NeedsApprovalSelection`, `InboxFolderEntries`) and its guards `Approval01Tests` are deleted. The guards are the Go `TestApproval01_*`, which have the same names and meaning; none was relaxed. FOLDER-01's guard was already Go's.
+
+- 2026-11-16 (#1170, the Inbox core in Go, Task 7): Go guards added beside the Swift ones; same meaning; no guard relaxed. `inboxfeed` ports `NeedsApprovalSelection` over `db.ReadNeedsApprovalTx`, which reads the open approvals with `db.AwaitingOwnerClause` (the Swift `awaitingOwnerClause`, moved into `db` as the one "waits on the owner" rule). The Swift guards stay listed until the Swift builder is deleted.
 
 - 2026-11-10 (Inbox builder final review, board #919; owner approval in ask #610): APPROVAL-01 amended — below the open approvals, Needs approval also draws the actions the owner already approved that are still `approved` or `executing` (applied in the background, stuck or still running), natively and uncounted: they are not open approvals, so neither the folder count nor the Inbox badge includes them, and they leave the folder once applied, failed or dismissed. Supporting: `InboxFolderEntriesTests::testNeedsApprovalKeepsApprovedAndExecutingRowsUncounted`.
 

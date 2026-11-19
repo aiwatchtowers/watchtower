@@ -65,6 +65,7 @@ import (
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstart"
 	"watchtower/internal/tools"
+	"watchtower/internal/tower"
 )
 
 // The phase-1 environment.
@@ -191,6 +192,10 @@ type Options struct {
 	// (unified chat T17): the providers, their pair and capability rows and
 	// the routing status, read on every build. nil leaves `routing` out.
 	ChatRouting func(context.Context) *chatengine.RoutingCatalog
+	// Tower is the daemon's tower (the socket's): the phone Inbox's feed
+	// (inbox.feed) and writes (inbox.act, as the hub) go through it. nil =
+	// no Inbox on the phone and no inbox capability in the heartbeat.
+	Tower *tower.Tower
 
 	// Test seams (zero = production).
 	newTransport func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error)

@@ -21,6 +21,7 @@ import (
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/sessionagent"
+	"watchtower/internal/tower"
 )
 
 // Wire reasons the handlers answer with (the Kit's ActionReason).
@@ -196,6 +197,10 @@ type Deps struct {
 	// (shared with Watchman by the daemon); nil = Register builds one over
 	// DB, Sessions, Store (the held answers' ledger) and Clock.
 	Answerer *askanswer.Answerer
+	// Tower is the daemon's tower the phone Inbox's inbox_act calls
+	// (inbox.act, as the Mac does over the socket); nil = this hub has no
+	// Inbox, and inbox_act is refused not_supported.
+	Tower *tower.Tower
 }
 
 // Handlers is the registered handler set: its in-memory state (asks being
@@ -276,6 +281,8 @@ func Register(d *actions.Dispatcher, deps Deps) *Handlers {
 	for _, k := range startStopKinds {
 		reg(k, h.sessionStartStop)
 	}
+	// The phone Inbox: idempotent or not per verb (inboxActOptions).
+	d.Register(inboxActKind, h.inboxAct, inboxActOptions())
 	return h
 }
 

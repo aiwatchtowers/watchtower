@@ -299,6 +299,10 @@ type Daemon struct {
 
 	// watchmanUpkeep is phaseWatchmanUpkeep's state (watchman_upkeep.go).
 	watchmanUpkeep watchmanUpkeepState
+
+	// syncPaused reports whether sync is paused (SetSyncPaused): the owner's
+	// pause or --no-sync. nil = never.
+	syncPaused func() bool
 }
 
 // New creates a Daemon. Slack orchestrators are attached separately via
@@ -633,7 +637,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// The purge hold first (#601): a purged or half-purged account's
 	// calendar must not be refilled before the first cycle's purge phase.
 	d.refreshPurgeHold()
-	d.startupCalendarSync(ctx)
+	if d.isSyncPaused() {
+		d.logger.Println("sync paused: no startup calendar sync")
+	} else {
+		d.startupCalendarSync(ctx)
+	}
 
 	return d.runLoop(ctx, pollInterval)
 }

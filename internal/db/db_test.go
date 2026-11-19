@@ -209,7 +209,7 @@ func TestAllTablesExist(t *testing.T) {
 		"plan_usage_samples", "plan_usage_status", "history_backfill",
 		"automation_tool_grants", "linear_workflow_states", "linear_labels", "builtin_migrations",
 		"db_maintenance", "account_purges", "spec_reviews", "spec_review_marks", "spec_review_questions", "spec_review_thread_findings", "learn_seen", "coach_proposals", "prompt_additions", "skill_pack_overlays", "llm_calls",
-		"inbox_folders", "inbox_folder_state", "inbox_folder_routes",
+		"inbox_folders", "inbox_folder_state", "inbox_folder_routes", "tower_requests",
 	}
 
 	for _, table := range expectedTables {

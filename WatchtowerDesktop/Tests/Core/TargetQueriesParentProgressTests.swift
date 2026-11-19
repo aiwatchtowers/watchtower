@@ -38,43 +38,6 @@ final class TargetQueriesParentProgressTests: XCTestCase {
         XCTAssertEqual(try progress(queue, 1), 0.75, accuracy: 1e-9)
     }
 
-    func testSnooze_ZeroesLeafProgressAndRecomputesParent() throws {
-        let queue = try makeTree()
-
-        try queue.write { try TargetQueries.snooze($0, id: 4, until: Date()) }
-
-        XCTAssertEqual(try progress(queue, 4), 0.0, accuracy: 1e-9)
-        XCTAssertEqual(try progress(queue, 2), 0.0, accuracy: 1e-9)
-        XCTAssertEqual(try progress(queue, 1), 0.0, accuracy: 1e-9)
-    }
-
-    func testUpdateStatus_OnParentWithChildren_KeepsChildAverage() throws {
-        let queue = try makeTree()
-
-        // mid has non-dismissed children, so its own status must not overwrite
-        // the average (Go's leaf-only UPDATE ... NOT EXISTS guard).
-        try queue.write { try TargetQueries.updateStatus($0, id: 2, status: "done") }
-
-        XCTAssertEqual(try progress(queue, 2), 0.5, accuracy: 1e-9)
-        XCTAssertEqual(try progress(queue, 1), 0.5, accuracy: 1e-9)
-    }
-
-    func testDayPlanCascade_RecomputesTaskParent() throws {
-        let queue = try makeTree()
-        let itemID = try queue.write { db -> Int64 in
-            let planID = try TestDatabase.insertDayPlan(db, userID: "U1")
-            return try TestDatabase.insertDayPlanItem(
-                db, dayPlanID: planID, kind: "backlog", sourceType: "task", sourceID: "3", title: "leaf-a"
-            )
-        }
-
-        try queue.write { try DayPlanQueries.markItemDone($0, itemId: itemID, cascadeToTask: true) }
-
-        XCTAssertEqual(try progress(queue, 3), 1.0, accuracy: 1e-9)
-        XCTAssertEqual(try progress(queue, 2), 1.0, accuracy: 1e-9)
-        XCTAssertEqual(try progress(queue, 1), 1.0, accuracy: 1e-9)
-    }
-
     func testUpdateParent_ToSameParent_LeavesProgressAlone() throws {
         let queue = try makeTree()
 

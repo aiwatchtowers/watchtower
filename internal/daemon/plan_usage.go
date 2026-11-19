@@ -13,7 +13,8 @@ func (d *Daemon) SetPlanUsage(r PlanUsageRunner, disable func() error) {
 }
 
 // startPlanUsage runs the poller beside the sync loop when plan_usage.enabled
-// is on; off, it records the disabled state once so the Desktop says so.
+// is on, and only while sync is not paused (runUnlessPaused); off, it records
+// the disabled state once so the Desktop says so.
 func (d *Daemon) startPlanUsage(ctx context.Context) (stop func()) {
 	if d.planUsage == nil {
 		return func() {}
@@ -29,9 +30,7 @@ func (d *Daemon) startPlanUsage(ctx context.Context) (stop func()) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if err := d.planUsage.Run(runCtx); err != nil {
-			d.logger.Printf("plan usage: poller stopped: %v", err)
-		}
+		d.runUnlessPaused(runCtx, "plan usage: poller", d.planUsage.Run)
 	}()
 	return func() {
 		cancel()

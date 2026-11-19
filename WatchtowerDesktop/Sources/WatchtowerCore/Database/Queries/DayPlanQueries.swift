@@ -51,125 +51,13 @@ package enum DayPlanQueries {
 
     // MARK: - Item Status Mutations
 
-    /// Mark a day plan item as done. If cascadeToTask is true and the item's source is a task,
-    /// also sets that task's status to 'done' atomically.
-    package static func markItemDone(_ db: Database, itemId: Int64, cascadeToTask: Bool) throws {
-        try db.execute(
-            sql: """
-                UPDATE day_plan_items
-                SET status = 'done', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ?
-                """,
-            arguments: [itemId]
-        )
-        // A regenerated plan replaces its items.
-        try db.requireUpdated("day plan item", id: itemId)
-        if cascadeToTask {
-            try cascadeTaskStatus(db, itemId: itemId, taskStatus: "done")
-        }
-    }
-
-    /// Mark a day plan item as pending. If cascadeToTask is true and the item's source is a task,
-    /// resets that task's status back to 'todo' atomically.
-    package static func markItemPending(_ db: Database, itemId: Int64, cascadeToTask: Bool) throws {
-        try db.execute(
-            sql: """
-                UPDATE day_plan_items
-                SET status = 'pending', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ?
-                """,
-            arguments: [itemId]
-        )
-        try db.requireUpdated("day plan item", id: itemId)
-        if cascadeToTask {
-            try cascadeTaskStatus(db, itemId: itemId, taskStatus: "todo")
-        }
-    }
-
     // MARK: - Delete
-
-    /// Delete a day plan item. Calendar items are silently skipped (defense-in-depth).
-    package static func deleteItem(_ db: Database, itemId: Int64) throws {
-        try db.execute(
-            sql: "DELETE FROM day_plan_items WHERE id = ? AND source_type != 'calendar'",
-            arguments: [itemId]
-        )
-    }
 
     // MARK: - Reorder
 
-    /// Reassign order_index values for backlog items in the given order.
-    /// Each id at position i gets order_index = i. All updates run in one transaction batch.
-    package static func reorderBacklog(_ db: Database, planId: Int64, orderedIds: [Int64]) throws {
-        for (index, itemId) in orderedIds.enumerated() {
-            try db.execute(
-                sql: """
-                    UPDATE day_plan_items
-                    SET order_index = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                    WHERE id = ? AND day_plan_id = ?
-                    """,
-                arguments: [index, itemId, planId]
-            )
-        }
-    }
-
     // MARK: - Add Manual Item
 
-    /// Insert a new manual item at the end of backlog (MAX order_index + 1, or 0 if empty).
-    /// Returns the new row id.
-    @discardableResult
-    package static func addManualItem(
-        _ db: Database,
-        planId: Int64,
-        kind: DayPlanItemKind,
-        title: String,
-        startTime: Date?,
-        endTime: Date?
-    ) throws -> Int64 {
-        let nextIndex: Int = (try Int.fetchOne(
-            db,
-            sql: "SELECT COALESCE(MAX(order_index) + 1, 0) FROM day_plan_items WHERE day_plan_id = ?",
-            arguments: [planId]
-        )) ?? 0
-
-        let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime]
-        let startStr: String? = startTime.map { fmt.string(from: $0) }
-        let endStr: String? = endTime.map { fmt.string(from: $0) }
-
-        try db.execute(
-            sql: """
-                INSERT INTO day_plan_items
-                    (day_plan_id, kind, source_type, title, start_time, end_time,
-                     status, order_index, tags)
-                VALUES (?, ?, 'manual', ?, ?, ?, 'pending', ?, '[]')
-                """,
-            arguments: [planId, kind.rawValue, title, startStr, endStr, nextIndex]
-        )
-        return db.lastInsertedRowID
-    }
-
     // MARK: - Private Helpers
-
-    /// If the item has source_type='task' and a valid Int64 source_id, update that task's status
-    /// through the ordinary `TargetQueries.updateStatus` path: a task deleted meanwhile throws
-    /// `TargetNotFoundError` (rolling back the item's own change in the same transaction), and
-    /// closing a task runs the INBOX-02 `target_due` cascade like any other Desktop "Done".
-    private static func cascadeTaskStatus(_ db: Database, itemId: Int64, taskStatus: String) throws {
-        // Fetch source_type and source_id for the item
-        guard let row = try Row.fetchOne(
-            db,
-            sql: "SELECT source_type, source_id FROM day_plan_items WHERE id = ?",
-            arguments: [itemId]
-        ) else { return }
-
-        let sourceType = row["source_type"] as String? ?? ""
-        guard sourceType == "task",
-              let sourceIdStr = row["source_id"] as String?,
-              let taskId = Int64(sourceIdStr) else { return }
-
-        try TargetQueries.updateStatus(db, id: Int(taskId), status: taskStatus)
-    }
 
     package static func todayDateString() -> String {
         let fmt = DateFormatter()
