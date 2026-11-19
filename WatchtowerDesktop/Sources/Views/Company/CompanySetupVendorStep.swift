@@ -20,6 +20,8 @@ struct CompanySetupVendorStep: View {
                 slack
             } else if showsOnlyTheCheck {
                 checkContent
+                // The values stay editable: an edit un-checks the step and brings the guide back (A28).
+                fields
             } else {
                 phaseContent
                 checkContent
