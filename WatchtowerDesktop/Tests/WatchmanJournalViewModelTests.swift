@@ -201,7 +201,7 @@ final class WatchmanJournalViewModelTests: XCTestCase {
         let now = date("2026-11-17T09:00:00Z")
         let tick: @Sendable (Duration) async -> Void = { _ in await ticker.wait() }
         let vm = WatchmanJournalViewModel(read: { snapshot }, now: { now }, calendar: calendar, tick: tick)
-        let task = Task { await vm.watch(readStatus: { statusReads.bump() }) }
+        let task = Task { await vm.watch { statusReads.bump() } }
         await until { ticker.waiting == 1 }
         XCTAssertEqual(statusReads.value, 1, "read when the journal opens")
         ticker.fire()
