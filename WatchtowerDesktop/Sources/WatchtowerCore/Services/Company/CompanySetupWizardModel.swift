@@ -166,6 +166,9 @@ package final class CompanySetupWizardModel {
     // Slack step
     /// The configuration token field. Memory only: never in the draft, never in argv.
     package var slackToken = ""
+    /// Publish asked for the token (none held, or the last one was refused):
+    /// its field stays while it is typed, though `publishNeedsToken` turns false.
+    package private(set) var publishTokenAsked = false
     /// The app chosen for reuse (Found, or a pasted settings link).
     package private(set) var slackReuse: (appID: String, clientID: String)?
     /// The pasted settings link (**We already have one**).
@@ -288,6 +291,7 @@ package final class CompanySetupWizardModel {
     package func open() async {
         guard load == .notOpened else {
             await slack.reloadRecords()
+            applyEntry()
             return
         }
         load = .loading
@@ -304,6 +308,76 @@ package final class CompanySetupWizardModel {
         await slack.reloadRecords()
         load = .ready
         enter(current)
+        applyEntry()
+    }
+
+    // MARK: Entry points (A19)
+
+    /// Where a Slack setup-record row opens the page (company screens spec
+    /// §0, A19, A32): **Add the link to the app** at Publish. `slackStep`
+    /// opens the Slack step for an app (no setup-record row uses it: A32).
+    package enum Entry: Equatable, Sendable {
+        case slackStep(appID: String)
+        case publish(appID: String)
+
+        /// A setup-record row's entry: **Add the link to the app** opens
+        /// Publish. Nil keeps plan B's sheet: a lost create (`pending_create`,
+        /// clear or attach, never a second app), and `install` / `approval`,
+        /// whose admin connect and approval check the wizard's Slack step does
+        /// not run (it would take the app as ready and move on).
+        package init?(record: SlackSetupRecord) {
+            guard record.stage == "link_missing" else { return nil }
+            self = .publish(appID: record.appID)
+        }
+    }
+
+    /// Asked before the draft is read, an entry waits for it.
+    @ObservationIgnored private var pendingEntry: Entry?
+
+    /// Opens the page at an entry's step: applied now when the page is
+    /// loaded, else once `open()` has read the draft.
+    package func request(_ entry: Entry) {
+        pendingEntry = entry
+        applyEntry()
+    }
+
+    private func applyEntry() {
+        guard let entry = pendingEntry, load == .ready else { return }
+        pendingEntry = nil
+        // Publish is running: the page stays on it (the row can be pressed again).
+        guard publishState != .running else { return }
+        // A Slack run still going decides the draft's app (it may end on a
+        // form, never on an answer): the page shows that run at the Slack
+        // step; the row can be pressed again once it is done.
+        if slack.isRunning, ticked.contains(.slack) {
+            if let index = steps.firstIndex(of: .vendor(.slack)) { reached.formUnion(steps.prefix(index + 1)) }
+            move(to: .vendor(.slack))
+            return
+        }
+        // A finished Publish starts fresh, as Done would.
+        if isPublished { reset() }
+        let (asked, appID): (Step, String) = switch entry {
+        case let .slackStep(appID): (.vendor(.slack), appID)
+        case let .publish(appID): (.publish, appID)
+        }
+        // The draft already holds another app: Publish would write that one's
+        // page, so the Slack step opens instead and shows which app it is.
+        let otherApp = !draft.slack.appID.isEmpty && !appID.isEmpty && draft.slack.appID != appID
+        let target: Step = otherApp ? .vendor(.slack) : asked
+        touched = true
+        if !ticked.contains(.slack) {
+            draft.services = CompanyVendor.allCases.filter { ticked.contains($0) || $0 == .slack }.map(\.rawValue)
+        }
+        draft.skipped.removeAll { $0 == CompanyVendor.slack.rawValue }
+        // The record owns the app; the draft only references it, and never
+        // loses an app of its own to another record's.
+        if draft.slack.appID.isEmpty, !appID.isEmpty {
+            draft.slack = .init(appID: appID)
+            phases[.slack] = nil
+        }
+        guard let index = steps.firstIndex(of: target) else { return }
+        reached.formUnion(steps.prefix(index + 1))
+        move(to: target)
     }
 
     private func readDraft() async -> CompanyDraftShow? {
@@ -357,7 +431,8 @@ package final class CompanySetupWizardModel {
         candidates = found.candidates ?? []
         foundVendors = Set(candidates.compactMap { CompanyVendor(rawValue: $0.vendor) })
         // Pre-tick only a fresh setup: a resumed draft keeps its own choice.
-        if !hasDraft {
+        // Ticks the person made while it looked win.
+        if !hasDraft, !touched {
             draft.services = CompanyVendor.allCases.filter(foundVendors.contains).map(\.rawValue)
         }
     }
@@ -365,7 +440,9 @@ package final class CompanySetupWizardModel {
     /// Leaving the page (‹ Connections, another service or tab, quitting):
     /// the draft is saved at the current step. A running check goes on.
     package func leave() async {
-        guard load == .ready, hasDraft || touched else { return }
+        // A running Publish saved the draft before it began and deletes it on success:
+        // a save queued behind it would bring the draft back.
+        guard load == .ready, hasDraft || touched, publishState != .running else { return }
         await saveDraft()
         resumed = true
     }
@@ -384,6 +461,11 @@ package final class CompanySetupWizardModel {
     /// set-aside one go; the stored bundle and the accounts the checks made
     /// stay (§2.12).
     package func discard() async {
+        // Publish deletes the draft itself; a discard under it would land on a reset setup.
+        guard publishState != .running, !discarding else { return }
+        // Until it ends nothing else starts (Publish would save the draft back).
+        discarding = true
+        defer { discarding = false }
         // A check waiting on its pre-check save is abandoned now, never started.
         generation += 1
         // After any save in flight: a save landing later would bring the draft back.
@@ -420,6 +502,7 @@ package final class CompanySetupWizardModel {
         publishSteps = []
         publishName = ""
         publishRefusal = nil
+        publishTokenAsked = false
         storageProblem = nil
         slackToken = ""
         slackReuse = nil
@@ -436,6 +519,9 @@ package final class CompanySetupWizardModel {
         // A fresh setup pre-ticks what this Mac knows, as on a first open.
         draft.services = CompanyVendor.allCases.filter(foundVendors.contains).map(\.rawValue)
     }
+
+    /// **Discard setup** is deleting the draft: Publish and the steps wait.
+    package private(set) var discarding = false
 
     /// Publish went through: Go deleted the draft, which stays deleted.
     package var isPublished: Bool {
@@ -465,7 +551,8 @@ package final class CompanySetupWizardModel {
     }
 
     private func writeDraft() async -> Bool {
-        guard load == .ready, !isPublished else { return false }
+        // Discard is deleting the draft: a save now (leaving the page) would bring it back.
+        guard load == .ready, !isPublished, !discarding else { return false }
         var out = draft
         out.step = current.draftName
         guard let data = try? Self.encoder.encode(out), await run(["company", "draft", "save"], stdin: data) else {
@@ -538,6 +625,8 @@ package final class CompanySetupWizardModel {
 
     /// **Back**.
     package func back() {
+        // A running Publish keeps its step: its link and code land there.
+        guard publishState != .running else { return }
         if case .vendor(.slack) = current, slackAttempt, !slack.isRunning {
             // From the Slack step's diff or problem: back to its choice. The
             // confirmed App ID goes too: only Update the app may confirm it.
@@ -553,7 +642,7 @@ package final class CompanySetupWizardModel {
 
     /// A rail row: only steps already reached.
     package func goTo(_ step: Step) {
-        guard reached.contains(step), steps.contains(step) else { return }
+        guard reached.contains(step), steps.contains(step), publishState != .running else { return }
         if case let .vendor(v) = step, isSkipped(v) {
             // Reopening a skipped step sets it up after all.
             draft.skipped.removeAll { $0 == v.rawValue }
@@ -980,6 +1069,19 @@ package final class CompanySetupWizardModel {
         }
     }
 
+    /// The problem is about the app, not the token (not a collaborator,
+    /// another workspace, an App ID Slack does not know): the step shows the
+    /// problem alone, and **Try again** keeps the token in memory.
+    package var slackProblemNamesTheApp: Bool {
+        guard slackProblem != nil else { return false }
+        if case .editing = slack.phase, case let .adopt(adopt) = slack.form, adopt.appIDProblem != nil { return true }
+        guard case let .finished(.problem(problem)) = slack.phase else { return false }
+        switch problem {
+        case .notCollaborator, .wrongWorkspace: return true
+        default: return false
+        }
+    }
+
     /// The Slack run's marks, in the wizard's words.
     package var slackProgress: [SlackAppSetupModel.StepLine] {
         guard slackAttempt else { return [] }
@@ -1185,14 +1287,14 @@ package final class CompanySetupWizardModel {
     }
 
     private var canPublish: Bool {
-        publishBlockedReason == nil && !publishNeedsToken && publishState != .running
+        publishBlockedReason == nil && !publishNeedsToken && publishState != .running && !discarding
     }
 
     /// Packs the bundle and writes the link to the Slack app's About page.
     /// The token goes on stdin only. Failures keep the setup (Go keeps the
     /// draft and the stored bundle).
     package func publish(token: String?) async {
-        guard publishBlockedReason == nil, publishState != .running else { return }
+        guard publishBlockedReason == nil, publishState != .running, !discarding else { return }
         let token = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if isActive(.slack), token.isEmpty { return }
         publishRefusal = nil
@@ -1246,6 +1348,7 @@ package final class CompanySetupWizardModel {
             draftUnreadableFile = nil
         case "token_expired":
             slackToken = ""
+            publishTokenAsked = true
             publishState = .tokenExpired
         case "network":
             publishState = .failed(result.message.isEmpty ? Self.publishNetworkFallback : result.message)
@@ -1265,8 +1368,12 @@ package final class CompanySetupWizardModel {
             return Self.companyRenamed(stored: draft.company, typed: publishName)
         case "token_missing":
             slackToken = ""
+            publishTokenAsked = true
             return Self.publishNeedsTokenLine
         case "wrong_workspace":
+            // That token cannot write this app's page: the field asks for another.
+            slackToken = ""
+            publishTokenAsked = true
             return Self.publishWrongWorkspace
         default:
             return Self.publishRefused(result.message.isEmpty ? result.reason : result.message)
@@ -1311,6 +1418,12 @@ package final class CompanySetupWizardModel {
     /// The name field's prefill on entering Publish.
     package func preparePublish() {
         if publishName.isEmpty { publishName = draft.company.isEmpty ? derivedName().name : draft.company }
+        if publishNeedsToken { publishTokenAsked = true }
+    }
+
+    /// Publish shows the token field: Slack is part of it and the token was asked for.
+    package var publishShowsToken: Bool {
+        isActive(.slack) && (publishTokenAsked || publishNeedsToken)
     }
 
     // MARK: The CLI

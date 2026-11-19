@@ -152,6 +152,10 @@ extension ConnectionService {
     /// The overview's two groups: sources Watchtower reads, tools the assistant uses.
     static var sources: [Self] { [.slack, .google, .email, .calendar, .jira, .linear] }
     static var aiTools: [Self] { [.quickConnections] }
+    /// Pages of the detail area that are not services (no card, no row, no badge).
+    static var pages: [Self] { [.companySetup] }
+    /// Every service the overview, the list and the badge count.
+    static var services: [Self] { sources + aiTools }
 
     /// The service a "Connect …" button names (Choose Jira boards: Jira);
     /// nil, the overview, for one that names several or none.
@@ -170,6 +174,7 @@ extension ConnectionService {
         case .slack, .linear: "workspace"
         case .jira: "site"
         case .quickConnections: "server"
+        case .companySetup: "company"
         case .google, .email, .calendar: "account"
         }
     }
@@ -184,6 +189,7 @@ extension ConnectionService {
         case .jira: "Issues, boards and Confluence spaces."
         case .linear: "Issues, cycles and projects next to your Jira work."
         case .quickConnections: "MCP servers the assistant can use."
+        case .companySetup: "Every service your company uses, set up once for colleagues."
         }
     }
 }

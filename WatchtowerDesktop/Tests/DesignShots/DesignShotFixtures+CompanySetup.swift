@@ -38,12 +38,11 @@ enum CompanySetupShotFixtures {
     }
 
     private static var wizardShots: [DesignShot] {
-        let scenes = CompanyWizardScenes.scenes
-        var shots = scenes.map { scene in shot("wizard-\(scene.name)", 720) { CompanyWizardMock(scene: scene) } }
-        for name in narrowWizardSteps {
-            if let scene = scenes.first(where: { $0.name == name }) {
-                shots.append(shot("wizard-\(name)-narrow", 420) { CompanyWizardMock(scene: scene, narrow: true) })
-            }
+        // The production page (Task 22) over a model driven to each scene's state.
+        let names = CompanyWizardScenes.scenes.map(\.name) + CompanyWizardLive.extraScenes
+        var shots = names.map { name in shot("wizard-\(name)", 720) { CompanyWizardLive.page(name) } }
+        for name in narrowWizardSteps where names.contains(name) {
+            shots.append(shot("wizard-\(name)-narrow", 420) { CompanyWizardLive.page(name, narrow: true) })
         }
         return shots
     }

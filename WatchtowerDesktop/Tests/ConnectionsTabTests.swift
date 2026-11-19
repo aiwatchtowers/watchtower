@@ -94,8 +94,10 @@ final class ConnectionsTabTests: XCTestCase {
     }
 
     func testEveryServiceIsInOneGroup() {
-        XCTAssertEqual(Set(ConnectionService.sources + ConnectionService.aiTools), Set(ConnectionService.allCases))
+        XCTAssertEqual(Set(ConnectionService.services + ConnectionService.pages), Set(ConnectionService.allCases))
+        XCTAssertEqual(ConnectionService.services, ConnectionService.sources + ConnectionService.aiTools)
         XCTAssertTrue(Set(ConnectionService.sources).isDisjoint(with: ConnectionService.aiTools))
+        XCTAssertTrue(Set(ConnectionService.services).isDisjoint(with: ConnectionService.pages), "a page is no service card")
     }
 
     // MARK: - Badge from the live view models
@@ -181,6 +183,44 @@ final class ConnectionsTabTests: XCTestCase {
 
         let slack = ConnectionsDetailSplit(service: .slack).environment(appState)
         XCTAssertThrowsError(try slack.inspect().find(SourceBlockedNotice.self))
+    }
+
+    /// **Set up for my company** opens the wizard's page in the detail area
+    /// (company screens spec §2.2); ‹ Connections returns to the overview and
+    /// the wizard, held on AppState, keeps what was entered.
+    func testCompanySetupDestination() throws {
+        let appState = isolatedWithConfig()
+        appState.selectedDestination = .home
+        appState.openCompanySetup()
+        XCTAssertEqual(appState.selectedDestination, .connections)
+        XCTAssertEqual(appState.selectedConnection, .companySetup)
+        let model = appState.companySetup
+        model.toggle(.google)
+
+        let split = ConnectionsDetailSplit(service: .companySetup).environment(appState)
+        let page = try split.inspect().find(CompanySetupPage.self).actualView()
+        XCTAssertTrue(page.model === model)
+        XCTAssertThrowsError(try split.inspect().find(button: "All Connections"), "the page brings its own way back")
+        try split.inspect().find(button: CompanySetupWizardModel.backToConnections).tap()
+        XCTAssertNil(appState.selectedConnection)
+        XCTAssertTrue(appState.companySetup === model)
+        XCTAssertEqual(appState.companySetup.ticked, [.google], "the draft in progress is kept")
+        XCTAssertFalse(appState.connectionSummaries.contains { $0.service == .companySetup }, "no card, no badge")
+    }
+
+    /// The setup-record rows of Connections → Slack open the wizard (A19).
+    func testSlackRecordRowsRoute() {
+        func record(_ stage: String) -> SlackSetupRecord {
+            SlackSetupRecord(teamID: "T0ACME", teamName: "acme", appID: "A0ACME", clientID: "1111.2222", connected: true,
+                             linkWritten: false, installRequested: false, stage: stage)
+        }
+        let appState = AppState.isolated()
+        for stage in ["pending_create", "install", "approval"] {
+            XCTAssertFalse(appState.routeSlackSetupRecord(record(stage)), stage)
+            XCTAssertNil(appState.selectedConnection, "\(stage) stays on plan B's sheet")
+        }
+        XCTAssertTrue(appState.routeSlackSetupRecord(record("link_missing")))
+        XCTAssertEqual(appState.selectedConnection, .companySetup)
     }
 
     /// A day plan's Jira item opens Connections → Jira (the Boards tab before #899).

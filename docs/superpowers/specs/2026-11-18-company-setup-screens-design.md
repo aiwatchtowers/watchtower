@@ -23,7 +23,7 @@ No production code changes with this spec. The mockups are design-only SwiftUI s
 |---|---|---|
 | §3.1–§3.2 the Slack-only **Set up for my company** sheet | the wizard's **Slack** step (§2.5 here), on a page instead of a sheet (owner, ask #1490; supersedes Slack spec decision 13 for the setup). Its token form, its progress marks, `badToken`, `notAllowed` and `approval` states keep their texts. Its **Success** ("Copy connect code") moves to **Publish** (§2.10): the code is now the company code | parent D7: one setup for every vendor |
 | §3.3 **Add the link to the app** sheet | the wizard's **Publish** step with a fresh token (`publish-tokenExpired`, §2.10). The sheet goes | parent §2 step 8: Publish writes the link |
-| §3.4 the setup-record rows on Connections → Slack | kept. **Continue setup** and **Check again** open the wizard at the Slack step; **Add the link to the app** opens it at Publish | the record still exists (Slack spec T7); only the button target changes |
+| §3.4 the setup-record rows on Connections → Slack | kept. **Add the link to the app** opens the wizard at Publish; **Continue setup**, **Check again** and a lost create stay on plan B's sheet (A32) | the record still exists (Slack spec T7); only the button target changes |
 | §3.5 `SlackAppSetupModel` | the Slack step's engine (create, reuse, link write), driven by `CompanySetupWizardModel` (§9); it owns no sheet of its own. **It does not exist yet** (the Slack screens spec is not implemented): the company plan builds it first, as task **C0** (Slack spec §3.5 without the sheet, over Slack plan B's T7 CLI); the Slack screens plan's task S3 then reuses it and adds only the setup-record rows | one wizard model owns the frame; the company plan does not wait for the Slack screens plan |
 | §4.1 the About page text | written by Publish: "Watchtower for <company> — connect: <company link>" and the company code (parent §2 step 8). The listener keeps serving `/slack/connect` for About pages written before | parent §2; old pages must not break |
 | §4.2 the connect field "Connect link or code" | also accepts a company link or code; one opens **Connect Acme?** (§3.1) | one field, never "wrong field" |
@@ -463,6 +463,8 @@ Light frames linked; each has a `-dark` twin. The vendor-step shots show a compa
 | [`company-wizard-services-found`](../../design/mockups/company-setup/company-wizard-services-found-light.png) | Slack and Atlassian pre-ticked from discovery |
 | [`company-wizard-services-change`](../../design/mockups/company-setup/company-wizard-services-change-light.png) | **Change services**: unticking a filled step asks first |
 | [`company-wizard-draftUnreadable`](../../design/mockups/company-setup/company-wizard-draftUnreadable-light.png) | error: the draft cannot be read, kept as `.bad-<ts>` |
+| [`company-wizard-loading`](../../design/mockups/company-setup/company-wizard-loading-light.png) | loading: the page reads the draft (Task 22) |
+| [`company-wizard-readFailed`](../../design/mockups/company-setup/company-wizard-readFailed-light.png) | error: `company draft show` failed, **Try again** (Task 22) |
 | [`company-wizard-looking`](../../design/mockups/company-setup/company-wizard-looking-light.png) | loading: looking for known apps |
 | [`company-wizard-slack-notFound`](../../design/mockups/company-setup/company-wizard-slack-notFound-light.png) | empty: first open, nothing found |
 | [`company-wizard-slack-found`](../../design/mockups/company-setup/company-wizard-slack-found-light.png) | found one: **Use Watchtower** / **Create new** |
@@ -674,6 +676,7 @@ Screen tasks (C) follow the parent's tasks they need.
 | A26 | The company plan builds `SlackAppSetupModel` first (C0) instead of waiting for the Slack screens plan |
 | A27 | An unreadable draft is renamed `draft.json.bad-<ts>` (0600) and shown with **Show file in Finder**; Discard or Publish deletes it; only the newest is kept; the daemon deletes one older than 30 days |
 | A28 | Editing a field a step's check used un-checks the step (hash of the checked values in the draft) |
+| A32 | (agent, Task 22 review) Of the Slack setup-record rows only **Add the link to the app** (`link_missing`) opens the wizard (at Publish; for another app than the draft's, at the Slack step). `pending_create`, `install` (**Continue setup**) and `approval` (**Check again**) stay on plan B's sheet: the wizard's Slack step runs no admin connect, approval check or lost-create clear, so it would mark an app ready that was never installed. Narrows A19 and §0's §3.4 row |
 
 ## 15. Needs the owner
 

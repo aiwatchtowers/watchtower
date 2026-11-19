@@ -54,7 +54,7 @@ struct SlackConnectionDetail: View {
             VStack(alignment: .leading, spacing: Spacing.large) {
                 sharedAppBanner
                 modeSection
-                SlackSetupRecordRows(model: appState.slackAppSetup, blocked: sourceBlocked)
+                SlackSetupRecordRows(model: appState.slackAppSetup, blocked: sourceBlocked) { appState.routeSlackSetupRecord($0) }
                 connectSection
                 workspaceSection
                 FileVaultLine()
@@ -125,7 +125,7 @@ struct SlackConnectionDetail: View {
            let banner = modePresentation(center, now: Date()).sharedAppBanner {
             SlackSharedAppBanner(
                 banner: banner, blocked: sourceBlocked,
-                setUpForCompany: { appState.slackAppSetup.present() },
+                setUpForCompany: { appState.openCompanySetup() },
                 pasteLink: appState.slackConnectFlow.map { flow in { flow.reconnect(.connectSection) } })
         }
     }
@@ -157,7 +157,7 @@ struct SlackConnectionDetail: View {
     @ViewBuilder private var connectSection: some View {
         if let section = connectPresentation, !section.isFolded, let flow = appState.slackConnectFlow {
             SlackConnectSection(section: section, flow: flow, blocked: sourceBlocked,
-                                setUpForCompany: { appState.slackAppSetup.present() },
+                                setUpForCompany: { appState.openCompanySetup() },
                                 fieldFocused: $connectFieldFocused)
         }
     }
