@@ -166,4 +166,21 @@ final class SessionChatViewTests: XCTestCase {
         XCTAssertFalse(context.rowActions.allowsEdit)
         XCTAssertFalse(context.rowActions.allowsRegenerate)
     }
+
+    // MARK: Tail paging (#2065 Task 8)
+
+    func testMarkerOnlyTailWithEarlierPageShowsTheFeed() {
+        XCTAssertFalse(SessionChatView.showsEmptyState(dialogEmpty: true, nothingPending: true, hasEarlierPage: true),
+                       "a tail of subagent markers alone still pages in earlier messages")
+        XCTAssertTrue(SessionChatView.showsEmptyState(dialogEmpty: true, nothingPending: true, hasEarlierPage: false))
+        XCTAssertFalse(SessionChatView.showsEmptyState(dialogEmpty: false, nothingPending: true, hasEarlierPage: false))
+    }
+
+    func testLoadingRowFollowsTheWindowAndTheEarlierPage() {
+        XCTAssertTrue(SessionChatView.hasEarlier(windowHasEarlier: true, hasEarlierPage: false, pageFailed: false))
+        XCTAssertTrue(SessionChatView.hasEarlier(windowHasEarlier: false, hasEarlierPage: true, pageFailed: false))
+        XCTAssertFalse(SessionChatView.hasEarlier(windowHasEarlier: false, hasEarlierPage: true, pageFailed: true),
+                       "a failed page waits for Retry, never a layout pass")
+        XCTAssertFalse(SessionChatView.hasEarlier(windowHasEarlier: false, hasEarlierPage: false, pageFailed: false))
+    }
 }

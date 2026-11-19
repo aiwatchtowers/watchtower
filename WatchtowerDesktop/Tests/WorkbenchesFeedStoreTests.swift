@@ -105,6 +105,22 @@ final class WorkbenchesFeedStoreTests: XCTestCase {
         XCTAssertEqual(runner.feedCalls.last?.suffix(2), ["--tail", "60"], "its next open is a cold tail read")
     }
 
+    func testEvictionSkipsOpenPanes() {
+        let vm = makeVM(FeedRunner())
+        let open = vm.feedStore(sessionID: 1)
+        vm.feedPaneAppeared(sessionID: 1)
+        var stores: [Int64: SessionFeedStore] = [:]
+        for id in Int64(2)...9 { stores[id] = vm.feedStore(sessionID: id) }
+        XCTAssertTrue(vm.feedStore(sessionID: 1) === open, "the open pane's store is never dropped")
+        XCTAssertFalse(vm.feedStore(sessionID: 2) === stores[2], "the least recently shown closed one goes instead")
+        vm.feedPaneDisappeared(sessionID: 1)
+        XCTAssertEqual(vm.feedStores.count, WorkbenchesViewModel.keptFeedStores)
+    }
+
+    /// The store's own gate: a follow loop that runs while the window is off
+    /// screen spawns nothing. A kept store whose pane is closed has no follow
+    /// loop at all: that guarantee is structural (`follow` lives in the pane's
+    /// `.task`, cancelled with the pane), so this pins the gate only.
     func testHiddenKeptStoreDoesNotPoll() async {
         let runner = FeedRunner()
         let vm = makeVM(runner)

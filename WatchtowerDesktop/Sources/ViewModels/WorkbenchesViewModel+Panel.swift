@@ -418,18 +418,46 @@ extension WorkbenchesViewModel {
     /// a pane starts that open's trace (a reopen when it holds entries).
     /// Without the watchtower CLI the store is `runnerMissing`.
     func feedStore(sessionID: Int64) -> SessionFeedStore {
-        feedStoreOrder.removeAll { $0 == sessionID }
-        feedStoreOrder.append(sessionID)
+        touchFeedStore(sessionID)
         if let store = feedStores[sessionID] {
             store.beginOpenTrace(reopen: !store.entries.isEmpty)
             return store
         }
         let store = SessionFeedStore(sessionID: sessionID, runner: cli?.runner)
         feedStores[sessionID] = store
-        while feedStoreOrder.count > Self.keptFeedStores {
-            feedStores[feedStoreOrder.removeFirst()] = nil
-        }
+        trimFeedStores()
         return store
+    }
+
+    /// A Workchat pane came on screen: its store is the most recently shown
+    /// and is not dropped while the pane stays.
+    func feedPaneAppeared(sessionID: Int64) {
+        feedStorePanes[sessionID, default: 0] += 1
+        touchFeedStore(sessionID)
+    }
+
+    /// A Workchat pane left the screen: its store may be dropped again.
+    func feedPaneDisappeared(sessionID: Int64) {
+        let open = (feedStorePanes[sessionID] ?? 0) - 1
+        feedStorePanes[sessionID] = open > 0 ? open : nil
+        trimFeedStores()
+    }
+
+    private func touchFeedStore(_ sessionID: Int64) {
+        feedStoreOrder.removeAll { $0 == sessionID }
+        feedStoreOrder.append(sessionID)
+    }
+
+    /// Drops the least recently shown stores over `keptFeedStores`, never one
+    /// whose pane is open.
+    private func trimFeedStores() {
+        var over = feedStores.count - Self.keptFeedStores
+        guard over > 0 else { return }
+        for id in feedStoreOrder where over > 0 && feedStores[id] != nil && feedStorePanes[id] == nil {
+            feedStores[id] = nil
+            over -= 1
+        }
+        feedStoreOrder.removeAll { feedStores[$0] == nil }
     }
 
     /// The workbench's Find Repeats model, made once; nil without the watchtower CLI.

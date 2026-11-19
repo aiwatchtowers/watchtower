@@ -47,6 +47,9 @@ func TestTailPage_UnknownBeforeIsAnError(t *testing.T) {
 	_, _, err := TailPage(entriesN(10), "nope", 60)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `before "nope"`)
+	// Pinned text: the Desktop's SessionFeedStore.refusesBefore matches
+	// "no such entry" to stop paging for good.
+	assert.Contains(t, err.Error(), "no such entry")
 }
 
 func TestBuild_TailKeepsFullSubagentsList(t *testing.T) {
@@ -79,5 +82,7 @@ func TestTailPage_AmbiguousBeforeIsAnError(t *testing.T) {
 	es[4].ID = "e1" // a repeated legacy id from another conversation
 	_, _, err := TailPage(es, "e1", 3)
 	require.Error(t, err)
+	// Pinned text: the Desktop's SessionFeedStore.refusesBefore matches
+	// "is ambiguous" to stop paging for good.
 	assert.Contains(t, err.Error(), `before id "e1" is ambiguous (2 entries)`)
 }

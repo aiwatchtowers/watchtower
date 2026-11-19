@@ -179,20 +179,80 @@ final class SessionFeedStoreTests: XCTestCase {
     func testEarlierPageFailureKeepsEntriesAndPaging() async {
         let runner = FakeRunner([
             .success(payload(entries: entries(90..<150), before: "e90")),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        let added = await store.loadEarlierPage()
+        XCTAssertFalse(added)
+        XCTAssertEqual(store.entries.count, 60)
+        XCTAssertEqual(store.entries.first?.id, "e90")
+        XCTAssertTrue(store.hasEarlierPage)
+        XCTAssertNotNil(store.earlierPageError)
+        XCTAssertNil(store.error, "a page failure is kept apart from the poll's error")
+    }
+
+    func testEarlierPageRetryRefetchesThePage() async {
+        let runner = FakeRunner([
+            .success(payload(entries: entries(90..<150), before: "e90")),
             .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")),
+            .success(payload(cursor: "c2")),
             .success(payload(entries: entries(30..<90), before: "e30"))
         ])
         let store = SessionFeedStore(sessionID: 7, runner: runner)
         await store.refresh()
         await store.loadEarlierPage()
-        XCTAssertEqual(store.entries.count, 60)
-        XCTAssertEqual(store.entries.first?.id, "e90")
-        XCTAssertTrue(store.hasEarlierPage)
-        XCTAssertNotNil(store.error)
-        await store.loadEarlierPage()
-        XCTAssertEqual(runner.calls.last?.suffix(2), ["--before", "e90"], "the retry asks for the same page")
+        await store.refresh()
+        XCTAssertEqual(runner.calls.last?.suffix(2), ["--after", "c1"])
+        XCTAssertNotNil(store.earlierPageError, "a poll never clears the page's failure")
+        let added = await store.retryEarlierPage()
+        XCTAssertTrue(added)
+        XCTAssertEqual(runner.calls.last?.suffix(2), ["--before", "e90"], "Retry asks for the same page")
         XCTAssertEqual(store.entries.first?.id, "e30")
-        XCTAssertNil(store.error)
+        XCTAssertNil(store.earlierPageError)
+    }
+
+    func testFailedPageIsNotRetriedOnEveryMeasure() async {
+        let runner = FakeRunner([
+            .success(payload(entries: entries(90..<150), before: "e90")),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        await store.loadEarlierPage()
+        // The layout's automatic asks after the failure spawn nothing.
+        for _ in 0..<3 { await store.loadEarlierPage() }
+        XCTAssertEqual(runner.calls.count, 2)
+    }
+
+    func testEarlierPageTakesARepeatedIDOnce() async {
+        let runner = FakeRunner([
+            .success(payload(entries: entries(90..<150), before: "e90")),
+            .success(payload(entries: entry("L5", "agent", text: "first") + "," + entry("L5", "agent", text: "second")
+                + "," + entry("e89", "agent"), before: "L5"))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        await store.loadEarlierPage()
+        XCTAssertEqual(store.entries.prefix(2).map(\.id), ["L5", "e89"])
+        XCTAssertEqual(store.entries.first?.text, "first")
+        XCTAssertEqual(store.entries.count, 62)
+    }
+
+    func testTailReadAfterAnEarlierPageKeepsBefore() async {
+        let runner = FakeRunner([
+            .success(payload(cursor: "", entries: entries(90..<150), before: "e90")),
+            .success(payload(cursor: "", entries: entries(30..<90), before: "e30")),
+            .success(payload(cursor: "", entries: entries(91..<151), before: "e91"))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        await store.loadEarlierPage()
+        await store.refresh()
+        XCTAssertTrue(runner.calls.last?.contains("--tail") ?? false, "an empty cursor reads the tail again")
+        XCTAssertEqual(store.entries.first?.id, "e30")
+        await store.loadEarlierPage()
+        XCTAssertEqual(runner.calls.last?.suffix(2), ["--before", "e30"], "the tail never rewinds the paging")
     }
 
     func testEarlierPageWithAPermanentlyBadBeforeStopsPaging() async {
@@ -206,8 +266,8 @@ final class SessionFeedStoreTests: XCTestCase {
             await store.loadEarlierPage()
             XCTAssertFalse(store.hasEarlierPage, "the same before fails every time: paging stops, never retried")
             XCTAssertEqual(store.entries.count, 60)
-            XCTAssertNotNil(store.error)
-            await store.loadEarlierPage()
+            XCTAssertNotNil(store.earlierPageError)
+            await store.retryEarlierPage()
             XCTAssertEqual(runner.calls.count, 2)
         }
     }
