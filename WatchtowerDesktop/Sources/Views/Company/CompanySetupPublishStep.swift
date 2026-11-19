@@ -52,10 +52,22 @@ struct CompanySetupPublishStep: View {
     private var summary: some View {
         let vendors = CompanyVendor.allCases
         let lines = model.publishSummary.enumerated().map { index, line in
-            let mark: WizardMark.Kind = index < vendors.count && !model.isActive(vendors[index]) ? .skipped : .done
-            return (title: line, mark: mark)
+            guard index < vendors.count else { return (title: line, mark: WizardMark.Kind.done) }
+            return (title: line, mark: mark(vendors[index]))
         }
         return WizardStepLines(lines: lines)
+    }
+
+    /// A summary line's mark: what Publish packs is ready, still waiting, or not used.
+    private func mark(_ v: CompanyVendor) -> WizardMark.Kind {
+        guard model.isActive(v) else { return .skipped }
+        let ready = switch v {
+        case .slack: model.slackAppReady
+        case .google, .atlassian: model.isChecked(v)
+        case .linear: model.valuesComplete(v)
+        case .microsoft: model.valuesComplete(v) && !(model.draft.microsoftWaiting && !model.isChecked(v))
+        }
+        return ready ? .done : .waiting
     }
 
     @ViewBuilder

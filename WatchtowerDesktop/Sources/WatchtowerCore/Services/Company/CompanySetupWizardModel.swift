@@ -342,12 +342,18 @@ package final class CompanySetupWizardModel {
     }
 
     private func applyEntry() {
-        // A Slack run still going sets the draft's app when it ends: the
-        // entry waits for it (slackFinished applies it), then checks the app.
-        guard let entry = pendingEntry, load == .ready, !slack.isRunning else { return }
+        guard let entry = pendingEntry, load == .ready else { return }
         pendingEntry = nil
         // Publish is running: the page stays on it (the row can be pressed again).
         guard publishState != .running else { return }
+        // A Slack run still going decides the draft's app (it may end on a
+        // form, never on an answer): the page shows that run at the Slack
+        // step; the row can be pressed again once it is done.
+        if slack.isRunning, ticked.contains(.slack) {
+            if let index = steps.firstIndex(of: .vendor(.slack)) { reached.formUnion(steps.prefix(index + 1)) }
+            move(to: .vendor(.slack))
+            return
+        }
         // A finished Publish starts fresh, as Done would.
         if isPublished { reset() }
         let (asked, appID): (Step, String) = switch entry {
@@ -1024,10 +1030,9 @@ package final class CompanySetupWizardModel {
             phases[.slack] = .found
             Task {
                 if current == .vendor(.slack) { await advance() } else { await saveDraft() }
-                applyEntry()
             }
         case .failed:
-            applyEntry()
+            break
         }
     }
 

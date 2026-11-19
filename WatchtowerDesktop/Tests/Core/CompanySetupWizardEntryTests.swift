@@ -168,27 +168,30 @@ final class CompanySetupWizardEntryTests: XCTestCase {
         XCTAssertTrue(model.publishShowsToken)
     }
 
-    /// An entry asked while the wizard's Slack run goes on waits for it, then
-    /// checks the app the run set: another app → the Slack step, not Publish.
-    func testEntryWaitsForTheSlackRun() async {
+    /// An entry asked while the wizard's Slack run goes on shows that run (the
+    /// Slack step) and lands nothing: the run decides the draft's app.
+    func testEntryDuringASlackRunShowsTheRun() async {
         let cli = CompanyScriptedCLI()
         let model = make(cli)
         await model.open()
         model.toggle(.slack)
+        model.toggle(.google)
         await model.next()
         model.createNew()
         model.slackToken = "xoxe.xoxp-1-sample-token"
         cli.hold(["slack", "app", "create"])
         await model.next()
         await cli.waitFor(["slack", "app", "create"])
-        await model.leave()
+        model.back() // left the step; the run goes on
+        XCTAssertEqual(model.current, .services)
         model.request(.publish(appID: "A0OTHER"))
-        XCTAssertEqual(model.current, .vendor(.slack), "nothing moves while the run goes on")
+        XCTAssertEqual(model.current, .vendor(.slack), "the running Slack step, not Publish")
+        XCTAssertEqual(model.draft.slack.appID, "", "the other row's app never lands")
         cli.setups = acmeSetup
         cli.release(["slack", "app", "create"], [#"{"result":"ok","team_id":"T0ACME","team_name":"acme","app_id":"A0ACME","#
             + #""client_id":"1111.2222","link_written":false}"#])
-        await untilObserved { model.reached.contains(.denyList) && model.current == .vendor(.slack) }
-        XCTAssertEqual(model.draft.slack.appID, "A0ACME", "the run's app stays; the other row's never lands")
+        await untilObserved { model.draft.slack.appID == "A0ACME" && model.current == .vendor(.google) }
+        XCTAssertNotEqual(model.current, .publish, "nothing was queued behind the run")
     }
 
     /// Ticks made while discovery looks are kept.
