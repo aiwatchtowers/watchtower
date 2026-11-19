@@ -292,14 +292,21 @@ func TailPage(entries []Entry, before string, n int) (page []Entry, nextBefore s
 	end := len(entries)
 	if before != "" {
 		end = -1
+		matches := 0
 		for i := range entries {
 			if entries[i].ID == before {
-				end = i
-				break
+				if matches == 0 {
+					end = i
+				}
+				matches++
 			}
 		}
 		if end < 0 {
 			return nil, "", fmt.Errorf("before %q: no such entry", before)
+		}
+		if matches > 1 {
+			// legacy Codex ids ("L<offset>") can repeat across conversations
+			return nil, "", fmt.Errorf("before id %q is ambiguous (%d entries)", before, matches)
 		}
 	}
 	start := max(end-n, 0)

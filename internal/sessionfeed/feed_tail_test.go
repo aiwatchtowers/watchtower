@@ -73,3 +73,11 @@ func TestTailPage_RejectsNonPositiveSize(t *testing.T) {
 	_, _, err := TailPage(entriesN(3), "", 0)
 	require.Error(t, err)
 }
+
+func TestTailPage_AmbiguousBeforeIsAnError(t *testing.T) {
+	es := entriesN(6)
+	es[4].ID = "e1" // a repeated legacy id from another conversation
+	_, _, err := TailPage(es, "e1", 3)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `before id "e1" is ambiguous (2 entries)`)
+}
