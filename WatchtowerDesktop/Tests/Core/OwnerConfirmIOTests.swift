@@ -20,9 +20,16 @@ final class OwnerConfirmIOTests: XCTestCase {
         return (ends[0], ends[1])
     }
 
+    /// Writes all of `text` (a short write goes on with the rest; a failed one stops).
     private func send(_ fd: Int32, _ text: String) {
         let bytes = Array(text.utf8)
-        _ = bytes.withUnsafeBytes { write(fd, $0.baseAddress, bytes.count) }
+        var sent = 0
+        while sent < bytes.count {
+            let n = bytes[sent...].withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+            if n < 0 && errno == EINTR { continue }
+            guard n > 0 else { return }
+            sent += n
+        }
     }
 
     private func read(_ writes: [String], limit: Int, closing: Bool = false) throws -> OwnerConfirmIO.LineRead {
