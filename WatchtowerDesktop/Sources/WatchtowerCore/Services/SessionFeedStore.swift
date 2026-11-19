@@ -1,12 +1,32 @@
 import Foundation
+import os
 
 /// Holds the chat feed of one session and merges each poll of
 /// `watchtower workbench session-feed` into it: upsert by entry id keeping the
-/// first position, so a growing agent message or a subagent whose status
-/// changed updates in place.
+/// first position, so a growing agent message updates in place. The subagent
+/// markers are kept apart in `subagents` (the 👥 list's source, #2065), upserted
+/// the same way, so a subagent whose status changed updates in place there.
+/// The first read is a tail read (the last `tailSize` entries); earlier
+/// entries come a page at a time from `loadEarlierPage()` (#2065 Task 8).
 @MainActor
 package final class SessionFeedStore: ObservableObject {
+    /// Entries per tail read and per earlier page.
+    package static let tailSize = 60
+
     @Published package private(set) var entries: [SessionFeedEntry] = []
+    /// Entries before the first one held exist and can be read a page at a
+    /// time (`loadEarlierPage()`). False once the first page is held, and
+    /// when the CLI refuses the page's `before` id for good.
+    @Published package private(set) var hasEarlierPage = false
+    /// The last earlier-page read failed (kept apart from a poll's `error`,
+    /// which an `--after` read clears). Until `retryEarlierPage()` the page
+    /// is not asked for again, so a layout pass never respawns the CLI.
+    @Published package private(set) var earlierPageError: String?
+    /// Every subagent marker read so far, from the feed's `subagents` list and
+    /// the `subagent` entries; never part of `entries` by the list.
+    @Published package private(set) var subagents: [SessionFeedEntry] = []
+    /// A read has succeeded once; a later failure never resets it.
+    @Published package private(set) var feedLoaded = false
     @Published package private(set) var error: String?
     /// The agent's open tool call from the last good read (an empty read
     /// included); the live line shows it, it is never an entry.
@@ -30,8 +50,21 @@ package final class SessionFeedStore: ObservableObject {
     private let sessionID: Int64
     private let runner: CLIRunnerProtocol
     private var cursor = ""
+    /// The id of the first entry held from the tail pages: `--before` for
+    /// the next earlier page.
+    private var before = ""
+    /// An earlier page is being read; another ask is a no-op meanwhile.
+    package private(set) var loadingEarlierPage = false
+    /// An earlier page is held: a later tail read (cursor still empty) must
+    /// not move `before` back to the tail.
+    private var heldEarlierPage = false
     private var index: [String: Int] = [:]
+    private var subagentIndex: [String: Int] = [:]
     private var screenGate = ForegroundRefreshGate()
+    /// The open-time trace of the pane showing this store. The store starts
+    /// one as it is made (before the pane renders its first feed), so every
+    /// mark of the open lands on it; `refresh()` marks the CLI phases.
+    package private(set) var openTrace: WorkchatOpenTrace?
     /// The last CLI read started; the next one waits for it, so the pane
     /// never runs two CLI processes at once (main feed and subagent alike).
     private var lastRead: Task<Void, Never>?
@@ -41,6 +74,19 @@ package final class SessionFeedStore: ObservableObject {
         self.sessionID = sessionID
         self.runner = runner ?? UnavailableRunner()
         runnerMissing = runner == nil
+        beginOpenTrace(reopen: false)
+    }
+
+    /// Starts the trace of one pane open and marks `.appear`. Called once
+    /// per open (the store's init, `WorkbenchesViewModel.feedStore`), so a
+    /// kept store shown again (`reopen: true`) always times its own open: a
+    /// trace a pane left unpainted is abandoned (its interval ends), never
+    /// carried into the next open.
+    package func beginOpenTrace(reopen: Bool) {
+        openTrace?.abandon()
+        let trace = WorkchatOpenTrace(sessionID: sessionID, reopen: reopen)
+        openTrace = trace
+        trace.mark(.appear)
     }
 
     /// The pane's poll: one read now, then while `isActive` one more every
@@ -73,17 +119,29 @@ package final class SessionFeedStore: ObservableObject {
         return screenGate.tick()
     }
 
-    /// Reads what is new since the last cursor (a full read while none exists).
-    /// A failure keeps the entries and sets `error`.
+    /// Reads what is new since the last cursor (a tail read of the last
+    /// `tailSize` entries while none exists). A failure keeps the entries and
+    /// sets `error`.
     package func refresh() async {
+        let tailRead = cursor.isEmpty
         var args = ["workbench", "session-feed", "--session", String(sessionID), "--json"]
-        if !cursor.isEmpty { args += ["--after", cursor] }
+        args += tailRead ? ["--tail", String(Self.tailSize)] : ["--after", cursor]
         let generation = liveGeneration
+        // The open this read started for: a newer pane's trace begun while it
+        // runs is not marked by it.
+        let trace = openTrace
         do {
-            let payload = try Self.decode(try await read(args))
+            trace?.mark(.spawn)
+            let data = try await read(args)
+            trace?.mark(.exit)
+            let payload = try Self.decode(data)
+            trace?.mark(.decode)
             merge(payload.entries)
-            merge(payload.subagents)
+            mergeSubagents(payload.entries.filter { $0.kind == "subagent" } + payload.subagents)
+            // Only a tail read prints `before`; an `--after` read leaves it.
+            if tailRead, !heldEarlierPage { setBefore(payload.before) }
             cursor = payload.cursor
+            feedLoaded = true
             if generation == liveGeneration {
                 activity = payload.activity
                 liveLoaded = true
@@ -102,6 +160,72 @@ package final class SessionFeedStore: ObservableObject {
                 liveError = WorkchatLivePresentation.unavailable
             }
         }
+    }
+
+    /// Reads the page of `tailSize` entries before the first one held and
+    /// puts it in front; returns how many dialog entries
+    /// (`WorkchatFeedAdapter.dialog`) this page added, never counting what a
+    /// poll appended meanwhile. A no-op (0) without an
+    /// earlier page, while one is being read, or after a failed one (until
+    /// `retryEarlierPage()`). Goes through the pane's serial read, so it never
+    /// overlaps a poll. A failure keeps the entries and sets
+    /// `earlierPageError`; the page stays asked for (`hasEarlierPage`), except
+    /// when the CLI refuses its `before` id for good, which ends the paging
+    /// quietly (logged, no `earlierPageError`).
+    @discardableResult
+    package func loadEarlierPage() async -> Int {
+        guard hasEarlierPage, earlierPageError == nil, !before.isEmpty, !loadingEarlierPage, !runnerMissing else {
+            return 0
+        }
+        loadingEarlierPage = true
+        defer { loadingEarlierPage = false }
+        do {
+            let data = try await read([
+                "workbench", "session-feed", "--session", String(sessionID), "--json",
+                "--tail", String(Self.tailSize), "--before", before
+            ])
+            let payload = try Self.decode(data)
+            let added = prepend(payload.entries)
+            mergeSubagents(payload.entries.filter { $0.kind == "subagent" } + payload.subagents)
+            heldEarlierPage = true
+            setBefore(payload.before)
+            return WorkchatFeedAdapter.dialog(added).count
+        } catch {
+            if Self.refusesBefore(error) {
+                // The same id fails every time: paging ends quietly (no
+                // error with a Retry that could never succeed).
+                Self.log.notice("session \(self.sessionID, privacy: .public): earlier pages end, before refused")
+                setBefore("")
+            } else {
+                earlierPageError = error.localizedDescription
+            }
+            return 0
+        }
+    }
+
+    /// The owner's Retry after a failed earlier page: reads it again.
+    @discardableResult
+    package func retryEarlierPage() async -> Int {
+        earlierPageError = nil
+        return await loadEarlierPage()
+    }
+
+    private static let log = Logger(subsystem: "com.watchtower.desktop", category: "SessionFeed")
+
+    /// The CLI's `--before` errors that the same id gives on every try
+    /// (`internal/sessionfeed/feed.go` `TailPage`): an id no longer in the
+    /// feed, or a legacy Codex id ("L<offset>") repeated across conversations.
+    /// Each text is pinned in `internal/sessionfeed/feed_tail_test.go`:
+    /// "is ambiguous" by `TestTailPage_AmbiguousBeforeIsAnError`, "no such
+    /// entry" by `TestTailPage_UnknownBeforeIsAnError`.
+    private static func refusesBefore(_ error: Error) -> Bool {
+        guard case let CLIRunnerError.nonZeroExit(_, stderr) = error else { return false }
+        return stderr.contains("is ambiguous") || stderr.contains("no such entry")
+    }
+
+    private func setBefore(_ id: String) {
+        before = id
+        hasEarlierPage = !id.isEmpty
     }
 
     /// The session left working: the old step must not flash on the next turn.
@@ -252,6 +376,33 @@ package final class SessionFeedStore: ObservableObject {
             } else {
                 index[entry.id] = entries.count
                 entries.append(entry)
+            }
+        }
+    }
+
+    /// An earlier page goes in front; an entry already held stays where it
+    /// is, and an id repeated inside the page (legacy Codex "L<offset>") is
+    /// taken once, the first time. Returns the entries added.
+    private func prepend(_ page: [SessionFeedEntry]) -> [SessionFeedEntry] {
+        var seen = Set(index.keys)
+        let fresh = page.filter { SessionFeedEntry.knownKinds.contains($0.kind) && seen.insert($0.id).inserted }
+        guard !fresh.isEmpty else { return [] }
+        entries = fresh + entries
+        index = Dictionary(entries.enumerated().map { ($1.id, $0) }) { first, _ in first }
+        return fresh
+    }
+
+    private func mergeSubagents(_ incoming: [SessionFeedEntry]) {
+        for entry in incoming where entry.kind == "subagent" {
+            if let i = subagentIndex[entry.id] {
+                // The first known start time stays: an `--after` read dates a
+                // marker by its meta.json mtime, and Done's order must not jump.
+                var entry = entry
+                if let first = subagents[i].subagent?.startedAt { entry.subagent?.startedAt = first }
+                subagents[i] = entry
+            } else {
+                subagentIndex[entry.id] = subagents.count
+                subagents.append(entry)
             }
         }
     }

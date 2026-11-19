@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -145,4 +146,38 @@ func TestSubagent_BackgroundDropsParentReport(t *testing.T) {
 	res, err := ParseSubagent(p, out[0].Subagent.ParentReport)
 	require.NoError(t, err)
 	assert.Len(t, res.Entries, 1) // no report entry
+}
+
+func TestSubagent_StartedAtFromAgentCall(t *testing.T) {
+	res := parseStr(t, join(assistantRec("a1", "m1", agentCall("toolu_1", "Explore", "look"))), 0)
+	require.Len(t, res.Entries, 1)
+	require.False(t, res.Entries[0].At.IsZero())
+	assert.Equal(t, res.Entries[0].At, res.Entries[0].Subagent.StartedAt)
+}
+
+func TestSubagent_StartedAtFromMetaMtime(t *testing.T) {
+	dir := t.TempDir()
+	writeSub(t, dir, "aa", `{"agentType":"Explore","toolUseId":"toolu_1","finished":true}`, "")
+	when := time.Date(2026, 10, 1, 10, 0, 6, 0, time.UTC)
+	require.NoError(t, os.Chtimes(filepath.Join(dir, "subagents", "agent-aa.meta.json"), when, when))
+	out := metaMarkers(dir, "conv")
+	require.Len(t, out, 1)
+	assert.True(t, out[0].Subagent.StartedAt.Equal(when))
+}
+
+func TestSubagent_StartedAtZeroWithoutCallOrMeta(t *testing.T) {
+	mk := Entry{ID: "x", Kind: KindSubagent, Subagent: &SubagentRef{ToolUseID: "x"}}
+	out := ResolveSubagents(filepath.Join(t.TempDir(), "nope"), []Entry{mk})
+	assert.True(t, out[0].Subagent.StartedAt.IsZero())
+	assert.Empty(t, metaMarkers(filepath.Join(t.TempDir(), "nope"), "c"))
+}
+
+func TestSubagent_StartedAtFallsBackToMetaWhenCallHasNoTime(t *testing.T) {
+	dir := t.TempDir()
+	writeSub(t, dir, "aa", `{"agentType":"Explore","toolUseId":"toolu_1"}`, "")
+	when := time.Date(2026, 10, 1, 10, 0, 6, 0, time.UTC)
+	require.NoError(t, os.Chtimes(filepath.Join(dir, "subagents", "agent-aa.meta.json"), when, when))
+	es := []Entry{{ID: "toolu_1", Kind: KindSubagent, Subagent: &SubagentRef{ToolUseID: "toolu_1"}}}
+	out := ResolveSubagents(dir, es)
+	assert.True(t, out[0].Subagent.StartedAt.Equal(when))
 }

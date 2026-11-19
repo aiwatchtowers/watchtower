@@ -24,7 +24,7 @@ Each session opens in the mode you last showed it in. A new session always opens
 
 Claude Code's own notices, such as a background task finishing or a message from another session, show as one grey line instead of as your messages. Click one for the details.
 
-Once the session ends, the field gives way to **Session finished. The history stays readable.** You can still scroll and open subagents.
+Once the session ends, the field gives way to **Session finished. The history stays readable.** You can still scroll, and the agents button under it still opens finished subagents.
 
 ## Using it
 
@@ -59,10 +59,11 @@ action: nav:projects
 
 - Return in the field at the bottom sends your line. Shift-Return adds a line break; the message keeps its line breaks.
 - A line starting with `/` is typed as written, so `/clear` works.
-- You can send while the agent works. With Claude Code the line shows **Queued · the agent reads it at its next step** until the agent picks it up. If it has to wait a moment, it reads **Queued · sends in a moment**, and **Cancel** drops it; quitting drops it too. While a Codex session works, the field says **Codex takes your message when this turn ends.** and your line reads **Queued · sends when the agent stops**.
+- You can send while the agent works: with text in the field the round button is Send in every state. With Claude Code the line shows **Queued · the agent reads it at its next step** until the agent picks it up. If it has to wait a moment, it reads **Queued · sends in a moment**, and **Cancel** drops it; quitting drops it too. While a Codex session works, the field says **Codex takes your message when this turn ends.** and your line reads **Queued · sends when the agent stops**.
 - The small line above the field shows the current tool, or **Last · …** for the last completed action while the assistant continues working. **Working…** is the fallback for Claude and Codex alike. This line stays outside your conversation history.
-- Paste a screenshot or PDF with ⌘V, or drop files, and they show as chips above the field (✕ removes one). Pasted files are kept in Watchtower's folder until the session stops. Finder files attach as they are. If a paste can't be saved, or a file's path has a line break, the reason shows under the field.
-- **Stop** (■), or Esc in the empty field, interrupts the agent. If it can't, the reason shows above the field.
+- Paste a screenshot with ⌘V and **[Image #1]** goes into the text at the cursor; a long text paste goes in as **[Pasted text #2 +42 lines]**, as in Claude Code. One Backspace removes the whole token. On send, the text goes in full and the image as its saved file's path. If the image file is gone by then, **Pasted image #N is gone — paste it again** shows and your draft stays.
+- A pasted PDF, dropped files and the paperclip's picks show as chips above the field (✕ removes one). Pasted files are kept in Watchtower's folder until the session stops. If a paste can't be saved, or a file's path has a line break, the reason shows under the field.
+- The round button is **Stop** (■) only with an empty field while the agent works; it, or Esc in the empty field, interrupts the agent. If it can't, the reason shows above the field.
 - A line typed into the terminal but not sent says so, with **Show in Terminal**: press Return there.
 
 ### Answer a permission prompt
@@ -85,23 +86,25 @@ A shortened request, or an edit of Watchtower or shell settings, gets **Deny** o
 
 Each open ask of the session shows at the end of the chat as a card with its number and title. **Open Ask** opens it in the ask drawer, where you answer it as anywhere else.
 
-### Read a subagent
+### See agents and the turn's steps
 <!-- learn
-id: workchat-live-agents
-title: See who is working in Workchat
-text: Click the agent count above the field to see running tasks and open a subagent’s chat.
+id: workchat-agents-list
+title: See working and finished agents
+text: Click the agents button above the field to see who works now and open any finished agent’s report.
 area: development
 level: power
 kind: feature
-since: 0.26.5
+since: next
 action: nav:projects
+replaces: [workchat-live-agents]
+changed: Agents left the conversation; finished ones sit under Done in the list.
 -->
 
-Click the small agents icon and count above the field to open the running-agent list. Each row shows the task, its latest known action and elapsed time; click one to read that agent’s chat. The list opens only when you click, and closes without changing your conversation.
+Subagents never show in the conversation. The agents button above the field (two people and a count) opens the list: **WORKING** rows show the type, task, latest action and timer, and **Done · N** lists every finished subagent, newest first. Click a row to read that agent's chat in the same pane, with **‹ Back** and a path bar that starts at **Workchat**; subagents are read-only.
 
-A **?** means the agent state is unavailable, rather than that no agents are running. Some agents appear before their transcript is ready; their row opens once the transcript can be read safely.
+The button shows the working count, a dimmed **✓ N** when only finished agents remain, and **?** when the agent state is unavailable, which is not the same as none running. It stays while there are finished agents. Done is collapsed while agents work and opens by itself when none do; your own choice wins until you quit.
 
-A subagent's card opens it in the same pane, with **‹ Back** and a path bar that starts at **Workchat**. Subagents are read-only: write to the agent in the main Workchat.
+While the agent works, the steps of this turn show above the line, newest at the bottom: tool, summary and time. The line then reads **This turn · N steps**. Click the line, or press ⌥↓ in the field, to hide or show the list; Workchat remembers your choice for that pane. The list goes away when the turn ends or a permission card shows.
 
 ## When it's empty or wrong
 

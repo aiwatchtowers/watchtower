@@ -33,6 +33,8 @@ struct WorkchatView: View {
     @State private var openTarget: BoardTargetRoute?
     @State private var openAsk: AskRoute?
     @State private var openSubagent: SessionChatRoute?
+    @State private var showsAgents = false
+    @State private var doneDisclosure = WorkchatAgents.DoneDisclosure.automatic
     @State private var startingSession = false
     @State private var openSession: SessionRoute?
 
@@ -69,6 +71,11 @@ struct WorkchatView: View {
             if let model { composer(model.composer) }
         }
         .toolbar {
+            if let badge = model?.agents.badge {
+                ToolbarItem(placement: .topBarTrailing) {
+                    WorkchatAgentsButton(badge: badge) { showsAgents = true }
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 if let session { menu(session, targetID: model?.targetID) }
             }
@@ -88,6 +95,19 @@ struct WorkchatView: View {
         }
         .navigationDestination(item: $openSession) { route in
             Self(replica: replica, sessionID: route.id, store: env.store, requester: env.chatRequests)
+        }
+        .sheet(isPresented: $showsAgents) {
+            if let model {
+                WorkchatAgentsSheet(
+                    agents: model.agents,
+                    disclosure: $doneDisclosure,
+                    onOpen: { route in
+                        showsAgents = false
+                        openSubagent = route
+                    },
+                    onClose: { showsAgents = false }
+                )
+            }
         }
         .sheet(isPresented: $startingSession) {
             if let session {
@@ -264,7 +284,7 @@ struct WorkchatView: View {
             ChatBubble(role: .watchtower, text: "No messages yet")
         }
         ForEach(model.entries) { entry in
-            WorkchatEntryRow(entry: entry, sessionID: sessionID) { openSubagent = $0 }
+            WorkchatEntryRow(entry: entry)
         }
     }
 
@@ -435,12 +455,9 @@ struct WorkchatView: View {
 
 /// One entry of the session's chat in the workchat's bubbles (mockup 3):
 /// the owner's lines and ask answers right, the agent's text left, the
-/// brief and Watchtower's lines as captions, a subagent as a row that opens
-/// its own chat.
+/// brief and Watchtower's lines as captions, subagents are in the agents sheet.
 struct WorkchatEntryRow: View {
     let entry: SessionChat.Entry
-    let sessionID: Int64
-    let onOpenSubagent: (SessionChatRoute) -> Void
     @State private var briefOpen = false
 
     var body: some View {
@@ -457,11 +474,6 @@ struct WorkchatEntryRow: View {
             brief
         case .separator:
             ChatBubble(role: .watchtower, text: "New conversation")
-        case .subagent:
-            if let subagent = entry.subagent {
-                let route = SessionChatEntryRow.route(for: subagent, sessionID: sessionID)
-                ChatBubble(role: .subagent, text: Self.subagentText(subagent), onTap: route.map { route in { onOpenSubagent(route) } })
-            }
         default:
             EmptyView()
         }
@@ -499,12 +511,6 @@ struct WorkchatEntryRow: View {
         return "Brief · \(title)"
     }
 
-    /// "Explore · Find the archive view · finished".
-    static func subagentText(_ subagent: SessionChat.Entry.Subagent) -> String {
-        [subagent.type.isEmpty ? "Subagent" : subagent.type, subagent.description, SessionChatEntryRow.statusText(subagent.status).lowercased()]
-            .filter { !$0.isEmpty }
-            .joined(separator: " · ")
-    }
 }
 
 /// What to do next with a session whose turn is over (#1784): a plain card
