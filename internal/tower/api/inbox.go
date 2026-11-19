@@ -321,11 +321,14 @@ const (
 	LegacyIdeas        LegacyKind = "ideas"
 	LegacyThreadBriefs LegacyKind = "thread_briefs"
 	LegacyMessages     LegacyKind = "messages"
+	// LegacyWatchman is Watchman's morning journal: no items, the journal
+	// is its own pane.
+	LegacyWatchman LegacyKind = "watchman"
 )
 
 // EnumValues lists every LegacyKind.
 func (LegacyKind) EnumValues() []string {
-	return []string{"morning_brief", "tracks", "ideas", "thread_briefs", "messages"}
+	return []string{"morning_brief", "tracks", "ideas", "thread_briefs", "messages", "watchman"}
 }
 
 // LegacySection is a legacy root entry's list.

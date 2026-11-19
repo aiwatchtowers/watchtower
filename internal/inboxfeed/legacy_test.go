@@ -3,6 +3,7 @@ package inboxfeed
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"watchtower/internal/tower/api"
 )
@@ -239,5 +240,63 @@ func TestFolders_OwnHiddenBesideTheEffectiveFlag(t *testing.T) {
 		if got[id] != w {
 			t.Errorf("folder %d hidden/own %v, want %v", id, got[id], w)
 		}
+	}
+}
+
+// Watchman's morning journal is a root card once Watchman was turned on:
+// "Watchman", "N waiting" (unread while one waits) over every night, and
+// the newest night's twin decisions — pending, waiting, owner-marked-done,
+// owner-first, superseded and check items left out — at the newest item's
+// time; not counted in the folder's count. Before the first item it sits at
+// the enable time with no night line; before Watchman was turned on there
+// is no card.
+func TestLegacy_WatchmanJournalCard(t *testing.T) {
+	// ownerDone is SQL: NULL or a quoted time.
+	item := func(id int, kind, state, outcome string, unsure int, ownerDone, created string) string {
+		return fmt.Sprintf("INSERT INTO watchman_items (id, workbench_id, kind, ref_kind, ref_id, state, outcome, unsure, "+
+			"owner_done_at, created_at) VALUES (%d, 1, '%s', 'ask', %d, '%s', '%s', %d, %s, '%s')",
+			id, kind, id, state, outcome, unsure, ownerDone, created)
+	}
+	base := []string{
+		"INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme')",
+		"INSERT INTO watchman_workbenches (workbench_id, enabled_at) VALUES (1, '2026-11-10T09:00:00Z')",
+	}
+	if feed := buildFeed(t, base[:1], Options{}); hasCard(feed, WatchmanCardID) {
+		t.Errorf("a card before Watchman was turned on: %v", cardIDs(feed.Cards))
+	}
+	first := cardByID(t, buildFeed(t, base, Options{}), WatchmanCardID)
+	if first.Title != "Watchman" || first.Preview != "" || first.SourceLine != "" || first.Unread ||
+		first.Stamp != "2026-11-10T09:00:00Z" || first.Legacy == nil || first.Legacy.Kind != api.LegacyWatchman {
+		t.Errorf("before the first item %+v", first)
+	}
+
+	// The night before testNow's: 2026-11-15 12:00 to 2026-11-16 12:00 UTC.
+	feed := buildFeed(t, append(base,
+		item(1, "ask", "done", "answered", 1, "NULL", "2026-11-15T22:00:00Z"),
+		item(2, "ask", "done", "answered", 0, "NULL", "2026-11-15T23:00:00Z"),
+		item(3, "review_doc", "done", "approved", 1, "NULL", "2026-11-16T01:00:00Z"),
+		item(4, "ask", "done", "parked", 1, "NULL", "2026-11-16T02:00:00Z"),                   // waiting
+		item(5, "ask", "done", "handed", 1, "'2026-11-16T08:00:00Z'", "2026-11-16T03:00:00Z"), // marked done
+		item(6, "ask", "done", "owner_first", 1, "NULL", "2026-11-16T04:00:00Z"),
+		item(7, "check", "done", "answered", 1, "NULL", "2026-11-16T05:00:00Z"),
+		item(8, "ask", "deciding", "", 1, "NULL", "2026-11-16T06:00:00Z"),
+		item(9, "ask", "done", "parked", 1, "NULL", "2026-11-14T22:00:00Z"), // an older night, still waiting
+	), Options{})
+	c := cardByID(t, feed, WatchmanCardID)
+	if c.Preview != "2 waiting" || !c.Unread || c.SourceLine != "Night of 15 Nov · 3 decided · 2 unsure" ||
+		c.Stamp != "2026-11-16T06:00:00Z" || c.CardKind != api.CardLegacy || len(c.Legacy.Items) != 0 {
+		t.Errorf("journal card %+v", c)
+	}
+	for _, f := range feed.Folders {
+		if f.Count != 0 {
+			t.Errorf("folder %d counts %d: the journal is never counted", f.ID, f.Count)
+		}
+	}
+
+	tonight := cardByID(t, buildFeed(t, append(base,
+		item(1, "ask", "done", "answered", 1, "NULL", "2026-11-16T13:00:00Z")), Options{Now: testNow.Add(2 * time.Hour)}),
+		WatchmanCardID)
+	if tonight.SourceLine != "Tonight · 1 decided · 1 unsure" || tonight.Preview != "" || tonight.Unread {
+		t.Errorf("tonight %+v", tonight)
 	}
 }

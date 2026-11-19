@@ -37,23 +37,10 @@ package enum WatchmanJournalCopy {
         "Deciding: \(oneLine(question))"
     }
 
-    // MARK: Home and the Inbox entry
+    // MARK: Home
 
     package static func homeRow(_ counts: WatchmanNightCounts) -> String {
         "Overnight Watchman decided \(counts.decided) — \(counts.unsure) unsure, \(counts.waiting) waiting for you"
-    }
-
-    /// The entry's summary; empty when nothing waits.
-    package static func inboxSummary(waiting: Int) -> String {
-        waiting > 0 ? "\(waiting) waiting" : ""
-    }
-
-    /// "Night of 16 Nov · 14 decided · 2 unsure"; empty before the first night.
-    package static func inboxDetail(_ counts: WatchmanNightCounts?, now: Date, calendar: Calendar) -> String {
-        guard let counts else { return "" }
-        var parts = [nightTitle(counts.start, now: now, calendar: calendar), "\(counts.decided) decided"]
-        if counts.unsure > 0 { parts.append("\(counts.unsure) unsure") }
-        return parts.joined(separator: " · ")
     }
 
     // MARK: Nights

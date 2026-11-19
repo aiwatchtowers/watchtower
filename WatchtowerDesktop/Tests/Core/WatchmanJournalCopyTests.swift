@@ -94,15 +94,6 @@ final class WatchmanJournalCopyTests: XCTestCase {
         XCTAssertEqual(Copy.nightListLine(night, live: false), "1 decided · all sure")
     }
 
-    func testInboxEntryLines() {
-        let counts = WatchmanNightCounts(start: date("2026-11-16T12:00:00Z"), decided: 14, unsure: 2, waiting: 2)
-        XCTAssertEqual(Copy.inboxSummary(waiting: 2), "2 waiting")
-        XCTAssertEqual(Copy.inboxSummary(waiting: 0), "")
-        XCTAssertEqual(Copy.inboxDetail(counts, now: date("2026-11-18T09:00:00Z"), calendar: calendar),
-                       "Night of 16 Nov · 14 decided · 2 unsure")
-        XCTAssertEqual(Copy.inboxDetail(nil, now: date("2026-11-18T09:00:00Z"), calendar: calendar), "")
-    }
-
     /// C1: the Watchman entry has its own empty-state copy key.
     func testEmptyStateCopyKey() throws {
         let copy = try XCTUnwrap(EmptyStateCopyTable.copy(for: Copy.emptyCopyKey, briefingHour: 8))

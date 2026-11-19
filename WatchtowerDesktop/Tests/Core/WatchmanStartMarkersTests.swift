@@ -17,11 +17,11 @@ final class WatchmanStartMarkersTests: XCTestCase {
         XCTAssertEqual(WatchmanItem.startOwedErrors, go)
     }
 
-    /// Both SQL readers take the one fragment built from the markers.
+    /// The SQL fragment (Mark done's reader) is built from the markers; Go's
+    /// `db.WatchmanWaitingClause` names the same constants.
     func testSQLFragmentNamesEveryMarker() {
         for marker in WatchmanItem.startOwedErrors {
             XCTAssertTrue(WatchmanItem.failedStepSQL.contains("'\(marker)'"), marker)
         }
-        XCTAssertTrue(WatchmanItem.waitingSQL.contains(WatchmanItem.failedStepSQL))
     }
 }

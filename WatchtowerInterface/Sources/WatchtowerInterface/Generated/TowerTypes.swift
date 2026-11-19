@@ -1684,6 +1684,7 @@ public enum LegacyKind: Codable, Hashable, Sendable {
     case ideas
     case threadBriefs
     case messages
+    case watchman
     /// A value this build does not know (sent by a newer Watchtower).
     case unknown(String)
 
@@ -1694,6 +1695,7 @@ public enum LegacyKind: Codable, Hashable, Sendable {
         case "ideas": self = .ideas
         case "thread_briefs": self = .threadBriefs
         case "messages": self = .messages
+        case "watchman": self = .watchman
         default: self = .unknown(rawValue)
         }
     }
@@ -1705,6 +1707,7 @@ public enum LegacyKind: Codable, Hashable, Sendable {
         case .ideas: "ideas"
         case .threadBriefs: "thread_briefs"
         case .messages: "messages"
+        case .watchman: "watchman"
         case .unknown(let value): value
         }
     }

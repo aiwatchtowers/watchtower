@@ -186,11 +186,6 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         .map { "'" + $0.replacingOccurrences(of: "'", with: "''") + "'" }
         .joined(separator: ", ")
 
-    /// The SQL twin of `waitsForOwner` (alias-free columns).
-    package static let waitingSQL = """
-        state = 'done' AND owner_done_at IS NULL AND ((outcome IN ('parked', 'handed') AND feedback = '') OR \(failedStepSQL))
-        """
-
     /// The owner corrected it and the correction never reached a session.
     package var correctionUnsent: Bool {
         feedback == "corrected" && correctionSentAt == nil
@@ -309,21 +304,5 @@ package struct WatchmanNightCounts: Equatable, Sendable {
     package init(_ night: WatchmanNight) {
         self.init(start: night.date, decided: night.decided.count, unsure: night.decided.filter(\.unsure).count,
                   waiting: night.waiting.count)
-    }
-}
-
-/// What the Inbox's Watchman entry needs (`InboxFeedQueries.read`).
-package struct WatchmanInboxSummary: Equatable, Sendable {
-    /// The newest night with an item; nil before the first.
-    package var latest: WatchmanNightCounts?
-    /// Parked and handed items not acknowledged, every night.
-    package var waiting: Int
-    /// The newest item's time, else when Watchman was first turned on.
-    package var updatedAt: Date
-
-    package init(latest: WatchmanNightCounts?, waiting: Int, updatedAt: Date) {
-        self.latest = latest
-        self.waiting = waiting
-        self.updatedAt = updatedAt
     }
 }

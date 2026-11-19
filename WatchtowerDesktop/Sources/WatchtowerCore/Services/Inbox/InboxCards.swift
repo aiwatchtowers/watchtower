@@ -103,8 +103,6 @@ package struct InboxFeedSnapshot: Equatable, Sendable {
     /// Built-ins whose one-time move to Automations failed (C2): first in
     /// Needs approval, each with **Retry**.
     package var builtinNotices: [BuiltinUpgradeNotice] = []
-    /// The Watchman entry's summary; nil while Watchman was never turned on.
-    package var watchman: WatchmanInboxSummary?
 
     package init(
         proposals: [AgentAction] = [],

@@ -82,19 +82,6 @@ package enum WatchmanJournalQueries {
         return titles
     }
 
-    /// The Inbox entry's summary; nil while Watchman was never turned on
-    /// and has no item (or on a database without its tables).
-    package static func inboxSummary(_ db: Database, calendar: Calendar = .current) throws -> WatchmanInboxSummary? {
-        guard try db.tableExists("watchman_items"), try db.tableExists("watchman_workbenches") else { return nil }
-        let latest = try nights(db, limit: 1, calendar: calendar).first
-        let enabledAt = try String.fetchOne(db, sql: "SELECT MAX(enabled_at) FROM watchman_workbenches")
-        guard let updatedAt = latest?.items.last?.createdAt ?? AutomationDates.parse(enabledAt) else { return nil }
-        let waiting = try Int.fetchOne(db, sql: """
-            SELECT COUNT(*) FROM watchman_items WHERE \(WatchmanItem.waitingSQL)
-            """) ?? 0
-        return WatchmanInboxSummary(latest: latest.map(WatchmanNightCounts.init), waiting: waiting, updatedAt: updatedAt)
-    }
-
     /// Home's row: the newer of tonight and last night that decided or
     /// parked anything; nil when neither did.
     package static func homeNight(_ db: Database, now: Date, calendar: Calendar = .current) throws -> WatchmanNightCounts? {

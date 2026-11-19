@@ -85,14 +85,6 @@ final class WatchmanJournalQueriesTests: XCTestCase {
         XCTAssertEqual(night.pending.map(\.question), ["deciding"])
         let live = try queue.read { try WatchmanJournalQueries.liveDeciding($0) }
         XCTAssertEqual(live.map(\.question), ["deciding"])
-        try queue.write { db in
-            try db.execute(sql: "INSERT INTO watchman_workbenches (workbench_id, enabled_at) VALUES (1, '2026-11-10T00:00:00Z')")
-        }
-        let calendar = calendar
-        let summary = try XCTUnwrap(queue.read { try WatchmanJournalQueries.inboxSummary($0, calendar: calendar) })
-        XCTAssertEqual(summary.waiting, 2)
-        XCTAssertEqual(summary.latest, WatchmanNightCounts(start: night.date, decided: 2, unsure: 2, waiting: 2))
-        XCTAssertEqual(summary.updatedAt, date("2026-11-16T01:40:00Z"))
     }
 
     /// A check is listed until someone runs it; it never counts as decided.
@@ -268,16 +260,11 @@ final class WatchmanJournalQueriesTests: XCTestCase {
                      error: "starting the next session: host busy")
             try item(db, workbench: wb, created: "2026-11-16T01:10:00Z", kind: "handover", question: "owed",
                      error: "next session not started yet")
-            try db.execute(sql: "INSERT INTO watchman_workbenches (workbench_id, enabled_at) VALUES (?, '2026-11-10T00:00:00Z')",
-                           arguments: [wb])
         }
         let night = try XCTUnwrap(nights(queue).first)
         XCTAssertEqual(night.waiting.map(\.question), ["failed"])
         XCTAssertEqual(night.decided.map(\.question), ["owed"])
         XCTAssertEqual(night.waiting.first.map(WatchmanJournalCopy.waitingReason), "starting the next session: host busy")
-        let calendar = calendar
-        let summary = try XCTUnwrap(queue.read { try WatchmanJournalQueries.inboxSummary($0, calendar: calendar) })
-        XCTAssertEqual(summary.waiting, 1)
         let failed = try XCTUnwrap(night.waiting.first)
         XCTAssertTrue(try queue.write { try WatchmanFeedbackQueries.ownerDone($0, itemID: failed.id) })
         XCTAssertEqual(try nights(queue).first?.waiting.count, 0, "Mark done takes it out of Waiting for you")

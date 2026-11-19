@@ -487,20 +487,15 @@ private struct TrayMenuShot: View {
 
 // MARK: - Inbox source list
 
-/// The real `InboxFolderContentList` of the Inbox root with Watchman's real
-/// row (`InboxFolderEntries.row(.watchman, …)`) beside Morning brief, Track
-/// my threads and Idea finder; its summary carries what waits for the owner.
+/// The real `InboxFolderContentList` of the Inbox root with Watchman's row
+/// beside Morning brief, Track my threads and Idea finder; its texts are the
+/// Go feed's journal card (`inboxfeed.watchmanCard`, pinned by
+/// `TestLegacy_WatchmanJournalCard`), its summary what waits for the owner.
 private struct InboxEntryMock: View {
     var body: some View {
-        var feed = InboxFeedSnapshot()
-        feed.watchman = WatchmanInboxSummary(
-            latest: WatchmanNightCounts(start: JournalFixture.at("2026-11-16T12:00:00Z"), decided: 14, unsure: 2,
-                                        waiting: 2),
-            waiting: 2, updatedAt: JournalFixture.morning)
-        let inputs = InboxFolderEntries.Inputs(
-            feed: feed, folders: InboxFolderMenuSnapshot(tree: .rootOnly), now: JournalFixture.morning,
-            calendar: JournalFixture.calendar)
-        let watchman = InboxFolderEntries.row(.watchman, inputs)
+        let watchman = InboxFolderListRow(
+            id: InboxFolderEntry.watchman.id, kind: .legacy, title: WatchmanJournalCopy.title, summary: "2 waiting",
+            detail: "Night of 16 Nov · 14 decided · 2 unsure", unread: true)
         let others = Copy.inboxOthers.map {
             InboxFolderListRow(id: $0.id, kind: .legacy, title: $0.title, summary: $0.summary, detail: $0.detail)
         }

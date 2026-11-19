@@ -48,6 +48,10 @@ type legacy struct {
 	// it has a briefing or a plan.
 	openDay    string
 	startOfDay time.Time
+	// watchman is the morning journal's summary; nil while Watchman was
+	// never turned on.
+	watchman *db.WatchmanJournalSummary
+	now      time.Time
 }
 
 // day is one date of the Morning brief (InboxDayCard).
@@ -114,6 +118,10 @@ func readLegacy(ctx context.Context, tx *sql.Tx, now time.Time, disabled func(st
 	}
 	if l.briefs, err = readBriefs(ctx, tx, now); err != nil {
 		return l, err
+	}
+	l.now = now
+	if l.watchman, err = db.WatchmanJournalSummaryTx(ctx, tx, now.Location()); err != nil {
+		return l, fmt.Errorf("inboxfeed: %w", err)
 	}
 	hasToday := false
 	for _, dd := range l.days {
@@ -433,8 +441,9 @@ type timedCard struct {
 // every unread one, and today's placeholder), Track my threads while a
 // track exists (stopped ones included), Idea finder while an idea exists
 // or its built-in is indexed, Messages while it stands in for Waiting for
-// me and has a message, and each thread brief applied in the last 24
-// hours at its own applied time (the Mac lists each as a root entry).
+// me and has a message, each thread brief applied in the last 24 hours at
+// its own applied time (the Mac lists each as a root entry), and Watchman's
+// morning journal once Watchman was turned on, at its newest item's time.
 func (s *snapshot) legacyCards(folder int64) []timedCard {
 	l := s.legacy
 	var out []timedCard
@@ -455,6 +464,9 @@ func (s *snapshot) legacyCards(folder int64) []timedCard {
 	for _, b := range l.briefs {
 		c, at := threadBriefCard(b, folder)
 		out = append(out, timedCard{at, c})
+	}
+	if l.watchman != nil {
+		out = append(out, timedCard{l.watchman.UpdatedAt, watchmanCard(*l.watchman, l.now, folder)})
 	}
 	return out
 }
@@ -643,6 +655,27 @@ func threadBriefCard(b db.AgentAction, folder int64) (api.Card, time.Time) {
 		Stamp:   formatStamp(applied)}
 	return legacyCard(ThreadBriefCardID(b.ID), folder, title, "Thread brief", "", applied, false,
 		api.LegacySection{Kind: api.LegacyThreadBriefs, Items: []api.LegacyItem{item}}), applied
+}
+
+// watchmanCard is Watchman's morning journal: "Watchman", "N waiting"
+// (unread while one waits, never counted in the folder's count), and its
+// newest night — "Tonight · 14 decided · 2 unsure", "Night of 16 Nov · 3
+// decided" — or no line before the first item. The journal is its own
+// pane, so the card carries no items.
+func watchmanCard(w db.WatchmanJournalSummary, now time.Time, folder int64) api.Card {
+	night := ""
+	if !w.NightStart.IsZero() {
+		night = "Night of " + w.NightStart.Format("2 Jan")
+		if w.NightStart.Equal(db.WatchmanNightStart(now, now.Location())) {
+			night = "Tonight"
+		}
+		night += " · " + strconv.Itoa(w.Decided) + " decided"
+		if w.Unsure > 0 {
+			night += " · " + strconv.Itoa(w.Unsure) + " unsure"
+		}
+	}
+	return legacyCard(WatchmanCardID, folder, "Watchman", night, countLine(w.Waiting, "waiting"), w.UpdatedAt,
+		w.Waiting > 0, api.LegacySection{Kind: api.LegacyWatchman})
 }
 
 // countLine is "<n> <what>", or "" for none.
