@@ -429,6 +429,11 @@ func stopStateFixture(t *testing.T, branch string) (database *db.DB, pid, row in
 	database = writeActionsConfig(t)
 	folder := driftRepo(t)
 	pid, _ = driftWorkbench(t, database, folder, branch)
+	if branch == "open" {
+		// An open branch is no drift by construction; these tests are about
+		// the turn state, so the check need not race its wall-clock budget.
+		stubStopHookCheck(t)
+	}
 	_, err := devpack.InstallStateHooks(folder, "watchtower", pid)
 	require.NoError(t, err)
 	res, err := database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
@@ -442,7 +447,6 @@ func stopStateFixture(t *testing.T, branch string) (database *db.DB, pid, row in
 func TestSessionState_StopHookRecordsWaitingWithoutDrift(t *testing.T) {
 	database, pid, row := stopStateFixture(t, "open")
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
-	stubStopHookCheck(t) // no drift: the board is not the subject
 
 	out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), statePayload("Stop", briefLaunchID, ""))
 
