@@ -3217,3 +3217,14 @@ Entry format:
 - weak-dimension: 7. A new fixture file copied a `do/catch` shape from the older fixtures that lack `XCTFail` instead of calling the shared failure helper.
 - rule-gap (candidate, dim 7/Design kit): *a DesignShot fixture's error path calls `DesignShotFixtures.failure` (XCTFail plus red text); a local `catch` that only returns a Text is the tell.*
 - outcome: TBD
+
+## 2026-11-19 — ci/split-go-test (PR #751: Go Test split into three coverage shards on the gate's runner, internal/db spread across them and merged by go-coverage, GOMAXPROCS 6 per shard on the Mac, editor bridge check moved beside Swift Test; panel: prosecutor (7) + codex (2); pr-review-toolkit specialists unavailable; judge verified by reading, no runs) — verdict: changes-needed
+
+- contested: F1, three Mac shards at GOMAXPROCS 6. Held major. GOMAXPROCS is per process, and shard 1 alone starts CMD_SHARDS=6 cmd processes plus a db slice, so "three of them stay near the core count" is wrong arithmetic. The same file records three race shards on the Mac reaching load ~500 and failing. The pending green Mac run is the merge condition, but one green run on a quiet machine does not settle it. [4/8]
+- contested: C1, the recursive delete of `$COVER_OUT` in coverage-gate.sh. CI never hits it, because each matrix job has its own checkout. Held major anyway: COVER_OUT is an env override, so the delete reaches whatever path a developer exports, and sequential local `SHARD=K/3` runs in one checkout wipe the earlier shards' profiles. The fix is one line: remove only `<db>.*of*.cov`. [9]
+- false-positive: none dismissed. F3 (cmd weight units) and F5 (unknown COVER_WEIGHTS names fall back to the default) only affect balance, never correctness, so they were downgraded to nits. [4]
+- miss: codex alone caught both script-level defects (C1 delete scope, C2 leading-zero SHARD skipping the missing-package check and giving an octal error on 08). The prosecutor read the shell for balance and docs, not for its inputs. [9]
+- weak-dimension: 9. In a shell script, check what every env-overridable path variable flows into (delete, move, redirects) and whether string compares (`== 1`) agree with the awk numeric parse of the same input.
+- rule-gap (candidate, dim 9): *a script that recursively deletes an env-overridable path removes only the files it owns (a glob of its own names), never the directory; and a value parsed numerically in one place is never compared as a string elsewhere.*
+- rule-gap (candidate, dim 4/8): *a CI change that adds concurrent jobs on the self-hosted Mac states its per-process thread arithmetic (processes x GOMAXPROCS) against the 16 cores, and merges only after a green Mac run.*
+- outcome: TBD

@@ -113,9 +113,10 @@ else
 # CI seconds per package (go-test log, 2026-11-18, the unsharded run on the
 # owner's Mac runner, GOMAXPROCS=8: "ok <pkg> <s>s"; packages under 15 s take
 # the default, their median rounded up). CMD_WEIGHT is cmd's share in the same
-# units: its CMD_SHARDS slices' seconds together (4 x ~260 s), plus the steps
-# CI runs only in cmd's shard (make test-scripts ~110 s, make hub-smoke
-# ~90 s). It is the heaviest, so shard 1, and alone there.
+# units: the seconds of its CMD_SHARDS (4) slices added up (4 x ~260 s, the
+# way the other packages' seconds add up as they share -p), plus the steps CI
+# runs only in cmd's shard (make test-scripts ~110 s, make hub-smoke ~90 s).
+# Only the balance hangs on it. It is the heaviest, so shard 1, alone there.
 CMD_WEIGHT=1240
 COVER_WEIGHTS="workbenchcheck 118 sessioncleanup 113 automations 104 workbenchgit 94 transporttest 90 hub/adopt 89 daemon 87 tools 74 sessionreport 67 diagnostics 57 devpack 45 agentreport 44 chat 40 sessionstart 40 kb 39 codex 39 hub/switcher 38 hub 36 hub/slices/sources 35 agentlog 34 coach 34 hub/actions 34 memory 31 reviewdiff 29 ai 27 hub/actions/handlers 24 sync 21 reviewmap 17 chatengine 17 ideas 16 confluenceedit 16 digest 15"
 COVER_WEIGHT_DEFAULT=3
@@ -129,7 +130,7 @@ MY_PKGS="$(echo "$ALL_PKGS" | awk -v shard="$SHARD" -v cmd="$CMD_PKG" -v cmdw="$
     { pkgs[NR] = $0 }
     END {
         if (shard == "") { for (i = 1; i <= NR; i++) print pkgs[i]; exit }
-        if (split(shard, kn, "/") != 2 || kn[1] !~ /^[0-9]+$/ || kn[2] !~ /^[0-9]+$/ || kn[1] < 1 || kn[1] > kn[2]) {
+        if (split(shard, kn, "/") != 2 || kn[1] !~ /^[1-9][0-9]*$/ || kn[2] !~ /^[1-9][0-9]*$/ || kn[1] < 1 || kn[1] > kn[2]) {
             print "coverage-gate: SHARD must be K/N with 1 <= K <= N, got " shard > "/dev/stderr"; exit 1 }
         k = kn[1] + 0; n = kn[2] + 0
         if (n == 1) { for (i = 1; i <= NR; i++) print pkgs[i]; exit }
@@ -182,8 +183,9 @@ done
 if [[ -n "$SPREAD_SLICE" ]]; then
     read -r sk sn <<< "$SPREAD_SLICE"
     MY_SPLITS="$MY_SPLITS $SPREAD_PKG:$sn:$((sk - 1))"
-    rm -rf "$COVER_OUT"
     mkdir -p "$COVER_OUT"
+    # Only this slice's own profile: other shards' (and other files) stay.
+    rm -f "$COVER_OUT/$(echo "$SPREAD_PKG" | tr '/' '_').${sk}of$sn.cov"
 fi
 
 WORK="$(mktemp -d)"

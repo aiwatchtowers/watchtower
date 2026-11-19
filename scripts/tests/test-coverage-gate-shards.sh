@@ -12,7 +12,9 @@
 #   - SHARD=1..3/3 deal the module but db: disjoint, union + db = every package
 #   - cmd (the heaviest) opens shard 1, alone in this small module
 #   - no SHARD and SHARD=1/1 select every package
-#   - a malformed SHARD fails
+#   - a malformed SHARD fails (leading zeros included)
+#   - shards sharing one COVER_OUT keep each other's profiles
+#   - every COVER_WEIGHTS name is a package directory of the tree
 #   - each shard checks only its whole packages' thresholds, runs its db
 #     slice into COVER_OUT and checks no db threshold; a threshold for a
 #     package the tree lacks fails shard 1 only
@@ -87,7 +89,7 @@ for k in 1 2 3; do packages "$k/3" > "$TMP/s$k"; done
 [[ "$( (cat "$TMP/s1" "$TMP/s2" "$TMP/s3"; echo watchtower/internal/db) | sort)" == "$all" ]] \
     || note_fail "shards 1..3/3 plus db are not a partition of the module"
 [[ "$(cat "$TMP/s1")" == watchtower/cmd ]] || note_fail "shard 1/3: expected cmd alone, got: $(cat "$TMP/s1")"
-for bad in 0/3 4/3 x/3 3 1/2/3; do
+for bad in 0/3 4/3 x/3 3 1/2/3 01/3 1/03; do
     if packages "$bad" > /dev/null 2>&1; then note_fail "SHARD=$bad: expected a failure"; fi
 done
 
@@ -116,6 +118,14 @@ for k in 1 2 3; do
     [[ "$out" == *"$want"* && "$out" == *"PASSED ($n package(s) checked)"* ]] \
         || note_fail "shard $k: expected '$want' and $n checked, got: $out"
 done
+
+# Shards sharing one COVER_OUT (a local run in one checkout) keep each
+# other's profiles and any other file there.
+mkdir -p "$TMP/shared"
+touch "$TMP/shared/keep.txt"
+for k in 1 2 3; do SHARD=$k/3 COVER_OUT="$TMP/shared" gate "$TMP/thresholds" > /dev/null || note_fail "shared COVER_OUT: shard $k failed"; done
+[[ "$(ls "$TMP/shared" | tr '\n' ' ')" == "keep.txt watchtower_internal_db.1of3.cov watchtower_internal_db.2of3.cov watchtower_internal_db.3of3.cov " ]] \
+    || note_fail "shared COVER_OUT: expected every shard's profile and keep.txt, got: $(ls "$TMP/shared")"
 
 out="$(gate --merge "$TMP/merge" "$TMP/thresholds")" || note_fail "merge: expected a pass, got: $out"
 [[ "$out" == *"✓ watchtower/internal/db 100.0% (≥ 90%)"* && "$out" == *"PASSED (1 package(s) checked)"* ]] \
@@ -147,6 +157,20 @@ if out="$(gate "$TMP/thresholds")"; then
     note_fail "unsharded: a threshold for a missing package must fail"
 fi
 [[ "$out" == *"internal/gone listed in thresholds but missing"* ]] || note_fail "unsharded: expected the missing-package line, got: $out"
+
+# Every COVER_WEIGHTS name is a package of the tree: a stale name would fall
+# back to the default weight and quietly skew the split.
+REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
+weights="$(sed -n 's/^COVER_WEIGHTS="\(.*\)"$/\1/p' "$GATE")"
+[[ -n "$weights" ]] || note_fail "COVER_WEIGHTS not found in coverage-gate.sh"
+# shellcheck disable=SC2086 # one word per name and weight
+set -- $weights
+while [[ $# -ge 2 ]]; do
+    if ! ls "$REPO/internal/$1"/*.go > /dev/null 2>&1; then
+        note_fail "COVER_WEIGHTS names internal/$1, which has no Go files"
+    fi
+    shift 2
+done
 
 if [[ $FAILURES -ne 0 ]]; then
     echo "$FAILURES failure(s)"

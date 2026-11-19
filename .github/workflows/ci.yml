@@ -267,16 +267,16 @@ jobs:
     # A hang must fail the job, not run to GitHub's 6 h default; the race
     # pass runs in go-test-race.
     timeout-minutes: 60
-    # On the Mac the three shards share its 16 cores: 6 each (go test's -p
-    # follows GOMAXPROCS too) instead of the unsharded job's 8, so three of
-    # them stay near the core count and the timing-bound tests keep their
-    # margins (all three at 8 beside other work pushed the load past 200 in a
-    # local trial, 2026-11-19, and git- and hook-timing tests failed). Empty
-    # in the cloud, where the runtime ignores it. CMD_SHARDS: cmd, alone in
-    # shard 1, runs as 6 slices there (its tests are serial within a slice).
+    # On the Mac the three shards share its 16 cores, so 4 each instead of
+    # the unsharded job's 8. GOMAXPROCS is per process: shard 1 runs cmd's 4
+    # slices (serial tests, about a core each) and a db slice; shards 2 and 3
+    # run up to 4 test binaries at once (go test's -p follows GOMAXPROCS)
+    # and a db slice — about 5 busy cores a shard. All three at 8 beside
+    # other work pushed the load past 200 in a local trial (2026-11-19) and
+    # git- and hook-timing tests failed. Empty in the cloud, where the
+    # runtime ignores it.
     env:
-      GOMAXPROCS: ${{ contains(needs.gate.outputs.linux, 'self-hosted') && '6' || '' }}
-      CMD_SHARDS: 6
+      GOMAXPROCS: ${{ contains(needs.gate.outputs.linux, 'self-hosted') && '4' || '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -326,7 +326,8 @@ jobs:
           name: go-coverage-${{ matrix.shard }}
           path: coverage-out/
           if-no-files-found: error
-          retention-days: 1
+          # A failed shard re-run days later still finds the others' profiles.
+          retention-days: 7
 
   # internal/db's coverage threshold over the three shards' profiles
   # (`coverage-gate.sh --merge`: awk over the files, no Go, no build).
@@ -659,13 +660,14 @@ jobs:
       # diff.html) in a headless WKWebView against the pinned Monaco build,
       # which is gitignored: fetched (checksummed) first. It builds no package
       # (one swiftc of the harness, ~1 min in all), so it runs in the
-      # background during Test's first, minutes-long phase of concurrent lanes
-      # and "Editor bridge check" below collects it: ~1 min off the job
+      # background beside Test's concurrent lanes and "Editor bridge check"
+      # below collects it: ~1 min off the job
       # (2026-11-10). Its harness waits on fixed delays, so a flake under the
       # lanes' load is the cost to watch; if it shows, move it back to run
       # after Test. Not before Build: CodeEditorWeb is a copied resource,
       # Monaco would land in the bundle.
       - name: Editor bridge check (start)
+        id: bridge-start
         working-directory: .
         run: |
           mkdir -p "$RUNNER_TEMP/editor-bridge"
@@ -692,8 +694,10 @@ jobs:
         working-directory: .
         run: make test-swift-strict-pool
 
-      # Waits for the background run started before Test and prints its log.
+      # Waits for the background run started before Test and prints its log,
+      # also when Test failed (its finished result is still worth reading).
       - name: Editor bridge check
+        if: always() && steps.bridge-start.outcome == 'success'
         timeout-minutes: 10
         working-directory: .
         run: |
