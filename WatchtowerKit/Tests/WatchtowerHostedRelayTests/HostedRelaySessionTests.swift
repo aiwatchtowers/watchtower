@@ -464,9 +464,11 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
     /// zone starts, the data zone first. On a live socket the hand-over is the frame's place in the write chain
     /// (one connection, writes in the order sent), so the socket writes the data zone's `changes` before the
     /// mailbox's, whatever order the relay then answers in. Recorded at the phone's socket, not at the relay.
+    /// This pins the data-zone-first order; a pull that dropped the wait for each hand-over would still pass on
+    /// most runs (the data zone's task usually reaches the socket first anyway).
     func testWakeHandsTheDataZoneReadOverFirst() async throws {
-        let sent = SentFrames()
-        let (phone, _, macs) = try await paired(macs: [1], sent: sent)
+        let socketLog = StandOpLog()
+        let (phone, _, macs) = try await paired(macs: [1], socketLog: socketLog)
         let session = HostedRelaySession(client: phone)
         _ = await probe(session, zones: [])
         await waitUntilLive(session)
@@ -474,7 +476,9 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
 
         try await hub.pull()
 
-        XCTAssertEqual(sent.changedZones, [dataZone(macs[0]), mailbox(macs[0], phone)], "data zone's read written first")
+        XCTAssertEqual(
+            socketLog.all.compactMap { if case .changes(let changes) = $0 { changes.zone } else { nil } },
+            [dataZone(macs[0]), mailbox(macs[0], phone)], "the data zone's read written first")
     }
 
     /// The app leaves mid-read: the caller of the wake's reads is cancelled (`HubSession.setActive(false)` cancels its
@@ -786,53 +790,11 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         let tally: SocketTally
 
         var gate: DialGate?
-        var sent: SentFrames?
 
         func dial(_ url: URL, headers: [String: String]) async throws -> any RelaySocket {
             tally.dialed()
             try await gate?.pass()
-            let socket = try await base.dial(url, headers: headers)
-            guard let sent else { return socket }
-            return RecordingSocket(base: socket, sent: sent)
-        }
-    }
-
-    /// The zones of the `changes` frames the phone's sockets wrote, in write order.
-    final class SentFrames: Sendable {
-        private let zones = OSAllocatedUnfairLock<[String]>(initialState: [])
-
-        var changedZones: [String] {
-            zones.withLock { $0 }
-        }
-
-        func record(_ data: Data) {
-            guard let frame = try? Relay_V1_Frame(serializedBytes: data),
-                  case .changes(let changes)? = frame.request.op
-            else { return }
-            zones.withLock { $0.append(changes.zone) }
-        }
-    }
-
-    /// A socket that records each frame as it is written.
-    struct RecordingSocket: RelaySocket {
-        let base: any RelaySocket
-        let sent: SentFrames
-
-        func send(_ data: Data) async throws {
-            sent.record(data)
-            try await base.send(data)
-        }
-
-        func receive() async throws -> RelaySocketMessage {
-            try await base.receive()
-        }
-
-        func ping() async throws {
-            try await base.ping()
-        }
-
-        func close(code: Int) async {
-            await base.close(code: code)
+            return try await base.dial(url, headers: headers)
         }
     }
 
@@ -879,7 +841,7 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         macs seeds: [UInt8],
         wrapHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil,
         gate: DialGate? = nil,
-        sent: SentFrames? = nil
+        socketLog: StandOpLog? = nil
     ) async throws -> (HostedRelayClient, SocketTally, [HostedRelayClient]) {
         let tally = SocketTally()
         let signer = try backend.signer(seed: 2)
@@ -890,7 +852,9 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
             kind: .phone,
             attestor: RelayAttestor(attest: fakeAttest(seed: 2), keys: InMemoryAppAttestKeyStore(), clock: clock),
             http: wrapHTTP?(backend.http) ?? backend.http,
-            sockets: CountingDialer(base: backend.sockets, tally: tally, gate: gate, sent: sent),
+            sockets: CountingDialer(
+                base: socketLog.map { RecordingRelaySocketDialer(base: backend.sockets, log: $0) } ?? backend.sockets,
+                tally: tally, gate: gate),
             clock: clock,
             backoff: Self.quickBackoff
         ) { tally.displaced() }
