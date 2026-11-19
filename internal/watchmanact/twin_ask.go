@@ -107,6 +107,10 @@ func (t *Twin) handle(ctx context.Context, it db.WatchmanItem) {
 		return
 	}
 	ask, err := t.d.DB.GetOwnerAskByID(it.RefID)
+	if it.Kind == "handover" && it.Error == db.WatchmanHandoverHeld {
+		j.closeHeld(ctx, ask, err)
+		return
+	}
 	switch {
 	case errors.Is(err, db.ErrAskNotFound):
 		j.drop()
@@ -166,6 +170,31 @@ func (t *Twin) handle(ctx context.Context, it db.WatchmanItem) {
 		j.decideHandover(ctx, p)
 	default:
 		j.decideQuestion(ctx, p)
+	}
+}
+
+// closeHeld settles a held handover the lease took because its ask no
+// longer waits for the finish, with no model call: an ask gone or
+// withdrawn closes it superseded, one the owner answered owner-first. Any
+// other state (a race with the lease's own check) gives it back.
+func (j *job) closeHeld(ctx context.Context, ask *db.OwnerAsk, err error) {
+	switch {
+	case errors.Is(err, db.ErrAskNotFound) || (err == nil && ask.Status == "withdrawn"):
+		j.finishAlone(j.outcome(OutcomeSuperseded))
+	case err != nil:
+		j.fail(ctx, err)
+	case ask.Status == "open":
+		j.release()
+	default:
+		ours, err := j.t.d.DB.WatchmanAskAnsweredByTwin(ask.ID)
+		switch {
+		case err != nil:
+			j.fail(ctx, err)
+		case ours:
+			j.release()
+		default:
+			j.finishAlone(j.outcome(OutcomeOwnerFirst))
+		}
 	}
 }
 

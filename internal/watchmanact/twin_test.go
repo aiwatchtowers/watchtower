@@ -1296,7 +1296,12 @@ func TestTwin_HandoverHeldUntilTheFinishPasses(t *testing.T) {
 	}
 
 	e.decideFn = continueDecision
-	e.promoteHandover(askID, false) // the review approved: the finish passes
+	// The review approved: the finish passes, its write releases the hold.
+	released, err := e.db.FinishTerminalSessionSettling(e.session, "Done.", time.Now(), askID)
+	e.must(err)
+	if !released {
+		t.Fatal("the finish did not release the handover")
+	}
 	e.finishSession()
 	if n := e.run(); n != 1 {
 		t.Fatalf("RunOnce = %d, want the handover leased", n)
@@ -1474,4 +1479,28 @@ func queueItem(d *db.DB, it db.WatchmanItem) (id int64, inserted bool, err error
 	}
 	id, err = res.LastInsertId()
 	return id, true, err
+}
+
+// Fix wave 2: a held handover whose ask the owner answered meanwhile is
+// leased and closed owner-first, with no model call; one whose ask was
+// withdrawn closes superseded.
+func TestTwin_HeldHandoverOfAnsweredOrWithdrawnAskCloses(t *testing.T) {
+	e := newTwinEnv(t)
+	answered, answeredItem := e.question("Left: the CSV import")
+	withdrawn, withdrawnItem := e.question("Left: the PDF export")
+	e.promoteHandover(answered, true)
+	e.promoteHandover(withdrawn, true)
+	if n := e.run(); n != 0 {
+		t.Fatalf("RunOnce = %d, want both held", n)
+	}
+	_, err := e.db.Exec(`UPDATE owner_asks SET status = 'answered', answer = '{"answers":[]}' WHERE id = ?`, answered)
+	e.must(err)
+	_, err = e.db.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = 'agent' WHERE id = ?`, withdrawn)
+	e.must(err)
+	e.run()
+	wantOutcome(t, e.item(answeredItem), OutcomeOwnerFirst)
+	wantOutcome(t, e.item(withdrawnItem), OutcomeSuperseded)
+	if e.decideCalls() != 0 {
+		t.Fatalf("decisions = %d, want none", e.decideCalls())
+	}
 }

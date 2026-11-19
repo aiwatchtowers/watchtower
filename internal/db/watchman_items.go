@@ -22,6 +22,7 @@ type WatchmanItem struct {
 	RefID               int64
 	State, Outcome      string
 	Attempts            int
+	Moves               int // review_code: times its diff moved after a decision (00205)
 	LeaseUntil          *time.Time
 	NotBefore           *time.Time
 	Question            string // redacted, at most 2048 runes
@@ -65,7 +66,7 @@ const (
 	watchmanItemCols     = `id, workbench_id, session_id, target_id, kind, ref_kind, ref_id, state, outcome, attempts,
 		lease_until, not_before, question, choice, rationale, precedent_ids, confidence, importance, category,
 		unsure, park_reason, delivery, round_id, cost_usd, error, created_at, decided_at,
-		feedback, feedback_text, feedback_at, check_done_at`
+		feedback, feedback_text, feedback_at, check_done_at, COALESCE(moves, 0)`
 )
 
 func wmNullTime(t *time.Time) any {
@@ -102,7 +103,7 @@ func scanWatchmanItem(sc interface{ Scan(...any) error }) (*WatchmanItem, error)
 	if err := sc.Scan(&it.ID, &it.WorkbenchID, &sess, &tgt, &it.Kind, &it.RefKind, &it.RefID, &it.State, &it.Outcome, &it.Attempts,
 		&lease, &notBefore, &it.Question, &it.Choice, &it.Rationale, &prec, &it.Confidence, &it.Importance, &it.Category,
 		&unsure, &it.ParkReason, &it.Delivery, &round, &it.CostUSD, &it.Error, &created, &decided,
-		&it.Feedback, &it.FeedbackText, &fbAt, &checkDone); err != nil {
+		&it.Feedback, &it.FeedbackText, &fbAt, &checkDone, &it.Moves); err != nil {
 		return nil, err
 	}
 	it.SessionID, it.TargetID, it.RoundID = sess.Int64, tgt.Int64, round.Int64
@@ -191,8 +192,54 @@ var watchmanHandoverBeforeWrite = func() {}
 // finished.
 const WatchmanHandoverHeld = "waiting for the session's finish check to pass"
 
-// watchmanNotHeld is the lease's filter of a held handover.
-var watchmanNotHeld = ` AND NOT (kind = 'handover' AND error = '` + strings.ReplaceAll(WatchmanHandoverHeld, "'", "''") + `')`
+// watchmanHeldSQL is WatchmanHandoverHeld as an SQL literal.
+var watchmanHeldSQL = `'` + strings.ReplaceAll(WatchmanHandoverHeld, "'", "''") + `'`
+
+// watchmanNotHeld is the lease's filter of a held handover: one whose ask
+// still waits for the finish (open, or answered by the twin as a question)
+// is skipped; one whose ask went (deleted, withdrawn, answered by the owner)
+// is leased, and the twin closes it without a decision.
+var watchmanNotHeld = ` AND NOT (kind = 'handover' AND error = ` + watchmanHeldSQL + `
+	AND EXISTS (SELECT 1 FROM owner_asks a WHERE a.id = watchman_items.ref_id AND (a.status = 'open'
+		OR (a.status IN ('answered','delivered') AND EXISTS (SELECT 1 FROM watchman_items t
+			WHERE t.ref_kind = 'ask' AND t.ref_id = a.id AND t.kind != 'handover' AND t.state = 'done' AND t.outcome = 'answered')))))`
+
+// SettleWatchmanHandoversTx settles session's held handovers inside the
+// finish's own write transaction (a finish that passed): the one of ask
+// askID is released to be decided, every other is closed superseded (a
+// retry named another ask, or none). released reports the release.
+func (db *DB) SettleWatchmanHandoversTx(tx *sql.Tx, sessionID, askID int64, now time.Time) (released bool, err error) {
+	if _, err := tx.Exec(`UPDATE watchman_items SET state = 'done', outcome = 'superseded', error = '', decided_at = ?
+		WHERE session_id = ? AND kind = 'handover' AND state = 'queued' AND error = `+watchmanHeldSQL+` AND ref_id != ?`,
+		wmTime(now), sessionID, askID); err != nil {
+		return false, fmt.Errorf("closing session %d's other handovers: %w", sessionID, err)
+	}
+	if askID == 0 {
+		return false, nil
+	}
+	res, err := tx.Exec(`UPDATE watchman_items SET error = ''
+		WHERE ref_kind = 'ask' AND ref_id = ? AND kind = 'handover' AND state IN ('queued','deciding') AND error = `+watchmanHeldSQL, askID)
+	if err != nil {
+		return false, fmt.Errorf("releasing the handover of ask %d: %w", askID, err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// CloseStaleWatchmanHandovers closes superseded every held handover whose
+// session will not pass a finish any more: it ended without one, is being
+// deleted or is gone, or is no longer armed (daemon upkeep, every cycle).
+func (db *DB) CloseStaleWatchmanHandovers(now time.Time) (int64, error) {
+	res, err := db.Exec(`UPDATE watchman_items SET state = 'done', outcome = 'superseded', error = '', decided_at = ?
+		WHERE kind = 'handover' AND state = 'queued' AND error = `+watchmanHeldSQL+`
+		  AND (NOT EXISTS (SELECT 1 FROM terminal_sessions ts WHERE ts.id = watchman_items.session_id
+		                   AND ts.finished_at IS NULL AND ts.`+NotDeletingSQL+`)
+		       OR NOT `+watchmanHandoverArmed+`)`, wmTime(now))
+	if err != nil {
+		return 0, fmt.Errorf("closing stale watchman handovers: %w", err)
+	}
+	return res.RowsAffected()
+}
 
 // PromoteWatchmanHandover makes ask it.RefID the twin's handover in one write
 // transaction, held (WatchmanHandoverHeld) when held is true, released when
@@ -573,19 +620,20 @@ func (db *DB) ReleaseWatchmanItem(id int64, lease time.Time, costUSD float64, no
 }
 
 // DeferWatchmanItem hands a deciding item back to the queue, not before
-// notBefore: the item waits for something outside the twin (a spec review
-// still running, the owner writing review comments) as if this attempt never
-// ran (attempts-1), or — spent — its diff moved after the decision, and the
-// attempt counts towards the cap. costUSD, what the attempt's calls cost, is
-// added to the item's cost either way. False when the lease is stale.
-func (db *DB) DeferWatchmanItem(id int64, lease, notBefore time.Time, costUSD float64, spent bool) (bool, error) {
-	giveBack := 1
-	if spent {
-		giveBack = 0
+// notBefore, as if this attempt never ran (attempts-1): the item waits for
+// something outside the twin (a spec review still running, the owner
+// writing review comments), or — moved — its diff moved after the
+// decision, counted in moves (never in attempts). costUSD, what the
+// attempt's calls cost, is added to the item's cost. False when the lease
+// is stale.
+func (db *DB) DeferWatchmanItem(id int64, lease, notBefore time.Time, costUSD float64, moved bool) (bool, error) {
+	move := 0
+	if moved {
+		move = 1
 	}
-	res, err := db.Exec(`UPDATE watchman_items SET state = 'queued', lease_until = NULL, attempts = MAX(attempts - ?, 0),
-			not_before = ?, cost_usd = cost_usd + ?
-		WHERE id = ? AND state = 'deciding' AND lease_until = ?`, giveBack, wmTime(notBefore), costUSD, id, wmTime(lease))
+	res, err := db.Exec(`UPDATE watchman_items SET state = 'queued', lease_until = NULL, attempts = MAX(attempts - 1, 0),
+			not_before = ?, cost_usd = cost_usd + ?, moves = COALESCE(moves, 0) + ?
+		WHERE id = ? AND state = 'deciding' AND lease_until = ?`, wmTime(notBefore), costUSD, move, id, wmTime(lease))
 	if err != nil {
 		return false, fmt.Errorf("deferring watchman item %d: %w", id, err)
 	}

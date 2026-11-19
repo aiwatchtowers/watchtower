@@ -124,7 +124,7 @@ func NewFinishSession(sessionEnv func() string, wake func()) *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding finish_session args: %w", err)
 			}
-			return finishSession(ctx, d, call.Binding, a, sessionEnv)
+			return finishSession(ctx, d, call.Binding, a, sessionEnv, wake)
 		},
 	}
 }
@@ -175,7 +175,7 @@ func scopeFinishSession(ctx context.Context, d *db.DB, b Binding, a finishSessio
 // session's open asks — a finished session may still wait on the owner. A
 // failed count after the write is an error; the agent's retry rewrites the
 // same finish.
-func finishSession(ctx context.Context, d *db.DB, b Binding, a finishSessionArgs, sessionEnv func() string) (any, error) {
+func finishSession(ctx context.Context, d *db.DB, b Binding, a finishSessionArgs, sessionEnv func() string, wake func()) (any, error) {
 	summary, err := finishSummary(a.Summary)
 	if err != nil {
 		return nil, err
@@ -185,12 +185,17 @@ func finishSession(ctx context.Context, d *db.DB, b Binding, a finishSessionArgs
 		return nil, err
 	}
 	at := time.Now().UTC()
-	err = d.FinishTerminalSession(sessionID, summary, at)
+	// The finish and the settling of a Watchman handover held by the gate
+	// are one write: the handover is released only when the finish lands.
+	released, err := d.FinishTerminalSessionSettling(sessionID, summary, at, a.HandoverAskID)
 	if errors.Is(err, db.ErrTerminalSessionNotFound) {
 		return nil, errNoTerminalSession // the session row went since Scope ran
 	}
 	if err != nil {
 		return nil, err
+	}
+	if released && wake != nil {
+		wake()
 	}
 	out := map[string]any{"session_id": sessionID, "finished_at": at.Format(finishedAtLayout)}
 	if a.HandoverAskID != 0 {

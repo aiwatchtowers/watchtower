@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -62,7 +63,7 @@ func TestProj14_FinishArmedQueuesReviewAndRefuses(t *testing.T) {
 	launchedFor(t, fx.d, session, group)
 
 	_, err := proposeIn(t, reg, wb, "finish_session", `{"summary":"All done, token=abc123SECRETxyz rotated.","reason":"r"}`)
-	assert.Equal(t, "Watchman is reviewing this session's changes; keep working on what is left and call finish_session again after its review round arrives",
+	assert.Equal(t, "Watchman is reviewing this session's changes; keep working on what is left and call finish_session again after its review round arrives; commits made while Watchman reviews restart its review",
 		refusal(t, err))
 	assertNotFinished(t, fx.d, session, 0)
 	it, err := fx.d.WatchmanItemByRef("session", session, "review_code")
@@ -301,4 +302,57 @@ func TestFinishSession_UnarmedReviewAskStillHandsOver(t *testing.T) {
 	id := askID(t, mustApply(t, reg, fx.a, "ask_owner", `{"kind":"review","title":"Review","doc_path":"docs/spec.md","reason":"r"}`))
 	out := mustApply(t, reg, fx.a, "finish_session", fmt.Sprintf(`{"summary":"Done.","handover_ask_id":%d,"reason":"r"}`, id))
 	assert.EqualValues(t, id, out["handover_ask_id"])
+}
+
+// Fix wave 2: the hold is released only by the finish's own write. A finish
+// whose write fails leaves the handover held, and the lease skips it.
+func TestFinishSession_FailedFinishWriteKeepsTheHold(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	session := seedTerminalSession(t, fx.d, fx.a)
+	armSession(t, fx.d, session)
+	var wakes atomic.Int32
+	reg := watchmanRegistry(t, fx.d, session, &wakes)
+	id := askID(t, mustApply(t, reg, fx.a, "ask_owner", fmt.Sprintf(`{"kind":"question","title":"Images later?",`+
+		`"questions":[{"question":"Leave images?","options":[{"label":"Yes"},{"label":"No"}]}],"target_id":%d,"reason":"r"}`, fx.aTarget)))
+	_, err := fx.d.Exec(`CREATE TRIGGER no_finish BEFORE UPDATE OF finished_at ON terminal_sessions
+		BEGIN SELECT RAISE(ABORT, 'database is locked'); END`)
+	require.NoError(t, err)
+	rc, err := proposeIn(t, reg, fx.a, "finish_session",
+		fmt.Sprintf(`{"summary":"A done.","target_id":%d,"handover_ask_id":%d,"reason":"r"}`, fx.aTarget, id))
+	require.True(t, err != nil || rc.Status != "applied", "the finish write failed: %+v", rc)
+	at, _ := finishState(t, fx.d, session)
+	assert.Empty(t, at, "the finish was rolled back")
+	it, err := fx.d.WatchmanItemByRef("ask", id, "handover")
+	require.NoError(t, err)
+	require.NotNil(t, it)
+	assert.Equal(t, db.WatchmanHandoverHeld, it.Error, "still held after the failed write")
+	leased, err := fx.d.LeaseArmedWatchmanItem(time.Now(), time.Minute, nil)
+	require.NoError(t, err)
+	assert.Nil(t, leased, "a held handover is not leased")
+}
+
+// Fix wave 2: a retry that names another handover ask closes the first one;
+// the finish's write releases the second.
+func TestFinishSession_RetryWithAnotherAskClosesTheOld(t *testing.T) {
+	fx, wb, session, reg, _ := armedRepoSession(t)
+	ask := func(title string) int64 {
+		return askID(t, mustApply(t, reg, wb, "ask_owner", fmt.Sprintf(`{"kind":"question","title":%q,`+
+			`"questions":[{"question":"Leave it?","options":[{"label":"Yes"},{"label":"No"}]}],"reason":"r"}`, title)))
+	}
+	first := ask("Images later?")
+	_, err := proposeIn(t, reg, wb, "finish_session", fmt.Sprintf(`{"summary":"A done.","handover_ask_id":%d,"reason":"r"}`, first))
+	refusal(t, err)
+	second := ask("Exports later?")
+	sentRoundAt(t, fx.d, wb, session, "", true)
+	mustApply(t, reg, wb, "finish_session", fmt.Sprintf(`{"summary":"A done.","handover_ask_id":%d,"reason":"r"}`, second))
+	old, err := fx.d.WatchmanItemByRef("ask", first, "handover")
+	require.NoError(t, err)
+	require.NotNil(t, old)
+	assert.Equal(t, "done", old.State)
+	assert.Equal(t, "superseded", old.Outcome)
+	cur, err := fx.d.WatchmanItemByRef("ask", second, "handover")
+	require.NoError(t, err)
+	require.NotNil(t, cur)
+	assert.Equal(t, "queued", cur.State)
+	assert.Empty(t, cur.Error)
 }

@@ -56,6 +56,14 @@ func (d *Daemon) phaseWatchmanUpkeep(ctx context.Context) {
 		return
 	}
 	st := &d.watchmanUpkeep
+	// A handover held for a finish that can no longer pass (its session
+	// ended without one, went, or was taken back) is closed first: a queued
+	// handover keeps its session's arming row.
+	if n, err := d.db.CloseStaleWatchmanHandovers(time.Now()); err != nil {
+		d.logger.Printf("watchman upkeep: %v", err)
+	} else if n > 0 {
+		d.logger.Printf("watchman upkeep: %d held handover(s) closed", n)
+	}
 	// Rows nothing can be decided for any more (the session ended or went,
 	// the target went) go first, so they hold nothing awake.
 	if n, err := d.db.PruneWatchmanArming(); err != nil {

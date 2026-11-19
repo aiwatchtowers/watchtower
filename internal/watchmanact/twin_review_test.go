@@ -198,15 +198,16 @@ func TestTwin_ReviewCodeMainBaseParks(t *testing.T) {
 }
 
 // wantWaiting checks the item, whose diff moved after its decision, waits
-// reviewWait with its attempt spent (final review B-I3: the moves count
-// towards the cap) and nothing was approved or sent.
+// reviewWait with its attempt unspent and the move counted (moves, apart
+// from attempts) and nothing was approved or sent.
 func (e *reviewEnv) wantWaiting(itemID int64) {
 	e.t.Helper()
 	it := e.item(itemID)
 	var nb sql.NullString
-	e.must(e.db.QueryRow(`SELECT not_before FROM watchman_items WHERE id = ?`, itemID).Scan(&nb))
-	if it.State != "queued" || it.Attempts != 1 || !nb.Valid {
-		e.t.Fatalf("item = %s attempts %d not_before %v, want waiting with the attempt spent", it.State, it.Attempts, nb)
+	var moves int
+	e.must(e.db.QueryRow(`SELECT not_before, COALESCE(moves, 0) FROM watchman_items WHERE id = ?`, itemID).Scan(&nb, &moves))
+	if it.State != "queued" || it.Attempts != 0 || moves != 1 || !nb.Valid {
+		e.t.Fatalf("item = %s attempts %d moves %d not_before %v, want waiting unspent with one move", it.State, it.Attempts, moves, nb)
 	}
 	if at, err := time.Parse(time.RFC3339, nb.String); err != nil || time.Until(at) < 30*time.Second {
 		e.t.Fatalf("not_before = %q, want about a minute ahead", nb.String)
@@ -871,7 +872,7 @@ func TestTwin_ReviewDocRedactsFindings(t *testing.T) {
 }
 
 // Final review B-I3: a tree that moves after every decision is reviewed
-// MaxAttempts times, each attempt's cost kept on the item, then parked for
+// MaxMoves times, each attempt's cost kept on the item, then parked for
 // the owner; nothing is approved.
 func TestTwin_ReviewCodeKeptMovingParks(t *testing.T) {
 	e := newReviewEnv(t)
@@ -887,7 +888,7 @@ func TestTwin_ReviewCodeKeptMovingParks(t *testing.T) {
 		return d, nil
 	}
 	itemID := e.queueReview()
-	for i := 1; i <= MaxAttempts; i++ {
+	for i := 1; i <= MaxMoves; i++ {
 		_, err := e.db.Exec(`UPDATE watchman_items SET not_before = NULL WHERE id = ?`, itemID)
 		e.must(err)
 		if n := e.run(); n != 1 {
@@ -908,5 +909,36 @@ func TestTwin_ReviewCodeKeptMovingParks(t *testing.T) {
 		if r.Outcome == db.ReviewOutcomeApproved {
 			t.Fatalf("round %d approved", r.ID)
 		}
+	}
+}
+
+// Fix wave 2: moves and failures are counted apart — two failed attempts
+// and one move leave the review queued, neither parked nor failed out.
+func TestTwin_ReviewCodeFailuresAndAMoveDoNotPark(t *testing.T) {
+	e := newReviewEnv(t)
+	calls := 0
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		calls++
+		if calls <= 2 {
+			return watchman.Decision{}, errors.New("model hiccup")
+		}
+		e.baseMu.Lock()
+		e.place.Round.TreeSHA = "t2"
+		e.baseMu.Unlock()
+		return reviewDecision(ReviewApprove), nil
+	}
+	itemID := e.queueReview()
+	for i := 0; i < 3; i++ {
+		_, err := e.db.Exec(`UPDATE watchman_items SET not_before = NULL WHERE id = ?`, itemID)
+		e.must(err)
+		if n := e.run(); n != 1 {
+			t.Fatalf("pass %d: RunOnce = %d", i+1, n)
+		}
+	}
+	it := e.item(itemID)
+	var moves int
+	e.must(e.db.QueryRow(`SELECT COALESCE(moves, 0) FROM watchman_items WHERE id = ?`, itemID).Scan(&moves))
+	if it.State != "queued" || it.Attempts != 2 || moves != 1 {
+		t.Fatalf("item = %s attempts %d moves %d, want queued with 2 failures and 1 move", it.State, it.Attempts, moves)
 	}
 }

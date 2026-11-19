@@ -128,12 +128,16 @@ func protectedPlace(place ReviewPlace) (park, why string) {
 // unspent: it waits for something outside the twin.
 func (j *job) deferItem() { j.putBack(false) }
 
+// MaxMoves caps how often a review's diff may move after the decision: the
+// MaxMoves-th move parks it for the owner (reasonKeptMoving), so a tree that
+// keeps moving is not reviewed, and paid for, over and over. Moves are
+// counted apart from attempts.
+const MaxMoves = 3
+
 // deferMoved gives back an item whose diff moved after its decision, the
-// attempt spent; the MaxAttempts-th such move parks it for the owner
-// (reasonKeptMoving), so a tree that keeps moving is not reviewed, and paid
-// for, over and over.
+// attempt unspent and the move counted.
 func (j *job) deferMoved() {
-	if j.it.Attempts >= MaxAttempts {
+	if j.it.Moves+1 >= MaxMoves {
 		o := j.outcome(OutcomeParked)
 		o.ParkReason = reasonKeptMoving
 		j.finishAlone(o)
@@ -143,9 +147,9 @@ func (j *job) deferMoved() {
 }
 
 // putBack defers the item for reviewWait with this attempt's cost.
-func (j *job) putBack(spent bool) {
+func (j *job) putBack(moved bool) {
 	notBefore := j.now().Add(reviewWait)
-	if _, err := j.t.d.DB.DeferWatchmanItem(j.it.ID, j.lease, notBefore, j.outcome("").CostUSD, spent); err != nil {
+	if _, err := j.t.d.DB.DeferWatchmanItem(j.it.ID, j.lease, notBefore, j.outcome("").CostUSD, moved); err != nil {
 		log.Printf("watchman twin: %v", err)
 		return
 	}
@@ -336,9 +340,9 @@ func (t *Twin) handleReviewCode(parent context.Context, it db.WatchmanItem) {
 // outside any transaction): true when it is still the round's tree and
 // place and checked's branch (the one the PR base was read for). A place
 // that moved (new commits, a Refresh, a repoint, a branch switch) puts the
-// item back for reviewWait, its attempt spent (deferMoved: the
-// MaxAttempts-th move parks), to be reviewed again on the new tree; a read
-// that fails is a failed attempt.
+// item back for reviewWait, its attempt unspent and the move counted
+// (deferMoved: the MaxMoves-th move parks), to be reviewed again on the new
+// tree; a read that fails is a failed attempt.
 func (j *job) placeStill(ctx context.Context, round *db.ReviewRound, checked ReviewPlace) bool {
 	fresh, err := j.t.d.ReviewPlace(ctx, j.it.WorkbenchID, j.it.SessionID)
 	if err != nil {

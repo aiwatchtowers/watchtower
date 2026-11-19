@@ -4012,6 +4012,7 @@ CREATE TABLE IF NOT EXISTS watchman_items (
     check_done_at TEXT,
     owner_done_at TEXT,       -- the owner marked a waiting item done (Desktop only)
     correction_sent_at TEXT,  -- the owner's correction reached a session (Desktop only)
+    moves         INTEGER,    -- review_code: times its diff moved after the decision (00205)
     UNIQUE (ref_kind, ref_id, kind)
 );
 CREATE INDEX IF NOT EXISTS idx_watchman_items_queue ON watchman_items(state, not_before);

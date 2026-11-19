@@ -977,3 +977,58 @@ func (db *DB) setWatchmanItemKind(refKind string, refID int64, from, to string) 
 	n, err := res.RowsAffected()
 	return n > 0, err
 }
+
+// Fix wave 2: a held handover whose session ended without a passing finish,
+// went, or was taken back is closed superseded by upkeep; one of a live
+// armed session stays held. A finish that names another ask closes the old
+// one and releases the named one in its own write.
+func TestWatchmanHeldHandovers_CloseAndSettle(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	held := func(s int64, title string) int64 {
+		a := questionAsk(wb, title)
+		a.SessionID = nullID(s)
+		id := mustInsertAsk(t, d, a)
+		_, _, err := d.PromoteWatchmanHandover(WatchmanItem{WorkbenchID: wb, SessionID: s, RefID: id, Question: "q"}, true)
+		require.NoError(t, err)
+		return id
+	}
+	state := func(askID int64) (string, string, string) {
+		var st, out, e string
+		require.NoError(t, d.QueryRow(`SELECT state, outcome, error FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ? AND kind = 'handover'`,
+			askID).Scan(&st, &out, &e))
+		return st, out, e
+	}
+	ended := newTestSession(t, d, wb)
+	wmArmSession(t, d, ended)
+	endedAsk := held(ended, "Ended")
+	_, err := d.Exec(`UPDATE terminal_sessions SET finished_at = '2026-11-18T01:00:00.000Z' WHERE id = ?`, ended)
+	require.NoError(t, err)
+	disarmed := newTestSession(t, d, wb)
+	wmArmSession(t, d, disarmed)
+	disarmedAsk := held(disarmed, "Disarmed")
+	_, err = d.DeleteWatchmanArming("session", disarmed)
+	require.NoError(t, err)
+	live := newTestSession(t, d, wb)
+	wmArmSession(t, d, live)
+	liveAsk := held(live, "Live")
+	n, err := d.CloseStaleWatchmanHandovers(time.Now())
+	require.NoError(t, err)
+	require.EqualValues(t, 2, n)
+	for _, id := range []int64{endedAsk, disarmedAsk} {
+		st, out, e := state(id)
+		require.Equal(t, []string{"done", "superseded", ""}, []string{st, out, e})
+	}
+	st, _, e := state(liveAsk)
+	require.Equal(t, []string{"queued", WatchmanHandoverHeld}, []string{st, e})
+
+	// The retry names another ask: the old one closes, the new one is released.
+	otherAsk := held(live, "Other")
+	released, err := d.FinishTerminalSessionSettling(live, "Done.", time.Now(), otherAsk)
+	require.NoError(t, err)
+	require.True(t, released)
+	st, out, _ := state(liveAsk)
+	require.Equal(t, []string{"done", "superseded"}, []string{st, out})
+	st, _, e = state(otherAsk)
+	require.Equal(t, []string{"queued", ""}, []string{st, e})
+}
