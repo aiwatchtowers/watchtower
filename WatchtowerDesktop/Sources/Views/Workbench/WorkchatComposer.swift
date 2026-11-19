@@ -3,9 +3,10 @@ import SwiftUI
 import WatchtowerCore
 
 /// The Workchat's field and round button (#711, spec §4): Return sends,
-/// Shift-Return adds a line; while the agent works the button is Stop, and
-/// Esc in the empty field stops too. A Stop that did not go says why above
-/// the field (`WorkchatModel.stopError`); while an agent without mid-turn
+/// Shift-Return adds a line; the button is Send whenever the field holds
+/// something, even while the agent works (#2065 §5), and Stop only with an
+/// empty field while it works; Esc in the empty field stops too. A Stop
+/// that did not go says why above the field (`WorkchatModel.stopError`); while an agent without mid-turn
 /// input works, one line says a message waits for the turn's end (U2).
 struct WorkchatComposer: View {
     @Bindable var model: WorkchatModel
@@ -39,7 +40,8 @@ struct WorkchatComposer: View {
                     placeholder: Self.placeholder,
                     hasPendingContent: !model.attachments.isEmpty,
                     autoFocus: autoFocus,
-                    focusRequest: focusRequest
+                    focusRequest: focusRequest,
+                    sendWhileStreaming: true
                 ),
                 onSend: send,
                 onStop: stop,
@@ -112,13 +114,6 @@ struct WorkchatOutgoingBubble: View {
         }
     }
 
-    /// A line to an agent that takes lines while it works is held only for a
-    /// prompt, the owner's typing or the settle after the previous line; any
-    /// other waits for the agent to stop.
-    static func queuedCaption(holdsUntilIdle: Bool) -> String {
-        holdsUntilIdle ? "Queued · sends when the agent stops ·" : "Queued · sends in a moment ·"
-    }
-
     private var isPending: Bool {
         line.state == .queued || line.state == .sending
     }
@@ -133,34 +128,27 @@ struct WorkchatOutgoingBubble: View {
         }
     }
 
+    /// `WorkchatOutgoing.caption`, with the state's link after it; the send
+    /// time where it has none.
     @ViewBuilder
     private var caption: some View {
-        switch line.state {
-        case .sending:
-            Text("Sending…")
-        case .queued:
+        let text = WorkchatOutgoing.caption(
+            state: line.state, working: working, holdsUntilIdle: holdsUntilIdle, sentWhileBusy: line.sentWhileBusy
+        )
+        if let text {
             HStack(spacing: Spacing.small) {
-                Text(Self.queuedCaption(holdsUntilIdle: holdsUntilIdle))
-                Button("Cancel", action: onCancel).buttonStyle(.link)
+                Text(text)
+                switch line.state {
+                case .queued:
+                    Button("Cancel", action: onCancel).buttonStyle(.link)
+                case .typed, .copied:
+                    Button("Show in Terminal", action: onShowTerminal).buttonStyle(.link)
+                case .sending, .sent, .notSent:
+                    EmptyView()
+                }
             }
-        case .typed:
-            HStack(spacing: Spacing.small) {
-                Text("Typed into the terminal, not sent: press Return there ·")
-                Button("Show in Terminal", action: onShowTerminal).buttonStyle(.link)
-            }
-        case .copied:
-            HStack(spacing: Spacing.small) {
-                Text("Copied to the clipboard: the terminal does not accept pasted text ·")
-                Button("Show in Terminal", action: onShowTerminal).buttonStyle(.link)
-            }
-        case .notSent:
-            Text("Not sent: the session ended")
-        case .sent:
-            if line.sentWhileBusy && working {
-                Text("Queued · the agent reads it at its next step")
-            } else {
-                Text(line.sentAt, format: .dateTime.hour().minute())
-            }
+        } else {
+            Text(line.sentAt, format: .dateTime.hour().minute())
         }
     }
 }
