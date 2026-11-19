@@ -356,6 +356,10 @@ final class CompanyConnectionsPresentationTests: XCTestCase {
         // The own-project lock hides its button.
         XCTAssertEqual(Pres.banner(.google, accounts: [shared], locks: [.ownGoogleProject])?.actions, [.pasteCode])
         XCTAssertNil(Pres.banner(.google, accounts: [account(.google, 3, "x")]))
+        // An account that no longer syncs does not "keep syncing Gmail".
+        XCTAssertNil(Pres.banner(.google, accounts: [account(.google, 5, "y", status: "error", error: "x", shared: true)]))
+        let jiraInError = account(.atlassian, 6, "old.atlassian.net", status: "error", error: "unknown_client", shared: true)
+        XCTAssertNotNil(Pres.banner(.atlassian, accounts: [jiraInError]))
     }
 
     func testSharedAtlassianBanner() throws {

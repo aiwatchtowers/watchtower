@@ -601,7 +601,12 @@ package enum CompanyConnectionsPresentation {
     /// §7's banner over `vendor`'s detail while an account still runs on a
     /// retiring shared app; nil otherwise.
     package static func banner(_ vendor: CompanyVendor, accounts: [AccountRef], locks: Set<LockKey> = []) -> CompanyBanner? {
-        let labels = accounts.filter { $0.vendor == vendor && $0.sharedApp && !$0.isGone }.map(\.label)
+        // Google's banner names accounts that still sync Gmail; Atlassian's, every account that
+        // must sign in again.
+        let flagged = accounts.filter { a in
+            a.vendor == vendor && a.sharedApp && !a.isGone && (vendor != .google || a.status == "ok")
+        }
+        let labels = flagged.map(\.label)
         guard !labels.isEmpty else { return nil }
         switch vendor {
         case .google:
