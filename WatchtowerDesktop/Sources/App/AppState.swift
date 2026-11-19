@@ -483,7 +483,7 @@ final class AppState {
     /// panel, inspector) — tests pass an isolated suite.
     @ObservationIgnored let workbenchDefaults: UserDefaults
 
-    /// Applies the CLI migrations (`db migrate`); blocks for up to 30 s.
+    /// `db migrate`, then a corp build's `company bridge` (`CompanyBridgeLaunch.migrateThenBridge`).
     @ObservationIgnored let migrateDatabase: @Sendable () -> Void
     /// Opens the workspace database; `migrateDatabase` runs first.
     @ObservationIgnored let openDatabase: @Sendable () throws -> DatabaseManager
@@ -532,7 +532,7 @@ final class AppState {
     init(
         onboardingDefaults: UserDefaults = .standard,
         workbenchDefaults: UserDefaults = .standard,
-        migrateDatabase: @escaping @Sendable () -> Void = { DatabaseManager.runCLIMigrations() },
+        migrateDatabase: @escaping @Sendable () -> Void = { CompanyBridgeLaunch.migrateThenBridge() },
         openDatabase: @escaping @Sendable () throws -> DatabaseManager = { try DatabaseManager(path: DatabaseManager.resolveDBPath()) },
         databaseCompaction: DatabaseCompactionStep? = nil,
         peopleRosterRun: @escaping PeopleRosterLoad.Run = PeopleRosterLoad.cliRun,

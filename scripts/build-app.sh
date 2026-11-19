@@ -43,6 +43,27 @@ if [ -n "$FLAVOR" ] && ! printf '%s' "$FLAVOR" | grep -Eq '^[A-Za-z0-9._-]+$'; t
 fi
 FLAVOR_SUFFIX="${FLAVOR:+-$FLAVOR}"
 # END profile-selection
+# BEGIN company-name (extracted verbatim by cmd/company_bridge_test.go)
+# A flavored build other than dev stores its baked clients as a company
+# bundle at launch (`watchtower company bridge`, #1887 T11a) under the
+# company BUILD_COMPANY_NAME names; without it the bridge has nothing to store
+# them under and the install could never leave the gated feed. The name goes
+# into ldflags in single quotes, so it may hold spaces but no quote,
+# backslash, $ or backtick.
+BUILD_COMPANY_NAME="${BUILD_COMPANY_NAME:-}"
+if [ -n "$FLAVOR" ] && [ "$FLAVOR" != "dev" ]; then
+    if [ -z "$BUILD_COMPANY_NAME" ]; then
+        echo "ERROR: BUILD_COMPANY_NAME is required for the corp flavor — add BUILD_COMPANY_NAME=\"<company name>\" to the build profile" >&2
+        exit 1
+    fi
+    case "$BUILD_COMPANY_NAME" in
+        *[\'\"\\\$\`]*)
+            echo "ERROR: BUILD_COMPANY_NAME must not contain quotes, backslashes, \$ or backticks — it lands in ldflags" >&2
+            exit 1
+            ;;
+    esac
+fi
+# END company-name
 DESKTOP_DIR="$PROJECT_ROOT/WatchtowerDesktop"
 # Everything is built into STAGE_DIR, a sibling of build/, and promoted to
 # BUILD_DIR by scripts/app-swap.sh only at the very end — so the owner can keep
@@ -363,7 +384,7 @@ LINK_FETCH_DENY_HOSTS="${WATCHTOWER_LINK_FETCH_DENY_HOSTS:-}"
 # docs/features/go-hub.md "Keychain check") failed: a newer build cannot
 # delete the items an older build created.
 GOARCH=arm64 CGO_ENABLED=1 go build -tags codegrammars \
-    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/auth.RetiredSharedClientID=${RETIRED_SLACK_CLIENT_ID} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/linear.DefaultLinearClientID=${LINEAR_ID} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID} -X watchtower/internal/purge.BuildDefault=${PURGE_DEFAULT} -X watchtower/internal/media.BuildDenyHosts=${LINK_FETCH_DENY_HOSTS} -X watchtower/internal/hub.DefaultRelayOrigin=${RELAY_ORIGIN_DEFAULT} -X watchtower/internal/hub/identity.KeychainBuildFlag=false" \
+    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X 'watchtower/cmd.BuildCompanyName=${BUILD_COMPANY_NAME}' -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/auth.RetiredSharedClientID=${RETIRED_SLACK_CLIENT_ID} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/linear.DefaultLinearClientID=${LINEAR_ID} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID} -X watchtower/internal/purge.BuildDefault=${PURGE_DEFAULT} -X watchtower/internal/media.BuildDenyHosts=${LINK_FETCH_DENY_HOSTS} -X watchtower/internal/hub.DefaultRelayOrigin=${RELAY_ORIGIN_DEFAULT} -X watchtower/internal/hub/identity.KeychainBuildFlag=false" \
     -o "$STAGE_DIR/watchtower" .
 echo "    Go CLI built ($(du -h "$STAGE_DIR/watchtower" | cut -f1))"
 

@@ -459,6 +459,14 @@ func denyHosts(raw json.RawMessage) ([]string, error) {
 	return out, nil
 }
 
+// DenyHost is h in the form link_deny_hosts keeps it (trimmed, ASCII
+// lower-cased), and whether a bundle accepts it — for a writer building a
+// bundle from a looser list (the corp bridge's build-time deny list).
+func DenyHost(h string) (string, bool) {
+	h = asciiLower(trimASCII(h))
+	return h, validHost(h)
+}
+
 // validHost: a lower-case ASCII DNS name of two or more labels whose last
 // label has a letter (so no IPv4 literal), at most 253 characters.
 func validHost(h string) bool {
