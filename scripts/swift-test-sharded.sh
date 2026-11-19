@@ -47,11 +47,38 @@ cd "$ROOT/WatchtowerDesktop"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-BUNDLE="$(swift build --show-bin-path)/WatchtowerDesktopPackageTests.xctest"
-if [[ ! -d "$BUNDLE" ]]; then
-    echo "swift-test-sharded: no test bundle at $BUNDLE — run swift build --build-tests first" >&2
-    exit 1
-fi
+BIN="$(swift build --show-bin-path)"
+
+# bundle_for <test target>: the xctest bundle holding the target's classes.
+# The native build system links every test target into one
+# WatchtowerDesktopPackageTests.xctest under .build/<triple>/debug; the
+# swiftbuild one (the default from Swift 6.4, e.g. the Mac's runners) makes
+# one <Target>.xctest per test target under .build/out/Products/Debug.
+bundle_for() {
+    if [[ -d "$BIN/WatchtowerDesktopPackageTests.xctest" ]]; then
+        echo "$BIN/WatchtowerDesktopPackageTests.xctest"
+    else
+        echo "$BIN/$1.xctest"
+    fi
+}
+
+# xctest_lane <shard> <Target.Class,...>: one xctest process per bundle the
+# classes live in, in turn; the lane's status is its first failure's. A
+# crash (a signal, status > 128) ends the lane there, so the summary's "last
+# started test" is the crashed bundle's.
+xctest_lane() {
+    local shard=$1 target classes rc=0 r
+    for target in $(tr , '\n' <<< "$2" | cut -d. -f1 | sort -u); do
+        classes="$(tr , '\n' <<< "$2" | grep "^$target\." | paste -sd, -)"
+        r=0
+        WATCHTOWER_TEST_SHARD="$shard" NSUnbufferedIO=YES \
+            xcrun xctest -XCTest "$classes" "$(bundle_for "$target")" || r=$?
+        if [[ $rc -eq 0 ]]; then rc=$r; fi
+        if [[ $r -gt 128 ]]; then break; fi
+    done
+    return "$rc"
+}
+
 if ! swift test list --skip-build > "$WORK/list" 2> "$WORK/list.err"; then
     cat "$WORK/list.err" >&2
     echo "swift-test-sharded: listing the tests failed" >&2
@@ -64,6 +91,12 @@ if [[ ! -s "$WORK/all-classes" ]]; then
     echo "swift-test-sharded: no XCTest classes listed" >&2
     exit 1
 fi
+for target in $(cut -d. -f1 "$WORK/all-classes" | sort -u); do
+    if [[ ! -d "$(bundle_for "$target")" ]]; then
+        echo "swift-test-sharded: no test bundle at $(bundle_for "$target") — run swift build --build-tests first" >&2
+        exit 1
+    fi
+done
 
 # Each background job gets its own process group, so the watchdog can kill a
 # hung lane together with the processes it started (xcrun -> xctest,
@@ -193,8 +226,7 @@ print_summary() {
 # hangs still leaves its last "Test Case ... started" line in its log.
 for ((s = 0; s < SHARDS; s++)); do
     classes="$(awk -v n="$SHARDS" -v i="$s" 'NR % n == i' "$WORK/all-classes" | paste -sd, -)"
-    start_lane "XCTest shard $((s + 1))/$SHARDS" \
-        env WATCHTOWER_TEST_SHARD="$s" NSUnbufferedIO=YES xcrun xctest -XCTest "$classes" "$BUNDLE"
+    start_lane "XCTest shard $((s + 1))/$SHARDS" xctest_lane "$s" "$classes"
 done
 if grep -q '(' "$WORK/list"; then
     start_lane "Swift Testing" \

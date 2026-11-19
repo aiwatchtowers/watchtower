@@ -24,8 +24,7 @@ import (
 // API URL and HTTP client itself for the calls it makes without slack-go
 // (search.messages decoded raw, file downloads).
 type Client struct {
-	api         *slack.Client
-	token       string
+	auth        atomic.Pointer[clientAuth] // SetToken swaps it between calls
 	apiURL      string
 	http        *http.Client
 	files       *http.Client // file downloads: no whole-request timeout, the Slack-host redirect rule
@@ -117,15 +116,39 @@ func NewClientWithAPIURLUnlimited(token, apiURL string) *Client {
 func newClient(token, apiURL string, rl *RateLimiter) *Client {
 	hc := newHTTPClient()
 	c := &Client{
-		api:         slack.New(token, slack.OptionAPIURL(apiURL), slack.OptionHTTPClient(hc)),
-		token:       token,
 		apiURL:      apiURL,
 		http:        hc,
 		rateLimiter: rl,
 	}
+	c.SetToken(token)
 	c.files = &http.Client{Timeout: fileDownloadTimeout, Transport: transport, CheckRedirect: c.fileRedirect}
 	return c
 }
+
+// clientAuth is the token and the slack-go client built on it, swapped as one.
+type clientAuth struct {
+	api   *slack.Client
+	token string
+}
+
+// SetToken makes every later call use token — a rotated token refreshed
+// while a long-lived client (the daemon's orchestrator) keeps its rate
+// limiter and stats. A call already in flight finishes on the old one.
+func (c *Client) SetToken(token string) {
+	if cur := c.auth.Load(); cur != nil && cur.token == token {
+		return
+	}
+	c.auth.Store(&clientAuth{
+		api:   slack.New(token, slack.OptionAPIURL(c.apiURL), slack.OptionHTTPClient(c.http)),
+		token: token,
+	})
+}
+
+// api is the slack-go client on the current token.
+func (c *Client) api() *slack.Client { return c.auth.Load().api }
+
+// bearer is the current token.
+func (c *Client) bearer() string { return c.auth.Load().token }
 
 // SetLogger sets a logger for the client and its rate limiter.
 func (c *Client) SetLogger(l *log.Logger) {
@@ -239,7 +262,7 @@ func (c *Client) AuthTest(ctx context.Context) (*AuthTestResponse, error) {
 	err := c.doRequest(ctx, Tier2, func() error {
 		c.logf("slack API: auth.test")
 		var err error
-		resp, err = c.api.AuthTestContext(ctx)
+		resp, err = c.api().AuthTestContext(ctx)
 		return err
 	})
 	if err != nil {
@@ -258,7 +281,7 @@ func (c *Client) GetTeamInfo(ctx context.Context) (*slack.TeamInfo, error) {
 	err := c.doRequest(ctx, Tier2, func() error {
 		c.logf("slack API: team.info")
 		var err error
-		info, err = c.api.GetTeamInfoContext(ctx)
+		info, err = c.api().GetTeamInfoContext(ctx)
 		return err
 	})
 	return info, err
@@ -269,7 +292,7 @@ func (c *Client) GetTeamInfo(ctx context.Context) (*slack.TeamInfo, error) {
 func (c *Client) GetUsers(ctx context.Context, onPage ...func(fetched int)) ([]slack.User, error) {
 	var allUsers []slack.User
 
-	p := c.api.GetUsersPaginated(slack.GetUsersOptionLimit(listPageLimit))
+	p := c.api().GetUsersPaginated(slack.GetUsersOptionLimit(listPageLimit))
 	for {
 		var done bool
 		err := c.doRequest(ctx, Tier2, func() error {
@@ -313,7 +336,7 @@ func (c *Client) GetChannels(ctx context.Context, types []string, onPage ...func
 		err := c.doRequest(ctx, Tier2, func() error {
 			c.logf("slack API: conversations.list (fetched so far: %d)", len(allChannels))
 			var err error
-			channels, nextCursor, err = c.api.GetConversationsContext(ctx, &slack.GetConversationsParameters{
+			channels, nextCursor, err = c.api().GetConversationsContext(ctx, &slack.GetConversationsParameters{
 				Types:  types,
 				Limit:  listPageLimit,
 				Cursor: cursor,
@@ -345,7 +368,7 @@ func (c *Client) GetChannelReadCursor(ctx context.Context, channelID string) (st
 	err := c.doRequest(ctx, Tier3, func() error {
 		c.logf("slack API: conversations.info channel=%s", channelID)
 		var err error
-		ch, err = c.api.GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
+		ch, err = c.api().GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
 			ChannelID: channelID,
 		})
 		return err
@@ -385,7 +408,7 @@ func (c *Client) GetConversationHistory(ctx context.Context, opts HistoryOptions
 	err := c.doRequest(ctx, Tier3, func() error {
 		c.logf("slack API: conversations.history channel=%s oldest=%s cursor=%q", opts.ChannelID, opts.Oldest, opts.Cursor)
 		var err error
-		resp, err = c.api.GetConversationHistoryContext(ctx, &slack.GetConversationHistoryParameters{
+		resp, err = c.api().GetConversationHistoryContext(ctx, &slack.GetConversationHistoryParameters{
 			ChannelID: opts.ChannelID,
 			Cursor:    opts.Cursor,
 			Oldest:    opts.Oldest,
@@ -419,7 +442,7 @@ func (c *Client) GetConversationReplies(ctx context.Context, channelID, threadTS
 		err := c.doRequest(ctx, Tier3, func() error {
 			c.logf("slack API: conversations.replies channel=%s thread=%s", channelID, threadTS)
 			var err error
-			msgs, hasMore, nextCursor, err = c.api.GetConversationRepliesContext(ctx, &slack.GetConversationRepliesParameters{
+			msgs, hasMore, nextCursor, err = c.api().GetConversationRepliesContext(ctx, &slack.GetConversationRepliesParameters{
 				ChannelID: channelID,
 				Timestamp: threadTS,
 				Cursor:    cursor,
@@ -455,7 +478,7 @@ func (c *Client) PostMessage(ctx context.Context, channelID, text, threadTS stri
 	err := c.doRequest(ctx, Tier3, func() error {
 		c.logf("slack API: chat.postMessage channel=%s thread=%s", channelID, threadTS)
 		var err error
-		_, ts, err = c.api.PostMessageContext(ctx, channelID, opts...)
+		_, ts, err = c.api().PostMessageContext(ctx, channelID, opts...)
 		return err
 	})
 	if err != nil {
@@ -471,7 +494,7 @@ func (c *Client) OpenDM(ctx context.Context, userID string) (string, error) {
 	err := c.doRequest(ctx, Tier3, func() error {
 		c.logf("slack API: conversations.open user=%s", userID)
 		var err error
-		ch, _, _, err = c.api.OpenConversationContext(ctx, &slack.OpenConversationParameters{Users: []string{userID}, ReturnIM: true})
+		ch, _, _, err = c.api().OpenConversationContext(ctx, &slack.OpenConversationParameters{Users: []string{userID}, ReturnIM: true})
 		return err
 	})
 	if err != nil {
@@ -574,7 +597,7 @@ func (c *Client) postAPI(ctx context.Context, method string, form url.Values, ds
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Bearer "+c.bearer())
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -682,7 +705,7 @@ func (c *Client) DownloadFile(ctx context.Context, fileURL string, limit int64) 
 		if err != nil {
 			return err
 		}
-		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("Authorization", "Bearer "+c.bearer())
 		r, err := c.files.Do(req)
 		if err != nil {
 			return err
@@ -738,7 +761,7 @@ func (c *Client) GetUserInfo(ctx context.Context, userID string) (*slack.User, e
 	err := c.doRequest(ctx, Tier4, func() error {
 		c.logf("slack API: users.info user=%s", userID)
 		var err error
-		user, err = c.api.GetUserInfoContext(ctx, userID)
+		user, err = c.api().GetUserInfoContext(ctx, userID)
 		return err
 	})
 	return user, err
@@ -751,7 +774,7 @@ func (c *Client) GetEmoji(ctx context.Context) (map[string]string, error) {
 	err := c.doRequest(ctx, Tier2, func() error {
 		c.logf("slack API: emoji.list")
 		var err error
-		emojis, err = c.api.GetEmojiContext(ctx)
+		emojis, err = c.api().GetEmojiContext(ctx)
 		return err
 	})
 	return emojis, err
@@ -783,7 +806,7 @@ func (c *Client) ListUserReactions(ctx context.Context, userID string) ([]slack.
 		err := c.doRequest(ctx, Tier3, func() error {
 			c.logf("slack API: reactions.list user=%s page=%d", userID, page)
 			var err error
-			items, paging, err = c.api.ListReactionsContext(ctx, params)
+			items, paging, err = c.api().ListReactionsContext(ctx, params)
 			return err
 		})
 		if err != nil {

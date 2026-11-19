@@ -137,7 +137,7 @@ func (s DBStore) BenchFolders(ctx context.Context, workbenchID int64) ([]string,
 	return out, nil
 }
 
-// hasFolderRows: the database has workbench_folders (migration 00196). The
+// hasFolderRows: the database has workbench_folders (migration 00197). The
 // cleanup opens a database without migrating it; an older one has only
 // folder_path.
 func (s DBStore) hasFolderRows() (bool, error) {

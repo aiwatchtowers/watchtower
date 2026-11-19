@@ -3,7 +3,7 @@ import WatchtowerTestSupport
 import XCTest
 @testable import WatchtowerCore
 
-/// The Desktop's reads of the multi-folder tables (00196) and the folder
+/// The Desktop's reads of the multi-folder tables (00197) and the folder
 /// columns it writes on its own rows: the no-CLI session insert and the
 /// reviewer threads.
 final class WorkbenchFolderQueriesTests: XCTestCase {

@@ -86,7 +86,7 @@ Go and Swift move together, and the interop test is the gate:
 ### Build, CI and release
 
 - **Local.** The first `go test` or build after a clean cache compiles the amalgamation (~30 s). After that the Go build cache keeps it, so never pass `-count=1` by reflex. `CGO_ENABLED=0` no longer builds.
-- **Linux is a CI-only build** with OpenSSL. Every Ubuntu job that compiles Go installs `libssl-dev` explicitly (Guide Check, Go Lint, Go Test, the race shards, Code Index full grammars, and the release Go gate and race shards). CI therefore tests the engine that ships, never another one.
+- **Linux is a CI-only build** with OpenSSL. Every Ubuntu job that compiles Go installs `libssl-dev` explicitly (Guide Check, Go Lint, Go Test, the race shards, Code Index full grammars, and the release Go gate and race shards). While the owner's Mac serves CI (`scripts/ci-runner/README.md`), those jobs run on macOS instead and build the CommonCrypto engine that ships; the OpenSSL build is then checked by **Go Build (Linux)** (`go build` + `go vet`, always on ubuntu) and tested only by the release workflow.
 - **`.goreleaser.yaml` is deleted.** It built `CGO_ENABLED=0` binaries, nothing called it, and its Homebrew tap does not exist. There is no Linux or Intel release binary.
 - **Notices.** `THIRD_PARTY_NOTICES.md` § SQLite engine lists the mattn fork, the SQLCipher amalgamation, `SQLCipher.swift` and the GRDB fork, with the Zetetic licence text. `scripts/tests/test-build-app-notices.sh` checks that `VERSION`'s tags appear there.
 
@@ -115,6 +115,18 @@ Reads are 15–45 % faster, in line with the spike. With `PRAGMA cache_size = -6
 
 Spec §5.3: these run on a notarized throwaway probe (`spike/603-keychain-gate`, never merged) before any Stage 2 code. The owner's results go here.
 
-G1–G4 not run: the owner closed the check without running it on 2026-10-25 (ask #497, not a priority now). Stage 2 code stays parked until they run; whoever picks Stage 2 up runs the probe first.
+The owner closed the check without running it on 2026-10-25 (ask #497, not a priority now). Stage 2 code stays parked until the gaps below are closed; whoever picks Stage 2 up runs them first.
+
+**Contributor run, 2026-11-18, under another team's Developer ID.** The probe, signed with a Developer ID provisioning profile of a second team (own App ID, `keychain-access-groups = <TEAM>.*`), plus a probe command that adds, rewrites (`SecItemUpdate` after `errSecDuplicateItem`), reads and deletes a plain generic password with no Secure Enclave key — the shape of a stored token. G4 ran on notarized, stapled builds; the other rows ran on a build with the same signature and profile, not notarized. What it shows is macOS behaviour, not our team's profile.
+
+| Check | What ran | Result |
+|---|---|---|
+| G1 | The helper CLI through the `bin/watchtower` symlink, from Terminal, from an agent's shell (a hook's parent) and from a temporary user launchd job | osstatus 0 every time, 1–18 ms, no dialog |
+| G3, without the SE key | `Probe.app` writes the item and the helper CLI reads it; the CLI rewrites it and `Probe.app` reads it | the same SHA-256 on both sides, no dialog |
+| G4 | 0.1.0 writes; a rebuilt, re-signed, re-notarized 0.1.1 (another version string in the binary) reads it, rewrites it, deletes it; the next read is -25300 | osstatus 0 for each, no dialog — the step the login-keychain check failed (`errSecInvalidOwnerEdit`, [go-hub.md](go-hub.md)) |
+| G5 | Unsigned ad-hoc build: add, read, delete | -34018, -25300, -34018; nothing created in the login keychain |
+| — | The same binary signed by the same team with no entitlements, as the CLI is signed today | -25300: the signature alone gives no access, the access group does |
+
+Still open: **G2** (a read while the screen is locked), **G3 with the SE key** (the app's SE key used by the CLI), and the same run on our team's profile.
 
 G5, partial (an agent run of the probe's unsigned ad-hoc build, 2026-10-21): without the keychain-access-groups entitlement a write fails at once with `errSecMissingEntitlement` (-34018) and a read returns `errSecItemNotFound` (-25300) — the same code as a key that really is gone. No item was created and no dialog appeared. So Stage 2 checks the entitlement directly at launch and never treats a not-found read as key loss on its own.

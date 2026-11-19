@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/issuekey"
 	watchtowerslack "watchtower/internal/slack"
+	"watchtower/internal/slackauth"
 	"watchtower/internal/sync"
 
 	"github.com/dustin/go-humanize"
@@ -164,7 +165,7 @@ func runSyncCommand(ctx context.Context, deps Deps) string {
 	ran := 0
 	skipped := 0
 	for _, acct := range accounts {
-		token, err := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), acct.ID).Load()
+		token, err := slackauth.LoadFresh(ctx, cfg.WorkspaceDir(), database, acct.ID, slackauth.DefaultRefresher(), time.Now)
 		if err != nil || token == nil {
 			skipped++
 			continue

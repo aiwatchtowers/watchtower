@@ -7,7 +7,7 @@ import (
 )
 
 // PRState is a workbench_pr_states row: the cached state of a PR or branch a
-// session report names, per workbench folder (00196). Go is its only reader
+// session report names, per workbench folder (00197). Go is its only reader
 // and writer.
 type PRState struct {
 	WorkbenchID int64

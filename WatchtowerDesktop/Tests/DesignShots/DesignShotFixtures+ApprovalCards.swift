@@ -111,7 +111,7 @@ enum ApprovalCardShotFixtures {
         AnyView(Card(
             action: action, inFlight: inFlight, onApprove: {}, onReject: {}, onRetry: {}, gestureError: gestureError,
             onOpen: open ? { _ in } : nil, onApproveEdited: editable ? { _ in } : nil,
-            onReconnectSlack: reconnect ? { _ in nil } : nil, contextLabel: context, onOpenContext: context.map { _ in {} },
+            onReconnectSlack: reconnect ? { _ in .signedIn } : nil, contextLabel: context, onOpenContext: context.map { _ in {} },
             onDismiss: dismiss ? {} : nil, sessionHoldsCall: holds
         ))
     }

@@ -197,3 +197,25 @@ func TestSlackMode_FromAccountsAndVerdicts(t *testing.T) {
 		t.Fatalf("a Full account: mode = %q; want full", mode)
 	}
 }
+
+// TestSlackMode_NewestBatchWins: an older ok verdict does not keep the mode
+// Live after a newer failed check of the same provider (ask #1525).
+func TestSlackMode_NewestBatchWins(t *testing.T) {
+	d := db.OpenTestDB(t)
+	now := time.Now()
+	if err := d.UpsertSlackLiveStatus(db.SlackLiveStatus{TeamID: "T1", Provider: "claude", Status: "ok", CheckedAt: now.Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpsertSlackLiveStatus(db.SlackLiveStatus{Provider: "claude", Status: "not_connected", CheckedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if mode, err := SlackMode(d); err != nil || mode != slackmode.Off {
+		t.Fatalf("older ok, newer failed: mode = %q, %v; want off", mode, err)
+	}
+	if err := d.UpsertSlackLiveStatus(db.SlackLiveStatus{Provider: "codex", Status: "ok", CheckedAt: now.Add(-2 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if mode, err := SlackMode(d); err != nil || mode != slackmode.Live {
+		t.Fatalf("codex's newest batch ok: mode = %q, %v; want live", mode, err)
+	}
+}

@@ -17,7 +17,7 @@
 
 **Status:** Enforced
 
-**Observable:** Only a value the configuration profile forces for `com.watchtower.desktop` is policy. A value written with `defaults write` into the same domain changes nothing and never shows **Managed by your organization**. A key with a wrong type (a boolean given as the integer `1`, a string where an array belongs, a forced key whose value cannot be read) acts as its most restrictive value: no source, no Quick Connection, no provider, MobileSync `off`, shell and claude.ai tools not allowed, background AI not allowed (`AllowBackgroundAI` `false`), purge on. Unknown array entries are dropped; a list of only unknown entries is the empty list. No profile means no restriction, for every build.
+**Observable:** Only a value the configuration profile forces for `com.watchtower.desktop` is policy. A value written with `defaults write` into the same domain changes nothing and never shows **Managed by your organization**. A key with a wrong type (a boolean given as the integer `1`, a string where an array belongs, a forced key whose value cannot be read) acts as its most restrictive value: no source, no Quick Connection, no provider, no Slack app (`SlackApps` is an array of `{team_id, client_id}` dictionaries; a malformed or repeated-team entry is dropped), MobileSync `off`, shell and claude.ai tools not allowed, background AI not allowed (`AllowBackgroundAI` `false`), purge on. Unknown array entries are dropped; a list of only unknown entries is the empty list. No profile means no restriction, for every build.
 
 **Mechanism:** Go reads through CoreFoundation (`CFPreferencesAppValueIsForced` per key, then `CFPreferencesCopyAppValue`; CFBoolean told apart from CFNumber by type id; anything unreadable is `unsupported{}`). The reader is installed only by `main` (`policy.UseSystemReader`), never in a test binary. Swift reads the same API (`ManagedPolicyReader`, a forced key without a value is `NSNull`), and the app's reader is empty under XCTest. `Normalize` / `ManagedPolicy.normalize` apply the same fail-closed rules and report each defect.
 
@@ -35,7 +35,7 @@
 
 **Status:** Enforced
 
-**Observable:** The Desktop locks exactly what the CLI and the daemon refuse, for every profile: the same normalized keys (`AllowBackgroundAI` rows included: `true`, `false`, a wrong type as `false`, absent), problems and Quick Connection matches (https only, host and port, the path on a `/` boundary, dot segments and encoded separators refused, byte comparisons).
+**Observable:** The Desktop locks exactly what the CLI and the daemon refuse, for every profile: the same normalized keys (`AllowBackgroundAI` rows included: `true`, `false`, a wrong type as `false`, absent; `SlackApps` included: the same entries kept and dropped), problems and Quick Connection matches (https only, host and port, the path on a `/` boundary, dot segments and encoded separators refused, byte comparisons).
 
 **Mechanism:** One fixture, `internal/policy/testdata/policy_cases.json`, run by both sides; the Swift URL matcher mirrors Go's `net/url` by hand (EscapedPath, host and port rules, control characters).
 
@@ -44,6 +44,7 @@
 **Test guards:**
 - `internal/policy/policy_test.go`: `TestPolicy02_SharedFixture`.
 - `WatchtowerDesktop/Tests/Core/ManagedPolicyTests.swift`: `sharedFixture`, `sharedConnectionCases`.
+- The shared fixture `internal/policy/testdata/policy_cases.json` carries the `SlackApps` cases both twins run (`slack_apps_valid`, `slack_apps_wrong_type`, `slack_apps_bad_entries`, `slack_apps_duplicate_team`, `slack_apps_empty`; plan B Task 5, #1709); removing one weakens POLICY-01/02 for that key.
 
 **Locked since:** 2026-10-25
 

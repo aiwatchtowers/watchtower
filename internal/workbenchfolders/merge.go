@@ -75,7 +75,7 @@ var mergeTables = []mergeTable{
 	{table: "terminal_sessions", column: "project_id", op: opCustom, apply: pinHomeThenMove("terminal_sessions", "workbench_folder_id", "")},
 	{table: "owner_asks", column: "project_id", op: opCustom, apply: moveAsks},
 	{table: "coach_proposals", column: "workbench_id", op: opMove},
-	// Keyed by folder too (00196): B's folders came along, so no clash.
+	// Keyed by folder too (00197): B's folders came along, so no clash.
 	{table: "workbench_pr_states", column: "project_id", op: opMove},
 	{table: "review_reviewer_threads", column: "project_id", op: opMove},
 	{table: "automations", column: "project_id", op: opCustom, apply: moveAutomations},

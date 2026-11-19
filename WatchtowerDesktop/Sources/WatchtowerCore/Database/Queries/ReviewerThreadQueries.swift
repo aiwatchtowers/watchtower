@@ -1,7 +1,7 @@
 import GRDB
 
 /// Branch review's reviewer threads (board #1025, migration 00180): one
-/// conversation per (workbench, folder, branch) since 00196, so two folders
+/// conversation per (workbench, folder, branch) since 00197, so two folders
 /// with the same branch never share a thread. The folder is the reviewed
 /// session's (`terminal_sessions.workbench_folder_id`); nil — a row without
 /// one — is the workbench's home folder. The Desktop is the only writer.

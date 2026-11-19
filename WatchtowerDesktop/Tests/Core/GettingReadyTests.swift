@@ -110,6 +110,43 @@ final class GettingReadyTests: XCTestCase {
         XCTAssertEqual(sourceRows(caldavOnly.zone).map(\.source), [.jiraOrMail, .calendar])
     }
 
+    /// Slack Live only is one grouped row (owner, ask #1572), not a card per
+    /// feature; a policy that forbids Slack (#608) keeps the row and its
+    /// line but drops its button.
+    func testNeedsFullSlackIsOneRow() {
+        let readiness = readinessMap([
+            .digests: .needsFullSlack, .tracks: .needsFullSlack, .inbox: .needsFullSlack, .slackSync: .needsFullSlack
+        ])
+        let open = step(readiness).zone
+        XCTAssertTrue(cards(open).isEmpty)
+        XCTAssertEqual(sourceRows(open), [
+            GettingReadySourceRow(source: .fullSlack, features: [.slackSync, .digests, .tracks, .inbox])
+        ])
+        XCTAssertEqual(sourceRows(step(readiness, policy: policy(allowing: ["slack"])).zone).map(\.offersConnect), [true])
+        let forbidden = sourceRows(step(readiness, policy: policy(allowing: ["jira"])).zone)
+        XCTAssertEqual(forbidden.map(\.source), [.fullSlack], "the line stays")
+        XCTAssertEqual(forbidden.map(\.offersConnect), [false], "no button")
+    }
+
+    /// The Live-only row opens the zone on its own (even for the always-on
+    /// Inbox alone) and never lets it complete while Slack stays Live only.
+    func testLiveOnlyRowKeepsTheZoneOpen() {
+        let inboxOnly = step(readinessMap([.inbox: .needsFullSlack]))
+        XCTAssertEqual(sourceRows(inboxOnly.zone).map(\.source), [.fullSlack])
+
+        let terminal = step(readinessMap([.calendar: .ready, .digests: .needsFullSlack]))
+        XCTAssertEqual(cards(terminal.zone).map(\.feature), [.calendar])
+        XCTAssertNil(terminal.memory.completedAt, "never complete while Live only")
+    }
+
+    func testConnectLine() {
+        XCTAssertEqual(GettingReadyPolicy.connectLine(source: .jira, tabTitles: ["Workload", "Blockers"]),
+                       "Connect Jira to get Workload and Blockers")
+        XCTAssertEqual(
+            GettingReadyPolicy.connectLine(source: .fullSlack, tabTitles: ["Digests", "Tracks", "People"]),
+            "Connect your workspace's app to get Digests, Tracks and People — Live answers in Chats only.")
+    }
+
     /// The forbidden rows were the only reason to open the zone: it stays hidden.
     /// `.digests` is goal-switched, so its Connect row alone opens the zone.
     func testOnlyForbiddenRowsKeepTheZoneHidden() {

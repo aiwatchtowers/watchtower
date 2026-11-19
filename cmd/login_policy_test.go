@@ -28,6 +28,7 @@ func TestPolicyLogin_RefusedBeforeAnyWrite(t *testing.T) {
 		src  string
 	}{
 		{"auth login", "slack"}, {"reaction-commands poll", "slack"}, {"slack add", "slack"}, {"slack login", "slack"}, {"slack enable", "slack"},
+		{"slack app create", "slack"}, {"slack app adopt", "slack"}, {"slack app link", "slack"},
 		{"google login", "google"}, {"google add", "google"}, {"gmail login", "google"}, {"gmail sync", "google"},
 		{"calendar login", "google"}, {"calendar sync", "google"},
 		{"imap add", "imap"}, {"outlook login", "imap"},
@@ -68,7 +69,10 @@ func TestPolicyLogin_EverySourceCommandIsGuarded(t *testing.T) {
 		key := sourceCommandKey(c)
 		if c.RunE != nil {
 			seen[key] = true
-			if !sourceGuardExempt[key] {
+			switch {
+			case sourceGuardedInside[key]:
+				assert.Empty(t, sourceGuarded[c], "%q checks the policy itself and is not wrapped", key)
+			case !sourceGuardExempt[key]:
 				assert.Equal(t, src, sourceGuarded[c], "%q is not guarded", key)
 			}
 		}
@@ -83,6 +87,17 @@ func TestPolicyLogin_EverySourceCommandIsGuarded(t *testing.T) {
 	}
 	for key := range sourceGuardExempt {
 		assert.True(t, seen[key], "exempt %q is not a runnable source command", key)
+	}
+	// A command that checks the policy itself names the test proving it
+	// refuses a forbidden source.
+	insideGuardProof := map[string]string{
+		"slack connect serve": "TestSlackLinkConnect_PolicyBlocksSlack",
+	}
+	assert.Len(t, sourceGuardedInside, len(insideGuardProof))
+	for key := range sourceGuardedInside {
+		assert.True(t, seen[key], "self-guarded %q is not a runnable source command", key)
+		assert.NotEmpty(t, insideGuardProof[key], "self-guarded %q has no behaviour test", key)
+		assert.False(t, sourceGuardExempt[key], "%q is self-guarded, not exempt", key)
 	}
 	for _, group := range []string{"auth", "reaction-commands", "slack", "google", "gmail", "calendar", "imap", "outlook", "caldav", "jira", "confluence", "linear"} {
 		_, ok := sourceCommandGroups[group]
@@ -143,7 +158,7 @@ func TestPolicyToolFactories_RefuseForbiddenSource(t *testing.T) {
 	require.ErrorIs(t, err, policy.ErrNotAllowed, "jira connect")
 	_, err = linearWriteClientFactory(cfg, nil)(db.LinearAccount{ID: 1})
 	require.ErrorIs(t, err, policy.ErrNotAllowed, "linear writes")
-	_, _, err = slackSenderFactory(cfg)(db.SlackAccount{ID: 1})
+	_, _, err = slackSenderFactory(cfg, nil)(db.SlackAccount{ID: 1})
 	require.ErrorIs(t, err, policy.ErrNotAllowed, "slack send")
 	assert.Contains(t, err.Error(), "source slack is not allowed by your organization (allowed: google)")
 }

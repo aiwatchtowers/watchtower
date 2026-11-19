@@ -1,8 +1,10 @@
 import AppKit
 import DesignKit
+import GRDB
 import SwiftUI
 import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 /// Design-only scenes for the Slack Full / Live screens (#1779, spec
 /// `docs/superpowers/specs/2026-11-15-slack-full-live-screens-design.md`).
@@ -14,17 +16,25 @@ enum SlackFullLiveShotFixtures {
     enum Pane: String, CaseIterable {
         case full, fullLive, live, off, loading, checking, probeFailed, readFailed, liveProblems
         case sharedApp, portBusy, pasteInvalid, organization, setupInstall, setupApproval, linkMissing
+        case setupPending
     }
 
     /// The Set up for my company sheet and the Add the link sheet.
     enum Setup: String, CaseIterable {
         case empty, ready, progress, success, badToken, notAllowed, linkFailed, approval
         case addLinkEmpty, addLinkBusy, addLinkError, addLinkDone
+        case adopt, adoptAppId, adoptNotCollaborator
+        case pendingCreate, pendingConfirmClear, adoptConfirm, adoptAppIdProblem, busy
     }
 
     /// Connecting from a link or a pasted code.
     enum Connect: String, CaseIterable {
         case confirm, browser, success, teamMismatch, denied
+    }
+
+    /// The onboarding Slack card's sheet when no build-baked app exists (plan B, A13).
+    enum Onboarding: String, CaseIterable {
+        case empty, organization, pasteInvalid, portBusy
     }
 
     static var shots: [DesignShot] {
@@ -41,17 +51,24 @@ enum SlackFullLiveShotFixtures {
             }
         ] + Setup.allCases.map { frame in
             DesignShot(name: "slack-fl-setup-\(frame.rawValue)", size: NSSize(width: 520, height: 0)) {
-                AnyView(SlackSetupSheetMock(frame: frame))
+                AnyView(SlackSetupShotFixture.sheet(frame))
             }
         } + [
             DesignShot(name: "slack-fl-setup-ready-narrow", size: NSSize(width: 380, height: 0)) {
-                AnyView(SlackSetupSheetMock(frame: .ready))
+                AnyView(SlackSetupShotFixture.sheet(.ready))
             }
         ] + Connect.allCases.map { frame in
             DesignShot(name: "slack-fl-connect-\(frame.rawValue)", size: NSSize(width: 440, height: 0)) {
                 AnyView(SlackConnectSheetMock(frame: frame))
             }
+        } + Onboarding.allCases.map { frame in
+            DesignShot(name: "slack-fl-onboarding-\(frame.rawValue)", size: NSSize(width: 520, height: 0)) {
+                AnyView(SlackOnboardingConnectMock(frame: frame))
+            }
         } + [
+            DesignShot(name: "slack-fl-onboarding-empty-narrow", size: NSSize(width: 380, height: 0)) {
+                AnyView(SlackOnboardingConnectMock(frame: .empty))
+            },
             DesignShot(name: "slack-fl-needs-full-digests", size: NSSize(width: 720, height: 360)) {
                 AnyView(NeedsFullSlackDigestsMock())
             },
@@ -65,7 +82,7 @@ enum SlackFullLiveShotFixtures {
             DesignShot(name: "slack-fl-needs-full-statistics", size: NSSize(width: 720, height: 360)) {
                 AnyView(NeedsFullSlackDigestsMock(tab: "statistics"))
             },
-            DesignShot(name: "slack-fl-needs-full-home-card", size: NSSize(width: 420, height: 0)) {
+            DesignShot(name: "slack-fl-needs-full-home-card", size: NSSize(width: 640, height: 0)) {
                 AnyView(NeedsFullSlackHomeCardMock())
             },
             DesignShot(name: "slack-fl-needs-full-knowledge", size: NSSize(width: 640, height: 0)) {
@@ -82,37 +99,9 @@ private typealias Copy = SlackFullLiveMockCopy
 
 // MARK: - Connections → Slack
 
-/// One Live row: a provider, its status, the reason and the time.
-private struct LiveRowMock {
-    let provider: String
-    let status: String
-    let reason: String?
-    let checked: String
-    let tone: Color
-}
-
 private struct SlackPaneMock: View {
     let pane: SlackFullLiveShotFixtures.Pane
-
-    private var chip: (String, Color) {
-        switch pane {
-        case .full: (Copy.chipFull, Tone.success)
-        case .fullLive, .loading, .checking, .probeFailed, .readFailed: (Copy.chipFullLive, Tone.success)
-        case .live, .liveProblems: (Copy.chipLive, Tone.status("blue"))
-        case .sharedApp: (Copy.chipShared, Tone.warning)
-        default: (Copy.chipOff, Tone.status("gray"))
-        }
-    }
-
-    private var summary: String {
-        switch pane {
-        case .full: Copy.summaryFull
-        case .fullLive, .loading, .checking, .probeFailed, .readFailed: Copy.summaryFullLive
-        case .live, .liveProblems: Copy.summaryLive
-        case .sharedApp: Copy.summaryShared
-        default: Copy.summaryOff
-        }
-    }
+    @FocusState private var fieldFocused: Bool
 
     private var hasAccount: Bool {
         [.full, .fullLive, .loading, .checking, .probeFailed, .readFailed, .sharedApp].contains(pane)
@@ -122,9 +111,12 @@ private struct SlackPaneMock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.large) {
-            if pane == .sharedApp { sharedBanner }
+            if let banner = SlackPaneModeFixture.presentation(pane).sharedAppBanner {
+                // The real banner (`SlackSharedAppBanner`, screens spec §5).
+                SlackSharedAppBanner(banner: banner, setUpForCompany: {}, pasteLink: {})
+            }
             modeSection
-            if let record { recordRow(record) }
+            SlackSetupRecordRows(model: SlackSetupShotFixture.rowsModel(pane))
             if showsConnect { connectSection }
             if hasAccount { workspaces }
         }
@@ -134,457 +126,237 @@ private struct SlackPaneMock: View {
         .detailBackground()
     }
 
+    /// The real Slack mode section (`SlackModeSection`) on fixture data.
     private var modeSection: some View {
-        SettingsSection(title: Copy.modeTitle, isBusy: pane == .checking) {
-            HStack(spacing: Spacing.regular) {
-                Chip(text: chip.0, color: chip.1, dot: true)
-                Spacer(minLength: Spacing.medium)
-            }
-            Text(summary).font(.callout).fixedSize(horizontal: false, vertical: true)
-            liveBlock
-        }
+        SlackModeSection(presentation: SlackPaneModeFixture.presentation(pane), checkAgain: {}, tryAgain: {})
     }
 
-    private var liveRows: [LiveRowMock] {
-        switch pane {
-        case .full:
-            [LiveRowMock(provider: Copy.providerClaude, status: Copy.liveNotConnected,
-                         reason: Copy.reasonConnectorsOff, checked: Copy.checked2H, tone: Tone.status("gray"))]
-        case .fullLive, .checking, .probeFailed:
-            [LiveRowMock(provider: Copy.providerClaude, status: Copy.liveOn, reason: nil,
-                         checked: Copy.checked5H, tone: Tone.success),
-             LiveRowMock(provider: Copy.providerCodex, status: Copy.liveNotConnected,
-                         reason: Copy.reasonCLIMissing, checked: Copy.checked5H, tone: Tone.status("gray"))]
-        case .live:
-            [LiveRowMock(provider: Copy.providerClaude, status: Copy.liveNotConnected,
-                         reason: Copy.reasonDefault, checked: Copy.checked12Min, tone: Tone.status("gray")),
-             LiveRowMock(provider: Copy.providerCodex, status: Copy.liveOnTeamID, reason: nil,
-                         checked: Copy.checked12Min, tone: Tone.success)]
-        case .liveProblems:
-            [LiveRowMock(provider: Copy.providerClaude, status: Copy.liveOnUnidentified,
-                         reason: Copy.reasonUnidentified, checked: Copy.checkedJustNow, tone: Tone.success),
-             LiveRowMock(provider: Copy.providerCodex, status: Copy.liveNeedsAdmin,
-                         reason: Copy.reasonNeedsAdmin, checked: Copy.checkedJustNow, tone: Tone.warning)]
-        case .sharedApp:
-            [LiveRowMock(provider: Copy.providerClaude, status: Copy.liveNoPlan,
-                         reason: Copy.reasonNoPlan, checked: Copy.checked2H, tone: Tone.status("gray"))]
-        default:
-            [LiveRowMock(provider: Copy.providerClaude, status: Copy.liveNotConnected,
-                         reason: Copy.reasonDefault, checked: Copy.checked12Min, tone: Tone.status("gray"))]
-        }
+    /// The section after retirement: the build has no Slack app (`builtin_app`
+    /// false), so **Connect another workspace…** replaces Add (A8).
+    private var section: SlackModePresentation.ConnectSection {
+        SlackModePresentation.ConnectSection(
+            display: SlackPaneModeFixture.presentation(pane).display,
+            portBusy: pane == .portBusy,
+            expanded: false,
+            organizationApps: pane == .organization ? [ManagedPolicy.SlackApp(teamID: "T0ACME", clientID: "1111.2222")] : nil,
+            accounts: [],
+            builtinApp: false)
     }
 
-    @ViewBuilder private var liveBlock: some View {
-        VStack(alignment: .leading, spacing: Spacing.compact) {
-            HStack(spacing: Spacing.regular) {
-                Text(Copy.liveTitle).font(.subheadline.weight(.semibold))
-                Spacer(minLength: Spacing.medium)
-                if pane != .loading, pane != .readFailed {
-                    Button(Copy.checkAgain) {}.buttonStyle(.kitSecondary).disabled(pane == .checking)
-                }
-            }
-            switch pane {
-            case .loading:
-                HStack(spacing: Spacing.regular) {
-                    ProgressView().controlSize(.small)
-                    Text(Copy.loading).font(.caption).foregroundStyle(.secondary)
-                }
-            case .readFailed:
-                problem(Copy.readFailed, action: Copy.tryAgain)
-            case .off:
-                Text(Copy.notCheckedYet).font(.caption).foregroundStyle(.secondary)
-            default:
-                ForEach(liveRows, id: \.provider) { row in liveRow(row) }
-                if pane == .checking {
-                    Text(Copy.checking).font(.caption).foregroundStyle(.secondary)
-                }
-                if pane == .probeFailed { problem(Copy.probeFailed, action: nil) }
-            }
-        }
-        .padding(.top, Spacing.small)
-    }
-
-    private func liveRow(_ row: LiveRowMock) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-            Circle().fill(row.tone).frame(width: IconSize.stateDot, height: IconSize.stateDot)
-            VStack(alignment: .leading, spacing: Spacing.tight) {
-                Text("\(row.provider): \(row.status)").font(.callout)
-                if let reason = row.reason {
-                    Text(reason).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Spacer(minLength: Spacing.medium)
-            Text(row.checked).font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    private func problem(_ text: String, action: String?) -> some View {
-        HStack(alignment: .top, spacing: Spacing.regular) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Tone.warning)
-            Text(text).font(.caption).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: Spacing.regular)
-            if let action { Button(action) {}.buttonStyle(.kitSecondary) }
-        }
-    }
-
+    /// The real connect section (`SlackConnectSection`) on fixture data.
     private var connectSection: some View {
-        SettingsSection(title: Copy.connectTitle, caption: Copy.connectCaption) {
-            if pane == .organization {
-                VStack(alignment: .leading, spacing: Spacing.compact) {
-                    Text(Copy.orgTitle).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    HStack {
-                        Label(Copy.orgRow, systemImage: "building.2").font(.callout)
-                        Spacer(minLength: Spacing.medium)
-                        Button(Copy.connect) {}.buttonStyle(.kitPrimary)
-                    }
-                }
-            }
-            if pane == .portBusy {
-                HStack(alignment: .top, spacing: Spacing.regular) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Tone.warning)
-                    Text(Copy.portBusy).font(.caption).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            HStack(spacing: Spacing.regular) {
-                TextField(Copy.pastePlaceholder, text: .constant(pasteText)).textFieldStyle(.kit)
-                Button(Copy.connect) {}
-                    .buttonStyle(.kitSecondary)
-                    .disabled(pasteText.isEmpty)
-            }
-            if pane == .pasteInvalid {
-                Text(Copy.pasteInvalid)
-                    .font(.caption)
-                    .foregroundStyle(Tone.error)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            HStack(spacing: Spacing.regular) {
-                Text(Copy.noAppYet).font(.caption).foregroundStyle(.secondary)
-                Button(Copy.setUpForCompany) {}.buttonStyle(.kitQuiet)
-            }
-        }
+        SlackConnectSection(
+            section: section,
+            flow: SlackConnectShotFlow.make(paste: pane == .pasteInvalid ? "https://acme.slack.com/apps/A0ACME" : nil),
+            setUpForCompany: {},
+            fieldFocused: $fieldFocused)
     }
 
-    private var pasteText: String {
-        pane == .pasteInvalid ? "https://acme.slack.com/apps/A0ACME" : ""
-    }
-
-    private var record: (String, String, Bool)? {
-        switch pane {
-        case .setupInstall: (Copy.recordInstall, Copy.continueSetup, true)
-        case .setupApproval: (Copy.recordApproval, Copy.checkAgain, false)
-        case .linkMissing: (Copy.recordLinkMissing, Copy.addLink, true)
-        default: nil
-        }
-    }
-
-    private func recordRow(_ record: (String, String, Bool)) -> some View {
-        HStack(alignment: .center, spacing: Spacing.medium) {
-            Image(systemName: record.2 ? "wrench.and.screwdriver" : "hourglass").foregroundStyle(Tone.warning)
-            Text(record.0).font(.callout).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: Spacing.medium)
-            Button(record.1) {}.buttonStyle(.kitPrimary)
-        }
-        .padding(Spacing.medium)
-        .card()
-    }
-
-    private var sharedBanner: some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            HStack(spacing: Spacing.regular) {
-                Image(systemName: "clock.badge.exclamationmark").foregroundStyle(Tone.warning)
-                Text(Copy.sharedTitle).font(.headline)
-            }
-            Text(Copy.sharedBody).font(.callout).fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: Spacing.regular) {
-                Button(Copy.setUpForCompany) {}.buttonStyle(.kitSecondary)
-                Button(Copy.pasteALink) {}.buttonStyle(.kitQuiet)
-            }
-        }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Tone.warning.opacity(ChipTint.fillOpacity), in: RoundedRectangle(cornerRadius: Radius.row))
-    }
-
+    /// The real row title (`SlackAccountTitle`: tag and shared-app line) and
+    /// the real add row (`SlackWorkspacesAddRow`); the row's switch and
+    /// buttons are the shipped ones, left out here.
     private var workspaces: some View {
-        SettingsSection(title: Copy.workspacesTitle) {
-            HStack(spacing: Spacing.regular) {
-                Image(systemName: "number").foregroundStyle(.secondary)
-                Text("acme").font(.body)
-                if pane == .sharedApp { OutlineTag(text: Copy.chipShared) }
-                Spacer(minLength: Spacing.medium)
-                Text(pane == .sharedApp ? Copy.accountShared : Copy.accountFull)
-                    .font(.caption).foregroundStyle(.secondary)
+        SettingsSection(title: "Slack Workspaces") {
+            HStack {
+                SlackAccountTitle(
+                    account: SlackPaneModeFixture.acme,
+                    sharedAppAccountIDs: pane == .sharedApp ? [1] : [],
+                    lastSync: SlackPaneModeFixture.now.addingTimeInterval(-180),
+                    now: SlackPaneModeFixture.now)
+                Spacer()
+                Circle().fill(Tone.success).frame(width: IconSize.stateDot, height: IconSize.stateDot)
             }
-            if pane != .sharedApp {
-                Button(Copy.connectAnother) {}.buttonStyle(.kitQuiet)
-            }
+            SlackWorkspacesAddRow(section: section, add: {}, openFold: {})
         }
     }
 }
 
-// MARK: - Set up for my company / Add the link
+// MARK: - Set up for my company / Add the link (the real sheet, plan B Task 13)
 
-private struct SlackSetupSheetMock: View {
-    let frame: SlackFullLiveShotFixtures.Setup
+/// `SlackAppSetupModel` in each frame's state, for the real
+/// `SlackAppSetupSheet` and `SlackSetupRecordRows`.
+@MainActor
+enum SlackSetupShotFixture {
+    typealias Model = SlackAppSetupModel
+    static let token = "xoxe.xoxp-1-sample-token"
+    static let acme = SlackSetupTarget(teamID: "T0ACME", teamName: "acme", appID: "A0ACME", clientID: "1111.2222",
+                                       linkWritten: true)
 
-    private var isAddLink: Bool { frame.rawValue.hasPrefix("addLink") }
+    static func sheet(_ frame: SlackFullLiveShotFixtures.Setup) -> some View {
+        let empty = frame == .empty || frame == .addLinkEmpty
+        return SlackAppSetupSheet(model: model(frame), token: empty ? "" : token)
+    }
 
-    private var token: String {
-        switch frame {
-        case .empty, .addLinkEmpty: ""
-        default: "xoxe.xoxp-1-sample-token"
+    static func model(_ frame: SlackFullLiveShotFixtures.Setup) -> Model {
+        let link = Model.Form.addLink(acme)
+        let adopt = Model.Adopt(target: acme)
+        var needsID = adopt
+        needsID.needsAppID = true
+        return switch frame {
+        case .empty, .ready: Model(streamer: nil)
+        case .progress: Model(streamer: nil, phase: .running, steps: progressSteps)
+        case .success: Model(streamer: nil, phase: .finished(.success(acme)))
+        case .badToken: Model(streamer: nil, phase: .finished(.problem(.badToken)))
+        case .notAllowed: Model(streamer: nil, phase: .finished(.problem(.notAllowed(workspace: "acme"))))
+        case .linkFailed: Model(streamer: nil, phase: .finished(.linkFailed(acme)))
+        case .approval: Model(streamer: nil, phase: .finished(.approval(acme)))
+        case .addLinkEmpty: Model(streamer: nil, form: link)
+        case .addLinkBusy: Model(streamer: nil, form: link, phase: .running)
+        case .addLinkError: Model(streamer: nil, form: link, phase: .finished(.problem(.badToken)))
+        case .addLinkDone: Model(streamer: nil, form: link, phase: .finished(.linkDone))
+        case .adopt: Model(streamer: nil, form: .adopt(adopt))
+        case .adoptAppId: Model(streamer: nil, form: .adopt(needsID))
+        case .adoptNotCollaborator:
+            Model(streamer: nil, form: .adopt(adopt), phase: .finished(.problem(.notCollaborator(workspace: "acme"))))
+        case .pendingCreate, .pendingConfirmClear, .adoptConfirm, .adoptAppIdProblem, .busy: reviewModel(frame, adopt: needsID)
         }
     }
 
-    private var isBusy: Bool { frame == .progress || frame == .addLinkBusy }
+    /// The states added after the plan B Task 13 review.
+    private static func reviewModel(_ frame: SlackFullLiveShotFixtures.Setup, adopt: Model.Adopt) -> Model {
+        var confirm = adopt
+        confirm.confirm = ("A0ACME", "Watchtower")
+        var problem = adopt
+        problem.appIDProblem = .format
+        let pending = Model.Form.pending(SlackSetupTarget(teamID: "T0ACME", teamName: "acme"))
+        if frame == .pendingConfirmClear {
+            let model = Model(streamer: nil, form: pending)
+            model.clearPending() // the first press asks to check Slack's app page first
+            return model
+        }
+        return switch frame {
+        case .pendingCreate: Model(streamer: nil, form: pending)
+        case .adoptConfirm: Model(streamer: nil, form: .adopt(confirm))
+        case .adoptAppIdProblem: Model(streamer: nil, form: .adopt(problem))
+        default: Model(streamer: nil, phase: .finished(.problem(.busy)))
+        }
+    }
+
+    private static var progressSteps: [Model.StepLine] {
+        let marks: [Model.StepMark] = [.done, .done, .running, .waiting]
+        return zip(Model.createSteps, marks).map { line, mark in
+            var line = line
+            line.mark = mark
+            return line
+        }
+    }
+
+    /// The pane's unfinished-setup row for the record frames, none otherwise.
+    static func rowsModel(_ pane: SlackFullLiveShotFixtures.Pane) -> Model {
+        let stage: String? = switch pane {
+        case .setupInstall: "install"
+        case .setupApproval: "approval"
+        case .linkMissing: "link_missing"
+        case .setupPending: "pending_create"
+        default: nil
+        }
+        let records = stage.map { stage in
+            [SlackSetupRecord(teamID: "T0ACME", teamName: "acme", appID: "A0ACME", clientID: "1111.2222",
+                              connected: stage == "link_missing", linkWritten: stage != "link_missing",
+                              installRequested: stage == "approval", stage: stage)]
+        } ?? []
+        return Model(streamer: nil, records: records)
+    }
+}
+
+// MARK: - Onboarding: connect Slack without a build-baked app (plan B, A13)
+
+/// The real onboarding sheet (`SlackOnboardingConnectSheet`) for each frame.
+private struct SlackOnboardingConnectMock: View {
+    let frame: SlackFullLiveShotFixtures.Onboarding
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.large) {
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(isAddLink ? Copy.addLinkTitle : Copy.setupTitle).font(.title3.weight(.semibold))
-                Text(isAddLink ? Copy.addLinkIntro : Copy.setupIntro)
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            if showsForm { form }
-            if frame == .progress { progress }
-            outcome
-            buttons
-        }
-        .controlSize(.small)
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
-    }
-
-    private var showsForm: Bool {
-        [.empty, .ready, .badToken, .notAllowed, .addLinkEmpty, .addLinkBusy, .addLinkError].contains(frame)
-    }
-
-    private var form: some View {
-        VStack(alignment: .leading, spacing: Spacing.medium) {
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Copy.setupStep1).font(.headline)
-                Text(Copy.setupStep1Help)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button(Copy.openTokenPage) {}.buttonStyle(.kitSecondary)
-            }
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Copy.setupStep2).font(.headline)
-                SecureField(Copy.tokenPlaceholder, text: .constant(token)).textFieldStyle(.kit).disabled(isBusy)
-                Text(Copy.tokenNote).font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-    }
-
-    private var progress: some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            ForEach(Array(Copy.progressSteps.enumerated()), id: \.offset) { index, step in
-                HStack(spacing: Spacing.regular) {
-                    Group {
-                        if index < 2 {
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(Tone.success)
-                        } else if index == 2 {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Image(systemName: "circle").foregroundStyle(.tertiary)
-                        }
-                    }
-                    .frame(width: ListLayout.markColumn)
-                    Text(step).font(.callout).foregroundStyle(index > 2 ? .secondary : .primary)
-                }
-            }
-            Text(Copy.progressCaption)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-    }
-
-    @ViewBuilder private var outcome: some View {
-        switch frame {
-        case .success:
-            notice(icon: "checkmark.circle.fill", tone: Tone.success, title: Copy.successTitle, body: Copy.successBody)
-        case .badToken, .addLinkError:
-            notice(icon: "exclamationmark.triangle.fill", tone: Tone.warning, title: nil, body: Copy.badToken)
-        case .notAllowed:
-            notice(icon: "exclamationmark.triangle.fill", tone: Tone.warning, title: nil, body: Copy.notAllowed)
-        case .linkFailed:
-            notice(icon: "exclamationmark.triangle.fill", tone: Tone.warning, title: Copy.successTitle, body: Copy.linkFailed)
-        case .approval:
-            notice(icon: "hourglass", tone: Tone.warning, title: nil, body: Copy.approval)
-        case .addLinkBusy:
-            HStack(spacing: Spacing.regular) {
-                ProgressView().controlSize(.small)
-                Text(Copy.addLinkBusy).font(.caption).foregroundStyle(.secondary)
-            }
-        case .addLinkDone:
-            notice(icon: "checkmark.circle.fill", tone: Tone.success, title: nil, body: Copy.addLinkDone)
-        default:
-            EmptyView()
-        }
-    }
-
-    private func notice(icon: String, tone: Color, title: String?, body: String) -> some View {
-        HStack(alignment: .top, spacing: Spacing.regular) {
-            Image(systemName: icon).foregroundStyle(tone)
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                if let title { Text(title).font(.headline) }
-                Text(body).font(.callout).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-    }
-
-    private var buttons: some View {
-        HStack(spacing: Spacing.regular) {
-            Spacer()
-            switch frame {
-            case .empty, .ready:
-                Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                Button(Copy.createApp) {}.buttonStyle(.kitPrimary).disabled(token.isEmpty)
-            case .progress:
-                Button(Copy.close) {}.buttonStyle(.kitSecondary)
-            case .badToken, .notAllowed:
-                Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                Button(Copy.tryAgain) {}.buttonStyle(.kitPrimary)
-            case .success:
-                Button(Copy.copyCode) {}.buttonStyle(.kitSecondary)
-                Button(Copy.done) {}.buttonStyle(.kitPrimary)
-            case .linkFailed:
-                Button(Copy.close) {}.buttonStyle(.kitSecondary)
-                Button(Copy.addLink) {}.buttonStyle(.kitPrimary)
-            case .approval:
-                Button(Copy.close) {}.buttonStyle(.kitSecondary)
-                Button(Copy.checkAgain) {}.buttonStyle(.kitPrimary)
-            case .addLinkEmpty, .addLinkBusy:
-                Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                Button(Copy.addLinkAction) {}.buttonStyle(.kitPrimary).disabled(token.isEmpty || isBusy)
-            case .addLinkError:
-                Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                Button(Copy.tryAgain) {}.buttonStyle(.kitPrimary)
-            case .addLinkDone:
-                Button(Copy.done) {}.buttonStyle(.kitPrimary)
-            }
-        }
+        SlackOnboardingConnectSheet(
+            section: SlackModePresentation.ConnectSection(
+                display: .off,
+                portBusy: frame == .portBusy,
+                expanded: true,
+                organizationApps: frame == .organization
+                    ? [ManagedPolicy.SlackApp(teamID: "T0ACME", clientID: "1111.2222")] : nil,
+                accounts: [],
+                builtinApp: false),
+            flow: SlackConnectShotFlow.make(paste: frame == .pasteInvalid ? "https://acme.slack.com/apps/A0ACME" : nil),
+            setUpForCompany: {},
+            close: {})
     }
 }
 
 // MARK: - Connect from a link or code
 
+/// The real connect sheet (`SlackConnectSheet`) for one step of the flow.
 private struct SlackConnectSheetMock: View {
     let frame: SlackFullLiveShotFixtures.Connect
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.large) {
-            switch frame {
-            case .confirm:
-                Text(Copy.confirmTitle).font(.title3.weight(.semibold))
-                Text(Copy.confirmBody).font(.callout).fixedSize(horizontal: false, vertical: true)
-            case .browser:
-                HStack(alignment: .top, spacing: Spacing.regular) {
-                    ProgressView().controlSize(.small)
-                    VStack(alignment: .leading, spacing: Spacing.small) {
-                        Text(Copy.browserWait).font(.callout).fixedSize(horizontal: false, vertical: true)
-                        Text(Copy.browserNote)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            case .success:
-                notice("checkmark.circle.fill", Tone.success, Copy.connectedTitle, Copy.connectedBody)
-            case .teamMismatch:
-                notice("exclamationmark.triangle.fill", Tone.warning, nil, Copy.teamMismatch)
-            case .denied:
-                notice("xmark.circle", Tone.status("gray"), nil, Copy.denied)
-            }
-            HStack(spacing: Spacing.regular) {
-                Spacer()
-                switch frame {
-                case .confirm:
-                    Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                    Button(Copy.connect) {}.buttonStyle(.kitPrimary)
-                case .browser:
-                    Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                case .success:
-                    Button(Copy.done) {}.buttonStyle(.kitPrimary)
-                case .teamMismatch, .denied:
-                    Button(Copy.close) {}.buttonStyle(.kitSecondary)
-                    Button(Copy.startAgain) {}.buttonStyle(.kitPrimary)
-                }
-            }
+    private var step: SlackConnectFlowModel.Step {
+        let target = SlackConnectTarget(teamID: "T0ACME", clientID: "1111.2222")
+        return switch frame {
+        case .confirm: .confirming(flow: "f1", target: target)
+        case .browser: .browser(flow: "f1", target: target, since: SlackPaneModeFixture.now)
+        case .success: .connected(workspace: "acme")
+        case .teamMismatch: .failed(.teamMismatch, retry: target)
+        case .denied: .failed(.denied, retry: target)
         }
-        .controlSize(.small)
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
     }
 
-    private func notice(_ icon: String, _ tone: Color, _ title: String?, _ body: String) -> some View {
-        HStack(alignment: .top, spacing: Spacing.regular) {
-            Image(systemName: icon).foregroundStyle(tone)
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                if let title { Text(title).font(.headline) }
-                Text(body).font(.callout).fixedSize(horizontal: false, vertical: true)
-            }
+    var body: some View {
+        if let content = SlackConnectSheetContent(step: step) {
+            SlackConnectSheet(content: content) { _ in }
         }
+    }
+}
+
+/// A connect flow for the shots: its host runs no child (a fake streamer),
+/// so nothing starts; `paste` leaves that text refused in the field.
+@MainActor
+private enum SlackConnectShotFlow {
+    static func make(paste: String?) -> SlackConnectFlowModel {
+        let flow = SlackConnectFlowModel(host: SlackConnectListenerHost(streamer: FakeCLILineStream()))
+        if let paste {
+            flow.pasteText = paste
+            flow.connectPasted()
+        }
+        return flow
     }
 }
 
 // MARK: - needsFullSlack
 
-/// The real `FeatureEmptyState` of the Digests tab; the new readiness line
-/// and its button stand in `extra` until `Readiness.needsFullSlack` exists.
+/// The real `FeatureEmptyState` of a Slack tab under `Readiness.needsFullSlack`
+/// (screens spec §2.1): its line and its one Connect workspace app button.
 private struct NeedsFullSlackDigestsMock: View {
     var tab = "digests"
 
     var body: some View {
-        if let row = EmptyStateCopyTable.copy(for: tab, briefingHour: 8) {
-            // `needsFullSlack` replaces the tab's own action (as `needsSource` does today).
-            let copy = EmptyStateCopy(
-                icon: row.icon, title: row.title, landsHere: row.landsHere, feature: row.feature, primaryAction: nil)
+        if let copy = EmptyStateCopyTable.copy(for: tab, briefingHour: 8) {
             FeatureEmptyState(
-                copy: copy, readiness: nil, syncLine: nil, turnOnError: nil, isTurningOn: false,
-                onAction: { _ in },
-                extra: {
-                    Text(Copy.needsFullLine).font(.callout).multilineTextAlignment(.center)
-                    Button(Copy.needsFullAction) {}.buttonStyle(.kitPrimary)
-                }
-            )
+                copy: copy, readiness: .needsFullSlack, syncLine: nil, turnOnError: nil, isTurningOn: false
+            ) { _ in }
             .detailBackground()
         }
     }
 }
 
+/// The real Home → Getting ready zone with Slack Live only: one grouped row
+/// (owner, ask #1572).
 private struct NeedsFullSlackHomeCardMock: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            HStack(spacing: Spacing.regular) {
-                Image(systemName: "doc.text.magnifyingglass").foregroundStyle(.secondary)
-                Text("Digests").font(.headline)
-            }
-            Text(Copy.needsFullLine).font(.callout).fixedSize(horizontal: false, vertical: true)
-            Button(Copy.needsFullAction) {}.buttonStyle(.kitSecondary)
-        }
-        .controlSize(.small)
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
+        GettingReadyZoneView(
+            zone: .shown(cards: [], sourceRows: [
+                GettingReadySourceRow(
+                    source: .fullSlack, features: [.slackSync, .digests, .tracks, .peopleCards, .ideas, .inbox])
+            ]),
+            firstSync: nil,
+            onLink: { _ in },
+            onHide: {}
+        )
         .padding(Spacing.large)
         .detailBackground()
     }
 }
 
+/// No Knowledge search view exists in the Desktop yet (the knowledge index
+/// is read by the chats' `search_knowledge`): the note's string is
+/// `SlackModePresentation.knowledgeNote`, laid out as the mockup did.
 private struct NeedsFullSlackKnowledgeMock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
@@ -597,7 +369,7 @@ private struct NeedsFullSlackKnowledgeMock: View {
             .card()
             HStack(alignment: .top, spacing: Spacing.regular) {
                 Image(systemName: "info.circle").foregroundStyle(.secondary)
-                Text(Copy.knowledgeNote)
+                Text(SlackPaneModeFixture.presentation(.live).knowledgeNote ?? "")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -646,5 +418,72 @@ private struct LiveArtifactKeepMock: View {
         .padding(Spacing.cozy)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .panelBackground()
+    }
+}
+
+// MARK: - The real Slack mode section's fixture data
+
+/// `SlackModePresentation` for each pane frame, built from sample accounts
+/// and `slack_live_status` rows (`acme`, made-up ids) at a fixed clock.
+@MainActor
+enum SlackPaneModeFixture {
+    static let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    static let acme = SlackAccount(row: Row([
+        "id": 1, "team_id": "T0ACME", "team_name": "acme", "status": "ok", "enabled": true
+    ]))
+
+    static func presentation(_ pane: SlackFullLiveShotFixtures.Pane) -> SlackModePresentation {
+        let hasAccount: Set<SlackFullLiveShotFixtures.Pane> =
+            [.full, .fullLive, .loading, .checking, .probeFailed, .readFailed, .sharedApp]
+        var lastError: SlackLiveError?
+        switch pane {
+        case .probeFailed:
+            lastError = SlackLiveError(
+                provider: "claude", message: "the watchtower command did not answer in 150 seconds.", kind: .probe)
+        case .readFailed:
+            lastError = SlackLiveError(provider: "", message: "database is locked", kind: .read)
+        default: break
+        }
+        return SlackModePresentation(
+            accounts: hasAccount.contains(pane) ? [acme] : [],
+            sharedAppAccountIDs: pane == .sharedApp ? [1] : [],
+            liveStatuses: rows(pane),
+            isRunning: pane == .checking,
+            hasRead: pane != .loading,
+            lastError: lastError,
+            now: now)
+    }
+
+    private static func rows(_ pane: SlackFullLiveShotFixtures.Pane) -> [SlackLiveStatusRow] {
+        let twoHours: TimeInterval = 2 * 3600, fiveHours: TimeInterval = 5 * 3600, twelveMin: TimeInterval = 12 * 60
+        switch pane {
+        case .full:
+            return [row("claude", "not_connected", "connectors_off", ago: twoHours)]
+        case .fullLive, .checking, .probeFailed, .readFailed:
+            return [row("claude", "ok", team: "T0ACME", ago: fiveHours),
+                    row("codex", "not_connected", "cli_missing", ago: fiveHours)]
+        case .live:
+            return [row("claude", "not_connected", "no_connector", ago: twelveMin),
+                    row("codex", "ok", team: "T0ACME", ago: twelveMin)]
+        case .liveProblems:
+            return [row("claude", "ok", ago: 10), row("codex", "needs_admin", ago: 10)]
+        case .sharedApp:
+            return [row("claude", "no_plan", ago: twoHours)]
+        case .loading, .off:
+            return []
+        default:
+            return [row("claude", "not_connected", "no_connector", ago: twelveMin)]
+        }
+    }
+
+    private static func row(
+        _ provider: String, _ status: String, _ errorClass: String = "", team: String = "", ago: TimeInterval
+    ) -> SlackLiveStatusRow {
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime]
+        return SlackLiveStatusRow(
+            teamID: team, provider: provider, status: status, errorClass: errorClass, connectorID: "",
+            checkedAt: fmt.string(from: now.addingTimeInterval(-ago)))
     }
 }
