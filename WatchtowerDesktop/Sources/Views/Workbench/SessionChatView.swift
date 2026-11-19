@@ -340,8 +340,14 @@ struct SessionChatView: View {
         follow.onFocusApplied = { earlierAnchor = nil }
         context.follow = follow
         context.footer = AnyView(pending)
-        return ChatUI.ChatFeedView(messages: workchatFeed.messages, context: context)
+        let messages = workchatFeed.messages
+        // Only a feed with messages is the open's adapter step: a permission card or an ask can render it empty first.
+        if !messages.isEmpty { store.openTrace?.mark(.adapter) }
+        return ChatUI.ChatFeedView(messages: messages, context: context)
             .macChatStyle(hooks: .app, look: .workchat)
+            // The first non-empty paint: on appear, or when the first message arrives after it.
+            .onAppear { if !messages.isEmpty { store.openTrace?.mark(.paint) } }
+            .onChange(of: messages.isEmpty) { _, empty in if !empty { store.openTrace?.mark(.paint) } }
             .embeddedArtifactSheet($artifact)
     }
 
@@ -389,6 +395,8 @@ struct SessionChatView: View {
             Text("No messages yet")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // The empty state's paint: once the first read is back and found nothing.
+                .task(id: store.liveLoaded) { if store.liveLoaded { store.openTrace?.mark(.paint) } }
         } else {
             Spacer()
         }
