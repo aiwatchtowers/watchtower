@@ -253,6 +253,20 @@ extension CompanySetupWizardModel {
         return "The sign-in did not finish\(why). Nothing was saved."
     }
 
+    static func notRecorded(_ detail: String) -> String {
+        let why = detail.isEmpty ? "" : ": \(detail)"
+        return "The sign-in worked, but Watchtower could not record the check in this setup\(why). Your account stays "
+            + "connected; check again."
+    }
+
+    static func appIDProblemLine(_ problem: SlackAppSetupModel.AppIDProblem, appID: String) -> String {
+        switch problem {
+        case .format: "That is not a Slack app settings link. It looks like https://api.slack.com/apps/A0123ABCD."
+        case .mismatch: "This workspace's Watchtower app is another one than \(appID). Check the link and paste it again."
+        case .notFound: "Slack has no app \(appID) this token can see. Check the link and paste it again."
+        }
+    }
+
     static let checkStopped = "The check stopped before it answered. Nothing was saved; try again."
     static let nameNeeded = "Watchtower needs your company's name before this check: colleagues see “Connect <name>?”. "
         + "Enter it under Company name."

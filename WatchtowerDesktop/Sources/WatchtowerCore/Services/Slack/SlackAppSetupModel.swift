@@ -332,6 +332,13 @@ package final class SlackAppSetupModel {
         isPresented = true
     }
 
+    /// The company wizard leaves a form (Back, another choice): a fresh
+    /// create form, so an App ID confirmed earlier never carries over.
+    package func resetForm() {
+        guard !isRunning else { return }
+        reset(.create)
+    }
+
     /// Hides the sheet; a running run keeps going.
     package func close() {
         isPresented = false

@@ -428,6 +428,62 @@ final class CompanySetupWizardModelTests: XCTestCase {
         XCTAssertTrue(cli.calls(["slack", "app", "create"]).isEmpty)
     }
 
+    private let confirmApp = #"{"result":"confirm_app","team_id":"T0ACME","team_name":"acme","app_id":"A0ACME","#
+        + #""app_name":"Watchtower","client_id":"1111.2222","changes":{"add_scopes":["reactions:read"]}}"#
+
+    /// The settings link's app, through the token form to the diff.
+    private func slackAtDiff() async -> (Model, ScriptedCLI) {
+        let cli = ScriptedCLI()
+        let (model, _) = make(cli)
+        await model.open()
+        model.toggle(.slack)
+        await model.next()
+        model.alreadyHaveOne()
+        model.setField(.slack, .slackSettingsLink, "https://api.slack.com/apps/A0ACME")
+        await model.next()
+        model.slackToken = token
+        cli.on(["slack", "app", "adopt"], [confirmApp])
+        await model.next()
+        await untilObserved { model.slackDiff != nil }
+        return (model, cli)
+    }
+
+    func testBackFromDiffNeverConfirms() async {
+        let (model, cli) = await slackAtDiff()
+        model.back()
+        XCTAssertNil(model.slackDiff)
+        model.alreadyHaveOne()
+        model.setField(.slack, .slackSettingsLink, "https://api.slack.com/apps/A0ACME")
+        await model.next()
+        cli.on(["slack", "app", "adopt"], [confirmApp])
+        await model.next()
+        await untilObserved { model.slackDiff != nil }
+        XCTAssertEqual(cli.calls(["slack", "app", "adopt"]).count, 2)
+        XCTAssertFalse(cli.calls(["slack", "app", "adopt"]).last?.args.contains("--confirm-app-id") ?? true,
+                       "only Update the app confirms the App ID")
+    }
+
+    func testUnknownAppLinkSaysSo() async {
+        let cli = ScriptedCLI()
+        let (model, _) = make(cli)
+        await model.open()
+        model.toggle(.slack)
+        await model.next()
+        model.alreadyHaveOne()
+        model.setField(.slack, .slackSettingsLink, "https://api.slack.com/apps/A0NOPE")
+        await model.next()
+        model.slackToken = token
+        cli.on(["slack", "app", "adopt"], [#"{"result":"app_not_found","team_id":"T0ACME","team_name":"acme"}"#])
+        await model.next()
+        await untilObserved { model.slackProblem != nil }
+        XCTAssertEqual(model.slackProblem, "Slack has no app A0NOPE this token can see. Check the link and paste it again.")
+        XCTAssertEqual(model.primary.title, "Try again")
+        await model.next()
+        XCTAssertEqual(model.phase(.slack), .existing, "back to the link field")
+        XCTAssertNil(model.slackProblem)
+        XCTAssertEqual(cli.calls(["slack", "app", "adopt"]).count, 1, "Try again does not repeat the same request")
+    }
+
     func testNotCollaboratorKeepsStepOpen() async {
         let cli = ScriptedCLI()
         let (model, _) = make(cli)
@@ -1043,6 +1099,60 @@ final class CompanySetupWizardModelTests: XCTestCase {
         XCTAssertTrue(model.isChecked(.atlassian))
         XCTAssertEqual(model.checkLine(.atlassian), "Your organization sets Acme's apps on this Mac; what you set up here is "
             + "used once the profile is removed.")
+    }
+
+    func testCheckNotRecordedIsNotChecked() async {
+        let (model, cli) = await resume(atlassianDraft)
+        cli.on(["company", "check", "atlassian"], [#"{"result":"ok","slug":"acme","email":"alice@example.com","#
+            + #""checked":false,"draft_error":"disk full"}"#])
+        await model.check(.atlassian)
+        XCTAssertFalse(model.isChecked(.atlassian), "Publish would refuse a step Go did not mark")
+        XCTAssertEqual(model.checkLine(.atlassian), "The sign-in worked, but Watchtower could not record the check in this "
+            + "setup: disk full. Your account stays connected; check again.")
+        XCTAssertEqual(model.connectedAs[.atlassian], "alice@example.com")
+        XCTAssertEqual(model.publishBlockedReason, Model.publishWaitsAtlassian)
+    }
+
+    func testStaleCheckResultIsDropped() async {
+        let draft = #"{"company":"Acme","services":["microsoft"],"step":"microsoft","slack":{},"#
+            + #""microsoft":{"client_id":"4b1e0c9d-0000-4f00-a000-00000000077a","tenant_id":"0000-acme"}}"#
+        let (model, cli) = await resume(draft)
+        cli.hold(["company", "check", "microsoft"])
+        let check = Task { await model.check(.microsoft) }
+        await cli.waitFor(["company", "check", "microsoft"])
+        model.setField(.microsoft, .tenantID, "1111-acme")
+        cli.release(["company", "check", "microsoft"], [#"{"result":"admin_consent","admin_consent_url":"u"}"#])
+        await check.value
+        XCTAssertNil(model.checks[.microsoft], "the answer was about the old tenant")
+        XCTAssertFalse(model.draft.microsoftWaiting)
+        XCTAssertEqual(model.current, .vendor(.microsoft))
+        XCTAssertEqual(model.primary.title, "Continue")
+        // A service dropped while its check ran stays dropped.
+        let (dropped, droppedCLI) = await resume(atlassianDraft)
+        droppedCLI.hold(["company", "check", "atlassian"])
+        let late = Task { await dropped.check(.atlassian) }
+        await droppedCLI.waitFor(["company", "check", "atlassian"])
+        dropped.toggle(.atlassian)
+        dropped.confirmDrop(.atlassian)
+        droppedCLI.release(["company", "check", "atlassian"], [atlassianOK])
+        await late.value
+        XCTAssertNil(dropped.checks[.atlassian])
+        XCTAssertFalse(dropped.isChecked(.atlassian))
+        XCTAssertEqual(dropped.ticked, [])
+    }
+
+    func testPublishThenLeaveWritesNoDraft() async {
+        let (model, cli) = await publishReady()
+        model.slackToken = token
+        cli.on(["company", "publish"], [#"{"result":"ok","slug":"acme","link":"l","code":"c"}"#])
+        await model.next()
+        let saves = cli.calls(["company", "draft", "save"]).count
+        await model.leave()
+        XCTAssertEqual(cli.calls(["company", "draft", "save"]).count, saves, "Go deleted the draft; it stays deleted")
+        XCTAssertNil(model.resumeLine)
+        model.finish()
+        XCTAssertEqual(model.current, .services)
+        XCTAssertEqual(model.publishState, .ready)
     }
 
     func testCheckThatDiesSaysSo() async {

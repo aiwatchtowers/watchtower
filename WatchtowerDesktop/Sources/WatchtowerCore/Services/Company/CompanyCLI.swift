@@ -236,6 +236,8 @@ package struct CompanyCheckResult: Decodable, Equatable, Sendable {
     package var message = ""
     package var checked = false
     package var adminConsentURL = ""
+    /// The check passed but marking the draft's step failed.
+    package var draftError = ""
     /// Atlassian: the grant came back without the Confluence scopes
     /// (`"confluence": false`; Atlassian refused them, Jira alone connected).
     package var confluenceRefused = false
@@ -244,7 +246,7 @@ package struct CompanyCheckResult: Decodable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case result, slug, accountID = "account_id", email, domain, site, code, message, checked
-        case adminConsentURL = "admin_consent_url", confluence
+        case adminConsentURL = "admin_consent_url", confluence, draftError = "draft_error"
     }
 
     package init(from decoder: Decoder) throws {
@@ -259,6 +261,7 @@ package struct CompanyCheckResult: Decodable, Equatable, Sendable {
         message = try c.decodeIfPresent(String.self, forKey: .message) ?? ""
         checked = try c.decodeIfPresent(Bool.self, forKey: .checked) ?? false
         adminConsentURL = try c.decodeIfPresent(String.self, forKey: .adminConsentURL) ?? ""
+        draftError = try c.decodeIfPresent(String.self, forKey: .draftError) ?? ""
         confluenceRefused = try c.decodeIfPresent(Bool.self, forKey: .confluence) == false
     }
 }

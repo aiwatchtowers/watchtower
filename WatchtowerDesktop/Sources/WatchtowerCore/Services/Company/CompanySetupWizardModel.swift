@@ -402,9 +402,21 @@ package final class CompanySetupWizardModel {
         dropWarning = nil
     }
 
+    /// Publish went through: Go deleted the draft, which stays deleted.
+    package var isPublished: Bool {
+        if case .done = publishState { return true }
+        return false
+    }
+
+    /// **Done** after Publish: the page starts fresh next time.
+    package func finish() {
+        guard isPublished else { return }
+        reset()
+    }
+
     @discardableResult
     private func saveDraft() async -> Bool {
-        guard load == .ready else { return false }
+        guard load == .ready, !isPublished else { return false }
         var out = draft
         out.step = current.draftName
         guard let data = try? Self.encoder.encode(out), await run(["company", "draft", "save"], stdin: data) else {
@@ -478,8 +490,10 @@ package final class CompanySetupWizardModel {
     /// **Back**.
     package func back() {
         if case .vendor(.slack) = current, slackAttempt, !slack.isRunning {
-            // From the Slack step's diff or problem: back to its choice.
+            // From the Slack step's diff or problem: back to its choice. The
+            // confirmed App ID goes too: only Update the app may confirm it.
             slackAttempt = false
+            slack.resetForm()
             phases[.slack] = nil
             enter(current)
             return
@@ -736,16 +750,27 @@ package final class CompanySetupWizardModel {
     }
 
     private func finishCheck(_ v: CompanyVendor, _ result: CompanyCheckResult, values: [String]) async {
+        let signedIn = result.result == "ok" || result.result == "forced"
+        if !result.slug.isEmpty, signedIn { draft.slug = result.slug }
+        if signedIn, !result.email.isEmpty { connectedAs[v] = result.email }
+        // Values edited (or the service dropped) while it ran: the answer is
+        // about values the step no longer holds. Go kept what the sign-in
+        // connected; the step itself is left to a new check.
+        guard checkValues(v) == values, ticked.contains(v) else {
+            checks[v] = nil
+            return
+        }
         switch result.result {
         case "ok", "forced":
-            if !result.slug.isEmpty { draft.slug = result.slug }
             if result.result == "forced" { forcedVendors.insert(v) } else { forcedVendors.remove(v) }
-            // A check of values edited meanwhile does not check the new ones.
-            if checkValues(v) == values {
-                checkedValues[v] = values
-                if v == .google, !result.domain.isEmpty { draft.google?.domain = result.domain }
+            // Go marks the draft's step; without that mark Publish refuses it,
+            // so the step is not checked here either.
+            guard result.checked else {
+                checks[v] = .failed(Self.notRecorded(result.draftError))
+                return
             }
-            if !result.email.isEmpty { connectedAs[v] = result.email }
+            checkedValues[v] = values
+            if v == .google, !result.domain.isEmpty { draft.google?.domain = result.domain }
             if v == .atlassian { confluenceRefused = result.confluenceRefused }
             if v == .microsoft { draft.microsoftWaiting = false }
             checks[v] = .passed
@@ -829,9 +854,13 @@ package final class CompanySetupWizardModel {
     private func startSlackRun() {
         let token = slackToken.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty, !slack.isRunning else { return }
+        let confirming = slackDiff != nil
+        // Only Update the app on the diff confirms an App ID: any other run
+        // starts from a fresh form, so a stale confirmation never applies.
+        if !confirming { slack.resetForm() }
         slackAttempt = true
         if let reuse = slackReuse {
-            slackConfirming = slackDiff != nil
+            slackConfirming = confirming
             slack.startAdopt(token: token, appID: reuse.appID, clientID: reuse.clientID)
         } else {
             slackConfirming = false
@@ -868,7 +897,11 @@ package final class CompanySetupWizardModel {
     /// The Slack run's problem line (the wizard words not-collaborator and
     /// wrong-workspace itself, naming the app).
     package var slackProblem: String? {
-        guard slackAttempt, !slack.isRunning, case let .finished(.problem(problem)) = slack.phase else { return nil }
+        guard slackAttempt, !slack.isRunning else { return nil }
+        if case .editing = slack.phase, case let .adopt(adopt) = slack.form, let problem = adopt.appIDProblem {
+            return Self.appIDProblemLine(problem, appID: slackReuse?.appID ?? "")
+        }
+        guard case let .finished(.problem(problem)) = slack.phase else { return nil }
         switch problem {
         case .notCollaborator:
             return Self.notCollaborator(appID: slackReuse?.appID ?? "")
@@ -1032,6 +1065,13 @@ package final class CompanySetupWizardModel {
     }
 
     private func slackNext() async {
+        if case .editing = slack.phase, slackProblem != nil {
+            // The pasted link named no usable app: back to the link field.
+            slackAttempt = false
+            slack.resetForm()
+            phases[.slack] = .existing
+            return
+        }
         if slackDiff != nil || slackProblem != nil {
             if slackProblem != nil { slack.tryAgain() }
             startSlackRun()
@@ -1126,7 +1166,9 @@ package final class CompanySetupWizardModel {
             publishState = .done(Published(slug: result.slug, link: result.link, code: result.code,
                                            onSlackPage: result.result == "ok"))
             slackToken = ""
-            hasDraft = !result.draftError.isEmpty
+            // Go deleted the draft: nothing writes it back (leave, Done).
+            hasDraft = false
+            touched = false
             draftUnreadableFile = nil
         case "token_expired":
             slackToken = ""
