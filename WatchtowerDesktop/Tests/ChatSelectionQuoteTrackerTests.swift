@@ -212,7 +212,7 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
         tracker.attach(to: anchor)
         (self.tracker, self.anchor) = (tracker, anchor)
         window.makeFirstResponder(stub)
-        return InteractionFeed(window: window, stub: stub, tracker: tracker, quoted: { quoted })
+        return InteractionFeed(window: window, stub: stub, tracker: tracker) { quoted }
     }
 
     private func up(_ feed: InteractionFeed, atStub point: CGPoint?) {
@@ -266,6 +266,12 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
         XCTAssertEqual(feed.tracker.selection?.text, "budget", "a new selection is offered again")
     }
 
+    private func mouseUpEvent(at point: CGPoint, in window: NSWindow) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseUp, location: point, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+            context: nil, eventNumber: 0, clickCount: 1, pressure: 0))
+    }
+
     /// The monitor: a mouse-up in the feed's window reads the selection
     /// after the event is handled, with the mouse's place; a key-up has
     /// none; another window's event is left alone.
@@ -286,9 +292,7 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
         feed.stub.selected = "retry"
 
         let point = feed.stub.convert(CGPoint(x: 50, y: 20), to: nil)
-        let mouseUp = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [], timestamp: 0,
-                                                      windowNumber: feed.window.windowNumber, context: nil,
-                                                      eventNumber: 0, clickCount: 1, pressure: 0))
+        let mouseUp = try mouseUpEvent(at: point, in: feed.window)
         XCTAssertTrue(monitor(mouseUp) === mouseUp, "the event goes on to the window")
         XCTAssertNil(feed.tracker.selection, "read only once the window has handled it")
         XCTAssertEqual(pending.count, 1)
@@ -297,17 +301,15 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
         XCTAssertEqual(byMouse.height, ChatSelectionQuoteTracker.pointBoxHeight, "a sliver at the mouse")
 
         feed.stub.selected = "retry budget"
-        let keyUp = try XCTUnwrap(NSEvent.keyEvent(with: .keyUp, location: .zero, modifierFlags: [], timestamp: 0,
-                                                  windowNumber: feed.window.windowNumber, context: nil, characters: "a",
-                                                  charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0))
+        let keyUp = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyUp, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: feed.window.windowNumber,
+            context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0))
         _ = monitor(keyUp)
         flush()
         XCTAssertEqual(feed.tracker.selection?.rect.height, 60, "a key: the whole visible text")
 
         let (other, _) = makeWindow()
-        let elsewhere = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [], timestamp: 0,
-                                                        windowNumber: other.windowNumber, context: nil,
-                                                        eventNumber: 0, clickCount: 1, pressure: 0))
+        let elsewhere = try mouseUpEvent(at: point, in: other)
         _ = monitor(elsewhere)
         XCTAssertTrue(pending.isEmpty, "another window's event is not looked at")
     }
