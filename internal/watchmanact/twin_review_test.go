@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,8 @@ import (
 
 	"watchtower/internal/asks"
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/reviewdiff"
 	"watchtower/internal/specreview"
 	"watchtower/internal/watchman"
@@ -194,15 +197,16 @@ func TestTwin_ReviewCodeMainBaseParks(t *testing.T) {
 	}
 }
 
-// wantWaiting checks the item waits reviewWait with its attempt unspent
-// and nothing was approved or sent.
+// wantWaiting checks the item, whose diff moved after its decision, waits
+// reviewWait with its attempt spent (final review B-I3: the moves count
+// towards the cap) and nothing was approved or sent.
 func (e *reviewEnv) wantWaiting(itemID int64) {
 	e.t.Helper()
 	it := e.item(itemID)
 	var nb sql.NullString
 	e.must(e.db.QueryRow(`SELECT not_before FROM watchman_items WHERE id = ?`, itemID).Scan(&nb))
-	if it.State != "queued" || it.Attempts != 0 || !nb.Valid {
-		e.t.Fatalf("item = %s attempts %d not_before %v, want waiting unspent", it.State, it.Attempts, nb)
+	if it.State != "queued" || it.Attempts != 1 || !nb.Valid {
+		e.t.Fatalf("item = %s attempts %d not_before %v, want waiting with the attempt spent", it.State, it.Attempts, nb)
 	}
 	if at, err := time.Parse(time.RFC3339, nb.String); err != nil || time.Until(at) < 30*time.Second {
 		e.t.Fatalf("not_before = %q, want about a minute ahead", nb.String)
@@ -863,5 +867,46 @@ func TestTwin_ReviewDocRedactsFindings(t *testing.T) {
 	}
 	if m := e.marks(askID); m["bs:1"].State != "comment" {
 		t.Fatalf("marks = %+v, want the mark on the kept key", m)
+	}
+}
+
+// Final review B-I3: a tree that moves after every decision is reviewed
+// MaxAttempts times, each attempt's cost kept on the item, then parked for
+// the owner; nothing is approved.
+func TestTwin_ReviewCodeKeptMovingParks(t *testing.T) {
+	e := newReviewEnv(t)
+	cost := 0.25
+	tree := 1
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		e.baseMu.Lock()
+		tree++
+		e.place.Round.TreeSHA = fmt.Sprintf("t%d", tree)
+		e.baseMu.Unlock()
+		d := reviewDecision(ReviewApprove)
+		d.Usage = &digest.Usage{Tokens: llmusage.Tokens{ReportedCostUSD: &cost}}
+		return d, nil
+	}
+	itemID := e.queueReview()
+	for i := 1; i <= MaxAttempts; i++ {
+		_, err := e.db.Exec(`UPDATE watchman_items SET not_before = NULL WHERE id = ?`, itemID)
+		e.must(err)
+		if n := e.run(); n != 1 {
+			t.Fatalf("pass %d: RunOnce = %d", i, n)
+		}
+		var got float64
+		e.must(e.db.QueryRow(`SELECT cost_usd FROM watchman_items WHERE id = ?`, itemID).Scan(&got))
+		if want := cost * float64(i); got < want-1e-9 || got > want+1e-9 {
+			t.Fatalf("pass %d: cost_usd = %v, want %v", i, got, want)
+		}
+	}
+	it := e.item(itemID)
+	wantOutcome(t, it, OutcomeParked)
+	if it.ParkReason != reasonKeptMoving {
+		t.Fatalf("park reason = %q", it.ParkReason)
+	}
+	for _, r := range e.rounds() {
+		if r.Outcome == db.ReviewOutcomeApproved {
+			t.Fatalf("round %d approved", r.ID)
+		}
 	}
 }

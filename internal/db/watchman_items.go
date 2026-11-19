@@ -607,13 +607,19 @@ func (db *DB) ReleaseWatchmanItem(id int64, lease time.Time, costUSD float64) (b
 }
 
 // DeferWatchmanItem hands a deciding item back to the queue, not before
-// notBefore, as if this attempt never ran (attempts-1): the item waits for
-// something outside the twin (a spec review still running, the owner
-// writing review comments). False when the lease is stale.
-func (db *DB) DeferWatchmanItem(id int64, lease, notBefore time.Time) (bool, error) {
-	res, err := db.Exec(`UPDATE watchman_items SET state = 'queued', lease_until = NULL, attempts = MAX(attempts - 1, 0),
-			not_before = ?
-		WHERE id = ? AND state = 'deciding' AND lease_until = ?`, wmTime(notBefore), id, wmTime(lease))
+// notBefore: the item waits for something outside the twin (a spec review
+// still running, the owner writing review comments) as if this attempt never
+// ran (attempts-1), or — spent — its diff moved after the decision, and the
+// attempt counts towards the cap. costUSD, what the attempt's calls cost, is
+// added to the item's cost either way. False when the lease is stale.
+func (db *DB) DeferWatchmanItem(id int64, lease, notBefore time.Time, costUSD float64, spent bool) (bool, error) {
+	giveBack := 1
+	if spent {
+		giveBack = 0
+	}
+	res, err := db.Exec(`UPDATE watchman_items SET state = 'queued', lease_until = NULL, attempts = MAX(attempts - ?, 0),
+			not_before = ?, cost_usd = cost_usd + ?
+		WHERE id = ? AND state = 'deciding' AND lease_until = ?`, giveBack, wmTime(notBefore), costUSD, id, wmTime(lease))
 	if err != nil {
 		return false, fmt.Errorf("deferring watchman item %d: %w", id, err)
 	}

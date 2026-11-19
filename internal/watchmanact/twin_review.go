@@ -72,6 +72,7 @@ const (
 	reasonOwnerRoundOpen   = "the owner has a review round of this session open with comments"
 	reasonFindingsUnread   = "the spec review's findings could not be read"
 	reasonReviewHandedBack = "the twin says this review needs the owner"
+	reasonKeptMoving       = "the changes kept moving while Watchman reviewed — the owner reviews them"
 	changesCommentFallback = "Watchman asks for changes before this can be approved"
 	// reviewSituationLimit caps the diff review's situation, in runes.
 	reviewSituationLimit = 16000
@@ -124,10 +125,27 @@ func protectedPlace(place ReviewPlace) (park, why string) {
 }
 
 // deferItem gives the item back to the queue for reviewWait, its attempt
-// unspent.
-func (j *job) deferItem() {
+// unspent: it waits for something outside the twin.
+func (j *job) deferItem() { j.putBack(false) }
+
+// deferMoved gives back an item whose diff moved after its decision, the
+// attempt spent; the MaxAttempts-th such move parks it for the owner
+// (reasonKeptMoving), so a tree that keeps moving is not reviewed, and paid
+// for, over and over.
+func (j *job) deferMoved() {
+	if j.it.Attempts >= MaxAttempts {
+		o := j.outcome(OutcomeParked)
+		o.ParkReason = reasonKeptMoving
+		j.finishAlone(o)
+		return
+	}
+	j.putBack(true)
+}
+
+// putBack defers the item for reviewWait with this attempt's cost.
+func (j *job) putBack(spent bool) {
 	notBefore := j.now().Add(reviewWait)
-	if _, err := j.t.d.DB.DeferWatchmanItem(j.it.ID, j.lease, notBefore); err != nil {
+	if _, err := j.t.d.DB.DeferWatchmanItem(j.it.ID, j.lease, notBefore, j.outcome("").CostUSD, spent); err != nil {
 		log.Printf("watchman twin: %v", err)
 		return
 	}
@@ -318,8 +336,9 @@ func (t *Twin) handleReviewCode(parent context.Context, it db.WatchmanItem) {
 // outside any transaction): true when it is still the round's tree and
 // place and checked's branch (the one the PR base was read for). A place
 // that moved (new commits, a Refresh, a repoint, a branch switch) puts the
-// item back for reviewWait, its attempt unspent, to be reviewed again on
-// the new tree; a read that fails is a failed attempt.
+// item back for reviewWait, its attempt spent (deferMoved: the
+// MaxAttempts-th move parks), to be reviewed again on the new tree; a read
+// that fails is a failed attempt.
 func (j *job) placeStill(ctx context.Context, round *db.ReviewRound, checked ReviewPlace) bool {
 	fresh, err := j.t.d.ReviewPlace(ctx, j.it.WorkbenchID, j.it.SessionID)
 	if err != nil {
@@ -328,7 +347,7 @@ func (j *job) placeStill(ctx context.Context, round *db.ReviewRound, checked Rev
 	}
 	if fresh.Empty || !sameRoundPlace(&fresh.Round, round) || fresh.Branch != checked.Branch {
 		log.Printf("watchman twin: item %d: the session's changes moved while it was reviewed; reviewed again", j.it.ID)
-		j.deferItem()
+		j.deferMoved()
 		return false
 	}
 	return true
@@ -472,7 +491,7 @@ func (j *job) approveRound(ctx context.Context, round *db.ReviewRound, place Rev
 // checked only: the place is read again first (placeStill), and the park is
 // finished in a transaction that re-reads the round (checkRoundTx) — a tree,
 // place or branch that moved, or a round repointed meanwhile, waits
-// reviewWait with the attempt unspent instead of parking on a stale diff.
+// reviewWait (deferMoved) instead of parking on a stale diff.
 func (j *job) parkReview(ctx context.Context, round *db.ReviewRound, place ReviewPlace, reason string) {
 	if !j.placeStill(ctx, round, place) {
 		return
@@ -492,7 +511,7 @@ func (j *job) parkReview(ctx context.Context, round *db.ReviewRound, place Revie
 	case errors.Is(err, errKindChanged):
 		j.release()
 	case errors.Is(err, errRoundMoved):
-		j.deferItem()
+		j.deferMoved()
 	case err != nil:
 		j.fail(ctx, err)
 	}
@@ -573,7 +592,7 @@ func (j *job) roundWritten(ctx context.Context, err error, roundID int64, line s
 	case errors.Is(err, errKindChanged):
 		j.release()
 	case errors.Is(err, errRoundMoved):
-		j.deferItem()
+		j.deferMoved()
 	case errors.Is(err, errRoundClosed):
 		j.roundClosed(ctx, roundID)
 	case err != nil:
