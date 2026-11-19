@@ -63,7 +63,9 @@ bundle_for() {
 }
 
 # xctest_lane <shard> <Target.Class,...>: one xctest process per bundle the
-# classes live in, in turn; the lane's status is its first failure's.
+# classes live in, in turn; the lane's status is its first failure's. A
+# crash (a signal, status > 128) ends the lane there, so the summary's "last
+# started test" is the crashed bundle's.
 xctest_lane() {
     local shard=$1 target classes rc=0 r
     for target in $(tr , '\n' <<< "$2" | cut -d. -f1 | sort -u); do
@@ -72,6 +74,7 @@ xctest_lane() {
         WATCHTOWER_TEST_SHARD="$shard" NSUnbufferedIO=YES \
             xcrun xctest -XCTest "$classes" "$(bundle_for "$target")" || r=$?
         if [[ $rc -eq 0 ]]; then rc=$r; fi
+        if [[ $r -gt 128 ]]; then break; fi
     done
     return "$rc"
 }

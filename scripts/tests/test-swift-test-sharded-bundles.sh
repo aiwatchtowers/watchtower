@@ -10,7 +10,9 @@
 #     one xctest call per target, each on its own bundle with only its classes
 #   - the lane passes its shard in WATCHTOWER_TEST_SHARD
 #   - a failing first target does not stop the next; the lane returns the
-#     first failure's status (a crash's 139 survives a later plain failure)
+#     first failure's status
+#   - a crash (status > 128) ends the lane at its bundle, status kept, so the
+#     summary's last started test is the crashed bundle's
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -79,9 +81,12 @@ lane "swiftbuild: one call per target bundle" 0 \
     "shard=2 xctest -XCTest CoreTests.A,CoreTests.C $BIN/CoreTests.xctest
 shard=2 xctest -XCTest DesktopTests.B $BIN/DesktopTests.xctest"
 
-EXIT_CoreTests=139 EXIT_DesktopTests=1 lane "first failure's status, next target still runs" 139 \
+EXIT_CoreTests=1 EXIT_DesktopTests=139 lane "first failure's status, next target still runs" 1 \
     "shard=2 xctest -XCTest CoreTests.A,CoreTests.C $BIN/CoreTests.xctest
 shard=2 xctest -XCTest DesktopTests.B $BIN/DesktopTests.xctest"
+
+EXIT_CoreTests=139 lane "a crash ends the lane, its status kept" 139 \
+    "shard=2 xctest -XCTest CoreTests.A,CoreTests.C $BIN/CoreTests.xctest"
 
 EXIT_DesktopTests=1 lane "a later failure fails the lane" 1 \
     "shard=2 xctest -XCTest CoreTests.A,CoreTests.C $BIN/CoreTests.xctest
