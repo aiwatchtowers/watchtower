@@ -40,7 +40,7 @@ package final class WorkchatOpenTrace {
         let signposter = Self.signposter
         if let interval { signposter.endInterval(Self.name(interval.phase), interval.state) }
         interval = phase == .paint ? nil : (signposter.beginInterval(Self.name(phase), id: signposter.makeSignpostID()), phase)
-        guard phase == .paint, reported == nil else { return }
+        guard phase == .paint else { return }
         let line = makeReport()
         reported = line
         Self.log.notice("\(line, privacy: .public)")

@@ -341,7 +341,8 @@ struct SessionChatView: View {
         context.follow = follow
         context.footer = AnyView(pending)
         let messages = workchatFeed.messages
-        store.openTrace?.mark(.adapter)
+        // Only a feed with messages is the open's adapter step: a permission card or an ask can render it empty first.
+        if !messages.isEmpty { store.openTrace?.mark(.adapter) }
         return ChatUI.ChatFeedView(messages: messages, context: context)
             .macChatStyle(hooks: .app, look: .workchat)
             // The first non-empty paint: on appear, or when the first message arrives after it.
