@@ -1,0 +1,28 @@
+{
+  "busy": {
+    "heading": "Another link is waiting",
+    "message": "Watchtower is already asking you to confirm a company link. Answer it there, then open this link again."
+  },
+  "newer": {
+    "heading": "This link needs a newer Watchtower",
+    "message": "Update Watchtower from its menu, then open the link again."
+  },
+  "not_taken": {
+    "heading": "Watchtower did not take this link",
+    "message": "Open Watchtower, then open the link again."
+  },
+  "open": {
+    "heading": "Continue in Watchtower",
+    "message_acme": "Watchtower is asking you to confirm Acme. You can close this tab."
+  },
+  "refused": {
+    "heading": "This link does not work",
+    "hint": "Ask your admin for a fresh link, or paste the connect code in Watchtower → Connections.",
+    "reasons": {
+      "damaged": "The link is damaged or cut short.",
+      "personal": "The link carries a personal Google project, which only this Mac can set.",
+      "site_not_https": "The link names a site that is not https.",
+      "too_long": "The link is too long to be a Watchtower company link."
+    }
+  }
+}

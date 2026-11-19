@@ -67,7 +67,8 @@ type slackFailedEvent struct {
 }
 
 // slackConnectCommand is one stdin line: start (team_id, client_id and an
-// optional account_id; skips the confirm), confirm (flow) or cancel (flow).
+// optional account_id; skips the confirm), confirm (flow), cancel (flow) or
+// company_dismiss (flow: the app answered a company_link event).
 type slackConnectCommand struct {
 	Cmd       string `json:"cmd"`
 	TeamID    string `json:"team_id"`
@@ -105,6 +106,7 @@ type slackConnectServer struct {
 	logger   *log.Logger
 	deps     slackConnectDeps
 	reg      *slackconnect.Registry
+	links    *pendingLinks
 }
 
 // serveSlackConnect is `slack connect serve`: it binds the listener (busy:
@@ -128,9 +130,23 @@ func serveSlackConnect(ctx context.Context, cfg *config.Config, database *db.DB,
 		ctx: ctx, cfg: cfg, database: database, out: out, deps: deps,
 		logger: log.New(logOut, "[slack connect] ", log.LstdFlags),
 		reg:    slackconnect.NewRegistry(deps.clock, deps.exchange),
+		links:  &pendingLinks{},
 	}
 	events := make(chan slackconnect.Event)
-	shutdown := serveSlackConnectListener(ln, s.reg, events, make(chan struct{}))
+	stop := make(chan struct{})
+	companyEvents := make(chan companyLinkEvent)
+	emitCompany := func(ctx context.Context, ev companyLinkEvent) bool {
+		select {
+		case companyEvents <- ev:
+			return true
+		case <-ctx.Done():
+			return false
+		case <-stop:
+			return false
+		}
+	}
+	company := companyConnectHandler(ln.Addr().String(), emitCompany, s.links, s.logger)
+	shutdown := serveSlackConnectListener(ln, s.reg, events, stop, company)
 	// The app is gone (stdin EOF): nobody answers a page any more.
 	defer shutdown(true)
 	if err := s.emit(slackPortEvent{Event: "listening", Port: ln.Addr().(*net.TCPAddr).Port}); err != nil {
@@ -152,6 +168,8 @@ func serveSlackConnect(ctx context.Context, cfg *config.Config, database *db.DB,
 			err = s.handleCommand(c)
 		case ev := <-events:
 			err = s.handleEvent(ev)
+		case ev := <-companyEvents:
+			err = s.emit(ev)
 		}
 		if err != nil {
 			return err
@@ -203,6 +221,11 @@ func (s *slackConnectServer) handleCommand(c slackConnectCommand) error {
 				"This connection was cancelled in Watchtower.")
 		}
 		return nil // no such live flow: its own end was already reported
+	case "company_dismiss":
+		// The app answered a company link (cancelled it, or took it on);
+		// the next link may wait for a confirm. An unknown flow is a no-op.
+		s.links.release(c.Flow)
+		return nil
 	default:
 		s.logger.Printf("skipping unknown command %q", c.Cmd)
 		return nil
