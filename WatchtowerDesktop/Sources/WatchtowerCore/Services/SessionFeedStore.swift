@@ -32,6 +32,9 @@ package final class SessionFeedStore: ObservableObject {
     private var cursor = ""
     private var index: [String: Int] = [:]
     private var screenGate = ForegroundRefreshGate()
+    /// The open-time trace of the pane showing this store (set on appear);
+    /// `refresh()` marks the CLI spawn, exit and decode phases on it.
+    package var openTrace: WorkchatOpenTrace?
     /// The last CLI read started; the next one waits for it, so the pane
     /// never runs two CLI processes at once (main feed and subagent alike).
     private var lastRead: Task<Void, Never>?
@@ -80,7 +83,11 @@ package final class SessionFeedStore: ObservableObject {
         if !cursor.isEmpty { args += ["--after", cursor] }
         let generation = liveGeneration
         do {
-            let payload = try Self.decode(try await read(args))
+            openTrace?.mark(.spawn)
+            let data = try await read(args)
+            openTrace?.mark(.exit)
+            let payload = try Self.decode(data)
+            openTrace?.mark(.decode)
             merge(payload.entries)
             merge(payload.subagents)
             cursor = payload.cursor

@@ -204,6 +204,29 @@ work for both.
 - Target: first paint ≤ 300 ms on the 950-entry session on reopen, ≤ 500 ms
   on first open; the before/after numbers go into this doc.
 
+**Measured: before (2026-11-19).** Composite, not a real pane open: the
+installed CLI's median of 5 timed `session-feed --json` reads, plus the Swift
+share from `WorkchatOpenBenchmarkTests` (decode → store apply → adapter →
+`NSHostingView` layout of the feed, best of 3 runs; the pane's own
+`WorkchatOpenTrace` log line is `workchat open session=N first|reopen …`).
+Reopen is the kept-store path: adapter + layout over entries already held, no
+CLI on the way to the paint. The dev app's trace line on a database copy was
+not recorded (a repo-built app is not run against the live install).
+**Caveat:** both parts were measured while the machine was saturated by
+parallel builds (load average near 1000), so every figure is inflated and
+noisy (the CLI medians are 5–10× the quiet figures quoted above); Task 10
+re-measures on a quiet machine before any target is judged.
+
+| Session | Entries | CLI share (loaded) | Swift share, first open | First open total | Reopen total |
+|---|---|---|---|---|---|
+| small | 7 | 2.7 s | 0.78 s | about 3.5 s | 0.08 s |
+| mid | about 330 | 6.3 s | 1.4 s | about 7.7 s | 0.02 s |
+| large | about 1000 | 9.3 s | 3.9 s | about 13 s | 0.06 s |
+
+The Swift share is dominated by decode and the feed layout; the CLI share is
+what the tail read (C5) removes. The harness's entry count is higher than the
+CLI's `entries` (the subagent markers are merged in).
+
 ### 5. Type while the agent works (owner, 2026-11-19)
 
 Today `ChatComposerField` turns the round button into Stop whenever

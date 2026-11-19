@@ -204,6 +204,13 @@ struct SessionChatView: View {
             if !nowWorking { store.clearActivity() }
         }
         .onChange(of: sessionID) { path = SessionChatPath() }
+        // Open-time signposts (#2065): the trace starts as the pane appears;
+        // `reopen` is true when the store already holds entries.
+        .onAppear {
+            let trace = WorkchatOpenTrace(sessionID: sessionID, reopen: !store.entries.isEmpty)
+            store.openTrace = trace
+            trace.mark(.appear)
+        }
     }
 
     private struct MainFollowKey: Hashable {
@@ -340,8 +347,11 @@ struct SessionChatView: View {
         follow.onFocusApplied = { earlierAnchor = nil }
         context.follow = follow
         context.footer = AnyView(pending)
-        return ChatUI.ChatFeedView(messages: workchatFeed.messages, context: context)
+        let messages = workchatFeed.messages
+        store.openTrace?.mark(.adapter)
+        return ChatUI.ChatFeedView(messages: messages, context: context)
             .macChatStyle(hooks: .app, look: .workchat)
+            .onAppear { if !messages.isEmpty { store.openTrace?.mark(.paint) } }
             .embeddedArtifactSheet($artifact)
     }
 
@@ -389,6 +399,8 @@ struct SessionChatView: View {
             Text("No messages yet")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // The empty state's paint: once the first read is back and found nothing.
+                .task(id: store.liveLoaded) { if store.liveLoaded { store.openTrace?.mark(.paint) } }
         } else {
             Spacer()
         }
