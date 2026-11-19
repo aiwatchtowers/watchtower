@@ -98,8 +98,9 @@ func skillTools(deps Deps) []*tools.Tool {
 				"before and after texts. Each row carries the 14-day measure: metric, baseline, verdict (works, "+
 				"no_effect, too_little_data, or empty while measuring), verdict_value, decided_at, measure_from (a repo_* "+
 				"edit is measured from the owner's commit; empty = not committed yet) and reverts_id (a cut of that "+
-				"proposal). In Analytics → Accepted edits the dot is green for verdict works, grey for no_effect or a "+
-				"rolled_back proposal, and yellow otherwise: still measuring, waiting for the owner's commit, or too_little_data.",
+				"proposal). In Analytics → Accepted edits the dot is grey for a rolled_back proposal whatever its verdict; "+
+				"otherwise green for verdict works, grey for no_effect, and yellow for the rest: still measuring, waiting "+
+				"for the owner's commit, or too_little_data.",
 			func(_ context.Context, d *db.DB, _ tools.Binding, a listProposalsArgs) (any, error) {
 				return listCoachProposals(d, a)
 			}),
