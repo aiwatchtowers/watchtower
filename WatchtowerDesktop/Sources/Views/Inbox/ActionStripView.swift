@@ -205,7 +205,7 @@ struct ActionStripActionsView: View {
     /// A built-in notice's **Retry** (its built-in id).
     var onRetryBuiltin: ((String) -> Void)?
     /// A failed Slack send's Reconnect Slack button (`AppState.reconnectSlack`).
-    var onReconnectSlack: ((Int64) async -> String?)?
+    var onReconnectSlack: ((Int64) async -> SlackReconnectOutcome)?
     /// `MacAgentActionCard.sessionHoldsCall` for a row (a connector call).
     var sessionHoldsCall: ((AgentAction) -> Bool)?
     /// The empty list's readiness and actions (`AppState.emptyStateContext`).

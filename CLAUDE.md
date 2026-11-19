@@ -64,6 +64,7 @@ Per-feature notes — architecture, contracts, dual paths, v1 limits — live in
 - Slack Multi-Account — `slack-multi-account.md`
 - Slack Live — the owner's own Claude/ChatGPT Slack connector — `slack-live.md`
 - Slack adaptive sync and Stop syncing — `slack-adaptive-sync.md`
+- Slack Full — entry into Full and the retired shared app — `slack-full.md`
 - Jira Multi-Account — `jira-multi-account.md`
 - Jira status history + time in status — `jira-changelog.md`
 - Jira custom fields discovery & mapping — `jira-custom-fields.md`
@@ -105,7 +106,10 @@ The user-facing guide lives in `docs/guide/` (start at `docs/guide/README.md`). 
 - iPhone app: `make mobile-build`, `make mobile-test MOBILE_FILTER=<TestClass>` (simulator `SIM`, default `iPhone 18 Pro`; override with one your Xcode has), `make mobile-gen` after editing `WatchtowerMobile/project.yml`. Builds are unsigned; tests are signed to run locally with the test-only `WatchtowerMobile/StoreKitTesting.entitlements`; device and archive signing come from the gitignored `WatchtowerMobile/Signing.xcconfig`.
 - Lint: `make lint-diff` (issues introduced vs origin/main). Full `make lint` is the gate.
 
-**Gate (before a PR):** full `make test`, `make test-swift` (includes the Kit), `make lint-all` (lints the Desktop, Kit and phone trees); with phone changes also `make mobile-test`.
+**Gate:** full `make test`, `make test-swift` (includes the Kit), `make lint-all` (lints the Desktop, Kit and phone trees); with phone changes also `make mobile-test`; plus every other job in `.github/workflows/*.yml` run locally by its own command (Leak Check included: `scripts/leak-check.sh`, since nothing is pushed before an umbrella merge). Any failure blocks the merge; a job that cannot run locally is named in the report.
+- **Inside an umbrella:** no GitHub PR per target and no waiting on CI. The gate runs in the target's worktree before it is merged into the umbrella branch locally (`git merge`), and once more on the umbrella before its single PR into main.
+- **Outside an umbrella:** the gate runs before the PR.
+- Wherever this file says "before the PR", read it as these gate moments.
 
 **Cache hygiene:** never delete `WatchtowerDesktop/.build`; a cold rebuild of the ML dependencies costs minutes (measured 4:24 cold on a loaded machine) plus ~5 GB of disk per worktree. Don't alternate `-c debug`/`-c release` builds in one worktree without need.
 

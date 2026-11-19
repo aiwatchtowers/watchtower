@@ -22,12 +22,14 @@ final class OwnerAskKeysTests: XCTestCase {
     nonisolated private static let checklist = #"{"checklist":[{"id":"1","text":"Launch"}]}"#
 
     override func setUpWithError() throws {
+        try WindowServerTestGate.skipIfAbsent()
         (pool, path) = try TestDatabase.createPool()
         project = try pool.write { try TestDatabase.insertWorkbench($0, folder: "/tmp/acme") }
     }
 
     override func tearDown() {
-        TestDatabase.cleanup(path: path)
+        // nil when the window-server gate skipped the class before setUp made it.
+        if let path { TestDatabase.cleanup(path: path) }
         super.tearDown()
     }
 

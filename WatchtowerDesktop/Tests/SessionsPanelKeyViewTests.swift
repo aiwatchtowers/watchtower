@@ -13,6 +13,7 @@ final class SessionsPanelKeyViewTests: XCTestCase {
     private var focus: [Bool] = []
 
     override func setUp() async throws {
+        try WindowServerTestGate.skipIfAbsent()
         commands = []
         focus = []
     }

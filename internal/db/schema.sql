@@ -1615,7 +1615,24 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     revoked_at        TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
     first_cycle_at    TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the account's first sync attempt; older messages a sync stores keep their post time as synced_at (see 00190)
     emoji_scope_missing INTEGER NOT NULL DEFAULT 0,  -- 1 = a legacy token (no recorded grant) lacks emoji:read; the emoji sync skips the account until a re-login (see 00195)
-    people_prune_done_at TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when the one-time pass deleting people cards of non-partners finished; '' = pending (see 00195)
+    people_prune_done_at TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when the one-time pass deleting people cards of non-partners finished; '' = pending (see 00195)
+    client_id         TEXT NOT NULL DEFAULT '',  -- Slack app client id the token was issued through; '' = connected before 00196, backfilled once (see 00196)
+    app_id            TEXT NOT NULL DEFAULT '',  -- Slack App ID from oauth.v2.access; '' = unknown (see 00196)
+    refresh_token_expires_at TEXT NOT NULL DEFAULT ''  -- RFC 3339 UTC expiry of a rotated token's refresh token; '' = no rotation (see 00196)
+);
+
+-- One row per team whose own Slack app this install set up (slack app
+-- create|adopt). "Connected" = an ok slack_accounts row with the same
+-- client_id; never stored here (see 00196).
+CREATE TABLE IF NOT EXISTS slack_app_setups (
+    team_id              TEXT PRIMARY KEY,
+    team_name            TEXT NOT NULL DEFAULT '',
+    app_id               TEXT NOT NULL,
+    client_id            TEXT NOT NULL,
+    link_written         INTEGER NOT NULL DEFAULT 0,  -- 1 = the connect link is on the app's About page
+    install_requested_at TEXT NOT NULL DEFAULT '',    -- RFC 3339 UTC of an admin approval request; '' = none
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL
 );
 
 -- Multi-account IMAP/Outlook email source: one row per connected mailbox
@@ -3867,7 +3884,7 @@ CREATE TABLE IF NOT EXISTS chat_turn_leases (
     cancel_requested_at_ms INTEGER                               -- set by the other side's Stop
 );
 
--- Watchman (00196): precedents, profile and backtests of the phase-1 learning loop.
+-- Watchman (00197): precedents, profile and backtests of the phase-1 learning loop.
 CREATE TABLE IF NOT EXISTS watchman_workbenches (
     workbench_id       INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
     enabled_at         TEXT NOT NULL,
@@ -3968,7 +3985,7 @@ CREATE TABLE IF NOT EXISTS watchman_skipped_keys (
     PRIMARY KEY (workbench_id, source, source_key)
 );
 
--- Watchman phase 2 (00200; spec §§2, 4, 6 and the phase-2 plan's item enums).
+-- Watchman phase 2 (00201; spec §§2, 4, 6 and the phase-2 plan's item enums).
 CREATE TABLE IF NOT EXISTS watchman_arming (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     scope    TEXT NOT NULL CHECK (scope IN ('session','target')),
@@ -3984,7 +4001,7 @@ CREATE TABLE IF NOT EXISTS watchman_items (
     session_id    INTEGER,
     target_id     INTEGER,
     kind          TEXT NOT NULL CHECK (kind IN ('ask','review_doc','check','handover','permission','review_code','guard')),
-    ref_kind      TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round','guard')),  -- 'guard': a guard hook denial, ref_id its own number (00203)
+    ref_kind      TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round','guard')),  -- 'guard': a guard hook denial, ref_id its own number (00204)
     ref_id        INTEGER NOT NULL,
     state         TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','deciding','done')),
     outcome       TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('','answered','handed','parked','owner_first','approved','changes','superseded')),
@@ -4012,7 +4029,7 @@ CREATE TABLE IF NOT EXISTS watchman_items (
     check_done_at TEXT,
     owner_done_at TEXT,       -- the owner marked a waiting item done (Desktop only)
     correction_sent_at TEXT,  -- the owner's correction reached a session (Desktop only)
-    moves         INTEGER,    -- review_code: times its diff moved after the decision (00205)
+    moves         INTEGER,    -- review_code: times its diff moved after the decision (00206)
     UNIQUE (ref_kind, ref_id, kind)
 );
 CREATE INDEX IF NOT EXISTS idx_watchman_items_queue ON watchman_items(state, not_before);

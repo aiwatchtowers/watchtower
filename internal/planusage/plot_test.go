@@ -241,3 +241,15 @@ func TestProjection_SharedSwiftFixture(t *testing.T) {
 		assert.NotContains(t, string(b), forbidden)
 	}
 }
+
+func TestCurrentWindowSamples_DropsSamplesBeforeEarlyReset(t *testing.T) {
+	c, l, _ := plotFixture()
+	published := *c.FetchedAt
+	var samples []db.PlanUsageSample
+	for i, pct := range []float64{90, 95, 1, 5} {
+		samples = append(samples, db.PlanUsageSample{LimitKey: l.Key, TakenAt: published.Add(time.Duration(i-4) * time.Minute), Percent: pct, ResetsAt: *l.ResetsAt})
+	}
+	h := CurrentWindowSamples(samples, l, published)
+	require.Len(t, h, 2)
+	assert.Equal(t, 1.0, h[0].Percent)
+}

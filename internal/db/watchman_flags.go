@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Watchman precedent flags (migration 00199, spec §9.1 Store): the learner's
+// Watchman precedent flags (migration 00200, spec §9.1 Store): the learner's
 // relabel pass is the only writer of is_decision / parked / flags_at after a
 // row is stored.
 

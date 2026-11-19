@@ -747,7 +747,7 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     enabled           INTEGER NOT NULL DEFAULT 1,
     search_last_date  TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '', first_cycle_at TEXT NOT NULL DEFAULT '', emoji_scope_missing INTEGER NOT NULL DEFAULT 0, people_prune_done_at TEXT NOT NULL DEFAULT '');
+, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '', first_cycle_at TEXT NOT NULL DEFAULT '', emoji_scope_missing INTEGER NOT NULL DEFAULT 0, people_prune_done_at TEXT NOT NULL DEFAULT '', client_id TEXT NOT NULL DEFAULT '', app_id TEXT NOT NULL DEFAULT '', refresh_token_expires_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS jira_accounts (
     id                            INTEGER PRIMARY KEY AUTOINCREMENT,
     cloud_id                      TEXT NOT NULL DEFAULT '',
@@ -2496,6 +2496,16 @@ CREATE TABLE IF NOT EXISTS agent_session_tombstones (
 CREATE TABLE IF NOT EXISTS people_card_exclusions (
     user_id    TEXT PRIMARY KEY,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE TABLE IF NOT EXISTS slack_app_setups (
+    team_id              TEXT PRIMARY KEY,
+    team_name            TEXT NOT NULL DEFAULT '',
+    app_id               TEXT NOT NULL,
+    client_id            TEXT NOT NULL,
+    link_written         INTEGER NOT NULL DEFAULT 0,
+    install_requested_at TEXT NOT NULL DEFAULT '',
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS watchman_workbenches (
     workbench_id       INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// The twin's work items (00200, spec §6): one row per wait point, queued by
+// The twin's work items (00201, spec §6): one row per wait point, queued by
 // the writers of the wait, leased by the twin worker, finished in the same
 // transaction as the answer. Go never writes the feedback columns (Desktop only).
 
@@ -22,7 +22,7 @@ type WatchmanItem struct {
 	RefID               int64
 	State, Outcome      string
 	Attempts            int
-	Moves               int // review_code: times its diff moved after a decision (00205)
+	Moves               int // review_code: times its diff moved after a decision (00206)
 	LeaseUntil          *time.Time
 	NotBefore           *time.Time
 	Question            string // redacted, at most 2048 runes
@@ -468,7 +468,7 @@ func (db *DB) watchmanMissedWaitPoints(session int64) ([]WatchmanItem, error) {
 // finished parked item, for Waiting for you on the night it happened
 // (created_at = decided_at = at). Each denial is its own row: ref_kind
 // 'guard' with ref_id the next number after the guard items before it, taken
-// in the same statement (00203). it.Question is the denial's line,
+// in the same statement (00204). it.Question is the denial's line,
 // it.ParkReason names the limit.
 func (db *DB) ParkWatchmanGuard(it WatchmanItem, at time.Time) error {
 	q := []rune(it.Question)

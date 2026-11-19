@@ -576,7 +576,7 @@ func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFac
 		}
 	}
 	if h.sup.o.DB != nil {
-		f.Accounts = slices.DBAccounts(h.sup.o.DB.DB)
+		f.Accounts = slices.DBAccounts(h.sup.o.DB)
 	}
 	return f
 }

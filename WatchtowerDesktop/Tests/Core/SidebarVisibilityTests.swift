@@ -112,4 +112,38 @@ final class SidebarVisibilityTests: XCTestCase {
         XCTAssertTrue(ConnectedSources(linear: true).provides(.linear))
         XCTAssertFalse(ConnectedSources(linear: true).provides(.jira))
     }
+
+    // MARK: - Slack Live (screens spec §2.2)
+
+    func testSlackLiveIsItsOwnSource() {
+        let live = ConnectedSources(slackLive: true)
+        XCTAssertTrue(live.provides(.slackLive))
+        XCTAssertFalse(live.provides(.messages), "Live syncs nothing")
+        XCTAssertFalse(ConnectedSources(slack: true).provides(.slackLive))
+        XCTAssertTrue(ConnectedSources.all.provides(.slackLive))
+    }
+
+    /// Live is each provider's newest probe batch (SLACKMODE-01): an older
+    /// `ok` under a newer failed check is not Live.
+    func testSlackLiveReadsTheNewestBatch() throws {
+        func status(_ provider: String, _ status: String, team: String = "", at: String) -> (Database) throws -> Void {
+            { db in
+                try db.execute(sql: """
+                    INSERT INTO slack_live_status (team_id, provider, status, error_class, connector_id, checked_at)
+                    VALUES (?, ?, ?, '', '', ?)
+                    """, arguments: [team, provider, status, at])
+            }
+        }
+        let early = "2026-11-18T09:00:00.000000000Z"
+        let late = "2026-11-18T10:00:00.000000000Z"
+        XCTAssertEqual(try fetch(status("claude", "ok", team: "T1", at: early)), ConnectedSources(slackLive: true))
+        XCTAssertEqual(try fetch { db in
+            try status("claude", "ok", team: "T1", at: early)(db)
+            try status("claude", "not_connected", at: late)(db)
+        }, .none)
+        XCTAssertEqual(try fetch { db in
+            try status("claude", "not_connected", at: late)(db)
+            try status("codex", "ok", at: early)(db)
+        }, ConnectedSources(slackLive: true), "another provider's newest ok")
+    }
 }

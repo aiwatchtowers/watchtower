@@ -1,3 +1,4 @@
+import ChatUI
 import Foundation
 import WatchtowerCore
 
@@ -39,23 +40,40 @@ extension AppState {
     }
 
     /// Re-consents one Slack account from a failed send's card ("sign in
-    /// again to grant send"): the same `slack login --account <id>` flow as
-    /// Connections → Slack → Reconnect. Returns why it failed (nil on success or
-    /// a cancelled sign-in) so the card can say so.
-    func reconnectSlack(accountID: Int64) async -> String? {
+    /// again to grant send"): the same route as Connections → Slack →
+    /// Reconnect (`slack login --account <id>`, or the connect flow, plan B
+    /// A7). A route that continues on Connections → Slack (the flow in the
+    /// browser, or the connect section) is `.handedOff`, never "done": the
+    /// grant exists only once that flow connects.
+    func reconnectSlack(accountID: Int64) async -> SlackReconnectOutcome {
         guard let vm = slackAccountsViewModel else {
-            return "Slack accounts are not loaded yet — open Connections → Slack."
+            return .failed("Slack accounts are not loaded yet — open Connections → Slack.")
         }
         if vm.accounts.isEmpty {
             await vm.refreshAsync()
             // A failed read is not "no longer connected": say what failed.
-            if vm.accounts.isEmpty, let readError = vm.readError { return readError }
+            if vm.accounts.isEmpty, let readError = vm.readError { return .failed(readError) }
         }
         guard let account = vm.accounts.first(where: { $0.id == accountID }) else {
-            return "Slack account #\(accountID) is no longer connected."
+            return .failed("Slack account #\(accountID) is no longer connected.")
         }
-        await vm.relogin(account)
-        return vm.error
+        let route = await vm.relogin(account)
+        return reconnectOutcome(route: route, error: vm.error)
+    }
+
+    /// How a card's Reconnect ended; a hand-off brings Connections → Slack
+    /// forward, where the flow's sheet and the connect section live.
+    func reconnectOutcome(route: SlackReloginRoute?, error: String?) -> SlackReconnectOutcome {
+        switch route {
+        case nil:
+            return .failed(error ?? "Slack did not start the sign-in.")
+        case .builtin:
+            return error.map(SlackReconnectOutcome.failed) ?? .signedIn
+        case .flow, .connectSection:
+            openConnections(.slack)
+            bringMainWindowForward()
+            return .handedOff
+        }
     }
 
     /// Every service, in the overview's order.
@@ -73,8 +91,17 @@ extension AppState {
             service: service,
             accounts: connectionAccounts(service),
             readError: connectionReadError(service),
-            blocked: !PolicySourceMap.allowed(service.rawValue, policy: managedPolicy.policy)
+            blocked: !PolicySourceMap.allowed(service.rawValue, policy: managedPolicy.policy),
+            notice: service == .slack ? slackOverviewNotice : nil
         )
+    }
+
+    /// "Shared app retiring" while an account syncs through the retired
+    /// shared app (screens spec §5); not a problem.
+    private var slackOverviewNotice: String? {
+        guard let vm = slackAccountsViewModel else { return nil }
+        return SlackModePresentation.overviewStatusLine(
+            accounts: vm.accounts, sharedAppAccountIDs: vm.sharedAppAccountIDs)
     }
 
     private func connectionReadError(_ service: ConnectionService) -> String? {

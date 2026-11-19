@@ -1,0 +1,40 @@
+{
+  "display_information": {
+    "background_color": "#1a1a2e",
+    "description": "Your Slack on your Mac, with the AI provider you choose",
+    "long_description": "Watchtower for Acme. Connect: http://127.0.0.1:18551/slack/connect?team=T0ACME\u0026client=1111.2222\nConnect code: T0ACME:1111.2222 — paste it in Watchtower → Connections → Slack if the link does not open.\nOpen Watchtower first. No Watchtower yet? Download it from https://github.com/aiwatchtowers/watchtower/releases/latest.\n\nWhy Watchtower asks for each permission: read history and the channel list of public and private channels, DMs and group DMs, and search, to keep a local copy on your Mac; open a DM and post a message, only when you press Approve; read people's names and emails, to match them with your calendar, Jira and Linear; read files, to describe images you were sent; read your reactions, for reaction commands; read the workspace's name and custom emoji, to show them.\n\nWatchtower keeps its copy on each person's Mac and has no server. To write summaries and answer questions it sends message text to the AI provider each person chooses — Anthropic (Claude) or OpenAI (Codex) under that person's own account, or a local model (Ollama) — and nowhere else. AI output can be wrong. Privacy: https://aiwatchtowers.com/privacy/",
+    "name": "Watchtower"
+  },
+  "oauth_config": {
+    "pkce_enabled": true,
+    "redirect_urls": [
+      "http://127.0.0.1:18551/callback"
+    ],
+    "scopes": {
+      "user": [
+        "channels:history",
+        "groups:history",
+        "im:history",
+        "mpim:history",
+        "channels:read",
+        "groups:read",
+        "im:read",
+        "mpim:read",
+        "im:write",
+        "search:read",
+        "users:read",
+        "users:read.email",
+        "files:read",
+        "reactions:read",
+        "team:read",
+        "chat:write",
+        "emoji:read"
+      ]
+    }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": true
+  }
+}

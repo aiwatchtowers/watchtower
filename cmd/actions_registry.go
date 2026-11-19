@@ -160,12 +160,12 @@ const slackLandedCheckPages = 5
 
 // slackSenderFactory serves send_slack_message: the account's token file,
 // and the scopes it records (empty for a token saved before they were).
-func slackSenderFactory(cfg *config.Config) tools.SlackSenderFactory {
+func slackSenderFactory(cfg *config.Config, database *db.DB) tools.SlackSenderFactory {
 	return func(account db.SlackAccount) (tools.SlackSender, string, error) {
 		if err := sourceRefusal("slack"); err != nil {
 			return nil, "", err // #608: a forbidden Slack source sends nothing
 		}
-		tok, err := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), account.ID).Load()
+		tok, err := loadSlackToken(context.Background(), cfg, database, account.ID)
 		if err != nil {
 			return nil, "", fmt.Errorf("reading slack account #%d token: %w", account.ID, err)
 		}
@@ -204,7 +204,7 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 		tools.NewEditConfluencePage(confluencePageClientFactory(cfg)),
 		// Slack send (#166): main chat + workbench sessions; in a workbench
 		// session it is recorded pending for the Desktop's Approve (DEV-06).
-		tools.NewSendSlackMessage(slackSenderFactory(cfg)),
+		tools.NewSendSlackMessage(slackSenderFactory(cfg, database)),
 		tools.NewGetWritingStyle(),
 		// Automations (spec 2026-10-14 §6.1, D2): local-store email reads on
 		// the automation surface only, never in tools.ReadTools() (DEV-01).

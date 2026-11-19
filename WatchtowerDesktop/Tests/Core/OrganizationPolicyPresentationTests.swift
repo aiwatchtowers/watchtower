@@ -56,4 +56,15 @@ struct OrganizationPolicyPresentationTests {
             "AI providers: none — AI features cannot run"
         ])
     }
+
+    @Test("SlackApps lists the workspaces it sets up")
+    func slackAppsListed() {
+        let apps: [[String: Any]] = [
+            ["team_id": "T0ACME", "client_id": "1111.2222"],
+            ["team_id": "T0BETA", "client_id": "3333.4444"]
+        ]
+        #expect(text(["SlackApps": apps])
+            == ["Slack workspaces set up for you: T0ACME, T0BETA"])
+        #expect(text(["SlackApps": [Any]()]) == ["Slack workspaces set up for you: none"])
+    }
 }

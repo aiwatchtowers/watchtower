@@ -620,6 +620,71 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertEqual(evaluate(.dayPlan, input), .ready)
     }
 
+    // MARK: - Slack Live only (screens spec §2.1)
+
+    /// No synced Slack account, Live on.
+    private func liveOnly(now: Date, connected: ConnectedSources = .none) -> ReadinessInputs {
+        ReadinessInputs(now: now, connected: connected, daemonRunning: true, slackLiveOnly: true)
+    }
+
+    func testNeedsFullSlackForSlackFeatures() {
+        let input = liveOnly(now: today(10))
+        for feature in ReadinessFeature.allCases where feature.source == .slack {
+            XCTAssertEqual(evaluate(feature, input), .needsFullSlack, "\(feature)")
+        }
+        XCTAssertEqual(Readiness.needsFullSlack, .needsSource(.fullSlack))
+        XCTAssertEqual(FeatureReadiness.line(.needsFullSlack),
+                       "Needs your workspace's Slack app. Live answers in Chats only.")
+        XCTAssertEqual(ReadinessSource.fullSlack.actionTitle, "Connect workspace app")
+        // Other sources keep their own need.
+        XCTAssertEqual(evaluate(.calendar, input), .needsSource(.calendar))
+        XCTAssertEqual(evaluate(.streamDigests, input), .needsSource(.jiraOrMail))
+    }
+
+    func testNeedsFullSlackForAnySourceOnlyWhenNothingElse() {
+        let anySource = ReadinessFeature.allCases.filter { $0.source == .anySource }
+        XCTAssertEqual(Set(anySource), [.briefing, .dayPlan, .memory, .inbox])
+        let alone = liveOnly(now: today(10))
+        for feature in anySource {
+            XCTAssertEqual(evaluate(feature, alone), .needsFullSlack, "\(feature)")
+        }
+        for other in [ConnectedSources(mail: true), ConnectedSources(calendar: true),
+                      ConnectedSources(jira: true), ConnectedSources(linear: true)] {
+            let input = liveOnly(now: today(10), connected: other)
+            for feature in anySource {
+                XCTAssertNotEqual(evaluate(feature, input), .needsFullSlack, "\(feature) with \(other)")
+            }
+            XCTAssertEqual(evaluate(.digests, input), .needsFullSlack, "a Slack feature still needs it")
+        }
+    }
+
+    /// An account on the retired shared app is a `slack_accounts` row: Slack
+    /// counts as connected, the features keep their content.
+    func testSharedAppAccountIsNotNeedsFullSlack() {
+        var input = inputs(now: today(10))
+        input.contentPresent = [.digests]
+        for feature in ReadinessFeature.allCases {
+            XCTAssertNotEqual(evaluate(feature, input), .needsFullSlack, "\(feature)")
+        }
+        XCTAssertEqual(evaluate(.digests, input), .ready)
+    }
+
+    func testOffBeatsNeedsFullSlack() {
+        var input = liveOnly(now: today(10))
+        input.disabledFeatureIDs = ["slack-digests", "secretary-inbox"]
+        XCTAssertEqual(evaluate(.digests, input), .off)
+        XCTAssertEqual(evaluate(.inbox, input), .off)
+        XCTAssertEqual(evaluate(.tracks, input), .needsFullSlack)
+    }
+
+    /// Slack Off (no account, Live not on): the old "Connect Slack" stays.
+    func testOffModeKeepsConnectSlack() {
+        let input = ReadinessInputs(now: today(10), daemonRunning: true)
+        XCTAssertEqual(evaluate(.digests, input), .needsSource(.slack))
+        XCTAssertEqual(evaluate(.inbox, input), .needsSource(.anySource))
+        XCTAssertEqual(FeatureReadiness.line(.needsSource(.slack)), "Connect Slack to get this")
+    }
+
     // MARK: - Background AI paused (#1886, spec §6.2)
 
     private let paused = BackgroundAIConsent.resolve(answer: "paused", policy: nil)
