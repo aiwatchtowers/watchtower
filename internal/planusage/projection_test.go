@@ -114,4 +114,7 @@ func TestSinceLastReset(t *testing.T) {
 	require.Len(t, got, 2)
 	assert.Equal(t, 10.0, got[0].Percent)
 	assert.Empty(t, sinceLastReset(nil))
+	// exactly resetDropPercent is a reset; just under it is not
+	assert.Len(t, sinceLastReset(series(reset, at(10, 0), time.Minute, 20, 15, 16)), 2)
+	assert.Len(t, sinceLastReset(series(reset, at(10, 0), time.Minute, 20, 15.5, 16)), 3)
 }
