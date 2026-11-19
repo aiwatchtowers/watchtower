@@ -215,6 +215,9 @@ final class CompanySetupWizardEntryTests: XCTestCase {
         XCTAssertFalse(model.primary.enabled)
         await model.publish(token: nil)
         XCTAssertTrue(cli.calls(["company", "publish"]).isEmpty)
+        let saves = cli.calls(["company", "draft", "save"]).count
+        await model.leave()
+        XCTAssertEqual(cli.calls(["company", "draft", "save"]).count, saves, "leaving mid-discard saves nothing back")
         cli.release(["company", "draft", "discard"], [])
         await discard.value
         XCTAssertFalse(model.discarding)

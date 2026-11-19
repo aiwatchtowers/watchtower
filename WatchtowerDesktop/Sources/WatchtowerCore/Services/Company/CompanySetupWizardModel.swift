@@ -551,7 +551,8 @@ package final class CompanySetupWizardModel {
     }
 
     private func writeDraft() async -> Bool {
-        guard load == .ready, !isPublished else { return false }
+        // Discard is deleting the draft: a save now (leaving the page) would bring it back.
+        guard load == .ready, !isPublished, !discarding else { return false }
         var out = draft
         out.step = current.draftName
         guard let data = try? Self.encoder.encode(out), await run(["company", "draft", "save"], stdin: data) else {
