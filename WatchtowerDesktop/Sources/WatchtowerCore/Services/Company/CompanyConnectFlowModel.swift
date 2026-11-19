@@ -216,7 +216,7 @@ package final class CompanyConnectFlowModel {
     /// opened; else the field's error, and nothing starts.
     package func paste(_ text: String) async -> String? {
         guard let wire = Self.wire(fromInput: text) else { return Self.codeInvalid }
-        guard !isRunning else { return Self.anotherRunning }
+        guard !isRunning, !externalBusy() else { return Self.anotherRunning }
         return await open(wire: wire, slug: nil, variant: .code, linkFlow: nil)
     }
 

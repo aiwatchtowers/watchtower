@@ -34,7 +34,8 @@ extension AppState {
         slackConnectFlow?.companyPaste = { [weak self, weak flow] text in
             // Onboarding has no Connections tab to show the confirm on.
             if self?.needsOnboarding == true { return CompanyConnectFlowModel.pasteDuringOnboarding }
-            return await flow?.paste(text) ?? CompanyConnectFlowModel.codeInvalid
+            guard let flow else { return CompanyConnectFlowModel.codeInvalid }
+            return await flow.paste(text) // nil: the confirm opened
         }
         return flow
     }

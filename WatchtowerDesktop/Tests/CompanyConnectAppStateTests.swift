@@ -63,6 +63,19 @@ final class CompanyConnectAppStateTests: XCTestCase {
         XCTAssertTrue(fake.invocations.isEmpty)
     }
 
+    /// A20 through the production wiring: a company code in Slack's field
+    /// opens the company confirm and clears the field, no error.
+    func testCompanyCodeInSlackFieldOpensTheConfirm() async throws {
+        let (appState, _, fake) = wired()
+        let slack = try XCTUnwrap(appState.slackConnectFlow)
+        fake.enqueue(inspect)
+        slack.pasteText = "eyJ2IjoxfQ"
+        slack.connectPasted()
+        await untilObserved { slack.pasteText.isEmpty }
+        XCTAssertNil(slack.pasteError)
+        XCTAssertEqual(appState.companyConnect?.phase, .confirm)
+    }
+
     func testCompanyAndSlackFlowsShareTheGuard() async throws {
         let (appState, host, fake) = wired()
         let slack = try XCTUnwrap(appState.slackConnectFlow)
