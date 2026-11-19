@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"watchtower/internal/agentlogdb"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/devpack"
 	"watchtower/internal/watchman"
 	"watchtower/internal/watchmanact"
 )
@@ -91,7 +93,9 @@ type watchmanArmJSON struct {
 	// rewrite failed; the daemon's upkeep rewrites it next cycle.
 	SidecarError string `json:"sidecar_error"`
 	// HooksWarning: one line per repository whose layout (a shared
-	// core.worktree or core.bare) the git guard cannot be installed in.
+	// core.worktree or core.bare) the git guard cannot be installed in, and
+	// one per folder of a covered session whose Claude settings lack the
+	// Watchman guard hook (watchmanGuardHookWarnings).
 	HooksWarning string `json:"hooks_warning"`
 }
 
@@ -169,6 +173,48 @@ func watchmanGuardWarnings(ctx context.Context, database *db.DB, workbenches []i
 		var unsupported *watchmanact.GuardUnsupportedError
 		if err := watchmanact.CheckGuardLayout(ctx, wb.FolderPath); errors.As(err, &unsupported) {
 			addLine(text, unsupported.Error())
+		}
+	}
+	return nil
+}
+
+// watchmanGuardHookWarnings adds a line for the folder of every live session
+// rows cover (a session row, or a session whose ticket sits under a target
+// row) whose .claude/settings.local.json lacks the Watchman guard
+// PreToolUse hook (WATCHMAN-05): there the agent's tool calls are not
+// checked against the hard limits. A settings file that cannot be read
+// counts as lacking it. Claude Code loads hooks at session start, so a
+// session started before a Repair still runs without the hook — the line
+// says to restart it (a file-time check is no proof: Claude Code itself
+// rewrites the file when the owner allows a tool for good).
+func watchmanGuardHookWarnings(database *db.DB, rows []db.WatchmanArming, text *string) error {
+	live, err := database.WatchmanLiveSessions()
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, s := range live {
+		covered := false
+		for _, r := range rows {
+			switch {
+			case r.Scope == "session":
+				covered = r.RefID == s.SessionID
+			case s.TargetID != 0:
+				if covered, err = database.InTicketSubtree(s.WorkbenchID, r.RefID, s.TargetID); err != nil {
+					return err
+				}
+			}
+			if covered {
+				break
+			}
+		}
+		folder := cmp.Or(s.Folder, s.WorkbenchFolder)
+		if !covered || seen[folder] {
+			continue
+		}
+		seen[folder] = true
+		if ok, err := devpack.HasWatchmanGuardHook(folder, s.WorkbenchID); err != nil || !ok {
+			addLine(text, folder+": the Watchman guard hook is not installed — Repair the workbench, then restart the session")
 		}
 	}
 	return nil
@@ -358,6 +404,9 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 		return err
 	}
 	if err := watchmanGuardWarnings(cmd.Context(), database, workbenches, &out.HooksWarning); err != nil {
+		return err
+	}
+	if err := watchmanGuardHookWarnings(database, rows, &out.HooksWarning); err != nil {
 		return err
 	}
 

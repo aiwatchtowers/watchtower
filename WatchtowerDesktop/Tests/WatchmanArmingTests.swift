@@ -164,6 +164,23 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertEqual(runner.verbs.count, 1)
     }
 
+    /// A covered session without the Watchman guard hook (final review
+    /// A-I1): the check's `hooks_warning` line alone opens the sheet, which
+    /// shows it, and the arm's notice keeps it under the control.
+    func testMissingGuardHookLineOpensTheSheetAndStaysAsNotice() async throws {
+        let line = "/tmp/acme: the Watchman guard hook is not installed — Repair the workbench, then restart the session"
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", #"{"ok":true,"armed":[],"first_time":false,"protection_warning":"","hooks_warning":"\#(line)"}"#)
+        runner.reply("arm", #"{"ok":true,"armed":[],"first_time":false,"protection_warning":"","hooks_warning":"\#(line)"}"#)
+        let center = await center(runner)
+        await center.handTo(.session(5), workbench: "acme-api")
+        let sheet = try XCTUnwrap(center.sheet)
+        XCTAssertEqual(sheet.content.warnings, [line])
+        center.sheet = nil
+        await center.arm(.session(5))
+        XCTAssertEqual(center.armNotices[.session(5)], line)
+    }
+
     /// A CLI error: the control shows it and the strip stays unarmed.
     func testArmFailureShowsErrorAndKeepsControl() async throws {
         let runner = ArmingRunner(status: Self.unarmed)

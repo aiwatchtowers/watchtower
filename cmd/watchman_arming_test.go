@@ -17,17 +17,20 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/devpack"
 	"watchtower/internal/watchman"
 	"watchtower/internal/watchmanact"
 )
 
 // armSession inserts a terminal session of workbench wb; kind shell or a
-// finished session is never armed.
+// finished session is never armed. Its folder has the Watchman guard hook,
+// as a repaired workbench's folders do.
 func armSession(t *testing.T, wb int64, kind string, target any, finished bool) (id int64, folder string) {
 	t.Helper()
 	var path string
 	d := openAgentsTestMain(t, &path)
 	folder = t.TempDir()
+	installGuardHook(t, folder, wb)
 	var fin any
 	if finished {
 		fin = "2026-11-01T10:00:00.000Z"
@@ -42,6 +45,14 @@ func armSession(t *testing.T, wb int64, kind string, target any, finished bool) 
 	id, err = res.LastInsertId()
 	require.NoError(t, err)
 	return id, folder
+}
+
+// installGuardHook installs workbench wb's Watchman guard hook (with the
+// ask guard it travels with) in folder.
+func installGuardHook(t *testing.T, folder string, wb int64) {
+	t.Helper()
+	_, err := devpack.InstallAskGuardHooks(folder, "watchtower", wb)
+	require.NoError(t, err)
 }
 
 func resetWatchmanArmFlags() {
@@ -694,6 +705,7 @@ func TestWatchmanArm_HooksWarningForUnsupportedLayout(t *testing.T) {
 	out, gerr = exec.Command("git", "-C", repo, "config", "core.worktree", repo).CombinedOutput()
 	require.NoError(t, gerr, string(out))
 	setSessionFolder(t, s1, repo)
+	installGuardHook(t, repo, wb)
 	want := "Watchman's git guard cannot be installed in " + repo + ": shared core.worktree/core.bare — the other layers still apply"
 	for _, check := range []bool{true, false} {
 		args := []string{"arm", "--session", strconv.FormatInt(s1, 10), "--json"}
@@ -709,6 +721,42 @@ func TestWatchmanArm_HooksWarningForUnsupportedLayout(t *testing.T) {
 	_, gerr = exec.Command("git", "-C", repo, "config", "--get", "extensions.worktreeConfig").Output()
 	assert.Error(t, gerr, "the extension was enabled")
 	text, err := runWatchman(t, "arm", "--session", strconv.FormatInt(s1, 10), "--check")
+	resetWatchmanArmFlags()
+	require.NoError(t, err, text)
+	assert.Contains(t, text, want)
+}
+
+// Final review A-I1: a covered session whose folder lacks the Watchman
+// guard hook is named in hooks_warning, on --check and on the arm, by a
+// session row and through a target; a session the arm does not cover is not.
+func TestWatchmanArm_WarnsWhenTheGuardHookIsMissing(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	var path string
+	d := openAgentsTestMain(t, &path)
+	res, err := d.Exec(`INSERT INTO targets (text, period_start, period_end, project_id) VALUES ('acme', '2026-11-01', '2026-11-30', ?)`, wb)
+	require.NoError(t, err)
+	tid, err := res.LastInsertId()
+	require.NoError(t, err)
+	bare, bareFolder := armSession(t, wb, "claude", tid, false)
+	require.NoError(t, os.Remove(filepath.Join(bareFolder, ".claude", "settings.local.json")))
+	_, otherFolder := armSession(t, wb, "claude", nil, false)
+	require.NoError(t, os.Remove(filepath.Join(otherFolder, ".claude", "settings.local.json")))
+	hooked, _ := armSession(t, wb, "claude", nil, false)
+	want := bareFolder + ": the Watchman guard hook is not installed — Repair the workbench, then restart the session"
+
+	for _, args := range [][]string{
+		{"arm", "--session", strconv.FormatInt(bare, 10), "--check", "--json"},
+		{"arm", "--target", strconv.FormatInt(tid, 10), "--check", "--json"},
+		{"arm", "--session", strconv.FormatInt(bare, 10), "--json"},
+	} {
+		r, raw, err := armCLI(t, args...)
+		require.NoError(t, err, raw)
+		assert.Equal(t, want, r.HooksWarning, "%v", args)
+	}
+	r, raw, err := armCLI(t, "arm", "--session", strconv.FormatInt(hooked, 10), "--json")
+	require.NoError(t, err, raw)
+	assert.Empty(t, r.HooksWarning, "a hooked session; the bare ones are not covered")
+	text, err := runWatchman(t, "arm", "--session", strconv.FormatInt(bare, 10), "--check")
 	resetWatchmanArmFlags()
 	require.NoError(t, err, text)
 	assert.Contains(t, text, want)

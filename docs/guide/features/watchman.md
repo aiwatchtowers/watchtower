@@ -53,7 +53,7 @@ since: next
 
 Under **What Watchman learned**, **Edit** opens a category's rules (one per line, at most 20); **Save** pins them, so the weekly rebuild leaves them alone until you press **Unpin**. The sleep window edits the same way, as `HH:MM-HH:MM`. Under **Your hard limits**, **Add a Limit…** takes a command's first words (`terraform apply`) or a tool's name (`create_jira_issue`), and Watchman parks it for you. **Remove** takes only your own rows; the built-in ones stay.
 
-From a terminal, `watchtower watchman learn --workbench N` prints the estimate (add `--start` to begin), `watchman profile --workbench N` shows what it learned, `watchman limits list|add|remove` manages your limits, and `watchman backtest --workbench N` runs a backtest once learning is done (`--force` runs it earlier). From an AI agent's session, `learn --start`, `backtest`, `profile set|unpin`, `limits add|remove`, `arm` and `disarm` are refused.
+From a terminal, `watchtower watchman learn --workbench N` prints the estimate (add `--start` to begin), `watchman profile --workbench N` shows what it learned, `watchman limits list|add|remove` manages your limits, and `watchman backtest --workbench N` runs a backtest once learning is done (`--force` runs it earlier). From an AI agent's session, `learn --start`, `backtest`, `profile set|unpin`, `limits add|remove`, `arm` (not `arm --check`) and `disarm` are refused.
 
 ### Hand a session to Watchman
 <!-- learn
@@ -70,7 +70,7 @@ since: next
 
 **Take back** stops new decisions; one already under way still finishes. On a session also handed over through its target, Take back on the strip removes only the direct hand-over.
 
-The first time on a workbench a sheet shows what turns on: Agent analytics and learning, with its estimate; until learning finishes, Watchman parks everything for you. It warns when main is not protected on GitHub or the git guard cannot go into a repository. Merging pull requests, pushing to main, tags, releases, messages to people and your own limits stay yours: Watchman parks them, and a guard stops the agent doing them itself. Not caught: deletes or messages from a script, code the agent writes that runs later (hooks, tests, Makefiles), and commands hidden from the guard.
+The first time on a workbench a sheet shows what turns on: Agent analytics and learning, with its estimate; until learning finishes, Watchman parks everything for you. It warns when main is not protected on GitHub, the git guard cannot go into a repository, or a session's folder lacks Watchman's guard: Repair the workbench, then restart that session. Merging pull requests, pushing to main, tags, releases, messages to people and your own limits stay yours: Watchman parks them, and a guard stops the agent doing them itself. Not caught: deletes or messages from a script, code the agent writes that runs later (hooks, tests, Makefiles), and commands hidden from the guard.
 
 ### Read the night's journal
 <!-- learn
