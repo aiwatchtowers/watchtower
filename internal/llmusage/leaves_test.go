@@ -40,6 +40,7 @@ var knownNonLLMExec = map[string]string{
 	"cmd.LaunchSpecReview":               "starts this binary's `workbench spec-review run`, whose reviewer call records in that process",
 	"cmd.execCommandRunner":              "claude mcp add/remove/get for the workbench install (MCP config, no model call)",
 	"cmd.registerMCPWithClaudeCode":      "claude mcp add (MCP config, no model call)",
+	"cmd.runCompanyChainChild":           "runs this binary's google/jira/outlook/linear sign-in for the company connect chain (OAuth, no model call)",
 	"cmd.runIntegrateRemove":             "claude mcp remove (MCP config, no model call)",
 	"cmd.runQuickSync":                   "runs this binary's `sync`, which records its own calls",
 	"cmd.runServiceCommand":              "systemctl/launchctl/loginctl for `service install|uninstall|status` (no model call)",
