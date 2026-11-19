@@ -4,7 +4,7 @@
 # under it, each a LaunchAgent that ci's login loads into its Aqua session —
 #
 #   ~ci/actions-runner-swift      label wt-swift    (Swift Test)
-#   ~ci/actions-runner-general-N  label wt-general  (every other job), N = 1..8
+#   ~ci/actions-runner-general-N  label wt-general  (every other job), N = 1..5
 #
 # .github/workflows/ci.yml sends jobs here only while these runners are online
 # (scripts/ci-pick-runner.sh); otherwise CI runs on GitHub-hosted runners.
@@ -47,10 +47,10 @@ RUNNER_URL="https://github.com/actions/runner/releases/download/v${RUNNER_VERSIO
 
 # name:label — the folder is actions-runner-<name>, the runner wt-mac-<name>.
 # Runner names show in public job logs: never the host name.
-# Six: one run's Mac jobs at once (Go Test, Go Lint, Leak Check, Swift Lint
-# + Kit Test, Guide Check, the code index), so a second run queues instead of
-# piling onto the cores the owner's own work needs (#1705).
-INSTANCES="swift:wt-swift general-1:wt-general general-2:wt-general general-3:wt-general general-4:wt-general general-5:wt-general general-6:wt-general general-7:wt-general general-8:wt-general"
+# Five: eight left a 16-core Mac at load 175-260 with the owner's own work,
+# and the tests that still wait on real time failed at random (ask #1624); a
+# second run's jobs queue instead of piling onto the same cores (#1705).
+INSTANCES="swift:wt-swift general-1:wt-general general-2:wt-general general-3:wt-general general-4:wt-general general-5:wt-general"
 
 die() {
     echo "setup-mac-runner: $*" >&2
