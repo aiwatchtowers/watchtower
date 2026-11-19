@@ -326,7 +326,10 @@ jobs:
           name: go-coverage-${{ matrix.shard }}
           path: coverage-out/
           if-no-files-found: error
-          # A failed shard re-run days later still finds the others' profiles.
+          # A re-run shard replaces its own profile (the run keeps its
+          # artifacts across attempts), and one re-run days later still finds
+          # the other shards'.
+          overwrite: true
           retention-days: 7
 
   # internal/db's coverage threshold over the three shards' profiles
