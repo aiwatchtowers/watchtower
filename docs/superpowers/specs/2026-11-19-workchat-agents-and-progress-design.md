@@ -229,6 +229,29 @@ The Swift share is dominated by decode and the feed layout; the CLI share is
 what the tail read (C5) removes. The harness's entry count is higher than the
 CLI's `entries` (the subagent markers are merged in).
 
+**Measured: Task 11 (2026-11-19, load average 9–18).** First open after the
+speed follow-up, same composite method: the branch CLI's `--tail 60` median of
+5 on a database copy, plus the harness's Swift share (median of 3). "Before"
+is the umbrella before Task 11, measured in the same hour on the same copy and
+sessions.
+
+| Session | Entries | CLI before → after | Swift before → after | First open before → after |
+|---|---|---|---|---|
+| small | 7 | 0.28 → 0.07 s | 0.10 → 0.10 s | about 0.38 → 0.17 s |
+| mid | about 350 | 0.48 → 0.20 s | 0.20 → 0.13 s | about 0.68 → 0.33 s |
+| large | about 1,070 | 0.62 → 0.27 s | 0.34 → 0.15 s | about 0.96 → 0.42 s |
+
+What changed: transcript discovery stats `<dir>/<id>.jsonl` instead of listing
+every transcript and subagent `meta.json` under the repository's project
+directories (the repository slug prefix matched every worktree's directory,
+thousands of files, the bulk of the small session's time); a live snapshot
+reads the open call of a Claude child only for the rows it shows; the parser
+decodes records in parallel batches and handles them in file order; the
+Desktop decodes dates with cached formatters (a formatter per date was most of
+the large feed's decode). The JSON is the same as before (apart from `live.observed_at`) for a
+full read, a tail read, a `--before` page and a `--subagent` read. Targets: first
+open ≤ 500 ms met on all three; reopen unchanged (≤ 300 ms).
+
 ### 5. Type while the agent works (owner, 2026-11-19)
 
 Today `ChatComposerField` turns the round button into Stop whenever

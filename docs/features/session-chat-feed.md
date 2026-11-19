@@ -49,7 +49,7 @@ The rows are written by **SQL triggers on `terminal_sessions`** (`AFTER INSERT` 
 - `internal/db/schema.sql` mirrors the table but not the triggers (only a comment points at 00127).
 - The migration backfills one row per existing tab with an id (`created_at` as `first_seen_at`).
 
-Locating transcripts: `LocateAll` lists the workbench's candidate directories (`agentlog.CandidateDirs`, worktrees included) under `<claude dir>/projects` once per call and resolves every ledger id from that one listing. A missing transcript is skipped, not an error.
+Locating transcripts: `LocateAll` finds the workbench's candidate directories (`agentfiles.CandidateDirs`, worktrees included) under `<claude dir>/projects` once per call and stats `<dir>/<id>.jsonl` for every ledger id (no directory listing: a repository's slug prefix matches every worktree's directory, thousands of files). When several directories hold an id, the first path in sorted order wins; a symlink or an id that is not a plain file name is refused. A missing transcript is skipped, not an error. The parser decodes records in parallel batches (512 lines or 4 MiB) and handles them in file order (#2065 Task 11).
 
 ## Entry points in the app
 

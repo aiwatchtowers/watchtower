@@ -244,24 +244,26 @@ func liveMarkers(live *Live, conv string) []Entry {
 
 // LocateAll finds the main transcripts of agentSessionIDs under the Claude
 // projects directory, searching the directories of folderRoots once. Ids
-// without a transcript are absent from the result.
+// without a transcript are absent from the result. It stats <dir>/<id>.jsonl
+// per id instead of listing the directories: a repository's slug prefix
+// matches every worktree's directory, thousands of files the open of one
+// pane must not touch. When several directories hold an id, the
+// lexicographically first path wins (the order a sorted listing gives).
 func LocateAll(projectsDir string, folderRoots []string, agentSessionIDs []string) map[string]string {
 	found := map[string]string{}
 	dirs, err := agentfiles.CandidateDirs(projectsDir, folderRoots)
 	if err != nil {
 		return found
 	}
-	files, err := agentfiles.ListTranscripts(dirs)
-	if err != nil {
-		return found
-	}
-	want := map[string]bool{}
 	for _, id := range agentSessionIDs {
-		want[id] = true
-	}
-	for _, f := range files {
-		if _, dup := found[f.SessionUUID]; !f.Subagent && want[f.SessionUUID] && !dup {
-			found[f.SessionUUID] = f.Path
+		if strings.ContainsAny(id, `/\`) {
+			continue // not a file name inside the directory
+		}
+		for _, dir := range dirs {
+			f, ok := agentfiles.StatTranscript(filepath.Join(dir, id+".jsonl"))
+			if prev, dup := found[id]; ok && (!dup || f.Path < prev) {
+				found[id] = f.Path
+			}
 		}
 	}
 	return found
