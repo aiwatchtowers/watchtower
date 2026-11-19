@@ -74,6 +74,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("tuning-chat-") })
     }
 
+    /// The coach's pull-request states (spec 2026-11-19 §4.6).
+    func testCoachRepoPRsShotsRender() throws {
+        try renderShots(CoachRepoPRsShotFixtures.shots)
+    }
+
     func testWorkchatActivityShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("workchat-activity-") })
     }

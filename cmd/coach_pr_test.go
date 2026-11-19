@@ -32,7 +32,7 @@ type fakeGitHubCmd struct {
 	origin, state                                             string
 	mergedAt                                                  time.Time
 	published                                                 []workbenchgit.PublishRequest
-	closed                                                    []string
+	closed, ghHosts                                           []string
 	opts                                                      []workbenchgit.Options
 	noDeadline                                                int
 }
@@ -54,20 +54,22 @@ func installFakeGitHub(t *testing.T) *fakeGitHubCmd {
 		return workbenchgit.Status{Git: true, StatusOK: true}
 	}
 	coachGitHub = coachGitHubCalls{
-		isGitHub: func(ctx context.Context, o workbenchgit.Options, _ func(string) bool) (bool, error) {
+		// origin's one URL names f.origin (HOST/OWNER/REPO): github.com
+		// always, another host when accept takes it.
+		githubOrigin: func(ctx context.Context, o workbenchgit.Options, accept func(string) bool) (workbenchgit.GitHubRepo, error) {
 			f.seen(ctx, o)
-			return !f.notGitHub, nil
+			if f.notGitHub || f.originErr != nil {
+				return workbenchgit.GitHubRepo{}, f.originErr
+			}
+			host, _, _ := strings.Cut(f.origin, "/")
+			if host != "github.com" && !accept(host) {
+				return workbenchgit.GitHubRepo{}, nil
+			}
+			return workbenchgit.GitHubRepo{Host: host, Repo: f.origin}, nil
 		},
-		originHost: func(ctx context.Context, o workbenchgit.Options) (string, error) {
+		ghReady: func(ctx context.Context, o workbenchgit.Options, host string) error {
 			f.seen(ctx, o)
-			return "github.com", nil
-		},
-		originRepo: func(ctx context.Context, o workbenchgit.Options) (string, error) {
-			f.seen(ctx, o)
-			return f.origin, f.originErr
-		},
-		ghReady: func(ctx context.Context, o workbenchgit.Options, _ string) error {
-			f.seen(ctx, o)
+			f.ghHosts = append(f.ghHosts, host)
 			return f.ghErr
 		},
 		defaultBase: func(ctx context.Context, o workbenchgit.Options) (string, string, error) {
@@ -191,6 +193,9 @@ func TestCoachAcceptPR_FailureCodes(t *testing.T) {
 			f.baseErr = fmt.Errorf("%w: gh repo view", workbenchgit.ErrTimeout)
 		}},
 		{"fetch failed", "failed", "fetch", func(f *fakeGitHubCmd) { f.publishErr = errors.New("git fetch: bad object") }},
+		{"gh offline", "github_unreachable", coach.UnreachableLine, func(f *fakeGitHubCmd) {
+			f.ghErr = fmt.Errorf("%w: gh auth status: error connecting to api.github.com", workbenchgit.ErrUnreachable)
+		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -211,6 +216,132 @@ func TestCoachAcceptPR_FailureCodes(t *testing.T) {
 			assert.Empty(t, p.PRURL)
 		})
 	}
+}
+
+// Follow-up 2: on a host other than github.com, a gh that cannot check the
+// login (offline, over budget) refuses the Accept with that code — nothing
+// published, nothing written — instead of dropping to the working copy; only
+// gh missing or not logged in to that host keeps D8's working-copy route.
+func TestCoachAcceptPR_OtherHostUncheckedLoginRefuses(t *testing.T) {
+	for _, c := range []struct {
+		name, code string
+		err        error
+	}{
+		{"offline", "github_unreachable", fmt.Errorf("%w: gh auth status: error connecting", workbenchgit.ErrUnreachable)},
+		{"over budget", "timeout", fmt.Errorf("%w: gh auth status", workbenchgit.ErrTimeout)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := coachSetup(t)
+			f := installFakeGitHub(t)
+			f.origin, f.ghErr = "ghe.example.com/team/repo", c.err
+			wb := prWorkbench(t, d)
+			id := insertRepoProposal(t, d, wb, "unchecked")
+			out, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--json")
+			require.Error(t, err)
+			assert.JSONEq(t, strconv.Quote(c.code), string(coachJSONObject(t, out)["code"]), out)
+			assert.Empty(t, f.published)
+			p, err := d.GetCoachProposal(id)
+			require.NoError(t, err)
+			assert.Equal(t, "open", p.Status)
+			folder, err := d.GetWorkbench(wb)
+			require.NoError(t, err)
+			_, err = os.Stat(filepath.Join(folder.FolderPath, "CLAUDE.md"))
+			assert.ErrorIs(t, err, os.ErrNotExist, "the working copy is not written")
+		})
+	}
+
+	// Not logged in to that host: D8's working-copy route, the file written.
+	d := coachSetup(t)
+	f := installFakeGitHub(t)
+	f.origin, f.ghErr = "ghe.example.com/team/repo", fmt.Errorf("%w: gh: not logged in", workbenchgit.ErrNoGH)
+	coachFolderStatus = func(ctx context.Context, folder string) workbenchgit.Status {
+		return workbenchgit.ReadStatus(ctx, workbenchgit.Options{Folder: folder})
+	}
+	repo := gitBranchRepo(t)
+	wb, err := d.CreateWorkbench("acme", repo)
+	require.NoError(t, err)
+	id := insertRepoProposal(t, d, wb, "logged-out")
+	out, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err, out)
+	assert.Empty(t, f.published)
+	raw, err := os.ReadFile(filepath.Join(repo, "CLAUDE.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "Run tests.\n", string(raw))
+}
+
+// Finding 5: the repository the route chose — here on a GitHub Enterprise
+// host gh is logged in to — is the one GHReady checks and Publish works on.
+func TestCoachAcceptPR_RouteRepoCarriesThrough(t *testing.T) {
+	d := coachSetup(t)
+	f := installFakeGitHub(t)
+	f.origin = "ghe.example.com/team/repo"
+	id := insertRepoProposal(t, d, prWorkbench(t, d), "ghe")
+	out, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err, out)
+	require.Len(t, f.published, 1)
+	assert.Equal(t, []string{"ghe.example.com", "ghe.example.com"}, f.ghHosts, "the chosen host, never another URL's")
+	last := f.opts[len(f.opts)-1]
+	assert.Equal(t, "ghe.example.com/team/repo", last.Repo, "Publish works on the routed repository")
+}
+
+// Finding 4: one Accept, Decline or Roll Back of a proposal at a time
+// across processes — a second is refused at once with in_progress and
+// changes nothing; once the first ends the lock is free again.
+func TestCoachProposalLock(t *testing.T) {
+	ws := t.TempDir()
+	unlock, err := coachProposalLock(ws, 7)
+	require.NoError(t, err)
+	type result struct{ err error }
+	got := make(chan result)
+	go func() { // another process's decision of the same proposal
+		u, err := coachProposalLock(ws, 7)
+		if u != nil {
+			u()
+		}
+		got <- result{err}
+	}()
+	second := <-got
+	require.ErrorIs(t, second.err, coach.ErrInProgress)
+	assert.Contains(t, second.err.Error(), coach.InProgressLine)
+	assert.Equal(t, "in_progress", codedCoachErr(second.err).code)
+	other, err := coachProposalLock(ws, 8)
+	require.NoError(t, err, "another proposal is not blocked")
+	other()
+	unlock()
+	again, err := coachProposalLock(ws, 7)
+	require.NoError(t, err, "free once the first decision ended")
+	again()
+}
+
+// The verbs take the lock: with another decision of the proposal running,
+// Accept, Decline and Roll Back are refused with in_progress and nothing
+// reaches GitHub or the row.
+func TestCoachVerbs_RefusedWhileAnotherDecisionRuns(t *testing.T) {
+	d := coachSetup(t)
+	f := installFakeGitHub(t)
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	open := insertRepoProposal(t, d, prWorkbench(t, d), "lock-open")
+	accepted := acceptedPRRow(t, d, prWorkbench(t, d), "lock-acc", "https://github.com/acme/repo/pull/3", time.Now())
+	for _, c := range []struct {
+		verb   string
+		id     int64
+		status string
+	}{{"accept", open, "open"}, {"decline", open, "open"}, {"rollback", accepted, "accepted"}} {
+		unlock, err := coachProposalLock(cfg.WorkspaceDir(), c.id)
+		require.NoError(t, err)
+		out, err := runCoach(t, "", c.verb, strconv.FormatInt(c.id, 10), "--json")
+		unlock()
+		require.Error(t, err, c.verb)
+		assert.JSONEq(t, `"in_progress"`, string(coachJSONObject(t, out)["code"]), c.verb)
+		p, err := d.GetCoachProposal(c.id)
+		require.NoError(t, err)
+		assert.Equal(t, c.status, p.Status, c.verb)
+	}
+	assert.Empty(t, f.published)
+	assert.Empty(t, f.closed)
+	out, err := runCoach(t, "", "accept", strconv.FormatInt(open, 10), "--json")
+	require.NoError(t, err, out)
 }
 
 // A folder that is not a GitHub one keeps the working-copy route (D2): no

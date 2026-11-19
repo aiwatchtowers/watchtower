@@ -387,6 +387,112 @@ func TestPublish_RemovesLeftoverOfItsID(t *testing.T) {
 	}
 }
 
+// A workbench folder below the repository's top level (finding 2): Rel is
+// relative to that folder, so the edit, its revert and a deletion touch
+// <sub>/<Rel> in the scratch worktree — never a file of that name at the
+// top level.
+func TestPublish_FolderBelowTheTopLevel(t *testing.T) {
+	f := newPublishFixture(t)
+	if err := os.MkdirAll(filepath.Join(f.dir, "svc", "api"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, f.dir, filepath.Join("svc", "api", "CLAUDE.md"), "# API rules\n", "nested rules")
+	gitIn(t, f.dir, "push", "-q", Remote, "main")
+	o := f.options(nil)
+	o.Folder = filepath.Join(f.dir, "svc", "api")
+	base := gitIn(t, f.origin, "rev-parse", "refs/heads/main")
+
+	req := f.request(16)
+	req.Before, req.After, req.BaseSHA = "# API rules\n", "# API rules\n\n- be brief\n", base
+	if _, err := Publish(context.Background(), o, req); err != nil {
+		t.Fatal(err)
+	}
+	tip := "refs/heads/coach/0a1b2c3d/proposal-16"
+	if got := gitIn(t, f.origin, "diff-tree", "--no-commit-id", "--name-only", "-r", tip); got != "svc/api/CLAUDE.md" {
+		t.Errorf("the commit changes %q, want only svc/api/CLAUDE.md", got)
+	}
+	if got := gitIn(t, f.origin, "show", tip+":CLAUDE.md"); got != "# Rules" {
+		t.Errorf("the top-level CLAUDE.md changed: %q", got)
+	}
+
+	// The top-level file's text is not what the nested folder's file holds.
+	req = f.request(17)
+	req.Before, req.BaseSHA = "# Rules\n", base
+	if _, err := Publish(context.Background(), o, req); !errors.Is(err, ErrBaseDiffers) {
+		t.Errorf("err = %v, want ErrBaseDiffers against svc/api/CLAUDE.md", err)
+	}
+
+	// A created file and its deletion land in the folder too.
+	req = f.request(18)
+	req.Rel, req.Before, req.After, req.MayCreate, req.BaseSHA = "AGENTS.md", "", "agents\n", true, base
+	if _, err := Publish(context.Background(), o, req); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitIn(t, f.origin, "diff-tree", "--no-commit-id", "--name-status", "-r", "refs/heads/coach/0a1b2c3d/proposal-18"); got != "A\tsvc/api/AGENTS.md" {
+		t.Errorf("the create = %q, want svc/api/AGENTS.md added", got)
+	}
+	req = f.request(19)
+	req.Branch, req.Before, req.After, req.Delete, req.BaseSHA = "coach/0a1b2c3d/revert-19", "# API rules\n", "", true, base
+	if _, err := Publish(context.Background(), o, req); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitIn(t, f.origin, "diff-tree", "--no-commit-id", "--name-status", "-r", "refs/heads/coach/0a1b2c3d/revert-19"); got != "D\tsvc/api/CLAUDE.md" {
+		t.Errorf("the deletion = %q, want svc/api/CLAUDE.md deleted", got)
+	}
+}
+
+// Follow-up 3: a folder whose name starts with a space keeps it in the
+// prefix (only rev-parse's newline is dropped).
+func TestPublish_FolderNameWithALeadingSpace(t *testing.T) {
+	f := newPublishFixture(t)
+	if err := os.MkdirAll(filepath.Join(f.dir, " sp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, f.dir, filepath.Join(" sp", "CLAUDE.md"), "# Spaced\n", "spaced rules")
+	gitIn(t, f.dir, "push", "-q", Remote, "main")
+	o := f.options(nil)
+	o.Folder = filepath.Join(f.dir, " sp")
+	req := f.request(28)
+	req.Before, req.After, req.BaseSHA = "# Spaced\n", "# Spaced\n\n- be brief\n", gitIn(t, f.origin, "rev-parse", "refs/heads/main")
+	if _, err := Publish(context.Background(), o, req); err != nil {
+		t.Fatal(err)
+	}
+	// (Without the space the base holds no sp/CLAUDE.md: Publish would have
+	// refused with ErrBaseDiffers.)
+	if got := gitIn(t, f.origin, "show", "refs/heads/coach/0a1b2c3d/proposal-28: sp/CLAUDE.md"); got != "# Spaced\n\n- be brief" {
+		t.Errorf("\" sp/CLAUDE.md\" on the branch = %q", got)
+	}
+}
+
+// A scratch worktree registered with a relative gitdir (worktree.useRelativePaths,
+// finding 9) whose folder is gone is forgotten too; another entry is not.
+func TestForgetWorktree_RelativeGitdir(t *testing.T) {
+	f := newPublishFixture(t)
+	r, err := open(f.options(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := filepath.Join(f.dir, ".git", "worktrees")
+	dir := filepath.Join(f.scratch, "24")
+	rel, err := filepath.Rel(filepath.Join(admin, "24"), filepath.Join(dir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, gitdir := range map[string]string{"24": rel, "other": "../../../elsewhere/.git"} {
+		if err := os.MkdirAll(filepath.Join(admin, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(admin, name), "gitdir", gitdir+"\n")
+	}
+	forgetWorktree(context.Background(), r, dir)
+	if _, err := os.Stat(filepath.Join(admin, "24")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the relative registration of %s is still there (%v)", dir, err)
+	}
+	if _, err := os.Stat(filepath.Join(admin, "other")); err != nil {
+		t.Errorf("another registration was removed: %v", err)
+	}
+}
+
 // An executable file keeps its mode; the commit changes only its content.
 func TestPublish_KeepsTheFileMode(t *testing.T) {
 	f := newPublishFixture(t)
@@ -629,6 +735,77 @@ func TestClosePR_DeletesOnlyTheRemoteBranch(t *testing.T) {
 	}
 }
 
+// A close whose branch deletion failed (finding 3): gh reports the pull
+// request CLOSED, so ClosePR does not close it again but still deletes the
+// coach branch on origin — a rollback's retry finishes the job.
+func TestClosePR_AlreadyClosedStillDeletesTheBranch(t *testing.T) {
+	f := newPublishFixture(t)
+	o := f.options(nil)
+	res, err := Publish(context.Background(), o, f.request(26))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const branch = "coach/0a1b2c3d/proposal-26"
+	writeFile(t, f.stub, "view", `{"headRefName":"`+branch+`","isCrossRepository":false,"state":"CLOSED"}`)
+	if err := ClosePR(context.Background(), o, res.PRURL); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitIn(t, f.origin, "for-each-ref", "refs/heads/"+branch); got != "" {
+		t.Errorf("origin still has %q", got)
+	}
+	if n := countPrefix(f.ghCalls(t), "pr close"); n != 0 {
+		t.Errorf("a closed pull request was closed again (%d calls)", n)
+	}
+	// Again, the branch already gone: fine.
+	if err := ClosePR(context.Background(), o, res.PRURL); err != nil {
+		t.Fatalf("again: %v", err)
+	}
+}
+
+// Follow-up 1: ClosePR deletes the branch only where git would really push
+// — the URL after insteadOf/pushInsteadOf — and only when that URL names the
+// pull request's repository. A pushInsteadOf to another repository, or an
+// insteadOf that sends fetch and push to a same-named repository elsewhere,
+// leaves the branch: no push runs, the close still succeeds.
+func TestClosePR_PushRewrittenElsewhereLeavesTheBranch(t *testing.T) {
+	f := newPublishFixture(t)
+	res, err := Publish(context.Background(), f.options(nil), f.request(27))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const branch = "coach/0a1b2c3d/proposal-27"
+	writeFile(t, f.stub, "view", `{"headRefName":"`+branch+`","isCrossRepository":false,"state":"OPEN"}`)
+	// Push only: rewritten to another repository.
+	gitIn(t, f.dir, "config", "url.https://github.com/other/repo.git.pushInsteadOf", ghURL)
+	rec := &recorder{}
+	if err := ClosePR(context.Background(), f.options(rec), res.PRURL); err != nil {
+		t.Fatal(err)
+	}
+	if rec.ran("push") {
+		t.Errorf("a delete was pushed through a pushInsteadOf to another repository: %q", rec.argv())
+	}
+	if gitIn(t, f.origin, "for-each-ref", "refs/heads/"+branch) == "" {
+		t.Error("the branch on the pull request's repository was deleted")
+	}
+	gitIn(t, f.dir, "config", "--unset", "url.https://github.com/other/repo.git.pushInsteadOf")
+
+	// Fetch and push both rewritten to a same-named repository on another
+	// host: the two URLs agree with each other, but not with the PR.
+	gitIn(t, f.dir, "remote", "set-url", Remote, "https://ghe.example.com/team/repo.git")
+	gitIn(t, f.dir, "config", "url.https://mirror.example.com/.insteadOf", "https://ghe.example.com/")
+	rec = &recorder{}
+	if err := ClosePR(context.Background(), f.options(rec), "https://ghe.example.com/team/repo/pull/5"); err != nil {
+		t.Fatal(err)
+	}
+	if rec.ran("push") {
+		t.Errorf("a delete was pushed to the mirror: %q", rec.argv())
+	}
+	if !pushTargetIs("git@ghe.example.com:Team/Repo.git", "ghe.example.com/team/repo") || // leak-check:allow: test git remote URL, not an email
+		pushTargetIs("https://mirror.example.com/team/repo.git", "ghe.example.com/team/repo") {
+		t.Error("pushTargetIs compares host and OWNER/REPO")
+	}
+}
+
 func TestPRRepository(t *testing.T) {
 	for in, want := range map[string]string{
 		"https://GitHub.com/example/repo/pull/3":       "github.com/example/repo",
@@ -644,11 +821,11 @@ func TestPRRepository(t *testing.T) {
 	}
 }
 
-func TestOriginRepo(t *testing.T) {
+func TestGitHubOrigin_Repo(t *testing.T) {
 	f := newPublishFixture(t)
-	got, err := OriginRepo(context.Background(), f.options(nil))
-	if err != nil || got != "github.com/example/repo" {
-		t.Fatalf("OriginRepo = %q, %v", got, err)
+	got, err := GitHubOrigin(context.Background(), f.options(nil), anyHost)
+	if err != nil || got != (GitHubRepo{Host: githubHost, Repo: "github.com/example/repo"}) {
+		t.Fatalf("GitHubOrigin = %+v, %v", got, err)
 	}
 }
 
@@ -659,9 +836,9 @@ func TestGHReady(t *testing.T) {
 		t.Fatalf("logged in: %v", err)
 	}
 	f.flag(t, "offline")
-	if err := GHReady(context.Background(), o, githubHost); err == nil || errors.Is(err, ErrNoGH) ||
+	if err := GHReady(context.Background(), o, githubHost); !errors.Is(err, ErrUnreachable) || errors.Is(err, ErrNoGH) ||
 		!strings.Contains(err.Error(), "error connecting") {
-		t.Fatalf("offline: %v, want a plain error with gh's words, not ErrNoGH", err)
+		t.Fatalf("offline: %v, want ErrUnreachable with gh's words, not ErrNoGH", err)
 	}
 	f.unflag(t, "offline")
 	f.flag(t, "loggedout")
@@ -701,42 +878,69 @@ func TestRemoteURL(t *testing.T) {
 // Path choice (spec D8): a github.com origin in any of the three URL forms is
 // a GitHub folder without asking gh; another host only when gh is logged in
 // there; no origin or a local one never.
-func TestIsGitHubFolder(t *testing.T) {
+func TestGitHubOrigin(t *testing.T) {
 	dir := newRepo(t)
 	o := Options{Folder: dir}
 	asked := ""
 	loggedIn := func(answer bool) func(string) bool {
 		return func(host string) bool { asked = host; return answer }
 	}
-	check := func(url string, ghAnswer, want bool, wantAsked string) {
+	check := func(url string, ghAnswer bool, want GitHubRepo, wantAsked string) {
 		t.Helper()
 		gitIn(t, dir, "remote", "set-url", Remote, url)
 		asked = ""
-		got, err := IsGitHubFolder(context.Background(), o, loggedIn(ghAnswer))
+		got, err := GitHubOrigin(context.Background(), o, loggedIn(ghAnswer))
 		if err != nil || got != want || asked != wantAsked {
-			t.Errorf("%s (gh logged in: %v) = %v %v, asked %q; want %v, asked %q", url, ghAnswer, got, err, asked, want, wantAsked)
+			t.Errorf("%s (gh logged in: %v) = %+v %v, asked %q; want %+v, asked %q", url, ghAnswer, got, err, asked, want, wantAsked)
 		}
 	}
-	if got, err := IsGitHubFolder(context.Background(), o, loggedIn(true)); err != nil || got || asked != "" {
-		t.Errorf("no origin = %v %v (asked %q), want false", got, err, asked)
+	if got, err := GitHubOrigin(context.Background(), o, loggedIn(true)); err != nil || got != (GitHubRepo{}) || asked != "" {
+		t.Errorf("no origin = %+v %v (asked %q), want none", got, err, asked)
 	}
 	gitIn(t, dir, "remote", "add", Remote, "x")
-	check("https://github.com/example/repo.git", false, true, "")
-	check("ssh://git@github.com/example/repo.git", false, true, "")             // leak-check:allow: test git remote URL, not an email
-	check("git@github.com:example/repo.git", false, true, "")                   // leak-check:allow: test git remote URL, not an email
-	check("git@ghe.example.com:team/repo.git", false, false, "ghe.example.com") // leak-check:allow: test git remote URL, not an email
-	check("https://ghe.example.com/team/repo.git", true, true, "ghe.example.com")
-	check("/srv/git/repo.git", true, false, "")
-	if host, err := OriginHost(context.Background(), Options{Folder: dir}); err != nil || host != "" {
-		t.Errorf("OriginHost of a path = %q %v", host, err)
-	}
+	gh := GitHubRepo{Host: githubHost, Repo: "github.com/example/repo"}
+	ghe := GitHubRepo{Host: "ghe.example.com", Repo: "ghe.example.com/team/repo"}
+	check("https://github.com/example/repo.git", false, gh, "")
+	check("ssh://git@github.com/example/repo.git", false, gh, "")                      // leak-check:allow: test git remote URL, not an email
+	check("git@github.com:example/repo.git", false, gh, "")                            // leak-check:allow: test git remote URL, not an email
+	check("git@ghe.example.com:team/repo.git", false, GitHubRepo{}, "ghe.example.com") // leak-check:allow: test git remote URL, not an email
+	check("https://ghe.example.com/team/repo.git", true, ghe, "ghe.example.com")
+	check("/srv/git/repo.git", true, GitHubRepo{}, "")
 	// insteadOf either way round: an alias that git rewrites to github.com,
 	// and a github.com URL that git rewrites to a mirror.
 	gitIn(t, dir, "config", "url.https://github.com/.insteadOf", "gh:")
-	check("gh:example/repo.git", false, true, "")
+	check("gh:example/repo.git", false, gh, "")
 	gitIn(t, dir, "config", "--unset", "url.https://github.com/.insteadOf")
 	gitIn(t, dir, "config", "url./srv/mirror/.insteadOf", "https://github.com/")
-	check("https://github.com/example/repo.git", false, true, "")
+	check("https://github.com/example/repo.git", false, gh, "")
+}
+
+// An insteadOf alias whose own host gh is not logged in to, rewritten to a
+// GitHub Enterprise host it is (finding 5): routing, GHReady, DefaultBase
+// and Publish all work on the host gh is logged in to — never the alias,
+// which would read as a missing gh login.
+func TestGitHubOrigin_AliasToALoggedInHost(t *testing.T) {
+	dir := newRepo(t)
+	gitIn(t, dir, "remote", "add", Remote, "corp:team/repo") // scp-like: host "corp"
+	gitIn(t, dir, "config", "url.https://ghe.example.com/.insteadOf", "corp:")
+	var asked []string
+	loggedIn := func(host string) bool { asked = append(asked, host); return host == "ghe.example.com" }
+	got, err := GitHubOrigin(context.Background(), Options{Folder: dir}, loggedIn)
+	if err != nil || got != (GitHubRepo{Host: "ghe.example.com", Repo: "ghe.example.com/team/repo"}) {
+		t.Fatalf("GitHubOrigin = %+v %v (asked %q), want the logged-in host", got, err, asked)
+	}
+	r, err := open(Options{Folder: dir, Repo: got.Repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slug, err := ghRepo(context.Background(), r); err != nil || slug != got.Repo {
+		t.Errorf("ghRepo with the chosen repository = %q %v, want %s", slug, err, got.Repo)
+	}
+	// Origin repointed since the choice: refused, not another repository.
+	gitIn(t, dir, "remote", "set-url", Remote, "https://ghe.example.com/team/other.git")
+	if slug, err := ghRepo(context.Background(), r); err == nil {
+		t.Errorf("ghRepo after origin moved = %q, want a refusal", slug)
+	}
 }
 
 // A push or ls-remote outside an owner's Publish never runs: only the

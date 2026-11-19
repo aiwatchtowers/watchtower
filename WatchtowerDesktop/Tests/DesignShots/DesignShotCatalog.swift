@@ -621,6 +621,7 @@ enum DesignShotCatalog {
             + AutoCleanupShotFixtures.shots
             + ClosedAsksShotFixtures.shots
             + TuningChatShotFixtures.shots // The tuning chat over the Analytics pane (#1517).
+            + CoachRepoPRsShotFixtures.shots // Coach repository edits as pull requests (spec 2026-11-19 §4.6).
             + SlackFullLiveShotFixtures.shots // Slack Full / Live screens spec (#1779), design only.
             + SlackAdaptiveSyncShotFixtures.shots // Adaptive Slack sync, Statistics → Channels (#1709).
             + SlackPolicyShotFixtures.shots // Slack Developer Policy hygiene (#1769): People frames real, the rest design only.
@@ -670,6 +671,7 @@ enum DesignShotFixtures {
         AutoCleanupShotFixtures.cleanUp()
         AgentSettingsShotFixtures.cleanUp()
         CoachShotFixtures.cleanUp()
+        CoachRepoPRsShotFixtures.cleanUp()
         InboxFolderMenuShotFixtures.cleanUp()
         InboxFoldersShotFixtures.cleanUp()
         InboxApprovalsShotFixtures.cleanUp()

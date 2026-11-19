@@ -3,6 +3,7 @@ package coach
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -35,6 +36,12 @@ var (
 	// ErrOriginMoved: the folder's origin is no longer the repository the
 	// pull request a rollback reverts is in.
 	ErrOriginMoved = errors.New("the folder's origin is not the pull request's repository")
+	// ErrUnreachable: gh could not tell whether the owner is logged in to
+	// GitHub (offline, GitHub down); nothing was tried.
+	ErrUnreachable = errors.New("gh could not reach GitHub")
+	// ErrInProgress: another Accept, Decline or Roll Back of the same
+	// proposal is running in another process (cmd's per-proposal lock).
+	ErrInProgress = errors.New("another decision on this proposal is running")
 
 	// errPRNotWired is an Applier built without the pull-request seams
 	// meeting a pull-request route or row: never written or undone locally.
@@ -52,6 +59,8 @@ const (
 	// PRUnreadableLine takes the pull request's "#N".
 	PRUnreadableLine = "Could not read pull request %s from GitHub — try again."
 	OriginMovedLine  = "This folder's origin is no longer the repository the pull request is in; nothing changed."
+	UnreachableLine  = "Could not reach GitHub to check your gh login; nothing changed — try again."
+	InProgressLine   = "This proposal is already being accepted, declined or rolled back — wait for it to finish."
 )
 
 // BaseDiffersError is ErrBaseDiffers (errors.Is) with the text the default
@@ -129,6 +138,10 @@ func prError(err error, rel string) error {
 		line = TimeoutLine
 	case errors.Is(err, ErrOriginMoved):
 		line = OriginMovedLine
+	case errors.Is(err, ErrUnreachable):
+		line = UnreachableLine
+	case errors.Is(err, ErrInProgress):
+		line = InProgressLine
 	default:
 		return err
 	}
@@ -236,10 +249,13 @@ func (a *Applier) acceptPR(p db.CoachProposal, folder, edited string, baseline *
 // swapped, branch coach/revert-<id>; a file the Accept created is deleted,
 // as the working-copy route does) whose base must hold the accepted text,
 // else ErrChangedSince with the diff accepted → the base's text now; open —
-// the pull request is closed; closed unmerged — nothing on GitHub. Then the
-// proposal goes rolled_back with the revert's URL. A seam failure refuses
-// and leaves it accepted. force does not apply: a base that moved cannot be
-// reverted by a pull request either way.
+// the pull request is closed; closed unmerged — its coach branch is
+// deleted from origin if it is still there (a close whose deletion failed),
+// a failure there only logged. Then the proposal goes rolled_back with the
+// revert's URL; a row `coach sync-prs` marked rolled_back meanwhile (it saw
+// the close) counts as done. A seam failure refuses and leaves it accepted.
+// force does not apply: a base that moved cannot be reverted by a pull
+// request either way.
 func (a *Applier) rollbackPR(p db.CoachProposal) (revertURL, diff string, err error) {
 	id := p.ID
 	fail := func(err error) (string, string, error) {
@@ -286,16 +302,32 @@ func (a *Applier) rollbackPR(p db.CoachProposal) (revertURL, diff string, err er
 			return fail(prError(err, rel))
 		}
 	case prClosed:
+		// Idempotent: a closed pull request is not closed again; only its
+		// coach branch on the pull request's own origin is deleted.
+		if err := a.RepoClosePR(folder, p.PRURL); err != nil {
+			log.Printf("coach: rolling back proposal %d: deleting the branch of closed pull request %s: %s",
+				id, p.PRURL, logredact.Body([]byte(err.Error())))
+		}
 	default:
 		return fail(fmt.Errorf("pull request %s is in an unknown state %q", p.PRURL, state))
 	}
 	if err := a.DB.MarkCoachRolledBack(id, revertURL, a.now()); err != nil {
+		if errors.Is(err, db.ErrCoachStateChanged) && revertURL == "" && a.rolledBackMeanwhile(id) {
+			return "", "", nil
+		}
 		if revertURL != "" { // the next Rollback finds the same revert pull request
 			return "", "", fmt.Errorf("rolling back coach proposal %d (revert pull request %s open): %w", id, revertURL, err)
 		}
 		return "", "", fmt.Errorf("rolling back coach proposal %d: %w", id, err)
 	}
 	return revertURL, "", nil
+}
+
+// rolledBackMeanwhile: proposal id is rolled_back now — `coach sync-prs`
+// saw the close a Rollback made and marked it first.
+func (a *Applier) rolledBackMeanwhile(id int64) bool {
+	p, err := a.DB.GetCoachProposal(id)
+	return err == nil && p.Status == "rolled_back"
 }
 
 // SyncPRs brings the accepted pull-request edits not yet measured up to date

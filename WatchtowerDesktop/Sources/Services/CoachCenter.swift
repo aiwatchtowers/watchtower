@@ -6,7 +6,8 @@ import WatchtowerCore
 /// metrics (`status --workbench N --days D [--agent A]`, the pane's agent
 /// filter) while its Analytics pane is
 /// shown, the proposals (`proposals --status all`), and the owner's verbs
-/// Accept / Decline / Roll back / Run now.
+/// Accept / Decline / Roll back / Run now, and `sync-prs` when Accepted
+/// edits or the tuning panel appears (spec 2026-11-19 §4.4).
 ///
 /// Reads follow `AgentAnalyticsCenter`'s discipline: one run per key in
 /// flight plus one queued rerun, a 60 s tick only while the Workbench tab is
@@ -31,6 +32,20 @@ final class CoachCenter {
     /// Proposals with an owner verb in flight: a second press on the same
     /// card does nothing and the card disables its buttons meanwhile.
     private(set) var pending: Set<Int64> = []
+    /// Cards whose last verb GitHub or the network refused (`push_failed`,
+    /// `pr_failed`, `timeout`, `pr_unreadable`): Retry runs it again.
+    private(set) var retries: [Int64: Retry] = [:]
+    /// `coach sync-prs` is running.
+    private(set) var syncing = false
+    /// Over Accepted edits when the last `coach sync-prs` could not read
+    /// some pull requests or failed; nil once a sync read them all.
+    private(set) var syncLine: String?
+
+    /// The verb a card's Retry runs again.
+    enum Retry: Equatable {
+        case accept(editedText: String?)
+        case rollback
+    }
 
     @ObservationIgnored var isTabOnScreen: () -> Bool = { false }
 
@@ -102,6 +117,7 @@ final class CoachCenter {
         guard pending.insert(id).inserted else { return }
         defer { pending.remove(id) }
         cardErrors[id] = nil
+        retries[id] = nil
         let args = ["coach", "accept", String(id), "--json"] + (editedText == nil ? [] : ["--stdin"])
         do {
             let data = if let editedText {
@@ -112,7 +128,7 @@ final class CoachCenter {
             if let file = CoachWrittenFile.parse(acceptResult: data) { written[id] = file }
             reloadAll()
         } catch {
-            decisionFailed(id, error)
+            decisionFailed(id, error, retry: .accept(editedText: editedText))
         }
     }
 
@@ -120,6 +136,7 @@ final class CoachCenter {
         guard pending.insert(id).inserted else { return }
         defer { pending.remove(id) }
         cardErrors[id] = nil
+        retries[id] = nil
         do {
             _ = try await runner.run(args: ["coach", "decline", String(id), "--json"])
             reloadAll()
@@ -136,6 +153,7 @@ final class CoachCenter {
         guard pending.insert(id).inserted else { return nil }
         defer { pending.remove(id) }
         cardErrors[id] = nil
+        retries[id] = nil
         let args = ["coach", "rollback", String(id), "--json"] + (force ? ["--force"] : [])
         do {
             _ = try await runner.run(args: args)
@@ -145,7 +163,7 @@ final class CoachCenter {
             if !force, let failure = Self.failure(error), failure.code == "changed_since" {
                 return failure.diff ?? ""
             }
-            decisionFailed(id, error)
+            decisionFailed(id, error, retry: .rollback)
             return nil
         }
     }
@@ -177,6 +195,37 @@ final class CoachCenter {
             } else {
                 runLine = "The coach run failed: \(Self.message(error))"
             }
+        }
+    }
+
+    /// `coach sync-prs` once: the Accepted edits list or the tuning panel
+    /// appeared (spec 2026-11-19 §4.4; never on the tick). A call while one
+    /// runs does nothing; when rows changed the pane reloads. Like `runNow`,
+    /// `stop()` only skips applying the result.
+    func syncPRs() {
+        guard !syncing else { return }
+        syncing = true
+        let started = epoch
+        Task { [weak self, runner] in
+            let result: Result<Data, Error>
+            do {
+                result = .success(try await runner.run(args: ["coach", "sync-prs", "--json"]))
+            } catch {
+                result = .failure(error)
+            }
+            self?.syncFinished(result, epoch: started)
+        }
+    }
+
+    private func syncFinished(_ result: Result<Data, Error>, epoch started: Int) {
+        syncing = false
+        guard started == epoch else { return }
+        do {
+            let out = try JSONDecoder().decode(CoachSyncResult.self, from: result.get())
+            syncLine = out.syncError.isEmpty ? nil : CoachPRTexts.syncLine(code: out.syncCode)
+            if out.changed > 0 { reloadAll() }
+        } catch {
+            syncLine = CoachPRTexts.syncFailed
         }
     }
 
@@ -240,6 +289,13 @@ final class CoachCenter {
                 let data = try await runner.run(args: ["coach", "proposals", "--status", "all", "--json"])
                 let list = try JSONDecoder().decode(CoachProposalList.self, from: data)
                 guard !Task.isCancelled else { return }
+                // A card whose proposal moved on (a sync rolled it back, a stale one closed) drops
+                // the error and the Retry made for its old state.
+                let before = Dictionary((proposals?.value ?? []).map { ($0.id, $0.status) }) { first, _ in first }
+                for p in list.proposals where before[p.id].map({ $0 != p.status }) == true {
+                    cardErrors[p.id] = nil
+                    retries[p.id] = nil
+                }
                 proposals = SessionReportCenter.Snapshot(value: list.proposals)
             } catch {
                 guard !Task.isCancelled, !(error is CancellationError) else { return }
@@ -252,8 +308,10 @@ final class CoachCenter {
 
     // MARK: - Errors
 
-    private func decisionFailed(_ id: Int64, _ error: Error) {
-        switch Self.failure(error)?.code {
+    private func decisionFailed(_ id: Int64, _ error: Error, retry: Retry? = nil) {
+        let failure = Self.failure(error)
+        if CoachPRTexts.retryable(failure?.code) { retries[id] = retry }
+        switch failure?.code {
         case "stale", "state_changed":
             cardErrors[id] = "The text changed since — this proposal is closed"
             reloadAll()
@@ -264,7 +322,12 @@ final class CoachCenter {
         case "not_git":
             cardErrors[id] = TuningChatTexts.repoNotGit
         default:
-            cardErrors[id] = Self.message(error)
+            // A pull-request refusal names the card's file and PR; the CLI's line carries the proposal id.
+            let proposal = proposals?.value?.first { $0.id == id }
+            cardErrors[id] = failure.flatMap {
+                CoachPRTexts.refusal(code: $0.code ?? "", cliError: $0.error, path: proposal?.repoRelativePath,
+                                     prURL: proposal?.prURL ?? "")
+            } ?? Self.message(error)
         }
     }
 

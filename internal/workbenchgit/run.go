@@ -41,6 +41,11 @@ type Options struct {
 	// Scratch is the folder Publish adds its detached worktrees under
 	// (<workspace>/coach-pr), one <Scratch>/<id> per request.
 	Scratch string
+	// Repo is the GitHub repository (HOST/OWNER/REPO) the caller chose
+	// among origin's URLs with GitHubOrigin: DefaultBase and Publish work on
+	// it and refuse when origin no longer names it. "" = the first of
+	// origin's URLs that names a repository.
+	Repo string
 	// NetworkBudget bounds each git fetch, ls-remote or push and each gh
 	// call Publish, PRState, ClosePR, GHReady and DefaultBase make.
 	// 0 = defaultNetworkBudget.

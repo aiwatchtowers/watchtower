@@ -573,6 +573,11 @@ func runCoachAccept(cmd *cobra.Command, e *coachEnv, arg string) (any, error) {
 	if err := coachConfirm(e, "accept a coach proposal", id, edited); err != nil {
 		return nil, err
 	}
+	unlock, err := coachProposalLock(e.cfg.WorkspaceDir(), id)
+	if err != nil {
+		return nil, codedCoachErr(err)
+	}
+	defer unlock()
 	ctx, cancel := coachPRContext(cmd.Context())
 	defer cancel()
 	res, err := e.prApplier(ctx).Accept(id, edited)
@@ -592,6 +597,11 @@ func runCoachDecline(e *coachEnv, arg string) (any, error) {
 	if err := coachConfirm(e, "decline a coach proposal", id, ""); err != nil {
 		return nil, err
 	}
+	unlock, err := coachProposalLock(e.cfg.WorkspaceDir(), id)
+	if err != nil {
+		return nil, codedCoachErr(err)
+	}
+	defer unlock()
 	if err := e.applier().Decline(id); err != nil {
 		return nil, codedCoachErr(err)
 	}
@@ -606,6 +616,11 @@ func runCoachRollback(cmd *cobra.Command, e *coachEnv, arg string) (any, error) 
 	if err := coachConfirm(e, "roll back a coach proposal", id, ""); err != nil {
 		return nil, err
 	}
+	unlock, err := coachProposalLock(e.cfg.WorkspaceDir(), id)
+	if err != nil {
+		return nil, codedCoachErr(err)
+	}
+	defer unlock()
 	ctx, cancel := coachPRContext(cmd.Context())
 	defer cancel()
 	res, err := e.prApplier(ctx).RollbackWithResult(id, coachFlagForce)
@@ -683,6 +698,10 @@ func codedCoachErr(err error) *coachCodedError {
 		code = "pr_unreadable"
 	case errors.Is(err, coach.ErrOriginMoved):
 		code = "origin_moved"
+	case errors.Is(err, coach.ErrUnreachable):
+		code = "github_unreachable"
+	case errors.Is(err, coach.ErrInProgress):
+		code = "in_progress"
 	case errors.Is(err, db.ErrCoachStateChanged):
 		code = "state_changed"
 	case errors.Is(err, coach.ErrRepoDirty):

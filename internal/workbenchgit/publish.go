@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
@@ -46,6 +47,9 @@ var (
 	ErrPRFailed = errors.New("opening the pull request failed")
 	// ErrTimeout: a network call ran over its budget.
 	ErrTimeout = errors.New("a network call timed out")
+	// ErrUnreachable: gh could not tell whether the owner is logged in —
+	// offline, GitHub down — so nothing was tried.
+	ErrUnreachable = errors.New("gh could not reach GitHub")
 )
 
 // BaseDiffersError is ErrBaseDiffers (errors.Is) with what the base holds
@@ -65,7 +69,7 @@ func (e *BaseDiffersError) Is(target error) bool { return target == ErrBaseDiffe
 // PublishRequest is one pull request Publish opens.
 type PublishRequest struct {
 	ID            int64  // the proposal; its scratch worktree is <Options.Scratch>/<ID>
-	Rel           string // the file, relative to the folder's top level
+	Rel           string // the file, relative to the folder (which may sit below the repository's top level)
 	Before, After string // the text the base must hold, the text to commit
 	Branch        string // coach/<token>/proposal-<id> or coach/<token>/revert-<id>
 	Title, Body   string // Body goes to gh verbatim
@@ -212,44 +216,42 @@ func chooseOrigin(urls []string, accept func(host string) bool) (host, path stri
 
 func anyHost(string) bool { return true }
 
-// OriginHost is the host of the folder's origin — github.com when its
-// configured or its rewritten URL is there — ("" when there is no origin,
-// or it is a local path). It runs no network call and no gh.
-func OriginHost(ctx context.Context, o Options) (string, error) {
-	r, err := open(o)
-	if err != nil {
-		return "", err
-	}
-	urls, err := originURLs(ctx, r)
-	if err != nil {
-		return "", err
-	}
-	host, _ := chooseOrigin(urls, anyHost)
-	return host, nil
+// GitHubRepo is the GitHub repository a folder's origin names: its host (for
+// GHReady) and HOST/OWNER/REPO (Options.Repo, gh's -R). Zero when origin
+// names none.
+type GitHubRepo struct {
+	Host, Repo string
 }
 
-// IsGitHubFolder decides the path of a repository edit (spec D8): an
-// origin on github.com (configured or rewritten URL) is always a GitHub
-// folder, gh or not; another host is one only when ghLoggedIn(host) says gh
-// is logged in there; no origin, or a local one, never is.
-func IsGitHubFolder(ctx context.Context, o Options, ghLoggedIn func(host string) bool) (bool, error) {
+// GitHubOrigin decides the path of a repository edit (spec D8) and which
+// of origin's URLs (configured, or rewritten through url.<x>.insteadOf)
+// names the repository, once, for every later call of the Accept or Roll
+// Back: one on github.com always does, gh or not; one on another host only
+// when accept(host) says so (gh is logged in there, or it is a pull
+// request's host); no origin, or a local one, never does (zero GitHubRepo).
+// Repo is "" when the URL's path is not OWNER/REPO (DefaultBase and
+// Publish then refuse). It runs no network call; gh only through accept.
+func GitHubOrigin(ctx context.Context, o Options, accept func(host string) bool) (GitHubRepo, error) {
 	r, err := open(o)
 	if err != nil {
-		return false, err
+		return GitHubRepo{}, err
 	}
 	urls, err := originURLs(ctx, r)
 	if err != nil {
-		return false, err
+		return GitHubRepo{}, err
 	}
-	host, _ := chooseOrigin(urls, ghLoggedIn)
-	return host != "", nil
+	host, path := chooseOrigin(urls, accept)
+	if host == "" || strings.Count(path, "/") != 1 {
+		return GitHubRepo{Host: host}, nil
+	}
+	return GitHubRepo{Host: host, Repo: host + "/" + path}, nil
 }
 
 // GHReady checks that gh is installed and logged in to host (`gh auth
 // status --hostname <host>`): ErrNoGH when gh is missing or says the owner
 // is not logged in (or must log in again), ErrTimeout over the budget, and
-// any other failure — offline, GitHub down — as itself, so a logged-in
-// owner is never told to log in.
+// any other failure — offline, GitHub down — ErrUnreachable with gh's
+// words, so a logged-in owner is never told to log in.
 func GHReady(ctx context.Context, o Options, host string) error {
 	out, err := gh(ctx, o, "auth", "status", "--hostname", host)
 	var missing *exec.Error
@@ -264,7 +266,7 @@ func GHReady(ctx context.Context, o Options, host string) error {
 	case errors.As(err, &re) && loggedOut(string(out)+"\n"+re.stderr):
 		return fmt.Errorf("%w: %s", ErrNoGH, gitError(err))
 	}
-	return fmt.Errorf("gh auth status: %w", err)
+	return fmt.Errorf("%w: gh auth status: %s", ErrUnreachable, gitError(err))
 }
 
 // loggedOut: gh's auth status output says there is no usable login.
@@ -273,27 +275,27 @@ func loggedOut(output string) bool {
 	return strings.Contains(output, "not logged in") || strings.Contains(output, "gh auth login")
 }
 
-// ghRepo is the folder's origin as gh's -R argument (HOST/OWNER/REPO).
+// ghRepo is the repository gh works on (HOST/OWNER/REPO): Options.Repo
+// when the caller chose one with GitHubOrigin — refused when origin no
+// longer names it —, else the first of origin's URLs that names one.
 func ghRepo(ctx context.Context, r *repo) (string, error) {
 	urls, err := originURLs(ctx, r)
 	if err != nil {
 		return "", err
 	}
-	host, path := chooseOrigin(urls, anyHost)
-	if host == "" || strings.Count(path, "/") != 1 {
+	accept := anyHost
+	if r.o.Repo != "" {
+		want, _, _ := strings.Cut(r.o.Repo, "/")
+		accept = func(host string) bool { return strings.EqualFold(host, want) }
+	}
+	host, path := chooseOrigin(urls, accept)
+	switch {
+	case host == "" || strings.Count(path, "/") != 1:
 		return "", fmt.Errorf("origin %q does not name a GitHub repository", urls)
+	case r.o.Repo != "" && !strings.EqualFold(host+"/"+path, r.o.Repo):
+		return "", fmt.Errorf("origin %q no longer names %s", urls, r.o.Repo)
 	}
 	return host + "/" + path, nil
-}
-
-// OriginRepo is the folder's origin as HOST/OWNER/REPO (the repository gh
-// works on). It runs no network call and no gh.
-func OriginRepo(ctx context.Context, o Options) (string, error) {
-	r, err := open(o)
-	if err != nil {
-		return "", err
-	}
-	return ghRepo(ctx, r)
 }
 
 // DefaultBase is the repository's default branch on GitHub (spec D4: `gh
@@ -399,6 +401,14 @@ func Publish(ctx context.Context, o Options, req PublishRequest) (res PublishRes
 		return res, fmt.Errorf("%w: origin pushes to a different repository (%s) than it fetches from (%s)",
 			ErrPushFailed, strings.TrimSpace(string(pushURL)), strings.TrimSpace(string(fetchURL)))
 	}
+	// Rel is relative to the folder, which may sit below the repository's
+	// top level; the scratch worktree is the whole repository.
+	prefix, err := r.git(ctx, "rev-parse", "--show-prefix")
+	if err != nil {
+		return res, failure(nil, err)
+	}
+	// Only the newline goes: a folder name may start or end with a space.
+	req.Rel = filepath.ToSlash(filepath.Join(strings.TrimSuffix(string(prefix), "\n"), req.Rel))
 	if err := fetchBase(ctx, o, r, strings.TrimSpace(string(fetchURL)), req.BaseSHA); err != nil {
 		return res, failure(nil, err)
 	}
@@ -477,9 +487,17 @@ func forgetWorktree(ctx context.Context, r *repo, dir string) {
 		return
 	}
 	for _, e := range entries {
-		raw, err := os.ReadFile(filepath.Join(admin, e.Name(), "gitdir")) // <work tree>/.git
-		if err == nil && want[filepath.Dir(filepath.Clean(strings.TrimSpace(string(raw))))] {
-			_ = os.RemoveAll(filepath.Join(admin, e.Name()))
+		entry := filepath.Join(admin, e.Name())
+		raw, err := os.ReadFile(filepath.Join(entry, "gitdir")) // <work tree>/.git
+		if err != nil {
+			continue
+		}
+		gitdir := strings.TrimSpace(string(raw))
+		if !filepath.IsAbs(gitdir) { // worktree.useRelativePaths: relative to the entry
+			gitdir = filepath.Join(entry, gitdir)
+		}
+		if want[filepath.Dir(filepath.Clean(gitdir))] {
+			_ = os.RemoveAll(entry)
 		}
 	}
 }
@@ -623,25 +641,30 @@ func PRState(ctx context.Context, o Options, prURL string) (state string, merged
 // which would also delete a local branch of that name the owner checked
 // out) and then deletes its head branch on origin only: by a push of the
 // deletion to origin's push URL, under the owner-network rules, so no
-// local ref moves. The branch is deleted only when it is a coach branch
-// of the same repository, origin is that repository, and it still exists
-// there; otherwise it is left. ErrNoGH when gh is missing or logged out,
-// ErrTimeout over the budget.
+// local ref moves. A pull request gh already reports closed is not closed
+// again, its branch is still deleted: a retry after a close whose branch
+// deletion failed finishes the job. The branch is deleted only when it is
+// a coach branch of the same repository, origin is that repository, and it
+// still exists there; otherwise it is left. ErrNoGH when gh is missing or
+// logged out, ErrTimeout over the budget.
 func ClosePR(ctx context.Context, o Options, prURL string) (err error) {
 	defer overBudget(&err)
-	out, err := gh(ctx, o, "pr", "view", prURL, "--json", "headRefName,isCrossRepository")
+	out, err := gh(ctx, o, "pr", "view", prURL, "--json", "headRefName,isCrossRepository,state")
 	if err != nil {
 		return ghFailure(out, err)
 	}
 	var view struct {
 		HeadRefName       string `json:"headRefName"`
 		IsCrossRepository bool   `json:"isCrossRepository"`
+		State             string `json:"state"`
 	}
 	if err := json.Unmarshal(out, &view); err != nil {
 		return fmt.Errorf("gh pr view: no head branch in %q", clip(string(out)))
 	}
-	if out, err := gh(ctx, o, "pr", "close", prURL); err != nil {
-		return ghFailure(out, err)
+	if view.State != "CLOSED" {
+		if out, err := gh(ctx, o, "pr", "close", prURL); err != nil {
+			return ghFailure(out, err)
+		}
 	}
 	if view.IsCrossRepository || !branchPattern.MatchString(view.HeadRefName) {
 		return nil
@@ -653,12 +676,16 @@ func ClosePR(ctx context.Context, o Options, prURL string) (err error) {
 // the pull request's repository (else leaves it): a push of the deletion
 // to the push URL, no hooks, no prompt; a branch already gone is fine.
 func deleteRemoteBranch(ctx context.Context, o Options, prURL, branch string) error {
+	pr := PRRepository(prURL)
+	o.Repo = pr // the origin URL on the pull request's host, as a rollback's revert reads it
 	r, err := open(o)
 	if err != nil {
 		return err
 	}
-	slug, err := ghRepo(ctx, r)
-	if err != nil || !strings.EqualFold(slug, PRRepository(prURL)) {
+	if pr == "" {
+		return nil
+	}
+	if _, err := ghRepo(ctx, r); err != nil {
 		return nil // origin is not (or no longer names) the pull request's repository: its branch is left
 	}
 	fetchURL, err := r.git(ctx, "remote", "get-url", Remote)
@@ -672,6 +699,16 @@ func deleteRemoteBranch(ctx context.Context, o Options, prURL, branch string) er
 	if !sameRepository(strings.TrimSpace(string(fetchURL)), strings.TrimSpace(string(pushURL))) {
 		return nil
 	}
+	// The URL git pushes to, after insteadOf/pushInsteadOf, must itself name
+	// the pull request's repository: a rewrite to another repository of the
+	// same name would otherwise lose that one's branch.
+	if !pushTargetIs(strings.TrimSpace(string(pushURL)), pr) {
+		// Host and path only: a push URL may carry user:token@.
+		host, path := remoteURL(strings.TrimSpace(string(pushURL)))
+		log.Printf("workbenchgit: leaving branch %s: origin pushes to %s, not the pull request's repository %s",
+			branch, clip(host+"/"+path), pr)
+		return nil
+	}
 	pctx, cancel := context.WithTimeout(withOwnerNetwork(ctx, ghPath(o)), budget(o))
 	defer cancel()
 	_, err = r.git(pctx, "push", "--quiet", "--no-verify", "--receive-pack=git-receive-pack",
@@ -681,6 +718,20 @@ func deleteRemoteBranch(ctx context.Context, o Options, prURL, branch string) er
 		return nil
 	}
 	return failure(ErrPushFailed, err)
+}
+
+// localPushTargets lets a push target on disk (no host) stand for any
+// repository: the tests reach a bare repository through insteadOf. Never set
+// outside tests.
+var localPushTargets = false
+
+// pushTargetIs: the effective push URL names repo (HOST/OWNER/REPO).
+func pushTargetIs(pushURL, repo string) bool {
+	host, path := remoteURL(pushURL)
+	if host == "" {
+		return localPushTargets
+	}
+	return strings.EqualFold(host+"/"+path, repo)
 }
 
 // PRRepository is HOST/OWNER/REPO of a pull request URL

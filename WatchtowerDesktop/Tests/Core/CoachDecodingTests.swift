@@ -72,6 +72,26 @@ final class CoachDecodingTests: XCTestCase {
         XCTAssertEqual(repo.writtenBranch, "main")
         XCTAssertEqual(repo.measureFrom, "2026-11-02T09:00:00Z")
         XCTAssertEqual(try decodeProposal(#","folder_branch":"""#).folderBranch, "")
+        XCTAssertEqual(old.prURL, "", "an older CLI without pr_url")
+        XCTAssertEqual(old.revertPRURL, "")
+        let pr = try decodeProposal(#","pr_url":"https://github.com/acme/repo/pull/12","#
+            + #""revert_pr_url":"https://github.com/acme/repo/pull/13""#)
+        XCTAssertEqual(pr.prURL, "https://github.com/acme/repo/pull/12")
+        XCTAssertEqual(pr.revertPRURL, "https://github.com/acme/repo/pull/13")
+    }
+
+    func testSyncResultDecodes() throws {
+        let ok = try JSONDecoder().decode(CoachSyncResult.self, from: Data(
+            #"{"ok":true,"changed":2,"sync_error":"","sync_code":""}"#.utf8))
+        XCTAssertEqual(ok.changed, 2)
+        XCTAssertEqual(ok.syncError, "")
+        let partialJSON = #"{"ok":true,"changed":0,"sync_error":"Log in with `gh auth login` to let Watchtower "#
+            + #"open the pull request.","sync_code":"no_gh"}"#
+        let partial = try JSONDecoder().decode(CoachSyncResult.self, from: Data(partialJSON.utf8))
+        XCTAssertEqual(partial.syncCode, "no_gh")
+        XCTAssertTrue(partial.syncError.hasPrefix("Log in with"))
+        XCTAssertEqual(try JSONDecoder().decode(CoachSyncResult.self, from: Data(#"{"ok":true,"changed":0}"#.utf8))
+            .syncError, "")
     }
 
     func testFailureParsePicksJSONLineBeforeProse() {

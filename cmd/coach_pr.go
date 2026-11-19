@@ -11,10 +11,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"watchtower/internal/coach"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/workbenchgit"
 )
 
@@ -32,6 +34,11 @@ const coachPRBudget = 3 * time.Minute
 // coachScratchDir is the folder the scratch worktrees go in, under the
 // workspace (spec 4.1); `workbench cleanup` lists what is left there.
 const coachScratchDir = "coach-pr"
+
+// coachLockDir holds the per-proposal decision locks (<id>.lock), under the
+// workspace: apart from coachScratchDir, whose leftovers `workbench
+// cleanup` lists.
+const coachLockDir = "coach-locks"
 
 // coachBranchTokenFile holds the workspace's branch token, in the workspace
 // folder.
@@ -96,22 +103,45 @@ func coachScopedBranch(token, branch string) (string, error) {
 	return "coach/" + token + "/" + rest, nil
 }
 
+// coachProposalLock takes proposal id's decision lock — a non-blocking
+// flock on <workspace>/coach-locks/<id>.lock — for one Accept, Decline or
+// Roll Back, from its status read through its MarkCoach*: two processes
+// deciding the same proposal at once would remove each other's scratch
+// worktree and overwrite each other's branch, or leave a pull request open
+// for a declined proposal. A second one is refused at once (ErrInProgress,
+// code in_progress), never queued: by the time the first one ends, the
+// proposal has moved on and the second decision would be refused anyway.
+// The kernel drops the lock when the holder dies, so a killed CLI never
+// leaves it held; the empty file stays.
+func coachProposalLock(workspace string, id int64) (unlock func(), err error) {
+	dir := filepath.Join(workspace, coachLockDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("locking coach proposal %d: %w", id, err)
+	}
+	unlock, ok, err := fsutil.TryLockFile(filepath.Join(dir, strconv.FormatInt(id, 10)+".lock"))
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("locking coach proposal %d: %w", id, err)
+	case !ok:
+		return nil, fmt.Errorf("coach proposal %d: %s (%w)", id, coach.InProgressLine, coach.ErrInProgress)
+	}
+	return unlock, nil
+}
+
 // coachGitHubCalls are the workbenchgit pull-request calls the seams make.
 type coachGitHubCalls struct {
-	isGitHub    func(ctx context.Context, o workbenchgit.Options, ghLoggedIn func(host string) bool) (bool, error)
-	originHost  func(ctx context.Context, o workbenchgit.Options) (string, error)
-	originRepo  func(ctx context.Context, o workbenchgit.Options) (string, error)
-	ghReady     func(ctx context.Context, o workbenchgit.Options, host string) error
-	defaultBase func(ctx context.Context, o workbenchgit.Options) (branch, sha string, err error)
-	publish     func(ctx context.Context, o workbenchgit.Options, req workbenchgit.PublishRequest) (workbenchgit.PublishResult, error)
-	prState     func(ctx context.Context, o workbenchgit.Options, prURL string) (string, time.Time, error)
-	closePR     func(ctx context.Context, o workbenchgit.Options, prURL string) error
+	githubOrigin func(ctx context.Context, o workbenchgit.Options, accept func(host string) bool) (workbenchgit.GitHubRepo, error)
+	ghReady      func(ctx context.Context, o workbenchgit.Options, host string) error
+	defaultBase  func(ctx context.Context, o workbenchgit.Options) (branch, sha string, err error)
+	publish      func(ctx context.Context, o workbenchgit.Options, req workbenchgit.PublishRequest) (workbenchgit.PublishResult, error)
+	prState      func(ctx context.Context, o workbenchgit.Options, prURL string) (string, time.Time, error)
+	closePR      func(ctx context.Context, o workbenchgit.Options, prURL string) error
 }
 
 // coachGitHub is the real workbenchgit (a seam for tests).
 var coachGitHub = coachGitHubCalls{
-	isGitHub: workbenchgit.IsGitHubFolder, originHost: workbenchgit.OriginHost, originRepo: workbenchgit.OriginRepo,
-	ghReady: workbenchgit.GHReady, defaultBase: workbenchgit.DefaultBase, publish: workbenchgit.Publish,
+	githubOrigin: workbenchgit.GitHubOrigin,
+	ghReady:      workbenchgit.GHReady, defaultBase: workbenchgit.DefaultBase, publish: workbenchgit.Publish,
 	prState: workbenchgit.PRState, closePR: workbenchgit.ClosePR,
 }
 
@@ -131,16 +161,25 @@ var coachGHPath = func() string {
 }
 
 // prApplier is the coach's Applier with the pull-request seams filled over
-// ctx: every git and gh call they make ends with it.
+// ctx: every git and gh call they make ends with it. The GitHub repository
+// the route chose among origin's URLs for a folder is the one its Publish
+// works on (finding 5: never another URL of the same origin).
 func (e *coachEnv) prApplier(ctx context.Context) *coach.Applier {
 	a := e.applier()
 	g := coachGitHub
 	gh := coachGHPath()
 	scratch := filepath.Join(e.cfg.WorkspaceDir(), coachScratchDir)
+	routed := map[string]string{} // folder → the HOST/OWNER/REPO its route chose
 	opts := func(folder string) workbenchgit.Options {
-		return workbenchgit.Options{Folder: folder, GHPath: gh, Scratch: scratch}
+		return workbenchgit.Options{Folder: folder, GHPath: gh, Scratch: scratch, Repo: routed[folder]}
 	}
-	a.RepoRoute = func(folder string) (coach.RepoRoute, error) { return coachRoute(ctx, g, opts(folder)) }
+	a.RepoRoute = func(folder string) (coach.RepoRoute, error) {
+		route, repo, err := coachRoute(ctx, g, opts(folder))
+		if route.PR {
+			routed[folder] = repo
+		}
+		return route, err
+	}
 	token := func() (string, error) { return coachBranchToken(e.cfg.WorkspaceDir()) }
 	a.RepoPublish = func(folder string, req coach.RepoPublishReq) (string, string, error) {
 		return coachPublish(ctx, g, opts(folder), token, req)
@@ -155,47 +194,65 @@ func (e *coachEnv) prApplier(ctx context.Context) *coach.Applier {
 	return a
 }
 
-// coachRoute decides how a folder takes a repository edit (spec D8): a
-// folder that is not a git work tree, or whose origin is not a GitHub
-// repository gh can reach, keeps the working-copy route (which refuses
-// not_git itself); a GitHub folder whose gh is missing or logged out is
-// refused (no_gh, D3), never dropped to the working copy.
-func coachRoute(ctx context.Context, g coachGitHubCalls, o workbenchgit.Options) (coach.RepoRoute, error) {
+// coachRoute decides how a folder takes a repository edit (spec D8) and
+// which GitHub repository (HOST/OWNER/REPO) among origin's URLs it works
+// on: a folder that is not a git work tree, or whose origin is not a
+// GitHub repository gh can reach, keeps the working-copy route (which
+// refuses not_git itself); a GitHub folder whose gh is missing or logged
+// out is refused (no_gh, D3), never dropped to the working copy, and one
+// whose gh cannot reach GitHub to tell is refused retryably
+// (github_unreachable, or timeout) — also on another host, whose login could
+// not be checked: only gh missing or not logged in to that host keeps D8's
+// working-copy route. GHReady checks the host the repository was chosen
+// on — never another URL of the same origin.
+func coachRoute(ctx context.Context, g coachGitHubCalls, o workbenchgit.Options) (coach.RepoRoute, string, error) {
 	if !coachFolderStatus(ctx, o.Folder).Git {
-		return coach.RepoRoute{}, nil
+		return coach.RepoRoute{}, "", nil
 	}
-	isGitHub, err := g.isGitHub(ctx, o, func(host string) bool { return g.ghReady(ctx, o, host) == nil })
+	var unchecked error // a host whose login gh could not check (offline, over budget)
+	loggedIn := func(host string) bool {
+		err := g.ghReady(ctx, o, host)
+		if unchecked == nil && (errors.Is(err, workbenchgit.ErrUnreachable) || errors.Is(err, workbenchgit.ErrTimeout)) {
+			unchecked = err
+		}
+		return err == nil
+	}
+	origin, err := g.githubOrigin(ctx, o, loggedIn)
 	if err != nil {
-		return coach.RepoRoute{}, coachGitHubErr(err, nil)
+		return coach.RepoRoute{}, "", coachGitHubErr(err, nil)
 	}
-	if !isGitHub {
-		return coach.RepoRoute{}, nil
+	if origin.Host == "" {
+		if unchecked != nil { // never a working-copy write because GitHub was unreachable
+			return coach.RepoRoute{}, "", coachGitHubErr(unchecked, nil)
+		}
+		return coach.RepoRoute{}, "", nil
 	}
-	host, err := g.originHost(ctx, o)
-	if err != nil {
-		return coach.RepoRoute{}, coachGitHubErr(err, nil)
+	if err := g.ghReady(ctx, o, origin.Host); err != nil {
+		return coach.RepoRoute{}, "", coachGitHubErr(err, nil)
 	}
-	if err := g.ghReady(ctx, o, host); err != nil {
-		return coach.RepoRoute{}, coachGitHubErr(err, nil)
-	}
-	return coach.RepoRoute{PR: true}, nil
+	return coach.RepoRoute{PR: true}, origin.Repo, nil
 }
 
 // coachPublish opens req's pull request against the repository's default
 // branch, on req's branch in the workspace's namespace (coachScopedBranch),
-// and returns its URL and the branch pushed. A revert is refused before
-// anything moves when the folder's origin is gone or is no longer the
-// repository of the pull request it reverts (ErrOriginMoved).
+// and returns its URL and the branch pushed. An Accept works on the
+// repository its route chose (o.Repo). A revert works on the origin URL on
+// the reverted pull request's host, and is refused before anything moves
+// when the folder's origin is gone or no longer names that pull request's
+// repository (ErrOriginMoved).
 func coachPublish(ctx context.Context, g coachGitHubCalls, o workbenchgit.Options, token func() (string, error),
 	req coach.RepoPublishReq) (string, string, error) {
 	if req.Reverts != "" {
-		origin, err := g.originRepo(ctx, o)
+		pr := workbenchgit.PRRepository(req.Reverts)
+		prHost, _, _ := strings.Cut(pr, "/")
+		origin, err := g.githubOrigin(ctx, o, func(host string) bool { return pr != "" && strings.EqualFold(host, prHost) })
 		if err != nil {
 			return "", "", fmt.Errorf("%w: %v", coach.ErrOriginMoved, err)
 		}
-		if pr := workbenchgit.PRRepository(req.Reverts); pr == "" || !strings.EqualFold(pr, origin) {
-			return "", "", fmt.Errorf("%w: pull request %s, origin %s", coach.ErrOriginMoved, req.Reverts, origin)
+		if pr == "" || !strings.EqualFold(pr, origin.Repo) {
+			return "", "", fmt.Errorf("%w: pull request %s, origin %s", coach.ErrOriginMoved, req.Reverts, origin.Repo)
 		}
+		o.Repo = origin.Repo
 	}
 	tok, err := token()
 	if err != nil {
@@ -233,6 +290,8 @@ func coachGitHubErr(err, other error) error {
 		return fmt.Errorf("%w: %v", coach.ErrTimeout, err)
 	case errors.Is(err, workbenchgit.ErrNoGH):
 		return fmt.Errorf("%w: %v", coach.ErrNoGH, err)
+	case errors.Is(err, workbenchgit.ErrUnreachable):
+		return fmt.Errorf("%w: %v", coach.ErrUnreachable, err)
 	case errors.As(err, &bd):
 		return &coach.BaseDiffersError{Current: bd.Current, Detail: bd.Rel + " on " + bd.Base}
 	case errors.Is(err, workbenchgit.ErrPushFailed):

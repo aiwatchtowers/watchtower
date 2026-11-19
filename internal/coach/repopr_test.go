@@ -255,15 +255,52 @@ func TestRollbackPR_ByState(t *testing.T) {
 
 	f.state = prClosed
 	id = prAccepted(t, d, a, wb, 3)
+	closedURL := proposal(t, d, id).PRURL
 	published := len(f.published)
 	r, err = a.RollbackWithResult(id, false)
 	require.NoError(t, err)
 	assert.Empty(t, r.RevertPRURL)
-	assert.Len(t, f.published, published, "no git call for a pull request closed by hand")
-	assert.Len(t, f.closed, 1)
+	assert.Len(t, f.published, published, "no push for a pull request closed by hand")
+	assert.Equal(t, []string{url, closedURL}, f.closed,
+		"a closed pull request goes through the idempotent close: only its leftover branch is deleted")
 	assert.Equal(t, "rolled_back", proposal(t, d, id).Status)
 
 	assert.Equal(t, before, folderFiles(t, folder))
+}
+
+// Finding 3: a pull request already closed — by hand, or by a Rollback
+// whose branch deletion failed — is rolled back even when deleting its
+// leftover branch fails again (logged, not fatal); and a close that a
+// concurrent `coach sync-prs` saw first (it marked the row rolled_back
+// between the close and MarkCoachRolledBack) counts as done.
+func TestRollbackPR_ClosedAndRacingSync(t *testing.T) {
+	d := openDBs(t)
+	a, f, _, wb := prApplier(t, d)
+	f.state, f.closeErr = prClosed, fmt.Errorf("%w: git push --delete: denied", ErrPushFailed)
+	id := prAccepted(t, d, a, wb, 6)
+	_, err := a.RollbackWithResult(id, false)
+	require.NoError(t, err, "a leftover branch that cannot be deleted does not block the rollback")
+	assert.Equal(t, "rolled_back", proposal(t, d, id).Status)
+
+	f.state, f.closeErr = prOpen, nil
+	id = prAccepted(t, d, a, wb, 7)
+	a.RepoClosePR = func(string, string) error {
+		_, err := d.Exec(`UPDATE coach_proposals SET status = 'rolled_back' WHERE id = ?`, id) // the sync wins the row
+		return err
+	}
+	r, err := a.RollbackWithResult(id, false)
+	require.NoError(t, err, "the sync marked the closed pull request rolled back first: done")
+	assert.Empty(t, r.RevertPRURL)
+	assert.Equal(t, "rolled_back", proposal(t, d, id).Status)
+
+	// Another writer moved the row elsewhere (not rolled back): still the CAS error.
+	id = prAccepted(t, d, a, wb, 8)
+	a.RepoClosePR = func(string, string) error {
+		_, err := d.Exec(`UPDATE coach_proposals SET status = 'superseded' WHERE id = ?`, id)
+		return err
+	}
+	_, err = a.RollbackWithResult(id, false)
+	require.ErrorIs(t, err, db.ErrCoachStateChanged)
 }
 
 // Spec §4.5: a failed state read, revert push or close refuses and leaves
