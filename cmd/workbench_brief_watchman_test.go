@@ -66,3 +66,16 @@ func TestProj12_BriefIgnoresInheritedRowOfAnotherAgent(t *testing.T) {
 	require.Equal(t, 1, strings.Count(loadWorkbenchBrief(pid, io.Discard, "codex"), watchmanBriefLine), "the same row in a codex brief of its workbench")
 	require.NotContains(t, loadWorkbenchBrief(other, io.Discard, "codex"), watchmanBriefLine, "another workbench")
 }
+
+// Final review E-1: a failed arming read is logged to the hook's stderr
+// (the writer the brief was given), and the brief goes on without the line.
+func TestProj12_BriefWatchmanReadErrorGoesToStderr(t *testing.T) {
+	database, pid, _ := claudeRowFixture(t)
+	_, err := database.Exec(`ALTER TABLE watchman_arming RENAME TO watchman_arming_gone`)
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = database.Exec(`ALTER TABLE watchman_arming_gone RENAME TO watchman_arming`) })
+	var stderr strings.Builder
+	out := loadWorkbenchBrief(pid, &stderr, "claude")
+	require.NotContains(t, out, watchmanBriefLine)
+	require.Contains(t, stderr.String(), "brief: watchman arming:")
+}

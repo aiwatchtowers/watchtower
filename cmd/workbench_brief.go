@@ -191,10 +191,10 @@ func loadWorkbenchBrief(id int64, stderr io.Writer, agent string) string {
 	if _, err := os.Stat(p.FolderPath); err != nil {
 		return briefUnavailable(id, fmt.Sprintf("folder %s is missing (moved or deleted?)", p.FolderPath))
 	}
-	return briefFromDB(database, p, agent)
+	return briefFromDB(database, p, agent, stderr)
 }
 
-func briefFromDB(database *db.DB, p *db.Workbench, agent string) string {
+func briefFromDB(database *db.DB, p *db.Workbench, agent string, stderr io.Writer) string {
 	board, err := database.GetWorkbenchBoard(p.ID)
 	if err != nil {
 		return briefUnavailable(p.ID, "is unavailable: "+err.Error())
@@ -217,7 +217,7 @@ func briefFromDB(database *db.DB, p *db.Workbench, agent string) string {
 	method := joinBriefLines(briefMethodSection(e, briefPresetMismatch(e, p.FolderPath, p.ID)), briefColumnsFor(database, p.ID))
 	return renderSessionBrief(board, p, comments, drift, loadBriefRecent(database, p.ID, now), loadBriefAsks(database, p.ID), now,
 		briefRulesFor(e.Preset), method, joinBriefLines(briefReviewLines(database, p.ID), briefCleanupLine(database, p.ID)),
-		joinBriefLines(briefInstructionsSlot(database, p.ID), briefWatchmanLine(database, p.ID, agent)))
+		joinBriefLines(briefInstructionsSlot(database, p.ID), briefWatchmanLine(database, p.ID, agent, stderr)))
 }
 
 // briefAsks is the answered-asks input: the asks for the brief's own session
@@ -295,8 +295,9 @@ const briefWatchmanLineText = "The owner handed this session to Watchman; asks a
 
 // briefWatchmanLine is briefWatchmanLineText while the brief's own session is
 // armed (arming is the delegation); "" when it is not, when the session is
-// not of this agent and workbench, or when the read fails (logged, the brief goes on).
-func briefWatchmanLine(database *db.DB, workbenchID int64, agent string) string {
+// not of this agent and workbench, or when the read fails (logged to stderr,
+// the hook's log; the brief goes on).
+func briefWatchmanLine(database *db.DB, workbenchID int64, agent string, stderr io.Writer) string {
 	sessionID, ok, err := terminalSessionRowID()
 	if err != nil || !ok {
 		return "" // an invalid env var is already reported by recordTerminalSessionID
@@ -309,7 +310,7 @@ func briefWatchmanLine(database *db.DB, workbenchID int64, agent string) string 
 	}
 	armed, err := database.WatchmanSessionArmed(sessionID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "watchtower: workbench %d brief: watchman arming: %v\n", workbenchID, err)
+		fmt.Fprintf(stderr, "watchtower: workbench %d brief: watchman arming: %v\n", workbenchID, err)
 		return ""
 	}
 	if !armed {
