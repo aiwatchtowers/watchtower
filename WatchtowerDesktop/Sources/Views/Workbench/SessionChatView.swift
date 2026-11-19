@@ -232,7 +232,6 @@ struct SessionChatView: View {
             if !busy { store.clearActivity() }
         }
         .onDisappear { vm.feedPaneDisappeared(sessionID: sessionID) }
-        .onChange(of: sessionID) { path = SessionChatPath() }
     }
 
     private struct MainFollowKey: Hashable {
@@ -454,13 +453,33 @@ struct SessionChatView: View {
     /// Reads the store's earlier page (again, for the owner's Retry); the
     /// window moves only when the page added entries.
     private func pageEarlier(retry: Bool) {
-        guard store.hasEarlierPage else { return }
         let top = dialogEntries.first?.id
         Task {
-            let added = retry ? await store.retryEarlierPage() : await store.loadEarlierPage()
-            guard added else { return }
+            guard await Self.pageEarlier(store: store, retry: retry) else { return }
             if let anchor = window.earlierPageArrived(entries: dialogEntries, previousTop: top) { earlierAnchor = anchor }
         }
+    }
+
+    /// Consecutive earlier pages read in one ask that add no dialog entry.
+    static let maxPagesWithoutDialog = 20
+
+    /// Reads earlier pages until one adds a dialog entry (a page of subagent
+    /// markers alone, or of entries already held, leaves the feed's height
+    /// as it was, so nothing would ask again). Stops on a failure, when the
+    /// paging ends, while a page is already being read, or after
+    /// `maxPagesWithoutDialog` pages. True when dialog entries were added.
+    @MainActor
+    static func pageEarlier(store: SessionFeedStore, retry: Bool) async -> Bool {
+        var retry = retry
+        for _ in 0..<maxPagesWithoutDialog {
+            guard store.hasEarlierPage, !store.loadingEarlierPage else { return false }
+            let shown = WorkchatFeedAdapter.dialog(store.entries).count
+            if retry { await store.retryEarlierPage() } else { await store.loadEarlierPage() }
+            retry = false
+            if WorkchatFeedAdapter.dialog(store.entries).count > shown { return true }
+            if store.earlierPageError != nil { return false }
+        }
+        return false
     }
 
     /// "No messages yet" only when nothing at all can be shown: a tail of

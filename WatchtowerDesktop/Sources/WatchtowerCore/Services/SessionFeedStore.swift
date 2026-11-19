@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Holds the chat feed of one session and merges each poll of
 /// `watchtower workbench session-feed` into it: upsert by entry id keeping the
@@ -52,7 +53,8 @@ package final class SessionFeedStore: ObservableObject {
     /// The id of the first entry held from the tail pages: `--before` for
     /// the next earlier page.
     private var before = ""
-    private var loadingEarlierPage = false
+    /// An earlier page is being read; another ask is a no-op meanwhile.
+    package private(set) var loadingEarlierPage = false
     /// An earlier page is held: a later tail read (cursor still empty) must
     /// not move `before` back to the tail.
     private var heldEarlierPage = false
@@ -162,7 +164,8 @@ package final class SessionFeedStore: ObservableObject {
     /// `retryEarlierPage()`). Goes through the pane's serial read, so it never
     /// overlaps a poll. A failure keeps the entries and sets
     /// `earlierPageError`; the page stays asked for (`hasEarlierPage`), except
-    /// when the CLI refuses its `before` id for good, which ends the paging.
+    /// when the CLI refuses its `before` id for good, which ends the paging
+    /// quietly (logged, no `earlierPageError`).
     @discardableResult
     package func loadEarlierPage() async -> Bool {
         guard hasEarlierPage, earlierPageError == nil, !before.isEmpty, !loadingEarlierPage, !runnerMissing else {
@@ -182,8 +185,14 @@ package final class SessionFeedStore: ObservableObject {
             setBefore(payload.before)
             return added
         } catch {
-            earlierPageError = error.localizedDescription
-            if Self.refusesBefore(error) { setBefore("") }
+            if Self.refusesBefore(error) {
+                // The same id fails every time: paging ends quietly (no
+                // error with a Retry that could never succeed).
+                Self.log.notice("session \(self.sessionID, privacy: .public): earlier pages end, before refused")
+                setBefore("")
+            } else {
+                earlierPageError = error.localizedDescription
+            }
             return false
         }
     }
@@ -201,6 +210,8 @@ package final class SessionFeedStore: ObservableObject {
     /// Each text is pinned in `internal/sessionfeed/feed_tail_test.go`:
     /// "is ambiguous" by `TestTailPage_AmbiguousBeforeIsAnError`, "no such
     /// entry" by `TestTailPage_UnknownBeforeIsAnError`.
+    private static let log = Logger(subsystem: "com.watchtower.desktop", category: "SessionFeed")
+
     private static func refusesBefore(_ error: Error) -> Bool {
         guard case let CLIRunnerError.nonZeroExit(_, stderr) = error else { return false }
         return stderr.contains("is ambiguous") || stderr.contains("no such entry")

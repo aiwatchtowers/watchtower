@@ -183,4 +183,93 @@ final class SessionChatViewTests: XCTestCase {
                        "a failed page waits for Retry, never a layout pass")
         XCTAssertFalse(SessionChatView.hasEarlier(windowHasEarlier: false, hasEarlierPage: false, pageFailed: false))
     }
+
+    /// Answers `session-feed` reads from `pages` in order (`{}` past the end).
+    private final class PageRunner: CLIRunnerProtocol, @unchecked Sendable {
+        private let lock = NSLock()
+        private var pages: [Result<String, Error>]
+        private(set) var calls: [[String]] = []
+        init(_ pages: [Result<String, Error>]) { self.pages = pages }
+        func run(args: [String]) async throws -> Data {
+            let next: Result<String, Error> = lock.withLock {
+                calls.append(args)
+                return pages.isEmpty ? .success("{}") : pages.removeFirst()
+            }
+            return Data(try next.get().utf8)
+        }
+    }
+
+    private func page(_ entries: [String], before: String?) -> Result<String, Error> {
+        let key = before.map { #","before":"\#($0)""# } ?? ""
+        return .success(#"{"session_id":7,"cursor":"c1","entries":[\#(entries.joined(separator: ","))],"subagents":[]\#(key)}"#)
+    }
+
+    private func agent(_ id: String) -> String {
+        #"{"id":"\#(id)","kind":"agent","at":"2026-10-16T10:00:00Z","text":"t","conversation":"main"}"#
+    }
+
+    private func marker(_ id: String) -> String {
+        #"{"id":"\#(id)","kind":"subagent","at":"2026-10-16T10:00:00Z","text":"","conversation":"main","#
+            + #""subagent":{"tool_use_id":"\#(id)","agent_id":"a","type":"general","description":"d","status":"finished"}}"#
+    }
+
+    func testPermanentRefusalLeavesNoDeadRetry() async {
+        let runner = PageRunner([
+            page([agent("e90")], before: "e90"),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: #"Error: before id "e90" is ambiguous (2 entries)"#))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        let added = await SessionChatView.pageEarlier(store: store, retry: false)
+        XCTAssertFalse(added)
+        XCTAssertNil(store.earlierPageError, "no error bar, so no Retry that could never succeed")
+        XCTAssertFalse(SessionChatView.hasEarlier(windowHasEarlier: false, hasEarlierPage: store.hasEarlierPage,
+                                                  pageFailed: store.earlierPageError != nil))
+        _ = await SessionChatView.pageEarlier(store: store, retry: true)
+        XCTAssertEqual(runner.calls.count, 2, "paging ended: nothing more is read")
+    }
+
+    func testTransientPageFailureRetriesThroughTheBar() async {
+        let runner = PageRunner([
+            page([agent("e90")], before: "e90"),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")),
+            page([agent("e89")], before: nil)
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        _ = await SessionChatView.pageEarlier(store: store, retry: false)
+        XCTAssertNotNil(store.earlierPageError)
+        _ = await SessionChatView.pageEarlier(store: store, retry: false)
+        XCTAssertEqual(runner.calls.count, 2, "no automatic retry after a failure")
+        let added = await SessionChatView.pageEarlier(store: store, retry: true)
+        XCTAssertTrue(added)
+        XCTAssertNil(store.earlierPageError)
+        XCTAssertEqual(store.entries.first?.id, "e89")
+    }
+
+    func testMarkerOnlyPagesKeepPaging() async {
+        let runner = PageRunner([
+            page([agent("e90")], before: "e90"),
+            page([marker("m1"), marker("m2")], before: "m1"),
+            page([agent("e90")], before: "e80"), // nothing new, but before moves on
+            page([agent("e70"), marker("m0")], before: "e70")
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        let added = await SessionChatView.pageEarlier(store: store, retry: false)
+        XCTAssertTrue(added)
+        XCTAssertEqual(runner.calls.count, 4, "pages without a dialog entry are read on until one adds one")
+        XCTAssertEqual(WorkchatFeedAdapter.dialog(store.entries).map(\.id), ["e70", "e90"])
+        XCTAssertTrue(store.hasEarlierPage)
+    }
+
+    func testPagesWithoutDialogStopAtTheCap() async {
+        let pages = (0...SessionChatView.maxPagesWithoutDialog).map { page([marker("m\($0)")], before: "m\($0)") }
+        let runner = PageRunner([page([agent("e90")], before: "e90")] + pages)
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        let added = await SessionChatView.pageEarlier(store: store, retry: false)
+        XCTAssertFalse(added)
+        XCTAssertEqual(runner.calls.count, 1 + SessionChatView.maxPagesWithoutDialog)
+    }
 }

@@ -266,7 +266,7 @@ final class SessionFeedStoreTests: XCTestCase {
             await store.loadEarlierPage()
             XCTAssertFalse(store.hasEarlierPage, "the same before fails every time: paging stops, never retried")
             XCTAssertEqual(store.entries.count, 60)
-            XCTAssertNotNil(store.earlierPageError)
+            XCTAssertNil(store.earlierPageError, "paging ends quietly: no error with a Retry that cannot succeed")
             await store.retryEarlierPage()
             XCTAssertEqual(runner.calls.count, 2)
         }
