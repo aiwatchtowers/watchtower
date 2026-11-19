@@ -48,9 +48,10 @@ exactly as before. Nothing else changes for contributors.
 - Where a job differs on the Mac it checks `runner.environment`: no
   `apt-get`, no `setup-xcode` (the runners' `.env` sets `DEVELOPER_DIR`),
   no setup-go / golangci-lint caches (the `ci` user's own caches persist),
-  Go Lint's timeout is 10 minutes instead of 5, and Go Test runs with
-  `GOMAXPROCS=8` (half the cores; `go test -p` follows it), leaving the rest
-  to the jobs beside it and to the owner.
+  Go Lint's timeout is 10 minutes instead of 5, and Go Test's three
+  shards run with `GOMAXPROCS=4` each (`go test -p` follows it; about 5
+  busy cores a shard), leaving the rest to the jobs beside them and to the
+  owner.
 
 ## Why not Swift Test
 

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -351,10 +352,33 @@ func TestListCoachProposals_IncludesDeclinedChat(t *testing.T) {
 	assert.Equal(t, coach.DestClaudeMDUser, r["destination"])
 	assert.Equal(t, "Run tests first", r["title"])
 	assert.NotContains(t, r, "after_text", "a listing carries no texts")
+	assert.Equal(t, "corrections", r["metric"])
+	assert.Equal(t, "2026-11-10T12:00:00Z", r["decided_at"])
+	assert.Equal(t, "", r["verdict"], "no verdict yet")
+	assert.NotContains(t, r, "measure_from")
 
 	rows = f.rows(t, "list_coach_proposals", fmt.Sprintf(`{"id":%d}`, id))
 	require.Len(t, rows, 1)
 	assert.Equal(t, "Run tests first.\n", rows[0]["after_text"])
+}
+
+// The chat sees the 14-day measure the Accepted edits dot is coloured by.
+func TestListCoachProposals_CarriesTheVerdict(t *testing.T) {
+	f := newFixture(t)
+	id, err := f.d.InsertCoachProposal(db.CoachProposal{
+		Fingerprint: "fp-1", Kind: "add", Destination: coach.DestClaudeMDUser,
+		Title: "Run tests first", Why: "w", Metric: "corrections", AfterText: "Run tests first.\n", Origin: "chat",
+	}, testNow)
+	require.NoError(t, err)
+	require.NoError(t, f.d.DecideCoachProposal(id, "open", "accepted", testNow))
+	v := 0.25
+	require.NoError(t, f.d.SetCoachVerdict(id, "works", &v, testNow.Add(15*24*time.Hour)))
+
+	rows := f.rows(t, "list_coach_proposals", `{}`)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "works", rows[0]["verdict"])
+	assert.InDelta(t, 0.25, rows[0]["verdict_value"], 1e-9)
+	assert.Equal(t, "2026-11-25T12:00:00Z", rows[0]["verdict_at"])
 }
 
 // A history of skill-sized proposals stays under the read cap: the listing
