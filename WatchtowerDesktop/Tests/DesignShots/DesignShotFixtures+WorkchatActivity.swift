@@ -176,7 +176,7 @@ struct WorkchatLiveProposalShot: View {
                     if usesLiveImplementation {
                         WorkchatAgentsPopover(
                             list: WorkchatLivePresentation.agentsList(snapshot: actualSnapshot, error: nil, feedLoaded: true,
-                                                                      feedError: nil, done: [], now: fixtureNow),
+                                                                      feedError: nil, done: [], idle: false, now: fixtureNow),
                             agentsMore: actualSnapshot?.agentsMore ?? 0, paneKey: "shot", memory: WorkchatPaneMemory()
                         ) { _ in }
                             .background(Surface.window, in: RoundedRectangle(cornerRadius: Radius.container))

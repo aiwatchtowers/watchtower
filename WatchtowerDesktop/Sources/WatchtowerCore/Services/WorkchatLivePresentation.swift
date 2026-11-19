@@ -79,7 +79,13 @@ package enum WorkchatLivePresentation {
             return Row(symbol: "", text: "", elapsed: nil, agentsBadge: String(done.count), warning: false, pulse: false,
                        retry: false, agentsEnabled: true, activity: false, agentsSymbol: "checkmark", agentsDimmed: true)
         }
-        var result = workingRow(snapshot: snapshot, error: error, loaded: loaded, stateAt: stateAt, now: now)
+        // An agent already in Done is never counted as working (the list filters it too).
+        var counted = snapshot
+        if !done.isEmpty {
+            let doneIDs = Set(done.map(\.toolUseID))
+            counted?.agents.removeAll { doneIDs.contains($0.id) }
+        }
+        var result = workingRow(snapshot: counted, error: error, loaded: loaded, stateAt: stateAt, now: now)
         let unknown = result.agentsBadge == "?"
         if result.agentsBadge == nil, !done.isEmpty {
             result.agentsBadge = String(done.count)
@@ -130,6 +136,12 @@ package enum WorkchatLivePresentation {
     }
     private static func workingText(_ snapshot: SessionFeedLive) -> String { working }
     package static func agentsTitle(count: Int) -> String { "Running agents · \(count)" }
+    /// The 👥 button's help and accessibility label, naming its count; nil without a button.
+    package static func agentsLabel(_ row: Row) -> String? {
+        guard let badge = row.agentsBadge else { return nil }
+        if badge == "?" { return "\(listTitle) · status unavailable" }
+        return row.agentsDimmed ? "\(listTitle) · Done \(badge)" : "\(listTitle) · \(badge) working"
+    }
     package static func agentsTitle(snapshot: SessionFeedLive?) -> String {
         guard let snapshot, snapshot.agentsState == "known",
               !snapshot.agents.contains(where: { $0.ref.status == "unknown" }) else { return "Running agents · unknown" }
@@ -148,19 +160,22 @@ package enum WorkchatLivePresentation {
     }
     /// The 👥 list: Working from the live snapshot (minus any id already in
     /// Done), Done from the feed's finished markers (`done(from:)`). Done from
-    /// the last good read survives a later failure (`feedLoaded`).
+    /// the last good read survives a later failure (`feedLoaded`). `idle`: the
+    /// session runs no turn; otherwise a missing or stale snapshot means the
+    /// agents are not observed, never that none works.
     package static func agentsList(
         snapshot: SessionFeedLive?,
         error: String?,
         feedLoaded: Bool,
         feedError: String?,
         done: [SessionFeedSubagent],
+        idle: Bool,
         now: Date
     ) -> AgentsList {
         let state: AgentsList.State = feedLoaded ? .ready : (feedError == nil ? .loading : .error)
         let doneIDs = Set(done.map(\.toolUseID))
         let working = agentRows(snapshot, error: error, now: now).filter { !doneIDs.contains($0.id) }
-        let unknown = workingUnknown(snapshot, error: error, now: now)
+        let unknown = workingUnknown(snapshot, error: error, idle: idle, now: now)
         let note: String? = unknown ? unknownAgents : (working.isEmpty ? noneWorking : nil)
         let rows = done.map {
             DoneRow(ref: $0, title: $0.type.isEmpty ? "Subagent" : $0.type, subtitle: $0.description, id: $0.toolUseID)
@@ -169,12 +184,14 @@ package enum WorkchatLivePresentation {
                           doneOpenByDefault: working.isEmpty || unknown)
     }
 
-    /// The live snapshot cannot say who works: missing after an error, stale,
-    /// agents state not known, or an agent whose status is not resolved.
-    private static func workingUnknown(_ snapshot: SessionFeedLive?, error: String?, now: Date) -> Bool {
+    /// The live snapshot cannot say who works: a read error, no fresh snapshot
+    /// while the session is busy, agents state not known, or an agent whose
+    /// status is not resolved. An idle session's missing or old read is none.
+    private static func workingUnknown(_ snapshot: SessionFeedLive?, error: String?, idle: Bool, now: Date) -> Bool {
         if error != nil { return true }
-        guard let snapshot else { return false }
-        guard let observed = snapshot.observedAt, now.timeIntervalSince(observed) < staleAfter else { return true }
+        guard let snapshot, let observed = snapshot.observedAt, now.timeIntervalSince(observed) < staleAfter else {
+            return !idle
+        }
         return snapshot.agentsState != "known"
             || snapshot.agents.contains { $0.ref.status != "finished" && $0.ref.status != "running" }
     }

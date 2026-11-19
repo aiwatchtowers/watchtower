@@ -143,28 +143,33 @@ struct SessionChatView: View {
             }
             if let subagent = path.stack.last {
                 subagentScreen(subagent)
-            } else if store.entries.isEmpty && (workchat?.outgoing.isEmpty ?? true) && permission == nil && openAsks.isEmpty {
+            } else if dialogEntries.isEmpty && (workchat?.outgoing.isEmpty ?? true) && permission == nil && openAsks.isEmpty {
                 emptyState
             } else {
                 feed
             }
-            if path.isRoot, let line = Self.endedLine(kind: vm.session(sessionID, projectID: projectID)?.kind,
-                                                      finishedShown: finishedShown) {
+            let ended = path.isRoot ? Self.endedLine(kind: vm.session(sessionID, projectID: projectID)?.kind,
+                                                     finishedShown: finishedShown) : nil
+            if let ended {
                 // No composer and no Stop once the session ended, or for a
-                // kind this build does not know (A7b). The 👥 row stays under
-                // the line while the tab has finished agents to list.
+                // kind this build does not know (A7b).
                 Divider()
-                Text(line)
+                Text(ended)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, Spacing.large)
-                    .padding(.vertical, Spacing.cozy)
-                if !done.isEmpty {
-                    liveLine(working: false).padding(.bottom, Spacing.small)
-                }
-            } else if path.isRoot, composerShown, let workchat {
-                liveLine(working: working && permission == nil)
+                    .padding(.top, Spacing.cozy)
+                    .padding(.bottom, done.isEmpty ? Spacing.cozy : .zero)
+            }
+            // One live line for both states, so an open 👥 list survives the
+            // session ending; under the ended line it stays while there are
+            // finished agents to list.
+            if path.isRoot, ended == nil ? composerShown && workchat != nil : !done.isEmpty {
+                liveLine(working: ended == nil && working)
+                    .padding(.bottom, ended == nil ? .zero : Spacing.small)
+            }
+            if path.isRoot, ended == nil, composerShown, let workchat {
                 Divider()
                 // No card to carry it: a failed permission read shows here.
                 if permission == nil, let error = workchat.permissionError {
@@ -222,15 +227,17 @@ struct SessionChatView: View {
             ?? SessionFeedSubagent.currentStatus(of: subagent, in: store.subagents)
     }
 
+    /// The entries the feed draws: the subagent markers live in the 👥 list.
+    private var dialogEntries: [SessionFeedEntry] { WorkchatFeedAdapter.dialog(store.entries) }
+
     /// The tab's finished subagents, the 👥 list's Done.
     private var done: [SessionFeedSubagent] { WorkchatLivePresentation.done(from: store.subagents) }
 
     /// The caption row over the composer (or under the ended line): the agent's
     /// step and the 👥 list.
     private func liveLine(working: Bool) -> some View {
-        WorkchatLiveLine(snapshot: permission == nil ? store.live : nil,
-                         error: permission == nil ? store.liveError : nil,
-                         loaded: store.liveLoaded, working: working,
+        WorkchatLiveLine(snapshot: store.live, error: store.liveError,
+                         loaded: store.liveLoaded, working: working, activityHidden: permission != nil,
                          stateAt: SessionFeedEntry.parseDate(vm.sessionStatuses[sessionID]?.at),
                          done: done, paneKey: "session-\(sessionID)", memory: vm.paneMemory,
                          feedLoaded: store.feedLoaded, feedError: store.error,
@@ -337,8 +344,9 @@ struct SessionChatView: View {
     /// feed follows the bottom as in AI Chat. The lines on their way, the permission card and the open asks follow
     /// the entries.
     private var feed: some View {
-        let total = store.entries.count
-        let shown = Array(store.entries[window.range(total: total)])
+        let entries = dialogEntries
+        let total = entries.count
+        let shown = Array(entries[window.range(total: total)])
         var workchatFeed = WorkchatFeed(entries: shown, markdown: markdown, expandedEvents: expandedEvents,
                                         onToggle: toggleEvent)
         // A question card's answers go to the agent as the owner's next line while the session takes lines.
@@ -395,11 +403,11 @@ struct SessionChatView: View {
     /// The owner scrolled up (the window keeps what they read) or back to the newest entries (the window lets its
     /// pin go and shrinks to the newest again).
     private func followingChanged(_ following: Bool) {
-        if window.followingChanged(following, total: store.entries.count) { earlierAnchor = nil }
+        if window.followingChanged(following, total: dialogEntries.count) { earlierAnchor = nil }
     }
 
     private func loadEarlier() {
-        if let anchor = window.loadEarlier(entries: store.entries) { earlierAnchor = anchor }
+        if let anchor = window.loadEarlier(entries: dialogEntries) { earlierAnchor = anchor }
     }
 
     @ViewBuilder

@@ -119,6 +119,25 @@ final class WorkchatLivePresentationTests: XCTestCase {
         XCTAssertNil(row(snapshot(), done: [])?.agentsBadge)
     }
 
+    func testRowBadgeSkipsAgentsAlreadyDone() throws {
+        let done = [SessionFeedSubagent(toolUseID: "x", status: "finished")]
+        let live = snapshot(agents: [runningAgent("x")])
+        let result = try XCTUnwrap(row(live, done: done))
+        XCTAssertEqual(result.agentsBadge, "1"); XCTAssertEqual(result.agentsSymbol, "checkmark"); XCTAssertTrue(result.agentsDimmed)
+        XCTAssertEqual(row(live)?.agentsBadge, "1", "without Done the live agent still counts")
+        XCTAssertEqual(row(live)?.agentsSymbol, "person.2")
+    }
+
+    func testAgentsLabelNamesTheCount() throws {
+        let done = [SessionFeedSubagent(toolUseID: "d1", status: "finished"), SessionFeedSubagent(toolUseID: "d2", status: "finished")]
+        let working = try XCTUnwrap(row(snapshot(agents: [runningAgent("w1"), runningAgent("w2")])))
+        XCTAssertEqual(WorkchatLivePresentation.agentsLabel(working), "Agents · 2 working")
+        XCTAssertEqual(WorkchatLivePresentation.agentsLabel(try XCTUnwrap(row(snapshot(), done: done))), "Agents · Done 2")
+        XCTAssertEqual(WorkchatLivePresentation.agentsLabel(try XCTUnwrap(row(snapshot(state: "unknown")))),
+                       "Agents · status unavailable")
+        XCTAssertNil(WorkchatLivePresentation.agentsLabel(try XCTUnwrap(row(snapshot()))))
+    }
+
     func testButtonShownIdleAndEndedHiddenWithoutSubagents() throws {
         let done = [SessionFeedSubagent(toolUseID: "d1", status: "finished")]
         let idle = try XCTUnwrap(row(nil, working: false, done: done))

@@ -9,7 +9,12 @@ struct WorkchatLiveLine: View {
     let snapshot: SessionFeedLive?
     let error: String?
     let loaded: Bool
+    /// The session runs a turn (or background agents): the list then never
+    /// reads a missing snapshot as "none working".
     let working: Bool
+    /// A permission card stands in for the activity text; the 👥 list still
+    /// reads the real snapshot.
+    var activityHidden = false
     let stateAt: Date?
     /// The finished subagents of this pane, ordered (`WorkchatLivePresentation.done(from:)`).
     var done: [SessionFeedSubagent] = []
@@ -28,12 +33,16 @@ struct WorkchatLiveLine: View {
     var referenceDate: Date?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var agentsOpen = false
+    /// The last conversation a snapshot named: the popover closes only when
+    /// it changes, not when the snapshot goes away at turn end.
+    @State private var lastConversation: String?
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let now = referenceDate ?? context.date
-            let row = WorkchatLivePresentation.row(snapshot: snapshot, error: error, loaded: loaded,
-                                                   working: working, stateAt: stateAt, now: now, done: done)
+            let row = WorkchatLivePresentation.row(snapshot: activityHidden ? nil : snapshot,
+                                                   error: activityHidden ? nil : error, loaded: loaded,
+                                                   working: working && !activityHidden, stateAt: stateAt, now: now, done: done)
             HStack(spacing: Spacing.compact) {
                 if let row {
                     if row.activity {
@@ -62,13 +71,16 @@ struct WorkchatLiveLine: View {
             .frame(height: ListLayout.lineMinHeight)
             .onChange(of: row?.warning) { _, warning in if warning == true { agentsOpen = false } }
         }
-        .onChange(of: snapshot?.conversation) { _, _ in agentsOpen = false }
+        .onChange(of: snapshot?.conversation, initial: true) { _, conversation in
+            guard let conversation else { return }
+            if let lastConversation, lastConversation != conversation { agentsOpen = false }
+            lastConversation = conversation
+        }
+        .onChange(of: paneKey) { _, _ in agentsOpen = false; lastConversation = nil }
     }
 
     private func agentsButton(row: WorkchatLivePresentation.Row, badge: String, now: Date) -> some View {
-        let help = badge == "?" ? WorkchatLivePresentation.unknownAgents
-            : row.activity && !row.agentsDimmed ? WorkchatLivePresentation.agentsTitle(snapshot: snapshot)
-            : WorkchatLivePresentation.listTitle
+        let label = WorkchatLivePresentation.agentsLabel(row) ?? WorkchatLivePresentation.listTitle
         return Button { agentsOpen.toggle() } label: {
             HStack(spacing: Spacing.small) {
                 Image(systemName: row.agentsSymbol)
@@ -83,12 +95,13 @@ struct WorkchatLiveLine: View {
         // A capsule badge, as the approved mock draws it; the quiet style's plate is a rounded rectangle.
         .buttonStyle(.plain)
         .disabled(!row.agentsEnabled)
-        .help(help)
-        .accessibilityLabel(help)
+        .opacity(row.agentsEnabled ? 1 : 0.5)
+        .help(label)
+        .accessibilityLabel(label)
         .popover(isPresented: $agentsOpen, arrowEdge: .bottom) {
             WorkchatAgentsPopover(
                 list: WorkchatLivePresentation.agentsList(snapshot: snapshot, error: error, feedLoaded: feedLoaded,
-                                                          feedError: feedError, done: done, now: now),
+                                                          feedError: feedError, done: done, idle: !working, now: now),
                 agentsMore: snapshot?.agentsMore ?? 0,
                 paneKey: paneKey,
                 memory: memory,

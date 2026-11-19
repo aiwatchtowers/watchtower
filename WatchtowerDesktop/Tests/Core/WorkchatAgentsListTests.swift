@@ -30,10 +30,11 @@ final class WorkchatAgentsListTests: XCTestCase {
         error: String? = nil,
         feedLoaded: Bool = true,
         feedError: String? = nil,
-        done: [SessionFeedSubagent] = []
+        done: [SessionFeedSubagent] = [],
+        idle: Bool = false
     ) -> WorkchatLivePresentation.AgentsList {
         WorkchatLivePresentation.agentsList(snapshot: live, error: error, feedLoaded: feedLoaded, feedError: feedError,
-                                            done: done, now: now)
+                                            done: done, idle: idle, now: now)
     }
 
     private var nineDone: [SessionFeedSubagent] { (1...9).map { finished("d\($0)") } }
@@ -66,7 +67,7 @@ final class WorkchatAgentsListTests: XCTestCase {
 
     func testListStrings() {
         let result = WorkchatLivePresentation.agentsList(snapshot: snapshot(), error: nil, feedLoaded: true, feedError: nil,
-                                                         done: nineDone, now: now)
+                                                         done: nineDone, idle: false, now: now)
         XCTAssertEqual(result.doneTitle, "Done · 9"); XCTAssertEqual(result.workingNote, "No agents working")
         XCTAssertEqual(result.state, .ready)
         XCTAssertEqual(WorkchatLivePresentation.listTitle, "Agents"); XCTAssertEqual(WorkchatLivePresentation.workingTitle, "WORKING")
@@ -111,6 +112,23 @@ final class WorkchatAgentsListTests: XCTestCase {
         XCTAssertEqual(rows.map(\.title), ["codex-wrapper", "Subagent"])
         XCTAssertEqual(rows.map(\.subtitle), ["Review the spec", "No type"])
         XCTAssertEqual(rows.first?.ref.toolUseID, "a")
+    }
+
+    /// A permission card hides the activity text, not the agents: without a
+    /// snapshot while the session is busy, the list never claims none works.
+    func testPermissionPromptNeverSaysNoneWorking() {
+        let waiting = list(nil, done: nineDone, idle: false)
+        XCTAssertEqual(waiting.workingNote, "Agent status unavailable")
+        XCTAssertTrue(waiting.doneOpenByDefault)
+        let fed = list(snapshot(agents: [running("bg")]), idle: false)
+        XCTAssertEqual(fed.working.map(\.id), ["bg"], "the real snapshot lists the background agent")
+    }
+
+    func testTurnStartBeforeFirstLiveReadIsNotNone() {
+        XCTAssertEqual(list(nil, idle: false).workingNote, "Agent status unavailable", "not observed yet is not none")
+        XCTAssertEqual(list(nil, idle: true).workingNote, "No agents working", "an idle session with no snapshot")
+        let stale = SessionFeedLive(observedAt: now - WorkchatLivePresentation.staleAfter, agentsState: "known")
+        XCTAssertEqual(list(stale, idle: true).workingNote, "No agents working", "an idle pane's old read is not a failure")
     }
 
     func testWorkingRowHeadingAndSubtitle() throws {

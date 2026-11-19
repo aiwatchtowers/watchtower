@@ -20,6 +20,12 @@ package enum WorkchatFeedAdapter {
         }
     }
 
+    /// The entries that make the dialog: everything but the subagent markers,
+    /// which draw nothing (the empty state and the feed window count these).
+    package static func dialog(_ entries: [SessionFeedEntry]) -> [SessionFeedEntry] {
+        entries.filter { $0.kind != "subagent" }
+    }
+
     /// The role an entry kind takes; nil for a kind this build does not know and for a subagent marker.
     package static func role(for kind: String) -> String? {
         switch kind {

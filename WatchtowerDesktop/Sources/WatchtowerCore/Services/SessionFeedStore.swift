@@ -267,6 +267,10 @@ package final class SessionFeedStore: ObservableObject {
     private func mergeSubagents(_ incoming: [SessionFeedEntry]) {
         for entry in incoming where entry.kind == "subagent" {
             if let i = subagentIndex[entry.id] {
+                // The first known start time stays: an `--after` read dates a
+                // marker by its meta.json mtime, and Done's order must not jump.
+                var entry = entry
+                if let first = subagents[i].subagent?.startedAt { entry.subagent?.startedAt = first }
                 subagents[i] = entry
             } else {
                 subagentIndex[entry.id] = subagents.count

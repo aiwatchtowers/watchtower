@@ -51,6 +51,12 @@ final class WorkchatFeedAdapterTests: XCTestCase {
         XCTAssertNil(WorkchatFeedAdapter.role(for: "subagent"))
     }
 
+    func testDialogLeavesMarkersOut() {
+        let entries = [entry("s1", kind: "subagent"), entry("o1", kind: "owner"), entry("s2", kind: "subagent")]
+        XCTAssertEqual(WorkchatFeedAdapter.dialog(entries).map(\.id), ["o1"])
+        XCTAssertTrue(WorkchatFeedAdapter.dialog([entry("s1", kind: "subagent")]).isEmpty, "markers only: the empty state")
+    }
+
     private func entry(_ id: String, kind: String) -> SessionFeedEntry {
         SessionFeedEntry(id: id, kind: kind, text: id,
                          subagent: kind == "subagent" ? SessionFeedSubagent(toolUseID: "tu-\(id)", status: "running") : nil)

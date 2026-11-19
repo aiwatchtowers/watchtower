@@ -34,7 +34,7 @@ final class WorkchatLiveLineTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let unknown = SessionFeedLive(observedAt: now, agentsState: "unknown")
         let list = WorkchatLivePresentation.agentsList(snapshot: unknown, error: nil, feedLoaded: true, feedError: nil,
-                                                       done: [], now: now)
+                                                       done: [], idle: false, now: now)
         let popover = WorkchatAgentsPopover(list: list, paneKey: "p", memory: WorkchatPaneMemory()) { _ in }
         let texts = try popover.inspect().findAll(ViewType.Text.self).map { try $0.string() }
         XCTAssertTrue(texts.contains("Agents"))
@@ -47,7 +47,7 @@ final class WorkchatLiveLineTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let done = [SessionFeedSubagent(toolUseID: "d1", type: "Explore", description: "Read the filter", status: "finished")]
         let list = WorkchatLivePresentation.agentsList(snapshot: SessionFeedLive(observedAt: now), error: nil, feedLoaded: true,
-                                                       feedError: nil, done: done, now: now)
+                                                       feedError: nil, done: done, idle: true, now: now)
         let memory = WorkchatPaneMemory()
         var opened: [String] = []
         let open = WorkchatAgentsPopover(list: list, paneKey: "p", memory: memory) { opened.append($0.toolUseID) }

@@ -138,6 +138,32 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertNotNil(store.error)
     }
 
+    func testStartedAtKeepsFirstValueAcrossReads() async {
+        func marker(_ status: String, startedAt: String?) -> String {
+            let at = startedAt.map { #","started_at":"\#($0)""# } ?? ""
+            return #"{"id":"sub","kind":"subagent","at":"0001-01-01T00:00:00Z","text":"","conversation":"main","#
+                + #""subagent":{"tool_use_id":"tu1","agent_id":"a1","type":"Explore","description":"d","status":""#
+                + status + "\"" + at + "}}"
+        }
+        let runner = FakeRunner([
+            .success(payload(entries: marker("running", startedAt: nil))),
+            .success(payload(cursor: "c2", subagents: marker("running", startedAt: "2026-10-01T10:00:06Z"))),
+            .success(payload(cursor: "c3", subagents: marker("finished", startedAt: "2026-10-01T10:09:00Z"))),
+            .success(payload(cursor: "c4", subagents: marker("finished", startedAt: nil)))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        XCTAssertNil(store.subagents.first?.subagent?.startedAt)
+        await store.refresh()
+        let first = SessionFeedEntry.parseDate("2026-10-01T10:00:06Z")
+        XCTAssertEqual(store.subagents.first?.subagent?.startedAt, first, "the first non-nil time is taken")
+        await store.refresh()
+        XCTAssertEqual(store.subagents.first?.subagent?.startedAt, first, "an --after read's meta.json mtime never moves it")
+        XCTAssertEqual(store.subagents.first?.subagent?.status, "finished", "the rest of the marker still updates")
+        await store.refresh()
+        XCTAssertEqual(store.subagents.first?.subagent?.startedAt, first, "an undated marker never clears it")
+    }
+
     func testDecodesSubagentStartedAt() throws {
         func ref(_ startedAt: String) throws -> SessionFeedSubagent {
             let json = #"{"tool_use_id":"tu1","agent_id":"a1","type":"Explore","description":"d","status":"finished","#
