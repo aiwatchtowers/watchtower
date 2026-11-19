@@ -211,7 +211,9 @@ share from `WorkchatOpenBenchmarkTests` (decode → store apply → adapter →
 `WorkchatOpenTrace` log line is `workchat open session=N first|reopen …`).
 Reopen is the kept-store path: adapter + layout over entries already held, no
 CLI on the way to the paint. The dev app's trace line on a database copy was
-not recorded (a repo-built app is not run against the live install).
+not recorded (a repo-built app is not run against the live install). The two paints differ: the pane's `.paint` fires when the feed
+appears, before its layout, while the harness's includes a hosting layout, so
+the harness reads higher.
 **Caveat:** both parts were measured while the machine was saturated by
 parallel builds (load average near 1000), so every figure is inflated and
 noisy (the CLI medians are 5–10× the quiet figures quoted above); Task 10

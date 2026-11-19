@@ -37,21 +37,18 @@ final class WorkchatOpenBenchmarkTests: XCTestCase {
 
     func testOpenAndReopen() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["WORKCHAT_BENCH_JSON"] != nil, "benchmark only")
-        let path = try XCTUnwrap(ProcessInfo.processInfo.environment["WORKCHAT_BENCH_JSON"],
-                                 "WORKCHAT_BENCH_JSON not set")
+        let path = ProcessInfo.processInfo.environment["WORKCHAT_BENCH_JSON"] ?? ""
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         let store = SessionFeedStore(sessionID: 1, runner: FileRunner(data: data))
 
-        let first = WorkchatOpenTrace(sessionID: 1, reopen: false)
-        store.openTrace = first
-        first.mark(.appear)
+        let first = try XCTUnwrap(store.openTrace)
         await store.refresh()
+        XCTAssertFalse(store.entries.isEmpty, "bad fixture: no entries decoded")
         paint(store, trace: first)
         print("BENCH \(first.report ?? "no report") entries=\(store.entries.count)")
 
-        let reopen = WorkchatOpenTrace(sessionID: 1, reopen: true)
-        store.openTrace = nil
-        reopen.mark(.appear)
+        store.beginOpenTrace(reopen: true)
+        let reopen = try XCTUnwrap(store.openTrace)
         paint(store, trace: reopen)
         print("BENCH \(reopen.report ?? "no report") entries=\(store.entries.count)")
     }

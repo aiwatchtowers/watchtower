@@ -32,9 +32,10 @@ package final class SessionFeedStore: ObservableObject {
     private var cursor = ""
     private var index: [String: Int] = [:]
     private var screenGate = ForegroundRefreshGate()
-    /// The open-time trace of the pane showing this store (set on appear);
-    /// `refresh()` marks the CLI spawn, exit and decode phases on it.
-    package var openTrace: WorkchatOpenTrace?
+    /// The open-time trace of the pane showing this store. The store starts
+    /// one as it is made (before the pane renders its first feed), so every
+    /// mark of the open lands on it; `refresh()` marks the CLI phases.
+    package private(set) var openTrace: WorkchatOpenTrace?
     /// The last CLI read started; the next one waits for it, so the pane
     /// never runs two CLI processes at once (main feed and subagent alike).
     private var lastRead: Task<Void, Never>?
@@ -44,6 +45,18 @@ package final class SessionFeedStore: ObservableObject {
         self.sessionID = sessionID
         self.runner = runner ?? UnavailableRunner()
         runnerMissing = runner == nil
+        beginOpenTrace(reopen: false)
+    }
+
+    /// Starts the trace of one pane open and marks `.appear`. One trace per
+    /// open: while the current one has not reported, it stays (a re-appear or
+    /// a poll never starts a second); a finished one is replaced, so a kept
+    /// store shown again (`reopen: true`) times its own open.
+    package func beginOpenTrace(reopen: Bool) {
+        if let openTrace, openTrace.report == nil { return }
+        let trace = WorkchatOpenTrace(sessionID: sessionID, reopen: reopen)
+        openTrace = trace
+        trace.mark(.appear)
     }
 
     /// The pane's poll: one read now, then while `isActive` one more every

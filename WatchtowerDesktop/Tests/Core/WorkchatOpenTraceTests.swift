@@ -43,4 +43,28 @@ final class WorkchatOpenTraceTests: XCTestCase {
         t = start.advanced(by: .milliseconds(520)); trace.mark(.paint)
         XCTAssertEqual(trace.report, "workchat open session=1 first total=520ms spawn=10 cli=- decode=- adapter=- paint=510")
     }
+
+    @MainActor func testMarksAfterPaintAreIgnored() {
+        let start = ContinuousClock.now
+        var t = start
+        let trace = WorkchatOpenTrace(sessionID: 1, reopen: false) { t }
+        trace.mark(.appear)
+        t = start.advanced(by: .milliseconds(20)); trace.mark(.paint)
+        let report = trace.report
+        t = start.advanced(by: .milliseconds(900))
+        trace.mark(.spawn); trace.mark(.exit); trace.mark(.paint)
+        XCTAssertEqual(trace.report, report)
+    }
+
+    @MainActor func testStoreKeepsOneLiveTraceAndReplacesAFinishedOne() {
+        let store = SessionFeedStore(sessionID: 3, runner: nil)
+        let first = store.openTrace
+        XCTAssertNotNil(first)
+        store.beginOpenTrace(reopen: true)
+        XCTAssertTrue(store.openTrace === first, "a live trace is kept")
+        first?.mark(.paint)
+        store.beginOpenTrace(reopen: true)
+        XCTAssertFalse(store.openTrace === first, "a finished trace is replaced")
+        XCTAssertNil(store.openTrace?.report)
+    }
 }

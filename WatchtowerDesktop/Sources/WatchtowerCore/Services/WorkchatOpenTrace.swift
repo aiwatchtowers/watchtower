@@ -33,7 +33,9 @@ package final class WorkchatOpenTrace {
     package var report: String? { reported }
 
     package func mark(_ phase: WorkchatOpenPhase) {
-        guard marks[phase] == nil else { return }
+        // Once the report is out the open is over: a later poll must not start
+        // an interval that nothing closes.
+        guard reported == nil, marks[phase] == nil else { return }
         marks[phase] = clock()
         let signposter = Self.signposter
         if let interval { signposter.endInterval(Self.name(interval.phase), interval.state) }
