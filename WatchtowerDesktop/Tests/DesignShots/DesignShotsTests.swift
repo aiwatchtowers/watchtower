@@ -118,6 +118,46 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(SlackFullLiveShotFixtures.shots)
     }
 
+    /// Connections → Slack: the `slack-fl-pane-*` shots draw the real Slack
+    /// mode section (`SlackModeSection`, screens spec §1), and its chip and
+    /// summary say what the approved mockup said for the same frame.
+    func testSlackModePaneShotsRender() throws {
+        typealias Copy = SlackFullLiveMockCopy
+        let expected: [SlackFullLiveShotFixtures.Pane: (String, String)] = [
+            .full: (Copy.chipFull, Copy.summaryFull),
+            .fullLive: (Copy.chipFullLive, Copy.summaryFullLive),
+            .checking: (Copy.chipFullLive, Copy.summaryFullLive),
+            .probeFailed: (Copy.chipFullLive, Copy.summaryFullLive),
+            .live: (Copy.chipLive, Copy.summaryLive),
+            .liveProblems: (Copy.chipLive, Copy.summaryLive),
+            .off: (Copy.chipOff, Copy.summaryOff),
+            .sharedApp: (Copy.chipShared, Copy.summaryShared)
+        ]
+        for (pane, copy) in expected {
+            let presentation = SlackPaneModeFixture.presentation(pane)
+            XCTAssertEqual(presentation.chip, copy.0, pane.rawValue)
+            XCTAssertEqual(presentation.summary, copy.1, pane.rawValue)
+        }
+        XCTAssertEqual(SlackPaneModeFixture.presentation(.probeFailed).problem, Copy.probeFailed)
+        XCTAssertEqual(SlackPaneModeFixture.presentation(.readFailed).problem, Copy.readFailed)
+        XCTAssertEqual(SlackPaneModeFixture.presentation(.live).liveRows.map(\.status),
+                       [Copy.liveNotConnected, Copy.liveOnTeamID])
+        XCTAssertEqual(SlackPaneModeFixture.presentation(.fullLive).liveRows.map(\.age),
+                       [Copy.checked5H, Copy.checked5H])
+        try renderShots(SlackFullLiveShotFixtures.shots.filter { $0.name.hasPrefix("slack-fl-pane-") })
+    }
+
+    /// `needsFullSlack` (screens spec §2): the Digests, Catch-Up and
+    /// Statistics shots draw the real `FeatureEmptyState`, the Home shot the
+    /// real Getting ready row; their strings are the approved mockups'.
+    func testSlackNeedsFullShotsRender() throws {
+        typealias Copy = SlackFullLiveMockCopy
+        XCTAssertEqual(FeatureReadiness.line(.needsFullSlack), Copy.needsFullLine)
+        XCTAssertEqual(ReadinessSource.fullSlack.actionTitle, Copy.needsFullAction)
+        XCTAssertEqual(SlackPaneModeFixture.presentation(.live).knowledgeNote, Copy.knowledgeNote)
+        try renderShots(SlackFullLiveShotFixtures.shots.filter { $0.name.hasPrefix("slack-fl-needs-full-") })
+    }
+
     /// The unified chat's new states and baselines (#1822 T0).
     /// The composer's shots and the existing shots that hold a composer (#1822 T13).
     func testComposerShotsRender() throws {

@@ -380,7 +380,7 @@ final class AgentActionCardViewTests: XCTestCase {
                                       onReconnectSlack: { id in
                                            reconnectedIDs.withLock { $0.append(id) }
                                            signal.changed()
-                                           return nil
+                                           return .signedIn
                                        })
         try view.inspect().find(button: "Reconnect Slack").tap()
         await signal.until { reconnectedIDs.withLock { !$0.isEmpty } }

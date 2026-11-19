@@ -121,6 +121,23 @@ final class ConnectionsTabTests: XCTestCase {
         XCTAssertEqual(appState.connectionsAttentionCount, 0)
     }
 
+    /// Screens spec §5: an account on the retired shared app reads "Shared
+    /// app retiring" on the card; it is not a problem, so no badge, and a
+    /// real problem still wins the line.
+    func testSharedAppCardIsNotAttention() {
+        let ok = ConnectionAccountState(name: "acme", isOK: true, status: "ok", error: "")
+        let notice = "Shared app retiring"
+        let card = ConnectionSummary(service: .slack, accounts: [ok], blocked: false, notice: notice)
+        XCTAssertEqual(card.statusLine, notice)
+        XCTAssertFalse(card.needsAttention)
+        XCTAssertEqual(ConnectionSummary.attentionCount([card]), 0)
+
+        let broken = ConnectionAccountState(name: "beta", isOK: false, status: "revoked", error: "token expired")
+        let both = ConnectionSummary(service: .slack, accounts: [ok, broken], blocked: false, notice: notice)
+        XCTAssertEqual(both.statusLine, "beta: token expired", "a problem wins")
+        XCTAssertTrue(both.needsAttention)
+    }
+
     // MARK: - Navigation
 
     func testOpenConnectionsLandsOnTheService() {

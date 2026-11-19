@@ -130,9 +130,11 @@ extension SidebarDestination {
         case .blockers: [.jira, .linear]
         // Catch-Up also surfaces tracker mentions and meeting items. The
         // Inbox has no source gate: it also holds the briefings, day plans,
-        // tracks and ideas (C1), whose own tabs never had one.
-        case .catchUp: [.messages, .jira, .linear, .calendar]
-        case .statistics: [.messages]
+        // tracks and ideas (C1), whose own tabs never had one. With Slack
+        // Live only, Catch-Up and Statistics stay and show
+        // `Readiness.needsFullSlack` (screens spec §2.2, ask #1315).
+        case .catchUp: [.messages, .slackLive, .jira, .linear, .calendar]
+        case .statistics: [.messages, .slackLive]
         default: nil
         }
     }

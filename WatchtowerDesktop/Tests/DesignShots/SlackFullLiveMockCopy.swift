@@ -1,12 +1,13 @@
 import Foundation
 
-/// Design-only string table of the Slack Full / Live screens spec
-/// (`docs/superpowers/specs/2026-11-15-slack-full-live-screens-design.md`).
-/// The implementation moves each group into the view model the spec names
-/// (`SlackModePresentation`, `SlackAppSetupModel`, `SlackConnectFlowModel`,
-/// `FeatureReadiness`) and pins it there; `SlackFullLiveMockCopyTests` pins
-/// this table so the mockups and the spec cannot drift apart. Sample data
-/// only: `acme`, made-up ids.
+/// Test-only string table of the Slack Full / Live screens spec
+/// (`docs/superpowers/specs/2026-11-15-slack-full-live-screens-design.md`),
+/// read by the design-shot fixtures and sheet tests. The app's strings live
+/// in the view models (`SlackModePresentation`, `SlackAppSetupModel`,
+/// `SlackConnectFlowModel`, `FeatureReadiness`) and are pinned there;
+/// `SlackFullLiveMockCopyTests` pins this table against the spec and, where
+/// a string has one, against its production twin. Sample data only: `acme`,
+/// made-up ids.
 enum SlackFullLiveMockCopy {
     // MARK: Connections → Slack: the mode
 
@@ -65,7 +66,7 @@ enum SlackFullLiveMockCopy {
     static let connect = "Connect"
     static let pasteInvalid = "That is not a Watchtower connect link or code. Copy it again from the app's About tab in Slack."
     static let portBusy = "The connect link cannot reach Watchtower: port 18551 is busy. "
-        + "Paste the link or the code here instead."
+        + "Quit the app holding port 18551, then open Connections → Slack again to retry."
     static let orgTitle = "Set up by your organization"
     static let orgRow = "Workspace T0ACME"
     static let noAppYet = "No Watchtower app in your workspace yet?"
@@ -162,4 +163,48 @@ enum SlackFullLiveMockCopy {
 
     static let keepTitle = "Add to Knowledge"
     static let keepReason = "Built on Live Slack answers, which are not kept"
+
+    // MARK: Plan B additions (asks #1425, #1426): admin note, adopt, onboarding
+
+    static let copyAdminNote = "Copy a note for your admin"
+    static let adminNoteCopied = "Copied. Send it to a workspace admin."
+    static let adminNote = "Please set up Watchtower for acme in Slack: "
+        + "https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/slack-full.md"
+        + "#set-up-slack-for-your-company"
+    static let adoptTitle = "Watchtower's app already exists in acme"
+    static let adoptPKCEWarning = "Watchtower turns on PKCE sign-in for this app, which can be turned off "
+        + "only by Slack support; Slack may ask colleagues already connected to allow Watchtower again."
+    static let adoptBody = "Update it to the current version: Watchtower adds the connect link to its About page "
+        + "and the sign-in settings it needs. " + adoptPKCEWarning
+    static let adoptAction = "Update the app"
+    static let adoptAppIDLabel = "App ID"
+    static let adoptAppIDHelp = "Find it on the app's Basic Information page at api.slack.com/apps."
+    static let notCollaborator = "Your token cannot change this app. Ask one of its collaborators "
+        + "(listed on its Collaborators page) to run this setup."
+    static let onboardingTitle = "Connect Slack"
+    static let onboardingCaption = "Watchtower connects through your workspace's own Slack app. "
+        + "Open Watchtower in Slack, go to its About tab and click the connect link, or paste the link or code here."
+    static let onboardingLiveHint = "No app in your workspace? Chats can still read Slack through Live "
+        + "in your Claude or ChatGPT account."
+    static let skip = "Skip"
+
+    // MARK: Plan B Task 13 review: the lost create, the App ID check, a refusal
+
+    static let pendingBody = "Slack did not answer when Watchtower asked it to create the app in acme, so the app may "
+        + "exist. Look for “Watchtower” on api.slack.com/apps. If it is there, enter its App ID and Client ID from its "
+        + "Basic Information page, then paste a fresh configuration token to add the connect link; if not, start again."
+    static let confirmClear = "Watchtower may have created the app already. Check Slack's app page first: if “Watchtower” "
+        + "is there, enter its ids and use it. Start again only if it is not there, or the workspace gets a second "
+        + "Watchtower app."
+    static let confirmClearAction = "Nothing there: start again"
+    static let clientIDLabel = "Client ID"
+    static let openAppsPage = "Open Slack's app page"
+    static let pendingStartAgain = "Start again"
+    static let pendingUseApp = "Use this app"
+    static let recordPending = "Setup is not finished: Slack did not confirm Watchtower's app in acme. "
+        + "Check api.slack.com/apps before going on."
+    static let adoptConfirm = "App A0ACME is called “Watchtower”. Update it only if it is your workspace's Watchtower app. "
+        + adoptPKCEWarning
+    static let appIDFormat = "That is not an App ID: it starts with A."
+    static let busy = "Another setup is already running on this Mac. Try again once it has finished."
 }
