@@ -1,9 +1,9 @@
 #!/bin/bash
 # Sets up the owner's Mac as Watchtower's self-hosted CI (see README.md next
 # to this file): a standard macOS user `ci` and nine GitHub Actions runners
-# under it, each a LaunchAgent in ci's GUI session —
+# under it, each a LaunchAgent that ci's login loads into its Aqua session —
 #
-#   ~ci/actions-runner-swift      label wt-swift    (idle: Swift Test needs a window server)
+#   ~ci/actions-runner-swift      label wt-swift    (Swift Test)
 #   ~ci/actions-runner-general-N  label wt-general  (every other job), N = 1..8
 #
 # .github/workflows/ci.yml sends jobs here only while these runners are online
@@ -11,9 +11,10 @@
 #
 # Run it as yourself (not root) with `gh` signed in as a repository admin; it
 # asks for your sudo password. Safe to run again: it creates what is missing,
-# rewrites each runner's PATH and environment, restarts the runners, and
-# removes every other actions-runner-* folder in ci's home (ci serves these
-# runners only).
+# rewrites each runner's PATH, environment and LaunchAgent, and removes every
+# other actions-runner-* folder in ci's home (ci serves these runners only).
+# It never starts a runner: ci's login does, so after a run that changed
+# anything, log ci out (while no job runs) and in again.
 #
 # Usage: scripts/ci-runner/setup-mac-runner.sh [--uninstall] [--repo OWNER/NAME]
 #            [--xcode /Applications/Xcode.app] [--allow-open-home]
@@ -124,6 +125,22 @@ service_plist() {
     if sudo test -f "$dir/.service"; then
         sudo cat "$dir/.service"
     fi
+}
+
+# aqua_agent <plist>: turns svc.sh's LaunchAgent into one that only ci's
+# login loads, into its Aqua session — the only place a job reaches the
+# window server (Swift Test's AppKit tests, a simulator). svc.sh's template
+# sets SessionCreate, which starts the runner in a new security session cut
+# off from it (no CGSession, window number 0); and a `launchctl bootstrap`
+# from this script is not ci's login either.
+aqua_agent() {
+    local plist=$1 key
+    for key in SessionCreate LimitLoadToSessionType RunAtLoad; do
+        as_ci /usr/libexec/PlistBuddy -c "Delete :$key" "$plist" >/dev/null 2>&1 || true
+    done
+    as_ci /usr/libexec/PlistBuddy -c "Add :LimitLoadToSessionType string Aqua" "$plist"
+    as_ci /usr/libexec/PlistBuddy -c "Add :RunAtLoad bool true" "$plist"
+    as_ci plutil -lint -s "$plist"
 }
 
 gui_session() { sudo launchctl print "gui/$1" >/dev/null 2>&1; }
@@ -286,20 +303,20 @@ install() {
             in_dir_as_ci "$dir" ./svc.sh install >/dev/null
         fi
         plist=$(service_plist "$dir")
-        if gui_session "$uid"; then
-            sudo launchctl bootout "gui/$uid" "$plist" 2>/dev/null || true
-            sudo launchctl bootstrap "gui/$uid" "$plist"
-            echo "   wt-mac-$name started"
-        fi
+        [ -n "$plist" ] || die "svc.sh left no LaunchAgent for wt-mac-$name"
+        aqua_agent "$plist"
+        echo "   wt-mac-$name: loaded at $CI_USER's login, in its Aqua session"
     done
 
     echo
     if gui_session "$uid"; then
-        echo "All nine runners are running in $CI_USER's session."
+        echo "Runners installed. $CI_USER is logged in, so the runners still run the old way:"
+        echo "log $CI_USER out (while no job runs) and in again; its login starts them."
     else
-        echo "Runners installed. They start when $CI_USER logs in: log in as $CI_USER once"
-        echo "(Fast User Switching), then switch back to your account without logging out."
+        echo "Runners installed. They start when $CI_USER logs in."
     fi
+    echo "Log in as $CI_USER with Fast User Switching, then switch back to your account"
+    echo "without logging out of $CI_USER."
     echo "Keep the Mac awake on power while it serves CI:  sudo pmset -c sleep 0"
     echo "The rest of the checklist (the RUNNER_STATUS_TOKEN secret) is in scripts/ci-runner/README.md."
 }

@@ -2840,6 +2840,7 @@ Entry format:
 - miss: no lane pointed out that the Mac path never ran. The PR body says so. Go Test, the race shards and Go Lint now run darwin-tagged code in CI for the first time (keychain, cgo policy reader, osascript), and lint covers darwin files instead of linux files. **A CI change that moves jobs to a new OS needs one green run on that OS before merge, not only the fallback path.** [6]
 - weak-dimension: 6. Both lanes reviewed the YAML's branching on `runner.environment` but not whether the suite passes on macOS.
 - rule-gap (candidate, dim 9): *self-hosted runners on a public repository ship with the fork-PR approval policy applied by the setup code itself, not by a README step.* The fix round in the working tree does this.
+
 - outcome: TBD
 
 ## 2026-11-10 — fix/1714-chat-table-wrap (#1714 / ask #1197: chat tables wrap instead of scrolling; `MarkdownTableColumns` in WatchtowerCore, `NSTextTable` run view, streaming `MarkdownTableGrid` Layout; 13 files; panel: prosecutor (5) + codex (0); pr-review-toolkit specialists unavailable; judge verified fabdd38f8 by reading, no runs) — verdict: approve
