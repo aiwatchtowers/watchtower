@@ -131,23 +131,30 @@ func isGitDirAssignment(w string) bool {
 	return ok && slices.Contains(gitDirVars, name)
 }
 
-// chdirOpts are the wrapper options that change the directory.
-var chdirOpts = map[string]bool{"-C": true, "--chdir": true, "-D": true}
+// chdirOpts are each wrapper's options that run its command in another
+// directory (sudo's chroot too; sudo -C is close-from, not a directory).
+// doas -C names a config file; it stays here, which only parks more.
+var chdirOpts = map[string]map[string]bool{
+	"env":  {"-C": true, "--chdir": true},
+	"sudo": {"-D": true, "--chdir": true, "-R": true, "--chroot": true},
+	"doas": {"-C": true},
+}
 
 const cwdUnknown = "?"
 
 // wrappers maps each wrapper program to the options that take an operand
 // (the macOS BSD and GNU man pages together).
 var wrappers = map[string]map[string]bool{
-	"sudo": {"-a": true, "-c": true, "-u": true, "-g": true, "-h": true, "-p": true, "-r": true, "-t": true, "-C": true, "-D": true, "-R": true, "-T": true, "-U": true,
-		"--auth-type": true, "--login-class": true, "--user": true, "--group": true, "--host": true, "--prompt": true, "--role": true, "--type": true,
+	"sudo": {"-a": true, "-c": true, "-u": true, "-g": true, "-p": true, "-r": true, "-t": true, "-C": true, "-D": true, "-R": true, "-T": true, "-U": true,
+		"--auth-type": true, "--login-class": true, "--user": true, "--group": true, "--prompt": true, "--role": true, "--type": true,
 		"--close-from": true, "--chdir": true, "--chroot": true, "--command-timeout": true, "--other-user": true},
 	"command": {},
 	"time":    {"-f": true, "-o": true, "--format": true, "--output": true},
 	"nohup":   {},
-	"env":     {"-u": true, "-C": true, "-S": true, "-L": true, "-P": true, "-U": true, "--unset": true, "--chdir": true, "--split-string": true},
-	"exec":    {"-a": true},
-	"nice":    {"-n": true, "--adjustment": true},
+	"env": {"-a": true, "-u": true, "-C": true, "-S": true, "-L": true, "-P": true, "-U": true, "--argv0": true, "--unset": true, "--chdir": true,
+		"--split-string": true},
+	"exec": {"-a": true},
+	"nice": {"-n": true, "--adjustment": true},
 	// timeout's command follows a duration as well (stripWrappers).
 	"timeout":    {"-s": true, "-k": true, "--signal": true, "--kill-after": true},
 	"caffeinate": {"-t": true, "-w": true},
@@ -317,7 +324,7 @@ func stripWrappers(words []string, c *shellCmd) []string {
 			if !known { // an option this reader cannot place: what follows may be its operand
 				return []string{unresolved}
 			}
-			moved := chdirOpts[name]
+			moved := chdirOpts[path.Base(w)][name]
 			c.elsewhere, c.chdir = c.elsewhere || moved, c.chdir || moved
 			if takesNext && len(words) > 0 {
 				words = words[1:]
@@ -337,7 +344,7 @@ func stripWrappers(words []string, c *shellCmd) []string {
 // ones, and long ones (xcrun's single-dash too); with the valued ones of
 // wrappers and the optional ones of wrapperOptional they are every option
 // this reader knows. Any other option cannot be placed and parks
-// (wrapperOption). nice's digits are its legacy -N adjustment.
+// (wrapperOption).
 var wrapperFlags = map[string][]string{
 	"sudo": {"-A", "-B", "-b", "-E", "-e", "-H", "-i", "-K", "-k", "-l", "-N", "-n", "-P", "-S", "-s", "-V", "-v",
 		"--preserve-env", "--non-interactive", "--login", "--shell", "--reset-timestamp", "--remove-timestamp", "--background",
@@ -346,7 +353,6 @@ var wrapperFlags = map[string][]string{
 	"env": {"-0", "-i", "-v", "--ignore-environment", "--null", "--debug", "--default-signal", "--ignore-signal", "--block-signal",
 		"--list-signal-handling"},
 	"exec":       {"-c", "-l"},
-	"nice":       {"-0", "-1", "-2", "-3", "-4", "-5", "-6", "-7", "-8", "-9"},
 	"time":       {"-a", "-h", "-l", "-p", "-q", "-v", "-V", "--verbose", "--portability", "--append", "--quiet"},
 	"timeout":    {"-f", "-p", "-v", "--preserve-status", "--foreground", "--verbose"},
 	"caffeinate": {"-d", "-i", "-m", "-s", "-u"},
@@ -361,8 +367,12 @@ var wrapperFlags = map[string][]string{
 // wrapperOptional are the wrappers' options whose operand is optional: it
 // is only ever attached (xargs -i{} or --replace={}), never the next word.
 var wrapperOptional = map[string][]string{
+	"sudo":  {"-h", "--host"},
 	"xargs": {"-e", "-i", "-l", "--eof", "--replace", "--max-lines"},
 }
+
+// niceAdjustment is nice's legacy numeric option: one word, no cluster.
+var niceAdjustment = regexp.MustCompile(`^-(\+|-)?[0-9]+$`)
 
 // wrapperOption reads one option word of wrapper prog: name is the option
 // with an operand it sets ("" for a flag) and takesNext reports that its
@@ -377,6 +387,9 @@ func wrapperOption(opt, prog string) (name string, takesNext, known bool) {
 	valued, flags, optional := wrappers[prog], wrapperFlags[prog], wrapperOptional[prog]
 	if valued[opt] {
 		return opt, true, true
+	}
+	if prog == "nice" && niceAdjustment.MatchString(opt) { // the legacy -N, -+N, --N
+		return "", false, true
 	}
 	if strings.HasPrefix(opt, "--") {
 		long, _, attached := strings.Cut(opt, "=")

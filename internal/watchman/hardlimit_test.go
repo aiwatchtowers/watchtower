@@ -895,6 +895,23 @@ func TestParkedBy_WrapperShortOptions(t *testing.T) {
 	both("xargs -q rm -rf /x", LimitUnreadable)
 	both("stdbuf -x rm -rf /x", LimitUnreadable)
 	both("nohup -x rm -rf /x", LimitUnreadable)
+	// Fix round 1: env's argv0 is valued; nice's legacy adjustment is one
+	// numeric word; sudo's host is optional and attached only; sudo's
+	// chroot moves the command, its -C (close-from) does not.
+	both("env -a name rm -rf /x", LimitDeleteOutside)
+	both("env --argv0=name rm -rf /x", LimitDeleteOutside)
+	both("env --argv0 name rm -rf /x", LimitDeleteOutside)
+	both("nice -+5 rm -rf /x", LimitDeleteOutside)
+	both("nice --5 rm -rf /x", LimitDeleteOutside)
+	both("nice -1x rm -rf /x", LimitUnreadable)
+	both("nice -+ rm -rf /x", LimitUnreadable)
+	both("sudo -h rm -rf /x", LimitDeleteOutside)
+	both("sudo -hbox rm -rf /x", LimitDeleteOutside)
+	both("sudo --host=box rm -rf /x", LimitDeleteOutside)
+	both("sudo -R /jail rm -rf foo", LimitDeleteOutside)
+	both("sudo --chroot=/jail rm -rf foo", LimitDeleteOutside)
+	both("sudo -C 3 rm -rf foo", "")
+	both("sudo -h rm -rf foo", "")
 	// What stays harmless.
 	both("sudo -E go test ./...", "")
 	both("sudo -r role go test ./...", "")
