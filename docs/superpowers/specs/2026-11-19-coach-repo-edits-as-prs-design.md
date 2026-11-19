@@ -28,8 +28,11 @@ Non-goals: merging the PR, editing an open PR, git hosts other than GitHub (the 
 | D2 | A folder whose `origin` is not a GitHub repository `gh` can reach keeps today's path (write the working copy, owner commits). Without it such folders could not take repository edits at all. | This spec; flagged for the owner's review |
 | D3 | `gh` missing or logged out in a GitHub folder refuses (`no_gh`) instead of falling back to the working copy: a silent fallback would bring back the problem #1606 fixes. The refusal says how to log in. | This spec; flagged for the owner's review |
 | D4 | The default branch is GitHub's (`gh repo view --json defaultBranchRef`), not `origin/HEAD`, which a clone may not have set. | This spec |
-| D5 | Merge is seen through `gh pr view <url> --json state,mergedAt`, not through `origin/<default>`, which only the Desktop's header fetch moves. | Reviewer, round 1 |
+| D5 | Merge is seen through `gh pr view <url> --json state,mergedAt`, not through `origin/<default>`, which only the Desktop's header fetch moves. `gh` runs only in processes the owner starts (Accept, Roll Back, the Coach tab's refresh), never in the daemon: `gh` reads its token from the Keychain, which may raise a system prompt from a background process — the same reason `gitbin` keeps credential helpers out of the background fetch. | Reviewer, rounds 1–2 |
 | D6 | The commit and the push run without the repository's hooks (`--no-verify`): the commit holds one Markdown file the owner reviews in the PR, and the repository's CI runs on it there. | This spec |
+| D8 | A folder is a GitHub folder when its `origin` URL's host is `github.com` (https, ssh or `git@host:` form), read with `git remote get-url origin` — no `gh` needed to decide. Another host takes the PR path only when `gh auth status --hostname <host>` succeeds; otherwise D2. So a missing or logged-out `gh` refuses (`no_gh`) on github.com and never silently drops a GitHub folder to the old path. | Reviewer, round 2 |
+| D9 | Nothing in the owner's repository moves: the base commit is fetched by its id (`gh repo view --json defaultBranchRef` gives the branch and its head commit), `git fetch --no-write-fetch-head origin <sha>`, so neither `origin/<default>` nor `FETCH_HEAD` changes. | Reviewer, round 2 |
+| D10 | Every network call has a budget: 60 s per `git fetch`/`git push`/`gh` call, 3 min for a whole Accept or Roll Back. Over budget: refused with code `timeout`, the proposal keeps its state, the scratch folder is removed. | Reviewer, round 2 |
 | D7 | Rollback of a merged edit opens a revert PR and records it apart from the original PR; the card says the revert is waiting for its merge. | Reviewer, round 1 |
 
 ## 4. Design
@@ -37,8 +40,9 @@ Non-goals: merging the PR, editing an open PR, git hosts other than GitHub (the 
 ### 4.1 Where the git writes live
 
 `internal/coach` still runs no git (`TestCOACH01_NoGitWrites` stays as it is). `Applier` gets two more seams,
-`RepoPublish` and `RepoPRState`, filled by `cmd` (the `coach accept` / `coach rollback` process the Desktop
-confirms, AGENT-07) and by the daemon (`RepoPRState` only). The git and `gh` calls live in a new file
+`RepoPublish` and `RepoPRState`, filled only by `cmd` (the `coach accept` / `coach rollback` / `coach sync-prs`
+processes the owner starts; Accept and Roll Back are confirmed in the Desktop, AGENT-07). The daemon leaves both
+nil. The git and `gh` calls live in a new file
 `internal/workbenchgit/publish.go`, through `gitbin` like every other workbench git call:
 
 ```go
@@ -68,13 +72,15 @@ in step 2 below checks the same login the push uses on https.
 ### 4.3 Accept
 
 1. The checks that need no git run as today (state `open`, baseline, `ValidateAfter`).
-2. `gh repo view --json nameWithOwner,defaultBranchRef` in the folder. Not a GitHub repository (or no `origin`):
-   D2, today's path, unchanged (`dirty`/`not_git` refusals included). `gh` not installed or not logged in: refused
-   with code `no_gh` ("Log in with `gh auth login` to let Accept open the pull request"), nothing written.
+2. `git remote get-url origin` decides the path (D8). No `origin`, or a host that is not GitHub: D2, today's
+   path, unchanged (`dirty`/`not_git` refusals included). A GitHub folder whose `gh` is not installed or not
+   logged in: refused with code `no_gh` ("Log in with `gh auth login` to let Accept open the pull request"),
+   nothing written. Otherwise `gh repo view --json defaultBranchRef` gives the default branch and its head commit.
 3. `Publish`:
-   - `git fetch origin <default>` (with the push's credentials, 4.2);
+   - `git fetch --no-write-fetch-head origin <sha>` (the head commit from step 2, with the push's credentials,
+     4.2; no ref of the repository moves, D9);
    - remove a leftover `<scratch>/<id>` of this proposal (`git worktree remove --force`, `git worktree prune`);
-   - `git worktree add --detach <scratch>/<id> origin/<default>` — no local branch is created;
+   - `git worktree add --detach <scratch>/<id> <sha>` — no local branch is created;
    - the file there must hold `Before`, otherwise refused with code `base_differs` ("CLAUDE.md on main differs from
      the one the chat read — pull, then ask the chat again"); the proposal stays open;
    - write `After`; `git commit --no-verify` (author = the repository's git identity, message `coach: <title>`);
@@ -89,10 +95,13 @@ The working-copy `dirty` check does not apply to the PR path: the working copy i
 
 ### 4.4 The verdict window
 
-`coachCommitCheck` (daily) checks a row with `pr_url` through `RepoPRState`: `MERGED` sets `measure_from` to the
-PR's `mergedAt`. A row without `pr_url` keeps today's `HEAD` check. `gh` failing skips the row that day, as an
-unreadable folder does now. The 30-day `too_little_data` rule is unchanged, so an unmerged PR ends the way an
-uncommitted edit ends today.
+The daemon's `coachCommitCheck` keeps today's `HEAD` check for every row and never runs `gh` (D5): a merged PR
+the owner has pulled is seen there. A row with `pr_url` is also checked through `RepoPRState` by the owner's own
+processes — every `coach accept`/`coach rollback`, and `coach sync-prs`, which the Desktop runs when the Coach
+tab's accepted list is shown. `MERGED` sets `measure_from` to the PR's `mergedAt` (a compare-and-set on
+`measure_from IS NULL`, so the earlier of the two checks wins and a late check still starts the window at the
+merge). `gh` failing leaves the row as it was. The 30-day `too_little_data` rule is unchanged, so an unmerged PR
+ends the way an uncommitted edit ends today.
 
 ### 4.5 Rollback
 
@@ -125,11 +134,12 @@ back card with `revert_pr_url` shows "revert: PR #M — merge it to remove the e
 | `gh pr create` fails after the push | `pr_failed`; proposal stays open; the branch stays on origin and the next Accept reuses it. |
 | Rollback: `gh` fails, the revert push or `ClosePR` fails | Refused, proposal stays `accepted` (4.5). |
 | Rollback: PR closed by hand | `rolled_back` without a git call. |
+| A network call hangs | Over its budget (D10): `timeout`, state unchanged, scratch folder removed. |
 | Owner edits the file again after the merge | Measuring starts at the merge regardless; the verdict compares the period, as for every other edit. |
 
 Writers of `pr_url` and `revert_pr_url`: only `MarkCoachAccepted` and `MarkCoachRolledBack`, both behind the
-status compare-and-set; writer of `measure_from`: only `coachCommitCheck` (compare-and-set on `measure_from IS
-NULL`, as today).
+status compare-and-set; writers of `measure_from`: `coachCommitCheck` (daemon, `HEAD`) and `coach sync-prs` / Accept /
+Roll Back (`mergedAt`), each a compare-and-set on `measure_from IS NULL`: the first wins, a later one is a no-op.
 
 ## 6. Contracts
 
@@ -139,7 +149,8 @@ NULL`, as today).
   closes a pull request; it never writes the owner's working copy or local refs, never pushes another branch and
   never merges. New guard: `internal/workbenchgit/publish_test.go::TestCOACH01_PublishTouchesOnlyItsBranch` (a bare
   origin, a folder with a dirty working copy and a second branch: after `Publish` the working copy, `HEAD` and
-  every local ref are unchanged, and origin gains only `coach/proposal-<id>`).
+  every local ref — `origin/*` and `FETCH_HEAD` included — are unchanged, and origin gains only
+  `coach/proposal-<id>`).
 - **AGENT-07** unchanged: Accept and Roll Back still run only on the owner's confirmation in the Desktop.
 - **PROJ-10** and the workbench git rules (`workbench.md`) unchanged: no branch switch, no stash, no write in the
   owner's working tree; the new calls go through `gitbin` and add the push credential rule of 4.2.
@@ -152,7 +163,11 @@ NULL`, as today).
 - `Applier.Accept`: PR path stores `pr_url` and never writes the working copy; non-GitHub path unchanged; `no_gh`.
 - `Applier.Rollback`: `MERGED` → revert PR in `revert_pr_url`; `OPEN` → closed; `CLOSED` → only the status;
   `gh` failure and push failure leave it `accepted`; base moved → `changed_since`.
-- `coachCommitCheck`: a merged PR sets `measure_from` to `mergedAt`; an open PR sets nothing; `gh` failure skips.
+- `coach sync-prs`: a merged PR sets `measure_from` to `mergedAt`; an open PR sets nothing; `gh` failure leaves
+  the row; the daemon's `coachCommitCheck` runs no `gh` (its seams carry no `RepoPRState`).
+- Path choice (D8): github.com https/ssh/scp URLs → PR path; another host without `gh` login → old path; github.com
+  without `gh` → `no_gh`.
+- Budgets (D10): a stub `gh` that hangs → `timeout`, proposal still open.
 - Desktop: `CoachPresentation` texts for the PR link, the waiting reason and the revert.
 - Docs: `docs/features/agent-coach.md`, `docs/features/tuning-chat.md`, `docs/inventory/coach.md`, the guide page
   for the coach card.
