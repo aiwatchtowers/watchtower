@@ -65,7 +65,7 @@ A service you cancelled shows **Not connected** with **Connect** in its company 
 
 ## When your company changes an app
 
-A link that changes a stored company's apps never applies on its own. Watchtower shows **<company>'s link changes its apps** with each change, and **Keep current** is the default. **Replace** stores the new apps; the changed services' accounts show "Re-login needed — <company> changed its app" with **Re-login**.
+A link that changes a stored company's apps never applies on its own. Watchtower shows **<company>'s link changes its apps** with each change, and **Keep current** is the default. **Replace** stores the new apps; the changed services' accounts show "Re-login needed — <company> changed its app" with **Re-login** (a service the new link drops offers **Paste a company code** instead).
 
 If the company rotated a secret without a new link, the next refresh fails: the row says "Re-login needed — your company changed its app; open the new link". Ask your admin for the new link and paste it. Your data stays in both cases; nothing is deleted for it.
 

@@ -142,7 +142,7 @@ Inbox items made from a deleted message or mail stay, with their text removed. I
 ## When someone closes their Atlassian account
 <!-- learn: none -->
 
-Every 7 days Watchtower asks Atlassian which of the people it stored from a Jira site have closed their account (a site connected with an API token looks their profiles up instead). For each closed account it erases what it got from Atlassian about that person: their Jira and Confluence user entries with name, email and Slack match, and their name on issues and comments, which then show no name. Search documents built from those issues and pages are rebuilt.
+Every 7 days Watchtower asks Atlassian which of the people it stored from a connected Jira site have closed their account (a site that needs a Re-login, or that your organization stops, waits until it syncs again) (a site connected with an API token looks their profiles up instead). For each closed account it erases what it got from Atlassian about that person: their Jira and Confluence user entries with name, email and Slack match, and their name on issues and comments, which then show no name. Search documents built from those issues and pages are rebuilt.
 
 Memory is not touched: it keys people by Slack, not Atlassian. Text the AI already wrote, such as digests, briefings, chats and inbox card text, is not rewritten; it ages out under its own retention. If Atlassian cannot answer, nothing is erased and Watchtower asks again next time.
 

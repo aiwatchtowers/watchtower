@@ -136,7 +136,7 @@ action: nav:connections
 
 For when your company has no Atlassian app, or you prefer a token. Press **Connect with an API token**, then **Open Atlassian's token page** and create a token with scopes (**Copy scopes** copies them). Fill in **Site**, **Atlassian email** and **API token** and press **Connect**. Watchtower checks the token with the site before storing it, and keeps it only on your Mac. A token without Confluence access connects Jira alone.
 
-When a token expires or is revoked, its row says "The API token stopped working (expired or revoked) — paste a new one": press **Paste a new token**. The data stays; only the 30-day rule of [revoked access](../concepts/revoked-access.md) can still delete it, and the row names that day. If your organization does not allow API tokens, the button is gone and token sites stop syncing, keeping their data.
+When a token expires or is revoked, its row says "The API token stopped working (expired or revoked) — paste a new one": press **Paste a new token**. The data stays; only the 30-day rule of [revoked access](../concepts/revoked-access.md) can still delete it, and while it applies the row names that day. If your organization does not allow API tokens, the button is gone and token sites stop syncing, keeping their data.
 
 ## When it's empty or wrong
 
@@ -147,7 +147,7 @@ When a token expires or is revoked, its row says "The API token stopped working 
 - **Workload is empty though Jira has issues.** No Jira user is matched to a Slack user. Connect Slack, then press **Resolve** in **User Mapping**.
 - **A comment or issue deleted in Jira is still shown.** A comment disappears the next time that issue is synced; an issue within about a day.
 - **A Jira site row shows a Re-login button.** Atlassian revoked the grant, so that site stops syncing until you press **Re-login** in **Connections** → **Jira**.
-- **"Watchtower's shared Atlassian app is retired".** Sign the site in again through your company's app (**Set up for my company** if nobody has) or with an API token; its data stays.
+- **"Watchtower's shared Atlassian app is retired".** Sign the site in again through your company's app (**Set up for my company** if nobody has) or with an API token.
 - **"Re-login needed — your company changed its app; open the new link".** Your company replaced or rotated its Atlassian app. Paste the new code or open the new link.
 - **"Re-login to finish the setup".** The sign-in lacks the permission that erases people who closed their Atlassian account. Press **Re-login**.
 - **Blockers misses an issue you call blocked.** A Jira issue is listed as blocked only when its status name contains "block"; a flag or label is not read. A Linear issue needs an open "blocked by" relation. Links only build the chain shown under a listed issue.
