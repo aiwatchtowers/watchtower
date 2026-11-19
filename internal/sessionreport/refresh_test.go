@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -85,7 +86,6 @@ func newWorkbench(t *testing.T, folder string) (*db.DB, int64) {
 }
 
 // ghStubScript answers the gh calls the tests make; anything else fails.
-// pr 15 hangs until it is killed (with its child: the process group).
 const ghStubScript = `#!/bin/sh
 echo "$*" >> '%LOG%'
 case "$*" in
@@ -96,7 +96,6 @@ case "$*" in
   echo '{"state":"MERGED","title":"Merged one","additions":40,"deletions":7,"mergedAt":"2026-10-02T09:30:00Z"}' ;;
 "pr view 13 --json state,title,additions,deletions,mergedAt")
   echo '{"state":"CLOSED","title":"Closed one","additions":1,"deletions":1,"mergedAt":null}' ;;
-"pr view 15 --json state,title,additions,deletions,mergedAt") sleep 60 ;;
 "pr list --head feature --state all --limit 1 --json number,state,title,additions,deletions,mergedAt")
   echo '[{"number":21,"state":"MERGED","title":"Feature","additions":9,"deletions":3,"mergedAt":"2026-10-01T08:00:00Z"}]' ;;
 "pr list --head "*) echo '[]' ;;
@@ -443,14 +442,24 @@ func TestRefresh_OfflineKeepsGHBranchState(t *testing.T) {
 	}
 }
 
-// The real budget running out during the last ref's read still says so:
-// the cut read is neither stored nor counted as a failed read.
+// The refresh's context ending during the last ref's read (the wall-clock
+// budget's deadline, here the caller's cancel at that read: no clock) still
+// says so: the cut read is neither stored nor counted as a failed read.
 func TestRefresh_BudgetCutOnTheLastRefIsNoted(t *testing.T) {
 	dir := newRepo(t)
 	ghStub(t)
 	d, id := newWorkbench(t, dir)
-	res := Refresh(context.Background(), d, id, []string{"pr:15"},
-		RefreshOptions{Network: true, Budget: time.Second, Now: fixedNow})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	prev := run
+	run = func(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
+		if slices.Contains(args, "view") && slices.Contains(args, "15") {
+			cancel() // mid-read: the gh call then never runs
+		}
+		return prev(ctx, dir, stdin, name, args...)
+	}
+	t.Cleanup(func() { run = prev })
+	res := Refresh(ctx, d, id, []string{"pr:15"}, RefreshOptions{Network: true, Now: fixedNow})
 	if !strings.Contains(res.Note, "time budget ran out; 1 ref(s) keep their cached state") ||
 		strings.Contains(res.Note, "could not be read") {
 		t.Fatalf("note %q, want only the budget note", res.Note)

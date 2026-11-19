@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,9 +32,13 @@ func sessionReportWorkbench(t *testing.T, folder string) {
 }
 
 // loadSessionReportFixture loads the SQL fixture at path into the command's
-// database and binds workbench 1 to folder.
+// database and binds workbench 1 to folder. The command's merge refresh
+// runs on a fixed clock: no time budget on the wall for its git reads.
 func loadSessionReportFixture(t *testing.T, path, folder string) {
 	t.Helper()
+	now := time.Now()
+	sessionReportClock = func() time.Time { return now }
+	t.Cleanup(func() { sessionReportClock = nil })
 	database := writeActionsConfig(t)
 	script, err := os.ReadFile(path)
 	require.NoError(t, err)

@@ -29,7 +29,7 @@ final class OwnerConfirmIOTests: XCTestCase {
         let (server, client) = try pair()
         writes.forEach { send(client, $0) }
         if closing { shutdown(client, SHUT_WR) }
-        return OwnerConfirmIO.readLine(server, limit: limit, within: 1)
+        return OwnerConfirmIO.readLine(server, limit: limit, within: nil)
     }
 
     func testALineOfExactlyTheLimitWithItsNewlineIsRead() throws {
@@ -47,8 +47,8 @@ final class OwnerConfirmIOTests: XCTestCase {
     func testANewlineInALaterReadEndsTheLine() throws {
         let (server, client) = try pair()
         send(client, "abc")
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { self.send(client, "def\nrest") }
-        XCTAssertEqual(OwnerConfirmIO.readLine(server, limit: 10, within: 2), .line(Data("abcdef".utf8)))
+        DispatchQueue.global().async { self.send(client, "def\nrest") }
+        XCTAssertEqual(OwnerConfirmIO.readLine(server, limit: 10, within: nil), .line(Data("abcdef".utf8)))
     }
 
     func testBytesAfterTheNewlineAreNotPartOfTheLine() throws {
@@ -59,8 +59,9 @@ final class OwnerConfirmIOTests: XCTestCase {
         XCTAssertEqual(try read(["abc"], limit: 10, closing: true), .noLine)
     }
 
+    /// The deadline is already past (0 s): no clock to wait out.
     func testSilenceRunsOutAsNoLine() throws {
         let (server, _) = try pair()
-        XCTAssertEqual(OwnerConfirmIO.readLine(server, limit: 10, within: 0.2), .noLine)
+        XCTAssertEqual(OwnerConfirmIO.readLine(server, limit: 10, within: 0), .noLine)
     }
 }
