@@ -107,6 +107,13 @@ final class CompanyConnectionsPresentationTests: XCTestCase {
         XCTAssertEqual(full.line, "5 of 5 services connected")
         XCTAssertNil(full.missingLine)
         XCTAssertEqual(full.actions, [])
+        // Connected means an ok account, as `company inspect` counts it: a revoked or rejected one is not.
+        let broken = [account(.linear, 1, "Acme", slug: "acme", status: "revoked"),
+                      account(.google, 2, "x", slug: "acme", status: "error", error: "invalid_client")]
+        let brokenCard = zone(companies: [acme], accounts: all.filter { $0.vendor != .linear && $0.vendor != .google } + broken)
+            .body.cards[0]
+        XCTAssertEqual(brokenCard.line, "3 of 5 services connected")
+        XCTAssertEqual(brokenCard.missingLine, "Not connected: Gmail and Calendar, Linear")
         // One vendor: "service", not "services".
         let one = CompanyRef(slug: "beta", name: "Beta", vendors: [.linear: ""])
         XCTAssertEqual(zone(companies: [one]).body.cards[0].line, "0 of 1 service connected")
@@ -204,7 +211,8 @@ final class CompanyConnectionsPresentationTests: XCTestCase {
         // Its company's card names it, with the Re-login of the changed vendors.
         let card = zone(companies: [acme], accounts: [a]).body.cards[0]
         XCTAssertEqual(card.problemLine, "Google: Re-login needed — Acme changed its app")
-        XCTAssertEqual(card.actions.first, .relogin([.google]))
+        XCTAssertEqual(card.actions, [.relogin([.google]), .connectRest])
+        XCTAssertFalse(card.missingLine?.contains("Gmail") ?? true, "a Replace's vendor is not also Not connected")
         XCTAssertEqual(CompanyCard.Action.relogin([.google]).title, "Re-login")
         let atl = account(.atlassian, 2, "acme.atlassian.net", slug: "acme", status: "error", error: "company_changed_app")
         XCTAssertEqual(zone(companies: [acme], accounts: [atl]).body.cards[0].problemLine,

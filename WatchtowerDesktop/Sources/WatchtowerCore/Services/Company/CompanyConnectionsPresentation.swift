@@ -423,12 +423,14 @@ package enum CompanyConnectionsPresentation {
 
     private static func card(_ company: CompanyRef, accounts: [AccountRef]) -> CompanyCard {
         let vendors = CompanyVendor.allCases.filter { company.vendors[$0] != nil }
-        let tied = accounts.filter { $0.companySlug == company.slug && !$0.isGone }
-        let connected = vendors.filter { v in tied.contains { $0.vendor == v } }
-        let missing = vendors.filter { !connected.contains($0) }
+        let tied = accounts.filter { $0.companySlug == company.slug }
+        // Connected = an ok account, as `company inspect` counts it (the connect sheet's rows).
+        let connected = vendors.filter { v in tied.contains { $0.vendor == v && $0.status == "ok" } }
         let changed = vendors.filter { v in
             tied.contains { $0.vendor == v && $0.status == "error" && $0.error == codeChangedApp }
         }
+        // A Replace's vendor has its own Re-login, not Connect the rest.
+        let missing = vendors.filter { !connected.contains($0) && !changed.contains($0) }
         let nothingYet = company.forced && connected.isEmpty
 
         let line = nothingYet ? "Set up by your organization · nothing connected yet"
