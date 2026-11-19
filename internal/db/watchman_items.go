@@ -258,9 +258,10 @@ func (db *DB) CloseStaleWatchmanHandovers(now time.Time) (int64, error) {
 // journal and the twin decides the handover without answering the ask
 // again. A handover closed superseded whose ask still waits (open, or
 // answered by the twin as a question) reopens, so a session re-armed, or a
-// finish that names the ask again, hands it over after all; any other
-// handover released or done is left. So a scan or writer racing it
-// ends with exactly one handover row. it carries the insert's workbench,
+// finish that names the ask again, hands it over after all — the same row,
+// so its created_at, cost and moves carry over and the superseded close is
+// not journalled apart; any other handover released or done is left. So
+// a scan or writer racing it ends with exactly one handover row. it carries the insert's workbench,
 // session, target and question; promoted reports a handover it wrote,
 // inserted a new row.
 func (db *DB) PromoteWatchmanHandover(it WatchmanItem, held bool) (promoted, inserted bool, err error) {

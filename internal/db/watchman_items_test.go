@@ -1043,7 +1043,9 @@ func TestCloseStaleWatchmanHandovers_ExpiredDecidingHold(t *testing.T) {
 	now := time.Date(2026, 11, 18, 3, 0, 0, 0, time.UTC)
 	s := newTestSession(t, d, wb)
 	wmArmSession(t, d, s)
-	held := func(title, lease string) int64 {
+	liveSession := newTestSession(t, d, wb)
+	wmArmSession(t, d, liveSession)
+	heldIn := func(s int64, title, lease string) int64 {
 		a := questionAsk(wb, title)
 		a.SessionID = nullID(s)
 		id := mustInsertAsk(t, d, a)
@@ -1053,8 +1055,9 @@ func TestCloseStaleWatchmanHandovers_ExpiredDecidingHold(t *testing.T) {
 		require.NoError(t, err)
 		return id
 	}
-	expired := held("Expired", wmTime(now.Add(-time.Minute)))
-	live := held("Live", wmTime(now.Add(time.Minute)))
+	expired := heldIn(s, "Expired", wmTime(now.Add(-time.Minute)))
+	live := heldIn(s, "Live", wmTime(now.Add(time.Minute)))
+	stillArmed := heldIn(liveSession, "Expired in a live session", wmTime(now.Add(-time.Minute)))
 	_, err := d.Exec(`UPDATE terminal_sessions SET finished_at = '2026-11-18T01:00:00.000Z' WHERE id = ?`, s)
 	require.NoError(t, err)
 
@@ -1069,6 +1072,8 @@ func TestCloseStaleWatchmanHandovers_ExpiredDecidingHold(t *testing.T) {
 	require.False(t, lease.Valid)
 	require.NoError(t, d.QueryRow(`SELECT state, error FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?`, live).Scan(&st, &e))
 	require.Equal(t, []string{"deciding", WatchmanHandoverHeld}, []string{st, e}, "a live lease is not stolen")
+	require.NoError(t, d.QueryRow(`SELECT state, error FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?`, stillArmed).Scan(&st, &e))
+	require.Equal(t, []string{"deciding", WatchmanHandoverHeld}, []string{st, e}, "a live armed session's hold stays open")
 }
 
 // A held handover of a session taken back is closed even when its arming
