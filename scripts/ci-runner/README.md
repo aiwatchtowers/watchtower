@@ -41,7 +41,7 @@ exactly as before. Nothing else changes for contributors.
   error or a timeout keeps everything in the cloud.
 - On the Mac the jobs run as a separate standard macOS user, `ci`, so a
   branch's code cannot reach the owner's Keychain, `~/.config/watchtower` or
-  the live database. Eight general runners (`actions-runner-general-1..8`
+  the live database. Five general runners (`actions-runner-general-1..5`
   in `ci`'s home, named `wt-mac-general-N`, label `wt-general`) and one
   `wt-mac-swift` (`actions-runner-swift`, label `wt-swift`), each a
   LaunchAgent that `ci`'s login loads into its Aqua (GUI) session.
@@ -163,7 +163,7 @@ covers them; Mobile App stays in the cloud.
    request workflows from contributors* → *Require approval for all external
    contributors*). Read a fork PR's workflow changes before approving it.
 
-7. **Check:** Settings → Actions → Runners lists `wt-mac-general-1..8` and `wt-mac-swift` as
+7. **Check:** Settings → Actions → Runners lists `wt-mac-general-1..5` and `wt-mac-swift` as
    Idle. Push a branch: the gate's *pick* step logs
    `runs-on: linux=["self-hosted","wt-general"] …`.
 
@@ -199,5 +199,5 @@ covers them; Mobile App stays in the cloud.
   time, so a test that writes to the real home (rather than a temp folder)
   sees what other jobs and earlier runs left there.
 - **No spill-over.** A class goes to the Mac whenever one of its runners is
-  online, busy or not; concurrent runs queue for the eight general runners rather
+  online, busy or not; concurrent runs queue for the five general runners rather
   than overflow to the cloud.
