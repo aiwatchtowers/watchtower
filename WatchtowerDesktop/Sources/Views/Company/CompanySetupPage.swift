@@ -112,7 +112,7 @@ struct CompanySetupPage: View {
                 if !isNarrow {
                     CompanySetupRail(model: model)
                         .frame(width: PaneWidth.sideListIdeal)
-                        .disabled(model.load != .ready)
+                        .disabled(model.load != .ready || model.discarding)
                 }
                 VStack(alignment: .leading, spacing: Spacing.medium) {
                     // Narrow, the folded rail's line already names a vendor step.
@@ -123,7 +123,7 @@ struct CompanySetupPage: View {
                         // The drop warning carries its own Keep / Drop on Services.
                         if model.dropWarning == nil || model.current != .services { footer }
                     }
-                    .disabled(model.load != .ready)
+                    .disabled(model.load != .ready || model.discarding)
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }

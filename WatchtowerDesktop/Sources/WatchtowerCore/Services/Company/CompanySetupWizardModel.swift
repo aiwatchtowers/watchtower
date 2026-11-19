@@ -462,7 +462,10 @@ package final class CompanySetupWizardModel {
     /// stay (§2.12).
     package func discard() async {
         // Publish deletes the draft itself; a discard under it would land on a reset setup.
-        guard publishState != .running else { return }
+        guard publishState != .running, !discarding else { return }
+        // Until it ends nothing else starts (Publish would save the draft back).
+        discarding = true
+        defer { discarding = false }
         // A check waiting on its pre-check save is abandoned now, never started.
         generation += 1
         // After any save in flight: a save landing later would bring the draft back.
@@ -516,6 +519,9 @@ package final class CompanySetupWizardModel {
         // A fresh setup pre-ticks what this Mac knows, as on a first open.
         draft.services = CompanyVendor.allCases.filter(foundVendors.contains).map(\.rawValue)
     }
+
+    /// **Discard setup** is deleting the draft: Publish and the steps wait.
+    package private(set) var discarding = false
 
     /// Publish went through: Go deleted the draft, which stays deleted.
     package var isPublished: Bool {
@@ -1280,14 +1286,14 @@ package final class CompanySetupWizardModel {
     }
 
     private var canPublish: Bool {
-        publishBlockedReason == nil && !publishNeedsToken && publishState != .running
+        publishBlockedReason == nil && !publishNeedsToken && publishState != .running && !discarding
     }
 
     /// Packs the bundle and writes the link to the Slack app's About page.
     /// The token goes on stdin only. Failures keep the setup (Go keeps the
     /// draft and the stored bundle).
     package func publish(token: String?) async {
-        guard publishBlockedReason == nil, publishState != .running else { return }
+        guard publishBlockedReason == nil, publishState != .running, !discarding else { return }
         let token = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if isActive(.slack), token.isEmpty { return }
         publishRefusal = nil

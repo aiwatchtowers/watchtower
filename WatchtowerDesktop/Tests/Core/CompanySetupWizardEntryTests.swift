@@ -197,6 +197,30 @@ final class CompanySetupWizardEntryTests: XCTestCase {
         XCTAssertNotEqual(model.current, .publish, "nothing was queued behind the run")
     }
 
+    /// While Discard deletes the draft, Publish does not start (it would save the draft back).
+    func testNoPublishWhileDiscarding() async {
+        let cli = CompanyScriptedCLI()
+        let model = make(cli)
+        await model.open()
+        model.toggle(.linear)
+        model.publishName = "Acme"
+        await model.next()
+        await model.skip()
+        await model.next()
+        XCTAssertEqual(model.current, .publish)
+        cli.hold(["company", "draft", "discard"])
+        let discard = Task { await model.discard() }
+        await cli.waitFor(["company", "draft", "discard"])
+        XCTAssertTrue(model.discarding)
+        XCTAssertFalse(model.primary.enabled)
+        await model.publish(token: nil)
+        XCTAssertTrue(cli.calls(["company", "publish"]).isEmpty)
+        cli.release(["company", "draft", "discard"], [])
+        await discard.value
+        XCTAssertFalse(model.discarding)
+        XCTAssertEqual(model.current, .services)
+    }
+
     /// Ticks made while discovery looks are kept.
     func testTicksDuringDiscoveryWin() async {
         let cli = CompanyScriptedCLI()
