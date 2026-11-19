@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -250,8 +251,8 @@ func reviewFindings(row *db.SpecReview) (*specreview.Result, []specreview.Ledger
 
 // inventoryDir is the behavior inventory of the folder the review ask's
 // document is in (its DocFolderID; the home folder for a legacy ask with
-// none); errDocFolderUnresolved when that folder row is gone or not the
-// workbench's.
+// none); errDocFolderUnresolved when that folder row is gone, not the
+// workbench's, or its folder is not on disk.
 func (t *Twin) inventoryDir(ctx context.Context, workbenchID int64, docFolder sql.NullInt64) (string, error) {
 	if !docFolder.Valid {
 		// A legacy ask from before multi-folder workbenches: the home folder.
@@ -268,11 +269,17 @@ func (t *Twin) inventoryDir(ctx context.Context, workbenchID int64, docFolder sq
 	if err != nil {
 		return "", err
 	}
+	// A moved or unmounted folder still has its row: its missing inventory
+	// would read as "no contracts", so a folder not on disk parks too. A
+	// missing inventory inside a present folder is harmless (no contracts).
+	if st, err := os.Stat(f.FolderPath); err != nil || !st.IsDir() {
+		return "", fmt.Errorf("%w: folder %d (%s) is not on disk", errDocFolderUnresolved, f.ID, f.FolderPath)
+	}
 	return filepath.Join(f.FolderPath, filepath.FromSlash(inventoryName)), nil
 }
 
-// errDocFolderUnresolved: the ask's recorded document folder is gone or not
-// of its workbench, so its inventory cannot be read — the approve parks.
+// errDocFolderUnresolved: the ask's recorded document folder is gone, not on
+// disk or not of its workbench, so its inventory cannot be read — the approve parks.
 var errDocFolderUnresolved = errors.New("the document's folder cannot be resolved")
 
 // --- review_code -------------------------------------------------------

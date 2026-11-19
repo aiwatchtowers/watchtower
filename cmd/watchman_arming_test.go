@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -815,4 +816,26 @@ func TestWatchmanArm_ChecksTheCoveredFolders(t *testing.T) {
 	_, out, err = armCLI(t, "arm", "--target", strconv.FormatInt(target, 10), "--check", "--json")
 	require.NoError(t, err, out)
 	assert.ElementsMatch(t, []string{home, hub}, asked, "a target covers every live folder of its bench")
+}
+
+// Every covered repository is checked, and with several each warning names
+// its repository; one repository keeps the bare warning.
+func TestWatchmanProtectionWarning_EveryRepoNamed(t *testing.T) {
+	prev := watchmanProtectionRun
+	t.Cleanup(func() { watchmanProtectionRun = prev })
+	unprotected := map[string]bool{"/code/app": true, "/code/hub": true}
+	watchmanProtectionRun = func(_ context.Context, dir, _ string, args ...string) ([]byte, error) {
+		if args[len(args)-1] == ".default_branch" {
+			return []byte("main\n"), nil
+		}
+		if unprotected[dir] {
+			return []byte(`{"message":"Branch not protected","status":"404"}`), errors.New("exit status 1")
+		}
+		return []byte(`{"required_pull_request_reviews":{"required_approving_review_count":1},"enforce_admins":{"enabled":true}}`), nil
+	}
+	warn := watchmanact.ProtectionWarningUnprotected
+	assert.Equal(t, "/code/app: "+warn+"\n/code/hub: "+warn,
+		watchmanProtectionWarning(context.Background(), []string{"/code/app", "/code/safe", "/code/hub"}))
+	assert.Equal(t, warn, watchmanProtectionWarning(context.Background(), []string{"/code/hub"}))
+	assert.Empty(t, watchmanProtectionWarning(context.Background(), []string{"/code/safe"}))
 }

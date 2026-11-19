@@ -194,6 +194,9 @@ func checkHandoverAsk(d *db.DB, workbenchID, session, ticket, askID int64) (bool
 		return false, &ValidationError{Msg: fmt.Sprintf("handover_ask_id: ask #%d was not filed by this session", askID)}
 	case ask.Status == "withdrawn":
 		return false, &ValidationError{Msg: fmt.Sprintf("handover_ask_id: ask #%d is withdrawn", askID)}
+	case ask.Kind == db.AskKindFolder:
+		return false, &ValidationError{Msg: fmt.Sprintf("handover_ask_id: ask #%d is a folder suggestion; "+
+			"file a question or check ask that says what is left and why", askID)}
 	case ask.Kind == "review" && watchmanArmedForGate(d, session):
 		return false, &ValidationError{Msg: fmt.Sprintf("handover_ask_id: ask #%d is a review; "+
 			"file a question or check ask that says what is left and why", askID)}

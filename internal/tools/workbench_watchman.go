@@ -147,6 +147,11 @@ func markWatchmanHandover(d *db.DB, workbenchID, session, ticket, askID int64) {
 		watchmanLog("ask %d was not marked Watchman's handover: %v", askID, err)
 		return
 	}
+	if ask.Kind == db.AskKindFolder {
+		// Never the twin's (checkHandoverAsk refuses it; kept here too).
+		watchmanLog("ask %d is a folder suggestion: not marked Watchman's handover", askID)
+		return
+	}
 	if ask.TargetID.Valid {
 		ticket = ask.TargetID.Int64
 	}

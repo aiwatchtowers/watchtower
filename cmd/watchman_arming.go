@@ -171,18 +171,26 @@ func watchmanScopeRepos(ctx context.Context, database *db.DB, rows []db.Watchman
 	return repos, nil
 }
 
-// watchmanProtectionWarning checks each covered repository's default branch
-// protection (spec §5 item 2) and returns the first warning; "" when every
-// one needs an approving review to merge.
+// watchmanProtectionWarning checks every covered repository's default
+// branch protection (spec §5 item 2) within one budget and returns their
+// warnings, one line each; "" when every one needs an approving review to
+// merge. With one repository the line is the warning alone; with several
+// each line starts with its repository's path.
 func watchmanProtectionWarning(ctx context.Context, repos []string) string {
 	ctx, cancel := context.WithTimeout(ctx, watchmanProtectionBudget)
 	defer cancel()
+	var text string
 	for _, repo := range repos {
-		if w := watchmanact.CheckProtection(ctx, watchmanProtectionRun, repo).Warning; w != "" {
-			return w
+		w := watchmanact.CheckProtection(ctx, watchmanProtectionRun, repo).Warning
+		if w == "" {
+			continue
 		}
+		if len(repos) > 1 {
+			w = repo + ": " + w
+		}
+		addLine(&text, w)
 	}
-	return ""
+	return text
 }
 
 // addLine appends line to the newline-joined text unless it is there.

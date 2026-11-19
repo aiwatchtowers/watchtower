@@ -263,7 +263,8 @@ func (db *DB) CloseStaleWatchmanHandovers(now time.Time) (int64, error) {
 // not journalled apart; any other handover released or done is left. So
 // a scan or writer racing it ends with exactly one handover row. It
 // carries the insert's workbench, session, target and
-// question; promoted reports a handover it wrote, inserted a new row.
+// question; promoted reports a handover it wrote, inserted a new row. A
+// folder suggestion is never promoted (both false).
 func (db *DB) PromoteWatchmanHandover(it WatchmanItem, held bool) (promoted, inserted bool, err error) {
 	watchmanHandoverBeforeWrite()
 	q := []rune(it.Question)
@@ -275,6 +276,14 @@ func (db *DB) PromoteWatchmanHandover(it WatchmanItem, held bool) (promoted, ins
 		hold = WatchmanHandoverHeld
 	}
 	err = db.WithTx(func(tx *sql.Tx) error {
+		// A folder suggestion is never the twin's, not even as a handover.
+		var folderAsk int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM owner_asks WHERE id = ? AND kind = ?`, it.RefID, AskKindFolder).Scan(&folderAsk); err != nil {
+			return err
+		}
+		if folderAsk > 0 {
+			return nil
+		}
 		res, err := tx.Exec(`UPDATE watchman_items SET kind = 'handover', error = ?
 			WHERE ref_kind = 'ask' AND ref_id = ? AND state IN ('queued','deciding')
 			  AND (kind != 'handover' OR error = ?)`, hold, it.RefID, WatchmanHandoverHeld)
