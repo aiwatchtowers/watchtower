@@ -196,6 +196,9 @@ func TestHandlerDepsCarryTheRunnerSeams(t *testing.T) {
 		if deps.Windows == nil || deps.ChatWatches == nil || deps.Reports == nil {
 			t.Fatalf("runner seams: windows %v, watches %v, reports %v", deps.Windows != nil, deps.ChatWatches != nil, deps.Reports != nil)
 		}
+		if _, plain := deps.ChatWatches.(*handlers.ChatWatchRegistry); plain {
+			t.Fatal("the handlers' chat watches do not wake the session chat runner")
+		}
 		if deps.Sealer == nil || deps.LateEcho == nil || deps.Sessions == nil || deps.DB == nil || deps.Store == nil {
 			t.Fatal("held lines need the sealer and the late echo")
 		}

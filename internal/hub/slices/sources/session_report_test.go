@@ -645,3 +645,120 @@ func TestSessionReportAChangeWhileTheHubWasOffRunsOnTheFirstPass(t *testing.T) {
 		t.Fatalf("an unchanged finished session ran %d times", n)
 	}
 }
+
+// Runners on request (#1996): the phone's session_report_request starts a
+// pass at once, not after the 5 s gap a background signal waits.
+func TestSessionReportAPhoneRequestStartsAPassWithoutTheGap(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newReportRig(t)
+		project, session := r.seed()
+		run := r.runner(ReportTiming{}, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		if err := run.save(ctx, session, cliReport(t, session)); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- run.Run(ctx) }()
+		synctest.Wait() // the first pass ran nothing (stored, not live)
+		if n := len(r.callList()); n != 0 {
+			t.Fatalf("first pass: %d runs", n)
+		}
+		time.Sleep(time.Second) // inside the gap of the wait that follows
+		if !run.RequestReport(session) {
+			t.Fatal("the request was refused")
+		}
+		synctest.Wait()
+		if c := r.callList(); len(c) != 1 || c[0] != (reportCall{project, session, true}) {
+			t.Fatalf("calls %v right after the request, want one network run", c)
+		}
+		cancel()
+		<-done
+	})
+}
+
+// A stored requested report refreshes the PR cache: the workbench's
+// summaries run in the same pass, inside their 5 s spacing, for that
+// workbench only and once.
+func TestSessionReportARequestedRunRefreshesTheWorkbenchSummariesInsideTheirSpacing(t *testing.T) {
+	r := newReportRig(t)
+	project, session := r.seed()
+	other := insertWorkbench(t, r.d, "other", "/tmp/other")
+	insertSession(t, r.d, other, sessionSeed{lastActive: r.now})
+	run := r.runner(ReportTiming{}, nil)
+	ctx := context.Background()
+	run.SessionStateChanged(project)
+	run.SessionStateChanged(other)
+	run.RunDue(ctx)
+	if len(r.sums) != 2 {
+		t.Fatalf("the state change's summaries: %v", r.sums)
+	}
+	r.advance(time.Second)
+	run.SessionStateChanged(other) // background: waits for its spacing
+	if !run.RequestReport(session) {
+		t.Fatal("the request was refused")
+	}
+	run.RunDue(ctx)
+	if len(r.sums) != 3 || r.sums[2] != project {
+		t.Fatalf("summaries after the request: %v, want the requested workbench once more", r.sums)
+	}
+	run.SessionStateChanged(project)
+	r.advance(time.Second)
+	run.RunDue(ctx)
+	if len(r.sums) != 3 {
+		t.Fatalf("the spacing was skipped twice: %v", r.sums)
+	}
+}
+
+// A requested run that fails keeps the stored report and leaves the
+// summaries to their own cadence.
+func TestSessionReportAFailedRequestedRunLeavesTheSummariesToTheirCadence(t *testing.T) {
+	r := newReportRig(t)
+	project, session := r.seed()
+	run := r.runner(ReportTiming{}, nil)
+	ctx := context.Background()
+	run.SessionStateChanged(project)
+	run.RunDue(ctx)
+	r.failing = true
+	r.advance(time.Second)
+	run.RequestReport(session)
+	run.RunDue(ctx)
+	if c := r.callList(); len(c) == 0 || !c[len(c)-1].network {
+		t.Fatalf("calls %v, want the requested network run", c)
+	}
+	if len(r.sums) != 1 {
+		t.Fatalf("a failed run re-ran the summaries: %v", r.sums)
+	}
+}
+
+// The host closing mid-pass (the ctx ends during the requested run) stores
+// nothing and keeps the request due with the network for the next pass.
+func TestSessionReportARequestCutByStopStaysDue(t *testing.T) {
+	r := newReportRig(t)
+	project, session := r.seed()
+	run := r.runner(ReportTiming{}, nil)
+	if err := run.save(context.Background(), session, cliReport(t, session)); err != nil {
+		t.Fatal(err)
+	}
+	before := r.stored()[session]
+	ctx, cancel := context.WithCancel(context.Background())
+	cut := r.runner(ReportTiming{}, func(ctx context.Context, wb, id int64, network bool) (sessionreport.Report, error) {
+		cancel()
+		<-ctx.Done()
+		return sessionreport.Report{}, ctx.Err()
+	})
+	cut.RequestReport(session)
+	cut.RunDue(ctx)
+	if !bytes.Equal(r.stored()[session].Payload, before.Payload) {
+		t.Fatal("a cut run stored a report")
+	}
+	cut.o.Fetch = func(_ context.Context, wb, id int64, network bool) (sessionreport.Report, error) {
+		r.mu.Lock()
+		r.calls = append(r.calls, reportCall{wb, id, network})
+		r.mu.Unlock()
+		return cliReport(t, id), nil
+	}
+	cut.RunDue(context.Background())
+	if c := r.callList(); len(c) != 1 || c[0] != (reportCall{project, session, true}) {
+		t.Fatalf("after the cut: %v, want the requested network run", c)
+	}
+}

@@ -163,3 +163,131 @@ func TestACancelledWaitLeavesALaterSignalForTheNextWait(t *testing.T) {
 		}
 	})
 }
+
+// Runners on request (#1996): a phone request wakes the runner with
+// signalNow, which skips the minimum gap; background signals keep it.
+
+func TestAnUrgentSignalEndsTheWaitWithoutTheGap(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		w := newRunnerWake(0)
+		done, took := startWait(context.Background(), w, 15*time.Second)
+		time.Sleep(time.Second)
+		w.signalNow()
+		synctest.Wait()
+		if !ended(done) {
+			t.Fatal("the urgent signal did not end the wait at once")
+		}
+		if got := time.Duration(took.Load()); got != time.Second {
+			t.Fatalf("the wait took %v, want 1s (no gap)", got)
+		}
+	})
+}
+
+func TestAnUrgentSignalSentBetweenWaitsEndsTheNextWaitAtOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		w := newRunnerWake(0)
+		w.signalNow()
+		done, took := startWait(context.Background(), w, 15*time.Second)
+		<-done
+		if got := time.Duration(took.Load()); got != 0 {
+			t.Fatalf("the pending urgent signal's wait took %v, want 0", got)
+		}
+	})
+}
+
+func TestAnUrgentSignalCutsTheGapABackgroundSignalStarted(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		w := newRunnerWake(0)
+		done, took := startWait(context.Background(), w, 15*time.Second)
+		time.Sleep(time.Second)
+		w.signal() // a state change: its gap runs to 5 s
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if ended(done) {
+			t.Fatal("the background signal skipped the gap")
+		}
+		w.signalNow()
+		synctest.Wait()
+		if !ended(done) {
+			t.Fatal("the urgent signal did not cut the gap")
+		}
+		if got := time.Duration(took.Load()); got != 2*time.Second {
+			t.Fatalf("the wait took %v, want 2s", got)
+		}
+	})
+}
+
+// A burst of requests while a pass runs (signals sent before the next wait)
+// costs exactly one follow-up pass: the next wait ends at once, the one
+// after it runs its full timer.
+func TestABurstOfUrgentSignalsDuringAPassMakesOneFollowUpPass(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		w := newRunnerWake(0)
+		for range 5 {
+			w.signalNow()
+			w.signal()
+		}
+		done, took := startWait(context.Background(), w, 15*time.Second)
+		<-done
+		if got := time.Duration(took.Load()); got != 0 {
+			t.Fatalf("the follow-up pass waited %v", got)
+		}
+		done, took = startWait(context.Background(), w, 15*time.Second)
+		<-done
+		if got := time.Duration(took.Load()); got != 15*time.Second {
+			t.Fatalf("a second follow-up pass: the wait took %v, want 15s", got)
+		}
+	})
+}
+
+// A loop stopped while an urgent signal is pending (its ctx ended) leaves
+// it for the next wait of the same wake.
+func TestACancelledWaitKeepsAnUrgentSignalForTheNextWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		w := newRunnerWake(0)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		w.signalNow()
+		done, _ := startWait(ctx, w, 15*time.Second)
+		<-done
+		done, took := startWait(context.Background(), w, 15*time.Second)
+		<-done
+		if got := time.Duration(took.Load()); got != 0 {
+			t.Fatalf("the next wait took %v, want 0", got)
+		}
+	})
+}
+
+func TestCadenceAnUrgentRequestSkipsTheSpacingOnceForThatWorkbenchOnly(t *testing.T) {
+	c := newCadence[int](time.Minute, 5*time.Second)
+	t0 := time.Unix(1_800_000_000, 0)
+	keep := map[int64]bool{1: true, 2: true}
+	never := func(int64) bool { return false }
+	first := func(int64, bool) bool { return true }
+	if due := c.takeDue([]int64{1, 2}, keep, t0, first, never); len(due) != 2 {
+		t.Fatalf("first pass: %v", due)
+	}
+	c.requestNow(1)
+	c.request(2, true)
+	due := c.takeDue([]int64{1, 2}, keep, t0.Add(time.Second), first, never)
+	if len(due) != 1 || due[0].id != 1 {
+		t.Fatalf("an urgent request inside the spacing: due %v, want only workbench 1", due)
+	}
+	// Once: a background request of workbench 1 right after waits again.
+	c.request(1, true)
+	due = c.takeDue([]int64{1, 2}, keep, t0.Add(2*time.Second), first, never)
+	if len(due) != 0 {
+		t.Fatalf("the spacing was skipped twice: %v", due)
+	}
+	// A pass cut before it ran workbench 1 keeps its urgency.
+	c.requestNow(1)
+	due = c.takeDue([]int64{1, 2}, keep, t0.Add(3*time.Second), first, never)
+	if len(due) != 1 || due[0].id != 1 {
+		t.Fatalf("due %v", due)
+	}
+	c.restore(due)
+	due = c.takeDue([]int64{1, 2}, keep, t0.Add(4*time.Second), first, never)
+	if len(due) != 1 || due[0].id != 1 {
+		t.Fatalf("an unfinished urgent run was not kept due: %v", due)
+	}
+}

@@ -828,3 +828,42 @@ The hub's half of the live link — relay ops over the open socket (R2), inline 
 the mailbox event lane, the early nudge and the in-cycle `PublishNow` (R4), and the `event_read`/`nudge_saved`
 timings (R7) — is described in place above; how the parts fit with the relay and the phone, the failure behaviour
 and the stand numbers are in [live-link.md](live-link.md).
+
+## Runners on request (2026-11-19, #1996)
+
+A phone request no longer waits for a runner's background floor. `session_report_request` wakes the report runner
+with `runnerWake.signalNow`, which ends the wait, or the gap a background signal started, at once
+(`TestAnUrgentSignalEndsTheWaitWithoutTheGap`, `TestAnUrgentSignalCutsTheGapABackgroundSignalStarted`,
+`TestSessionReportAPhoneRequestStartsAPassWithoutTheGap`); the requested run already skipped the per-session state
+spacing. A stored requested report also runs its workbench's summaries in the same pass, skipping `SummarySpacing`
+once for that workbench only (`cadence.requestNow`; `TestCadenceAnUrgentRequestSkipsTheSpacingOnceForThatWorkbenchOnly`,
+`TestSessionReportARequestedRunRefreshesTheWorkbenchSummariesInsideTheirSpacing`): gh refreshed the PR cache they read.
+`session_chat_request` opens its watch through `SessionChatSource.RequestWatches`, which wakes the chat loop instead
+of its 2 s tick (`TestSessionChatARequestWakesTheLoopAtOnce`). Background signals — a session state change, a deferred
+run's timer — keep the 5 s minimum gap and the spacings (the existing `runner_test.go` twins). The other kinds the
+research note lists are not runner-fed: `permission_answer`, `session_input` and `session_start` move
+`permission_request`/`terminal_session`/`session_timeline` through the state lane (kicked by the `data_version` watch,
+nudging at once), and `chat_turn` through the chat engine.
+
+- **Bursts.** Requests sent while a pass runs cost exactly one follow-up pass, started at once: the wait that ends
+  takes every pending signal of both kinds (`TestABurstOfUrgentSignalsDuringAPassMakesOneFollowUpPass`). Report
+  requests start passes at most once per 60 s per session (`RequestSpacing`; a refused request sends no signal); a
+  chat pass reads only watches that are due (`Every` 3 s per watch), so a burst of chat requests reads nothing more.
+  A pass in flight is not interrupted: the request waits for it to end (up to its runs' timeouts, 30 s per report).
+- **Failure modes.** The host closing mid-pass (the runner's ctx ends): the run in flight stores nothing and the
+  request stays due with the network for the next pass (`TestSessionReportARequestCutByStopStaysDue`); a wait cancelled
+  with an urgent signal pending leaves it for the next wait (`TestACancelledWaitKeepsAnUrgentSignalForTheNextWait`). A
+  requested run that fails or times out keeps the stored report, consumes the request (the phone may ask again after
+  60 s) and leaves the summaries to their cadence (`TestSessionReportAFailedRequestedRunLeavesTheSummariesToTheirCadence`,
+  `TestSessionReportAHungRunTimesOutAndStoresNothing`). A hub restart with a request pending loses it — the wake, the
+  request flags and the chat watches are memory only, and the action is already applied, so it is not replayed: the
+  first pass after the start runs every live session and every session without a stored report (offline, no gh) and
+  republishes the stored reports (`TestSessionReportAChangeWhileTheHubWasOffRunsOnTheFirstPass`); the phone repeats
+  `session_chat_request` every minute and may repeat a report request.
+- **Writers.** The cached report (sidecar `session_reports`) is written only by the report runner's loop
+  (`save`, pruned by `RunDue`), and the session chat payloads only by the chat loop's `run`: background and requested
+  passes are the same loop, serial, so the later pass's value wins. The request state (`reportEntry.networkRequested`,
+  the summary cadence's `requested`/`urgent`) is written by the handler (`RequestReport`), the state lane
+  (`SessionStateChanged`) and the loop (`takeDue`/`restore`/`requestNow`) under the runner's or the cadence's mutex;
+  `restore` ORs a cut run's flags back and skips a run a later pass stamped, so a request that lands during a pass is
+  never lost. The wake tokens are lock-free one-slot channels.

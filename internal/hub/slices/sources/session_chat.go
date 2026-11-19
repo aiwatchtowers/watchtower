@@ -97,6 +97,8 @@ type SessionChatSource struct {
 	// generation is bumped when everything is dropped: a read that began
 	// under another generation stores nothing.
 	generation int
+	// wake ends the loop's wait for its next tick (a phone request).
+	wake chan struct{}
 }
 
 // chatKey is one watched feed.
@@ -133,7 +135,7 @@ func SessionChat(w handlers.ChatWatches, d *db.DB, o SessionChatOptions) *Sessio
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	s := &SessionChatSource{w: w, d: d, o: o, runs: map[chatKey]*chatRun{}}
+	s := &SessionChatSource{w: w, d: d, o: o, runs: map[chatKey]*chatRun{}, wake: make(chan struct{}, 1)}
 	if s.o.Fetch == nil {
 		dirs := o.Dirs
 		if dirs == (sessionfeed.Dirs{}) {
@@ -200,8 +202,28 @@ func (s *SessionChatSource) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
+		case <-s.wake:
 		}
 	}
+}
+
+// RequestWatches is the watches the session_chat_request handler opens:
+// each Watch also wakes the loop, so the pass that reads a new watch starts
+// at once instead of on the next tick (runners on request). A pass in
+// flight finishes first and one more follows; a burst of requests costs at
+// most that one pass, which reads only what is due (Every per watch).
+func (s *SessionChatSource) RequestWatches() handlers.ChatWatches {
+	return wakingWatches{ChatWatches: s.w, wake: s.wake}
+}
+
+type wakingWatches struct {
+	handlers.ChatWatches
+	wake chan struct{}
+}
+
+func (w wakingWatches) Watch(cw handlers.ChatWatch) {
+	w.ChatWatches.Watch(cw)
+	notify(w.wake)
 }
 
 // RunDue is one pass: the due watches, one after the other. A ctx that ends

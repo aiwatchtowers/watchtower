@@ -323,6 +323,11 @@ func handlerDeps(o Options, st *state.Store, set *sources.Set, watches handlers.
 	if set.Report != nil {
 		deps.Reports = set.Report
 	}
+	// A phone's session_chat_request wakes the session chat runner at once
+	// (runners on request).
+	if set.Chat != nil {
+		deps.ChatWatches = set.Chat.RequestWatches()
+	}
 	return deps
 }
 
