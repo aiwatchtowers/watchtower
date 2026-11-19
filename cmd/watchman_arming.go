@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/watchman"
 	"watchtower/internal/watchmanact"
 )
@@ -209,11 +210,11 @@ func watchmanGuardHookWarnings(database *db.DB, rows []db.WatchmanArming, text *
 			}
 		}
 		folder := cmp.Or(s.Folder, s.WorkbenchFolder)
-		// A Codex session gets the guard from its launch flags, never from a
-		// settings file: CodexLaunchArgs always carries CodexHookSet, the
-		// watchman-guard row included, and integrate trusts every hook of
-		// that set. Only Claude Code reads it from the folder.
-		if !covered || seen[folder] || s.Kind == "codex" {
+		// An agent whose hooks arrive with its launch flags (Caps.LaunchHooks:
+		// Codex's CodexLaunchArgs always carries the hook set, the
+		// watchman-guard row included) gets the guard from them, never from
+		// a settings file; only a folder-installed hook set is checked here.
+		if !covered || seen[folder] || sessionagent.CapsOf(s.Kind).LaunchHooks {
 			continue
 		}
 		seen[folder] = true
