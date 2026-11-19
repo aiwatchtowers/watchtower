@@ -131,7 +131,7 @@ poll and off-screen gates are unchanged.
 `session-feed --json` adds `live`, `live_ok` and optional `live_error`; `activity` retains its exact
 old keys and open-call semantics (owner approval ask #932; design ask #933). The cursor-independent
 snapshot contains `observed_at`, `conversation`, `turn_at`, `turn_active`, `current`, `latest`,
-`agents`, `agents_state` and `agents_more`. Each action has `id`, `tool`, `summary`, `started_at`,
+`agents`, `agents_state`, `agents_more`, `steps` and `steps_more`. `steps` are the current turn's tool calls (oldest first, the open one last, finished ones with `completed_at`), read from the same 4 MiB `LiveOf` window, capped at 40 (`steps_more` counts the cut); `[]` when the turn ended, never null. Each action has `id`, `tool`, `summary`, `started_at`,
 `completed_at`, `more`; each agent has `ref` (the unchanged subagent-ref wire shape), `started_at`,
 `action`, `can_open`. Arrays are always arrays. Unknown/truncated lifecycle is explicitly `unknown`,
 never a zero count. A failed hint has `live_ok:false` and a short generic `live_error`; a successful

@@ -20,18 +20,23 @@ const liveWindow = 4 << 20
 const maxLiveAgents = 32
 const maxLiveAgentCandidates = 128
 
+// maxLiveSteps caps the current turn's step list; steps_more counts the cut.
+const maxLiveSteps = 40
+
 // Live is an on-demand, cursor-independent snapshot. Activity keeps its old
 // meaning; completed actions and agent state live only in this new envelope.
 type Live struct {
-	ObservedAt      time.Time   `json:"observed_at"`
-	Conversation    string      `json:"conversation"`
-	TurnAt          time.Time   `json:"turn_at"`
-	TurnActive      bool        `json:"turn_active"`
-	Current         *LiveAction `json:"current"`
-	Latest          *LiveAction `json:"latest"`
-	Agents          []LiveAgent `json:"agents"`
-	AgentsState     string      `json:"agents_state"`
-	AgentsMore      int         `json:"agents_more"`
+	ObservedAt      time.Time    `json:"observed_at"`
+	Conversation    string       `json:"conversation"`
+	TurnAt          time.Time    `json:"turn_at"`
+	TurnActive      bool         `json:"turn_active"`
+	Current         *LiveAction  `json:"current"`
+	Latest          *LiveAction  `json:"latest"`
+	Agents          []LiveAgent  `json:"agents"`
+	AgentsState     string       `json:"agents_state"`
+	AgentsMore      int          `json:"agents_more"`
+	Steps           []LiveAction `json:"steps"`
+	StepsMore       int          `json:"steps_more"`
 	inspectedAgents int
 }
 type LiveAction struct {
@@ -53,6 +58,7 @@ type LiveAgent struct {
 type liveReader struct {
 	live       *Live
 	open       []LiveAction
+	steps      []LiveAction
 	agents     map[string]*LiveAgent
 	codex      bool
 	sidechain  bool
@@ -74,7 +80,7 @@ func LiveOf(c Conversation, sidechain bool, now time.Time) (*Live, error) {
 	if err != nil {
 		return nil, err
 	}
-	live := &Live{ObservedAt: now.UTC(), Conversation: c.AgentSessionID, TurnActive: true, Agents: []LiveAgent{}, AgentsState: "known"}
+	live := &Live{ObservedAt: now.UTC(), Conversation: c.AgentSessionID, TurnActive: true, Agents: []LiveAgent{}, AgentsState: "known", Steps: []LiveAction{}}
 	r := liveReader{live: live, agents: map[string]*LiveAgent{}, codex: c.Codex, sidechain: sidechain, path: c.Path}
 	if cut {
 		live.AgentsState = "unknown"
@@ -103,6 +109,11 @@ func LiveOf(c Conversation, sidechain bool, now time.Time) (*Live, error) {
 	if !live.TurnActive {
 		live.Current = nil
 		live.Latest = nil
+	} else if n := len(r.steps); n > maxLiveSteps {
+		live.Steps = append(live.Steps, r.steps[n-maxLiveSteps:]...)
+		live.StepsMore = n - maxLiveSteps
+	} else {
+		live.Steps = append(live.Steps, r.steps...)
 	}
 	if !c.Codex {
 		r.claudeAgents()
@@ -116,12 +127,24 @@ func (r *liveReader) reset(at time.Time) {
 	r.live.Current = nil
 	r.live.Latest = nil
 	r.open = nil
+	r.steps = nil
 }
 func (r *liveReader) start(a LiveAction) {
 	if a.ID == "" {
 		return
 	}
 	r.live.TurnActive = true
+	replaced := false
+	for i := range r.steps {
+		if r.steps[i].ID == a.ID {
+			r.steps[i] = a
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		r.steps = append(r.steps, a)
+	}
 	for i := range r.open {
 		if r.open[i].ID == a.ID {
 			r.open[i] = a
@@ -131,6 +154,12 @@ func (r *liveReader) start(a LiveAction) {
 	r.open = append(r.open, a)
 }
 func (r *liveReader) complete(id string, at time.Time) {
+	for i := range r.steps {
+		if r.steps[i].ID == id {
+			r.steps[i].CompletedAt = at
+			break
+		}
+	}
 	for i, a := range r.open {
 		if a.ID == id {
 			a.CompletedAt = at
