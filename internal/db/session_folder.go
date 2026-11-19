@@ -8,10 +8,10 @@ import (
 )
 
 // SessionFolderPath is the workbench folder session sessionID was started
-// for (terminal_sessions.workbench_folder_id, 00196) — the main repository
+// for (terminal_sessions.workbench_folder_id, 00197) — the main repository
 // its review, finish gate and report read — and whether that folder has
 // left the bench (removed: the path is still the folder's). A row with no
-// folder (one started before 00196, or a database not yet migrated past
+// folder (one started before 00197, or a database not yet migrated past
 // it) reads as the workbench's projects.folder_path. ErrTerminalSessionNotFound
 // when there is no such session on a workbench.
 func (db *DB) SessionFolderPath(ctx context.Context, sessionID int64) (path string, removed bool, err error) {

@@ -50,7 +50,7 @@ package enum TerminalSessionQueries {
         package var worktreeBase: String?
         /// The automation run starting this session (00122); nil = the owner.
         package var automationRunID: Int64?
-        /// The workbench folder (00196). nil on a workbench row = its home
+        /// The workbench folder (00197). nil on a workbench row = its home
         /// folder: this insert is the no-CLI fallback, which only ever starts
         /// in the home folder (`workbench session start` places every other).
         package var workbenchFolderID: Int64?
@@ -83,7 +83,7 @@ package enum TerminalSessionQueries {
     /// Throws `missingSessionID` for a row of an agent whose id the app
     /// chooses (`AgentSessionCaps.appSessionID`: Claude Code) without one
     /// (the schema's CHECK would reject a NULL one; an empty one too, here).
-    /// A workbench row records its folder (00196): the given one, else the
+    /// A workbench row records its folder (00197): the given one, else the
     /// home folder; a standalone terminal none.
     package static func create(_ db: Database, _ new: NewSession) throws -> TerminalSession {
         if new.kind.agent?.session.caps.appSessionID == true, new.claudeSessionID?.isEmpty ?? true {
@@ -262,7 +262,7 @@ package enum TerminalSessionQueries {
         let cwdAt = try hasAgentCwd(db) ? "s.agent_cwd_at" : "NULL"
         let watchIssue = try hasColumn(db, "agent_watch_issue") ? "s.agent_watch_issue" : "NULL"
         let shells = try hasColumn(db, "agent_background_shells") ? "s.agent_background_shells" : "NULL"
-        // Migration 00196 brought both the sub-session link and session_messages.
+        // Migration 00197 brought both the sub-session link and session_messages.
         let multiFolder = try hasColumn(db, "parent_session_id")
         let parent = multiFolder ? "s.parent_session_id" : "NULL"
         let inPrompt = multiFolder ? """

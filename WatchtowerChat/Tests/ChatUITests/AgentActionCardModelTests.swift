@@ -98,7 +98,7 @@ final class AgentActionCardModelTests: XCTestCase {
         XCTAssertFalse(AgentActionCard.connectorEditable(connector, services: none, sessionHolds: true))
 
         let all = ChatApprovalServices(approveEdited: true, retry: { _ in }, dismiss: { _ in },
-                                       reconnectSlack: { _ in nil })
+                                       reconnectSlack: { _ in .signedIn })
         XCTAssertTrue(AgentActionCard.editsSlack(slack, services: all))
         XCTAssertEqual(AgentActionCard.shownSettledOffer(for: failed, services: all, offersRetry: true), .retry)
         XCTAssertEqual(AgentActionCard.shownSettledOffer(for: failed, services: all, offersRetry: false), .none)
@@ -203,5 +203,13 @@ final class AgentActionCardModelTests: XCTestCase {
         XCTAssertEqual(AgentActionCard.bodyLines(for: card), [])
         let row = ChatAgentAction(id: 1, tool: "create_target", argsJSON: "{}")
         XCTAssertEqual(AgentActionCard.bodyLines(for: row), [""], "a row's lines are drawn as they are")
+    }
+
+    /// A Reconnect the Mac handed to its connect flow is not "done": the card says where to finish.
+    func testReconnectNotes() {
+        XCTAssertEqual(AgentActionCard.reconnectNote(.signedIn), AgentActionCard.reconnectDoneNote)
+        XCTAssertEqual(AgentActionCard.reconnectNote(.handedOff),
+                       "Finish connecting in your browser or in Connections → Slack, then press Retry.")
+        XCTAssertEqual(AgentActionCard.reconnectNote(.failed("no CLI")), "Reconnect failed: no CLI")
     }
 }

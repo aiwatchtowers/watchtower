@@ -99,11 +99,25 @@ extension PlanUsageStatus {
         if let minutes = limit.windowDurationMinutes, minutes > 0, minutes <= PlanUsageWindow.maximumMinutes {
             start = reset.addingTimeInterval(-Double(minutes) * 60)
         } else { start = fetchedAt.addingTimeInterval(-8 * 86400) }
-        return history[limit.key, default: []].filter { sample in
+        let window = history[limit.key, default: []].filter { sample in
             guard let sampleReset = sample.resetsAt else { return false }
             return sample.takenAt <= fetchedAt && sample.takenAt >= start &&
                 abs(sampleReset.timeIntervalSince(reset)) <= 60 && sample.percent.isFinite && (0...100).contains(sample.percent)
         }
+        return Self.sinceLastReset(window)
+    }
+
+    /// Fall, in percentage points, that marks an early reset by the provider (the reset
+    /// time stays unchanged). Go twin: `resetDropPercent` in internal/planusage/projection.go.
+    private static let resetDropPercent = 5.0
+
+    /// Keeps the history from the last early reset on: the last sample at least
+    /// `resetDropPercent` below its predecessor, inclusive. Input is ordered by time.
+    private static func sinceLastReset(_ samples: [PlanUsageSample]) -> [PlanUsageSample] {
+        for index in samples.indices.reversed().dropLast() where samples[index - 1].percent - samples[index].percent >= resetDropPercent {
+            return Array(samples[index...])
+        }
+        return samples
     }
 
     package func forecast(for limit: PlanUsageLimit, now: Date, enabled: Bool = true) throws -> PlanUsageForecast {

@@ -132,7 +132,7 @@ func TestOpenExistingRWNeverCreatesNeverMigrates(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 106, version, "no migration ran")
 
-	// A raw write: CreateWorkbench needs 00196's workbench_folders.
+	// A raw write: CreateWorkbench needs 00197's workbench_folders.
 	res, err := rw.Exec(`INSERT INTO projects (name, folder_path) VALUES ('acme', ?)`, t.TempDir())
 	require.NoError(t, err, "a write must succeed")
 	id, err := res.LastInsertId()

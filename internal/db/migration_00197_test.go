@@ -42,10 +42,10 @@ func mfCount(t *testing.T, raw *sql.DB, q string, args ...any) int {
 	return n
 }
 
-// seedMultiFolderV195 plants two workbenches with sessions (one standalone),
+// seedMultiFolderV196 plants two workbenches with sessions (one standalone),
 // a target, asks with every child table 00158/00162/00178 made, a reviewer
-// thread, PR states and workbench document index rows — the pre-00196 shape.
-func seedMultiFolderV195(t *testing.T, raw *sql.DB) {
+// thread, PR states and workbench document index rows — the pre-00197 shape.
+func seedMultiFolderV196(t *testing.T, raw *sql.DB) {
 	t.Helper()
 	for _, q := range []string{
 		`INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/code/app'), (2, 'hub', '/tmp/code/hub')`,
@@ -87,20 +87,20 @@ const ownerAskChildrenDump = `
 	UNION ALL SELECT 'finding', ask_id, item_key, finding FROM spec_review_thread_findings
 	ORDER BY 1, 2, 3`
 
-const ownerAskV195Cols = `id, project_id, session_id, target_id, kind, title, summary, changes, payload, doc_path,
+const ownerAskV196Cols = `id, project_id, session_id, target_id, kind, title, summary, changes, payload, doc_path,
 	doc_snapshot, previous_ask_id, status, withdrawn_reason, answer, created_at, answered_at, delivered_at, level,
 	origin, chat_asked_at, withdrawn_at, automation_run_id, doc_type`
 
 func migratedMultiFolder(t *testing.T) *sql.DB {
 	t.Helper()
-	raw := openRawDBAtVersion(t, 195)
-	seedMultiFolderV195(t, raw)
+	raw := openRawDBAtVersion(t, 196)
+	seedMultiFolderV196(t, raw)
 	applyNextMigration(t, raw)
 	assertNoFKViolations(t, raw)
 	return raw
 }
 
-func TestMigration00196_BackfillsOneFolderPerWorkbench(t *testing.T) {
+func TestMigration00197_BackfillsOneFolderPerWorkbench(t *testing.T) {
 	t.Parallel()
 	raw := migratedMultiFolder(t)
 
@@ -117,9 +117,9 @@ func TestMigration00196_BackfillsOneFolderPerWorkbench(t *testing.T) {
 	assert.Zero(t, mfCount(t, raw, `SELECT COUNT(*) FROM targets WHERE workbench_folder_id IS NOT NULL`))
 }
 
-func TestMigration00196_BackfillsFolderNames(t *testing.T) {
+func TestMigration00197_BackfillsFolderNames(t *testing.T) {
 	t.Parallel()
-	raw := openRawDBAtVersion(t, 195)
+	raw := openRawDBAtVersion(t, 196)
 	// A pre-NOCASE-check pair (another spelling of one folder) must not fail
 	// the live-path index: the later bench's row starts removed.
 	tcExec(t, raw, `INSERT INTO projects (id, name, folder_path) VALUES
@@ -129,18 +129,18 @@ func TestMigration00196_BackfillsFolderNames(t *testing.T) {
 		mfDump(t, raw, `SELECT workbench_id, name, removed_at IS NOT NULL FROM workbench_folders ORDER BY workbench_id`))
 }
 
-func TestMigration00196_OwnerAsksRebuildKeepsChildren(t *testing.T) {
+func TestMigration00197_OwnerAsksRebuildKeepsChildren(t *testing.T) {
 	t.Parallel()
-	raw := openRawDBAtVersion(t, 195)
-	seedMultiFolderV195(t, raw)
-	asksBefore := mfDump(t, raw, `SELECT `+ownerAskV195Cols+` FROM owner_asks ORDER BY id`)
+	raw := openRawDBAtVersion(t, 196)
+	seedMultiFolderV196(t, raw)
+	asksBefore := mfDump(t, raw, `SELECT `+ownerAskV196Cols+` FROM owner_asks ORDER BY id`)
 	childrenBefore := mfDump(t, raw, ownerAskChildrenDump)
 	require.Len(t, childrenBefore, 4)
 
 	applyNextMigration(t, raw)
 	assertNoFKViolations(t, raw)
 
-	assert.Equal(t, asksBefore, mfDump(t, raw, `SELECT `+ownerAskV195Cols+` FROM owner_asks ORDER BY id`))
+	assert.Equal(t, asksBefore, mfDump(t, raw, `SELECT `+ownerAskV196Cols+` FROM owner_asks ORDER BY id`))
 	assert.Equal(t, childrenBefore, mfDump(t, raw, ownerAskChildrenDump))
 	assert.Equal(t, 32, mfCount(t, raw, `SELECT seq FROM sqlite_sequence WHERE name = 'owner_asks'`),
 		"the AUTOINCREMENT high-water mark is carried")
@@ -162,7 +162,7 @@ func TestMigration00196_OwnerAsksRebuildKeepsChildren(t *testing.T) {
 	assert.Equal(t, 1, mfCount(t, raw, `SELECT COUNT(*) FROM owner_asks WHERE id = 31 AND session_id IS NULL`))
 }
 
-func TestMigration00196_OwnerAsksGainDocFolder(t *testing.T) {
+func TestMigration00197_OwnerAsksGainDocFolder(t *testing.T) {
 	t.Parallel()
 	raw := migratedMultiFolder(t)
 	assert.Equal(t, []string{"30 docs/spec.md <nil>", "31  <nil>", "32 docs/spec.md <nil>"},
@@ -176,7 +176,7 @@ func TestMigration00196_OwnerAsksGainDocFolder(t *testing.T) {
 		"a gone folder clears the link, the ask stays")
 }
 
-func TestMigration00196_OldReviewThreadsAndPRStatesResolveForTheHomeFolder(t *testing.T) {
+func TestMigration00197_OldReviewThreadsAndPRStatesResolveForTheHomeFolder(t *testing.T) {
 	t.Parallel()
 	raw := migratedMultiFolder(t)
 	app := int64(mfCount(t, raw, `SELECT id FROM workbench_folders WHERE workbench_id = 1`))
@@ -209,9 +209,9 @@ func TestMigration00196_OldReviewThreadsAndPRStatesResolveForTheHomeFolder(t *te
 // One file's new key can be another's old key: under home folder 1,
 // README.md becomes wbdoc:1:1:README.md, the old key of 1:README.md. Both
 // survive, rekeyed and searchable, and Down gives both their old keys back.
-func TestMigration00196_RekeyWithKeysThatCollideOneByOne(t *testing.T) {
+func TestMigration00197_RekeyWithKeysThatCollideOneByOne(t *testing.T) {
 	t.Parallel()
-	raw := openRawDBAtVersion(t, 195)
+	raw := openRawDBAtVersion(t, 196)
 	tcExec(t, raw, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/code/app')`)
 	tcExec(t, raw, `INSERT INTO kb_documents (id, source, title) VALUES
 		('wbdoc:1:README.md', 'project_doc', 'readme'), ('wbdoc:1:1:README.md', 'project_doc', 'odd name')`)
@@ -232,7 +232,7 @@ func TestMigration00196_RekeyWithKeysThatCollideOneByOne(t *testing.T) {
 	assert.Equal(t, []string{"wbdoc:1:1:1:README.md", "wbdoc:1:1:README.md"},
 		mfDump(t, raw, `SELECT key FROM kb_dirty ORDER BY key`))
 
-	require.NoError(t, gooseDownTo(raw, "migrations", 195))
+	require.NoError(t, gooseDownTo(raw, "migrations", 196))
 	assertNoFKViolations(t, raw)
 	assert.Equal(t, []string{"wbdoc:1:1:README.md odd name", "wbdoc:1:README.md readme"},
 		mfDump(t, raw, `SELECT id, title FROM kb_documents ORDER BY id`))
@@ -242,7 +242,7 @@ func TestMigration00196_RekeyWithKeysThatCollideOneByOne(t *testing.T) {
 
 // Entries indexed from a privacy-protected folder are never rebuilt by the
 // daemon: the migration rekeys every wbdoc row in place, searchable.
-func TestMigration00196_RekeysWorkbenchDocIndexRows(t *testing.T) {
+func TestMigration00197_RekeysWorkbenchDocIndexRows(t *testing.T) {
 	t.Parallel()
 	raw := migratedMultiFolder(t)
 	app := mfCount(t, raw, `SELECT id FROM workbench_folders WHERE workbench_id = 1`)
@@ -255,7 +255,7 @@ func TestMigration00196_RekeysWorkbenchDocIndexRows(t *testing.T) {
 	assert.Equal(t, []string{"project_doc " + key}, mfDump(t, raw, `SELECT source, key FROM kb_dirty WHERE source = 'project_doc'`))
 }
 
-func TestMigration00196_DownAndUpAgain(t *testing.T) {
+func TestMigration00197_DownAndUpAgain(t *testing.T) {
 	t.Parallel()
 	raw := migratedMultiFolder(t)
 	tcExec(t, raw, `INSERT INTO owner_asks (project_id, kind, title) VALUES (1, 'folder', 'Add hub?')`)
@@ -263,7 +263,7 @@ func TestMigration00196_DownAndUpAgain(t *testing.T) {
 		VALUES (90, 1, '/tmp/code/site', 1, 'owner', 'site')`)
 	tcExec(t, raw, `INSERT INTO kb_documents (id, source, title) VALUES ('wbdoc:1:90:README.md', 'project_doc', 'site readme')`)
 	tcExec(t, raw, `INSERT INTO kb_chunks (doc_id, idx, body) VALUES ('wbdoc:1:90:README.md', 0, 'site text')`)
-	require.NoError(t, gooseDownTo(raw, "migrations", 195))
+	require.NoError(t, gooseDownTo(raw, "migrations", 196))
 	assert.Zero(t, mfCount(t, raw, `SELECT COUNT(*) FROM kb_fts WHERE kb_fts MATCH 'site'`),
 		"another folder's document, whose old key would collide, goes")
 	assertNoFKViolations(t, raw)
@@ -281,15 +281,15 @@ func TestMigration00196_DownAndUpAgain(t *testing.T) {
 	assertNoFKViolations(t, raw)
 }
 
-// A legacy bench whose only folder 00196 marked removed (another spelling of
+// A legacy bench whose only folder 00197 marked removed (another spelling of
 // an older bench's folder) still has a home: its report and PR cache work.
-func TestMigration00196_LegacyDuplicateBenchKeepsAHome(t *testing.T) {
+func TestMigration00197_LegacyDuplicateBenchKeepsAHome(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "w.db")
 	d, err := Open(path)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
-	require.NoError(t, gooseDownTo(d.DB, "migrations", 195))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 196))
 	_, err = d.Exec(`INSERT INTO projects (id, name, folder_path) VALUES (1, 'a', '/tmp/Code/App'), (2, 'b', '/tmp/code/app')`)
 	require.NoError(t, err)
 	require.NoError(t, gooseUp(d.DB, "migrations"))
@@ -309,15 +309,15 @@ func TestMigration00196_LegacyDuplicateBenchKeepsAHome(t *testing.T) {
 }
 
 // `workbench asks` and the ask guard open the database without migrating:
-// on a 00195 database the asks and the session row read with NULL folders.
-func TestMigration00196_UnmigratedReadersStillReadAsksAndSessions(t *testing.T) {
+// on a 00196 database the asks and the session row read with NULL folders.
+func TestMigration00197_UnmigratedReadersStillReadAsksAndSessions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "w.db")
 	d, err := Open(path)
 	require.NoError(t, err)
 	wb := newTestWorkbench(t, d)
 	sid := newTestSession(t, d, wb)
 	ask := mustInsertAsk(t, d, OwnerAsk{WorkbenchID: wb, SessionID: nullID(sid), Kind: AskKindQuestion, Title: "Which?"})
-	require.NoError(t, gooseDownTo(d.DB, "migrations", 195))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 196))
 	require.NoError(t, d.Close())
 
 	old, err := OpenExisting(path, 100*time.Millisecond)

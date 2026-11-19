@@ -17,6 +17,10 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
     private var tracker: ChatSelectionQuoteTracker?
     private var anchor: NSView?
 
+    override func setUpWithError() throws {
+        try WindowServerTestGate.skipIfAbsent()
+    }
+
     override func tearDown() {
         if let tracker, let anchor { tracker.detach(from: anchor) }
         windows.forEach { $0.close() }

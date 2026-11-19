@@ -431,7 +431,7 @@ func Resolve(ctx context.Context, d *db.DB, workbenchID int64, ref string) (db.W
 
 // IsFallbackHome reports whether f is a removed row that is still its
 // bench's home because the bench has no live folder at all: a legacy bench
-// whose only row migration 00196 marked removed (a case-insensitive
+// whose only row migration 00197 marked removed (a case-insensitive
 // duplicate of another bench's folder; db.HomeFolder's fallback). Such a
 // bench keeps working in that folder as before the migration. q may be a
 // caller's transaction.

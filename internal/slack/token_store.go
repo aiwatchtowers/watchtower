@@ -1,11 +1,13 @@
 package slack
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"watchtower/internal/fsutil"
 )
@@ -18,6 +20,20 @@ type Token struct {
 	// Scope is the comma-separated user scopes Slack granted (authed_user.scope).
 	// Empty on a token saved before scopes were recorded: unknown, not none.
 	Scope string `json:"scope,omitempty"`
+	// RefreshToken, ExpiresAt and RefreshExpiresAt are set only for a token
+	// with rotation; a token without them (the retired shared app, a company
+	// app without rotation, files written earlier) is used as is.
+	RefreshToken     string    `json:"refresh_token,omitempty"`
+	ExpiresAt        time.Time `json:"expires_at,omitzero"`
+	RefreshExpiresAt time.Time `json:"refresh_expires_at,omitzero"`
+	// RefreshedAt is when slackauth last refreshed the token (zero: never);
+	// a refresh that left an expiry inside its window is not repeated.
+	RefreshedAt time.Time `json:"refreshed_at,omitzero"`
+	// ClientID and AppID name the Slack app the token was issued through.
+	// When they differ from the account row, the file is the truth (A6);
+	// empty on files written before they were recorded.
+	ClientID string `json:"client_id,omitempty"`
+	AppID    string `json:"app_id,omitempty"`
 }
 
 // SendScope is the user scope chat.postMessage needs.
@@ -72,6 +88,20 @@ func (s *TokenStore) Save(t *Token) error {
 		return fmt.Errorf("marshaling slack token: %w", err)
 	}
 	return fsutil.WriteFileAtomic(s.path, data, 0o600)
+}
+
+// Lock takes the per-account flock (<token file>.lock) that every token-file
+// write and every refresh holds; the returned func releases it. A waiter
+// re-reads the file after taking the lock.
+func (s *TokenStore) Lock(ctx context.Context) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return nil, fmt.Errorf("creating token directory: %w", err)
+	}
+	unlock, err := fsutil.LockFile(ctx, s.path+".lock")
+	if err != nil {
+		return nil, fmt.Errorf("locking slack token: %w", err)
+	}
+	return unlock, nil
 }
 
 func (s *TokenStore) Delete() error {

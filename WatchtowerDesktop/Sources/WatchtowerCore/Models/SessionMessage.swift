@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-/// One `session_messages` row (00196): a message between two live sessions
+/// One `session_messages` row (00197): a message between two live sessions
 /// of one workbench (PROJ-23). MCP inserts it, the daemon alone delivers it
 /// and moves `state`; the Desktop only reads it — its one change, the
 /// prompt-flag Dismiss, goes through `workbench message dismiss`.
