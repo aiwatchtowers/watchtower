@@ -25,7 +25,7 @@ import (
 // person setting up typed so far, secrets included, except the Slack
 // configuration token, which is never written. Only `company draft
 // save|discard`, `company check` (MarkDraftChecked) and `company publish`
-// (DiscardDraft) write it, under draft.json.lock.
+// (SetDraftCompany, DiscardDraftIf) write it, under draft.json.lock.
 
 const (
 	draftFile      = draftSlug + ".json"
@@ -419,6 +419,29 @@ func (s Store) RecordDraftCheck(c DraftCheck) error {
 		d.Checked = map[string]string{}
 	}
 	d.Checked[c.Vendor] = c.Hash
+	return s.writeDraft(d)
+}
+
+// SetDraftCompany sets the draft's company name to the given one while the draft
+// still equals read (Publish under an edited name, ask #1613), checked
+// under the draft lock: nothing else of the draft changes, so its checked
+// marks hold. A draft saved, replaced or discarded since read is not
+// touched (ErrDraftValuesChanged). No draft is an error wrapping
+// fs.ErrNotExist.
+func (s Store) SetDraftCompany(read Draft, to string) error {
+	unlock, err := s.lockDraft()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	d, err := readDraft(s.draftPath())
+	if err != nil {
+		return fmt.Errorf("reading the company draft: %w", err)
+	}
+	if !reflect.DeepEqual(d, read) {
+		return ErrDraftValuesChanged
+	}
+	d.Company = to
 	return s.writeDraft(d)
 }
 

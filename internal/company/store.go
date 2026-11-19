@@ -49,6 +49,14 @@ var ErrStoredChanged = errors.New("company file changed since it was read")
 // damaged): the store never overwrites a company it cannot read as the same.
 var ErrSlugTaken = errors.New("company file belongs to another company")
 
+// ErrNameTaken is SaveRenamed to a name another company holds: its file, the
+// forced MDM bundle, or the slug pinned when it was last forced.
+var ErrNameTaken = errors.New("company name belongs to another company")
+
+// ErrCompanyForced is SaveRenamed of a company the forced MDM bundle names:
+// the organization sets its name.
+var ErrCompanyForced = errors.New("the organization sets this company's name")
+
 // Entry is one effective company: its stored file, or the forced MDM bundle
 // (Forced) that wins over the stored file of the same company name.
 type Entry struct {
@@ -301,7 +309,7 @@ func (s Store) SlugFor(company, forcedWire string) (string, error) {
 // company or that it cannot read (ErrSlugTaken): the slug of a different
 // company comes from SlugFor.
 func (s Store) Save(slug string, b companybundle.Bundle) error {
-	return s.save(slug, b, nil, false)
+	return s.save(slug, b, saveOpts{})
 }
 
 // SaveIfUnchanged is Save that writes only while the file still holds prev
@@ -309,13 +317,59 @@ func (s Store) Save(slug string, b companybundle.Bundle) error {
 // read (needs Replace or not) never lands over a newer write. Otherwise it
 // returns ErrStoredChanged and writes nothing.
 func (s Store) SaveIfUnchanged(slug string, prev *companybundle.Bundle, b companybundle.Bundle) error {
-	return s.save(slug, b, prev, true)
+	return s.save(slug, b, saveOpts{check: true, prev: prev})
+}
+
+// CheckRename refuses renaming the company under slug from old to name: a
+// company the forced MDM bundle names (ErrCompanyForced), or a name another
+// company holds (ErrNameTaken) — a stored file (a person's own Google
+// project included), the forced bundle, or the slug pinned when a company
+// was last forced.
+func (s Store) CheckRename(slug, old, name, forcedWire string) error {
+	if fb, err := companybundle.Parse(forcedWire, companybundle.OriginMDM); err == nil && fb.Company == old {
+		return fmt.Errorf("%w: %q", ErrCompanyForced, old)
+	}
+	st, err := s.read()
+	if err != nil {
+		return err
+	}
+	overlay(&st, forcedWire)
+	for _, e := range st.entries {
+		if e.Bundle.Company == name && e.Slug != slug {
+			return fmt.Errorf("%w: %q is stored as %s", ErrNameTaken, name, e.Slug)
+		}
+	}
+	if pinned, ok := st.seen[name]; ok && pinned != slug {
+		return fmt.Errorf("%w: %q was forced as %s", ErrNameTaken, name, pinned)
+	}
+	return nil
+}
+
+// SaveRenamed is SaveIfUnchanged of b under a new company name: only the
+// display name changes (ask #1613), so the slug, the file name and every
+// account's company_slug tie stay. Under the file's flock it writes only
+// while the file still holds prev (else ErrStoredChanged) and runs
+// CheckRename. The name check reads the directory under this file's lock
+// only: a confirm of another company carrying the same new name that lands
+// on another slug at that moment is not excluded (the window SlugFor has
+// for two confirms of one new company).
+func (s Store) SaveRenamed(slug string, prev, b companybundle.Bundle, forcedWire string) error {
+	return s.save(slug, b, saveOpts{check: true, prev: &prev, rename: true, forced: forcedWire})
+}
+
+// saveOpts: check writes only over prev (SaveIfUnchanged); rename lets the
+// file's company name change after CheckRename against forced (SaveRenamed).
+type saveOpts struct {
+	check  bool
+	prev   *companybundle.Bundle
+	rename bool
+	forced string
 }
 
 // save validates b the way a stored file is read (Save is also the bridge's
 // and the wizard's writer, whose bundles do not all come out of Parse), so
 // nothing unreadable lands on disk.
-func (s Store) save(slug string, b companybundle.Bundle, prev *companybundle.Bundle, check bool) error {
+func (s Store) save(slug string, b companybundle.Bundle, o saveOpts) error {
 	if !slugRE.MatchString(slug) || slug == draftSlug {
 		return fmt.Errorf("invalid company slug %q", slug)
 	}
@@ -355,12 +409,20 @@ func (s Store) save(slug string, b companybundle.Bundle, prev *companybundle.Bun
 		if cur, err = readFile(path, slug); err != nil {
 			return fmt.Errorf("%w: %s.json is unreadable (%v)", ErrSlugTaken, slug, err)
 		}
-		if cur.Company != n.Company {
+		// A file renamed since the caller read it is a change (try again),
+		// not another company's file.
+		renamedSince := o.check && o.prev != nil && o.prev.Company != cur.Company
+		if cur.Company != n.Company && !o.rename && !renamedSince {
 			return fmt.Errorf("%w: %s.json holds %q", ErrSlugTaken, slug, cur.Company)
 		}
 	}
-	if check && (exists != (prev != nil) || (exists && !reflect.DeepEqual(cur, *prev))) {
+	if o.check && (exists != (o.prev != nil) || (exists && !reflect.DeepEqual(cur, *o.prev))) {
 		return fmt.Errorf("%w: %s.json", ErrStoredChanged, slug)
+	}
+	if o.rename && cur.Company != n.Company {
+		if err := s.CheckRename(slug, cur.Company, n.Company, o.forced); err != nil {
+			return err
+		}
 	}
 	return fsutil.WriteFileAtomic(path, append(data, '\n'), 0o600)
 }
