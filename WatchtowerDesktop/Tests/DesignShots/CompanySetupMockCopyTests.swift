@@ -171,6 +171,10 @@ final class CompanySetupMockCopyTests: XCTestCase {
         }
         XCTAssertEqual(captions, [Copy.groupAcmeGoogle, Copy.groupAcmeAtlassian, Copy.groupAcmeSlack, Copy.groupAcmeLinear,
                                   Copy.groupAcmeMicrosoft])
+        // The Slack app's name in its caption, and the section that adds an account (Task 25a).
+        XCTAssertEqual(acme.vendors[.slack], Pres.slackAppDetail(appID: "A0ACME"))
+        XCTAssertEqual(Copy.addAccountTitle, Pres.addAccountTitle)
+        XCTAssertEqual(Copy.syncing, CompaniesZoneScenes.syncing)
         // Banners and locks.
         let google = Pres.banner(.google, accounts: [account(.google, "bob@example.org", shared: true)])
         XCTAssertEqual(google?.title, Copy.googleBannerTitle)

@@ -1,12 +1,23 @@
+import DesignKit
 import SwiftUI
 import WatchtowerCore
 
 /// Linear detail pane in the Connections tab: the connected workspaces
-/// (`watchtower linear accounts --json`), each with its sign-in kind, an
-/// Enabled switch, Re-login, Remove and its teams to sync. Removal is
-/// non-destructive like Jira's: the token goes, synced issues stay.
+/// (`watchtower linear accounts --json`) grouped by company (company screens
+/// spec §4.2), each with its sign-in kind, an Enabled switch, Re-login,
+/// Remove and its teams to sync. Removal is non-destructive like Jira's:
+/// the token goes, synced issues stay. A stored company with Linear and no
+/// workspace shows a **Not connected** row whose Connect signs in through
+/// the company's app.
 struct LinearConnectionDetail: View {
     @Environment(AppState.self) private var appState
+    /// A Not connected row's Connect: that vendor's login through the company's app.
+    private var groupConnect: CompanyGroupConnect {
+        CompanyGroupConnect(disabled: sourceBlocked || appState.companyFlowBusy) { slug, vendor in
+            appState.reloginCompany(slug: slug, vendors: [vendor])
+        }
+    }
+
     /// The organization's policy forbids this source (#608): nothing new
     /// connects; existing accounts keep their data.
     private var sourceBlocked: Bool { !appState.managedPolicy.policy.sourceAllowed("linear") }
@@ -17,23 +28,26 @@ struct LinearConnectionDetail: View {
     @State private var replacementKey = ""
 
     var body: some View {
-        Form {
-            if let vm = appState.linearAccountsViewModel {
-                workspacesSection(vm)
-                ForEach(vm.accounts.filter(\.enabled)) { account in
-                    teamsSection(vm, account: account, titled: vm.accounts.filter(\.enabled).count > 1)
-                }
-            } else {
-                Section("Linear Workspaces") {
-                    Text("Loading...")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.large) {
+                if let vm = appState.linearAccountsViewModel {
+                    workspaces(vm)
+                    ForEach(vm.accounts.filter(\.enabled)) { account in
+                        teamsSection(vm, account: account, titled: vm.accounts.filter(\.enabled).count > 1)
+                    }
+                } else {
+                    SettingsSection(title: Self.workspacesTitle) {
+                        Text("Loading...")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
+            .controlSize(.small)
+            .padding(Spacing.page)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .formStyle(.grouped)
-        .padding(.horizontal)
-        .padding(.top, 4)
+        .detailBackground()
         .sheet(isPresented: $showAddSheet) {
             AddLinearAccountView(daemonPolicy: appState.accountDaemonPolicy)
                 .environment(appState)
@@ -66,95 +80,121 @@ struct LinearConnectionDetail: View {
         }
     }
 
+    static let workspacesTitle = "Linear Workspaces"
+    static let noWorkspaces = "No Linear workspaces connected."
+
+    /// The workspaces grouped by company, then Add with the last command's error.
     @ViewBuilder
-    private func workspacesSection(_ vm: LinearAccountsViewModel) -> some View {
-        Section("Linear Workspaces") {
-            if vm.accounts.isEmpty {
-                Text("No Linear workspaces connected.")
+    private func workspaces(_ vm: LinearAccountsViewModel) -> some View {
+        let groups = appState.companyAccountGroups(.linear)
+        if groups.isEmpty {
+            SettingsSection(title: Self.workspacesTitle) {
+                Text(Self.noWorkspaces)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            ForEach(vm.accounts) { account in
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(account.displayName)
-                        Text(account.url.isEmpty ? account.authLabel : "\(account.url) · \(account.authLabel)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if !account.isOK, !account.error.isEmpty {
-                            Text(account.error)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                                .lineLimit(2)
-                        }
-                        if let line = AccountPurgeLine.make(
-                            center: appState.accountPurgeCenter, source: "linear", accountID: account.id,
-                            isPurged: account.isPurged
-                        ) {
-                            line
-                        }
-                    }
-                    Spacer()
-                    Circle()
-                        .fill(statusColor(account))
-                        .frame(width: 8, height: 8)
-                        .help(account.isOK ? "Connected" : (account.isPurged ? "Data deleted" : account.status))
-                    Toggle("Enabled", isOn: Binding(
-                        get: { account.enabled },
-                        set: { value in Task { await vm.setEnabled(account, enabled: value) } }
-                    ))
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .disabled(vm.isBusy || account.isPurged)
-                    if !account.isOK || account.auth == "error" {
-                        Button("Re-login") {
-                            if account.usesAPIKey {
-                                replacingKeyFor = account
-                            } else {
-                                Task { await vm.relogin(account) }
-                            }
-                        }
-                        .managedByOrganization(sourceBlocked)
-                        .help(reloginBlocked(account.id) ?? "")
-                        .disabled(vm.isBusy || reloginBlocked(account.id) != nil)
-                    }
-                    Button("Remove") { pendingRemoval = account }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.red)
-                        .disabled(vm.isBusy)
-                }
+        }
+        CompanyAccountGroups(groups: groups, connect: groupConnect) { ref in
+            if let account = vm.accounts.first(where: { $0.id == Int64(ref.accountID) }) {
+                accountRow(vm, account: account, ref: ref)
             }
-
+        }
+        SettingsSection(title: CompanyConnectionsPresentation.addAccountTitle) {
             if let error = vm.error {
                 Text(error)
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Tone.error)
                     .textSelection(.enabled)
             }
-
-            HStack {
+            HStack(spacing: Spacing.regular) {
                 Button("Add Linear Workspace") { showAddSheet = true }
+                    .buttonStyle(.kitSecondary)
                     .managedByOrganization(sourceBlocked)
                     .disabled(vm.isBusy)
                 if vm.isBusy, !showAddSheet {
                     ProgressView().controlSize(.small)
                     if vm.isAuthorizing {
                         Button("Cancel") { vm.cancelConnect() }
+                            .buttonStyle(.kitQuiet)
                     }
                 }
             }
         }
     }
 
+    private func accountRow(_ vm: LinearAccountsViewModel, account: LinearAccount, ref: AccountRef) -> some View {
+        let status = appState.companyRowStatus(ref)
+        return CompanyAccountRow(
+            title: account.displayName,
+            status: status,
+            line: account.url.isEmpty ? account.authLabel : "\(account.url) · \(account.authLabel)",
+            dot: statusColor(account),
+            extra: AnyView(rowExtra(account, hasStatus: status != nil))
+        ) {
+            Toggle("Enabled", isOn: Binding(
+                get: { account.enabled },
+                set: { value in Task { await vm.setEnabled(account, enabled: value) } }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .disabled(vm.isBusy || account.isPurged)
+            if let action = status?.action, action == .pasteCode {
+                CompanyRowStatusButton(action: action, disabled: sourceBlocked) { _ in appState.pasteCompanyCode() }
+            } else if !account.isOK || account.auth == "error" || status?.action == .relogin {
+                Button(RowStatus.Action.relogin.title) { relogin(vm, account: account) }
+                    .buttonStyle(.kitSecondary)
+                    .managedByOrganization(sourceBlocked)
+                    .help(reloginBlocked(account.id) ?? "")
+                    .disabled(vm.isBusy || reloginBlocked(account.id) != nil || appState.companyFlowBusy)
+            }
+            Button("Remove") { pendingRemoval = account }
+                .buttonStyle(.kitQuiet)
+                .foregroundStyle(Tone.error)
+                .disabled(vm.isBusy)
+        }
+    }
+
+    /// The row's own lines under its status: the account's error (when no
+    /// §4.3 status says it) and the purge line.
+    @ViewBuilder
+    private func rowExtra(_ account: LinearAccount, hasStatus: Bool) -> some View {
+        if !hasStatus, !account.isOK, !account.error.isEmpty {
+            Text(account.error)
+                .font(.caption)
+                .foregroundStyle(Tone.error)
+                .lineLimit(2)
+        }
+        if let line = AccountPurgeLine.make(
+            center: appState.accountPurgeCenter, source: "linear", accountID: account.id,
+            isPurged: account.isPurged
+        ) {
+            line
+        }
+    }
+
+    /// Re-login: an account of a stored company signs in again through the
+    /// company's app (the chain); an API-key account asks for a new key;
+    /// any other runs today's `linear` re-login.
+    private func relogin(_ vm: LinearAccountsViewModel, account: LinearAccount) {
+        if account.usesAPIKey {
+            replacingKeyFor = account
+        } else if !account.companySlug.isEmpty, appState.companyRefs.contains(where: { $0.slug == account.companySlug }) {
+            appState.reloginCompany(slug: account.companySlug, vendors: [.linear])
+        } else {
+            Task { await vm.relogin(account) }
+        }
+    }
+
     @ViewBuilder
     private func teamsSection(_ vm: LinearAccountsViewModel, account: LinearAccount, titled: Bool) -> some View {
-        Section(titled ? "Teams — \(account.displayName)" : "Teams") {
+        SettingsSection(title: titled ? "Teams — \(account.displayName)" : "Teams") {
             if let error = vm.teamErrors[account.id] {
-                HStack {
+                HStack(spacing: Spacing.regular) {
                     Text(error)
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Tone.error)
                     Button("Try Again") { Task { await vm.loadTeams(for: account) } }
+                        .buttonStyle(.kitSecondary)
                 }
             } else if let teams = vm.teams[account.id] {
                 if teams.isEmpty {
@@ -167,7 +207,7 @@ struct LinearConnectionDetail: View {
                         get: { team.selected },
                         set: { value in Task { await vm.setTeam(team, selected: value, for: account) } }
                     )) {
-                        HStack {
+                        HStack(spacing: Spacing.regular) {
                             Text(team.name)
                             Text(team.key)
                                 .font(.caption)
@@ -185,20 +225,21 @@ struct LinearConnectionDetail: View {
     }
 
     private func replaceKeySheet(_ account: LinearAccount) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: Spacing.medium) {
             Text("New API key for \(account.displayName)")
                 .font(.headline)
             SecureField("lin_api_…", text: $replacementKey)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.kit)
             if let error = appState.linearAccountsViewModel?.error {
-                Text(error).font(.caption).foregroundStyle(.red)
+                Text(error).font(.caption).foregroundStyle(Tone.error)
             }
-            HStack {
+            HStack(spacing: Spacing.regular) {
                 Spacer()
                 Button("Cancel") {
                     replacementKey = ""
                     replacingKeyFor = nil
                 }
+                .buttonStyle(.kitSecondary)
                 Button("Save") {
                     Task {
                         let saved = await appState.linearAccountsViewModel?.reloginWithAPIKey(account, key: replacementKey) ?? false
@@ -208,12 +249,13 @@ struct LinearConnectionDetail: View {
                         }
                     }
                 }
+                .buttonStyle(.kitPrimary)
                 .keyboardShortcut(.defaultAction)
                 .disabled(replacementKey.trimmingCharacters(in: .whitespaces).isEmpty
                           || appState.linearAccountsViewModel?.isBusy == true)
             }
         }
-        .padding(20)
+        .padding(Spacing.page)
         .frame(width: 380)
     }
 
@@ -224,9 +266,9 @@ struct LinearConnectionDetail: View {
     }
 
     private func statusColor(_ account: LinearAccount) -> Color {
-        if account.isOK { return .green }
-        if account.status == "revoked" { return .red }
-        if account.isPurged { return .gray }
-        return .orange
+        if account.isOK { return Tone.success }
+        if account.status == "revoked" { return Tone.error }
+        if account.isPurged { return Tone.status("gray") }
+        return Tone.warning
     }
 }

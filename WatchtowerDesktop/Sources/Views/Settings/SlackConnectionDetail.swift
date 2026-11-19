@@ -34,6 +34,13 @@ final class SlackAuthFlowState {
 /// list (`slack_accounts` table, migration 00048) and the reaction commands.
 struct SlackConnectionDetail: View {
     @Environment(AppState.self) private var appState
+    /// A Not connected row's Connect: that vendor's login through the company's app.
+    private var groupConnect: CompanyGroupConnect {
+        CompanyGroupConnect(disabled: sourceBlocked || appState.companyFlowBusy) { slug, vendor in
+            appState.reloginCompany(slug: slug, vendors: [vendor])
+        }
+    }
+
     /// The organization's policy forbids this source (#608): nothing new
     /// connects; existing accounts keep their data.
     private var sourceBlocked: Bool { !appState.managedPolicy.policy.sourceAllowed("slack") }
@@ -325,74 +332,31 @@ struct SlackConnectionDetail: View {
     /// single-account Slack "Disconnect" in `workspaceSection` runs the same
     /// remove (`auth logout` → `removeSlackAccount`) and shows the same text.
     private var slackAccountsSection: some View {
-        SettingsSection(title: "Slack Workspaces") {
+        Group {
             if let vm = appState.slackAccountsViewModel {
-                if vm.accounts.isEmpty {
-                    Text("No Slack workspaces connected.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(vm.accounts) { account in
-                        HStack {
-                            VStack(alignment: .leading, spacing: Spacing.tight) {
-                                SlackAccountTitle(account: account, sharedAppAccountIDs: vm.sharedAppAccountIDs,
-                                                  lastSync: vm.lastSyncs[account.id])
-                                if let line = AccountPurgeLine.make(
-                                    center: appState.accountPurgeCenter, source: "slack", accountID: Int64(account.id),
-                                    isPurged: account.isPurged
-                                ) {
-                                    line
-                                }
-                            }
-                            Spacer()
-                            Circle()
-                                .fill(slackAccountStatusColor(account))
-                                .frame(width: IconSize.stateDot, height: IconSize.stateDot)
-                                .help(accountStatusHelp(account))
-                            Toggle("Enabled", isOn: Binding(
-                                get: { account.enabled },
-                                set: { newValue in
-                                    Task { await vm.setEnabled(account, enabled: newValue) }
-                                }
-                            ))
-                            .toggleStyle(.switch)
-                            .controlSize(.mini)
-                            .disabled(vm.isConnecting || account.isPurged)
-                            // Always offered: a healthy account re-consents to pick up a
-                            // newly requested permission (sending, chat:write).
-                            // Move to Full (on the retired app) opens the connect section (A7).
-                            Button(SlackModePresentation.reloginTitle(isOK: account.isOK,
-                                                                      relogin: vm.relogin(of: account.id))) {
-                                Task { await vm.relogin(account) }
-                            }
-                            .buttonStyle(.kitSecondary)
-                            .managedByOrganization(sourceBlocked)
-                            .help(
-                                reloginBlocked(account.id)
-                                    ?? "Sign in to this workspace again (grants new permissions such as sending messages)"
-                            )
-                            .disabled(vm.isConnecting || reloginBlocked(account.id) != nil
-                                || appState.connectFlowRunning)
-                            Button("Rename…") {
-                                accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
-                            }
-                            .buttonStyle(.kitQuiet)
-                            .disabled(vm.isConnecting)
-                            Button("Remove") {
-                                slackAccountPendingRemoval = account
-                            }
-                            .buttonStyle(.kitQuiet)
-                            .foregroundStyle(Tone.error)
-                            .disabled(vm.isConnecting)
-                        }
+                // Grouped by company (company screens spec §4.2).
+                let groups = appState.companyAccountGroups(.slack)
+                if groups.isEmpty {
+                    SettingsSection(title: "Slack Workspaces") {
+                        Text("No Slack workspaces connected.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
-
-                accountsFooter(vm)
+                CompanyAccountGroups(groups: groups, connect: groupConnect) { ref in
+                    if let account = vm.accounts.first(where: { $0.id == ref.accountID }) {
+                        workspaceRow(vm, account: account, status: appState.companyRowStatus(ref))
+                    }
+                }
+                SettingsSection(title: CompanyConnectionsPresentation.addAccountTitle) {
+                    accountsFooter(vm)
+                }
             } else {
-                Text("Loading...")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                SettingsSection(title: "Slack Workspaces") {
+                    Text("Loading...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .sheet(isPresented: $showAddSlackAccountSheet) {
@@ -425,6 +389,83 @@ struct SlackConnectionDetail: View {
                 slackAccount: slackAccountPendingRemoval?.displayName ?? "this workspace",
                 status: appState.accountPurgeCenter?.status
             ))
+        }
+    }
+
+    /// One workspace: its title and the §4.3 status of a company's account,
+    /// the switch, Re-login (or the status's own action), Rename, Remove.
+    private func workspaceRow(_ vm: SlackAccountsViewModel, account: SlackAccount, status: RowStatus?) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                SlackAccountTitle(account: account, sharedAppAccountIDs: vm.sharedAppAccountIDs,
+                                  lastSync: vm.lastSyncs[account.id])
+                if let status {
+                    Text(status.text)
+                        .font(.caption)
+                        .foregroundStyle(status.needsAttention ? AnyShapeStyle(Tone.error) : AnyShapeStyle(.secondary))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let line = AccountPurgeLine.make(
+                    center: appState.accountPurgeCenter, source: "slack", accountID: Int64(account.id),
+                    isPurged: account.isPurged
+                ) {
+                    line
+                }
+            }
+            Spacer()
+            Circle()
+                .fill(slackAccountStatusColor(account))
+                .frame(width: IconSize.stateDot, height: IconSize.stateDot)
+                .help(accountStatusHelp(account))
+            Toggle("Enabled", isOn: Binding(
+                get: { account.enabled },
+                set: { newValue in
+                    Task { await vm.setEnabled(account, enabled: newValue) }
+                }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .disabled(vm.isConnecting || account.isPurged)
+            if let action = status?.action {
+                // A company's account: Re-login runs through the company's app; a
+                // changed or unknown app asks for the company's code (A20: Slack's
+                // connect field takes it).
+                CompanyRowStatusButton(action: action, disabled: vm.isConnecting || appState.companyFlowBusy) { action in
+                    if action == .relogin, !account.companySlug.isEmpty {
+                        appState.reloginCompany(slug: account.companySlug, vendors: [.slack])
+                    } else {
+                        _ = appState.slackConnectFlow?.reconnect(.connectSection)
+                    }
+                }
+                .managedByOrganization(sourceBlocked)
+            } else {
+                // Always offered: a healthy account re-consents to pick up a
+                // newly requested permission (sending, chat:write).
+                // Move to Full (on the retired app) opens the connect section (A7).
+                Button(SlackModePresentation.reloginTitle(isOK: account.isOK,
+                                                          relogin: vm.relogin(of: account.id))) {
+                    Task { await vm.relogin(account) }
+                }
+                .buttonStyle(.kitSecondary)
+                .managedByOrganization(sourceBlocked)
+                .help(
+                    reloginBlocked(account.id)
+                        ?? "Sign in to this workspace again (grants new permissions such as sending messages)"
+                )
+                .disabled(vm.isConnecting || reloginBlocked(account.id) != nil
+                    || appState.connectFlowRunning)
+            }
+            Button("Rename…") {
+                accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
+            }
+            .buttonStyle(.kitQuiet)
+            .disabled(vm.isConnecting)
+            Button("Remove") {
+                slackAccountPendingRemoval = account
+            }
+            .buttonStyle(.kitQuiet)
+            .foregroundStyle(Tone.error)
+            .disabled(vm.isConnecting)
         }
     }
 

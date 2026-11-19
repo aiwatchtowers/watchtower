@@ -331,6 +331,8 @@ package enum CompanyConnectionsPresentation {
     package static let groupTokensCaption = "Sites connected with your own token"
     package static let groupUnknown = "Other accounts"
     package static let groupUnknownCaption = "Signed in through an app this Watchtower no longer knows"
+    /// The section under the groups that adds an account (and holds the last command's error).
+    package static let addAccountTitle = "Add an account"
     package static let tokenTag = "API token"
     package static let sharedTag = "Shared app"
 
@@ -349,6 +351,17 @@ package enum CompanyConnectionsPresentation {
     package static let ownGoogleLocked = "Your organization does not allow own Google projects. Ask IT for your company's link."
     package static let tokenLocked = "Your organization does not allow Atlassian API tokens. Token sites stop syncing "
         + "and keep their data."
+
+    /// A company card while its chain waits on a vendor (§3.2, A10).
+    package static func connecting(_ vendor: CompanyVendor) -> String {
+        "Connecting… \(vendorName(vendor))"
+    }
+
+    /// What identifies a company's Slack app in its group caption, from the
+    /// Slack setup record that holds the bundle's client id.
+    package static func slackAppDetail(appID: String) -> String {
+        "Watchtower (\(appID))"
+    }
 
     package static func reloginChanged(_ company: String) -> String {
         "Re-login needed — \(company) changed its app"
