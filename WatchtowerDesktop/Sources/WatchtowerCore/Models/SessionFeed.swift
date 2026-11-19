@@ -148,10 +148,13 @@ package struct SessionFeedPayload: Decodable, Sendable {
     package var live: SessionFeedLive?
     package var liveOK: Bool
     package var liveError: String?
+    /// A `--tail` read's page start: the id to pass as `--before` for the
+    /// page before it; "" when absent (nothing earlier, or not a tail read).
+    package var before: String
 
     private enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
-        case cursor, entries, subagents, activity, live
+        case cursor, entries, subagents, activity, live, before
         case liveOK = "live_ok", liveError = "live_error"
     }
 
@@ -165,5 +168,6 @@ package struct SessionFeedPayload: Decodable, Sendable {
         live = try c.decodeIfPresent(SessionFeedLive.self, forKey: .live)
         liveOK = try c.decodeIfPresent(Bool.self, forKey: .liveOK) ?? false
         liveError = try c.decodeIfPresent(String.self, forKey: .liveError)
+        before = try c.decodeIfPresent(String.self, forKey: .before) ?? ""
     }
 }

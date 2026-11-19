@@ -18,6 +18,8 @@ struct SessionChatView: View {
     /// The composer takes the keyboard as it is made.
     var composerAutoFocus = false
 
+    /// The session's kept store (`WorkbenchesViewModel.feedStore`): a pane
+    /// shown again paints the entries it holds at once.
     @StateObject private var store: SessionFeedStore
     /// The subagents opened in place; empty = the main feed.
     @State private var path = SessionChatPath()
@@ -44,9 +46,10 @@ struct SessionChatView: View {
         self.projectID = projectID
         self.composerFocus = composerFocus
         self.composerAutoFocus = composerAutoFocus
-        // An autoclosure: the store and its CLI lookup are built once per
-        // pane, not on every render of the parent.
-        _store = StateObject(wrappedValue: SessionFeedStore(sessionID: sessionID, runner: ProcessCLIRunner.makeDefault()))
+        // An autoclosure, run once per pane (the pane is keyed by session):
+        // the store is fetched, and its open trace started, once per open,
+        // never on a re-render of the parent.
+        _store = StateObject(wrappedValue: vm.feedStore(sessionID: sessionID))
     }
 
     /// The agent works or has background subagents running: poll every 3 s.
@@ -142,13 +145,21 @@ struct SessionChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             if store.runnerMissing {
-                errorBar(WorkbenchesViewModel.cliMissingMessage, retry: false)
+                errorBar(WorkbenchesViewModel.cliMissingMessage, retry: nil)
             } else if path.isRoot, let error = store.error {
-                errorBar(error, retry: true)
+                errorBar(error) { Task { await store.poller.refresh() } }
+            }
+            // A failed earlier page has its own bar: its Retry reads the page,
+            // never a poll (which would leave the page unread).
+            if path.isRoot, let error = store.earlierPageError {
+                errorBar(error) { pageEarlier(retry: true) }
             }
             if let subagent = path.stack.last {
                 subagentScreen(subagent)
-            } else if dialogEntries.isEmpty && (workchat?.outgoing.isEmpty ?? true) && permission == nil && openAsks.isEmpty {
+            } else if Self.showsEmptyState(
+                dialogEmpty: dialogEntries.isEmpty,
+                nothingPending: (workchat?.outgoing.isEmpty ?? true) && permission == nil && openAsks.isEmpty,
+                hasEarlierPage: store.hasEarlierPage) {
                 emptyState
             } else {
                 feed
@@ -215,6 +226,12 @@ struct SessionChatView: View {
         .onChange(of: busy) { _, nowBusy in
             if !nowBusy { store.clearActivity() }
         }
+        .onAppear {
+            vm.feedPaneAppeared(sessionID: sessionID)
+            // A kept store missed the change while its pane was closed.
+            if !busy { store.clearActivity() }
+        }
+        .onDisappear { vm.feedPaneDisappeared(sessionID: sessionID) }
         .onChange(of: sessionID) { path = SessionChatPath() }
     }
 
@@ -396,7 +413,9 @@ struct SessionChatView: View {
         workchatFeed.answerPending = !(workchat?.outgoing.isEmpty ?? true)
         workchatFeed.onOpenArtifact = { artifact = $0 }
         var context = workchatFeed.context()
-        context.hasEarlier = window.hasEarlier(total: total)
+        context.hasEarlier = Self.hasEarlier(windowHasEarlier: window.hasEarlier(total: total),
+                                             hasEarlierPage: store.hasEarlierPage,
+                                             pageFailed: store.earlierPageError != nil)
         context.rowActions.loadEarlier = loadEarlier
         context.focusMessageID = earlierAnchor
         var follow = ChatFeedFollow(conversationID: sessionID)
@@ -451,8 +470,40 @@ struct SessionChatView: View {
         if window.followingChanged(following, total: dialogEntries.count) { earlierAnchor = nil }
     }
 
+    /// Grows the window over the entries held; once it shows them all, reads
+    /// the store's earlier page and grows over that.
     private func loadEarlier() {
-        if let anchor = window.loadEarlier(entries: dialogEntries) { earlierAnchor = anchor }
+        let entries = dialogEntries
+        if window.hasEarlier(total: entries.count) {
+            if let anchor = window.loadEarlier(entries: entries) { earlierAnchor = anchor }
+            return
+        }
+        pageEarlier(retry: false)
+    }
+
+    /// Reads the store's earlier page (again, for the owner's Retry); the
+    /// window moves only when the page added entries.
+    private func pageEarlier(retry: Bool) {
+        guard store.hasEarlierPage else { return }
+        let top = dialogEntries.first?.id
+        Task {
+            let added = retry ? await store.retryEarlierPage() : await store.loadEarlierPage()
+            guard added else { return }
+            if let anchor = window.earlierPageArrived(entries: dialogEntries, previousTop: top) { earlierAnchor = anchor }
+        }
+    }
+
+    /// "No messages yet" only when nothing at all can be shown: a tail of
+    /// subagent markers alone still has earlier messages to page in.
+    static func showsEmptyState(dialogEmpty: Bool, nothingPending: Bool, hasEarlierPage: Bool) -> Bool {
+        dialogEmpty && nothingPending && !hasEarlierPage
+    }
+
+    /// The feed's loading row: entries the window hides, or an earlier page
+    /// to read. A failed page drops the row (its bar's Retry reads it), so a
+    /// layout pass never asks for it again.
+    static func hasEarlier(windowHasEarlier: Bool, hasEarlierPage: Bool, pageFailed: Bool) -> Bool {
+        windowHasEarlier || (hasEarlierPage && !pageFailed)
     }
 
     @ViewBuilder
@@ -468,13 +519,13 @@ struct SessionChatView: View {
         }
     }
 
-    private func errorBar(_ message: String, retry: Bool) -> some View {
+    private func errorBar(_ message: String, retry: (() -> Void)?) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             Text(message).font(.callout).lineLimit(3).textSelection(.enabled)
             Spacer(minLength: 4)
-            if retry {
-                Button("Retry") { Task { await store.poller.refresh() } }
+            if let retry {
+                Button("Retry", action: retry)
             }
         }
         .padding(8)
@@ -497,5 +548,15 @@ extension SessionFeedWindow {
         guard hasEarlier(total: entries.count) else { return nil }
         let anchor = grow(entries: entries)
         return following ? nil : anchor.map(WorkchatFeedAdapter.messageID)
+    }
+
+    /// The store put an earlier page in front of the entries the window
+    /// showed from their start (`previousTop`): the window grows when the page
+    /// does not fit, and while the owner reads older text the old top entry's
+    /// message id comes back, to keep in view. Nil when following or nothing
+    /// was shown.
+    mutating func earlierPageArrived(entries: [SessionFeedEntry], previousTop: String?) -> Int64? {
+        if hasEarlier(total: entries.count) { _ = grow(entries: entries) }
+        return following ? nil : previousTop.map(WorkchatFeedAdapter.messageID)
     }
 }
