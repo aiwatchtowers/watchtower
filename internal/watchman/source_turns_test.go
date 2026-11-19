@@ -242,11 +242,13 @@ func TestTurnSource_PermanentlyUnreadableSessionSkippedAfterGrace(t *testing.T) 
 }
 
 // Once the backfill has drained, the cursor's lo mark is "end": the next
-// call reads only the sessions at or after hi, never the older transcripts.
+// call reads only the sessions at or after hi, never an older transcript
+// idle past the grace.
 func TestTurnSource_DoneBackfillReadsNoOlderTranscript(t *testing.T) {
 	d := openWatchmanDB(t)
 	wb := addWorkbench(t, d, t.TempDir())
 	s1 := addSession(t, d, wb, "a1")
+	setLastActive(t, d, s1, time.Now().Add(-2*turnReadGrace)) // long idle: not tracked
 	s2 := addSession(t, d, wb, "a2")
 	feeds := map[int64][]sessionfeed.Entry{
 		s1: {entry("a1", sessionfeed.KindAgent, "Add a cache?", 0), entry("u1", sessionfeed.KindOwner, "no", 1)},
@@ -298,5 +300,63 @@ func TestTurnSource_SkipsAutomationSessions(t *testing.T) {
 	ps, _, _, err := TurnSource(fakeFeeds(feeds)).Next(context.Background(), d, wb, "", 10)
 	if err != nil || len(ps) != 1 || ps[0].OwnerWords != "no" {
 		t.Fatalf("got %+v err=%v", ps, err)
+	}
+}
+
+// Final review (codex 2): a newer session moves hi past an older one that is
+// still running; the older one's later owner turns are read all the same,
+// once each, and it leaves the cursor once idle past the grace.
+func TestTurnSource_OlderActiveSessionKeepsItsTurns(t *testing.T) {
+	d := openWatchmanDB(t)
+	wb := addWorkbench(t, d, t.TempDir())
+	now := time.Now()
+	s1 := addSession(t, d, wb, "a1")
+	s2 := addSession(t, d, wb, "a2")
+	setLastActive(t, d, s1, now)
+	setLastActive(t, d, s2, now)
+	feeds := map[int64][]sessionfeed.Entry{
+		s1: {entry("a1", sessionfeed.KindAgent, "Add a cache?", 0), entry("u1", sessionfeed.KindOwner, "no", 1)},
+		s2: {entry("a2", sessionfeed.KindAgent, "Rename it?", 10), entry("u2", sessionfeed.KindOwner, "yes", 11)},
+	}
+	src := turnSource{read: fakeFeeds(feeds), now: func() time.Time { return now }}
+	ctx := context.Background()
+	words := func(ps []db.WatchmanPrecedent) string {
+		var w []string
+		for _, p := range ps {
+			w = append(w, p.OwnerWords)
+		}
+		return strings.Join(w, ",")
+	}
+	ps, c, done, err := src.Next(ctx, d, wb, "", 10)
+	if err != nil || !done || words(ps) != "yes,no" {
+		t.Fatalf("first: %s done=%v err=%v", words(ps), done, err)
+	}
+	// The older session goes on after the newer one set hi.
+	feeds[s1] = append(feeds[s1], entry("a3", sessionfeed.KindAgent, "And the index?", 20), entry("u3", sessionfeed.KindOwner, "later", 21))
+	ps, c, _, err = src.Next(ctx, d, wb, c, 10)
+	if err != nil || words(ps) != "later" {
+		t.Fatalf("second: %s cursor %q err=%v", words(ps), c, err)
+	}
+	ps, c, _, err = src.Next(ctx, d, wb, c, 10)
+	if err != nil || len(ps) != 0 {
+		t.Fatalf("third: %s err=%v; want nothing read twice", words(ps), err)
+	}
+	// A page cut by the limit keeps the older session's mark.
+	feeds[s1] = append(feeds[s1], entry("a4", sessionfeed.KindAgent, "Docs?", 30), entry("u4", sessionfeed.KindOwner, "yes, docs", 31),
+		entry("a5", sessionfeed.KindAgent, "Tests?", 32), entry("u5", sessionfeed.KindOwner, "tests too", 33))
+	ps, c, _, err = src.Next(ctx, d, wb, c, 1)
+	if err != nil || words(ps) != "yes, docs" {
+		t.Fatalf("limited: %s err=%v", words(ps), err)
+	}
+	ps, c, _, err = src.Next(ctx, d, wb, c, 10)
+	if err != nil || words(ps) != "tests too" {
+		t.Fatalf("after the limit: %s err=%v", words(ps), err)
+	}
+	// Idle past the grace: read to its end once more, then dropped.
+	now = now.Add(2 * turnReadGrace)
+	setLastActive(t, d, s2, now)
+	_, c, _, err = src.Next(ctx, d, wb, c, 10)
+	if err != nil || strings.Count(c, "|") != 1 {
+		t.Fatalf("cursor %q err=%v; want the idle session dropped", c, err)
 	}
 }

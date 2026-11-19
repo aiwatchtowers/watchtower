@@ -32,7 +32,7 @@ Situation and owner words are redacted (`Redact`: known secret shapes, bearer to
 | `turn` | the owner's own lines in the workbench's agent sessions, with the agent text just before as the situation; sessions an automation started are left out; needs Agent analytics on the workbench | labelled |
 | `git` | the owner's commits (authored by the folder's `user.email`, any author when none is set, and no agent trailer; the sleep window uses the same rule) that rewrite paths an agent commit changed in the 7 days before (`rewrote`), and the workbench's merged PRs (`merged`) | `tests` / `finish` |
 
-A row a source cannot read (corrupt JSON, no `decided_at`) is skipped, logged by id and counted (`SkipCounter`); the cursor moves past it. The `git` and `turn` cursors set their `lo` mark to `end` once the backfill has drained, so a done source reads only what is new.
+A row a source cannot read (corrupt JSON, no `decided_at`) is skipped, logged by id and counted (`SkipCounter`); the cursor moves past it. The `git` and `turn` cursors set their `lo` mark to `end` once the backfill has drained, so a done source reads only what is new. The `turn` cursor also keeps, per older session still active within 24 h, the last turn it read (`|<sid>:<idx>,…`), so a new owner turn in an older session still running after a newer one moved `hi` is read too.
 
 ## Learning
 
