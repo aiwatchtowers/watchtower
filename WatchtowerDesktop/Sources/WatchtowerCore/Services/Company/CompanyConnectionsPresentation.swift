@@ -636,6 +636,15 @@ package enum CompanyConnectionsPresentation {
         }
     }
 
+    /// An API-token site's row offers **Paste a new token**: its token died,
+    /// or it fails for another reason no §4.3 status names (a token site has
+    /// no OAuth sign-in). A stopped, removed or purged row offers nothing.
+    package static func offersNewToken(_ a: AccountRef, status: RowStatus?) -> Bool {
+        guard a.isAPIToken else { return false }
+        if let status { return status.action == .pasteNewToken }
+        return a.status == "error" || a.status == "revoked"
+    }
+
     // MARK: Banners and locks
 
     /// §7's banner over `vendor`'s detail while an account still runs on a

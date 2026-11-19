@@ -7,12 +7,15 @@ import (
 	"net"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/db"
 	"watchtower/internal/jira"
 	"watchtower/internal/policy/policytest"
+	"watchtower/internal/purge"
 )
 
 // TestJiraAPIToken_JSONResults (#1887 C5): with --json, add and re-auth
@@ -92,18 +95,41 @@ func TestJiraAPIToken_JSONResults(t *testing.T) {
 		cmd, out = newTokenCmd(t, jiraLoginCmd, map[string]string{"api-token-stdin": "true", "json": "true"}, next)
 		require.NoError(t, runJiraLogin(cmd, nil))
 		assert.JSONEq(t, `{"result":"unauthorized"}`, out.String())
+
+		// The replace sheet's other ends: the policy forbids tokens (exit 0,
+		// the sheet closes), and an OAuth site (failed, non-zero).
+		policytest.Set(t, map[string]any{"AllowAtlassianAPIToken": false})
+		cmd, out = newTokenCmd(t, jiraLoginCmd, map[string]string{"api-token-stdin": "true", "json": "true"}, next)
+		require.NoError(t, runJiraLogin(cmd, nil))
+		assert.JSONEq(t, `{"result":"forbidden"}`, out.String())
+		policytest.Set(t, map[string]any{})
+		oauthID, err := h.database.CreateJiraAccount(db.JiraAccount{CloudID: "c2", SiteURL: "https://other.atlassian.net"})
+		require.NoError(t, err)
+		withJiraAccountFlag(t, oauthID)
+		cmd, out = newTokenCmd(t, jiraLoginCmd, map[string]string{"api-token-stdin": "true", "json": "true"}, next)
+		require.Error(t, runJiraLogin(cmd, nil))
+		require.NoError(t, json.Unmarshal(out.Bytes(), &got), out.String())
+		assert.Equal(t, "failed", got.Result)
+		assert.Contains(t, got.Message, "signs in with OAuth")
 	})
 }
 
 // TestJiraAccountsJSON_PurgeLease (#1887 §6.3): `jira accounts --json`
 // carries each account's PURGE-01 lease day only while the lease counts —
-// purge on under a rule with leases, the account not stopped by the policy.
+// purge on under a rule with leases, the account not stopped by the policy —
+// and not once the deadline is under purge.Grace away (the next pass
+// schedules the purge; its own line then says when).
 func TestJiraAccountsJSON_PurgeLease(t *testing.T) {
 	h := newAPITokenHarness(t)
 	a := addTokenAccount(t, h)
 	require.NoError(t, h.database.SetJiraAccountAuthState(a.ID, "error", jira.CodeAPITokenDead))
-	_, err := h.database.Exec(`UPDATE jira_accounts SET access_ok_at = '2026-11-18T09:00:00Z' WHERE id = ?`, a.ID)
-	require.NoError(t, err)
+	access := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Second)
+	setAccess := func(at time.Time) {
+		t.Helper()
+		_, err := h.database.Exec(`UPDATE jira_accounts SET access_ok_at = ? WHERE id = ?`, at.Format(time.RFC3339), a.ID)
+		require.NoError(t, err)
+	}
+	setAccess(access)
 
 	lease := func() string {
 		t.Helper()
@@ -117,7 +143,10 @@ func TestJiraAccountsJSON_PurgeLease(t *testing.T) {
 
 	assert.Empty(t, lease(), "the default rule gives a live account no lease")
 	policytest.Set(t, map[string]any{"PurgeRevokedData": true})
-	assert.Equal(t, "2026-12-18T09:00:00Z", lease())
+	assert.Equal(t, access.Add(purge.Lease).Format(time.RFC3339), lease())
+	setAccess(time.Now().UTC().Add(-purge.Lease + purge.Grace - time.Hour))
+	assert.Empty(t, lease(), "under Grace away: the purge line takes over")
+	setAccess(access)
 	policytest.Set(t, map[string]any{"PurgeRevokedData": true, "AllowAtlassianAPIToken": false})
 	assert.Empty(t, lease(), "POLICY-03 holds a stopped token site's lease")
 }

@@ -108,7 +108,7 @@ func finishAPITokenCommand(cmd *cobra.Command, res apiTokenResult, err error, te
 		res = classifyAPITokenError(err)
 	}
 	if encErr := json.NewEncoder(cmd.OutOrStdout()).Encode(res); encErr != nil {
-		return encErr
+		return errors.Join(err, encErr)
 	}
 	if res.Result == apiTokenResultFailed {
 		return err

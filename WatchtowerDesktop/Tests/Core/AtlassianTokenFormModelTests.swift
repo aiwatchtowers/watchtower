@@ -44,7 +44,8 @@ final class AtlassianTokenFormModelTests: XCTestCase {
         XCTAssertTrue(model.canSubmit)
         XCTAssertEqual(model.primaryTitle, Model.connectTitle)
         XCTAssertTrue(model.showsScopedHint)
-        XCTAssertTrue(model.fieldsEditable)
+        XCTAssertTrue(model.siteEditable)
+        XCTAssertTrue(model.emailEditable)
     }
 
     func testUnauthorized() async {
@@ -120,15 +121,30 @@ final class AtlassianTokenFormModelTests: XCTestCase {
         model.openReplace(accountID: 7, email: "bob@example.com", site: "https://beta.atlassian.net")
         XCTAssertEqual(model.title, "Paste a new token for beta.atlassian.net")
         XCTAssertEqual(model.intro, Model.replaceIntro)
-        XCTAssertFalse(model.fieldsEditable)
+        XCTAssertFalse(model.siteEditable)
+        XCTAssertFalse(model.emailEditable)
         XCTAssertFalse(model.showsScopedHint)
         XCTAssertEqual(model.primaryTitle, "Save token")
         XCTAssertFalse(model.canSubmit)
         model.token = Self.token
         await model.submit()
-        XCTAssertEqual(fake.invocations.map(\.args), [["jira", "login", "--account", "7", "--api-token-stdin", "--json"]])
+        let login = ["jira", "login", "--account", "7", "--api-token-stdin", "--email", "bob@example.com", "--json"]
+        XCTAssertEqual(fake.invocations.map(\.args), [login])
         XCTAssertEqual(model.phase, .done(host: "beta.atlassian.net", email: "bob@example.com"))
         XCTAssertEqual(connected(), 1)
+    }
+
+    /// A row that names no email (an unknown owner) asks for it: the token
+    /// file the re-auth would read it from may be the broken part.
+    func testReplaceWithoutKnownEmailAsksForIt() {
+        let (model, _, _) = makeModel()
+        model.openReplace(accountID: 7, email: "", site: "https://beta.atlassian.net")
+        XCTAssertTrue(model.emailEditable)
+        XCTAssertFalse(model.siteEditable)
+        model.token = Self.token
+        XCTAssertFalse(model.canSubmit)
+        model.email = "bob@example.com"
+        XCTAssertTrue(model.canSubmit)
     }
 
     func testTokenOnStdinOnlyAndDropped() async {

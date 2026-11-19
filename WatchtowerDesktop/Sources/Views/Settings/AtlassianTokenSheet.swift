@@ -48,8 +48,8 @@ struct AtlassianTokenSheet: View {
         }
         VStack(alignment: .leading, spacing: Spacing.regular) {
             Text(Model.step2).font(.callout.weight(.medium))
-            field(Model.emailLabel, text: $model.email, editable: model.fieldsEditable)
-            field(Model.siteLabel, text: $model.site, editable: model.fieldsEditable)
+            field(Model.emailLabel, text: $model.email, editable: model.emailEditable)
+            field(Model.siteLabel, text: $model.site, editable: model.siteEditable)
             WizardField(label: Model.tokenLabel, text: $model.token, secure: true, prompt: Model.tokenLabel)
                 .disabled(model.isChecking)
         }

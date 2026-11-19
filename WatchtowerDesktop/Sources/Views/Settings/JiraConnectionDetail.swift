@@ -170,11 +170,14 @@ struct JiraConnectionDetail: View {
                 }
             } else if ref.isAPIToken {
                 // A token site takes a new token, never an OAuth sign-in; a stopped one takes nothing.
-                if status?.action == .pasteNewToken || (status == nil && !account.isOK && !account.isPurged) {
+                if CompanyConnectionsPresentation.offersNewToken(ref, status: status) {
                     CompanyRowStatusButton(action: .pasteNewToken,
-                                           disabled: sourceBlocked || appState.atlassianToken.isChecking) { action in
+                                           disabled: vm.isConnecting || appState.atlassianToken.isChecking
+                                               || reloginBlocked(account.id) != nil) { action in
                         appState.companyRowAction(action, account: ref)
                     }
+                    .managedByOrganization(sourceBlocked)
+                    .help(reloginBlocked(account.id) ?? "")
                 }
             } else if !account.isOK || status?.action == .relogin {
                 // `jira login --account` signs in through the site's own client (its company's after a Replace).

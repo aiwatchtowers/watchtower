@@ -122,12 +122,19 @@ package final class AtlassianTokenFormModel {
     /// the token alone (Go keeps the stored email when the row names none).
     package var canSubmit: Bool {
         guard phase != .checking else { return false }
-        let required = mode == .add ? [email, site, token] : [token]
+        let required = mode == .add ? [email, site, token] : (emailEditable ? [email, token] : [token])
         return required.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
-    /// Email and site are typed only when adding.
-    package var fieldsEditable: Bool { mode == .add }
+    /// The site is typed only when adding.
+    package var siteEditable: Bool { mode == .add }
+
+    /// The email is typed when adding, and in replace mode when the row
+    /// names none (the token file may be what is broken).
+    package var emailEditable: Bool {
+        if case .replace(_, let known, _) = mode { return known.isEmpty }
+        return true
+    }
 
     // MARK: Texts
 
@@ -241,7 +248,9 @@ package final class AtlassianTokenFormModel {
             ["jira", "add", "--api-token-stdin", "--email", email.trimmingCharacters(in: .whitespacesAndNewlines),
              "--site", site.trimmingCharacters(in: .whitespacesAndNewlines), "--with-confluence", "--json"]
         case .replace(let id, _, _):
-            ["jira", "login", "--account", String(id), "--api-token-stdin", "--json"]
+            // The email the sheet shows is the one used, not the token file's.
+            ["jira", "login", "--account", String(id), "--api-token-stdin", "--email",
+             email.trimmingCharacters(in: .whitespacesAndNewlines), "--json"]
         }
     }
 
@@ -293,7 +302,7 @@ package final class AtlassianTokenFormModel {
     }
 
     /// `jira add|login --api-token-stdin --json`'s one line (Go `apiTokenResult`).
-    private struct Result: Decodable {
+    private struct Answer: Decodable {
         let result: String
         let site: String?
         let email: String?
@@ -316,7 +325,7 @@ package final class AtlassianTokenFormModel {
         } catch {
             failure = error.localizedDescription
         }
-        guard let last, let result = try? JSONDecoder().decode(Result.self, from: Data(last.utf8)) else {
+        guard let last, let result = try? JSONDecoder().decode(Answer.self, from: Data(last.utf8)) else {
             return .problem(.failed(failure ?? "The check ended without an answer."))
         }
         return switch result.result {

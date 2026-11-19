@@ -155,9 +155,15 @@ final class JiraConnectionDetailTests: XCTestCase {
             try db.execute(sql: "INSERT INTO jira_accounts (id, site_url, status, error, auth_kind) "
                 + "VALUES (2, 'https://beta.atlassian.net', 'error', 'api_token_dead', 'api_token')")
         }
-        let vm = JiraAccountsViewModel(dbPool: pool, daemon: FakeDaemonRestarter()) { nil }
+        // Even a lease day on the row (Go holds it, so it would not send one) shows no note.
+        let cli = try GoogleConnectionDetailTests.stubCLI(
+            stdout: #"[{"id":2,"auth_kind":"api_token","shared_atlassian":false,"purge_lease_at":"2026-12-18T09:00:00Z"}]"#,
+            test: self)
+        let vm = JiraAccountsViewModel(dbPool: pool, daemon: FakeDaemonRestarter(), cliPath: { cli.path },
+                                       readsAccountFlags: true)
         appState.jiraAccountsViewModel = vm
         await vm.refreshAsync()
+        XCTAssertEqual(vm.sharedFlags.leaseDates.count, 1)
 
         let view = JiraConnectionDetail().environment(appState)
         XCTAssertNoThrow(try view.inspect().find(text: Pres.stoppedByPolicyLine))
