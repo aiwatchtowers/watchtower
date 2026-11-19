@@ -101,3 +101,21 @@ func TestLiveStepsSidechainOnlyOwnRecords(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"t1"}, stepIDs(live.Steps))
 }
+
+func TestLiveSteps_CapKeepsOpenStep(t *testing.T) {
+	lines := []string{ownerLine, assistantRec("aopen", "mopen", toolUse("open", "Bash", map[string]any{"command": "sleep 99"}))}
+	for i := 1; i <= 45; i++ {
+		id := fmt.Sprintf("t%d", i)
+		lines = append(lines, assistantRec("a"+id, "m"+id, toolUse(id, "Read", map[string]any{"file_path": "a.go"})), userBlocks("u"+id, toolResult(id)))
+	}
+	live, err := LiveOf(liveFile(t, false, lines...), false, liveNow)
+	require.NoError(t, err)
+	// Rule: the last 40 by start order (t6..t45) plus the older open step = 41;
+	// the 5 cut steps (t1..t5) are finished, so StepsMore is 5.
+	require.Len(t, live.Steps, 41)
+	assert.Equal(t, 5, live.StepsMore)
+	assert.Equal(t, "open", live.Steps[0].ID)
+	assert.True(t, live.Steps[0].CompletedAt.IsZero())
+	assert.Equal(t, "t6", live.Steps[1].ID)
+	assert.Equal(t, "t45", live.Steps[40].ID)
+}

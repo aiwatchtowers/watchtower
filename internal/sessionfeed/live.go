@@ -59,6 +59,7 @@ type liveReader struct {
 	live       *Live
 	open       []LiveAction
 	steps      []LiveAction
+	stepIdx    map[string]int // step id -> index in steps
 	agents     map[string]*LiveAgent
 	codex      bool
 	sidechain  bool
@@ -110,8 +111,16 @@ func LiveOf(c Conversation, sidechain bool, now time.Time) (*Live, error) {
 		live.Current = nil
 		live.Latest = nil
 	} else if n := len(r.steps); n > maxLiveSteps {
-		live.Steps = append(live.Steps, r.steps[n-maxLiveSteps:]...)
-		live.StepsMore = n - maxLiveSteps
+		// The last maxLiveSteps by start order, plus any still-open step that
+		// started earlier (a running timer must not vanish); steps_more counts
+		// only the finished steps that were cut.
+		for i, st := range r.steps {
+			if i >= n-maxLiveSteps || st.CompletedAt.IsZero() {
+				live.Steps = append(live.Steps, st)
+			} else {
+				live.StepsMore++
+			}
+		}
 	} else {
 		live.Steps = append(live.Steps, r.steps...)
 	}
@@ -128,21 +137,20 @@ func (r *liveReader) reset(at time.Time) {
 	r.live.Latest = nil
 	r.open = nil
 	r.steps = nil
+	r.stepIdx = nil
 }
 func (r *liveReader) start(a LiveAction) {
 	if a.ID == "" {
 		return
 	}
 	r.live.TurnActive = true
-	replaced := false
-	for i := range r.steps {
-		if r.steps[i].ID == a.ID {
-			r.steps[i] = a
-			replaced = true
-			break
+	if i, ok := r.stepIdx[a.ID]; ok {
+		r.steps[i] = a
+	} else {
+		if r.stepIdx == nil {
+			r.stepIdx = map[string]int{}
 		}
-	}
-	if !replaced {
+		r.stepIdx[a.ID] = len(r.steps)
 		r.steps = append(r.steps, a)
 	}
 	for i := range r.open {
@@ -154,11 +162,8 @@ func (r *liveReader) start(a LiveAction) {
 	r.open = append(r.open, a)
 }
 func (r *liveReader) complete(id string, at time.Time) {
-	for i := range r.steps {
-		if r.steps[i].ID == id {
-			r.steps[i].CompletedAt = at
-			break
-		}
+	if i, ok := r.stepIdx[id]; ok {
+		r.steps[i].CompletedAt = at
 	}
 	for i, a := range r.open {
 		if a.ID == id {
