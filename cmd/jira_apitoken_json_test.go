@@ -150,3 +150,58 @@ func TestJiraAccountsJSON_PurgeLease(t *testing.T) {
 	policytest.Set(t, map[string]any{"PurgeRevokedData": true, "AllowAtlassianAPIToken": false})
 	assert.Empty(t, lease(), "POLICY-03 holds a stopped token site's lease")
 }
+
+// TestJiraAPIToken_ConfluenceProbed (#1887 C5, closes Task 17's "scopes
+// recorded, not verified"): with Confluence asked for, the token's
+// Confluence access is probed; the Confluence scopes are recorded only when
+// it answers, else the site connects with Jira alone and the line says
+// confluence:false. Without --with-confluence nothing is probed.
+func TestJiraAPIToken_ConfluenceProbed(t *testing.T) {
+	for _, reads := range []bool{true, false} {
+		t.Run(map[bool]string{true: "reads", false: "jira only"}[reads], func(t *testing.T) {
+			h := newAPITokenHarness(t)
+			h.noConfluence = !reads
+			flags := addTokenFlags()
+			flags["json"] = "true"
+			flags["with-confluence"] = "true"
+			cmd, out := newTokenCmd(t, jiraAddCmd, flags, cmdTestAPIToken)
+			require.NoError(t, runJiraAdd(cmd, nil), out.String())
+			var got apiTokenResult
+			require.NoError(t, json.Unmarshal(out.Bytes(), &got), out.String())
+			require.NotNil(t, got.Confluence)
+			assert.Equal(t, reads, *got.Confluence)
+			assert.Equal(t, "ok", got.Result)
+			creds, err := jira.NewTokenStore(h.cfg.WorkspaceDir(), got.AccountID).LoadAPIToken()
+			require.NoError(t, err)
+			if reads {
+				assert.Contains(t, creds.Scope, jira.ConfluenceScopes)
+			} else {
+				assert.Equal(t, jira.JiraScopes, creds.Scope, "no Confluence grant recorded")
+			}
+
+			// A re-auth asks again: the carried-over Confluence is probed with the new token.
+			withJiraAccountFlag(t, got.AccountID)
+			h.noConfluence = true
+			probes := h.confluenceProbes
+			cmd, out = newTokenCmd(t, jiraLoginCmd, map[string]string{"api-token-stdin": "true", "json": "true"}, "ATATT-next") // leak-check:allow
+			require.NoError(t, runJiraLogin(cmd, nil), out.String())
+			got = apiTokenResult{}
+			require.NoError(t, json.Unmarshal(out.Bytes(), &got), out.String())
+			if reads {
+				assert.Equal(t, probes+1, h.confluenceProbes)
+				require.NotNil(t, got.Confluence)
+				assert.False(t, *got.Confluence)
+			} else {
+				assert.Nil(t, got.Confluence, "nothing to carry over: not asked")
+			}
+		})
+	}
+
+	h := newAPITokenHarness(t)
+	flags := addTokenFlags()
+	flags["json"] = "true"
+	cmd, out := newTokenCmd(t, jiraAddCmd, flags, cmdTestAPIToken)
+	require.NoError(t, runJiraAdd(cmd, nil), out.String())
+	assert.Zero(t, h.confluenceProbes)
+	assert.NotContains(t, out.String(), "confluence")
+}

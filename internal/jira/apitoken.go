@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"watchtower/internal/fsutil"
 	"watchtower/internal/policy"
@@ -274,6 +275,35 @@ func ProbeAPIToken(ctx context.Context, hc *http.Client, cloudID, site string, c
 		}
 	}
 	return APITokenCreds{}, Myself{}, deadErr
+}
+
+// ProbeConfluence reports whether creds (as ProbeAPIToken returned them,
+// Scoped set) read Confluence on site: one GET of /wiki/api/v2/spaces?limit=1
+// at the base the token's kind calls — the same rule as Jira
+// (APITokenBaseURL). Only a 200 is access; any other answer (a Jira-only
+// scoped token gets 401/403) is none. A request that could not run is an
+// error. hc nil uses a 15 s client.
+func ProbeConfluence(ctx context.Context, hc *http.Client, cloudID, site string, creds APITokenCreds) (bool, error) {
+	if err := probeSiteCheck(site); err != nil {
+		return false, err
+	}
+	if hc == nil {
+		hc = &http.Client{Timeout: 15 * time.Second}
+	}
+	u := apiTokenBase(apiGatewayRoot, "confluence", creds.Scoped, cloudID, site) + "/wiki/api/v2/spaces?limit=1"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Authorization", creds.basicAuth())
+	req.Header.Set("Accept", "application/json")
+	resp, err := hc.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("checking Confluence access: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	return resp.StatusCode == http.StatusOK, nil
 }
 
 // probeSiteCheck is ValidateAPITokenSite; a var so the probe's tests can

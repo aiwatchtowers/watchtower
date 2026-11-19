@@ -338,7 +338,7 @@ Top: "Connect Jira with an API token" / "For a person whose company has no Atlas
 | Done | `company-token-done` | "Connected to acme.atlassian.net as alice@example.com" / "The first sync starts now." | **Done** |
 | New token for a dead one | `company-token-replace` | "Paste a new token for acme.atlassian.net" / "The old token stopped working. Your data was kept; a new token picks up where the sync stopped."; email and site read-only | **Cancel**, **Save token** |
 
-The token goes to `jira add --api-token-stdin` (and its re-auth) on stdin, never argv; the model drops it when the run ends.
+The token goes to `jira add --api-token-stdin` (and its re-auth) on stdin, never argv. The model clears it once a run connects and whenever the sheet closes; after a failed check it stays in the field so **Try again** resends it, as the error frames show (A34). With Confluence asked for, Go probes Confluence with the token and records its scopes only when it answers; otherwise the site connects with Jira alone and the done summary adds "Confluence off — the token has no Confluence access".
 
 ### 6.3 The dead token row (D22)
 
@@ -679,6 +679,7 @@ Screen tasks (C) follow the parent's tasks they need.
 | A28 | Editing a field a step's check used un-checks the step (hash of the checked values in the draft) |
 | A32 | (agent, Task 22 review) Of the Slack setup-record rows only **Add the link to the app** (`link_missing`) opens the wizard (at Publish; for another app than the draft's, at the Slack step). `pending_create`, `install` (**Continue setup**) and `approval` (**Check again**) stay on plan B's sheet: the wizard's Slack step runs no admin connect, approval check or lost-create clear, so it would mark an app ready that was never installed. Narrows A19 and §0's §3.4 row |
 | A33 | (owner, ask #1613) The Company name edited at Publish after a check stored the setup changes only the display name; the slug, the file name and the accounts' `company_slug` stay (§2.12) |
+| A34 | (agent, Task 27 review) The API-token sheet keeps the token in its field after a failed check, so **Try again** resends it: the error mockups (`company-token-unauthorized` … `-network`) win over §6.2's earlier "drops it when the run ends". The token never leaves the sheet's memory (stdin only, never argv, a log or a file of ours) and is cleared on success and whenever the sheet closes |
 
 ## 15. Needs the owner
 

@@ -29,14 +29,17 @@ const cmdTestAPIToken = "ATATT-cmd-test-token-not-real"
 
 // apiTokenHarness answers the site check and the token check.
 type apiTokenHarness struct {
-	cfg        *config.Config
-	database   *db.DB
-	cloudID    string
-	tenantErr  error
-	probeErr   error
-	scoped     bool
-	tenantAsks []string
-	probes     []jira.APITokenCreds
+	cfg       *config.Config
+	database  *db.DB
+	cloudID   string
+	tenantErr error
+	probeErr  error
+	scoped    bool
+	// noConfluence: the token reads no Confluence (a Jira-only scoped token).
+	noConfluence     bool
+	confluenceProbes int
+	tenantAsks       []string
+	probes           []jira.APITokenCreds
 }
 
 func newAPITokenHarness(t *testing.T) *apiTokenHarness {
@@ -45,8 +48,12 @@ func newAPITokenHarness(t *testing.T) *apiTokenHarness {
 	var err error
 	h.cfg, err = config.Load(flagConfig)
 	require.NoError(t, err)
-	origTenant, origProbe := jiraTenantInfo, jiraProbeAPIToken
-	t.Cleanup(func() { jiraTenantInfo, jiraProbeAPIToken = origTenant, origProbe })
+	origTenant, origProbe, origConfluence := jiraTenantInfo, jiraProbeAPIToken, jiraProbeConfluence
+	t.Cleanup(func() { jiraTenantInfo, jiraProbeAPIToken, jiraProbeConfluence = origTenant, origProbe, origConfluence })
+	jiraProbeConfluence = func(context.Context, *http.Client, string, string, jira.APITokenCreds) (bool, error) {
+		h.confluenceProbes++
+		return !h.noConfluence, nil
+	}
 	jiraTenantInfo = func(_ context.Context, _ *http.Client, site string) (string, error) {
 		h.tenantAsks = append(h.tenantAsks, site)
 		return h.cloudID, h.tenantErr

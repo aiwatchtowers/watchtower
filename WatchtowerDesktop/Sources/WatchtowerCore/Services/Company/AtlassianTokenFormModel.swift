@@ -48,6 +48,9 @@ package final class AtlassianTokenFormModel {
     package var email = ""
     package var site = ""
     package var token = ""
+    /// The last connect asked for Confluence and Go found the token cannot
+    /// read it: the site syncs Jira only (no Confluence scopes recorded).
+    package private(set) var confluenceOff = false
 
     @ObservationIgnored private let makeStreamer: @MainActor () -> (any CLILineStreaming)?
     /// A run connected a site or saved a new token: the owner refreshes the
@@ -172,6 +175,7 @@ package final class AtlassianTokenFormModel {
     package static let doneTitle = "Done"
     package static let unauthorized = "Atlassian did not accept this email and token. Check both, or create a new token."
     package static let doneBody = "The first sync starts now."
+    package static let confluenceOffLine = "Confluence off — the token has no Confluence access"
 
     package static func replaceTitle(_ host: String) -> String { "Paste a new token for \(host)" }
     package static func checking(_ host: String) -> String { "Checking the token with \(host)…" }
@@ -262,9 +266,10 @@ package final class AtlassianTokenFormModel {
         let checkedHost = host
         let secret = token.trimmingCharacters(in: .whitespacesAndNewlines)
         phase = .checking
+        confluenceOff = false
         let outcome = await run(args: args, stdin: Data((secret + "\n").utf8))
         let next: Phase = switch outcome {
-        case let .connected(site, email):
+        case let .connected(site, email, _):
             .done(host: site.isEmpty ? checkedHost : Self.host(site), email: email.isEmpty ? self.email : email)
         case .forbidden:
             .form
@@ -273,7 +278,8 @@ package final class AtlassianTokenFormModel {
         }
         phase = next
         switch outcome {
-        case .connected:
+        case let .connected(_, _, off):
+            confluenceOff = off
             token = ""
             onConnected()
             // Closed during the check: the account shows in the list; no sheet to come back to.
@@ -296,7 +302,8 @@ package final class AtlassianTokenFormModel {
 
     /// One run's outcome.
     private enum Outcome {
-        case connected(site: String, email: String)
+        /// `confluenceOff`: Confluence was asked for and the token cannot read it.
+        case connected(site: String, email: String, confluenceOff: Bool)
         case forbidden
         case problem(Problem)
     }
@@ -306,9 +313,24 @@ package final class AtlassianTokenFormModel {
         let result: String
         let site: String?
         let email: String?
+        /// `"confluence": false` (absent when Confluence was not asked for).
+        let confluenceOff: Bool
         let scope: String?
         let detail: String?
         let message: String?
+
+        enum CodingKeys: String, CodingKey { case result, site, email, confluence, scope, detail, message }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            result = try c.decode(String.self, forKey: .result)
+            site = try c.decodeIfPresent(String.self, forKey: .site)
+            email = try c.decodeIfPresent(String.self, forKey: .email)
+            confluenceOff = try c.decodeIfPresent(Bool.self, forKey: .confluence).map { !$0 } ?? false
+            scope = try c.decodeIfPresent(String.self, forKey: .scope)
+            detail = try c.decodeIfPresent(String.self, forKey: .detail)
+            message = try c.decodeIfPresent(String.self, forKey: .message)
+        }
     }
 
     private func run(args: [String], stdin: Data) async -> Outcome {
@@ -329,7 +351,7 @@ package final class AtlassianTokenFormModel {
             return .problem(.failed(failure ?? "The check ended without an answer."))
         }
         return switch result.result {
-        case "ok": .connected(site: result.site ?? "", email: result.email ?? "")
+        case "ok": .connected(site: result.site ?? "", email: result.email ?? "", confluenceOff: result.confluenceOff)
         case "forbidden": .forbidden
         case "unauthorized": .problem(.unauthorized)
         case "missing_scope": .problem(.missingScope(result.scope ?? ""))

@@ -25,8 +25,9 @@ import (
 
 // Seams so tests answer the site and the token check without the network.
 var (
-	jiraTenantInfo    = jira.TenantInfo
-	jiraProbeAPIToken = jira.ProbeAPIToken
+	jiraTenantInfo      = jira.TenantInfo
+	jiraProbeAPIToken   = jira.ProbeAPIToken
+	jiraProbeConfluence = jira.ProbeConfluence
 )
 
 // errAPITokenOnStdinOnly refuses a positional argument of add/login without
@@ -87,8 +88,11 @@ type apiTokenResult struct {
 	Site      string `json:"site,omitempty"`
 	Email     string `json:"email,omitempty"`
 	Scope     string `json:"scope,omitempty"`
-	Detail    string `json:"detail,omitempty"`
-	Message   string `json:"message,omitempty"`
+	// Confluence: whether the token reads Confluence, when it was asked for
+	// (--with-confluence, or a re-auth carrying it over); absent otherwise.
+	Confluence *bool  `json:"confluence,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+	Message    string `json:"message,omitempty"`
 }
 
 // finishAPITokenCommand reports an add or re-auth: with --json one line
@@ -286,6 +290,26 @@ func checkAPIToken(cmd *cobra.Command, site, wantCloudID string, creds jira.APIT
 	return cloudID, creds, me, nil
 }
 
+// confirmConfluence probes Confluence with a checked token when Confluence was
+// asked for (wanted): the Confluence scopes stay in creds.Scope only when the
+// token reads Confluence, so a Jira-only scoped token never claims a grant it
+// lacks. A probe that could not run counts as no access (warned on stderr):
+// the site connects with Jira, and a new token with Confluence asks again.
+// The second value is nil when Confluence was not asked for.
+func confirmConfluence(cmd *cobra.Command, cloudID, site string, creds jira.APITokenCreds, wanted bool) (jira.APITokenCreds, *bool) {
+	if !wanted {
+		return creds, nil
+	}
+	ok, err := jiraProbeConfluence(cmd.Context(), nil, cloudID, site, creds)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v — connecting Jira only\n", err)
+	}
+	if !ok {
+		creds.Scope = jira.JiraScopes
+	}
+	return creds, &ok
+}
+
 // addJiraAPITokenAccount is `jira add --api-token-stdin`: everything is
 // checked on the network before a row or a file is written, so a refused or
 // unreachable check leaves nothing behind.
@@ -320,11 +344,13 @@ func connectJiraAPITokenAccount(cmd *cobra.Command, cfg *config.Config, database
 		return none, err
 	}
 	label, _ := cmd.Flags().GetString("label")
-	creds := jira.APITokenCreds{Email: email, Scope: apiTokenScope(jiraLoginOptionsFromFlags(cmd))}
+	opts := jiraLoginOptionsFromFlags(cmd)
+	creds := jira.APITokenCreds{Email: email, Scope: apiTokenScope(opts)}
 	cloudID, creds, me, err := checkAPIToken(cmd, site, "", creds)
 	if err != nil {
 		return none, err
 	}
+	creds, confluence := confirmConfluence(cmd, cloudID, site, creds, opts.WithConfluence)
 
 	if _, err := ensureLegacyJiraAccount(cfg, database, jiraCmdLogger(cmd)); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy account seed failed: %v\n", err)
@@ -344,7 +370,7 @@ func connectJiraAPITokenAccount(cmd *cobra.Command, cfg *config.Config, database
 		rollbackNewJiraAccount(cfg, database, accountID)
 		return none, err
 	}
-	return apiTokenResult{AccountID: accountID, Site: site, Email: apiTokenOwnerEmail(me, creds)}, nil
+	return apiTokenResult{AccountID: accountID, Site: site, Email: apiTokenOwnerEmail(me, creds), Confluence: confluence}, nil
 }
 
 // apiTokenOwnerEmail is the email Atlassian named for the token, else the
@@ -395,10 +421,11 @@ func replaceJiraAPIToken(cmd *cobra.Command, cfg *config.Config, database *db.DB
 		return none, err
 	}
 	scope := apiTokenScope(opts)
-	_, creds, me, err := checkAPIToken(cmd, account.SiteURL, account.CloudID, jira.APITokenCreds{Email: email, Scope: scope})
+	cloudID, creds, me, err := checkAPIToken(cmd, account.SiteURL, account.CloudID, jira.APITokenCreds{Email: email, Scope: scope})
 	if err != nil {
 		return none, err
 	}
+	creds, confluence := confirmConfluence(cmd, cloudID, account.SiteURL, creds, opts.WithConfluence)
 	unlock, err := store.Lock(cmd.Context())
 	if err != nil {
 		return none, err
@@ -411,7 +438,8 @@ func replaceJiraAPIToken(cmd *cobra.Command, cfg *config.Config, database *db.DB
 	if err := finishAPITokenConnect(cmd, database, account.ID, me); err != nil {
 		return none, err
 	}
-	return apiTokenResult{AccountID: account.ID, Site: account.SiteURL, Email: apiTokenOwnerEmail(me, creds)}, nil
+	return apiTokenResult{AccountID: account.ID, Site: account.SiteURL, Email: apiTokenOwnerEmail(me, creds),
+		Confluence: confluence}, nil
 }
 
 // finishAPITokenConnect records the person the token belongs to and marks

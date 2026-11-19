@@ -145,6 +145,38 @@ final class JiraConnectionDetailTests: XCTestCase {
                        .replace(accountID: 2, email: "bob@example.com", site: "https://beta.atlassian.net"))
     }
 
+    /// §6.3, A17: once the lease purge is scheduled, its own purge line takes
+    /// over and the dead token's lease note goes.
+    func testLeaseNoteGivesWayToAScheduledPurge() async throws {
+        let (appState, _) = LinearConnectionDetailTests.wired()
+        let pool = try pool()
+        try await pool.write { db in
+            try db.execute(sql: "INSERT INTO jira_accounts (id, site_url, status, error, auth_kind) "
+                + "VALUES (2, 'https://beta.atlassian.net', 'error', 'api_token_dead', 'api_token')")
+        }
+        let cli = try GoogleConnectionDetailTests.stubCLI(
+            stdout: #"[{"id":2,"auth_kind":"api_token","shared_atlassian":false,"purge_lease_at":"2026-12-18T09:00:00Z"}]"#,
+            test: self)
+        let vm = JiraAccountsViewModel(dbPool: pool, daemon: FakeDaemonRestarter(), cliPath: { cli.path },
+                                       readsAccountFlags: true)
+        appState.jiraAccountsViewModel = vm
+        await vm.refreshAsync()
+        let center = AccountPurgeCenter(dbPool: pool, runner: nil)
+        appState.accountPurgeCenter = center
+        await center.reload()
+        let ref = try XCTUnwrap(appState.companyAccountRefs.first)
+        XCTAssertNotNil(appState.companyRowStatus(ref)?.note, "no purge row yet: the lease note shows")
+
+        try await pool.write { db in
+            try db.execute(sql: "INSERT INTO account_purges (id, source, account_id, reason, due_at) "
+                + "VALUES (9, 'jira', 2, 'lease', '2026-12-18T09:00:00Z')")
+        }
+        await center.reload()
+        XCTAssertNotNil(center.openRow(source: "jira", accountID: 2))
+        XCTAssertNil(appState.companyRowStatus(ref)?.note)
+        XCTAssertEqual(appState.companyRowStatus(ref)?.action, .pasteNewToken, "the dead line and its button stay")
+    }
+
     /// §6.5: with API tokens forbidden the token site reads "Stopped by your
     /// organization — data kept" under the lock card (no lease note: POLICY-03
     /// holds the lease), and no token offer or new-token button is left.

@@ -19,6 +19,7 @@ struct AtlassianTokenSheet: View {
             if case let .done(host, email) = model.phase {
                 WizardNotice(icon: "checkmark.circle.fill", tone: Tone.success,
                              title: Model.connected(host, email), text: Model.doneBody)
+                if model.confluenceOff { WizardCaption(Model.confluenceOffLine) }
             } else {
                 form
             }

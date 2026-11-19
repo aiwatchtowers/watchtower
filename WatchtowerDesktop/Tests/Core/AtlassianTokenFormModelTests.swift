@@ -114,6 +114,27 @@ final class AtlassianTokenFormModelTests: XCTestCase {
         XCTAssertFalse(model.isPresented)
     }
 
+    /// Go probed Confluence and the token cannot read it: connected with
+    /// Jira only, and the summary says so; a token that reads it says nothing.
+    func testConfluenceOffLine() async {
+        let (model, _, connected) = makeModel([
+            Self.reply(#"{"result":"ok","account_id":4,"site":"https://acme.atlassian.net","email":"alice@example.com","#
+                + #""confluence":false}"#),
+            Self.reply(#"{"result":"ok","account_id":5,"site":"https://acme.atlassian.net","email":"alice@example.com","#
+                + #""confluence":true}"#)
+        ])
+        fill(model)
+        await model.submit()
+        XCTAssertEqual(model.phase, .done(host: "acme.atlassian.net", email: "alice@example.com"))
+        XCTAssertTrue(model.confluenceOff)
+        XCTAssertEqual(Model.confluenceOffLine, "Confluence off — the token has no Confluence access")
+        XCTAssertEqual(connected(), 1)
+        model.close()
+        fill(model)
+        await model.submit()
+        XCTAssertFalse(model.confluenceOff)
+    }
+
     func testReplaceModeReadOnlyEmailSite() async {
         let (model, fake, connected) = makeModel([
             Self.reply(#"{"result":"ok","account_id":7,"site":"https://beta.atlassian.net","email":"bob@example.com"}"#)
