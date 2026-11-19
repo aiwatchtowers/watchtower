@@ -101,7 +101,8 @@ final class CompanyConnectAppStateTests: XCTestCase {
 
     // MARK: - Connect this Mac after Publish (#1887 Task 22)
 
-    /// A wizard model over a scripted CLI: Linear only, published as acme when `publish` is true.
+    /// A wizard model over a scripted CLI: Linear only (checked, so Connect
+    /// this Mac has it to offer), published as acme when `published` is true.
     private func setup(published: Bool) async -> CompanySetupWizardModel {
         let cli = CompanyScriptedCLI()
         let model = CompanySetupWizardModel(streamer: cli, slack: SlackAppSetupModel(streamer: cli, mode: .wizard))
@@ -109,7 +110,11 @@ final class CompanyConnectAppStateTests: XCTestCase {
         model.toggle(.linear)
         model.publishName = "Acme"
         await model.next()
-        await model.skip()
+        model.createNew()
+        model.setField(.linear, .clientID, "lin-0000-acme")
+        cli.on(["company", "check", "linear"], [#"{"result":"ok","checked":true}"#])
+        await model.next()
+        await untilObserved { model.current == .denyList }
         await model.next()
         if published {
             cli.on(["company", "publish"], [#"{"result":"no_slack","slug":"acme","link":"l","code":"c"}"#])
@@ -126,13 +131,16 @@ final class CompanyConnectAppStateTests: XCTestCase {
     }
 
     /// After Publish it opens the same-bundle confirm for the published slug.
-    func testConnectThisMacOpensTheSameBundleConfirm() async {
+    func testConnectThisMacOpensTheSameBundleConfirm() async throws {
         let (appState, _, fake) = wired()
         appState.companySetup = await setup(published: true)
-        XCTAssertNotNil(appState.connectThisMacAction)
+        XCTAssertEqual(appState.companySetup.primary.title, "Connect this Mac")
+        XCTAssertTrue(appState.companySetup.primary.enabled, "the page shows it")
+        let action = try XCTUnwrap(appState.connectThisMacAction)
         fake.enqueue(FakeCLILineStream.Reply(lines: [#"{"company":"Acme","slug":"acme","state":"same","forced":false,"#
             + #""vendors":["linear"],"connected":{},"changes":[],"forbidden":[],"details":{}}"#]))
-        await appState.connectThisMac()
+        action()
+        await untilObserved { appState.companyConnect?.phase == .confirm }
         XCTAssertEqual(fake.invocations.last?.args, ["company", "inspect", "--json", "--slug", "acme"])
         XCTAssertEqual(appState.companyConnect?.variant, .again)
         XCTAssertEqual(appState.companyConnect?.phase, .confirm)
