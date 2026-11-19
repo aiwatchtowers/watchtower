@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/coach"
@@ -94,7 +95,11 @@ func skillTools(deps Deps) []*tools.Tool {
 			"List the coach's proposals — open, accepted, declined, rolled back — newest first, without their "+
 				"texts, so you never propose an edit that is already open, accepted or declined. Narrow with "+
 				"destination and skill; limit defaults to 50 (at most 100). Pass id for one proposal with its "+
-				"before and after texts.",
+				"before and after texts. Each row carries the 14-day measure: metric, baseline, verdict (works, "+
+				"no_effect, too_little_data, or empty while measuring), verdict_value, decided_at, measure_from (a repo_* "+
+				"edit is measured from the owner's commit; empty = not committed yet) and reverts_id (a cut of that "+
+				"proposal). In Analytics → Accepted edits the dot is green for verdict works, grey for no_effect or a "+
+				"rolled_back proposal, and yellow otherwise: still measuring, waiting for the owner's commit, or too_little_data.",
 			func(_ context.Context, d *db.DB, _ tools.Binding, a listProposalsArgs) (any, error) {
 				return listCoachProposals(d, a)
 			}),
@@ -470,6 +475,15 @@ type proposalRow struct {
 	WorkbenchID int64  `json:"workbench_id,omitempty"`
 	Title       string `json:"title"`
 	Why         string `json:"why"`
+	Metric      string `json:"metric"`
+	RevertsID   int64  `json:"reverts_id,omitempty"`
+	// The 14-day measure (times RFC 3339 UTC, "" = not yet).
+	DecidedAt    string   `json:"decided_at,omitempty"`
+	MeasureFrom  string   `json:"measure_from,omitempty"`
+	Baseline     *float64 `json:"baseline,omitempty"`
+	Verdict      string   `json:"verdict"`
+	VerdictValue *float64 `json:"verdict_value,omitempty"`
+	VerdictAt    string   `json:"verdict_at,omitempty"`
 	// The texts come only with id: a listing of skill-sized texts would pass
 	// the read cap (tools.MaxReadResultBytes) after a few proposals.
 	BeforeText *string `json:"before_text,omitempty"`
@@ -526,7 +540,17 @@ func listCoachProposals(d *db.DB, a listProposalsArgs) ([]proposalRow, error) {
 
 func proposalRowOf(p db.CoachProposal) proposalRow {
 	return proposalRow{ID: p.ID, Status: p.Status, Origin: p.Origin, Destination: p.Destination,
-		Skill: p.Skill, PromptID: p.PromptID, WorkbenchID: p.WorkbenchID, Title: p.Title, Why: p.Why}
+		Skill: p.Skill, PromptID: p.PromptID, WorkbenchID: p.WorkbenchID, Title: p.Title, Why: p.Why,
+		Metric: p.Metric, RevertsID: p.RevertsID, DecidedAt: rfc3339(p.DecidedAt), MeasureFrom: rfc3339(p.MeasureFrom),
+		Baseline: p.Baseline, Verdict: p.Verdict, VerdictValue: p.VerdictValue, VerdictAt: rfc3339(p.VerdictAt)}
+}
+
+// rfc3339 is t in UTC, "" for the zero time.
+func rfc3339(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // folderOf is the workbench's own folder (projects.folder_path).

@@ -31,19 +31,12 @@ var ErrNotFound = errors.New("not found")
 func ReadTools(deps Deps) []*tools.Tool {
 	return append([]*tools.Tool{
 		readTool[reportArgs]("get_agent_report",
-			"Read the agent analytics report of one workbench (agents report JSON): totals, time split, models, "+
-				"commands, context, skills, trouble, tasks, hints and the session list. days 0 = the whole retention, "+
-				"at most 90; agent claude or codex narrows it to one agent.",
-			func(ctx context.Context, d *db.DB, b tools.Binding, a reportArgs) (any, error) {
-				wb, err := reportScope(d, b, &a)
-				if err != nil {
-					return nil, err
-				}
-				return deps.AgentReport(ctx, wb, a.Days, a.Agent)
-			}),
-		readTool[reportArgs]("list_agent_sessions",
-			"List one workbench's agent sessions in a period with their cost, time and trouble (the session list of "+
-				"get_agent_report). Open one with get_agent_session.",
+			"Read the agent analytics report of one workbench (agents report JSON): totals, time, subagents, models, "+
+				"commands, hints, context, skills (used rows and never_used), trouble, tasks and sessions. days 0 = the whole "+
+				"retention, at most 90; agent claude or codex narrows it to one agent. sections picks the sections to return "+
+				"(all when omitted); limit cuts every list section to that many rows (default 50, at most 200; the rest is "+
+				"counted in <section>_more). A result too big for one read is refused with each section's size: ask again "+
+				"for fewer sections.",
 			func(ctx context.Context, d *db.DB, b tools.Binding, a reportArgs) (any, error) {
 				wb, err := reportScope(d, b, &a)
 				if err != nil {
@@ -53,10 +46,27 @@ func ReadTools(deps Deps) []*tools.Tool {
 				if err != nil {
 					return nil, err
 				}
-				return sessionsOf(rep)
+				return shapeReport(rep, reportMeta, a.Sections, reportRows(a.Limit))
+			}),
+		readTool[sessionListArgs]("list_agent_sessions",
+			"List one workbench's agent sessions in a period with their cost, time and PRs (the sessions section of "+
+				"get_agent_report, newest first), limit rows (default 50, at most 200; the rest counted in sessions_more). Open one "+
+				"with get_agent_session.",
+			func(ctx context.Context, d *db.DB, b tools.Binding, a sessionListArgs) (any, error) {
+				ra := reportArgs{WorkbenchID: a.WorkbenchID, Days: a.Days, Agent: a.Agent}
+				wb, err := reportScope(d, b, &ra)
+				if err != nil {
+					return nil, err
+				}
+				rep, err := deps.AgentReport(ctx, wb, ra.Days, ra.Agent)
+				if err != nil {
+					return nil, err
+				}
+				return shapeReport(rep, reportMeta, []string{"sessions"}, reportRows(a.Limit))
 			}),
 		readTool[sessionArgs]("get_agent_session",
-			"Read one agent session's report: time split, subagents, lanes, commands, context, skills and hints.",
+			"Read one agent session's report: session, time split, subagents, hints, lanes (each agent's timeline as "+
+				"totals per category and tool class) and commands. sections and limit work as in get_agent_report.",
 			func(ctx context.Context, d *db.DB, b tools.Binding, a sessionArgs) (any, error) {
 				wb, err := workbenchOf(d, b, a.WorkbenchID)
 				if err != nil {
@@ -69,7 +79,14 @@ func ReadTools(deps Deps) []*tools.Tool {
 				if errors.Is(err, ErrNotFound) {
 					return nil, &tools.ValidationError{Msg: "session " + a.Session + " not found"}
 				}
-				return res, err
+				if err != nil {
+					return nil, err
+				}
+				det, err := summarizeLanes(res)
+				if err != nil {
+					return nil, err
+				}
+				return shapeReport(det, sessionMeta, a.Sections, reportRows(a.Limit))
 			}),
 		readTool[usageArgs]("get_llm_usage",
 			"Read what Watchtower spent on AI in a period (usage llm JSON): sections and per-purpose rows.",
@@ -94,14 +111,25 @@ func ReadTools(deps Deps) []*tools.Tool {
 }
 
 type reportArgs struct {
+	WorkbenchID int64    `json:"workbench_id,omitempty" jsonschema:"the workbench; omit for the panel's workbench"`
+	Days        int      `json:"days" jsonschema:"the period in days back from now; 0 = the whole retention, at most 90"`
+	Agent       string   `json:"agent,omitempty" jsonschema:"claude or codex; omit for both agents"`
+	Sections    []string `json:"sections,omitempty" jsonschema:"the report sections to return, e.g. [\"time\",\"skills\"]; omit for all"`
+	Limit       int      `json:"limit,omitempty" jsonschema:"rows kept in every list section; default 50, at most 200"`
+}
+
+type sessionListArgs struct {
 	WorkbenchID int64  `json:"workbench_id,omitempty" jsonschema:"the workbench; omit for the panel's workbench"`
 	Days        int    `json:"days" jsonschema:"the period in days back from now; 0 = the whole retention, at most 90"`
 	Agent       string `json:"agent,omitempty" jsonschema:"claude or codex; omit for both agents"`
+	Limit       int    `json:"limit,omitempty" jsonschema:"sessions to return, newest first; default 50, at most 200"`
 }
 
 type sessionArgs struct {
-	WorkbenchID int64  `json:"workbench_id,omitempty" jsonschema:"the workbench; omit for the panel's workbench"`
-	Session     string `json:"session" jsonschema:"the session's uuid, from list_agent_sessions"`
+	WorkbenchID int64    `json:"workbench_id,omitempty" jsonschema:"the workbench; omit for the panel's workbench"`
+	Session     string   `json:"session" jsonschema:"the session's uuid, from list_agent_sessions"`
+	Sections    []string `json:"sections,omitempty" jsonschema:"the sections to return, e.g. [\"time\",\"lanes\"]; omit for all"`
+	Limit       int      `json:"limit,omitempty" jsonschema:"rows kept in every list section; default 50, at most 200"`
 }
 
 type usageArgs struct {
@@ -168,27 +196,6 @@ func workbenchOf(d *db.DB, b tools.Binding, id int64) (int64, error) {
 		return 0, err
 	}
 	return id, nil
-}
-
-// sessionsOf keeps the period, the agent filter, the session list and the
-// analytics state of an agents report (enabled, import: an empty list while
-// analytics is off or the first import runs is not an all-clear).
-func sessionsOf(rep any) (any, error) {
-	raw, err := json.Marshal(rep)
-	if err != nil {
-		return nil, fmt.Errorf("encoding the agent report: %w", err)
-	}
-	var all map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &all); err != nil {
-		return nil, fmt.Errorf("reading the agent report: %w", err)
-	}
-	out := map[string]json.RawMessage{}
-	for _, k := range []string{"workbench_id", "since", "until", "agent", "agents", "sessions", "old_format_sessions", "enabled", "import"} {
-		if v, ok := all[k]; ok {
-			out[k] = v
-		}
-	}
-	return out, nil
 }
 
 type promptRow struct {
