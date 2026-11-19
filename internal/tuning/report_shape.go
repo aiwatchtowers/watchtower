@@ -1,6 +1,7 @@
 package tuning
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -98,8 +99,13 @@ func shapeReport(v any, meta, sections []string, limit int) (map[string]json.Raw
 }
 
 // cutList keeps the first limit rows of a JSON list (after reversing it when
-// reverse) and says how many it cut; any other value passes as it is.
+// reverse) and says how many it cut. An object section (skills: rows,
+// never_used) has each of its own lists cut the same way, the cut rows
+// counted in "<field>_more" inside it; any other value passes as it is.
 func cutList(raw json.RawMessage, limit int, reverse bool) (json.RawMessage, int, error) {
+	if len(raw) > 0 && raw[0] == '{' {
+		return cutObjectLists(raw, limit)
+	}
 	if len(raw) == 0 || raw[0] != '[' {
 		return raw, 0, nil
 	}
@@ -118,21 +124,55 @@ func cutList(raw json.RawMessage, limit int, reverse bool) (json.RawMessage, int
 	return cut, len(rows) - limit, err
 }
 
+func cutObjectLists(raw json.RawMessage, limit int) (json.RawMessage, int, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, 0, err
+	}
+	changed := false
+	for k, v := range obj {
+		if len(v) == 0 || v[0] != '[' {
+			continue
+		}
+		cut, more, err := cutList(v, limit, false)
+		if err != nil {
+			return nil, 0, fmt.Errorf("%s: %w", k, err)
+		}
+		if more > 0 {
+			obj[k], obj[k+"_more"] = cut, json.RawMessage(fmt.Sprint(more))
+			changed = true
+		}
+	}
+	if !changed {
+		return raw, 0, nil
+	}
+	out, err := json.Marshal(obj)
+	return out, 0, err
+}
+
 // checkReportSize refuses a shaped report over maxReportBytes, naming each
-// section's size so the chat can ask for less.
+// section's size so the chat can ask for less. Sizes are of the indented JSON
+// the MCP server sends (internal/mcp renders results with MarshalIndent).
 func checkReportSize(out map[string]json.RawMessage) error {
-	total := 0
+	whole, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding the agent report: %w", err)
+	}
+	if len(whole) <= maxReportBytes {
+		return nil
+	}
 	type size struct {
 		key string
 		n   int
 	}
-	var sizes []size
+	sizes := make([]size, 0, len(out))
 	for k, raw := range out {
-		total += len(raw) + len(k) + 4
-		sizes = append(sizes, size{k, len(raw)})
-	}
-	if total <= maxReportBytes {
-		return nil
+		var b bytes.Buffer
+		n := len(raw)
+		if json.Indent(&b, raw, "  ", "  ") == nil {
+			n = b.Len()
+		}
+		sizes = append(sizes, size{k, n})
 	}
 	sort.Slice(sizes, func(i, j int) bool {
 		if sizes[i].n != sizes[j].n {
@@ -146,7 +186,7 @@ func checkReportSize(out map[string]json.RawMessage) error {
 	}
 	return &tools.ValidationError{
 		Msg: fmt.Sprintf("the result is %d bytes, over the %d one read may return — ask for fewer sections, a smaller limit or fewer days; bytes per section: %s",
-			total, maxReportBytes, strings.Join(parts, ", ")),
+			len(whole), maxReportBytes, strings.Join(parts, ", ")),
 		Err: tools.ErrResultTooLarge,
 	}
 }

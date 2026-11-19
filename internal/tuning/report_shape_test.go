@@ -85,7 +85,7 @@ func TestGetAgentReport_TooLargeNamesSectionSizes(t *testing.T) {
 	require.ErrorAs(t, err, &ve)
 	require.ErrorIs(t, err, tools.ErrResultTooLarge)
 	assert.Contains(t, err.Error(), "ask for fewer sections")
-	assert.Regexp(t, `bytes per section: commands \d+, time 14$`, err.Error())
+	assert.Regexp(t, `bytes per section: commands \d+, time 23$`, err.Error(), "indented sizes, as the MCP server sends them")
 
 	got, err := f.call(t, "get_agent_report", `{"days":7,"sections":["time"]}`)
 	require.NoError(t, err, "a narrower ask fits")
@@ -138,4 +138,36 @@ func TestGetAgentSession_LanesFoldIntoTotals(t *testing.T) {
 	raw, err = json.Marshal(res)
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"session":{"uuid":"s-1"},"time":{"model_ms":3000}}`, string(raw))
+}
+
+func TestGetAgentReport_LimitCutsListsInsideObjectSections(t *testing.T) {
+	f := newFixture(t)
+	f.report = map[string]any{"skills": map[string]any{"used": 14, "rows": rowsOf(3, "r"), "never_used": rowsOf(60, "n")}}
+	got, err := f.call(t, "get_agent_report", `{"days":7,"sections":["skills"],"limit":2}`)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"used": float64(14),
+		"rows": []any{map[string]any{"id": "r0"}, map[string]any{"id": "r1"}}, "rows_more": float64(1),
+		"never_used": []any{map[string]any{"id": "n0"}, map[string]any{"id": "n1"}}, "never_used_more": float64(58)},
+		got["skills"])
+	assert.NotContains(t, got, "skills_more")
+}
+
+// The size check measures the indented JSON the MCP server sends: a result
+// that fits only when compact is refused.
+func TestGetAgentReport_SizeIsTheIndentedEncoding(t *testing.T) {
+	rows := make([]any, 200)
+	for i := range rows {
+		rows[i] = map[string]any{"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6, "g": 7, "h": 8, "i": 9, "j": 10, "k": 11, "l": 12, "m": 13, "n": 14, "o": 15, "p": 16, "q": 17}
+	}
+	compact, err := json.Marshal(map[string]any{"commands": rows})
+	require.NoError(t, err)
+	indented, err := json.MarshalIndent(map[string]any{"commands": rows}, "", "  ")
+	require.NoError(t, err)
+	require.Less(t, len(compact), maxReportBytes)
+	require.Greater(t, len(indented), maxReportBytes)
+
+	f := newFixture(t)
+	f.report = map[string]any{"commands": rows}
+	_, err = f.call(t, "get_agent_report", `{"days":7,"limit":200}`)
+	require.ErrorIs(t, err, tools.ErrResultTooLarge)
 }
