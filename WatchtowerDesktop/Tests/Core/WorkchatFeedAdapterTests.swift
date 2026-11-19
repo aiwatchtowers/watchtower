@@ -22,10 +22,11 @@ final class WorkchatFeedAdapterTests: XCTestCase {
 
         let messages = WorkchatFeedAdapter.messages(entries)
 
-        XCTAssertEqual(messages.map(\.role), ["system", "user", "assistant", "user", "system", "system", "system", "system"],
-                       "an unknown kind is left out")
-        XCTAssertEqual(messages.map(\.text), ["The brief", "Fix the build", "On it.", "Yes", "Rebase on main", "", "Done", ""])
-        XCTAssertEqual(messages.map(\.id), entries.dropLast().map { WorkchatFeedAdapter.messageID($0.id) })
+        XCTAssertEqual(messages.map(\.role), ["system", "user", "assistant", "user", "system", "system", "system"],
+                       "a subagent marker and an unknown kind are left out")
+        XCTAssertEqual(messages.map(\.text), ["The brief", "Fix the build", "On it.", "Yes", "Rebase on main", "Done", ""])
+        XCTAssertEqual(messages.map(\.id), entries.filter { !["subagent", "future_kind"].contains($0.kind) }
+            .map { WorkchatFeedAdapter.messageID($0.id) })
         XCTAssertEqual(Set(messages.map(\.id)).count, messages.count, "ids stay distinct")
         XCTAssertEqual(messages[1].createdAt, at)
         XCTAssertEqual(messages[0].createdAt, .distantPast, "no time for the brief")
@@ -41,5 +42,17 @@ final class WorkchatFeedAdapterTests: XCTestCase {
         XCTAssertEqual(WorkchatFeedAdapter.askHeader(entries[3])?.title, "Ship it?")
         XCTAssertEqual(WorkchatFeedAdapter.askHeader(SessionFeedEntry(id: "x", kind: "ask_answer", text: "No"))?.label, "Ask")
         XCTAssertNil(WorkchatFeedAdapter.askHeader(entries[1]))
+    }
+
+    /// #2065: agents leave the conversation; they live in the 👥 list.
+    func testSubagentEntryMapsToNoMessage() {
+        let entries = [entry("o1", kind: "owner"), entry("s1", kind: "subagent"), entry("a1", kind: "agent")]
+        XCTAssertEqual(WorkchatFeedAdapter.messages(entries).map(\.id), ["o1", "a1"].map(WorkchatFeedAdapter.messageID))
+        XCTAssertNil(WorkchatFeedAdapter.role(for: "subagent"))
+    }
+
+    private func entry(_ id: String, kind: String) -> SessionFeedEntry {
+        SessionFeedEntry(id: id, kind: kind, text: id,
+                         subagent: kind == "subagent" ? SessionFeedSubagent(toolUseID: "tu-\(id)", status: "running") : nil)
     }
 }

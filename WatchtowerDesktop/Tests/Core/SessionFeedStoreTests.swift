@@ -108,10 +108,47 @@ final class SessionFeedStoreTests: XCTestCase {
         ])
         let store = SessionFeedStore(sessionID: 7, runner: runner)
         await store.refresh()
-        XCTAssertEqual(store.entries[0].subagent?.status, "running")
+        XCTAssertEqual(store.subagents.map(\.subagent?.status), ["running"])
         await store.refresh()
-        XCTAssertEqual(store.entries.count, 1)
-        XCTAssertEqual(store.entries[0].subagent?.status, "finished")
+        XCTAssertEqual(store.subagents.count, 1)
+        XCTAssertEqual(store.subagents[0].subagent?.status, "finished")
+        XCTAssertEqual(store.entries.first?.subagent?.status, "running", "the subagents list never enters the entries")
+    }
+
+    func testSubagentsKeptApartFromEntries() async {
+        let runner = FakeRunner([.success(payload(entries: entry("a", "owner"), subagents: marker("sub", status: "finished")))])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        XCTAssertFalse(store.feedLoaded)
+        await store.refresh()
+        XCTAssertEqual(store.subagents.map(\.id), ["sub"])
+        XCTAssertEqual(store.entries.map(\.id), ["a"])
+        XCTAssertTrue(store.feedLoaded)
+    }
+
+    func testStoreKeepsSubagentsWhenALaterReadFails() async {
+        let runner = FakeRunner([
+            .success(payload(subagents: marker("sub", status: "finished"))),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        await store.refresh()
+        XCTAssertEqual(store.subagents.map(\.id), ["sub"])
+        XCTAssertTrue(store.feedLoaded, "a failure never resets the first good read")
+        XCTAssertNotNil(store.error)
+    }
+
+    func testDecodesSubagentStartedAt() throws {
+        func ref(_ startedAt: String) throws -> SessionFeedSubagent {
+            let json = #"{"tool_use_id":"tu1","agent_id":"a1","type":"Explore","description":"d","status":"finished","#
+                + #""started_at":"\#(startedAt)"}"#
+            return try JSONDecoder().decode(SessionFeedSubagent.self, from: Data(json.utf8))
+        }
+        XCTAssertEqual(try ref("2026-10-01T10:00:06Z").startedAt, SessionFeedEntry.parseDate("2026-10-01T10:00:06Z"))
+        XCTAssertNotNil(try ref("2026-10-01T10:00:06Z").startedAt)
+        XCTAssertNil(try ref("0001-01-01T00:00:00Z").startedAt)
+        let absent = #"{"tool_use_id":"tu1","status":"finished"}"#
+        XCTAssertNil(try JSONDecoder().decode(SessionFeedSubagent.self, from: Data(absent.utf8)).startedAt)
     }
 
     func testUnknownKindIgnored() async {
@@ -297,12 +334,12 @@ final class SessionFeedStoreTests: XCTestCase {
         let store = SessionFeedStore(sessionID: 7, runner: runner)
         let pushed = SessionFeedSubagent(toolUseID: "tu1", status: "running")
         await store.followSubagent("tu1", interval: .milliseconds(1), readsMainFeed: true,
-                                   isRunning: { SessionFeedSubagent.currentStatus(of: pushed, in: store.entries) == "running" },
+                                   isRunning: { SessionFeedSubagent.currentStatus(of: pushed, in: store.subagents) == "running" },
                                    isOnScreen: { true }, onEntries: { _ in })
         XCTAssertEqual(runner.calls.count, 4, "subagent + main per tick, none after finished")
         XCTAssertTrue(runner.calls[0].contains("--subagent"))
         XCTAssertFalse(runner.calls[1].contains("--subagent"))
-        XCTAssertEqual(store.entries.first?.subagent?.status, "finished")
+        XCTAssertEqual(store.subagents.first?.subagent?.status, "finished")
     }
 
     func testSubagentFollowFinishedReadsOnce() async {

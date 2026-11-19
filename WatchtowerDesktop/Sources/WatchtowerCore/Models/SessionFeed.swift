@@ -11,13 +11,24 @@ package struct SessionFeedSubagent: Decodable, Equatable, Sendable {
     package var description: String
     /// "running", "finished" or "unknown".
     package var status: String
+    /// When the Agent call started; only the feed's `subagents` list carries
+    /// it (`started_at`). nil when absent or Go's zero time.
+    package var startedAt: Date?
 
-    package init(toolUseID: String, agentID: String = "", type: String = "", description: String = "", status: String = "unknown") {
+    package init(
+        toolUseID: String,
+        agentID: String = "",
+        type: String = "",
+        description: String = "",
+        status: String = "unknown",
+        startedAt: Date? = nil
+    ) {
         self.toolUseID = toolUseID
         self.agentID = agentID
         self.type = type
         self.description = description
         self.status = status
+        self.startedAt = startedAt
     }
 
     /// The status of `subagent` in the feed's current markers (a read
@@ -30,6 +41,7 @@ package struct SessionFeedSubagent: Decodable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case toolUseID = "tool_use_id"
         case agentID = "agent_id"
+        case startedAt = "started_at"
         case type, description, status
     }
 
@@ -40,6 +52,7 @@ package struct SessionFeedSubagent: Decodable, Equatable, Sendable {
         type = try c.decodeIfPresent(String.self, forKey: .type) ?? ""
         description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
         status = try c.decodeIfPresent(String.self, forKey: .status) ?? "unknown"
+        startedAt = SessionFeedEntry.parseDate(try c.decodeIfPresent(String.self, forKey: .startedAt))
     }
 }
 

@@ -638,6 +638,9 @@ final class WorkbenchesViewModel {
     /// lines survive pane switches; dropped with the session
     /// (`forgetProcessState`). Created during a view's body, hence not observed.
     @ObservationIgnored var workchatModels: [Int64: WorkchatModel] = [:]
+    /// Workchat panes' in-memory toggles (the 👥 list's Done), kept for the
+    /// app's lifetime and never persisted (#2065).
+    let paneMemory = WorkchatPaneMemory()
     /// `<workspace>/workchat-attachments`, next to the open database.
     @ObservationIgnored var attachmentStore: WorkchatAttachmentStore?
     /// Branch review's reviewer (board #1025): set by the app with its

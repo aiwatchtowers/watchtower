@@ -10,6 +10,15 @@ package enum WorkchatLivePresentation {
     package static let working = "Working…"
     package static let loading = "Loading activity…"
     package static let unavailable = "Activity unavailable"
+    // The 👥 list (#2065 spec §2).
+    package static let listTitle = "Agents"
+    package static let workingTitle = "WORKING"
+    package static let noneWorking = "No agents working"
+    package static let listLoading = "Loading agents…"
+    package static let listError = "Couldn’t read the agents"
+    package static func doneTitle(_ count: Int) -> String { "Done · \(count)" }
+    /// Done shows at most this many rows, the rest scroll.
+    package static let maxDoneRows = 5
 
     package struct Row: Equatable, Sendable {
         package var symbol: String
@@ -20,6 +29,12 @@ package enum WorkchatLivePresentation {
         package var pulse: Bool
         package var retry: Bool
         package var agentsEnabled: Bool
+        /// false: no turn runs, the row holds only the 👥 button (no text or timer).
+        package var activity = true
+        /// "person.2" for working agents (or unknown), "checkmark" when only finished ones remain.
+        package var agentsSymbol = "person.2"
+        /// The badge counts finished agents only: tertiary on a faint capsule.
+        package var agentsDimmed = false
     }
     package struct AgentRow: Equatable, Identifiable, Sendable {
         package var agent: SessionLiveAgent
@@ -27,6 +42,27 @@ package enum WorkchatLivePresentation {
         package var action: String
         package var elapsed: String?
         package var id: String { agent.id }
+        /// The list row's first line: the agent's type (else the title).
+        package var heading: String { agent.ref.type.isEmpty ? title : agent.ref.type }
+        /// The list row's second line: the task, then what it does now.
+        package var subtitle: String { heading == title ? action : "\(title) · \(action)" }
+    }
+    package struct DoneRow: Equatable, Identifiable, Sendable {
+        package var ref: SessionFeedSubagent
+        package var title: String
+        package var subtitle: String
+        package var id: String
+    }
+    package struct AgentsList: Equatable, Sendable {
+        package enum State: Equatable, Sendable { case ready, loading, error }
+        package var state: State
+        package var working: [AgentRow]
+        /// Said under WORKING when it has no rows; nil when rows show.
+        package var workingNote: String?
+        package var done: [DoneRow]
+        package var doneTitle: String
+        /// Done opens by itself when nothing is known to work (C2).
+        package var doneOpenByDefault: Bool
     }
     package static func row(
         snapshot: SessionFeedLive?,
@@ -34,9 +70,34 @@ package enum WorkchatLivePresentation {
         loaded: Bool,
         working: Bool,
         stateAt: Date?,
-        now: Date
+        now: Date,
+        done: [SessionFeedSubagent] = []
     ) -> Row? {
-        guard working else { return nil }
+        guard working else {
+            // Idle or ended: only the 👥 button, and only with finished agents to list.
+            guard !done.isEmpty else { return nil }
+            return Row(symbol: "", text: "", elapsed: nil, agentsBadge: String(done.count), warning: false, pulse: false,
+                       retry: false, agentsEnabled: true, activity: false, agentsSymbol: "checkmark", agentsDimmed: true)
+        }
+        var result = workingRow(snapshot: snapshot, error: error, loaded: loaded, stateAt: stateAt, now: now)
+        let unknown = result.agentsBadge == "?"
+        if result.agentsBadge == nil, !done.isEmpty {
+            result.agentsBadge = String(done.count)
+            result.agentsSymbol = "checkmark"
+            result.agentsDimmed = true
+        }
+        // Unknown live status still opens the list when Done has rows to read.
+        result.agentsEnabled = result.agentsBadge != nil && (!unknown || !done.isEmpty)
+        return result
+    }
+
+    private static func workingRow(
+        snapshot: SessionFeedLive?,
+        error: String?,
+        loaded: Bool,
+        stateAt: Date?,
+        now: Date
+    ) -> Row {
         let stale = snapshot?.observedAt.map { now.timeIntervalSince($0) >= staleAfter } ?? false
         if error != nil || stale || (loaded && (snapshot == nil || snapshot?.observedAt == nil)) {
             let text: String
@@ -85,6 +146,54 @@ package enum WorkchatLivePresentation {
                      elapsed: elapsed(from: $0.startedAt, now: now))
         }
     }
+    /// The 👥 list: Working from the live snapshot (minus any id already in
+    /// Done), Done from the feed's finished markers (`done(from:)`). Done from
+    /// the last good read survives a later failure (`feedLoaded`).
+    package static func agentsList(
+        snapshot: SessionFeedLive?,
+        error: String?,
+        feedLoaded: Bool,
+        feedError: String?,
+        done: [SessionFeedSubagent],
+        now: Date
+    ) -> AgentsList {
+        let state: AgentsList.State = feedLoaded ? .ready : (feedError == nil ? .loading : .error)
+        let doneIDs = Set(done.map(\.toolUseID))
+        let working = agentRows(snapshot, error: error, now: now).filter { !doneIDs.contains($0.id) }
+        let unknown = workingUnknown(snapshot, error: error, now: now)
+        let note: String? = unknown ? unknownAgents : (working.isEmpty ? noneWorking : nil)
+        let rows = done.map {
+            DoneRow(ref: $0, title: $0.type.isEmpty ? "Subagent" : $0.type, subtitle: $0.description, id: $0.toolUseID)
+        }
+        return AgentsList(state: state, working: working, workingNote: note, done: rows, doneTitle: doneTitle(done.count),
+                          doneOpenByDefault: working.isEmpty || unknown)
+    }
+
+    /// The live snapshot cannot say who works: missing after an error, stale,
+    /// agents state not known, or an agent whose status is not resolved.
+    private static func workingUnknown(_ snapshot: SessionFeedLive?, error: String?, now: Date) -> Bool {
+        if error != nil { return true }
+        guard let snapshot else { return false }
+        guard let observed = snapshot.observedAt, now.timeIntervalSince(observed) < staleAfter else { return true }
+        return snapshot.agentsState != "known"
+            || snapshot.agents.contains { $0.ref.status != "finished" && $0.ref.status != "running" }
+    }
+
+    /// The finished subagents among the feed's markers: `started_at` newest
+    /// first; undated ones after them, ties and undated in the CLI's order.
+    package static func done(from subagents: [SessionFeedEntry]) -> [SessionFeedSubagent] {
+        let finished = subagents.compactMap(\.subagent).filter { $0.status == "finished" }
+        let ordered = finished.enumerated().sorted { lhs, rhs in
+            switch (lhs.element.startedAt, rhs.element.startedAt) {
+            case let (l?, r?) where l != r: l > r
+            case (.some, nil): true
+            case (nil, .some): false
+            default: lhs.offset < rhs.offset
+            }
+        }
+        return ordered.map(\.element)
+    }
+
     package static func elapsed(from start: Date?, now: Date) -> String? {
         guard let start else { return nil }
         let seconds = max(0, Int(now.timeIntervalSince(start)))
