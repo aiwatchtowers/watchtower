@@ -239,6 +239,10 @@ func runCalendarSync(cmd *cobra.Command, _ []string) error {
 		if calendarSyncFlagAccount != 0 && acct.ID != calendarSyncFlagAccount {
 			continue
 		}
+		if err := refuseStoppedOwnProject(cfg.WorkspaceDir(), acct); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: %v\n", acct.ID, err)
+			continue
+		}
 		store := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), acct.ID)
 		if !store.Exists() {
 			continue

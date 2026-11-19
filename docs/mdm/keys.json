@@ -69,7 +69,7 @@
     "key": "AllowOwnGoogleProject",
     "type": "boolean",
     "default": "true",
-    "effect": "Whether a person may connect Google through their own Google Cloud project. false hides the option; accounts on an own project stop syncing and keep their data, company and shared-client accounts are untouched."
+    "effect": "Whether a person may connect Google through their own Google Cloud project. false hides and refuses the option; accounts on an own project (also one added earlier with a custom OAuth client) stop syncing and keep their data, company and shared-client accounts are untouched."
   },
   {
     "key": "RequireDatabaseEncryption",

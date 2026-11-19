@@ -163,6 +163,10 @@ func runGmailSync(cmd *cobra.Command, _ []string) error {
 		if gmailSyncFlagAccount != 0 && acct.ID != gmailSyncFlagAccount {
 			continue
 		}
+		if err := refuseStoppedOwnProject(cfg.WorkspaceDir(), acct); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: %v\n", acct.ID, err)
+			continue
+		}
 		store := gmail.NewAccountTokenStore(cfg.WorkspaceDir(), acct.ID)
 		if !store.Exists() {
 			continue

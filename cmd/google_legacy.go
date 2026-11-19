@@ -9,6 +9,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/gmail"
+	"watchtower/internal/policy"
 )
 
 // ensureLegacyGoogleAccount seeds google_accounts from a pre-multi-account
@@ -124,6 +125,9 @@ func fillLegacyAccountEmail(ctx context.Context, cfg *config.Config, database *d
 	acct, err := database.GetGoogleAccount(id)
 	if err != nil || acct.Email != "" || !acct.GmailEnabled {
 		return
+	}
+	if stopped, _ := googleOwnProjectStopped(policy.Current(), cfg.WorkspaceDir(), acct); stopped {
+		return // no token refresh through an own project the policy stops
 	}
 	token, err := gmail.NewAccountTokenStore(cfg.WorkspaceDir(), id).Load()
 	if err != nil || token.RefreshToken == "" {

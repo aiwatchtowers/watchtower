@@ -295,6 +295,11 @@ type Daemon struct {
 	// runLoop starts no scheduled cycle while it says no. nil = always a
 	// full wake.
 	fullWake func() (caps uint32, full bool)
+	// accountAllowed is the policy's per-account verdict
+	// (SetAccountSyncAllowed); nil allows every account. accountSkipping
+	// holds the accounts the last check found stopped (logs once per change).
+	accountAllowed  func(source string, id int64) bool
+	accountSkipping map[purgeKey]bool
 }
 
 // New creates a Daemon. Slack orchestrators are attached separately via
@@ -1181,7 +1186,7 @@ func (d *Daemon) phaseCalendarSync(ctx context.Context) {
 		return
 	}
 	for _, s := range d.calendarSyncers {
-		if d.purgeHeld("google", s.AccountID()) {
+		if d.purgeHeld("google", s.AccountID()) || !d.accountPhaseAllowed("google", s.AccountID()) {
 			continue
 		}
 		n, err := s.Sync(ctx)
@@ -1221,7 +1226,7 @@ func (d *Daemon) phaseGmailSync(ctx context.Context) {
 		return
 	}
 	for _, s := range d.gmailSyncers {
-		if d.purgeHeld("google", s.AccountID()) {
+		if d.purgeHeld("google", s.AccountID()) || !d.accountPhaseAllowed("google", s.AccountID()) {
 			continue
 		}
 		var n int

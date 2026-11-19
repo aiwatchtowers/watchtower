@@ -48,6 +48,7 @@ import (
 	"watchtower/internal/media"
 	"watchtower/internal/oauthclient"
 	"watchtower/internal/platform"
+	"watchtower/internal/policy"
 	"watchtower/internal/powerstate"
 	"watchtower/internal/prompts"
 	"watchtower/internal/providerhealth"
@@ -1101,10 +1102,19 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	if _, err := ensureLegacyGoogleAccount(ctx, cfg, database, logger); err != nil {
 		logger.Printf("google: failed to seed legacy account: %v", err)
 	}
+	// The own-project accounts the policy keeps unwired stay stopped (leases
+	// held) until the next start wires them (POLICY-03).
+	var unwiredGoogle map[int64]bool
+	if googleAccounts, err := database.ListGoogleAccounts(); err == nil {
+		unwiredGoogle = googleAccountsStopped(policy.Current(), cfg.WorkspaceDir(), googleAccounts)
+	}
 	// Wire one calendar/gmail syncer per connected google_accounts row.
 	calSyncers, gmSyncers := wireGoogleSyncers(ctx, cfg, database, logger)
 	d.SetCalendarSyncers(calSyncers)
 	d.SetGmailSyncers(gmSyncers)
+	// A tightened AllowOwnGoogleProject stops a wired own-project account
+	// at its next cycle and holds its purge leases (POLICY-03).
+	d.SetAccountSyncAllowed(googleAccountSyncAllowed(cfg.WorkspaceDir(), database, unwiredGoogle))
 	// Wire one IMAP/Outlook syncer per connected email_accounts row.
 	d.SetImapSyncers(wireImapSyncers(cfg, database, logger))
 	// Wire one CalDAV/ICS syncer per connected calendar_accounts row.
@@ -1724,7 +1734,21 @@ func wireGoogleSyncers(ctx context.Context, cfg *config.Config, database *db.DB,
 	}
 	var calSyncers []*calendar.Syncer
 	var gmSyncers []*gmail.Syncer
+	ownProjectPolicy := policy.Current()
 	for _, acct := range accounts {
+		if stopped, err := googleOwnProjectStopped(ownProjectPolicy, cfg.WorkspaceDir(), acct); err != nil {
+			// The policy forbids own projects and this account's company
+			// cannot be read: not wired, the real problem on the row.
+			logger.Printf("google: %v", err)
+			recordGoogleTokenError(database, logger, acct, logredact.Full(err))
+			continue
+		} else if stopped {
+			// Stopped by the organization's policy (AllowOwnGoogleProject,
+			// #1887 D24, POLICY-03): no client, no token refresh; the row,
+			// its files and data are left as they are.
+			logger.Printf("google: account %d: own Google projects are not allowed by your organization's policy; not syncing", acct.ID)
+			continue
+		}
 		store := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), acct.ID)
 		if !store.Exists() {
 			recordGoogleTokenError(database, logger, acct, "no token file — re-login required")
