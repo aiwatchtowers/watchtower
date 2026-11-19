@@ -192,10 +192,11 @@ struct JiraConnectionDetail: View {
             }
             .buttonStyle(.kitQuiet)
             .disabled(vm.isConnecting)
+            // A token check still running (its sheet may be closed) could write the row back after a remove.
             Button("Remove") { jiraAccountPendingRemoval = account }
                 .buttonStyle(.kitQuiet)
                 .foregroundStyle(Tone.error)
-                .disabled(vm.isConnecting)
+                .disabled(vm.isConnecting || appState.atlassianToken.isChecking)
         }
     }
 
