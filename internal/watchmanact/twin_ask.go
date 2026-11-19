@@ -27,9 +27,9 @@ const (
 // Copy (spec 2026-11-16-watchman-design, verbatim).
 const (
 	// ParkedPrefix starts the answer of a parked item: "Parked for the owner: <reason>".
-	ParkedPrefix = "Parked for the owner: "
+	ParkedPrefix = db.WatchmanParkedPrefix
 	// HandedPrefix starts the answer of a handed item: "Handed to the owner: <what he must do>".
-	HandedPrefix = "Handed to the owner: "
+	HandedPrefix = db.WatchmanHandedPrefix
 	// CheckAnswerText answers a check the twin cannot run.
 	CheckAnswerText = "The owner is away — verify what you can yourself (tests, screenshots, make desktop-shots) and continue"
 	// LearningReason parks every item of a workbench Watchman is still learning.

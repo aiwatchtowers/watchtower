@@ -372,17 +372,45 @@ type WatchmanMark struct {
 	Sub string
 }
 
-// wmTwinDecided is true for an entity (ref_kind, ref_id) the twin decided: its
-// item carries a twin outcome, so the owner did not decide it (WATCHMAN-03).
-func wmTwinDecided(kind, id string) string {
-	return `EXISTS (SELECT 1 FROM watchman_items w WHERE w.ref_kind = '` + kind + `' AND w.ref_id = ` + id +
-		` AND w.outcome IN ('answered','handed','parked','approved','changes'))`
+// The twin's own answer texts (spec copy, verbatim): a park or a hand-back
+// it wrote onto an ask (watchmanact answers with them; the readers below
+// tell its answer from the owner's later one by them).
+const (
+	WatchmanParkedPrefix = "Parked for the owner: "
+	WatchmanHandedPrefix = "Handed to the owner: "
+)
+
+// wmTwinWrote are the outcomes whose item wrote the entity's answer or
+// verdict itself. parked and handed wrote one only on an ask with a text
+// answer (and a permission, which decided_by marks); owner_first and
+// superseded never did (WATCHMAN-03: the owner's later answer to a parked
+// item is his).
+const wmTwinWrote = `('answered','approved','changes')`
+
+// wmTwinDecided is true for a permission request id the twin decided.
+// Its parks and hand-backs deny with decided_by = 'watchman', which the
+// reader filters on its own.
+func wmTwinDecided(id string) string {
+	return `EXISTS (SELECT 1 FROM watchman_items w WHERE w.ref_kind = 'permission' AND w.ref_id = ` + id +
+		` AND w.outcome IN ` + wmTwinWrote + `)`
 }
 
-// wmTwinRound is wmTwinDecided for a review round, also matched on the item's round_id.
+// wmTwinAnswered is true for ask a (alias) whose answer the twin wrote: a
+// decision, or a park or hand-back whose text stands in the ask's answer —
+// not a park the owner answered later (a review ask, an answer that could
+// not be written).
+func wmTwinAnswered(a string) string {
+	return `EXISTS (SELECT 1 FROM watchman_items w WHERE w.ref_kind = 'ask' AND w.ref_id = ` + a + `.id
+		AND (w.outcome IN ` + wmTwinWrote + ` OR (w.outcome IN ('parked','handed')
+			AND (instr(` + a + `.answer, '` + WatchmanParkedPrefix + `') > 0 OR instr(` + a + `.answer, '` + WatchmanHandedPrefix + `') > 0))))`
+}
+
+// wmTwinRound is true for a review round id the twin wrote its verdict on
+// (matched on the item's ref or its round_id); a parked review left the
+// round to the owner.
 func wmTwinRound(id string) string {
 	return `EXISTS (SELECT 1 FROM watchman_items w WHERE ((w.ref_kind = 'round' AND w.ref_id = ` + id + `) OR w.round_id = ` + id +
-		`) AND w.outcome IN ('answered','handed','parked','approved','changes'))`
+		`) AND w.outcome IN ` + wmTwinWrote + `)`
 }
 
 // Each reader's inner select (wm_at, wm_id, wm_sub first); the estimate
@@ -395,7 +423,7 @@ var (
 		WHERE a.project_id = ? AND a.status IN ('answered','delivered')
 			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL
 			AND (s.id IS NULL OR s.` + NotDeletingSQL + `)
-			AND NOT ` + wmTwinDecided("ask", "a.id") + ``
+			AND NOT ` + wmTwinAnswered("a") + ``
 	wmReviewSQL = `
 		SELECT COALESCE(strftime(` + wmAtFormat + `, r.sent_at), '') AS wm_at, c.id*4 AS wm_id, '' AS wm_sub, 'comment' AS kind, c.id AS rid,
 			COALESCE(c.path, '') AS path, c.quote, c.lens, c.body, r.outcome, '' AS header, '' AS patch, '' AS lstatus,
@@ -428,7 +456,7 @@ var (
 		WHERE a.project_id = ? AND a.status IN ('answered','delivered')
 			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL
 			AND (s.id IS NULL OR s.` + NotDeletingSQL + `)
-			AND NOT ` + wmTwinDecided("ask", "a.id") + `
+			AND NOT ` + wmTwinAnswered("a") + `
 			AND m.state IN ('ok','comment','not_useful')`
 	wmPermissionSQL = `SELECT COALESCE(strftime(` + wmAtFormat + `, r.decided_at), '') AS wm_at, r.id AS wm_id, '' AS wm_sub, r.tool_name, r.summary, r.summary_clipped, r.status,
 			s.folder_path, COALESCE(p.folder_path, ''),
@@ -438,7 +466,7 @@ var (
 		LEFT JOIN projects p ON p.id = r.workbench_id
 		WHERE r.workbench_id = ? AND r.status IN ('allowed','denied')
 			AND COALESCE(r.decided_by, '') != 'watchman'
-			AND NOT ` + wmTwinDecided("permission", "r.id") + ``
+			AND NOT ` + wmTwinDecided("r.id") + ``
 )
 
 // wmPage wraps inner, which selects wm_at, wm_id and wm_sub first, in the

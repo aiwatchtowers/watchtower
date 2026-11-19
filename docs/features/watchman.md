@@ -115,7 +115,7 @@ An armed session's brief (a row of this agent and workbench) carries `The owner 
 
 ### Learning from the journal (Task 14, migration 00201)
 
-The seventh source, `journal` (WATCHMAN-03): a twin decision the owner marked **OK** becomes a precedent with the twin's choice (weight 1), one he corrected a precedent with his words (weight 3); an item without feedback is never read, a correction without text is skipped. Migration 00201 rebuilds `watchman_precedents` so its `source` CHECK takes `journal` (00199's columns, FTS and triggers kept). The other sources leave out every row a twin item decided. Phase 2 keeps the weekly backtest only (D44: the rerun after each morning's feedback batch is deferred, about $17 a run).
+The seventh source, `journal` (WATCHMAN-03): a twin decision the owner marked **OK** becomes a precedent with the twin's choice (weight 1), one he corrected a precedent with his words (weight 3); an item without feedback is never read, a correction without text is skipped. Migration 00201 rebuilds `watchman_precedents` so its `source` CHECK takes `journal` (00199's columns, FTS and triggers kept). The other sources leave out what the twin wrote (an answer or verdict it decided, a park or hand-back text on the ask); the owner's later answer to a parked or handed item, and owner-first and superseded items, are learned as his. Phase 2 keeps the weekly backtest only (D44: the rerun after each morning's feedback batch is deferred, about $17 a run).
 
 ### Desktop: arming (Task 15) and Settings editing (Task 18)
 
