@@ -41,13 +41,13 @@ type OwnerAsk struct {
 	AutomationRunID sql.NullInt64
 	// DocType is a review ask's document kind (00158): spec | plan | other; '' for any other ask.
 	DocType string
-	// DocFolderID is the workbench folder DocPath is relative to (00197);
+	// DocFolderID is the workbench folder DocPath is relative to (00209);
 	// NULL = the home folder.
 	DocFolderID sql.NullInt64
 }
 
 // The kinds of an ask (owner_asks.kind); folder is the agent's suggestion to
-// put a folder on the bench (00197).
+// put a folder on the bench (00209).
 const (
 	AskKindReview   = "review"
 	AskKindCheck    = "check"
@@ -96,7 +96,7 @@ const (
 )
 
 // askCols is the ask columns, doc_snapshot included when withSnapshot, for a reader
-// outside a transaction. doc_folder_id (00197) reads as NULL on a database
+// outside a transaction. doc_folder_id (00209) reads as NULL on a database
 // not yet migrated past it: `workbench asks` and the ask guard open the
 // database without migrating. A write path (the database is migrated) uses
 // the constants.
@@ -220,7 +220,7 @@ func (db *DB) OpenSpecAskOfSession(sessionID int64) (int64, error) {
 	return id, nil
 }
 
-// FolderAskPayload is a folder ask's payload (00197, spec 2026-11-18 §4 item
+// FolderAskPayload is a folder ask's payload (00209, spec 2026-11-18 §4 item
 // 4): the folder the agent suggests, its repository root, how many tool
 // calls of the session touched it, the agent's reason and, when the folder
 // is on another bench, that bench (the card offers the merge).

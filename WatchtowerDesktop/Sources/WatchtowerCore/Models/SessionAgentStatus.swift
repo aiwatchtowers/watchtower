@@ -75,7 +75,7 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
     /// The highest round among the session's open asks hidden in the spec
     /// review author loop (`SpecLoopRoundSQL` in Go); 0 = none in the loop.
     package var specReviewRound: Int
-    /// `terminal_sessions.parent_session_id` (migration 00197): the session
+    /// `terminal_sessions.parent_session_id` (migration 00209): the session
     /// that started this one as its sub-session; nil for a top-level row or
     /// a database without the column.
     package var parentSessionID: Int64?

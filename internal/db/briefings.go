@@ -104,11 +104,7 @@ func (db *DB) GetRecentBriefings(userID string, limit int) ([]Briefing, error) {
 
 // MarkBriefingRead marks a briefing as read with the current timestamp.
 func (db *DB) MarkBriefingRead(id int) error {
-	_, err := db.Exec(`UPDATE briefings SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ? AND read_at IS NULL`, id)
-	if err != nil {
-		return fmt.Errorf("marking briefing read: %w", err)
-	}
-	return nil
+	return db.WithTx(func(tx *sql.Tx) error { return MarkBriefingReadTx(tx, []int{id}) })
 }
 
 const briefingSelectCols = `SELECT id, workspace_id, user_id, date, role, attention, your_day, what_happened, team_pulse, coaching, model, input_tokens, output_tokens, cost_usd, prompt_version, read_at, created_at`

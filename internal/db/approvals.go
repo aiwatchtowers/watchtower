@@ -114,6 +114,19 @@ const openActionClause = `(status = 'pending'
 	    AND NOT (tool = 'claude_ai_connector_call' AND error != 'session ended while the call ran; outcome unknown')))
 	AND ` + approvalRowClause
 
+// AwaitingOwnerClause is the one "an action waits on the owner" rule of the
+// Inbox (the Desktop's AgentActionQueries.awaitingOwnerClause, the badge's
+// own predicate, APPROVAL-01): pending or failed, never a workbench's
+// direct-apply audit row unless External, never an Inbox button's
+// one-press row, never a failed session call settled with anything but the
+// unknown-outcome error that the owner has not dismissed yet. An
+// unqualified WHERE clause over agent_actions with no `?`. It differs from
+// openActionClause (the needs-approval built-in's own run) only on a
+// dismissed failed row, which waits here and not there.
+const AwaitingOwnerClause = `status IN ('pending','failed') AND ` + approvalRowClause + `
+	AND NOT (status = 'failed' AND tool = 'claude_ai_connector_call'
+		AND NOT (error = 'session ended while the call ran; outcome unknown' AND dismissed_at = ''))`
+
 // openReminderClause is REMIND-01's due set: pending and remind_at <= ?.
 const openReminderClause = `status = 'pending' AND remind_at <= ?`
 
@@ -163,7 +176,7 @@ func (db *DB) ApprovalDriftOf(ctx context.Context, automationID int64, now time.
 	if err != nil {
 		return drift, err
 	}
-	open, err := openApprovals(ctx, tx, formatAutomationTime(now))
+	open, err := openApprovals(ctx, tx, formatAutomationTime(now), builtinApprovalsQuery)
 	if err != nil {
 		return drift, err
 	}
@@ -194,6 +207,10 @@ type OpenApproval struct {
 	ChangedAt string
 	// An action's.
 	Tool, ArgsJSON, Reason, Status, Error, ContextType, ContextID string
+	// ResultJSON is an action's stored result (what a brief_context echoed).
+	ResultJSON string
+	// External is an action's external flag.
+	External bool
 	// A reminder's.
 	Note, RemindAt, MessageRef string
 }
@@ -234,7 +251,7 @@ func (db *DB) ReadApprovalsView(ctx context.Context, automationID int64, now tim
 	if err != nil {
 		return view, err
 	}
-	open, err := openApprovals(ctx, tx, formatAutomationTime(now))
+	open, err := openApprovals(ctx, tx, formatAutomationTime(now), builtinApprovalsQuery)
 	if err != nil {
 		return view, err
 	}
@@ -250,20 +267,34 @@ func (db *DB) ReadApprovalsView(ctx context.Context, automationID int64, now tim
 	return view, nil
 }
 
-// openApprovals lists the open approvals, oldest created first (actions
-// before reminders on a tie, then id).
-func openApprovals(ctx context.Context, tx *sql.Tx, now string) ([]OpenApproval, error) {
-	rows, err := tx.QueryContext(ctx, `
+// openApprovalsQuery lists the open approvals with actions as
+// actionClause has them; its one `?` is now.
+func openApprovalsQuery(actionClause string) string {
+	return `
 		SELECT k, id, created_at, changed_at, tool, args_json, reason, status, error, context_type, context_id,
-		       note, remind_at, message_ref FROM (
+		       result_json, note, remind_at, message_ref, external FROM (
 			SELECT 0 AS k, id, created_at, MAX(created_at, decided_at, applied_at) AS changed_at,
-			       tool, args_json, reason, status, error, context_type, context_id,
-			       '' AS note, '' AS remind_at, '' AS message_ref
-			FROM agent_actions WHERE `+openActionClause+`
+			       tool, args_json, reason, status, error, context_type, context_id, result_json,
+			       '' AS note, '' AS remind_at, '' AS message_ref, external
+			FROM agent_actions WHERE ` + actionClause + `
 			UNION ALL
-			SELECT 1, id, created_at, MAX(created_at, remind_at), '', '', '', status, '', '', '', note, remind_at, message_ref
-			FROM reminders WHERE `+openReminderClause+`)
-		ORDER BY created_at, k, id`, now)
+			SELECT 1, id, created_at, MAX(created_at, remind_at), '', '', '', status, '', '', '', '', note, remind_at, message_ref, 0
+			FROM reminders WHERE ` + openReminderClause + `)
+		ORDER BY created_at, k, id`
+}
+
+// The open approvals of the needs-approval built-in's run (openActionClause)
+// and of the Inbox (AwaitingOwnerClause).
+var (
+	builtinApprovalsQuery = openApprovalsQuery(openActionClause)
+	inboxApprovalsQuery   = openApprovalsQuery(AwaitingOwnerClause)
+)
+
+// openApprovals lists the open approvals of query (builtinApprovalsQuery or
+// inboxApprovalsQuery), oldest created first (actions before reminders on a
+// tie, then id).
+func openApprovals(ctx context.Context, tx *sql.Tx, now, query string) ([]OpenApproval, error) {
+	rows, err := tx.QueryContext(ctx, query, now)
 	if err != nil {
 		return nil, fmt.Errorf("reading open approvals: %w", err)
 	}
@@ -273,7 +304,7 @@ func openApprovals(ctx context.Context, tx *sql.Tx, now string) ([]OpenApproval,
 		var a OpenApproval
 		var k int
 		if err := rows.Scan(&k, &a.ID, &a.CreatedAt, &a.ChangedAt, &a.Tool, &a.ArgsJSON, &a.Reason, &a.Status, &a.Error,
-			&a.ContextType, &a.ContextID, &a.Note, &a.RemindAt, &a.MessageRef); err != nil {
+			&a.ContextType, &a.ContextID, &a.ResultJSON, &a.Note, &a.RemindAt, &a.MessageRef, &a.External); err != nil {
 			return nil, fmt.Errorf("reading open approvals: %w", err)
 		}
 		a.Kind = ApprovalKindAction

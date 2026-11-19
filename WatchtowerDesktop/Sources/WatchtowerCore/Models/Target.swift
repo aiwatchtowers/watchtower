@@ -142,7 +142,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
     package let branch: String          // git branch the work happens on (PROJ-07), "" = not linked
     package let pr: String              // pull request, a number or a URL (PROJ-07), "" = not linked
     package let boardColumnID: Int64?   // workbench board column (PROJ-19), nil = the status's first column
-    package let workbenchFolderID: Int64? // the bench folder the work is in (00197), nil = the home folder
+    package let workbenchFolderID: Int64? // the bench folder the work is in (00209), nil = the home folder
 
     package enum CodingKeys: String, CodingKey {
         case id

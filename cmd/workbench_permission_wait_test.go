@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 )
 
@@ -92,7 +94,7 @@ func answerFromPhone(database *db.DB, row int64, status string) <-chan error {
 		id, err := pendingPermissionID(database, row, ended)
 		if err == nil {
 			var ok bool
-			ok, err = database.ClosePermissionRequest(id, status, time.Now())
+			ok, err = database.ClosePermissionRequest(id, status, "", time.Now())
 			if err == nil && !ok {
 				err = errors.New("the request was no longer pending")
 			}
@@ -207,7 +209,7 @@ func TestPermissionWait_RecordsApprovalAtOnce(t *testing.T) {
 			if s, sErr := database.GetTerminalSession(row); sErr != nil || s.AgentState.String != agentStateApproval {
 				err = errors.Join(sErr, errors.New("state is not approval while pending"))
 			}
-			_, cErr := database.ClosePermissionRequest(id, db.PermissionAllowed, time.Now())
+			_, cErr := database.ClosePermissionRequest(id, db.PermissionAllowed, "", time.Now())
 			err = errors.Join(err, cErr)
 		}
 		done <- err
@@ -322,6 +324,15 @@ func TestPermissionSummary(t *testing.T) {
 			assert.Equal(t, tc.clipped, clipped)
 		})
 	}
+}
+
+// Every line of a multi-line description is a `# ` comment: an unmarked
+// second line would read as a command (or open a quote) in the hard-limit
+// table.
+func TestPermissionSummary_EveryDescriptionLineIsAComment(t *testing.T) {
+	got, clipped := permissionSummary("Bash", json.RawMessage(`{"command":"go test ./...","description":"Run tests\nthen push"}`))
+	assert.Equal(t, "go test ./...\n# Run tests\n# then push", got)
+	assert.False(t, clipped)
 }
 
 // SIGTERM (the hook's timeout, Claude Code quitting) ends the wait: no
@@ -555,4 +566,166 @@ func TestPermissionWait_ReadsThatKeepFailingExpireTheRequest(t *testing.T) {
 	var status string
 	require.NoError(t, database.QueryRow(`SELECT status FROM permission_requests`).Scan(&status))
 	assert.Equal(t, db.PermissionExpired, status)
+}
+
+// The Watchman hard-limit table (internal/watchman/hardlimit.go) reads these
+// summary shapes: a plain path for Edit and Write, compact JSON carrying
+// file_path or path for the other file tools.
+func TestPermissionSummary_ShapesWatchmanReads(t *testing.T) {
+	got, _ := permissionSummary("Edit", json.RawMessage(`{"file_path":"/w/a/my notes/x.md","old_string":"a"}`))
+	require.Equal(t, "/w/a/my notes/x.md", got)
+	got, _ = permissionSummary("Read", json.RawMessage(`{"file_path":"/w/a/x.go"}`))
+	require.JSONEq(t, `{"file_path":"/w/a/x.go"}`, got)
+	got, _ = permissionSummary("Grep", json.RawMessage(`{"pattern":"x","path":"/w/a"}`))
+	require.JSONEq(t, `{"pattern":"x","path":"/w/a"}`, got)
+}
+
+// countPermissionWakes counts the Watchman wakes permission-wait sends.
+func countPermissionWakes(t *testing.T) *atomic.Int32 {
+	t.Helper()
+	var n atomic.Int32
+	prev := permissionWatchmanWake
+	permissionWatchmanWake = func(*config.Config) { n.Add(1) }
+	t.Cleanup(func() { permissionWatchmanWake = prev })
+	return &n
+}
+
+func armHookSession(t *testing.T, database *db.DB, row int64) {
+	t.Helper()
+	require.NoError(t, database.UpsertWatchmanArming(db.WatchmanArming{Scope: "session", RefID: row, ArmedAt: time.Now(), ArmedBy: "cli"}))
+}
+
+// A prompt of an armed session queues the twin's permission item and wakes
+// the daemon; the hook still waits for the decision as before.
+func TestPermissionWait_ArmedQueuesItem(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	armHookSession(t, database, row)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	fastPermissionPoll(t)
+	wakes := countPermissionWakes(t)
+	done := answerFromPhone(database, row, db.PermissionAllowed)
+
+	out, errOut := runPermissionWait(t, pid, permissionPayload(briefLaunchID))
+
+	require.NoError(t, <-done)
+	assert.Equal(t, permissionAllowJSON, out)
+	assert.Empty(t, errOut)
+	var reqID int64
+	require.NoError(t, database.QueryRow(`SELECT id FROM permission_requests`).Scan(&reqID))
+	it, err := database.WatchmanItemByRef("permission", reqID, "permission")
+	require.NoError(t, err)
+	require.NotNil(t, it)
+	assert.Equal(t, row, it.SessionID)
+	assert.Equal(t, pid, it.WorkbenchID)
+	assert.Equal(t, "Tool: Bash\nls -la\n# List files", it.Question)
+	assert.Equal(t, int32(1), wakes.Load())
+}
+
+// An insert that fails leaves the prompt the owner's (spec §7): one stderr
+// line naming the request, and the hook waits for the answer as before.
+func TestPermissionWait_QueueFailureStillWaits(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	armHookSession(t, database, row)
+	_, err := database.Exec(`CREATE TRIGGER wm_fail BEFORE INSERT ON watchman_items BEGIN SELECT RAISE(ABORT, 'database is locked'); END`)
+	require.NoError(t, err)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	fastPermissionPoll(t)
+	wakes := countPermissionWakes(t)
+	done := answerFromPhone(database, row, db.PermissionDenied)
+
+	out, errOut := runPermissionWait(t, pid, permissionPayload(briefLaunchID))
+
+	require.NoError(t, <-done)
+	assert.Equal(t, permissionDenyJSON, out)
+	assert.Equal(t, 1, strings.Count(errOut, "\n"), errOut)
+	var reqID int64
+	require.NoError(t, database.QueryRow(`SELECT id FROM permission_requests`).Scan(&reqID))
+	assert.Contains(t, errOut, fmt.Sprintf("permission request %d was not queued for Watchman", reqID))
+	assert.Zero(t, wakes.Load())
+}
+
+// closePendingAs closes the hook's request with status, decided by by, once
+// it is pending — the CAS of the Mac, the phone or Watchman's Answerer.
+func closePendingAs(database *db.DB, row int64, status, by string) <-chan error {
+	done := make(chan error, 1)
+	ended := permissionWaitsEnded.Load()
+	go func() {
+		id, err := pendingPermissionID(database, row, ended)
+		if err == nil {
+			var ok bool
+			ok, err = database.ClosePermissionRequest(id, status, by, time.Now())
+			if err == nil && !ok {
+				err = errors.New("the request was no longer pending")
+			}
+		}
+		done <- err
+	}()
+	return done
+}
+
+// PROJ-21 with a third decider: Watchman's deny tells the agent the twin
+// denied it and the owner decides in the morning; its allow is the plain
+// allow.
+func TestProj21_WatchmanDenySaysTwin(t *testing.T) {
+	for _, c := range []struct {
+		status, want string
+	}{
+		{db.PermissionDenied, `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"` +
+			"Watchman (the owner's twin) denied this — the owner decides it in the morning; continue with other work" + `"}}}`},
+		{db.PermissionAllowed, permissionAllowJSON},
+	} {
+		t.Run(c.status, func(t *testing.T) {
+			database, pid, row := briefSessionFixture(t)
+			armHookSession(t, database, row)
+			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+			stepClock(t)
+			fastPermissionPoll(t)
+			countPermissionWakes(t)
+			done := closePendingAs(database, row, c.status, "watchman")
+
+			out, errOut := runPermissionWait(t, pid, permissionPayload(briefLaunchID))
+
+			require.NoError(t, <-done)
+			assert.Equal(t, c.want, out)
+			assert.Empty(t, errOut)
+			var decoded map[string]any
+			require.NoError(t, json.Unmarshal([]byte(out), &decoded), "valid JSON")
+		})
+	}
+}
+
+// An armed session's prompt (its twin item queued) still takes the Mac's
+// and the phone's answers as before, each with its own text.
+func TestProj21_PhoneAndMacUnchangedWithWatchman(t *testing.T) {
+	for _, c := range []struct {
+		name, status, by, want string
+	}{
+		{"phone allow", db.PermissionAllowed, "iPhone", permissionAllowJSON},
+		{"phone deny", db.PermissionDenied, "iPhone", permissionDenyJSON},
+		{"mac deny", db.PermissionDenied, permissionDecidedByMac,
+			`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied by the owner at the Mac."}}}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			database, pid, row := briefSessionFixture(t)
+			armHookSession(t, database, row)
+			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+			stepClock(t)
+			fastPermissionPoll(t)
+			countPermissionWakes(t)
+			done := closePendingAs(database, row, c.status, c.by)
+
+			out, errOut := runPermissionWait(t, pid, permissionPayload(briefLaunchID))
+
+			require.NoError(t, <-done)
+			assert.Equal(t, c.want, out)
+			assert.Empty(t, errOut)
+			var reqID int64
+			require.NoError(t, database.QueryRow(`SELECT id FROM permission_requests`).Scan(&reqID))
+			it, err := database.WatchmanItemByRef("permission", reqID, "permission")
+			require.NoError(t, err)
+			require.NotNil(t, it, "the twin's item was queued")
+		})
+	}
 }

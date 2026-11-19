@@ -26,6 +26,10 @@ package protocol CLIRunnerProtocol {
     /// child `WATCHTOWER_AI_ORIGIN=background`, which the CLI gates on the
     /// owner's background-AI answer (#1886).
     func runModel(args: [String], origin: CLIOrigin, timeout: TimeInterval?, stdin: Data?) async throws -> Data
+    /// `capture` for a model command (`runModel`'s origin rule): stdout and
+    /// the exit code even when the command fails, for a reply envelope a
+    /// failure still prints.
+    func captureModel(args: [String], origin: CLIOrigin, timeout: TimeInterval) async throws -> CLICapturedResult
 }
 
 /// Who started a model command the Desktop launches. Background = started by
@@ -83,6 +87,18 @@ extension CLIRunnerProtocol {
     /// `runModel` with no timeout and no stdin.
     package func runModel(args: [String], origin: CLIOrigin) async throws -> Data {
         try await runModel(args: args, origin: origin, timeout: nil, stdin: nil)
+    }
+
+    /// Through `runModel`, so the origin is never dropped; a failure keeps
+    /// its exit code and stderr but not its stdout (`ProcessCLIRunner` keeps
+    /// all three).
+    package func captureModel(args: [String], origin: CLIOrigin, timeout: TimeInterval) async throws -> CLICapturedResult {
+        do {
+            let data = try await runModel(args: args, origin: origin, timeout: timeout, stdin: nil)
+            return CLICapturedResult(stdout: data, exitCode: 0)
+        } catch let CLIRunnerError.nonZeroExit(code, stderr) {
+            return CLICapturedResult(stdout: Data(), exitCode: code, stderr: stderr)
+        }
     }
 }
 
@@ -232,6 +248,13 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
         try CLIRunnerError.refuseModelCommand(args)
         return try await capture(
             args: args, environment: await Constants.resolvedEnvironmentAsync(), stdin: nil, timeout: timeout)
+    }
+
+    package func captureModel(
+        args: [String], origin: CLIOrigin, timeout: TimeInterval
+    ) async throws -> CLICapturedResult {
+        let environment = origin.environment(await Constants.resolvedEnvironmentAsync())
+        return try await capture(args: args, environment: environment, stdin: nil, timeout: timeout)
     }
 
     package func capture(

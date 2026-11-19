@@ -21,7 +21,8 @@ final class SliceKindTests: XCTestCase {
                 "heartbeat", "device_grant", "recording_job",
                 "workbench", "workbench_target", "workbench_comment", "terminal_session",
                 "owner_ask", "session_report", "session_timeline", "ask_alert", "permission_request",
-                "session_chat", "chat_list", "chat_feed", "chat_page", "chat_search"
+                "session_chat", "chat_list", "chat_feed", "chat_page", "chat_search",
+                "inbox_folder", "inbox_card"
             ]
         )
     }

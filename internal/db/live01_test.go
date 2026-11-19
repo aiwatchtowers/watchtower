@@ -165,6 +165,9 @@ var displayOnlyReadersAt = map[string]string{
 	// internal/hub chat_answer push: ids, status and the conversation title only.
 	"hub/chat_turn_watch.go:send":           "the chat_answer push reads a conversation title, never message text into a store",
 	"hub/chat_turn_watch.go:pendingActions": "the chat_answer push: pending action ids of main chats, no text",
+	// The tower's ideas.delete (plan Task 9): IdeaQueries.delete's Go twin.
+	"db/screen_writes.go:DeleteIdeaTx": "deletes a deleted idea's Discuss chat by id; reads no text",
+	"inboxfeed/screens.go:tablesIdeas": "the ideas commands' ChangeTables, table names only",
 	// internal/chatstore: the hub's chat turn store, the Swift write path's
 	// twin. It writes the chat rows and reads its own tree for the next turn;
 	// stepStarted and markIfUsedTx write the mark itself (LIVE-01 mechanism).
@@ -184,6 +187,14 @@ var displayOnlyReadersAt = map[string]string{
 	"chatstore/turn.go:stepStarted":         "writes a step and the LIVE-01 mark",
 	"chatstore/turn.go:markIfUsedTx":        "writes the LIVE-01 mark",
 	"chatstore/turn.go:titleIfNeeded":       "a count of complete answers, no text",
+	// internal/chatstore/embedded.go: an embedded chat's own `ai query
+	// --persist` turn (the DatabaseEmbeddedChatStore twin). It writes that
+	// turn's rows and reads no chat text; embedded chats never carry Slack
+	// connectors (main surface only).
+	"chatstore/embedded.go:BeginEmbedded": "an existence probe of the conversation, then inserts the turn's owner row and empty reply",
+	"chatstore/embedded.go:Apply":         "writes the turn's own reply text and steps",
+	"chatstore/embedded.go:saveActual":    "routing columns of the turn's own reply",
+	"chatstore/embedded.go:Finalize":      "writes the turn's own reply (text, status, tokens) and the conversation's updated_at",
 	// The phone's chat actions (iPhone chat §4.5): conversation rows the
 	// Mac's Chats panel writes too, and the attachment intake's row.
 	"chatstore/conversations.go:NewConversation":    "inserts an empty conversation row",
@@ -196,6 +207,24 @@ var displayOnlyReadersAt = map[string]string{
 	"chatstore/conversations.go:Move":               "the project column, an existence count, no text",
 	"chatstore/conversations.go:UsePreferred":       "routing columns only (Use preferred, #1822 T17), no text",
 	"chatstore/attachments.go:SaveAttachment":       "inserts an attachment row of an existing conversation, no text read",
+	// The chat.* tower commands (mobile-inbox spec §8): the embedded chats'
+	// writes, ported from the Desktop's GRDB writers. They write rows and
+	// read ids, flags and counts, never text into a store.
+	"chatstore/commands.go:tConversations":                "table names of a command's ChangeTables, no read",
+	"chatstore/commands.go:RegisterCommands":              "registration: ChangeTables names",
+	"chatstore/commands.go:refuseMainChatTx":              "reads a conversation's context_type by id (main chat or not), no text",
+	"chatstore/commands.go:chatDelete":                    "deletes an embedded chat of a context type, no read",
+	"chatstore/commands.go:requireEmbeddedTx":             "reads a conversation's context_type by id (embedded or not), no text",
+	"chatstore/commands.go:chatMessageAppend":             "inserts an embedded chat's notice row; reads no chat text",
+	"chatstore/commands.go:chatReplyFinish":               "writes an embedded chat's reply end and updated_at; reads no chat text",
+	"chatstore/commands.go:chatNew":                       "finds a context's chat id and inserts a conversation row",
+	"chatstore/commands.go:insertContextChatTx":           "inserts an empty conversation row",
+	"chatstore/commands.go:chatSetTitle":                  "writes an automatic title",
+	"chatstore/commands.go:chatSetModel":                  "provider and model columns only",
+	"chatstore/commands.go:chatContext":                   "moves a draft chat to its context (existence checks only)",
+	"chatstore/commands.go:chatDeleteEmptyCodeQuestions":  "deletes empty code questions",
+	"chatstore/commands.go:emptyCodeQuestionsTx":          "ids of code questions with no message, no text",
+	"db/meeting_transcripts.go:DeleteMeetingTranscriptTx": "deletes a recording's meeting chat (meetings.delete), no text read",
 	// The phone's chat (iPhone chat spec §4.6): the hub's chat slices and the
 	// Go port of the Mac's ⌘K search show chat text on the phone and store
 	// nothing (the slices live in memory and the sealed relay records only).

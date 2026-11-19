@@ -198,7 +198,7 @@ func TestProjectBrief_ShowsTheBoardDrift(t *testing.T) {
 	database := writeActionsConfig(t)
 	folder := driftRepo(t)
 	pid, tid := driftWorkbench(t, database, folder, "merged")
-	brief := loadWorkbenchBrief(pid, io.Discard)
+	brief := loadWorkbenchBrief(pid, io.Discard, "claude")
 	assert.Contains(t, brief, "Board drift")
 	assert.Contains(t, brief, "#"+strconv.FormatInt(tid, 10)+` "Feature" [in_progress]: branch merged is merged into main`)
 	assert.LessOrEqual(t, len([]rune(brief)), briefMaxChars)
@@ -219,7 +219,7 @@ func TestProjectBrief_DriftChecksOpenTargetsOnly(t *testing.T) {
 	require.Len(t, rep.Findings, 1, "the full check still sees it")
 	assert.Equal(t, workbenchcheck.KindDoneUnmerged, rep.Findings[0].Kind)
 
-	assert.NotContains(t, loadWorkbenchBrief(pid, io.Discard), "Board drift")
+	assert.NotContains(t, loadWorkbenchBrief(pid, io.Discard, "claude"), "Board drift")
 }
 
 // benchFolderAt puts folder on workbench pid as its second folder and
@@ -265,7 +265,7 @@ func TestProj07_CheckRunsInTheTargetsFolder(t *testing.T) {
 	rep = checkJSON(t, pid)
 	require.Len(t, rep.Findings, 1)
 	assert.Equal(t, workbenchcheck.KindBranchMissing, rep.Findings[0].Kind, "in hub: hub has no branch merged")
-	assert.Contains(t, loadWorkbenchBrief(pid, io.Discard), "branch merged is found neither locally nor on origin")
+	assert.Contains(t, loadWorkbenchBrief(pid, io.Discard, "claude"), "branch merged is found neither locally nor on origin")
 }
 
 // A home folder gone from disk no longer stops the check: it is reported as
@@ -351,7 +351,7 @@ func TestProj07_RemovedFolderInTheBriefAndTheStopHook(t *testing.T) {
 	rep := checkJSON(t, pid)
 	require.Len(t, rep.Findings, 1)
 	assert.Equal(t, workbenchcheck.KindFolderRemoved, rep.Findings[0].Kind, "no git verdict from app for hub's target")
-	assert.Contains(t, loadWorkbenchBrief(pid, io.Discard), "folder removed: "+gone)
+	assert.Contains(t, loadWorkbenchBrief(pid, io.Discard, "claude"), "folder removed: "+gone)
 	assert.Empty(t, stopHook(t, pid, `{"stop_hook_active":false}`), "folder removed never stops a turn")
 }
 

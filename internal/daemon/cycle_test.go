@@ -185,6 +185,8 @@ type loopOpts struct {
 	fetchRange func(ctx context.Context) error
 	withDB     bool // a test DB and a workspace, no backfill row (implied by backfill)
 	darkWake   bool // the probe starts in a dark wake (it can be flipped later)
+	// setup runs on the daemon before Run (more wiring), nil = nothing.
+	setup func(d *Daemon)
 }
 
 func startLoop(t *testing.T, o loopOpts) *loopHarness {
@@ -224,6 +226,9 @@ func startLoop(t *testing.T, o loopOpts) *loopHarness {
 	fullWake := &atomic.Bool{}
 	fullWake.Store(!o.darkWake)
 	d.SetFullWakeProbe(boolProbe(fullWake))
+	if o.setup != nil {
+		o.setup(d)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &loopHarness{d: d, probe: probe, wake: o.wake, trigger: trigger, mono: mono, fullWake: fullWake, logs: logs,

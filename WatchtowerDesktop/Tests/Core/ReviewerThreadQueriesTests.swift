@@ -26,7 +26,7 @@ final class ReviewerThreadQueriesTests: XCTestCase {
             try Int64.fetchOne($0, sql: "SELECT id FROM workbench_folders WHERE workbench_id = ?", arguments: [project])
         }
         XCTAssertNotNil(home)
-        XCTAssertEqual(keyFolder, home, "the thread is keyed by the workbench's home folder (00197)")
+        XCTAssertEqual(keyFolder, home, "the thread is keyed by the workbench's home folder (00209)")
 
         let conversation = try XCTUnwrap(try db.read { try ChatConversationQueries.fetchByID($0, id: first) })
         XCTAssertEqual(conversation.contextType, "review_reviewer")
@@ -34,7 +34,7 @@ final class ReviewerThreadQueriesTests: XCTestCase {
         XCTAssertEqual(try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_conversations") }, 2)
     }
 
-    /// A legacy bench whose only folder row migration 00197 marked removed
+    /// A legacy bench whose only folder row migration 00209 marked removed
     /// (another spelling of an older bench's folder) still gets its threads.
     func testALegacyBenchWithARemovedOnlyFolderGetsThreads() throws {
         let db = try TestDatabase.create()

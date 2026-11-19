@@ -16,7 +16,6 @@ import (
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
-	"watchtower/internal/workbenchfiles"
 )
 
 // writeWorkbenchFile creates rel (and its directories) inside project id's folder.
@@ -75,7 +74,7 @@ func TestDev06_DocumentPathStaysInsideTheFolder(t *testing.T) {
 func TestDocumentsWereReplacedByAsks(t *testing.T) {
 	fx := newWorkbenchFixture(t)
 	reg := workbenchRegistry(t, fx.d)
-	for _, tool := range WorkbenchTools(workbenchfiles.Store{}, nil, SessionDeps{}) {
+	for _, tool := range WorkbenchTools(WorkbenchDeps{}) {
 		assert.NotEqual(t, "attach_document", tool.Name)
 	}
 	_, ok := reg.Get("attach_document")

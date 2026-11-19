@@ -27,6 +27,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
 	"watchtower/internal/db"
+	"watchtower/internal/tower"
 )
 
 // orderLog records the owner stop's steps in order.
@@ -297,7 +298,7 @@ func TestSyncDaemon_StartRemovesStoppedMarker(t *testing.T) {
 		_, markedAtChat, _ = daemon.ReadStoppedMarker(cfg.WorkspaceDir())
 		return nil, func() {}
 	}
-	startGoHubFn = func(context.Context, *config.Config, *db.DB, *chatengine.Engine, *log.Logger) func() {
+	startGoHubFn = func(context.Context, *config.Config, *db.DB, *tower.Tower, *chatengine.Engine, *log.Logger) func() {
 		return func() {}
 	}
 	ctx, cancel := context.WithCancel(context.Background())

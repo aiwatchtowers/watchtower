@@ -32,7 +32,7 @@ final class RowNotFoundSurfacingTests: XCTestCase {
             try TestDatabase.insertWorkspace(db)
             return try TestDatabase.insertTrack(db, text: "gone soon")
         }
-        let vm = TracksViewModel(dbManager: manager)
+        let vm = TracksViewModel(dbManager: manager, tower: manager.fakeTower)
         vm.load()
         let stale = try XCTUnwrap((vm.updatedTracks + vm.allTracks).first { Int64($0.id) == id })
         // No `load()` after the delete: the VM never sees another process's write.
@@ -40,10 +40,8 @@ final class RowNotFoundSurfacingTests: XCTestCase {
 
         await vm.updatePriority(stale, to: "high")
 
-        XCTAssertEqual(
-            vm.errorMessage,
-            "Failed to update priority: \(RowNotFoundError(kind: "track", id: id).localizedDescription)"
-        )
+        // Go's `not_found` sentence, shown as is.
+        XCTAssertEqual(vm.errorMessage, "Couldn't change the priority: it's no longer on the Mac.")
         XCTAssertFalse((vm.updatedTracks + vm.allTracks).contains { Int64($0.id) == id })
     }
 

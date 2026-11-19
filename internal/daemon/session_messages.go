@@ -25,51 +25,24 @@ type MessageDeliverer interface {
 // deliverer.
 func (d *Daemon) SetMessageDeliverer(m MessageDeliverer) { d.messages = m }
 
-// startSessionMessages starts the deliverer (and, when no automations wake
-// forwarder runs, its own forwarder of the wake signal) as goroutines of
-// their own; the returned stop cancels and waits for them.
+// startSessionMessages starts the deliverer as a goroutine of its own (the
+// wake forwarder, startWakeForwarder, hands it every AutomationWakeSignal);
+// the returned stop cancels and waits for it.
 func (d *Daemon) startSessionMessages(ctx context.Context) (stop func()) {
 	if d.messages == nil {
 		return func() {}
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{}, 2)
-	n := 1
+	done := make(chan struct{})
 	go func() {
-		defer func() { done <- struct{}{} }()
+		defer close(done)
 		if err := d.messages.Start(runCtx); err != nil {
 			d.logger.Printf("session messages: deliverer stopped: %v", err)
 		}
 	}()
-	if !d.automationsActive() {
-		n++
-		go func() {
-			defer func() { done <- struct{}{} }()
-			d.forwardMessageWakes(runCtx)
-		}()
-	}
 	return func() {
 		cancel()
-		for range n {
-			<-done
-		}
-	}
-}
-
-// forwardMessageWakes hands every wake to the deliverer until ctx is done or
-// the wake channel closes (forwardAutomationWakes does it when automations
-// run).
-func (d *Daemon) forwardMessageWakes(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case _, ok := <-d.automationWakeCh:
-			if !ok {
-				return
-			}
-			d.messages.Wake()
-		}
+		<-done
 	}
 }
 

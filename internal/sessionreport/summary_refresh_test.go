@@ -44,7 +44,7 @@ func repoBoard(t *testing.T) (d *db.DB, id int64, dir, path string) {
 func TestRefreshedSummaries_AnUnsavedVerdictStillCounts(t *testing.T) {
 	d, id, _, _ := repoBoard(t)
 	runSQL(t, d, `CREATE TRIGGER no_cache BEFORE INSERT ON workbench_pr_states BEGIN SELECT RAISE(ABORT, 'test: no cache'); END`)
-	rows, res, err := RefreshedSummaries(context.Background(), d, id, RefreshOptions{})
+	rows, res, err := RefreshedSummaries(context.Background(), d, id, RefreshOptions{Now: fixedNow})
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.Equal(t, []int{0, 3, 1}, []int{rows[0].Done, rows[0].Total, rows[0].Merged}, "the fresh verdict counts")
@@ -97,7 +97,7 @@ func TestRefreshedSummaries_CacheWritesWaitBriefly(t *testing.T) {
 func TestRefreshedSummaries_MergedStale(t *testing.T) {
 	t.Run("all checked", func(t *testing.T) {
 		d, id, _, _ := repoBoard(t)
-		rows, res, err := RefreshedSummaries(context.Background(), d, id, RefreshOptions{})
+		rows, res, err := RefreshedSummaries(context.Background(), d, id, RefreshOptions{Now: fixedNow})
 		require.NoError(t, err)
 		assert.Empty(t, res.Note)
 		require.Len(t, rows, 1)
@@ -218,7 +218,7 @@ func TestRefresh_AFailedReadGoesLast(t *testing.T) {
 func TestRefreshedSummaries_RestoresTheBusyTimeout(t *testing.T) {
 	d, id, _, _ := repoBoard(t)
 	require.NoError(t, d.SetBusyTimeout(7*time.Second))
-	_, _, err := RefreshedSummaries(context.Background(), d, id, RefreshOptions{})
+	_, _, err := RefreshedSummaries(context.Background(), d, id, RefreshOptions{Now: fixedNow})
 	require.NoError(t, err)
 	var ms int64
 	require.NoError(t, d.QueryRow("PRAGMA busy_timeout").Scan(&ms))

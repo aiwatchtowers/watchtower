@@ -42,6 +42,7 @@ One runtime (`internal/hub`, `Run`) inside the daemon joins these packages:
 | `internal/sessionstart` | Sessions created in Go: `Begin`/`Finish`/`Start`, placement (folder or own worktree), `Launch` (the Swift `TerminalLaunch` twin) and `Port`, the hub's `handlers.SessionPort` over `session-host`. |
 | `internal/sessionhost` | `watchtower session-host`, protocol v2 (below). |
 | `internal/sessionstate` | The session state resolver shared by the hub's handlers and sources (`Resolve`, `IsIdle(row, state)`, `IsWorking`, `NeedsApproval`, `HooksReported`), pinned to the Swift `SessionControl` by fixtures. |
+| `internal/askanswer` (2026-11-18, Watchman phase 2 Task 4) | The one answer path of owner asks and permission requests, moved out of the hub's handlers (spec `2026-11-16-watchman-design` D17): `Answerer.Answer` (the guarded `status = 'open'` compare-and-set, the caller's `Also` writes in the same transaction, then the line typed through `SessionPort` under PROJ-12's gates, held while the session cannot take it), `ClosePermission` (the `status = 'pending'` CAS with `decided_by`; `ByWatchman` = `watchman`) and `DeliverLine`. The hub's request parsing, scope checks, refusals and phone texts stay in its handlers, and its phone behaviour is unchanged. Two instances, never shared: the hub's (held lines in `hub_meta`, `HeldMetaKey`) and Watchman's twin worker's in the daemon (its own `HeldKey`, held lines in `<workspace>/watchman_held_asks.json`); a double answer is prevented by the CAS, not by a shared instance. |
 
 Seams: `transport.Transport` (relay in production, memfake in tests), `handlers.SessionPort` (the real
 `sessionstart.Port`, or a refusing port — below), `slices.Source`, and the `Options` test seams in `internal/hub/hub.go`.
@@ -796,6 +797,17 @@ On a relay route the keyring rotates every 7 days (`relayRotationAge`; 90 days o
 
 The hub runs phone-started chat turns: `internal/chatstore` (the Go turn store) and `internal/hub/chatrun` (a pool of 2 `ai session` processes, started at hub start with a sweep of orphan groups and dead leases, closed first at hub stop). A turn's rows are written by the lease holder's store, Swift or Go (`chat_turn_leases`, migration 00189). The ten `chat_*` kinds and the `chat_attachment` frame are registered in `handlers.Register`; the `chat` grant (`hub allow <device> chat [--revoke]`, sidecar migration 00017) is on by default; the heartbeat carries `capabilities.chat` and `chat_reason`; `hub desktop heartbeat --chat-lease 0|1` and the control socket's `chat_lease` tell the hub the Desktop honours the lease. Full note: [iphone-chat.md](iphone-chat.md); push: the `chat_answer` paragraph in Phase 4 above.
 
+## Phone Inbox (2026-11-16, #1170)
+
+The hub publishes the Inbox the Mac draws (mobile Inbox spec §6; `docs/features/inbox-core.md` for the feed and its writes), through the daemon's own tower: `runSyncDaemon` builds one `*tower.Tower` (`newDaemonTower`), serves it on the socket and hands it to `startGoHub` (`hub.Options.Tower`).
+
+- **Slices.** `sources.InboxSource` (only under `MobileSync` `allowed`, and only with a tower) builds one feed per cycle — `inbox.feed` through `Tower.Call` as the hub, `limit: 300` (`PhoneInboxLimit`), `clip: true` — outside any write transaction, shared by both kinds of one cycle (a build older than 5 s is not shared): `inbox_folder-<id>` (the `api.Folder` JSON plus `more`, the cards the cap left out, and `card_ids`, its cards' ids in the feed's order — the replica keeps no publish order, and card records stay order-free so a new card changes only its own record and its folder's; hidden folders flagged, the phone's screen models hide them) and `inbox_card-<id>` (the `api.Card` JSON). A card whose payload is past the envelope budget is published as a too-large notice (`inboxfeed.TooLargeSentence`, its ids, title, time and flags; no blocks, actions or approval), so one card never fails the kind. A failed build fails both kinds for the cycle, which keep their last records (the publisher logs the class). `ChangeTables` maps every table of `inboxfeed.ChangeTables` to both kinds. Under `workbench_only` neither kind is built and the switch deletes their records (POLICY-03).
+- **Legacy cards.** A legacy card keeps its typed section (`legacy.items` with UTC `stamp`/`end`: the phone draws plan times in its own zone) and carries it as a block document too; a card past the budget keeps only the document. `inboxlegacy.Project(section)` turns a legacy section into a block document validated with `blocks.Options{BuiltIn: true, PlanItemRefs: true}` (`PlanItemRefs` admits the `plan_item` ref, hub only, never a script): Morning brief as a "Plan · done of all" heading with its items (`plan_item` refs, "✓ " on a done one, no clock time) and an "Attention" heading with its lines (danger when high); Track my threads as the active tracks (`track` refs, "N new" as an accent badge) and a "Stopped · N" list; Idea finder as "To judge · N" and "Recent"; Thread briefs as one row per brief (its `action` ref); Messages as "N waiting · Mentions, DMs and replies" and "On your Mac". A list past the caps keeps its first rows and adds "N more on your Mac"; a section that does not project carries "Open it on your Mac." (`inboxlegacy.Unprojected`).
+- **Capability.** The heartbeat's `capabilities.inbox` is `on` under `allowed`, else `policy_off` with `inbox_reason: policy`; a hub without a tower sends no key (an older hub).
+- **`inbox_act`.** Params are the generated `inbox.act` request. The handler checks the grant `inboxfeed.ActGrant` names (`permissions` → `PermissionsAllowed`, `typing` → `TypingAllowed`, refusals worded through `withServerAllowStep`), then calls `inbox.act` with `Origin{Transport: "hub", Device}` — never the socket's signed-Desktop gate. `ok` is applied with the act's result; `refused` is failed with the tower's sentence and `result.code` (`not_found`; `changed`/`args_changed`/`reply_waiting` → `conflict`; `not_permitted`/`unsupported` → `not_supported`); `unknown` is `outcome_unknown`. It nudges `inbox_card` and `inbox_folder`, and is refused `not_supported` under `workbench_only` or without a tower.
+- **Exactly once.** `actions.KindOptions.NonIdempotentFor` decides per action from its params: `inbox_act` claims approve, retry, every press and Run Now begun before the handler (`inboxfeed.ActIdempotent`), so a hub stopped mid-apply answers `outcome_unknown` and never runs them again; a guarded verb is dispatched again after a restart and the tower's ledger answers its stored result. The table is pinned in `hub_contract_cases.json` (`inbox_act_idempotency`, read by Go and the Kit).
+- **Background applies.** A phone approve answers `applying` after the decision; the tool runs on the daemon's `towerBackground` (`ActDeps.Background`), which the daemon waits for, at most 30 s, after the hub and the socket stopped and before the database closes.
+
 ## A failing publish is visible (2026-11-16, #1873, asks #1396/#1398)
 
 - **The log names the reason.** A failed publish cycle, a kind's source read, a phone's mailbox read and the relay readers sync log a
@@ -828,3 +840,47 @@ The hub's half of the live link — relay ops over the open socket (R2), inline 
 the mailbox event lane, the early nudge and the in-cycle `PublishNow` (R4), and the `event_read`/`nudge_saved`
 timings (R7) — is described in place above; how the parts fit with the relay and the phone, the failure behaviour
 and the stand numbers are in [live-link.md](live-link.md).
+
+## Runners on request (2026-11-19, #1996)
+
+A phone request no longer waits for a runner's background floor. `session_report_request` wakes the report runner
+with `runnerWake.signalNow`, which ends the wait, or the gap a background signal started, at once
+(`TestAnUrgentSignalEndsTheWaitWithoutTheGap`, `TestAnUrgentSignalCutsTheGapABackgroundSignalStarted`,
+`TestSessionReportAPhoneRequestStartsAPassWithoutTheGap`); the requested run already skipped the per-session state
+spacing. A stored requested report also runs its workbench's summaries in the same pass, skipping `SummarySpacing`
+once for that workbench only (`cadence.requestNow`; `TestCadenceAnUrgentRequestSkipsTheSpacingOnceForThatWorkbenchOnly`,
+`TestSessionReportARequestedRunRefreshesTheWorkbenchSummariesInsideTheirSpacing`): gh refreshed the PR cache they read.
+`session_chat_request` opens its watch through `SessionChatSource.RequestWatches`, which wakes the chat loop instead
+of its 2 s tick (`TestSessionChatARequestWakesTheLoopAtOnce`). A background signal — a session state change
+(`SessionStateChanged` of the report runner and the git refresher) — keeps the 5 s minimum gap and the spacings (the
+existing `runner_test.go` twins); a deferred run is no signal, it shortens the wait itself. The other kinds the research
+note lists are not runner-fed: `permission_answer`, `session_input` and `session_start` move
+`permission_request`/`terminal_session`/`session_timeline` through the state lane (kicked by the `data_version` watch,
+nudging at once), and `chat_turn` through the chat engine. After a phone `session_start` or `session_input` the
+record shows at once, but its report fields — `terminal_session`'s `report_*` (`SessionReportRunner.Summary`) and the
+report milestones of `session_timeline` — still follow the state change's `signal()`, with the 5 s gap and
+`SummarySpacing`. That is deliberate: input is frequent and report runs are costly, so these stay background.
+
+- **Bursts.** Requests sent while a pass runs cost exactly one follow-up pass, started at once: the wait that ends
+  takes every pending signal of both kinds (`TestABurstOfUrgentSignalsDuringAPassMakesOneFollowUpPass`). Report
+  requests start passes at most once per 60 s per session (`RequestSpacing`; a refused request sends no signal); a
+  chat pass reads only watches that are due (`Every` 3 s per watch), so a burst of chat requests reads nothing more.
+  A pass in flight is not interrupted: the request waits for it to end (up to its runs' timeouts, 30 s per report).
+- **Failure modes.** The host closing mid-pass (the runner's ctx ends): the run in flight stores nothing and the
+  request stays due with the network for the next pass (`TestSessionReportARequestCutByStopStaysDue`); the ended ctx
+  ends the runner's loop, so signals still pending do not matter (a wait entered with ctx already ended consumes
+  none, `TestAWaitEnteredWithAnEndedContextConsumesNoUrgentSignal`). A
+  requested run that fails or times out keeps the stored report, consumes the request (the phone may ask again after
+  60 s) and leaves the summaries to their cadence (`TestSessionReportAFailedRequestedRunLeavesTheSummariesToTheirCadence`,
+  `TestSessionReportAHungRunTimesOutAndStoresNothing`). A hub restart with a request pending loses it — the wake, the
+  request flags and the chat watches are memory only, and the action is already applied, so it is not replayed: the
+  first pass after the start runs every live session and every session without a stored report (offline, no gh) and
+  republishes the stored reports (`TestSessionReportAChangeWhileTheHubWasOffRunsOnTheFirstPass`); the phone repeats
+  `session_chat_request` every minute and may repeat a report request.
+- **Writers.** The cached report (sidecar `session_reports`) is written only by the report runner's loop
+  (`save`, pruned by `RunDue`), and the session chat payloads only by the chat loop's `run`: background and requested
+  passes are the same loop, serial, so the later pass's value wins. The request state (`reportEntry.networkRequested`,
+  the summary cadence's `requested`/`urgent`) is written by the handler (`RequestReport`), the state lane
+  (`SessionStateChanged`) and the loop (`takeDue`/`restore`/`requestNow`) under the runner's or the cadence's mutex;
+  `restore` ORs a cut run's flags back and skips a run a later pass stamped, so a request that lands during a pass is
+  never lost. The wake tokens are lock-free one-slot channels.

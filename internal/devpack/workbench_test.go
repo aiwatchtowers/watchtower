@@ -122,7 +122,7 @@ func TestWorkbenchSkill_AsksReplaceDocuments(t *testing.T) {
 }
 
 // Spec 2026-10-03-workbench-session-report Part 5: the skill teaches
-// finishing a session (pack v3); the marker is now v22 (v4: spec 2026-10-08,
+// finishing a session (pack v3); the marker is now v23 (v4: spec 2026-10-08,
 // Working a target / Working a group; v5: board #499, in_progress from the
 // first prompt; v6: spec 2026-10-10-owner-asks-v2 Part 7, Asking the owner;
 // v7: spec 2026-10-12-codex-workbench-agent §6.5, both agents' tool spellings;
@@ -140,12 +140,13 @@ func TestWorkbenchSkill_AsksReplaceDocuments(t *testing.T) {
 // spec 2026-10-26 the author loop; v19: board #1352, set_session_target;
 // v20: spec 2026-11-08, answer_review_question and the thread question line;
 // v21: board #1025, the overview in the background on a big branch;
-// v22: board #2003, the multi-folder tools and the agent-message rule).
+// v22: Watchman approve merge rule; v23: board #2003, the multi-folder tools
+// and the agent-message rule).
 func TestWorkbenchSkill_TeachesFinishingASession(t *testing.T) {
 	_, body := WorkbenchSkill()
 	content := string(body)
-	if !strings.Contains(content, "\n"+MarkerKey+": v22\n") {
-		t.Fatalf("the skill must carry %s: v22", MarkerKey)
+	if !strings.Contains(content, "\n"+MarkerKey+": v23\n") {
+		t.Fatalf("the skill must carry %s: v23", MarkerKey)
 	}
 	start := strings.Index(content, "## Finishing a session")
 	if start < 0 {
@@ -255,11 +256,11 @@ func TestWorkbenchSkill_AskingTheOwnerTeachesLevelsAndDiscipline(t *testing.T) {
 	}
 }
 
-// DEV-04 across every previous version (v1..v21 → v22): a copy we wrote
+// DEV-04 across every previous version (v1..v22 → v23): a copy we wrote
 // and the owner never touched is upgraded; an edited one is kept,
 // byte-identical, as drifted.
 func TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne(t *testing.T) {
-	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md", "watchtower-workbench-v3.md", "watchtower-workbench-v4.md", "watchtower-workbench-v5.md", "watchtower-workbench-v6.md", "watchtower-workbench-v7.md", "watchtower-workbench-v8.md", "watchtower-workbench-v9.md", "watchtower-workbench-v10.md", "watchtower-workbench-v11.md", "watchtower-workbench-v12.md", "watchtower-workbench-v13.md", "watchtower-workbench-v14.md", "watchtower-workbench-v15.md", "watchtower-workbench-v16.md", "watchtower-workbench-v17.md", "watchtower-workbench-v18.md", "watchtower-workbench-v19.md", "watchtower-workbench-v20.md", "watchtower-workbench-v21.md"} {
+	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md", "watchtower-workbench-v3.md", "watchtower-workbench-v4.md", "watchtower-workbench-v5.md", "watchtower-workbench-v6.md", "watchtower-workbench-v7.md", "watchtower-workbench-v8.md", "watchtower-workbench-v9.md", "watchtower-workbench-v10.md", "watchtower-workbench-v11.md", "watchtower-workbench-v12.md", "watchtower-workbench-v13.md", "watchtower-workbench-v14.md", "watchtower-workbench-v15.md", "watchtower-workbench-v16.md", "watchtower-workbench-v17.md", "watchtower-workbench-v18.md", "watchtower-workbench-v19.md", "watchtower-workbench-v20.md", "watchtower-workbench-v21.md", "watchtower-workbench-v22.md"} {
 		prev, err := os.ReadFile(filepath.Join("testdata", fixture))
 		if err != nil {
 			t.Fatal(err)
@@ -308,7 +309,8 @@ func assertUpgradeLayout(t *testing.T, fixture, folder string, want State, rep W
 		fixture == "watchtower-workbench-v14.md" || fixture == "watchtower-workbench-v15.md" ||
 		fixture == "watchtower-workbench-v16.md" || fixture == "watchtower-workbench-v17.md" ||
 		fixture == "watchtower-workbench-v18.md" || fixture == "watchtower-workbench-v19.md" ||
-		fixture == "watchtower-workbench-v20.md" || fixture == "watchtower-workbench-v21.md"
+		fixture == "watchtower-workbench-v20.md" || fixture == "watchtower-workbench-v21.md" ||
+		fixture == "watchtower-workbench-v22.md"
 	if want == StateUpdated || splitCore {
 		if rep.Flow.State != StateInstalled || rep.SingleFileLayout {
 			t.Fatalf("%s %s: flow %+v single=%v, want the preset installed", want, fixture, rep.Flow, rep.SingleFileLayout)
@@ -905,7 +907,7 @@ func TestWorkbenchSkill_TeachesTheBigBranchOverview(t *testing.T) {
 	}
 }
 
-// Pack v22 (board #2003, spec 2026-11-18-multi-folder-workbench §6.6, §6.7,
+// Pack v23 (board #2003, spec 2026-11-18-multi-folder-workbench §6.6, §6.7,
 // §6.10): the four multi-folder tools, a target's folder, the rule that an
 // agent message carries no owner authority (both agents) and Codex's own call
 // of suggest_workbench_folder (no hook reminds it).
@@ -921,5 +923,14 @@ func TestWorkbenchSkill_TeachesTheMultiFolderBench(t *testing.T) {
 		if !strings.Contains(string(core), want) {
 			t.Errorf("the core skill lacks %q", want)
 		}
+	}
+}
+
+// Pack v22: the Watchman approve rule reaches workbenches without the flow preset.
+func TestWorkbenchSkill_WatchmanMergeRule(t *testing.T) {
+	_, core := WorkbenchSkill()
+	rule := "In a session handed to Watchman, a Watchman **Approve** on the review round counts as the owner's approval for merging this session's PR into its feature or umbrella branch, never into `main`; check CI is green first."
+	if !strings.Contains(string(core), rule) {
+		t.Errorf("the core skill lacks the Watchman merge rule")
 	}
 }

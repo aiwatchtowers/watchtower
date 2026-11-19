@@ -6,7 +6,6 @@ package chatengine
 // text and steps over the last flush. The hub fits it to its record caps.
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -29,8 +28,7 @@ import (
 
 // The feed's caps (iPhone chat spec §4.6).
 const (
-	MaxMessageText     = 40_000
-	maxActionArgsBytes = 4000
+	MaxMessageText = 40_000
 	// maxResultValueBytes caps each result value the approval card shows.
 	maxResultValueBytes = 512
 	// maxLabel caps titles, names and error messages (SliceClip's 200).
@@ -306,6 +304,10 @@ type FeedAction struct {
 	// ArgsComplete is false when ArgsDisplay was clipped: the card then
 	// offers no editor and no Confluence diff.
 	ArgsComplete bool `json:"args_complete"`
+	// DismissedAt is when the owner dismissed a session call whose outcome
+	// is unknown; "" while not dismissed (mobile Inbox spec §12.9: the
+	// phone's card then stops offering Dismiss).
+	DismissedAt string `json:"dismissed_at,omitempty"`
 }
 
 type Feed struct {
@@ -647,7 +649,8 @@ func chatFeedActionsTx(ctx context.Context, tx *sql.Tx, conv int64, window []cha
 	}
 	in, args := inList(ids)
 	//nolint:gosec // G202: in is "?,?,…" placeholders only
-	rows, err := tx.QueryContext(ctx, `SELECT id, tool, args_json, status, reason, turn_id, external, error, result_json
+	rows, err := tx.QueryContext(ctx, `SELECT id, tool, args_json, status, reason, turn_id, external, error, result_json,
+		       dismissed_at
 		FROM agent_actions
 		WHERE conversation_id = ? AND turn_id <> ''
 		  AND turn_id IN (SELECT turn_id FROM chat_messages WHERE id IN (`+in+`))
@@ -660,7 +663,7 @@ func chatFeedActionsTx(ctx context.Context, tx *sql.Tx, conv int64, window []cha
 		var a FeedAction
 		var argsJSON, reason, resultJSON string
 		if err := rows.Scan(&a.ID, &a.Tool, &argsJSON, &a.Status, &reason, &a.TurnID,
-			&a.External, &a.Error, &resultJSON); err != nil {
+			&a.External, &a.Error, &resultJSON, &a.DismissedAt); err != nil {
 			return nil, fmt.Errorf("reading chat actions: %w", err)
 		}
 		a.Title = actionTitle(a.Tool)
@@ -688,19 +691,9 @@ func actionTitle(tool string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// argsDisplay is an action's args as the phone shows them: indented JSON
-// (the stored text when it is not JSON), cut at 4000 characters, and
-// whether the text is whole. The approval hash is over the stored bytes,
-// never this text.
-func argsDisplay(argsJSON string) (string, bool) {
-	var buf bytes.Buffer
-	text := argsJSON
-	if json.Indent(&buf, []byte(argsJSON), "", "  ") == nil {
-		text = buf.String()
-	}
-	out, clipped := clipText(text, maxActionArgsBytes)
-	return out, clipped == nil
-}
+// argsDisplay is an action's args as the phone shows them
+// (tools.ArgsDisplay, shared with the phone Inbox's approval card).
+func argsDisplay(argsJSON string) (string, bool) { return tools.ArgsDisplay(argsJSON) }
 
 // cardResultKeys are the result_json keys the approval card shows (the
 // outcome link, "Task #N created", "Board X connected", the Confluence

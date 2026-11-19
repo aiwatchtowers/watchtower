@@ -262,7 +262,7 @@ func TestOutsideTouchWalkIsCapped(t *testing.T) {
 	// that mount, before anything there is probed.
 	share := filepath.Dir(repo)
 	var asked []string
-	onShare := func(p string) bool { asked = append(asked, p); return p != share && !pathWithin(p, share) }
+	onShare := func(p string) bool { asked = append(asked, p); return p != share && !pathInsideFold(p, share) }
 	_, _, ok = outsideRoot(filepath.Join(repo, "a.go"), nil, onShare)
 	assert.False(t, ok, "a non-local mount is never walked")
 	assert.Equal(t, share, asked[len(asked)-1], "the walk stops at the share's mount point")
@@ -283,13 +283,13 @@ func TestOutsideTouchSymlinkOntoANetworkMountIsNeverWalked(t *testing.T) {
 	var asked []string
 	shareIsRemote := func(p string) bool {
 		asked = append(asked, p)
-		return p != share && !pathWithin(p, share)
+		return p != share && !pathInsideFold(p, share)
 	}
 	_, _, ok := outsideRoot(filepath.Join(link, "src", "a.go"), nil, shareIsRemote)
 	assert.False(t, ok, "the link's target is on the share")
 	assert.Equal(t, repo, asked[len(asked)-1], "refused at the link's target, before any probe behind it")
 	for _, p := range asked {
-		assert.False(t, pathWithin(p, share), "nothing inside the share was asked about: %s", p)
+		assert.False(t, pathInsideFold(p, share), "nothing inside the share was asked about: %s", p)
 	}
 
 	resolved, root, ok := outsideRoot(filepath.Join(link, "src", "a.go"), nil, func(string) bool { return true })

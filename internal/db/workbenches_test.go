@@ -22,7 +22,7 @@ func newTestWorkbench(t *testing.T, d *DB) int64 {
 }
 
 // newOldSchemaWorkbench plants a bare projects row, for a test that migrated
-// down below 00197 (CreateWorkbench writes workbench_folders too).
+// down below 00209 (CreateWorkbench writes workbench_folders too).
 func newOldSchemaWorkbench(t *testing.T, d *DB) int64 {
 	t.Helper()
 	res, err := d.Exec(`INSERT INTO projects (name, folder_path) VALUES ('acme', ?)`, t.TempDir())

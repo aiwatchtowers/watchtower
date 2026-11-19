@@ -143,7 +143,23 @@ package enum HomeFeedQueries {
             ORDER BY stamp DESC, id DESC
             LIMIT ?
             """, arguments: StatementArguments(arguments))
-        return try rows.map { row in
+        return try messageRows(db, rows, now: now)
+    }
+
+    /// The messages `ids` as the Inbox draws them, whatever their status
+    /// (the tower's feed decides which are listed).
+    package static func messageRows(_ db: Database, ids: [Int64], now: Date) throws -> [HomeFeedInboxRow] {
+        guard !ids.isEmpty else { return [] }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT *, MAX(created_at, mentioned_at) AS stamp FROM inbox_items
+            WHERE id IN (\(ids.map(String.init).joined(separator: ",")))
+            ORDER BY id
+            """)
+        return try messageRows(db, rows, now: now)
+    }
+
+    private static func messageRows(_ db: Database, _ rows: [Row], now: Date) throws -> [HomeFeedInboxRow] {
+        try rows.map { row in
             let item = InboxItem(row: row)
             let stamp: String = row["stamp"] ?? ""
             let names = try senderNames(db, item)

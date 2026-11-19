@@ -28,9 +28,9 @@ enum IdeaChatSurface {
 
     /// The idea's conversation, created on first use (the title the old view
     /// model gave it, so existing history keeps opening).
-    static func conversationID(for idea: Idea, dbPool: DatabasePool) async throws -> Int64 {
+    static func conversationID(for idea: Idea, dbPool: DatabasePool, writes: ChatWrites) async throws -> Int64 {
         try await DatabaseEmbeddedChatStore.conversationID(
-            dbPool: dbPool, contextType: contextType, contextID: String(idea.id),
+            dbPool: dbPool, writes: writes, contextType: contextType, contextID: String(idea.id),
             title: "Idea: \(String(idea.title.prefix(60)))")
     }
 

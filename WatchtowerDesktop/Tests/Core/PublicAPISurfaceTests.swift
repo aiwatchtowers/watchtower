@@ -66,7 +66,50 @@ final class PublicAPISurfaceTests: XCTestCase {
         XCTAssertFalse(app.contains(#".product(name: "WatchtowerKit""#), "the app takes WatchtowerSync only")
     }
 
+    /// WatchtowerInterface (mobile Inbox spec §2.3) is linked by Core and the
+    /// phone alike, so it stays Foundation-only: no package dependencies, and
+    /// every source file imports Foundation and nothing else.
+    func testInterfacePackageIsFoundationOnly() throws {
+        let packageDir = Self.desktopDir.deletingLastPathComponent().appendingPathComponent("WatchtowerInterface")
+        let manifest = try String(contentsOf: packageDir.appendingPathComponent("Package.swift"), encoding: .utf8)
+        XCTAssertFalse(manifest.contains(".package("), "WatchtowerInterface must have no package dependencies")
+
+        let sourcesDir = packageDir.appendingPathComponent("Sources/WatchtowerInterface")
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: sourcesDir, includingPropertiesForKeys: nil))
+        var scanned = 0
+        var offenders: [String] = []
+        for case let url as URL in enumerator where url.pathExtension == "swift" {
+            scanned += 1
+            let source = try String(contentsOf: url, encoding: .utf8)
+            for line in source.split(separator: "\n") {
+                guard let module = Self.importedModule(line), module != "Foundation" else { continue }
+                offenders.append("\(url.lastPathComponent): \(line.trimmingCharacters(in: .whitespaces))")
+            }
+        }
+        XCTAssertGreaterThan(scanned, 0, "WatchtowerInterface sources must be reachable at \(sourcesDir.path)")
+        XCTAssertEqual(offenders, [], "WatchtowerInterface sources import Foundation only")
+    }
+
+    func testImportedModuleReadsEveryImportForm() {
+        XCTAssertEqual(Self.importedModule("import Foundation"), "Foundation")
+        XCTAssertEqual(Self.importedModule("@testable import GRDB"), "GRDB")
+        XCTAssertEqual(Self.importedModule("  import struct Combine.Published"), "Combine")
+        XCTAssertNil(Self.importedModule("// import GRDB in a comment"))
+    }
+
     // MARK: - Helpers
+
+    /// The module an import declaration names (attributes and `import struct …`
+    /// forms included), or nil when the line is not an import.
+    private static func importedModule(_ line: some StringProtocol) -> String? {
+        let words = line.split { $0 == " " || $0 == "\t" }
+        guard let importIndex = words.firstIndex(of: "import"),
+              words[..<importIndex].allSatisfy({ $0.hasPrefix("@") }) else { return nil }
+        let rest = words[words.index(after: importIndex)...]
+        let kinds: Set<String> = ["struct", "class", "enum", "protocol", "func", "var", "let", "typealias"]
+        guard let path = rest.first(where: { !kinds.contains(String($0)) }) else { return nil }
+        return String(path.split(separator: ".").first ?? path)
+    }
 
     /// True for any import declaration (attributes and `import struct …`
     /// forms included) of a Kit module.

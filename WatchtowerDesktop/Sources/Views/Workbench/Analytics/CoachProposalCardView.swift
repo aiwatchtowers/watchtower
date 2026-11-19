@@ -73,7 +73,17 @@ struct CoachProposalCardView: View {
             Text(proposal.why).font(.callout).foregroundStyle(.secondary)
             diffBlock(diff)
             if let error = coach.cardErrors[proposal.id] {
-                Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(Tone.warning)
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                    Label { Text(CoachPRTexts.styled(error)) } icon: { Image(systemName: "exclamationmark.triangle") }
+                        .font(.caption)
+                        .foregroundStyle(Tone.warning)
+                    if case let .accept(editedText) = coach.retries[proposal.id] {
+                        Button(CoachPRTexts.retry) { Task { await coach.accept(proposal.id, editedText: editedText) } }
+                            .buttonStyle(.kitQuiet)
+                            .controlSize(.small)
+                            .disabled(busy)
+                    }
+                }
             }
             // One line when it fits; a narrow panel puts the evidence above the buttons.
             ViewThatFits(in: .horizontal) {

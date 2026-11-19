@@ -6,6 +6,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -40,6 +41,12 @@ var (
 	workbenchSessionReportFlagNoNetwork bool
 )
 
+// sessionReportClock is the merge refresh's clock (sessionreport
+// RefreshOptions.Now); nil = the wall clock, with each refresh's time
+// budget. Tests set a fixed clock, which takes the budget off the wall: a
+// loaded machine never cuts their git reads short.
+var sessionReportClock func() time.Time
+
 func init() {
 	c := workbenchSessionReportCmd
 	c.Flags().Int64Var(&workbenchSessionReportFlagWorkbench, workbenchFlag, 0, "workbench id")
@@ -73,7 +80,8 @@ func runWorkbenchSessionReport(cmd *cobra.Command, _ []string) error {
 	}
 	w := cmd.OutOrStdout()
 	if workbenchSessionReportFlagSummary {
-		rows, res, err := sessionreport.RefreshedSummaries(ctx, database, id, sessionreport.RefreshOptions{})
+		rows, res, err := sessionreport.RefreshedSummaries(ctx, database, id,
+			sessionreport.RefreshOptions{Now: sessionReportClock})
 		if err != nil {
 			return err
 		}
@@ -109,7 +117,7 @@ func sessionReport(ctx context.Context, database *db.DB, workbenchID, sessionID 
 		return sessionreport.Report{}, err
 	}
 	res := sessionreport.Refresh(ctx, database, workbenchID, refs, sessionreport.RefreshOptions{
-		Network: network, Budget: sessionreport.DefaultRefreshBudget, SessionID: sessionID,
+		Network: network, Budget: sessionreport.DefaultRefreshBudget, Now: sessionReportClock, SessionID: sessionID,
 	})
 	return sessionreport.Build(ctx, database, workbenchID, sessionID, sessionreport.Options{PRNote: res.Note})
 }

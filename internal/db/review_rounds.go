@@ -177,11 +177,27 @@ func (db *DB) RepointReviewRound(r ReviewRound) error {
 // (nothing written) when the round is not open or not this workbench's. sent
 // counts the round's comments now sent.
 func (db *DB) SendReviewRound(projectID, id int64) (sent int, ok bool, err error) {
-	tx, err := db.Begin()
-	if err != nil {
-		return 0, false, err
+	err = db.WithTx(func(tx *sql.Tx) error {
+		sent, ok, err = db.SendReviewRoundTx(tx, projectID, id)
+		if err == nil && !ok {
+			return errNothingWritten
+		}
+		return err
+	})
+	if errors.Is(err, errNothingWritten) {
+		return 0, false, nil
 	}
-	defer tx.Rollback() // a committed tx makes this a no-op
+	return sent, ok, err
+}
+
+// errNothingWritten rolls back a wrapper's transaction whose compare-and-set
+// did not apply.
+var errNothingWritten = errors.New("nothing written")
+
+// SendReviewRoundTx is SendReviewRound inside the caller's transaction (the
+// Watchman twin finishes its item in the same one); ok false = the round was
+// not open, and nothing was written.
+func (db *DB) SendReviewRoundTx(tx *sql.Tx, projectID, id int64) (sent int, ok bool, err error) {
 	res, err := tx.Exec(`UPDATE review_rounds SET status = 'sent', outcome = ?, sent_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE id = ? AND project_id = ? AND status = 'open'`, ReviewOutcomeChanges, id, projectID)
 	if err != nil {
@@ -197,7 +213,7 @@ func (db *DB) SendReviewRound(projectID, id int64) (sent int, ok bool, err error
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM review_comments WHERE round_id = ? AND status = 'sent'`, id).Scan(&sent); err != nil {
 		return 0, false, err
 	}
-	return sent, true, tx.Commit()
+	return sent, true, nil
 }
 
 // ApproveReviewRound closes an open round as approved in one transaction. ok
@@ -206,11 +222,22 @@ func (db *DB) SendReviewRound(projectID, id int64) (sent int, ok bool, err error
 // resolveOpen is false; with resolveOpen those rows are resolved in the same
 // transaction.
 func (db *DB) ApproveReviewRound(projectID, id int64, resolveOpen bool) (ok bool, err error) {
-	tx, err := db.Begin()
-	if err != nil {
-		return false, fmt.Errorf("approving review round %d: %w", id, err)
+	err = db.WithTx(func(tx *sql.Tx) error {
+		ok, err = db.ApproveReviewRoundTx(tx, projectID, id, resolveOpen)
+		if err == nil && !ok {
+			return errNothingWritten
+		}
+		return err
+	})
+	if errors.Is(err, errNothingWritten) {
+		return false, nil
 	}
-	defer tx.Rollback() // a committed tx makes this a no-op
+	return ok, err
+}
+
+// ApproveReviewRoundTx is ApproveReviewRound inside the caller's transaction;
+// ok false = refused, and nothing was written.
+func (db *DB) ApproveReviewRoundTx(tx *sql.Tx, projectID, id int64, resolveOpen bool) (ok bool, err error) {
 	var drafts, open int
 	if err := tx.QueryRow(`SELECT
 		COALESCE(SUM(status = 'draft'), 0), COALESCE(SUM(status IN ('carried','outdated')), 0)
@@ -236,7 +263,38 @@ func (db *DB) ApproveReviewRound(projectID, id int64, resolveOpen bool) (ok bool
 			return false, fmt.Errorf("resolving open comments of review round %d: %w", id, err)
 		}
 	}
-	return true, tx.Commit()
+	return true, nil
+}
+
+// ReviewRoundTx reads round id inside tx (the Watchman twin's re-check of
+// the round's place before it writes).
+func (db *DB) ReviewRoundTx(tx *sql.Tx, id int64) (*ReviewRound, error) {
+	r, err := scanReviewRound(tx.QueryRow(`SELECT `+reviewRoundCols+` FROM review_rounds WHERE id = ?`, id))
+	if err != nil {
+		return nil, fmt.Errorf("review round %d: %w", id, err)
+	}
+	return r, nil
+}
+
+// ReviewRoundCommentCountTx counts round id's comments of any status inside
+// tx.
+func (db *DB) ReviewRoundCommentCountTx(tx *sql.Tx, id int64) (int, error) {
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM review_comments WHERE round_id = ?`, id).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting review round %d comments: %w", id, err)
+	}
+	return n, nil
+}
+
+// AddReviewDesignCommentTx adds a draft design comment (no path) with body
+// to round id at tree inside tx: the Watchman twin's request for changes,
+// sent with the round in the same transaction.
+func (db *DB) AddReviewDesignCommentTx(tx *sql.Tx, id int64, tree, body string) error {
+	if _, err := tx.Exec(`INSERT INTO review_comments (round_id, path, tree_sha, body, status) VALUES (?, NULL, ?, ?, 'draft')`,
+		id, tree, body); err != nil {
+		return fmt.Errorf("adding a design comment to review round %d: %w", id, err)
+	}
+	return nil
 }
 
 // ReviewRoundComments lists a round's comments in id order.

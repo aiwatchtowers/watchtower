@@ -1,0 +1,894 @@
+{
+  "_doc": "One case per chat.* command (internal/chatstore/commands.go), run by Go TestChatWritesCases; until #1170 Task 18 the Swift ChatWritesFixtureTests ran them against the Swift writer each case names in `swift`. Since the unified chat (#1822) the main chat's writes are the chat engine's: the commands left are the embedded chats', the queued drafts' and meetings.delete, and a conversation-level one that names a main chat is refused not_permitted. Each case runs `seed` on a fresh database, calls the command with `params` (Go adds request_id), and must leave exactly `check`'s rows. `refusal` and `result` are the Go command's answer. Time columns written from the clock are checked as `> 1000`.",
+  "cases": [
+    {
+      "name": "new_main_chat_is_refused",
+      "command": "chat.new",
+      "swift": "ChatConversationQueries.create",
+      "seed": [],
+      "params": {},
+      "refusal": "not_permitted",
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_conversations",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "new_embedded_chat",
+      "command": "chat.new",
+      "swift": "ChatConversationQueries.create",
+      "seed": [],
+      "params": {
+        "context": {
+          "type": "target",
+          "id": "7",
+          "title": "Plan"
+        }
+      },
+      "result": {
+        "conversation_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT title, context_type, context_id, project_id, routing_mode FROM chat_conversations",
+          "rows": [
+            [
+              "Plan",
+              "target",
+              "7",
+              null,
+              "preferred_reserve"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "new_embedded_chat_reuses_the_contexts_chat",
+      "command": "chat.new",
+      "swift": "DatabaseEmbeddedChatStore.conversationID",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (3, 'Track', 'track', '9', 1, 1)"
+      ],
+      "params": {
+        "context": {
+          "type": "track",
+          "id": "9",
+          "title": "Other",
+          "reuse": true
+        }
+      },
+      "result": {
+        "conversation_id": 3
+      },
+      "check": [
+        {
+          "sql": "SELECT id, title FROM chat_conversations",
+          "rows": [
+            [
+              3,
+              "Track"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "new_code_question_records_its_model",
+      "command": "chat.new",
+      "swift": "ChatConversationQueries.create+setProviderModel",
+      "seed": [],
+      "params": {
+        "context": {
+          "type": "code_question",
+          "id": "1:a.go:3",
+          "title": "a.go:3"
+        },
+        "routing": {
+          "automatic": false,
+          "provider": "codex",
+          "model": "gpt-x"
+        }
+      },
+      "result": {
+        "conversation_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT title, context_type, context_id, provider, model, routing_mode FROM chat_conversations",
+          "rows": [
+            [
+              "a.go:3",
+              "code_question",
+              "1:a.go:3",
+              "codex",
+              "gpt-x",
+              "preferred_reserve"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_title_of_an_embedded_chat",
+      "command": "chat.set_title",
+      "swift": "ChatConversationQueries.updateTitle",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Chat', 'target', '7', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "title": "Scope"
+      },
+      "check": [
+        {
+          "sql": "SELECT title, title_source, updated_at > 1000 FROM chat_conversations",
+          "rows": [
+            [
+              "Scope",
+              "prefix",
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_title_of_a_main_chat_is_refused",
+      "command": "chat.set_title",
+      "swift": "ChatConversationQueries.updateTitle",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'Chat', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "title": "Scope"
+      },
+      "refusal": "not_permitted",
+      "check": [
+        {
+          "sql": "SELECT title, updated_at FROM chat_conversations",
+          "rows": [
+            [
+              "Chat",
+              1.0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_title_if_empty_writes_an_empty_title",
+      "command": "chat.set_title",
+      "swift": "TuningChatSurface.setTitleIfEmpty",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, '', 'analytics_tuning', '2', 1, 1)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (1, 'user', 'Why so slow', 2)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "title": "Why so slow",
+        "if_empty": true
+      },
+      "check": [
+        {
+          "sql": "SELECT title, updated_at FROM chat_conversations",
+          "rows": [
+            [
+              "Why so slow",
+              1.0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_title_if_empty_keeps_a_title",
+      "command": "chat.set_title",
+      "swift": "TuningChatSurface.setTitleIfEmpty",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Kept', 'analytics_tuning', '2', 1, 1)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (1, 'user', 'Why so slow', 2)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "title": "Why so slow",
+        "if_empty": true
+      },
+      "check": [
+        {
+          "sql": "SELECT title FROM chat_conversations",
+          "rows": [
+            [
+              "Kept"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "delete_a_main_chat_is_refused",
+      "command": "chat.delete",
+      "swift": "ChatConversationQueries.delete",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (1, 'user', 'hi', 2)"
+      ],
+      "params": {
+        "conversation_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_conversations",
+          "rows": [
+            [
+              1
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT COUNT(*) FROM chat_messages",
+          "rows": [
+            [
+              1
+            ]
+          ]
+        }
+      ],
+      "refusal": "not_permitted"
+    },
+    {
+      "name": "delete_a_code_question",
+      "command": "chat.delete",
+      "swift": "CodeQuestionList.delete",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (2, 'q', 'code_question', '1:a.go:3', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (3, 't', 'target', '7', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 2,
+        "context_type": "code_question"
+      },
+      "check": [
+        {
+          "sql": "SELECT id FROM chat_conversations",
+          "rows": [
+            [
+              3
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_model_of_a_code_question",
+      "command": "chat.set_model",
+      "swift": "ChatConversationQueries.setProviderModel",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'q', 'code_question', '1:a.go:3', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "provider": "claude"
+      },
+      "check": [
+        {
+          "sql": "SELECT provider, model, routing_mode FROM chat_conversations",
+          "rows": [
+            [
+              "claude",
+              null,
+              "preferred_reserve"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_model_of_a_main_chat_is_refused",
+      "command": "chat.set_model",
+      "swift": "ChatConversationQueries.setProviderModel",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "provider": "claude"
+      },
+      "refusal": "not_permitted",
+      "check": [
+        {
+          "sql": "SELECT provider, model FROM chat_conversations",
+          "rows": [
+            [
+              null,
+              null
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "context_moves_a_draft_chat_over_an_empty_one",
+      "command": "chat.context",
+      "swift": "DatabaseEmbeddedChatStore.rekeyConversation",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Draft', 'automation_draft', 'd1', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (2, 'Old', 'automation', '9', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "context_type": "automation",
+        "context_id": "9"
+      },
+      "result": {
+        "changed": true
+      },
+      "check": [
+        {
+          "sql": "SELECT id, context_type, context_id, updated_at > 1000 FROM chat_conversations",
+          "rows": [
+            [
+              1,
+              "automation",
+              "9",
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "context_keeps_a_target_chat_with_messages",
+      "command": "chat.context",
+      "swift": "DatabaseEmbeddedChatStore.rekeyConversation",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Draft', 'automation_draft', 'd1', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (2, 'Old', 'automation', '9', 1, 1)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (2, 'user', 'hi', 2)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "context_type": "automation",
+        "context_id": "9"
+      },
+      "result": {
+        "changed": false
+      },
+      "check": [
+        {
+          "sql": "SELECT id, context_type, context_id FROM chat_conversations ORDER BY id",
+          "rows": [
+            [
+              1,
+              "automation_draft",
+              "d1"
+            ],
+            [
+              2,
+              "automation",
+              "9"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reviewer_thread_is_made_on_first_use",
+      "command": "chat.reviewer_thread",
+      "swift": "ReviewerThreadQueries.ensure",
+      "seed": [
+        "INSERT INTO projects (id, name, folder_path) VALUES (1, 'W', '/example/w')",
+        "INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name) VALUES (7, 1, '/example/w', 0, 'owner', 'w')"
+      ],
+      "params": {
+        "project_id": 1,
+        "branch": "main"
+      },
+      "result": {
+        "conversation_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT id, title, context_type, context_id FROM chat_conversations",
+          "rows": [
+            [
+              1,
+              "Reviewer: main",
+              "review_reviewer",
+              "1:main"
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT project_id, workbench_folder_id, branch, conversation_id FROM review_reviewer_threads",
+          "rows": [
+            [
+              1,
+              7,
+              "main",
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reviewer_thread_is_reused",
+      "command": "chat.reviewer_thread",
+      "swift": "ReviewerThreadQueries.ensure",
+      "seed": [
+        "INSERT INTO projects (id, name, folder_path) VALUES (1, 'W', '/example/w')",
+        "INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name) VALUES (7, 1, '/example/w', 0, 'owner', 'w')",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (4, 'Reviewer: main', 'review_reviewer', '1:main', 1, 1)",
+        "INSERT INTO review_reviewer_threads (project_id, workbench_folder_id, branch, conversation_id) VALUES (1, 7, 'main', 4)"
+      ],
+      "params": {
+        "project_id": 1,
+        "branch": "main"
+      },
+      "result": {
+        "conversation_id": 4
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_conversations",
+          "rows": [
+            [
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reviewer_thread_is_per_folder",
+      "command": "chat.reviewer_thread",
+      "swift": "ReviewerThreadQueries.ensure",
+      "seed": [
+        "INSERT INTO projects (id, name, folder_path) VALUES (1, 'W', '/example/w')",
+        "INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name) VALUES (7, 1, '/example/w', 0, 'owner', 'w')",
+        "INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name) VALUES (8, 1, '/example/hub', 1, 'owner', 'hub')",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (4, 'Reviewer: main', 'review_reviewer', '1:main', 1, 1)",
+        "INSERT INTO review_reviewer_threads (project_id, workbench_folder_id, branch, conversation_id) VALUES (1, 7, 'main', 4)"
+      ],
+      "params": {
+        "project_id": 1,
+        "folder_id": 8,
+        "branch": "main"
+      },
+      "result": {
+        "conversation_id": 5
+      },
+      "check": [
+        {
+          "sql": "SELECT id, context_id FROM chat_conversations ORDER BY id",
+          "rows": [
+            [
+              4,
+              "1:main"
+            ],
+            [
+              5,
+              "1:f8:main"
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT workbench_folder_id, branch, conversation_id FROM review_reviewer_threads ORDER BY conversation_id",
+          "rows": [
+            [
+              7,
+              "main",
+              4
+            ],
+            [
+              8,
+              "main",
+              5
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "code_question_delete_empty",
+      "command": "chat.code_question.delete_empty",
+      "swift": "CodeQuestionList.deleteEmpty",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'a', 'code_question', '1:a.go:3', 10, 10)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (2, 'b', 'code_question', '10:b.go:3', 10, 10)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (3, 'c', 'code_question', '1:c.go:3', 10, 10)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (3, 'user', 'hi', 11)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (4, 'd', 'code_question', '1:d.go:3', 500, 500)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (5, 'e', 'code_question', '1:e.go:3', 10, 10)"
+      ],
+      "params": {
+        "workbench_id": 1,
+        "created_before": 100,
+        "keeping": [
+          5
+        ]
+      },
+      "result": {
+        "count": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT id FROM chat_conversations ORDER BY id",
+          "rows": [
+            [
+              2
+            ],
+            [
+              3
+            ],
+            [
+              4
+            ],
+            [
+              5
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "draft_save_replaces_the_surfaces_text",
+      "command": "chat.draft.save",
+      "swift": "QueuedDraftQueries.save",
+      "seed": [
+        "INSERT INTO chat_queued_drafts (surface_key, text, at) VALUES ('track:3', 'old', 1)"
+      ],
+      "params": {
+        "surface_key": "track:3",
+        "text": "new"
+      },
+      "check": [
+        {
+          "sql": "SELECT surface_key, text, at > 1000 FROM chat_queued_drafts",
+          "rows": [
+            [
+              "track:3",
+              "new",
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "draft_clear",
+      "command": "chat.draft.clear",
+      "swift": "QueuedDraftQueries.clear",
+      "seed": [
+        "INSERT INTO chat_queued_drafts (surface_key, text, at) VALUES ('track:3', 'old', 1)"
+      ],
+      "params": {
+        "surface_key": "track:3"
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_queued_drafts",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "meetings_delete_takes_the_recordings_meeting_chat",
+      "command": "meetings.delete",
+      "swift": "MeetingTranscriptQueries.delete",
+      "seed": [
+        "INSERT INTO meeting_transcripts (id, title, audio_path, transcript_text, private) VALUES (1, 'Sync', '/nonexistent/a.m4a', 'hello', 0)",
+        "INSERT INTO meeting_transcripts (id, title, audio_path, transcript_text, private) VALUES (2, 'Sync', NULL, 'hello', 0)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (10, 'M', 'meeting', '1', 1, 5)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (10, 'user', 'hi', 2)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (11, 'M', 'meeting', '2', 1, 5)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (11, 'user', 'hi', 2)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (12, 'M', 'target', '1', 1, 5)",
+        "INSERT INTO meeting_recaps (id, transcript_id, source_text, recap_json) VALUES (1, 1, 's', '{}')"
+      ],
+      "params": {
+        "transcript_id": 1
+      },
+      "result": {
+        "deleted": true
+      },
+      "check": [
+        {
+          "sql": "SELECT id FROM meeting_transcripts",
+          "rows": [
+            [
+              2
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT id FROM chat_conversations ORDER BY id",
+          "rows": [
+            [
+              11
+            ],
+            [
+              12
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT conversation_id FROM chat_messages",
+          "rows": [
+            [
+              11
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT id, transcript_id FROM meeting_recaps",
+          "rows": [
+            [
+              1,
+              null
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "meetings_delete_takes_only_the_newest_meeting_chat",
+      "command": "meetings.delete",
+      "swift": "MeetingTranscriptQueries.delete",
+      "seed": [
+        "INSERT INTO meeting_transcripts (id, title, audio_path, transcript_text, private) VALUES (1, 'Sync', NULL, 'hello', 0)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (10, 'M', 'meeting', '1', 1, 5)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (10, 'user', 'hi', 2)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (11, 'M', 'meeting', '1', 1, 9)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (11, 'user', 'hi', 2)"
+      ],
+      "params": {
+        "transcript_id": 1
+      },
+      "result": {
+        "deleted": true
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM meeting_transcripts",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT id FROM chat_conversations",
+          "rows": [
+            [
+              10
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT conversation_id FROM chat_messages",
+          "rows": [
+            [
+              10
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "meetings_delete_of_a_private_recording_takes_its_recap",
+      "command": "meetings.delete",
+      "swift": "MeetingTranscriptQueries.delete",
+      "seed": [
+        "INSERT INTO meeting_transcripts (id, title, audio_path, transcript_text, private) VALUES (1, 'Sync', NULL, 'hello', 1)",
+        "INSERT INTO meeting_recaps (id, transcript_id, source_text, recap_json) VALUES (1, 1, 's', '{}')"
+      ],
+      "params": {
+        "transcript_id": 1
+      },
+      "result": {
+        "deleted": true
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM meeting_recaps",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "meetings_delete_of_a_gone_recording_changes_nothing",
+      "command": "meetings.delete",
+      "swift": "MeetingTranscriptQueries.delete",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (10, 'M', 'meeting', '1', 1, 5)"
+      ],
+      "params": {
+        "transcript_id": 1
+      },
+      "result": {
+        "deleted": false
+      },
+      "check": [
+        {
+          "sql": "SELECT id FROM chat_conversations",
+          "rows": [
+            [
+              10
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "message_append_a_notice",
+      "command": "chat.message.append",
+      "swift": "ChatMessageQueries.insert",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Chat', 'target', '7', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "role": "system",
+        "text": "Saved the automation."
+      },
+      "result": {
+        "message_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT conversation_id, role, text, turn_id, status, created_at > 1000 FROM chat_messages",
+          "rows": [
+            [
+              1,
+              "system",
+              "Saved the automation.",
+              "",
+              "complete",
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "message_append_to_a_gone_chat_is_refused",
+      "command": "chat.message.append",
+      "swift": "ChatMessageQueries.insert",
+      "seed": [],
+      "params": {
+        "conversation_id": 3,
+        "role": "system",
+        "text": "x"
+      },
+      "refusal": "not_found",
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_messages",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reply_finish_with_the_surface_text",
+      "command": "chat.reply.finish",
+      "swift": "ChatMessageQueries.finalizeEmbedded",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Chat', 'target', '7', 1, 1)",
+        "INSERT INTO chat_messages (id, conversation_id, role, text, created_at, turn_id, status) VALUES (5, 1, 'assistant', 'raw reply', 2, 't1', 'complete')"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "message_id": 5,
+        "text": "Shown reply",
+        "status": "complete"
+      },
+      "check": [
+        {
+          "sql": "SELECT text, status, error_code, error_message FROM chat_messages",
+          "rows": [
+            [
+              "Shown reply",
+              "complete",
+              null,
+              null
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT updated_at > 1000 FROM chat_conversations",
+          "rows": [
+            [
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reply_finish_as_an_error",
+      "command": "chat.reply.finish",
+      "swift": "ChatMessageQueries.finalizeEmbedded",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Chat', 'target', '7', 1, 1)",
+        "INSERT INTO chat_messages (id, conversation_id, role, text, created_at, turn_id, status) VALUES (5, 1, 'assistant', 'raw reply', 2, 't1', 'complete')"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "message_id": 5,
+        "text": "raw reply",
+        "status": "error",
+        "error_code": "internal",
+        "error_message": "The assistant returned no text."
+      },
+      "check": [
+        {
+          "sql": "SELECT text, status, error_code, error_message FROM chat_messages",
+          "rows": [
+            [
+              "raw reply",
+              "error",
+              "internal",
+              "The assistant returned no text."
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT updated_at FROM chat_conversations",
+          "rows": [
+            [
+              1.0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reply_finish_of_another_chats_message_is_refused",
+      "command": "chat.reply.finish",
+      "swift": "ChatMessageQueries.finalizeEmbedded",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Chat', 'target', '7', 1, 1)",
+        "INSERT INTO chat_messages (id, conversation_id, role, text, created_at, turn_id, status) VALUES (5, 1, 'assistant', 'raw reply', 2, 't1', 'complete')"
+      ],
+      "params": {
+        "conversation_id": 2,
+        "message_id": 5,
+        "text": "x",
+        "status": "complete"
+      },
+      "refusal": "not_found",
+      "check": [
+        {
+          "sql": "SELECT text, status FROM chat_messages",
+          "rows": [
+            [
+              "raw reply",
+              "complete"
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

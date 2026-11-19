@@ -1,12 +1,14 @@
 package sessionstart
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -31,8 +33,10 @@ import (
 )
 
 const (
-	pasteOpen  = "\x1b[200~"
-	pasteClose = "\x1b[201~"
+	pasteOpen = "\x1b[200~"
+	// pasteModeOn is the stub's bracketed-paste switch (DEC mode 2004).
+	pasteModeOn = "\x1b[?2004h"
+	pasteClose  = "\x1b[201~"
 )
 
 // ptyMark is the marker ptyBefore types.
@@ -66,17 +70,43 @@ func (w *world) port() *Port {
 }
 
 // startedSession is a claude session started through the port, launched and
-// idle for its run (a Stop hook after its start).
+// idle for its run (a Stop hook after its start). The hook is written once
+// the host has read the stub's bracketed-paste switch, as a real agent's
+// Stop hook comes after it drew its prompt: stamped earlier, a line could
+// reach the host before the switch and end cannot_type (CI, 2026-11-19).
 func (w *world) startedSession(p *Port) (int64, sessionhost.SessionInfo) {
 	w.t.Helper()
 	res, err := p.Start(context.Background(), handlers.StartRequest{Workbench: w.wb, Brief: "go"})
 	require.NoError(w.t, err)
 	require.Equal(w.t, StateRunning, res.State, "the port answers after the launch was checked")
 	info := w.launched(res.SessionID)
+	w.waitPasteMode(info)
 	_, err = w.db.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ? WHERE id = ?`,
 		db.AgentStateStamp(time.Now().Add(time.Second)), res.SessionID)
 	require.NoError(w.t, err)
 	return res.SessionID, info
+}
+
+// waitPasteMode returns once the host has read the session's bracketed-paste
+// switch (DEC 2004), on a pane attached and closed again: an attach replays
+// the host's tracked modes before the output, and the host tracks a chunk's
+// modes before it forwards the chunk, so the switch on the pane means the
+// host holds it. No clock: the pane's frames are the event.
+func (w *world) waitPasteMode(info sessionhost.SessionInfo) {
+	w.t.Helper()
+	pane := attach(w.t, w.socket, info)
+	defer func() { _ = pane.nc.Close() }()
+	var seen []byte
+	for !bytes.Contains(seen, []byte(pasteModeOn)) {
+		ft, b, err := sessionhost.ReadFrame(pane.nc)
+		require.NoError(w.t, err)
+		if ft == sessionhost.Exit || ft == sessionhost.Error {
+			w.t.Fatalf("session %d ended before its paste mode (%s): %q", info.Row, b, seen)
+		}
+		if ft == sessionhost.Output {
+			seen = append(seen, b...)
+		}
+	}
 }
 
 func TestPortLiveSeesOnlyThisScope(t *testing.T) {
@@ -239,7 +269,12 @@ func (r *relay) line(sid int64, text string) uint64 {
 	return seq
 }
 
+// finalStatuses are the echo statuses that never change again.
+var finalStatuses = []string{wire.StatusApplied, wire.StatusFailed, wire.StatusExpired, wire.StatusCancelled}
+
 // echo passes the processor and syncs the phone until seq's echo satisfies ok.
+// A final echo that does not fails the test at once instead of waiting for an
+// echo that cannot come.
 func (r *relay) echo(seq uint64, what string, ok func(wire.ActionRequest) bool) wire.ActionRequest {
 	r.t.Helper()
 	var e wire.ActionRequest
@@ -249,6 +284,13 @@ func (r *relay) echo(seq uint64, what string, ok func(wire.ActionRequest) bool) 
 		_, err = r.phone.Sync()
 		require.NoError(r.t, err)
 		e = r.phone.Echoes[seq]
+		if !ok(e) && slices.Contains(finalStatuses, e.Status) {
+			reason := ""
+			if e.Reason != nil {
+				reason = *e.Reason
+			}
+			r.t.Fatalf("%s: the echo ended %s (reason %q, result %v)", what, e.Status, reason, e.Result)
+		}
 		return ok(e)
 	})
 	return e

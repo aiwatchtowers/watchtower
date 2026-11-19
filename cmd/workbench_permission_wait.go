@@ -18,8 +18,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/askanswer"
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/sessionagent"
+	"watchtower/internal/watchman"
 )
 
 // permissionPollEvery is how often permission-wait reads its request back
@@ -38,11 +41,18 @@ const permissionSummaryRunes = 2000
 
 // The decisions permission-wait prints. Allow is for this one call: never
 // updatedInput, never updatedPermissions (a phone allows a call, not a rule).
-// A deny decided by the Mac's Workchat card (`decided_by = "Mac"`) says so.
+// A deny decided by the Mac's Workchat card (`decided_by = "Mac"`) says so,
+// and so does one decided by Watchman, the owner's twin (`decided_by =
+// "watchman"`); an allow is the same whoever decided it.
 const (
 	permissionAllowOutput   = `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`
 	permissionDenyOutput    = `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from the owner's phone."}}}`
 	permissionMacDenyOutput = `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied by the owner at the Mac."}}}`
+	// permissionDeniedByWatchman is the agent's text for a twin's deny (spec
+	// 2026-11-16-watchman-design, verbatim).
+	permissionDeniedByWatchman   = "Watchman (the owner's twin) denied this — the owner decides it in the morning; continue with other work"
+	permissionWatchmanDenyOutput = `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"` +
+		permissionDeniedByWatchman + `"}}}`
 )
 
 // permissionDecidedByMac is the `decided_by` the Desktop's Workchat writes.
@@ -126,7 +136,7 @@ func waitPermissionDecision(ctx context.Context, stdin io.Reader, stderr io.Writ
 	if in.Event != "PermissionRequest" || in.SessionID == "" {
 		return "", nil
 	}
-	database, err := openHookDB()
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
 		return "", err
 	}
@@ -144,7 +154,31 @@ func waitPermissionDecision(ctx context.Context, stdin io.Reader, stderr io.Writ
 	if err != nil {
 		return "", err
 	}
+	queueWatchmanPermission(stderr, cfg, database, db.WatchmanItem{
+		WorkbenchID: workbenchID, SessionID: row.ID,
+		Kind: "permission", RefKind: "permission", RefID: id,
+		Question: watchman.ItemQuestion(db.WatchmanPermissionText(in.ToolName, summary)),
+	})
 	return pollPermissionRequest(ctx, stderr, database, id, workbenchID, in.SessionID)
+}
+
+// permissionWatchmanWake wakes the daemon for a prompt's queued item; a var
+// for tests.
+var permissionWatchmanWake = func(cfg *config.Config) { watchmanWaitPointWake(cfg)() }
+
+// queueWatchmanPermission queues the twin's item for a prompt of an armed
+// session (spec 2026-11-16-watchman-design §3, §4) and wakes the daemon for
+// a new one. A failure is one stderr line naming the request: the prompt
+// stays the owner's and the wait goes on as without Watchman (spec §7).
+func queueWatchmanPermission(stderr io.Writer, cfg *config.Config, database *db.DB, it db.WatchmanItem) {
+	_, inserted, err := database.QueueWatchmanWaitPoint(it)
+	if err != nil {
+		fmt.Fprintf(stderr, "watchtower: permission request %d was not queued for Watchman (it stays the owner's): %v\n", it.RefID, err)
+		return
+	}
+	if inserted {
+		permissionWatchmanWake(cfg)
+	}
 }
 
 // pollPermissionRequest reads request id back every permissionPollEvery
@@ -204,8 +238,11 @@ func checkPermissionRequest(stderr io.Writer, database *db.DB, id, workbenchID i
 	case db.PermissionAllowed:
 		return permissionAllowOutput, true, nil
 	case db.PermissionDenied:
-		if req.DecidedBy.Valid && req.DecidedBy.String == permissionDecidedByMac {
+		switch {
+		case req.DecidedBy.Valid && req.DecidedBy.String == permissionDecidedByMac:
 			return permissionMacDenyOutput, true, nil
+		case req.DecidedBy.Valid && req.DecidedBy.String == askanswer.ByWatchman:
+			return permissionWatchmanDenyOutput, true, nil
 		}
 		return permissionDenyOutput, true, nil
 	case db.PermissionPending:
@@ -220,7 +257,7 @@ func checkPermissionRequest(stderr io.Writer, database *db.DB, id, workbenchID i
 		(row.AgentStateAt.Before(req.CreatedAt) || row.AgentState.String == agentStateApproval) {
 		return "", false, nil
 	}
-	closed, err := database.ClosePermissionRequest(id, db.PermissionAnsweredOnMac, hookNow())
+	closed, err := database.ClosePermissionRequest(id, db.PermissionAnsweredOnMac, "", hookNow())
 	if err == nil && !closed {
 		// The phone's answer landed after the Mac's: Claude Code keeps the Mac's.
 		fmt.Fprintf(stderr, "watchtower: permission request %d: the phone answered after the Mac; the Mac's answer stands\n", id)
@@ -232,17 +269,27 @@ func checkPermissionRequest(stderr io.Writer, database *db.DB, id, workbenchID i
 // more. The database calls take no context, so a cancelled wait still
 // writes it, under the busy timeout already set.
 func expirePermissionRequest(database *db.DB, id int64) error {
-	_, err := database.ClosePermissionRequest(id, db.PermissionExpired, hookNow())
+	_, err := database.ClosePermissionRequest(id, db.PermissionExpired, "", hookNow())
 	return err
 }
 
-// permissionSummary is what a permission request shows the owner, at most
-// permissionSummaryRunes runes, and whether it was cut short (clipped): a
-// Bash command (and its description on the next line as a `# ` comment,
-// so it never reads as part of the command), the file an Edit, Write or
-// NotebookEdit touches, the URL a WebFetch reads, otherwise the tool input
-// as compact JSON.
+// permissionSummary is what a permission request shows the owner,
+// permissionSummaryText cut to at most permissionSummaryRunes runes, and
+// whether it was cut short (clipped).
 func permissionSummary(toolName string, toolInput json.RawMessage) (summary string, clipped bool) {
+	s := permissionSummaryText(toolName, toolInput)
+	if utf8.RuneCountInString(s) <= permissionSummaryRunes {
+		return s, false
+	}
+	return clipRunes(s, permissionSummaryRunes), true
+}
+
+// permissionSummaryText is a tool call as the hard-limit table reads it,
+// whole: a Bash command (and its description below it, every line a `# `
+// comment, so no line of it reads as part of the command), the file an
+// Edit, Write or NotebookEdit touches, the URL a WebFetch reads, otherwise
+// the tool input as compact JSON.
+func permissionSummaryText(toolName string, toolInput json.RawMessage) string {
 	var fields map[string]json.RawMessage
 	_ = json.Unmarshal(toolInput, &fields)
 	str := func(key string) string {
@@ -257,7 +304,9 @@ func permissionSummary(toolName string, toolInput json.RawMessage) (summary stri
 	case "Bash":
 		s = str("command")
 		if d := str("description"); s != "" && d != "" {
-			s += "\n# " + d
+			for _, line := range strings.Split(d, "\n") {
+				s += "\n# " + line
+			}
 		}
 	case "Edit", "Write", "NotebookEdit":
 		s = str("file_path")
@@ -275,8 +324,5 @@ func permissionSummary(toolName string, toolInput json.RawMessage) (summary stri
 			s = strings.TrimSpace(string(toolInput))
 		}
 	}
-	if utf8.RuneCountInString(s) <= permissionSummaryRunes {
-		return s, false
-	}
-	return clipRunes(s, permissionSummaryRunes), true
+	return s
 }

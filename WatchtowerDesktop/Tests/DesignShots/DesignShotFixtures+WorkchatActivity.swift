@@ -174,7 +174,11 @@ struct WorkchatLiveProposalShot: View {
             if agentsOpen {
                 Group {
                     if usesLiveImplementation {
-                        WorkchatRunningAgentsPicker(snapshot: actualSnapshot, error: nil, now: fixtureNow) { _ in }
+                        WorkchatAgentsPopover(
+                            list: WorkchatLivePresentation.agentsList(snapshot: actualSnapshot, error: nil, feedLoaded: true,
+                                                                      feedError: nil, done: [], idle: false, now: fixtureNow),
+                            agentsMore: actualSnapshot?.agentsMore ?? 0, paneKey: "shot", memory: WorkchatPaneMemory()
+                        ) { _ in }
                             .background(Surface.window, in: RoundedRectangle(cornerRadius: Radius.container))
                             .overlay(RoundedRectangle(cornerRadius: Radius.container)
                                 .strokeBorder(.quaternary, lineWidth: Stroke.hairline))
@@ -191,6 +195,7 @@ struct WorkchatLiveProposalShot: View {
         if usesLiveImplementation {
             WorkchatLiveLine(snapshot: actualSnapshot, error: model == .error ? "Activity unavailable" : nil,
                              loaded: !model.isLoading, working: !model.isEmpty, stateAt: fixtureNow - 2,
+                             paneKey: "shot", memory: WorkchatPaneMemory(),
                              onRetry: {}, onOpenAgent: { _ in }, referenceDate: fixtureNow)
         } else {
         HStack(spacing: Spacing.compact) {

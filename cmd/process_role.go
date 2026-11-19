@@ -9,11 +9,12 @@ import (
 // hook specs in internal/devpack): their DB work is timed against an
 // agent's hook budget, so lock metrics name them apart from the CLI.
 var hookCommands = map[string]bool{
-	"workbench brief":         true,
-	"workbench check":         true,
-	"workbench ask-guard":     true,
-	"workbench session-state": true,
-	"workbench outside-touch": true,
+	"workbench brief":          true,
+	"workbench check":          true,
+	"workbench ask-guard":      true,
+	"workbench session-state":  true,
+	"workbench watchman-guard": true,
+	"workbench outside-touch":  true,
 }
 
 // roleFor names this process in lock-metrics events from its arguments,

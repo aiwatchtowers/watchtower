@@ -33,7 +33,7 @@ func judgeFixture(t *testing.T, sessions int, baseline *float64) (dbs, int64, in
 	if baseline != nil {
 		n = 3
 	}
-	require.NoError(t, d.MarkCoachAccepted(id, "Run the tests.\nKeep diffs small.", "", baseline, n, judgeDecided))
+	require.NoError(t, d.MarkCoachAccepted(id, "Run the tests.\nKeep diffs small.", "", "", baseline, n, judgeDecided))
 	return d, wb, id
 }
 
@@ -98,7 +98,7 @@ func TestJudge_NoEffectCutPromptAddition(t *testing.T) {
 	require.NoError(t, err)
 	id := propose(t, d, db.CoachProposal{Destination: DestPromptAdd, PromptID: prompts.SpecReview,
 		BeforeText: "Other rule.", AfterText: "Other rule.\nKeep it short."})
-	require.NoError(t, d.MarkCoachAccepted(id, "Other rule.\nKeep it short.", "", fl(5), 3, judgeDecided))
+	require.NoError(t, d.MarkCoachAccepted(id, "Other rule.\nKeep it short.", "", "", fl(5), 3, judgeDecided))
 	// The workbench scope of a global destination is ignored; measure is global.
 	_, c := runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
 	require.Equal(t, 1, c)
@@ -210,7 +210,7 @@ func TestJudge_AllowRuleGetsVerdictButNoCut(t *testing.T) {
 		d.session(t, wb, fmt.Sprintf("s%d", i), ids, 1, 1.0)
 	}
 	id := propose(t, d, db.CoachProposal{Destination: DestSettingsAllow, BeforeText: "", AfterText: "Bash(ls:*)"})
-	require.NoError(t, d.MarkCoachAccepted(id, "Bash(ls:*)", "", fl(5), 3, judgeDecided))
+	require.NoError(t, d.MarkCoachAccepted(id, "Bash(ls:*)", "", "", fl(5), 3, judgeDecided))
 	j, c := runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
 	assert.Equal(t, 1, j)
 	assert.Zero(t, c)
@@ -233,7 +233,7 @@ func TestJudge_ReverseOfReplaceIsAcceptedEndToEnd(t *testing.T) {
 	require.NoError(t, d.SetWorkbenchInstruction(wb, db.InstructionProcedure, "Be concise and quick."))
 	id := propose(t, d, db.CoachProposal{Destination: DestProcedure, WorkbenchID: wb, Kind: "replace",
 		BeforeText: "Be long.", AfterText: "Be concise and quick."})
-	require.NoError(t, d.MarkCoachAccepted(id, "Be concise and quick.", "", fl(5), 3, judgeDecided))
+	require.NoError(t, d.MarkCoachAccepted(id, "Be concise and quick.", "", "", fl(5), 3, judgeDecided))
 	now := judgeDecided.Add(15 * 24 * time.Hour)
 	_, c := runJudge(t, d, now)
 	require.Equal(t, 1, c)
@@ -259,7 +259,7 @@ func TestJudge_RestoredTextOverBudgetNoCut(t *testing.T) {
 	require.NoError(t, d.SetWorkbenchInstruction(wb, db.InstructionProcedure, "Short."))
 	id := propose(t, d, db.CoachProposal{Destination: DestProcedure, WorkbenchID: wb, Kind: "replace",
 		BeforeText: long, AfterText: "Short."})
-	require.NoError(t, d.MarkCoachAccepted(id, "Short.", "", fl(5), 3, judgeDecided))
+	require.NoError(t, d.MarkCoachAccepted(id, "Short.", "", "", fl(5), 3, judgeDecided))
 	// Restoring would fit exactly; a longer current text pushes it over.
 	require.NoError(t, d.SetWorkbenchInstruction(wb, db.InstructionProcedure, "Short. And more text after it."))
 	_, c := runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
@@ -279,7 +279,7 @@ func (d dbs) agentSessions(t *testing.T, agent string, wb int64, ids []int64, n,
 func acceptedFor(t *testing.T, d dbs, dest string, wb int64, baseline float64) int64 {
 	t.Helper()
 	id := propose(t, d, db.CoachProposal{Destination: dest, WorkbenchID: wb, AfterText: "Keep diffs small."})
-	require.NoError(t, d.MarkCoachAccepted(id, "Keep diffs small.", "", fl(baseline), 3, judgeDecided))
+	require.NoError(t, d.MarkCoachAccepted(id, "Keep diffs small.", "", "", fl(baseline), 3, judgeDecided))
 	if IsRepoDestination(dest) { // committed at once: measured from the Accept, as the others
 		_, err := d.SetCoachMeasureFrom(id, judgeDecided)
 		require.NoError(t, err)
@@ -374,7 +374,7 @@ func TestJudge_NoCutForCodexRulesAllow(t *testing.T) {
 	home := t.TempDir()
 	writeFile(t, filepath.Join(home, ".codex", codexRulesRel), rule+"\n")
 	id := propose(t, d, db.CoachProposal{Destination: DestCodexRulesAllow, BeforeText: "", AfterText: rule + "\n"})
-	require.NoError(t, d.MarkCoachAccepted(id, rule+"\n", "", fl(5), 3, judgeDecided))
+	require.NoError(t, d.MarkCoachAccepted(id, rule+"\n", "", "", fl(5), 3, judgeDecided))
 	j, c, err := judge(d.DB, d.al, home, judgeDecided.Add(15*24*time.Hour))
 	require.NoError(t, err)
 	assert.Equal(t, 1, j)
@@ -427,7 +427,7 @@ func TestJudge_NoCutForCodexSkillInTwoFolders(t *testing.T) {
 	writeFile(t, filepath.Join(home, ".codex", "skills", "a", "SKILL.md"), "Before.\nAfter.\n")
 	id := propose(t, d, db.CoachProposal{Destination: DestCodexSkillUser, Skill: "a",
 		BeforeText: "Before.\n", AfterText: "Before.\nAfter.\n"})
-	require.NoError(t, d.MarkCoachAccepted(id, "Before.\nAfter.\n", "", fl(5), 3, judgeDecided))
+	require.NoError(t, d.MarkCoachAccepted(id, "Before.\nAfter.\n", "", "", fl(5), 3, judgeDecided))
 	j, c, err := judge(d.DB, d.al, home, judgeDecided.Add(15*24*time.Hour))
 	require.NoError(t, err)
 	assert.Equal(t, 1, j)
@@ -452,7 +452,7 @@ func TestJudge_CutOfChatEditIsWeekly(t *testing.T) {
 	require.NoError(t, err)
 	id := propose(t, d, db.CoachProposal{Destination: DestClaudeSkillUser, Skill: "review", Origin: "chat",
 		ConversationID: &conv, BeforeText: "Read the diff.\n", AfterText: "Read the diff.\nKeep it short.\n"})
-	require.NoError(t, d.MarkCoachAccepted(id, "Read the diff.\nKeep it short.\n", "", fl(5), 3, judgeDecided))
+	require.NoError(t, d.MarkCoachAccepted(id, "Read the diff.\nKeep it short.\n", "", "", fl(5), 3, judgeDecided))
 	orig := proposal(t, d, id)
 
 	j, c, err := judge(d.DB, d.al, home, judgeDecided.Add(15*24*time.Hour))
@@ -478,6 +478,13 @@ func TestJudge_CutOfChatEditIsWeekly(t *testing.T) {
 // an accepted repo_claude_md edit decided at judgeDecided instead.
 func repoJudgeFixture(t *testing.T, sessions int) (dbs, int64) {
 	t.Helper()
+	return repoPRJudgeFixture(t, sessions, "")
+}
+
+// repoPRJudgeFixture is repoJudgeFixture whose Accept opened the pull
+// request prURL ("" = the working-copy route).
+func repoPRJudgeFixture(t *testing.T, sessions int, prURL string) (dbs, int64) {
+	t.Helper()
 	d := openDBs(t)
 	wb, ids := d.workbench(t, "a", 1)
 	for i := range sessions {
@@ -485,7 +492,7 @@ func repoJudgeFixture(t *testing.T, sessions int) (dbs, int64) {
 	}
 	id := propose(t, d, db.CoachProposal{Destination: DestRepoClaudeMD, WorkbenchID: wb,
 		BeforeText: "Run tests.\n", AfterText: "Run tests.\nKeep diffs small.\n"})
-	require.NoError(t, d.MarkCoachAccepted(id, "Run tests.\nKeep diffs small.\n", "main", fl(10), 3, judgeDecided))
+	require.NoError(t, d.MarkCoachAccepted(id, "Run tests.\nKeep diffs small.\n", "main", prURL, fl(10), 3, judgeDecided))
 	return d, id
 }
 

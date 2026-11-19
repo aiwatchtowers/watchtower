@@ -102,10 +102,10 @@ package struct TerminalSession: Codable, FetchableRecord, Identifiable, Equatabl
     /// The automation run that started this session (00122); nil = the owner
     /// started it, or the run was deleted since.
     package var automationRunID: Int64?
-    /// The workbench folder the session was started for (00197); nil for a
+    /// The workbench folder the session was started for (00209); nil for a
     /// standalone terminal. Its cwd is that folder or a worktree of it.
     package var workbenchFolderID: Int64?
-    /// The session this one is a sub-session of (00197); nil = a top-level
+    /// The session this one is a sub-session of (00209); nil = a top-level
     /// session, or its parent was deleted since.
     package var parentSessionID: Int64?
     /// That run's trigger (`automation_runs.trigger`, joined by

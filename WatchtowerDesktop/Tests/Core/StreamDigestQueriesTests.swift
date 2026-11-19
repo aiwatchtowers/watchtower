@@ -120,35 +120,6 @@ final class StreamDigestQueriesTests: XCTestCase {
 
     // MARK: - markRead / unreadCount
 
-    func testMarkReadStampsReadAt() throws {
-        let db = try TestDatabase.create()
-        let id = try db.write { db in
-            try TestDatabase.insertStreamDigest(db)
-        }
-        XCTAssertNil(try db.read { try StreamDigestQueries.fetchAll($0) }.first?.readAt)
-
-        try db.write { db in try StreamDigestQueries.markRead(db, id: Int(id)) }
-
-        let digest = try db.read { try StreamDigestQueries.fetchAll($0) }.first { $0.id == Int(id) }
-        XCTAssertNotNil(digest?.readAt)
-        XCTAssertEqual(digest?.isRead, true)
-    }
-
-    func testMarkReadIsIdempotentAndNeverOverwritesAnEarlierTimestamp() throws {
-        let db = try TestDatabase.create()
-        let id = try db.write { db in
-            try TestDatabase.insertStreamDigest(db)
-        }
-
-        try db.write { db in try StreamDigestQueries.markRead(db, id: Int(id)) }
-        let firstReadAt = try db.read { try StreamDigestQueries.fetchAll($0) }.first { $0.id == Int(id) }?.readAt
-
-        try db.write { db in try StreamDigestQueries.markRead(db, id: Int(id)) }
-        let secondReadAt = try db.read { try StreamDigestQueries.fetchAll($0) }.first { $0.id == Int(id) }?.readAt
-
-        XCTAssertEqual(firstReadAt, secondReadAt)
-    }
-
     // MARK: - fetchByID
 
     func testFetchByIDResolvesOneRowAndNilForUnknown() throws {
@@ -172,7 +143,7 @@ final class StreamDigestQueriesTests: XCTestCase {
             try TestDatabase.insertStreamDigest(db)
             try TestDatabase.insertStreamDigest(db)
             let readID = try TestDatabase.insertStreamDigest(db)
-            try StreamDigestQueries.markRead(db, id: Int(readID))
+            try db.execute(sql: "UPDATE stream_digests SET read_at = '2026-11-16T09:00:00Z' WHERE id = ?", arguments: [readID])
         }
 
         let count = try db.read { try StreamDigestQueries.unreadCount($0) }

@@ -209,7 +209,14 @@ func (r *Registry) callCompanyRead(ctx context.Context, t *Tool, args json.RawMe
 	}
 	res, err := r.executeRecorded(ctx, t, args, b, func() { record(0, 0, auditlog.ResultError) })
 	if err != nil {
-		record(0, 0, auditlog.ResultError)
+		// A tool that shapes and size-checks its own result (the tuning
+		// report reads) refuses with ErrResultTooLarge: audited as too_large,
+		// like the cap below, not as a failure.
+		result := auditlog.ResultError
+		if errors.Is(err, ErrResultTooLarge) {
+			result = auditlog.ResultTooLarge
+		}
+		record(0, 0, result)
 		return nil, err
 	}
 	raw, err := json.Marshal(res)

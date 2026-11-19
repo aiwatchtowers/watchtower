@@ -332,3 +332,65 @@ func TestExec_WithProcessGroupReapsChildrenOnTimeout(t *testing.T) {
 	}
 	waitGone(pid)
 }
+
+// ExecOwnerNetwork never prompts (no terminal, no askpass, ssh in batch
+// mode) but keeps the owner's ssh agent, and its argv clears every
+// credential helper before naming gh as the only one, with no hook and no
+// fsmonitor.
+func TestExecOwnerNetwork_CredentialsAndNoPrompt(t *testing.T) {
+	t.Setenv("GIT_ASKPASS", "/inherited/askpass")
+	t.Setenv("SSH_ASKPASS", "/inherited/askpass")
+	t.Setenv("SSH_AUTH_SOCK", "/owner/agent")
+	t.Setenv("GIT_DIR", "/elsewhere")
+	fake := filepath.Join(t.TempDir(), "git")
+	script := "#!/bin/sh\nprintf '%s|%s|%s|%s|%s|%s|%s|%s\\n' \"$GIT_SSH_COMMAND\" \"${GIT_ASKPASS-unset}\" \"${SSH_ASKPASS-unset}\" " +
+		"\"$SSH_ASKPASS_REQUIRE\" \"$GIT_ALLOW_PROTOCOL\" \"$GIT_TERMINAL_PROMPT\" \"${SSH_AUTH_SOCK-unset}\" \"${GIT_DIR-unset}\"\n" +
+		"for a in \"$@\"; do printf '%s\\n' \"$a\"; done\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := ExecOwnerNetwork(context.Background(), t.TempDir(), "/opt/my tools/gh", fake, "push", "origin", "HEAD:refs/heads/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	wantEnv := "ssh -o BatchMode=yes -o ConnectTimeout=10|||never|git:http:https:ssh:file|0|/owner/agent|unset"
+	if lines[0] != wantEnv {
+		t.Fatalf("env = %q, want %q", lines[0], wantEnv)
+	}
+	argv := strings.Join(lines[1:], " ")
+	for _, want := range []string{
+		"-c core.hooksPath=/dev/null", "-c core.fsmonitor=false",
+		"-c credential.helper= -c credential.helper=!'/opt/my tools/gh' auth git-credential",
+		"-c core.alternateRefsCommand=true",
+	} {
+		if !strings.Contains(argv, want) {
+			t.Errorf("argv %q lacks %q", argv, want)
+		}
+	}
+	if !strings.HasSuffix(argv, " push origin HEAD:refs/heads/x") {
+		t.Errorf("argv %q does not end with the call's own args", argv)
+	}
+	if got := ownerNetworkArgs("gh", "fetch")[len(readConfig)+3]; got != "credential.helper=!gh auth git-credential" {
+		t.Errorf("a bare gh is not quoted: %q", got)
+	}
+}
+
+// An owner's network call cut off by its context is killed with its whole
+// process group.
+func TestExecOwnerNetwork_KillsTheProcessGroup(t *testing.T) {
+	fake := filepath.Join(t.TempDir(), "git")
+	// The fake skips ownerNetworkArgs' -c pairs and runs the script it is given.
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nwhile [ \"$1\" = -c ]; do shift 2; done\nexec /bin/sh -c \"$1\" sh \"$2\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pid, cancel, result := startedChild(t, context.Background(), func(ctx context.Context, script, fifo string) error {
+		_, _, err := ExecOwnerNetwork(ctx, t.TempDir(), "gh", fake, script, fifo)
+		return err
+	})
+	cancel()
+	if err := <-result; err == nil {
+		t.Fatal("want the cut-off run to fail")
+	}
+	waitGone(pid)
+}

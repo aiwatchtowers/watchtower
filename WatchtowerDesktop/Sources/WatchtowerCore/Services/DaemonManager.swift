@@ -155,7 +155,9 @@ package final class DaemonManager {
     }
 
     // C4 fix: async to avoid blocking main thread
-    package func startDaemon() async {
+    /// `noSync` starts it with `--no-sync` (the app's start before
+    /// onboarding finishes): the socket serves, no sync cycle runs.
+    package func startDaemon(noSync: Bool = false) async {
         resolvePathIfNeeded()
         guard let path = watchtowerPath else {
             errorMessage = "watchtower binary not found in PATH"
@@ -163,7 +165,7 @@ package final class DaemonManager {
         }
 
         do {
-            let result = try await Self.launchDetachedDaemon(path: path)
+            let result = try await Self.launchDetachedDaemon(path: path, noSync: noSync)
             if result.status == 0 {
                 isRunning = true
                 errorMessage = nil
@@ -270,15 +272,18 @@ package final class DaemonManager {
 
     /// The one launch of `sync --daemon --detach`, shared by `startDaemon()`
     /// and `restart()`, so both give the daemon the owner's `CODEX_HOME`.
+    /// `noSync` adds `--no-sync` (a start argument, never stored).
     /// `loginEnvironment` and `processFactory` are test seams.
     nonisolated static func launchDetachedDaemon(
         path: String,
+        noSync: Bool = false,
         loginEnvironment: () async -> [String: String]? = { await Constants.resolvedLoginEnvironment() },
         processFactory: (String, [String]) -> Process = makeProcess
     ) async throws -> (status: Int32, stderr: String) {
         let login = await loginEnvironment()
+        let arguments = ["sync", "--daemon", "--detach"] + (noSync ? ["--no-sync"] : [])
         return try await runProcessCapturingStderr(
-            path: path, arguments: ["sync", "--daemon", "--detach"]
+            path: path, arguments: arguments
         ) { path, arguments in
             let process = processFactory(path, arguments)
             process.environment = daemonEnvironment(base: ProcessInfo.processInfo.environment, login: login)
@@ -335,8 +340,9 @@ package final class DaemonManager {
     /// the worse case, race a second one in. So a non-zero stop is followed
     /// by polling pid liveness up to `restartStopGrace`; `--detach` runs only
     /// once the pid is confirmed dead, and `.stopTimedOut` is thrown instead
-    /// of attempted if it never dies.
-    package nonisolated static func restart() async throws {
+    /// of attempted if it never dies. `noSync` starts the new one with
+    /// `--no-sync` (a restart before onboarding finishes).
+    package nonisolated static func restart(noSync: Bool = false) async throws {
         guard let path = Constants.findCLIPath() else {
             throw DaemonRestartError.cliNotFound
         }
@@ -359,7 +365,7 @@ package final class DaemonManager {
             }
         }
 
-        let result = try await launchDetachedDaemon(path: path)
+        let result = try await launchDetachedDaemon(path: path, noSync: noSync)
         if result.status != 0 {
             throw DaemonRestartError.startFailed(status: result.status, stderr: result.stderr)
         }

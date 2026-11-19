@@ -46,7 +46,7 @@ package struct EmbeddedStreamReducer: Sendable {
             return .failed(message)
         case .failure(let error):
             return .failed(error.message)
-        case .routing, .toolStart, .toolEnd, .usage, .done:
+        case .routing, .toolStart, .toolEnd, .usage, .started, .saveError, .done:
             return .none
         }
     }

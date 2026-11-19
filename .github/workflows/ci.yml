@@ -97,7 +97,7 @@ jobs:
               - '!WatchtowerChat/**'
               - '!WatchtowerChatText/**'
             mobile:
-              - '{WatchtowerMobile/**,WatchtowerKit/**,WatchtowerChatText/**,WatchtowerChat/**,Makefile,.github/workflows/ci.yml}'
+              - '{WatchtowerMobile/**,WatchtowerKit/**,WatchtowerChatText/**,WatchtowerInterface/**,WatchtowerChat/**,Makefile,.github/workflows/ci.yml}'
             guide:
               - 'docs/guide/**'
 
@@ -141,8 +141,9 @@ jobs:
               - 'scripts/**'
               - 'docs/guide/reference/keyboard-shortcuts.md'
               - 'cmd/testdata/**'
-              - 'internal/{aiconsent,asks,automations,automations/blocks,automations/builtin,chat,chatengine,chatstore,coach,codewalk,codex,config,db,ideas,inbox,instructions,planusage,policy,purge,reviewdiff,sessionhost,sessionstart,sessionstate,skills,slackconnect,slackmode,specreview,tools}/testdata/**'
+              - 'internal/{aiconsent,asks,automations,automations/blocks,automations/builtin,chat,chatengine,chatstore,coach,codewalk,codex,config,db,ideas,inbox,inboxfeed,instructions,planusage,policy,purge,reviewdiff,sessionhost,sessionstart,sessionstate,skills,slackconnect,slackmode,specreview,tools,watchman}/testdata/**'
               - 'internal/hub/{identity,secure,transport/cloudkit}/testdata/**'
+              - 'internal/tower/api/testdata/**'
               - 'internal/db/schema.sql'
               - 'internal/chat/{artifacts_examples,questions_contract}.md'
               - 'internal/features/registry.go'
@@ -254,8 +255,10 @@ jobs:
         with:
           version: "v2.11.4"
           # The Mac's cores are shared with the other jobs and the owner's
-          # own work: a slow lint there is not a broken one.
-          args: --timeout=${{ runner.environment == 'self-hosted' && '10m' || '5m' }}
+          # own work: a slow lint there is not a broken one. The Mac's eight
+          # runners share the ci user's lint lock, so a second lint there
+          # would fail at once ("parallel golangci-lint is running").
+          args: --timeout=${{ runner.environment == 'self-hosted' && '10m --allow-parallel-runners' || '5m' }}
           # The Mac keeps golangci-lint's own cache in the ci user's home.
           skip-cache: ${{ runner.environment == 'self-hosted' }}
 
@@ -387,6 +390,11 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+      # The Swift side of the tower interface is generated from the Go types
+      # (internal/tower/gen): a stale generated file fails here with its diff.
+      - name: Generated interface check
+        run: make gen-interface-check
 
       # The shell suite over scripts/build-app.sh — it stubs `ps` and never
       # builds, so it rides this job (Linux in the cloud) rather than paying
@@ -639,6 +647,10 @@ jobs:
         working-directory: WatchtowerChatText
         run: swiftlint lint --strict
 
+      - name: SwiftLint (interface package)
+        working-directory: WatchtowerInterface
+        run: swiftlint lint --strict
+
       # ChatUI's views are held to the kit_* rules by the package's config.
       - name: SwiftLint (chat package)
         working-directory: WatchtowerChat
@@ -659,6 +671,12 @@ jobs:
       - name: Test (chat text package)
         timeout-minutes: 10
         working-directory: WatchtowerChatText
+        run: swift test
+
+      # Its generated GoldenRoundTripTests read internal/tower/api/testdata.
+      - name: Test (interface package)
+        timeout-minutes: 10
+        working-directory: WatchtowerInterface
         run: swift test
 
       # ChatWire (the chat wire models, operations and stores) and ChatUI (the

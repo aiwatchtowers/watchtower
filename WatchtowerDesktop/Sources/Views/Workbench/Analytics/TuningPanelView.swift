@@ -64,6 +64,7 @@ struct TuningPanelView: View {
         }
         .macChatStyle(hooks: .app, look: .embedded)
         .task(id: ObjectIdentifier(chat)) { await chat.refreshCards() }
+        .onAppear { coach?.syncPRs() }
         .sheet(item: $editing) { proposal in
             if let coach { CoachEditSheet(proposal: proposal, coach: coach) }
         }
@@ -304,7 +305,8 @@ struct TuningNoToolsCard: View {
 /// A settled chat proposal folded to one line: accepted ones point at the
 /// pane's Accepted edits, where they are measured and can be rolled back.
 /// A workbench repository file names the file and branch it wrote until
-/// the commit is seen (§4.3a).
+/// the commit is seen (§4.3a); a pull-request edit links its PR (spec
+/// 2026-11-19 §4.6).
 struct TuningAcceptedLine: View {
     let proposal: CoachProposal
     var written: CoachWrittenFile?
@@ -319,6 +321,9 @@ struct TuningAcceptedLine: View {
                     .foregroundStyle(isAccepted ? Tone.success : .secondary)
                 Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: Spacing.regular)
+                if isAccepted, let raw = TuningChatTexts.prURL(proposal, written: written), let url = URL(string: raw) {
+                    CoachPRLink(label: CoachPRTexts.label(raw), url: url).font(.callout)
+                }
                 if isAccepted {
                     Button(TuningChatTexts.showAccepted, action: onShow)
                         .buttonStyle(.kitQuiet)

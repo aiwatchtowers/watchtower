@@ -262,9 +262,8 @@ package enum WorkbenchQueries {
     // MARK: - Board
 
     /// The status of every ancestor of `targetID` on its own project's
-    /// board, keyed by id. Read before and after an owner's status write, it
-    /// tells which parents migration 00085's rollup (PROJ-05) moved as part
-    /// of that write.
+    /// board, keyed by id. Read before and after a move, it tells which
+    /// parents migration 00085's rollup (PROJ-05) moved as part of it.
     package static func ancestorStatuses(_ db: Database, of targetID: Int64) throws -> [Int64: String] {
         let rows = try Row.fetchAll(db, sql: """
             WITH RECURSIVE up(id, depth) AS (
@@ -284,36 +283,6 @@ package enum WorkbenchQueries {
             out[row["id"]] = row["status"]
         }
         return out
-    }
-
-    /// The owner's status write on a workbench target: `TargetQueries.updateStatus`
-    /// (history actor `owner`, PROJ-06), run inside the caller's write.
-    /// - Returns: the ancestors the PROJ-05 rollup moved in the same write,
-    ///   sorted — the owner's doing too, so the caller reports them as owner
-    ///   writes and they never notify.
-    package static func updateTargetStatus(_ db: Database, targetID: Int64, status: String) throws -> [Int64] {
-        try rolledUpAncestors(db, of: targetID) {
-            try TargetQueries.updateStatus(db, id: Int(targetID), status: status)
-        }
-    }
-
-    /// The owner's card move to board column `columnID` of `status` (nil =
-    /// the status's first column, PROJ-19): `updateTargetStatus` writing the
-    /// column in the same statement (`TargetQueries.updateStatus(…,
-    /// boardColumnID:)`).
-    package static func updateTargetColumn(
-        _ db: Database, targetID: Int64, status: String, columnID: Int64?
-    ) throws -> [Int64] {
-        try rolledUpAncestors(db, of: targetID) {
-            try TargetQueries.updateStatus(db, id: Int(targetID), status: status, boardColumnID: columnID)
-        }
-    }
-
-    private static func rolledUpAncestors(_ db: Database, of targetID: Int64, _ write: () throws -> Void) throws -> [Int64] {
-        let before = try ancestorStatuses(db, of: targetID)
-        try write()
-        let after = try ancestorStatuses(db, of: targetID)
-        return after.filter { before[$0.key] != $0.value }.map(\.key).sorted()
     }
 
     /// Workbench `projectID`'s board column definition (PROJ-19): columns in
@@ -363,24 +332,6 @@ package enum WorkbenchQueries {
             if let id = column?.id { counts[id, default: 0] += 1 }
         }
         return counts
-    }
-
-    /// Work on It took the target up (board #499): a workbench task still
-    /// `todo` moves to `in_progress` as the owner's write
-    /// (`updateTargetStatus`). The status is read here, inside the caller's
-    /// write transaction, so a change the agent made meanwhile is never
-    /// overwritten. Any other status — `in_progress`, `in_review`,
-    /// `blocked`, `done`, `dismissed` — a group (sub-targets on its own
-    /// workbench: its status follows them, PROJ-05), a personal target and
-    /// a missing row write nothing.
-    /// - Returns: nil when nothing was written, else the ancestors the
-    ///   rollup moved (see `updateTargetStatus`).
-    package static func markInProgressOnWorkOn(_ db: Database, targetID: Int64) throws -> [Int64]? {
-        guard let row = try Row.fetchOne(
-            db, sql: "SELECT status, project_id FROM targets WHERE id = ?", arguments: [targetID]
-        ), let projectID: Int64 = row["project_id"], row["status"] as String? == "todo",
-            try !TargetQueries.hasChildren(db, id: targetID, workbenchID: projectID) else { return nil }
-        return try updateTargetStatus(db, targetID: targetID, status: "in_progress")
     }
 
     /// Every target status on the project's board, keyed by id. Read before

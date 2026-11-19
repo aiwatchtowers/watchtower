@@ -98,7 +98,7 @@ since: 0.24.0
 action: nav:automations
 -->
 
-An emoji from your dictionary on a Slack message makes the built-in **Reactions** gather the thread and compose an action, checked every sync cycle (**Sync Now** picks one up at once).
+An emoji from your dictionary on a Slack message makes the built-in **Reactions** gather the thread and compose an action, checked every sync cycle.
 
 | Emoji | Does | Default |
 |---|---|---|
@@ -188,12 +188,13 @@ The root's **⋯** opens these in the reading pane, and **?** above the Inbox op
 
 - **"Your Inbox is empty".** Nothing landed in the root yet; **New Artifact…** makes an automation.
 - **"Nothing in Release yet".** No automation writes to that folder; use **Move to Folder** on a card.
-- **"Showing approvals in the standard card — …".** The built-in Needs approval is off, was stopped, or its last run failed. **Turn On** or **Run History**; nothing waits unseen meanwhile.
+- **"Showing approvals in the standard card — …".** The built-in Needs approval is off, was stopped, or its last run failed. **Turn On** or **Run History**.
 - **"The menu changed — reloaded. Drag again if needed."** Another change landed first; nothing moved. Try again.
+- **"Couldn't refresh the Inbox: …".** The service didn't answer; the list stays. **Retry** (or **Restart**).
 - **"The watchtower CLI isn't available".** Menu edits and presses that run it are off; reading still works.
 - **A message you answered is still listed.** It leaves at the next sync after the answer reaches Watchtower.
 - **"Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are".** Without it, attention detection and the brief never run. Click **Open Connections**.
-- **A reaction did nothing.** Check the emoji is in the dictionary and enabled, it was a new reaction and Slack is connected, then **Sync Now**.
+- **A reaction did nothing.** Check the emoji is in the dictionary and enabled and Slack is connected, then **Sync Now**.
 
 Still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
 

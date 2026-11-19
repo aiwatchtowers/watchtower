@@ -20,7 +20,7 @@ package enum ReviewerSurface {
     package static let contextType = "review_reviewer"
 
     /// The thread's chat context: `<project>:<branch>` for a session row
-    /// without a folder (the home folder's, as before 00197),
+    /// without a folder (the home folder's, as before 00209),
     /// `<project>:f<folder>:<branch>` for a session's folder.
     package static func contextID(projectID: Int64, folderID: Int64? = nil, branch: String) -> String {
         guard let folderID else { return "\(projectID):\(branch)" }

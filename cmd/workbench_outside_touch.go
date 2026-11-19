@@ -337,17 +337,17 @@ func benchCovers(path, root string, dirs []string) bool {
 			continue
 		}
 		d = filepath.Clean(d)
-		if strings.EqualFold(path, d) || pathWithin(path, d) || strings.EqualFold(root, d) || pathWithin(root, d) ||
-			pathWithin(d, root) {
+		if strings.EqualFold(path, d) || pathInsideFold(path, d) || strings.EqualFold(root, d) || pathInsideFold(root, d) ||
+			pathInsideFold(d, root) {
 			return true
 		}
 	}
 	return false
 }
 
-// pathWithin reports whether child lies strictly inside parent, by whole
+// pathInsideFold reports whether child lies strictly inside parent, by whole
 // path components, ignoring case.
-func pathWithin(child, parent string) bool {
+func pathInsideFold(child, parent string) bool {
 	c, p := strings.ToLower(child), strings.ToLower(parent)
 	return strings.HasPrefix(c, strings.TrimSuffix(p, string(filepath.Separator))+string(filepath.Separator))
 }

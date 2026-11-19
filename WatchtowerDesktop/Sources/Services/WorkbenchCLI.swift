@@ -414,6 +414,10 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// the bench (#2003, spec §6.7). A folder set up before it lacks it
     /// until a Repair; a CLI that does not send the key has none to install.
     var outsideTouch = true
+    /// The PreToolUse `workbench watchman-guard` hook (Watchman phase 2,
+    /// spec 2026-11-16 §5 item 3). A folder set up before it lacks it until
+    /// a Repair; a CLI that does not send the key has none to install.
+    let watchmanGuard: Bool
     let mcp: Bool
     let claudeFound: Bool
     /// The folder was set up before the Workbench rename and still holds
@@ -549,6 +553,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         case permissionWait = "permission_wait"
         case cleanupPermission = "cleanup_permission"
         case outsideTouch = "outside_touch"
+        case watchmanGuard = "watchman_guard"
         case claudeFound = "claude_found"
         case legacySkill = "legacy_skill"
         case currentMCP = "current_mcp"
@@ -566,6 +571,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         askToolBlock: Bool = true,
         permissionWait: Bool = true,
         cleanupPermission: Bool = true,
+        watchmanGuard: Bool = true,
         mcp: Bool,
         claudeFound: Bool = true,
         legacy: Bool = false,
@@ -574,7 +580,8 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         codex: Codex? = nil
     ) {
         self.init(skill: skill, hook: hook, stopHook: stopHook, stateHooks: stateHooks,
-                  askGuard: askGuard, askToolBlock: askToolBlock, permissionWait: permissionWait, cleanupPermission: cleanupPermission, mcp: mcp,
+                  askGuard: askGuard, askToolBlock: askToolBlock, permissionWait: permissionWait, cleanupPermission: cleanupPermission,
+                  watchmanGuard: watchmanGuard, mcp: mcp,
                   claudeFound: claudeFound, legacy: legacy, legacySkill: legacySkill, currentMCP: mcp,
                   groupPrompt: groupPrompt, codex: codex)
     }
@@ -588,6 +595,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         askToolBlock: Bool = true,
         permissionWait: Bool = true,
         cleanupPermission: Bool = true,
+        watchmanGuard: Bool = true,
         mcp: Bool,
         claudeFound: Bool = true,
         legacy: Bool = false,
@@ -609,6 +617,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         self.askToolBlock = askToolBlock
         self.permissionWait = permissionWait
         self.cleanupPermission = cleanupPermission
+        self.watchmanGuard = watchmanGuard
         self.mcp = mcp
         self.claudeFound = claudeFound
     }
@@ -628,6 +637,8 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         // Nor one without the cleanup permission (board #535).
         cleanupPermission = try c.decodeIfPresent(Bool.self, forKey: .cleanupPermission) ?? true
         outsideTouch = try c.decodeIfPresent(Bool.self, forKey: .outsideTouch) ?? true
+        // Nor one without the Watchman guard hook.
+        watchmanGuard = try c.decodeIfPresent(Bool.self, forKey: .watchmanGuard) ?? true
         mcp = try c.decode(Bool.self, forKey: .mcp)
         // An older CLI without the key could always check the registration.
         claudeFound = try c.decodeIfPresent(Bool.self, forKey: .claudeFound) ?? true
@@ -724,6 +735,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     var claudeNeedsRepair: Bool {
         legacy || skill == "missing" || skill == "updated" || !hook || !stopHook || !stateHooks
             || !askGuard || !askToolBlock || !permissionWait || !cleanupPermission || !outsideTouch
+            || !watchmanGuard
             || (claudeFound && (!mcp || missesCurrentMCP))
     }
 

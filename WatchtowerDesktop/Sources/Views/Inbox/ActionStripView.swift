@@ -63,7 +63,10 @@ struct ActionStripView: View {
                     onNewArtifact: { appState.newInboxArtifact() },
                     onMakeTaskFromTrack: { await appState.makeTask(fromTrack: $0) },
                     onGoToTarget: { appState.navigateToTarget($0) },
-                    artifactMenu: appState.inboxArtifactMenu
+                    artifactMenu: appState.inboxArtifactMenu,
+                    onReadWatchmanStatus: { await appState.watchmanCenter?.load() },
+                    watchmanJournal: appState.watchmanJournal,
+                    watchmanDaemon: appState.watchmanCenter?.daemon ?? .unknown
                 )
             } else {
                 ProgressView()
@@ -235,6 +238,12 @@ struct ActionStripActionsView: View {
     /// The artifact ⋯ (reading pane, list rows) and Needs approval's ⋯;
     /// nil (tests, shots) draws neither.
     var artifactMenu: InboxArtifactMenuModel?
+    /// Rereads `watchman status` (the daemon line) while the journal is open.
+    var onReadWatchmanStatus: () async -> Void = {}
+    /// The Watchman entry's journal (spec 2026-11-16 §10); nil before the database opens.
+    var watchmanJournal: WatchmanJournalViewModel?
+    /// `watchman status`'s `daemon_running`.
+    var watchmanDaemon: WatchmanDaemonState = .unknown
 
     /// What the header opened in the reading pane, and the Idea finder's
     /// open row; settable at init so a design shot can open one.
@@ -268,15 +277,17 @@ struct ActionStripActionsView: View {
 
     private var inbox: some View {
         VStack(spacing: 0) {
-            if let list = vm.legacyList {
-                legacyHeader(list)
-                if list == .ideas, let ideas, let ideasRow {
-                    self.ideasRow(ideasRow, ideas: ideas)
-                        .padding(.horizontal, Spacing.medium)
-                        .padding(.bottom, Spacing.regular)
+            // The feed's line (mockup §7): over the kept list, or alone before
+            // the first list, where "Loading the Inbox…" stands in for it.
+            if let status = vm.feedStatus(now: now ?? Date()) {
+                InboxFeedStatusLine(status: status) { Task { await vm.retryFeed() } }
+                if vm.towerFeed == nil {
+                    Spacer(minLength: 0)
                 }
             }
-            content
+            if vm.towerFeed != nil || vm.feedLoader == nil {
+                feedContent
+            }
         }
         .confirmationDialog(deleteTitle, isPresented: deleteConfirming,
                             presenting: artifactMenu?.pendingDelete) { pending in
@@ -288,6 +299,20 @@ struct ActionStripActionsView: View {
         } message: { _ in
             Text("This removes the recipe file with its runs, state and outputs.")
         }
+    }
+
+    /// The selected folder: its legacy header, then its list and reading pane.
+    @ViewBuilder
+    private var feedContent: some View {
+        if let list = vm.legacyList {
+            legacyHeader(list)
+            if list == .ideas, let ideas, let ideasRow {
+                self.ideasRow(ideasRow, ideas: ideas)
+                    .padding(.horizontal, Spacing.medium)
+                    .padding(.bottom, Spacing.regular)
+            }
+        }
+        content
     }
 
     // MARK: - The ⋯ menus
@@ -491,6 +516,15 @@ struct ActionStripActionsView: View {
         case let .brief(action)?: pane(.proposal(action))
         case let .approval(item)?: pane(Self.listItem(item))
         case let .builtinNotice(notice)?: pane(.builtinNotice(notice))
+        case .watchman?:
+            if let watchmanJournal {
+                WatchmanJournalView(model: watchmanJournal, readStatus: onReadWatchmanStatus)
+                    .onChange(of: watchmanDaemon, initial: true) { _, daemon in
+                        watchmanJournal.daemon = daemon
+                    }
+            } else {
+                pane(nil)
+            }
         case .legacyTracks?, .legacyIdeas?, .legacyMessages?, nil: pane(nil)
         }
     }
@@ -659,7 +693,7 @@ struct ActionStripActionsView: View {
             filled(Self.listItem(item))
         case let .builtinNotice(notice):
             filled(.builtinNotice(notice))
-        case .artifact, .brief, .legacyDay, .legacyTracks, .legacyIdeas, .legacyMessages:
+        case .artifact, .brief, .legacyDay, .legacyTracks, .legacyIdeas, .legacyMessages, .watchman:
             EmptyView()
         }
     }
@@ -776,7 +810,9 @@ struct ActionStripActionsView: View {
         // An Inbox target button's newest proposal: the button's state, so a
         // stuck row (Needs approval keeps approved and executing rows on their
         // native card) offers Try again (apply, or apply --force on the same row).
-        let targetState = vm.targetFacts(for: action).map { TargetButtonStateResolver.state($0, now: now ?? Date()) }
+        let targetState = vm.targetButton(forApproval: action).map {
+            TargetButtonStateResolver.state($0, now: now ?? Date())
+        }
         return MacAgentActionCard(
             action: action,
             inFlight: vm.actionFeed.inFlight.contains(action.id),
@@ -803,7 +839,7 @@ struct ActionStripActionsView: View {
     private func saveProposal(_ action: AgentAction) -> SaveAutomationProposalPane {
         SaveAutomationProposalPane(
             action: action,
-            workbenchName: { id in workbenches.first { $0.id == id }?.name },
+            approval: vm.feedApproval(action.id),
             contextLabel: vm.actionLabels[action.id],
             inFlight: vm.actionFeed.inFlight.contains(action.id),
             gestureError: vm.actionFeed.rowErrors[action.id]?.message,

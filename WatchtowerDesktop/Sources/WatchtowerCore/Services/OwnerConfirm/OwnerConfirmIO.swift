@@ -112,17 +112,22 @@ final class OwnerConfirmIO: @unchecked Sendable {
     }
 
     /// The request line (its newline not included, at most `limit` bytes
-    /// with it). Each read is scanned once for the newline, so a line of
-    /// megabytes costs one pass.
-    static func readLine(_ fd: Int32, limit: Int, within: TimeInterval) -> LineRead {
-        let deadline = Date().addingTimeInterval(within)
+    /// with it), within `within` seconds (nil: no deadline — tests that are
+    /// not about it, so a loaded machine never runs it out). Each read is
+    /// scanned once for the newline, so a line of megabytes costs one pass.
+    static func readLine(_ fd: Int32, limit: Int, within: TimeInterval?) -> LineRead {
+        let deadline = within.map { Date().addingTimeInterval($0) }
         var data = Data()
         var buf = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
-            let left = deadline.timeIntervalSinceNow
-            guard left > 0 else { return .noLine }
+            var wait: Int32 = -1
+            if let deadline {
+                let left = deadline.timeIntervalSinceNow
+                guard left > 0 else { return .noLine }
+                wait = Int32(max(1, left * 1000))
+            }
             var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-            guard poll(&pfd, 1, Int32(max(1, left * 1000))) > 0 else { continue }
+            guard poll(&pfd, 1, wait) > 0 else { continue }
             let n = read(fd, &buf, buf.count)
             guard n > 0 else { return .noLine }
             if let end = buf[0..<n].firstIndex(of: UInt8(ascii: "\n")) {

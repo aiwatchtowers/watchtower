@@ -25,7 +25,7 @@ final class InboxDayPaneTests: XCTestCase {
     override func setUp() async throws {
         pool = try TestDatabase.create()
         cli = FakeCLIRunner()
-        plan = DayPlanViewModel(databasePool: pool, cliRunner: cli)
+        plan = DayPlanViewModel(databasePool: pool, cliRunner: cli, tower: FakeScreenTower.applying(pool))
     }
 
     override func tearDown() async throws {

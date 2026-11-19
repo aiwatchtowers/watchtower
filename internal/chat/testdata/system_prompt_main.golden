@@ -246,6 +246,7 @@ Workbench
 - Agent analytics (features/agent-analytics.md)
 - Agent coach (features/agent-coach.md)
 - Tuning chat (features/tuning-chat.md)
+- Watchman (features/watchman.md)
 
 Automations & AI
 - Chats (features/ai-chat.md)

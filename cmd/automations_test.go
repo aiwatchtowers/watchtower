@@ -1318,3 +1318,28 @@ func TestAutomationsShow_WatchBlock(t *testing.T) {
 	assert.Equal(t, float64(id), byID[float64(a.ID)])
 	assert.Zero(t, byID[float64(owner.ID)])
 }
+
+// A wait point's wake signals only a daemon that advertises the Watchman
+// wake; an older daemon (the automations wake alone) and no daemon at all are
+// no error — the cycle scan picks the item up.
+func TestWatchmanWake_SignalsOnlyCapableDaemon(t *testing.T) {
+	writeActionsConfig(t)
+	cfg, err := loadAutomationsConfig()
+	require.NoError(t, err)
+	var sent []syscall.Signal
+	prev := automationWakeKill
+	automationWakeKill = func(_ int, sig syscall.Signal) error { sent = append(sent, sig); return nil }
+	t.Cleanup(func() { automationWakeKill = prev })
+
+	require.NoError(t, wakeWatchman(cfg), "no daemon")
+	assert.Empty(t, sent)
+
+	writeDaemonPID(t, true) // advertises the automations wake only
+	require.NoError(t, wakeWatchman(cfg))
+	assert.Empty(t, sent, "a daemon without the Watchman wake is not signalled")
+
+	body := idArg(int64(os.Getpid())) + "\n" + daemon.AutomationWakeCapability + "\n" + daemon.WatchmanWakeCapability + "\n"
+	require.NoError(t, os.WriteFile(daemon.CapsPath(pidFilePath(cfg)), []byte(body), 0o600))
+	require.NoError(t, wakeWatchman(cfg))
+	assert.Equal(t, []syscall.Signal{daemon.AutomationWakeSignal}, sent)
+}
