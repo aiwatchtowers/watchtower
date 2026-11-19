@@ -98,4 +98,53 @@ final class CompanyConnectAppStateTests: XCTestCase {
         host.onCompanyEvent?(.companyLink(flow: "f2", bundle: "eyJ2IjoxfQ"))
         XCTAssertEqual(company?.phase, .idle)
     }
+
+    // MARK: - Connect this Mac after Publish (#1887 Task 22)
+
+    /// A wizard model over a scripted CLI: Linear only, published as acme when `publish` is true.
+    private func setup(published: Bool) async -> CompanySetupWizardModel {
+        let cli = CompanyScriptedCLI()
+        let model = CompanySetupWizardModel(streamer: cli, slack: SlackAppSetupModel(streamer: cli, mode: .wizard))
+        await model.open()
+        model.toggle(.linear)
+        model.publishName = "Acme"
+        await model.next()
+        await model.skip()
+        await model.next()
+        if published {
+            cli.on(["company", "publish"], [#"{"result":"no_slack","slug":"acme","link":"l","code":"c"}"#])
+            await model.next()
+        }
+        return model
+    }
+
+    /// The listener is not up: no company connect flow, the button is hidden.
+    func testConnectThisMacHiddenWithoutTheFlow() {
+        let appState = AppState.isolated()
+        XCTAssertNil(appState.companyConnect)
+        XCTAssertNil(appState.connectThisMacAction)
+    }
+
+    /// After Publish it opens the same-bundle confirm for the published slug.
+    func testConnectThisMacOpensTheSameBundleConfirm() async {
+        let (appState, _, fake) = wired()
+        appState.companySetup = await setup(published: true)
+        XCTAssertNotNil(appState.connectThisMacAction)
+        fake.enqueue(FakeCLILineStream.Reply(lines: [#"{"company":"Acme","slug":"acme","state":"same","forced":false,"#
+            + #""vendors":["linear"],"connected":{},"changes":[],"forbidden":[],"details":{}}"#]))
+        await appState.connectThisMac()
+        XCTAssertEqual(fake.invocations.last?.args, ["company", "inspect", "--json", "--slug", "acme"])
+        XCTAssertEqual(appState.companyConnect?.variant, .again)
+        XCTAssertEqual(appState.companyConnect?.phase, .confirm)
+    }
+
+    /// Before Publish went through it does nothing.
+    func testConnectThisMacBeforePublishDoesNothing() async {
+        let (appState, _, fake) = wired()
+        appState.companySetup = await setup(published: false)
+        let before = fake.invocations.count
+        await appState.connectThisMac()
+        XCTAssertEqual(fake.invocations.count, before)
+        XCTAssertEqual(appState.companyConnect?.phase, .idle)
+    }
 }

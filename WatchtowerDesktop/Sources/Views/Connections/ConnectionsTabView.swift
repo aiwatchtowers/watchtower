@@ -130,14 +130,8 @@ struct ConnectionsDetailSplit: View {
             back: { appState.selectedConnection = nil },
             openQuickConnections: { appState.openConnections(.quickConnections) },
             showFile: { appState.showCompanySetupFile($0) },
-            connectThisMac: appState.companyConnect.map { flow in { connectRest(flow) } }
+            connectThisMac: appState.connectThisMacAction
         ))
-    }
-
-    /// **Connect this Mac** after Publish: the same-bundle confirm (§3.1), only what is not connected yet.
-    private func connectRest(_ flow: CompanyConnectFlowModel) {
-        guard case let .done(published) = appState.companySetup.publishState else { return }
-        Task { await flow.connectRest(slug: published.slug) }
     }
 }
 
