@@ -179,6 +179,21 @@ if ! $DEV_MODE && [ -z "$RELAY_ORIGIN_DEFAULT" ] \
 fi
 # END relay-origin-check
 
+# BEGIN shared-jira-check (extracted verbatim by scripts/tests/test-build-app-profile.sh)
+# Our shared Atlassian app is retired (#1887 D4): a public release (no
+# BUILD_FLAVOR, a release version as above, not --dev) must not bake
+# WATCHTOWER_JIRA_CLIENT_ID/SECRET — a sign-in goes through a company's own
+# Atlassian app. --dev and non-release builds may keep them (development),
+# and so may a flavoured build until its bridge moves the client into its
+# company bundle.
+if ! $DEV_MODE && [ -z "$FLAVOR" ] \
+    && { [ -n "${WATCHTOWER_JIRA_CLIENT_ID:-}" ] || [ -n "${WATCHTOWER_JIRA_CLIENT_SECRET:-}" ]; } \
+    && printf '%s' "$VERSION" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+'; then
+    echo "ERROR: WATCHTOWER_JIRA_CLIENT_ID/SECRET are set: a public release must not bake the retired shared Atlassian app — remove them from the build profile" >&2
+    exit 1
+fi
+# END shared-jira-check
+
 # NOTARIZE_PROFILE is only read on the release path (dev mode exits before
 # notarization), so one unconditional default suffices.
 NOTARIZE_PROFILE="${NOTARIZE_PROFILE:-}"

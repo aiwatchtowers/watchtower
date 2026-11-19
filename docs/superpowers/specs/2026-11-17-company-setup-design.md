@@ -41,7 +41,8 @@ After this work:
 | D22 | An Atlassian API token that stops working (expired or revoked) puts the account in error, not revoked: no 72-hour purge; only the 30-day lease applies | ask #1476 |
 | D23 | Token accounts erase closed Atlassian people too, through a 7-day profile lookup, with the same erase as PDR (§6) | ask #1476 |
 | D24 | New MDM keys: `AllowAtlassianAPIToken` (bool, default true) and `AllowOwnGoogleProject` (bool, default true; the personal Google project path, §4, stays allowed unless IT turns it off). No key forcing company apps only | ask #1476 ("свой проект можно + настройка MDM") |
-| D15 | Sharing on our shared Atlassian app is turned off 30 days after company setup ships | ask #1455 |
+| D15 | ~~Sharing on our shared Atlassian app is turned off 30 days after company setup ships~~ — amended below | ask #1455 |
+| D15 amended | The public release stops baking the shared Jira client at once; shared-app Jira accounts get Re-login in that release, no 30-day countdown | ask #1600 |
 | D14 | Screens (wizard with the existing-app fork, confirmation, Connections rows, banners, the Atlassian API-token form, the MDM help links) get their own screens spec with DesignShotCatalog mockups for every state, as #1709 does for Slack. This spec holds no screen and no UI task: it fixes the behaviour, the data and the UI texts (in the models, tested — T3); the screens spec is a prerequisite of every UI task and the screen tasks are planned from it. Screens spec: [`2026-11-18-company-setup-screens-design.md`](2026-11-18-company-setup-screens-design.md) | decided by the agent |
 
 ## 1. The company bundle
@@ -145,7 +146,7 @@ Connections → Jira → **Connect with an API token**, beside the OAuth button;
 ## 5. What is retired
 
 - **Shared Google client:** stays for Calendar only (D11). The public build stops requesting `gmail.readonly` through it. Existing Gmail accounts on the shared client: their stored tokens keep working until Google refuses them; Connections shows "Move Gmail to your company's or your own Google project". Their data follows the purge rules (PURGE-01).
-- **Shared Atlassian app (D4):** the public build stops baking `DefaultJiraClientID/Secret`; `WATCHTOWER_JIRA_CLIENT_ID/SECRET` stay for development. Existing accounts keep syncing until the owner turns the app's sharing off, 30 days after company setup ships (D15), with a banner "Your company needs its own Atlassian app — ask your admin or set it up".
+- **Shared Atlassian app (D4, D15 amended — ask #1600):** the public release that ships company setup stops baking `DefaultJiraClientID/Secret` at once (`scripts/build-app.sh` refuses a public release that would); `WATCHTOWER_JIRA_CLIENT_ID/SECRET` stay for development. An Atlassian refresh needs the client secret, so in that release every Jira account on the shared app (untied, OAuth) goes to Re-login (`unknown_client`, status `error`, never `revoked`: data kept, no 72-hour purge) — no 30-day countdown. A banner says "Your company needs its own Atlassian app — ask your admin or set it up" and offers the company setup and an API token.
 - **Corp build (D3):** `.env.corp` and the corp flavor go after the corp users have moved. What it bakes moves: Slack/Google/Jira/Microsoft clients → the bundle; `PURGE_DEFAULT` → MDM `PurgeRevokedData` (and #1769 makes purge default-on anyway); `LINK_FETCH_DENY_HOSTS` → the bundle's `link_deny_hosts` (D18), on top of the company domains already derived (ask #598); the gated update feed → the public one.
 
 **Moving a corp install without breaking its accounts.** The public build no longer knows the corp clients, so an existing corp account must be tied to the company bundle *before* the first public binary runs, or its next token refresh fails `invalid_client`. One release, in order:
@@ -165,7 +166,7 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
   - not rewritten: free-text derived texts (digests, briefings, chat transcripts, inbox card text). They are summaries, not Atlassian records; they age out under retention. Stated in the guide's privacy page.
 - `updated` → refetch the profile on the next sync.
 - An error (network, 401/403, missing scope) erases nothing; the phase retries next cycle and a missing `report:personal-data` scope shows "Re-login to finish the setup" on the account.
-- Accounts on the retired shared app run the same phase while they still work, so our own obligation is met during the transition.
+- Accounts on the retired shared app run the same phase until their Re-login (with D15 amended, the release that ships company setup ends their refresh), so our own obligation is met for the data they synced.
 
 ## 7. Failures
 

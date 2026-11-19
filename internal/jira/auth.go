@@ -43,6 +43,11 @@ var (
 //
 //	-X watchtower/internal/jira.DefaultJiraClientID=...
 //	-X watchtower/internal/jira.DefaultJiraClientSecret=...
+//
+// A public release bakes neither (#1887 D4, scripts/build-app.sh refuses
+// one that would): our shared Atlassian app is retired at once (D15 amended,
+// ask #1600) — its accounts need a Re-login through a company's own app (or
+// an API token). WATCHTOWER_JIRA_CLIENT_ID/SECRET stay for development.
 var (
 	DefaultJiraClientID     string
 	DefaultJiraClientSecret string

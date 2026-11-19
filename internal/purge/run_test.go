@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -105,6 +106,72 @@ func TestPurge02_RunFinishesPurged(t *testing.T) {
 			}
 		})
 	}
+}
+
+// PURGE-02 (#1887): a purge deletes the account's own company client record
+// (<source>_client_<id>.json) with its token, and only its own: another
+// account's record of the same source (id 10 shares the prefix "1"), the
+// sibling source's record with the same id and a Google credentials file
+// stay. A Re-login during the run keeps the record with the token.
+func TestPurge02_ClientFileGoesWithItsAccountOnly(t *testing.T) {
+	for _, c := range []struct{ source, seed, sibling string }{
+		{"jira", `INSERT INTO jira_accounts (id, cloud_id, status) VALUES (1, 'c1', 'revoked')`, "linear"},
+		{"linear", `INSERT INTO linear_accounts (id, org_id, status) VALUES (1, 'o1', 'revoked')`, "jira"},
+	} {
+		t.Run(c.source, func(t *testing.T) {
+			d := openPurgeDB(t)
+			execAll(t, d, c.seed)
+			dir := t.TempDir()
+			gone := []string{c.source + "_token_1.json", c.source + "_client_1.json"}
+			kept := []string{c.source + "_client_10.json", c.source + "_token_10.json", c.source + "_client_2.json",
+				c.sibling + "_client_1.json", "google_credentials_1.json"}
+			for _, name := range slices.Concat(gone, kept) {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(`{"client_id":"x"}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			done, err := Run(context.Background(), d, dir, scheduledRow(t, d, c.source, 1), setting(true), time.Minute)
+			if err != nil || !done {
+				t.Fatalf("Run = %v, %v", done, err)
+			}
+			for _, name := range gone {
+				if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+					t.Errorf("%s still on disk (%v)", name, err)
+				}
+			}
+			for _, name := range kept {
+				if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+					t.Errorf("%s must stay: %v", name, err)
+				}
+			}
+		})
+	}
+
+	t.Run("relogin during the run keeps it", func(t *testing.T) {
+		d := openPurgeDB(t)
+		execAll(t, d, `INSERT INTO jira_accounts (id, cloud_id, status) VALUES (1, 'c1', 'revoked')`)
+		dir := t.TempDir()
+		files := []string{"jira_token_1.json", "jira_client_1.json"}
+		for _, name := range files {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(`{}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		p := scheduledRow(t, d, "jira", 1)
+		execAll(t, d, `UPDATE account_purges SET state = 'running', started_at = '2026-01-01T00:00:00Z'`)
+		if err := d.SetJiraAccountAuthState(1, "ok", ""); err != nil {
+			t.Fatal(err)
+		}
+		p.State = "running"
+		if done, err := Run(context.Background(), d, dir, p, setting(true), time.Minute); err != nil || !done {
+			t.Fatalf("Run = %v, %v", done, err)
+		}
+		for _, name := range files {
+			if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+				t.Errorf("%s of a re-logged account must stay: %v", name, err)
+			}
+		}
+	})
 }
 
 func TestPurge02_BudgetStopsAndResumes(t *testing.T) {

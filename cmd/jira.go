@@ -249,6 +249,7 @@ func init() {
 	jiraCmd.AddCommand(jiraAddCmd)
 	jiraCmd.AddCommand(jiraLoginCmd)
 	jiraCmd.AddCommand(jiraLogoutCmd)
+	jiraAccountsCmd.Flags().Bool("json", false, "print JSON (with each account's company and shared-app flags, and the shared app's cutoff day)")
 	jiraCmd.AddCommand(jiraAccountsCmd)
 	jiraCmd.AddCommand(jiraEnableCmd)
 	jiraCmd.AddCommand(jiraDisableCmd)
@@ -1113,6 +1114,9 @@ func runJiraAccounts(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	out := cmd.OutOrStdout()
+	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+		return writeJiraAccountsJSON(out, cfg.WorkspaceDir(), accounts)
+	}
 	if len(accounts) == 0 {
 		fmt.Fprintln(out, "No Jira sites connected. Run 'watchtower jira add' to connect one.")
 		return nil

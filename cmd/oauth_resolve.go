@@ -10,6 +10,7 @@ import (
 	"watchtower/internal/companybundle"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/gmail"
 	"watchtower/internal/imap"
 	"watchtower/internal/jira"
 	"watchtower/internal/linear"
@@ -323,6 +324,39 @@ func googleLoginOAuthConfig(workspaceDir string, account db.GoogleAccount) (cale
 	}
 	cfg, _, err := resolveGoogleOAuthConfigForAccount(workspaceDir, account)
 	return cfg, err
+}
+
+// errGmailNeedsOwnProject is a Gmail sign-in through our shared Google
+// client, which keeps the Calendar scopes only (#1887 D11).
+var errGmailNeedsOwnProject = errors.New("gmail needs your company's or your own Google project: " +
+	"open your company's Watchtower link, or add the account with --client-id and --client-secret-stdin")
+
+// googleOnSharedClient reports a client that is our shared Google app: the
+// public build's baked id, on whatever layer it arrives (baked, the env, a
+// credentials file or a bundle that names it). A flavoured build's baked
+// client is its company's app, and a development build bakes none.
+func googleOnSharedClient(clientID string) bool {
+	return BuildFlavor == "" && calendar.DefaultGoogleClientID != "" && clientID == calendar.DefaultGoogleClientID
+}
+
+// googleScopesFor returns the OAuth scopes to request through clientID for
+// the selected services, calendar before gmail — the order Google's consent
+// screen lists the per-service checkboxes in. Our shared client never asks
+// for Gmail (D11): that is errGmailNeedsOwnProject, before any browser
+// opens. Gmail rows that already hold a shared grant keep syncing on it;
+// only a new sign-in is refused.
+func googleScopesFor(clientID string, wantCalendar, wantGmail bool) ([]string, error) {
+	if wantGmail && googleOnSharedClient(clientID) {
+		return nil, errGmailNeedsOwnProject
+	}
+	var scopes []string
+	if wantCalendar {
+		scopes = append(scopes, calendar.ScopeCalendarReadonly)
+	}
+	if wantGmail {
+		scopes = append(scopes, gmail.ScopeGmailReadonly)
+	}
+	return scopes, nil
 }
 
 // ---- Linear ----
