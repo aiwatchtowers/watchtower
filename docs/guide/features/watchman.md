@@ -4,7 +4,7 @@ Watchman learns how you decide in a workbench and tests, on your own past decisi
 
 ## Why use it
 
-Today a session stops whenever it needs you: an ask, a permission prompt, a review. Before anything is allowed to answer for you, Watchman checks the idea against your own record, so you get a number instead of a hope.
+A session stops whenever it needs you: an ask, a permission prompt, a review. Before anything answers for you, Watchman checks the idea against your own record: a number, not a hope.
 
 ## How it works
 <!-- learn
@@ -70,7 +70,7 @@ since: next
 
 **Take back** stops new decisions; one already under way still finishes. On a session also handed over through its target, Take back on the strip removes only the direct hand-over.
 
-The first time on a workbench a sheet shows what turns on: Agent analytics and learning, with its estimate; until learning finishes, Watchman parks everything for you. It warns when main is not protected on GitHub, the git guard cannot go into a repository, or a session's folder lacks Watchman's guard: Repair the workbench, then restart that session. Merging pull requests, pushing to main, tags, releases, messages to people and your own limits stay yours: Watchman parks them, and a guard stops the agent doing them itself. Not caught: deletes or messages from a script, code the agent writes that runs later (hooks, tests, Makefiles), and commands hidden from the guard.
+The first time on a workbench a sheet shows what turns on: Agent analytics and learning, with its estimate; until learning finishes, Watchman parks everything for you. It warns when main is not protected on GitHub, the git guard cannot go into a repository, or a session's folder lacks Watchman's guard (Repair the workbench, restart the session). Merging pull requests, pushing to main, tags, releases, messages to people and your own limits stay yours: Watchman parks them, and a guard stops the agent doing them itself. Not caught: deletes or messages from a script, code the agent writes that runs later (hooks, tests, Makefiles), and commands hidden from the guard.
 
 ### Read the night's journal
 <!-- learn
@@ -89,7 +89,7 @@ Everything Watchman handled lands in **Inbox → Watchman**, one night per entry
 - **Decided**: each decision with what it chose, why, the earlier decisions it leaned on and its confidence. In this version every decision is marked **Unsure**.
 - **Checks nobody ran**: checks a session asked for that Watchman passed on.
 
-The night's header shows its span, any stretch the Mac slept ("the Mac slept from 02:10 to 03:05, nothing ran") and what the night cost. While Watchman works, a "Deciding: …" line shows its current item; when the daemon is stopped, "Watchman is not running — the daemon is stopped" sits above the last night. A workbench menu narrows the journal to one workbench.
+The night's header shows its span, when the Mac slept ("the Mac slept from 02:10 to 03:05, nothing ran") and the cost. While Watchman works, a "Deciding: …" line shows its current item; when the daemon is stopped, "Watchman is not running — the daemon is stopped" sits above the last night. A menu narrows it to one workbench.
 
 ### OK and Correct…
 <!-- learn
@@ -108,10 +108,10 @@ since: next
 
 - **No night yet** in the journal: no session was handed to Watchman yet.
 - **Not measured** on a category: too few decisions yet. It fills as you keep working.
-- Finish looks thin: handover asks are learned as ordinary questions.
+- Finish looks thin: handover asks count as ordinary questions.
 - An agent's commit without its `Co-Authored-By` line can count as yours.
-- Your sleep window is a rough guess when you are rarely active.
-- A backtest that says busy is already running elsewhere.
+- Your sleep window is a rough guess if you are rarely active.
+- A busy backtest is already running elsewhere.
 
 ## Related
 
