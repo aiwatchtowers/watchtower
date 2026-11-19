@@ -75,15 +75,15 @@ func (d *Daemon) phaseAccountPurgeLeases(ctx context.Context) {
 func (d *Daemon) purgeRules() func(db.PurgeAccount) purge.Rule {
 	on, origin := purge.Enabled(d.config)
 	return purge.AccountRules(on, origin, func(a db.PurgeAccount) bool {
-		return accountSyncAllowed(a) && d.accountAllowedQuiet(a.Source, a.ID)
+		return AccountSyncAllowed(a) && d.accountAllowedQuiet(a.Source, a.ID)
 	})
 }
 
-// accountSyncAllowed reports whether the organization's policy lets the
+// AccountSyncAllowed reports whether the organization's policy lets the
 // account sync: its source is allowed (AllowedSources, #608) and, for an
 // Atlassian API-token account, so are API tokens (AllowAtlassianAPIToken,
 // #1887 D24). A stopped account keeps its data: its leases are held.
-func accountSyncAllowed(a db.PurgeAccount) bool {
+func AccountSyncAllowed(a db.PurgeAccount) bool {
 	p := policy.Current()
 	if !p.SourceAllowed(a.Source) {
 		return false

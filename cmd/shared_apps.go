@@ -5,11 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"time"
 
 	"watchtower/internal/calendar"
 	"watchtower/internal/company"
+	"watchtower/internal/config"
+	"watchtower/internal/daemon"
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
+	"watchtower/internal/purge"
 )
 
 // The retirement banners' data (#1887 T10): `google accounts --json` and
@@ -97,6 +102,12 @@ type jiraAccountJSON struct {
 	// SharedAtlassian: the account signed in through our retired shared
 	// Atlassian app (D4) — the shared-Atlassian banner ("sign in again").
 	SharedAtlassian bool `json:"shared_atlassian"`
+	// PurgeLeaseAt is the day PURGE-01's 30-day lease would delete the
+	// account (RFC 3339), set only while that lease counts for it: purge on
+	// under a rule with leases, the account not stopped by the policy
+	// (POLICY-03 holds a locked token site's lease). The dead-token row's
+	// note (#1887 §6.3) shows it; the Desktop keeps no copy of the rule.
+	PurgeLeaseAt string `json:"purge_lease_at,omitempty"`
 }
 
 // jiraOnSharedApp reports an OAuth account on our shared Atlassian app: no
@@ -117,17 +128,42 @@ func jiraOnSharedApp(workspaceDir string, a db.JiraAccount) bool {
 	return jira.DefaultJiraClientID != "" && cfg.ClientID == jira.DefaultJiraClientID
 }
 
-func writeJiraAccountsJSON(w io.Writer, workspaceDir string, accounts []db.JiraAccount) error {
+// jiraPurgeLeases is each Jira account's lease deadline under the daemon's
+// purge rule (purge.Enabled, daemon.AccountSyncAllowed). An unreadable ledger
+// gives none: the note is left out, never guessed. A deadline less than
+// purge.Grace away is left out too: the next pass schedules the purge (due
+// at least Grace after it), and the purge line then says when.
+func jiraPurgeLeases(cfg *config.Config, database *db.DB, now time.Time) map[int64]time.Time {
+	accounts, err := database.ListPurgeAccounts()
+	if err != nil {
+		log.Printf("jira accounts: purge leases: %v", err)
+		return nil
+	}
+	on, origin := purge.Enabled(cfg)
+	leases := purge.LeaseDeadlines(accounts, purge.AccountRules(on, origin, daemon.AccountSyncAllowed), "jira")
+	for id, due := range leases {
+		if due.Before(now.Add(purge.Grace)) {
+			delete(leases, id)
+		}
+	}
+	return leases
+}
+
+func writeJiraAccountsJSON(w io.Writer, workspaceDir string, accounts []db.JiraAccount, leases map[int64]time.Time) error {
 	rows := make([]jiraAccountJSON, 0, len(accounts))
 	for _, a := range accounts {
 		authKind := a.AuthKind
 		if authKind == "" {
 			authKind = "oauth"
 		}
-		rows = append(rows, jiraAccountJSON{
+		row := jiraAccountJSON{
 			ID: a.ID, Label: a.Label, SiteURL: a.SiteURL, Status: a.Status, Enabled: a.Enabled, Error: a.Error,
 			AuthKind: authKind, CompanySlug: a.CompanySlug, SharedAtlassian: jiraOnSharedApp(workspaceDir, a),
-		})
+		}
+		if t, ok := leases[a.ID]; ok {
+			row.PurgeLeaseAt = t.UTC().Format(time.RFC3339)
+		}
+		rows = append(rows, row)
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")

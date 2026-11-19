@@ -5,11 +5,9 @@ import WatchtowerCore
 
 private typealias Pres = CompanyConnectionsPresentation
 
-/// The production Google and Jira account sections (#1887 Task 25b) over
-/// sample data (`Acme`, `example.com`, made-up ids), for the
-/// `company-google-detail*` and `company-jira-detail*` shots (Google's
-/// `-locked` too, Task 26); Jira's `-locked` and `-tokenError` stay mocks
-/// until Task 27.
+/// The production Google and Jira account sections (#1887 Tasks 25b, 26,
+/// 27) over sample data (`Acme`, `example.com`, made-up ids), for the
+/// `company-google-detail*` and `company-jira-detail*` shots.
 @MainActor
 enum CompanyDetailScenes {
     private static let acme = CompaniesZoneScenes.acme
@@ -47,6 +45,15 @@ enum CompanyDetailScenes {
         ref(.atlassian, 3, "old.atlassian.net", slug: "", status: "error", error: "unknown_client", shared: true)
     ]
 
+    /// A dead API token and an OAuth site beside it (§6.3).
+    private static let jiraTokenAccounts = [
+        ref(.atlassian, 1, "acme.atlassian.net"),
+        ref(.atlassian, 2, "beta.atlassian.net", slug: "", status: "error", error: "api_token_dead", authKind: "api_token")
+    ]
+    /// Go's `purge_lease_at` for the dead token: Dec 18.
+    private static let lease = [2: Date(timeIntervalSince1970: 1_797_584_400)]
+    private static let utc = TimeZone(identifier: "UTC") ?? .current
+
     static var panes: [(String, AnyView)] {
         [
             ("google-detail", pane(.google, accounts: googleAccounts)),
@@ -54,11 +61,14 @@ enum CompanyDetailScenes {
             ("google-detail-empty", pane(.google, accounts: [], companies: [])),
             ("google-detail-loading", pane(.google, accounts: [], loaded: false)),
             ("google-detail-readFailed", pane(.google, accounts: [], readError: "database is locked")),
-            ("google-detail-locked", pane(.google, accounts: Array(googleAccounts.prefix(2)), policyLocks: [.ownGoogleProject])),
+            ("google-detail-locked", pane(.google, accounts: Array(googleAccounts.prefix(2)), locks: [.ownGoogleProject])),
             ("jira-detail", pane(.atlassian, accounts: jiraAccounts)),
             ("jira-detail-empty", pane(.atlassian, accounts: [], companies: [])),
             ("jira-detail-loading", pane(.atlassian, accounts: [], loaded: false)),
-            ("jira-detail-readFailed", pane(.atlassian, accounts: [], readError: "database is locked"))
+            ("jira-detail-readFailed", pane(.atlassian, accounts: [], readError: "database is locked")),
+            ("jira-detail-tokenError", pane(.atlassian, accounts: jiraTokenAccounts, lease: lease)),
+            // POLICY-03 holds a stopped site's lease: no note under the lock.
+            ("jira-detail-locked", pane(.atlassian, accounts: jiraTokenAccounts, locks: [.atlassianAPIToken]))
         ]
     }
 
@@ -69,12 +79,11 @@ enum CompanyDetailScenes {
         loaded: Bool = true,
         readError: String? = nil,
         banner: Bool = true,
-        policyLocks: Set<LockKey> = []
+        locks: Set<LockKey> = [],
+        lease: [Int: Date] = [:]
     ) -> AnyView {
         let companies = companies ?? [acme, own]
         let groups = Pres.groups(vendor: vendor, accounts: accounts, companies: companies) { _ in false }
-        // What this build offers: the API token waits for Task 27 (`AppState.unbuiltOffers`).
-        let locks = AppState.unbuiltOffers.union(policyLocks)
         let list = Pres.accountsList(vendor: vendor, loaded: loaded, readError: readError, accounts: accounts, groups: groups,
                                      locks: locks)
         return AnyView(VStack(alignment: .leading, spacing: Spacing.large) {
@@ -85,11 +94,11 @@ enum CompanyDetailScenes {
                 emptyActions: Pres.detailActions(vendor, companies: companies, empty: true, locks: locks),
                 addActions: Pres.detailActions(vendor, companies: companies, empty: false, locks: locks),
                 connect: CompanyGroupConnect { _, _ in },
-                locks: policyLocks,
+                locks: locks,
                 perform: { _ in },
                 bannerAction: { _ in },
                 tryAgain: {},
-                row: { row($0, companies: companies, policyLocks: policyLocks) }
+                row: { row($0, companies: companies, locks: locks, lease: lease) }
             )
         }
         .controlSize(.small)
@@ -98,10 +107,11 @@ enum CompanyDetailScenes {
         .detailBackground())
     }
 
-    private static func row(_ account: AccountRef, companies: [CompanyRef], policyLocks: Set<LockKey>) -> some View {
-        let stopped = policyLocks.contains(.ownGoogleProject)
-            && Pres.isOwnGoogleProject(account, companies: companies) { _ in false }
-        let status = Pres.rowStatus(account, purgeLease: nil, companies: companies, stoppedByPolicy: stopped)
+    private static func row(_ account: AccountRef, companies: [CompanyRef], locks: Set<LockKey>, lease: [Int: Date]) -> some View {
+        let stopped = (locks.contains(.ownGoogleProject) && Pres.isOwnGoogleProject(account, companies: companies) { _ in false })
+            || (locks.contains(.atlassianAPIToken) && account.isAPIToken)
+        let status = Pres.rowStatus(account, purgeLease: lease[account.accountID], companies: companies,
+                                    stoppedByPolicy: stopped, zone: utc)
         let line = account.vendor == .google
             ? Pres.googleRowLine(account, calendar: true, gmail: !account.sharedApp || account.status == "ok")
             : Pres.jiraRowLine(account, title: account.label, enabled: true,

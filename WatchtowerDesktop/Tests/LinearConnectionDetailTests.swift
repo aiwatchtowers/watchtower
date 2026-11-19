@@ -15,8 +15,9 @@ final class LinearConnectionDetailTests: XCTestCase {
         + #""vendors":{"linear":{"client_id":"lin-1"}}}],"errors":[],"draft":{"state":"none"}}"#
 
     /// AppState with a company connect flow and a Companies zone on one fake CLI.
-    static func wired() -> (AppState, FakeCLILineStream) {
-        let appState = AppState.isolated()
+    static func wired(policy: [String: Any] = [:]) -> (AppState, FakeCLILineStream) {
+        let appState = AppState.isolated(managedPolicy: policy)
+        if !policy.isEmpty { appState.managedPolicy.refresh() }
         appState.sharedConfig = ConfigService(configPath: NSTemporaryDirectory() + "watchtower-tests-\(UUID().uuidString).yaml")
         let fake = FakeCLILineStream()
         let host = SlackConnectListenerHost(streamer: fake)

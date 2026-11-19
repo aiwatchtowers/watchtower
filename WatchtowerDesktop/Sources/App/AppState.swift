@@ -98,12 +98,12 @@ final class AppState {
     var selectedConnection: ConnectionService?
     @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState() // a connect survives leaving the tab
     @ObservationIgnored private(set) lazy var slackAppSetup = SlackAppSetupModel { Self.slackLineStream() } // #1709 S3; no process under XCTest
-    /// The company setup wizard (#1887 C1): here, so a check or a Slack run outlives the page; its own wizard-mode Slack engine.
-    /// Settable for tests (a model over a scripted CLI).
+    /// The company setup wizard (#1887 C1): here, so a check or a Slack run outlives the page; its own wizard-mode Slack engine. Settable for tests.
     @ObservationIgnored lazy var companySetup = CompanySetupWizardModel(
         makeStreamer: { Self.slackLineStream() }, slack: SlackAppSetupModel(makeStreamer: { Self.slackLineStream() }, mode: .wizard))
     @ObservationIgnored lazy var companiesZone = CompaniesZoneModel { Self.slackLineStream() } // #1887 C3: outlives the tab
     @ObservationIgnored lazy var ownGoogleProject = makeOwnGoogleProject { Self.slackLineStream() } // #1887 C4: outlives the page
+    @ObservationIgnored lazy var atlassianToken = AtlassianTokenFormModel { Self.slackLineStream() } // #1887 C5: a check outlives its sheet
     @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
     /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
     @ObservationIgnored weak var observedProviderConnection: ProviderConnection?

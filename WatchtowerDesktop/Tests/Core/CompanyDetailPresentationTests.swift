@@ -198,4 +198,14 @@ final class CompanyDetailPresentationTests: XCTestCase {
         XCTAssertNil(Pres.sharedGmailMove(row("error", shared: false), locks: []), "its own Re-login works")
         XCTAssertNil(Pres.sharedGmailMove(row("removed"), locks: []))
     }
+
+    /// `jira accounts --json`'s lease day (§6.3): present only on the rows Go
+    /// set it on; an unreadable date is a failed read, never "no lease".
+    func testLeaseDatesReadByID() throws {
+        let rows = #"[{"id":4,"purge_lease_at":"2026-12-18T09:00:00Z"},{"id":5,"purge_lease_at":""},{"id":6}]"#
+        let dates = try SharedAppFlags.dates(Data(rows.utf8), field: SharedAppFlags.jiraLeaseField)
+        XCTAssertEqual(dates, [4: Date(timeIntervalSince1970: 1_797_584_400)])
+        XCTAssertThrowsError(try SharedAppFlags.dates(Data(#"[{"id":4,"purge_lease_at":"soon"}]"#.utf8),
+                                                      field: SharedAppFlags.jiraLeaseField))
+    }
 }

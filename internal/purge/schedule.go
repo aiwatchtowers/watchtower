@@ -360,3 +360,17 @@ func Apply(d *db.DB, rules func(db.PurgeAccount) Rule, leases bool, now time.Tim
 	}
 	return done, errors.Join(errs...)
 }
+
+// LeaseDeadlines returns the lease deadline of each of source's accounts that
+// has one under rules (leaseDeadlines): the day PURGE-01 would delete it when
+// nothing confirms access before. The Desktop's dead-token note (#1887 §6.3)
+// shows it, so it never keeps a copy of the rule.
+func LeaseDeadlines(accounts []db.PurgeAccount, rules func(db.PurgeAccount) Rule, source string) map[int64]time.Time {
+	out := map[int64]time.Time{}
+	for k, t := range leaseDeadlines(accounts, rules) {
+		if k.source == source && !t.IsZero() {
+			out[k.id] = t
+		}
+	}
+	return out
+}

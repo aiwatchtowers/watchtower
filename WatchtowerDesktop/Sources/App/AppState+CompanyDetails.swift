@@ -13,18 +13,10 @@ extension AppState {
             atlassianAPITokenAllowed: policy.atlassianAPITokenAllowed)
     }
 
-    /// Ways to connect this build does not offer yet, left out as their lock
-    /// would leave them out: the API token waits for Task 27's sheet, which
-    /// empties this set.
-    static let unbuiltOffers: Set<LockKey> = [.atlassianAPIToken]
-
-    /// What the banners, empty states and add sections leave out.
-    var companyOfferLocks: Set<LockKey> { companyLocks.union(Self.unbuiltOffers) }
-
     /// §7's banner over `vendor`'s detail.
     func companyBanner(_ vendor: CompanyVendor) -> CompanyBanner? {
         CompanyConnectionsPresentation.banner(
-            vendor, accounts: companyAccountRefs.filter { $0.vendor == vendor }, locks: companyOfferLocks)
+            vendor, accounts: companyAccountRefs.filter { $0.vendor == vendor }, locks: companyLocks)
     }
 
     /// `vendor`'s account list: loading, read failed, empty or the groups.
@@ -37,12 +29,12 @@ extension AppState {
         return CompanyConnectionsPresentation.accountsList(
             vendor: vendor, loaded: read.loaded, readError: read.error,
             accounts: companyAccountRefs.filter { $0.vendor == vendor }, groups: companyAccountGroups(vendor),
-            locks: companyOfferLocks)
+            locks: companyLocks)
     }
 
     /// The empty state's or the add section's buttons.
     func companyDetailActions(_ vendor: CompanyVendor, empty: Bool) -> [DetailAction] {
-        CompanyConnectionsPresentation.detailActions(vendor, companies: companyRefs, empty: empty, locks: companyOfferLocks)
+        CompanyConnectionsPresentation.detailActions(vendor, companies: companyRefs, empty: empty, locks: companyLocks)
     }
 
     /// A Google or Jira detail's buttons wait while its own sign-in, the own
@@ -83,20 +75,25 @@ extension AppState {
         return CompanyConnectionsPresentation.isOwnGoogleProject(ref, companies: companyRefs) { own.contains($0.accountID) }
     }
 
-    /// A row the policy stops (§5.4): an own-project Google account while
-    /// own projects are not allowed. Go stops its sync and keeps its data.
+    /// A row the policy stops: an own-project Google account while own
+    /// projects are not allowed (§5.4), an API-token Jira site while tokens
+    /// are not (§6.5). Go stops its sync and keeps its data.
     func companyRowStoppedByPolicy(_ ref: AccountRef) -> Bool {
-        companyLocks.contains(.ownGoogleProject) && isOwnGoogleProject(ref)
+        (companyLocks.contains(.ownGoogleProject) && isOwnGoogleProject(ref))
+            || (companyLocks.contains(.atlassianAPIToken) && ref.isAPIToken)
     }
 
     /// A detail button that needs no view state of its own (the detail opens
-    /// its own sheets): a company code, a company's app, Calendar, the wizard.
+    /// its own sheets and pages): a company code, a company's app, Calendar,
+    /// the API-token sheet (its model lives here; the Jira detail shows it).
     func performCompanyDetailAction(_ kind: DetailAction.Kind, vendor: CompanyVendor) {
         switch kind {
         case .pasteCode:
             pasteCompanyCode()
         case .connectCompany(let slug):
             reloginCompany(slug: slug, vendors: [vendor])
+        case .connectWithToken:
+            openAtlassianToken { $0.openAdd() }
         case .connectCalendar:
             // Calendar only: the shared Google app requests no Gmail (D11).
             googleAccountsViewModel?.addAccount(calendar: true, gmail: false, clientID: "", clientSecret: "",
@@ -107,12 +104,25 @@ extension AppState {
     }
 
     /// A banner button (§7); **Use my own Google project** is the detail's.
+    /// **Connect with an API token** opens the token sheet the Jira detail shows.
     func performCompanyBannerAction(_ action: CompanyBanner.Action) {
         switch action {
         case .pasteCode: pasteCompanyCode()
         case .setUpForCompany: openCompanySetup()
+        case .connectWithToken: openAtlassianToken { $0.openAdd() }
         default: break // the detail's own sheet or page
         }
+    }
+
+    /// Opens the API-token sheet (§6.2) the Jira detail shows; a run that
+    /// connects reloads the Jira sites and re-wires the daemon, as a finished
+    /// `jira add` / `jira login` does.
+    func openAtlassianToken(_ open: (AtlassianTokenFormModel) -> Void) {
+        atlassianToken.onConnected = { [weak self] in
+            guard let self else { return }
+            jiraAccountsViewModel?.tokenWroteAccount(daemonPolicy: accountDaemonPolicy)
+        }
+        open(atlassianToken)
     }
 
     /// The overview card's line for a banner, never a problem (§7).

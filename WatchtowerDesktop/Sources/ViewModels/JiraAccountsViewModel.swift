@@ -479,6 +479,13 @@ final class JiraAccountsViewModel {
         applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
     }
 
+    /// The API-token sheet (`AtlassianTokenFormModel`) connected a site or
+    /// saved a new token: reload and re-wire the daemon, as a finished
+    /// `jira add` / `jira login` does.
+    func tokenWroteAccount(daemonPolicy: DaemonRestartPolicy) {
+        applyResult((0, "", ""), failurePrefix: "", daemonPolicy: daemonPolicy)
+    }
+
     private func applyResult(
         _ result: (exitCode: Int32, stdout: String, stderr: String),
         failurePrefix: String,

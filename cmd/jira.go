@@ -1136,7 +1136,7 @@ func runJiraAccounts(cmd *cobra.Command, _ []string) error {
 	}
 	out := cmd.OutOrStdout()
 	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
-		return writeJiraAccountsJSON(out, cfg.WorkspaceDir(), accounts)
+		return writeJiraAccountsJSON(out, cfg.WorkspaceDir(), accounts, jiraPurgeLeases(cfg, database, time.Now()))
 	}
 	if len(accounts) == 0 {
 		fmt.Fprintln(out, "No Jira sites connected. Run 'watchtower jira add' to connect one.")

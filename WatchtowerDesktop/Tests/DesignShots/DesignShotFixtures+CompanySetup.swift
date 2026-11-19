@@ -82,28 +82,26 @@ enum CompanySetupShotFixtures {
             + [shot("overview-companies-narrow", 420) { CompaniesZoneScenes.overview(.companies) }]
     }
 
-    /// Slack, Linear and Outlook (Task 25a), Google and Jira (Task 25b,
-    /// Google's lock Task 26) from the production sections and groups;
-    /// Jira's `-locked` and `-tokenError` frames stay mocks until Task 27.
+    /// Slack, Linear and Outlook (Task 25a), Google and Jira (Tasks 25b, 26,
+    /// 27) from the production sections and groups.
     private static var paneShots: [DesignShot] {
         let details = CompanyDetailScenes.panes
         return CompaniesZoneScenes.panes.map { name, view in shot(name, 640) { view } }
             + details.map { name, view in shot(name, 640) { view } }
-            + CompanyPaneScenes.scenes.map { name, sections in shot(name, 640) { MockPane(sections: sections) } }
             + ["google-detail", "jira-detail"].compactMap { name in
                 details.first { $0.0 == name }.map { scene in shot("\(name)-narrow", 360) { scene.1 } }
             }
     }
 
-    /// The own Google project page (Task 26, production) and the API token
-    /// sheet (mock until Task 27).
+    /// The own Google project page (Task 26) and the API token sheet (Task
+    /// 27), both production.
     private static var sheetShots: [DesignShot] {
-        let token = CompanySheetScenes.token
+        let token = CompanyTokenShots.scenes
         var shots = OwnGoogleLive.scenes.map { name in shot("ownGoogle-\(name)", 640) { OwnGoogleLive.page(name) } }
         shots.append(shot("ownGoogle-empty-narrow", 360) { OwnGoogleLive.page("empty") })
-        shots += token.map { name, blocks in shot("token-\(name)", 520) { MockSheet(blocks: blocks) } }
+        shots += token.map { name, model in shot("token-\(name)", 520) { AtlassianTokenSheet(model: model()) } }
         if let empty = token.first(where: { $0.0 == "empty" }) {
-            shots.append(shot("token-empty-narrow", 380) { MockSheet(blocks: empty.1) })
+            shots.append(shot("token-empty-narrow", 380) { AtlassianTokenSheet(model: empty.1()) })
         }
         return shots
     }
@@ -112,102 +110,6 @@ enum CompanySetupShotFixtures {
         [
             shot("policy-privacy", 640) { PolicyPrivacyMock() },
             shot("policy-blockedNotice", 640) { BlockedNoticeMock() }
-        ]
-    }
-}
-
-// MARK: - Detail panes left as mocks (Task 27)
-
-/// The Jira frames whose states Task 27 builds: the token lock and the dead
-/// API token. The rest of the details renders production views
-/// (`CompanyDetailScenes`).
-@MainActor
-enum CompanyPaneScenes {
-    private static func ok(_ title: String, tag: String? = nil) -> MockBlock {
-        .account(MockAccount(title: title, status: Copy.syncing, tone: Tone.success, tag: tag))
-    }
-
-    private static func stopped(_ title: String, tag: String? = nil) -> MockBlock {
-        .account(MockAccount(title: title, status: Copy.stoppedByPolicy, tone: Tone.status("gray"), tag: tag))
-    }
-
-    private static let lockBlocks: (String) -> [MockBlock] = { text in
-        [.notice(MockNotice(icon: "lock.fill", tone: Tone.status("gray"), title: nil, body: text)),
-         .buttons(leading: [MockButton(title: Copy.itGuideLink, kind: .quiet)], trailing: []),
-         .managedBadge]
-    }
-
-    static var scenes: [(String, [MockPaneSection])] { jiraScenes }
-
-    private static var jiraScenes: [(String, [MockPaneSection])] {
-        let acme = MockPaneSection(title: "Acme", caption: Copy.groupAcmeAtlassian,
-                                   blocks: [ok("alice@example.com · acme.atlassian.net")])
-        let deadToken = MockPaneSection(
-            title: Copy.groupTokens, caption: Copy.groupTokensCaption,
-            blocks: [.account(MockAccount(title: "bob@example.com · beta.atlassian.net", status: Copy.tokenDead,
-                                          tone: Tone.error, tag: Copy.tokenTag,
-                                          button: MockButton(title: Copy.pasteNewToken, kind: .primary),
-                                          note: Copy.tokenLease, statusIsProblem: true))])
-        let add = MockPaneSection(title: Copy.addAccountTitle, blocks: [
-            .buttons(leading: [MockButton(title: Copy.connectCompanyAtlassian), MockButton(title: Copy.connectTokenButton)],
-                     trailing: [])
-        ])
-        return [
-            ("jira-detail-tokenError", [acme, deadToken, add]),
-            ("jira-detail-locked", [
-                acme,
-                MockPaneSection(title: Copy.groupTokens, caption: Copy.groupTokensCaption,
-                                blocks: [stopped("bob@example.com · beta.atlassian.net", tag: Copy.tokenTag)]
-                                    + lockBlocks(Copy.tokenLocked)),
-                MockPaneSection(title: Copy.addAccountTitle, blocks: [
-                    .buttons(leading: [MockButton(title: Copy.connectCompanyAtlassian)], trailing: [])
-                ])
-            ])
-        ]
-    }
-}
-
-// MARK: - API token sheet (mock until Task 27)
-
-@MainActor
-enum CompanySheetScenes {
-    private static func buttons(_ primary: String, disabled: Bool = false) -> MockBlock {
-        .buttons(leading: [], trailing: [MockButton(title: Copy.cancel), MockButton(title: primary, kind: .primary, disabled: disabled)])
-    }
-
-    private static let doneButton = MockBlock.buttons(leading: [], trailing: [MockButton(title: Copy.done, kind: .primary)])
-
-    private static let tokenHead = MockBlock.title(Copy.tokenTitle, Copy.tokenIntro)
-    private static let tokenStep1: [MockBlock] = [
-        .body(Copy.tokenStep1),
-        .caption(Copy.tokenStep1Help),
-        .buttons(leading: [MockButton(title: Copy.openAtlassianTokens), MockButton(title: Copy.copyScopes, kind: .quiet)],
-                 trailing: []),
-        .body(Copy.tokenStep2)
-    ]
-
-    private static func fields(_ email: String, _ site: String, _ token: String, readOnly: Bool = false) -> MockBlock {
-        .fields([MockField(label: Copy.atlassianEmail, value: email, readOnly: readOnly),
-                 MockField(label: Copy.site, value: site, readOnly: readOnly),
-                 MockField(label: Copy.apiToken, value: token, secure: true)], error: nil)
-    }
-
-    private static var filled: MockBlock { fields("alice@example.com", "acme.atlassian.net", "sample-token") }
-
-    static var token: [(String, [MockBlock])] {
-        let form = [tokenHead] + tokenStep1
-        return [
-            ("empty", form + [fields("", "", ""), .caption(Copy.scopedHint), buttons(Copy.connect, disabled: true)]),
-            ("ready", form + [filled, .caption(Copy.scopedHint), buttons(Copy.connect)]),
-            ("checking", form + [filled, .busy(Copy.tokenChecking), buttons(Copy.connect, disabled: true)]),
-            ("unauthorized", form + [filled, .problem(Copy.tokenUnauthorized, nil), buttons(Copy.tryAgain)]),
-            ("missingScope", form + [filled, .problem(Copy.tokenMissingScope, nil), buttons(Copy.tryAgain)]),
-            ("notCloud", form + [fields("alice@example.com", "acme.example.com", "sample-token"),
-                                 .problem(Copy.tokenNotCloud, nil), buttons(Copy.tryAgain)]),
-            ("network", form + [filled, .problem(Copy.tokenNetwork, nil), buttons(Copy.tryAgain)]),
-            ("done", [.title(Copy.tokenTitle, nil), .success(Copy.tokenDoneTitle, Copy.tokenDoneBody), doneButton]),
-            ("replace", [.title(Copy.tokenReplaceTitle, Copy.tokenReplaceIntro)] + tokenStep1
-                + [fields("bob@example.com", "beta.atlassian.net", "", readOnly: true), buttons(Copy.saveToken, disabled: true)])
         ]
     }
 }

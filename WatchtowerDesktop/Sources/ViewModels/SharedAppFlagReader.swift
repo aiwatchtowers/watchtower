@@ -6,8 +6,9 @@ import WatchtowerCore
 /// `shared_atlassian`, #1887 T19): the banners of company screens spec §7
 /// and the rows' **Shared app** tag; for Google also which accounts run on
 /// the person's own project (`own_project`, C4: the own-project group and
-/// its policy lock). Go owns the client resolver that decides them; this
-/// only reads the flags.
+/// its policy lock); for Jira also `purge_lease_at`, the PURGE-01 lease day
+/// a dead token's note names (§6.3). Go owns the client resolver and the
+/// purge rule that decide them; this only reads the rows.
 ///
 /// Empty before the first successful read, so a failed one shows no banner;
 /// a later failure keeps the last answer (logged, never shown: the detail
@@ -17,17 +18,22 @@ import WatchtowerCore
 @Observable
 final class SharedAppFlagReader {
     private var flagged: [String: Set<Int>] = [:]
+    /// Each account's lease day while the lease counts (`dateField` only).
+    private(set) var leaseDates: [Int: Date] = [:]
     @ObservationIgnored private let args: [String]
     @ObservationIgnored private let flag: String
     @ObservationIgnored private let flags: [String]
+    @ObservationIgnored private let dateField: String?
     @ObservationIgnored private var reads = 0
     @ObservationIgnored private var applied = 0
 
-    /// `flag` is the shared-app flag; `extraFlags` are read alongside it.
-    init(args: [String], flag: String, extraFlags: [String] = []) {
+    /// `flag` is the shared-app flag; `extraFlags` are read alongside it, and
+    /// `dateField` as each row's date.
+    init(args: [String], flag: String, extraFlags: [String] = [], dateField: String? = nil) {
         self.args = args
         self.flag = flag
         flags = [flag] + extraFlags
+        self.dateField = dateField
     }
 
     static func google() -> SharedAppFlagReader {
@@ -36,7 +42,8 @@ final class SharedAppFlagReader {
     }
 
     static func jira() -> SharedAppFlagReader {
-        SharedAppFlagReader(args: SharedAppFlags.jiraArgs, flag: SharedAppFlags.jiraFlag)
+        SharedAppFlagReader(args: SharedAppFlags.jiraArgs, flag: SharedAppFlags.jiraFlag,
+                            dateField: SharedAppFlags.jiraLeaseField)
     }
 
     /// The accounts on the retiring shared app.
@@ -52,8 +59,10 @@ final class SharedAppFlagReader {
         // A failed run is logged by the runner; an answer that is not the rows is logged here.
         guard let data = try? await ProcessCLIRunner(binaryPath: cliPath).run(args: args) else { return }
         let ids: [String: Set<Int>]
+        let dates: [Int: Date]
         do {
             ids = try SharedAppFlags.accountIDs(data, flags: flags)
+            dates = try dateField.map { try SharedAppFlags.dates(data, field: $0) } ?? [:]
         } catch {
             CLILog.failure(args: args, exitCode: 0, stderr: "stdout is not the account rows (\(data.count) bytes)")
             return
@@ -61,5 +70,6 @@ final class SharedAppFlagReader {
         guard read > applied else { return }
         applied = read
         flagged = ids
+        leaseDates = dates
     }
 }

@@ -81,7 +81,7 @@ package struct AccountRef: Equatable, Sendable, Identifiable {
 
     /// Removed or purged: it no longer connects its company's vendor.
     var isGone: Bool { status == "removed" || status == "purged" }
-    var isAPIToken: Bool { authKind == "api_token" }
+    package var isAPIToken: Bool { authKind == "api_token" }
     /// A Linear workspace connected with the person's own API key: no app of ours.
     var isAPIKey: Bool { authKind == "api_key" }
 }
@@ -634,6 +634,15 @@ package enum CompanyConnectionsPresentation {
         default:
             return nil
         }
+    }
+
+    /// An API-token site's row offers **Paste a new token**: its token died,
+    /// or it fails for another reason no §4.3 status names (a token site has
+    /// no OAuth sign-in). A stopped, removed or purged row offers nothing.
+    package static func offersNewToken(_ a: AccountRef, status: RowStatus?) -> Bool {
+        guard a.isAPIToken else { return false }
+        if let status { return status.action == .pasteNewToken }
+        return a.status == "error" || a.status == "revoked"
     }
 
     // MARK: Banners and locks

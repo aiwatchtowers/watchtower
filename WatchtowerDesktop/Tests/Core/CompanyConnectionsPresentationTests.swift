@@ -365,6 +365,23 @@ final class CompanyConnectionsPresentationTests: XCTestCase {
         XCTAssertNil(Pres.rowStatus(other, purgeLease: due, companies: [acme])?.note)
     }
 
+    /// A token site never offers an OAuth Re-login: a dead or otherwise
+    /// failing token takes a new one; a stopped, healthy or gone row nothing.
+    func testTokenRowOffersNewToken() {
+        let dead = account(.atlassian, 2, "b", status: "error", error: "api_token_dead", authKind: "api_token")
+        XCTAssertTrue(Pres.offersNewToken(dead, status: Pres.rowStatus(dead, purgeLease: nil, companies: [])))
+        let other = account(.atlassian, 2, "b", status: "error", error: "network down", authKind: "api_token")
+        XCTAssertTrue(Pres.offersNewToken(other, status: Pres.rowStatus(other, purgeLease: nil, companies: [])))
+        let stopped = Pres.rowStatus(dead, purgeLease: nil, companies: [], stoppedByPolicy: true)
+        XCTAssertFalse(Pres.offersNewToken(dead, status: stopped))
+        let ok = account(.atlassian, 2, "b", authKind: "api_token")
+        XCTAssertFalse(Pres.offersNewToken(ok, status: nil))
+        let purged = account(.atlassian, 2, "b", status: "purged", authKind: "api_token")
+        XCTAssertFalse(Pres.offersNewToken(purged, status: nil))
+        let oauth = account(.atlassian, 2, "b", status: "error", error: "network down")
+        XCTAssertFalse(Pres.offersNewToken(oauth, status: nil))
+    }
+
     // MARK: - Banners
 
     func testSharedGoogleBanner() throws {

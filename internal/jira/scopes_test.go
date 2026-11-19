@@ -2,6 +2,7 @@ package jira
 
 import (
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -68,4 +69,20 @@ func TestHasConfluenceWriteScopes(t *testing.T) {
 	sort.Sort(sort.Reverse(sort.StringSlice(fields)))
 	assert.True(t, HasConfluenceWriteScopes(&OAuthToken{Scope: "x " + strings.Join(fields, " ")}))
 	assert.False(t, HasConfluenceWriteScopes(nil))
+}
+
+// TestAPITokenScopesFixture (#1887 C5): the scopes the Desktop's token sheet
+// copies (testdata/api_token_scopes.txt, read by the Swift test too) are the
+// Jira and Confluence scopes Watchtower reads with, without offline_access
+// (an OAuth refresh scope a token has no use for).
+func TestAPITokenScopesFixture(t *testing.T) {
+	raw, err := os.ReadFile("testdata/api_token_scopes.txt")
+	require.NoError(t, err)
+	var want []string
+	for _, s := range strings.Fields(JiraScopes + " " + ConfluenceScopes) {
+		if s != "offline_access" {
+			want = append(want, s)
+		}
+	}
+	assert.Equal(t, want, strings.Fields(string(raw)))
 }

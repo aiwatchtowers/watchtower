@@ -209,4 +209,23 @@ package enum SharedAppFlags {
         }
         return ids
     }
+
+    /// `jira accounts --json`'s `purge_lease_at`: the day PURGE-01's lease
+    /// would delete the account, present only while that lease counts (Go
+    /// decides it with the daemon's own rule, §6.3).
+    package static let jiraLeaseField = "purge_lease_at"
+
+    /// The rows' `field` dates (RFC 3339) by account id; a row without one is left out.
+    package static func dates(_ data: Data, field: String) throws -> [Int: Date] {
+        guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { throw DecodeError() }
+        let formatter = ISO8601DateFormatter()
+        var out: [Int: Date] = [:]
+        for row in rows {
+            guard let id = row["id"] as? Int else { throw DecodeError() }
+            guard let raw = row[field] as? String, !raw.isEmpty else { continue }
+            guard let date = formatter.date(from: raw) else { throw DecodeError() }
+            out[id] = date
+        }
+        return out
+    }
 }

@@ -10,9 +10,12 @@ import WatchtowerCore
 /// sync (the Boards tab until #899). A board's profile and the features
 /// detail open in place, with a way back.
 ///
-/// A new site signs in through a company's Atlassian app (or, with Task 27,
-/// an API token): the shared app is retired (D15 amended, ask #1600), so
-/// there is no plain "Add Jira Site" here; onboarding keeps its add sheet.
+/// A new site signs in through a company's Atlassian app or with an API
+/// token (§6, `AtlassianTokenSheet`): the shared app is retired (D15
+/// amended, ask #1600), so there is no plain "Add Jira Site" here;
+/// onboarding keeps its add sheet. While the organization forbids API
+/// tokens (§6.5) the token offers are gone, token sites read "Stopped by
+/// your organization" under the lock card, and an open token sheet closes.
 ///
 /// Like Slack (and unlike Google), removal is non-destructive: `jira remove`
 /// drops the token and marks the row removed/disabled but leaves
@@ -55,6 +58,15 @@ struct JiraConnectionDetail: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .detailBackground()
+        .sheet(isPresented: Binding(
+            get: { appState.atlassianToken.isPresented },
+            set: { if !$0 { appState.atlassianToken.close() } }
+        )) {
+            AtlassianTokenSheet(model: appState.atlassianToken).frame(width: 520)
+        }
+        .onChange(of: appState.companyLocks.contains(.atlassianAPIToken), initial: true) { _, locked in
+            if locked { appState.atlassianToken.policyLocked() }
+        }
         .accountRenameAlert($accountBeingRenamed) { target, name in
             Task { await appState.jiraAccountsViewModel?.rename(accountID: target.id, to: name) }
         }
@@ -122,6 +134,7 @@ struct JiraConnectionDetail: View {
             blocked: sourceBlocked,
             busy: appState.companyDetailBusy(.atlassian),
             error: vm?.error,
+            locks: appState.companyLocks,
             perform: { appState.performCompanyDetailAction($0, vendor: .atlassian) },
             bannerAction: { appState.performCompanyBannerAction($0) },
             tryAgain: { vm?.refresh() },
@@ -155,9 +168,17 @@ struct JiraConnectionDetail: View {
                 CompanyRowStatusButton(action: .pasteCode, disabled: sourceBlocked) { action in
                     appState.companyRowAction(action, account: ref)
                 }
-            } else if status?.action == .pasteNewToken {
-                // Task 27's sheet takes the new token; until then the status line says what to do.
-                EmptyView()
+            } else if ref.isAPIToken {
+                // A token site takes a new token, never an OAuth sign-in; a stopped one takes nothing.
+                if CompanyConnectionsPresentation.offersNewToken(ref, status: status) {
+                    CompanyRowStatusButton(action: .pasteNewToken,
+                                           disabled: vm.isConnecting || appState.atlassianToken.isChecking
+                                               || reloginBlocked(account.id) != nil) { action in
+                        appState.companyRowAction(action, account: ref)
+                    }
+                    .managedByOrganization(sourceBlocked)
+                    .help(reloginBlocked(account.id) ?? "")
+                }
             } else if !account.isOK || status?.action == .relogin {
                 // `jira login --account` signs in through the site's own client (its company's after a Replace).
                 Button(RowStatus.Action.relogin.title) { Task { await vm.relogin(account) } }
@@ -171,10 +192,11 @@ struct JiraConnectionDetail: View {
             }
             .buttonStyle(.kitQuiet)
             .disabled(vm.isConnecting)
+            // A token check still running (its sheet may be closed) could write the row back after a remove.
             Button("Remove") { jiraAccountPendingRemoval = account }
                 .buttonStyle(.kitQuiet)
                 .foregroundStyle(Tone.error)
-                .disabled(vm.isConnecting)
+                .disabled(vm.isConnecting || appState.atlassianToken.isChecking)
         }
     }
 
