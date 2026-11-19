@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 
 	"watchtower/internal/calendar"
@@ -59,13 +60,13 @@ func googleSharedGmail(workspaceDir string, a db.GoogleAccount) bool {
 }
 
 func writeGoogleAccountsJSON(w io.Writer, workspaceDir string, accounts []db.GoogleAccount) error {
-	// An unreadable company directory leaves a tied row's own_project false:
-	// the Desktop reads the same directory for its company groups, where a
-	// personal bundle's rows are grouped from the bundle itself; an untied
-	// row needs no company to tell.
+	// An unreadable company directory fails the listing rather than report
+	// a personal bundle's rows as not own (they would leave the §5.4 lock);
+	// the Desktop keeps its last flags. A damaged single file is a LoadError
+	// and leaves only that company's rows untold.
 	entries, _, err := company.NewStore(workspaceDir).LoadAll(companyForcedBundle())
 	if err != nil {
-		entries = nil
+		return fmt.Errorf("reading companies: %w", err)
 	}
 	rows := make([]googleAccountJSON, 0, len(accounts))
 	for _, a := range accounts {

@@ -275,7 +275,21 @@ func addOwnGoogleProject(cmd *cobra.Command, cfg *config.Config, database *db.DB
 	if err != nil || !asJSON {
 		return err
 	}
-	return writeCompanyResult(cmd, companyCheckResult{Result: checkOK, Slug: slug, AccountID: id, Email: grant.result.email}, nil)
+	return writeCompanyResult(cmd, companyCheckResult{Result: checkOK, Slug: slug, AccountID: id, Email: grant.result.email,
+		NotGranted: grant.result.notGranted()}, nil)
+}
+
+// notGranted names the requested services the consent left unapproved
+// ("calendar", "gmail"); nil when every one was granted.
+func (r googleConnectResult) notGranted() []string {
+	var missing []string
+	if r.wantCalendar && !r.calEnabled {
+		missing = append(missing, "calendar")
+	}
+	if r.wantGmail && !r.gmEnabled {
+		missing = append(missing, "gmail")
+	}
+	return missing
 }
 
 func runGoogleAccounts(cmd *cobra.Command, _ []string) error {

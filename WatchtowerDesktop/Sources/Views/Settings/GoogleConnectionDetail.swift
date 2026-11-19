@@ -23,7 +23,7 @@ struct GoogleConnectionDetail: View {
     private var ownProjectLocked: Bool { appState.companyLocks.contains(.ownGoogleProject) }
 
     var body: some View {
-        Group {
+        VStack(spacing: 0) { // one view: its onDisappear is the detail's, not a branch's
             // §5.2: Use my own Google project is a page in this detail.
             if ownProject.isOpen && !ownProjectLocked {
                 OwnGoogleProjectPage(model: ownProject)
@@ -103,7 +103,7 @@ struct GoogleConnectionDetail: View {
             list: appState.companyAccountsList(.google),
             emptyActions: appState.companyDetailActions(.google, empty: true),
             addActions: appState.companyDetailActions(.google, empty: false),
-            connect: appState.companyGroupConnect(blocked: sourceBlocked || vm?.isConnecting == true),
+            connect: appState.companyGroupConnect(blocked: sourceBlocked || appState.companyDetailBusy(.google)),
             blocked: sourceBlocked,
             busy: appState.companyDetailBusy(.google),
             error: vm?.error,
@@ -165,17 +165,17 @@ struct GoogleConnectionDetail: View {
                 .buttonStyle(.kitSecondary)
                 .managedByOrganization(sourceBlocked)
                 .help(reloginBlocked(account.id) ?? "")
-                .disabled(vm.isConnecting || reloginBlocked(account.id) != nil)
+                .disabled(appState.companyDetailBusy(.google) || reloginBlocked(account.id) != nil)
             }
             Button("Rename…") {
                 accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
             }
             .buttonStyle(.kitQuiet)
-            .disabled(vm.isConnecting)
+            .disabled(appState.companyDetailBusy(.google))
             Button("Remove") { googleAccountPendingRemoval = account }
                 .buttonStyle(.kitQuiet)
                 .foregroundStyle(Tone.error)
-                .disabled(vm.isConnecting)
+                .disabled(appState.companyDetailBusy(.google))
         }
     }
 

@@ -65,8 +65,8 @@ extension AppState {
     ) -> OwnGoogleProjectModel {
         let model = OwnGoogleProjectModel(makeStreamer: makeStreamer)
         model.externalBusy = { [weak self] in
-            guard let self else { return true }
-            return googleAccountsViewModel?.isConnecting == true || companyConnect?.isRunning == true
+            // The detail's own busy rule; the model checks its own run itself.
+            self?.companyDetailBusy(.google) ?? true
         }
         model.onConnected = { [weak self] in
             guard let self else { return }

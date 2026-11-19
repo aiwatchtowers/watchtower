@@ -19,6 +19,7 @@ struct OwnGoogleProjectPage: View {
                 if let done = model.doneLines {
                     Text(Model.title).font(.title3.weight(.semibold))
                     WizardNotice(icon: "checkmark.circle.fill", tone: Tone.success, title: done.title, text: done.body)
+                    if let missing = model.notGrantedNote { WizardProblem(text: missing) }
                     if let weekly = model.weeklyNote { WizardCaption(weekly) }
                 } else {
                     VStack(alignment: .leading, spacing: Spacing.small) {

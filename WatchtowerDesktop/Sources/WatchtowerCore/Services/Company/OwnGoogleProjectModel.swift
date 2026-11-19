@@ -46,6 +46,8 @@ package final class OwnGoogleProjectModel {
     package private(set) var file: DroppedFile?
     /// The last drop was not a Google OAuth client JSON.
     package private(set) var fileProblem = false
+    /// The services the last connect's consent left unapproved.
+    package private(set) var notGranted: [String] = []
     /// Spike S2 failed: the done page says Google asks for a weekly sign-in.
     package let weeklyRelogin: Bool
 
@@ -102,6 +104,7 @@ package final class OwnGoogleProjectModel {
 
     private func reset() {
         phase = .idle
+        notGranted = []
         file = nil
         fileProblem = false
     }
@@ -157,12 +160,18 @@ package final class OwnGoogleProjectModel {
             phase = .failed(Self.failedLine(failure ?? ""))
             return
         }
-        finish(result)
+        apply(result)
     }
 
-    private func finish(_ result: CompanyCheckResult) {
+    /// Refusals that are not Google's verdict on the client: Go's own
+    /// (the sign-in lacks a service the same address's row syncs, its purge
+    /// runs); their message says what to do, not "download the JSON again".
+    private static let refusalsNotAboutTheClient: Set<String> = ["grant_too_narrow", "purge_running"]
+
+    private func apply(_ result: CompanyCheckResult) {
         switch result.result {
         case "ok":
+            notGranted = result.notGranted
             phase = .done(email: result.email)
             onConnected?()
         case "network":
@@ -170,8 +179,12 @@ package final class OwnGoogleProjectModel {
         case "cancelled":
             phase = .failed(CompanySetupWizardModel.cancelledLine(result.message))
         default:
-            let code = result.code.isEmpty ? result.message : result.code
-            phase = .failed(CompanySetupWizardModel.rejectedLine(.google, code: code, tenant: ""))
+            // Only a code Google sent back (invalid_client, …) is a refused client.
+            if result.code.isEmpty || Self.refusalsNotAboutTheClient.contains(result.code) {
+                phase = .failed(Self.failedLine(result.message))
+            } else {
+                phase = .failed(CompanySetupWizardModel.rejectedLine(.google, code: result.code, tenant: ""))
+            }
         }
     }
 
@@ -210,6 +223,12 @@ package final class OwnGoogleProjectModel {
         return (Self.connectedTitle(email), Self.connectedBody)
     }
 
+    /// A partial consent: the services left unapproved, under the done lines.
+    package var notGrantedNote: String? {
+        guard case .done = phase, !notGranted.isEmpty else { return nil }
+        return Self.notGrantedLine(notGranted)
+    }
+
     /// The weekly sign-in note under the done lines, only when S2 failed.
     package var weeklyNote: String? {
         guard weeklyRelogin, case .done = phase else { return nil }
@@ -240,7 +259,17 @@ extension OwnGoogleProjectModel {
     package static let connectTitle = "Connect"
     package static let tryAgainTitle = "Try again"
     package static let doneTitle = "Done"
-    package static func connectedTitle(_ email: String) -> String { "Connected \(email) through your own project" }
+    /// A Calendar-only consent reads no address: "your Google account".
+    package static func connectedTitle(_ email: String) -> String {
+        "Connected \(email.isEmpty ? "your Google account" : email) through your own project"
+    }
+
+    /// "Gmail was not approved on Google's consent screen, so it does not sync. Re-login the account to approve it."
+    package static func notGrantedLine(_ services: [String]) -> String {
+        let names = services.map { $0 == "gmail" ? "Gmail" : "Google Calendar" }.joined(separator: " and ")
+        let (verb, rest) = services.count > 1 ? ("were", "they do not sync") : ("was", "it does not sync")
+        return "\(names) \(verb) not approved on Google's consent screen, so \(rest). Re-login the account to approve it."
+    }
     package static let connectedBody = "The first sync starts now."
     package static let weeklyLine = "Google asks a project like this to sign in again every 7 days. "
         + "Watchtower reminds you when it is time."

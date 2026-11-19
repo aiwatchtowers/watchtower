@@ -435,6 +435,27 @@ func TestGoogleAddClientIDJSON_OK(t *testing.T) {
 	assert.Equal(t, accounts[0].ID, res.AccountID)
 	assert.Equal(t, "bob@example.org", res.Email)
 	assert.Equal(t, "bob-example-org", res.Slug)
+	assert.Empty(t, res.NotGranted)
+}
+
+// A consent that left Gmail unapproved is still a connection (Calendar),
+// and the result line says what was not granted.
+func TestGoogleAddClientIDJSON_PartialGrantNamesTheMissingService(t *testing.T) {
+	h := newGoogleAddHarness(t, "bob@example.org")
+	policytest.Set(t, nil)
+	googleOAuthLogin = func(context.Context, calendar.GoogleOAuthConfig, io.Writer, ...calendar.LoginOptions) (*calendar.OAuthToken, error) {
+		return &calendar.OAuthToken{AccessToken: "a", RefreshToken: "r", Scope: calendar.ScopeCalendarReadonly}, nil
+	}
+
+	res, err := ownGoogleJSONResult(t)
+
+	require.NoError(t, err)
+	assert.Equal(t, checkOK, res.Result)
+	assert.Equal(t, []string{"gmail"}, res.NotGranted)
+	assert.Empty(t, res.Email, "no Gmail, no address")
+	accounts, err := h.database.ListGoogleAccounts()
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
 }
 
 // TestGoogleAddClientIDJSON_FailuresStoreNothing: a refused client, an
@@ -522,4 +543,12 @@ func TestGoogleAccountsJSON_OwnProject(t *testing.T) {
 		own[r.ID] = r.OwnProject
 	}
 	assert.Equal(t, map[int64]bool{f.personal: true, f.legacy: true, f.company: false, f.bridged: false, f.shared: false}, own)
+
+	// An unreadable company directory is an error, never "not own".
+	dir := filepath.Join(f.cfg.WorkspaceDir(), "company")
+	require.NoError(t, os.Chmod(dir, 0))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	buf.Reset()
+	require.Error(t, writeGoogleAccountsJSON(&buf, f.cfg.WorkspaceDir(), all))
+	assert.Empty(t, buf.String(), "no rows printed")
 }

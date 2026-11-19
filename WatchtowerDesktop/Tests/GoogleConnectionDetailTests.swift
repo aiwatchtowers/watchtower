@@ -140,6 +140,26 @@ final class GoogleConnectionDetailTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(text: Pres.googleEmpty))
     }
 
+    /// AppState's own-project model waits for the other Google sign-ins, and
+    /// a connect re-reads the accounts and re-wires the daemon.
+    func testOwnProjectWiring() async throws {
+        let (appState, _) = LinearConnectionDetailTests.wired()
+        let vm = GoogleAccountsViewModel(dbPool: try pool(), daemon: FakeDaemonRestarter()) { nil }
+        appState.googleAccountsViewModel = vm
+        let own = appState.ownGoogleProject
+        own.drop(Data(#"{"installed":{"client_id":"9876-home","client_secret":"s"}}"#.utf8), fileName: "c.json")
+        XCTAssertTrue(own.canConnect)
+        vm.isConnecting = true
+        XCTAssertFalse(own.canConnect, "a Google sign-in of the detail runs")
+        XCTAssertTrue(appState.companyDetailBusy(.google))
+        vm.isConnecting = false
+
+        XCTAssertNil(vm.daemonRestartTask)
+        own.onConnected?()
+        XCTAssertNotNil(vm.daemonRestartTask, "the new account's first sync is wired")
+        await vm.daemonRestartTask?.value
+    }
+
     /// §5.4 with Go's `own_project` flag: an untied legacy own-credentials
     /// account sits under "Your own Google project" (not the shared app),
     /// stopped by the organization with no Re-login, then the lock card;
@@ -196,8 +216,15 @@ final class GoogleConnectionDetailTests: XCTestCase {
         let moves = try view.inspect().findAll(ViewType.Button.self) {
             try $0.labelView().text().string() == CompanyBanner.Action.useOwnGoogle.title
         }
-        XCTAssertEqual(moves.count, 2, "the banner's and the stopped row's")
-        try moves[1].tap()
+        XCTAssertGreaterThanOrEqual(moves.count, 3, "the banner's, the stopped row's and the add section's")
+        let before = moves.count
+        try await pool.write { db in try db.execute(sql: "UPDATE google_accounts SET status = 'ok' WHERE id = 2") }
+        await vm.refreshAsync()
+        let after = try view.inspect().findAll(ViewType.Button.self) {
+            try $0.labelView().text().string() == CompanyBanner.Action.useOwnGoogle.title
+        }.count
+        XCTAssertLessThan(after, before, "a syncing shared row has no move button")
+        try moves[0].tap()
         XCTAssertTrue(appState.ownGoogleProject.isOpen)
     }
 

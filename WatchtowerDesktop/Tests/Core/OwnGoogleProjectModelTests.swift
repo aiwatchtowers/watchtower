@@ -77,6 +77,40 @@ final class OwnGoogleProjectModelTests: XCTestCase {
         XCTAssertEqual(m.phase, .idle)
     }
 
+    /// A consent that left Gmail unapproved connects Calendar alone: the
+    /// done page says so (no address without Gmail).
+    func testPartialGrantSaysWhatDidNotConnect() async {
+        let (m, _) = model([.init(lines: [#"{"result":"ok","account_id":4,"email":"","not_granted":["gmail"]}"#])])
+        dropped(m)
+        await m.connect()
+        XCTAssertEqual(m.doneLines?.title, "Connected your Google account through your own project")
+        XCTAssertEqual(m.notGrantedNote, "Gmail was not approved on Google's consent screen, so it does not sync. "
+            + "Re-login the account to approve it.")
+        XCTAssertEqual(Model.notGrantedLine(["calendar", "gmail"]), "Google Calendar and Gmail were not approved on "
+            + "Google's consent screen, so they do not sync. Re-login the account to approve it.")
+        m.finish()
+        XCTAssertNil(m.notGrantedNote)
+    }
+
+    /// Go's own refusals (a re-tie the grant does not cover, a running purge)
+    /// and an unclassified failure say what happened, never "download the
+    /// JSON again", which is about a refused client only.
+    func testRefusalsNotAboutTheClient() async {
+        let narrow = "the new sign-in lacks a service the account syncs: run again with --calendar --gmail"
+        let (m, _) = model([
+            .init(lines: [#"{"result":"rejected","code":"grant_too_narrow","message":"\#(narrow)"}"#]),
+            .init(lines: [#"{"result":"rejected","code":"purge_running","message":"its data is being deleted"}"#]),
+            .init(lines: [#"{"result":"rejected","message":"could not read the Gmail address"}"#])
+        ])
+        dropped(m)
+        await m.connect()
+        XCTAssertEqual(m.status, .problem("Could not connect your Google project: \(narrow)."))
+        await m.connect()
+        XCTAssertEqual(m.status, .problem("Could not connect your Google project: its data is being deleted."))
+        await m.connect()
+        XCTAssertEqual(m.status, .problem("Could not connect your Google project: could not read the Gmail address."))
+    }
+
     func testRejectedClient() async {
         let (m, _) = model([.init(lines: [#"{"result":"rejected","code":"invalid_client","message":"token exchange failed"}"#])])
         var connected = 0
