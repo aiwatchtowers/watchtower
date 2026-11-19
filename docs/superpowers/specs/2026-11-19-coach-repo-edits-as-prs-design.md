@@ -95,13 +95,19 @@ The working-copy `dirty` check does not apply to the PR path: the working copy i
 
 ### 4.4 The verdict window
 
-The daemon's `coachCommitCheck` keeps today's `HEAD` check for every row and never runs `gh` (D5): a merged PR
-the owner has pulled is seen there. A row with `pr_url` is also checked through `RepoPRState` by the owner's own
-processes — every `coach accept`/`coach rollback`, and `coach sync-prs`, which the Desktop runs when the Coach
-tab's accepted list is shown. `MERGED` sets `measure_from` to the PR's `mergedAt` (a compare-and-set on
-`measure_from IS NULL`, so the earlier of the two checks wins and a late check still starts the window at the
-merge). `gh` failing leaves the row as it was. The 30-day `too_little_data` rule is unchanged, so an unmerged PR
-ends the way an uncommitted edit ends today.
+A row with `pr_url` is measured from its merge only, and only the owner's processes look at it (D5): the
+daemon's `coachCommitCheck` and its query `ListRepoProposalsAwaitingCommit` skip rows with `pr_url`, so it stays the
+one writer of `measure_from` for working-copy rows and never writes a PR row. `coach sync-prs`, which the Desktop
+runs when the Coach tab's accepted list or the tuning panel is shown, reads `RepoPRState` for each accepted PR row
+without `measure_from` and a verdict:
+
+- `MERGED`: `measure_from` = the PR's `mergedAt` (compare-and-set on `measure_from IS NULL`);
+- `CLOSED` without merge, or still `OPEN` 30 days after the Accept (`repoCommitWait`): final `too_little_data`;
+- `gh` failing: the row is left as it was.
+
+The weekly judge gives no final `too_little_data` to a PR row whose `measure_from` is empty (the daemon cannot see
+GitHub); once `measure_from` is set, the row is judged like every other. Accept and Roll Back do not sync other
+rows.
 
 ### 4.5 Rollback
 
@@ -138,8 +144,9 @@ back card with `revert_pr_url` shows "revert: PR #M — merge it to remove the e
 | Owner edits the file again after the merge | Measuring starts at the merge regardless; the verdict compares the period, as for every other edit. |
 
 Writers of `pr_url` and `revert_pr_url`: only `MarkCoachAccepted` and `MarkCoachRolledBack`, both behind the
-status compare-and-set; writers of `measure_from`: `coachCommitCheck` (daemon, `HEAD`) and `coach sync-prs` / Accept /
-Roll Back (`mergedAt`), each a compare-and-set on `measure_from IS NULL`: the first wins, a later one is a no-op.
+status compare-and-set; writer of `measure_from`: `coachCommitCheck` (daemon, `HEAD`) for rows without `pr_url`, `coach
+sync-prs` (`mergedAt`) for rows with it — never both for one row; each a compare-and-set on `measure_from IS NULL`.
+Writers of a PR row's `too_little_data`: only `coach sync-prs`.
 
 ## 6. Contracts
 
@@ -163,8 +170,10 @@ Roll Back (`mergedAt`), each a compare-and-set on `measure_from IS NULL`: the fi
 - `Applier.Accept`: PR path stores `pr_url` and never writes the working copy; non-GitHub path unchanged; `no_gh`.
 - `Applier.Rollback`: `MERGED` → revert PR in `revert_pr_url`; `OPEN` → closed; `CLOSED` → only the status;
   `gh` failure and push failure leave it `accepted`; base moved → `changed_since`.
-- `coach sync-prs`: a merged PR sets `measure_from` to `mergedAt`; an open PR sets nothing; `gh` failure leaves
-  the row; the daemon's `coachCommitCheck` runs no `gh` (its seams carry no `RepoPRState`).
+- `coach sync-prs`: a merged PR sets `measure_from` to `mergedAt`; an open PR under 30 days sets nothing; a PR
+  closed unmerged or open past 30 days ends `too_little_data`; `gh` failure leaves the row; the daemon's
+  `coachCommitCheck` skips PR rows and runs no `gh`; the judge gives no final verdict to a PR row without
+  `measure_from`.
 - Path choice (D8): github.com https/ssh/scp URLs → PR path; another host without `gh` login → old path; github.com
   without `gh` → `no_gh`.
 - Budgets (D10): a stub `gh` that hangs → `timeout`, proposal still open.

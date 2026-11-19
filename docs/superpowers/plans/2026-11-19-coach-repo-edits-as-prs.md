@@ -25,9 +25,14 @@ Depends on: none.
 - `MarkCoachAccepted(id, after, branch, prURL, baseline, n, now)` stores `pr_url` (all callers updated, `""` on the
   old path).
 - New `MarkCoachRolledBack(id, revertPRURL, now)` — compare-and-set `accepted → rolled_back` that also stores
-  `revert_pr_url`; `Applier.Rollback` keeps `DecideCoachProposal` for non-PR rows or switches to it with `""`.
-- `SetCoachMeasureFromAt(id, at)` is the existing `SetCoachMeasureFrom` (already takes the time); no change.
-- Tests: migration up/down; `MarkCoachAccepted` stores the URL; `MarkCoachRolledBack` refuses a non-accepted row.
+  `revert_pr_url`; `Applier.Rollback` uses it for every row (`""` for a non-PR row), replacing its
+  `DecideCoachProposal(id, "accepted", "rolled_back", …)` call.
+- `ListRepoProposalsAwaitingCommit` adds `AND pr_url = ''` (the daemon never writes a PR row's `measure_from`, spec
+  4.4); new `ListPRProposalsAwaitingMerge()` returns accepted rows with `pr_url <> ''`, `measure_from IS NULL`,
+  `verdict = ''`.
+- `SetCoachMeasureFrom(id, at)` already takes the time; no change.
+- Tests: migration up/down; `MarkCoachAccepted` stores the URL; `MarkCoachRolledBack` refuses a non-accepted row;
+  `ListRepoProposalsAwaitingCommit` skips a PR row; `ListPRProposalsAwaitingMerge` lists only PR rows.
 
 ## Task 2 — `workbenchgit`: path choice, `Publish`, `PRState`, `ClosePR`
 
@@ -49,8 +54,10 @@ New file `internal/workbenchgit/publish.go` (+ `publish_test.go`), all calls thr
 - Credentials (spec 4.2): push and fetch with `GIT_TERMINAL_PROMPT=0`, no askpass, `-c credential.helper= -c
   'credential.helper=!gh auth git-credential'` for https, `GIT_SSH_COMMAND='ssh -o BatchMode=yes'` for ssh. A
   `gitbin` helper `ExecOwnerNetwork` holds this rule (one place).
-- Budgets (D10): 60 s per network call (`context.WithTimeout`), `ErrTimeout` when it fires; the 3-min operation
-  budget is the caller's (Task 4).
+- Budgets (D10): `Options.NetworkBudget` (default 60 s) per network call (`context.WithTimeout`), `ErrTimeout`
+  when it fires; the 3-min operation budget is the caller's (Task 4). Tests never wait on the wall clock: the
+  timeout test passes a context the test cancels itself while the stub `gh` blocks on its stdin, and asserts the
+  mapping of `context.DeadlineExceeded` to `ErrTimeout` with a deadline already in the past.
 - `gh` path is a field of `Options` (`GHPath`, default `gh` from `PATH`), so tests use a stub script; the stub
   reaps its process group (CLAUDE.md "Tests that spawn processes reap them").
 - Tests (bare origin in `t.TempDir()`, stub `gh` script): spec §7's `Publish` list, path choice for the three URL
@@ -76,9 +83,13 @@ Depends on: Task 1.
   `ErrBaseDiffers` → `ErrChangedSince` with the diff) then `MarkCoachRolledBack(id, revertURL)`; OPEN →
   `RepoClosePR` then `MarkCoachRolledBack(id, "")`; CLOSED → `MarkCoachRolledBack(id, "")`; any seam error →
   refused, still `accepted`.
-- `SyncPRs(now) (int, error)` — for accepted rows with `pr_url` and no `measure_from`: `RepoPRState`, MERGED →
-  `SetCoachMeasureFrom(id, mergedAt)`; a seam error skips the row. Accept and Rollback call it at their end
-  (errors logged, never fail the verb).
+- `SyncPRs(now) (int, error)` over `ListPRProposalsAwaitingMerge`: `RepoPRState` → MERGED →
+  `SetCoachMeasureFrom(id, mergedAt)`; CLOSED, or OPEN with `now − decided_at ≥ repoCommitWait` →
+  `SetCoachVerdict(id, "too_little_data", nil, now)`; a seam error skips the row. Only `coach sync-prs` calls it;
+  Accept and Rollback do not.
+- Judge (`internal/coach/judge.go`): the final `too_little_data` for a repo row without `measure_from` (line ~80)
+  applies only when `PRURL == ""`; a PR row waits for `SyncPRs`. Test: a PR row 31 days after Accept with no
+  `measure_from` gets no verdict from the judge.
 - Tests with fake seams: spec §7's Accept, Rollback and sync lists; the old route's tests stay green.
 - Guard `TestCOACH01_NoGitWrites` (b): add `workbenchgit.OriginHost`, `IsGitHubFolder`, `GHReady`, `DefaultBase`,
   `Publish`, `PRState`, `ClosePR` as allowed **only in `cmd/coach*.go`** (still forbidden in the daemon and
@@ -103,6 +114,12 @@ Depends on: Tasks 2, 3.
 
 Depends on: Tasks 1, 4.
 
+- **Mockups first** (workbench rule): `DesignShotCatalog` entries for the accepted card in every state — PR open
+  (waiting for merge), PR merged and measuring, verdict given, reverted with a revert PR waiting, and the Accept
+  refusals (`no_gh` with its `gh auth login` line, `base_differs`, `push_failed`/`pr_failed`/`timeout` with Retry);
+  shots committed to `docs/design/mockups/coach-repo-prs/` before the views change. After the change, the shots are
+  taken again and compared with these.
+
 - `CoachProposal` (WatchtowerCore) decodes `pr_url`, `revert_pr_url` (`CoachProposal+Row.swift`);
   `CoachWrittenFile.parse` reads `pr_url`.
 - `CoachPresentation`: "PR #N" link label (number parsed from the URL), dot reason "Waiting for PR #N to merge"
@@ -110,8 +127,9 @@ Depends on: Tasks 1, 4.
   main"; failure sentences for the five new codes. Tests in `Tests/Core`.
 - `CoachAcceptedLogView`: the link (opens the browser via `NSWorkspace`), the revert line. Tones only through
   `Tone`.
-- `CoachCenter`: runs `coach sync-prs` once when the accepted list appears (not on a timer), then reloads.
-- `make desktop-shots` for the accepted card with a PR, waiting, and reverted; compare with the spec text.
+- `CoachCenter`: runs `coach sync-prs` once when the accepted list or the tuning panel appears (not on a timer),
+  then reloads.
+- `make desktop-shots` again; compare each state with the committed mockups.
 - `make test-swift FILTER='CoachPresentation|CoachProposal|CoachCenter'`, `make lint-swift`.
 
 ## Task 6 — Docs and inventory
