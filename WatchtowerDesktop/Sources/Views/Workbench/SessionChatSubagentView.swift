@@ -13,6 +13,9 @@ struct SessionChatSubagentView: View {
     let store: SessionFeedStore
     let subagent: SessionFeedSubagent
     let parentToolUseID: String?
+    /// This screen's key in `memory` (`"session-<id>/<toolUseID>"`).
+    let paneKey: String
+    let memory: WorkchatPaneMemory
     /// The subagent's status in the main feed's current markers.
     let status: () -> String
     /// The session works or has background subagents running.
@@ -45,9 +48,13 @@ struct SessionChatSubagentView: View {
         VStack(spacing: 0) {
             content
             // Always the row, empty or not: the run does not jump.
+            // Nested subagents never enter the run; they are this screen's 👥 list.
             WorkchatLiveLine(snapshot: live, error: liveError, loaded: liveLoaded,
                              working: currentStatus != "finished" && isActive(), stateAt: nil,
-                             onRetry: { refreshID = UUID() }, onOpenAgent: onOpenSubagent)
+                             done: WorkchatLivePresentation.done(from: entries), paneKey: paneKey, memory: memory,
+                             feedLoaded: !loading, feedError: error,
+                             onRetry: { refreshID = UUID() }, onRetryList: { refreshID = UUID() },
+                             onOpenAgent: onOpenSubagent)
         }
             .task(id: SessionSubagentFollowKey(follow: followKey, retry: refreshID, parentToolUseID: parentToolUseID)) {
                 await store.followSubagent(
@@ -104,7 +111,7 @@ struct SessionChatSubagentView: View {
     private var run: some View {
         // Read-only: a subagent's question card shows its questions and takes no answer.
         var feed = WorkchatFeed(entries: entries, markdown: markdown, expandedEvents: expandedEvents,
-                                onOpenSubagent: onOpenSubagent, onToggle: toggleEvent)
+                                onToggle: toggleEvent)
         feed.onOpenArtifact = { artifact = $0 }
         let byID = feed.entriesByMessage
         var context = feed.context()

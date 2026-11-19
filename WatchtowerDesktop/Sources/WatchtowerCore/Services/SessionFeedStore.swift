@@ -2,11 +2,17 @@ import Foundation
 
 /// Holds the chat feed of one session and merges each poll of
 /// `watchtower workbench session-feed` into it: upsert by entry id keeping the
-/// first position, so a growing agent message or a subagent whose status
-/// changed updates in place.
+/// first position, so a growing agent message updates in place. The subagent
+/// markers are kept apart in `subagents` (the 👥 list's source, #2065), upserted
+/// the same way, so a subagent whose status changed updates in place there.
 @MainActor
 package final class SessionFeedStore: ObservableObject {
     @Published package private(set) var entries: [SessionFeedEntry] = []
+    /// Every subagent marker read so far, from the feed's `subagents` list and
+    /// the `subagent` entries; never part of `entries` by the list.
+    @Published package private(set) var subagents: [SessionFeedEntry] = []
+    /// A read has succeeded once; a later failure never resets it.
+    @Published package private(set) var feedLoaded = false
     @Published package private(set) var error: String?
     /// The agent's open tool call from the last good read (an empty read
     /// included); the live line shows it, it is never an entry.
@@ -31,6 +37,7 @@ package final class SessionFeedStore: ObservableObject {
     private let runner: CLIRunnerProtocol
     private var cursor = ""
     private var index: [String: Int] = [:]
+    private var subagentIndex: [String: Int] = [:]
     private var screenGate = ForegroundRefreshGate()
     /// The open-time trace of the pane showing this store. The store starts
     /// one as it is made (before the pane renders its first feed), so every
@@ -102,8 +109,9 @@ package final class SessionFeedStore: ObservableObject {
             let payload = try Self.decode(data)
             openTrace?.mark(.decode)
             merge(payload.entries)
-            merge(payload.subagents)
+            mergeSubagents(payload.entries.filter { $0.kind == "subagent" } + payload.subagents)
             cursor = payload.cursor
+            feedLoaded = true
             if generation == liveGeneration {
                 activity = payload.activity
                 liveLoaded = true
@@ -272,6 +280,21 @@ package final class SessionFeedStore: ObservableObject {
             } else {
                 index[entry.id] = entries.count
                 entries.append(entry)
+            }
+        }
+    }
+
+    private func mergeSubagents(_ incoming: [SessionFeedEntry]) {
+        for entry in incoming where entry.kind == "subagent" {
+            if let i = subagentIndex[entry.id] {
+                // The first known start time stays: an `--after` read dates a
+                // marker by its meta.json mtime, and Done's order must not jump.
+                var entry = entry
+                if let first = subagents[i].subagent?.startedAt { entry.subagent?.startedAt = first }
+                subagents[i] = entry
+            } else {
+                subagentIndex[entry.id] = subagents.count
+                subagents.append(entry)
             }
         }
     }
