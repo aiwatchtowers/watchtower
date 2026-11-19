@@ -125,3 +125,22 @@ func TestWatchmanTwinPhase_PausedLeavesItemsQueued(t *testing.T) {
 	d.phaseWatchmanTwin(context.Background())
 	require.Equal(t, int32(1), twin.runs.Load())
 }
+
+// The twin's own wake (a decision ended, an item came due) runs a pass on
+// the worker's loop, like a wait point's (final review B-I2); with no loop
+// started it is a no-op.
+func TestWatchmanTwinPhase_TwinWakeRunsAPass(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d, _, _ := newBackfillDaemon(t)
+		d.wakeWatchmanTwin() // nothing started: no channel, no block
+		twin := &fakeTwin{}
+		d.watchmanTwin = twin
+		stop := d.startWatchmanTwin(context.Background())
+		synctest.Wait()
+		require.Equal(t, int32(1), twin.runs.Load())
+		d.wakeWatchmanTwin()
+		synctest.Wait()
+		require.Equal(t, int32(2), twin.runs.Load())
+		stop()
+	})
+}

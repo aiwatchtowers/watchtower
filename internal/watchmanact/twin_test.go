@@ -1372,3 +1372,45 @@ func TestTwin_HandoverOfAnOwnerAnsweredAskIsNotQueued(t *testing.T) {
 		t.Fatalf("handover = %+v, %v; want none", h, err)
 	}
 }
+
+// Final review B-I2: a decision that ends wakes the caller, so a third item
+// left queued behind MaxDeciding is decided on that wake, not at the next
+// cycle; an item put back until later asks for a wake when it comes due.
+func TestTwin_FreedSlotWakesTheNextPass(t *testing.T) {
+	e := newTwinEnv(t)
+	var wakes int
+	var mu sync.Mutex
+	e.twin.d.Wake = func() { mu.Lock(); wakes++; mu.Unlock() }
+	var ids []int64
+	for _, title := range []string{"Which store?", "Which cache?", "Which queue?"} {
+		_, id := e.question(title)
+		ids = append(ids, id)
+	}
+	if n := e.run(); n != MaxDeciding {
+		t.Fatalf("RunOnce = %d, want %d", n, MaxDeciding)
+	}
+	if it := e.item(ids[2]); it.State != "queued" {
+		t.Fatalf("third item = %s, want queued behind the two", it.State)
+	}
+	mu.Lock()
+	got := wakes
+	mu.Unlock()
+	if got != MaxDeciding {
+		t.Fatalf("wakes = %d, want one per ended decision", got)
+	}
+	e.run() // the pass the wake asks for
+	wantOutcome(t, e.item(ids[2]), OutcomeAnswered)
+
+	// A provider refusal puts the item back for ProviderRetry: a wake is
+	// scheduled for then.
+	var after []time.Duration
+	e.twin.d.After = func(d time.Duration, f func()) { after = append(after, d); f() }
+	_, id := e.question("Which index?")
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		return watchman.Decision{}, &providers.Failure{Category: providers.Quota}
+	}
+	e.run()
+	if it := e.item(id); it.State != "queued" || len(after) != 1 || after[0] <= 0 || after[0] > ProviderRetry {
+		t.Fatalf("item %s, scheduled %v; want queued with one wake within ProviderRetry", it.State, after)
+	}
+}

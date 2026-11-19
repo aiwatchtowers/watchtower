@@ -59,6 +59,13 @@ type TwinDeps struct {
 	// Approve.
 	PRBase func(ctx context.Context, folder, branch string) (base, defaultBranch string, err error)
 	Clock  func() time.Time
+	// Wake asks the caller for another pass (non-blocking; nil = none): a
+	// decision ended, so a slot is free for an item left queued, or an item
+	// put back with a not_before has come due.
+	Wake func()
+	// After runs f once d has passed (nil = time.AfterFunc): the wake of an
+	// item put back until later.
+	After func(d time.Duration, f func())
 }
 
 // Twin answers the queued items of armed sessions in the owner's place: the
@@ -81,6 +88,9 @@ func NewTwin(d TwinDeps) *Twin {
 	}
 	if d.Run == nil {
 		d.Run = ExecRun
+	}
+	if d.After == nil {
+		d.After = func(d time.Duration, f func()) { time.AfterFunc(d, f) }
 	}
 	return &Twin{d: d, starting: map[int64]bool{}}
 }
@@ -160,6 +170,7 @@ func (t *Twin) RunOnce(ctx context.Context) int {
 		t.wg.Add(1)
 		go func(it db.WatchmanItem) {
 			defer t.wg.Done()
+			defer t.wake() // a slot is free: an item left queued may lease now
 			if it.Kind == "review_code" {
 				t.handleReviewCode(ctx, it)
 				return
@@ -172,6 +183,20 @@ func (t *Twin) RunOnce(ctx context.Context) int {
 
 // Wait waits for the items RunOnce started.
 func (t *Twin) Wait() { t.wg.Wait() }
+
+func (t *Twin) wake() {
+	if t.d.Wake != nil {
+		t.d.Wake()
+	}
+}
+
+// wakeAt asks for a pass once notBefore has come (an item put back until
+// then); a time already past is covered by the job's own end.
+func (t *Twin) wakeAt(notBefore time.Time) {
+	if d := notBefore.Sub(t.d.Clock()); d > 0 && t.d.Wake != nil {
+		t.d.After(d, t.d.Wake)
+	}
+}
 
 // DeliverHeld tries the twin's held answer lines again.
 func (t *Twin) DeliverHeld(ctx context.Context) { t.d.Answerer.DeliverHeld(ctx) }
@@ -360,7 +385,9 @@ func (j *job) requeue(notBefore time.Time, errText string) {
 	log.Printf("watchman twin: item %d: attempt %d did not decide, queued again", j.it.ID, j.it.Attempts)
 	if _, err := j.t.d.DB.RequeueWatchmanItem(j.it.ID, j.lease, notBefore, errText); err != nil {
 		log.Printf("watchman twin: %v", err)
+		return
 	}
+	j.t.wakeAt(notBefore)
 }
 
 // errorTextLimit caps an error kept on an item or in a park reason.

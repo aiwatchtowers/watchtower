@@ -42,7 +42,21 @@ func (d *Daemon) SetWatchmanTwin(a *askanswer.Answerer, start func(ctx context.C
 		StartSession: start,
 		ReviewPlace:  watchmanact.LiveReviewPlace(d.db),
 		PRBase:       watchmanact.GHPRBase(watchmanact.ExecRun),
+		Wake:         d.wakeWatchmanTwin,
 	})
+}
+
+// wakeWatchmanTwin asks the twin worker's loop for another pass, as a wait
+// point's writer does (non-blocking; a pass already asked for absorbs it):
+// the twin calls it when a decision ends and when an item it put back comes
+// due, so a queued item never waits for the next cycle.
+func (d *Daemon) wakeWatchmanTwin() {
+	if ch := d.watchmanWakeCh; ch != nil {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // watchmanTwinGenerator is the Watchman generator outside the cycle's worker

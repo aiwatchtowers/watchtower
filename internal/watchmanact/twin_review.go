@@ -126,9 +126,12 @@ func protectedPlace(place ReviewPlace) (park, why string) {
 // deferItem gives the item back to the queue for reviewWait, its attempt
 // unspent.
 func (j *job) deferItem() {
-	if _, err := j.t.d.DB.DeferWatchmanItem(j.it.ID, j.lease, j.now().Add(reviewWait)); err != nil {
+	notBefore := j.now().Add(reviewWait)
+	if _, err := j.t.d.DB.DeferWatchmanItem(j.it.ID, j.lease, notBefore); err != nil {
 		log.Printf("watchman twin: %v", err)
+		return
 	}
+	j.t.wakeAt(notBefore)
 }
 
 // --- review_doc --------------------------------------------------------
