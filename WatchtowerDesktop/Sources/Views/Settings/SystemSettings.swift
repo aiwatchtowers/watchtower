@@ -144,8 +144,9 @@ struct SystemSettings: View {
                 // The notes open in the update window, rendered in full
                 // (ask #694), not cut down to a few lines here.
                 HStack {
-                    Label("Version \(version) available", systemImage: "arrow.down.circle.fill")
-                        .foregroundStyle(.blue)
+                    Label(UpdateWindowCopy.settingsOffer(version: version, required: service.isUpdateRequired),
+                          systemImage: service.isUpdateRequired ? "exclamationmark.triangle.fill" : "arrow.down.circle.fill")
+                        .foregroundStyle(service.isUpdateRequired ? Tone.warning : .blue)
                     Spacer()
                     Button("What's New…") {
                         _ = service.presentUpdateWindow?()

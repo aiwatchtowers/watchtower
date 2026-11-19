@@ -132,6 +132,27 @@ gh release upload "v<version>" \
 ```
 4. Show the release URL to the user.
 
+### Requiring a minimum version (only when asked)
+
+A release can force every older app to update first — for a one-way
+server-side change. Do this only when the user asks for it for this release;
+never by default. Builds before the one that shipped this feature ignore it.
+
+- **Public channel:** put the marker on its own line in the release notes
+  (`--notes`, or `gh release edit "v<version>" --notes-file …` afterwards):
+  `<!-- min_version: X.Y.Z -->`. GitHub hides it; the app strips it from the
+  notes it shows. Running builds older than `X.Y.Z` get the **Software
+  Update** window with no Later at their next check (within 6 h, or at launch).
+- **Corp (gated) channel:** `lending/scripts/publish-build.sh` copies the
+  GitHub release body into the manifest's `notes`, so the marker above
+  reaches corp builds with no extra step. To set a different minimum for corp
+  only, add `"min_version": "X.Y.Z"` to `manifest/<flavor>.json` (the manifest
+  key wins over the marker).
+- Format: `X`, `X.Y` or `X.Y.Z`, digits only, optional leading `v`; it must
+  not be newer than the release being published. Anything else is ignored
+  (the app logs it and requires nothing). To lift a requirement, remove the
+  marker (or the key) — the next successful check drops it.
+
 ## Step 9: Publish the iPhone app to TestFlight
 
 Every release also ships the iPhone app (`WatchtowerMobile`) to TestFlight
