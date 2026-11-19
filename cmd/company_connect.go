@@ -27,7 +27,7 @@ import (
 )
 
 // The company connect chain (#1887 spec §3 step 2, screens §3.2): after the
-// person's one Connect, each vendor of a stored company signs in in turn,
+// person's one Connect, each vendor of a stored company signs in, one after another,
 // through the company's own app. It runs inside `slack connect serve` (the
 // Slack step needs the process that holds 18551; stdin company_connect,
 // company_skip, company_stop) and one-shot as `watchtower company connect`.
@@ -158,9 +158,11 @@ func runCompanyChain(ctx context.Context, d chainDeps, ch *companyChain, slug st
 			vendorEvent(v, chainFailed, "", "Watchtower cannot sign in to "+v+" here")
 			continue
 		}
-		vendorEvent(v, chainWaiting, "", "")
+		// Skippable before the app hears it waits: a Skip sent in answer to
+		// the waiting event always finds it.
 		vctx, skip := context.WithCancel(ctx)
 		ch.setCurrent(v, skip)
+		vendorEvent(v, chainWaiting, "", "")
 		label, err := login(vctx, slug)
 		ch.setCurrent("", nil)
 		ended := vctx.Err() != nil
@@ -224,21 +226,54 @@ func execVendorLogins(cfg *config.Config) map[string]vendorLogin {
 	return logins
 }
 
+// companyChainChildEnv marks a chain's sign-in child: its stdin is a pipe
+// whose write end only the chain holds, and its EOF (the chain's process
+// gone, even by SIGKILL or a crash) ends the child (watchChainParent).
+const companyChainChildEnv = "WATCHTOWER_COMPANY_CHAIN_CHILD"
+
+func init() {
+	if os.Getenv(companyChainChildEnv) == "1" {
+		go watchChainParent(os.Stdin, os.Stderr, func() { os.Exit(1) })
+	}
+}
+
+// watchChainParent reads in until EOF (no chain child reads its stdin), then
+// says why on errOut and calls exit: a sign-in whose chain is gone must not
+// finish later and write an account nobody asked for any more (spec §7,
+// quit mid-chain).
+func watchChainParent(in io.Reader, errOut io.Writer, exit func()) {
+	_, _ = io.Copy(io.Discard, in)
+	fmt.Fprintln(errOut, "Error: the Watchtower company connect that started this sign-in is gone")
+	exit()
+}
+
 // runCompanyChainChild runs one vendor's sign-in child to its end. ctx
-// ending kills the child's process group and reaps it; its stdout (which
-// may carry an authorize URL) is dropped, the tail of its stderr becomes the
-// failure message. A child stuck past a parent killed with SIGKILL ends at
-// its own login timeout.
+// ending kills the child's process group and reaps it; the chain's own end
+// (whatever way) closes the child's stdin, which ends it too. Its stdout
+// (which may carry an authorize URL) is dropped, the tail of its stderr
+// becomes the failure message.
 func runCompanyChainChild(ctx context.Context, exe string, args []string) error {
+	parentR, parentW, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("starting the sign-in: %w", err)
+	}
+	defer parentW.Close()
 	c := exec.CommandContext(ctx, exe, args...)
 	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	c.Cancel = func() error {
 		return syscall.Kill(-c.Process.Pid, syscall.SIGKILL)
 	}
 	c.WaitDelay = companyChildWaitDelay
+	c.Env = append(os.Environ(), companyChainChildEnv+"=1")
+	c.Stdin = parentR
 	stderr := &tailWriter{max: companyChildStderrMax}
 	c.Stderr = stderr
-	err := c.Run()
+	err = c.Start()
+	// Only the child keeps the read end; this process keeps the write end.
+	_ = parentR.Close()
+	if err == nil {
+		err = c.Wait()
+	}
 	if err == nil {
 		return nil
 	}
@@ -319,8 +354,8 @@ type slackChainResult struct {
 	err   error
 }
 
-// slackChainWaiters are the serve child's chain Slack flows waiting for
-// their callback; the chain's goroutine adds and removes, the loop answers.
+// slackChainWaiters are the serve child's chain Slack flows and their
+// answer channels; the chain's goroutine adds, the loop answers.
 type slackChainWaiters struct {
 	mu sync.Mutex
 	m  map[slackconnect.FlowID]chan slackChainResult
@@ -335,12 +370,6 @@ func (w *slackChainWaiters) add(id slackconnect.FlowID) <-chan slackChainResult 
 	ch := make(chan slackChainResult, 1)
 	w.m[id] = ch
 	return ch
-}
-
-func (w *slackChainWaiters) remove(id slackconnect.FlowID) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	delete(w.m, id)
 }
 
 func (w *slackChainWaiters) get(id slackconnect.FlowID) chan slackChainResult {
@@ -371,8 +400,10 @@ func (s *slackConnectServer) companySlackLogin(ctx context.Context, slug string)
 		s.reg.Cancel(id)
 		return "", fmt.Errorf("starting the Slack sign-in: %w", err)
 	}
+	// Kept for serve's life (one per chain): a callback that lands after the
+	// step ended (a Skip won the race) is still the chain's, never a plain
+	// Slack connected event for a flow the app never saw.
 	done := s.chainWaiters.add(id)
-	defer s.chainWaiters.remove(id)
 	s.deps.openBrowser(authorizeURL)
 	select {
 	case r := <-done:
@@ -388,7 +419,7 @@ func (s *slackConnectServer) companySlackLogin(ctx context.Context, slug string)
 // No Slack event goes to stdout: the chain reports the vendor itself. A
 // grant whose step was skipped meanwhile is still stored (the person
 // finished the sign-in); Connections shows it.
-func (s *slackConnectServer) chainCallback(ev slackconnect.Event, done chan slackChainResult) error {
+func (s *slackConnectServer) chainCallback(ev slackconnect.Event, done chan slackChainResult) {
 	res := ev.Result
 	var r slackChainResult
 	switch res.Outcome {
@@ -410,7 +441,6 @@ func (s *slackConnectServer) chainCallback(ev slackconnect.Event, done chan slac
 	case done <- r:
 	default: // the step already ended (buffered once)
 	}
-	return nil
 }
 
 // runningChain is the serve child's one chain; only the serve loop reads
@@ -427,7 +457,7 @@ type runningChain struct {
 // link may wait for its confirm.
 func (s *slackConnectServer) companyConnect(c slackConnectCommand) error {
 	if s.chain != nil {
-		return s.emit(slackFlowEvent{Event: "busy", Flow: s.chain.chain.flow})
+		return s.chainBusy()
 	}
 	if id, live := s.reg.Live(); live {
 		return s.emit(slackFlowEvent{Event: "busy", Flow: string(id)})
@@ -453,12 +483,15 @@ func (s *slackConnectServer) companyConnect(c slackConnectCommand) error {
 	return nil
 }
 
+// chainBusy answers a Slack start, confirm or link, or a second chain, while
+// a chain runs: busy names the chain.
+func (s *slackConnectServer) chainBusy() error {
+	return s.emit(slackFlowEvent{Event: "busy", Flow: s.chain.chain.flow})
+}
+
 // withLogin is m with key set to v, m itself untouched.
 func withLogin(m map[string]vendorLogin, key string, v vendorLogin) map[string]vendorLogin {
 	out := maps.Clone(m)
-	if out == nil {
-		out = map[string]vendorLogin{}
-	}
 	out[key] = v
 	return out
 }
@@ -549,11 +582,20 @@ func runCompanyConnect(cmd *cobra.Command, _ []string) error {
 // connectCompanyOnce runs the one-shot chain and prints it; an error when a
 // vendor ended cancelled or failed.
 func connectCompanyOnce(ctx context.Context, d chainDeps, slug string, vendors []string, asJSON bool, out io.Writer) error {
+	// Output that can no longer be written stops the chain: no further
+	// consent opens for a run nobody can follow.
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
 	var writeErr error
 	emit := func(ev any) {
 		if writeErr != nil {
 			return
 		}
+		defer func() {
+			if writeErr != nil {
+				stop()
+			}
+		}()
 		if asJSON {
 			writeErr = writeSlackConnectEvent(out, ev)
 			return
@@ -573,6 +615,9 @@ func connectCompanyOnce(ctx context.Context, d chainDeps, slug string, vendors [
 	states := runCompanyChain(ctx, d, ch, slug, vendors, emit)
 	if writeErr != nil {
 		return writeErr
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("stopped before every service was connected: %w", ctx.Err())
 	}
 	var notConnected []string
 	for _, v := range companyChainVendors(vendors) {

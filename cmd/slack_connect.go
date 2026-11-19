@@ -458,8 +458,8 @@ func runSlackConnectOnce(cmd *cobra.Command, cfg *config.Config, database *db.DB
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	accountID, res, rebound, err := connectSlackOnce(ctx, cfg, database, newSlackConnectDeps(), t, opts.noOpen, errOut)
 	var busy *exitCodeError
-	if errors.As(err, &busy) {
-		return err
+	if errors.As(err, &busy) && busy.code == slackConnectPortBusyExitCode {
+		return err // before any browser: no result to report
 	}
 	oauthpage.ReturnAfterLogin(opts.appReturn, err, errOut)
 	if opts.asJSON {

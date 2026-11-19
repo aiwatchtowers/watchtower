@@ -306,6 +306,29 @@ func TestCompanyChainChild_CancelKillsAndReaps(t *testing.T) {
 	assert.ErrorIs(t, <-done, context.Canceled)
 }
 
+// A child knows it is a chain's (its stdin is the chain's pipe): the env
+// mark is set and its stdin stays open while the chain runs.
+func TestCompanyChainChild_StdinIsTheChainsPipe(t *testing.T) {
+	err := runCompanyChainChild(context.Background(), "/bin/sh",
+		[]string{"-c", `[ "$` + companyChainChildEnv + `" = 1 ] || exit 3; [ -p /dev/stdin ] || exit 4`})
+	assert.NoError(t, err)
+}
+
+// The chain's end, whatever way (its process killed included), is EOF on
+// the child's stdin: the child says so and exits before it can write an
+// account nobody asked for any more.
+func TestWatchChainParent_EOFExits(t *testing.T) {
+	r, w := io.Pipe()
+	exited := make(chan struct{})
+	var errOut bytes.Buffer
+	go watchChainParent(r, &errOut, func() { close(exited) })
+	_, err := w.Write([]byte("noise"))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	<-exited
+	assert.Contains(t, errOut.String(), "Error: the Watchtower company connect that started this sign-in is gone")
+}
+
 func TestTailWriter_KeepsTheTail(t *testing.T) {
 	w := &tailWriter{max: 4}
 	_, _ = w.Write([]byte("abc"))
@@ -342,10 +365,11 @@ func (h *serveHarness) expectVendor(t *testing.T, vendor, state string) map[stri
 
 const chainConnectAcme = `{"cmd":"company_connect","flow":"f1","slug":"acme","vendors":["slack","google"]}`
 
-// Spec §7 "Watchtower quits mid-chain": vendor 1 stays connected and tied,
-// the rest have no row, inspect says so, and nothing resumes on its own (a
-// new serve starts without a chain: only the app's company_connect starts
-// one).
+// Spec §7 "Watchtower quits mid-chain" (the app quitting closes serve's
+// stdin; a SIGKILLed serve's sign-in children end on their stdin's EOF,
+// TestWatchChainParent_EOFExits): vendor 1 stays connected and tied, the
+// rest have no row, inspect says so, and nothing resumes on its own — a new
+// serve runs no chain, so a Slack start there opens its sign-in at once.
 func TestCompanyChain_KillAfterFirstVendor(t *testing.T) {
 	env := newConnectEnv(t)
 	started := make(chan string, 1)
@@ -375,6 +399,10 @@ func TestCompanyChain_KillAfterFirstVendor(t *testing.T) {
 	res, err := inspectCompany(company.NewStore(env.cfg.WorkspaceDir()), env.db, companyWire(t, chainBundle()), "")
 	require.NoError(t, err)
 	assert.Equal(t, map[string]bool{"slack": true}, res.Connected)
+
+	fresh := startConnectServe(t, env, fixedGrant(connGrant(connNewID)))
+	fresh.send(t, `{"cmd":"start","team_id":"`+connTeam+`","client_id":"`+connNewID+`"}`)
+	fresh.expect(t, "browser") // not busy: no chain resumed
 }
 
 // The app gone (stdin EOF) is Stop: the waiting sign-in ends before serve
@@ -434,6 +462,40 @@ func TestCompanyChain_SlackFlowMakesChainBusy(t *testing.T) {
 	link := h.expect(t, "link")["flow"]
 	h.send(t, chainConnectAcme)
 	assert.Equal(t, link, h.expect(t, "busy")["flow"])
+}
+
+// A Slack link that arrives while a chain runs never holds the registry:
+// its flow is cancelled and busy names the chain, so a later Slack connect
+// is free.
+func TestCompanyChain_SlackLinkDuringChainIsBusy(t *testing.T) {
+	env := newConnectEnv(t)
+	started := make(chan string, 1)
+	h := startChainServe(t, env, map[string]vendorLogin{"google": blockingLogin(started, "google")})
+	h.send(t, `{"cmd":"company_connect","flow":"f1","slug":"acme","vendors":["google"]}`)
+	h.expectVendor(t, "google", chainWaiting)
+	<-started
+	h.link(t, connTeam, connNewID)
+	assert.Equal(t, "f1", h.expect(t, "busy")["flow"])
+	h.send(t, `{"cmd":"company_stop","flow":"f1"}`)
+	h.expectVendor(t, "google", chainSkipped)
+	h.expect(t, "company_done")
+	h.link(t, connTeam, connNewID)
+	h.expect(t, "link")
+}
+
+// A Skip sent in answer to the waiting event always ends that vendor.
+func TestCompanyChain_SkipRightAfterWaiting(t *testing.T) {
+	env := newConnectEnv(t)
+	logins := map[string]vendorLogin{"google": func(ctx context.Context, _ string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}}
+	h := startChainServe(t, env, logins)
+	h.send(t, `{"cmd":"company_connect","flow":"f1","slug":"acme","vendors":["google"]}`)
+	h.expectVendor(t, "google", chainWaiting)
+	h.send(t, `{"cmd":"company_skip","flow":"f1","vendor":"google"}`)
+	h.expectVendor(t, "google", chainSkipped)
+	h.expect(t, "company_done")
 }
 
 func TestCompanyChain_SkipViaStdin(t *testing.T) {
@@ -621,6 +683,11 @@ func TestCompanyConnect_OncePrintsAndFailsOnNotConnected(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, "not connected: google; connect them later from Connections", err.Error())
 	assert.Equal(t, "slack: connected (slack-account)\ngoogle: cancelled: you did not allow Watchtower\nlinear: connected (linear-account)\n", out.String())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = connectCompanyOnce(ctx, chainDeps{logins: okLogins(&calls{}), policyAllowed: allowAll}, "acme", []string{"linear"}, false, io.Discard)
+	assert.ErrorIs(t, err, context.Canceled, "an interrupted run is not a success")
 
 	out.Reset()
 	require.NoError(t, connectCompanyOnce(context.Background(), chainDeps{logins: okLogins(&calls{}), policyAllowed: allowAll}, "acme",

@@ -167,7 +167,8 @@ func serveSlackConnect(ctx context.Context, cfg *config.Config, database *db.DB,
 	shutdown := serveSlackConnectListener(ln, s.reg, events, stop, company)
 	// The app is gone (stdin EOF): nobody answers a page any more.
 	defer shutdown(true)
-	// First of the two: the chain's Slack step waits on the listener.
+	// Runs before the listener's shutdown above (defers run last-first):
+	// the chain's Slack step waits on the listener's callback.
 	defer s.endChain()
 	if err := s.emit(slackPortEvent{Event: "listening", Port: ln.Addr().(*net.TCPAddr).Port}); err != nil {
 		return err
@@ -266,7 +267,7 @@ func (s *slackConnectServer) handleCommand(c slackConnectCommand) error {
 // setup's admin connect) and opens its sign-in.
 func (s *slackConnectServer) start(c slackConnectCommand) error {
 	if s.chain != nil {
-		return s.emit(slackFlowEvent{Event: "busy", Flow: s.chain.chain.flow})
+		return s.chainBusy()
 	}
 	t, err := slackconnect.ParseConnectInput(c.TeamID + ":" + c.ClientID)
 	if err != nil {
@@ -294,7 +295,7 @@ func (s *slackConnectServer) start(c slackConnectCommand) error {
 // confirm is the owner's Connect on a link flow.
 func (s *slackConnectServer) confirm(id slackconnect.FlowID) error {
 	if s.chain != nil {
-		return s.emit(slackFlowEvent{Event: "busy", Flow: s.chain.chain.flow})
+		return s.chainBusy()
 	}
 	if err := s.refusal(slackconnect.Target{}); err != nil {
 		s.reg.Cancel(id)
@@ -331,6 +332,12 @@ func (s *slackConnectServer) refusal(t slackconnect.Target) error {
 func (s *slackConnectServer) handleEvent(ev slackconnect.Event) error {
 	switch ev.Kind {
 	case slackconnect.EventLink:
+		if s.chain != nil {
+			// The chain holds the shared guard: the link's flow must not keep
+			// the registry's slot while nobody can confirm it.
+			s.reg.Cancel(ev.Flow)
+			return s.chainBusy()
+		}
 		if err := sourceRefusal("slack"); err != nil {
 			s.reg.Cancel(ev.Flow)
 			return s.failed(ev.Flow, slackConnectReasonPolicy, err.Error())
@@ -340,7 +347,8 @@ func (s *slackConnectServer) handleEvent(ev slackconnect.Event) error {
 		return s.emit(slackFlowEvent{Event: "busy", Flow: string(ev.Flow)})
 	case slackconnect.EventCallback:
 		if done := s.chainWaiters.get(ev.Flow); done != nil {
-			return s.chainCallback(ev, done)
+			s.chainCallback(ev, done)
+			return nil
 		}
 		return s.callback(ev)
 	}
