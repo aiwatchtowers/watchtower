@@ -40,13 +40,6 @@ package struct DetailAction: Equatable, Sendable, Identifiable {
     package let emphasis: Emphasis
 }
 
-extension CompanyBanner {
-    /// The banner without `action`'s button (one this build cannot run yet).
-    package func dropping(_ action: Action) -> CompanyBanner {
-        CompanyBanner(title: title, body: body, actions: actions.filter { $0 != action }, cardLine: cardLine)
-    }
-}
-
 extension CompanyConnectionsPresentation {
     package static let accountsTitle = "Accounts"
     package static let googleTitle = "Google"
@@ -57,6 +50,18 @@ extension CompanyConnectionsPresentation {
         + "company's (ask your admin for the link) or your own."
     package static let jiraEmpty = "Your company has no Atlassian app in Watchtower yet. Connect with your own API token, "
         + "or ask your admin for the company link."
+    /// §6.4 without the token (its lock, or a build without the token sheet).
+    package static let jiraEmptyNoToken = "Your company has no Atlassian app in Watchtower yet. Ask your admin for the "
+        + "company link."
+    package static let notSyncing = "Not syncing"
+    package static let dataDeleted = "Data deleted"
+    package static let turnedOff = "Turned off"
+
+    /// The section title of `vendor`'s empty state.
+    package static func detailTitle(_ vendor: CompanyVendor) -> String {
+        vendor == .google ? googleTitle : jiraTitle
+    }
+
     package static let connectCalendar = "Connect Google Calendar"
 
     /// "Connect with Acme's Atlassian app".
@@ -80,12 +85,14 @@ extension CompanyConnectionsPresentation {
         loaded: Bool,
         readError: String?,
         accounts: [AccountRef],
-        groups: [AccountGroup]
+        groups: [AccountGroup],
+        locks: Set<LockKey> = []
     ) -> AccountsListState {
         guard loaded else { return .loading(vendor == .google ? googleLoading : jiraLoading) }
         if let readError, accounts.isEmpty { return .readFailed(readFailed(vendor, readError)) }
-        if groups.isEmpty { return .empty(vendor == .google ? googleEmpty : jiraEmpty) }
-        return .groups(groups)
+        guard groups.isEmpty else { return .groups(groups) }
+        if vendor == .google { return .empty(googleEmpty) }
+        return .empty(locks.contains(.atlassianAPIToken) ? jiraEmptyNoToken : jiraEmpty)
     }
 
     /// The buttons under the list (`empty` false, "Add an account") or of
@@ -125,6 +132,16 @@ extension CompanyConnectionsPresentation {
         }
     }
 
+    /// The head of a row's line when no §4.3 status speaks: syncing only for
+    /// a healthy, enabled row.
+    private static func rowHead(_ a: AccountRef, enabled: Bool) -> String {
+        switch a.status {
+        case "purged": dataDeleted
+        case "ok": enabled ? syncingLine(a) : turnedOff
+        default: enabled ? notSyncing : turnedOff
+        }
+    }
+
     /// A Google row's line: how it syncs and what it grants.
     package static func googleRowLine(_ a: AccountRef, calendar: Bool, gmail: Bool) -> String {
         let services: String = switch (calendar, gmail) {
@@ -133,12 +150,14 @@ extension CompanyConnectionsPresentation {
         case (false, true): "Gmail"
         case (false, false): "No service"
         }
-        return "\(syncingLine(a)) · \(services)"
+        return "\(rowHead(a, enabled: true)) · \(services)"
     }
 
-    /// A Jira row's line: how it syncs and, when known, who signed in.
-    package static func jiraRowLine(_ a: AccountRef, email: String) -> String {
-        email.isEmpty ? syncingLine(a) : "\(syncingLine(a)) · \(email)"
+    /// A Jira row's line: how it syncs, the site when the title (a renamed
+    /// label) does not say it, and who signed in.
+    package static func jiraRowLine(_ a: AccountRef, title: String, enabled: Bool, email: String) -> String {
+        let site = a.label == title ? "" : a.label
+        return [rowHead(a, enabled: enabled), site, email].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     /// The policy locks in force: what the banners and add sections leave out.

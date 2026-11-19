@@ -118,9 +118,9 @@ struct JiraConnectionDetail: View {
             list: appState.companyAccountsList(.atlassian),
             emptyActions: appState.companyDetailActions(.atlassian, empty: true),
             addActions: appState.companyDetailActions(.atlassian, empty: false),
-            connect: appState.companyGroupConnect(blocked: sourceBlocked),
+            connect: appState.companyGroupConnect(blocked: sourceBlocked || vm?.isConnecting == true),
             blocked: sourceBlocked,
-            busy: (vm?.isConnecting ?? true) || appState.companyFlowBusy,
+            busy: appState.companyDetailBusy(.atlassian),
             error: vm?.error,
             perform: { appState.performCompanyDetailAction($0, vendor: .atlassian) },
             bannerAction: { appState.performCompanyBannerAction($0) },
@@ -139,7 +139,8 @@ struct JiraConnectionDetail: View {
             title: account.displayName,
             tag: CompanyConnectionsPresentation.tag(ref),
             status: status,
-            line: CompanyConnectionsPresentation.jiraRowLine(ref, email: account.ownerEmail),
+            line: CompanyConnectionsPresentation.jiraRowLine(ref, title: account.displayName, enabled: account.enabled,
+                                                             email: account.ownerEmail),
             dot: statusColor(account),
             extra: AnyView(rowExtra(account, hasStatus: status != nil))
         ) {
@@ -150,10 +151,13 @@ struct JiraConnectionDetail: View {
             .toggleStyle(.switch)
             .controlSize(.mini)
             .disabled(vm.isConnecting || account.isPurged)
-            if let action = status?.action, action == .pasteCode || action == .pasteNewToken {
-                CompanyRowStatusButton(action: action, disabled: sourceBlocked) { _ in
+            if status?.action == .pasteCode {
+                CompanyRowStatusButton(action: .pasteCode, disabled: sourceBlocked) { action in
                     appState.companyRowAction(action, account: ref)
                 }
+            } else if status?.action == .pasteNewToken {
+                // Task 27's sheet takes the new token; until then the status line says what to do.
+                EmptyView()
             } else if !account.isOK || status?.action == .relogin {
                 // `jira login --account` signs in through the site's own client (its company's after a Replace).
                 Button(RowStatus.Action.relogin.title) { Task { await vm.relogin(account) } }

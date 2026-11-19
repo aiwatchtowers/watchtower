@@ -70,14 +70,17 @@ enum CompanyDetailScenes {
     ) -> AnyView {
         let companies = companies ?? [acme, own]
         let groups = Pres.groups(vendor: vendor, accounts: accounts, companies: companies) { _ in false }
-        let list = Pres.accountsList(vendor: vendor, loaded: loaded, readError: readError, accounts: accounts, groups: groups)
+        // What this build offers: the API token waits for Task 27 (`AppState.unbuiltOffers`).
+        let locks = AppState.unbuiltOffers
+        let list = Pres.accountsList(vendor: vendor, loaded: loaded, readError: readError, accounts: accounts, groups: groups,
+                                     locks: locks)
         return AnyView(VStack(alignment: .leading, spacing: Spacing.large) {
             CompanyAccountsSections(
                 vendor: vendor,
-                banner: banner ? AppState.shippable(Pres.banner(vendor, accounts: accounts)) : nil,
+                banner: banner ? Pres.banner(vendor, accounts: accounts, locks: locks) : nil,
                 list: list,
-                emptyActions: AppState.shippable(Pres.detailActions(vendor, companies: companies, empty: true)),
-                addActions: AppState.shippable(Pres.detailActions(vendor, companies: companies, empty: false)),
+                emptyActions: Pres.detailActions(vendor, companies: companies, empty: true, locks: locks),
+                addActions: Pres.detailActions(vendor, companies: companies, empty: false, locks: locks),
                 connect: CompanyGroupConnect { _, _ in },
                 perform: { _ in },
                 bannerAction: { _ in },
@@ -95,7 +98,8 @@ enum CompanyDetailScenes {
         let status = Pres.rowStatus(account, purgeLease: nil, companies: companies)
         let line = account.vendor == .google
             ? Pres.googleRowLine(account, calendar: true, gmail: !account.sharedApp || account.status == "ok")
-            : Pres.jiraRowLine(account, email: account.authKind == "api_token" ? "bob@example.com" : "alice@example.com")
+            : Pres.jiraRowLine(account, title: account.label, enabled: true,
+                               email: account.authKind == "api_token" ? "bob@example.com" : "alice@example.com")
         return CompanyAccountRow(title: account.label, tag: Pres.tag(account), status: status, line: line) {
             if let action = status?.action {
                 CompanyRowStatusButton(action: action) { _ in }

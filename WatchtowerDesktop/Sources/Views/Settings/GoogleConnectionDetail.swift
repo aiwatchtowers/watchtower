@@ -42,10 +42,14 @@ struct GoogleConnectionDetail: View {
         .onChange(of: appState.googleAccountsViewModel?.isConnecting ?? false) { wasConnecting, isConnecting in
             if wasConnecting && !isConnecting { config.adoptGoogleSyncSwitchesFromDisk() }
         }
+        // A company's Google sign-in (its chain) turns them on the same way.
+        .onChange(of: appState.companyConnect?.isRunning ?? false) { wasRunning, isRunning in
+            if wasRunning && !isRunning { config.adoptGoogleSyncSwitchesFromDisk() }
+        }
         .sheet(isPresented: $showAddGoogleAccountSheet) {
-            // Settings opened during onboarding: its finish starts the
-            // daemon, not this sheet.
-            AddGoogleAccountView(daemonPolicy: appState.accountDaemonPolicy)
+            // Use my own Google project: the add sheet with the custom client
+            // required, until Task 26's page replaces it.
+            AddGoogleAccountView(daemonPolicy: appState.accountDaemonPolicy, requiresCustomClient: true)
                 .environment(appState)
                 .marksAccountSheet(appState)
         }
@@ -86,13 +90,13 @@ struct GoogleConnectionDetail: View {
             list: appState.companyAccountsList(.google),
             emptyActions: appState.companyDetailActions(.google, empty: true),
             addActions: appState.companyDetailActions(.google, empty: false),
-            connect: appState.companyGroupConnect(blocked: sourceBlocked),
+            connect: appState.companyGroupConnect(blocked: sourceBlocked || vm?.isConnecting == true),
             blocked: sourceBlocked,
-            busy: vm?.isConnecting ?? true,
+            busy: appState.companyDetailBusy(.google),
             error: vm?.error,
             perform: perform,
             bannerAction: { action in
-                if action == .useOwnGoogle { showAddGoogleAccountSheet = true } else { appState.performCompanyBannerAction(action) }
+                if action == .useOwnGoogle { perform(.useOwnGoogle) } else { appState.performCompanyBannerAction(action) }
             },
             tryAgain: { vm?.refresh() },
             row: { ref in

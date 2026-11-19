@@ -13,11 +13,18 @@ extension AppState {
             atlassianAPITokenAllowed: policy.atlassianAPITokenAllowed)
     }
 
-    /// §7's banner over `vendor`'s detail; its actions without the ones this
-    /// build cannot run yet (`shippable`).
+    /// Ways to connect this build does not offer yet, left out as their lock
+    /// would leave them out: the API token waits for Task 27's sheet, which
+    /// empties this set.
+    static let unbuiltOffers: Set<LockKey> = [.atlassianAPIToken]
+
+    /// What the banners, empty states and add sections leave out.
+    var companyOfferLocks: Set<LockKey> { companyLocks.union(Self.unbuiltOffers) }
+
+    /// §7's banner over `vendor`'s detail.
     func companyBanner(_ vendor: CompanyVendor) -> CompanyBanner? {
-        Self.shippable(CompanyConnectionsPresentation.banner(
-            vendor, accounts: companyAccountRefs.filter { $0.vendor == vendor }, locks: companyLocks))
+        CompanyConnectionsPresentation.banner(
+            vendor, accounts: companyAccountRefs.filter { $0.vendor == vendor }, locks: companyOfferLocks)
     }
 
     /// `vendor`'s account list: loading, read failed, empty or the groups.
@@ -29,29 +36,28 @@ extension AppState {
         }
         return CompanyConnectionsPresentation.accountsList(
             vendor: vendor, loaded: read.loaded, readError: read.error,
-            accounts: companyAccountRefs.filter { $0.vendor == vendor }, groups: companyAccountGroups(vendor))
+            accounts: companyAccountRefs.filter { $0.vendor == vendor }, groups: companyAccountGroups(vendor),
+            locks: companyOfferLocks)
     }
 
     /// The empty state's or the add section's buttons.
     func companyDetailActions(_ vendor: CompanyVendor, empty: Bool) -> [DetailAction] {
-        Self.shippable(CompanyConnectionsPresentation.detailActions(
-            vendor, companies: companyRefs, empty: empty, locks: companyLocks))
+        CompanyConnectionsPresentation.detailActions(vendor, companies: companyRefs, empty: empty, locks: companyOfferLocks)
     }
 
-    /// Jira's **Connect with an API token** opens Task 27's sheet; until it
-    /// lands the button is left out rather than shown dead.
-    static let atlassianTokenSheetShips = false
-
-    static func shippable(_ actions: [DetailAction]) -> [DetailAction] {
-        actions.filter { $0.kind != .connectWithToken || atlassianTokenSheetShips }
-    }
-
-    static func shippable(_ banner: CompanyBanner?) -> CompanyBanner? {
-        atlassianTokenSheetShips ? banner : banner?.dropping(.connectWithToken)
+    /// A Google or Jira detail's buttons wait while its own sign-in or a
+    /// company chain runs: two browser sign-ins never start at once.
+    func companyDetailBusy(_ vendor: CompanyVendor) -> Bool {
+        let own = switch vendor {
+        case .google: googleAccountsViewModel?.isConnecting ?? true
+        case .atlassian: jiraAccountsViewModel?.isConnecting ?? true
+        case .slack, .linear, .microsoft: false
+        }
+        return own || companyConnect?.isRunning == true
     }
 
     /// A detail button that needs no view state of its own (the detail opens
-    /// its own sheets): a company code, a company's app, the wizard.
+    /// its own sheets): a company code, a company's app, Calendar, the wizard.
     func performCompanyDetailAction(_ kind: DetailAction.Kind, vendor: CompanyVendor) {
         switch kind {
         case .pasteCode:
@@ -62,7 +68,7 @@ extension AppState {
             // Calendar only: the shared Google app requests no Gmail (D11).
             googleAccountsViewModel?.addAccount(calendar: true, gmail: false, clientID: "", clientSecret: "",
                                                 daemonPolicy: accountDaemonPolicy)
-        case .useOwnGoogle, .connectWithToken:
+        default:
             break // the detail's own sheet or page
         }
     }
@@ -72,7 +78,7 @@ extension AppState {
         switch action {
         case .pasteCode: pasteCompanyCode()
         case .setUpForCompany: openCompanySetup()
-        case .useOwnGoogle, .connectWithToken: break
+        default: break // the detail's own sheet or page
         }
     }
 

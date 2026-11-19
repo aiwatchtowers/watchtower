@@ -106,8 +106,36 @@ final class CompanyDetailPresentationTests: XCTestCase {
         XCTAssertEqual(Pres.googleRowLine(account(.google, shared: true), calendar: false, gmail: true),
                        "Syncing through the shared app · Gmail")
         XCTAssertEqual(Pres.googleRowLine(account(.google), calendar: true, gmail: false), "Syncing · Calendar")
-        XCTAssertEqual(Pres.jiraRowLine(account(.atlassian), email: "alice@example.com"), "Syncing · alice@example.com")
-        XCTAssertEqual(Pres.jiraRowLine(account(.atlassian, shared: true), email: ""), "Syncing through the shared app")
+        let site = AccountRef(vendor: .atlassian, accountID: 1, label: "acme.atlassian.net", companySlug: "", status: "ok",
+                              error: "")
+        XCTAssertEqual(Pres.jiraRowLine(site, title: "acme.atlassian.net", enabled: true, email: "alice@example.com"),
+                       "Syncing · alice@example.com")
+        // A renamed site keeps its address on the line.
+        XCTAssertEqual(Pres.jiraRowLine(site, title: "Work", enabled: true, email: ""), "Syncing · acme.atlassian.net")
+        XCTAssertEqual(Pres.jiraRowLine(site, title: "acme.atlassian.net", enabled: false, email: ""), "Turned off")
+    }
+
+    /// Only a healthy row claims to sync; revoked, failed and purged rows do not.
+    func testRowLineNeverClaimsSyncingOnABrokenRow() {
+        func ref(_ status: String) -> AccountRef {
+            AccountRef(vendor: .google, accountID: 1, label: "a", companySlug: "", status: status, error: "token expired")
+        }
+        XCTAssertEqual(Pres.googleRowLine(ref("revoked"), calendar: true, gmail: false), "Not syncing · Calendar")
+        XCTAssertEqual(Pres.googleRowLine(ref("error"), calendar: true, gmail: false), "Not syncing · Calendar")
+        XCTAssertEqual(Pres.googleRowLine(ref("purged"), calendar: true, gmail: false), "Data deleted · Calendar")
+    }
+
+    /// Without the API token on offer (its lock, or a build without the sheet)
+    /// no text points at it.
+    func testNoTokenOfferNoTokenText() {
+        XCTAssertEqual(Pres.accountsList(vendor: .atlassian, loaded: true, readError: nil, accounts: [], groups: [],
+                                         locks: [.atlassianAPIToken]),
+                       .empty("Your company has no Atlassian app in Watchtower yet. Ask your admin for the company link."))
+        let shared = account(.atlassian, shared: true)
+        let banner = Pres.banner(.atlassian, accounts: [shared], locks: [.atlassianAPIToken])
+        XCTAssertEqual(banner?.body, "Your company needs its own Atlassian app — ask your admin or set it up. "
+            + "Sign alice@example.com in again through your company's app.")
+        XCTAssertEqual(banner?.actions, [.setUpForCompany])
     }
 
     // MARK: - Shared-app flags from Go

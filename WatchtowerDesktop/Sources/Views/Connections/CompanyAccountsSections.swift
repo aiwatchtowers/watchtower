@@ -39,17 +39,12 @@ struct CompanyAccountsSections<Row: View>: View {
             }
         case .readFailed(let text):
             SettingsSection(title: CompanyConnectionsPresentation.accountsTitle) {
-                Text(text)
-                    .font(.caption)
-                    .foregroundStyle(Tone.error)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+                errorCaption(text)
                 Button(CompanyConnectionsPresentation.tryAgain, action: tryAgain)
                     .buttonStyle(.kitSecondary)
             }
         case .empty(let text):
-            SettingsSection(title: vendor == .google ? CompanyConnectionsPresentation.googleTitle
-                                : CompanyConnectionsPresentation.jiraTitle) {
+            SettingsSection(title: CompanyConnectionsPresentation.detailTitle(vendor)) {
                 Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
                 buttons(emptyActions)
             }
@@ -63,17 +58,19 @@ struct CompanyAccountsSections<Row: View>: View {
 
     @ViewBuilder
     private func buttons(_ actions: [DetailAction]) -> some View {
-        if let error {
-            Text(error)
-                .font(.caption)
-                .foregroundStyle(Tone.error)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+        if let error { errorCaption(error) }
         ViewThatFits(in: .horizontal) {
             HStack(spacing: Spacing.regular) { buttonRow(actions) }
             VStack(alignment: .leading, spacing: Spacing.regular) { buttonRow(actions) }
         }
+    }
+
+    private func errorCaption(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(Tone.error)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder

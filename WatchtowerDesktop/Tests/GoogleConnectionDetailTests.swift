@@ -120,6 +120,17 @@ final class GoogleConnectionDetailTests: XCTestCase {
         XCTAssertTrue(appState.companiesZone.codeFieldOpen)
     }
 
+    /// Use my own Google project opens the add sheet with the custom client
+    /// shown and required: Gmail never goes to the shared app (D11).
+    func testOwnProjectSheetNeedsTheClient() throws {
+        let (appState, _) = LinearConnectionDetailTests.wired()
+        appState.googleAccountsViewModel = GoogleAccountsViewModel(dbPool: try pool(), daemon: FakeDaemonRestarter()) { nil }
+        let own = AddGoogleAccountView(requiresCustomClient: true).environment(appState)
+        XCTAssertTrue(try own.inspect().find(button: "Connect").isDisabled())
+        let plain = AddGoogleAccountView().environment(appState)
+        XCTAssertFalse(try plain.inspect().find(button: "Connect").isDisabled(), "onboarding's sheet is unchanged")
+    }
+
     /// §5.4: under the lock, Use my own Google project is gone from the
     /// add buttons and the banner.
     func testOwnProjectLockHidesTheButton() {
