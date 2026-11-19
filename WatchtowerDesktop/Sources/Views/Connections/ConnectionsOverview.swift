@@ -15,7 +15,8 @@ struct ConnectionsOverview: View {
                                      actions: appState.companiesZoneActions)
         ) { appState.openConnections($0) }
         // Each time the overview shows: a link, a flow or the wizard may have changed a company file.
-        .task { await appState.companiesZone.reload() }
+        // Not view-bound: leaving for a detail must not cancel the read it then groups by.
+        .onAppear { appState.reloadCompanies() }
     }
 }
 
