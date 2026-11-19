@@ -114,10 +114,10 @@ else
 # owner's Mac runner, GOMAXPROCS=8: "ok <pkg> <s>s"; packages under 15 s take
 # the default, their median rounded up). CMD_WEIGHT is cmd's share in the same
 # units: the seconds of its CMD_SHARDS (4) slices added up (4 x ~260 s, the
-# way the other packages' seconds add up as they share -p), plus the steps CI
-# runs only in cmd's shard (make test-scripts ~110 s, make hub-smoke ~90 s).
-# Only the balance hangs on it. It is the heaviest, so shard 1, alone there.
-CMD_WEIGHT=1240
+# way the other packages' seconds add up as they share -p). Only the balance
+# hangs on it. It is the heaviest, so shard 1, alone there (2026-11-19 on the
+# Mac: ~250 s of test step in each of the three shards).
+CMD_WEIGHT=1040
 COVER_WEIGHTS="workbenchcheck 118 sessioncleanup 113 automations 104 workbenchgit 94 transporttest 90 hub/adopt 89 daemon 87 tools 74 sessionreport 67 diagnostics 57 devpack 45 agentreport 44 chat 40 sessionstart 40 kb 39 codex 39 hub/switcher 38 hub 36 hub/slices/sources 35 agentlog 34 coach 34 hub/actions 34 memory 31 reviewdiff 29 ai 27 hub/actions/handlers 24 sync 21 reviewmap 17 chatengine 17 ideas 16 confluenceedit 16 digest 15"
 COVER_WEIGHT_DEFAULT=3
 

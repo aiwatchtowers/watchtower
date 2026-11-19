@@ -299,10 +299,12 @@ jobs:
 
       # The shell suite over scripts/build-app.sh — it stubs `ps` and never
       # builds, so it rides this job (Linux in the cloud) rather than paying
-      # for a macOS one. Seconds long, so it runs before the coverage gate:
-      # earlier signal, no cost. One shard runs it.
+      # for a macOS one. Short, so it runs before the coverage gate: earlier
+      # signal. Shard 2 runs it, the hub smoke test runs in shard 3: their
+      # ~2 and ~1.5 min would make cmd's shard 1 the long one (measured
+      # 2026-11-19: every shard's test step ~4 min).
       - name: Test (shell scripts)
-        if: matrix.shard == 1
+        if: matrix.shard == 2
         run: make test-scripts
 
       # Runs this shard's slice of the suite with -cover and enforces its
@@ -313,10 +315,9 @@ jobs:
         run: make test-cover SHARD=${{ matrix.shard }}/3
 
       # The headless hub smoke test, live mode (build tag smoke, so the
-      # coverage run above never includes it). On the shard that runs cmd:
-      # its build shares cmd's compiled dependencies.
+      # coverage run above never includes it).
       - name: Hub smoke test
-        if: matrix.shard == 1
+        if: matrix.shard == 3
         timeout-minutes: 10
         run: make hub-smoke
 
