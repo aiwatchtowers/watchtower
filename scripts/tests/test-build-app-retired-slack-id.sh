@@ -1,7 +1,7 @@
 #!/bin/bash
 # Tests for the retired-slack-id-check block in scripts/build-app.sh (#1709): a public release must set
 # RETIRED_SLACK_CLIENT_ID; no release bakes a Slack client secret; a public release does not bake the
-# retired id as its own (A15). The block is extracted verbatim (BEGIN/END markers) and run in a subshell.
+# Slack client id at all (A15, review ruling). The block is extracted verbatim (BEGIN/END markers) and run in a subshell.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -18,7 +18,7 @@ fi
 FAILURES=0
 WANT_ERR="ERROR: a public release must set RETIRED_SLACK_CLIENT_ID (recognises accounts on the retired shared Slack app)"
 WANT_SECRET_ERR="ERROR: a release must not set WATCHTOWER_OAUTH_CLIENT_SECRET"
-WANT_RETIRED_ERR="ERROR: a public release must not set WATCHTOWER_OAUTH_CLIENT_ID to RETIRED_SLACK_CLIENT_ID"
+WANT_RETIRED_ERR="ERROR: a public release must not set WATCHTOWER_OAUTH_CLIENT_ID"
 
 # expect_fail <name> <rc> <out> <wanted message>
 expect_fail() {
@@ -69,6 +69,7 @@ run "public release baking the retired id fails" retiredfail false "" notarize-p
 run "corp release with an id and no secret passes" pass false corp notarize-prof "" placeholder-corp-id ""
 run "public release with neither id nor secret passes" pass false "" notarize-prof placeholder-id "" ""
 run "dev-flavor release with a Slack secret fails" secretfail false dev notarize-prof placeholder-id "" placeholder-secret
+run "public release baking another id fails" retiredfail false "" notarize-prof placeholder-id placeholder-other-id ""
 run "dev-flavor release baking the retired id fails" retiredfail false dev notarize-prof placeholder-id placeholder-id ""
 run "public release with the retired id and a secret fails on the secret first" secretfail false "" notarize-prof placeholder-id placeholder-id placeholder-secret
 run "--dev passes with a Slack secret" pass true "" notarize-prof "" placeholder-dev-id placeholder-secret

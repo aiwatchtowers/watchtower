@@ -234,7 +234,7 @@ fi
 # needs none. The flavor test lives only here, never in app code. Stops before
 # anything is built.
 # Since Task 18 no build bakes a Slack app (A15): any release refuses a Slack client secret, and a public
-# release refuses WATCHTOWER_OAUTH_CLIENT_ID equal to the retired id. A corp release may still carry the
+# release refuses any WATCHTOWER_OAUTH_CLIENT_ID (review ruling). A corp release may still carry the
 # corp app's client id without a secret: that id only backfills old account rows (A17) and makes no
 # built-in app (auth.BuiltinApp needs id and secret), so Re-login runs the PKCE connect flow.
 RETIRED_SLACK_CLIENT_ID="${RETIRED_SLACK_CLIENT_ID:-}"
@@ -254,9 +254,8 @@ if $SLACK_RELEASE && [ -n "${WATCHTOWER_OAUTH_CLIENT_SECRET:-}" ]; then
     echo "ERROR: a release must not set WATCHTOWER_OAUTH_CLIENT_SECRET (no build bakes a Slack app any more; drop it from the build profile)" >&2
     exit 1
 fi
-if $SLACK_PUBLIC_RELEASE && [ -n "${WATCHTOWER_OAUTH_CLIENT_ID:-}" ] \
-    && [ "${WATCHTOWER_OAUTH_CLIENT_ID:-}" = "$RETIRED_SLACK_CLIENT_ID" ]; then
-    echo "ERROR: a public release must not set WATCHTOWER_OAUTH_CLIENT_ID to RETIRED_SLACK_CLIENT_ID (the shared Slack app is retired; drop the id from the build profile)" >&2
+if $SLACK_PUBLIC_RELEASE && [ -n "${WATCHTOWER_OAUTH_CLIENT_ID:-}" ]; then
+    echo "ERROR: a public release must not set WATCHTOWER_OAUTH_CLIENT_ID (no public build bakes a Slack app; a baked id would become the backfill source for old shared-app rows; drop it from the build profile)" >&2
     exit 1
 fi
 # The value lands unquoted inside -ldflags, so any build rejects a value with whitespace in it.
