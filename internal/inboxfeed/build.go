@@ -41,7 +41,7 @@ type Options struct {
 	Clip bool
 	// OmitMacOnly leaves out the cards only the Mac has a pane for —
 	// Watchman's morning journal — before Limit counts the cards (the
-	// hub's phone feed).
+	// hub's phone feed, FeedRequest.OmitMacOnly).
 	OmitMacOnly bool
 	// Day is a Morning brief day the client has open (FeedRequest.Day):
 	// listed while it has a briefing or a day plan.

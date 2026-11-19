@@ -1191,17 +1191,20 @@ public struct FeedRequest: Codable, Hashable, Sendable {
     public var folder: Int64?
     public var limit: Int?
     public var clip: Bool?
+    public var omitMacOnly: Bool?
     public var day: String?
 
     public init(
         folder: Int64? = nil,
         limit: Int? = nil,
         clip: Bool? = nil,
+        omitMacOnly: Bool? = nil,
         day: String? = nil
     ) {
         self.folder = folder
         self.limit = limit
         self.clip = clip
+        self.omitMacOnly = omitMacOnly
         self.day = day
     }
 
@@ -1209,6 +1212,7 @@ public struct FeedRequest: Codable, Hashable, Sendable {
         case folder
         case limit
         case clip
+        case omitMacOnly = "omit_mac_only"
         case day
     }
 }

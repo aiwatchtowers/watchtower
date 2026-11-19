@@ -18,6 +18,10 @@ type FeedRequest struct {
 	Limit int `json:"limit,omitempty"`
 	// Clip clips each card's body to 16 KB on a rune boundary.
 	Clip bool `json:"clip,omitempty"`
+	// OmitMacOnly leaves out the cards only the Mac has a pane for
+	// (Watchman's morning journal) before Limit and More count the cards:
+	// the hub's phone feed sets it.
+	OmitMacOnly bool `json:"omit_mac_only,omitempty"`
 	// Day is a Morning brief day ("2006-01-02") the client has open (a
 	// route to an older, read day): it is listed in the root while it has a
 	// briefing or a day plan, as today's and the unread days are. "" = none.

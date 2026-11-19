@@ -632,7 +632,7 @@ func towerInboxFeed(t *tower.Tower) sources.InboxFeed {
 		return nil
 	}
 	return func(ctx context.Context, o inboxfeed.Options) (api.Feed, error) {
-		params, err := json.Marshal(api.FeedRequest{Limit: o.Limit, Clip: o.Clip})
+		params, err := json.Marshal(api.FeedRequest{Limit: o.Limit, Clip: o.Clip, OmitMacOnly: o.OmitMacOnly})
 		if err != nil {
 			return api.Feed{}, err
 		}
