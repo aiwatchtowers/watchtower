@@ -28,7 +28,8 @@ final class OwnerAskKeysTests: XCTestCase {
     }
 
     override func tearDown() {
-        TestDatabase.cleanup(path: path)
+        // nil when the window-server gate skipped the class before setUp made it.
+        if let path { TestDatabase.cleanup(path: path) }
         super.tearDown()
     }
 

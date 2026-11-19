@@ -8,7 +8,8 @@ on:
   # `gate` job's push-vs-pull_request dedupe below, since its event_name
   # isn't "push") when a PR's pull_request-triggered run never materializes.
   workflow_dispatch:
-  # The nightly race pass (go-test-race); a scheduled run starts nothing else.
+  # The nightly race pass (go-test-race) and Swift UI Tests; a scheduled run
+  # starts nothing else.
   schedule:
     - cron: "17 2 * * *"
 
@@ -49,10 +50,10 @@ jobs:
   #            reading a path across the line that its filter misses.
   #   mobile — the iPhone app, the Kit it builds on, the Makefile or this file.
   # A push (main included) and workflow_dispatch always run everything; the
-  # nightly schedule runs only the race pass (go, swift, mobile and guide
-  # false).
+  # nightly schedule runs only the race pass and Swift UI Tests (go, swift,
+  # mobile and guide false).
   # It also picks where the jobs run (scripts/ci-pick-runner.sh): the
-  # owner's Mac when its self-hosted wt-general runners are online (set up by
+  # owner's Mac when its self-hosted runners are online (set up by
   # scripts/ci-runner/setup-mac-runner.sh), else the GitHub-hosted runners —
   # always for a fork PR, without the RUNNER_STATUS_TOKEN secret, and on any
   # API error. Its `linux`, `macos` and `swifttest` outputs are each job's
@@ -759,6 +760,8 @@ jobs:
     if: needs.gate.outputs.run == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: macos-26
     timeout-minutes: 45
+    outputs:
+      spm-key: ${{ steps.save.outcome == 'success' && steps.spm-key.outputs.key || '' }}
     defaults:
       run:
         working-directory: WatchtowerDesktop
@@ -769,12 +772,16 @@ jobs:
         with:
           xcode-version: "26.4.1"
 
-      # Main's latest build (Swift Test saves it); never saved from here.
+      - id: spm-key
+        env:
+          KEY: ${{ runner.os }}-spm-v2-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}-${{ github.sha }}
+        run: echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
       - name: Restore SPM build
         uses: actions/cache/restore@v4
         with:
           path: WatchtowerDesktop/.build
-          key: ${{ runner.os }}-spm-v2-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}-${{ github.sha }}
+          key: ${{ steps.spm-key.outputs.key }}
           restore-keys: |
             ${{ runner.os }}-spm-v2-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}-
             ${{ runner.os }}-spm-v2-
@@ -782,20 +789,39 @@ jobs:
       - name: Build
         run: swift build --build-tests -Xswiftc -enable-incremental-file-hashing
 
+      # While Swift Test runs on the Mac it saves no cloud build: this job
+      # keeps main's entry current instead (prune-spm-cache drops the older).
+      - name: Save SPM build
+        id: save
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(needs.gate.outputs.swifttest, 'self-hosted')
+        uses: actions/cache/save@v4
+        with:
+          path: WatchtowerDesktop/.build
+          key: ${{ steps.spm-key.outputs.key }}
+
+      # A filter that matches nothing passes: each class must have run.
       - name: Test
         timeout-minutes: 10
-        run: swift test --skip-build --filter 'OwnerAskKeysTests|SessionsPanelKeyViewTests|WorkbenchBackSwipeTests'
+        run: |
+          set -o pipefail
+          swift test --skip-build --filter 'OwnerAskKeysTests|SessionsPanelKeyViewTests|WorkbenchBackSwipeTests' 2>&1 | tee "$RUNNER_TEMP/ui-tests.log"
+          for class in OwnerAskKeysTests SessionsPanelKeyViewTests WorkbenchBackSwipeTests; do
+            grep -q "Test Suite '$class' passed" "$RUNNER_TEMP/ui-tests.log" ||
+              { echo "::error::$class did not run"; exit 1; }
+          done
 
   # Drops the main SPM build caches the latest main push replaced: one ~2 GB
   # entry against the repo's 10 GB cache. Its own job so actions: write (cache
   # deletion) never reaches a job that runs the checkout's code; no checkout.
   prune-spm-cache:
     name: Prune SPM build cache
-    needs: swift-test
+    # Swift Test saves main's build in the cloud, Swift UI Tests while Swift
+    # Test runs on the Mac: one of the two keys is set.
+    needs: [swift-test, swift-ui-test]
     # always(): the build is saved before the tests run, so a red test run
     # still leaves a new entry behind; the KEEP guard below covers a run that
     # never saved one.
-    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.swift-test.outputs.spm-key != ''
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && (needs.swift-test.outputs.spm-key != '' || needs.swift-ui-test.outputs.spm-key != '')
     runs-on: ubuntu-24.04
     permissions:
       actions: write
@@ -804,7 +830,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          KEEP: ${{ needs.swift-test.outputs.spm-key }}
+          KEEP: ${{ needs.swift-test.outputs.spm-key || needs.swift-ui-test.outputs.spm-key }}
         run: |
           keys="$(gh cache list --repo "$GITHUB_REPOSITORY" --ref refs/heads/main \
             --key "${KEEP%%-spm-*}-spm-" --limit 100 --json key --jq '.[].key')"
