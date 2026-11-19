@@ -43,6 +43,8 @@ final class ScreenshotTourTests: XCTestCase {
     /// `SHOTS_ONLY=chat` runs `testTheChatShots` alone: the Chats tab's states (iPhone chat mockups 1a–1j).
     private static let onlyChat = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "chat"
     private static let onlySpecReview = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "spec-review"
+    /// `SHOTS_ONLY=workchat-agents` runs `testTheWorkchatAgentsShots` alone: the agents sheet mockups (#2065).
+    private static let onlyWorkchatAgents = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "workchat-agents"
 
     func testTheRelayPhase4Shots() async throws {
         guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], Self.onlyRelayPhase4 else {
@@ -87,6 +89,29 @@ final class ScreenshotTourTests: XCTestCase {
             WorkbenchView(replica: root.env.workbenchReplica, writer: root.env.boardWriter,
                           workbenchID: DemoSeed.websiteID, segment: .sessions)
         })
+    }
+
+    /// #2065 (spec 2026-11-19 §1–§2): static mockups of the session chat without subagent cards, its agents button
+    /// and the agents sheet, P1–P4 (`make mobile-shots SHOTS_ONLY=workchat-agents`).
+    func testTheWorkchatAgentsShots() async throws {
+        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], Self.onlyWorkchatAgents else {
+            throw XCTSkip("Only with make mobile-shots SHOTS_ONLY=workchat-agents")
+        }
+        let dir = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let (root, _) = try makeDemoRoot()
+        let host = ScreenshotHost(directory: dir, env: root.env, linking: root.linking)
+        let frames: [(String, AnyView)] = [
+            ("workchat-phone-P1", AnyView(WorkchatAgentsMockups.p1)),
+            ("workchat-phone-P2", AnyView(WorkchatAgentsMockups.p2)),
+            ("workchat-phone-P3", AnyView(WorkchatAgentsMockups.p3)),
+            ("workchat-phone-P4", AnyView(WorkchatAgentsMockups.p4))
+        ]
+        for (name, view) in frames {
+            try await host.capture(name, view, settle: .milliseconds(1_500))
+        }
+        let written = try FileManager.default.contentsOfDirectory(atPath: path).filter { $0.hasPrefix("workchat-phone-P") }
+        XCTAssertEqual(written.count, 2 * frames.count)
     }
 
     func testTheChatShots() async throws {
