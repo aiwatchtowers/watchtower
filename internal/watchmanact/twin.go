@@ -316,11 +316,19 @@ func (j *job) finishAlone(o db.WatchmanOutcome) bool {
 // answered first (journalled, nothing delivered, a park's reason and text
 // dropped) — or the ask was withdrawn or superseded meanwhile: before any
 // decision the item goes (nothing to journal), after one it is finished
-// superseded with its choice kept.
+// superseded with its choice kept. A read of the ask that fails releases
+// the item for another try.
 func (j *job) lostRace(o db.WatchmanOutcome) {
 	parked := o.Outcome == OutcomeParked
 	o.ParkReason, o.Error = "", "" // no park, and no session start owed
 	ask, err := j.t.d.DB.GetOwnerAskByID(j.it.RefID)
+	if err != nil && !errors.Is(err, db.ErrAskNotFound) {
+		// Who won is unknown: never journal the owner as first on a read
+		// that failed. The item goes back to be decided again.
+		log.Printf("watchman twin: item %d: reading the ask after a lost answer: %v", j.it.ID, err)
+		j.release()
+		return
+	}
 	if err == nil && ask.Status == "open" {
 		// Still open: the spec review's author loop hid it meanwhile. Not
 		// the owner's answer: decided again once the loop ends.

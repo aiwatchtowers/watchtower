@@ -1414,3 +1414,28 @@ func TestTwin_FreedSlotWakesTheNextPass(t *testing.T) {
 		t.Fatalf("item %s, scheduled %v; want queued with one wake within ProviderRetry", it.State, after)
 	}
 }
+
+// Final review (codex 4): after a lost answer, a read of the ask that fails
+// says nothing about who won — the item is released for another try, never
+// journalled owner-first.
+func TestTwin_LostRaceReadErrorReleases(t *testing.T) {
+	e := newTwinEnv(t)
+	_, itemID := e.question("Which store?")
+	it, err := e.db.LeaseArmedWatchmanItem(time.Now(), LeaseFor, nil)
+	e.must(err)
+	if it == nil || it.ID != itemID {
+		t.Fatalf("leased %+v", it)
+	}
+	j := &job{t: e.twin, parent: context.Background(), it: *it, lease: *it.LeaseUntil}
+	_, err = e.db.Exec(`ALTER TABLE owner_asks RENAME TO owner_asks_gone`)
+	e.must(err)
+	j.lostRace(j.outcome(OutcomeAnswered))
+	_, err = e.db.Exec(`ALTER TABLE owner_asks_gone RENAME TO owner_asks`)
+	e.must(err)
+	got := e.item(itemID)
+	if got.State != "queued" || got.Outcome != "" || got.Attempts != 0 {
+		t.Fatalf("item = %s/%q attempts %d, want released", got.State, got.Outcome, got.Attempts)
+	}
+	e.run()
+	wantOutcome(t, e.item(itemID), OutcomeAnswered)
+}
