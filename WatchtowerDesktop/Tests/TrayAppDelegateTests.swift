@@ -81,7 +81,7 @@ final class TrayAppDelegateTerminateTests: XCTestCase {
         let replied = expectation(description: "replied")
         _ = TrayAppDelegate.terminateDecision(
             managesLifecycle: true, hasBlockingWork: false, confirmQuit: { .quitStoppingSessions },
-            closeChatSessions: { closed = true }, stopDaemon: {}, reply: { _ in replied.fulfill() })
+            shutdownChat: { closed = true }, stopDaemon: {}, reply: { _ in replied.fulfill() })
         await fulfillment(of: [replied], timeout: 5)
         XCTAssertTrue(closed)
     }
@@ -100,7 +100,7 @@ final class TrayAppDelegateTerminateTests: XCTestCase {
                 guard let button else { XCTFail("this quit must not ask"); return .cancel }
                 return plan.choice(button: button)
             },
-            closeChatSessions: { order.append("chat") },
+            shutdownChat: { order.append("chat") },
             closeTerminals: { order.append("close") },
             detachTerminals: { order.append("detach") },
             stopDaemon: { order.append("daemon") },

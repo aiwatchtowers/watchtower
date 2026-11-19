@@ -2,6 +2,7 @@ import WatchtowerCore
 import WebKit
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerChatText
 
 /// The in-app preview's file handler (#563), driven with a recording task:
 /// ranges across chunks, refusals, stale tokens and a stopped task.

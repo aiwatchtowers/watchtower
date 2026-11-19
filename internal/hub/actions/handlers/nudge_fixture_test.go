@@ -32,6 +32,7 @@ func TestNudgeTableMatchesTheSharedFixture(t *testing.T) {
 	}
 	table := map[string][]string{}
 	for kind, nudged := range NudgeTable {
+		table[kind] = []string{}
 		for _, s := range nudged {
 			table[kind] = append(table[kind], string(s))
 		}

@@ -175,7 +175,7 @@ func readStampFile(t *testing.T, path string) time.Time {
 
 func TestLaunchWatchmanBacktest_MissingBinary(t *testing.T) {
 	logs := filepath.Join(t.TempDir(), "logs")
-	err := LaunchWatchmanBacktest(filepath.Join(t.TempDir(), "no-such-binary"), 7, "acme", "", logs)
+	err := LaunchWatchmanBacktest(filepath.Join(t.TempDir(), "no-such-binary"), 7, "acme", "", logs, nil)
 	require.ErrorContains(t, err, "starting the backtest")
 	_, statErr := os.Stat(filepath.Join(logs, "watchman-backtest.log"))
 	require.NoError(t, statErr)

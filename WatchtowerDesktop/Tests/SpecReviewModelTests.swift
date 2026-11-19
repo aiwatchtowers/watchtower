@@ -5,6 +5,7 @@ import ViewInspector
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
+import WatchtowerChatText
 
 @MainActor
 final class SpecReviewModelTests: XCTestCase {

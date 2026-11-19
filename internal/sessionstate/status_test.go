@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"watchtower/internal/db"
 )
@@ -24,6 +25,7 @@ type fixtureRow struct {
 	OpenAsks              int     `json:"open_asks"`
 	OpenQuestionAsks      int     `json:"open_question_asks"`
 	OpenReviewAsks        int     `json:"open_review_asks"`
+	SpecReviewRound       int     `json:"spec_review_round"`
 	RunStartedAt          string  `json:"run_started_at"`
 }
 
@@ -65,7 +67,7 @@ func TestStatusFixtures(t *testing.T) {
 				AgentBackground: c.Row.AgentBackground, AgentBackgroundAt: c.Row.AgentBackgroundAt,
 				AgentBackgroundShells: c.Row.AgentBackgroundShells,
 				OpenAsks:              c.Row.OpenAsks, OpenQuestionAsks: c.Row.OpenQuestionAsks,
-				OpenReviewAsks: c.Row.OpenReviewAsks, RunStartedAt: c.Row.RunStartedAt,
+				OpenReviewAsks: c.Row.OpenReviewAsks, SpecReviewRound: c.Row.SpecReviewRound, RunStartedAt: c.Row.RunStartedAt,
 			}
 			s := Resolve(r, now)
 			if string(s) != c.Expect.State {
@@ -110,6 +112,40 @@ func TestLoadReadsRowAndOpenAsks(t *testing.T) {
 	}
 	if _, err := Load(context.Background(), d, 99); err == nil {
 		t.Error("missing session: want error")
+	}
+}
+
+// A session whose only open asks sit in the spec review author loop has no
+// visible ask and reads the highest loop round (#1945).
+func TestLoadReadsSpecReviewRound(t *testing.T) {
+	d := openTestDB(t)
+	mustExec(t, d, `INSERT INTO projects(id,name,folder_path) VALUES (1,'wb','/tmp/wb')`)
+	mustExec(t, d, `INSERT INTO terminal_sessions(id,project_id,kind,title,folder_path,claude_session_id)
+		VALUES (7,1,'claude','t','/tmp/wb','sid')`)
+	for i, round := range []int{1, 3} {
+		mustExec(t, d, `INSERT INTO owner_asks(id,project_id,session_id,kind,title,doc_path) VALUES (?,1,7,'review','a','x.md')`, i+1)
+		mustExec(t, d, `INSERT INTO spec_reviews(ask_id,status,queued_at,loop,round) VALUES (?,'running','2026-10-01T00:00:00Z','author',?)`, i+1, round)
+	}
+	r, err := Load(context.Background(), d, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.OpenAsks != 0 || r.OpenQuestionAsks != 0 || r.OpenReviewAsks != 0 || r.SpecReviewRound != 3 {
+		t.Errorf("row = %+v", r)
+	}
+	// A revealed loop (owner) is a visible ask again and no round.
+	mustExec(t, d, `UPDATE spec_reviews SET loop = 'owner'`)
+	if r, err = Load(context.Background(), d, 7); err != nil || r.OpenAsks != 2 || r.SpecReviewRound != 0 {
+		t.Errorf("revealed: %+v %v", r, err)
+	}
+}
+
+func TestSpecReviewSessionTakesInput(t *testing.T) {
+	waiting, at := "waiting", "2026-10-31T11:30:00.000Z"
+	r := Row{ID: 1, Kind: "claude", AgentState: &waiting, AgentStateAt: &at,
+		RunStartedAt: "2026-10-31T11:00:00.000Z", SpecReviewRound: 1}
+	if s := Resolve(r, time.Now()); s != StateSpecReview || !IsIdle(r, s) {
+		t.Errorf("state %q idle %v", s, IsIdle(r, s))
 	}
 }
 

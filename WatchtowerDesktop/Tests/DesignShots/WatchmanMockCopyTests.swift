@@ -1,3 +1,4 @@
+import WatchtowerCore
 import XCTest
 
 /// Pins the Watchman spec's string table
@@ -20,6 +21,35 @@ final class WatchmanMockCopyTests: XCTestCase {
         XCTAssertEqual(Copy.deciding, "Deciding: #1826 'Store window per workbench?' …")
         // 2 unsure cards + 4 sure lines + 8 more = the summary's 14 (12 sure).
         XCTAssertEqual(2 + Copy.sureRows.count + 8, 14)
+    }
+
+    /// Phase 2's two journal frames: the daemon line is the journal's own.
+    func testPhase2JournalFrames() {
+        XCTAssertEqual(Copy.daemonStopped, "Watchman is not running — the daemon is stopped")
+        XCTAssertEqual(Copy.daemonStopped, WatchmanJournalCopy.daemonStopped)
+        XCTAssertEqual(Copy.unsureBadge, WatchmanJournalCopy.unsureBadge)
+        XCTAssertEqual(Copy.homeRow, WatchmanJournalCopy.homeRow(
+            WatchmanNightCounts(start: Date(timeIntervalSince1970: 0), decided: 14, unsure: 2, waiting: 2)))
+        let names = Set(WatchmanShotFixtures.shots.map(\.name))
+        XCTAssertTrue(names.contains("watchman-journal-not-running"))
+        XCTAssertTrue(names.contains("watchman-journal-night-unsure"))
+    }
+
+    /// Phase 2's arming frames render the real controls: the spec's copy is
+    /// `WatchmanArmingCopy`'s. The sheet's confirm reads Hand to Watchman
+    /// (not the mockup's Start), and the tray has no Going to sleep (D47).
+    func testArmingFramesUseTheRealCopy() {
+        typealias Real = WatchmanArmingCopy
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = .gmt
+        let since = AutomationDates.parse("2026-11-17T01:40:00Z")
+        XCTAssertEqual(Copy.armedChip, Real.stripArmed(since: since, calendar: utc))
+        XCTAssertEqual(Copy.targetArmed, Real.targetArmed(since: since, calendar: utc))
+        XCTAssertEqual([Copy.handTo, Copy.takeBack, Copy.notNow], [Real.handTo, Real.takeBack, Real.notNow])
+        XCTAssertEqual(Copy.armAnalytics, Real.analyticsLine)
+        XCTAssertEqual(Copy.armHistory, Real.historyLine(WatchmanEstimate(decisions: 1850, needLabels: 1200, tokens: 1_600_000)))
+        XCTAssertEqual(Copy.armLimits, Real.limitsLine)
+        XCTAssertEqual(Copy.trayHandAll, Real.trayHandAll)
     }
 
     func testEmptyAndErrorStatesNameTheWayOut() {
@@ -66,6 +96,17 @@ final class WatchmanMockCopyTests: XCTestCase {
         XCTAssertEqual(Copy.nightCost, "Cost tonight $3.40")
     }
 
+    /// Phase 2's Settings editing frames draw the real view on the
+    /// status/profile/limits fixtures; their strings are pinned by
+    /// `WatchmanSettingsCopyTests`.
+    func testSettingsEditingFrames() {
+        let names = Set(WatchmanShotFixtures.shots.map(\.name))
+        for name in ["watchman-settings-results", "watchman-settings-add-limit", "watchman-settings-profile-edit"] {
+            XCTAssertTrue(names.contains(name), name)
+        }
+        XCTAssertEqual(WatchmanShotFixtures.addLimitError, WatchmanSettingsCopy.limitToolBlanks)
+    }
+
     func testEveryFrameHasAShot() {
         let names = Set(WatchmanShotFixtures.shots.map(\.name))
         XCTAssertEqual(names.count, WatchmanShotFixtures.Frame.allCases.count)
@@ -77,7 +118,7 @@ final class WatchmanMockCopyTests: XCTestCase {
                      "journal-narrow", "journal-correct-sheet", "home-row", "strip-armed", "strip-unarmed",
                      "arm-first-time", "settings-results", "settings-never-run", "settings-running",
                      "settings-failed", "tray-menu", "target-panel-armed", "target-panel-unarmed",
-                     "inbox-entry", "settings-not-learned"] {
+                     "inbox-entry", "settings-not-learned", "journal-not-running", "journal-night-unsure"] {
             XCTAssertTrue(names.contains("watchman-\(name)"), name)
         }
     }

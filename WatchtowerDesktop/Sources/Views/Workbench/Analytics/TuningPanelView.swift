@@ -1,5 +1,8 @@
+import ChatUI
+import ChatWire
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// Whether the tuning chat's tools are on for the panel: off is shown only
 /// once the catalog has been read (or its read failed) — before the first
@@ -41,9 +44,7 @@ struct TuningPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             titleRow
-            ChatFeedView(state: feedState, lastRowID: engine.messages.last?.id, density: .compact) {
-                feed
-            }
+            ChatUI.ChatFeedView(messages: feed.messages, context: feedContext)
             if !isEmpty, toolsState == .off {
                 TuningNoToolsCard(headline: TuningChatSurface.unavailableHelp(catalog: catalog),
                                   onOpenSettings: onOpenSettings)
@@ -61,6 +62,7 @@ struct TuningPanelView: View {
             EmbeddedChatComposer(engine: engine, placeholder: TuningChatTexts.placeholder, density: .compact,
                                  onEscape: onClose)
         }
+        .macChatStyle(hooks: .app, look: .embedded)
         .task(id: ObjectIdentifier(chat)) { await chat.refreshCards() }
         .sheet(item: $editing) { proposal in
             if let coach { CoachEditSheet(proposal: proposal, coach: coach) }
@@ -114,7 +116,38 @@ struct TuningPanelView: View {
 
     // MARK: - Feed
 
-    @ViewBuilder private var feed: some View {
+    /// The chat's rows through ChatUI's feed, each reply followed by the edits its turn proposed.
+    private var feed: EmbeddedChatFeed<AnyView> {
+        var feed = EmbeddedChatFeed(engine: engine, density: .compact, accessory: { item in
+            AnyView(cards(item.message.isAssistant && !item.message.turnID.isEmpty
+                              ? chat.cards.byTurn[item.message.turnID] ?? [] : []))
+        }, openArtifact: { _ in })
+        feed.showsEmptyState = false
+        return feed
+    }
+
+    private var feedContext: ChatFeedContext {
+        var context = feed.context(follows: true)
+        context.header = AnyView(header)
+        let rows = context.footer
+        context.footer = AnyView(VStack(alignment: .leading, spacing: Spacing.cozy) {
+            rows
+            if !isEmpty {
+                // A turn that stored no reply still shows what it proposed.
+                cards(orphans)
+            }
+            cards(chat.cards.trailing)
+            if let error = unresolvedCardsError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(Tone.warning)
+            }
+        })
+        return context
+    }
+
+    /// Before the rows: the empty state, or the figures line when the chat cannot read them itself.
+    @ViewBuilder private var header: some View {
         if isEmpty {
             TuningEmptyState(figures: figures, starters: toolsState == .on ? starters : [], loading: loading) {
                 chat.send(starter: $0)
@@ -123,24 +156,9 @@ struct TuningPanelView: View {
                 TuningNoToolsCard(headline: TuningChatSurface.unavailableHelp(catalog: catalog),
                                   onOpenSettings: onOpenSettings)
             }
-        } else {
+        } else if toolsState == .off, let figures {
             // Without tools the figures stay in view: the chat cannot read them.
-            if toolsState == .off, let figures {
-                TuningFiguresLine(figures: figures)
-            }
-            EmbeddedChatRows(engine: engine) { item in
-                if item.message.isAssistant, !item.message.turnID.isEmpty {
-                    cards(chat.cards.byTurn[item.message.turnID] ?? [])
-                }
-            }
-            // A turn that stored no reply still shows what it proposed.
-            cards(orphans)
-        }
-        cards(chat.cards.trailing)
-        if let error = unresolvedCardsError {
-            Label(error, systemImage: "exclamationmark.triangle")
-                .font(.caption)
-                .foregroundStyle(Tone.warning)
+            TuningFiguresLine(figures: figures)
         }
     }
 
@@ -195,10 +213,6 @@ struct TuningPanelView: View {
         }
     }
 
-    private var feedState: ChatAutoScrollPolicy.ThreadState {
-        .init(conversationID: engine.spec.key.conversationID, lastMessageID: engine.messages.last?.id,
-              scrollTarget: nil, liveMessageID: engine.liveTurn?.messageID)
-    }
 }
 
 // MARK: - Empty state

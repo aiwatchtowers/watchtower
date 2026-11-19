@@ -1,0 +1,25 @@
+{
+  "_doc": "Which chat.sock operations travel over the relay (unified chat spec §6.4, final review I2). relay maps each engine op to the hub's action kind (attach goes as the sealed chat_attachment upload, no action kind); not_on_relay is answered by the phone itself (RelayChatClient.localAnswer). Read by Go internal/hub/actions/handlers (TestChatRelayOps_EveryEngineOpIsRoutedOrListed) and by the phone (RelayChatClientTests.testRelayOpsContract). A new engine op goes in one of the two lists. chat_manage_ops are the chat_manage ops the hub's chat_manage takes from the phone (TestChatRelayOps_ManageOpsOnTheRelay); the rest (move, archive, discard) are chat.sock only.",
+  "relay": {
+    "chat_new": "chat_new",
+    "chat_turn": "chat_turn",
+    "chat_cancel": "chat_cancel",
+    "chat_page": "chat_page",
+    "chat_search": "chat_search",
+    "chat_read": "chat_read",
+    "chat_branch_select": "chat_branch_select",
+    "chat_manage": "chat_manage",
+    "entity_search": "chat_entity_search",
+    "skills_list": "chat_skills_list",
+    "attach": "chat_attachment"
+  },
+  "chat_manage_ops": ["delete", "pin", "rename", "unpin", "use_preferred"],
+  "not_on_relay": [
+    "artifact_manage",
+    "attach_discard",
+    "chat_sessions_retire",
+    "chat_shutdown",
+    "chat_warm",
+    "project_manage"
+  ]
+}

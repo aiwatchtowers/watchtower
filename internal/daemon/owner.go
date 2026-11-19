@@ -11,6 +11,12 @@ import (
 // runs every phase every cycle, and a line per cycle would bury the log. The
 // memo is in memory only, so a daemon restart may print the day's line again.
 func (d *Daemon) logNoOwnerOnce(now time.Time, phase string) {
+	d.logSkipOnce(now, phase, "no owner identity (connect Slack, Google, Jira, Linear or an email account)")
+}
+
+// logSkipOnce prints "<phase> skipped: <reason>" at most once per UTC
+// calendar day per phase (logNoOwnerOnce's memo).
+func (d *Daemon) logSkipOnce(now time.Time, phase, reason string) {
 	d.noOwnerMu.Lock()
 	defer d.noOwnerMu.Unlock()
 	day := now.UTC().Format("2006-01-02")
@@ -21,7 +27,7 @@ func (d *Daemon) logNoOwnerOnce(now time.Time, phase string) {
 		d.noOwnerLoggedDay = make(map[string]string)
 	}
 	d.noOwnerLoggedDay[phase] = day
-	d.logger.Printf("daemon: %s skipped: no owner identity (connect Slack, Google, Jira, Linear or an email account)", phase)
+	d.logger.Printf("daemon: %s skipped: %s", phase, reason)
 }
 
 // dayPlanOwner is the owner the day-plan phases run for, resolved once per

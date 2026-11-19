@@ -114,7 +114,7 @@ final class WorkbenchWiringTests: XCTestCase {
         let model = WorkbenchReplicaModel()
         model.start(store: store)
         try await poll { model.snapshot.workbenches.count == 3 }
-        XCTAssertEqual(model.snapshot.sessions.count, 10)
+        XCTAssertEqual(model.snapshot.sessions.count, 11)
         XCTAssertEqual(model.snapshot.asks.count, 6)
         XCTAssertEqual(model.snapshot.targets.count, 16)
         XCTAssertEqual(model.snapshot.comments.count, 3)

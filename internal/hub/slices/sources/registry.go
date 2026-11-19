@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/chatengine"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/platform"
@@ -61,12 +62,15 @@ type Config struct {
 	Location  *time.Location
 
 	// ChatWatches (nil = a new registry, returned in Set.ChatWatches) is
-	// what the chat handlers write and the chat sources publish; ChatLive
-	// (nil = none) is the hub runner's live turn text; ChatModels (nil =
-	// RegistryChatModels) is the composer's model list.
+	// what the chat handlers write and the chat sources publish; ChatEngine
+	// (nil = chat off: the chat sources publish nothing) is the daemon's
+	// chat engine they read; ChatModels (nil = RegistryChatModels) is the
+	// composer's model list; ChatRouting (nil = no `routing` on chat_list)
+	// reads the routing pill's catalog.
 	ChatWatches *ChatWatches
-	ChatLive    LiveText
+	ChatEngine  ChatReader
 	ChatModels  func() []ChatModel
+	ChatRouting func(context.Context) *chatengine.RoutingCatalog
 }
 
 // Set is the hub's sources and what the runtime must start and tell.
@@ -112,7 +116,13 @@ var WorkbenchOnlyKinds = []slices.Kind{
 // to the kinds it feeds (the hub's data_version watch, spec §9). The
 // runner-fed kinds (session_chat, session_report), the sidecar-backed
 // recording_job and the request-fed chat_page and chat_search (built once
-// per request) are not here: their own loops and nudges publish them.
+// per request) are not here: their own loops and nudges publish them. No
+// chat_* table is here either (unified chat §6.4): every chat write goes
+// through the daemon's engine, whose OnChange publishes chat_list and
+// chat_feed; agent_actions stays, as a tool's proposal is written by the
+// session's MCP process, not the engine. spec_reviews feeds every kind whose
+// read hides the author loop's asks (askVisible) or reads the loop round
+// (db.SpecLoopRoundSQL): a queue or a reveal writes only that table (#1945).
 var ChangeTables = map[string][]slices.Kind{
 	"projects":                 {"workbench"},
 	"automations":              {"workbench"},
@@ -124,19 +134,12 @@ var ChangeTables = map[string][]slices.Kind{
 	"project_comments":         {"workbench_target", "workbench_comment"},
 	"terminal_sessions":        {"workbench", "workbench_target", "terminal_session", "session_timeline", "permission_request"},
 	"owner_asks":               {"workbench", "workbench_target", "terminal_session", "session_timeline", "owner_ask", slices.KindAskAlert},
-	"spec_reviews":             {"owner_ask", slices.KindAskAlert},
+	"spec_reviews":             {"workbench", "workbench_target", "terminal_session", "session_timeline", "owner_ask", slices.KindAskAlert},
 	"permission_requests":      {"permission_request", slices.KindAskAlert},
 	"calendar_events":          {"calendar_event"},
 	"meeting_prep_cache":       {"calendar_event"},
 	"meeting_transcripts":      {"calendar_event", "meeting_transcript"},
 	"meeting_recaps":           {"meeting_transcript"},
-	"chat_conversations":       {slices.KindChatList, slices.KindChatFeed},
-	"chat_messages":            {slices.KindChatList, slices.KindChatFeed},
-	"chat_turn_steps":          {slices.KindChatFeed},
-	"chat_attachments":         {slices.KindChatFeed},
-	"chat_artifacts":           {slices.KindChatFeed},
-	"chat_turn_leases":         {slices.KindChatList, slices.KindChatFeed},
-	"chat_projects":            {slices.KindChatList, slices.KindChatFeed},
 	"agent_actions":            {slices.KindChatList, slices.KindChatFeed},
 }
 
@@ -232,11 +235,11 @@ func All(c Config) (*Set, error) {
 		if watches == nil {
 			watches = NewChatWatches()
 		}
-		feed := ChatFeedOptions{Watches: watches, Grant: c.Store.AnyChatPhone, Live: c.ChatLive, Now: now}
+		feed := ChatFeedOptions{Watches: watches, Grant: c.Store.AnyChatPhone, Now: now}
 		set.ChatWatches = watches
 		set.Sources = append(set.Sources,
-			ChatList(c.DB, ChatListOptions{Grant: c.Store.AnyChatPhone, Models: c.ChatModels, Now: now}),
-			ChatFeed(c.DB, feed), ChatPage(c.DB, feed), ChatSearch(c.DB, feed))
+			ChatList(c.ChatEngine, ChatListOptions{Grant: c.Store.AnyChatPhone, Models: c.ChatModels, Routing: c.ChatRouting}),
+			ChatFeed(c.ChatEngine, feed), ChatPage(c.ChatEngine, feed), ChatSearch(c.ChatEngine, feed))
 	}
 	return set, nil
 }

@@ -123,6 +123,16 @@ final class ActionOutboxOrderedTests: XCTestCase {
 
     // MARK: - Legacy and enqueue
 
+    /// Live link R5: a caller that shows the action before it is queued chooses its id; both paths keep it.
+    func testEnqueueKeepsACallersID() async throws {
+        for ordered in [true, false] {
+            let phone = try await makePhone(ordered: ordered)
+            let id = try await phone.outbox.enqueue(kind: .boardTargetStatus, entityRecordName: "target-42", id: "tap-1")
+            XCTAssertEqual(id, "tap-1")
+            XCTAssertEqual(try phone.store.pendingActions().map(\.id), ["tap-1"], "ordered: \(ordered)")
+        }
+    }
+
     func testALegacyHubKeepsTodaysPath() async throws {
         let phone = try await makePhone(ordered: false)
         let id = try await phone.outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")

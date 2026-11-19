@@ -1,14 +1,19 @@
 import AppKit
 import DesignKit
+import GRDB
 import SwiftUI
 import WatchtowerCore
 import WatchtowerTestSupport
+import XCTest
 @testable import WatchtowerDesktop
 
 /// Design-only scenes for Watchman (#1824, spec
 /// `docs/superpowers/specs/2026-11-16-watchman-design.md` §2, §10, §11).
-/// Nothing here is wired into the app (the strings are `WatchmanMockCopy`)
-/// except the `settings-*` frames, which draw the real section.
+/// The `journal-*` (the Correct… sheet too), `home-row`, `inbox-entry`,
+/// `settings-*`, `strip-*`, `target-panel-*` and `arm-first-time` frames draw
+/// the real views on fixture data; `tray-menu` draws the native menu as it
+/// reads, in the real copy; the rest are design-only (the strings are
+/// `WatchmanMockCopy`).
 /// Sample data only (`acme`, made-up ids).
 @MainActor
 enum WatchmanShotFixtures {
@@ -35,18 +40,23 @@ enum WatchmanShotFixtures {
         case inboxEntry = "inbox-entry"
         case settingsNotLearned = "settings-not-learned"
         case settingsRelabelling = "settings-relabelling"
+        case journalNotRunning = "journal-not-running"
+        case journalNightUnsure = "journal-night-unsure"
+        case settingsAddLimit = "settings-add-limit"
+        case settingsProfileEdit = "settings-profile-edit"
 
         /// A zero height means "as tall as the content".
         var size: NSSize {
             switch self {
-            case .journalNight, .journalBusy: NSSize(width: 1000, height: 0)
+            case .journalNight, .journalBusy, .journalNotRunning, .journalNightUnsure: NSSize(width: 1000, height: 0)
             case .journalEmpty, .journalLoading, .journalError: NSSize(width: 1000, height: 420)
             case .journalNarrow: NSSize(width: 360, height: 0)
             case .journalCorrectSheet: NSSize(width: 480, height: 0)
             case .homeRow: NSSize(width: 420, height: 0)
             case .stripArmed, .stripUnarmed: NSSize(width: 760, height: 0)
             case .armFirstTime: NSSize(width: 460, height: 0)
-            case .settingsResults, .settingsNeverRun, .settingsRunning, .settingsFailed, .settingsRelabelling: NSSize(width: 640, height: 0)
+            case .settingsResults, .settingsNeverRun, .settingsRunning, .settingsFailed, .settingsRelabelling,
+                 .settingsAddLimit, .settingsProfileEdit: NSSize(width: 640, height: 0)
             case .trayMenu: NSSize(width: 340, height: 0)
             case .targetPanelArmed, .targetPanelUnarmed: NSSize(width: 380, height: 0)
             case .inboxEntry: NSSize(width: 420, height: 300)
@@ -54,32 +64,59 @@ enum WatchmanShotFixtures {
             }
         }
 
-        @ViewBuilder var view: some View {
+        @MainActor @ViewBuilder var view: some View {
             switch self {
-            case .journalNight: JournalSplitMock(state: .night)
-            case .journalEmpty: JournalSplitMock(state: .empty)
-            case .journalLoading: JournalSplitMock(state: .loading)
-            case .journalError: JournalSplitMock(state: .error)
-            case .journalBusy: JournalSplitMock(state: .busy)
-            case .journalNarrow: JournalNarrowMock()
-            case .journalCorrectSheet: CorrectSheetMock()
-            case .homeRow: HomeRowMock()
-            case .stripArmed: SessionStripMock(armed: true)
-            case .stripUnarmed: SessionStripMock(armed: false)
-            case .armFirstTime: ArmSheetMock()
-            case .settingsResults: WatchmanSettingsShot(json: WatchmanStatusFixtures.results)
-            case .settingsNeverRun: WatchmanSettingsShot(json: WatchmanStatusFixtures.neverRun)
-            case .settingsRunning: WatchmanSettingsShot(json: WatchmanStatusFixtures.running)
-            case .settingsFailed: WatchmanSettingsShot(json: WatchmanStatusFixtures.failed)
-            case .trayMenu: TrayMenuMock()
-            case .targetPanelArmed: TargetPanelMock(armed: true)
-            case .targetPanelUnarmed: TargetPanelMock(armed: false)
+            case .journalNight:
+                JournalShot(model: JournalFixture.model([JournalFixture.fullNight] + JournalFixture.older))
+            case .journalEmpty: JournalShot(model: JournalFixture.model([]))
+            case .journalLoading: JournalShot(model: JournalFixture.model(nil))
+            case .journalError: JournalShot(model: JournalFixture.model(nil, failed: true))
+            case .journalBusy:
+                JournalShot(model: JournalFixture.model(
+                    [JournalFixture.liveNight] + JournalFixture.older, now: JournalFixture.tonight,
+                    deciding: [JournalFixture.deciding]))
+            case .journalNarrow:
+                JournalShot(model: JournalFixture.model([JournalFixture.fullNight] + JournalFixture.older, scope: 1))
+            case .journalNotRunning:
+                JournalShot(model: JournalFixture.model([JournalFixture.unsureNight] + JournalFixture.older,
+                                                        daemon: .stopped))
+            case .journalNightUnsure:
+                JournalShot(model: JournalFixture.model([JournalFixture.unsureNight] + JournalFixture.older))
+            case .journalCorrectSheet: CorrectSheetShot()
+            case .homeRow: HomeRowShot()
+            case .stripArmed: WatchmanArmingShotFixture.strip(armed: true)
+            case .stripUnarmed: WatchmanArmingShotFixture.strip(armed: false)
+            case .armFirstTime: ArmSheetShot()
+            case .settingsResults:
+                WatchmanSettingsShot(json: WatchmanStatusFixtures.results, editing: WatchmanStatusFixtures.editing())
+            case .settingsAddLimit:
+                WatchmanSettingsShot(
+                    json: WatchmanStatusFixtures.results,
+                    editing: WatchmanStatusFixtures.editing(errors: [.limits: WatchmanShotFixtures.addLimitError]),
+                    draft: .limit(kind: .tool, pattern: "create jira issue"))
+            case .settingsProfileEdit:
+                WatchmanSettingsShot(
+                    json: WatchmanStatusFixtures.results, editing: WatchmanStatusFixtures.editing(),
+                    draft: .entry(workbench: 1, key: "ux_text", text: WatchmanShotFixtures.profileDraft))
+            case .settingsNeverRun: WatchmanSettingsShot(json: WatchmanStatusFixtures.neverRun, editing: WatchmanStatusFixtures.editing())
+            case .settingsRunning: WatchmanSettingsShot(json: WatchmanStatusFixtures.running, editing: WatchmanStatusFixtures.editing())
+            case .settingsFailed: WatchmanSettingsShot(json: WatchmanStatusFixtures.failed, editing: WatchmanStatusFixtures.editing())
+            case .trayMenu: TrayMenuShot()
+            case .targetPanelArmed: WatchmanArmingShotFixture.targetPanel(armed: true)
+            case .targetPanelUnarmed: WatchmanArmingShotFixture.targetPanel(armed: false)
             case .inboxEntry: InboxEntryMock()
             case .settingsNotLearned: WatchmanSettingsShot(json: WatchmanStatusFixtures.learning)
-            case .settingsRelabelling: WatchmanSettingsShot(json: WatchmanStatusFixtures.relabelling)
+            case .settingsRelabelling: WatchmanSettingsShot(json: WatchmanStatusFixtures.relabelling, editing: WatchmanStatusFixtures.editing())
             }
         }
     }
+
+    /// The add-limit frame's line: a tool name with blanks, refused before the CLI.
+    static let addLimitError = WatchmanSettingsCopy.limitToolBlanks
+    /// The profile-edit frame's draft: ux_text's learned lines and one more.
+    static let profileDraft = "Shipped button titles stay unless the guide page changes too.\n"
+        + "Say what happened and what to do; no apologies, no exclamation marks.\n"
+        + "Name the button after what it does."
 
     static var shots: [DesignShot] {
         Frame.allCases.map { frame in
@@ -90,465 +127,297 @@ enum WatchmanShotFixtures {
 
 private typealias Copy = WatchmanMockCopy
 
-/// The capsule tint of Watchman's own marks (armed chip, the journal's moon).
-private let watchmanTone = Tone.status("purple")
+// MARK: - Inbox → Watchman (the real journal)
 
-// MARK: - Inbox → Watchman
+/// The journal's fixture nights (`acme`, made-up ids), read at a fixed
+/// moment in UTC so the shots are stable.
+@MainActor
+private enum JournalFixture {
+    static let calendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .gmt
+        return calendar
+    }()
 
-private enum JournalState { case night, empty, loading, error, busy }
+    /// The morning after the night of 16 Nov.
+    static let morning = at("2026-11-17T13:00:00Z")
+    /// 03:00 inside the night of 16 Nov, while it runs.
+    static let tonight = at("2026-11-17T03:00:00Z")
 
-/// The Inbox with the Watchman entry open: the nights on the left, the
-/// selected night's journal on the right.
-private struct JournalSplitMock: View {
-    let state: JournalState
+    static func at(_ text: String) -> Date { AutomationDates.parse(text) ?? .distantPast }
 
-    var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            nightList
-                .frame(width: PaneWidth.sideListMax - Spacing.page * 3)
-            Rectangle().fill(.separator).frame(width: Stroke.hairline)
-            reading
-                .frame(maxWidth: ReadableColumn.maxLineWidth, alignment: .topLeading)
-                .frame(maxWidth: .infinity, alignment: .top)
-        }
-        .controlSize(.small)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .detailBackground()
+    static func item(
+        _ id: Int64,
+        _ created: String,
+        workbench: (Int64, String) = (1, "acme-api"),
+        session: Int64 = 3,
+        target: Int64 = 0,
+        kind: String = "ask",
+        state: String = "done",
+        outcome: String = "answered",
+        question: String,
+        choice: String = "",
+        rationale: String = "",
+        precedents: [Int64] = [],
+        confidence: String = "",
+        category: String = "",
+        unsure: Bool = true,
+        parkReason: String = "",
+        cost: Double = 0
+    ) -> WatchmanItem {
+        WatchmanItem(
+            id: id, workbenchID: workbench.0, workbenchName: workbench.1, sessionID: session, targetID: target,
+            kind: kind, state: state,
+            outcome: outcome, question: question, choice: choice, rationale: rationale, precedentIDs: precedents,
+            confidence: confidence, category: category, unsure: unsure, parkReason: parkReason, costUSD: cost,
+            createdAt: at(created), decidedAt: state == "done" ? at(created).addingTimeInterval(60) : nil)
     }
 
-    private var nightList: some View {
-        VStack(alignment: .leading, spacing: Spacing.small) {
-            HStack(spacing: Spacing.regular) {
-                Image(systemName: "moon.stars").foregroundStyle(watchmanTone)
-                Text(Copy.journalTitle).font(.headline)
-                Spacer(minLength: Spacing.regular)
-                MenuLabel(text: Copy.scopeAll, systemImage: "square.stack", color: .secondary)
-            }
-            .padding(.bottom, Spacing.regular)
-            switch state {
-            case .empty, .loading, .error:
-                EmptyView()
-            case .night, .busy:
-                if state == .busy {
-                    nightRow(Copy.nightTonight, Copy.nightTonightLine, selected: true, live: true)
-                }
-                nightRow(Copy.night16, Copy.night16Line, selected: state == .night, live: false)
-                nightRow(Copy.night15, Copy.night15Line, selected: false, live: false)
-                nightRow(Copy.night13, Copy.night13Line, selected: false, live: false)
-            }
-        }
-        .padding(Spacing.medium)
+    static let parked = item(
+        1830, "2026-11-17T05:12:00Z", session: 4, outcome: "parked", question: "Merge feature/store-window → main",
+        parkReason: "merging to main is yours")
+    static let handed = item(
+        1834, "2026-11-17T03:47:00Z", session: 5, outcome: "handed", question: "Rotate the deploy token",
+        rationale: "issue a new token in the provider's console")
+    static let unsure1 = item(
+        1826, "2026-11-17T02:14:00Z", target: 1826, question: "Store the window per workbench or global?", choice: "Per workbench",
+        rationale: "You split settings per workbench in #1201, #1288 and kept global only what every workbench "
+            + "shares. A window's place differs per folder.",
+        precedents: [1201, 1288], confidence: "low", category: "design", cost: 0.9)
+    static let unsure2 = item(
+        1829, "2026-11-17T03:40:00Z", workbench: (2, "acme-web"), session: 7,
+        question: "Rename the \"Hold\" button to \"Pause\"?", choice: "Keep \"Hold\"",
+        rationale: "You turned down renames of shipped buttons in #1144 unless the guide page changed in the same "
+            + "PR. This one doesn't.",
+        precedents: [1144], confidence: "low", category: "ux_text", cost: 0.7)
+    static let sure = [
+        item(1827, "2026-11-17T02:30:00Z", kind: "permission", question: "Allow go test ./internal/watchman",
+             confidence: "high", category: "permission", unsure: false, cost: 0.3),
+        item(1828, "2026-11-17T04:05:00Z", kind: "review_code", outcome: "approved",
+             question: "Review round 2: Approve", confidence: "high", category: "review_code", unsure: false, cost: 0.8)
+    ]
+    static let check = item(
+        1831, "2026-11-17T06:20:00Z", kind: "check", question: "Check the tray menu on a second display", cost: 0.1)
+    static let deciding = item(
+        1835, "2026-11-17T02:58:00Z", state: "deciding", outcome: "", question: "Store window per workbench?")
+
+    static let precedents: [Int64: String] = [
+        1201: "#1201 Sidebar width per workbench", 1288: "#1288 Terminal font per workbench",
+        1144: "#1144 Keep \"Archive\" on the board"
+    ]
+
+    static func night(
+        _ start: String,
+        waiting: [WatchmanItem] = [],
+        checks: [WatchmanItem] = [],
+        decided: [WatchmanItem],
+        pending: [WatchmanItem] = []
+    ) -> WatchmanNight {
+        let items = waiting + checks + decided + pending
+        return WatchmanNight(date: at(start), waiting: waiting, checks: checks, decided: decided, pending: pending,
+                             costUSD: items.reduce(0) { $0 + $1.costUSD })
     }
 
-    private func nightRow(_ title: String, _ line: String, selected: Bool, live: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-            Group {
-                if live {
-                    ProgressView().controlSize(.mini)
-                } else {
-                    Circle().fill(selected ? Color.accentColor : .clear)
-                        .frame(width: IconSize.stateDot, height: IconSize.stateDot)
-                }
-            }
-            .frame(width: Spacing.medium)
-            VStack(alignment: .leading, spacing: Spacing.tight) {
-                Text(title).font(.callout.weight(selected ? .semibold : .regular))
-                Text(line).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, Spacing.regular)
-        .padding(.vertical, Spacing.compact)
-        .kitRow(isSelected: selected)
-    }
+    static let older = [
+        night("2026-11-15T12:00:00Z", decided: (0..<3).map {
+            item(1800 + Int64($0), "2026-11-16T0\($0 + 1):00:00Z", question: "Earlier \($0)", category: "scope")
+        }),
+        night("2026-11-13T12:00:00Z", decided: [item(1790, "2026-11-14T02:00:00Z", question: "Older", category: "tests")])
+    ]
 
-    @ViewBuilder private var reading: some View {
-        switch state {
-        case .night:
-            JournalNight(live: false).padding(Spacing.page)
-        case .busy:
-            JournalNight(live: true).padding(Spacing.page)
-        case .empty:
-            FeatureEmptyState(
-                copy: EmptyStateCopy(icon: "moon.stars", title: Copy.emptyTitle, landsHere: Copy.emptyBody,
-                                     feature: nil, primaryAction: nil),
-                readiness: nil, syncLine: nil, turnOnError: nil, isTurningOn: false,
-                onAction: { _ in },
-                extra: {
-                    Text(Copy.emptyHint)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: PaneWidth.narrowPage)
-                }
-            )
-        case .loading:
-            VStack(spacing: Spacing.regular) {
-                ProgressView().controlSize(.small)
-                Text(Copy.loading).font(.caption).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .error:
-            VStack(spacing: Spacing.medium) {
-                Image(systemName: "exclamationmark.triangle.fill").font(.title2).foregroundStyle(Tone.warning)
-                Text(Copy.readFailed)
-                    .font(.callout)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: PaneWidth.narrowPage)
-                Button(Copy.retry) {}.buttonStyle(.kitPrimary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-}
+    /// The night of 16 Nov as the spec mocks it: sure lines included.
+    static let fullNight = night(
+        "2026-11-16T12:00:00Z", waiting: [parked, handed], checks: [check], decided: [unsure1, unsure2] + sure)
+    /// A phase-2 night: every decision journalled unsure (D43).
+    static let unsureNight = night(
+        "2026-11-16T12:00:00Z", waiting: [parked], checks: [check],
+        decided: [unsure1, unsure2] + sure.map { var item = $0; item.unsure = true; return item })
+    /// Tonight, still running.
+    static let liveNight = night("2026-11-16T12:00:00Z", waiting: [parked], decided: [unsure1] + sure,
+                                 pending: [deciding])
 
-/// One night's journal: Waiting for you, then Decided (unsure cards in
-/// full, sure decisions as lines, a skipped check).
-private struct JournalNight: View {
-    let live: Bool
-    var narrow = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.large) {
-            header
-            if live { liveLine }
-            section(Copy.waitingTitle, count: live ? 1 : 2, trailing: nil) {
-                waitingCard(icon: "hand.raised.fill", title: Copy.parkedTitle, reason: Copy.parkedReason, session: Copy.parkedSession)
-                if !live {
-                    waitingCard(icon: "person.fill.questionmark", title: Copy.handedTitle,
-                                reason: Copy.handedReason, session: Copy.handedSession)
-                }
-            }
-            section(Copy.decidedTitle, count: live ? 3 : 14, trailing: live ? Copy.busySummary : Copy.decidedSummary) {
-                DecisionCard(
-                    session: Copy.unsure1Session, question: Copy.unsure1Question, choice: Copy.unsure1Choice,
-                    rationale: Copy.unsure1Rationale, precedents: Copy.unsure1Precedents,
-                    meta: Copy.unsure1Meta, outcome: Copy.unsure1Outcome, merged: true, narrow: narrow
-                )
-                if !narrow, !live {
-                    DecisionCard(
-                        session: Copy.unsure2Session, question: Copy.unsure2Question, choice: Copy.unsure2Choice,
-                        rationale: Copy.unsure2Rationale, precedents: Copy.unsure2Precedents,
-                        meta: Copy.unsure2Meta, outcome: Copy.unsure2Outcome, merged: false, narrow: narrow
-                    )
-                }
-                sureLines
-            }
+    static func model(
+        _ nights: [WatchmanNight]?,
+        now: Date = morning,
+        deciding: [WatchmanItem] = [],
+        failed: Bool = false,
+        daemon: WatchmanDaemonState = .unknown,
+        scope: Int64? = nil
+    ) -> WatchmanJournalViewModel {
+        let vm = WatchmanJournalViewModel(read: { throw CancellationError() }, now: { now }, calendar: calendar)
+        if failed {
+            vm.apply(.failure(CocoaError(.fileReadUnknown)))
+        } else if let nights {
+            vm.apply(.success(.init(nights: nights, deciding: deciding, precedents: precedents)))
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-            VStack(alignment: .leading, spacing: Spacing.tight) {
-                Text(live ? Copy.nightTonight : Copy.night16).font(.title3.weight(.semibold))
-                Text(live ? Copy.busySpan : Copy.nightSpan).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: Spacing.regular)
-            // D24: no budget stops the night; the header shows what it cost.
-            if !live { Text(Copy.nightCost).font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
-        }
-    }
-
-    private var liveLine: some View {
-        HStack(spacing: Spacing.regular) {
-            ProgressView().controlSize(.small)
-            Text(Copy.deciding).font(.callout).lineLimit(2)
-            Spacer(minLength: 0)
-        }
-        .padding(Spacing.medium)
-        .background(watchmanTone.opacity(ChipTint.fillOpacity), in: RoundedRectangle(cornerRadius: Radius.row))
-    }
-
-    private func section(
-        _ title: String, count: Int, trailing: String?, @ViewBuilder content: () -> some View
-    ) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                Text(title.uppercased())
-                    .font(.caption.weight(.semibold))
-                    .tracking(Tracking.caps)
-                    .foregroundStyle(.secondary)
-                CountBadge(text: "\(count)")
-                Spacer(minLength: Spacing.regular)
-                if let trailing { Text(trailing).font(.caption).foregroundStyle(.secondary) }
-            }
-            content()
-        }
-    }
-
-    private func waitingCard(icon: String, title: String, reason: String, session: String) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.compact) {
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                Image(systemName: icon).foregroundStyle(Tone.warning)
-                Text(title).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-            }
-            Text(reason).font(.callout)
-            Text(session).font(.caption).foregroundStyle(.secondary)
-            Button(Copy.openSession) {}.buttonStyle(.kitSecondary).padding(.top, Spacing.tight)
-        }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-    }
-
-    private var sureLines: some View {
-        VStack(alignment: .leading, spacing: Spacing.compact) {
-            ForEach(Copy.sureRows.prefix(live ? 2 : Copy.sureRows.count), id: \.title) { row in
-                line(icon: "checkmark.circle.fill", tone: Tone.success, title: row.title, note: nil, meta: row.meta)
-            }
-            if !live {
-                line(icon: "forward.circle", tone: Tone.status("gray"), title: Copy.skippedTitle,
-                     note: Copy.skippedLine, meta: Copy.skippedMeta)
-                Button(Copy.moreSure) {}.buttonStyle(.kitQuiet)
-            }
-        }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-    }
-
-    @ViewBuilder
-    private func line(icon: String, tone: Color, title: String, note: String?, meta: String) -> some View {
-        let text = VStack(alignment: .leading, spacing: Spacing.tight) {
-            Text(title).font(.callout).fixedSize(horizontal: false, vertical: true)
-            if let note { Text(note).font(.caption).foregroundStyle(.secondary) }
-        }
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-            Image(systemName: icon).foregroundStyle(tone)
-            if narrow {
-                VStack(alignment: .leading, spacing: Spacing.tight) {
-                    text
-                    Text(meta).font(.caption).foregroundStyle(.secondary)
-                }
-            } else {
-                text
-                Spacer(minLength: Spacing.medium)
-                Text(meta).font(.caption).foregroundStyle(.secondary)
-            }
-        }
+        vm.daemon = daemon
+        vm.scope = scope
+        return vm
     }
 }
 
-/// One decision Watchman took for the owner and was not sure about.
-private struct DecisionCard: View {
-    let session: String
-    let question: String
-    let choice: String
-    let rationale: String
-    let precedents: [String]
-    let meta: String
-    let outcome: String
-    let merged: Bool
-    let narrow: Bool
+/// The real journal (`WatchmanJournalContent`) on a fixture model.
+private struct JournalShot: View {
+    let model: WatchmanJournalViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            HStack(spacing: Spacing.regular) {
-                Chip(text: Copy.unsureBadge, color: Tone.warning, dot: true)
-                Text(session).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-            Text(question).font(.headline).fixedSize(horizontal: false, vertical: true)
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                Text(Copy.choseLabel).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Text(choice).font(.callout.weight(.semibold))
-            }
-            Text(rationale).font(.callout).fixedSize(horizontal: false, vertical: true)
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Copy.leanedOn).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                ForEach(precedents, id: \.self) { precedent in
-                    Button {} label: {
-                        Label(precedent, systemImage: "arrow.turn.down.right").font(.caption)
-                    }
-                    .buttonStyle(.kitQuiet)
-                }
-            }
-            Text(meta).font(.caption).foregroundStyle(.secondary)
-            HStack(spacing: Spacing.compact) {
-                Image(systemName: merged ? "arrow.triangle.merge" : "arrow.forward.circle")
-                    .foregroundStyle(merged ? Tone.success : .secondary)
-                Text(outcome).font(.caption)
-            }
-            HStack(spacing: Spacing.regular) {
-                Button(Copy.ok) {}.buttonStyle(.kitSecondary)
-                Button(Copy.correct) {}.buttonStyle(.kitSecondary)
-                if !narrow { Spacer(minLength: Spacing.regular) }
-                Button(Copy.openSession) {}.buttonStyle(.kitQuiet)
-            }
-            .padding(.top, Spacing.tight)
-        }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
+        WatchmanJournalContent(model: model, scrolls: false)
     }
 }
 
-/// The journal at 360 pt, scoped to one workbench.
-private struct JournalNarrowMock: View {
+/// The real Correct… sheet (`WatchmanCorrectSheet`) on the first unsure
+/// decision, its session ended: a new session starts with the correction.
+private struct CorrectSheetShot: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.medium) {
-            HStack(spacing: Spacing.regular) {
-                Image(systemName: "moon.stars").foregroundStyle(watchmanTone)
-                Text(Copy.journalTitle).font(.headline)
-                Spacer(minLength: Spacing.regular)
-                MenuLabel(text: Copy.scopeOne, systemImage: "square.stack", color: Color.accentColor)
-            }
-            JournalNight(live: false, narrow: true)
-        }
-        .controlSize(.small)
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
+        WatchmanCorrectSheet(model: Self.model())
     }
-}
 
-/// Correct…: the owner writes what he would have decided.
-private struct CorrectSheetMock: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.large) {
-            Text(Copy.correctTitle).font(.title3.weight(.semibold))
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Copy.unsure1Question).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                    Text(Copy.choseLabel).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    Text(Copy.unsure1Choice).font(.callout)
-                }
-            }
-            .padding(Spacing.medium)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .card()
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Copy.correctQuestion).font(.headline)
-                TextField("", text: .constant(Copy.correctDraft), axis: .vertical)
-                    .textFieldStyle(.kit)
-                    .lineLimit(3...6)
-                HStack(alignment: .top, spacing: Spacing.regular) {
-                    Image(systemName: "info.circle").foregroundStyle(.secondary)
-                    Text(Copy.correctSessionEnded)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            HStack(spacing: Spacing.regular) {
-                Spacer()
-                Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                Button(Copy.sendCorrection) {}.buttonStyle(.kitPrimary)
-            }
-        }
-        .controlSize(.small)
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
+    private static func model() -> WatchmanJournalViewModel {
+        let vm = JournalFixture.model([JournalFixture.fullNight])
+        vm.beginCorrect(JournalFixture.unsure1.id)
+        vm.correcting?.text = Copy.correctDraft
+        return vm
     }
 }
 
 // MARK: - Home
 
-private struct HomeRowMock: View {
+/// The real Home row (`WatchmanHomeRow`) on last night's counts.
+private struct HomeRowShot: View {
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-            Image(systemName: "moon.stars").foregroundStyle(watchmanTone)
-            Text(Copy.homeRow).font(.callout).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: Spacing.regular)
-            Image(systemName: "chevron.right")
-                .font(.system(size: IconSize.chevron, weight: .semibold))
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, Spacing.medium)
-        .padding(.vertical, Spacing.regular)
-        .card()
-        .controlSize(.small)
-        .padding(Spacing.large)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
+        WatchmanHomeRow(counts: WatchmanNightCounts(JournalFixture.fullNight)) {}
+            .controlSize(.small)
+            .padding(Spacing.large)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .detailBackground()
     }
 }
 
-// MARK: - Arming
+// MARK: - Arming (the real controls)
 
-/// The session strip above a session's pane, armed or not.
-private struct SessionStripMock: View {
-    let armed: Bool
+/// The arming controls' fixtures: a workbench `acme-api` with a session and
+/// a group target, and a `WatchmanCenter` holding a status read before (so
+/// the controls draw without calling the CLI). "Sleep since" is read in UTC.
+@MainActor
+enum WatchmanArmingShotFixture {
+    private static var poolPaths: [String] = []
+    /// What the views hold weakly (`WorkbenchesViewModel.watchman`).
+    private static var kept: [AnyObject] = []
 
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: Spacing.regular) {
-                MenuLabel(text: Copy.stripSession, systemImage: "circle.fill", color: Tone.success).fixedSize()
-                Label(Copy.stripPlace, systemImage: "folder").foregroundStyle(.secondary).lineLimit(1).fixedSize()
-                Label(Copy.stripBranch, systemImage: "arrow.triangle.branch")
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: Spacing.small)
-                if armed {
-                    Chip(text: Copy.armedChip, color: watchmanTone, dot: true).fixedSize()
-                    Button(Copy.takeBack) {}.buttonStyle(.kitSecondary).fixedSize()
-                } else {
-                    Button {} label: { Label(Copy.handTo, systemImage: "moon.stars") }
-                        .buttonStyle(.kitSecondary)
-                        .fixedSize()
+    static func cleanUp() {
+        poolPaths.forEach(TestDatabase.cleanup(path:))
+        poolPaths = []
+        kept = []
+    }
+
+    /// `watchman status --json` with one arming row (none when not armed);
+    /// `sessions` are the armed sessions, under the target when it is one.
+    static func statusJSON(armed: Bool, scope: WatchmanArmedEntry.Scope, id: Int64, sessions: [Int64]) -> String {
+        guard armed else {
+            return #"{"ok":true,"workbenches":[],"mode":"off","mode_since":null,"armed":[],"armed_sessions":[],"daemon_running":true}"#
+        }
+        let since = "2026-11-17T01:40:00Z"
+        let target = scope == .target ? id : 0
+        let entries = sessions.map { #"{"id":\#($0),"target":\#(target),"armed_at":"\#(since)"}"# }
+        return #"{"ok":true,"workbenches":[],"mode":"sleep","mode_since":"\#(since)","#
+            + #""armed":[{"scope":"\#(scope.rawValue)","id":\#(id),"armed_at":"\#(since)"}],"#
+            + #""armed_sessions":[\#(entries.joined(separator: ","))],"daemon_running":true}"#
+    }
+
+    static func status(armed: Bool, scope: WatchmanArmedEntry.Scope, id: Int64, sessions: [Int64]) -> WatchmanStatus {
+        WatchmanStatusFixtures.status(statusJSON(armed: armed, scope: scope, id: id, sessions: sessions))
+    }
+
+    /// A center that holds the status and answers each reread with it.
+    private static func center(_ json: String) -> WatchmanCenter {
+        let center = WatchmanCenter(runner: FakeCLIRunner(stdout: Data(json.utf8)), status: WatchmanStatusFixtures.status(json))
+        kept.append(center)
+        return center
+    }
+
+    /// The real `WorkbenchSessionStrip` of an agent session.
+    static func strip(armed: Bool) -> AnyView {
+        do {
+            let (pool, path) = try TestDatabase.createPool()
+            poolPaths.append(path)
+            let (project, session) = try pool.write { db -> (Workbench, TerminalSession) in
+                let id = try TestDatabase.insertWorkbench(db, name: "acme-api", folder: "/tmp/acme-api")
+                let session = try TerminalSessionQueries.create(db, .init(
+                    projectID: id, kind: .claude, title: Copy.stripSession, folderPath: "/tmp/acme-api",
+                    claudeSessionID: "00000000-0000-4000-8000-000000001826"))
+                let project = try XCTUnwrap(try Workbench.fetchOne(db, sql: "SELECT * FROM projects WHERE id = ?", arguments: [id]))
+                return (project, session)
+            }
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: DesignShotFixtures.defaultsSuite))
+            let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
+            vm.selectedWorkbenchID = project.id
+            vm.terminalSessions[project.id] = [session]
+            vm.watchman = center(statusJSON(armed: armed, scope: .session, id: session.id, sessions: [session.id]))
+            kept.append(vm)
+            return AnyView(VStack(spacing: 0) {
+                WorkbenchSessionStrip(vm: vm, project: project, pane: .session(session.id), sessionID: session.id,
+                                      isSplit: false, isExpanded: false)
+                Rectangle().fill(.separator).frame(height: Stroke.hairline)
+                Color.clear.frame(height: Spacing.hero)
+            }
+            .environment(\.calendar, JournalFixture.calendar)
+            .padding(.top, Spacing.regular)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .detailBackground())
+        } catch {
+            return DesignShotFixtures.failure(error)
+        }
+    }
+
+    /// The real `WorkbenchTargetPanel` of a group with four tasks.
+    static func targetPanel(armed: Bool) -> AnyView {
+        do {
+            let (pool, path) = try TestDatabase.createPool()
+            poolPaths.append(path)
+            let (projectID, group) = try pool.write { db -> (Int64, Int64) in
+                let pid = try TestDatabase.insertWorkbench(db, name: "acme-api", folder: "/tmp/acme-api")
+                let group = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, text: Copy.targetTitle,
+                                                                   status: "in_progress", priority: "high")
+                for child in Copy.targetChildren {
+                    let status = ["Done": "done", "In progress": "in_progress"][child.status] ?? "todo"
+                    try TestDatabase.insertWorkbenchTarget(db, projectID: pid, text: child.title, status: status,
+                                                           parentID: group)
                 }
-                segment(Copy.workchat, icon: "bubble.left.and.bubble.right")
-                segment(Copy.report, icon: "doc.text")
+                return (pid, group)
             }
-            .font(.caption)
-            .padding(.horizontal, Spacing.regular)
-            .padding(.vertical, Spacing.tight)
-            Rectangle().fill(.separator).frame(height: Stroke.hairline)
-            Color.clear.frame(height: Spacing.hero)
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: DesignShotFixtures.defaultsSuite))
+            let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: projectID, defaults: defaults)
+            vm.load()
+            vm.select(Int(group))
+            let node = try XCTUnwrap(vm.selectedNode)
+            let watchman = center(statusJSON(armed: armed, scope: .target, id: group, sessions: []))
+            kept.append(vm)
+            return AnyView(WorkbenchTargetPanel(
+                vm: vm, node: node, findings: [], titleDraft: .constant(Copy.targetTitle),
+                onShowAsk: { _, _ in false }, askOpenFailure: { nil }, onOpenGroup: { _ in }, onClose: {},
+                watchman: watchman, workbenchName: "acme-api"
+            )
+            .environment(\.calendar, JournalFixture.calendar)
+            .environment(AppState())
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .detailBackground())
+        } catch {
+            return DesignShotFixtures.failure(error)
         }
-        .controlSize(.small)
-        .padding(.top, Spacing.regular)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
-    }
-
-    private func segment(_ title: String, icon: String) -> some View {
-        Toggle(isOn: .constant(false)) { Label(title, systemImage: icon) }
-            .toggleStyle(SegmentedToggleStyle(showsIcon: false, isHovered: false) { _ in })
-            .segmentCapsule()
-            .fixedSize()
     }
 }
 
-/// The first arm on a workbench: what turns on, what learning costs.
-private struct ArmSheetMock: View {
+/// The real arm sheet of a first hand-over: `arm --check` said a first time
+/// (with its estimate) and an unprotected main.
+private struct ArmSheetShot: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.large) {
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Copy.armTitle).font(.title3.weight(.semibold))
-                Text(Copy.armBody).font(.callout).fixedSize(horizontal: false, vertical: true)
-            }
-            VStack(alignment: .leading, spacing: Spacing.medium) {
-                line("chart.bar.xaxis", .secondary, Copy.armAnalytics)
-                line("books.vertical", .secondary, Copy.armHistory)
-                line("hand.raised", .secondary, Copy.armLimits)
-            }
-            .padding(Spacing.medium)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .card()
-            line("exclamationmark.triangle.fill", Tone.warning, Copy.armNoProtection)
-                .padding(Spacing.medium)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Tone.warning.opacity(ChipTint.fillOpacity), in: RoundedRectangle(cornerRadius: Radius.row))
-            HStack(spacing: Spacing.regular) {
-                Spacer()
-                Button(Copy.notNow) {}.buttonStyle(.kitSecondary)
-                Button(Copy.start) {}.buttonStyle(.kitPrimary)
-            }
-        }
-        .controlSize(.small)
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
-    }
-
-    private func line(_ icon: String, _ tone: Color, _ text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-            Image(systemName: icon).foregroundStyle(tone).frame(width: IconSize.composer)
-            Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
-        }
+        let reply = WatchmanArmReply(
+            firstTime: true, estimate: WatchmanEstimate(decisions: 1850, needLabels: 1200, tokens: 1_600_000),
+            protectionWarning: WatchmanArmingCopy.protectionWarning)
+        WatchmanArmSheet(content: WatchmanArmSheetContent(workbench: "acme-api", reply: reply),
+                         onCancel: {}, onConfirm: {})
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .detailBackground()
     }
 }
 
@@ -558,9 +427,11 @@ private struct ArmSheetMock: View {
 /// on a `watchman status --json` fixture per state.
 private struct WatchmanSettingsShot: View {
     let json: String
+    var editing = WatchmanEditingData()
+    var draft: WatchmanSettingsDraft?
 
     var body: some View {
-        WatchmanSettingsContent(state: .of(WatchmanStatusFixtures.status(json)))
+        WatchmanSettingsContent(state: .of(WatchmanStatusFixtures.status(json)), editing: editing, draft: draft)
             .padding(Spacing.page)
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .detailBackground()
@@ -569,19 +440,20 @@ private struct WatchmanSettingsShot: View {
 
 // MARK: - Menu bar
 
-/// The menu bar menu (`TrayMenuContent`, a native menu) with Watchman's
-/// section between Sync Now and New Voice Idea. Drawn as the menu reads:
-/// status lines dimmed, a check on the item that is on.
-private struct TrayMenuMock: View {
+/// The menu bar menu (`TrayMenuContent`, a native menu that cannot render
+/// in a shot) drawn as it reads, with Watchman's section between Sync Now
+/// and New Voice Idea in the real copy: its status line and Hand all running
+/// sessions to Watchman. Phase 2 has no Going to sleep item (D47).
+private struct TrayMenuShot: View {
     var body: some View {
+        let status = WatchmanArmingShotFixture.status(armed: true, scope: .target, id: 1820, sessions: [3, 5, 7])
         VStack(alignment: .leading, spacing: Spacing.tight) {
             item(Copy.trayStatus, status: true)
             separator
             item(Copy.traySyncNow)
             separator
-            item(Copy.trayWatchmanStatus, status: true)
-            item(Copy.trayHandAll)
-            item(Copy.trayGoingToSleep, checked: true)
+            item(WatchmanArmingCopy.trayStatus(status, calendar: JournalFixture.calendar) ?? "", status: true)
+            item(WatchmanArmingCopy.trayHandAll)
             separator
             item(Copy.trayVoiceIdea, shortcut: Copy.trayVoiceShortcut)
             separator
@@ -601,122 +473,34 @@ private struct TrayMenuMock: View {
         Rectangle().fill(.separator).frame(height: Stroke.hairline).padding(.vertical, Spacing.small)
     }
 
-    private func item(_ title: String, status: Bool = false, checked: Bool = false, shortcut: String? = nil) -> some View {
+    private func item(_ title: String, status: Bool = false, shortcut: String? = nil) -> some View {
         HStack(spacing: Spacing.compact) {
-            Image(systemName: "checkmark")
-                .font(.caption.weight(.semibold))
-                .opacity(checked ? 1 : 0)
-                .frame(width: Spacing.medium)
             Text(title).foregroundStyle(status ? .secondary : .primary).lineLimit(1)
             Spacer(minLength: Spacing.large)
             if let shortcut { Text(shortcut).foregroundStyle(.secondary) }
         }
         .font(.body)
-        .padding(.horizontal, Spacing.compact)
+        .padding(.horizontal, Spacing.regular)
         .padding(.vertical, Spacing.tight)
-    }
-}
-
-// MARK: - Target panel
-
-/// `WorkbenchTargetPanel`'s header in group mode with Watchman's line: the
-/// whole subtree's sessions are handed over (or taken back) here.
-private struct TargetPanelMock: View {
-    let armed: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: Spacing.cozy) {
-                topBar
-                Text(Copy.targetTitle).font(.title3.weight(.semibold))
-                HStack(spacing: Spacing.compact) {
-                    MenuLabel(text: Copy.targetStatus, systemImage: "circle.fill", color: Tone.status("blue"))
-                    MenuLabel(text: Copy.targetPriority, systemImage: "flag.fill", color: Tone.priority("high"))
-                }
-                VStack(alignment: .leading, spacing: Spacing.small) {
-                    ProgressView(value: 0.6).frame(width: ListLayout.progressBar)
-                    Text(Copy.targetProgress).font(.caption).foregroundStyle(.secondary)
-                }
-                watchman
-            }
-            .padding(Spacing.large)
-            Rectangle().fill(.separator).frame(height: Stroke.hairline)
-            children.padding(Spacing.large)
-        }
-        .controlSize(.small)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
-    }
-
-    private var topBar: some View {
-        HStack(spacing: Spacing.regular) {
-            OutlineTag(text: Copy.targetNumber)
-            Chip(text: Copy.targetGroup, color: .secondary)
-            Spacer(minLength: 0)
-            Button {} label: { Label(Copy.targetWorkOnIt, systemImage: "play.fill") }
-                .buttonStyle(.kitSecondary)
-                .fixedSize()
-            Button {} label: { Image(systemName: "ellipsis") }.buttonStyle(.kitIcon(isOn: false))
-            Button {} label: { Image(systemName: "xmark") }.buttonStyle(.kitIcon(isOn: false))
-        }
-    }
-
-    @ViewBuilder private var watchman: some View {
-        if armed {
-            VStack(alignment: .leading, spacing: Spacing.compact) {
-                HStack(spacing: Spacing.regular) {
-                    Image(systemName: "moon.stars").foregroundStyle(watchmanTone)
-                    Text(Copy.targetArmed).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: Spacing.regular)
-                    Button(Copy.takeBack) {}.buttonStyle(.kitSecondary).fixedSize()
-                }
-                Text(Copy.targetArmedCaption)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(Spacing.medium)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(watchmanTone.opacity(ChipTint.fillOpacity), in: RoundedRectangle(cornerRadius: Radius.row))
-        } else {
-            VStack(alignment: .leading, spacing: Spacing.compact) {
-                Button {} label: { Label(Copy.handTo, systemImage: "moon.stars") }
-                    .buttonStyle(.kitSecondary)
-                    .fixedSize()
-                Text(Copy.targetUnarmedCaption)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    private var children: some View {
-        VStack(alignment: .leading, spacing: Spacing.small) {
-            Text(Copy.targetChildrenTitle).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-            ForEach(Copy.targetChildren, id: \.title) { child in
-                HStack(spacing: Spacing.regular) {
-                    Text(child.title).font(.callout).lineLimit(1)
-                    Spacer(minLength: Spacing.regular)
-                    Text(child.status).font(.caption).foregroundStyle(.secondary)
-                }
-                .frame(minHeight: ListLayout.rowMinHeight)
-                .kitRow(isSelected: false)
-            }
-        }
     }
 }
 
 // MARK: - Inbox source list
 
-/// The real `InboxFolderContentList` of the Inbox root with Watchman as one
-/// more built-in entry beside Morning brief, Track my threads and Idea
-/// finder; its summary carries what waits for the owner.
+/// The real `InboxFolderContentList` of the Inbox root with Watchman's real
+/// row (`InboxFolderEntries.row(.watchman, …)`) beside Morning brief, Track
+/// my threads and Idea finder; its summary carries what waits for the owner.
 private struct InboxEntryMock: View {
     var body: some View {
-        let watchman = InboxFolderListRow(id: "watchman", kind: .legacy, title: Copy.journalTitle,
-                                          summary: Copy.inboxWatchmanSummary, detail: Copy.inboxWatchmanDetail,
-                                          unread: true)
+        var feed = InboxFeedSnapshot()
+        feed.watchman = WatchmanInboxSummary(
+            latest: WatchmanNightCounts(start: JournalFixture.at("2026-11-16T12:00:00Z"), decided: 14, unsure: 2,
+                                        waiting: 2),
+            waiting: 2, updatedAt: JournalFixture.morning)
+        let inputs = InboxFolderEntries.Inputs(
+            feed: feed, folders: InboxFolderMenuSnapshot(tree: .rootOnly), now: JournalFixture.morning,
+            calendar: JournalFixture.calendar)
+        let watchman = InboxFolderEntries.row(.watchman, inputs)
         let others = Copy.inboxOthers.map {
             InboxFolderListRow(id: $0.id, kind: .legacy, title: $0.title, summary: $0.summary, detail: $0.detail)
         }

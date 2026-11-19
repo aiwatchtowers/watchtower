@@ -1,0 +1,20 @@
+{
+  "ok": true,
+  "armed": [],
+  "protection_warning": "Could not read main's protection on GitHub — treat it as unprotected",
+  "first_time": true,
+  "analytics_turned_on": false,
+  "learning_started": false,
+  "estimate": {
+    "decisions": 16,
+    "need_labels": 16,
+    "tokens": 5600
+  },
+  "sessions": [
+    1
+  ],
+  "dropped": [],
+  "error": "",
+  "sidecar_error": "",
+  "hooks_warning": ""
+}

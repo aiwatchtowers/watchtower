@@ -16,6 +16,7 @@ import (
 	gosync "sync"
 	"sync/atomic"
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/builtin"
 	"watchtower/internal/briefing"
@@ -129,15 +130,18 @@ type Daemon struct {
 	wakeCh              <-chan time.Duration // WatchWake: how long the machine slept
 	triggerCh           <-chan struct{}
 	automationWakeCh    <-chan struct{}  // AutomationWakeSignal watcher (WatchAutomationWake)
+	watchmanWakeCh      chan struct{}    // the twin's wake, ticked by every AutomationWakeSignal (forwardWakes)
+	watchmanTwin        WatchmanTwin     // nil = the twin worker is not wired (SetWatchmanTwin)
+	watchmanTwinCycle   chan struct{}    // each cycle's nudge to the twin worker (nudgeWatchmanTwin)
 	automationScheduler AutomationRunner // nil = automations not wired
 	automationExecutor  AutomationRunner
 	automationEvents    AutomationEvents // nil = no event automations
 	cycleEvents         AutomationEvents // this sync cycle's bus, nil = none (beginAutomationEvents); runSync and startupCalendarSync only
 	planUsage           PlanUsageRunner  // nil = Claude plan limits not wired
 	planUsageDisable    func() error
-	specReviewLaunch    func(askID int64) error // nil = the spec review sweep is off
+	specReviewLaunch    func(ctx context.Context, askID int64) error // nil = the spec review sweep is off
 	// watchmanBacktestLaunch starts a detached backtest child; nil = the weekly backtest is off.
-	watchmanBacktestLaunch func(workbenchID int64) error
+	watchmanBacktestLaunch func(ctx context.Context, workbenchID int64) error
 	pidPath                string
 	db                     *db.DB
 	agentLog               *agentlogdb.DB // nil = agentlog.db did not open; the analytics phase skips
@@ -169,6 +173,13 @@ type Daemon struct {
 	externalSync     ExternalSyncRunner
 	mediaPipe        *media.Pipeline
 	dayPlanPipeline  DayPlanRunner
+
+	// consent reads the background-AI consent (SetConsent; nil =
+	// aiconsent.Current); consentLogged is the last state consentNow saw,
+	// for the once-per-change paused line. Read on the cycle's goroutine only.
+	consent       aiconsent.Reader
+	consentLogged aiconsent.State
+
 	// mbMu guards what the Morning brief's gate and primitives read and write
 	// (lastBriefing, the briefing/day-plan attempt counters, lastDayPlanDate,
 	// briefNoDataAt, mbOwner, mbNow): a primitive runs on the script's
@@ -281,6 +292,9 @@ type Daemon struct {
 	// runLoop starts no scheduled cycle while it says no. nil = always a
 	// full wake.
 	fullWake func() (caps uint32, full bool)
+
+	// watchmanUpkeep is phaseWatchmanUpkeep's state (watchman_upkeep.go).
+	watchmanUpkeep watchmanUpkeepState
 }
 
 // New creates a Daemon. Slack orchestrators are attached separately via
@@ -530,10 +544,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return fmt.Errorf("writing pid file: %w", err)
 		}
 		defer RemovePID(d.pidPath)
-		// The wake watcher is installed above: advertise it — only when the
-		// scheduler and executor will run, so the CLI never signals a daemon
-		// that would drop the wake (or, built before automations, has no
-		// handler for it).
+		// The wake watcher is installed above: advertise it — the automations
+		// wake only when the scheduler and executor will run, so the CLI never
+		// signals a daemon that would drop the wake (or, built before
+		// automations, has no handler for it); the Watchman wake always.
 		defer d.advertiseCaps()()
 	}
 
@@ -587,6 +601,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// before Run returns (and before the PID file is removed).
 	stopAutomations := d.startAutomations(ctx)
 	defer stopAutomations()
+	// Stopped before the runners (defers run last-in first-out): it calls
+	// their Wake.
+	stopWakes := d.startWakeForwarder(ctx)
+	defer stopWakes()
+	// The twin worker, woken by the forwarder: stopped (and its deciding
+	// items waited for) before the forwarder.
+	stopTwin := d.startWatchmanTwin(ctx)
+	defer stopTwin()
 	stopPlanUsage := d.startPlanUsage(ctx)
 	defer stopPlanUsage()
 
@@ -636,6 +658,12 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// First of all: this cycle's AI usage counts the calls other processes
 	// spooled since the last one.
 	d.phaseLLMLedger(ctx)
+	// Every cycle, before the fetches: the keep-awake hold while anything
+	// is handed to Watchman, the arm sidecar, the slept-through gaps.
+	d.phaseWatchmanUpkeep(ctx)
+	// The twin's pass (scan, then lease) runs on its own goroutine: the
+	// cycle only nudges it.
+	d.nudgeWatchmanTwin()
 	d.setSection(sectionSlackFetch)
 	d.markFetchProgress()
 	d.sampleLockStats(fetchCtx)
@@ -703,20 +731,15 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 		d.logger.Printf("sync had errors, but running pipelines on existing data")
 	}
 
-	d.phaseChannelDigests(ctx)
+	d.aiPhase(ctx, "digests", d.phaseChannelDigests)
 	d.phaseUnsnooze()
 	d.phaseApprovalSweep(ctx)
 	d.phaseTranscriptAudioCleanup()
 	// Before the index, so this cycle's descriptions are searchable now.
-	d.phaseMediaDescribe(ctx)
+	d.aiPhase(ctx, "media", d.phaseMediaDescribe)
 	d.phaseKnowledgeIndex(ctx)
-	// Watchman's learning: mechanical reads plus light-tier labels, its own
-	// 5-minute budget shared across workbenches.
-	d.phaseWatchmanLearn(ctx)
-	// Weekly: category profiles (strong tier) and the learned sleep window.
-	d.phaseWatchmanProfile(ctx)
-	// Weekly, after the profiles: launches a detached backtest child (never in-process).
-	d.phaseWatchmanBacktest(ctx)
+	// Watchman's learning, profiles and weekly backtest (background AI).
+	d.phaseWatchmanAI(ctx)
 	// After the knowledge index: the fill is mechanical (no AI) and needs no
 	// fresh sync — Slack sync's own writes already reach the new index
 	// through the triggers — so it runs once the cycle's sync is done.
@@ -728,17 +751,22 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// Phases 2-4 run in parallel where possible:
 	//   Group A: Track my threads → inject track context → Rollups
 	//   Group B: People Cards (only depends on Phase 1 channel digests)
+	// The consent is read once, when the group starts. Paused, People cards
+	// do not start, and Track my threads skips its legacy tracks phase and
+	// the rollups (before any stamp, attempt or file write); only the
+	// built-in's slot runs there, gating itself (a queued Run Now still
+	// runs).
+	tracksCtx, peopleCtx, aiOK := ctx, ctx, d.consentNow().Allowed()
+	if aiOK {
+		tracksCtx = aiconsent.WithAdmitted(ctx, "phase:tracks")
+		peopleCtx = aiconsent.WithAdmitted(ctx, "phase:people")
+	}
 	var phasesWg gosync.WaitGroup
-	phasesWg.Add(2)
 	rollupNow := time.Now()
-	go func() {
-		defer phasesWg.Done()
-		d.phaseTrackMyThreads(ctx, rollupNow)
-	}()
-	go func() {
-		defer phasesWg.Done()
-		d.phasePeopleCards(ctx)
-	}()
+	phasesWg.Go(func() { d.phaseTrackMyThreads(tracksCtx, rollupNow, aiOK) })
+	if aiOK {
+		phasesWg.Go(func() { d.phasePeopleCards(peopleCtx) })
+	}
 	phasesWg.Wait()
 
 	// Auto-mark digests and tracks as read based on Slack read cursors.
@@ -751,22 +779,23 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	}
 	d.phaseInbox(ctx)
 	d.phaseWaitingForMe(ctx)
-	d.phaseStreamDigests(ctx)
+	d.aiPhase(ctx, "stream-digests", d.phaseStreamDigests)
 	d.phaseIdeaFinder(ctx)
-	d.phaseMemory(ctx)
-	d.phaseNextStep(ctx)
+	d.aiPhase(ctx, "memory", d.phaseMemory)
+	d.aiPhase(ctx, "next-step", d.phaseNextStep)
 	d.phaseMorningBrief(ctx, time.Now())
 
 	// Last, and alone: it shares the digest pipeline and the ideas lock with
 	// the forward phases above, so it must stay out of any parallel group.
 	// It fetches, so it runs on fetchCtx: a sleep cancels it (or, detected
 	// during the pipelines, skips it), while a trigger waits for it.
+	// Paused, it holds whole (D12): no fetch, no row change, no strike.
 	if fetchCtx.Err() == nil {
 		d.setSection(sectionBackfill)
-		d.phaseHistoryBackfill(fetchCtx)
+		d.aiPhase(fetchCtx, "history-backfill", d.phaseHistoryBackfill)
 		d.setSection(sectionPipelines)
 	}
-	d.phaseCoach(ctx)
+	d.coachPhases(ctx)
 	d.phaseSpecReviewSweep(ctx)
 }
 
@@ -809,7 +838,11 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 		return
 	}
 	errMsg := ""
-	if stats.err != nil {
+	switch {
+	case errors.Is(stats.err, aiconsent.ErrPaused):
+		// Refused by the backstop: a skip, not a failure.
+		d.logger.Printf("%s: skipped: background AI is paused", name)
+	case stats.err != nil:
 		errMsg = logredact.Full(stats.err)
 	}
 	if err := d.db.CompletePipelineRun(runID, stats.items, stats.inTok, stats.outTok, stats.cost, stats.totalAPI, stats.pFrom, stats.pTo, errMsg); err != nil {
@@ -1855,10 +1888,29 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 		return
 	}
 	if err := d.digestPipe.RunRollups(ctx); err != nil {
-		if !digest.ProviderDeferred(err) {
+		// A provider deferral or a background-AI-paused refusal is not an
+		// attempt.
+		if !digest.ProviderDeferred(err) && !errors.Is(err, aiconsent.ErrPaused) {
 			d.recordRollupAttempt(date)
 		}
 		d.logger.Printf("rollup error: %v", err)
+	}
+}
+
+// prunePreUpgradePeopleCards runs the one-time pass deleting people cards of
+// non-partners. It runs every cycle with no process-wide memo: the per-account
+// people_prune_done_at stamp is the only state, so a finished account costs
+// one SELECT over slack_accounts, and an account that was removed
+// during an earlier pass and reconnected later is pruned in the next cycle
+// (#2019), not after a restart. Accounts without a known owner stay pending.
+func (d *Daemon) prunePreUpgradePeopleCards(ctx context.Context) {
+	if d.db == nil {
+		return
+	}
+	if _, err := guide.PrunePreUpgradeCards(ctx, d.db, d.logger); err != nil {
+		if !isBenignShutdownErr(ctx, err) {
+			d.logger.Printf("people: %v", err)
+		}
 	}
 }
 
@@ -1873,6 +1925,9 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 // throttle window instead of skipping outright. Dual path with the Desktop's
 // readiness "Needs Slack Digests" (ReadinessFeature.runsOnlyWithDigests, #575).
 func (d *Daemon) phasePeopleCards(ctx context.Context) {
+	// The one-time upgrade prune runs whatever the generation gates say:
+	// stored cards of non-partners must go even when no card is made (A13).
+	d.prunePreUpgradePeopleCards(ctx)
 	if !d.config.People.Enabled || !d.config.Digest.Enabled {
 		return
 	}
@@ -1908,6 +1963,13 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 	if has, err := d.peoplePipe.HasData(ctx); err != nil {
 		d.logger.Printf("people: data check failed, running anyway: %v", err)
 	} else if !has {
+		// No Slack owner makes no cards, never cards for everyone (A13):
+		// say why, once a day.
+		if known, err := d.peoplePipe.OwnerKnown(); err != nil {
+			d.logger.Printf("people: owner check failed: %v", err)
+		} else if !known {
+			d.logSkipOnce(now, "people", "no Slack account with a known user, so no people cards (people cards are made only for the people you work with)")
+		}
 		// Current source eligibility can remove all input from an old window.
 		// Drop that empty descriptor without claiming success for newer data.
 		if err := d.peoplePipe.AcknowledgeWindow(ctx); err != nil {
@@ -1925,9 +1987,10 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 			if !isBenignShutdownErr(ctx, err) && !digest.ProviderDeferred(err) {
 				d.recordPeopleAttempt(date)
 			}
-		} else if d.peoplePipe.LastOutcome() == guide.OutcomeNoData {
+		} else if o := d.peoplePipe.LastOutcome(); o == guide.OutcomeNoData || o == guide.OutcomeNoOwner {
 			// No data despite the pre-check (a transient pre-check failure,
-			// or the window moved between the two): no stamp, retry.
+			// or the window moved between the two), or no owner yet: no
+			// stamp, retry.
 			d.logger.Printf("people: run found no data; not stamping")
 		} else {
 			if n > 0 {
@@ -2154,6 +2217,10 @@ func (d *Daemon) phaseStreamDigests(ctx context.Context) {
 // ledger, REACT-03), so an in-memory throttle is enough — a restart simply
 // re-polls and re-dispatches nothing already seen.
 func (d *Daemon) phaseReactionCommands(ctx context.Context) {
+	// A reaction from the owner's dictionary is the owner's gesture (D3):
+	// the poll and the runs it dispatches are owner-started, so they run
+	// while background AI is paused.
+	ctx = aiconsent.WithOwnerStarted(ctx)
 	if !d.config.ReactionCommands.Enabled {
 		// Nobody polls, so reactions placed now must not fire when the
 		// feature comes back: clear the event seed stamps (a no-op read when
@@ -2440,8 +2507,11 @@ func (d *Daemon) phaseBriefingAt(ctx context.Context, now time.Time) {
 			// A real failure (AI generate/parse/store error) reached this
 			// point — RunForDate's benign skips (no owner, handled above;
 			// "no data yet", (0, nil)) never consume budget; only a real
-			// error does.
-			d.recordBriefingAttempt(today)
+			// error does. A refusal because background AI is paused is
+			// deferred, not an attempt.
+			if !errors.Is(err, aiconsent.ErrPaused) {
+				d.recordBriefingAttempt(today)
+			}
 			d.logger.Printf("briefing error: %v", err)
 		} else if id > 0 {
 			d.logger.Printf("generated briefing (id=%d)", id)
@@ -2941,8 +3011,11 @@ func (d *Daemon) runDayPlanPhase(ctx context.Context, now time.Time, owner db.Ow
 			// shouldRunDayPlan already filtered out the "no owner"
 			// case before Run was ever called (see its own gate above), so
 			// every Run invocation reaching this point is a real attempt —
-			// any error here is a real failure and consumes budget.
-			d.recordDayPlanAttempt(date)
+			// any error here is a real failure and consumes budget —
+			// except a refusal because background AI is paused (deferred).
+			if !errors.Is(err, aiconsent.ErrPaused) {
+				d.recordDayPlanAttempt(date)
+			}
 			d.logger.Printf("dayplan: generation failed: %v", err)
 		} else {
 			d.lastDayPlanDate = date

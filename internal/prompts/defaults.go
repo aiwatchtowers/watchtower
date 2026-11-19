@@ -133,12 +133,12 @@ var DefaultVersions = map[string]int{
 	DigestDaily:                1,
 	DigestWeekly:               1,
 	DigestPeriod:               1,
-	TracksExtractBatch:         2, // v2: digest-based input instead of raw messages
-	PeopleReduce:               1,
-	PeopleTeam:                 1,
-	BriefingDaily:              12, // v12: FROM YOUR AUTOMATIONS section — output.briefing notes since the previous briefing (automations P2, spec 2026-10-14 §12.6); v11: open owner asks in WORKBENCHES (owner asks, spec 2026-10-03); v10: no workbench documents (owner asks, spec 2026-10-03); v9: the PROJECTS block is WORKBENCHES (Workbench rename, spec 2026-10-02); v8: PROJECTS block (spec 2026-09-29)
+	TracksExtractBatch:         2,  // v2: digest-based input instead of raw messages
+	PeopleReduce:               2,  // v2: no-surveillance rules, no red_flags, no team norms (#1769, A12/A17)
+	PeopleTeam:                 2,  // v2: no attention list, no-surveillance rules (#1769, A12/A17)
+	BriefingDaily:              13, // v13: team_pulse without volume/red-flag signals, no people-card flags (#1769, A12); v12: FROM YOUR AUTOMATIONS section — output.briefing notes since the previous briefing (automations P2, spec 2026-10-14 §12.6); v11: open owner asks in WORKBENCHES (owner asks, spec 2026-10-03); v10: no workbench documents (owner asks, spec 2026-10-03); v9: the PROJECTS block is WORKBENCHES (Workbench rename, spec 2026-10-02); v8: PROJECTS block (spec 2026-09-29)
 	DigestChannelBatch:         5,  // v5: instruct the model to echo channel_id verbatim from the block header (C1)
-	PeopleBatch:                1,  // v1: batch people cards for low-data users
+	PeopleBatch:                2,  // v2: no-surveillance rules, no red_flags, no team norms (#1769, A12/A17)
 	TasksGenerate:              1,  // v1: AI task generation with checklist and due date
 	TasksUpdate:                1,  // v1: AI task update from user instruction
 	MeetingPrep:                5,  // v5: the secretary/assistant persona merge — one assistant everywhere
@@ -146,7 +146,7 @@ var DefaultVersions = map[string]int{
 	MeetingNotes:               2,  // v2: conditional speaker-label attribution (labeled vs. unlabeled transcripts)
 	MeetingChapters:            1,  // v1: chapterize a meeting from a timecoded per-utterance transcript
 	MeetingFollowup:            1,  // v1: owner-voice follow-up draft from stated chapter content (intent-draft contract)
-	DayPlanGenerate:            4,  // v4: the secretary/assistant persona merge — one assistant everywhere
+	DayPlanGenerate:            5,  // v5: the PEOPLE block carries no red flags (#1769, A12); v4: the secretary/assistant persona merge — one assistant everywhere
 	TargetsExtract:             2,  // v2: GROUPING/sub_items + LANGUAGE rules reconciled from the compiled const (fix b7640c0b)
 	TargetsLink:                1,  // v1: single-target link proposal against active snapshot
 	TrackCompose:               1,  // v1: draft custom-track title+instruction from a free-text request
@@ -180,8 +180,8 @@ var DefaultVersions = map[string]int{
 	CoachPropose:               2,  // v2: the exact allow-rule table, claude_md_user allowed (4000 ceiling), ROLLED BACK group (v1: agent coach — edits to the owner's setup from repeated signals, strong tier)
 	MediaDescribe:              1,  // v1: an attached image to a title, description, verbatim text and keys (strong tier, image input)
 	MediaSummarizeLink:         1,  // v1: a fetched public page to a title and a short summary (light tier)
-	WatchmanDecide:             3,  // v3: "handoff" none|owner_only — hand back only a step that needs the owner's own hands (token, sign-in, a command on his side, his device, a payment); never state an owner-only action as done; no new work on a plain status report (ask #1486, D35, D37); v2: a situation with several questions is answered per question, one "<question>: <answer>" line each; "(recommended)" is only the agent's suggestion (ask #1423); v1: Watchman twin — decide one workbench item the way the owner would, from his precedents, profile and instructions (strong tier)
-	WatchmanJudge:              4,  // v4: a handed item gets one justified/unjustified verdict instead of grades (a handoff claiming an owner-only action done is unjustified); the §9.1 rubric (a recommended or reasonable other path is acceptable unless irreversible and contradicting the situation; release version, cheap reversible CI action, work order never bad alone; equal cases equal grades, with worked examples); D37 claims and unasked work are bad (ask #1486); v3: grades same/acceptable/bad per question, strong tier, sees the twin's confidence (ask #1423); v2: the situation is passed too; v1: same/different, light tier
+	WatchmanDecide:             4,  // v4: a review_doc item carries the spec review's "findings" (key, text) and the reply gains "marks" [{key, state ok|comment|not_useful, body}] the twin writes as the owner's marks with its verdict; Go drops unknown keys (Watchman phase 2 Task 12); v3: "handoff" none|owner_only — hand back only a step that needs the owner's own hands (token, sign-in, a command on his side, his device, a payment); never state an owner-only action as done; no new work on a plain status report (ask #1486, D35, D37); v2: a situation with several questions is answered per question, one "<question>: <answer>" line each; "(recommended)" is only the agent's suggestion (ask #1423); v1: Watchman twin — decide one workbench item the way the owner would, from his precedents, profile and instructions (strong tier)
+	WatchmanJudge:              5,  // v5: a handoff is judged on whether the step needs the owner's hands; confirmation-only option labels are not claims (phase-1b triage); v4: a handed item gets one justified/unjustified verdict instead of grades (a handoff claiming an owner-only action done is unjustified); the §9.1 rubric (a recommended or reasonable other path is acceptable unless irreversible and contradicting the situation; release version, cheap reversible CI action, work order never bad alone; equal cases equal grades, with worked examples); D37 claims and unasked work are bad (ask #1486); v3: grades same/acceptable/bad per question, strong tier, sees the twin's confidence (ask #1423); v2: the situation is passed too; v1: same/different, light tier
 	WatchmanLabel:              2,  // v2: the reply is an array of objects — "category" only for items with need_category, plus "decision" (answers a question or proposal of the agent) and "parked" (merge/push/rebase onto main, release, tag, TestFlight, an outward message, an inventory contract approval) for every item (ask #1486, D34); v1: Watchman learning — put each of the owner's past decisions in one of the eight categories (light tier)
 	WatchmanProfile:            1,  // v1: Watchman profile — distil a category's past owner decisions into at most 20 rules (strong tier)
 }
@@ -430,52 +430,47 @@ Rules:
 === DIGESTS ===
 %s`
 
-const defaultPeopleReduce = `You are creating a unified profile card for @%s based on behavioral signals observed across Slack channels over %s to %s.
+const defaultPeopleReduce = `You are creating a unified profile card for @%s based on work signals observed across Slack channels over %s to %s.
 
 %s
 
-Below are SITUATIONS observed in channel context (by the digest pipeline), plus computed statistics and team norms. Your job is to synthesize these into a single card that combines:
-1. ANALYSIS — classify their communication style, role in decisions, flag concerns
-2. COACHING — actionable advice for the viewer on how to work with this person
-
-IMPORTANT: Focus on what makes this person DIFFERENT from team norms. Do NOT describe typical behavior that matches the team average.
+Below are SITUATIONS observed in channel context (by the digest pipeline) and the BASIS of the card (how many messages and channels it rests on). Your job is to synthesize these into a single card that combines:
+1. WORK — the topics they work on, their part in decisions, what they delivered or helped with
+2. COLLABORATION — actionable advice for the viewer on how to work with this person
 
 Return ONLY a JSON object (no markdown fences, no explanation):
 
 {
-  "summary": "1-2 sentences: what makes this person distinctive. Reference specific signals.",
+  "summary": "1-2 sentences: the work topics this person is involved in. Reference specific signals.",
   "communication_style": "driver|collaborator|executor|observer|facilitator",
   "decision_role": "decision-maker|approver|contributor|observer|blocker",
-  "red_flags": ["Specific concerns backed by signals. Empty [] if none."],
   "highlights": ["Positive contributions backed by signals. Empty [] if none."],
   "accomplishments": ["Concrete things delivered/resolved this period from signals."],
-  "communication_guide": "Paragraph: communication preferences, timing, format. ONLY what is specific to this person vs team norms. If they match the norm, say so briefly and focus on exceptions.",
-  "decision_style": "How they participate in decisions — based on bottleneck/rubber_stamping/initiative/blocker signals. If no decision signals, say 'No notable decision patterns this period.'",
+  "communication_guide": "Paragraph: how to communicate with this person about work — channels, format, the kind of ask that works.",
+  "decision_style": "How they take part in decisions, based on the situations. If no decision signals, say 'No notable decision patterns this period.'",
   "tactics": ["If X, then Y — specific actionable tactics based on observed signals. Max 3-4."]
 }
 
 %s
 
 Rules:
+- Never infer or mention health, mood, burnout, workload judgments, personal life or protected characteristics, and never give performance verdicts; describe work topics and how to collaborate.
 - Base ALL analysis on the situations provided. Do NOT invent patterns not supported by evidence.
 - If a situation type appears in multiple channels, it is a PATTERN — emphasize it.
-- If conflicting situations exist (e.g., collaboration in one channel, conflict in another), note the CONTRAST.
-- Compare stats to team norms: only mention stats that deviate significantly (>30%% from avg).
+- If situations differ between channels (e.g., leading in one, reviewing in another), note the CONTRAST.
+- The BASIS counts only say how much the card rests on: never score activity, timing or message volume, and never compare the person with colleagues.
 - Coaching framing: frame guide sections as advice FOR THE VIEWER, not judgments ABOUT the person.
-- If relationship is manager->report: be more direct about concerns and accountability.
+- If relationship is manager->report: be direct about expectations and agreements on the work.
 - If relationship is report->manager: frame tactically (managing up).
 - If too few situations for meaningful analysis, say so in summary.
-- If a PREVIOUS CARD is provided, note trends and changes vs the prior period. Don't just repeat it.
+- If a PREVIOUS CARD is provided, note how the work topics changed vs the prior period. Don't just repeat it.
 - %s
 - Return valid JSON only
 
 === SITUATIONS ===
 %s
 
-=== COMPUTED STATS ===
-%s
-
-=== TEAM NORMS ===
+=== BASIS ===
 %s
 
 === PREVIOUS CARD ===
@@ -488,21 +483,20 @@ const defaultPeopleTeam = `You are creating a team communication summary for %s 
 
 %s
 
-Below are unified people cards for all team members. Create a summary that a manager can quickly scan to understand what needs attention.
+Below are unified people cards for the people the owner works with. Create a summary the owner can quickly scan to understand what the team worked on and how to work well together.
 
 Return ONLY a JSON object (no markdown fences, no explanation):
 
 {
-  "summary": "3-5 sentences: team communication health, dynamics, decision flow.",
-  "attention": ["Who needs attention and WHY — name names, cite specific signals and patterns. Be direct."],
-  "tips": ["Actionable team-level communication tips based on patterns across people."]
+  "summary": "3-5 sentences: what the team worked on, how decisions flowed, how the team communicates about work.",
+  "tips": ["Actionable team-level collaboration tips based on patterns across the cards."]
 }
 
 Rules:
-- Be direct — this is for a busy manager
-- Reference specific people by @username
-- Cross-reference: if multiple people have bottleneck signals, that is a systemic issue
-- Look for signal clusters: multiple conflict signals = team friction
+- Never infer or mention health, mood, burnout, workload judgments, personal life or protected characteristics, and never give performance verdicts; describe work topics and how to collaborate.
+- Be direct — this is for a busy owner
+- Speak about the team's work; never single a person out for concern or rank people against each other
+- Reference specific people by @username only for the work they did or the decisions they made
 - %s
 - Return valid JSON only
 
@@ -527,7 +521,7 @@ Return ONLY a JSON object (no markdown fences, no explanation):
     {"text": "Notable event or decision", "digest_id": 456, "channel_name": "#channel", "item_type": "decision|summary|topic", "importance": "high|medium|low"}
   ],
   "team_pulse": [
-    {"text": "Signal about a team member", "user_id": "U123", "signal_type": "volume_drop|volume_spike|new_red_flag|highlight|conflict", "detail": "Specifics"}
+    {"text": "Signal about a team member", "user_id": "U123", "signal_type": "highlight|conflict", "detail": "Specifics"}
   ],
   "coaching": [
     {"text": "Actionable communication tip", "related_user_id": "U123", "category": "communication|delegation|conflict|process"}
@@ -542,20 +536,19 @@ Rules:
   - Targets have a level (quarter/month/week/day/custom) — prefer day-level targets for scheduling today's work.
   - If no active targets or tracks exist, leave this array empty — do NOT invent items.
 - what_happened: max 7 items in total, from channel digests and automation notes. For digests include digest_id and channel_name. Focus on decisions and blockers.
-- team_pulse: signals from people cards. Include user_id. Flag volume changes, red flags, conflicts.
+- team_pulse: work signals from people cards (highlights, decisions, disagreements about the work). Include user_id. Never infer or mention health, mood, burnout, workload judgments, personal life or protected characteristics, and never give performance verdicts.
 - coaching: max 3 items. Grounded in observed patterns — not generic advice. Include related_user_id when applicable.
   - When suggesting actions, consider existing targets. Use suggest_target=true on tracks where user should create a target.
 - CALENDAR INTEGRATION: When calendar events are present, cross-reference attendees with tracks, inbox, and people data.
   - In "attention": flag meetings in the next 2 hours with unresolved items involving attendees.
   - In "your_day": interleave meetings with targets/tracks, ordered chronologically. Add prep suggestions before important meetings.
   - In "coaching": suggest conversation points based on people cards of attendees.
-  - If a meeting attendee has a people card with red_flags, mention it in team_pulse.
   - Do NOT list meetings as standalone items — always cross-reference with work data.
   - If CALENDAR section is empty, ignore calendar instructions entirely.
 - JIRA INTEGRATION: When JIRA CONTEXT is provided, incorporate Jira signals:
   - In "attention": flag stale issues (in_progress >7 days), blocked issues, and overdue issues. Use source_type="jira" and source_id=issue key.
   - In "your_day": include assigned Jira issues and awaiting-input items. Cross-reference with Slack tracks/digests when the same topic appears in both.
-  - In "team_pulse": mention team workload signals if sprint progress data is available.
+  - In "team_pulse": mention sprint progress facts (done vs planned) if sprint progress data is available — never as a judgment of a person.
   - Each Jira signal should include Slack context if the same issue key appears in digests or tracks.
   - If JIRA CONTEXT section is empty, ignore Jira instructions entirely.
 - WORKBENCHES: the WORKBENCHES section lists the user's Watchtower workbenches — folder-bound boards that coding agents work on — with activity since the previous briefing. Bring a workbench into "attention" only for a blocked target, open asks waiting for the owner (an agent is waiting for the owner's answer in the Desktop app) or unread agent comments; use source_type="project" and source_id=the block's project_id (both keep their stored names). Never put a workbench's targets into "your_day" or into target_id — they live on the workbench board, not among the user's targets. If the section reads "(no project activity)", do not mention workbenches at all.
@@ -757,7 +750,7 @@ Rules:
 === CHANNEL DIGESTS ===
 %s`
 
-const defaultPeopleBatch = `You are creating lightweight people cards for multiple users based on limited behavioral signals observed across Slack channels over %s to %s.
+const defaultPeopleBatch = `You are creating lightweight people cards for multiple users based on limited work signals observed across Slack channels over %s to %s.
 
 %s
 
@@ -767,14 +760,13 @@ Return ONLY a JSON array (no markdown fences, no explanation):
 [
   {
     "user_id": "U123ABC",
-    "summary": "1-2 sentences: what stands out about this person based on available signals.",
+    "summary": "1-2 sentences: the work topics this person is involved in, based on available signals.",
     "communication_style": "driver|collaborator|executor|observer|facilitator",
     "decision_role": "decision-maker|approver|contributor|observer|blocker",
-    "red_flags": ["Specific concerns if any. Empty [] if none."],
     "highlights": ["Positive contributions if any. Empty [] if none."],
     "accomplishments": ["Concrete deliverables if visible."],
-    "communication_guide": "Brief: how to communicate with this person based on observed patterns.",
-    "decision_style": "How they participate in decisions, or 'Limited data' if not enough signals.",
+    "communication_guide": "Brief: how to communicate with this person about work, based on observed patterns.",
+    "decision_style": "How they take part in decisions, or 'Limited data' if not enough signals.",
     "tactics": ["If X, then Y — max 2 tactics."]
   }
 ]
@@ -784,17 +776,15 @@ Return [] if no users have enough data for any analysis.
 %s
 
 Rules:
+- Never infer or mention health, mood, burnout, workload judgments, personal life or protected characteristics, and never give performance verdicts; describe work topics and how to collaborate.
 - One entry per user in the USERS block below. Include user_id in each entry.
-- Base analysis on available situations and stats. Do NOT invent patterns.
+- Base analysis on available situations. Do NOT invent patterns.
 - Keep cards concise — these are lightweight summaries, not full profiles.
-- Compare stats to team norms: only mention stats that deviate significantly.
-- If a user has zero situations but has stats, focus on activity patterns.
+- The basis counts only say how much a card rests on: never score activity, timing or message volume, and never compare people with each other.
+- If a user has zero situations, keep the card to the work topics their messages show, or say the data is too thin.
 - communication_style and decision_role: pick the closest match, even with limited data.
 - %s
 - Return valid JSON only
-
-=== TEAM NORMS ===
-%s
 
 === USERS ===
 %s`
@@ -1928,6 +1918,7 @@ The user message holds one JSON object inside <data>…</data> with:
 - "precedents": the owner's past decisions most similar to this one, each with "id", "situation", "choice", "owner_words" (what he wrote, may be empty) and "decided_at".
 - "profile": the owner's distilled rules for this category, may be empty.
 - "instructions": the owner's standing instructions to agents, may be empty.
+- "findings": only for a "review_doc" item — the spec review's findings on the document, each with "key" and "text"; absent otherwise.
 
 How to decide:
 - Precedents that match the situation closely weigh most; newer ones win over older ones when they disagree. The owner's own words explain why he chose.
@@ -1944,9 +1935,13 @@ When to hand the decision to the owner:
 - You never state an owner-only action as done: never write that a token was issued or deleted, that he signed in, ran a command or paid ("old token deleted").
 - On a plain status report (the agent reports and asks nothing), answer only what was asked: add no new work the owner would have to call off ("start Task 9").
 
+Marks on a document review:
+- For a "review_doc" item with "findings", also return "marks": one entry per finding you would mark the way the owner marks a review card, as {"key": "<the finding's key, copied verbatim>", "state": "ok" | "comment" | "not_useful", "body": "…"}. "ok" — the owner agrees with the finding as it stands; "comment" — he would add a remark to the author, written in "body"; "not_useful" — he would dismiss it. "body" is empty unless "state" is "comment". Leave out a finding you would not mark. With "changes" as the choice, at least one mark is a "comment" saying what to change.
+- For every other item "marks" is [].
+
 Return ONLY a JSON object (no markdown fences, no prose outside the JSON) with exactly this shape:
 
-{"choice": "…", "rationale": "…", "precedent_ids": [12, 40], "confidence": "medium", "category": "design", "importance": "low", "handoff": "none"}
+{"choice": "…", "rationale": "…", "precedent_ids": [12, 40], "confidence": "medium", "category": "design", "importance": "low", "handoff": "none", "marks": []}
 
 Rules:
 - "rationale": one to three sentences on why the owner would choose this, citing what in his precedents or rules points there, in the language of the owner's words in the precedents (English when there are none).
@@ -2031,6 +2026,7 @@ The user message holds one JSON object inside <data>…</data> with:
 
 A handed moment (when "handoff" is "owner_only"):
 - Do not grade the twin's choice. Rule only on the handoff: "justified" when the step really needs the owner's own hands — something only he can do or confirm: issue or revoke a token, sign in, run a command on his side, press something on his device, make a payment; "unjustified" otherwise, a question about what the owner meant included (the twin must answer that itself). A handoff whose choice or reasoning states an owner-only action as already done ("token already revoked") is "unjustified"; apart from that rule, the choice is still not graded.
+- On a handoff the options may only confirm the owner's own action ("signed in", "connected it"): the twin hands over instead of choosing, so not choosing any of them is not a claim that it was done. Rule on whether the step needs the owner's hands, not on the option labels — a rationale that states the owner-only action as already done is still unjustified. Example: the agent asks "Sign in to the registry?" with options "Signed in" / "Could not sign in"; the twin hands it to the owner, saying only he can sign in. That handoff is "justified".
 - Return ONLY {"handoff":"justified","why":"<one short sentence>"} or {"handoff":"unjustified","why":"<one short sentence>"}, with no "grades".
 
 Otherwise (when "handoff" is "none") grade the decision.

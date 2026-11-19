@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// The inspector's Sources panel: one answer's sources, deduplicated and
 /// grouped (Slack channel / Jira project / space / Mail / Meetings / Other),

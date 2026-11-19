@@ -20,10 +20,8 @@ func publicError(err error) *PublicError {
 		return nil
 	}
 	code := ErrorCode(err)
-	switch code {
-	case "no_credentials", "unsupported_auth", "cli_missing", "unsupported_cli", "network", "parse", "storage", "busy", "feature_disabled", "cancelled", "timeout":
-	default:
-		code = "storage"
+	if !publicCodes[code] {
+		code = CodeStorage
 	}
 	return &PublicError{Code: code, Message: "Plan usage: " + code + "."}
 }
@@ -163,13 +161,13 @@ func ReadStatus(store ReadStore, provider string, enabled bool, now time.Time) (
 }
 
 func safeStoredReason(reason string) string {
-	switch reason {
-	case "no_credentials", "unsupported_auth", "cli_missing", "unsupported_cli", "network", "parse", "timeout":
+	switch {
+	case storedReasons[reason]:
 		return reason
-	case "token_expired", "http_401":
-		return "no_credentials"
+	case reason == "token_expired" || reason == "http_401":
+		return CodeNoCredentials
 	}
-	return "network"
+	return CodeNetwork
 }
 
 // Collect runs sources independently, including after another source fails.

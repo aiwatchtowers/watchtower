@@ -28,7 +28,9 @@ struct HomeView: View {
                 learn: appState.learnCenter.zone,
                 learnActions: appState.learnZoneActions,
                 coachNote: appState.homeCenter.coachNote,
-                aiSpend: appState.homeCenter.aiSpend
+                aiSpend: appState.homeCenter.aiSpend,
+                onAllowBackgroundAI: { appState.presentBackgroundAIConsent() },
+                backgroundAI: HomeBackgroundAICard.make(appState.backgroundAI)
             )
         }
         .task { await appState.homeCenter.refreshAISpend() }
@@ -65,6 +67,10 @@ struct HomeContent: View {
     let coachNote: String?
     /// The numbers' AI spend (`HomeCenter.aiSpend`).
     let aiSpend: HomeAISpend
+    /// Background AI paused or turned off by the organization (#1886): one
+    /// card above the Getting ready zone, never hidden with it.
+    let backgroundAI: HomeBackgroundAICard?
+    let onAllowBackgroundAI: () -> Void
 
     init(
         snapshot: HomeSnapshot?,
@@ -84,9 +90,13 @@ struct HomeContent: View {
         learn: LearnSelection? = nil,
         learnActions: LearnZoneActions = .none,
         coachNote: String? = nil,
-        aiSpend: HomeAISpend = .unavailable
+        aiSpend: HomeAISpend = .unavailable,
+        onAllowBackgroundAI: @escaping () -> Void = {},
+        backgroundAI: HomeBackgroundAICard? = nil
     ) {
         self.aiSpend = aiSpend
+        self.backgroundAI = backgroundAI
+        self.onAllowBackgroundAI = onAllowBackgroundAI
         self.purges = purges
         self.learn = learn
         self.learnActions = learnActions
@@ -112,6 +122,9 @@ struct HomeContent: View {
                 header
                 if !purges.isEmpty {
                     AccountPurgeBanner(rows: purges, zone: calendar.timeZone, onReconnect: onReconnect)
+                }
+                if let backgroundAI {
+                    HomeBackgroundAICardView(card: backgroundAI, onAllow: onAllowBackgroundAI)
                 }
                 if let snapshot {
                     GettingReadyZoneView(
@@ -185,8 +198,40 @@ struct HomeContent: View {
     }()
 }
 
-/// Home's right column: the Workbench zone, the links zone, today in
-/// numbers and Learn Watchtower, in that order; a zone with nothing to show
+/// Home's one background AI card (#1886, spec §6.3): what waits while it is
+/// paused, and the way back to the consent screen (none while the
+/// organization decided).
+struct HomeBackgroundAICardView: View {
+    let card: HomeBackgroundAICard
+    let onAllow: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            HStack(spacing: Spacing.regular) {
+                Image(systemName: "pause.circle")
+                    .foregroundStyle(card.managed ? Color.secondary : Tone.warning)
+                Text(card.title).font(.headline)
+                Spacer()
+                if card.managed { ManagedByOrganizationBadge() }
+            }
+            Text(card.body)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let action = card.actionTitle {
+                Button(action, action: onAllow)
+                    .buttonStyle(.kitSecondary)
+                    .controlSize(.small)
+            }
+        }
+        .padding(Spacing.medium)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
+    }
+}
+
+/// Home's right column: Watchman's row, the Workbench zone, the links zone,
+/// today in numbers and Learn Watchtower, in that order; a zone with nothing to show
 /// is left out (numbers show once their first read lands).
 struct HomeSideColumn: View {
     let snapshot: HomeSnapshot
@@ -200,6 +245,9 @@ struct HomeSideColumn: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.page) {
+            if let watchman = snapshot.watchman {
+                WatchmanHomeRow(counts: watchman) { onLink(.watchmanJournal) }
+            }
             if snapshot.showsWorkbench || coachNote != nil {
                 WorkbenchZoneView(
                     blocks: snapshot.workbench, coach: snapshot.coach, failed: snapshot.workbenchFailed,

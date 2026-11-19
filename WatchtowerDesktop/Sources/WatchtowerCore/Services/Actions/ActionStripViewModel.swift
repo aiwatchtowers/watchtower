@@ -407,7 +407,7 @@ package final class ActionStripViewModel {
             // Its agent-action card; a brief has no read mark to write.
             selection = .proposal(action.id)
             return nil
-        case .legacyTracks, .legacyIdeas, .legacyMessages, .approval, .builtinNotice:
+        case .legacyTracks, .legacyIdeas, .legacyMessages, .watchman, .approval, .builtinNotice:
             selection = nil
             return nil
         }
@@ -542,6 +542,10 @@ package final class ActionStripViewModel {
             if folder == nil { folderMenu.select(folderMenu.tree.root.id) }
         case let .legacy(list):
             showLegacy(list)
+        case .watchman:
+            folderMenu.select(folderMenu.tree.root.id)
+            let id = InboxFolderEntry.watchman.id
+            entrySelection = folderEntries.contains { $0.id == id } ? id : nil
         case let .card(item):
             await openCard(item, keepFolder: folder != nil)
         }
@@ -1314,5 +1318,12 @@ package struct InstalledCLIRunner: CLIRunnerProtocol {
     package func run(args: [String]) async throws -> Data {
         guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
         return try await runner.run(args: args)
+    }
+
+    package func runModel(
+        args: [String], origin: CLIOrigin, timeout: TimeInterval?, stdin: Data?
+    ) async throws -> Data {
+        guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
+        return try await runner.runModel(args: args, origin: origin, timeout: timeout, stdin: stdin)
     }
 }

@@ -198,7 +198,7 @@ func TestProjectBrief_ShowsTheBoardDrift(t *testing.T) {
 	database := writeActionsConfig(t)
 	folder := driftRepo(t)
 	pid, tid := driftWorkbench(t, database, folder, "merged")
-	brief := loadWorkbenchBrief(pid, io.Discard)
+	brief := loadWorkbenchBrief(pid, io.Discard, "claude")
 	assert.Contains(t, brief, "Board drift")
 	assert.Contains(t, brief, "#"+strconv.FormatInt(tid, 10)+` "Feature" [in_progress]: branch merged is merged into main`)
 	assert.LessOrEqual(t, len([]rune(brief)), briefMaxChars)
@@ -219,7 +219,7 @@ func TestProjectBrief_DriftChecksOpenTargetsOnly(t *testing.T) {
 	require.Len(t, rep.Findings, 1, "the full check still sees it")
 	assert.Equal(t, workbenchcheck.KindDoneUnmerged, rep.Findings[0].Kind)
 
-	assert.NotContains(t, loadWorkbenchBrief(pid, io.Discard), "Board drift")
+	assert.NotContains(t, loadWorkbenchBrief(pid, io.Discard, "claude"), "Board drift")
 }
 
 // PROJ-02/PROJ-04: nothing of a deleted project remains in the folder's

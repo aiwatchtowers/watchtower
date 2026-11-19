@@ -3,6 +3,7 @@ import AppKit
 import GRDB
 import UserNotifications
 import WatchtowerCore
+import ChatUI
 
 /// Allows notifications to display as banners even when the app is in the foreground,
 /// and handles notification click actions to navigate within the running app.
@@ -385,6 +386,8 @@ struct WatchtowerApp: App {
             .frame(minWidth: 800, minHeight: 600)
             // "Run Automation…" (⌃⌘R) over every destination, never per tab.
             .modifier(RunAutomationPaletteHost(appState: appState))
+            // Hand to Watchman's arm sheet, from a strip, a target panel or the tray.
+            .modifier(WatchmanArmSheetHost(center: appState.watchmanCenter))
             .background(OpaqueWindowBackground())
             // `.environment` must wrap the overlay too: the overlay attaches as a
             // sibling outside any environment applied deeper on NavigationRoot, so

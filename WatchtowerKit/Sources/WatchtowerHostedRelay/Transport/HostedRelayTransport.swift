@@ -216,6 +216,13 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         await detachFromSession()
     }
 
+    /// The device's one socket is checked before the return's fetch (live link R6, `HostedRelaySession.wake`);
+    /// nothing while this transport does not want the socket.
+    public func wake() async {
+        guard wantsSocket else { return }
+        await session.wake()
+    }
+
     /// Flushes the plain queue; a stopped flush re-reads its zone.
     public func sendNow() async {
         guard held() == nil else { return }
@@ -271,15 +278,17 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
 
     // MARK: - The socket
 
-    /// A socket event the session routed here: a zone change is a pull of that zone (R9; the
+    /// A socket event the session routed here: a zone change whose records continue the zone's
+    /// cursor is buffered from the event (`applyInline`), any other is a pull of that zone (R9; the
     /// connection sends a record-less one per zone after every connect, so a reconnect pulls
     /// both), a connect flushes the plain queue, a refusal goes to `relayEvents`. Controls and the
     /// account state are the session's (`session.events`).
     /// `generation`: the attach the event was routed to (nil: the current one).
     func handle(_ event: HostedRelayClientEvent, generation: Int? = nil) async {
         switch event {
-        case .zoneChanged(let zone, _):
-            let lanes = cloudZones(zone)
+        case let .zoneChanged(zone, seq, records):
+            // The lanes the event's own records do not bring up to date are read (live link R1).
+            let lanes = cloudZones(zone).filter { !applyInline(zone: $0, seq: seq, records: records) }
             guard !lanes.isEmpty else { return }
             do {
                 try await pullZones(Set(lanes))

@@ -14,17 +14,21 @@ struct AutomationListRow: View {
     let now: Date
     /// The organization's policy blocks it (#608, `AutomationPolicyBlock`).
     var policyBlocked = false
+    /// Background AI is paused: a recipe it holds reads Waiting (#1886).
+    let backgroundAI: BackgroundAIConsent.State
     let onSelect: () -> Void
 
     var body: some View {
-        let state = policyBlocked ? .chip(.blockedByPolicy) : AutomationRowPresentation.state(item, now: now)
+        let state = policyBlocked
+            ? .chip(.blockedByPolicy)
+            : AutomationRowPresentation.state(item, now: now, consent: backgroundAI)
         AutomationRowContent(
             isOn: AutomationRowPresentation.isOn(item),
             isDraft: false,
             name: item.automation.name.isEmpty ? item.automation.slug : item.automation.name,
             state: state,
             summary: AutomationRowPresentation.summary(item),
-            line: AutomationRowPresentation.line(item, changes: changes, now: now),
+            line: AutomationRowPresentation.line(item, changes: changes, now: now, consent: backgroundAI),
             lineIsWarning: AutomationRowPresentation.isFailed(item)
         )
         .panelTab(isSelected: isSelected)
@@ -165,7 +169,7 @@ private struct AutomationRowContent: View {
     @ViewBuilder private var stateView: some View {
         switch state {
         case let .chip(chip):
-            Chip(text: chip.title, color: Self.color(chip))
+            Chip(text: chip.title, color: Self.color(chip), dot: chip == .waitingForBackgroundAI)
         case .failed:
             stateText("failed").foregroundStyle(Tone.warning)
         case .off:
@@ -190,6 +194,7 @@ private struct AutomationRowContent: View {
         case .cantRead: Tone.error
         case .draft: Color.accentColor
         case .blockedByPolicy: Color.secondary
+        case .waitingForBackgroundAI: Tone.status("gray")
         }
     }
 }

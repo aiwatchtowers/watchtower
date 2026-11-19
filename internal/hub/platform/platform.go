@@ -3,10 +3,8 @@
 // work alerts push only then; workbench-remote spec §5.1) and the keep-awake
 // power assertion (the Swift MacAwakeAssertion), both read and taken through
 // cgo on darwin (on linux there is no console to sit at, so the owner is
-// always away, and there is no keep-awake) — and PeerUID, the user of the
-// process at the other end of a unix socket (LOCAL_PEERCRED on darwin,
-// SO_PEERCRED on linux, refused elsewhere), which the hub's control socket
-// and the CloudKit bridge client check.
+// always away, and there is no keep-awake). A socket peer's uid lives in the
+// neutral watchtower/internal/platform.
 package platform
 
 import "time"

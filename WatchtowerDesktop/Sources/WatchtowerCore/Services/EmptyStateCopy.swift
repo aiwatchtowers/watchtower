@@ -50,6 +50,9 @@ package enum EmptyStateAction: Equatable, Sendable {
     case openBuiltin(id: String, label: String)
     /// The tab's own existing action (e.g. "Build a recap").
     case tabAction(label: String)
+    /// Opens the background AI consent screen; shown only when readiness is
+    /// `.backgroundAIPaused(managed: false)` (#1886).
+    case allowBackgroundAI
 }
 
 /// The per-tab copy (first-run spec §1.5). UI text is English only.
@@ -116,6 +119,12 @@ package enum EmptyStateCopyTable {
         // Needs approval: the title says it all.
         "inboxApprovals": EmptyStateCopy(
             icon: "checkmark.circle", title: "Nothing waits for your approval", landsHere: "",
+            feature: nil, primaryAction: nil),
+        // The Inbox's Watchman entry before its first night (C1, `WatchmanJournalCopy.emptyCopyKey`).
+        "inboxWatchman": EmptyStateCopy(
+            icon: "moon.stars", title: "No night yet",
+            landsHere: "When you hand a session to Watchman and leave, the decisions it takes for you land here: "
+                + "what was asked, what it chose, why, and how sure it was.",
             feature: nil, primaryAction: nil),
         // The Inbox's Messages legacy list (`InboxLegacyList.emptyCopyKey`).
         "inboxMessages": EmptyStateCopy(

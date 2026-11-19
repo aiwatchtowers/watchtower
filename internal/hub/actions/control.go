@@ -511,14 +511,17 @@ func deleteClass(err error, out []transport.Outcome) string {
 // feed and is answered then — except that an echo replaces the hub's own
 // older record at its name.
 func (p *Processor) FlushControls(ctx context.Context) (written, failed int, err error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.run.RLock()
+	defer p.run.RUnlock()
 	if p.paused.Load() {
 		return 0, 0, nil
 	}
 	return p.flushAll(ctx)
 }
 
+// flushAll writes every linked phone's queue, each under its own flush
+// lock, never p.mu: a pass applying another mailbox's page, and a write to
+// another mailbox, go on meanwhile.
 func (p *Processor) flushAll(ctx context.Context) (written, failed int, err error) {
 	boxes, err := p.mailboxes()
 	if err != nil {
@@ -526,7 +529,7 @@ func (p *Processor) flushAll(ctx context.Context) (written, failed int, err erro
 	}
 	var errs []error
 	for _, b := range boxes {
-		w, f, err := p.flushMailbox(ctx, b)
+		w, f, err := p.flushQueue(ctx, b)
 		written, failed = written+w, failed+f
 		if err != nil {
 			// One phone's failure never holds back the others' queues.
@@ -537,8 +540,21 @@ func (p *Processor) flushAll(ctx context.Context) (written, failed int, err erro
 	return written, failed, errors.Join(errs...)
 }
 
+// flushBox writes b's queue now (a claim's received echo, a late echo).
+func (p *Processor) flushBox(ctx context.Context, b mailbox) error {
+	_, _, err := p.flushQueue(ctx, b)
+	return err
+}
+
+// flushQueue is flushMailbox under b's queue's flush lock.
+func (p *Processor) flushQueue(ctx context.Context, b mailbox) (written, failed int, err error) {
+	defer p.flushLock(b.queue)()
+	return p.flushMailbox(ctx, b)
+}
+
 // flushMailbox writes b's queue in order; failed counts rows that did not
-// land this time (the first one stops the mailbox).
+// land this time (the first one stops the mailbox). b's queue's flush lock
+// is held.
 func (p *Processor) flushMailbox(ctx context.Context, b mailbox) (written, failed int, err error) {
 	zone := b.zone
 	// Rows queued while the phone's mailbox had the other shape (its own

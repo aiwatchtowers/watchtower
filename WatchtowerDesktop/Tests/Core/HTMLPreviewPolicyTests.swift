@@ -1,6 +1,7 @@
 import WebKit
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 final class HTMLPreviewPolicyTests: XCTestCase {
     private let page = URL(string: "wtpreview://0a1b/index.html")!

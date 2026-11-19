@@ -8,13 +8,12 @@ import WatchtowerTestSupport
 /// The chat project page (spec 2026-10-26 §7) on fixed sample data: three
 /// chats, instructions, two files and two pinned sources — or, `empty`, a
 /// fresh project. One database per variant, made on first use and removed
-/// by `cleanUp`; no session process is ever started (nothing is typed).
+/// by `cleanUp`; nothing reaches an engine (nothing is typed).
 @MainActor
 enum ProjectPageShotFixtures {
     private struct Fixture {
         let manager: DatabaseManager
         let path: String
-        let pool: ChatSessionPool
         let chatVM: ChatViewModel
         let projectID: Int64
     }
@@ -34,10 +33,8 @@ enum ProjectPageShotFixtures {
                     projectID: fixture.projectID,
                     chatVM: fixture.chatVM,
                     dbPool: fixture.manager.dbPool,
-                    attachmentsRoot: nil,
-                    modelSuggestions: [],
                     maxComposerHeight: 200,
-                    onOpenChat: { _ in }, onRenamed: {}, onDeleted: { _ in }, onPromptChanged: { _ in }
+                    onOpenChat: { _ in }, onDeleted: { _ in }
                 )
                 .detailBackground()
             )
@@ -75,11 +72,9 @@ enum ProjectPageShotFixtures {
             try ChatProjectQueries.addSource(db, projectID: project.id, kind: .slackChannel, ref: "1:C1", label: "#acme-research")
             return project.id
         }
-        let pool = ChatSessionPool(dbPool: manager.dbPool) { FakeChatSessionProcess(arguments: $0) }
-        let defaults = UserDefaults(suiteName: DesignShotFixtures.defaultsSuite) ?? .standard
-        let chatVM = ChatViewModel(dbManager: manager, pool: pool, defaults: defaults, attachmentsRoot: nil)
+        let chatVM = ChatViewModel(client: DatabaseProjectClient(db: manager.dbPool), dbPool: manager.dbPool)
         chatVM.openProject(projectID)
-        let fixture = Fixture(manager: manager, path: path, pool: pool, chatVM: chatVM, projectID: projectID)
+        let fixture = Fixture(manager: manager, path: path, chatVM: chatVM, projectID: projectID)
         fixtures[empty] = fixture
         return fixture
     }

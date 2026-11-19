@@ -238,7 +238,5 @@ final class TuningChatSurfaceTests: XCTestCase {
         let conv = try await TuningChatSurface.latestOrNewConversation(dbPool: pool, workbenchID: 3)
         let standalone = try await pool.read { try ChatConversationQueries.fetchStandalone($0) }.map(\.id)
         XCTAssertFalse(standalone.contains(conv))
-        let panel = try await pool.read { try ChatHistoryQueries.panelRows($0, projectID: nil) }
-        XCTAssertFalse(panel.contains { $0.conversation.id == conv })
     }
 }

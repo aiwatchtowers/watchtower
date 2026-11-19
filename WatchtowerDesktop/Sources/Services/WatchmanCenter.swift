@@ -11,7 +11,15 @@ import WatchtowerCore
 ///
 /// Both owner verbs block until the CLI finishes (a backtest takes minutes);
 /// meanwhile `watch()` rereads the status every `pollInterval` for the
-/// progress line. Nothing here writes the database.
+/// progress line. Phase 2 adds editing (`editing`): each learned workbench's
+/// `profile --json` with `profile set|unpin` (category texts and the sleep
+/// window) and `limits list|add|remove`. Every write goes through the CLI;
+/// nothing here writes the database.
+///
+/// Phase 2 (#1823, D47): the arming controls — Hand to Watchman / Take back
+/// on the session strip and the target panel, the tray's Hand all running
+/// sessions — go through `watchman arm|disarm --json` (one implementation of
+/// arming, its sidecar and git hooks) and read the arming from the status.
 @MainActor
 @Observable
 final class WatchmanCenter {
@@ -20,6 +28,8 @@ final class WatchmanCenter {
     nonisolated static let backtestTimeout: TimeInterval = 6 * 3600
     /// The first learning pass runs under its own budget in the CLI.
     nonisolated static let learnTimeout: TimeInterval = 2 * 3600
+    /// `profile set|unpin`, `limits add|remove`: one row write each.
+    nonisolated static let editTimeout: TimeInterval = 60
 
     private(set) var state: WatchmanSettingsState = .loading
     /// Workbenches whose `learn --start` this app runs now.
@@ -31,20 +41,57 @@ final class WatchmanCenter {
     /// A reread that failed while a status is on screen: the screen keeps
     /// the last status and shows this line.
     private(set) var readError: String?
+    /// Profiles, limits and the lines of their failed reads and edits.
+    private(set) var editing = WatchmanEditingData()
+
+    /// The last status read: the arming the controls show; nil before one.
+    private(set) var lastStatus: WatchmanStatus?
+    /// Arming scopes whose `arm`/`disarm` (or its check) this app runs now.
+    private(set) var armingHere: Set<WatchmanArmScope> = []
+    /// One line per scope under its control: a failed arm or take back.
+    private(set) var armNotices: [WatchmanArmScope: String] = [:]
+    /// The arm sheet on screen (the check said a first time or a warning).
+    var sheet: WatchmanArmSheetRequest?
+    /// The sheet's confirm checks the running sessions again now.
+    private(set) var confirming = false
+    /// A session's title for the arm sheet's list; AppState wires the
+    /// workbench sessions. nil: "Session N".
+    @ObservationIgnored var sessionTitle: (Int64) -> String? = { _ in nil }
 
     @ObservationIgnored private let runner: any CLIRunnerProtocol
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
-    @ObservationIgnored private var lastStatus: WatchmanStatus?
+    /// The status read the controls started and that runs now: controls
+    /// appearing together share it.
+    @ObservationIgnored private var inFlightRead: Task<Void, Never>?
     /// Bumped by every read: an older reply never overwrites a newer one.
     @ObservationIgnored private var readToken = 0
+    /// Bumped by every limits read, and per workbench by every profile read.
+    @ObservationIgnored private var limitsToken = 0
+    @ObservationIgnored private var profileTokens: [Int64: Int] = [:]
+    /// Learned workbenches whose profile read ended (read or failed) since
+    /// the last `refresh()`; a cancelled read leaves its workbench out, so
+    /// the next read retries it.
+    @ObservationIgnored private var profilesAsked: Set<Int64> = []
+    /// Bumped by `refresh()`: a profile read started before it never marks
+    /// its workbench read for the new round.
+    @ObservationIgnored private var profileGeneration = 0
 
+    /// `status`: one already read (a design shot draws the controls on it);
+    /// the app reads its own on first use.
     init(
         runner: any CLIRunnerProtocol,
-        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        status: WatchmanStatus? = nil
     ) {
         self.runner = runner
         self.sleep = sleep
+        lastStatus = status
+        daemon = status?.daemon ?? .unknown
     }
+
+    /// `daemon_running` of the last status read; unknown before one, or
+    /// from a CLI that does not print it (the journal's daemon line).
+    private(set) var daemon: WatchmanDaemonState = .unknown
 
     /// A learning pass or a backtest is under way here or in the daemon.
     var needsPolling: Bool {
@@ -74,14 +121,29 @@ final class WatchmanCenter {
             let data = try await runner.run(args: ["watchman", "status", "--json"])
             let status = try JSONDecoder().decode(WatchmanStatus.self, from: data)
             guard token == readToken else { return }
-            guard status.ok else { return readFailed(Self.replyError(data) ?? "the status reply was not ok") }
-            lastStatus = status
-            readError = nil
-            apply()
+            if status.ok {
+                lastStatus = status
+                daemon = status.daemon
+                readError = nil
+                apply()
+            } else {
+                readFailed(Self.replyError(data) ?? "the status reply was not ok")
+            }
         } catch {
             guard token == readToken, !(error is CancellationError) else { return }
             readFailed(Self.message(error))
         }
+        // Also after a failed read: the workbenches of the last status read.
+        await loadNewProfiles()
+    }
+
+    /// Reads everything again: the status, each learned workbench's
+    /// profile and the limits. Opening Settings and **Retry** run it.
+    func refresh() async {
+        profilesAsked.removeAll()
+        profileGeneration += 1
+        await load()
+        await loadLimits()
     }
 
     /// Replaces the section only when no status was read yet.
@@ -96,7 +158,7 @@ final class WatchmanCenter {
     /// Reads once, then again every `pollInterval` while something runs.
     /// The view restarts it whenever `needsPolling` changes.
     func watch() async {
-        await load()
+        await refresh()
         while needsPolling, !Task.isCancelled {
             do { try await sleep(Self.pollInterval) } catch { return }
             guard !Task.isCancelled else { return }
@@ -111,7 +173,7 @@ final class WatchmanCenter {
         notices[workbench] = nil
         apply()
         let args = ["watchman", "learn", "--workbench", String(workbench), "--start", "--json"]
-        let failure = await call(args, timeout: Self.learnTimeout).failure
+        let failure = await call(args, origin: .owner, timeout: Self.learnTimeout).failure
         learningHere.remove(workbench)
         if let failure { notices[workbench] = WatchmanSettingsCopy.learnFailed(failure) }
         await load()
@@ -124,7 +186,7 @@ final class WatchmanCenter {
         notices[workbench] = nil
         apply()
         let args = ["watchman", "backtest", "--workbench", String(workbench), "--json"]
-        let outcome = await call(args, timeout: Self.backtestTimeout)
+        let outcome = await call(args, origin: .owner, timeout: Self.backtestTimeout)
         backtestHere.remove(workbench)
         // A run that started and failed is a `failed` row the status shows
         // with its error; the notice is only for a call that never got that far.
@@ -132,6 +194,360 @@ final class WatchmanCenter {
             notices[workbench] = failure == "busy" ? WatchmanSettingsCopy.busy : failure
         }
         await load()
+    }
+
+    // MARK: - Arming
+
+    /// `arm` and `disarm` print their reply at once, after the branch
+    /// protection check (15 s budget) at most.
+    nonisolated static let armTimeout: TimeInterval = 120
+
+    /// Why the controls have no fresh arming to show: the last read failed
+    /// (with or without an older status on screen); nil otherwise.
+    var armingReadError: String? {
+        if let readError { return readError }
+        if case let .readFailed(message) = state { return message }
+        return nil
+    }
+
+    /// Rereads the status for a control, the panel or the tray that became
+    /// visible (an arm made elsewhere shows then). No timer: only appearing
+    /// rereads. Reads already running are shared, not repeated.
+    func reread() async {
+        if let inFlightRead { return await inFlightRead.value }
+        let read = Task { await load() }
+        inFlightRead = read
+        await read.value
+        inFlightRead = nil
+    }
+
+    /// Hand to Watchman: `arm --check` first; a first time on a workbench or
+    /// a warning opens the arm sheet, otherwise it arms. `workbench` names
+    /// the sheet (nil: every running session, the tray). True when the
+    /// sheet opened — the tray then brings the main window up for it.
+    @discardableResult
+    func handTo(_ scope: WatchmanArmScope, workbench: String?) async -> Bool {
+        guard armingHere.insert(scope).inserted else { return false }
+        armNotices[scope] = nil
+        let check = await check(scope)
+        armingHere.remove(scope)
+        switch check {
+        case let .failed(message):
+            armNotices[scope] = WatchmanArmingCopy.armFailed(message)
+            return false
+        case let .reply(reply):
+            if let refusal = Self.allRunningRefusal(scope, reply) {
+                armNotices[scope] = refusal
+                return false
+            }
+            guard reply.needsSheet else {
+                // `--only` goes with every running session only (the CLI
+                // refuses it with --session or --target).
+                await arm(scope, only: scope == .allRunning ? reply.sessions ?? [] : [])
+                return false
+            }
+            let title = workbench.map(WatchmanArmingCopy.sheetTitle(workbench:)) ?? WatchmanArmingCopy.sheetTitleAllRunning
+            sheet = makeSheet(scope, title: title, reply: reply)
+            return true
+        }
+    }
+
+    /// The tray's Hand all running sessions to Watchman: the same check and
+    /// sheet as a control's. True when the sheet opened.
+    func handAllRunning() async -> Bool {
+        await handTo(.allRunning, workbench: nil)
+    }
+
+    /// The arm sheet's Hand to Watchman: arms its scope and closes it.
+    /// Every running session (the tray) is checked again first: when the
+    /// running set changed since the sheet opened, the sheet shows the new
+    /// set and asks again; otherwise exactly the confirmed sessions are armed
+    /// (`--only`), so a session started meanwhile is never armed unseen. One
+    /// confirm at a time; a sheet dismissed during the check arms nothing.
+    /// `token` is the sheet the button was pressed on: a sheet replaced
+    /// before this runs is not confirmed.
+    func confirmSheet(token: UUID) async {
+        guard !confirming, let request = sheet, request.token == token else { return }
+        guard request.scope == .allRunning else {
+            sheet = nil
+            await arm(request.scope)
+            return
+        }
+        confirming = true
+        let check = await check(.allRunning)
+        confirming = false
+        // Another sheet (or none) since the press: this confirm is void.
+        guard sheet?.token == request.token else { return }
+        switch check {
+        case let .failed(message):
+            sheet = nil
+            armNotices[.allRunning] = WatchmanArmingCopy.armFailed(message)
+        case let .reply(reply):
+            if let refusal = Self.allRunningRefusal(.allRunning, reply) {
+                sheet = nil
+                armNotices[.allRunning] = refusal
+            } else if Set(reply.sessions ?? []) != Set(request.sessions) {
+                sheet = makeSheet(.allRunning, title: request.title, reply: reply, notice: WatchmanArmingCopy.sessionsChanged)
+            } else {
+                sheet = nil
+                await arm(.allRunning, only: request.sessions)
+            }
+        }
+    }
+
+    /// Every running session is armed only as an explicit set: a check that
+    /// lists none (nothing runs) or cannot list them (an older CLI) stops here.
+    private static func allRunningRefusal(_ scope: WatchmanArmScope, _ reply: WatchmanArmReply) -> String? {
+        guard scope == .allRunning else { return nil }
+        guard let sessions = reply.sessions else { return WatchmanArmingCopy.updateCLI }
+        return sessions.isEmpty ? WatchmanArmingCopy.nothingToHandOver : nil
+    }
+
+    private func makeSheet(
+        _ scope: WatchmanArmScope, title: String, reply: WatchmanArmReply, notice: String? = nil
+    ) -> WatchmanArmSheetRequest {
+        let sessions = reply.sessions ?? []
+        let names = sessions.map { id in sessionTitle(id).map { "#\(id) \($0)" } ?? WatchmanArmingCopy.sessionFallback(id) }
+        return WatchmanArmSheetRequest(
+            scope: scope, title: title, sessions: sessions,
+            content: WatchmanArmSheetContent(title: title, reply: reply, sessions: names, notice: notice))
+    }
+
+    /// `watchman arm --check`: writes nothing.
+    func check(_ scope: WatchmanArmScope) async -> WatchmanArmCheck {
+        let outcome = await call(["watchman", "arm"] + scope.flags() + ["--check", "--json"], timeout: Self.armTimeout)
+        if let failure = outcome.failure { return .failed(failure) }
+        guard let reply = try? JSONDecoder().decode(WatchmanArmReply.self, from: outcome.stdout) else {
+            return .failed(WatchmanArmingCopy.replyUnreadable)
+        }
+        return .reply(reply)
+    }
+
+    /// `watchman arm`, then the status again. The scope's notice is the
+    /// failure, or what the reply has to say (warnings, the D21 line, the
+    /// sidecar note); an unreadable reply after exit 0 lets the status say.
+    /// A press while the scope's arm or Take back runs does nothing (nil).
+    @discardableResult
+    func arm(_ scope: WatchmanArmScope, only: [Int64] = []) async -> WatchmanArmReply? {
+        // Every running session only ever as an explicit set.
+        if scope == .allRunning, only.isEmpty {
+            armNotices[scope] = WatchmanArmingCopy.nothingToHandOver
+            return nil
+        }
+        // One arm of a scope at a time, as one Take back.
+        guard armingHere.insert(scope).inserted else { return nil }
+        armNotices[scope] = nil
+        let onlyFlags = scope != .allRunning || only.isEmpty ? [] : ["--only", only.map(String.init).joined(separator: ",")]
+        let outcome = await call(["watchman", "arm"] + scope.flags() + onlyFlags + ["--json"], timeout: Self.armTimeout)
+        armingHere.remove(scope)
+        let reply = try? JSONDecoder().decode(WatchmanArmReply.self, from: outcome.stdout)
+        if let failure = outcome.failure {
+            armNotices[scope] = WatchmanArmingCopy.armFailed(failure)
+        } else if let reply {
+            armNotices[scope] = WatchmanArmingCopy.armedNotice(reply)
+        } else {
+            armNotices[scope] = WatchmanArmingCopy.rereading
+        }
+        await load()
+        return outcome.failure == nil ? reply : nil
+    }
+
+    /// Take back: `watchman disarm`, then the status again.
+    func disarm(_ scope: WatchmanArmScope) async {
+        guard armingHere.insert(scope).inserted else { return }
+        armNotices[scope] = nil
+        let outcome = await call(["watchman", "disarm"] + scope.flags(disarm: true) + ["--json"], timeout: Self.armTimeout)
+        armingHere.remove(scope)
+        if let failure = outcome.failure {
+            armNotices[scope] = WatchmanArmingCopy.takeBackFailed(failure)
+        } else if let reply = try? JSONDecoder().decode(WatchmanDisarmReply.self, from: outcome.stdout),
+                  !reply.sidecarError.isEmpty {
+            armNotices[scope] = WatchmanArmingCopy.takeBackSidecarNote
+        }
+        await load()
+    }
+
+    // MARK: - Editing (phase 2)
+
+    /// Reads the profile of each workbench the last status shows learned
+    /// and whose read has not ended since `refresh()`, also while polling
+    /// goes on for another. A failed read keeps what was read before and
+    /// shows its line.
+    private func loadNewProfiles() async {
+        for row in lastStatus?.workbenches ?? [] where row.isLearned && !profilesAsked.contains(row.workbench) {
+            let generation = profileGeneration
+            if await loadProfile(workbench: row.workbench), generation == profileGeneration {
+                profilesAsked.insert(row.workbench)
+            }
+        }
+    }
+
+    private func loadLimits() async {
+        limitsToken += 1
+        let token = limitsToken
+        do {
+            let data = try await runner.run(args: ["watchman", "limits", "list", "--json"])
+            let limits = try JSONDecoder().decode(WatchmanLimits.self, from: data)
+            guard token == limitsToken else { return }
+            editing.limits = limits
+            editing.limitsReadError = nil
+        } catch {
+            guard token == limitsToken, !(error is CancellationError) else { return }
+            editing.limitsReadError = Self.message(error)
+        }
+    }
+
+    /// True only when this read published its profile or its error; false
+    /// when it was cancelled or a newer read overtook it.
+    @discardableResult
+    private func loadProfile(workbench: Int64) async -> Bool {
+        let token = (profileTokens[workbench] ?? 0) + 1
+        profileTokens[workbench] = token
+        do {
+            let data = try await runner.run(args: ["watchman", "profile", "--workbench", String(workbench), "--json"])
+            let profile = try JSONDecoder().decode(WatchmanProfile.self, from: data)
+            guard profileTokens[workbench] == token else { return false }
+            editing.profiles[workbench] = profile
+            editing.profileReadErrors[workbench] = nil
+        } catch {
+            if error is CancellationError { return false }
+            guard profileTokens[workbench] == token else { return false }
+            editing.profileReadErrors[workbench] = Self.message(error)
+        }
+        return true
+    }
+
+    /// Saves and pins a category's text or, under `sleep_window`, the sleep
+    /// window: checked here first (the window's `HH:MM-HH:MM`, a text's 1–20
+    /// lines), then written to a temporary file for `profile set
+    /// --text-file`. True once saved, so the editor closes; otherwise the
+    /// entry's line says why.
+    @discardableResult
+    func saveProfile(workbench: Int64, key: String, text: String) async -> Bool {
+        let slot = WatchmanEditSlot.profile(workbench: workbench, key: key)
+        let checked = key == WatchmanProfileEntry.sleepWindowKey ? Self.sleepWindow(text) : Self.profileText(text)
+        let value: String
+        switch checked {
+        case let .success(text): value = text
+        case let .failure(problem):
+            editing.errors[slot] = problem.line
+            return false
+        }
+        guard editing.saving.insert(slot).inserted else { return false }
+        defer { editing.saving.remove(slot) }
+        editing.errors[slot] = nil
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("watchman-profile-\(UUID().uuidString).txt")
+        do {
+            try Data(value.utf8).write(to: file, options: .atomic)
+        } catch {
+            editing.errors[slot] = WatchmanSettingsCopy.saveFailed(SessionReportCenter.errorLine(error))
+            return false
+        }
+        // The CLI has read it by the time it exits; a leftover file in the temporary directory is harmless.
+        defer { try? FileManager.default.removeItem(at: file) }
+        let args = ["watchman", "profile", "set", "--workbench", String(workbench), "--key", key,
+                    "--text-file", file.path]
+        if let failure = await call(args, timeout: Self.editTimeout).failure {
+            editing.errors[slot] = WatchmanSettingsCopy.saveFailed(failure)
+            return false
+        }
+        await reloadAfterProfileChange(workbench: workbench, key: key)
+        return true
+    }
+
+    /// Unpins an entry: the next weekly rebuild replaces it.
+    func unpin(workbench: Int64, key: String) async {
+        let slot = WatchmanEditSlot.profile(workbench: workbench, key: key)
+        guard editing.saving.insert(slot).inserted else { return }
+        defer { editing.saving.remove(slot) }
+        editing.errors[slot] = nil
+        let args = ["watchman", "profile", "unpin", "--workbench", String(workbench), "--key", key]
+        if let failure = await call(args, timeout: Self.editTimeout).failure {
+            editing.errors[slot] = WatchmanSettingsCopy.unpinFailed(failure)
+            return
+        }
+        await reloadAfterProfileChange(workbench: workbench, key: key)
+    }
+
+    /// Adds an owner's limit after the same checks the CLI makes
+    /// (`ValidateLimitPattern`; an unclosed quote is left to the CLI, whose
+    /// error shows). True once added, so the form closes.
+    @discardableResult
+    func addLimit(kind: WatchmanLimitKind, pattern: String) async -> Bool {
+        let pattern = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let problem = Self.limitProblem(kind: kind, pattern: pattern) {
+            editing.errors[.limits] = problem
+            return false
+        }
+        guard editing.saving.insert(.limits).inserted else { return false }
+        defer { editing.saving.remove(.limits) }
+        editing.errors[.limits] = nil
+        // `=` keeps a pattern that starts with "-" a value, not a flag.
+        let args = ["watchman", "limits", "add", "--kind=\(kind.rawValue)", "--pattern=\(pattern)"]
+        if let failure = await call(args, timeout: Self.editTimeout).failure {
+            editing.errors[.limits] = WatchmanSettingsCopy.addFailed(failure)
+            return false
+        }
+        await loadLimits()
+        return true
+    }
+
+    /// Removes an owner's limit; a built-in row has no id to pass.
+    func removeLimit(id: Int64) async {
+        guard editing.saving.insert(.limits).inserted else { return }
+        defer { editing.saving.remove(.limits) }
+        editing.errors[.limits] = nil
+        if let failure = await call(["watchman", "limits", "remove", "--id", String(id)], timeout: Self.editTimeout).failure {
+            editing.errors[.limits] = WatchmanSettingsCopy.removeFailed(failure)
+            return
+        }
+        await loadLimits()
+    }
+
+    /// Drops an edit's line (the owner cancelled or opened the editor again).
+    func clearError(_ slot: WatchmanEditSlot) {
+        editing.errors[slot] = nil
+    }
+
+    private func reloadAfterProfileChange(workbench: Int64, key: String) async {
+        await loadProfile(workbench: workbench)
+        // The sleep section reads the window and its pin from the status.
+        if key == WatchmanProfileEntry.sleepWindowKey { await load() }
+    }
+
+    struct EditProblem: Error, Equatable {
+        let line: String
+    }
+
+    /// `"00:30-07:45"` as the CLI stores it (ASCII digits only); the edges
+    /// are trimmed, and an en dash (as the screen shows it) and spaces
+    /// around the dash are accepted.
+    static func sleepWindow(_ text: String) -> Result<String, EditProblem> {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "–", with: "-")
+        let window = #/(?<start>(?:[01][0-9]|2[0-3]):[0-5][0-9]) *- *(?<end>(?:[01][0-9]|2[0-3]):[0-5][0-9])/#
+        guard let match = trimmed.wholeMatch(of: window) else {
+            return .failure(EditProblem(line: WatchmanSettingsCopy.sleepBadFormat))
+        }
+        return .success("\(match.output.start)-\(match.output.end)")
+    }
+
+    /// A category text: its non-blank lines, 1 to 20 of them.
+    static func profileText(_ text: String) -> Result<String, EditProblem> {
+        let lines = WatchmanProfileEntry(key: "", text: text, pinned: false, updatedAt: "").lines
+        if lines.isEmpty { return .failure(EditProblem(line: WatchmanSettingsCopy.profileEmptyText)) }
+        if lines.count > WatchmanProfileEntry.maxLines {
+            return .failure(EditProblem(line: WatchmanSettingsCopy.profileTooLong(lines: lines.count)))
+        }
+        return .success(lines.joined(separator: "\n"))
+    }
+
+    /// The form's line for a pattern the CLI would refuse; nil when it may go.
+    static func limitProblem(kind: WatchmanLimitKind, pattern: String) -> String? {
+        if pattern.isEmpty { return WatchmanSettingsCopy.limitEmptyPattern }
+        if pattern.contains(where: \.isNewline) { return WatchmanSettingsCopy.limitOneLine }
+        if kind == .tool, pattern.contains(where: \.isWhitespace) { return WatchmanSettingsCopy.limitToolBlanks }
+        return nil
     }
 
     // MARK: - Private
@@ -142,10 +558,17 @@ final class WatchmanCenter {
     }
 
     /// Runs an owner verb: its stdout and, unless it succeeded, its error
-    /// line (`"busy"` when the Watchman lock is held).
-    private func call(_ args: [String], timeout: TimeInterval) async -> (failure: String?, stdout: Data) {
+    /// line (`"busy"` when the Watchman lock is held). A verb that calls a
+    /// model (`learn`, `backtest`: `ModelCommands`) names its origin.
+    private func call(
+        _ args: [String], origin: CLIOrigin? = nil, timeout: TimeInterval
+    ) async -> (failure: String?, stdout: Data) {
         do {
-            let result = try await runner.capture(args: args, timeout: timeout)
+            let result = if let origin {
+                try await runner.captureModel(args: args, origin: origin, timeout: timeout)
+            } else {
+                try await runner.capture(args: args, timeout: timeout)
+            }
             if let error = Self.replyError(result.stdout) { return (error, result.stdout) }
             guard result.exitCode != 0 else { return (nil, result.stdout) }
             let line = result.stderr.split(whereSeparator: \.isNewline).first.map(String.init)
@@ -188,4 +611,17 @@ final class WatchmanCenter {
         }
         return SessionReportCenter.errorLine(error)
     }
+}
+
+/// The arm sheet of one control: the scope it arms and what it shows.
+struct WatchmanArmSheetRequest: Identifiable, Equatable {
+    let scope: WatchmanArmScope
+    let title: String
+    /// The sessions the check covered: the set the owner confirms.
+    let sessions: [Int64]
+    let content: WatchmanArmSheetContent
+    /// Unique per presented sheet: a confirm acts only on the sheet it was
+    /// pressed on.
+    let token = UUID()
+    var id: UUID { token }
 }

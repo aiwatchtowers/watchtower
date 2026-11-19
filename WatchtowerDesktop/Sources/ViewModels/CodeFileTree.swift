@@ -36,9 +36,13 @@ final class CodeFileTree {
         self.root = root
     }
 
+    /// The root row is open (board #2017): closed, the tree shows no rows.
+    var isRootExpanded: Bool { expanded.contains("") }
+
     /// The visible rows, depth-first: the children of every expanded
-    /// directory under its row.
+    /// directory under its row; none while the root is closed.
     var rows: [Row] {
+        guard isRootExpanded else { return [] }
         var out: [Row] = []
         append(children: "", depth: 0, into: &out)
         return out
@@ -52,6 +56,7 @@ final class CodeFileTree {
         }
     }
 
+    /// "" toggles the root row.
     func toggle(_ dir: String) {
         if expanded.contains(dir) {
             expanded.remove(dir)
@@ -60,8 +65,10 @@ final class CodeFileTree {
         }
     }
 
-    /// Opens `dir` and every folder above it (a new entry is created there).
+    /// Opens `dir`, every folder above it and the root (a new entry is
+    /// created there).
     func expand(_ dir: String) {
+        expanded.insert("")
         var path = dir
         while !path.isEmpty {
             if !expanded.contains(path) {
@@ -72,6 +79,7 @@ final class CodeFileTree {
         }
     }
 
+    /// Closes every folder; the root stays open.
     func collapseAll() {
         expanded = [""]
     }

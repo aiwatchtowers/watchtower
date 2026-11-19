@@ -1,5 +1,7 @@
 import AppKit
 import WatchtowerCore
+import WatchtowerChatText
+import ChatUI
 
 /// Rendered text → `NSAttributedString`, laid out the way the chat's
 /// `MarkdownView` reads it: fonts per style run, lists hanging under their

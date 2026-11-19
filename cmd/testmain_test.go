@@ -9,7 +9,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"watchtower/internal/aiconsent"
+	"watchtower/internal/aiconsent/aiconsenttest"
 	"watchtower/internal/auditlog"
+	"watchtower/internal/chat/listenstub"
 	"watchtower/internal/codex"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
@@ -60,6 +63,12 @@ import (
 func TestMain(m *testing.M) {
 	// Read tests' audit lines stay out of the machine's unified log.
 	auditlog.SetSinkForTest(func(string) {})
+	// Background AI reads allowed unless a test injects a consent reader.
+	aiconsenttest.AllowByDefault()
+	// The `ai session --listen` stand-in (sync stop's chat tests).
+	if os.Getenv(listenstub.Env) == "1" {
+		listenstub.Main()
+	}
 	if len(os.Args) == 3 && os.Args[1] == extractPDFTextCmd.Name() {
 		if err := extract.ServePDFHelper(os.Stdout, os.Stderr, os.Args[2]); err != nil {
 			os.Exit(1)
@@ -69,6 +78,11 @@ func TestMain(m *testing.M) {
 	// The test binary as the real CLI (os.Args[1:] are its arguments), for
 	// tests that need a process: signals, stdin EOF, exit codes.
 	if os.Getenv(runCLIEnv) == "1" {
+		// The consent end-to-end test's CLI reads ai.background_runs from
+		// its config.yaml, as the shipped binary does (test binary only).
+		if os.Getenv(realConsentEnv) == "1" {
+			aiconsent.SetCurrentOverrideForTest(nil)
+		}
 		// The owner-confirm argv test's listener is this test binary, not
 		// the signed app: its subprocess trusts the peer (test binary only).
 		if os.Getenv(trustTestPeerEnv) == "1" {
@@ -112,6 +126,14 @@ func TestMain(m *testing.M) {
 	askOwnerDesktop = func(context.Context, string, ownerconfirm.Request) (ownerconfirm.Reply, error) {
 		return ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil
 	}
+	// No cmd test may ask GitHub for a branch protection through a real gh;
+	// the arm tests that want one put a fake gh on PATH (withFakeGh).
+	watchmanProtectionRun = func(context.Context, string, string, ...string) ([]byte, error) {
+		return nil, errors.New("gh is stubbed out in cmd tests")
+	}
+	// No cmd test may call Slack: `slack remove` revokes at a refused local
+	// port unless a test points slackRevokeAPIURL at its own server.
+	slackRevokeAPIURL = "http://127.0.0.1:1/"
 	// No git a cmd test starts may leave maintenance writing into a
 	// t.TempDir repository after it returns.
 	gittest.DisableBackgroundGit()

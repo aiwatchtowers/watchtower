@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import WatchtowerCore
+import ChatUI
 
 /// Chat-first creation composer (spec §9.5): one multiline editor, a permanent
 /// key-hint caption, the Extract affordance as a secondary control, and an

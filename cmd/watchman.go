@@ -9,7 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/config"
+	"watchtower/internal/daemon"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/instructions"
@@ -41,6 +43,13 @@ var (
 		return digest.WithCallTimeout(cliGenerator(cfg), digest.DaemonAICallTimeout)
 	}
 	watchmanGit watchman.GitRunner = watchman.ExecGit
+	// watchmanDaemonRunning reads, without touching it, whether the daemon's
+	// pid file names a live daemon (a live process whose identity could not
+	// be read counts as running).
+	watchmanDaemonRunning = func(cfg *config.Config) bool {
+		_, state, err := daemon.PeekProcess(pidFilePath(cfg))
+		return err == nil && (state == daemon.PeekRunning || state == daemon.PeekUnknown)
+	}
 	// watchmanFeedReader reads a session's chat for the owner-turn source.
 	watchmanFeedReader = func(ctx context.Context, d *db.DB) instructions.FeedReader {
 		return instructions.NewFeedReader(ctx, d, coachSessionDirs())
@@ -154,26 +163,9 @@ func watchmanStart(cmd *cobra.Command, cfg *config.Config) error {
 	defer database.Close()
 	defer al.Close()
 	wb := watchmanFlagWorkbench
-	est, err := watchman.Estimate(ctx, database, watchmanGit, wb)
+	turnedOn, err := watchmanTurnOn(cmd, database, al, alPath, wb, !watchmanFlagJSON)
 	if err != nil {
 		return err
-	}
-	if err := database.EnableWatchmanWorkbench(wb, time.Now(), est.Decisions); err != nil {
-		return err
-	}
-	on, err := database.WorkbenchAgentAnalytics(wb)
-	if err != nil {
-		return err
-	}
-	turnedOn := false
-	if !on {
-		if err := enableAgentAnalytics(cmd, database, al, alPath, wb); err != nil {
-			return err
-		}
-		turnedOn = true
-		if !watchmanFlagJSON {
-			fmt.Fprintln(cmd.OutOrStdout(), "Agent analytics turned on — Watchman learns from your sessions")
-		}
 	}
 	sources := append(watchman.DBSources(), watchman.TurnSource(watchmanFeedReader(ctx, database)), watchman.GitSource(watchmanGit))
 	st, err := watchman.Learn(ctx, database, wb, watchman.LearnOptions{
@@ -209,6 +201,35 @@ func watchmanStart(cmd *cobra.Command, cfg *config.Config) error {
 	return nil
 }
 
+// watchmanAnalyticsLine is the D21 line, said once when Watchman turns
+// Agent analytics on.
+const watchmanAnalyticsLine = "Agent analytics turned on — Watchman learns from your sessions"
+
+// watchmanTurnOn turns Watchman on for workbench wb (no-op when it already
+// is) and Agent analytics there; analyticsTurnedOn is whether analytics was
+// off, and then the D21 line is printed when say is set. `learn --start` and
+// the first arm share it; neither the estimate nor this runs a learning pass.
+func watchmanTurnOn(cmd *cobra.Command, database *db.DB, al *agentlogdb.DB, alPath string, wb int64, say bool) (analyticsTurnedOn bool, err error) {
+	est, err := watchman.Estimate(cmd.Context(), database, watchmanGit, wb)
+	if err != nil {
+		return false, err
+	}
+	if err := database.EnableWatchmanWorkbench(wb, time.Now(), est.Decisions); err != nil {
+		return false, err
+	}
+	on, err := database.WorkbenchAgentAnalytics(wb)
+	if err != nil || on {
+		return false, err
+	}
+	if err := enableAgentAnalytics(cmd, database, al, alPath, wb); err != nil {
+		return false, err
+	}
+	if say {
+		fmt.Fprintln(cmd.OutOrStdout(), watchmanAnalyticsLine)
+	}
+	return true, nil
+}
+
 // bySourceText is " (ask 3, git 2)" sorted by source name, "" when nothing was written.
 func bySourceText(m map[string]int) string {
 	var parts []string
@@ -237,8 +258,9 @@ func runWatchmanStatus(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 	rep, err := watchman.Status(cmd.Context(), database, watchmanStatusFlagWorkbench, watchman.StatusOptions{
-		Running: watchman.Locked(watchman.LockPath(cfg.WorkspaceDir())),
-		Git:     watchmanGit,
+		Running:       watchman.Locked(watchman.LockPath(cfg.WorkspaceDir())),
+		DaemonRunning: watchmanDaemonRunning(cfg),
+		Git:           watchmanGit,
 	})
 	if err != nil {
 		return err
@@ -247,6 +269,13 @@ func runWatchmanStatus(cmd *cobra.Command, _ []string) error {
 		return writeJSON(cmd.OutOrStdout(), rep)
 	}
 	out := cmd.OutOrStdout()
+	if rep.Mode == watchman.ModeSleep && rep.ModeSince != nil {
+		since, _ := time.Parse(time.RFC3339, *rep.ModeSince)
+		fmt.Fprintf(out, "Watchman · Sleep since %s — %d handed to it\n", since.Local().Format("15:04"), len(rep.Armed))
+		if !rep.DaemonRunning {
+			fmt.Fprintln(out, "Watchman is not running — the daemon is stopped")
+		}
+	}
 	for _, wb := range rep.Workbenches {
 		fmt.Fprintf(out, "Workbench %d (%s): ", wb.Workbench, wb.Name)
 		if wb.Learning == nil {

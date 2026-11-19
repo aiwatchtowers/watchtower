@@ -155,18 +155,10 @@ private struct QuestionConversationView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 4)
-            ChatModelPicker(
-                provider: choice.provider,
-                model: choice.model,
-                suggestions: questions.modelSuggestions(choice.provider),
-                onSelectProvider: { provider in
-                    Task { await questions.setModelChoice(choice.switching(to: provider), conversationID: conversationID) }
-                },
-                onSelectModel: { model in
-                    Task { await questions.setModelChoice(.init(provider: choice.provider, model: model), conversationID: conversationID) }
-                }
-            )
-            .disabled(busy || deleting || questions.storingChoices.contains(conversationID))
+            CodeQuestionModelPill(choice: choice, suggestions: questions.modelSuggestions(choice.provider),
+                                  enabled: !(busy || deleting || questions.storingChoices.contains(conversationID))) { picked in
+                Task { await questions.setModelChoice(picked, conversationID: conversationID) }
+            }
             if CodeQuestionActionsFeature.handToClaudeCode {
                 Button {
                     questions.handToClaude(question)

@@ -113,6 +113,17 @@ func TestSleepWindow_ParseAndFormat(t *testing.T) {
 	}
 }
 
+func TestParseSleepSpan(t *testing.T) {
+	span, ok := ParseSleepSpan("23:15-07:05")
+	require.True(t, ok)
+	assert.Equal(t, SleepSpan{Start: 23*time.Hour + 15*time.Minute, End: 7*time.Hour + 5*time.Minute}, *span)
+	for _, bad := range []string{"", "23:15", "25:00-07:00"} {
+		span, ok := ParseSleepSpan(bad)
+		assert.False(t, ok, bad)
+		assert.Nil(t, span, bad)
+	}
+}
+
 func TestActivityTimes_AllSources(t *testing.T) {
 	d := openWatchmanDB(t)
 	repo := newTestRepo(t)

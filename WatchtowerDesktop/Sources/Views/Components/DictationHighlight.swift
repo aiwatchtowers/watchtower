@@ -1,4 +1,5 @@
 import SwiftUI
+import ChatUI
 
 /// Pure state derivation for the `.dictationHighlight` field modifier,
 /// testable without rendering (the `DictationSpan` precedent).

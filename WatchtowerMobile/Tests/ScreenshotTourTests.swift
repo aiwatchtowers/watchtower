@@ -1,6 +1,9 @@
+import ChatUI
+import ChatWire
 import CryptoKit
 import SwiftUI
 import UIKit
+import WatchtowerChatText
 import WatchtowerHostedRelay
 import WatchtowerKit
 @testable import WatchtowerSync
@@ -39,6 +42,7 @@ final class ScreenshotTourTests: XCTestCase {
     private static let onlyRelayPhase5 = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "relay-phase5"
     /// `SHOTS_ONLY=chat` runs `testTheChatShots` alone: the Chats tab's states (iPhone chat mockups 1a–1j).
     private static let onlyChat = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "chat"
+    private static let onlySpecReview = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "spec-review"
 
     func testTheRelayPhase4Shots() async throws {
         guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], Self.onlyRelayPhase4 else {
@@ -66,6 +70,23 @@ final class ScreenshotTourTests: XCTestCase {
         let written = try FileManager.default.contentsOfDirectory(atPath: path)
             .filter { name in rows.contains { name.hasPrefix($0.number + "-") } && name.hasSuffix(".png") }
         XCTAssertEqual(written.count, 3 * rows.count)
+    }
+
+    /// Board #1945: the website workbench's Sessions tab with a session in
+    /// Spec review (`make mobile-shots SHOTS_ONLY=spec-review`).
+    func testTheSpecReviewShots() async throws {
+        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], Self.onlySpecReview else {
+            throw XCTSkip("Only with make mobile-shots SHOTS_ONLY=spec-review")
+        }
+        let dir = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let (root, _) = try makeDemoRoot()
+        try await poll({ Self.isHydrated(root.env) }, "the demo seed hydrated")
+        let host = ScreenshotHost(directory: dir, env: root.env, linking: root.linking)
+        try await host.capture("05r-workbench-sessions-spec-review", NavigationStack {
+            WorkbenchView(replica: root.env.workbenchReplica, writer: root.env.boardWriter,
+                          workbenchID: DemoSeed.websiteID, segment: .sessions)
+        })
     }
 
     func testTheChatShots() async throws {
@@ -221,10 +242,12 @@ final class ScreenshotTourTests: XCTestCase {
             ChatsShot(center: center(ChatList(conversations: [], error: "read_failed")), heartbeat: on, route: relay)
         )
         let searching = center(list, searches: [DemoSeed.Chat.searchQuery: DemoSeed.Chat.search(now: now)])
-        searching.search.setQuery(DemoSeed.Chat.searchQuery)
+        // The hits are in before the frame (the search answers from the record the center holds).
+        searching.listQuery = DemoSeed.Chat.searchQuery
+        await searching.listModel.search(DemoSeed.Chat.searchQuery)
         try await shot("C1i", "chats-search", "search \"billing\" with the Mac's hits", ChatsShot(center: searching, heartbeat: on, route: relay))
         let deleting = Self.chatCenter(list, sleep: holds)
-        deleting.rowActions.delete(5)
+        deleting.listModel.delete(5)
         try await shot("C1j", "chats-undo-delete", "a chat deleted, the Undo bar up", ChatsShot(center: deleting, heartbeat: on, route: relay))
         try await shot(
             "C1k", "chats-turned-off", "the organization's policy",
@@ -235,7 +258,9 @@ final class ScreenshotTourTests: XCTestCase {
             deviceID: DemoSeed.device.deviceID, hubID: DemoSeed.hubID, name: DemoSeed.device.name, scope: .private, linked: true,
             typingAllowed: true, startSessionsAllowed: true, permissionsAllowed: true, chatAllowed: true
         )
+        rows += try await captureComposerFrames(host: host, list: list) + captureRoutingFrames(host: host, list: list)
         rows += try await captureConversations(host: host, list: list, heartbeat: on, relay: relay, grant: approving, now: now)
+        rows += try await captureUnifiedChatMocks(host: host)
 
         // 1d: the Mac asleep (its heartbeat 40 min old), the last list the phone holds.
         let stale = now.addingTimeInterval(-2_400)
@@ -251,6 +276,157 @@ final class ScreenshotTourTests: XCTestCase {
                 mac: .asleep(lastSeen: stale)
             )
         )
+        return rows
+    }
+
+    /// The composer states the phone gains from the shared composer (#1822 T13): the quote batch with its comments,
+    /// the picked mention and skill chips, and the draft's files as shared chips with their upload state. Before the
+    /// conversation frames, on the composer alone over its page.
+    private func captureComposerFrames(host: ScreenshotHost, list: ChatList) async throws -> [ScreenshotHost.IndexRow] {
+        func composer(_ prepare: (ChatsCenter, ChatComposerModel) -> Void) -> AnyView {
+            // A suspending sleep: a sleep that returns at once turns the client's feed loop into a busy loop.
+            let center = Self.chatCenter(list)
+            let route = ChatRoute(id: DemoSeed.Chat.Feeds.roadmap)
+            let (conversation, model) = center.conversation(route)
+            conversation.reachability = .connected
+            prepare(center, model)
+            let files = ChatConversationView.draftFiles(center.drafts.draft(route.id).attachments, center: center,
+                                                        conversation: route.id)
+            let routing = center.routing(model)
+            return AnyView(VStack(spacing: 0) {
+                Spacer()
+                ChatComposerView(model: model, field: ChatComposerFieldConfig(placeholder: model.placeholder),
+                                 onAttach: {}, routing: routing, shellFiles: files)
+            }
+            .background(PhoneSurface.page)
+            .environment(\.chatUIStyle, PhoneChatStyle()))
+        }
+        let frames: [(String, AnyView)] = [
+            ("iphone-chat-composer-quotes", composer { _, model in
+                model.addQuote("The rollout starts with the internal group next Tuesday.")
+                model.addQuote("The staging check was never run.")
+                model.quotes[0].comment = "Which group exactly?"
+            }),
+            ("iphone-chat-composer-mentions", composer { _, model in
+                model.skill = "release-notes"
+                model.mentions = [ChatCompose.Mention(kind: "person", id: "1:U1", label: "Anna Lee"),
+                                  ChatCompose.Mention(kind: "jira", id: "PAY-12", label: "PAY-12")]
+                model.draft = "Ask @Anna Lee about @PAY-12"
+            }),
+            ("iphone-chat-composer-attachments", composer { center, model in
+                let key = DemoSeed.Chat.Feeds.roadmap
+                _ = center.attach(data: Data("notes".utf8), fileName: "meeting-notes.md", conversation: key)
+                _ = center.attach(data: Data("log".utf8), fileName: "build.log", conversation: key)
+                _ = center.attach(data: Data("plan".utf8), fileName: "q3-plan.txt", conversation: key)
+                center.drafts.update(key) { draft in
+                    draft.attachments[1].state = .uploading
+                    draft.attachments[2].state = .failed("refused")
+                }
+                model.hasShellAttachments = true
+                model.draft = "What do these say?"
+            })
+        ]
+        var rows: [ScreenshotHost.IndexRow] = []
+        for (name, frame) in frames {
+            try await host.captureThree(name, frame)
+            rows.append(ScreenshotHost.IndexRow(
+                number: name, view: "ChatComposerView", source: "WatchtowerChat/Sources/ChatUI/Composer",
+                reached: "ChatUI composer, phone style, light/dark/narrow"
+            ))
+        }
+        return rows
+    }
+
+    /// The routing pill shared with the Mac (#1822 T17, ask #1418): its labels and menu are the Mac's, a saved chat's
+    /// pill stays editable between turns, and the fallback card, the capability line and the routing error come from
+    /// the list's `routing` (an older daemon's list has none: the model choice only). On the composer alone.
+    private func captureRoutingFrames(host: ScreenshotHost, list: ChatList) async throws -> [ScreenshotHost.IndexRow] {
+        func routingList(preferred state: String, error: String? = nil) throws -> ChatList {
+            let status = error == nil ? try ChatRoutingStatus.parse(Data("""
+                {"preferred_provider":"claude","enabled":true,"revision":"demo",
+                 "providers":[{"provider":"claude","state":"\(state)","next_probe_at":"2026-01-02T14:30:00Z"}]}
+                """.utf8)) : nil
+            let routing = ChatList.Routing(providers: [
+                .init(id: "claude", displayName: "Claude", reservePeer: "codex", images: true, pdfs: true, readFolder: true,
+                      claudeAITools: true),
+                .init(id: "codex", displayName: "Codex", reservePeer: "claude", images: true, readFolder: true)
+            ], status: status, error: error)
+            return ChatList(conversations: list.conversations, projects: list.projects, models: list.models, routing: routing)
+        }
+        func frame(
+            _ list: ChatList,
+            saved: Bool = true,
+            actual: String = "",
+            reason: String = "",
+            reachability: ChatReachability = .connected,
+            prepare: (ChatRoutingModel) -> Void = { _ in }
+        ) -> AnyView {
+            let center = Self.chatCenter(list)
+            let route = saved ? ChatRoute(id: DemoSeed.Chat.Feeds.roadmap) : .new
+            let (conversation, model) = center.conversation(route)
+            if saved {
+                conversation.store.apply(.snapshot(ChatFeed(
+                    conversation: ChatFeed.Conversation(id: route.id, title: "Q3 roadmap", actualProvider: actual,
+                                                        actualModel: actual.isEmpty ? "" : "gpt-5.6-sol", routingReason: reason),
+                    messages: [ChatFeed.Message(id: 1, role: "user", text: "Summarise the Q3 roadmap", createdAt: Date())]
+                )))
+            }
+            conversation.reachability = reachability
+            let routing = center.routing(model)
+            prepare(routing)
+            return AnyView(VStack(spacing: 0) {
+                Spacer()
+                ChatComposerView(model: model, field: ChatComposerFieldConfig(placeholder: model.placeholder),
+                                 onAttach: {}, routing: routing)
+            }
+            .background(PhoneSurface.page)
+            .environment(\.chatUIStyle, PhoneChatStyle()))
+        }
+        let frames: [(String, AnyView)] = [
+            ("iphone-chat-routing-new-chat", frame(try routingList(preferred: "available"), saved: false)),
+            ("iphone-chat-routing-saved", frame(try routingList(preferred: "available")) { $0.selectModel("opus") }),
+            ("iphone-chat-routing-fallback", frame(try routingList(preferred: "quota_wait"), actual: "codex", reason: "quota_exhausted")),
+            ("iphone-chat-routing-recovered", frame(try routingList(preferred: "available"), actual: "codex", reason: "quota_exhausted")),
+            ("iphone-chat-routing-unsupported", frame(try routingList(preferred: "available"), actual: "claude",
+                                                      reason: "required_capability_missing")),
+            ("iphone-chat-routing-missing-caps", frame(try routingList(preferred: "available")) { $0.selectProvider("codex") }),
+            ("iphone-chat-routing-status-error", frame(try routingList(preferred: "available", error: "Couldn't read provider availability"))),
+            ("iphone-chat-routing-offline", frame(try routingList(preferred: "available"), actual: "codex", reason: "quota_exhausted",
+                                                  reachability: .unavailable)),
+            ("iphone-chat-routing-no-catalog", frame(list, actual: "claude"))
+        ]
+        var rows: [ScreenshotHost.IndexRow] = []
+        for (name, frame) in frames {
+            try await host.captureThree(name, frame)
+            rows.append(ScreenshotHost.IndexRow(
+                number: name, view: "ChatRoutingAccessory", source: "WatchtowerChat/Sources/ChatUI/Composer/Routing",
+                reached: "ChatUI routing pill, phone style, light/dark/narrow"
+            ))
+        }
+        return rows
+    }
+
+    /// The unified chat's new parts (spec 2026-11-16 §10, #1822 T0): a question card, a Slack approval card and the
+    /// fallback card, drawn by `ChatUI` in the phone's style (T9 replaced the T0 mocks under the same names). Named by
+    /// shot, not by frame number.
+    private func captureUnifiedChatMocks(host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
+        let frames: [(String, String, AnyView)] = [
+            ("iphone-chat-question-card", "QuestionPartView", AnyView(UnifiedChatParts.questionCard)),
+            ("iphone-chat-approval-slack", "ApprovalPartView", AnyView(UnifiedChatParts.slackApproval)),
+            ("iphone-chat-approval-jira", "AgentActionCard", AnyView(UnifiedChatParts.jiraApproval)),
+            ("iphone-chat-approval-confluence", "AgentActionCard", AnyView(UnifiedChatParts.confluenceApproval)),
+            ("iphone-chat-approval-connector", "AgentActionCard", AnyView(UnifiedChatParts.connectorApproval)),
+            ("iphone-chat-approval-settled", "AgentActionCard", AnyView(UnifiedChatParts.settledApproval)),
+            ("iphone-chat-approval-no-permission", "AgentActionCard", AnyView(UnifiedChatParts.noPermissionApproval)),
+            ("chat-part-fallback", "FallbackPartView", AnyView(UnifiedChatParts.fallback))
+        ]
+        var rows: [ScreenshotHost.IndexRow] = []
+        for (name, view, frame) in frames {
+            try await host.captureThree(name, frame)
+            rows.append(ScreenshotHost.IndexRow(
+                number: name, view: view, source: "WatchtowerChat/Sources/ChatUI/Parts", reached: "ChatUI part, phone style, light/dark/narrow"
+            ))
+        }
         return rows
     }
 
@@ -297,27 +473,41 @@ final class ScreenshotTourTests: XCTestCase {
         try await shot("C2g", "chat-loading", "no feed yet", ChatRoute(id: Feeds.meeting), center(nil))
         try await shot("C2h", "chat-new", "a new chat", .new, center(nil))
         let quoting = center(Feeds.quoting(now: now))
-        quoting.drafts.update(Feeds.roadmap) { $0.quotes = [Feeds.quote] }
+        quoting.keepDraft(Feeds.roadmap, text: "", quotes: [Feeds.quote])
         try await shot("C2i", "chat-quote", "a quote waits, older history above", ChatRoute(id: Feeds.roadmap), quoting)
 
         let menu = NavigationStack {
             Color.clear
-                .navigationTitle(ChatConversationModel.newChatTitle)
+                .navigationTitle(ChatConversationView.newChatTitle)
                 .navigationBarTitleDisplayMode(.inline)
                 .safeAreaInset(edge: .bottom) { ChatAttachmentMenu { _ in }.padding(.bottom, Spacing.wide).background(.regularMaterial) }
         }
         try await sheet("C3a", "chat-attach-menu", menu, "ChatAttachmentPicker")
-        let vendor = center(Feeds.artifactAndError(now: now)).conversation(ChatRoute(id: Feeds.vendor))
-        let email = try XCTUnwrap(vendor.artifact("reply-to-vendor"))
-        try await sheet("C3b", "chat-artifact-email", ChatArtifactSheet(artifact: email, host: .mac), "ChatArtifactSheet")
-        try await sheet("C3c", "chat-sources", ChatSourcesSheet(sources: Feeds.roadmapSources), "ChatSourcesSheet")
+        let vendor = Feeds.artifactAndError(now: now)
+        let drafts = vendor.messages.flatMap { ArtifactParser.parse($0.text, final: true).artifacts }
+        let draft = try XCTUnwrap(drafts.last { $0.key == "reply-to-vendor" })
+        let email = ChatArtifactContent(draft: draft, stored: vendor.artifacts.first { $0.key == "reply-to-vendor" })
+        let viewer = NavigationStack {
+            ScrollView { ArtifactViewer(artifact: email, openURL: { _ in }, copy: { _ in }).padding(Spacing.large) }
+                .navigationTitle(email.title)
+                .navigationBarTitleDisplayMode(.inline)
+        }
+        .environment(\.chatUIStyle, PhoneChatStyle())
+        try await sheet("C3b", "chat-artifact-email", viewer, "ChatConversationView")
+        let sources = ChatSourcesList(sources: Feeds.roadmapSources.map(ChatSource.init(wire:))) { _ in }
+        try await sheet("C3c", "chat-sources", sources, "ChatConversationView")
         env.navigation.chatsPath = []
         return rows
     }
 
     /// A chat center showing `list` and `searches`, its sends going nowhere.
+    /// A center whose timers never fire during the tour. Its sleep must suspend: `RelayChatClient`'s feed repeat loop
+    /// runs on the main actor, and a sleep that returns at once turns it into a busy loop that starves every later
+    /// frame (the C2 conversations hung on it, #1822 T15).
     private static func chatCenter(
-        _ list: ChatList?, searches: [String: ChatSearch] = [:], sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in }
+        _ list: ChatList?,
+        searches: [String: ChatSearch] = [:],
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in try await Task.sleep(for: .seconds(86_400)) }
     ) -> ChatsCenter {
         let center = ChatsCenter(sender: ChatSender { _, _ in "" }, sleep: sleep)
         center.apply(ChatsSnapshot(list: list, searches: searches))
@@ -358,12 +548,45 @@ final class ScreenshotTourTests: XCTestCase {
         try await host.capture("09s-session-10-mac-asleep", NavigationStack {
             WorkchatView(replica: env.workbenchReplica, sessionID: 10, store: env.store, requester: env.chatRequests)
         })
+        // #1873: the stale line on the Workbench tab, then every state of the line side by side.
+        try await host.capture("05s-workbenches-stale", Self.app(.workbench)(env))
+        try await host.capture("06s-workbench-stale", NavigationStack {
+            WorkbenchView(replica: env.workbenchReplica, writer: env.boardWriter, workbenchID: DemoSeed.acmeID, segment: .sessions)
+        })
+        try await host.capture("06f-freshness-states", Self.freshnessStates(now: Date()))
+        let source = "Features/Workbench/ReplicaFreshness.swift"
         return [
             ScreenshotHost.IndexRow(number: "01s", view: "NowView", source: "Features/Now/NowView.swift", reached: "full app, Mac asleep"),
             ScreenshotHost.IndexRow(
                 number: "09s", view: "WorkchatView", source: "Features/Workbench/WorkchatView.swift", reached: "bare stack, Mac asleep"
-            )
+            ),
+            ScreenshotHost.IndexRow(
+                number: "05s", view: "WorkbenchListView", source: "Features/Workbench/WorkbenchListView.swift", reached: "full app, Mac asleep"
+            ),
+            ScreenshotHost.IndexRow(
+                number: "06s", view: "WorkbenchView", source: "Features/Workbench/WorkbenchView.swift", reached: "bare stack, Mac asleep"
+            ),
+            ScreenshotHost.IndexRow(number: "06f", view: "ReplicaFreshnessText", source: source, reached: "leaf views, stuck/stale/offline")
         ]
+    }
+
+    /// The freshness line's three states (#1873), from heartbeats built for each.
+    private static func freshnessStates(now: Date) -> some View {
+        func beat(age: TimeInterval, stuck: TimeInterval?) -> HeartbeatPayload {
+            HeartbeatPayload(
+                updatedAt: now.addingTimeInterval(-age), appVersion: "1", hubID: "h", macName: "Acme Mac", flavor: .default,
+                lastPublishAt: now.addingTimeInterval(-age), lastRelayAt: nil, relayBacklog: 0, accounts: [], enabledAt: now,
+                ownerUser: "", sharing: .none, stuckSince: stuck.map { now.addingTimeInterval(-$0) })
+        }
+        let models = [
+            ReplicaFreshness(heartbeat: beat(age: 60, stuck: 3_600), linked: true, relayUnansweredSince: nil, now: now),
+            ReplicaFreshness(heartbeat: beat(age: 7_200, stuck: nil), linked: true, relayUnansweredSince: nil, now: now),
+            ReplicaFreshness(heartbeat: beat(age: 60, stuck: nil), linked: true, relayUnansweredSince: now.addingTimeInterval(-120), now: now)
+        ].compactMap(\.self)
+        return VStack(alignment: .leading, spacing: Spacing.regular) {
+            ForEach(models, id: \.text) { ReplicaFreshnessText(model: $0) }
+        }
+        .padding(Spacing.large)
     }
 
     /// 16a–16c (#1786), after the Mac fell asleep so the earlier shots keep the demo as it was: an external
@@ -1663,5 +1886,116 @@ private actor RefusingTransport: ConditionalTransport {
 
     func delete(_ items: [ConditionalDelete]) async throws -> [DeleteOutcome] {
         try await inner.delete(items)
+    }
+}
+
+/// Static mocks of the unified chat's new phone parts (#1822 T0), from the tokens the chat cards use. The exact copy is
+/// the plan's Global Constraints.
+/// The unified chat's part frames: `ChatUI`'s real cards on a page, in the phone's style.
+@MainActor
+private enum UnifiedChatParts {
+    static let fallbackText = "Send a Slack message to #general — waiting for your approval"
+    static let openOnMac = "Open on the Mac"
+
+    private static func page<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.medium) {
+            content()
+            Spacer(minLength: 0)
+        }
+        .padding(Spacing.large)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(uiColor: .systemBackground))
+        .environment(\.chatUIStyle, PhoneChatStyle())
+    }
+
+    static var questionCard: some View {
+        page {
+            QuestionPartView(
+                card: ChatQuestionCard(questions: [ChatQuestion(
+                    id: "store", question: "Which session store should the redirect fix use?",
+                    options: [
+                        ChatQuestionOption(label: "Server table", description: "One row per session", recommended: true),
+                        ChatQuestionOption(label: "Cookie", description: "No extra table")
+                    ]
+                )]),
+                answerText: nil
+            ) { _ in }
+        }
+    }
+
+    static var slackApproval: some View {
+        approval(ChatFeed.Action(
+            id: 31, tool: "send_slack_message", title: "Send a Slack message to #general",
+            argsDisplay: ##"{"target": {"account_id": 1, "label": "#general", "workspace": "acme"}, "text": "The release is out."}"##,
+            argsSHA256: "abc123", status: "pending", external: true, argsComplete: true
+        ), text: "I drafted the announcement.")
+    }
+
+    // The approval card's per-tool bodies on the phone (#1822 T15): the content the shared card gains, for T16's review.
+
+    static var jiraApproval: some View {
+        approval(ChatFeed.Action(
+            id: 32, tool: "create_jira_issue", title: "Create a Jira issue",
+            argsDisplay: #"{"project_key": "ACME", "issue_type": "Task", "summary": "Pin the rollout window", "labels": ["release"]}"#,
+            argsSHA256: "b2", status: "pending", external: true, argsComplete: true
+        ), text: "I drafted the follow-up issue.")
+    }
+
+    static var confluenceApproval: some View {
+        approval(ChatFeed.Action(
+            id: 33, tool: "edit_confluence_page", title: "Edit a Confluence page",
+            argsDisplay: #"{"base_version": 7, "title": "Rollout plan", "url": "https://example.atlassian.net/wiki/x/98765", "#
+                + #""changes": [{"kind": "replace_text", "locator": "text in Plan", "before": "Ships on Friday.", "#
+                + #""after": "Ships on Monday.", "removed": []}]}"#,
+            argsSHA256: "c3", status: "pending", external: true, argsComplete: true
+        ), text: "I fixed the rollout day.")
+    }
+
+    static var connectorApproval: some View {
+        approval(ChatFeed.Action(
+            id: 34, tool: "claude_ai_connector_call", title: "Run a claude.ai connector",
+            argsDisplay: #"{"server": "Linear", "tool": "create_issue", "input": {"team": "ACME", "title": "Pin the rollout window"}}"#,
+            argsSHA256: "d4", status: "pending", external: true, argsComplete: true
+        ), text: "I can file it in Linear.", holds: true)
+    }
+
+    static var settledApproval: some View {
+        approval(ChatFeed.Action(
+            id: 35, tool: "create_jira_issue", title: "Create a Jira issue",
+            argsDisplay: #"{"project_key": "ACME", "issue_type": "Task", "summary": "Pin the rollout window"}"#,
+            argsSHA256: "b2", status: "applied", external: true,
+            result: ["url": "https://example.atlassian.net/browse/ACME-12", "key": "ACME-12"], argsComplete: true
+        ), text: "Filed.")
+    }
+
+    static var noPermissionApproval: some View {
+        approval(ChatFeed.Action(
+            id: 36, tool: "create_jira_issue", title: "Create a Jira issue",
+            argsDisplay: #"{"project_key": "ACME", "issue_type": "Task", "summary": "Pin the rollout window"}"#,
+            argsSHA256: "b2", status: "pending", external: true, argsComplete: true
+        ), text: "I drafted the follow-up issue.", state: ChatApprovalState(
+            showsButtons: false, canAnswer: false, line: ChatText.approveElsewhere(.mac)
+        ))
+    }
+
+    private static func approval(
+        _ action: ChatFeed.Action, text: String, state: ChatApprovalState? = nil, holds: Bool = false
+    ) -> some View {
+        let message = ChatFeed.Message(id: 1, role: "assistant", text: text, createdAt: Date(timeIntervalSince1970: 1_800_000_000))
+        let actions = ChatPartActions(approvals: ChatApprovalServices(state: { _ in state }, sessionHoldsCall: { _ in holds }))
+        return page {
+            ChatFeedView(messages: [message], context: ChatFeedContext(actions: [action], partActions: actions))
+        }
+    }
+
+    static var fallback: some View {
+        page {
+            FallbackPartView(
+                fallback: ChatPartFallback(
+                    text: fallbackText, actions: [.init(label: openOnMac, action: "open_url", url: "https://example.com/open")]
+                ),
+                actions: ChatPartActions()
+            )
+        }
     }
 }

@@ -14,13 +14,14 @@ import (
 const maxAccomplishments = 10
 
 // jiraDeliveryInstruction is appended to the people card prompt when Jira
-// delivery data is present. It tells the AI how to use the section.
+// delivery data is present. It tells the AI how to use the section: tracker
+// facts become work topics and accomplishments, never a judgment of the
+// person (#1769, spec §5.1 rule 7 — no Jira+Slack compound signals).
 const jiraDeliveryInstruction = `
-If JIRA DELIVERY data is provided above, include a Delivery section in the people card:
-- Incorporate delivery metrics (issues closed, cycle time, velocity) into accomplishments and highlights.
-- Use expertise tags to identify domain specialization.
-- Combine Jira workload signals with Slack activity signals for compound red flags (e.g., high open issues + low Slack responsiveness = bottleneck risk).
-- List resolved issues as concrete accomplishments.`
+If JIRA DELIVERY data is provided above, use it as facts about the work:
+- List resolved issues as concrete accomplishments.
+- Use expertise tags to identify the work topics they know.
+- Never turn issue counts, overdue issues or cycle times into a judgment of the person, and never combine them with Slack activity.`
 
 // gatherJiraDelivery collects issue-tracker delivery context (Jira and Linear,
 // from tracker_issues, enabled trackers only) for a single user; the section
@@ -78,37 +79,5 @@ func gatherJiraDelivery(database *db.DB, cfg *config.Config, userSlackID, from, 
 		}
 	}
 
-	// Workload signals and compound red flags.
-	signals := buildWorkloadSignals(stats)
-	if len(signals) > 0 {
-		b.WriteString("\nWorkload signals:\n")
-		for _, sig := range signals {
-			fmt.Fprintf(&b, "- %s\n", sig)
-		}
-	}
-
 	return b.String(), nil
-}
-
-// buildWorkloadSignals generates human-readable workload observations
-// including compound red flags.
-func buildWorkloadSignals(stats *db.DeliveryStats) []string {
-	var signals []string
-
-	if stats.OpenIssues > 5 {
-		signals = append(signals, fmt.Sprintf("%d open issues — high workload", stats.OpenIssues))
-	}
-	if stats.OverdueIssues > 0 {
-		signals = append(signals, fmt.Sprintf("%d overdue issue(s) — potential bottleneck", stats.OverdueIssues))
-	}
-	if stats.AvgCycleTimeDays > 14 {
-		signals = append(signals, fmt.Sprintf("%.1f day avg cycle time — slower than typical", stats.AvgCycleTimeDays))
-	}
-
-	// Compound red flag: overdue + high open count → burnout risk.
-	if stats.OverdueIssues > 0 && stats.OpenIssues > 10 {
-		signals = append(signals, "COMPOUND: overdue issues + high open count — burnout risk signal")
-	}
-
-	return signals
 }

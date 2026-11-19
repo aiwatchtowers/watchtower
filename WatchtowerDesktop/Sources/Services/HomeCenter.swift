@@ -123,6 +123,8 @@ final class HomeCenter {
     @ObservationIgnored private var feedData = HomeFeedData()
     /// The links read, landed with `data`.
     @ObservationIgnored private var linksData = HomeLinksData()
+    /// Watchman's last night, landed with `data`.
+    @ObservationIgnored private var watchmanNight: WatchmanNightCounts?
     /// The numbers read, on its own; nil until it first lands.
     @ObservationIgnored private var numbers: HomeNumbers?
     /// The pool `beginReading` reads, for `rereadNow`; nil while stopped.
@@ -192,7 +194,8 @@ final class HomeCenter {
         self.pool = pool
         let current = generation
         observationTask = observe(
-            pool, HomeQueries.observedTables + HomeFeedQueries.observedTables + HomeLinksQueries.observedTables,
+            pool, HomeQueries.observedTables + HomeFeedQueries.observedTables + HomeLinksQueries.observedTables
+                + WatchmanJournalQueries.observedTables,
             generation: current) { center in await center.reread(pool, generation: current) }
         numbersObservationTask = observe(pool, HomeNumbersQueries.observedTables, generation: current) { center in
             await center.rereadNumbers(pool, generation: current)
@@ -255,11 +258,13 @@ final class HomeCenter {
         var value: HomeWorkbenchData
         var feedValue: HomeFeedData
         var linksValue: HomeLinksData
+        var watchmanValue: WatchmanNightCounts?
         do {
-            (value, feedValue, linksValue) = try await pool.read { db in
+            (value, feedValue, linksValue, watchmanValue) = try await pool.read { db in
                 (HomeQueries.workbench(db, lastOpened: lastOpened),
                  HomeFeedQueries.read(db, now: now, calendar: calendar),
-                 HomeLinksQueries.read(db, now: now, calendar: calendar))
+                 HomeLinksQueries.read(db, now: now, calendar: calendar),
+                 Self.watchmanNight(db, now: now, calendar: calendar))
             }
         } catch {
             NSLog("HomeCenter: reading Home: %@", error.localizedDescription)
@@ -269,14 +274,26 @@ final class HomeCenter {
             feedValue.failed = Set(FeedSource.allCases)
             linksValue = linksData
             linksValue.failed = true
+            watchmanValue = watchmanNight
         }
         guard generation == current, token > landedToken else { return }
         landedToken = token
         data = value
         feedData = feedValue
         linksData = linksValue
+        watchmanNight = watchmanValue
         forgetGoneRows()
         rebuildSnapshot()
+    }
+
+    /// Watchman's row; a failed read leaves the row out (the journal says why).
+    nonisolated private static func watchmanNight(_ db: Database, now: Date, calendar: Calendar) -> WatchmanNightCounts? {
+        do {
+            return try WatchmanJournalQueries.homeNight(db, now: now, calendar: calendar)
+        } catch {
+            NSLog("HomeCenter: reading Watchman's night: %@", error.localizedDescription)
+            return nil
+        }
     }
 
     /// One numbers read. The pool failing marks every number failed ("—"),
@@ -481,7 +498,8 @@ final class HomeCenter {
             links: links,
             // A failure behind no visible link is not shown.
             linksFailed: linksData.failed && !links.isEmpty,
-            numbers: numbers
+            numbers: numbers,
+            watchman: watchmanNight
         )
     }
 

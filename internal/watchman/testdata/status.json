@@ -25,6 +25,10 @@
           "written": 0,
           "done": false
         },
+        "journal": {
+          "written": 0,
+          "done": false
+        },
         "permission": {
           "written": 2,
           "done": false
@@ -113,6 +117,10 @@
           "written": 0,
           "done": false
         },
+        "journal": {
+          "written": 0,
+          "done": false
+        },
         "permission": {
           "written": 0,
           "done": false
@@ -142,5 +150,32 @@
       "last_done": null,
       "running": true
     }
-  ]
+  ],
+  "mode": "sleep",
+  "mode_since": "2026-11-02T12:00:00Z",
+  "armed": [
+    {
+      "scope": "session",
+      "id": 1,
+      "armed_at": "2026-11-02T12:00:00Z"
+    },
+    {
+      "scope": "target",
+      "id": 4,
+      "armed_at": "2026-11-02T13:00:00Z"
+    }
+  ],
+  "armed_sessions": [
+    {
+      "id": 1,
+      "target": 0,
+      "armed_at": "2026-11-02T12:00:00Z"
+    },
+    {
+      "id": 2,
+      "target": 4,
+      "armed_at": "2026-11-02T13:00:00Z"
+    }
+  ],
+  "daemon_running": true
 }

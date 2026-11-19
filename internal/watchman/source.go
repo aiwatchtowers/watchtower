@@ -26,6 +26,7 @@ const (
 	SourceReview     = "review"
 	SourceSpec       = "spec"
 	SourcePermission = "permission"
+	SourceJournal    = "journal"
 )
 
 // Categories (spec §7, fixed in v1).
@@ -45,7 +46,7 @@ const SituationLimit = 2048
 
 // DBSources returns the database sources in learning order.
 func DBSources() []Source {
-	return []Source{&asksSource{}, &reviewSource{}, &specSource{}, &permissionSource{}}
+	return []Source{&asksSource{}, &reviewSource{}, &specSource{}, &permissionSource{}, &journalSource{}}
 }
 
 // SkipCounter is implemented by a Source that can meet rows it cannot learn

@@ -304,7 +304,13 @@ no omission notice. Required attachments, pins and policy remain preflight gates
 
 Healthy reserve sessions remain sticky. **Use preferred** between turns clears
 sticky metadata and retires the idle host; the existing pool waits for its exit
-before launching the replacement. Busy or queued turns cannot change routing,
+before launching the replacement. Since the unified chat (#1822 T17, ask #1418)
+it is the `chat_manage use_preferred` op, on `chat.sock` from the Mac and through
+the hub's `chat_manage` from the phone: under the conversation's turn lock the
+engine writes `preferred_reserve` with the actual pair and reason cleared
+(`chatstore.UsePreferred`, main chats only) and retires the idle session; a
+running turn or a live legacy lease refuses it `busy`. Picking **Preferred +
+reserve · Auto model** on a chat sitting sticky on the reserve sends the same op. Busy or queued turns cannot change routing,
 unsent drafts remain intact, and no global provider preference is written.
 The Go preflight may return an exhausted sticky reserve to a recovered compatible
 preferred before a new turn; it never replays a started turn.
@@ -330,8 +336,20 @@ The user can check these actions and then send a new message.
 `ChatRoutingPresentation` consumes the canonical status DTO and actual session
 metadata. Its copy comes from the approved `ProviderFallbackPreview`; runtime
 next-check times come from metadata, while sample times remain in shot fixtures.
-`ChatRoutingStatusView` is shared by production and light/dark, narrow and
-reverse-provider catalog scenes. Tests cover argv, parser/driver/DB reload,
+The three types live in `WatchtowerChat/Sources/ChatWire/Routing/`. The production
+routing component is `ChatUI`'s `ChatRoutingAccessory` (the actual-provider line,
+the missing-capabilities line, the fallback card, the routing error and the
+`ChatRoutingPill`) on both the Mac and the iPhone (#1822 T17, ask #1418); the
+model is `ChatRoutingModel`. The Mac feeds it `ai models` + `ai routing-status`;
+the phone feeds it the `chat_list` record's `models[]` and optional `routing`
+object (`chatengine.RoutingCatalog`, which reads the status through the same
+`providerrouting.ReadStatus` as the command), and the feed's conversation carries
+`routing_reason`. The Mac look comes through `DesignKitChatStyle`'s routing hooks,
+which draw `ProviderFallbackStatus`; `ChatModelPicker` and `ChatRoutingStatusView`
+are deleted. The same card serves production and light/dark, narrow and
+reverse-provider catalog scenes. On the phone the availability refreshes only
+when `chat_list` is rebuilt (any engine change), not on app activation, and it
+has no "check again" (a v1 limit). Tests cover argv, parser/driver/DB reload,
 embedded typed quota handling, action review without sending, explicit pins,
 sticky retirement and bounded warm sessions.
 
@@ -516,7 +534,7 @@ rules remain in force.
 | Runtime generation / acknowledgement | The daemon publishes one immutable generation, then writes its own PID/start-qualified acknowledgement. Active jobs keep their captured generation. Desktop/CLI readers cannot publish or confirm a stale process. | `TestRoutingReloadLogicalJobsAndSDKKeepSnapshot`, `TestRoutingReloadPublishAndAckFailuresAndLatestSaved`, `TestRoutingAckIdentityLossReplacementAndCorruption`: failure before publication retains the generation; ack failure after publication leaves confirmation unknown; restart rejects the old identity. |
 | Installation health / lease JSON | Eligible routed daemon and CLI callers share the same flocked store and exact scopes. One lease claimant wins. Metadata reads never clear quota; manual checks only write their rate gate. | `TestProcessesCompeteForOneLease`, `TestProcessDeathReleasesStableLock`, `TestRoutingIntegrationStrictLeavesDeferredRestartAndRealRecovery`: process death releases the lock; bounded lease expiry permits later pending work; no child starts for a competing blocked caller. |
 | Safe-source receipts / watermarks | Existing daemon pipelines and full-history CLI paths use transactional exact-claim receipts. Existing reset/account writers keep independent scopes and monotonic live floors. Manual scoped backfill deliberately does not write these receipts. | `TestBackfillDeferredDeclinedPrefixSurvivesRestart`, `TestBackfillDailyDeferredDoesNotReplaySavedDayOnNewData` and the composed strict-leaf integration preserve committed input after a mid-step failure/reconstruction; quota leaves unfinished input available. |
-| Chat actual / pin metadata | Go session routing and the Desktop turn store write the existing conversation/message fields; explicit manual choice clears sticky actual metadata between turns. Observed actual never overwrites global preference or the pool's wanted configuration. | `TestAISessionRoutingPersistsStickyAcrossRestartAndManualPin`, `testHistoricalPinsRemainUntilCombinedAutomaticChoiceAndStartedQuotaNeverResends`, `testFreshCommandDTOOffersManualChoiceWithoutInventingCompletedWork`: restart/partial quota preserve actual and pin intent; a read or clock change cannot replay a turn or claim completed background work. |
+| Chat actual / pin metadata | Go session routing (`ai session`'s `SetChatRouting`/`SetChatActual`) and the chat engine write the existing conversation/message fields (the Swift turn store is gone since the unified chat); explicit manual choice clears sticky actual metadata between turns, and so does `chatstore.UsePreferred` on `chat_manage use_preferred` (under the turn lock, refused `busy` while a turn runs or a legacy lease is live). Observed actual never overwrites global preference or the pool's wanted configuration. | `TestAISessionRoutingPersistsStickyAcrossRestartAndManualPin`, `testHistoricalPinsRemainUntilCombinedAutomaticChoiceAndStartedQuotaNeverResends`, `testFreshCommandDTOOffersManualChoiceWithoutInventingCompletedWork`: restart/partial quota preserve actual and pin intent; a read or clock change cannot replay a turn or claim completed background work. |
 
 
 ### Native-offering preflight and failure evidence

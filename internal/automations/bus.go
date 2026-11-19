@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sync"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/db"
 )
 
@@ -20,6 +21,9 @@ type Bus struct {
 	clock  Clock
 	wake   func()
 	logger *log.Logger
+	// consent reads the background-AI state at each Begin (SetConsent);
+	// nil reads aiconsent.Current.
+	consent aiconsent.Reader
 
 	mu   sync.Mutex
 	subs []*subscription
@@ -54,12 +58,25 @@ func NewBus(d *db.DB, clock Clock, wake func(), logger *log.Logger) *Bus {
 	return &Bus{db: d, clock: clock, wake: wake, logger: logger}
 }
 
+// SetConsent sets the background-AI consent reader; nil (the default) reads
+// aiconsent.Current, which fails closed. Call it before the first Begin.
+func (b *Bus) SetConsent(r aiconsent.Reader) { b.consent = r }
+
 // Begin loads the subscriptions of the runnable event automations and drops
-// the previous cycle's matches. On an error the bus has no subscriptions.
+// the previous cycle's matches. While background AI is paused the AI recipes
+// (AutomationUsesAI) are left out: no event is kept and no run queued for
+// them this cycle (spec §4.2). On an error the bus has no subscriptions.
 func (b *Bus) Begin() error {
 	rows, err := b.db.ListAutomations(db.AutomationFilter{TriggerKind: string(TriggerEvent), RunnableOnly: true})
 	var subs []*subscription
 	if err == nil {
+		read := b.consent
+		if read == nil {
+			read = aiconsent.Current
+		}
+		if !read().Allowed() {
+			rows = slices.DeleteFunc(rows, func(a db.Automation) bool { return AutomationUsesAI(&a) })
+		}
 		subs = b.subscriptionsOf(rows)
 	}
 	b.mu.Lock()

@@ -31,7 +31,7 @@ final class ReviewStubRunner: CLIRunnerProtocol, @unchecked Sendable {
 
 /// The streamed overview (board #1025): the scripted `overview` answer as its one line.
 extension ReviewStubRunner: CLIStreamingRunner {
-    func stream(args: [String]) async throws -> CLIStreamedRun {
+    func stream(args: [String], origin _: CLIOrigin) async throws -> CLIStreamedRun {
         let lines: [Data]
         if let streamLines {
             lines = streamLines.map { Data($0.utf8) }

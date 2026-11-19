@@ -10,7 +10,7 @@ import (
 )
 
 // statusSources are the sources a status lists, in learning order.
-var statusSources = []string{SourceAsk, SourceReview, SourceSpec, SourcePermission, "turn", "git"}
+var statusSources = []string{SourceAsk, SourceReview, SourceSpec, SourcePermission, SourceJournal, "turn", "git"}
 
 // BacktestInterrupted is the status a running backtest row is reported with
 // when no process holds the lock: its run died; the next run closes the row.
@@ -22,6 +22,88 @@ const BacktestInterrupted = "interrupted"
 type StatusReport struct {
 	OK          bool              `json:"ok"`
 	Workbenches []WorkbenchStatus `json:"workbenches"`
+	// Mode is Mode over the arming (phase 2, D47): sleep while anything is
+	// armed, since the oldest arming (ModeSince, RFC 3339; null when off).
+	Mode      TwinMode `json:"mode"`
+	ModeSince *string  `json:"mode_since"`
+	// Armed is every arming row, oldest first.
+	Armed []ArmedEntry `json:"armed"`
+	// ArmedSessions is the live sessions the twin decides for, armed
+	// directly or under an armed target (db.WatchmanArmedSessions), so the
+	// Desktop's session strip need not resolve the target subtree itself.
+	ArmedSessions []ArmedSession `json:"armed_sessions"`
+	// DaemonRunning: the daemon that runs the twin is up; when it is not,
+	// nothing decides ("Watchman is not running — the daemon is stopped").
+	DaemonRunning bool `json:"daemon_running"`
+}
+
+// ArmedEntry is one arming row in JSON (`watchman status`, `watchman
+// arm|disarm`).
+type ArmedEntry struct {
+	Scope   string `json:"scope"` // session | target
+	ID      int64  `json:"id"`
+	ArmedAt string `json:"armed_at"` // RFC 3339 UTC
+}
+
+// ArmedSession is one session the twin decides for: Target is the armed
+// target whose subtree holds it (0 = armed only by its own row; a session
+// under an armed target is returned only by taking the target back), and
+// ArmedAt is that target's arming time, else the session row's.
+type ArmedSession struct {
+	ID      int64  `json:"id"`
+	Target  int64  `json:"target"`
+	ArmedAt string `json:"armed_at"` // RFC 3339 UTC
+}
+
+// ArmedEntries converts arming rows, never nil.
+func ArmedEntries(rows []db.WatchmanArming) []ArmedEntry {
+	out := make([]ArmedEntry, 0, len(rows))
+	for _, a := range rows {
+		out = append(out, ArmedEntry{Scope: a.Scope, ID: a.RefID, ArmedAt: a.ArmedAt.UTC().Format(time.RFC3339)})
+	}
+	return out
+}
+
+// armedSessions lists the armed live sessions with the target that covers
+// each and its arming time; never nil.
+func armedSessions(d *db.DB, arming []db.WatchmanArming) ([]ArmedSession, error) {
+	sessions, err := d.WatchmanArmedSessions()
+	if err != nil {
+		return nil, err
+	}
+	under, err := d.WatchmanSessionsUnderArmedTargets()
+	if err != nil {
+		return nil, err
+	}
+	at := map[string]time.Time{}
+	for _, a := range arming {
+		at[fmt.Sprintf("%s/%d", a.Scope, a.RefID)] = a.ArmedAt
+	}
+	out := make([]ArmedSession, 0, len(sessions))
+	for _, s := range sessions {
+		e := ArmedSession{ID: s.SessionID, Target: under[s.SessionID]}
+		key := fmt.Sprintf("session/%d", s.SessionID)
+		if e.Target != 0 {
+			key = fmt.Sprintf("target/%d", e.Target)
+		}
+		if t, ok := at[key]; ok {
+			e.ArmedAt = t.UTC().Format(time.RFC3339)
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// armingMode is Mode over the arming rows: armed when there is any, since
+// the oldest one's armed_at.
+func armingMode(now time.Time, rows []db.WatchmanArming) (TwinMode, time.Time) {
+	in := ModeInputs{Armed: len(rows) > 0}
+	for _, a := range rows {
+		if in.ArmedAt.IsZero() || a.ArmedAt.Before(in.ArmedAt) {
+			in.ArmedAt = a.ArmedAt
+		}
+	}
+	return Mode(now, in)
 }
 
 // WorkbenchStatus is one workbench's Watchman state. A workbench Watchman is
@@ -102,11 +184,13 @@ type CategoryResult struct {
 }
 
 // StatusOptions are what Status cannot read from the database: Running is
-// whether the workspace's Watchman lock is held (Locked), Git sizes the
+// whether the workspace's Watchman lock is held (Locked), DaemonRunning
+// whether the daemon's pid file names a live daemon, Git sizes the
 // estimate of a workbench Watchman is not on for (ExecGit when nil).
 type StatusOptions struct {
-	Running bool
-	Git     GitRunner
+	Running       bool
+	DaemonRunning bool
+	Git           GitRunner
 }
 
 // Status reports workbenchID, or every workbench when it is 0 (those
@@ -128,7 +212,22 @@ func Status(ctx context.Context, d *db.DB, workbenchID int64, o StatusOptions) (
 			return StatusReport{}, fmt.Errorf("watchman status: %w", err)
 		}
 	}
-	rep := StatusReport{OK: true, Workbenches: []WorkbenchStatus{}}
+	arming, err := d.ListWatchmanArming()
+	if err != nil {
+		return StatusReport{}, fmt.Errorf("watchman status: %w", err)
+	}
+	armedSessions, err := armedSessions(d, arming)
+	if err != nil {
+		return StatusReport{}, fmt.Errorf("watchman status: %w", err)
+	}
+	rep := StatusReport{OK: true, Workbenches: []WorkbenchStatus{}, Armed: ArmedEntries(arming),
+		ArmedSessions: armedSessions, DaemonRunning: o.DaemonRunning}
+	var since time.Time
+	rep.Mode, since = armingMode(time.Now(), arming)
+	if !since.IsZero() {
+		at := since.UTC().Format(time.RFC3339)
+		rep.ModeSince = &at
+	}
 	for _, wb := range wbs {
 		s, err := workbenchStatus(ctx, d, wb, o)
 		if err != nil {

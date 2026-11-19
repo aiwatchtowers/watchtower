@@ -155,6 +155,23 @@ func ParseSleepWindow(s string) (start, end time.Duration, err error) {
 	return time.Duration(n(1)*60+n(2)) * time.Minute, time.Duration(n(3)*60+n(4)) * time.Minute, nil
 }
 
+// SleepSpan is a stored sleep window as offsets from local midnight; End
+// before Start crosses midnight. Settings shows and edits it; in phase 2
+// (D47) the mode does not read it.
+type SleepSpan struct {
+	Start, End time.Duration
+}
+
+// ParseSleepSpan reads the stored "HH:MM-HH:MM"; false when text is empty
+// or not that shape.
+func ParseSleepSpan(text string) (*SleepSpan, bool) {
+	start, end, err := ParseSleepWindow(text)
+	if err != nil {
+		return nil, false
+	}
+	return &SleepSpan{Start: start, End: end}, true
+}
+
 // ActivityTimes collects when the owner acted on a workbench at or after
 // since: his own turns in its agent sessions (only when agentLog is non-nil:
 // Agent analytics may be off), his ask answers and review comments, and the

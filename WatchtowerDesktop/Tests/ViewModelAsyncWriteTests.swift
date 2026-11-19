@@ -99,16 +99,6 @@ final class ViewModelAsyncWriteTests: XCTestCase {
         XCTAssertEqual(stored, ["done", "done"])
     }
 
-    /// A failed archive says so and leaves the selection where it was.
-    func testArchiveFailureKeepsTheSelection() async throws {
-        let history = ChatHistoryViewModel(dbManager: dbManager, attachmentsRoot: nil)
-        history.selectedConversationID = 999
-        let archived = await history.archive(999)
-        XCTAssertFalse(archived)
-        XCTAssertNotNil(history.lastError)
-        XCTAssertEqual(history.selectedConversationID, 999)
-    }
-
     /// The star shows only once it is stored, and a second press while the
     /// write waits does not flip it back.
     func testChannelStarWhileTheWriterIsBusy() async throws {

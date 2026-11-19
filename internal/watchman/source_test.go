@@ -16,7 +16,7 @@ func TestDBSources_Order(t *testing.T) {
 	for _, s := range DBSources() {
 		names = append(names, s.Name())
 	}
-	require.Equal(t, []string{"ask", "review", "spec", "permission"}, names)
+	require.Equal(t, []string{"ask", "review", "spec", "permission", "journal"}, names)
 }
 
 func TestSourceCursor_RoundTrip(t *testing.T) {

@@ -162,15 +162,31 @@ type Heartbeat struct {
 	// Capabilities is the host's switches (protocol §9); absent from an
 	// older hub, which the phone reads as every capability on.
 	Capabilities *HeartbeatCapabilities `json:"capabilities,omitempty"`
+	// StuckSince is when the oldest kind still not going through whole
+	// (a failed save, a refused or oversized record) first failed; absent
+	// while every kind goes through and from an older hub (#1873).
+	StuckSince *Time `json:"stuck_since,omitempty"`
+	// BackgroundAI is whether background AI runs on the hub's Mac
+	// (BackgroundAI* values, #1886); absent from an older hub and when the
+	// hub reports none.
+	BackgroundAI string `json:"background_ai,omitempty"`
 }
+
+// The heartbeat's background_ai values: allowed runs; paused is the owner's
+// (or an unanswered) state; organization is a pause the organization forces.
+const (
+	BackgroundAIAllowed      = "allowed"
+	BackgroundAIPaused       = "paused"
+	BackgroundAIOrganization = "organization"
+)
 
 // HeartbeatCapabilities is the heartbeat's capabilities object. Recordings
 // is "on" or "off"; an unknown value reads as not off. Chat is the AI chat
 // from the phone (iPhone chat §4.8): "on" only while the hub runs on the
-// relay with its chat runner and no Desktop app that ignores the chat lease
-// runs; the phone shows chat only on an explicit "on" (an absent key is an
-// older hub). ChatReason says why it is "off": not_relay, runner_down,
-// desktop_too_old or policy.
+// relay with the daemon's chat engine; the phone shows chat only on an
+// explicit "on" (an absent key is an older hub). ChatReason says why it is
+// "off": not_relay, runner_down or policy (an older hub may still send
+// desktop_too_old, which the phone keeps reading).
 type HeartbeatCapabilities struct {
 	Recordings string `json:"recordings,omitempty"`
 	Chat       string `json:"chat,omitempty"`
@@ -179,10 +195,9 @@ type HeartbeatCapabilities struct {
 
 // The chat capability's off reasons.
 const (
-	ChatOffNotRelay      = "not_relay"
-	ChatOffRunnerDown    = "runner_down"
-	ChatOffDesktopTooOld = "desktop_too_old"
-	ChatOffPolicy        = "policy"
+	ChatOffNotRelay   = "not_relay"
+	ChatOffRunnerDown = "runner_down"
+	ChatOffPolicy     = "policy"
 )
 
 // RecordingsCapability is the capabilities object for the switch: "on" or

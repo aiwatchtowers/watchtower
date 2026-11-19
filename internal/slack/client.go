@@ -540,6 +540,30 @@ func (c *Client) SearchMessages(ctx context.Context, query string, page int) (*S
 	}, nil
 }
 
+// RevokeToken calls auth.revoke: Slack invalidates the client's token, and so
+// every other place signed in with it. An already-invalid token comes back as
+// Slack's own error (invalid_auth, token_revoked); ok:true with revoked:false
+// is ErrTokenNotRevoked. (Tier 3)
+func (c *Client) RevokeToken(ctx context.Context) error {
+	return c.doRequest(ctx, Tier3, func() error {
+		c.logf("slack API: auth.revoke")
+		var resp struct {
+			slack.SlackResponse
+			Revoked bool `json:"revoked"`
+		}
+		if err := c.postAPI(ctx, "auth.revoke", url.Values{}, &resp); err != nil {
+			return err
+		}
+		if !resp.Revoked {
+			return ErrTokenNotRevoked
+		}
+		return nil
+	})
+}
+
+// ErrTokenNotRevoked is returned when auth.revoke answers ok but did not revoke the token.
+var ErrTokenNotRevoked = errors.New("slack: auth.revoke did not revoke the token")
+
 // postAPI posts a form to one Web API method with the token as a bearer
 // header and decodes the JSON answer into dst. A non-200 status is slack-go's
 // RateLimitedError (429 with Retry-After) or StatusCodeError; ok:false is

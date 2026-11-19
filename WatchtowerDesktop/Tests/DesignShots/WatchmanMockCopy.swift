@@ -95,6 +95,9 @@ enum WatchmanMockCopy {
     static let readFailed = "Couldn't read the journal. The decisions are stored; nothing was lost."
     static let retry = "Retry"
     static let deciding = "Deciding: #1826 'Store window per workbench?' …"
+    // Phase 2: `journal-not-running` (the last night kept below the line)
+    // and `journal-night-unsure` (every decision journalled unsure, D43).
+    static let daemonStopped = "Watchman is not running — the daemon is stopped"
 
     // MARK: Correct… sheet
 
@@ -197,14 +200,8 @@ enum WatchmanMockCopy {
     static let sleepValue = "00:30–07:45"
     static let sleepLearned = "Learned"
     static let sleepNotLearned = "Not learned yet: Watchman needs a week of your activity."
-    static let edit = "Edit"
-
-    static let limitsTitle = "Your hard limits"
-    static let limitsCaption = "Watchman parks these for you in every mode. "
-        + "The six built-in limits (merge to main, messages, releases…) can't be removed."
-    static let extraLimits = ["Change files under migrations/", "Bump a dependency version"]
-    static let remove = "Remove"
-    static let addLimit = "Add a Limit…"
+    // The editing frames (profile texts, the sleep window, the hard limits)
+    // draw the real view: their strings are `WatchmanSettingsCopy`'s.
 
     static let backtestTitle = "Backtest"
     static let backtestCaption = "Last run 15 Nov, 03:12 · your latest 30 decisions per category, hidden and "
@@ -238,21 +235,4 @@ enum WatchmanMockCopy {
     static let lastResults = "Last results, 15 Nov"
     static let backtestFailed = "The backtest stopped: the AI provider hit your plan limit. "
         + "Nothing changed; the last results stay."
-
-    static let profileTitle = "What Watchman learned"
-    static let profileCaption = "Your rules per category, distilled weekly from your decisions. An edit pins "
-        + "the text until you unpin it."
-    static let pinned = "Pinned by you"
-    static let learnedOn = "Learned 14 Nov"
-    static let unpin = "Unpin"
-    static let profileDesign = [
-        "Settings that differ by folder are per workbench; the rest stay global.",
-        "Prefer the simpler flow; never ask for a field the app can derive.",
-        "A new screen reuses the design kit; no new component for one use."
-    ]
-    static let profileUXText = [
-        "Shipped button titles stay unless the guide page changes too.",
-        "Say what happened and what to do; no apologies, no exclamation marks."
-    ]
-    static let profileEmpty = "Nothing learned yet. The profile is built after the first learning pass."
 }

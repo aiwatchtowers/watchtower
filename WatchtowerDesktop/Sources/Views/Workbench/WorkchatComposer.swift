@@ -1,3 +1,4 @@
+import ChatUI
 import SwiftUI
 import WatchtowerCore
 
@@ -34,21 +35,28 @@ struct WorkchatComposer: View {
             ChatComposerField(
                 text: $model.draft,
                 isStreaming: working,
+                config: ChatComposerFieldConfig(
+                    placeholder: Self.placeholder,
+                    hasPendingContent: !model.attachments.isEmpty,
+                    autoFocus: autoFocus,
+                    focusRequest: focusRequest
+                ),
                 onSend: send,
                 onStop: stop,
-                placeholder: "Message the agent… (/ for commands)",
                 onEscape: escape,
-                attachments: model.attachments,
+                attachments: model.attachments.map {
+                    ChatComposerAttachment(id: $0.id, name: $0.name, mime: $0.mime, size: $0.size)
+                },
                 attachmentError: model.attachmentError,
                 onAttachFiles: { model.attach(files: $0) },
                 onPasteData: { await model.attach(data: $0, name: $1) },
-                onRemoveAttachment: { model.removeAttachment($0) },
-                hasPendingContent: !model.attachments.isEmpty,
-                autoFocus: autoFocus,
-                focusRequest: focusRequest
+                onRemoveAttachment: { model.removeAttachment($0) }
             )
+            .macComposerStyle()
         }
     }
+
+    static let placeholder = "Message the agent… (/ for commands)"
 
     /// U2's line (S5): while the agent works and the session holds lines
     /// until it stops; nil otherwise.
@@ -61,9 +69,13 @@ struct WorkchatComposer: View {
         Task { await model.send() }
     }
 
-    /// Esc in the empty field while the agent works is Stop.
     private func escape() {
-        if working && model.draft.isEmpty { stop() }
+        Self.escape(working: working, draft: model.draft, stop: stop)
+    }
+
+    /// Esc in the empty field while the agent works is Stop; with text in the field, or while idle, nothing.
+    static func escape(working: Bool, draft: String, stop: () -> Void) {
+        if working && draft.isEmpty { stop() }
     }
 
     private func stop() {

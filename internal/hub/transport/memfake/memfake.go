@@ -547,6 +547,7 @@ func (f *Fake) nextTag() uint64 {
 // waits it goes straight into the channel; otherwise it joins pending (a zone
 // event already waiting for its zone absorbs it) and the pump delivers it.
 func (f *Fake) emit(e transport.Event) {
+	e.ArrivedAt = f.clock()
 	if !f.pumping {
 		select {
 		case f.events <- e:

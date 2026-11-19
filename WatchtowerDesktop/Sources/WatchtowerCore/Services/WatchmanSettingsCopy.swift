@@ -2,8 +2,8 @@ import Foundation
 
 /// Every string of Settings → Profile → Watchman (spec
 /// `docs/superpowers/specs/2026-11-16-watchman-design.md` §10, §11), pinned
-/// by `WatchmanSettingsCopyTests`. Phase 1 is read-only except Start
-/// Learning, Run Backtest Now and Retry.
+/// by `WatchmanSettingsCopyTests`. Phase 2 adds editing: profile texts and
+/// the sleep window (Edit / Unpin) and the owner's hard limits.
 package enum WatchmanSettingsCopy {
     package static let sectionTitle = "Watchman"
 
@@ -64,6 +64,130 @@ package enum WatchmanSettingsCopy {
     package static func sleepValue(_ raw: String?) -> String? {
         guard let raw, !raw.isEmpty else { return nil }
         return raw.replacingOccurrences(of: "-", with: "–")
+    }
+
+    package static let sleepPlaceholder = "00:30-07:45"
+    package static let sleepPinnedNote = "Saving pins the window: the weekly recompute leaves it until you unpin it."
+    package static let sleepBadFormat = "Write the window as HH:MM-HH:MM on a 24-hour clock, e.g. 00:30-07:45."
+
+    // MARK: Editing (phase 2)
+
+    package static let edit = "Edit"
+    package static let unpin = "Unpin"
+    package static let save = "Save"
+    package static let cancel = "Cancel"
+    package static let remove = "Remove"
+    package static let add = "Add"
+    /// The mark before each line of a category's text.
+    package static let bullet = "•"
+
+    /// "Couldn't save: <the CLI's error>".
+    package static func saveFailed(_ message: String) -> String { "Couldn't save: \(message)" }
+    package static func unpinFailed(_ message: String) -> String { "Couldn't unpin: \(message)" }
+    package static func addFailed(_ message: String) -> String { "Couldn't add the limit: \(message)" }
+    package static func removeFailed(_ message: String) -> String { "Couldn't remove the limit: \(message)" }
+
+    // MARK: Profile
+
+    package static let profileTitle = "What Watchman learned"
+    package static let profileCaption = "Your rules per category, distilled weekly from your decisions. An edit pins "
+        + "the text until you unpin it."
+    package static let profileEmpty = "No rules yet: a category needs at least 5 learned decisions. "
+        + "They are rebuilt weekly."
+    package static let profilePinned = "Pinned by you"
+    package static let profilePinnedNote = "Saving pins this text: the weekly rebuild leaves it until you unpin it."
+    package static let profileEmptyText = "Write at least one rule line."
+    package static let profileLoading = "Reading what Watchman learned…"
+
+    package static func profileTitle(name: String, several: Bool) -> String {
+        several ? "\(profileTitle) · \(name)" : profileTitle
+    }
+
+    /// "Learned 14 Nov" beside an entry the weekly rebuild wrote.
+    package static func profileLearned(_ updatedAt: String, timeZone: TimeZone = .current) -> String {
+        guard let when = date(updatedAt) else { return "Learned" }
+        return "Learned \(stamp(when, "d MMM", timeZone))"
+    }
+
+    package static func profileTooLong(lines: Int) -> String {
+        "At most \(WatchmanProfileEntry.maxLines) lines; this text has \(lines)."
+    }
+
+    package static func profileReadFailed(_ message: String) -> String {
+        "Couldn't read what Watchman learned: \(message)"
+    }
+
+    // MARK: Hard limits
+
+    package static let limitsTitle = "Your hard limits"
+    package static let limitsCaption = "Watchman parks these for you in every mode. "
+        + "The built-in ones can't be removed; you can add your own."
+    /// How many built-in rows the one line names before "…".
+    package static let builtinShown = 4
+
+    /// The built-in rows on one line: "Built in: A, B, C, D… (12)"; the
+    /// full list is `builtinHelp`.
+    package static func builtinSummary(_ names: [String]) -> String {
+        let shown = names.prefix(builtinShown).map(builtinLimit).joined(separator: ", ")
+        let more = names.count > builtinShown ? "…" : ""
+        return "Built in: \(shown)\(more) (\(names.count))"
+    }
+
+    /// Every built-in row, one per line (the summary line's tooltip).
+    package static func builtinHelp(_ names: [String]) -> String {
+        names.map(builtinLimit).joined(separator: "\n")
+    }
+
+    /// The confirmation before **Remove**.
+    package static func removeConfirmTitle(_ pattern: String) -> String { "Remove the limit “\(pattern)”?" }
+    package static let removeConfirmMessage = "Watchman may then take this action for you while it holds a session."
+    package static let addLimit = "Add a Limit…"
+    package static let limitKindTitle = "Kind"
+    package static let limitEmptyPattern = "Write the command's first words or the tool's name."
+    package static let limitOneLine = "The pattern must be one line."
+    package static let limitToolBlanks = "A tool name has no spaces."
+
+    package static func limitsReadFailed(_ message: String) -> String { "Couldn't read the limits: \(message)" }
+
+    package static func limitKind(_ kind: WatchmanLimitKind) -> String {
+        switch kind {
+        case .command: "Command"
+        case .tool: "Tool"
+        }
+    }
+
+    package static func limitPlaceholder(_ kind: WatchmanLimitKind) -> String {
+        switch kind {
+        case .command: "terraform apply"
+        case .tool: "create_jira_issue"
+        }
+    }
+
+    package static func limitHint(_ kind: WatchmanLimitKind) -> String {
+        switch kind {
+        case .command: "Parks every shell command that starts with these words."
+        case .tool: "Parks the tool of this name, also as an MCP tool."
+        }
+    }
+
+    /// A built-in row's line (`watchman.HardLimit` names); an unknown name
+    /// from a newer CLI shows as it is.
+    package static func builtinLimit(_ name: String) -> String {
+        switch name {
+        case "unreadable": "A command that cannot be read"
+        case "send_pack": "A plumbing push (git send-pack)"
+        case "main_ref": "Push to or merge into the default branch"
+        case "tag": "Create, delete or push a tag"
+        case "release": "A GitHub release"
+        case "testflight": "An App Store Connect or TestFlight upload"
+        case "force_push": "A forced push"
+        case "reset_shared": "A forced move of a shared branch"
+        case "delete_outside": "Delete outside the session's worktrees"
+        case "outward": "A message or comment other people see"
+        case "standing_grant": "Change the agent's own permission settings"
+        case "outside_folder": "Edit a file outside the workbench folder and its worktrees"
+        default: name
+        }
     }
 
     // MARK: Backtest

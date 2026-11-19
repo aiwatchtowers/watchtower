@@ -148,19 +148,22 @@ public actor ActionOutbox {
     /// hydration; the stale chip is dismissable) and is unreachable at real
     /// cadence: an echo takes seconds at minimum, the insert follows the
     /// save within the same call.
+    /// `id`: the action's id, chosen by a caller that shows the action before it is queued (the phone's optimistic
+    /// overlay); a fresh UUID by default.
     @discardableResult
     public func enqueue(
         kind: ActionKind,
         entityRecordName: String?,
-        params: [String: JSONValue] = [:]
+        params: [String: JSONValue] = [:],
+        id: String = UUID().uuidString
     ) async throws -> String {
         guard let deviceID else { throw ActionOutboxError.notLinked }
         if try orderedPath() {
             return try await enqueueOrdered(
-                kind: kind, entityRecordName: entityRecordName, params: params, deviceID: deviceID)
+                kind: kind, entityRecordName: entityRecordName, params: params, deviceID: deviceID, id: id)
         }
         let action = ActionRequestPayload(
-            id: UUID().uuidString,
+            id: id,
             kind: kind,
             entityID: Self.entityID(from: entityRecordName),
             params: params,

@@ -170,7 +170,7 @@ func TestAllTablesExist(t *testing.T) {
 	expectedTables := []string{
 		"workspace", "users", "channels", "messages",
 		"reactions", "files", "sync_state", "watch_list", "user_checkpoints",
-		"digests", "decision_reads", "user_analyses", "period_summaries",
+		"digests", "decision_reads", "user_analyses", "period_summaries", "people_card_exclusions",
 		"custom_emojis", "tracks", "track_retry_digests",
 		"feedback", "prompts", "prompt_history", "user_profile",
 		"track_events", "situations", "situation_signals",
@@ -189,7 +189,7 @@ func TestAllTablesExist(t *testing.T) {
 		"external_connections",
 		"external_connection_tools",
 		"kb_documents", "kb_chunks", "kb_sources", "kb_dirty",
-		"watchman_workbenches", "watchman_precedents", "watchman_cursors", "watchman_profile", "watchman_backtests", "watchman_backtest_rows", "watchman_skipped_keys",
+		"watchman_workbenches", "watchman_precedents", "watchman_cursors", "watchman_profile", "watchman_backtests", "watchman_backtest_rows", "watchman_skipped_keys", "watchman_arming", "watchman_items", "watchman_gaps", "watchman_extra_limits",
 		"ext_sources", "ext_documents", "ext_comments", "ext_users",
 		"doc_links", "ext_link_state",
 		"chat_conversations", "chat_messages", "chat_turn_steps", "chat_attachments",

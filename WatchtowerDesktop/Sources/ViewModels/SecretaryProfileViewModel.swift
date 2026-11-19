@@ -92,7 +92,7 @@ final class SecretaryProfileViewModel {
             return
         }
         do {
-            _ = try await runner.run(args: ["profile", "style-sample"])
+            _ = try await runner.runModel(args: ["profile", "style-sample"], origin: .owner)
             load()
         } catch {
             errorMessage = "Failed to generate style profile: \(error.localizedDescription)"

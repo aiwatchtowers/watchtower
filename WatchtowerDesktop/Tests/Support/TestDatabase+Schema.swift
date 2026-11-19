@@ -747,7 +747,7 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     enabled           INTEGER NOT NULL DEFAULT 1,
     search_last_date  TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '', first_cycle_at TEXT NOT NULL DEFAULT '');
+, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '', first_cycle_at TEXT NOT NULL DEFAULT '', emoji_scope_missing INTEGER NOT NULL DEFAULT 0, people_prune_done_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS jira_accounts (
     id                            INTEGER PRIMARY KEY AUTOINCREMENT,
     cloud_id                      TEXT NOT NULL DEFAULT '',
@@ -1117,7 +1117,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     created_at      REAL NOT NULL,
     turn_id         TEXT NOT NULL DEFAULT ''
 , status TEXT NOT NULL DEFAULT 'complete'
-    CHECK(status IN ('complete','partial','error')), provider TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, parent_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE, error_code TEXT, error_message TEXT);
+    CHECK(status IN ('complete','partial','error')), provider TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, parent_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE, error_code TEXT, error_message TEXT, client_key TEXT);
 CREATE TABLE IF NOT EXISTS chat_projects (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     name         TEXT NOT NULL,
@@ -2493,25 +2493,16 @@ CREATE TABLE IF NOT EXISTS agent_session_tombstones (
     agent_session_id TEXT PRIMARY KEY,
     deleted_at       TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS people_card_exclusions (
+    user_id    TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
 CREATE TABLE IF NOT EXISTS watchman_workbenches (
     workbench_id       INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
     enabled_at         TEXT NOT NULL,
     estimated_decisions INTEGER NOT NULL DEFAULT 0,  -- taken at start; the learning progress's denominator
     unlabelled         INTEGER NOT NULL DEFAULT 0,   -- decisions seen but not placed in a category
     learned_through    TEXT                          -- set when every source reports done on its backfill
-);
-CREATE TABLE IF NOT EXISTS watchman_precedents (
-    id           INTEGER PRIMARY KEY,
-    workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    source       TEXT NOT NULL CHECK (source IN ('ask','review','spec','permission','turn','git')),
-    source_key   TEXT NOT NULL,
-    category     TEXT NOT NULL CHECK (category IN ('design','scope','ux_text','tests','review_code','review_doc','permission','finish')),
-    situation    TEXT NOT NULL DEFAULT '',
-    choice       TEXT NOT NULL DEFAULT '',
-    owner_words  TEXT NOT NULL DEFAULT '',
-    decided_at   TEXT NOT NULL,
-    weight       REAL NOT NULL DEFAULT 1, is_decision INTEGER, parked INTEGER, flags_at TEXT,
-    UNIQUE (workbench_id, source, source_key)
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS watchman_fts USING fts5(
     situation, choice, owner_words,
@@ -2562,6 +2553,76 @@ CREATE TABLE IF NOT EXISTS watchman_skipped_keys (
     source_key   TEXT NOT NULL,
     skipped_at   TEXT NOT NULL,
     PRIMARY KEY (workbench_id, source, source_key)
+);
+CREATE TABLE IF NOT EXISTS watchman_arming (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope    TEXT NOT NULL CHECK (scope IN ('session','target')),
+    ref_id   INTEGER NOT NULL,            -- session or target id
+    armed_at TEXT NOT NULL,               -- RFC 3339 UTC
+    armed_by TEXT NOT NULL,               -- 'desktop' | 'cli'
+    UNIQUE (scope, ref_id)
+);
+CREATE TABLE IF NOT EXISTS watchman_gaps (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    ended_at   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS watchman_extra_limits (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT NOT NULL CHECK (kind IN ('command','tool')),
+    pattern    TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (kind, pattern)
+);
+CREATE TABLE IF NOT EXISTS "watchman_precedents" (
+    id           INTEGER PRIMARY KEY,
+    workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    source       TEXT NOT NULL CHECK (source IN ('ask','review','spec','permission','journal','turn','git')),
+    source_key   TEXT NOT NULL,
+    category     TEXT NOT NULL CHECK (category IN ('design','scope','ux_text','tests','review_code','review_doc','permission','finish')),
+    situation    TEXT NOT NULL DEFAULT '',
+    choice       TEXT NOT NULL DEFAULT '',
+    owner_words  TEXT NOT NULL DEFAULT '',
+    decided_at   TEXT NOT NULL,
+    weight       REAL NOT NULL DEFAULT 1,
+    is_decision  INTEGER,  -- §9.1: NULL = not flagged yet (a candidate), 0/1 set by the learner's relabel pass
+    parked       INTEGER,  -- §9.1: NULL/0 = usable, 1 = parked out of the backtest
+    flags_at     TEXT,     -- §9.1: when the relabel pass tried the row (even if both flags stayed NULL)
+    UNIQUE (workbench_id, source, source_key)
+);
+CREATE TABLE IF NOT EXISTS "watchman_items" (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    workbench_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_id    INTEGER,
+    target_id     INTEGER,
+    kind          TEXT NOT NULL CHECK (kind IN ('ask','review_doc','check','handover','permission','review_code','guard')),
+    ref_kind      TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round','guard')),
+    ref_id        INTEGER NOT NULL,
+    state         TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','deciding','done')),
+    outcome       TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('','answered','handed','parked','owner_first','approved','changes','superseded')),
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    lease_until   TEXT,
+    not_before    TEXT,
+    question      TEXT NOT NULL DEFAULT '',  -- redacted, at most 2048 runes
+    choice        TEXT NOT NULL DEFAULT '',
+    rationale     TEXT NOT NULL DEFAULT '',
+    precedent_ids TEXT NOT NULL DEFAULT '[]',  -- JSON array of watchman_precedents ids
+    confidence    TEXT NOT NULL DEFAULT '',
+    importance    TEXT NOT NULL DEFAULT '',
+    category      TEXT NOT NULL DEFAULT '',
+    unsure        INTEGER NOT NULL DEFAULT 1 CHECK (unsure IN (0, 1)),  -- every twin decision is journalled unsure (D43)
+    park_reason   TEXT NOT NULL DEFAULT '',
+    delivery      TEXT NOT NULL DEFAULT '',
+    round_id      INTEGER,
+    cost_usd      REAL NOT NULL DEFAULT 0,
+    error         TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL,
+    decided_at    TEXT,
+    feedback      TEXT NOT NULL DEFAULT '' CHECK (feedback IN ('','ok','corrected')),  -- written by the Desktop only
+    feedback_text TEXT NOT NULL DEFAULT '',
+    feedback_at   TEXT,
+    check_done_at TEXT, owner_done_at TEXT, correction_sent_at TEXT, moves INTEGER,
+    UNIQUE (ref_kind, ref_id, kind)
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
@@ -2924,8 +2985,12 @@ CREATE INDEX IF NOT EXISTS idx_inbox_folders_parent ON inbox_folders(parent_id, 
 CREATE INDEX IF NOT EXISTS coach_proposals_conversation ON coach_proposals(conversation_id);
 CREATE INDEX IF NOT EXISTS skill_pack_overlays_skill ON skill_pack_overlays(skill, id);
 CREATE INDEX IF NOT EXISTS idx_messages_synced_at ON messages(CASE WHEN synced_at = 0 THEN ts_unix ELSE synced_at END);
-CREATE INDEX IF NOT EXISTS idx_watchman_precedents_wb ON watchman_precedents(workbench_id, category, decided_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_messages_client_key ON chat_messages(conversation_id, client_key) WHERE client_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_watchman_backtests_wb ON watchman_backtests(workbench_id, id);
+CREATE INDEX IF NOT EXISTS idx_watchman_precedents_wb ON watchman_precedents(workbench_id, category, decided_at);
+CREATE INDEX IF NOT EXISTS idx_watchman_items_queue ON watchman_items(state, not_before);
+CREATE INDEX IF NOT EXISTS idx_watchman_items_wb ON watchman_items(workbench_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_watchman_items_created ON watchman_items(created_at);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;

@@ -72,6 +72,12 @@ final class HubContractFixtureTests: XCTestCase {
             XCTAssertEqual(heartbeat.chatOffered, (kit["chat"] as? String) == "on", name)
             XCTAssertEqual(heartbeat.capabilities?.chat, kit["chat"] as? String, name)
             XCTAssertEqual(heartbeat.capabilities?.chatReason, kit["chat_reason"] as? String, name)
+            // #1873: stuck_since reads as a date and re-encodes as the hub wrote it; absent unless a kind is stuck.
+            XCTAssertEqual(heartbeat.stuckSince?.timeIntervalSince1970, kit["stuck_since"] as? Double, name)
+            XCTAssertEqual(encoded["stuck_since"] as? Double, json["stuck_since"] as? Double, name)
+            // #1886: background_ai is optional; an unknown value reads as nil.
+            XCTAssertEqual(heartbeat.backgroundAI?.rawValue, kit["background_ai"] as? String, name)
+            XCTAssertEqual(encoded["background_ai"] as? String, json["background_ai"] as? String, name)
             // Re-encoded, the capabilities this build knows are what the hub wrote (an unknown key is dropped).
             let known = (json["capabilities"] as? [String: Any])?.filter { ["recordings", "chat", "chat_reason"].contains($0.key) }
             XCTAssertEqual(encoded["capabilities"] as? NSDictionary, known as NSDictionary?, name)
@@ -82,7 +88,7 @@ final class HubContractFixtureTests: XCTestCase {
     func testHeartbeatChatCapabilityIsAnExplicitOn() throws {
         let cases = try XCTUnwrap(load()["heartbeat"])
         let names = cases.compactMap { $0["name"] as? String }
-        XCTAssertTrue(names.contains("chat_on") && names.contains("chat_off_desktop_too_old"))
+        XCTAssertTrue(names.contains("chat_on") && names.contains("chat_off_runner_down"))
         let older = HeartbeatPayload(
             updatedAt: Date(), appVersion: "1", hubID: "h", macName: "m", flavor: .default, lastPublishAt: nil,
             lastRelayAt: nil, relayBacklog: 0, accounts: [], enabledAt: Date(), ownerUser: "", sharing: .none)

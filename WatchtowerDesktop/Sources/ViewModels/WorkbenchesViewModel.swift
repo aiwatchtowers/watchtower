@@ -136,6 +136,14 @@ final class WorkbenchesViewModel {
     /// The agent coach (#1120): the Analytics pane's proposals. AppState
     /// wires its own; nil = a pane without the coach section.
     @ObservationIgnored weak var coach: CoachCenter?
+    /// Watchman (#1823): the session strip's Hand to Watchman / Take back.
+    /// AppState wires its own; nil = a strip without it.
+    @ObservationIgnored weak var watchman: WatchmanCenter?
+
+    /// A session's title on any workbench (the Watchman arm sheet's list).
+    func sessionTitle(_ id: Int64) -> String? {
+        terminalSessions.values.lazy.flatMap { $0 }.first { $0.id == id }?.title
+    }
     /// The Analytics pane's period per workbench (7 days until picked).
     var analyticsPeriod: [Int64: AgentAnalyticsCenter.Period] = [:]
     /// The Analytics pane's agent filter per workbench (All until picked;
@@ -316,8 +324,8 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var gitHubRepositoryReads: Set<Int64> = []
     /// `git remote get-url origin` of a folder. A seam for tests.
     @ObservationIgnored var readOriginRemote: (URL) async -> String? = { await GitHubRemote.readOrigin(folder: $0) }
-    /// Runs `watchtower terminal title`; nil without a CLI. A seam for tests.
-    @ObservationIgnored var titleService: ((Int64) async throws -> TerminalTitleResult)?
+    /// Runs `watchtower terminal title` for a session row; nil without a CLI. A seam for tests.
+    @ObservationIgnored var titleService: ((TerminalSession) async throws -> TerminalTitleResult)?
     @ObservationIgnored var now: () -> Date = Date.init
 
     // Session state. Written only by WorkbenchesViewModel+Sessions.swift, which
@@ -696,7 +704,7 @@ final class WorkbenchesViewModel {
         asks = OwnerAsksViewModel(dbPool: dbPool, terminalCenter: terminalCenter, lineDelivery: lineDelivery, defaults: defaults)
         if let cli {
             let service = TerminalTitleService(runner: cli.runner)
-            titleService = { try await service.title(sessionID: $0) }
+            titleService = { try await service.title(session: $0) }
             terminalCenter?.codexLaunchArgs = { try await cli.launchArgs(agent: .codex, workbenchID: $0) }
             let automations = AutomationsCLI(runner: cli.runner)
             asks.wakeAutomations = { try await automations.wake() }

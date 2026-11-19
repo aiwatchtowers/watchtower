@@ -67,7 +67,7 @@ public struct HostedRelayPairing: Sendable {
 
     /// `get_account_state`: paying (active or grace), the Macs in slots.
     public func accountState() async throws -> (paying: Bool, macs: [String]) {
-        let state = try await refusing("getAccountState") { try await client.accountState() }
+        let state = try await refusing("getAccountState") { try await session.accountState() }
         let paying = state.entitlement.state == .active || state.entitlement.state == .grace
         return (paying, state.macDeviceIds)
     }
@@ -244,7 +244,7 @@ public struct HostedRelayPairing: Sendable {
 
     /// The Macs in slots for a `SLOT_LIMIT` answer; empty when the account state cannot be read.
     private func slottedMacs() async -> [String] {
-        (try? await client.accountState().macDeviceIds) ?? []
+        (try? await session.accountState().macDeviceIds) ?? []
     }
 
     /// An error's code for logs: the relay code or the case, never a message.

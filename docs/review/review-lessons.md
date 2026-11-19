@@ -3152,3 +3152,51 @@ Entry format:
 - weak-dimension: 7. The registration and surface wiring in `buildToolRegistry` had no cmd-level pin even though `TestAutomationEditorSurface_MountsOnlyDraftSaveAndReads` already lists editor tools by name.
 - rule-gap (candidate, dim 9): *a read tool with rune or char caps must keep its worst-case JSON encoding (6-byte escapes) under `MaxReadResultBytes`, or cap on encoded bytes.*
 - outcome: TBD
+
+## 2026-11-16 — fix/1872-hub-publish-failures (48f8e6da7: relay UNSPECIFIED "internal error" → `relay.ErrRelayInternal` (ErrUnavailable, not cycle-wide, pusher settles in_flight), non-200 without a protocol error is no answer, `relay.CodeClass` log fallback in four errClass tables; 16 files +357; panel: prosecutor (9) + codex (0); pr-review-toolkit specialists unavailable; judge verified by reading the HEAD diff and ran `go test ./internal/hub/...` green) — verdict: approve
+
+- contested: F7, `actions` gaining a production import of the concrete relay package for a log class. Dismissed: hub, slices and alerts already import it in production on main, and the use is log-only, so no seam is lost for mocking. F6 (four copied fallbacks and four copied tests) held as a nit: each package owns a private errClass by house pattern. [1/9]
+- false-positive: none dismissed outright; F3–F5, F8 and F9 were real and small, and all landed. [—]
+- miss: F1 and F2 came from the prosecutor alone. Mapping a new error to an existing sentinel (ErrUnavailable) silently inherits every policy that keys off the sentinel (`cycleWide`, the pusher's retry `classify`). Codex returned nothing. [8]
+- weak-dimension: 8. Widening what maps onto a shared sentinel needs a grep of every `errors.Is(err, <sentinel>)` consumer, not just the classifier the ticket names.
+- rule-gap (candidate, dim 8): *when a new error is wrapped as an existing transport sentinel, list every `errors.Is` consumer of that sentinel and state per consumer whether the inherited policy (cycle stop, retry, resend) is right for it. A non-idempotent op (push send) is the tell.*
+- outcome: TBD
+
+## 2026-11-16 — fix/1873-hub-publish-visibility (fce141b23: heartbeat `stuck_since` from `Publisher.StuckSince`, `logreason` content-free reasons and a line limiter on three hub failure lines, `hub status` relay note, phone `ReplicaFreshness` line on Now/Workbench; 30 files +1259/−22; panel: prosecutor (8) + codex (1, fixed in-branch by fce141b23); pr-review-toolkit specialists unavailable; judge verified by reading and ran the new slices/logreason/wire/cmd hub-status tests green, no mechanical revert) — verdict: approve
+
+- contested: F1, the publish-cycle limiter keyed on the whole line, kind list included. Real: per-kind backoff retries a different subset each cycle, so an outage logs one line per distinct subset. But go-hub.md documents "a different line logs at once", and the old code logged every cycle with no limit. Held minor, not major; the fix is to key on the reason and keep the kind list out of the key. [6]
+- false-positive: none dismissed outright. F3 (package-level limiters) went down to a nit: no test asserts those lines, and the hub runs one runtime per process. [7]
+- miss: codex alone caught the refused individual delete clearing `stuck_since`. The prosecutor read `noteKindOutcome`'s inputs (Failed, Skipped) but not every path in `deleteGone` that leaves a record on the phone. [6]
+- weak-dimension: 7. The new stuck predicate has three inputs (Failed, Skipped, errEpochMoved). Tests cover a refused save, a skipped record and a refused delete, but not a failed source or the epoch exclusion.
+- rule-gap (candidate, dim 9): *a rate limiter keyed on a formatted log line keeps per-cycle variable parts (counts, kind lists, ids) out of the key, or the limit silently stops holding.*
+- outcome: TBD
+
+## 2026-11-18 — feature/1945-spec-review-state (8622a46e8: session state "Spec review · round N" from the author loop, Go sessionstate + hub slice + Swift resolver, shared status fixtures) — verdict: changes-needed
+
+- contested: C1, the hub not republishing `terminal_session` on a `spec_reviews`-only write. Partly older than the branch: on main the slice already counted visible asks through `askVisible` while `ChangeTables` mapped `spec_reviews` only to owner_ask and ask_alert. Held major anyway. The branch makes the published state itself depend on `spec_reviews`. Filing an ask and queueing its review are two commits (`InsertOwnerAsk`, then `launchSpecReview`), and `RevealSpecLoop`/`LeaveSpecLoop` are UPDATEs on `spec_reviews` alone. So the phone shows "waiting on ask" for up to the 60 s full diff, and the timeline milestone for leaving the loop is stamped late. [8]
+- false-positive: none dismissed outright. F2 (a not-live spec-review session counted as Working while the phone groups it as Ended) sits inside the D11 corner case the owner chose not to handle, so it was deferred, not dropped. [6]
+- miss: the spec's §5.1 list of Kind-set consumers missed `ReviewChangesPaneView.turnOver`. Before the branch, a hidden author-loop ask resolved to `.stopped`, which is in the set. Now it resolves to `.specReview`, which is not, so the Branch review pane stops auto-refreshing at turn end. The prosecutor and codex both caught it. [8]
+- weak-dimension: 8. Adding an enum case needs a grep for every `Set<…Kind>` and `switch` over the enum, not only the consumers the spec lists. For a hub projection, every table its SQL reads needs a `ChangeTables` entry.
+- rule-gap (candidate, dim 8): *a hub slice whose SQL reads table T has T → that kind in `sources.ChangeTables`, and a state the fast lane must see has its inputs in `readSessionFacts`; a new subquery over a table missing from the map is the tell.*
+- outcome: TBD
+
+## 2026-11-18 — feature/1886-background-ai-consent (4e38c21ac: background AI consent — `ai.background_runs` answer + `AllowBackgroundAI` policy, `aiconsent` origin/admitted marks and per-call backstop, daemon `aiPhase` gate, executor hold, Desktop onboarding step / upgrade sheet / Settings; final whole-branch review; panel: prosecutor (6) + codex (4) + style-guardian standing in for the uninstalled pr-review-toolkit; judge verified by reading, no runs) — verdict: changes-needed
+
+- contested: F1, sessions an automation's `session()` starts carry only the run marker, so their watchtower children (title, Stop hook, MCP model tools) resolve the run's trigger as background, not admitted, and are refused while paused. Spec §2.2 says the session "is held with its run", and `WorkbenchCLI.sessionStart`'s comment claims it is admitted. Held major. It also gates an owner who answers such a session (BGAI-02). [6/8]
+- contested: C1, codex's P1. An unrelated Viper write folds hand-edited `AI:`/`ai:` duplicates and can persist `allowed`. Real, but it needs a hand-written conflicting duplicate in which the owner typed `allowed`. Held minor. [9]
+- false-positive: style-guardian's "flockRetry duplicates fsutil flockNB": one blocks, the other is `LOCK_NB`. Shared shape, different semantics; nit at most. [9]
+- miss: codex alone caught C4. The upgrade sheet and the Settings entry build the consent model without waiting for the provider catalog, so a subscription agent is described as "the model server" with no usage-limit line. The onboarding step already waits for the catalog. The prosecutor did not compare the three entry points of the same screen. [6]
+- weak-dimension: 6. Origin propagation was checked for the daemon's spawns (TestBGAI01 walks them) but not for sessionstart's launch env, which is the one spawn path that crosses into a long-lived terminal.
+- rule-gap (candidate, dim 6/8): *a marker carried to child processes through the environment (origin, admitted unit) is checked on every spawn path that can inherit the parent's work, including the terminal and session launchers, not only the ones the static spawn checker walks; a comment claiming "admitted with its run" needs a test that reads the child's env.*
+- rule-gap (candidate, dim 6): *a screen with several entry points (onboarding step, upgrade sheet, Settings) waits for the same async inputs on every entry; a guard on one entry and not on the others is the tell.*
+- outcome: TBD
+
+## 2026-11-18 — feature/2017-files-polish (dd2d629c9: workbench FILES tree polished to the multi-folder mockup — root row with branch/dirty/↑↓ from `vm.gitStatus`, `CodeFilesRootLine` in Core, compact rows on Tone tints, `.kitIcon` header buttons, empty-folder note, five DesignShot states; 10 files +605/−120; panel: prosecutor (9) + codex (2); pr-review-toolkit specialists unavailable; judge verified by reading, reviewer's filtered test log green for the new suites, swiftlint 0) — verdict: changes-needed
+
+- contested: C1, the root row showing the last good git snapshot after a failed refresh. Kept as minor: keeping the last status is the VM's documented policy, and the header's branch button does the same — but it passes `staleError` and marks the status stale, while the new row drops the error and its own doc says "the read failed → right side empty". A new consumer of a cached-with-error pair must read both halves, as the sibling consumer does. [6]
+- contested: F1 (prosecutor major), a DesignShot fixture `catch` that renders "fixture failed" text with no `XCTFail`. Held major: `DesignShotFixtures.failure` exists and fails the test, and the new fixture writes its own instead. A broken fixture would leave the shot test green and put an error PNG in front of the owner. [7]
+- false-positive: F2, `collapseAll` reopening a closed root row. Downgraded to a nit: the doc comment and the new test both pin "the root stays open" as intended, and the toolbar button is only on view while the section is open. [6]
+- miss: none late; codex alone raised the stale-status contradiction, and the prosecutor alone raised the fixture false-green. The two lanes did not overlap except on the keyboard reachability of the root row. [6/7]
+- weak-dimension: 7. A new fixture file copied a `do/catch` shape from the older fixtures that lack `XCTFail` instead of calling the shared failure helper.
+- rule-gap (candidate, dim 7/Design kit): *a DesignShot fixture's error path calls `DesignShotFixtures.failure` (XCTFail plus red text); a local `catch` that only returns a Text is the tell.*
+- outcome: TBD

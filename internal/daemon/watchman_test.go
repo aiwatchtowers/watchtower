@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
@@ -148,7 +149,7 @@ func seedDesignPrecedents(t *testing.T, database *db.DB, wb int64) {
 // stubBacktestLaunch wires a fake launcher that records the workbenches.
 func stubBacktestLaunch(d *Daemon) *[]int64 {
 	var launched []int64
-	d.SetWatchmanBacktestLaunch(func(wb int64) error { launched = append(launched, wb); return nil })
+	d.SetWatchmanBacktestLaunch(func(_ context.Context, wb int64) error { launched = append(launched, wb); return nil })
 	return &launched
 }
 
@@ -251,7 +252,7 @@ func TestPhaseWatchmanBacktest_FailedLaunchTriedOnceADay(t *testing.T) {
 	d, database, logs := newBackfillDaemon(t)
 	stubWatchman(t)
 	tries := 0
-	d.SetWatchmanBacktestLaunch(func(int64) error { tries++; return errors.New("no binary") })
+	d.SetWatchmanBacktestLaunch(func(context.Context, int64) error { tries++; return errors.New("no binary") })
 	enabledWatchmanWorkbench(t, database, "acme")
 	d.phaseWatchmanBacktest(context.Background())
 	d.phaseWatchmanBacktest(context.Background())
@@ -275,4 +276,34 @@ func TestPhaseWatchmanLearn_RunCountsRelabelled(t *testing.T) {
 	pending, err := database.WatchmanFlagsPending(wb)
 	require.NoError(t, err)
 	assert.Zero(t, pending)
+}
+
+// Watchman's AI phases are background AI (BGAI-01): while it is paused the
+// cycle builds no labeller and launches no backtest; once allowed the due
+// backtest starts under the phase's admitted ctx.
+func TestPhaseWatchmanAI_HeldWhilePaused(t *testing.T) {
+	daemonOrigin(t)
+	d, database, _ := newBackfillDaemon(t)
+	_, built := stubWatchman(t)
+	fc := newFakeConsent(consentPausedByOwner)
+	d.SetConsent(fc.read)
+	var launched []int64
+	var childEnv [][]string
+	d.SetWatchmanBacktestLaunch(func(ctx context.Context, wb int64) error {
+		launched = append(launched, wb)
+		childEnv = append(childEnv, aiconsent.ChildEnv(ctx))
+		return nil
+	})
+	wb := enabledWatchmanWorkbench(t, database, "acme")
+
+	d.phaseWatchmanAI(context.Background())
+	assert.Empty(t, launched, "no backtest while paused")
+	assert.Zero(t, *built, "no labeller built while paused")
+	assert.True(t, readUnixStamp(d.watchmanBacktestLaunchedPath(wb)).IsZero(), "nothing stamped while paused")
+
+	fc.set(consentAllowed)
+	d.phaseWatchmanAI(context.Background())
+	assert.Equal(t, []int64{wb}, launched)
+	require.Len(t, childEnv, 1)
+	assert.Contains(t, childEnv[0], aiconsent.EnvAdmitted+"=phase:watchman-backtest", "the child carries the admitted phase")
 }

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Watchman phase 1 storage (migration 00194): precedents mined from the
+// Watchman phase 1 storage (migration 00196): precedents mined from the
 // owner's past decisions, their FTS index, per-source cursors, the learned
 // profile and backtest results. Times are RFC 3339 UTC strings.
 
@@ -17,7 +17,7 @@ import (
 type WatchmanPrecedent struct {
 	ID          int64
 	WorkbenchID int64
-	Source      string // ask, review, spec, permission, turn, git
+	Source      string // ask, review, spec, permission, journal, turn, git
 	SourceKey   string // unique within (WorkbenchID, Source)
 	Category    string
 	Situation   string
@@ -372,22 +372,65 @@ type WatchmanMark struct {
 	Sub string
 }
 
+// The twin's own answer texts (spec copy, verbatim): a park or a hand-back
+// it wrote onto an ask (watchmanact answers with them; the readers below
+// tell its answer from the owner's later one by them).
+const (
+	WatchmanParkedPrefix = "Parked for the owner: "
+	WatchmanHandedPrefix = "Handed to the owner: "
+)
+
+// wmTwinWrote are the outcomes whose item wrote the entity's answer or
+// verdict itself. parked and handed wrote one only on an ask with a text
+// answer (and a permission, which decided_by marks); owner_first and
+// superseded never did (WATCHMAN-03: the owner's later answer to a parked
+// item is his).
+const wmTwinWrote = `('answered','approved','changes')`
+
+// wmTwinDecided is true for a permission request id the twin decided.
+// Its parks and hand-backs deny with decided_by = 'watchman', which the
+// reader filters on its own.
+func wmTwinDecided(id string) string {
+	return `EXISTS (SELECT 1 FROM watchman_items w WHERE w.ref_kind = 'permission' AND w.ref_id = ` + id +
+		` AND w.outcome IN ` + wmTwinWrote + `)`
+}
+
+// wmTwinAnswered is true for ask a (alias) whose answer the twin wrote: a
+// decision, or a park or hand-back whose text stands in the ask's answer —
+// not a park the owner answered later (a review ask, an answer that could
+// not be written).
+func wmTwinAnswered(a string) string {
+	return `EXISTS (SELECT 1 FROM watchman_items w WHERE w.ref_kind = 'ask' AND w.ref_id = ` + a + `.id
+		AND (w.outcome IN ` + wmTwinWrote + ` OR (w.outcome IN ('parked','handed')
+			AND (instr(` + a + `.answer, '` + WatchmanParkedPrefix + `') > 0 OR instr(` + a + `.answer, '` + WatchmanHandedPrefix + `') > 0))))`
+}
+
+// wmTwinRound is true for a review round id the twin wrote its verdict on
+// (matched on the item's ref or its round_id); a parked review left the
+// round to the owner.
+func wmTwinRound(id string) string {
+	return `EXISTS (SELECT 1 FROM watchman_items w WHERE ((w.ref_kind = 'round' AND w.ref_id = ` + id + `) OR w.round_id = ` + id +
+		`) AND w.outcome IN ` + wmTwinWrote + `)`
+}
+
 // Each reader's inner select (wm_at, wm_id, wm_sub first); the estimate
 // counts the same rows (WatchmanCounts).
-const (
+var (
 	wmOwnedComment = `c.carried_from IS NULL AND c.status IN ('sent','resolved')`
 	wmAsksSQL      = `SELECT COALESCE(strftime(` + wmAtFormat + `, a.answered_at), '') AS wm_at, a.id AS wm_id, '' AS wm_sub,
 			a.kind, a.title, a.summary, a.changes, a.payload, a.answer, a.doc_path, a.doc_type, a.doc_snapshot, a.origin
 		FROM owner_asks a LEFT JOIN terminal_sessions s ON s.id = a.session_id
 		WHERE a.project_id = ? AND a.status IN ('answered','delivered')
 			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL
-			AND (s.id IS NULL OR s.` + NotDeletingSQL + `)`
+			AND (s.id IS NULL OR s.` + NotDeletingSQL + `)
+			AND NOT ` + wmTwinAnswered("a") + ``
 	wmReviewSQL = `
 		SELECT COALESCE(strftime(` + wmAtFormat + `, r.sent_at), '') AS wm_at, c.id*4 AS wm_id, '' AS wm_sub, 'comment' AS kind, c.id AS rid,
 			COALESCE(c.path, '') AS path, c.quote, c.lens, c.body, r.outcome, '' AS header, '' AS patch, '' AS lstatus,
 			'' AS ref, 0 AS n
 		FROM review_comments c JOIN review_rounds r ON r.id = c.round_id
 		WHERE r.project_id = ? AND r.status IN ('sent','delivered') AND ` + wmOwnedComment + `
+			AND NOT ` + wmTwinRound("c.round_id") + `
 		UNION ALL
 		SELECT COALESCE(strftime(` + wmAtFormat + `, r.sent_at), ''), r.id*4+1, '', 'round', r.id,
 			COALESCE((SELECT group_concat(DISTINCT c.path) FROM review_comments c WHERE c.round_id = r.id AND ` + wmOwnedComment + `), ''),
@@ -396,10 +439,11 @@ const (
 			(SELECT COUNT(*) FROM review_comments c WHERE c.round_id = r.id AND ` + wmOwnedComment + `)
 		FROM review_rounds r
 		WHERE r.project_id = ? AND r.status IN ('sent','delivered') AND r.outcome != ''
+			AND NOT ` + wmTwinRound("r.id") + `
 		UNION ALL
 		SELECT COALESCE(strftime(` + wmAtFormat + `, v.at), ''), v.id*4+2, '', 'revert', v.id, v.path, '', '', '', '', v.header, v.patch, '', '', 0
 		FROM review_reverts v JOIN review_rounds r ON r.id = v.round_id
-		WHERE r.project_id = ?
+		WHERE r.project_id = ? AND NOT ` + wmTwinRound("v.round_id") + `
 		UNION ALL
 		SELECT COALESCE(strftime(` + wmAtFormat + `, l.decided_at), ''), l.id*4+3, '', 'lesson', l.id, '', '', l.lens, l.text, '', '', '', l.status, '', 0
 		FROM review_lessons l
@@ -412,6 +456,7 @@ const (
 		WHERE a.project_id = ? AND a.status IN ('answered','delivered')
 			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL
 			AND (s.id IS NULL OR s.` + NotDeletingSQL + `)
+			AND NOT ` + wmTwinAnswered("a") + `
 			AND m.state IN ('ok','comment','not_useful')`
 	wmPermissionSQL = `SELECT COALESCE(strftime(` + wmAtFormat + `, r.decided_at), '') AS wm_at, r.id AS wm_id, '' AS wm_sub, r.tool_name, r.summary, r.summary_clipped, r.status,
 			s.folder_path, COALESCE(p.folder_path, ''),
@@ -419,7 +464,9 @@ const (
 		FROM permission_requests r
 		JOIN terminal_sessions s ON s.id = r.terminal_session_id AND s.` + NotDeletingSQL + `
 		LEFT JOIN projects p ON p.id = r.workbench_id
-		WHERE r.workbench_id = ? AND r.status IN ('allowed','denied')`
+		WHERE r.workbench_id = ? AND r.status IN ('allowed','denied')
+			AND COALESCE(r.decided_by, '') != 'watchman'
+			AND NOT ` + wmTwinDecided("r.id") + ``
 )
 
 // wmPage wraps inner, which selects wm_at, wm_id and wm_sub first, in the
@@ -621,6 +668,39 @@ func scanWatchmanPermissionRows(rows *sql.Rows) ([]WatchmanPermissionRow, error)
 		}
 		if err := json.Unmarshal([]byte(worktrees), &r.Worktrees); err != nil {
 			return nil, fmt.Errorf("decoding worktrees of permission request %d: %w", r.Mark.ID, err)
+		}
+		r.ID = r.Mark.ID
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// WatchmanJournalRow is one twin decision the owner reviewed in the morning.
+type WatchmanJournalRow struct {
+	Mark                                 WatchmanMark // feedback_at, item id
+	ID                                   int64
+	Category, Question, Choice, Feedback string
+	FeedbackText                         string
+}
+
+// WatchmanJournalFeedback pages the workbench's items the owner marked OK or
+// corrected, decided_at = feedback_at. Only the Desktop writes the feedback
+// columns, so a row here is the owner's word (WATCHMAN-03).
+func (db *DB) WatchmanJournalFeedback(workbenchID int64, from *WatchmanMark, older bool, limit int) ([]WatchmanJournalRow, error) {
+	q, args := wmPage(`SELECT COALESCE(strftime(`+wmAtFormat+`, i.feedback_at), '') AS wm_at, i.id AS wm_id, '' AS wm_sub,
+			i.category, i.question, i.choice, i.feedback, i.feedback_text
+		FROM watchman_items i WHERE i.workbench_id = ? AND i.feedback IN ('ok','corrected')`,
+		[]any{workbenchID}, from, older, limit)
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("reading journal feedback of workbench %d: %w", workbenchID, err)
+	}
+	defer rows.Close()
+	var out []WatchmanJournalRow
+	for rows.Next() {
+		var r WatchmanJournalRow
+		if err := rows.Scan(&r.Mark.At, &r.Mark.ID, &r.Mark.Sub, &r.Category, &r.Question, &r.Choice, &r.Feedback, &r.FeedbackText); err != nil {
+			return nil, fmt.Errorf("scanning journal feedback: %w", err)
 		}
 		r.ID = r.Mark.ID
 		out = append(out, r)

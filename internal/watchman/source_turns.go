@@ -66,9 +66,13 @@ type turnItem struct {
 // them first, so hi moves without gaps), then older than its lo mark,
 // newest first. The cursor is "<hi sid>:<hi idx>|<lo sid>:<lo idx>"; the lo
 // mark is "end" (turnBackfillDone) once the backfill has drained, so a done
-// source reads only the sessions at or after hi.
+// source reads only the sessions at or after hi — and the older sessions it
+// tracks: a third part "|<sid>:<idx>,…" marks, per session below hi still
+// active within turnReadGrace, the last turn read, so a new owner turn in an
+// older session that is still running is read too (a session idle past the
+// grace leaves the list once read to its end).
 func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cursor string, limit int) ([]db.WatchmanPrecedent, string, bool, error) {
-	hi, lo, loDone, has, err := parseTurnCursor(cursor)
+	hi, lo, loDone, has, marks, err := parseTurnCursor(cursor)
 	if err != nil {
 		return nil, "", false, err
 	}
@@ -86,6 +90,7 @@ func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, curso
 		}
 	}
 	sort.Slice(sessions, func(i, j int) bool { return sessions[i].ID < sessions[j].ID })
+	recent := func(rs db.RecentWorkbenchSession) bool { return s.now().Sub(rs.LastActiveAt) < turnReadGrace }
 
 	type feedResult struct {
 		items []turnItem
@@ -102,15 +107,24 @@ func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, curso
 	}
 	var out []db.WatchmanPrecedent
 	next := func() string {
+		c := fmt.Sprintf("%d:%d|%d:%d", hi.sid, hi.idx, lo.sid, lo.idx)
 		if loDone {
-			return fmt.Sprintf("%d:%d|%s", hi.sid, hi.idx, turnBackfillDone)
+			c = fmt.Sprintf("%d:%d|%s", hi.sid, hi.idx, turnBackfillDone)
 		}
-		return fmt.Sprintf("%d:%d|%d:%d", hi.sid, hi.idx, lo.sid, lo.idx)
+		return c + formatTurnMarks(marks, hi.sid)
 	}
 
 	if has {
+		listed := map[int64]db.RecentWorkbenchSession{}
 		for _, rs := range sessions {
-			if rs.ID < hi.sid {
+			listed[rs.ID] = rs
+			from, tracked := marks[rs.ID]
+			switch {
+			case rs.ID == hi.sid:
+				from = hi.idx
+			case rs.ID > hi.sid:
+				from = -1
+			case !tracked:
 				continue
 			}
 			if err := ctx.Err(); err != nil {
@@ -118,23 +132,40 @@ func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, curso
 			}
 			items, err := itemsOf(rs)
 			if err != nil {
-				// A newer session that may still be live can hold turns newer
-				// than hi: stop rather than move hi past them. A session idle
+				// A session that may still be live can hold turns newer than
+				// its mark: stop rather than move past them. A session idle
 				// past the grace is skipped so it cannot stall the source.
-				if s.now().Sub(rs.LastActiveAt) < turnReadGrace {
+				if recent(rs) {
 					return nil, "", false, err
 				}
 				log.Printf("watchman: turns: skipping session %d: %v", rs.ID, err)
+				delete(marks, rs.ID)
 				continue
 			}
 			for _, it := range items {
-				if !hi.less(it.pos) {
+				if it.pos.idx <= from {
 					continue
 				}
-				out, hi = append(out, it.p), it.pos
+				out = append(out, it.p)
+				switch {
+				case rs.ID < hi.sid:
+					marks[rs.ID] = it.pos.idx
+				default:
+					if rs.ID > hi.sid {
+						marks[hi.sid] = hi.idx // the session hi leaves keeps its own mark
+					}
+					hi = it.pos
+				}
 				if len(out) == limit {
 					return out, next(), false, nil
 				}
+			}
+		}
+		// Read to the end: an older session idle past the grace, or gone,
+		// leaves the list.
+		for sid := range marks {
+			if rs, ok := listed[sid]; !ok || !recent(rs) {
+				delete(marks, sid)
 			}
 		}
 		if loDone {
@@ -156,6 +187,13 @@ func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, curso
 			log.Printf("watchman: turns: skipping session %d: %v", rs.ID, err)
 			continue
 		}
+		if _, tracked := marks[rs.ID]; has && rs.ID < hi.sid && !tracked && recent(rs) {
+			// Still running: its later turns come after what is read here.
+			marks[rs.ID] = -1
+			if len(items) > 0 {
+				marks[rs.ID] = items[len(items)-1].pos.idx
+			}
+		}
 		for j := len(items) - 1; j >= 0; j-- {
 			it := items[j]
 			if has && !it.pos.less(lo) {
@@ -175,6 +213,26 @@ func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, curso
 	}
 	loDone = true
 	return out, next(), true, nil
+}
+
+// formatTurnMarks is the cursor's third part for the tracked sessions below
+// hi ("" when none), in id order.
+func formatTurnMarks(marks map[int64]int, hiSID int64) string {
+	var sids []int64
+	for sid := range marks {
+		if sid < hiSID {
+			sids = append(sids, sid)
+		}
+	}
+	if len(sids) == 0 {
+		return ""
+	}
+	sort.Slice(sids, func(i, j int) bool { return sids[i] < sids[j] })
+	parts := make([]string, len(sids))
+	for i, sid := range sids {
+		parts[i] = fmt.Sprintf("%d:%d", sid, marks[sid])
+	}
+	return "|" + strings.Join(parts, ",")
 }
 
 // turnsOf reads one session's owner turns. A missing transcript reads as
@@ -224,24 +282,34 @@ func (s turnSource) turnsOf(rs db.RecentWorkbenchSession) ([]turnItem, error) {
 	return items, nil
 }
 
-func parseTurnCursor(c string) (hi, lo turnPos, loDone, has bool, err error) {
+func parseTurnCursor(c string) (hi, lo turnPos, loDone, has bool, marks map[int64]int, err error) {
+	marks = map[int64]int{}
 	if c == "" {
-		return hi, lo, false, false, nil
+		return hi, lo, false, false, marks, nil
 	}
-	h, l, ok := strings.Cut(c, "|")
-	if !ok {
-		return hi, lo, false, false, fmt.Errorf("watchman turn cursor %q: no lo mark", c)
+	parts := strings.Split(c, "|")
+	if len(parts) < 2 || len(parts) > 3 {
+		return hi, lo, false, false, nil, fmt.Errorf("watchman turn cursor %q: want <hi>|<lo>[|<marks>]", c)
 	}
-	if hi, err = parseTurnPos(h); err != nil {
-		return hi, lo, false, false, fmt.Errorf("watchman turn cursor %q: %w", c, err)
+	if hi, err = parseTurnPos(parts[0]); err != nil {
+		return hi, lo, false, false, nil, fmt.Errorf("watchman turn cursor %q: %w", c, err)
 	}
-	if l == turnBackfillDone {
-		return hi, lo, true, true, nil
+	if len(parts) == 3 {
+		for _, m := range strings.Split(parts[2], ",") {
+			pos, err := parseTurnPos(m)
+			if err != nil {
+				return hi, lo, false, false, nil, fmt.Errorf("watchman turn cursor %q: %w", c, err)
+			}
+			marks[pos.sid] = pos.idx
+		}
 	}
-	if lo, err = parseTurnPos(l); err != nil {
-		return hi, lo, false, false, fmt.Errorf("watchman turn cursor %q: %w", c, err)
+	if parts[1] == turnBackfillDone {
+		return hi, lo, true, true, marks, nil
 	}
-	return hi, lo, false, true, nil
+	if lo, err = parseTurnPos(parts[1]); err != nil {
+		return hi, lo, false, false, nil, fmt.Errorf("watchman turn cursor %q: %w", c, err)
+	}
+	return hi, lo, false, true, marks, nil
 }
 
 func parseTurnPos(s string) (turnPos, error) {

@@ -9,6 +9,9 @@ import WatchtowerRelayProto
 /// this actor's memory only and is never logged or put in an error.
 public actor HostedRelayClient {
     static let logger = Logger(subsystem: "WatchtowerKit", category: "HostedRelay")
+    /// Called when a request is handed over for sending (its frame queued on the socket in order, or its HTTPS post
+    /// begun): a pull sends one zone's first read before it starts the next zone's (live link R6).
+    @TaskLocal static var submitted: (@Sendable () -> Void)?
 
     /// `UNAVAILABLE` retry (proto README "Errors"): 0.5 s doubling to 8 s, at most 30 s in total.
     static let unavailableFirstDelay = Duration.milliseconds(500)
@@ -278,6 +281,8 @@ public actor HostedRelayClient {
         let status: Int
         let body: Data
         do {
+            // The op itself, not the login it may need first.
+            if token != nil { Self.submitted?() }
             (status, body) = try await http.post(opURL, body: try request.serializedData(), headers: headers)
         } catch {
             if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {

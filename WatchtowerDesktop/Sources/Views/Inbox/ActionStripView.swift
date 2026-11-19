@@ -1,6 +1,8 @@
+import ChatWire
 import GRDB
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// The Inbox tab's content: the folder menu and the selected folder
 /// (`ActionStripActionsView`) over every kind that needs the owner — the
@@ -46,7 +48,7 @@ struct ActionStripView: View {
                         }
                     },
                     onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
-                    sessionHoldsCall: { appState.chatSessionPool?.holdsSessionCall($0) ?? false },
+                    sessionHoldsCall: { appState.chatHoldsSessionCall($0) },
                     emptyState: appState.emptyStateContext,
                     onOpenConnections: { appState.openConnections() },
                     ownerKnown: appState.owner.isKnown,
@@ -61,7 +63,10 @@ struct ActionStripView: View {
                     onNewArtifact: { appState.newInboxArtifact() },
                     onMakeTaskFromTrack: { await appState.makeTask(fromTrack: $0) },
                     onGoToTarget: { appState.navigateToTarget($0) },
-                    artifactMenu: appState.inboxArtifactMenu
+                    artifactMenu: appState.inboxArtifactMenu,
+                    onReadWatchmanStatus: { await appState.watchmanCenter?.load() },
+                    watchmanJournal: appState.watchmanJournal,
+                    watchmanDaemon: appState.watchmanCenter?.daemon ?? .unknown
                 )
             } else {
                 ProgressView()
@@ -201,7 +206,7 @@ struct ActionStripActionsView: View {
     var onRetryBuiltin: ((String) -> Void)?
     /// A failed Slack send's Reconnect Slack button (`AppState.reconnectSlack`).
     var onReconnectSlack: ((Int64) async -> String?)?
-    /// `AgentActionCardView.sessionHoldsCall` for a row (a connector call).
+    /// `MacAgentActionCard.sessionHoldsCall` for a row (a connector call).
     var sessionHoldsCall: ((AgentAction) -> Bool)?
     /// The empty list's readiness and actions (`AppState.emptyStateContext`).
     var emptyState: EmptyStateContext = .neutral
@@ -233,6 +238,12 @@ struct ActionStripActionsView: View {
     /// The artifact ⋯ (reading pane, list rows) and Needs approval's ⋯;
     /// nil (tests, shots) draws neither.
     var artifactMenu: InboxArtifactMenuModel?
+    /// Rereads `watchman status` (the daemon line) while the journal is open.
+    var onReadWatchmanStatus: () async -> Void = {}
+    /// The Watchman entry's journal (spec 2026-11-16 §10); nil before the database opens.
+    var watchmanJournal: WatchmanJournalViewModel?
+    /// `watchman status`'s `daemon_running`.
+    var watchmanDaemon: WatchmanDaemonState = .unknown
 
     /// What the header opened in the reading pane, and the Idea finder's
     /// open row; settable at init so a design shot can open one.
@@ -489,6 +500,15 @@ struct ActionStripActionsView: View {
         case let .brief(action)?: pane(.proposal(action))
         case let .approval(item)?: pane(Self.listItem(item))
         case let .builtinNotice(notice)?: pane(.builtinNotice(notice))
+        case .watchman?:
+            if let watchmanJournal {
+                WatchmanJournalView(model: watchmanJournal, readStatus: onReadWatchmanStatus)
+                    .onChange(of: watchmanDaemon, initial: true) { _, daemon in
+                        watchmanJournal.daemon = daemon
+                    }
+            } else {
+                pane(nil)
+            }
         case .legacyTracks?, .legacyIdeas?, .legacyMessages?, nil: pane(nil)
         }
     }
@@ -657,7 +677,7 @@ struct ActionStripActionsView: View {
             filled(Self.listItem(item))
         case let .builtinNotice(notice):
             filled(.builtinNotice(notice))
-        case .artifact, .brief, .legacyDay, .legacyTracks, .legacyIdeas, .legacyMessages:
+        case .artifact, .brief, .legacyDay, .legacyTracks, .legacyIdeas, .legacyMessages, .watchman:
             EmptyView()
         }
     }
@@ -770,12 +790,12 @@ struct ActionStripActionsView: View {
         Task { await vm.select(nil) }
     }
 
-    private func card(_ action: AgentAction) -> AgentActionCardView {
+    private func card(_ action: AgentAction) -> MacAgentActionCard {
         // An Inbox target button's newest proposal: the button's state, so a
         // stuck row (Needs approval keeps approved and executing rows on their
         // native card) offers Try again (apply, or apply --force on the same row).
         let targetState = vm.targetFacts(for: action).map { TargetButtonStateResolver.state($0, now: now ?? Date()) }
-        return AgentActionCardView(
+        return MacAgentActionCard(
             action: action,
             inFlight: vm.actionFeed.inFlight.contains(action.id),
             onApprove: { Task { await vm.approve(action.id, shownArgs: action.argsJSON) } },

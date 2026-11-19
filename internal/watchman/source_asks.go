@@ -94,12 +94,20 @@ func askPrecedent(workbenchID int64, r db.WatchmanAskRow) (db.WatchmanPrecedent,
 		p.Choice, p.OwnerWords = checkChoice(payload.Checklist, answer.Checklist)
 		p.OwnerWords = joinNonEmpty("\n", p.OwnerWords, answer.Note)
 	default: // question
-		p.Situation = joinNonEmpty("\n", head, questionsText(payload.Questions))
+		p.Situation = AskSituation(r.Title, r.Summary, r.Changes, payload.Questions)
 		p.Choice, p.OwnerWords = questionChoice(payload.Questions, answer.Answers)
 		p.OwnerWords = joinNonEmpty("\n", p.OwnerWords, answer.Note)
 	}
 	p.Situation, p.Choice, p.OwnerWords = clean(p.Situation), clean(p.Choice), clean(p.OwnerWords)
 	return p, true, nil
+}
+
+// AskSituation is a question ask's text as a precedent's situation holds it
+// (before the clean): its title, summary and changes, then each question
+// with its options. The twin's live item uses it too, so retrieval compares
+// like with like.
+func AskSituation(title, summary, changes string, qs []asks.Question) string {
+	return joinNonEmpty("\n", title, summary, changes, questionsText(qs))
 }
 
 func focusText(fs []asks.Focus) string {

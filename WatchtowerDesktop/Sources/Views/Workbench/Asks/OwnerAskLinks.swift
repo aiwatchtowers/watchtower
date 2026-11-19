@@ -1,6 +1,8 @@
 import AppKit
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
+import ChatUI
 
 /// Links in an ask's text (#394): a workbench path (`path:line`, or a
 /// link to a path) opens text in Files and decoded raster mockups in the

@@ -14,7 +14,7 @@ func TestWatchmanDecidePromptRegistered(t *testing.T) {
 	assert.Equal(t, "watchman.decide", id)
 	assert.NotEmpty(t, Defaults[id])
 	assert.True(t, contains(AllIDs, id))
-	assert.Equal(t, 3, DefaultVersions[id])
+	assert.Equal(t, 4, DefaultVersions[id])
 	assert.NotEmpty(t, Descriptions[id])
 	assert.NotContains(t, Defaults[id], "%")
 	for _, want := range []string{`"choice"`, `"rationale"`,
@@ -24,6 +24,17 @@ func TestWatchmanDecidePromptRegistered(t *testing.T) {
 	}
 	for _, agent := range []string{"Claude", "Codex"} {
 		assert.NotContains(t, Defaults[id], agent)
+	}
+}
+
+// TestWatchmanDecidePrompt_V4Marks pins v4's marks: a review_doc item's
+// "findings" input and the reply's "marks" shape (key, the three states,
+// body), empty for every other item.
+func TestWatchmanDecidePrompt_V4Marks(t *testing.T) {
+	assert.Equal(t, 4, DefaultVersions[WatchmanDecide])
+	for _, want := range []string{`"findings"`, `"marks"`, `{"key": "<the finding's key, copied verbatim>", "state": "ok" | "comment" | "not_useful", "body": "…"}`,
+		`For every other item "marks" is []`, `"handoff": "none", "marks": []}`} {
+		assert.Contains(t, Defaults[WatchmanDecide], want)
 	}
 }
 
@@ -73,7 +84,7 @@ func TestWatchmanJudgePromptRegistered(t *testing.T) {
 	assert.Equal(t, "watchman.judge", id)
 	assert.NotEmpty(t, Defaults[id])
 	assert.True(t, contains(AllIDs, id))
-	assert.Equal(t, 4, DefaultVersions[id])
+	assert.Equal(t, 5, DefaultVersions[id])
 	assert.NotEmpty(t, Descriptions[id])
 	assert.NotContains(t, Defaults[id], "%")
 	for _, want := range []string{`{"grades":[{"q":`, `"grade":"same|acceptable|bad"`, `"why"`, `"situation"`, `"owner"`, `"twin"`,
@@ -108,6 +119,22 @@ func TestWatchmanPrompts_PinPhase1bRules(t *testing.T) {
 		"Equal owner and twin answers in equal situations get equal grades.",
 		`A handoff whose choice or reasoning states an owner-only action as already done ("token already revoked") is "unjustified"; apart from that rule, the choice is still not graded.`,
 		"Worked examples (equal cases, equal grades)"} {
+		assert.Contains(t, judge, want)
+	}
+}
+
+// TestWatchmanJudgePrompt_HandoffLabelIsNotAClaim pins v5: on a handoff the
+// option list may be confirmations of the owner's own action, and choosing
+// none of them is not a claim that it was done.
+func TestWatchmanJudgePrompt_HandoffLabelIsNotAClaim(t *testing.T) {
+	assert.Equal(t, 5, DefaultVersions[WatchmanJudge])
+	judge := Defaults[WatchmanJudge]
+	for _, want := range []string{
+		`the options may only confirm the owner's own action ("signed in", "connected it")`,
+		"not choosing any of them is not a claim that it was done",
+		`That handoff is "justified".`,
+		"a rationale that states the owner-only action as already done is still unjustified",
+	} {
 		assert.Contains(t, judge, want)
 	}
 }

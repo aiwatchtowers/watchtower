@@ -126,7 +126,8 @@ func formatJiraSection(issues []db.TrackerIssue) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// formatPeopleSection renders active people cards (red_flags) for the prompt.
+// formatPeopleSection renders active people cards for the prompt: style,
+// decision role and summary — no red flags (#1769, A12).
 func formatPeopleSection(cards []db.PeopleCard) string {
 	if len(cards) == 0 {
 		return "(none)"
@@ -136,14 +137,6 @@ func formatPeopleSection(cards []db.PeopleCard) string {
 		fmt.Fprintf(&sb, "- user:%s [%s / %s]", c.UserID, c.CommunicationStyle, c.DecisionRole)
 		if c.Summary != "" {
 			fmt.Fprintf(&sb, " — %s", c.Summary)
-		}
-		// Include red flags if any.
-		var flags []string
-		if c.RedFlags != "" && c.RedFlags != "[]" && c.RedFlags != "null" {
-			_ = json.Unmarshal([]byte(c.RedFlags), &flags)
-		}
-		if len(flags) > 0 {
-			fmt.Fprintf(&sb, " flags:[%s]", strings.Join(flags, "; "))
 		}
 		sb.WriteByte('\n')
 	}

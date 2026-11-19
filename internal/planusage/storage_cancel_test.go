@@ -2,13 +2,13 @@ package planusage
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"watchtower/internal/claude"
 	"watchtower/internal/codex"
 	"watchtower/internal/db"
 
@@ -127,8 +127,8 @@ func (s *pausedClaudeStore) UpsertPlanUsageStatusContext(ctx context.Context, st
 func TestPollOnce_CancelDuringStorageDoesNotPublish(t *testing.T) {
 	for _, point := range []string{"history", "publication"} {
 		t.Run(point, func(t *testing.T) {
-			fetch := &fakeFetch{body: load(t, "usage_full.json")}
-			p, d := newPoller(t, validCreds, fetch, at(10, 0))
+			read := okRead()
+			p, d := newPoller(t, read, at(10, 0))
 			_, err := p.PollOnce(context.Background())
 			require.NoError(t, err)
 			before, err := d.GetPlanUsageStatus()
@@ -138,7 +138,7 @@ func TestPollOnce_CancelDuringStorageDoesNotPublish(t *testing.T) {
 			p.Now = func() time.Time { return at(10, 5) }
 			p.failures = 3
 			if point == "publication" {
-				fetch.err = errors.New("synthetic source network failure")
+				read.push(claude.UsageSnapshot{}, usageErr("network"))
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()

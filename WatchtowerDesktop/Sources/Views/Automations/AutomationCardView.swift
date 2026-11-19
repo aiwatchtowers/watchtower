@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// The automation card (spec A5): the name with its scope and On/Off chips,
 /// **Run Now**, **Edit** and **⋯** (Turn Off / Turn On, Dry Run, Delete…),
