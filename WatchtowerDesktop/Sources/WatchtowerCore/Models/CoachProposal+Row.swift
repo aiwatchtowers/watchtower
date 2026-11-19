@@ -15,6 +15,8 @@ extension CoachProposal {
             decidedAt: nil, baseline: row["baseline"], verdict: row["verdict"], verdictValue: row["verdict_value"],
             verdictAt: nil, revertsID: (row["reverts_id"] as Int64?) ?? 0, budget: 0,
             skill: row["skill"], origin: row["origin"], conversationID: row["conversation_id"],
-            writtenBranch: row["written_branch"], measureFrom: row["measure_from"])
+            writtenBranch: row["written_branch"], measureFrom: row["measure_from"],
+            folderBranch: nil, prURL: (row["pr_url"] as String?) ?? "",
+            revertPRURL: (row["revert_pr_url"] as String?) ?? "")
     }
 }

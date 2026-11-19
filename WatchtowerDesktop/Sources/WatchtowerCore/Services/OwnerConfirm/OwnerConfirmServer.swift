@@ -146,8 +146,9 @@ package final class OwnerConfirmServer {
     private let present: (OwnerConfirmPrompt) -> Void
     private let timeout: Duration
     private let cooldown: Duration
-    /// Seconds a connection has to send its request line (`readTimeout`).
-    nonisolated private let lineTimeout: TimeInterval
+    /// Seconds a connection has to send its request line (`readTimeout`;
+    /// nil: no deadline, for tests that are not about it).
+    nonisolated private let lineTimeout: TimeInterval?
     /// The window's wait for the owner; tests run it out by hand.
     private let sleep: (Duration) async -> Void
     /// Told each admitted connection's count of open ones (tests).
@@ -161,7 +162,7 @@ package final class OwnerConfirmServer {
         grants: OwnerConfirmGrants = .shared,
         timeout: Duration = promptTimeout,
         cooldown: Duration = deniedCooldown,
-        lineTimeout: TimeInterval = readTimeout,
+        lineTimeout: TimeInterval? = readTimeout,
         sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) },
         onAdmit: (@Sendable (Int) -> Void)? = nil,
         present: @escaping (OwnerConfirmPrompt) -> Void

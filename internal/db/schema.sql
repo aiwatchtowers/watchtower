@@ -2927,7 +2927,9 @@ CREATE TABLE IF NOT EXISTS coach_proposals (
     skill           TEXT NOT NULL DEFAULT '',  -- the skill a skill or pack_overlay destination names
     conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL, -- the tuning conversation of a chat proposal
     written_branch  TEXT NOT NULL DEFAULT '',  -- repo_*: the branch Accept wrote on
-    measure_from    TEXT                       -- repo_*: when the edit was first seen at HEAD; NULL = not yet / not repo_*
+    measure_from    TEXT,                      -- repo_*: when the edit was first seen at HEAD; NULL = not yet / not repo_*
+    pr_url          TEXT NOT NULL DEFAULT '',  -- 00208: the pull request a repo_* Accept opened ('' = not a PR row)
+    revert_pr_url   TEXT NOT NULL DEFAULT ''   -- 00208: the pull request a Rollback opened to undo it
 );
 CREATE INDEX IF NOT EXISTS coach_proposals_conversation ON coach_proposals(conversation_id);
 

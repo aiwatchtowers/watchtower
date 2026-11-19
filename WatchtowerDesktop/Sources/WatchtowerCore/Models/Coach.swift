@@ -97,6 +97,12 @@ package struct CoachProposal: Decodable, Equatable, Identifiable, Sendable {
     /// folder, read by the CLI at list time ("" = not a git folder); nil when
     /// the key is absent. Never read from the database row.
     package var folderBranch: String?
+    /// `repo_*` in a GitHub folder: the pull request Accept opened
+    /// (spec 2026-11-19 §4.3); "" for a working-copy edit or before Accept.
+    package var prURL = ""
+    /// The pull request a Roll Back of a merged edit opened to undo it
+    /// (§4.5); "" otherwise.
+    package var revertPRURL = ""
 
     enum CodingKeys: String, CodingKey {
         case id, title, why, destination, kind, metric, before, after, evidence, sources, status
@@ -105,6 +111,7 @@ package struct CoachProposal: Decodable, Equatable, Identifiable, Sendable {
         case decidedAt = "decided_at", verdictValue = "verdict_value", verdictAt = "verdict_at"
         case revertsID = "reverts_id", conversationID = "conversation_id"
         case writtenBranch = "written_branch", measureFrom = "measure_from", folderBranch = "folder_branch"
+        case prURL = "pr_url", revertPRURL = "revert_pr_url"
     }
 }
 
@@ -141,7 +148,9 @@ extension CoachProposal {
             conversationID: try c.decodeIfPresent(Int64.self, forKey: .conversationID),
             writtenBranch: try c.decodeIfPresent(String.self, forKey: .writtenBranch) ?? "",
             measureFrom: try c.decodeIfPresent(String.self, forKey: .measureFrom),
-            folderBranch: try c.decodeIfPresent(String.self, forKey: .folderBranch))
+            folderBranch: try c.decodeIfPresent(String.self, forKey: .folderBranch),
+            prURL: try c.decodeIfPresent(String.self, forKey: .prURL) ?? "",
+            revertPRURL: try c.decodeIfPresent(String.self, forKey: .revertPRURL) ?? "")
     }
 }
 
@@ -151,25 +160,29 @@ package struct CoachProposalList: Decodable, Equatable, Sendable {
 }
 
 /// The workbench repository file a `coach accept --json` wrote (`written_path`,
-/// relative to the workbench folder, and `written_branch`); nil for any other
-/// destination (an empty `written_path`).
+/// relative to the workbench folder, and `written_branch`), and the pull
+/// request it opened (`pr_url`, "" on the working-copy route); nil for any
+/// other destination (an empty `written_path`).
 package struct CoachWrittenFile: Equatable, Sendable {
     package let path: String
     package let branch: String
+    package let prURL: String
 
-    package init(path: String, branch: String) {
+    package init(path: String, branch: String, prURL: String = "") {
         self.path = path
         self.branch = branch
+        self.prURL = prURL
     }
 
     package static func parse(acceptResult data: Data) -> Self? {
         struct Out: Decodable {
             let written_path: String?
             let written_branch: String?
+            let pr_url: String?
         }
         guard let out = try? JSONDecoder().decode(Out.self, from: data),
               let path = out.written_path, !path.isEmpty else { return nil }
-        return Self(path: path, branch: out.written_branch ?? "")
+        return Self(path: path, branch: out.written_branch ?? "", prURL: out.pr_url ?? "")
     }
 }
 
@@ -193,5 +206,29 @@ package struct CoachFailure: Decodable, Equatable, Sendable {
             return failure
         }
         return nil
+    }
+}
+
+/// Decoded `watchtower coach sync-prs --json` (spec 2026-11-19 §4.4): how
+/// many accepted pull-request rows changed, and the owner sentences of the
+/// rows GitHub could not answer for (`sync_error`, "" when all were read;
+/// the CLI still exits 0 then).
+package struct CoachSyncResult: Decodable, Equatable, Sendable {
+    package let ok: Bool
+    package let changed: Int
+    package let syncError: String
+    package let syncCode: String
+
+    enum CodingKeys: String, CodingKey {
+        case ok, changed
+        case syncError = "sync_error", syncCode = "sync_code"
+    }
+
+    package init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try c.decode(Bool.self, forKey: .ok)
+        changed = try c.decode(Int.self, forKey: .changed)
+        syncError = try c.decodeIfPresent(String.self, forKey: .syncError) ?? ""
+        syncCode = try c.decodeIfPresent(String.self, forKey: .syncCode) ?? ""
     }
 }

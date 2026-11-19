@@ -120,6 +120,10 @@ func checkRepoRoot(folder string) error {
 	return nil
 }
 
+// creatableRepoDestinations are the repository files an Accept may create
+// (an empty before-text); a Rollback deletes such a file again.
+var creatableRepoDestinations = map[string]bool{DestRepoClaudeMD: true, DestRepoAgentsMD: true}
+
 // repoFileOf is where a repository destination lives in folder: CLAUDE.md
 // and AGENTS.md may be created (0644, in the folder itself), the skills and
 // workflow.md must exist; a skill holding the devpack marker is refused.
@@ -137,14 +141,15 @@ func repoFileOf(folder, dest, skill string) (userFile, error) {
 	u := userFile{root: folder, path: filepath.Join(folder, filepath.FromSlash(rel))}
 	switch dest {
 	case DestRepoClaudeMD:
-		u.kind, u.create = repoClaudeMDKind, true
+		u.kind = repoClaudeMDKind
 	case DestRepoAgentsMD:
-		u.kind, u.create = repoAgentsMDKind, true
+		u.kind = repoAgentsMDKind
 	case DestRepoWorkflow:
 		u.kind = repoWorkflowKind
 	default:
 		u.kind = skillFileKind
 	}
+	u.create = creatableRepoDestinations[dest]
 	return u, nil
 }
 

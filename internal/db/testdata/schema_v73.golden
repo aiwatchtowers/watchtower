@@ -1266,7 +1266,7 @@ skill TEXT NOT NULL DEFAULT '',
 conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL,
 written_branch TEXT NOT NULL DEFAULT '',
 measure_from TEXT
-)
+, pr_url TEXT NOT NULL DEFAULT '', revert_pr_url TEXT NOT NULL DEFAULT '')
 
 table	codex_plan_usage_samples
 CREATE TABLE codex_plan_usage_samples (
@@ -5065,6 +5065,8 @@ GROUP BY up.ancestor
 24	conversation_id	INTEGER	notnull=0	dflt=NULL	pk=0
 25	written_branch	TEXT	notnull=1	dflt=''	pk=0
 26	measure_from	TEXT	notnull=0	dflt=NULL	pk=0
+27	pr_url	TEXT	notnull=1	dflt=''	pk=0
+28	revert_pr_url	TEXT	notnull=1	dflt=''	pk=0
 
 ## codex_plan_usage_samples
 0	scope	TEXT	notnull=1	dflt=NULL	pk=1

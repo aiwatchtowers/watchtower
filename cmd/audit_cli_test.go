@@ -210,6 +210,7 @@ var cliNoContentCommands = map[string]bool{
 	"coach rollback":                   true,
 	"coach run":                        true,
 	"coach status":                     true,
+	"coach sync-prs":                   true,
 	"config init":                      true,
 	"config set":                       true,
 	"config show":                      true,
