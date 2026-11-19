@@ -197,7 +197,7 @@ func TestWatchmanArmedSession_ReadsOneSession(t *testing.T) {
 	s, armed, err := d.WatchmanArmedSession(10)
 	require.NoError(t, err)
 	require.True(t, armed)
-	require.Equal(t, ArmedSession{SessionID: 10, WorkbenchID: 1, Folder: "/tmp/acme-s", WorkbenchFolder: "/tmp/acme-1ns"}, s)
+	require.Equal(t, ArmedSession{SessionID: 10, WorkbenchID: 1, Folder: "/tmp/acme-s", WorkbenchFolder: "/tmp/acme-1ns", Kind: "claude"}, s)
 	_, armed, err = d.WatchmanArmedSession(11)
 	require.NoError(t, err)
 	require.False(t, armed)
