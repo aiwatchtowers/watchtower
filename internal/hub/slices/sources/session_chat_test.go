@@ -647,3 +647,33 @@ func TestSessionChatLoopReadsNothingWhileUnlinked(t *testing.T) {
 		}
 	})
 }
+
+// Runners on request (#1996): a watch the phone opens through the source's
+// RequestWatches wakes the loop at once, not on its next 2 s tick.
+func TestSessionChatARequestWakesTheLoopAtOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newChatRig(t)
+		s := r.source(nil, ChatTiming{})
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- s.Run(ctx) }()
+		defer func() { cancel(); <-done }()
+		synctest.Wait() // the first pass: no watch, nothing read
+		s.RequestWatches().Watch(handlers.ChatWatch{SessionID: 7, Expires: r.clock.Now().Add(handlers.ChatWatchLength)})
+		synctest.Wait()
+		if n := r.callCount(); n != 1 {
+			t.Fatalf("%d reads right after the request, want 1", n)
+		}
+		if len(r.watches.Active(r.clock.Now())) != 1 {
+			t.Fatal("the request opened no watch")
+		}
+		// A burst of requests while nothing is due reads nothing more.
+		for range 5 {
+			s.RequestWatches().Watch(handlers.ChatWatch{SessionID: 7, Expires: r.clock.Now().Add(handlers.ChatWatchLength)})
+		}
+		synctest.Wait()
+		if n := r.callCount(); n != 1 {
+			t.Fatalf("%d reads after a burst inside Every, want 1", n)
+		}
+	})
+}
