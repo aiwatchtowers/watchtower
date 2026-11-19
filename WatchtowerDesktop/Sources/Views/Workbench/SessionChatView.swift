@@ -187,7 +187,7 @@ struct SessionChatView: View {
                         .padding(.top, Spacing.compact)
                 }
                 WorkchatComposer(model: workchat, working: working, autoFocus: composerAutoFocus,
-                                 focusRequest: composerFocus)
+                                 focusRequest: composerFocus, onToggleSteps: toggleSteps)
             }
         }
         // Each hook write for the session reads its permission prompt again
@@ -240,15 +240,30 @@ struct SessionChatView: View {
     /// The tab's finished subagents, the 👥 list's Done.
     private var done: [SessionFeedSubagent] { WorkchatLivePresentation.done(from: store.subagents) }
 
+    private var paneKey: String { "session-\(sessionID)" }
+
+    /// A permission card (or the approval state before it is read) hides the step and the steps list.
+    private var activityHidden: Bool { permission != nil || !working }
+
+    /// ⌥↓ in the composer toggles the steps list while it has steps to show;
+    /// otherwise the key moves the caret as always.
+    private var toggleSteps: (() -> Void)? {
+        let slot = WorkchatLivePresentation.stepsSlot(snapshot: activityHidden ? nil : store.live, error: store.liveError,
+                                                      working: busy, now: .now)
+        guard slot != nil else { return nil }
+        let memory = vm.paneMemory, pane = paneKey
+        return { memory.toggleSteps(pane) }
+    }
+
     /// The caption row over the composer (or under the ended line): the agent's
     /// step and the 👥 list.
     private func liveLine(working: Bool) -> some View {
         WorkchatLiveLine(snapshot: store.live, error: store.liveError,
                          loaded: store.liveLoaded, working: working,
                          // An approval (its card, or the state before the card is read) hides the step only.
-                         activityHidden: permission != nil || !self.working,
+                         activityHidden: activityHidden,
                          stateAt: SessionFeedEntry.parseDate(vm.sessionStatuses[sessionID]?.at),
-                         done: done, paneKey: "session-\(sessionID)", memory: vm.paneMemory,
+                         done: done, paneKey: paneKey, memory: vm.paneMemory,
                          feedLoaded: store.feedLoaded, feedError: store.error,
                          onRetry: { Task { await store.poller.refresh() } },
                          onRetryList: { Task { await store.poller.refresh() } },

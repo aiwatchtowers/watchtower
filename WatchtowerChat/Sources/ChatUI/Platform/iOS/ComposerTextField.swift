@@ -17,6 +17,8 @@ struct ChatComposerTextInput: View {
     var onLongTextPaste: ((LongPaste) -> Void)?
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
+    /// The Mac's ⌥↓; the phone has no arrow keys.
+    var onOptionArrowDown: (() -> Void)?
     var autoFocus: Bool
     var focusRequest: UUID?
     let onSubmit: () -> Void
