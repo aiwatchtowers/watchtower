@@ -646,8 +646,8 @@ final class BridgeContractTests: XCTestCase {
         let native = products.appendingPathComponent("\(target).build")
         if fm.fileExists(atPath: native.path) { return [native] }
         let config = products.lastPathComponent
-        let intermediates = products.deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Intermediates.noindex")
+        let out = products.deletingLastPathComponent().deletingLastPathComponent()
+        let intermediates = out.appendingPathComponent("Intermediates.noindex")
         var dirs: [URL] = []
         for package in try fm.contentsOfDirectory(at: intermediates, includingPropertiesForKeys: nil) {
             let objects = package.appendingPathComponent("\(config)/\(target)-t.build/Objects-normal")
