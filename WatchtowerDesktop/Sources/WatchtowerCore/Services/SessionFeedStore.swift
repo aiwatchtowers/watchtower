@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Holds the chat feed of one session and merges each poll of
 /// `watchtower workbench session-feed` into it: upsert by entry id keeping the
@@ -52,7 +53,8 @@ package final class SessionFeedStore: ObservableObject {
     /// The id of the first entry held from the tail pages: `--before` for
     /// the next earlier page.
     private var before = ""
-    private var loadingEarlierPage = false
+    /// An earlier page is being read; another ask is a no-op meanwhile.
+    package private(set) var loadingEarlierPage = false
     /// An earlier page is held: a later tail read (cursor still empty) must
     /// not move `before` back to the tail.
     private var heldEarlierPage = false
@@ -157,16 +159,19 @@ package final class SessionFeedStore: ObservableObject {
     }
 
     /// Reads the page of `tailSize` entries before the first one held and
-    /// puts it in front; true when entries were added. A no-op without an
+    /// puts it in front; returns how many dialog entries
+    /// (`WorkchatFeedAdapter.dialog`) this page added, never counting what a
+    /// poll appended meanwhile. A no-op (0) without an
     /// earlier page, while one is being read, or after a failed one (until
     /// `retryEarlierPage()`). Goes through the pane's serial read, so it never
     /// overlaps a poll. A failure keeps the entries and sets
     /// `earlierPageError`; the page stays asked for (`hasEarlierPage`), except
-    /// when the CLI refuses its `before` id for good, which ends the paging.
+    /// when the CLI refuses its `before` id for good, which ends the paging
+    /// quietly (logged, no `earlierPageError`).
     @discardableResult
-    package func loadEarlierPage() async -> Bool {
+    package func loadEarlierPage() async -> Int {
         guard hasEarlierPage, earlierPageError == nil, !before.isEmpty, !loadingEarlierPage, !runnerMissing else {
-            return false
+            return 0
         }
         loadingEarlierPage = true
         defer { loadingEarlierPage = false }
@@ -180,20 +185,28 @@ package final class SessionFeedStore: ObservableObject {
             mergeSubagents(payload.entries.filter { $0.kind == "subagent" } + payload.subagents)
             heldEarlierPage = true
             setBefore(payload.before)
-            return added
+            return WorkchatFeedAdapter.dialog(added).count
         } catch {
-            earlierPageError = error.localizedDescription
-            if Self.refusesBefore(error) { setBefore("") }
-            return false
+            if Self.refusesBefore(error) {
+                // The same id fails every time: paging ends quietly (no
+                // error with a Retry that could never succeed).
+                Self.log.notice("session \(self.sessionID, privacy: .public): earlier pages end, before refused")
+                setBefore("")
+            } else {
+                earlierPageError = error.localizedDescription
+            }
+            return 0
         }
     }
 
     /// The owner's Retry after a failed earlier page: reads it again.
     @discardableResult
-    package func retryEarlierPage() async -> Bool {
+    package func retryEarlierPage() async -> Int {
         earlierPageError = nil
         return await loadEarlierPage()
     }
+
+    private static let log = Logger(subsystem: "com.watchtower.desktop", category: "SessionFeed")
 
     /// The CLI's `--before` errors that the same id gives on every try
     /// (`internal/sessionfeed/feed.go` `TailPage`): an id no longer in the
@@ -365,14 +378,14 @@ package final class SessionFeedStore: ObservableObject {
 
     /// An earlier page goes in front; an entry already held stays where it
     /// is, and an id repeated inside the page (legacy Codex "L<offset>") is
-    /// taken once, the first time. True when entries were added.
-    private func prepend(_ page: [SessionFeedEntry]) -> Bool {
+    /// taken once, the first time. Returns the entries added.
+    private func prepend(_ page: [SessionFeedEntry]) -> [SessionFeedEntry] {
         var seen = Set(index.keys)
         let fresh = page.filter { SessionFeedEntry.knownKinds.contains($0.kind) && seen.insert($0.id).inserted }
-        guard !fresh.isEmpty else { return false }
+        guard !fresh.isEmpty else { return [] }
         entries = fresh + entries
         index = Dictionary(entries.enumerated().map { ($1.id, $0) }) { first, _ in first }
-        return true
+        return fresh
     }
 
     private func mergeSubagents(_ incoming: [SessionFeedEntry]) {

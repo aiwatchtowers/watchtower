@@ -184,7 +184,7 @@ final class SessionFeedStoreTests: XCTestCase {
         let store = SessionFeedStore(sessionID: 7, runner: runner)
         await store.refresh()
         let added = await store.loadEarlierPage()
-        XCTAssertFalse(added)
+        XCTAssertEqual(added, 0)
         XCTAssertEqual(store.entries.count, 60)
         XCTAssertEqual(store.entries.first?.id, "e90")
         XCTAssertTrue(store.hasEarlierPage)
@@ -206,7 +206,7 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls.last?.suffix(2), ["--after", "c1"])
         XCTAssertNotNil(store.earlierPageError, "a poll never clears the page's failure")
         let added = await store.retryEarlierPage()
-        XCTAssertTrue(added)
+        XCTAssertEqual(added, 60)
         XCTAssertEqual(runner.calls.last?.suffix(2), ["--before", "e90"], "Retry asks for the same page")
         XCTAssertEqual(store.entries.first?.id, "e30")
         XCTAssertNil(store.earlierPageError)
@@ -223,6 +223,17 @@ final class SessionFeedStoreTests: XCTestCase {
         // The layout's automatic asks after the failure spawn nothing.
         for _ in 0..<3 { await store.loadEarlierPage() }
         XCTAssertEqual(runner.calls.count, 2)
+    }
+
+    func testEarlierPageCountsOnlyItsOwnDialogEntries() async {
+        let runner = FakeRunner([
+            .success(payload(entries: entries(90..<150), before: "e90")),
+            .success(payload(entries: marker("m1", status: "finished") + "," + entry("e89", "owner"), before: "m1"))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        let added = await store.loadEarlierPage()
+        XCTAssertEqual(added, 1, "the marker is not a dialog entry")
     }
 
     func testEarlierPageTakesARepeatedIDOnce() async {
@@ -266,7 +277,7 @@ final class SessionFeedStoreTests: XCTestCase {
             await store.loadEarlierPage()
             XCTAssertFalse(store.hasEarlierPage, "the same before fails every time: paging stops, never retried")
             XCTAssertEqual(store.entries.count, 60)
-            XCTAssertNotNil(store.earlierPageError)
+            XCTAssertNil(store.earlierPageError, "paging ends quietly: no error with a Retry that cannot succeed")
             await store.retryEarlierPage()
             XCTAssertEqual(runner.calls.count, 2)
         }
