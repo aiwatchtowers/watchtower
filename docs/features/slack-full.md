@@ -4,7 +4,7 @@ Spec `docs/superpowers/specs/2026-11-14-slack-full-and-live-design.md` §5–§6
 
 ## Data (migration 00196)
 
-- `slack_accounts.client_id` (`''` = connected before 00196, backfilled, A17), `app_id` (from every `oauth.v2.access`; `''` = unknown), `refresh_token_expires_at` (`''` = no rotation). `db.SetSlackAccountApp`, `SetSlackAccountClientID` (one statement: keeps `app_id` for the same client id, clears it for another), `SetSlackRefreshExpiry`, `BackfillSlackClientIDs(id)` (`UPDATE … WHERE client_id = ''`, never overwrites a set id).
+- `slack_accounts.client_id` (`''` = connected before 00196, backfilled, A17), `app_id` (from every `oauth.v2.access`; `''` = unknown), `refresh_token_expires_at` (`''` = no rotation). `db.SetSlackAccountApp`, `SetSlackAccountClientID` (one statement: keeps `app_id` for the same client id, clears it for another), `SetSlackRefreshExpiry`, `BackfillSlackClientIDs(id)` (`UPDATE … WHERE client_id = '' AND company_slug = ''`: never overwrites a set id, and skips a row tied to a company bundle, which keeps the bundle's client; company setup #1887).
 - `slack_app_setups` (one row per team: `team_id`, `team_name`, `app_id`, `client_id`, `link_written`, `install_requested_at`, timestamps) — the setup record (A5). "Connected" is derived (an `ok` account with that client id), never stored. Empty ids = a pending create (below).
 - The token file `slack_token_<id>.json` gains `refresh_token`, `expires_at`, `refresh_expires_at`, `client_id`, `app_id` (all omitted when unset; an old file loads). `TokenStore.Lock` = `fsutil.LockFile(<file>.lock)`.
 

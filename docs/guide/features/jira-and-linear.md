@@ -113,7 +113,7 @@ action: nav:connections
 requires: source:jira
 -->
 
-1. Open **Connections** → **Jira**, press **Connect with <company>'s Atlassian app** and approve in the browser. The button appears once your company's link or code is connected; without one, press **Paste a company code** (Watchtower's own Atlassian app is retired). In Setup's Jira sheet you type nothing: if your Atlassian account reaches several sites, the sheet lists them under **Choose a Site**, so pick one and press **Continue**. Until you press **Continue**, **Cancel** stops the connect and nothing is added; after it, the site is added even if the sheet closes. Add a second site the same way. **Also connect Confluence** (ticked by default) makes the same sign-in cover Confluence for [knowledge search](search-and-knowledge.md); untick it for Jira only. If Atlassian refuses Confluence, a second sign-in tab connects Jira alone and the next step says so. If Atlassian shows an error page instead, press **Cancel**: the box unticks itself, so **Connect** again signs in to Jira only.
+1. Open **Connections** → **Jira**, press **Connect with <company>'s Atlassian app** and approve in the browser. The button appears once your [company's link or code](../start/company-setup.md) is connected; without one, press **Paste a company code** or connect with an API token (below). Watchtower's own Atlassian app is retired. In Setup's Jira sheet you type nothing: if your Atlassian account reaches several sites, the sheet lists them under **Choose a Site**, so pick one and press **Continue**. Until you press **Continue**, **Cancel** stops the connect and nothing is added; after it, the site is added even if the sheet closes. Add a second site the same way. **Also connect Confluence** (ticked by default) makes the same sign-in cover Confluence for [knowledge search](search-and-knowledge.md); untick it for Jira only. If Atlassian refuses Confluence, a second sign-in tab connects Jira alone and the next step says so. If Atlassian shows an error page instead, press **Cancel**: the box unticks itself, so **Connect** again signs in to Jira only.
 2. After the approval the sheet turns into **Choose Boards**: tick the boards you want synced and press **Done**. Only ticked boards sync. With Confluence connected, a line under the list names the spaces it selected for you. To change them later, open **Connections** → **Jira**, press **Refresh Boards** in its **Boards** section (**Fetch Boards** when the list is empty) and flip a board's switch.
 3. Wait for the first sync. **Last sync** and **Issues synced** at the bottom of **Connections** → **Jira** show progress.
 4. Open **Workload**. If people are missing, expand **User Mapping** in **Connections** → **Jira** and press **Resolve**, or use **Assign Slack user** on an unmatched row.
@@ -121,6 +121,22 @@ requires: source:jira
 6. To change which Jira signals the briefing and people cards include, open **Jira Features** and pick a role, or flip single switches. **Reset to Role Defaults** undoes your changes.
 
 An issue or epic key on any tab opens in Jira.
+
+### Connect with an API token
+<!-- learn
+id: jira-api-token
+title: Connect Jira with an API token
+text: No company Atlassian app yet? Press **Connect with an API token** in **Connections → Jira** and paste your own token.
+area: tasks
+level: next
+kind: feature
+since: next
+action: nav:connections
+-->
+
+For when your company has no Atlassian app, or you prefer a token. Press **Connect with an API token**, then **Open Atlassian's token page** and create a token with scopes (**Copy scopes** copies them). Fill in **Site**, **Atlassian email** and **API token** and press **Connect**. Watchtower checks the token with the site before storing it, and keeps it only on your Mac. A token without Confluence access connects Jira alone.
+
+When a token expires or is revoked, its row says "The API token stopped working (expired or revoked) — paste a new one": press **Paste a new token**. The data stays; only the 30-day rule of [revoked access](../concepts/revoked-access.md) can still delete it, and while it applies the row names that day. If your organization does not allow API tokens, the button is gone and token sites stop syncing, keeping their data.
 
 ## When it's empty or wrong
 
@@ -131,6 +147,9 @@ An issue or epic key on any tab opens in Jira.
 - **Workload is empty though Jira has issues.** No Jira user is matched to a Slack user. Connect Slack, then press **Resolve** in **User Mapping**.
 - **A comment or issue deleted in Jira is still shown.** A comment disappears the next time that issue is synced; an issue within about a day.
 - **A Jira site row shows a Re-login button.** Atlassian revoked the grant, so that site stops syncing until you press **Re-login** in **Connections** → **Jira**.
+- **"Watchtower's shared Atlassian app is retired".** Sign the site in again through your company's app (**Set up for my company** if nobody has) or with an API token.
+- **"Re-login needed — your company changed its app; open the new link".** Your company replaced or rotated its Atlassian app. Paste the new code or open the new link.
+- **"Re-login to finish the setup".** The sign-in lacks the permission that erases people who closed their Atlassian account. Press **Re-login**.
 - **Blockers misses an issue you call blocked.** A Jira issue is listed as blocked only when its status name contains "block"; a flag or label is not read. A Linear issue needs an open "blocked by" relation. Links only build the chain shown under a listed issue.
 
 Site needs **Re-login**? See [An account needs attention](../troubleshooting/account-needs-attention.md).
