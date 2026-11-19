@@ -31,6 +31,10 @@ struct SessionChatView: View {
     @State private var expandedEvents: Set<String> = []
     /// The entry that was at the top before earlier messages loaded: the feed keeps it in view, then lets it go.
     @State private var earlierAnchor: Int64?
+    /// The running batch of earlier pages (`pageEarlier`); cancelled when the pane goes.
+    @State private var pagingTask: Task<Void, Never>?
+    /// The last batch hit its cap with earlier pages left (`EarlierBatch.stalled`).
+    @State private var pagingStalled = false
     /// An artifact card opened from the feed.
     @State private var artifact: ChatArtifactContent?
 
@@ -231,7 +235,10 @@ struct SessionChatView: View {
             // A kept store missed the change while its pane was closed.
             if !busy { store.clearActivity() }
         }
-        .onDisappear { vm.feedPaneDisappeared(sessionID: sessionID) }
+        .onDisappear {
+            vm.feedPaneDisappeared(sessionID: sessionID)
+            pagingTask?.cancel()
+        }
     }
 
     private struct MainFollowKey: Hashable {
@@ -389,7 +396,7 @@ struct SessionChatView: View {
         context.focusMessageID = earlierAnchor
         var follow = ChatFeedFollow(conversationID: sessionID)
         follow.anchorsBottom = true
-        follow.loadsEarlierAtTop = true
+        follow.loadsEarlierAtTop = Self.loadsEarlierAtTop(pagingStalled: pagingStalled)
         follow.onFollowingChange = followingChanged
         follow.onFocusApplied = { earlierAnchor = nil }
         context.follow = follow
@@ -450,37 +457,61 @@ struct SessionChatView: View {
         pageEarlier(retry: false)
     }
 
-    /// Reads the store's earlier page (again, for the owner's Retry); the
-    /// window moves only when the page added entries.
+    /// Reads the store's earlier pages (again, for the owner's Retry) in one
+    /// batch, cancelled when the pane goes; the window moves only when a page
+    /// added dialog entries. A batch that hit its cap swaps the loading row
+    /// for ChatUI's "Load earlier messages" button, so the owner can start
+    /// the next one.
     private func pageEarlier(retry: Bool) {
+        guard pagingTask == nil else { return }
         let top = dialogEntries.first?.id
-        Task {
-            guard await Self.pageEarlier(store: store, retry: retry) else { return }
+        pagingTask = Task {
+            let result = await Self.pageEarlier(store: store, retry: retry)
+            pagingTask = nil
+            guard !Task.isCancelled else { return }
+            pagingStalled = result == .stalled
+            guard result == .added else { return }
             if let anchor = window.earlierPageArrived(entries: dialogEntries, previousTop: top) { earlierAnchor = anchor }
         }
     }
 
-    /// Consecutive earlier pages read in one ask that add no dialog entry.
+    /// Consecutive earlier pages read in one batch that add no dialog entry.
     static let maxPagesWithoutDialog = 20
+
+    /// How a batch of earlier pages ended.
+    enum EarlierBatch: Equatable {
+        /// A page added dialog entries.
+        case added
+        /// `maxPagesWithoutDialog` pages added none and more exist: the next
+        /// batch waits for the owner's "Load earlier messages".
+        case stalled
+        /// A failure, the end of the paging, a page already being read, or
+        /// the batch was cancelled.
+        case stopped
+    }
 
     /// Reads earlier pages until one adds a dialog entry (a page of subagent
     /// markers alone, or of entries already held, leaves the feed's height
-    /// as it was, so nothing would ask again). Stops on a failure, when the
-    /// paging ends, while a page is already being read, or after
-    /// `maxPagesWithoutDialog` pages. True when dialog entries were added.
+    /// as it was, so nothing would ask again). Counts only what each page
+    /// itself added: a poll appending to the tail meanwhile never ends the
+    /// batch.
     @MainActor
-    static func pageEarlier(store: SessionFeedStore, retry: Bool) async -> Bool {
+    static func pageEarlier(store: SessionFeedStore, retry: Bool) async -> EarlierBatch {
         var retry = retry
         for _ in 0..<maxPagesWithoutDialog {
-            guard store.hasEarlierPage, !store.loadingEarlierPage else { return false }
-            let shown = WorkchatFeedAdapter.dialog(store.entries).count
-            if retry { await store.retryEarlierPage() } else { await store.loadEarlierPage() }
+            guard !Task.isCancelled, store.hasEarlierPage, !store.loadingEarlierPage else { return .stopped }
+            let added = retry ? await store.retryEarlierPage() : await store.loadEarlierPage()
             retry = false
-            if WorkchatFeedAdapter.dialog(store.entries).count > shown { return true }
-            if store.earlierPageError != nil { return false }
+            if added > 0 { return .added }
+            if store.earlierPageError != nil { return .stopped }
         }
-        return false
+        return store.hasEarlierPage && store.earlierPageError == nil ? .stalled : .stopped
     }
+
+    /// The feed loads earlier entries by itself at the top, except after a
+    /// stalled batch: then ChatUI draws its "Load earlier messages" button,
+    /// whose click starts the next batch.
+    static func loadsEarlierAtTop(pagingStalled: Bool) -> Bool { !pagingStalled }
 
     /// "No messages yet" only when nothing at all can be shown: a tail of
     /// subagent markers alone still has earlier messages to page in.

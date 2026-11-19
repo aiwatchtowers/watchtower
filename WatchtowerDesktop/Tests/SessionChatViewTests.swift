@@ -221,7 +221,7 @@ final class SessionChatViewTests: XCTestCase {
         let store = SessionFeedStore(sessionID: 7, runner: runner)
         await store.refresh()
         let added = await SessionChatView.pageEarlier(store: store, retry: false)
-        XCTAssertFalse(added)
+        XCTAssertEqual(added, .stopped)
         XCTAssertNil(store.earlierPageError, "no error bar, so no Retry that could never succeed")
         XCTAssertFalse(SessionChatView.hasEarlier(windowHasEarlier: false, hasEarlierPage: store.hasEarlierPage,
                                                   pageFailed: store.earlierPageError != nil))
@@ -242,7 +242,7 @@ final class SessionChatViewTests: XCTestCase {
         _ = await SessionChatView.pageEarlier(store: store, retry: false)
         XCTAssertEqual(runner.calls.count, 2, "no automatic retry after a failure")
         let added = await SessionChatView.pageEarlier(store: store, retry: true)
-        XCTAssertTrue(added)
+        XCTAssertEqual(added, .added)
         XCTAssertNil(store.earlierPageError)
         XCTAssertEqual(store.entries.first?.id, "e89")
     }
@@ -257,7 +257,7 @@ final class SessionChatViewTests: XCTestCase {
         let store = SessionFeedStore(sessionID: 7, runner: runner)
         await store.refresh()
         let added = await SessionChatView.pageEarlier(store: store, retry: false)
-        XCTAssertTrue(added)
+        XCTAssertEqual(added, .added)
         XCTAssertEqual(runner.calls.count, 4, "pages without a dialog entry are read on until one adds one")
         XCTAssertEqual(WorkchatFeedAdapter.dialog(store.entries).map(\.id), ["e70", "e90"])
         XCTAssertTrue(store.hasEarlierPage)
@@ -269,7 +269,108 @@ final class SessionChatViewTests: XCTestCase {
         let store = SessionFeedStore(sessionID: 7, runner: runner)
         await store.refresh()
         let added = await SessionChatView.pageEarlier(store: store, retry: false)
-        XCTAssertFalse(added)
+        XCTAssertEqual(added, .stalled, "the next batch waits for the owner")
         XCTAssertEqual(runner.calls.count, 1 + SessionChatView.maxPagesWithoutDialog)
+    }
+
+    /// Answers each read by its arguments (`respond`), so the order in which
+    /// the poll and the pages reach the CLI does not matter; holds the read
+    /// `holds` picks until `open()`, and `reached` yields once it started.
+    /// `onCall` runs with the call count on every call.
+    private final class GatedRunner: CLIRunnerProtocol, @unchecked Sendable {
+        private let lock = NSLock()
+        private let respond: ([String]) -> Result<String, Error>
+        private let holds: ([String]) -> Bool
+        private var gate: CheckedContinuation<Void, Never>?
+        private var recorded: [[String]] = []
+        var calls: [[String]] { lock.withLock { recorded } }
+        var onCall: (Int) -> Void = { _ in }
+        let reached: AsyncStream<Void>
+        private let reachedSink: AsyncStream<Void>.Continuation
+
+        init(holds: @escaping ([String]) -> Bool = { _ in false }, respond: @escaping ([String]) -> Result<String, Error>) {
+            self.respond = respond
+            self.holds = holds
+            (reached, reachedSink) = AsyncStream.makeStream()
+        }
+
+        func open() { lock.withLock { gate }?.resume() }
+
+        func run(args: [String]) async throws -> Data {
+            let n = lock.withLock {
+                recorded.append(args)
+                return recorded.count
+            }
+            onCall(n)
+            if holds(args) {
+                await withCheckedContinuation { c in
+                    lock.withLock { gate = c }
+                    reachedSink.yield()
+                }
+            }
+            return Data(try respond(args).get().utf8)
+        }
+    }
+
+    private static func before(_ args: [String]) -> String? {
+        args.firstIndex(of: "--before").map { args[$0 + 1] }
+    }
+
+    private final class TaskBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var task: Task<SessionChatView.EarlierBatch, Never>?
+        func set(_ task: Task<SessionChatView.EarlierBatch, Never>) { lock.withLock { self.task = task } }
+        func cancel() { lock.withLock { task }?.cancel() }
+    }
+
+    func testCancelledBatchReadsNoFurtherPage() async {
+        let box = TaskBox()
+        let runner = GatedRunner { args in
+            guard let before = Self.before(args) else { return self.page([self.agent("e90")], before: "e90") }
+            return self.page([self.marker("m-\(before)")], before: "m-\(before)")
+        }
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        // The pane goes while the second page is being read.
+        runner.onCall = { n in if n == 3 { box.cancel() } }
+        let batch = Task { await SessionChatView.pageEarlier(store: store, retry: false) }
+        box.set(batch)
+        let result = await batch.value
+        XCTAssertEqual(result, .stopped)
+        XCTAssertEqual(runner.calls.count, 3, "the page in flight finishes; no further page is read")
+    }
+
+    func testPollDuringAMarkerOnlyPageDoesNotEndTheBatch() async {
+        let runner = GatedRunner(holds: { Self.before($0) == "e90" }, respond: { args in
+            if args.contains("--after") {
+                return .success(#"{"session_id":7,"cursor":"c2","entries":[\#(self.agent("e150"))],"subagents":[]}"#)
+            }
+            switch Self.before(args) {
+            case "e90": return self.page([self.marker("m1")], before: "m1")
+            case "m1": return self.page([self.agent("e70")], before: nil)
+            default: return self.page([self.agent("e90")], before: "e90")
+            }
+        })
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        let batch = Task { await SessionChatView.pageEarlier(store: store, retry: false) }
+        for await _ in runner.reached { break }
+        // A poll while the marker-only page is held: its read queues behind it.
+        let polling = Task { await store.refresh() }
+        await Task.yield()
+        runner.open()
+        let result = await batch.value
+        await polling.value
+        XCTAssertEqual(result, .added)
+        XCTAssertEqual(runner.calls.compactMap(Self.before), ["e90", "m1"],
+                       "the poll's new tail entry never counts as the marker page's own")
+        XCTAssertEqual(WorkchatFeedAdapter.dialog(store.entries).map(\.id), ["e70", "e90", "e150"])
+    }
+
+    func testStalledBatchShowsTheLoadEarlierButton() {
+        XCTAssertTrue(SessionChatView.loadsEarlierAtTop(pagingStalled: false))
+        XCTAssertFalse(SessionChatView.loadsEarlierAtTop(pagingStalled: true),
+                       "after the cap the feed draws ChatUI's button instead of the self-loading row")
+        XCTAssertEqual(SystemRow.earlierLabel, "Load earlier messages")
     }
 }
