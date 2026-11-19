@@ -54,12 +54,7 @@ struct SlackConnectionDetail: View {
             VStack(alignment: .leading, spacing: Spacing.large) {
                 sharedAppBanner
                 modeSection
-                SlackSetupRecordRows(model: appState.slackAppSetup, blocked: sourceBlocked) { record in
-                    // A19: the rows open the company wizard; a lost create keeps plan B's sheet.
-                    guard let entry = CompanySetupWizardModel.Entry(record: record) else { return false }
-                    appState.openCompanySetup(entry)
-                    return true
-                }
+                SlackSetupRecordRows(model: appState.slackAppSetup, blocked: sourceBlocked) { appState.routeSlackSetupRecord($0) }
                 connectSection
                 workspaceSection
                 FileVaultLine()

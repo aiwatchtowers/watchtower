@@ -121,7 +121,7 @@ struct ConnectionsDetailSplit: View {
         case .jira: JiraConnectionDetail()
         case .linear: LinearConnectionDetail()
         case .quickConnections: QuickConnectionsDetail()
-        case .companySetup: companySetup
+        case .companySetup: EmptyView() // drawn without the header, above
         }
     }
 

@@ -21,8 +21,8 @@ final class CompanySetupWizardEntryTests: XCTestCase {
     }
 
     func testRecordRowsMapToTheirStep() {
-        XCTAssertEqual(Model.Entry(record: record("install")), .slackStep(appID: "A0ACME"))
-        XCTAssertEqual(Model.Entry(record: record("approval")), .slackStep(appID: "A0ACME"))
+        XCTAssertNil(Model.Entry(record: record("install")), "the admin connect stays on plan B's sheet")
+        XCTAssertNil(Model.Entry(record: record("approval")), "Check again stays on plan B's sheet")
         XCTAssertEqual(Model.Entry(record: record("link_missing")), .publish(appID: "A0ACME"))
         XCTAssertNil(Model.Entry(record: record("pending_create")), "a lost create stays on plan B's sheet")
         XCTAssertNil(Model.Entry(record: record("done")))
@@ -63,6 +63,12 @@ final class CompanySetupWizardEntryTests: XCTestCase {
         XCTAssertEqual(model.current, .vendor(.slack))
         XCTAssertEqual(model.ticked, [.slack, .google])
         XCTAssertEqual(model.draft.slack.appID, "A0OWN", "another record never replaces the draft's app")
+
+        // Add the link for another app than the draft's: never Publish with the wrong one.
+        model.goTo(.services)
+        model.request(.publish(appID: "A0ACME"))
+        XCTAssertEqual(model.current, .vendor(.slack), "the Slack step shows which app the setup holds")
+        XCTAssertEqual(model.draft.slack.appID, "A0OWN")
     }
 
     /// A draft that could not be read keeps the entry for the next open.

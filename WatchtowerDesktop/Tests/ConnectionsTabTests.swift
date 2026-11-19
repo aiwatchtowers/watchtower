@@ -209,9 +209,17 @@ final class ConnectionsTabTests: XCTestCase {
     }
 
     /// The setup-record rows of Connections → Slack open the wizard (A19).
-    func testSlackRecordEntryOpensTheWizard() {
+    func testSlackRecordRowsRoute() {
+        func record(_ stage: String) -> SlackSetupRecord {
+            SlackSetupRecord(teamID: "T0ACME", teamName: "acme", appID: "A0ACME", clientID: "1111.2222", connected: true,
+                             linkWritten: false, installRequested: false, stage: stage)
+        }
         let appState = AppState.isolated()
-        appState.openCompanySetup(.publish(appID: "A0ACME"))
+        for stage in ["pending_create", "install", "approval"] {
+            XCTAssertFalse(appState.routeSlackSetupRecord(record(stage)), stage)
+            XCTAssertNil(appState.selectedConnection, "\(stage) stays on plan B's sheet")
+        }
+        XCTAssertTrue(appState.routeSlackSetupRecord(record("link_missing")))
         XCTAssertEqual(appState.selectedConnection, .companySetup)
     }
 

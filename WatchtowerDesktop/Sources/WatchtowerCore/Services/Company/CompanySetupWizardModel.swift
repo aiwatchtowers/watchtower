@@ -317,14 +317,14 @@ package final class CompanySetupWizardModel {
         case slackStep(appID: String)
         case publish(appID: String)
 
-        /// A setup-record row's entry; nil for a lost create (`pending_create`),
-        /// which only plan B's sheet can clear or attach (never a second app).
+        /// A setup-record row's entry: **Add the link to the app** opens
+        /// Publish. Nil keeps plan B's sheet: a lost create (`pending_create`,
+        /// clear or attach, never a second app), and `install` / `approval`,
+        /// whose admin connect and approval check the wizard's Slack step does
+        /// not run (it would take the app as ready and move on).
         package init?(record: SlackSetupRecord) {
-            switch record.stage {
-            case "install", "approval": self = .slackStep(appID: record.appID)
-            case "link_missing": self = .publish(appID: record.appID)
-            default: return nil
-            }
+            guard record.stage == "link_missing" else { return nil }
+            self = .publish(appID: record.appID)
         }
     }
 
@@ -339,14 +339,20 @@ package final class CompanySetupWizardModel {
     }
 
     private func applyEntry() {
-        guard let entry = pendingEntry, load == .ready, publishState != .running else { return }
+        guard let entry = pendingEntry, load == .ready else { return }
         pendingEntry = nil
+        // Publish is running: the page stays on it (the row can be pressed again).
+        guard publishState != .running else { return }
         // A finished Publish starts fresh, as Done would.
         if isPublished { reset() }
-        let (target, appID): (Step, String) = switch entry {
+        let (asked, appID): (Step, String) = switch entry {
         case let .slackStep(appID): (.vendor(.slack), appID)
         case let .publish(appID): (.publish, appID)
         }
+        // The draft already holds another app: Publish would write that one's
+        // page, so the Slack step opens instead and shows which app it is.
+        let otherApp = !draft.slack.appID.isEmpty && !appID.isEmpty && draft.slack.appID != appID
+        let target: Step = otherApp ? .vendor(.slack) : asked
         touched = true
         if !ticked.contains(.slack) {
             draft.services = CompanyVendor.allCases.filter { ticked.contains($0) || $0 == .slack }.map(\.rawValue)

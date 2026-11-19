@@ -71,7 +71,9 @@ struct CompanySetupPage: View {
         .padding(Spacing.page)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
-        .task { await model.open() }
+        // Not `.task`: leaving the page must not cancel the session's open
+        // (a cancelled discovery would read as "the look failed").
+        .onAppear { Task { await model.open() } }
         .onDisappear { Task { await model.leave() } }
         .confirmationDialog(Model.discardSetup, isPresented: $confirmDiscard) {
             Button(Model.discardButton, role: .destructive) { Task { await model.discard() } }
@@ -95,7 +97,14 @@ struct CompanySetupPage: View {
     private var steps: some View {
         VStack(alignment: .leading, spacing: Spacing.large) {
             if isNarrow {
-                Text(model.railNarrowLine).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                HStack(spacing: Spacing.regular) {
+                    Text(model.railNarrowLine).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Spacer(minLength: Spacing.regular)
+                    // The folded rail keeps its way back to the services.
+                    if model.current != .services, !model.isPublished {
+                        Button(Model.changeServices) { model.goTo(.services) }.buttonStyle(.kitQuiet)
+                    }
+                }
             }
             HStack(alignment: .top, spacing: Spacing.large) {
                 if !isNarrow { CompanySetupRail(model: model).frame(width: PaneWidth.sideListIdeal) }
@@ -148,7 +157,7 @@ struct CompanySetupPage: View {
             } else {
                 if showsSkip { Button(Model.skipStep) { Task { await model.skip() } }.buttonStyle(.kitQuiet) }
                 secondary
-                Button(model.primary.title, action: primary)
+                Button(primaryTitle, action: primary)
                     .buttonStyle(.kitPrimary)
                     .disabled(!model.primary.enabled)
             }
@@ -188,12 +197,23 @@ struct CompanySetupPage: View {
         }
     }
 
+    /// The model's title; on Slack's found apps it names the row chosen in the list.
+    private var primaryTitle: String {
+        guard foundPhase, vendor == .slack, let chosen = chosenCandidate else { return model.primary.title }
+        return Model.useApp(chosen.label)
+    }
+
+    private var chosenCandidate: CompanyCandidate? {
+        guard let vendor else { return nil }
+        let list = model.candidates(for: vendor)
+        let index = selection[vendor] ?? 0
+        return list.indices.contains(index) ? list[index] : list.first
+    }
+
     /// The prominent button: the found row chosen in the list, else the model's `next()`.
     private func primary() {
-        if foundPhase, let vendor {
-            let list = model.candidates(for: vendor)
-            let index = min(selection[vendor] ?? 0, max(list.count - 1, 0))
-            if list.indices.contains(index) { model.choose(list[index]) }
+        if foundPhase {
+            if let chosen = chosenCandidate { model.choose(chosen) }
             return
         }
         Task { await model.next() }

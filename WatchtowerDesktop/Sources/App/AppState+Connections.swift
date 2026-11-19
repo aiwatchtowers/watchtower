@@ -19,6 +19,15 @@ extension AppState {
         openConnections(.companySetup)
     }
 
+    /// A Slack setup-record row (A19): **Add the link to the app** opens the
+    /// wizard at Publish; false leaves the row to plan B's sheet (the other
+    /// stages, or a sheet run still going, which the sheet shows).
+    func routeSlackSetupRecord(_ record: SlackSetupRecord) -> Bool {
+        guard !slackAppSetup.isRunning, let entry = CompanySetupWizardModel.Entry(record: record) else { return false }
+        openCompanySetup(entry)
+        return true
+    }
+
     /// **Show file in Finder** for the set-aside draft, next to the company setups.
     func showCompanySetupFile(_ name: String) {
         guard let workspace = Constants.activeWorkspaceDir() else { return }
