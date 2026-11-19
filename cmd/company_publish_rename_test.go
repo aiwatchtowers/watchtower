@@ -223,6 +223,25 @@ func TestPublish_RefusedWriteRestoresTheDraftName(t *testing.T) {
 	}
 }
 
+// Another publish under the same new name stored the bundle first: this one
+// is refused, and the draft keeps the new name the stored bundle has.
+func TestPublish_ConcurrentRenameKeepsTheDraftName(t *testing.T) {
+	h, _ := renameHarness(t)
+	deps := h.deps(t)
+	deps.emit = func(s slackapp.Step) {
+		if s.Name == publishStepPack && s.State == slackapp.StateRunning {
+			require.NoError(t, h.store.SaveRenamed("acme", companybundle.Bundle{V: 1, Company: "Acme", Linear: &companybundle.Linear{ClientID: "acmelinear01"}},
+				companybundle.Bundle{V: 1, Company: "Acme Corp", Linear: &companybundle.Linear{ClientID: "acmelinear01"}}, ""))
+		}
+	}
+	res, err := publishCompany(t.Context(), deps, companyPublishInput{Company: "Acme Corp", ConfigToken: publishTestToken})
+	require.NoError(t, err)
+	assert.Equal(t, publishReasonStoredChanged, res.Reason)
+	d, _, _, err := h.store.LoadDraft(companyDraftT0)
+	require.NoError(t, err)
+	assert.Equal(t, "Acme Corp", d.Company)
+}
+
 // A draft saved between the publish's read and its rename is not renamed.
 func TestPublish_DraftSavedMeanwhileIsNotRenamed(t *testing.T) {
 	h, _ := renameHarness(t)

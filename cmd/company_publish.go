@@ -338,8 +338,9 @@ func publishCompany(ctx context.Context, deps companyPublishDeps, in companyPubl
 	if refusal := storePublishedBundle(deps, slug, stored, haveStored, b); refusal != nil {
 		deps.emitStep(publishStepPack, slackapp.StateFailed)
 		// Nothing was stored: the draft gets its name back (best effort; a
-		// draft saved meanwhile is left alone, the wizard's next save wins).
-		if published.Company != d.Company {
+		// draft saved meanwhile is left alone, the wizard's next save wins),
+		// unless another publish stored the bundle under the new name.
+		if published.Company != d.Company && !storedAs(deps.store, slug, name) {
 			if err := deps.store.SetDraftCompany(published, d.Company); err != nil {
 				fmt.Fprintf(deps.warn, "company publish: restoring the draft's name: %v\n", err)
 			}
@@ -385,6 +386,13 @@ func publishCompany(ctx context.Context, deps companyPublishDeps, in companyPubl
 
 func (deps companyPublishDeps) emitStep(name, state string) {
 	deps.emit(slackapp.Step{Name: name, State: state})
+}
+
+// storedAs reports whether the file under slug holds name now (an
+// unreadable store reads as no).
+func storedAs(store company.Store, slug, name string) bool {
+	e, ok, err := store.Get(slug, "")
+	return err == nil && ok && e.Bundle.Company == name
 }
 
 // publishRenameRefusal is the early refusal of renaming the company stored
