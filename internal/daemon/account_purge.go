@@ -69,11 +69,14 @@ func (d *Daemon) phaseAccountPurgeLeases(ctx context.Context) {
 }
 
 // purgeRules is the per-account purge rule of this pass (#1769, A21): the
-// switch and its origin from purge.Enabled, the source hold from the live
-// policy (POLICY-03).
+// switch and its origin from purge.Enabled, the hold from the live policy
+// (POLICY-03): a forbidden source, or an account the policy stops
+// (SetAccountSyncAllowed), is not synced, so its leases are held.
 func (d *Daemon) purgeRules() func(db.PurgeAccount) purge.Rule {
 	on, origin := purge.Enabled(d.config)
-	return purge.AccountRules(on, origin, accountSyncAllowed)
+	return purge.AccountRules(on, origin, func(a db.PurgeAccount) bool {
+		return accountSyncAllowed(a) && d.accountAllowedQuiet(a.Source, a.ID)
+	})
 }
 
 // accountSyncAllowed reports whether the organization's policy lets the

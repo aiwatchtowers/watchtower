@@ -147,7 +147,7 @@ func (d *Daemon) historyBackfillSources() []historybackfill.Source {
 		}
 	}
 	for _, s := range d.gmailSyncers {
-		if !d.purgeHeld("google", s.AccountID()) {
+		if !d.purgeHeld("google", s.AccountID()) && d.accountAllowedQuiet("google", s.AccountID()) {
 			out = append(out, gmailSource{s: s, id: s.AccountID(), d: d})
 		}
 	}

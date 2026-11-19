@@ -11,11 +11,13 @@ import (
 	"strings"
 
 	"watchtower/internal/calendar"
+	"watchtower/internal/company"
 	"watchtower/internal/companybundle"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/gmail"
 	"watchtower/internal/oauthpage"
+	"watchtower/internal/policy"
 
 	"github.com/spf13/cobra"
 )
@@ -43,8 +45,11 @@ var googleAddCmd = &cobra.Command{
 	Use:   "add",
 	Short: "Connect a new Google account (Calendar and/or Gmail)",
 	Long: "Creates a new google_accounts row and runs the OAuth consent flow for it.\n" +
-		"Pass --client-id together with --client-secret-stdin to bring the account's own\n" +
-		"Google Cloud OAuth client instead of Watchtower's build-time default.",
+		"Pass --client-id together with --client-secret-stdin to sign in through your own\n" +
+		"Google Cloud project instead of Watchtower's build-time default: the client is\n" +
+		"stored as your personal company (see 'watchtower company list') and an account\n" +
+		"of the same Gmail address moves onto it. Refused when your organization's\n" +
+		"policy sets AllowOwnGoogleProject to false.",
 	RunE: runGoogleAdd,
 }
 
@@ -171,9 +176,29 @@ func runGoogleAdd(cmd *cobra.Command, _ []string) error {
 		if clientID != "" {
 			return fmt.Errorf("--company and --client-id cannot be combined")
 		}
+		if err := refusePersonalCompany(cfg.WorkspaceDir(), slug); err != nil {
+			return err
+		}
 		if companyClient, err = companyGoogle(cfg.WorkspaceDir(), slug); err != nil {
 			return err
 		}
+	}
+	// An own Google project (#1887 §4): refused by the policy before the
+	// secret is read, a malformed client before the browser opens.
+	var ownClient *companybundle.Google
+	if clientID != "" {
+		if !policy.Current().OwnGoogleProjectAllowed() {
+			return errOwnGoogleProjectForbidden
+		}
+		secret, err := readLineFromStdin(cmd)
+		if err != nil {
+			return fmt.Errorf("reading client secret: %w", err)
+		}
+		g, err := company.CheckPersonalGoogle(companybundle.Google{ClientID: clientID, ClientSecret: secret})
+		if err != nil {
+			return err
+		}
+		ownClient = &g
 	}
 
 	database, err := db.Open(cfg.DBPath())
@@ -196,25 +221,42 @@ func runGoogleAdd(cmd *cobra.Command, _ []string) error {
 	if companyClient != nil {
 		return addGoogleAccountForCompany(cmd, cfg, database, companyClient, slug, label, wantCalendar, wantGmail)
 	}
+	if ownClient != nil {
+		return addOwnGoogleProject(cmd, cfg, database, ownClient, label, wantCalendar, wantGmail)
+	}
 
-	id, err := database.CreateGoogleAccount(db.GoogleAccount{Label: label, ClientID: clientID})
+	id, err := database.CreateGoogleAccount(db.GoogleAccount{Label: label})
 	if err != nil {
 		return fmt.Errorf("creating account: %w", err)
 	}
-
-	if clientID != "" {
-		secret, err := readLineFromStdin(cmd)
-		if err != nil {
-			rollbackGoogleAccount(database, cfg.WorkspaceDir(), id, cmd.ErrOrStderr())
-			return fmt.Errorf("reading client secret: %w", err)
-		}
-		if err := calendar.NewCredentialStore(cfg.WorkspaceDir(), id).Save(&calendar.Credentials{ClientID: clientID, ClientSecret: secret}); err != nil {
-			rollbackGoogleAccount(database, cfg.WorkspaceDir(), id, cmd.ErrOrStderr())
-			return fmt.Errorf("saving credentials: %w", err)
-		}
-	}
-
 	return connectGoogleAccount(cmd, cfg, database, id, wantCalendar, wantGmail, true)
+}
+
+// addOwnGoogleProject is `google add --client-id`: the company path
+// (googleCompanyConsent → recordGoogleCompanyGrant) with the own project g
+// stored as a personal bundle named after the signed-in address
+// (company.SavePersonal) once the consent succeeded and the row's checks
+// passed (googleCompanyGrantRow): a cancelled consent or a refused re-tie
+// stores nothing. A failure after it (the token write) leaves the bundle,
+// which the next add of the same client reuses.
+func addOwnGoogleProject(cmd *cobra.Command, cfg *config.Config, database *db.DB, g *companybundle.Google, label string, wantCalendar, wantGmail bool) error {
+	grant, err := googleCompanyConsent(cmd, g, wantCalendar, wantGmail)
+	if err != nil {
+		return err
+	}
+	if _, err := googleCompanyGrantRow(database, grant); err != nil {
+		return err
+	}
+	// Asked again: IT may have forbidden own projects during the consent.
+	if !policy.Current().OwnGoogleProjectAllowed() {
+		return errOwnGoogleProjectForbidden
+	}
+	slug, err := company.SavePersonal(company.NewStore(cfg.WorkspaceDir()), companyForcedBundle(), grant.result.email, *g)
+	if err != nil {
+		return fmt.Errorf("saving your own Google project: %w", err)
+	}
+	_, err = recordGoogleCompanyGrant(cmd, cfg, database, grant, slug, label)
+	return err
 }
 
 func runGoogleAccounts(cmd *cobra.Command, _ []string) error {
@@ -533,6 +575,9 @@ func connectGoogleAccount(cmd *cobra.Command, cfg *config.Config, database *db.D
 	acct, err := database.GetGoogleAccount(accountID)
 	if err != nil {
 		return fmt.Errorf("loading account %d: %w", accountID, err)
+	}
+	if err := refuseStoppedOwnProject(cfg.WorkspaceDir(), acct); err != nil {
+		return err
 	}
 	googleCfg, err := googleLoginOAuthConfig(cfg.WorkspaceDir(), acct)
 	if err != nil {

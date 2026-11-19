@@ -43,7 +43,7 @@ var keyDocs = map[string]KeyDoc{
 	KeyAllowAtlassianAPIToken: {Type: "boolean", Default: "true",
 		Effect: "Whether Jira may be connected with an Atlassian API token. false hides the option; token accounts stop syncing and keep their data."},
 	KeyAllowOwnGoogleProject: {Type: "boolean", Default: "true",
-		Effect: "Whether a person may connect Google through their own Google Cloud project. false hides the option; accounts on an own project stop syncing and keep their data, company and shared-client accounts are untouched."},
+		Effect: "Whether a person may connect Google through their own Google Cloud project. false hides and refuses the option; accounts on an own project (also one added earlier with a custom OAuth client) stop syncing and keep their data, company and shared-client accounts are untouched."},
 	KeyRequireDatabaseEncryption: {Type: "boolean", Default: "not set",
 		Effect: "Reserved: read and shown, not enforced in this version."},
 	KeyRetentionDays: {Type: "integer", Default: "not set",

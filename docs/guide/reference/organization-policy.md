@@ -25,7 +25,7 @@ Every key with its type, default and effect, and a sample profile with placehold
 | `AllowBackgroundAI` | boolean | `true` is your organization's consent to AI that runs in the background, so people are not asked; each person can still pause it for themselves. `false` keeps background AI off, whatever a person chose, and locks the switch in Settings. |
 | `CompanyBundle` | string: your company's connect code | Your company's apps for every connector, without the link. It wins over a stored copy of the same company; when you change an app in it, that app's accounts ask for a new sign-in at the next start. It never deletes an account. |
 | `AllowAtlassianAPIToken` | boolean | `false` hides connecting Jira with an API token; token accounts stop syncing and keep their data. |
-| `AllowOwnGoogleProject` | boolean | `false` hides **Use my own Google project**; accounts on a person's own project stop syncing and keep their data. Company and shared Google accounts are not affected. |
+| `AllowOwnGoogleProject` | boolean | `false` hides and refuses **Use my own Google project**; accounts on a person's own project, including one added earlier with a custom OAuth client, stop syncing and keep their data. Company and shared Google accounts are not affected. |
 
 A key with the wrong type counts as its most restrictive value (for example an integer `1` where a boolean belongs counts as `false`), and the problem is listed in the policy.
 
