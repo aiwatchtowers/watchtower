@@ -3,8 +3,11 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 
+	"watchtower/internal/calendar"
+	"watchtower/internal/company"
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
 )
@@ -37,6 +40,11 @@ type googleAccountJSON struct {
 	// SharedGmail: the account syncs Gmail through our shared Google client,
 	// which no longer grants Gmail (D11) — the shared-Google banner.
 	SharedGmail bool `json:"shared_gmail"`
+	// OwnProject: the account signs in through a Google project the person
+	// owns (company.IsOwnProject: a personal bundle, or an untied legacy
+	// credentials file) — the Desktop's "Your own Google project" group and
+	// its AllowOwnGoogleProject lock (#1887 C4).
+	OwnProject bool `json:"own_project"`
 }
 
 // googleSharedGmail reports an account that syncs Gmail on our shared Google
@@ -52,12 +60,21 @@ func googleSharedGmail(workspaceDir string, a db.GoogleAccount) bool {
 }
 
 func writeGoogleAccountsJSON(w io.Writer, workspaceDir string, accounts []db.GoogleAccount) error {
+	// An unreadable company directory fails the listing rather than report
+	// a personal bundle's rows as not own (they would leave the §5.4 lock);
+	// the Desktop keeps its last flags. A damaged single file is a LoadError
+	// and leaves only that company's rows untold.
+	entries, _, err := company.NewStore(workspaceDir).LoadAll(companyForcedBundle())
+	if err != nil {
+		return fmt.Errorf("reading companies: %w", err)
+	}
 	rows := make([]googleAccountJSON, 0, len(accounts))
 	for _, a := range accounts {
 		rows = append(rows, googleAccountJSON{
 			ID: a.ID, Label: a.Label, Email: a.Email, Status: a.Status, Error: a.Error,
 			CalendarEnabled: a.CalendarEnabled, GmailEnabled: a.GmailEnabled,
 			CompanySlug: a.CompanySlug, SharedGmail: googleSharedGmail(workspaceDir, a),
+			OwnProject: company.IsOwnProject(a, entries, calendar.NewCredentialStore(workspaceDir, a.ID).Exists()),
 		})
 	}
 	enc := json.NewEncoder(w)

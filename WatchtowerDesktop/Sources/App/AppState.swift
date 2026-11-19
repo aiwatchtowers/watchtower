@@ -101,10 +101,9 @@ final class AppState {
     /// The company setup wizard (#1887 C1): here, so a check or a Slack run outlives the page; its own wizard-mode Slack engine.
     /// Settable for tests (a model over a scripted CLI).
     @ObservationIgnored lazy var companySetup = CompanySetupWizardModel(
-        makeStreamer: { Self.slackLineStream() },
-        slack: SlackAppSetupModel(makeStreamer: { Self.slackLineStream() }, mode: .wizard)
-    )
+        makeStreamer: { Self.slackLineStream() }, slack: SlackAppSetupModel(makeStreamer: { Self.slackLineStream() }, mode: .wizard))
     @ObservationIgnored lazy var companiesZone = CompaniesZoneModel { Self.slackLineStream() } // #1887 C3: outlives the tab
+    @ObservationIgnored lazy var ownGoogleProject = makeOwnGoogleProject { Self.slackLineStream() } // #1887 C4: outlives the page
     @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
     /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
     @ObservationIgnored weak var observedProviderConnection: ProviderConnection?

@@ -3,7 +3,10 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,6 +22,7 @@ import (
 	"watchtower/internal/companybundle"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/gmail"
 	"watchtower/internal/policy"
 	"watchtower/internal/policy/policytest"
 )
@@ -396,4 +400,155 @@ func TestGoogleAddClientID_RefusedRetieStoresNoBundle(t *testing.T) {
 	a, err := h.database.GetGoogleAccount(id)
 	require.NoError(t, err)
 	assert.Empty(t, a.CompanySlug)
+}
+
+// ownGoogleJSONResult runs `google add --client-id … --json` and decodes its
+// last stdout line (the sign-in's own lines come before it).
+func ownGoogleJSONResult(t *testing.T) (companyCheckResult, error) {
+	t.Helper()
+	c, out := cmdWithFlags(t, googleAddCmd, map[string]string{
+		"client-id": ownClientID, "client-secret-stdin": "true", "gmail": "true", "calendar": "true", "json": "true",
+	})
+	c.SetIn(strings.NewReader("own-secret\n"))
+	err := runGoogleAdd(c, nil)
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	var res companyCheckResult
+	if err == nil {
+		require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &res), out.String())
+	}
+	return res, err
+}
+
+// TestGoogleAddClientIDJSON_OK: the Desktop's own-project page reads one
+// result line — the new row and the signed-in address for its done line.
+func TestGoogleAddClientIDJSON_OK(t *testing.T) {
+	h := newGoogleAddHarness(t, "bob@example.org")
+	policytest.Set(t, nil)
+
+	res, err := ownGoogleJSONResult(t)
+
+	require.NoError(t, err)
+	accounts, err := h.database.ListGoogleAccounts()
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	assert.Equal(t, checkOK, res.Result)
+	assert.Equal(t, accounts[0].ID, res.AccountID)
+	assert.Equal(t, "bob@example.org", res.Email)
+	assert.Equal(t, "bob-example-org", res.Slug)
+	assert.Empty(t, res.NotGranted)
+}
+
+// A consent that left Gmail unapproved is still a connection (Calendar),
+// and the result line says what was not granted.
+func TestGoogleAddClientIDJSON_PartialGrantNamesTheMissingService(t *testing.T) {
+	h := newGoogleAddHarness(t, "bob@example.org")
+	policytest.Set(t, nil)
+	googleOAuthLogin = func(context.Context, calendar.GoogleOAuthConfig, io.Writer, ...calendar.LoginOptions) (*calendar.OAuthToken, error) {
+		return &calendar.OAuthToken{AccessToken: "a", RefreshToken: "r", Scope: calendar.ScopeCalendarReadonly}, nil
+	}
+
+	res, err := ownGoogleJSONResult(t)
+
+	require.NoError(t, err)
+	assert.Equal(t, checkOK, res.Result)
+	assert.Equal(t, []string{"gmail"}, res.NotGranted)
+	assert.Empty(t, res.Email, "no Gmail, no address")
+	accounts, err := h.database.ListGoogleAccounts()
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+}
+
+// TestGoogleAddClientIDJSON_FailuresStoreNothing: a refused client, an
+// unreachable Google and a stopped sign-in are a result line (rejected with
+// Google's code, network, cancelled), never a stored bundle or a row; a
+// refused re-tie is rejected with its code and leaves the row as it was.
+func TestGoogleAddClientIDJSON_FailuresStoreNothing(t *testing.T) {
+	cases := map[string]struct {
+		login    error
+		result   string
+		code     string
+		existing bool
+	}{
+		"rejected":  {login: errors.New(`token exchange failed (401): {"error": "invalid_client"}`), result: checkRejected, code: "invalid_client"},
+		"network":   {login: &url.Error{Op: "Post", URL: "https://oauth2.googleapis.com/token", Err: errors.New("timeout")}, result: checkNetwork},
+		"cancelled": {login: context.Canceled, result: checkCancelled},
+		"narrow":    {result: checkRejected, code: "grant_too_narrow", existing: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := newGoogleAddHarness(t, "bob@example.org")
+			policytest.Set(t, nil)
+			if tc.login != nil {
+				googleOAuthLogin = func(context.Context, calendar.GoogleOAuthConfig, io.Writer, ...calendar.LoginOptions) (*calendar.OAuthToken, error) {
+					return nil, tc.login
+				}
+			}
+			var existing int64
+			if tc.existing {
+				var err error
+				existing, err = h.database.CreateGoogleAccount(db.GoogleAccount{Email: "bob@example.org", GmailEnabled: true, CalendarEnabled: true})
+				require.NoError(t, err)
+				// The consent grants Gmail only: it cannot replace the row's Calendar.
+				googleOAuthLogin = func(context.Context, calendar.GoogleOAuthConfig, io.Writer, ...calendar.LoginOptions) (*calendar.OAuthToken, error) {
+					return &calendar.OAuthToken{AccessToken: "a", RefreshToken: "r", Scope: gmail.ScopeGmailReadonly}, nil
+				}
+			}
+
+			res, err := ownGoogleJSONResult(t)
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.result, res.Result)
+			assert.Equal(t, tc.code, res.Code)
+			assert.Zero(t, res.AccountID)
+			entries, _, err := company.NewStore(h.cfg.WorkspaceDir()).LoadAll("")
+			require.NoError(t, err)
+			assert.Empty(t, entries, "no personal bundle")
+			accounts, err := h.database.ListGoogleAccounts()
+			require.NoError(t, err)
+			if tc.existing {
+				require.Len(t, accounts, 1)
+				assert.Equal(t, existing, accounts[0].ID)
+				assert.Empty(t, accounts[0].CompanySlug)
+			} else {
+				assert.Empty(t, accounts)
+			}
+		})
+	}
+}
+
+// --json is the own-project page's answer: without --client-id it is a
+// usage error, before any browser.
+func TestGoogleAddJSON_NeedsClientID(t *testing.T) {
+	h := newGoogleAddHarness(t, "bob@example.org")
+	c, _ := cmdWithFlags(t, googleAddCmd, map[string]string{"json": "true", "gmail": "true"})
+	require.Error(t, runGoogleAdd(c, nil))
+	assert.Zero(t, h.loginCalls)
+}
+
+// TestGoogleAccountsJSON_OwnProject: `own_project` follows
+// company.IsOwnProject — the personal bundle's row and the untied legacy
+// credentials row, never a company, bridged corp or shared-client row.
+func TestGoogleAccountsJSON_OwnProject(t *testing.T) {
+	f := newOwnProjectFixture(t)
+	all, err := f.database.ListGoogleAccounts()
+	require.NoError(t, err)
+	var buf bytes.Buffer
+
+	require.NoError(t, writeGoogleAccountsJSON(&buf, f.cfg.WorkspaceDir(), all))
+
+	var rows []googleAccountJSON
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
+	own := map[int64]bool{}
+	for _, r := range rows {
+		own[r.ID] = r.OwnProject
+	}
+	assert.Equal(t, map[int64]bool{f.personal: true, f.legacy: true, f.company: false, f.bridged: false, f.shared: false}, own)
+
+	// An unreadable company directory is an error, never "not own".
+	dir := filepath.Join(f.cfg.WorkspaceDir(), "company")
+	require.NoError(t, os.Rename(dir, dir+".moved"))
+	require.NoError(t, os.WriteFile(dir, []byte("not a directory"), 0o600))
+	buf.Reset()
+	require.Error(t, writeGoogleAccountsJSON(&buf, f.cfg.WorkspaceDir(), all))
+	assert.Empty(t, buf.String(), "no rows printed")
 }

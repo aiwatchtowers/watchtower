@@ -7,10 +7,11 @@ import XCTest
 final class SharedAppFlagReaderTests: XCTestCase {
     func testReadsTheFlaggedIDs() async throws {
         let cli = try GoogleConnectionDetailTests.stubCLI(
-            stdout: #"[{"id":1,"shared_gmail":true},{"id":2,"shared_gmail":false}]"#, test: self)
+            stdout: #"[{"id":1,"shared_gmail":true},{"id":2,"shared_gmail":false,"own_project":true}]"#, test: self)
         let reader = SharedAppFlagReader.google()
         await reader.read(cliPath: cli.path)
         XCTAssertEqual(reader.accountIDs, [1])
+        XCTAssertEqual(reader.ownProjectIDs, [2], "the own-project rule is Go's (company.IsOwnProject)")
         let args = try String(contentsOf: cli.log, encoding: .utf8)
         XCTAssertEqual(args.trimmingCharacters(in: .whitespacesAndNewlines), "google accounts --json")
     }
@@ -24,6 +25,7 @@ final class SharedAppFlagReaderTests: XCTestCase {
         XCTAssertEqual(reader.accountIDs, [])
         await reader.read(cliPath: good.path)
         XCTAssertEqual(reader.accountIDs, [3])
+        XCTAssertEqual(reader.ownProjectIDs, [], "Jira reads no own-project flag")
         await reader.read(cliPath: "/usr/bin/false")
         XCTAssertEqual(reader.accountIDs, [3], "a failed run keeps the last flags")
         await reader.read(cliPath: "/usr/bin/true") // exit 0, no JSON

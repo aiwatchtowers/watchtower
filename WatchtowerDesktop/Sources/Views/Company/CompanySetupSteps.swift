@@ -81,13 +81,32 @@ struct CompanySetupDenyListStep: View {
 }
 
 /// The client JSON's drop zone (Google): drop a file, paste the JSON, or
-/// click to choose the file.
+/// click to choose the file. Shared by the wizard's Google step and the
+/// own Google project page.
 struct WizardDropZone: View {
-    let model: CompanySetupWizardModel
+    /// The dropped file's line; nil before one.
+    let line: String?
+    /// The last drop was not a client JSON.
+    let problem: Bool
+    var disabled = false
+    /// The JSON's bytes and the name it came under.
+    let onData: (Data, String) -> Void
+
+    init(line: String?, problem: Bool, disabled: Bool = false, onData: @escaping (Data, String) -> Void) {
+        self.line = line
+        self.problem = problem
+        self.disabled = disabled
+        self.onData = onData
+    }
+
+    init(model: CompanySetupWizardModel) {
+        self.init(line: model.droppedGoogleLine, problem: model.googleFileProblem) { data, name in
+            model.dropGoogleClient(data, fileName: name)
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
-            let line = model.droppedGoogleLine
             Button(action: choose) {
                 HStack(spacing: Spacing.regular) {
                     Image(systemName: line == nil ? "square.and.arrow.down" : "doc.text")
@@ -101,9 +120,10 @@ struct WizardDropZone: View {
                 .card()
             }
             .buttonStyle(.plain)
+            .disabled(disabled)
             .onDrop(of: [.fileURL], isTargeted: nil, perform: drop)
             .onPasteCommand(of: [.json, .plainText, .utf8PlainText]) { _ in paste() }
-            if model.googleFileProblem { WizardProblem(text: Model.googleFileInvalid) }
+            if problem { WizardProblem(text: Model.googleFileInvalid) }
         }
     }
 
@@ -116,7 +136,7 @@ struct WizardDropZone: View {
     }
 
     private func drop(_ providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first else { return false }
+        guard !disabled, let provider = providers.first else { return false }
         _ = provider.loadObject(ofClass: URL.self) { url, _ in
             guard let url else { return }
             Task { @MainActor in read(url) }
@@ -125,13 +145,13 @@ struct WizardDropZone: View {
     }
 
     private func paste() {
-        guard let text = NSPasteboard.general.string(forType: .string) else { return }
-        model.dropGoogleClient(Data(text.utf8), fileName: Model.pastedJSON)
+        guard !disabled, let text = NSPasteboard.general.string(forType: .string) else { return }
+        onData(Data(text.utf8), Model.pastedJSON)
     }
 
     private func read(_ url: URL) {
         // An unreadable file is the same refusal as a wrong one.
         let data = (try? Data(contentsOf: url)) ?? Data()
-        model.dropGoogleClient(data, fileName: url.lastPathComponent)
+        onData(data, url.lastPathComponent)
     }
 }

@@ -7,8 +7,9 @@ private typealias Pres = CompanyConnectionsPresentation
 
 /// The production Google and Jira account sections (#1887 Task 25b) over
 /// sample data (`Acme`, `example.com`, made-up ids), for the
-/// `company-google-detail*` and `company-jira-detail*` shots; `-locked` and
-/// `-tokenError` stay mocks until Tasks 26 and 27.
+/// `company-google-detail*` and `company-jira-detail*` shots (Google's
+/// `-locked` too, Task 26); Jira's `-locked` and `-tokenError` stay mocks
+/// until Task 27.
 @MainActor
 enum CompanyDetailScenes {
     private static let acme = CompaniesZoneScenes.acme
@@ -53,6 +54,7 @@ enum CompanyDetailScenes {
             ("google-detail-empty", pane(.google, accounts: [], companies: [])),
             ("google-detail-loading", pane(.google, accounts: [], loaded: false)),
             ("google-detail-readFailed", pane(.google, accounts: [], readError: "database is locked")),
+            ("google-detail-locked", pane(.google, accounts: Array(googleAccounts.prefix(2)), policyLocks: [.ownGoogleProject])),
             ("jira-detail", pane(.atlassian, accounts: jiraAccounts)),
             ("jira-detail-empty", pane(.atlassian, accounts: [], companies: [])),
             ("jira-detail-loading", pane(.atlassian, accounts: [], loaded: false)),
@@ -66,12 +68,13 @@ enum CompanyDetailScenes {
         companies: [CompanyRef]? = nil,
         loaded: Bool = true,
         readError: String? = nil,
-        banner: Bool = true
+        banner: Bool = true,
+        policyLocks: Set<LockKey> = []
     ) -> AnyView {
         let companies = companies ?? [acme, own]
         let groups = Pres.groups(vendor: vendor, accounts: accounts, companies: companies) { _ in false }
         // What this build offers: the API token waits for Task 27 (`AppState.unbuiltOffers`).
-        let locks = AppState.unbuiltOffers
+        let locks = AppState.unbuiltOffers.union(policyLocks)
         let list = Pres.accountsList(vendor: vendor, loaded: loaded, readError: readError, accounts: accounts, groups: groups,
                                      locks: locks)
         return AnyView(VStack(alignment: .leading, spacing: Spacing.large) {
@@ -82,10 +85,11 @@ enum CompanyDetailScenes {
                 emptyActions: Pres.detailActions(vendor, companies: companies, empty: true, locks: locks),
                 addActions: Pres.detailActions(vendor, companies: companies, empty: false, locks: locks),
                 connect: CompanyGroupConnect { _, _ in },
+                locks: policyLocks,
                 perform: { _ in },
                 bannerAction: { _ in },
                 tryAgain: {},
-                row: { row($0, companies: companies) }
+                row: { row($0, companies: companies, policyLocks: policyLocks) }
             )
         }
         .controlSize(.small)
@@ -94,8 +98,10 @@ enum CompanyDetailScenes {
         .detailBackground())
     }
 
-    private static func row(_ account: AccountRef, companies: [CompanyRef]) -> some View {
-        let status = Pres.rowStatus(account, purgeLease: nil, companies: companies)
+    private static func row(_ account: AccountRef, companies: [CompanyRef], policyLocks: Set<LockKey>) -> some View {
+        let stopped = policyLocks.contains(.ownGoogleProject)
+            && Pres.isOwnGoogleProject(account, companies: companies) { _ in false }
+        let status = Pres.rowStatus(account, purgeLease: nil, companies: companies, stoppedByPolicy: stopped)
         let line = account.vendor == .google
             ? Pres.googleRowLine(account, calendar: true, gmail: !account.sharedApp || account.status == "ok")
             : Pres.jiraRowLine(account, title: account.label, enabled: true,

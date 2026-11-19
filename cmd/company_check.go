@@ -113,6 +113,9 @@ type companyCheckResult struct {
 	// Confluence: an Atlassian check's grant carries the Confluence scopes
 	// (false = Atlassian refused them and Jira alone connected).
 	Confluence *bool `json:"confluence,omitempty"`
+	// NotGranted: `google add --client-id --json` only — the requested
+	// services the consent left unapproved ("calendar", "gmail").
+	NotGranted []string `json:"not_granted,omitempty"`
 }
 
 // companyDryHTTP is the dry check's HTTP client (nil = default); a var so

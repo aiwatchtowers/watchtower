@@ -30,7 +30,7 @@ extension AppState {
         flow.externalBusy = { [weak self] in
             guard let self else { return false }
             return slackConnectFlow?.isRunning == true || slackAuthFlow.reconnecting
-                || slackAccountsViewModel?.isConnecting == true
+                || slackAccountsViewModel?.isConnecting == true || ownGoogleProject.isRunning
         }
         slackConnectFlow?.companyRunning = { [weak flow] in flow?.isRunning == true }
         slackConnectFlow?.companyPaste = { [weak self, weak flow] text in

@@ -45,15 +45,48 @@ extension AppState {
         CompanyConnectionsPresentation.detailActions(vendor, companies: companyRefs, empty: empty, locks: companyOfferLocks)
     }
 
-    /// A Google or Jira detail's buttons wait while its own sign-in or a
-    /// company chain runs: two browser sign-ins never start at once.
+    /// A Google or Jira detail's buttons wait while its own sign-in, the own
+    /// Google project's or a company chain runs: two browser sign-ins never
+    /// start at once.
     func companyDetailBusy(_ vendor: CompanyVendor) -> Bool {
         let own = switch vendor {
-        case .google: googleAccountsViewModel?.isConnecting ?? true
+        case .google: (googleAccountsViewModel?.isConnecting ?? true) || ownGoogleProject.isRunning
         case .atlassian: jiraAccountsViewModel?.isConnecting ?? true
         case .slack, .linear, .microsoft: false
         }
         return own || companyConnect?.isRunning == true
+    }
+
+    /// The own Google project page's model (#1887 C4): waits for the other
+    /// Google sign-ins, and a connect re-reads the accounts and re-wires the
+    /// daemon.
+    func makeOwnGoogleProject(
+        makeStreamer: @escaping @MainActor () -> (any CLILineStreaming)?
+    ) -> OwnGoogleProjectModel {
+        let model = OwnGoogleProjectModel(makeStreamer: makeStreamer)
+        model.externalBusy = { [weak self] in
+            // The detail's own busy rule; the model checks its own run itself.
+            self?.companyDetailBusy(.google) ?? true
+        }
+        model.onConnected = { [weak self] in
+            guard let self else { return }
+            googleAccountsViewModel?.accountAddedElsewhere(daemonPolicy: accountDaemonPolicy)
+            reloadCompanies() // the personal bundle Go stored names the group
+        }
+        return model
+    }
+
+    /// A Google account on the person's own project (Go's `own_project`,
+    /// or tied to a personal bundle).
+    func isOwnGoogleProject(_ ref: AccountRef) -> Bool {
+        let own = googleAccountsViewModel?.sharedFlags.ownProjectIDs ?? []
+        return CompanyConnectionsPresentation.isOwnGoogleProject(ref, companies: companyRefs) { own.contains($0.accountID) }
+    }
+
+    /// A row the policy stops (§5.4): an own-project Google account while
+    /// own projects are not allowed. Go stops its sync and keeps its data.
+    func companyRowStoppedByPolicy(_ ref: AccountRef) -> Bool {
+        companyLocks.contains(.ownGoogleProject) && isOwnGoogleProject(ref)
     }
 
     /// A detail button that needs no view state of its own (the detail opens

@@ -241,12 +241,15 @@ package struct CompanyCheckResult: Decodable, Equatable, Sendable {
     /// Atlassian: the grant came back without the Confluence scopes
     /// (`"confluence": false`; Atlassian refused them, Jira alone connected).
     package var confluenceRefused = false
+    /// `google add --client-id --json`: requested services the consent left
+    /// unapproved ("calendar", "gmail").
+    package var notGranted: [String] = []
 
     package init(result: String) { self.result = result }
 
     enum CodingKeys: String, CodingKey {
         case result, slug, accountID = "account_id", email, domain, site, code, message, checked
-        case adminConsentURL = "admin_consent_url", confluence, draftError = "draft_error"
+        case adminConsentURL = "admin_consent_url", confluence, draftError = "draft_error", notGranted = "not_granted"
     }
 
     package init(from decoder: Decoder) throws {
@@ -263,6 +266,7 @@ package struct CompanyCheckResult: Decodable, Equatable, Sendable {
         adminConsentURL = try c.decodeIfPresent(String.self, forKey: .adminConsentURL) ?? ""
         draftError = try c.decodeIfPresent(String.self, forKey: .draftError) ?? ""
         confluenceRefused = try c.decodeIfPresent(Bool.self, forKey: .confluence) == false
+        notGranted = try c.decodeIfPresent([String].self, forKey: .notGranted) ?? []
     }
 }
 

@@ -160,6 +160,16 @@ extension CompanyConnectionsPresentation {
         return [rowHead(a, enabled: enabled), site, email].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
+    /// A Gmail row on Watchtower's shared Google app that must sign in again
+    /// (D11): its Re-login would ask the shared app for Gmail, which it no
+    /// longer grants, so the row offers the move instead — your own project
+    /// (the same address's row moves onto it), or a company code under the
+    /// §5.4 lock. Nil for any other row (its Re-login works).
+    package static func sharedGmailMove(_ a: AccountRef, locks: Set<LockKey>) -> CompanyBanner.Action? {
+        guard a.vendor == .google, a.sharedApp, a.status != "ok", !a.isGone else { return nil }
+        return locks.contains(.ownGoogleProject) ? .pasteCode : .useOwnGoogle
+    }
+
     /// The policy locks in force: what the banners and add sections leave out.
     package static func locks(ownGoogleProjectAllowed: Bool, atlassianAPITokenAllowed: Bool) -> Set<LockKey> {
         var locks: Set<LockKey> = []
@@ -169,12 +179,16 @@ extension CompanyConnectionsPresentation {
     }
 }
 
-/// The shared-app flags of `google accounts --json` (`shared_gmail`) and
-/// `jira accounts --json` (`shared_atlassian`): Go decides them (it owns the
-/// client resolver), the Desktop only reads which account ids carry them.
+/// The account flags of `google accounts --json` (`shared_gmail`,
+/// `own_project`) and `jira accounts --json` (`shared_atlassian`): Go
+/// decides them (it owns the client resolver and the own-project rule,
+/// `company.IsOwnProject`), the Desktop only reads which account ids carry
+/// them.
 package enum SharedAppFlags {
     package static let googleArgs = ["google", "accounts", "--json"]
     package static let googleFlag = "shared_gmail"
+    /// A Google account on a project the person owns (#1887 C4).
+    package static let ownProjectFlag = "own_project"
     package static let jiraArgs = ["jira", "accounts", "--json"]
     package static let jiraFlag = "shared_atlassian"
 
@@ -182,11 +196,16 @@ package enum SharedAppFlags {
 
     /// The ids of the array's rows whose `flag` is true.
     package static func accountIDs(_ data: Data, flag: String) throws -> Set<Int> {
+        try accountIDs(data, flags: [flag])[flag] ?? []
+    }
+
+    /// Per flag, the ids of the array's rows where it is true.
+    package static func accountIDs(_ data: Data, flags: [String]) throws -> [String: Set<Int>] {
         guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { throw DecodeError() }
-        var ids: Set<Int> = []
+        var ids: [String: Set<Int>] = Dictionary(uniqueKeysWithValues: flags.map { ($0, []) })
         for row in rows {
             guard let id = row["id"] as? Int else { throw DecodeError() }
-            if row[flag] as? Bool == true { ids.insert(id) }
+            for flag in flags where row[flag] as? Bool == true { ids[flag, default: []].insert(id) }
         }
         return ids
     }

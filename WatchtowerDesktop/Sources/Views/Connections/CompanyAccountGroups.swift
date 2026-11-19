@@ -10,29 +10,54 @@ import WatchtowerCore
 struct CompanyAccountGroups<Row: View>: View {
     let groups: [AccountGroup]
     let connect: CompanyGroupConnect
+    /// The policy locks in force: a locked group ends with its lock card (§5.4, §6.5).
+    var locks: Set<LockKey> = []
     @ViewBuilder let row: (AccountRef) -> Row
 
     var body: some View {
         ForEach(groups) { group in
             SettingsSection(title: group.title, caption: group.caption) {
-                ForEach(group.rows) { item in
-                    switch item {
-                    case .account(let account):
-                        row(account)
-                    case .notConnected(let vendor):
-                        CompanyAccountRow(
-                            title: CompanyConnectionsPresentation.serviceName(vendor),
-                            status: CompanyConnectionsPresentation.notConnectedStatus
-                        ) {
-                            Button(RowStatus.Action.connect.title) {
-                                if case .company(let slug) = group.kind { connect.run(slug, vendor) }
-                            }
-                            .buttonStyle(.kitSecondary)
-                            .disabled(connect.disabled)
-                        }
-                    }
+                rows(group)
+                if let key = group.kind.lockKey, locks.contains(key) {
+                    CompanyLockCard(card: CompanyConnectionsPresentation.lockCard(key))
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func rows(_ group: AccountGroup) -> some View {
+        ForEach(group.rows) { item in
+            switch item {
+            case .account(let account):
+                row(account)
+            case .notConnected(let vendor):
+                CompanyAccountRow(
+                    title: CompanyConnectionsPresentation.serviceName(vendor),
+                    status: CompanyConnectionsPresentation.notConnectedStatus
+                ) {
+                    Button(RowStatus.Action.connect.title) {
+                        if case .company(let slug) = group.kind { connect.run(slug, vendor) }
+                    }
+                    .buttonStyle(.kitSecondary)
+                    .disabled(connect.disabled)
+                }
+            }
+        }
+    }
+}
+
+/// A policy lock under its group (§5.4, §6.5): the card, **What IT can
+/// set** and **Managed by your organization**.
+struct CompanyLockCard: View {
+    let card: LockCard
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            WizardNotice(icon: "lock.fill", tone: Tone.status("gray"), text: card.text)
+            Button(card.helpLabel) { openURL(card.helpURL) }.buttonStyle(.kitQuiet)
+            ManagedByOrganizationBadge()
         }
     }
 }

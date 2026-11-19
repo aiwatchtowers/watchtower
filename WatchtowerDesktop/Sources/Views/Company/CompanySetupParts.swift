@@ -122,12 +122,24 @@ struct WizardStepLines: View {
 /// Numbered guide lines, each with **Open** (its deep link) and an optional
 /// Copy button.
 struct WizardGuide: View {
-    let vendor: CompanyVendor
+    let lines: [(text: String, link: URL?)]
+    var copies: [Int: String] = [:]
+    var copyText: (Int) -> String = { _ in "" }
     @Environment(\.openURL) private var openURL
 
+    /// A vendor step's guide (`CompanyVendorGuide`).
+    init(vendor: CompanyVendor) {
+        lines = CompanyVendorGuide.guideLines(vendor)
+        copies = CompanyVendorGuide.guideCopyButtons(vendor)
+        copyText = { CompanyVendorGuide.guideCopyText(vendor, line: $0) }
+    }
+
+    /// Lines with **Open** only.
+    init(lines: [(text: String, link: URL?)]) {
+        self.lines = lines
+    }
+
     var body: some View {
-        let lines = CompanyVendorGuide.guideLines(vendor)
-        let copies = CompanyVendorGuide.guideCopyButtons(vendor)
         VStack(alignment: .leading, spacing: Spacing.regular) {
             ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
@@ -135,7 +147,7 @@ struct WizardGuide: View {
                     Text(line.text).font(.callout).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: Spacing.regular)
                     if let title = copies[index] {
-                        let text = CompanyVendorGuide.guideCopyText(vendor, line: index)
+                        let text = copyText(index)
                         Button(title) { WizardPasteboard.copy(text) }
                             .buttonStyle(.kitQuiet)
                             .disabled(text.isEmpty)

@@ -64,17 +64,21 @@ extension AppState {
         companiesZone.zone(accounts: companyAccountRefs, portBusy: slackConnectListener?.state == .portBusy)
     }
 
-    /// `vendor`'s §4.2 sections.
+    /// `vendor`'s §4.2 sections; Google's own-project group follows Go's
+    /// `own_project` flag (company.IsOwnProject).
     func companyAccountGroups(_ vendor: CompanyVendor) -> [AccountGroup] {
-        CompanyConnectionsPresentation.groups(
+        let own = vendor == .google ? googleAccountsViewModel?.sharedFlags.ownProjectIDs ?? [] : []
+        return CompanyConnectionsPresentation.groups(
             vendor: vendor, accounts: companyAccountRefs.filter { $0.vendor == vendor }, companies: companyRefs
-        ) { _ in false }
+        ) { own.contains($0.accountID) }
     }
 
     /// A row's §4.3 status (no purge lease here: Slack, Linear and Outlook
-    /// have no token rows).
+    /// have no token rows); an own Google project's row under the §5.4 lock
+    /// is stopped by the organization.
     func companyRowStatus(_ account: AccountRef) -> RowStatus? {
-        CompanyConnectionsPresentation.rowStatus(account, purgeLease: nil, companies: companyRefs)
+        CompanyConnectionsPresentation.rowStatus(account, purgeLease: nil, companies: companyRefs,
+                                                 stoppedByPolicy: companyRowStoppedByPolicy(account))
     }
 
     /// No card or row may start a company flow: none exists (no listener —

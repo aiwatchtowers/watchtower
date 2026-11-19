@@ -209,6 +209,32 @@ final class CompanySetupMockCopyTests: XCTestCase {
                        [Copy.connectCompanyAtlassian, Copy.connectTokenButton])
     }
 
+    /// Task 26: the own Google project page's words live in
+    /// `OwnGoogleProjectModel` (§5.2), and every frame is a shot.
+    func testOwnGoogleCopyLivesInTheModel() {
+        typealias Own = OwnGoogleProjectModel
+        XCTAssertEqual(Copy.backToGoogle, Own.backTitle)
+        XCTAssertEqual(Copy.ownTitle, Own.title)
+        XCTAssertEqual(Copy.ownIntro, Own.intro)
+        XCTAssertEqual(Copy.ownGuide, Own.guide.map(\.text))
+        XCTAssertTrue(Own.guide.allSatisfy { $0.link?.host == "console.cloud.google.com" }, "every line opens the console")
+        XCTAssertEqual(Copy.ownUnverifiedNote, Own.unverifiedNote)
+        XCTAssertEqual(Copy.checkingGoogle, Own.checkingLine)
+        XCTAssertEqual(Copy.connect, Own.connectTitle)
+        XCTAssertEqual(Copy.tryAgain, Own.tryAgainTitle)
+        XCTAssertEqual(Copy.done, Own.doneTitle)
+        XCTAssertEqual(Copy.ownDoneTitle, Own.connectedTitle("bob@example.org"))
+        XCTAssertEqual(Copy.ownDoneBody, Own.connectedBody)
+        XCTAssertEqual(Copy.ownWeeklyNote, Own.weeklyLine)
+        XCTAssertEqual(Copy.googleRejected, Model.rejectedLine(.google, code: "invalid_client", tenant: ""))
+        XCTAssertEqual(Copy.googleNetwork, Model.networkLine(.google, "the request timed out"))
+        let names = Set(CompanySetupShotFixtures.shots.map(\.name))
+        for scene in ["empty", "empty-narrow", "ready", "checking", "checkFailed", "done", "done-weekly"] {
+            XCTAssertTrue(names.contains("company-ownGoogle-\(scene)"), scene)
+        }
+        XCTAssertTrue(names.contains("company-google-detail-locked"))
+    }
+
     /// Task 21 moved the wizard's words into `CompanySetupWizardModel` and
     /// `CompanyVendorGuide`.
     func testWizardCopyLivesInTheModel() {

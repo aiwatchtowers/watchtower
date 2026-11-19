@@ -64,7 +64,7 @@ action: connect:imap
 -->
 
 1. Open **Connections**.
-2. For Gmail with Calendar, use **Google**: your company's account connects from its group, or click **Use my own Google project**. **Connect Google Calendar** adds Calendar alone through Watchtower's app.
+2. For Gmail with Calendar, use **Google**: your company's account connects from its group, or click **Use my own Google project**. That page walks you through a Google Cloud project of your own (about ten minutes, once): drop its client JSON and click **Connect**. **Connect Google Calendar** adds Calendar alone through Watchtower's app.
 3. For Gmail on its own, Outlook or another IMAP mailbox, use **Email** and click **Add Account**. Choose **Connect Gmail**, **Connect Outlook** or fill in the **IMAP** form (host, username, password; port, security and folder wait under **Advanced** with the usual 993, SSL and `INBOX`) and click **Test and Connect**.
 4. Wait for the next sync cycle, then check **Catch Up** or the next briefing.
 
@@ -76,7 +76,7 @@ Switch Gmail syncing off for all Google accounts with **Enable Gmail sync** unde
 - **Missing a newsletter or promotion:** Gmail Promotions and Social are skipped on purpose.
 - **Missing mail from a folder other than Inbox:** Gmail reads the Inbox only, and IMAP reads the single folder set under **Advanced** in the form.
 - **Account shows an error:** use **Re-login** on the Google account to sign in again. For IMAP, remove the account and add it again.
-- **Gmail needs your company's or your own Google project:** Watchtower's shared Google app connects Calendar only. Open your company's Watchtower link, or connect the account with your own Google project. A Gmail account already connected through the shared app keeps syncing until Google stops its sign-in; a Re-login of it is refused while Gmail is on.
+- **Gmail needs your company's or your own Google project:** Watchtower's shared Google app connects Calendar only. Open your company's Watchtower link, or connect the account with your own Google project. A Gmail account already connected through the shared app keeps syncing until Google stops its sign-in; then its row offers **Use my own Google project** instead of **Re-login**, and signing in with the same address moves the account onto your project.
 - **Mail I deleted is still here:** Gmail checks once a day for deleted or trashed mail, and IMAP checks on every sync. Archived Gmail stays.
 - **Old mail is missing:** only the last 7 days sync first. Older mail arrives with the background history backfill.
 
