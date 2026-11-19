@@ -572,7 +572,7 @@ final class SocketChatClientTests: XCTestCase {
     /// stream) into a `ChatFeedStore` build the same feed as decoding the same lines and applying them directly.
     @MainActor
     func testDecodePathBuildsTheDirectStoresFeed() async throws {
-        let run = try await decodePaths()
+        let run = try await decodePaths(rounds: 1)
         XCTAssertEqual(run.applied, 1_000)
         XCTAssertEqual(run.viaSocket.feed?.messages.map(\.text), run.direct.feed?.messages.map(\.text))
     }
@@ -585,7 +585,7 @@ final class SocketChatClientTests: XCTestCase {
     @MainActor
     func testDecodePathWithinTwiceOfDirectStore() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["WT_BENCH"] == "1", "benchmark only")
-        let run = try await decodePaths()
+        let run = try await decodePaths(rounds: 5)
         XCTAssertEqual(run.applied, 1_000)
         print("BENCH chat decode path: socket \(run.socketTime) vs direct \(run.directTime)")
         XCTAssertLessThanOrEqual(run.socketTime, run.directTime * 2 + .milliseconds(50),
@@ -602,10 +602,10 @@ final class SocketChatClientTests: XCTestCase {
         var applied = 0
     }
 
-    /// Five rounds of each path over the same 1 000 lines; each path's lowest wall time (a busy machine slows a
+    /// `rounds` rounds of each path over the same 1 000 lines; each path's lowest wall time (a busy machine slows a
     /// round, never speeds one up) and its last store.
     @MainActor
-    private func decodePaths() async throws -> DecodePaths {
+    private func decodePaths(rounds: Int) async throws -> DecodePaths {
         try server.listen()
         let client = makeClient()
         var states = client.reachability.makeAsyncIterator()
@@ -620,7 +620,7 @@ final class SocketChatClientTests: XCTestCase {
         let snapshot = try decoder.decode(ChatFeed.self, from: Data(server.feedJSON(9).utf8))
 
         var run = DecodePaths()
-        for _ in 0..<5 {
+        for _ in 0..<rounds {
             let store = ChatFeedStore()
             let elapsed = try clock.measure {
                 store.apply(.snapshot(snapshot))
@@ -638,7 +638,7 @@ final class SocketChatClientTests: XCTestCase {
             XCTFail("no snapshot")
             return run
         }
-        for _ in 0..<5 {
+        for _ in 0..<rounds {
             let store = ChatFeedStore()
             let start = clock.now
             store.apply(.snapshot(snapshot))

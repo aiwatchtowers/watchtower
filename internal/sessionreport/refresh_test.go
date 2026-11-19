@@ -442,6 +442,45 @@ func TestRefresh_OfflineKeepsGHBranchState(t *testing.T) {
 	}
 }
 
+// The wall clock (no Now) bounds every git and gh call by the budget's
+// context deadline; a test clock takes the deadline off: the budget then
+// runs on that clock alone. The run seam sees each call's context — no wait.
+func TestRefresh_TheWallClockBoundsEachCall(t *testing.T) {
+	dir := newRepo(t)
+	d, id := newWorkbench(t, dir)
+	t.Setenv("PATH", t.TempDir()) // no gh: git alone answers (it is located by gitbin)
+	var mu sync.Mutex
+	var deadlines []bool
+	prev := run
+	run = func(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
+		_, ok := ctx.Deadline()
+		mu.Lock()
+		deadlines = append(deadlines, ok)
+		mu.Unlock()
+		return prev(ctx, dir, stdin, name, args...)
+	}
+	t.Cleanup(func() { run = prev })
+	calls := func(opts RefreshOptions) []bool {
+		mu.Lock()
+		deadlines = nil
+		mu.Unlock()
+		Refresh(context.Background(), d, id, []string{"branch:main"}, opts)
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(deadlines)
+	}
+
+	if wall := calls(RefreshOptions{}); len(wall) == 0 || slices.Contains(wall, false) {
+		t.Fatalf("wall clock: deadlines %v, want one on every call", wall)
+	}
+	if _, err := d.Exec(`DELETE FROM workbench_pr_states`); err != nil {
+		t.Fatal(err)
+	}
+	if faked := calls(RefreshOptions{Now: fixedNow}); len(faked) == 0 || slices.Contains(faked, true) {
+		t.Fatalf("test clock: deadlines %v, want none", faked)
+	}
+}
+
 // The refresh's context ending during the last ref's read (the wall-clock
 // budget's deadline, here the caller's cancel at that read: no clock) still
 // says so: the cut read is neither stored nor counted as a failed read.

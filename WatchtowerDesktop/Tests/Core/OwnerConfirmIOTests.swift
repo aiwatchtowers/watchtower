@@ -44,11 +44,13 @@ final class OwnerConfirmIOTests: XCTestCase {
         XCTAssertEqual(try read(["12345", "67890"], limit: 10), .tooLong)
     }
 
+    /// The prefix fills the reader's 64 KiB buffer, so the newline lands in a later read whatever the timing.
     func testANewlineInALaterReadEndsTheLine() throws {
         let (server, client) = try pair()
-        send(client, "abc")
-        DispatchQueue.global().async { self.send(client, "def\nrest") }
-        XCTAssertEqual(OwnerConfirmIO.readLine(server, limit: 10, within: nil), .line(Data("abcdef".utf8)))
+        let prefix = String(repeating: "a", count: 64 * 1024)
+        DispatchQueue.global().async { self.send(client, prefix + "def\nrest") }
+        XCTAssertEqual(OwnerConfirmIO.readLine(server, limit: 128 * 1024, within: nil),
+                       .line(Data((prefix + "def").utf8)))
     }
 
     func testBytesAfterTheNewlineAreNotPartOfTheLine() throws {
