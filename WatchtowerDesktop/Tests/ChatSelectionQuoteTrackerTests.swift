@@ -38,9 +38,33 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
         return (window, root)
     }
 
-    private func findTextField(in view: NSView) -> NSTextField? {
-        if let field = view as? NSTextField { return field }
-        return view.subviews.lazy.compactMap { self.findTextField(in: $0) }.first
+    /// The views backing selectable SwiftUI `Text`s: an `NSTextField` up to
+    /// macOS 26, SwiftUI's own text-interaction view from macOS 27 (static
+    /// text that takes first responder).
+    private func swiftUITexts(in view: NSView) -> [NSView] {
+        if view is NSTextField || (view.accessibilityRole() == .staticText && view.acceptsFirstResponder) {
+            return [view]
+        }
+        return view.subviews.flatMap { swiftUITexts(in: $0) }
+    }
+
+    private func string(of view: NSView) -> String {
+        (view as? NSTextField)?.stringValue ?? (view.accessibilityValue() as? String) ?? ""
+    }
+
+    /// Selects `range` in a selectable SwiftUI `Text` as the owner's drag
+    /// does on this macOS: through the field editor on an `NSTextField`, or
+    /// the text-interaction view's own selection followed by the mouse
+    /// going up over it.
+    private func select(_ range: NSRange, inSwiftUIText view: NSView, tracker: ChatSelectionQuoteTracker) throws {
+        if let field = view as? NSTextField {
+            try beginEditing(field).setSelectedRange(range)
+            return
+        }
+        let window = try XCTUnwrap(view.window)
+        XCTAssertTrue(window.makeFirstResponder(view))
+        view.setAccessibilitySelectedTextRange(range)
+        tracker.selectionEnded(in: window, at: view.convert(CGPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil))
     }
 
     /// What a click in the text does: the window's field editor takes over
@@ -96,9 +120,11 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
     }
 
     /// The assumption the tracker rests on: a selectable SwiftUI `Text` is
-    /// an `NSTextField` using the window's field editor. If SwiftUI changes
-    /// this, the chip stops appearing — this fails first.
-    func testASelectableSwiftUITextIsBackedByATextField() throws {
+    /// an `NSTextField` using the window's field editor (up to macOS 26) or a
+    /// first-responder view reporting its selection through accessibility
+    /// (macOS 27). If SwiftUI changes this again, the chip stops appearing —
+    /// this fails first.
+    func testASelectableSwiftUITextQuotes() throws {
         let text = "Keep the retry budget small."
         let (_, root) = makeWindow()
         let host = NSHostingView(rootView: Text(text).textSelection(.enabled))
@@ -113,12 +139,59 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
         tracker.attach(to: anchor)
         (self.tracker, self.anchor) = (tracker, anchor)
 
-        let field = try XCTUnwrap(findTextField(in: host))
-        XCTAssertTrue(field.isSelectable)
-        XCTAssertFalse(field.isEditable)
-        let editor = try beginEditing(field)
-        editor.setSelectedRange((text as NSString).range(of: "retry budget"))
+        let view = try XCTUnwrap(swiftUITexts(in: host).first)
+        if let field = view as? NSTextField {
+            XCTAssertTrue(field.isSelectable)
+            XCTAssertFalse(field.isEditable)
+        }
+        try select((text as NSString).range(of: "retry budget"), inSwiftUIText: view, tracker: tracker)
         XCTAssertEqual(tracker.selection?.text, "retry budget")
+        XCTAssertNotNil(tracker.selection?.button)
+    }
+
+    /// macOS 27: a click that drops the selection, or focus moving to a view
+    /// with nothing selected, clears the chip once the mouse goes up.
+    func testASwiftUITextSelectionGoesWhenTheFocusMoves() throws {
+        let text = "Keep the retry budget small."
+        let (window, root) = makeWindow()
+        let host = NSHostingView(rootView: Text(text).textSelection(.enabled))
+        host.frame = NSRect(x: 0, y: 0, width: 400, height: 100)
+        root.addSubview(host)
+        let tracker = ChatSelectionQuoteTracker()
+        addRegion(host.frame, to: root, tracker: tracker)
+        let anchor = FlippedView(frame: root.bounds)
+        root.addSubview(anchor)
+        host.layoutSubtreeIfNeeded()
+        tracker.attach(to: anchor)
+        (self.tracker, self.anchor) = (tracker, anchor)
+        let view = try XCTUnwrap(swiftUITexts(in: host).first)
+        try XCTSkipIf(view is NSTextField, "up to macOS 26 the field editor's end of editing clears it")
+
+        try select((text as NSString).range(of: "retry"), inSwiftUIText: view, tracker: tracker)
+        XCTAssertEqual(tracker.selection?.text, "retry")
+        view.setAccessibilitySelectedTextRange(NSRange(location: 2, length: 0))
+        tracker.selectionEnded(in: window, at: nil)
+        XCTAssertNil(tracker.selection, "a collapsed selection offers nothing")
+
+        try select((text as NSString).range(of: "budget"), inSwiftUIText: view, tracker: tracker)
+        XCTAssertEqual(tracker.selection?.text, "budget")
+        window.makeFirstResponder(nil)
+        tracker.selectionEnded(in: window, at: nil)
+        XCTAssertNil(tracker.selection)
+    }
+
+    /// No character boxes on macOS 27: the box is a line-high sliver at the
+    /// point the mouse went up, kept inside the view's visible part.
+    func testTheInteractionBoxSitsAtTheMouseInsideTheView() {
+        let (_, root) = makeWindow()
+        let view = NSView(frame: NSRect(x: 10, y: 10, width: 200, height: 100))
+        root.addSubview(view)
+        let height = ChatSelectionQuoteTracker.pointBoxHeight
+        XCTAssertEqual(ChatSelectionQuoteTracker.interactionBox(in: view, at: CGPoint(x: 50, y: 50)),
+                       CGRect(x: 50, y: 50 - height / 2, width: 1, height: height))
+        XCTAssertEqual(ChatSelectionQuoteTracker.interactionBox(in: view, at: CGPoint(x: 500, y: -10)),
+                       CGRect(x: 199, y: 0, width: 1, height: height), "a drag past the edge stays inside")
+        XCTAssertEqual(ChatSelectionQuoteTracker.interactionBox(in: view, at: nil), view.bounds, "a key: the visible part")
     }
 
     /// The real marker behind a SwiftUI answer: its text quotes, a text
@@ -140,20 +213,13 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
         tracker.attach(to: anchor)
         (self.tracker, self.anchor) = (tracker, anchor)
 
-        var fields: [NSTextField] = []
-        func collect(_ view: NSView) {
-            if let field = view as? NSTextField { fields.append(field) }
-            view.subviews.forEach(collect)
-        }
-        collect(host)
-        let owner = try XCTUnwrap(fields.first { $0.stringValue.hasPrefix("Owner") })
-        let answer = try XCTUnwrap(fields.first { $0.stringValue.hasPrefix("Answer") })
+        let texts = swiftUITexts(in: host)
+        let owner = try XCTUnwrap(texts.first { string(of: $0).hasPrefix("Owner") })
+        let answer = try XCTUnwrap(texts.first { string(of: $0).hasPrefix("Answer") })
 
-        let ownerEditor = try beginEditing(owner)
-        ownerEditor.setSelectedRange(NSRange(location: 0, length: 5))
+        try select(NSRange(location: 0, length: 5), inSwiftUIText: owner, tracker: tracker)
         XCTAssertNil(tracker.selection, "outside every answer region")
-        let answerEditor = try beginEditing(answer)
-        answerEditor.setSelectedRange(NSRange(location: 0, length: 6))
+        try select(NSRange(location: 0, length: 6), inSwiftUIText: answer, tracker: tracker)
         XCTAssertEqual(tracker.selection?.text, "Answer")
     }
 
@@ -277,7 +343,7 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
         var added = 0
         var removed = 0
         var listening = ChatSelectionQuoteListening(center: center)
-        listening.addMouseDownMonitor = { _ in
+        listening.addEventMonitor = { _ in
             added += 1
             return NSObject()
         }
