@@ -46,7 +46,7 @@ func ReadTools(deps Deps) []*tools.Tool {
 				if err != nil {
 					return nil, err
 				}
-				return shapeReport(rep, reportMeta, a.Sections, reportRows(a.Limit))
+				return shapeReport(rep, reportMeta, a.Sections, reportRows(a.Limit), retryReport)
 			}),
 		readTool[sessionListArgs]("list_agent_sessions",
 			"List one workbench's agent sessions in a period with their cost, time and PRs (the sessions section of "+
@@ -62,7 +62,7 @@ func ReadTools(deps Deps) []*tools.Tool {
 				if err != nil {
 					return nil, err
 				}
-				return shapeReport(rep, reportMeta, []string{"sessions"}, reportRows(a.Limit))
+				return shapeReport(rep, reportMeta, []string{"sessions"}, reportRows(a.Limit), retrySessions)
 			}),
 		readTool[sessionArgs]("get_agent_session",
 			"Read one agent session's report: session, time split, subagents, hints, lanes (each agent's timeline as "+
@@ -86,7 +86,7 @@ func ReadTools(deps Deps) []*tools.Tool {
 				if err != nil {
 					return nil, err
 				}
-				return shapeReport(det, sessionMeta, a.Sections, reportRows(a.Limit))
+				return shapeReport(det, sessionMeta, a.Sections, reportRows(a.Limit), retrySession)
 			}),
 		readTool[usageArgs]("get_llm_usage",
 			"Read what Watchtower spent on AI in a period (usage llm JSON): sections and per-purpose rows.",

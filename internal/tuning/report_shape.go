@@ -18,11 +18,7 @@ import (
 // the chat what fits: the sections it asks for, lists cut to a row limit, a
 // session's timeline folded into per-lane totals, and a refusal that names
 // every section's size when the result is still too big.
-const (
-	defaultReportRows = 50
-	maxReportRows     = 200
-	maxReportBytes    = 48 * 1024
-)
+const maxReportBytes = 48 * 1024
 
 // reportMeta are the agents report keys every report read keeps: the period,
 // the filter and the analytics state (an empty report while analytics is off
@@ -33,16 +29,26 @@ var reportMeta = []string{"workbench_id", "since", "until", "agent", "agents", "
 // sessionMeta are the session drill-down keys every session read keeps.
 var sessionMeta = []string{"session"}
 
-// reportRows is the row limit a read asked for, defaulted and clamped.
+// reportRows is the row limit a read asked for, defaulted and clamped like
+// every list read (tools.DefaultListLimit, tools.MaxListLimit), so READ-01's
+// row backstop never refuses a shaped result.
 func reportRows(n int) int {
 	switch {
 	case n <= 0:
-		return defaultReportRows
-	case n > maxReportRows:
-		return maxReportRows
+		return tools.DefaultListLimit
+	case n > tools.MaxListLimit:
+		return tools.MaxListLimit
 	}
 	return n
 }
+
+// The retry hints of the size refusal: each names only arguments its tool
+// takes.
+const (
+	retryReport   = "ask for fewer sections, a smaller limit or fewer days"
+	retrySessions = "ask for a smaller limit or fewer days"
+	retrySession  = "ask for fewer sections or a smaller limit"
+)
 
 // shapeReport turns a report value into what the chat reads: the meta keys
 // plus the asked sections (every section when none is asked), each top-level
@@ -50,7 +56,7 @@ func reportRows(n int) int {
 // count the report already carries), refused when it is still over
 // maxReportBytes. The report lists sessions oldest first; the chat gets them
 // newest first, so a cut keeps the recent ones.
-func shapeReport(v any, meta, sections []string, limit int) (map[string]json.RawMessage, error) {
+func shapeReport(v any, meta, sections []string, limit int, retry string) (map[string]json.RawMessage, error) {
 	all, err := asObject(v)
 	if err != nil {
 		return nil, err
@@ -92,7 +98,7 @@ func shapeReport(v any, meta, sections []string, limit int) (map[string]json.Raw
 			out[k+"_more"] = json.RawMessage(fmt.Sprint(more))
 		}
 	}
-	if err := checkReportSize(out); err != nil {
+	if err := checkReportSize(out, retry); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -153,7 +159,7 @@ func cutObjectLists(raw json.RawMessage, limit int) (json.RawMessage, int, error
 // checkReportSize refuses a shaped report over maxReportBytes, naming each
 // section's size so the chat can ask for less. Sizes are of the indented JSON
 // the MCP server sends (internal/mcp renders results with MarshalIndent).
-func checkReportSize(out map[string]json.RawMessage) error {
+func checkReportSize(out map[string]json.RawMessage, retry string) error {
 	whole, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encoding the agent report: %w", err)
@@ -185,8 +191,8 @@ func checkReportSize(out map[string]json.RawMessage) error {
 		parts = append(parts, fmt.Sprintf("%s %d", s.key, s.n))
 	}
 	return &tools.ValidationError{
-		Msg: fmt.Sprintf("the result is %d bytes, over the %d one read may return — ask for fewer sections, a smaller limit or fewer days; bytes per section: %s",
-			len(whole), maxReportBytes, strings.Join(parts, ", ")),
+		Msg: fmt.Sprintf("the result is %d bytes, over the %d one read may return — %s; bytes per section: %s",
+			len(whole), maxReportBytes, retry, strings.Join(parts, ", ")),
 		Err: tools.ErrResultTooLarge,
 	}
 }
@@ -268,7 +274,7 @@ func summarizeLanes(v any) (any, error) {
 		out = append(out, s)
 	}
 	if all["lanes"], err = json.Marshal(out); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("encoding the lane totals: %w", err)
 	}
 	return all, nil
 }

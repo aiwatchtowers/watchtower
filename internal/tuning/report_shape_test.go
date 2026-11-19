@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/agentreport"
 	"watchtower/internal/tools"
 )
 
@@ -170,4 +171,47 @@ func TestGetAgentReport_SizeIsTheIndentedEncoding(t *testing.T) {
 	f.report = map[string]any{"commands": rows}
 	_, err = f.call(t, "get_agent_report", `{"days":7,"limit":200}`)
 	require.ErrorIs(t, err, tools.ErrResultTooLarge)
+}
+
+// The shaping keys on the real agents report JSON (sessions, tasks_more,
+// lanes, segments, the meta keys): a rename in internal/agentreport breaks
+// this test, not the chat silently. A long session's timeline fits once
+// folded.
+func TestReportShaping_RealReportTypes(t *testing.T) {
+	f := newFixture(t)
+	ov := &agentreport.Overview{WorkbenchID: f.wb, Since: "2026-11-03", Until: "2026-11-10", Agent: "all",
+		Enabled: true, Tasks: make([]agentreport.TaskRow, 60), TasksMore: 7}
+	for i := range 3 {
+		ov.Sessions = append(ov.Sessions, agentreport.SessionRow{UUID: fmt.Sprintf("s-%d", i)})
+	}
+	f.report = ov
+	got, err := f.call(t, "get_agent_report", `{"days":7,"sections":["sessions","tasks"]}`)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-11-03", got["since"])
+	assert.Equal(t, true, got["enabled"])
+	assert.Equal(t, "s-2", got["sessions"].([]any)[0].(map[string]any)["session_uuid"], "newest first")
+	assert.Len(t, got["tasks"], 50)
+	assert.Equal(t, float64(17), got["tasks_more"])
+
+	segs := make([]agentreport.Segment, 3000)
+	for i := range segs {
+		segs[i] = agentreport.Segment{Start: "2026-11-16T07:00:00.000Z", End: "2026-11-16T07:00:01.000Z",
+			Category: "tool", ToolClass: "build_test", Verb: "go test ./internal/some/long/package/path"}
+	}
+	det := &agentreport.SessionDetail{Session: agentreport.SessionRow{UUID: "s-1"},
+		Lanes: []agentreport.Lane{{Segments: segs}}}
+	f.deps.AgentSession = func(context.Context, int64, string) (any, error) { return det, nil }
+	reg := tools.New(f.d)
+	for _, tl := range ReadTools(f.deps) {
+		require.NoError(t, reg.Register(tl))
+	}
+	res, err := reg.CallRead(context.Background(), "get_agent_session", json.RawMessage(`{"session":"s-1"}`), f.binding(fmt.Sprint(f.wb)))
+	require.NoError(t, err, "3000 segments fold into one lane's totals")
+	raw, err := json.Marshal(res)
+	require.NoError(t, err)
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(raw, &out))
+	lane := out["lanes"].([]any)[0].(map[string]any)
+	assert.Equal(t, float64(3000), lane["segments"])
+	assert.Equal(t, map[string]any{"tool": float64(3_000_000)}, lane["ms_by_category"])
 }
