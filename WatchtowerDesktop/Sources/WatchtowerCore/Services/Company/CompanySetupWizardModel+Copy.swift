@@ -368,10 +368,9 @@ extension CompanySetupWizardModel {
             + "Choose another name."
     }
 
-    /// `company_forced`: the organization's managed preferences set the name.
-    static func publishNameForced(_ stored: String) -> String {
-        "Your organization sets this company's name, so it is published as “\(stored)”."
-    }
+    /// `company_forced`: the organization's managed preferences (or a corp
+    /// build) set the name.
+    static let publishNameForced = "Your organization sets this company's name on this Mac, so it cannot be changed here."
 
     package static func publishStepLines(slack: Bool) -> [SlackAppSetupModel.StepLine] {
         var lines = [SlackAppSetupModel.StepLine(id: "pack", label: "Packing the company setup", mark: .waiting)]

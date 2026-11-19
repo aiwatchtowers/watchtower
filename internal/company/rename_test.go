@@ -77,7 +77,7 @@ func TestCompanyStore_SaveRenamedRefusals(t *testing.T) {
 	})
 }
 
-func TestCompanyStore_NameHolder(t *testing.T) {
+func TestCompanyStore_CheckRename(t *testing.T) {
 	s := newStore(t)
 	require.NoError(t, s.Save("acme", sample("Acme")))
 	personal := sample("Initech")
@@ -85,21 +85,10 @@ func TestCompanyStore_NameHolder(t *testing.T) {
 	personal.Slack, personal.Atlassian, personal.Linear, personal.Microsoft = nil, nil, nil, nil
 	require.NoError(t, s.Save("initech", personal))
 
-	_, _, ok, err := s.NameHolder("Acme", "acme", "")
-	require.NoError(t, err)
-	assert.False(t, ok, "its own name")
-	holder, isPersonal, ok, err := s.NameHolder("Initech", "acme", "")
-	require.NoError(t, err)
-	assert.True(t, ok)
-	assert.True(t, isPersonal)
-	assert.Equal(t, "initech", holder)
-	holder, _, ok, err = s.NameHolder("Globex", "acme", wire(t, sample("Globex")))
-	require.NoError(t, err)
-	assert.True(t, ok, "the forced company")
-	assert.Equal(t, "globex", holder)
-	_, _, ok, err = s.NameHolder("Umbrella", "acme", "")
-	require.NoError(t, err)
-	assert.False(t, ok)
+	require.NoError(t, s.CheckRename("acme", "Acme", "Umbrella", ""))
+	assert.ErrorIs(t, s.CheckRename("acme", "Acme", "Initech", ""), ErrNameTaken, "a personal Google project")
+	assert.ErrorIs(t, s.CheckRename("acme", "Acme", "Globex", wire(t, sample("Globex"))), ErrNameTaken, "the forced company")
+	assert.ErrorIs(t, s.CheckRename("acme", "Acme", "Umbrella", wire(t, sample("Acme"))), ErrCompanyForced)
 }
 
 func assertStoredName(t *testing.T, s Store, want string) {
@@ -112,7 +101,7 @@ func assertStoredName(t *testing.T, s Store, want string) {
 
 func TestCompanyDraft_SetDraftCompany(t *testing.T) {
 	s := NewStore(t.TempDir())
-	assert.ErrorIs(t, s.SetDraftCompany("Acme", "Acme Corp"), fs.ErrNotExist, "no draft")
+	assert.ErrorIs(t, s.SetDraftCompany(sampleDraft(), "Acme Corp"), fs.ErrNotExist, "no draft")
 
 	d := sampleDraft()
 	d.Slug = "acme"
@@ -121,7 +110,7 @@ func TestCompanyDraft_SetDraftCompany(t *testing.T) {
 	before, _, _, err := s.LoadDraft(draftT0)
 	require.NoError(t, err)
 
-	require.NoError(t, s.SetDraftCompany("Acme", "Acme Corp"))
+	require.NoError(t, s.SetDraftCompany(before, "Acme Corp"))
 	got, _, _, err := s.LoadDraft(draftT0)
 	require.NoError(t, err)
 	want := before
@@ -129,8 +118,11 @@ func TestCompanyDraft_SetDraftCompany(t *testing.T) {
 	assert.Equal(t, want, got, "only the name changes; the check marks hold")
 	assert.True(t, got.IsChecked("google"))
 
-	require.NoError(t, s.SetDraftCompany("Acme", "Acme Corp"), "a rerun finds it named")
-	assert.ErrorIs(t, s.SetDraftCompany("Globex", "Acme Two"), ErrDraftValuesChanged, "a draft of another name is not touched")
+	// A draft that changed since it was read (same name or not) is not touched.
+	assert.ErrorIs(t, s.SetDraftCompany(before, "Acme Two"), ErrDraftValuesChanged)
+	stale := got
+	stale.DenyHosts = []string{"other.example.com"}
+	assert.ErrorIs(t, s.SetDraftCompany(stale, "Acme Two"), ErrDraftValuesChanged)
 	got, _, _, err = s.LoadDraft(draftT0)
 	require.NoError(t, err)
 	assert.Equal(t, "Acme Corp", got.Company)

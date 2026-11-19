@@ -422,12 +422,13 @@ func (s Store) RecordDraftCheck(c DraftCheck) error {
 	return s.writeDraft(d)
 }
 
-// SetDraftCompany sets the draft's company name to to while it is still
-// from (Publish under an edited name, ask #1613): nothing else of the draft
-// changes, so its checked marks hold. A draft already named to is left as
-// it is; one of another company is not touched (ErrDraftValuesChanged). No
-// draft is an error wrapping fs.ErrNotExist.
-func (s Store) SetDraftCompany(from, to string) error {
+// SetDraftCompany sets the draft's company name to the given one while the draft
+// still equals read (Publish under an edited name, ask #1613), checked
+// under the draft lock: nothing else of the draft changes, so its checked
+// marks hold. A draft saved, replaced or discarded since read is not
+// touched (ErrDraftValuesChanged). No draft is an error wrapping
+// fs.ErrNotExist.
+func (s Store) SetDraftCompany(read Draft, to string) error {
 	unlock, err := s.lockDraft()
 	if err != nil {
 		return err
@@ -437,14 +438,11 @@ func (s Store) SetDraftCompany(from, to string) error {
 	if err != nil {
 		return fmt.Errorf("reading the company draft: %w", err)
 	}
-	switch d.Company {
-	case to:
-		return nil
-	case from:
-		d.Company = to
-		return s.writeDraft(d)
+	if !reflect.DeepEqual(d, read) {
+		return ErrDraftValuesChanged
 	}
-	return ErrDraftValuesChanged
+	d.Company = to
+	return s.writeDraft(d)
 }
 
 // writeDraft encodes d under the held lock; a Slack token never lands.

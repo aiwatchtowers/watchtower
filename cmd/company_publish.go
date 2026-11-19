@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -104,9 +105,12 @@ type companyPublishDeps struct {
 	api      slackapp.API
 	lockPath string // the Slack app setup lock (slack app create|adopt|link share it)
 	forced   string
-	now      time.Time
-	emit     func(slackapp.Step)
-	warn     io.Writer
+	// buildCompany is the corp build's baked company (BuildCompanyName),
+	// whose name the bridge looks the company up by at every launch.
+	buildCompany string
+	now          time.Time
+	emit         func(slackapp.Step)
+	warn         io.Writer
 }
 
 func runCompanyPublish(cmd *cobra.Command, _ []string) error {
@@ -123,13 +127,14 @@ func runCompanyPublish(cmd *cobra.Command, _ []string) error {
 	out := cmd.OutOrStdout()
 	enc := json.NewEncoder(out)
 	deps := companyPublishDeps{
-		store:    company.NewStore(cfg.WorkspaceDir()),
-		database: database,
-		api:      slackAppAPI(),
-		lockPath: filepath.Join(cfg.WorkspaceDir(), slackAppSetupLock),
-		forced:   companyForcedBundle(),
-		now:      companyNow(),
-		warn:     cmd.ErrOrStderr(),
+		store:        company.NewStore(cfg.WorkspaceDir()),
+		database:     database,
+		api:          slackAppAPI(),
+		lockPath:     filepath.Join(cfg.WorkspaceDir(), slackAppSetupLock),
+		forced:       companyForcedBundle(),
+		buildCompany: BuildCompanyName,
+		now:          companyNow(),
+		warn:         cmd.ErrOrStderr(),
 		emit: func(s slackapp.Step) {
 			if asJSON {
 				_ = enc.Encode(s)
@@ -209,10 +214,15 @@ func refusedPublish(reason, msg string) companyPublishResult {
 // the bundle's display name changes, the slug, the file and the accounts'
 // company_slug ties stay. The draft takes the name first, then the bundle
 // (SaveRenamed); a crash between them leaves a draft the wizard reopens with
-// the new name, and the rerun renames the bundle. A rerun after both finds
-// nothing to rename. A name another company holds (its file, the forced
-// bundle, a once-forced pin, a personal project) is refused as name_taken,
-// a rename of the company the forced bundle names as company_forced.
+// the new name, and the rerun renames the bundle (until then a re-check
+// sends the new name with the old slug and is refused; Publish completes
+// it). A rerun after both finds nothing to rename. A refusal at the
+// bundle's write gives the draft its old name back. A name another company
+// holds (its file, the forced bundle, a once-forced pin, a personal
+// project) is refused as name_taken; a rename of the company the forced
+// bundle names, or of the corp build's baked company (the bridge finds it
+// by name), as company_forced. A link of the old name confirmed later is
+// another company to the store (names are its identity), under a new slug.
 //
 // Writers of company/<slug>.json: company check, company confirm, company
 // bridge and this publish, each under the file's flock and against the file
@@ -262,16 +272,12 @@ func publishCompany(ctx context.Context, deps companyPublishDeps, in companyPubl
 		return companyPublishResult{}, fmt.Errorf("reading the stored company %s: %w", slug, err)
 	}
 	if haveStored && stored.Bundle.Personal {
-		return refusedPublish(publishReasonNameTaken, personalNameMessage(name)), nil
+		return refusedPublish(publishReasonNameTaken, fmt.Sprintf("%q is your own Google project's name on this Mac; publish under another name", name)), nil
 	}
 	// A name edited after a check stored the setup: only the display name
 	// changes (ask #1613); the slug, the file and the accounts' ties stay.
-	renaming := haveStored && stored.Bundle.Company != name
-	if renaming {
-		if refusal, err := publishRenameRefusal(deps, slug, stored.Bundle.Company, name); err != nil || refusal != nil {
-			if err != nil {
-				return companyPublishResult{}, err
-			}
+	if haveStored && stored.Bundle.Company != name {
+		if refusal := publishRenameRefusal(deps, slug, stored.Bundle.Company, name); refusal != nil {
 			return *refusal, nil
 		}
 	}
@@ -315,23 +321,32 @@ func publishCompany(ctx context.Context, deps companyPublishDeps, in companyPubl
 	// The draft takes the name first: a crash before the bundle is stored
 	// leaves a draft the wizard reopens with the name typed, and the rerun
 	// renames the bundle; a crash after it finds both renamed.
+	published := d
 	if d.Company != name {
-		if err := deps.store.SetDraftCompany(d.Company, name); err != nil {
+		published.Company = name
+		if err := deps.store.SetDraftCompany(d, name); err != nil {
 			deps.emitStep(publishStepPack, slackapp.StateFailed)
-			if errors.Is(err, company.ErrDraftValuesChanged) {
+			if errors.Is(err, company.ErrDraftValuesChanged) || errors.Is(err, fs.ErrNotExist) {
 				return refusedPublish(publishReasonStoredChanged, "the company setup changed while it was published: publish again"), nil
 			}
 			fmt.Fprintf(deps.warn, "company publish: naming the draft: %v\n", err)
 			return refusedPublish(publishReasonStorage, "the company setup could not be stored on this Mac"), nil
 		}
-		d.Company = name
 	}
 	// Packed from this read of the file: a check or confirm that lands in
 	// between is never overwritten with the older blocks (try again).
 	if refusal := storePublishedBundle(deps, slug, stored, haveStored, b); refusal != nil {
 		deps.emitStep(publishStepPack, slackapp.StateFailed)
+		// Nothing was stored: the draft gets its name back (best effort; a
+		// draft saved meanwhile is left alone, the wizard's next save wins).
+		if published.Company != d.Company {
+			if err := deps.store.SetDraftCompany(published, d.Company); err != nil {
+				fmt.Fprintf(deps.warn, "company publish: restoring the draft's name: %v\n", err)
+			}
+		}
 		return *refusal, nil
 	}
+	d = published
 	deps.emitStep(publishStepPack, slackapp.StateDone)
 
 	res.Result = publishNoSlack
@@ -372,31 +387,18 @@ func (deps companyPublishDeps) emitStep(name, state string) {
 	deps.emit(slackapp.Step{Name: name, State: state})
 }
 
-func personalNameMessage(name string) string {
-	return fmt.Sprintf("%q is your own Google project's name on this Mac; publish under another name", name)
-}
-
-// publishRenameRefusal is the refusal of renaming the company stored under
-// slug from old to name, nil when the rename may go ahead. It is the early
-// answer; SaveRenamed checks the same under the file's lock.
-func publishRenameRefusal(deps companyPublishDeps, slug, old, name string) (*companyPublishResult, error) {
-	if fb, err := companybundle.Parse(deps.forced, companybundle.OriginMDM); err == nil && fb.Company == old {
-		r := refusedPublish(publishReasonForced, fmt.Sprintf("your organization sets this company's name (%q); publish it under that name", old))
-		return &r, nil
+// publishRenameRefusal is the early refusal of renaming the company stored
+// under slug from old to name, nil when it may go ahead; SaveRenamed checks
+// the store's part again under the file's lock. The corp build's baked
+// company keeps its name: the bridge finds it by that name at every launch.
+func publishRenameRefusal(deps companyPublishDeps, slug, old, name string) *companyPublishResult {
+	if deps.buildCompany != "" && deps.buildCompany == old {
+		return publishStoreRefusal(deps, company.ErrCompanyForced)
 	}
-	holder, personal, taken, err := deps.store.NameHolder(name, slug, deps.forced)
-	if err != nil {
-		return nil, fmt.Errorf("reading the stored companies: %w", err)
+	if err := deps.store.CheckRename(slug, old, name, deps.forced); err != nil {
+		return publishStoreRefusal(deps, err)
 	}
-	if !taken {
-		return nil, nil
-	}
-	msg := fmt.Sprintf("%q is the name of another company on this Mac (%s); publish under another name", name, holder)
-	if personal {
-		msg = personalNameMessage(name)
-	}
-	r := refusedPublish(publishReasonNameTaken, msg)
-	return &r, nil
+	return nil
 }
 
 // storePublishedBundle stores b under slug over the stored file this
@@ -412,16 +414,23 @@ func storePublishedBundle(deps companyPublishDeps, slug string, stored company.E
 	default:
 		err = deps.store.SaveIfUnchanged(slug, &stored.Bundle, b)
 	}
+	if err == nil {
+		return nil
+	}
+	return publishStoreRefusal(deps, err)
+}
+
+// publishStoreRefusal maps a store error of the bundle's write (or of the
+// early rename check) to the publish refusal.
+func publishStoreRefusal(deps companyPublishDeps, err error) *companyPublishResult {
 	var r companyPublishResult
 	switch {
-	case err == nil:
-		return nil
 	case errors.Is(err, company.ErrStoredChanged):
 		r = refusedPublish(publishReasonStoredChanged, "the company setup changed while it was published: publish again")
 	case errors.Is(err, company.ErrNameTaken):
-		r = refusedPublish(publishReasonNameTaken, fmt.Sprintf("%q became the name of another company on this Mac meanwhile; publish under another name", b.Company))
+		r = refusedPublish(publishReasonNameTaken, "that name is another company's on this Mac, or your own Google project's; publish under another name")
 	case errors.Is(err, company.ErrCompanyForced):
-		r = refusedPublish(publishReasonForced, "your organization now sets this company's name; publish it under that name")
+		r = refusedPublish(publishReasonForced, "your organization sets this company's name on this Mac; publish it under that name")
 	default:
 		fmt.Fprintf(deps.warn, "company publish: storing the company bundle: %v\n", err)
 		r = refusedPublish(publishReasonStorage, "the company setup could not be stored on this Mac")

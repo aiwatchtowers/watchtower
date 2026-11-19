@@ -158,7 +158,7 @@ package final class CompanySetupWizardModel {
     package private(set) var publishSteps: [SlackAppSetupModel.StepLine] = []
     /// The company name Publish sends; prefilled, editable (§2.10).
     package var publishName = ""
-    /// The Publish refusal the CLI gave (e.g. `company_renamed`), shown under the summary.
+    /// The Publish refusal the CLI gave (e.g. `name_taken`), shown under the summary.
     package private(set) var publishRefusal: String?
     /// The draft could not be saved or discarded: the line says so.
     package private(set) var storageProblem: String?
@@ -1338,7 +1338,7 @@ package final class CompanySetupWizardModel {
         // A slug comes back once Go stored the bundle under the name sent (a
         // rename only changes the display name, ask #1613), and Go named the
         // draft so first: the next save and check use it too.
-        if !result.slug.isEmpty, !name.isEmpty { draft.company = name }
+        if !result.slug.isEmpty { draft.company = name }
         switch result.result {
         case "ok", "no_slack":
             publishState = .done(Published(slug: result.slug, link: result.link, code: result.code,
@@ -1370,7 +1370,7 @@ package final class CompanySetupWizardModel {
         case "name_taken":
             return Self.publishNameTaken(publishName.trimmingCharacters(in: .whitespacesAndNewlines))
         case "company_forced":
-            return Self.publishNameForced(draft.company)
+            return Self.publishNameForced
         case "token_missing":
             slackToken = ""
             publishTokenAsked = true

@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,10 +25,10 @@ func renameHarness(t *testing.T) (*publishHarness, int64) {
 	return h, id
 }
 
-func (h *publishHarness) publishWith(t *testing.T, forced string, in companyPublishInput) companyPublishResult {
+func (h *publishHarness) publishWith(t *testing.T, forced, buildCompany string, in companyPublishInput) companyPublishResult {
 	t.Helper()
 	deps := h.deps(t)
-	deps.forced = forced
+	deps.forced, deps.buildCompany = forced, buildCompany
 	res, err := publishCompany(t.Context(), deps, in)
 	require.NoError(t, err)
 	return res
@@ -69,7 +71,9 @@ func TestPublish_RenameChangesOnlyTheDisplayName(t *testing.T) {
 // renames the bundle.
 func TestPublish_RenameRerunAfterCrashBeforeBundle(t *testing.T) {
 	h, id := renameHarness(t)
-	require.NoError(t, h.store.SetDraftCompany("Acme", "Acme Corp"))
+	d, _, _, err := h.store.LoadDraft(companyDraftT0)
+	require.NoError(t, err)
+	require.NoError(t, h.store.SetDraftCompany(d, "Acme Corp"))
 	res := h.publish(t, companyPublishInput{ConfigToken: publishTestToken})
 	require.Equal(t, publishOK, res.Result, res.Message)
 	assertOnlyAcme(t, h, id, "Acme Corp")
@@ -107,6 +111,7 @@ func TestPublish_RenameToATakenNameIsRefused(t *testing.T) {
 		name    string
 		setup   func(t *testing.T, h *publishHarness)
 		forced  string
+		build   string
 		reason  string
 		message string
 	}{
@@ -122,11 +127,18 @@ func TestPublish_RenameToATakenNameIsRefused(t *testing.T) {
 		{name: "the company the MDM bundle forces is renamed", reason: publishReasonForced, message: "organization sets",
 			forced: mustEncode(t, companybundle.Bundle{V: 1, Company: "Acme", Linear: &companybundle.Linear{ClientID: "acmelinear01"}}),
 			setup:  func(*testing.T, *publishHarness) {}},
+		{name: "the corp build's baked company is renamed", reason: publishReasonForced, message: "organization sets",
+			build: "Acme", setup: func(*testing.T, *publishHarness) {}},
+		{name: "a company forced before pins the name", reason: publishReasonNameTaken, message: "another company",
+			setup: func(t *testing.T, h *publishHarness) {
+				require.NoError(t, os.WriteFile(filepath.Join(h.store.Dir, ".forced-acme-corp.seen"),
+					[]byte(`{"v":1,"company":"Acme Corp","linear":{"client_id":"otherlinear01"}}`), 0o600))
+			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, _ := renameHarness(t)
 			tc.setup(t, h)
-			res := h.publishWith(t, tc.forced, companyPublishInput{Company: "Acme Corp", ConfigToken: publishTestToken})
+			res := h.publishWith(t, tc.forced, tc.build, companyPublishInput{Company: "Acme Corp", ConfigToken: publishTestToken})
 			assert.Equal(t, publishRefused, res.Result)
 			assert.Equal(t, tc.reason, res.Reason)
 			assert.Contains(t, res.Message, tc.message)
@@ -171,6 +183,64 @@ func TestPublish_StoreRefusalsUnderTheLock(t *testing.T) {
 	assert.Equal(t, publishReasonStoredChanged, r.Reason)
 	b, _ := h.stored(t)
 	assert.Equal(t, "Acme", b.Company)
+}
+
+// A refusal at the bundle's write, after the draft took the new name,
+// gives the draft its old name back: another company taking the name, or a
+// check storing the file, between the early check and the locked write.
+func TestPublish_RefusedWriteRestoresTheDraftName(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		race   func(t *testing.T, h *publishHarness)
+		reason string
+	}{
+		{"name taken meanwhile", func(t *testing.T, h *publishHarness) {
+			require.NoError(t, h.store.Save("acme-corp", companybundle.Bundle{V: 1, Company: "Acme Corp", Linear: &companybundle.Linear{ClientID: "otherlinear01"}}))
+		}, publishReasonNameTaken},
+		{"a check stored meanwhile", func(t *testing.T, h *publishHarness) {
+			require.NoError(t, h.store.Save("acme", companybundle.Bundle{V: 1, Company: "Acme", Linear: &companybundle.Linear{ClientID: "acmelinear02"}}))
+		}, publishReasonStoredChanged},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := renameHarness(t)
+			deps := h.deps(t)
+			deps.emit = func(s slackapp.Step) {
+				if s.Name == publishStepPack && s.State == slackapp.StateRunning {
+					tc.race(t, h)
+				}
+			}
+			res, err := publishCompany(t.Context(), deps, companyPublishInput{Company: "Acme Corp", ConfigToken: publishTestToken})
+			require.NoError(t, err)
+			assert.Equal(t, publishRefused, res.Result)
+			assert.Equal(t, tc.reason, res.Reason)
+			assert.Empty(t, res.Slug, "nothing stored")
+			b, _ := h.stored(t)
+			assert.Equal(t, "Acme", b.Company)
+			d, _, _, err := h.store.LoadDraft(companyDraftT0)
+			require.NoError(t, err)
+			assert.Equal(t, "Acme", d.Company, "the draft has its name back")
+		})
+	}
+}
+
+// A draft saved between the publish's read and its rename is not renamed.
+func TestPublish_DraftSavedMeanwhileIsNotRenamed(t *testing.T) {
+	h, _ := renameHarness(t)
+	deps := h.deps(t)
+	deps.emit = func(s slackapp.Step) {
+		if s.Name == publishStepPack && s.State == slackapp.StateRunning {
+			h.draft(t, func(d *company.Draft) { d.Slug = "acme"; d.DenyHosts = []string{"later.example.com"} })
+		}
+	}
+	res, err := publishCompany(t.Context(), deps, companyPublishInput{Company: "Acme Corp", ConfigToken: publishTestToken})
+	require.NoError(t, err)
+	assert.Equal(t, publishReasonStoredChanged, res.Reason)
+	b, _ := h.stored(t)
+	assert.Equal(t, "Acme", b.Company)
+	d, _, _, err := h.store.LoadDraft(companyDraftT0)
+	require.NoError(t, err)
+	assert.Equal(t, "Acme", d.Company)
+	assert.Equal(t, []string{"later.example.com"}, d.DenyHosts)
 }
 
 func mustEncode(t *testing.T, b companybundle.Bundle) string {

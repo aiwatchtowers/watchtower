@@ -1023,7 +1023,8 @@ final class CompanySetupWizardModelTests: XCTestCase {
 
         cli.on(["company", "publish"], [#"{"result":"refused","reason":"company_forced","message":"forced"}"#])
         await model.next()
-        XCTAssertEqual(model.publishRefusal, "Your organization sets this company's name, so it is published as “Acme”.")
+        XCTAssertEqual(model.publishRefusal, "Your organization sets this company's name on this Mac, so it cannot be "
+            + "changed here.")
     }
 
     func testPublishWithoutSlackSendsNoToken() async {
