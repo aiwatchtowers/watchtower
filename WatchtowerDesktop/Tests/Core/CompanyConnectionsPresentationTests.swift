@@ -308,6 +308,25 @@ final class CompanyConnectionsPresentationTests: XCTestCase {
         XCTAssertEqual(Pres.tag(jira[1]), "API token")
         XCTAssertEqual(jiraGroups[3].rows, [.account(jira[3])], "a tie to a company no longer stored")
 
+        // Linear: a personal API key is on no app of ours — its own group, never the shared app's.
+        let linear = [
+            account(.linear, 1, "Side project"),
+            account(.linear, 2, "Hobby", authKind: "api_key"),
+            account(.linear, 3, "Acme", slug: "acme")
+        ]
+        let linearGroups = Pres.groups(vendor: .linear, accounts: linear, companies: [acme]) { _ in true }
+        XCTAssertEqual(linearGroups.map(\.kind), [.company("acme"), .apiKeys, .shared])
+        XCTAssertEqual(linearGroups[1].title, Pres.groupKeys)
+        XCTAssertEqual(linearGroups[1].caption, "Workspaces connected with your own API key")
+        XCTAssertEqual(linearGroups[1].rows, [.account(linear[1])])
+        XCTAssertEqual(linearGroups[2].rows, [.account(linear[0])], "only the shared app's own workspaces")
+        XCTAssertEqual(Pres.tag(linear[1]), "API key")
+        XCTAssertNil(AccountGroup.Kind.apiKeys.lockKey, "no policy key stops a Linear API key")
+        // A Jira row never reads as a Linear key, nor a Linear key as a Jira token.
+        let keyedJira = Pres.groups(vendor: .atlassian, accounts: [account(.atlassian, 5, "x", authKind: "api_key")],
+                                    companies: []) { _ in false }
+        XCTAssertEqual(keyedJira.map(\.kind), [.shared])
+
         // Captions of the other vendors' company and shared groups.
         func titles(_ v: CompanyVendor) -> [String?] {
             let groups = Pres.groups(vendor: v, accounts: [account(v, 9, "x", slug: "acme"), account(v, 8, "y")],

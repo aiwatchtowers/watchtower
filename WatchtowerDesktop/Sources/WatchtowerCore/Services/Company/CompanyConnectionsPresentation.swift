@@ -82,6 +82,8 @@ package struct AccountRef: Equatable, Sendable, Identifiable {
     /// Removed or purged: it no longer connects its company's vendor.
     var isGone: Bool { status == "removed" || status == "purged" }
     var isAPIToken: Bool { authKind == "api_token" }
+    /// A Linear workspace connected with the person's own API key: no app of ours.
+    var isAPIKey: Bool { authKind == "api_key" }
 }
 
 // MARK: - Outputs
@@ -191,14 +193,15 @@ package enum AccountRow: Equatable, Sendable, Identifiable {
 /// A §4.2 section of a service detail.
 package struct AccountGroup: Equatable, Sendable, Identifiable {
     package enum Kind: Equatable, Sendable {
-        case company(String), ownProject, apiTokens, shared, other
+        /// `apiKeys`: Linear workspaces on the person's own API key (never an app of ours).
+        case company(String), ownProject, apiTokens, apiKeys, shared, other
 
         /// The policy key that stops this group's rows (§5.4, §6.5).
         package var lockKey: LockKey? {
             switch self {
             case .ownProject: .ownGoogleProject
             case .apiTokens: .atlassianAPIToken
-            case .company, .shared, .other: nil
+            case .company, .apiKeys, .shared, .other: nil
             }
         }
     }
@@ -208,6 +211,7 @@ package struct AccountGroup: Equatable, Sendable, Identifiable {
         case .company(let slug): "company:\(slug)"
         case .ownProject: "own"
         case .apiTokens: "tokens"
+        case .apiKeys: "keys"
         case .shared: "shared"
         case .other: "other"
         }
@@ -329,6 +333,9 @@ package enum CompanyConnectionsPresentation {
     package static let groupSharedMicrosoft = "Watchtower's Microsoft app"
     package static let groupTokens = "API tokens"
     package static let groupTokensCaption = "Sites connected with your own token"
+    package static let groupKeys = "API keys"
+    package static let groupKeysCaption = "Workspaces connected with your own API key"
+    package static let keyTag = "API key"
     package static let groupUnknown = "Other accounts"
     package static let groupUnknownCaption = "Signed in through an app this Watchtower no longer knows"
     /// The section under the groups that adds an account (and holds the last command's error).
@@ -498,12 +505,16 @@ package enum CompanyConnectionsPresentation {
                                 caption: companyCaption(company, vendor), rows: rows)
         }
 
-        var own: [AccountRow] = [], tokens: [AccountRow] = [], shared: [AccountRow] = [], other: [AccountRow] = []
+        var own: [AccountRow] = [], tokens: [AccountRow] = [], keys: [AccountRow] = []
+        var shared: [AccountRow] = [], other: [AccountRow] = []
         for a in mine where !storedSlugs.contains(a.companySlug) {
             if vendor == .google, personal.contains(a.companySlug) || (a.companySlug.isEmpty && ownProject(a)) {
                 own.append(.account(a))
             } else if vendor == .atlassian, a.isAPIToken {
                 tokens.append(.account(a))
+            } else if vendor == .linear, a.isAPIKey {
+                // A personal key signs in through no app: never the shared app's group.
+                keys.append(.account(a))
             } else if a.companySlug.isEmpty, a.sharedApp || a.error != codeUnknownClient {
                 // The shared app's rows stay in its group until their Re-login (§4.2), even
                 // once its retired client is unknown.
@@ -518,6 +529,9 @@ package enum CompanyConnectionsPresentation {
         }
         if !tokens.isEmpty {
             groups.append(AccountGroup(kind: .apiTokens, title: groupTokens, caption: groupTokensCaption, rows: tokens))
+        }
+        if !keys.isEmpty {
+            groups.append(AccountGroup(kind: .apiKeys, title: groupKeys, caption: groupKeysCaption, rows: keys))
         }
         if !shared.isEmpty {
             let (title, caption) = sharedGroupTitle(vendor)
@@ -560,6 +574,7 @@ package enum CompanyConnectionsPresentation {
     /// shared app that is retiring or retired.
     package static func tag(_ a: AccountRef) -> String? {
         if a.isAPIToken { return tokenTag }
+        if a.isAPIKey { return keyTag }
         return a.sharedApp ? sharedTag : nil
     }
 

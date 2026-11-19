@@ -119,6 +119,7 @@ struct LinearConnectionDetail: View {
         let status = appState.companyRowStatus(ref)
         return CompanyAccountRow(
             title: account.displayName,
+            tag: CompanyConnectionsPresentation.tag(ref),
             status: status,
             line: account.url.isEmpty ? account.authLabel : "\(account.url) · \(account.authLabel)",
             dot: statusColor(account),

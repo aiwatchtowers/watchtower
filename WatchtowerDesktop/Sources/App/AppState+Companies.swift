@@ -28,7 +28,7 @@ extension AppState {
         }
         refs += (linearAccountsViewModel?.accounts ?? []).map { a in
             AccountRef(vendor: .linear, accountID: Int(a.id), label: a.displayName, companySlug: a.companySlug,
-                       status: a.status, error: a.error)
+                       status: a.status, error: a.error, authKind: a.usesAPIKey ? "api_key" : "oauth")
         }
         refs += (emailAccountsViewModel?.accounts ?? []).filter(\.isOutlook).map { a in
             AccountRef(vendor: .microsoft, accountID: a.id, label: a.displayName, companySlug: a.companySlug,
