@@ -147,6 +147,7 @@
 		61DAF868A96DA3A609732EA7 /* RecorderChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CF8F8EF7B0FD80D2412EE8A /* RecorderChrome.swift */; };
 		62E010AEAA71C7111D15A4FD /* ScanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0879174780AFEA40D8A455F2 /* ScanView.swift */; };
 		63564EC779302B003A4EDC2D /* BoardCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71E04F6C4A52AE21410A7EE5 /* BoardCard.swift */; };
+		639764B3E1DF604BC3CD5D11 /* WorkchatAgents.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4EB554F40657D972317144D /* WorkchatAgents.swift */; };
 		63F458A70788063BE8CE64C1 /* RecordingsListModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD20EE9A45C3DA848BF4C3CF /* RecordingsListModel.swift */; };
 		645E4C039AA033B8351C973D /* StartSessionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2EA3DB88312AF8F548C2C0 /* StartSessionSheet.swift */; };
 		6498E8EB2BB3DC78CF09A3B1 /* RelaySlotsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 855F7388B27816608A65DDAC /* RelaySlotsView.swift */; };
@@ -181,6 +182,7 @@
 		79F71B90B31710083B0C485E /* HubSwitcherTourPages.swift in Sources */ = {isa = PBXBuildFile; fileRef = 732AD6EBE7102F126A7FD739 /* HubSwitcherTourPages.swift */; };
 		7A428D20DE2D3DF5A4B19E9A /* FakeHostedRelay+Auth.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEF9BB5AE927193D3E36C67C /* FakeHostedRelay+Auth.swift */; };
 		7C2E2C569B70FD5872BD3473 /* RecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EB4E696B701E6C25E4AEFD2 /* RecorderTests.swift */; };
+		7C3009FE59AC16AF47112C01 /* WorkchatAgentsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 828223C703770CCACD8A611C /* WorkchatAgentsTests.swift */; };
 		7E1CEB00E2AEA4E1FADAFBA0 /* RecorderNotices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67BF6DB29267D73FA3E8AEA6 /* RecorderNotices.swift */; };
 		7E85DCB5A5DBE705F60F7CC0 /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = EB8572B29D41BB288DE5049A /* SwiftProtobuf */; };
 		7F00F3800B6D983D9681DCA1 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEBD9ECF17CEA4057EAF471 /* NotificationService.swift */; };
@@ -246,6 +248,7 @@
 		AEA7D9B707722CCC72F5720A /* BoardModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F270954E959932DD49D7C63D /* BoardModelTests.swift */; };
 		AEDBBCFEBEBA3210837979F3 /* RelaySubscriptionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10DA8E631B66AD5BEE3D7E6 /* RelaySubscriptionStore.swift */; };
 		AF4F245EF58DC930B5BBA7B1 /* AskFormModel+Parts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FD08E4A5B5561A03B350B95 /* AskFormModel+Parts.swift */; };
+		AFC9B5FED6684994CB20819C /* WorkchatAgentsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01053473D9AB1D1C8E9A9198 /* WorkchatAgentsSheet.swift */; };
 		B068775AEFC00DB0E0D0F2DA /* DemoSeed+Chat.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF7B07CA0E5C3D6C6B96F408 /* DemoSeed+Chat.swift */; };
 		B13D19119CF5FEBCB8801027 /* HubSwitcherChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAE19619029A8B7286D78A2B /* HubSwitcherChip.swift */; };
 		B1F69F70BA8FFD9E650AC22D /* MainThread.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67FF986EDA25416E7265A3D6 /* MainThread.swift */; };
@@ -401,6 +404,7 @@
 
 /* Begin PBXFileReference section */
 		004FC7832564F980605115E3 /* LinkFailure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkFailure.swift; sourceTree = "<group>"; };
+		01053473D9AB1D1C8E9A9198 /* WorkchatAgentsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkchatAgentsSheet.swift; sourceTree = "<group>"; };
 		010CB89776EC632BC826B8DE /* ChatSendRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSendRecoveryTests.swift; sourceTree = "<group>"; };
 		023F050C1BCA4B70E85EEEE9 /* ChatSendCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSendCoordinator.swift; sourceTree = "<group>"; };
 		0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
@@ -563,6 +567,7 @@
 		8060EE68F5A9E7FAEA29B27B /* RelayAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayAvailability.swift; sourceTree = "<group>"; };
 		80E5D6B23496B65F60CFCFF5 /* ChatArtifactWebRTCTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatArtifactWebRTCTests.swift; sourceTree = "<group>"; };
 		8273B56D197DE1234DF9D87B /* Pill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pill.swift; sourceTree = "<group>"; };
+		828223C703770CCACD8A611C /* WorkchatAgentsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkchatAgentsTests.swift; sourceTree = "<group>"; };
 		8349EEC6E4D08022C76D9B89 /* ChatsGateModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatsGateModel.swift; sourceTree = "<group>"; };
 		83A0245800A1A535181F35C9 /* TransportRequestWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportRequestWiringTests.swift; sourceTree = "<group>"; };
 		84659903ACFF8DB646E65E9A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -667,6 +672,7 @@
 		C01947B686F94F5886C734CB /* Bars.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bars.swift; sourceTree = "<group>"; };
 		C1A17B38FC88C637F01D152D /* WorkchatStateCardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkchatStateCardTests.swift; sourceTree = "<group>"; };
 		C3F9240000D56B30D4AB7332 /* NotifyContent.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = NotifyContent.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		C4EB554F40657D972317144D /* WorkchatAgents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkchatAgents.swift; sourceTree = "<group>"; };
 		C58E2A79D0EEE81E96775305 /* ReplicaFreshness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaFreshness.swift; sourceTree = "<group>"; };
 		C68A6FC9A37EB91641EBFCAB /* DeviceIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIdentity.swift; sourceTree = "<group>"; };
 		C795BF8B605BF4BA1DBB8E88 /* ChatWireKitConformances.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatWireKitConformances.swift; sourceTree = "<group>"; };
@@ -970,6 +976,7 @@
 				AABA83461C8013610E3BDCB4 /* WelcomeTests.swift */,
 				06939E899729BD12C86EE8EE /* WorkbenchSessionsOrderTests.swift */,
 				5EDE2898F38881978E85D337 /* WorkbenchWiringTests.swift */,
+				828223C703770CCACD8A611C /* WorkchatAgentsTests.swift */,
 				C1A17B38FC88C637F01D152D /* WorkchatStateCardTests.swift */,
 				14A19B11833D779D2BDA2BE0 /* WorkchatWiringTests.swift */,
 				EEFE28A121A72623301B09B2 /* Support */,
@@ -1128,6 +1135,8 @@
 				9759126D122152063D8BFFD8 /* WorkbenchModels.swift */,
 				FF4654FD829A3CB9BFC8590E /* WorkbenchReplicaModel.swift */,
 				43762D471529DE769FDD240A /* WorkbenchView.swift */,
+				C4EB554F40657D972317144D /* WorkchatAgents.swift */,
+				01053473D9AB1D1C8E9A9198 /* WorkchatAgentsSheet.swift */,
 				B6761AE7B60B6C8501900869 /* WorkchatModel.swift */,
 				33BEBF3341F3F5CE217A9834 /* WorkchatStateCard.swift */,
 				E34FE8AB2E6D5D3AE4DF1B07 /* WorkchatView.swift */,
@@ -1713,6 +1722,8 @@
 				E2D1DF70951969EA75CEBE0C /* WorkbenchModels.swift in Sources */,
 				055004AE372755F08479F977 /* WorkbenchReplicaModel.swift in Sources */,
 				539249EE16F12B661A6D8359 /* WorkbenchView.swift in Sources */,
+				639764B3E1DF604BC3CD5D11 /* WorkchatAgents.swift in Sources */,
+				AFC9B5FED6684994CB20819C /* WorkchatAgentsSheet.swift in Sources */,
 				CE73BE7359EBFEB63F294C2E /* WorkchatComposerBar.swift in Sources */,
 				719AEE88A2069575C8634C54 /* WorkchatModel.swift in Sources */,
 				0A7A9BD20E29590C78DE22F9 /* WorkchatStateCard.swift in Sources */,
@@ -1850,6 +1861,7 @@
 				BB7B446082CF5A851F4A972D /* WorkbenchSessionsOrderTests.swift in Sources */,
 				6E20FEC5D76DB30D07FE3BD4 /* WorkbenchWiringTests.swift in Sources */,
 				19EA8B54180BA7E08EF9C7DE /* WorkchatAgentsMockups.swift in Sources */,
+				7C3009FE59AC16AF47112C01 /* WorkchatAgentsTests.swift in Sources */,
 				52E0CDDF53F50FA096232AA7 /* WorkchatStateCardTests.swift in Sources */,
 				9D354B3D6942E0AD14E45ACE /* WorkchatWiringTests.swift in Sources */,
 			);

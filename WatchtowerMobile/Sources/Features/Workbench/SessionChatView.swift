@@ -4,8 +4,7 @@ import WatchtowerSync
 
 /// A subagent's chat (board #486), pushed from its row in the workchat:
 /// read-only, in the workchat's bubbles (mockup 3) — the lines the subagent
-/// was given right, its text left, its own subagents as rows that push
-/// their chat. Opens scrolled to the newest entry. The session's own chat is the workchat
+/// was given right, its text left, its own subagents in the agents sheet. Opens scrolled to the newest entry. The session's own chat is the workchat
 /// (`WorkchatView`), the only one with a composer.
 struct SessionChatView: View {
     static let screen = ChatScreen.subagent
@@ -15,6 +14,7 @@ struct SessionChatView: View {
     private let requester: SessionChatRequester
     @State private var viewModel: SessionChatViewModel
     @State private var openSubagent: SessionChatRoute?
+    @State private var showsAgents = false
 
     init(replica: WorkbenchReplicaModel, route: SessionChatRoute, store: ReplicaStore, requester: SessionChatRequester) {
         self.replica = replica
@@ -37,6 +37,25 @@ struct SessionChatView: View {
         .background(Color(.systemBackground))
         .navigationTitle("Subagent")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if let badge = viewModel.chat.map({ WorkchatAgents(entries: $0.entries, sessionID: viewModel.sessionID) })?.badge {
+                ToolbarItem(placement: .topBarTrailing) {
+                    WorkchatAgentsButton(badge: badge) { showsAgents = true }
+                }
+            }
+        }
+        .sheet(isPresented: $showsAgents) {
+            if let chat = viewModel.chat {
+                WorkchatAgentsSheet(
+                    agents: WorkchatAgents(entries: chat.entries, sessionID: viewModel.sessionID),
+                    onOpen: { route in
+                        showsAgents = false
+                        openSubagent = route
+                    },
+                    onClose: { showsAgents = false }
+                )
+            }
+        }
         .navigationDestination(item: $openSubagent) { route in
             Self(replica: replica, route: route, store: store, requester: requester)
         }
@@ -67,11 +86,12 @@ struct SessionChatView: View {
                 if let earlier = viewModel.earlierText {
                     ChatBubble(role: .watchtower, text: earlier)
                 }
-                if chat.entries.isEmpty {
+                let entries = WorkchatAgents.dialog(chat.entries)
+                if entries.isEmpty {
                     ChatBubble(role: .watchtower, text: "No messages yet")
                 }
-                ForEach(chat.entries) { entry in
-                    WorkchatEntryRow(entry: entry, sessionID: viewModel.sessionID) { openSubagent = $0 }
+                ForEach(entries) { entry in
+                    WorkchatEntryRow(entry: entry)
                 }
             }
             .padding(.horizontal, Spacing.large)
