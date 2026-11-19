@@ -60,7 +60,7 @@ jobs:
   # runs-on; a job's steps branch on runner.environment where the Mac differs.
   # Mobile App needs a window server, which the Mac's runners lack, and the
   # race pass is too heavy to share the Mac with the owner's own work: those
-  # always run in the cloud (Swift Test skips its three window-server classes
+  # always run in the cloud (Swift Test skips its four window-server classes
   # on the Mac; Swift UI Tests runs them in the cloud after a main push).
   gate:
     name: Dedupe gate
@@ -631,7 +631,7 @@ jobs:
     # The key a main push saves its build under; prune-spm-cache keeps it.
     outputs:
       spm-key: ${{ steps.spm-key.outputs.key }}
-    # The Mac's runners have no window server: the three classes that need
+    # The Mac's runners have no window server: the four classes that need
     # one skip there (WindowServerTestGate) and run in Swift UI Tests.
     env:
       WATCHTOWER_CI_NO_WINDOW_SERVER: ${{ contains(needs.gate.outputs.swifttest, 'self-hosted') && '1' || '' }}
@@ -804,8 +804,8 @@ jobs:
         timeout-minutes: 10
         run: |
           set -o pipefail
-          swift test --skip-build --filter 'OwnerAskKeysTests|SessionsPanelKeyViewTests|WorkbenchBackSwipeTests' 2>&1 | tee "$RUNNER_TEMP/ui-tests.log"
-          for class in OwnerAskKeysTests SessionsPanelKeyViewTests WorkbenchBackSwipeTests; do
+          swift test --skip-build --filter 'OwnerAskKeysTests|SessionsPanelKeyViewTests|WorkbenchBackSwipeTests|ChatSelectionQuoteTrackerTests' 2>&1 | tee "$RUNNER_TEMP/ui-tests.log"
+          for class in OwnerAskKeysTests SessionsPanelKeyViewTests WorkbenchBackSwipeTests ChatSelectionQuoteTrackerTests; do
             grep -q "Test Suite '$class' passed" "$RUNNER_TEMP/ui-tests.log" ||
               { echo "::error::$class did not run"; exit 1; }
           done

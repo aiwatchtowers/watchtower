@@ -619,17 +619,45 @@ final class BridgeContractTests: XCTestCase {
         return regex.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range(at: 1)) }
     }
 
-    /// `<target>.build/*.o` beside the test bundle (SwiftPM's build products dir).
+    /// The target's object files from the build that made this test bundle: `<target>.build/*.o` beside
+    /// the bundle (SwiftPM's native build system), or, under swiftbuild (the default from Swift 6.4; the
+    /// bundle in `.build/out/Products/<config>`),
+    /// `.build/out/Intermediates.noindex/<package>.build/<config>/<target>-t.build/Objects-normal/<arch>/*.o`.
     /// One object file per current source (a stale object of a deleted source is left out); a source
     /// without its object fails the test.
     static func objectFiles(of target: String) throws -> [URL] {
-        let bundle = Bundle(for: BridgeContractTests.self).bundleURL
-        let dir = bundle.deletingLastPathComponent().appendingPathComponent("\(target).build")
-        let objects = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        let objects = try objectDirectories(of: target).flatMap {
+            try FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil)
+        }
         let sources = try bridgeSources().map(\.0)
-        let wanted = objects.filter { object in sources.contains { object.lastPathComponent == "\($0).o" } }
+        // Native names an object `<source>.swift.o`, swiftbuild `<source>.o`.
+        let wanted = objects.filter { object in
+            sources.contains { ["\($0).o", "\(($0 as NSString).deletingPathExtension).o" ].contains(object.lastPathComponent) }
+        }
         XCTAssertEqual(wanted.count, sources.count, "an object file is missing for one of \(sources)")
         return wanted
+    }
+
+    /// Where `objectFiles(of:)` reads: the native layout's one folder, else every swiftbuild
+    /// `Objects-normal/<arch>` folder of the target in the bundle's configuration. Neither found throws.
+    static func objectDirectories(of target: String) throws -> [URL] {
+        let fm = FileManager.default
+        let products = Bundle(for: BridgeContractTests.self).bundleURL.deletingLastPathComponent()
+        let native = products.appendingPathComponent("\(target).build")
+        if fm.fileExists(atPath: native.path) { return [native] }
+        let config = products.lastPathComponent
+        let intermediates = products.deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Intermediates.noindex")
+        var dirs: [URL] = []
+        for package in try fm.contentsOfDirectory(at: intermediates, includingPropertiesForKeys: nil) {
+            let objects = package.appendingPathComponent("\(config)/\(target)-t.build/Objects-normal")
+            guard let arches = try? fm.contentsOfDirectory(at: objects, includingPropertiesForKeys: nil) else { continue }
+            dirs += arches
+        }
+        guard !dirs.isEmpty else {
+            throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: native.path])
+        }
+        return dirs
     }
 
     static func demangledUndefinedSymbols(_ objects: [URL]) throws -> [String] {

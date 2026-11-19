@@ -19,11 +19,11 @@ exactly as before. Nothing else changes for contributors.
   six test lanes. One runner on purpose: eight runners would keep eight cold
   ~11 GB builds, and two Swift builds at once would take every core from the
   other jobs. Concurrent runs' Swift Tests queue for it. The job sets
-  `WATCHTOWER_CI_NO_WINDOW_SERVER=1`: the three classes that need a window
+  `WATCHTOWER_CI_NO_WINDOW_SERVER=1`: the four classes that need a window
   server (`OwnerAskKeysTests`, `SessionsPanelKeyViewTests`,
-  `WorkbenchBackSwipeTests`) skip there when none is reachable
+  `WorkbenchBackSwipeTests`, `ChatSelectionQuoteTrackerTests`) skip there when none is reachable
   (`WindowServerTestGate`: the variable AND no CGSession — a dev machine or
-  a cloud runner never skips them). **Swift UI Tests** runs those three on
+  a cloud runner never skips them). **Swift UI Tests** runs those four on
   `macos-26` after every push to main, nightly and on `workflow_dispatch`
   (not on pull requests).
 - Some jobs always run in the cloud:
@@ -83,7 +83,7 @@ launchctl bootstrap gui/<uid>` rather than letting `ci`'s login load them.
 The setup script now drops `SessionCreate`, sets `LimitLoadToSessionType` =
 `Aqua` and `RunAtLoad`, and starts nothing itself: rerun it, then log `ci`
 out and in (*One-time setup*, step 3). Until a run proves a window server
-there, Swift Test skips the three classes on the Mac and Swift UI Tests
+there, Swift Test skips the four classes on the Mac and Swift UI Tests
 covers them; Mobile App stays in the cloud.
 
 ## One-time setup (owner)
