@@ -79,6 +79,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(WorkchatAgentsMockShotFixtures.shots)
     }
 
+    /// The same states on the built views (#2065), `workchat-agents-real-NN-…` beside each mockup.
+    func testWorkchatAgentsShotsRender() throws {
+        try renderShots(WorkchatAgentsShotFixtures.shots)
+    }
+
     func testWorkchatActivityShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("workchat-activity-") })
     }

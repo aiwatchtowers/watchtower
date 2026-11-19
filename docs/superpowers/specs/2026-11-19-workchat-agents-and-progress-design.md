@@ -204,30 +204,41 @@ work for both.
 - Target: first paint ≤ 300 ms on the 950-entry session on reopen, ≤ 500 ms
   on first open; the before/after numbers go into this doc.
 
-**Measured: before (2026-11-19).** Composite, not a real pane open: the
-installed CLI's median of 5 timed `session-feed --json` reads, plus the Swift
-share from `WorkchatOpenBenchmarkTests` (decode → store apply → adapter →
-`NSHostingView` layout of the feed, best of 3 runs; the pane's own
-`WorkchatOpenTrace` log line is `workchat open session=N first|reopen …`).
-Reopen is the kept-store path: adapter + layout over entries already held, no
-CLI on the way to the paint. The dev app's trace line on a database copy was
-not recorded (a repo-built app is not run against the live install). The two paints differ: the pane's `.paint` fires when the feed
-appears, before its layout, while the harness's includes a hosting layout, so
-the harness reads higher.
-**Caveat:** both parts were measured while the machine was saturated by
-parallel builds (load average near 1000), so every figure is inflated and
-noisy (the CLI medians are 5–10× the quiet figures quoted above); Task 10
-re-measures on a quiet machine before any target is judged.
+**Measured: before and after (re-measured 2026-11-19, Task 10).** Composite,
+not a real pane open: the CLI's median of 5 timed reads plus the Swift share
+from `WorkchatOpenBenchmarkTests` (decode → store apply → adapter →
+`NSHostingView` layout of the feed, best of 3; the pane's own
+`WorkchatOpenTrace` line is `workchat open session=N first|reopen …`).
+**Before:** the installed CLI's full `session-feed --json` read, and the
+harness built at the umbrella commit right after Task 1 (subagent cards still
+drawn, no kept store). **After:** the branch CLI's `--tail 60` read against a
+copy of the database, and the branch harness over that page. The pane's
+`.paint` fires when the feed appears, before its layout, so the harness reads
+a little higher. The dev app's trace line on a database copy was not recorded
+(a repo-built app is not run against the live install).
+**Load:** the machine was busy with parallel lane builds (load average 93 during
+the CLI runs, 31–63 during the Swift runs, all above 20), so every figure is
+inflated and noisy; the CLI medians of the mid session spread from 1.2 to 2.8 s.
 
-| Session | Entries | CLI share (loaded) | Swift share, first open | First open total | Reopen total |
-|---|---|---|---|---|---|
-| small | 7 | 2.7 s | 0.78 s | about 3.5 s | 0.08 s |
-| mid | about 330 | 6.3 s | 1.4 s | about 7.7 s | 0.02 s |
-| large | about 1000 | 9.3 s | 3.9 s | about 13 s | 0.06 s |
+| Session | Entries | CLI before (full) | CLI after (`--tail 60`) | Swift before | Swift after | First open before | First open after | Reopen before | Reopen after |
+|---|---|---|---|---|---|---|---|---|---|
+| small | 7 | 0.38 s | 0.42 s | 0.11 s | 0.11 s | about 0.49 s | about 0.53 s | about 0.49 s | 0.02 s |
+| mid | about 350 | 1.66 s | 0.94 s | 0.26 s | 0.22 s | about 1.9 s | about 1.2 s | about 1.9 s | 0.03 s |
+| large | about 1070 | 0.66 s | 0.71 s | 0.71 s | 0.37 s | about 1.4 s | about 1.1 s | about 1.4 s | 0.03 s |
 
-The Swift share is dominated by decode and the feed layout; the CLI share is
-what the tail read (C5) removes. The harness's entry count is higher than the
-CLI's `entries` (the subagent markers are merged in).
+Reopen before = a first open (each pane built a new store and read the whole
+feed); reopen after = the kept store's entries painted with no CLI on the way
+(the `--after` read follows the paint). Large session, first open after, per
+phase: CLI 0.71 s, decode 0.23 s (60 entries plus the full `subagents` list),
+adapter 0.004 s, layout 0.13 s; before: CLI 0.66 s, decode 0.52 s, adapter
+0.05 s, layout 0.14 s.
+
+**Targets.** Reopen ≤ 300 ms: met (about 30 ms). First open ≤ 500 ms on the
+~950-entry session: **missed** (about 1.1 s). The dominant phase is the CLI
+read: `--tail` parses exactly what a full read parses (by design, so the
+cursor and the `subagents` list stay those of a full read), so it costs what a
+full read costs; decode is second. The tail read cut the Swift share by half,
+not the CLI share.
 
 ### 5. Type while the agent works (owner, 2026-11-19)
 

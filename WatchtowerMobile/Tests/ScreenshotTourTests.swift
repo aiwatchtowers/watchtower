@@ -99,7 +99,7 @@ final class ScreenshotTourTests: XCTestCase {
         }
         let dir = URL(fileURLWithPath: path, isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let (root, _) = try makeDemoRoot()
+        let (root, demo) = try makeDemoRoot()
         let host = ScreenshotHost(directory: dir, env: root.env, linking: root.linking)
         let frames: [(String, AnyView)] = [
             ("workchat-phone-P1", AnyView(WorkchatAgentsMockups.p1)),
@@ -110,8 +110,56 @@ final class ScreenshotTourTests: XCTestCase {
         for (name, view) in frames {
             try await host.capture(name, view, settle: .milliseconds(1_500))
         }
-        let written = try FileManager.default.contentsOfDirectory(atPath: path).filter { $0.hasPrefix("workchat-phone-P") }
-        XCTAssertEqual(written.count, 2 * frames.count)
+        let real = try await captureWorkchatAgentsReal(root.env, demo: demo, host: host)
+        let written = try FileManager.default.contentsOfDirectory(atPath: path).filter { $0.hasPrefix("workchat-phone-") }
+        XCTAssertEqual(written.count, 2 * (frames.count + real))
+    }
+
+    /// P1–P4 on the built views, beside the mockups: the demo session 10's chat slice republished with the mockups'
+    /// agents as subagent markers (2 running and 9 finished; 9 finished; none), the real `WorkchatView` for the
+    /// toolbar button and the real `WorkchatAgentsSheet` for the sheet. Returns the number of frames.
+    private func captureWorkchatAgentsReal(_ env: AppEnvironment, demo: DemoHub, host: ScreenshotHost) async throws -> Int {
+        try await poll({ Self.isHydrated(env) }, "the demo seed hydrated")
+        let now = Date()
+        let sealing = DemoSeed.hubTransport(inner: demo.transport, seq: DemoSeed.hubSeq(defaults: demo.defaults, now: now))
+        let probe = WorkchatView.chatModel(sessionID: 10, store: env.store, requester: env.chatRequests)
+        probe.appeared()
+        defer { probe.disappeared() }
+        func marker(_ index: Int, _ agent: WorkchatAgentsMockups.Agent, status: String) -> [String: Any] {
+            ["id": "m\(index)", "kind": "subagent", "at": DemoSeed.JSON.stamp(now.addingTimeInterval(-600)), "text": "",
+             "subagent": ["agent_id": "a\(index)", "tool_use_id": "toolu_\(index)", "type": agent.type,
+                          "description": agent.description, "status": status]]
+        }
+        func publish(_ name: String, markers: [[String: Any]]) async throws -> [SessionChat.Entry] {
+            var json = DemoSeed.workingChatPayload(now: now)
+            let dialog = (json["entries"] as? [[String: Any]] ?? []).filter { $0["kind"] as? String != "subagent" }
+            json["entries"] = dialog + markers
+            try await sealing.save([try DemoSeed.record(kind: .sessionChat, id: 10, json: json, modifiedAt: Date())])
+            _ = await env.refresh(.pull)
+            try await poll({ probe.chat?.entries.filter { $0.subagent != nil }.count == markers.count }, name)
+            return probe.chat?.entries ?? []
+        }
+        func workchat(_ name: String) async throws {
+            try await host.capture(name, NavigationStack {
+                WorkchatView(replica: env.workbenchReplica, sessionID: 10, store: env.store, requester: env.chatRequests)
+            }, settle: .milliseconds(1_500))
+        }
+        func sheet(_ name: String, _ entries: [SessionChat.Entry]) async throws {
+            try await host.capture(name, WorkchatAgentsSheet(
+                agents: WorkchatAgents(entries: entries, sessionID: 10), disclosure: .constant(.automatic), onOpen: { _ in }, onClose: {}
+            ), settle: .milliseconds(1_500))
+        }
+        let running = WorkchatAgentsMockups.working.enumerated().map { marker($0.offset, $0.element, status: "running") }
+        let finished = WorkchatAgentsMockups.done.enumerated().map { marker(10 + $0.offset, $0.element, status: "finished") }
+        let working = try await publish("P1/P2 markers", markers: running + finished)
+        try await workchat("workchat-phone-real-P1")
+        try await sheet("workchat-phone-real-P2", working)
+        let done = try await publish("P3 markers", markers: finished)
+        try await workchat("workchat-phone-real-P3")
+        try await sheet("workchat-phone-real-P3-sheet", done)
+        _ = try await publish("P4 markers", markers: [])
+        try await workchat("workchat-phone-real-P4")
+        return 5
     }
 
     func testTheChatShots() async throws {
