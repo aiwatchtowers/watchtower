@@ -104,8 +104,7 @@ final class AppState {
         makeStreamer: { Self.slackLineStream() },
         slack: SlackAppSetupModel(makeStreamer: { Self.slackLineStream() }, mode: .wizard)
     )
-    /// The Connections overview's Companies zone (#1887 C3): its last read and its code field outlive the tab.
-    @ObservationIgnored lazy var companiesZone = CompaniesZoneModel { Self.slackLineStream() }
+    @ObservationIgnored lazy var companiesZone = CompaniesZoneModel { Self.slackLineStream() } // #1887 C3: outlives the tab
     @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
     /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
     @ObservationIgnored weak var observedProviderConnection: ProviderConnection?
