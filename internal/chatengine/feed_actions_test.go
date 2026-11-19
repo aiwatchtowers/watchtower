@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/tools"
 )
 
 // feedActionOf reads conv's feed with one assistant message of turn "t1" and
@@ -84,7 +85,7 @@ func TestChatengine_FeedActionResultKeepsOnlyCardKeys(t *testing.T) {
 // TestChatengine_FeedActionArgsCompleteFalseWhenClipped: args past the
 // display cap reach the phone clipped, so the card offers no editor.
 func TestChatengine_FeedActionArgsCompleteFalseWhenClipped(t *testing.T) {
-	big := feedActionOf(t, 1, "", "", `{"text":"`+strings.Repeat("a", maxActionArgsBytes)+`"}`)
+	big := feedActionOf(t, 1, "", "", `{"text":"`+strings.Repeat("a", tools.MaxArgsDisplay)+`"}`)
 	assert.False(t, big.ArgsComplete)
 	small := feedActionOf(t, 1, "", "", `{"text":"hi"}`)
 	assert.True(t, small.ArgsComplete)
@@ -117,4 +118,33 @@ func TestChatengine_FeedActionResultEdges(t *testing.T) {
 	raw := feedActionOf(t, 0, "", "", "not json")
 	assert.Equal(t, "not json", raw.ArgsDisplay)
 	assert.True(t, raw.ArgsComplete)
+}
+
+// TestChatengine_FeedActionCarriesDismissedAt: a dismissed session call's
+// dismissed_at reaches the feed and its approval part (mobile Inbox spec
+// §12.9), so the phone stops offering Dismiss; a row not dismissed sends
+// none.
+func TestChatengine_FeedActionCarriesDismissedAt(t *testing.T) {
+	a := feedActionOf(t, 1, "", "", `{"summary":"x"}`)
+	assert.Empty(t, a.DismissedAt)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(approvalPart(a).Payload, &payload))
+	assert.NotContains(t, payload, "dismissed_at")
+
+	d := openDB(t)
+	conv := newConversation(t, d)
+	res, err := d.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at, turn_id)
+		VALUES (?, 'assistant', 'I ran a connector.', 1, 't1')`, conv)
+	require.NoError(t, err)
+	msg, _ := res.LastInsertId()
+	_, err = d.Exec(`UPDATE chat_conversations SET active_leaf_message_id = ? WHERE id = ?`, msg, conv)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO agent_actions (tool, args_json, surface, conversation_id, turn_id, status, error, dismissed_at)
+		VALUES ('claude_ai_connector_call', '{}', 'main', ?, 't1', 'failed',
+		'session ended while the call ran; outcome unknown', '2026-11-18T09:00:00Z')`, conv)
+	require.NoError(t, err)
+	a = onlyAction(t, d, conv)
+	assert.Equal(t, "2026-11-18T09:00:00Z", a.DismissedAt)
+	require.NoError(t, json.Unmarshal(approvalPart(a).Payload, &payload))
+	assert.Equal(t, "2026-11-18T09:00:00Z", payload["dismissed_at"])
 }

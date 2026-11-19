@@ -139,6 +139,27 @@ func TestLocateAll_FindsInCandidateDirs(t *testing.T) {
 	}, got)
 }
 
+// LocateAll stats <dir>/<id>.jsonl instead of listing: the first path in
+// sorted order wins across directories, a symlinked transcript is refused,
+// and an id that is not a plain file name never escapes the directory.
+func TestLocateAll_FirstPathWinsAndRefusesNonFiles(t *testing.T) {
+	proj := t.TempDir()
+	base, wt := filepath.Join(proj, "-w-app"), filepath.Join(proj, "-w-app-wt")
+	require.NoError(t, os.MkdirAll(base, 0o755))
+	require.NoError(t, os.MkdirAll(wt, 0o755))
+	for _, d := range []string{base, wt} {
+		require.NoError(t, os.WriteFile(filepath.Join(d, "u1.jsonl"), []byte("x\n"), 0o600))
+	}
+	outside := filepath.Join(proj, "secret.jsonl")
+	require.NoError(t, os.WriteFile(outside, []byte("x\n"), 0o600))
+	require.NoError(t, os.Symlink(outside, filepath.Join(base, "link.jsonl")))
+	require.NoError(t, os.MkdirAll(filepath.Join(base, "adir.jsonl"), 0o755))
+
+	got := LocateAll(proj, []string{"/w/app"}, []string{"u1", "link", "adir", "../secret"})
+	// "-w-app-wt/u1.jsonl" sorts before "-w-app/u1.jsonl" ('-' < '/').
+	assert.Equal(t, map[string]string{"u1": filepath.Join(wt, "u1.jsonl")}, got)
+}
+
 func TestBuild_AfterCursorReadsOnlyTail(t *testing.T) {
 	dir := t.TempDir()
 	head := userStr("u1", "one")
@@ -195,4 +216,22 @@ func TestFeed01_ReaderLeavesTranscriptUntouched(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	assert.Len(t, entries, 1, "reader must create no sibling files")
+}
+
+// A Done row from a sidecar-only marker (the launch call not in the parent
+// transcript) opens: FindSubagent searches the feed's subagent list.
+func TestFindSubagent_SidecarOnlyMarker(t *testing.T) {
+	dir := t.TempDir()
+	a := writeConv(t, dir, "A", userStr("u1", "go"))
+	writeSub(t, filepath.Join(dir, "A"), "ag1",
+		`{"toolUseId":"tu1","finished":true,"agentType":"Explore","description":"look"}`,
+		sideRec(userStr("s1", "the task")))
+	res, path, err := FindSubagent([]Conversation{a}, "tu1")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, "A", "subagents", "agent-ag1.jsonl"), path)
+	require.NotEmpty(t, res.Entries)
+	assert.Equal(t, "the task", res.Entries[0].Text)
+
+	_, _, err = FindSubagent([]Conversation{a}, "tu-missing")
+	assert.ErrorContains(t, err, "not found")
 }

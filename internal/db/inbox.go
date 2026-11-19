@@ -236,29 +236,17 @@ func (db *DB) UpdateInboxItemPriority(id int, priority string) error {
 
 // ResolveInboxItem marks an inbox item as resolved with a reason.
 func (db *DB) ResolveInboxItem(id int, reason string) error {
-	_, err := db.Exec(`UPDATE inbox_items SET status = 'resolved', resolved_reason = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-		WHERE id = ?`, reason, id)
-	if err != nil {
-		return fmt.Errorf("resolving inbox item %d: %w", id, err)
-	}
-	return nil
+	return db.WithTx(func(tx *sql.Tx) error { return ResolveInboxItemTx(tx, id, reason) })
 }
 
 // DismissInboxItem marks an inbox item as dismissed.
 func (db *DB) DismissInboxItem(id int) error {
-	return db.UpdateInboxItemStatus(id, "dismissed")
+	return db.WithTx(func(tx *sql.Tx) error { return DismissInboxItemTx(tx, id) })
 }
 
 // SnoozeInboxItem snoozes an inbox item until the given date.
 func (db *DB) SnoozeInboxItem(id int, until string) error {
-	_, err := db.Exec(`UPDATE inbox_items SET status = 'snoozed', snooze_until = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-		WHERE id = ?`, until, id)
-	if err != nil {
-		return fmt.Errorf("snoozing inbox item %d: %w", id, err)
-	}
-	return nil
+	return db.WithTx(func(tx *sql.Tx) error { return SnoozeInboxItemTx(tx, id, until) })
 }
 
 // UnsnoozeExpiredInboxItems moves snoozed inbox items past snooze_until back to pending.

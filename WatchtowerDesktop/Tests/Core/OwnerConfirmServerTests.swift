@@ -32,10 +32,12 @@ final class OwnerConfirmServerTests: XCTestCase {
     }
 
     /// No cooldown by default: every request here comes from this one pid.
+    /// No line deadline either, but where a test runs one out (`0`): an 8 MiB
+    /// request on a loaded machine took past the 5 s one (CI, 2026-11-19).
     private func start(
         grants: OwnerConfirmGrants = OwnerConfirmGrants(),
         cooldown: Duration = .zero,
-        lineTimeout: TimeInterval = OwnerConfirmServer.readTimeout,
+        lineTimeout: TimeInterval? = nil,
         sleep: @escaping (Duration) async -> Void = { _ in await parkUntilCancelled() }
     ) throws {
         let admitted = admitted

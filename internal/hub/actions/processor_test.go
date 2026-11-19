@@ -3,6 +3,7 @@ package actions
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"slices"
@@ -653,6 +654,53 @@ func TestDispatcherRegister(t *testing.T) {
 		}
 	}()
 	d.Register("custom", noop, KindOptions{})
+}
+
+// TestNonIdempotentForDecidesPerAction: a kind whose NonIdempotentFor says
+// so for an action's params is claimed begun before its handler, so a hub
+// stopped mid-apply answers outcome_unknown and never runs it again; one it
+// clears is dispatched again after the stop (its handler guards itself).
+func TestNonIdempotentForDecidesPerAction(t *testing.T) {
+	for _, claimed := range []bool{true, false} {
+		t.Run(strconv.FormatBool(claimed), func(t *testing.T) {
+			w := newWorld(t, transport.KindRelay)
+			calls := 0
+			w.disp.Register("per_params", func(context.Context, Request) Outcome {
+				calls++
+				if calls == 1 {
+					panic("the hub stops mid-apply")
+				}
+				return Outcome{Status: wire.StatusApplied}
+			}, KindOptions{NonIdempotentFor: func(params json.RawMessage) bool {
+				var p struct{ Verb string }
+				_ = json.Unmarshal(params, &p)
+				return p.Verb == "approve"
+			}})
+			a := w.phone.NewAction("per_params")
+			verb := "read"
+			if claimed {
+				verb = "approve"
+			}
+			a.Params = map[string]json.RawMessage{"verb": json.RawMessage(strconv.Quote(verb))}
+			seq := w.send(a)
+			func() {
+				defer func() { _ = recover() }()
+				_, _ = w.proc.Pass(w.ctx)
+			}()
+			w.settle()
+			if claimed {
+				w.wantEcho(seq, wire.StatusFailed, reasonOutcomeUnknown)
+				if calls != 1 {
+					t.Fatalf("handler ran %d times", calls)
+				}
+				return
+			}
+			w.wantEcho(seq, wire.StatusApplied, "")
+			if calls != 2 {
+				t.Fatalf("handler ran %d times, want 2", calls)
+			}
+		})
+	}
 }
 
 // relink writes the phone's new link as hub/link does: the device row

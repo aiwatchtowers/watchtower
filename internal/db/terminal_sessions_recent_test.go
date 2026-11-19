@@ -33,9 +33,10 @@ func TestListWorkbenchTerminalSessionsSince(t *testing.T) {
 	got, err := d.ListWorkbenchTerminalSessionsSince(time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC))
 	require.NoError(t, err)
 	require.Len(t, got, 3)
-	assert.Equal(t, RecentWorkbenchSession{ID: recentClaude, WorkbenchID: wb, Kind: "claude", FolderPath: "/tmp/acme", AgentSessionID: "c-1"}, got[0])
+	assert.Equal(t, RecentWorkbenchSession{ID: recentClaude, WorkbenchID: wb, Kind: "claude", FolderPath: "/tmp/acme", AgentSessionID: "c-1",
+		LastActiveAt: time.Date(2026, 10, 10, 8, 0, 0, 0, time.UTC)}, got[0])
 	assert.Equal(t, RecentWorkbenchSession{ID: recentCodex, WorkbenchID: wb, Kind: "codex", FolderPath: "/tmp/acme",
-		AgentSessionID: "x-1", TranscriptPath: "/tmp/acme/rollout.jsonl"}, got[1])
+		AgentSessionID: "x-1", TranscriptPath: "/tmp/acme/rollout.jsonl", LastActiveAt: time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)}, got[1])
 	assert.Equal(t, "codex", got[2].Kind)
 	assert.Empty(t, got[2].AgentSessionID)
 }

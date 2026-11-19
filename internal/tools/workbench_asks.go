@@ -198,8 +198,10 @@ type ErrSpecReviewSkipped struct{ Reason string }
 func (e ErrSpecReviewSkipped) Error() string { return e.Reason }
 
 // NewAskOwner files an ask of the owner: a document review, a check or
-// questions. sessionEnv returns the terminal session env (TerminalSessionEnv).
-func NewAskOwner(sessionEnv func() string, launch SpecReviewLauncher) *Tool {
+// questions. sessionEnv returns the terminal session env (TerminalSessionEnv);
+// wake asks the daemon to run the Watchman twin after an armed session's ask
+// queued its item (nil = none).
+func NewAskOwner(sessionEnv func() string, launch SpecReviewLauncher, wake func()) *Tool {
 	return &Tool{
 		Name: "ask_owner",
 		Description: "Ask the owner for a document review (kind review, doc_path), a check they run (kind check, " +
@@ -243,7 +245,7 @@ func NewAskOwner(sessionEnv func() string, launch SpecReviewLauncher) *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding ask_owner args: %w", err)
 			}
-			return fileAsk(ctx, d, call.Binding, a, sessionEnv, launch)
+			return fileAsk(ctx, d, call.Binding, a, sessionEnv, launch, wake)
 		},
 	}
 }
@@ -321,8 +323,9 @@ func askLevel(requested, kind string, p asks.Payload) (level, note string) {
 // the ask's session, both best-effort: a failed index is the result's
 // index_warning, a failed link its session_link_warning, never a failed ask.
 // A question ask of a session that has another open one filed within
-// seriesHintWindow carries the series hint.
-func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEnv func() string, launch SpecReviewLauncher) (any, error) {
+// seriesHintWindow carries the series hint. An armed session's ask then
+// queues the Watchman twin's item, best-effort (queueWatchmanAsk).
+func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEnv func() string, launch SpecReviewLauncher, wake func()) (any, error) {
 	p, err := workbenchOf(ctx, d, b)
 	if err != nil {
 		return nil, err
@@ -403,6 +406,7 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 		out["spec_review"] = launchSpecReview(d, id, launch, loop)
 	}
 	indexAndLinkFiledAsk(ctx, d, p, ask, out)
+	queueWatchmanAsk(d, ask, id, wake)
 	return out, nil
 }
 

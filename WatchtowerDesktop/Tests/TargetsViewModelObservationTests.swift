@@ -15,7 +15,7 @@ final class TargetsViewModelObservationTests: XCTestCase {
     func testStopObserving_EndsTheTask_AndAStartFollowsWritesAgain() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         vm.startObserving()
         await untilObserved { vm.observationLive }
@@ -47,7 +47,7 @@ final class TargetsViewModelObservationTests: XCTestCase {
         weak var released: TargetsViewModel?
         let task: Task<Void, Never>
         do {
-            let vm = TargetsViewModel(dbManager: manager)
+            let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
             vm.startObserving()
             task = try XCTUnwrap(vm.observationTask)
             // The baseline is in, so the next write is a change the loop sees.

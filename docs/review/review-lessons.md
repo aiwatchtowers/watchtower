@@ -3239,3 +3239,13 @@ Entry format:
 - rule-gap (candidate, dim 9): *a script that recursively deletes an env-overridable path removes only the files it owns (a glob of its own names), never the directory; and a value parsed numerically in one place is never compared as a string elsewhere.*
 - rule-gap (candidate, dim 4/8): *a CI change that adds concurrent jobs on the self-hosted Mac states its per-process thread arithmetic (processes x GOMAXPROCS) against the 16 cores, and merges only after a green Mac run.*
 - outcome: TBD
+
+## 2026-11-19 — test/no-real-time-ci-flakes (7fa26d7db + uncommitted fixes: Mac CI flakes from wall-clock waits — sessionreport budget off the wall under a test clock, OwnerConfirm line deadline optional, PeopleRosterLoad FakeRun on the main actor + untilObserved, sessionstart paste-mode wait and fail-fast echo, socket-path perf ratio moved behind WT_BENCH, R6 zone-order assertion relaxed to a Set; panel: prosecutor (8) + codex (3, all overlapping); pr-review-toolkit specialists unavailable; judge ran `go test ./internal/sessionreport` green, Swift by reading) — verdict: approve
+
+- contested: F4, the socket-vs-direct "not slower" ratio moved to a WT_BENCH benchmark. Held as a rejection because the brief allowed it and the measurements back it (CPU time is about 3x direct even on an idle machine, wall ratio 0.11–0.78 s against a 0.09 s bound under load). The anti-goal is still no longer gated in CI, so it went to Needs human. [7]
+- contested: F3, the Set comparison that drops "data zone's read first". The documented contract (relay-client.md, "only the starts are ordered … data first") is ordering at handover, and the old assertion checked arrival at the HTTP wrapper after an actor hop, which the code never guaranteed. Held minor, with a follow-up for a handover-level test. [7/8]
+- false-positive: F1 (Now==nil couples the context deadline). Now is documented as the budget's clock, and no production caller sets it (cmd hook nil, hub source passes none). A separate field would allow an incoherent budget measured on one clock with a deadline on another. [2]
+- miss: none late. Every codex finding duplicated a prosecutor finding (3 of 3 overlapping).
+- weak-dimension: 7. A de-flake fix that relaxes an assertion (a list to a Set, a ratio to a skip, a finite deadline to 0) must say which documented property lost its last test, and where that property is now covered or will be.
+- rule-gap (candidate, dim 7): *a flake fix that weakens or removes an assertion names the contract that assertion pinned and either moves it to a deterministic seam in the same change or files the follow-up; a relaxed assertion with no named home for the property is the tell.*
+- outcome: TBD

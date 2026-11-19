@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerInterface
 
 // MARK: - IdeaDetailPane
 //
@@ -20,9 +21,15 @@ struct IdeaDetailPane: View {
     let actions: IdeaActions
     /// A verdict write is under way: the bar's buttons wait.
     let isWriting: Bool
+    /// The idea's last press through the tower (busy, refused, didn't
+    /// confirm), drawn under the bar with its busy label; Retry repeats it.
+    var press = IdeaPressState()
     /// False while another prominent action is on screen (the Inbox's open
     /// New idea row): Approve drops to the regular style.
     let approveIsPrimary: Bool
+    /// The moment the ages are told from; nil draws them live
+    /// (`Text(_:style: .relative)`). The design shots pass their fixed moment.
+    var now: Date?
 
     @State private var comment: String
     @State private var rating: Int?
@@ -42,7 +49,15 @@ struct IdeaDetailPane: View {
     // so this @State already resets per idea selection change.
     @State private var discuss = IdeaDiscussState()
 
-    init(idea: Idea, allIdeas: [Idea], actions: IdeaActions, isWriting: Bool = false, approveIsPrimary: Bool = true) {
+    init(
+        idea: Idea,
+        allIdeas: [Idea],
+        actions: IdeaActions,
+        isWriting: Bool = false,
+        approveIsPrimary: Bool = true,
+        now: Date? = nil
+    ) {
+        self.now = now
         self.idea = idea
         self.allIdeas = allIdeas
         self.actions = actions
@@ -84,6 +99,16 @@ struct IdeaDetailPane: View {
         .task { jiraSiteURL = JiraConfigHelper.readSiteURL() }
     }
 
+    /// An age: live, or told from `now` when the screen has a fixed moment.
+    @ViewBuilder
+    private func age(_ date: Date) -> some View {
+        if let now {
+            Text(TimeFormatting.relativeSpan(from: date, now: now))
+        } else {
+            Text(date, style: .relative)
+        }
+    }
+
     // MARK: - Header
 
     private var header: some View {
@@ -93,7 +118,7 @@ struct IdeaDetailPane: View {
                 badge(statusLabel, color: statusColor)
                 Spacer()
                 if let date = TimeFormatting.parseISO(idea.lastMentionAt) {
-                    Text(date, style: .relative)
+                    age(date)
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
@@ -223,7 +248,7 @@ struct IdeaDetailPane: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
                 if let date = TimeFormatting.parseISO(mention.saidAt) {
-                    Text(date, style: .relative)
+                    age(date)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -333,10 +358,18 @@ struct IdeaDetailPane: View {
                 idea: idea,
                 mentions: mentions,
                 dbManager: dbManager,
+                chatWrites: appState.chatWrites,
                 center: appState.embeddedChatCenter,
                 state: $discuss
             )
         }
+    }
+
+    /// The pane with `press` drawn under its bar.
+    func pressState(_ press: IdeaPressState) -> Self {
+        var pane = self
+        pane.press = press
+        return pane
     }
 
     // MARK: - Action bar
@@ -346,6 +379,10 @@ struct IdeaDetailPane: View {
             ratingRow
             IdeaActionBar(idea: idea, allIdeas: allIdeas, actions: actions, openRow: $openRow,
                           isWriting: isWriting, approveIsPrimary: approveIsPrimary)
+            if press.state != nil {
+                TowerRowState(state: press.state, busyLabel: press.busyLabel, retry: press.retry)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(Spacing.medium)
     }
@@ -393,6 +430,13 @@ struct IdeaDetailPane: View {
 }
 
 // MARK: - IdeaActions
+
+/// An idea's press state for the pane (`IdeasViewModel.presses`).
+struct IdeaPressState {
+    var state: TowerActionState?
+    var busyLabel = ""
+    var retry: () -> Void = {}
+}
 
 /// The writes an idea card can ask for; the caller runs them through
 /// `IdeasViewModel` (today's verdict writes). Each one is awaited, so the

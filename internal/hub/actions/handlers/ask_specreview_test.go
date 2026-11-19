@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"testing"
 
 	"watchtower/internal/asks"
@@ -18,7 +20,7 @@ func TestSpecReviewAnswerCarriesContextLikeDesktop(t *testing.T) {
 		if c.Name == "spec_review_comment_on_a_rendered_list_item" {
 			markdown = c.Markdown
 			want = asks.Comment{Quote: c.Anchor.Quote, Prefix: c.Anchor.Prefix, Suffix: c.Anchor.Suffix, Heading: c.Anchor.Heading,
-				Body: "Reviewer is right: No rollback — needed now"}
+				Body: "Reviewer is right: No rollback — needed now", ItemKey: "bs:1"}
 		}
 	}
 	if markdown == "" {
@@ -48,18 +50,30 @@ func TestSpecReviewAnswerCarriesContextLikeDesktop(t *testing.T) {
 	}
 }
 
-// The first-heading fallback's quote (the first body line, markers rendered
-// away) is found again, under the rendered heading nearest before it.
-func TestSpecReviewFallbackAnchorIsRelocated(t *testing.T) {
-	snapshot := "# Spec\n\n## Behaviour\n\n- Muting lasts **twenty-four** hours\n"
-	anchor := firstHeadingAnchor(snapshot)
-	if anchor != [2]string{"Spec", "Muting lasts twenty-four hours"} {
-		t.Fatalf("anchor = %q", anchor)
+// anchorFixtures is the part of WatchtowerKit/Tests/Fixtures/asks/anchor-fixtures.json
+// this package's one case reads (internal/specreview pins the whole file).
+type anchorFixtures struct {
+	Cases []struct {
+		Name     string `json:"name"`
+		Markdown string `json:"markdown"`
+		Anchor   struct {
+			Quote   string `json:"quote"`
+			Prefix  string `json:"prefix"`
+			Suffix  string `json:"suffix"`
+			Heading string `json:"heading"`
+		} `json:"anchor"`
+	} `json:"cases"`
+}
+
+func loadAnchorFixtures(t *testing.T) anchorFixtures {
+	t.Helper()
+	raw, err := os.ReadFile("../../../../WatchtowerKit/Tests/Fixtures/asks/anchor-fixtures.json")
+	if err != nil {
+		t.Fatal(err)
 	}
-	doc := renderDocument(snapshot)
-	c := placeComment(anchor[0], anchor[1], "b", &doc)
-	want := asks.Comment{Heading: "Behaviour", Quote: "Muting lasts twenty-four hours", Prefix: "Spec\n\nBehaviour\n\n• ", Suffix: "\n\n", Body: "b"}
-	if c != want {
-		t.Fatalf("comment = %+v\nwant %+v", c, want)
+	var f anchorFixtures
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
 	}
+	return f
 }

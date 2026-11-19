@@ -28,9 +28,13 @@ final class LiveSlack01GuardTests: XCTestCase {
         TestDatabase.cleanup(path: path)
     }
 
-    // The turn store's marks (a Slack step's start, finalize, every Go step name, the first mark kept) are the
-    // engine's now: `TestLIVE01_GoStore*` (`internal/chatstore/live01_test.go`). Keep's refusal is
-    // `TestChatengine_ArtifactKeepWritesKnowledgeRow`. The panel's side stays here.
+    // The mark itself (the turn's start and end, every Go step name, the first mark kept, the keep refusal) is
+    // written by Go now, guarded twice: `TestLIVE01_GoStore*` (`internal/chatstore/live01_test.go`) and keep's
+    // refusal `TestChatengine_ArtifactKeepWritesKnowledgeRow` (the engine, unified chat), and
+    // `TestFinalizeMarksConversationOnSlackStep`, `TestStepStartMarksWithoutFinalize`,
+    // `TestFinalizeMarksConversationOnCodexSlackStep`, `TestFinalizeLeavesUnmarkedWithoutSlackStep`,
+    // `TestFirstMarkIsKept`, `TestEveryGoSlackStepNameMarks` and `TestKeepRefusedForLiveConversation`
+    // (`internal/chatstore/moved_guards_test.go`, #1170). The panel's side stays here.
 
     @MainActor
     func testPanelExplainsWhyKeepIsDisabled() throws {
@@ -71,28 +75,27 @@ final class LiveSlack01GuardTests: XCTestCase {
 
     // MARK: - Reader list
 
-    /// Files that checked the mark: the writer and the one path that pins text.
+    /// Files that check the mark (the panel's Add to Knowledge reads it
+    /// through `LiveSlackMark.isMarked`; Go writes it and refuses the keep).
     private static let checked: Set<String> = ["LiveSlackMark.swift"]
 
     /// Files that mention a chat table without feeding a lasting store.
     private static let displayOnly: [String: String] = [
         "ChatConversationQueries.swift": "conversation list, titles, routing for the chat screens",
+        "ChatArtifactQueries.swift": "artifact versions shown in the panel (Go writes and keeps them)",
         "ChatMessageQueries.swift": "messages shown in the chat",
         "ChatTreeQueries.swift": "the chat's own branch tree and turn rows",
         "ChatStepQueries.swift": "tool steps shown under an answer",
         "ChatProjectQueries.swift": "project grouping of chats",
         "CodeQuestionList.swift": "workbench Questions tab, never leaves it",
-        "EmbeddedChatStore.swift": "the embedded chat's own rows",
         "ChatSurfaceSpec.swift": "surface wiring, no read of text",
         "ChatToolCatalog.swift": "names the chat-history tools in step labels, no read",
         "EmbeddedChatReplay.swift": "names the chat-history tools in the replay hint, no read",
         "AutomationListSections.swift": "automation editor chats list",
         "ChatViewModel.swift": "the whole text of a reply the feed cut, shown in the chat",
-        "ChatArtifactQueries.swift": "artifact versions shown in the panel (the keep is the engine's)",
         "CodeQuestionSurface.swift": "workbench Questions tab, never leaves it",
         "IdeaChatSurface.swift": "Discuss-an-idea chat, never mined",
         "DatabaseManager.swift": "table list of the database",
-        "IdeaQueries.swift": "delete only",
         "LearnQueries.swift": "an existence signal, no text",
         "ChatModels.swift": "row types and comments",
         "CodeQuestionContext.swift": "comment only",

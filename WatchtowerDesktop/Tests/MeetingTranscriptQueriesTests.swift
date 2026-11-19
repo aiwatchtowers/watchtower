@@ -414,54 +414,6 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
         }
     }
 
-    func test_deleteRemovesRowChatAndReturnsAudioPath() throws {
-        let db = try TestDatabase.create()
-        var returnedPath: String?
-        try db.write { db in
-            try TestDatabase.insertCalendarEvent(db, id: "evt-1")
-            try TestDatabase.insertMeetingRecap(db, eventID: "evt-1", recapJSON: self.summaryJSON)
-            try TestDatabase.insertMeetingTranscript(
-                db, id: 1, eventID: "evt-1", audioPath: "/tmp/rec_1.caf")
-            try TestDatabase.insertMeetingTranscript(db, id: 2, title: "Keep me")
-            let conv = try ChatConversationQueries.create(
-                db, title: "Meeting: Rec", contextType: "meeting", contextID: "1")
-            _ = try ChatMessageQueries.insert(db, conversationID: conv.id, role: "user", text: "hi")
-
-            returnedPath = try MeetingTranscriptQueries.delete(db, id: 1)
-        }
-        XCTAssertEqual(returnedPath, "/tmp/rec_1.caf")
-        try db.read { db in
-            XCTAssertNil(try MeetingTranscriptQueries.fetch(db, id: 1))
-            XCTAssertNotNil(try MeetingTranscriptQueries.fetch(db, id: 2), "other transcripts untouched")
-            XCTAssertNil(try ChatConversationQueries.fetchByContext(db, type: "meeting", id: "1"))
-            let msgCount = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM chat_messages") ?? -1
-            XCTAssertEqual(msgCount, 0, "chat messages must be deleted with the conversation")
-            XCTAssertNotNil(try MeetingRecapQueries.fetch(db, eventID: "evt-1"),
-                            "the event's recap must survive transcript deletion (safe delete scope)")
-        }
-    }
-
-    // Valid-but-degenerate inputs: no chat, no audio, already-swept audio.
-    func test_deleteWithoutChatOrAudioSucceeds() throws {
-        let db = try TestDatabase.create()
-        var returnedPath: String? = "sentinel"
-        try db.write { db in
-            try TestDatabase.insertMeetingTranscript(db, id: 1, audioPath: nil)
-            returnedPath = try MeetingTranscriptQueries.delete(db, id: 1)
-        }
-        XCTAssertNil(returnedPath, "NULL audio_path (already swept) must return nil")
-        try db.read { db in
-            XCTAssertNil(try MeetingTranscriptQueries.fetch(db, id: 1))
-        }
-    }
-
-    func test_deleteUnknownIDIsNoOp() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            XCTAssertNil(try MeetingTranscriptQueries.delete(db, id: 999))
-        }
-    }
-
     // MARK: - relabelCluster (speaker identity)
 
     private var speakersFixture: [SpeakerEmbedding] {

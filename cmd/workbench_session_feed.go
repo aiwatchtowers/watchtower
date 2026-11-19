@@ -29,6 +29,9 @@ var workbenchSessionFeedCmd = &cobra.Command{
 		"conversation (/clear). --after C returns only what follows cursor C (an entry that\n" +
 		"grew keeps its id: upsert by id). --subagent T prints the feed of the subagent started\n" +
 		"by tool call T, read whole (its cursor is empty); --after and --subagent exclude each other.\n" +
+		"--tail N prints only the last N entries (--before ID: the N before entry ID; the output\n" +
+		"carries before for the next older page); the cursor and the subagents list stay those of a\n" +
+		"full read; --tail excludes --after and --subagent.\n" +
 		"skipped and unknown_records count only what this call read. The database is opened read-only.",
 	Args: cobra.NoArgs,
 	RunE: runWorkbenchSessionFeed,
@@ -38,6 +41,8 @@ var (
 	workbenchSessionFeedFlagSession  int64
 	workbenchSessionFeedFlagAfter    string
 	workbenchSessionFeedFlagSubagent string
+	workbenchSessionFeedFlagTail     int
+	workbenchSessionFeedFlagBefore   string
 	workbenchSessionFeedFlagJSON     bool
 )
 
@@ -47,24 +52,29 @@ func init() {
 	fs.Int64Var(&workbenchSessionFeedFlagSession, "session", 0, "terminal session id")
 	fs.StringVar(&workbenchSessionFeedFlagAfter, "after", "", "cursor from a previous call: print only what follows")
 	fs.StringVar(&workbenchSessionFeedFlagSubagent, "subagent", "", "tool_use id of a subagent: print its feed")
+	fs.IntVar(&workbenchSessionFeedFlagTail, "tail", 0, "print only the last N entries (N >= 1)")
+	fs.StringVar(&workbenchSessionFeedFlagBefore, "before", "", "with --tail: the page before this entry id")
 	fs.BoolVar(&workbenchSessionFeedFlagJSON, "json", false, "output JSON")
 	_ = c.MarkFlagRequired("session")
 	c.MarkFlagsMutuallyExclusive("after", "subagent")
+	c.MarkFlagsMutuallyExclusive("tail", "after")
+	c.MarkFlagsMutuallyExclusive("tail", "subagent")
 	workbenchCmd.AddCommand(c)
 }
 
 // sessionFeedJSON is the pinned output of `workbench session-feed --json`.
 type sessionFeedJSON struct {
-	SessionID      int64                  `json:"session_id"`
-	Cursor         string                 `json:"cursor"`
-	Entries        []sessionFeedEntryJSON `json:"entries"`
-	Activity       *sessionfeed.Activity  `json:"activity"` // the agent's open tool call, or null
-	Live           *sessionfeed.Live      `json:"live"`
-	LiveOK         bool                   `json:"live_ok"`
-	LiveError      string                 `json:"live_error,omitempty"`
-	Subagents      []sessionFeedEntryJSON `json:"subagents"`
-	Skipped        int                    `json:"skipped"`
-	UnknownRecords map[string]int         `json:"unknown_records"`
+	SessionID      int64                         `json:"session_id"`
+	Cursor         string                        `json:"cursor"`
+	Entries        []sessionFeedEntryJSON        `json:"entries"`
+	Activity       *sessionfeed.Activity         `json:"activity"` // the agent's open tool call, or null
+	Live           *sessionfeed.Live             `json:"live"`
+	LiveOK         bool                          `json:"live_ok"`
+	LiveError      string                        `json:"live_error,omitempty"`
+	Before         string                        `json:"before,omitempty"` // with --tail: id of the page's first entry, omitted at entry 0
+	Subagents      []sessionFeedSubagentItemJSON `json:"subagents"`
+	Skipped        int                           `json:"skipped"`
+	UnknownRecords map[string]int                `json:"unknown_records"`
 }
 
 type sessionFeedEntryJSON struct {
@@ -91,6 +101,38 @@ func toSessionFeedEntries(es []sessionfeed.Entry) []sessionFeedEntryJSON {
 	return out
 }
 
+// sessionFeedSubagentRefJSON is an entry's subagent object plus started_at;
+// only `subagents` list items carry it (entries keep the five pinned keys).
+type sessionFeedSubagentRefJSON struct {
+	ToolUseID   string    `json:"tool_use_id"`
+	AgentID     string    `json:"agent_id"`
+	Type        string    `json:"type"`
+	Description string    `json:"description"`
+	Status      string    `json:"status"`
+	StartedAt   time.Time `json:"started_at"`
+}
+
+// sessionFeedSubagentItemJSON is a `subagents` list item: the entry fields
+// with the richer subagent object.
+type sessionFeedSubagentItemJSON struct {
+	sessionFeedEntryJSON
+	Subagent *sessionFeedSubagentRefJSON `json:"subagent,omitempty"`
+}
+
+func toSessionFeedSubagentItems(es []sessionfeed.Entry) []sessionFeedSubagentItemJSON {
+	out := make([]sessionFeedSubagentItemJSON, 0, len(es))
+	for _, e := range es {
+		item := sessionFeedSubagentItemJSON{sessionFeedEntryJSON: toSessionFeedEntries([]sessionfeed.Entry{e})[0]}
+		item.sessionFeedEntryJSON.Subagent = nil
+		if r := e.Subagent; r != nil {
+			item.Subagent = &sessionFeedSubagentRefJSON{ToolUseID: r.ToolUseID, AgentID: r.AgentID, Type: r.Type,
+				Description: r.Description, Status: r.Status, StartedAt: r.StartedAt}
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 // sessionFeedBusyTimeout is how long the read waits out another process's write lock.
 const sessionFeedBusyTimeout = 2 * time.Second
 
@@ -100,6 +142,13 @@ func runWorkbenchSessionFeed(cmd *cobra.Command, _ []string) error {
 		ctx = context.Background()
 	}
 	id := workbenchSessionFeedFlagSession
+	tail := workbenchSessionFeedFlagTail
+	if cmd.Flags().Changed("tail") && tail < 1 {
+		return errors.New("--tail must be at least 1")
+	}
+	if workbenchSessionFeedFlagBefore != "" && !cmd.Flags().Changed("tail") {
+		return errors.New("--before needs --tail")
+	}
 	var after *sessionfeed.Cursor
 	if workbenchSessionFeedFlagAfter != "" {
 		c, err := sessionfeed.ParseCursor(workbenchSessionFeedFlagAfter)
@@ -134,7 +183,7 @@ func runWorkbenchSessionFeed(cmd *cobra.Command, _ []string) error {
 	}
 	lookup := sessionFeedAskLookup(database, sess.WorkbenchID)
 
-	out, err := buildSessionFeedOutput(id, convs, after, lookup, workbenchSessionFeedFlagSubagent)
+	out, err := buildSessionFeedOutput(id, convs, after, lookup, workbenchSessionFeedFlagSubagent, tail, workbenchSessionFeedFlagBefore)
 	if err != nil {
 		return err
 	}
@@ -156,8 +205,8 @@ func requireAgentSession(sess *db.TerminalSession) error {
 
 // buildSessionFeedOutput reads either one subagent's feed (sub set) or the
 // tab's chat after the cursor.
-func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *sessionfeed.Cursor, lookup sessionfeed.AskLookup, sub string) (sessionFeedJSON, error) {
-	out := sessionFeedJSON{SessionID: id, Entries: []sessionFeedEntryJSON{}, Subagents: []sessionFeedEntryJSON{}, UnknownRecords: map[string]int{}}
+func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *sessionfeed.Cursor, lookup sessionfeed.AskLookup, sub string, tail int, before string) (sessionFeedJSON, error) {
+	out := sessionFeedJSON{SessionID: id, Entries: []sessionFeedEntryJSON{}, Subagents: []sessionFeedSubagentItemJSON{}, UnknownRecords: map[string]int{}}
 	if sub != "" {
 		res, path, err := sessionfeed.FindSubagent(convs, sub)
 		if err != nil {
@@ -172,7 +221,7 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 				markers = append(markers, e)
 			}
 		}
-		out.Entries, out.Subagents = toSessionFeedEntries(res.Entries), toSessionFeedEntries(markers)
+		out.Entries, out.Subagents = toSessionFeedEntries(res.Entries), toSessionFeedSubagentItems(markers)
 		out.Skipped = res.Skipped
 		maps.Copy(out.UnknownRecords, res.Unknown)
 		return out, nil
@@ -189,7 +238,14 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 		out.Activity = sessionFeedActivity(last.Path, last.Codex, false)
 		setSessionFeedLive(&out, last, false)
 	}
-	out.Entries, out.Subagents = toSessionFeedEntries(feed.Entries), toSessionFeedEntries(feed.Subagents)
+	entries := feed.Entries
+	if tail > 0 {
+		entries, out.Before, err = sessionfeed.TailPage(entries, before, tail)
+		if err != nil {
+			return out, err
+		}
+	}
+	out.Entries, out.Subagents = toSessionFeedEntries(entries), toSessionFeedSubagentItems(feed.Subagents)
 	out.Skipped = feed.Skipped
 	maps.Copy(out.UnknownRecords, feed.Unknown)
 	return out, nil

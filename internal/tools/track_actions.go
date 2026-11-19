@@ -52,7 +52,9 @@ type trackAction struct {
 	change   trackChange
 }
 
-var errTrackActionAlreadyApplied = &ValidationError{Msg: "This change was already applied."}
+// ErrTrackActionAlreadyApplied refuses a press on an event whose change was
+// applied (inbox.act's make_task answers already).
+var ErrTrackActionAlreadyApplied = &ValidationError{Msg: "This change was already applied."}
 
 // NewApplyTrackAction builds apply_track_action, the owner's Apply press on a
 // custom track event's proposed target change (spec
@@ -149,7 +151,7 @@ func lostClaimRefusal(d *db.DB, eventID int) error {
 	if err := trackEventStatusRefusal(e); err != nil {
 		return err
 	}
-	return errTrackActionAlreadyApplied
+	return ErrTrackActionAlreadyApplied
 }
 
 // write makes the change on the target inside tx and returns its summary.
@@ -189,7 +191,7 @@ func readTrackEvent(d *db.DB, id int) (*db.TrackEvent, error) {
 func trackEventStatusRefusal(e *db.TrackEvent) error {
 	switch {
 	case e.ActionStatus == "applied":
-		return errTrackActionAlreadyApplied
+		return ErrTrackActionAlreadyApplied
 	case e.ActionStatus == "dismissed":
 		return &ValidationError{Msg: "This change was dismissed."}
 	case e.ActionStatus != "pending" || strings.TrimSpace(e.ProposedAction) == "":

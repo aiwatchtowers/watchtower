@@ -428,7 +428,10 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
 
     // MARK: - Wake reads (live link R6)
 
-    /// The pull reads its zones at once: both `changes` are in flight together, not one after the other.
+    /// The pull reads its zones at once: both `changes` are in flight together, not one after the other. Over
+    /// HTTPS their arrival order is not the pull's: the data zone's read is handed over first, but the client
+    /// actor's hop to the HTTP layer lets the mailbox's read arrive before it on a loaded machine (CI, 2026-11-19).
+    /// The handover order is a socket property (one connection, writes in order), not asserted here.
     func testWakeReadsZonesConcurrently() async throws {
         let http = HTTPBox()
         let (phone, _, macs) = try await paired(macs: [1], wrapHTTP: http.wrap)
@@ -448,8 +451,8 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         }
 
         XCTAssertEqual(
-            intercept.parked.compactMap { if case .changes(let changes) = $0.op { changes.zone } else { nil } },
-            [dataZone(macs[0]), mailbox(macs[0], phone)], "both zones' reads in flight together, the data zone's sent first")
+            Set(intercept.parked.compactMap { if case .changes(let changes) = $0.op { changes.zone } else { nil } }),
+            [dataZone(macs[0]), mailbox(macs[0], phone)], "both zones' reads in flight together")
         intercept.park(where: nil)
         intercept.releaseParked()
         try await pull.value

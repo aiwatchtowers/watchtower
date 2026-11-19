@@ -27,7 +27,9 @@ var workbenchCleanupCmd = &cobra.Command{
 		"eligible now — only the --item keys named, when any — and saves the result on the\n" +
 		"session (result_saved / result_error). --workbench N --sweep lists every worktree and\n" +
 		"branch of the workbench repository with an owner hint; a sweep applies only named\n" +
-		"--item keys and never signals a process. git is never fetched: fetch first.\n" +
+		"--item keys and never signals a process. git is never fetched: fetch first. It also lists\n" +
+		"the coach's pull-request scratch folders (<workspace>/coach-pr/*) older than a day; an\n" +
+		"--apply without --item, outside a terminal session, removes them.\n" +
 		"Exit codes: 0 done (kept items are not a failure), 1 could not plan, 2 usage.",
 	Args: cobra.NoArgs,
 	RunE: runWorkbenchCleanup,
@@ -100,13 +102,15 @@ func runWorkbenchCleanup(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if stream != nil {
+	if stream != nil { // the Desktop's stream: its pinned shape, no coach scratch folders
 		return stream.done(res)
 	}
+	scratch := coachScratchStep(cmd.ErrOrStderr(), f, req.CallerSessionID, time.Now())
 	if f.json {
-		return writeJSON(cmd.OutOrStdout(), res)
+		return writeJSON(cmd.OutOrStdout(), cleanupJSON{Result: res, CoachScratch: scratch})
 	}
 	printCleanupResult(cmd.OutOrStdout(), res)
+	printCoachScratch(cmd.OutOrStdout(), scratch, f.apply)
 	return nil
 }
 

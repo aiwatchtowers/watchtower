@@ -13,6 +13,18 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
         override var isFlipped: Bool { true }
     }
 
+    /// What macOS 27's SwiftUI text-interaction view shows the tracker: a
+    /// first responder of static text reporting its selection through
+    /// accessibility, no text view. Runs the macOS 27 path on every macOS.
+    private final class InteractionStub: NSView {
+        var selected = ""
+        var range = NSRange(location: 0, length: 0)
+        override var acceptsFirstResponder: Bool { true }
+        override func accessibilitySelectedTextRange() -> NSRange { range }
+        override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
+        override func accessibilitySelectedText() -> String? { selected }
+    }
+
     private var windows: [NSWindow] = []
     private var tracker: ChatSelectionQuoteTracker?
     private var anchor: NSView?
@@ -38,19 +50,33 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
         return (window, root)
     }
 
-    /// macOS 27 no longer backs a selectable SwiftUI `Text` with an
-    /// `NSTextField`, so the chip does not appear there (target #2070). The two
-    /// tests that check that assumption skip on 27+ until the tracker learns the
-    /// new backing; Swift UI Tests (macos-26) still runs them.
-    private func skipWhereSwiftUITextIsNoTextField() throws {
-        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 {
-            throw XCTSkip("macOS 27 backs selectable SwiftUI Text with no NSTextField (target #2070)")
+    /// The views backing selectable SwiftUI `Text`s: an `NSTextField` up to
+    /// macOS 26, SwiftUI's own text-interaction view from macOS 27 (static
+    /// text that takes first responder).
+    private func swiftUITexts(in view: NSView) -> [NSView] {
+        if view is NSTextField || (view.accessibilityRole() == .staticText && view.acceptsFirstResponder) {
+            return [view]
         }
+        return view.subviews.flatMap { swiftUITexts(in: $0) }
     }
 
-    private func findTextField(in view: NSView) -> NSTextField? {
-        if let field = view as? NSTextField { return field }
-        return view.subviews.lazy.compactMap { self.findTextField(in: $0) }.first
+    private func string(of view: NSView) -> String {
+        (view as? NSTextField)?.stringValue ?? (view.accessibilityValue() as? String) ?? ""
+    }
+
+    /// Selects `range` in a selectable SwiftUI `Text` as the owner's drag
+    /// does on this macOS: through the field editor on an `NSTextField`, or
+    /// the text-interaction view's own selection followed by the mouse
+    /// going up over it.
+    private func select(_ range: NSRange, inSwiftUIText view: NSView, tracker: ChatSelectionQuoteTracker) throws {
+        if let field = view as? NSTextField {
+            try beginEditing(field).setSelectedRange(range)
+            return
+        }
+        let window = try XCTUnwrap(view.window)
+        XCTAssertTrue(window.makeFirstResponder(view))
+        view.setAccessibilitySelectedTextRange(range)
+        tracker.selectionEnded(in: window, at: view.convert(CGPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil))
     }
 
     /// What a click in the text does: the window's field editor takes over
@@ -106,10 +132,11 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
     }
 
     /// The assumption the tracker rests on: a selectable SwiftUI `Text` is
-    /// an `NSTextField` using the window's field editor. If SwiftUI changes
-    /// this, the chip stops appearing — this fails first.
-    func testASelectableSwiftUITextIsBackedByATextField() throws {
-        try skipWhereSwiftUITextIsNoTextField()
+    /// an `NSTextField` using the window's field editor (up to macOS 26) or a
+    /// first-responder view reporting its selection through accessibility
+    /// (macOS 27). If SwiftUI changes this again, the chip stops appearing —
+    /// this fails first.
+    func testASelectableSwiftUITextQuotes() throws {
         let text = "Keep the retry budget small."
         let (_, root) = makeWindow()
         let host = NSHostingView(rootView: Text(text).textSelection(.enabled))
@@ -124,18 +151,222 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
         tracker.attach(to: anchor)
         (self.tracker, self.anchor) = (tracker, anchor)
 
-        let field = try XCTUnwrap(findTextField(in: host))
-        XCTAssertTrue(field.isSelectable)
-        XCTAssertFalse(field.isEditable)
-        let editor = try beginEditing(field)
-        editor.setSelectedRange((text as NSString).range(of: "retry budget"))
+        let view = try XCTUnwrap(swiftUITexts(in: host).first)
+        if let field = view as? NSTextField {
+            XCTAssertTrue(field.isSelectable)
+            XCTAssertFalse(field.isEditable)
+        }
+        try select((text as NSString).range(of: "retry budget"), inSwiftUIText: view, tracker: tracker)
         XCTAssertEqual(tracker.selection?.text, "retry budget")
+        XCTAssertNotNil(tracker.selection?.button)
+    }
+
+    /// macOS 27: a click that drops the selection, or focus moving to a view
+    /// with nothing selected, clears the chip once the mouse goes up.
+    func testASwiftUITextSelectionGoesWhenTheFocusMoves() throws {
+        let text = "Keep the retry budget small."
+        let (window, root) = makeWindow()
+        let host = NSHostingView(rootView: Text(text).textSelection(.enabled))
+        host.frame = NSRect(x: 0, y: 0, width: 400, height: 100)
+        root.addSubview(host)
+        let tracker = ChatSelectionQuoteTracker()
+        addRegion(host.frame, to: root, tracker: tracker)
+        let anchor = FlippedView(frame: root.bounds)
+        root.addSubview(anchor)
+        host.layoutSubtreeIfNeeded()
+        tracker.attach(to: anchor)
+        (self.tracker, self.anchor) = (tracker, anchor)
+        let view = try XCTUnwrap(swiftUITexts(in: host).first)
+        try XCTSkipIf(view is NSTextField, "up to macOS 26 the field editor's end of editing clears it")
+
+        try select((text as NSString).range(of: "retry"), inSwiftUIText: view, tracker: tracker)
+        XCTAssertEqual(tracker.selection?.text, "retry")
+        view.setAccessibilitySelectedTextRange(NSRange(location: 2, length: 0))
+        tracker.selectionEnded(in: window, at: nil)
+        XCTAssertNil(tracker.selection, "a collapsed selection offers nothing")
+
+        try select((text as NSString).range(of: "budget"), inSwiftUIText: view, tracker: tracker)
+        XCTAssertEqual(tracker.selection?.text, "budget")
+        window.makeFirstResponder(nil)
+        tracker.selectionEnded(in: window, at: nil)
+        XCTAssertNil(tracker.selection)
+    }
+
+    private struct InteractionFeed {
+        let window: NSWindow
+        let stub: InteractionStub
+        let tracker: ChatSelectionQuoteTracker
+        let quoted: () -> [String]
+    }
+
+    /// A window with an interaction stub inside a finished answer's region,
+    /// focused.
+    private func makeInteractionFeed(listening: ChatSelectionQuoteListening = .init()) -> InteractionFeed {
+        let (window, root) = makeWindow()
+        let stub = InteractionStub(frame: NSRect(x: 20, y: 40, width: 400, height: 60))
+        root.addSubview(stub)
+        let tracker = ChatSelectionQuoteTracker(listening: listening)
+        addRegion(NSRect(x: 10, y: 30, width: 420, height: 80), to: root, tracker: tracker)
+        let anchor = FlippedView(frame: root.bounds)
+        root.addSubview(anchor)
+        var quoted: [String] = []
+        tracker.quote = ChatFeedSelectionQuote { quoted.append($0) }
+        tracker.attach(to: anchor)
+        (self.tracker, self.anchor) = (tracker, anchor)
+        window.makeFirstResponder(stub)
+        return InteractionFeed(window: window, stub: stub, tracker: tracker) { quoted }
+    }
+
+    private func up(_ feed: InteractionFeed, atStub point: CGPoint?) {
+        feed.tracker.selectionEnded(in: feed.window, at: point.map { feed.stub.convert($0, to: nil) })
+    }
+
+    /// The macOS 27 path end to end, whatever macOS runs the test: offered,
+    /// kept in place while unchanged, cleared with the selection or focus.
+    func testTheInteractionPathOffersKeepsAndClears() throws {
+        let feed = makeInteractionFeed()
+        feed.stub.selected = "retry"
+        up(feed, atStub: CGPoint(x: 50, y: 20))
+        let first = try XCTUnwrap(feed.tracker.selection)
+        XCTAssertEqual(first.text, "retry")
+        XCTAssertNotNil(first.button)
+
+        up(feed, atStub: CGPoint(x: 300, y: 50))
+        XCTAssertEqual(feed.tracker.selection, first, "a click off the text leaves the same selection's chip in place")
+        up(feed, atStub: nil)
+        XCTAssertEqual(feed.tracker.selection, first, "so does a key such as ⌘C")
+
+        feed.stub.range = NSRange(location: 30, length: 5)
+        up(feed, atStub: CGPoint(x: 300, y: 50))
+        let elsewhere = try XCTUnwrap(feed.tracker.selection, "the same word elsewhere is still offered")
+        XCTAssertNotEqual(elsewhere.rect, first.rect, "and measured where it now is")
+
+        feed.stub.selected = "retry budget"
+        up(feed, atStub: nil)
+        XCTAssertEqual(feed.tracker.selection?.text, "retry budget", "a changed selection is measured again")
+
+        feed.stub.selected = ""
+        up(feed, atStub: CGPoint(x: 50, y: 20))
+        XCTAssertNil(feed.tracker.selection, "a collapsed selection offers nothing")
+
+        feed.stub.selected = "budget"
+        up(feed, atStub: CGPoint(x: 50, y: 20))
+        XCTAssertEqual(feed.tracker.selection?.text, "budget")
+        feed.window.makeFirstResponder(nil)
+        up(feed, atStub: nil)
+        XCTAssertNil(feed.tracker.selection, "the focus moved away")
+    }
+
+    /// "Ask about this" leaves the passage selected in its `Text`: the
+    /// click's own mouse-up must not bring the chip back for it.
+    func testAQuotedInteractionSelectionDoesNotComeBack() throws {
+        let feed = makeInteractionFeed()
+        feed.stub.selected = "retry"
+        up(feed, atStub: CGPoint(x: 50, y: 20))
+        feed.tracker.askAboutSelection()
+        XCTAssertEqual(feed.quoted(), ["retry"])
+        up(feed, atStub: CGPoint(x: 50, y: 20))
+        XCTAssertNil(feed.tracker.selection)
+
+        feed.stub.selected = "budget"
+        up(feed, atStub: CGPoint(x: 50, y: 20))
+        XCTAssertEqual(feed.tracker.selection?.text, "budget", "a new selection is offered again")
+
+        feed.tracker.askAboutSelection()
+        feed.stub.range = NSRange(location: 40, length: 6)
+        up(feed, atStub: CGPoint(x: 300, y: 40))
+        XCTAssertEqual(feed.tracker.selection?.text, "budget", "the same word elsewhere in the text is another selection")
+    }
+
+    private func mouseUpEvent(at point: CGPoint, in window: NSWindow) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseUp, location: point, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+            context: nil, eventNumber: 0, clickCount: 1, pressure: 0))
+    }
+
+    /// The monitor: a mouse-up in the feed's window reads the selection
+    /// after the event is handled, with the mouse's place; a key-up has
+    /// none; another window's event is left alone.
+    func testTheMonitorReadsTheSelectionAfterAMouseOrKeyUp() throws {
+        var handler: ((NSEvent) -> NSEvent?)?
+        var pending: [() -> Void] = []
+        var listening = ChatSelectionQuoteListening()
+        listening.addEventMonitor = { handler = $0; return NSObject() }
+        listening.removeMonitor = { _ in }
+        listening.afterEvent = { pending.append($0) }
+        func flush() {
+            let run = pending
+            pending = []
+            run.forEach { $0() }
+        }
+        let feed = makeInteractionFeed(listening: listening)
+        let monitor = try XCTUnwrap(handler)
+        feed.stub.selected = "retry"
+
+        let point = feed.stub.convert(CGPoint(x: 50, y: 20), to: nil)
+        let mouseUp = try mouseUpEvent(at: point, in: feed.window)
+        XCTAssertTrue(monitor(mouseUp) === mouseUp, "the event goes on to the window")
+        XCTAssertNil(feed.tracker.selection, "read only once the window has handled it")
+        XCTAssertEqual(pending.count, 1)
+        flush()
+        let byMouse = try XCTUnwrap(feed.tracker.selection?.rect)
+        XCTAssertEqual(byMouse.height, ChatSelectionQuoteTracker.pointBoxHeight, "a sliver at the mouse")
+
+        feed.stub.selected = "retry budget"
+        let keyUp = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyUp, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: feed.window.windowNumber,
+            context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0))
+        _ = monitor(keyUp)
+        flush()
+        XCTAssertEqual(feed.tracker.selection?.rect.height, 60, "a key: the whole visible text")
+
+        let (other, _) = makeWindow()
+        let elsewhere = try mouseUpEvent(at: point, in: other)
+        _ = monitor(elsewhere)
+        XCTAssertTrue(pending.isEmpty, "another window's event is not looked at")
+    }
+
+    /// A wide code block scrolled sideways takes the selection out of its
+    /// viewport: the chip goes.
+    func testScrollingTheCodeBlockSidewaysDropsTheChip() throws {
+        let (window, root) = makeWindow()
+        let scroll = NSScrollView(frame: NSRect(x: 20, y: 40, width: 300, height: 60))
+        let stub = InteractionStub(frame: NSRect(x: 0, y: 0, width: 1000, height: 60))
+        scroll.documentView = stub
+        root.addSubview(scroll)
+        let tracker = ChatSelectionQuoteTracker()
+        addRegion(NSRect(x: 10, y: 30, width: 420, height: 80), to: root, tracker: tracker)
+        let anchor = FlippedView(frame: root.bounds)
+        root.addSubview(anchor)
+        tracker.quote = ChatFeedSelectionQuote { _ in }
+        tracker.attach(to: anchor)
+        (self.tracker, self.anchor) = (tracker, anchor)
+        window.makeFirstResponder(stub)
+        stub.selected = "retry"
+        tracker.selectionEnded(in: window, at: stub.convert(CGPoint(x: 50, y: 30), to: nil))
+        XCTAssertEqual(tracker.selection?.text, "retry")
+
+        scroll.contentView.scroll(to: NSPoint(x: 600, y: 0))
+        XCTAssertNil(tracker.selection)
+    }
+
+    /// No character boxes on macOS 27: the box is a line-high sliver at the
+    /// point the mouse went up, kept inside the view's visible part.
+    func testTheInteractionBoxSitsAtTheMouseInsideTheView() {
+        let (_, root) = makeWindow()
+        let view = NSView(frame: NSRect(x: 10, y: 10, width: 200, height: 100))
+        root.addSubview(view)
+        let height = ChatSelectionQuoteTracker.pointBoxHeight
+        XCTAssertEqual(ChatSelectionQuoteTracker.interactionBox(in: view, at: CGPoint(x: 50, y: 50)),
+                       CGRect(x: 50, y: 50 - height / 2, width: 1, height: height))
+        XCTAssertEqual(ChatSelectionQuoteTracker.interactionBox(in: view, at: CGPoint(x: 500, y: -10)),
+                       CGRect(x: 199, y: 0, width: 1, height: height), "a drag past the edge stays inside")
+        XCTAssertEqual(ChatSelectionQuoteTracker.interactionBox(in: view, at: nil), view.bounds, "a key: the visible part")
     }
 
     /// The real marker behind a SwiftUI answer: its text quotes, a text
     /// outside it (an owner bubble) does not.
     func testTheAnswerMarkerScopesSwiftUIText() throws {
-        try skipWhereSwiftUITextIsNoTextField()
         let tracker = ChatSelectionQuoteTracker()
         let (_, root) = makeWindow()
         let host = NSHostingView(rootView: VStack(alignment: .leading, spacing: 20) {
@@ -152,20 +383,13 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
         tracker.attach(to: anchor)
         (self.tracker, self.anchor) = (tracker, anchor)
 
-        var fields: [NSTextField] = []
-        func collect(_ view: NSView) {
-            if let field = view as? NSTextField { fields.append(field) }
-            view.subviews.forEach(collect)
-        }
-        collect(host)
-        let owner = try XCTUnwrap(fields.first { $0.stringValue.hasPrefix("Owner") })
-        let answer = try XCTUnwrap(fields.first { $0.stringValue.hasPrefix("Answer") })
+        let texts = swiftUITexts(in: host)
+        let owner = try XCTUnwrap(texts.first { string(of: $0).hasPrefix("Owner") })
+        let answer = try XCTUnwrap(texts.first { string(of: $0).hasPrefix("Answer") })
 
-        let ownerEditor = try beginEditing(owner)
-        ownerEditor.setSelectedRange(NSRange(location: 0, length: 5))
+        try select(NSRange(location: 0, length: 5), inSwiftUIText: owner, tracker: tracker)
         XCTAssertNil(tracker.selection, "outside every answer region")
-        let answerEditor = try beginEditing(answer)
-        answerEditor.setSelectedRange(NSRange(location: 0, length: 6))
+        try select(NSRange(location: 0, length: 6), inSwiftUIText: answer, tracker: tracker)
         XCTAssertEqual(tracker.selection?.text, "Answer")
     }
 
@@ -289,7 +513,7 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
         var added = 0
         var removed = 0
         var listening = ChatSelectionQuoteListening(center: center)
-        listening.addMouseDownMonitor = { _ in
+        listening.addEventMonitor = { _ in
             added += 1
             return NSObject()
         }

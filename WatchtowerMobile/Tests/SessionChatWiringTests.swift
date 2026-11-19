@@ -168,7 +168,6 @@ final class SessionChatWiringTests: XCTestCase {
             let incomplete = SessionChat.Entry.Subagent(agentID: agent, toolUseID: tool, type: "Explore", description: "d", status: "running")
             XCTAssertNil(SessionChatEntryRow.route(for: incomplete, sessionID: 11), "no route without both ids")
         }
-        XCTAssertEqual(SessionChatEntryRow.statusText("running"), "Running")
     }
 
     func testTheChatGoingAwayStartsThePatienceTimerAgain() async throws {

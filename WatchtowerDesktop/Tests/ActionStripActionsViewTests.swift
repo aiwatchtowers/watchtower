@@ -91,11 +91,13 @@ final class ActionStripActionsViewTests: XCTestCase {
     }
 
     func testNonEmptyStripHidesTheSheetBehindTheHelpButton() async throws {
+        // A pending brief_context proposal (Go's case), and :pushpin: mapped to it.
         let pool = try makePool { db in
-            try TestDatabase.insertAgentAction(db, tool: "brief_context", status: "pending")
             try TestDatabase.insertReactionCommandMapping(db, emoji: "pushpin", tool: "brief_context")
         }
-        let vm = await stripVM(pool)
+        let tower = try FeedCaseTransport.seeded("desktop_actions_view_pending_brief_context", pool: pool)
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        await vm.follow(tower)
         XCTAssertFalse(vm.actionRows.isEmpty, "fixture must produce a non-empty strip")
         let sut = view(vm, rows: await dictionaryRows(pool), feature: .off)
 
@@ -158,24 +160,19 @@ final class ActionStripActionsViewTests: XCTestCase {
     /// The very first read fails: the reason and Try Again in place of the
     /// spinner, which would otherwise never end; Try Again's read lands.
     func testAFailedFirstReadShowsItsErrorNotASpinner() async throws {
-        // An artifact, so the read reaches the folder view broken below.
-        let pool = try makePool { db in
-            let automation = try TestDatabase.insertAutomation(db, slug: "weekly", name: "Weekly mail roundup")
-            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
-            try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run)
-        }
-        let original = try await pool.read { db in
-            try XCTUnwrap(String.fetchOne(
-                db, sql: "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'inbox_artifact_folders'"))
-        }
+        // An artifact the tower lists, so the records read reaches its
+        // automation, broken below (a table that reads without its columns).
+        let pool = try makePool()
+        let tower = try FeedCaseTransport.seeded("desktop_actions_view_one_artifact", pool: pool)
         try await pool.write { db in
-            try db.execute(sql: "DROP VIEW inbox_artifact_folders")
-            try db.execute(sql: "CREATE VIEW inbox_artifact_folders AS SELECT 1 AS unrelated")
+            try db.execute(sql: "ALTER TABLE automations RENAME TO automations_kept")
+            try db.execute(sql: "CREATE VIEW automations AS SELECT 1 AS unrelated")
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
         let sut = view(vm, rows: [], feature: .off)
 
-        await vm.refresh()
+        // The tower lists the artifact; the first records read fails.
+        await vm.follow(tower)
 
         XCTAssertFalse(vm.hasRead)
         XCTAssertNotNil(vm.firstReadError)
@@ -185,8 +182,8 @@ final class ActionStripActionsViewTests: XCTestCase {
         XCTAssertThrowsError(try sut.inspect().find(ReactionCheatSheetView.self), "never the empty Inbox")
 
         try await pool.write { db in
-            try db.execute(sql: "DROP VIEW inbox_artifact_folders")
-            try db.execute(sql: original)
+            try db.execute(sql: "DROP VIEW automations")
+            try db.execute(sql: "ALTER TABLE automations_kept RENAME TO automations")
         }
         try sut.inspect().find(button: "Try Again").tap()
         await vm.refresh()
@@ -221,20 +218,13 @@ final class ActionStripActionsViewTests: XCTestCase {
         let suite = "ActionStripActionsViewTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        var item: Int64 = 0
-        let pool = try makePool { db in
-            item = try TestDatabase.insertInboxItem(
-                db, channelID: "1:C001", triggerType: "mention",
-                permalink: "https://acme.slack.com/archives/C001/p1700000000000100")
-            let id = try TestDatabase.insertAutomation(db, slug: "waiting-for-me")
-            try db.execute(sql: """
-                UPDATE automations SET origin = 'builtin', builtin_id = 'waiting-for-me', path = 'builtin:waiting-for-me'
-                WHERE id = ?
-                """, arguments: [id])
-        }
+        // Slack mention 1 with a permalink; Waiting for me's built-in, no run yet.
+        let item: Int64 = 1
+        let pool = try makePool()
+        let tower = try FeedCaseTransport.seeded("desktop_reply_standin_before_first_run", pool: pool)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults)
         vm.openLegacy(.messages)
-        await vm.refresh()
+        await vm.follow(tower)
         XCTAssertTrue(vm.folderMenu.snapshot.waitingForMe.messagesStandIn)
         vm.selection = .message(Int(item))
         let sut = view(vm, rows: [], feature: .off)

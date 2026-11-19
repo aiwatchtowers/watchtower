@@ -210,8 +210,9 @@ public struct AgentActionCard: View {
             // tool, so an `approved` one provably never reached Jira. (A Confluence edit is version-checked, so its
             // note says why a retry cannot double-write.)
             if action.status == "failed", action.external, !action.isSessionApplied {
-                Text(action.tool == SlackSendProposal.tool ? Self.slackRetryNote : ConfluenceEdit.retryNote(for: action))
-                    .font(.caption).foregroundStyle(.orange)
+                style.approvalRetryNote(
+                    action.tool == SlackSendProposal.tool ? Self.slackRetryNote : ConfluenceEdit.retryNote(for: action)
+                )
             }
             if let accountID = Self.reconnectAccount(action, services: services), let reconnect = services.reconnectSlack {
                 reconnectRow(accountID, reconnect)

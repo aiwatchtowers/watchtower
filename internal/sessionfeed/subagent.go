@@ -32,7 +32,7 @@ func (st *state) marker(b block, at time.Time) {
 	st.markers[b.ID] = len(st.res.Entries)
 	st.res.Entries = append(st.res.Entries, Entry{
 		ID: b.ID, Kind: KindSubagent, At: at, Conversation: st.conv,
-		Subagent: &SubagentRef{ToolUseID: b.ID, Type: in.Type, Description: in.Description, Status: StatusUnknown},
+		Subagent: &SubagentRef{ToolUseID: b.ID, Type: in.Type, Description: in.Description, Status: StatusUnknown, StartedAt: at},
 	})
 }
 
@@ -76,6 +76,7 @@ type subagentMeta struct {
 	AgentType   string `json:"agentType"`
 	Description string `json:"description"`
 	agentID     string
+	modTime     time.Time
 }
 
 // readMetas reads <sessionDir>/subagents/agent-*.meta.json by toolUseId, in
@@ -103,6 +104,7 @@ func readMetas(sessionDir string) (map[string]subagentMeta, []string) {
 		if json.Unmarshal(raw, &m) != nil || m.ToolUseID == "" {
 			continue
 		}
+		m.modTime = fi.ModTime()
 		m.agentID = strings.TrimSuffix(strings.TrimPrefix(filepath.Base(f), "agent-"), ".meta.json")
 		if _, dup := metas[m.ToolUseID]; !dup {
 			order = append(order, m.ToolUseID)
@@ -125,6 +127,9 @@ func ResolveSubagents(sessionDir string, entries []Entry) []Entry {
 		m, ok := metas[ref.ToolUseID]
 		if ok && m.Shape == "background" {
 			ref.ParentReport = "" // the parent's result is only a launch notice
+		}
+		if ok && ref.StartedAt.IsZero() {
+			ref.StartedAt = m.modTime // the call carried no usable time
 		}
 		switch {
 		case !ok:
@@ -149,7 +154,7 @@ func metaMarkers(sessionDir, conv string) []Entry {
 			typ = "general-purpose"
 		}
 		out = append(out, Entry{ID: id, Kind: KindSubagent, Conversation: conv, Subagent: &SubagentRef{
-			ToolUseID: id, AgentID: m.agentID, Type: typ, Description: m.Description, Status: StatusRunning,
+			ToolUseID: id, AgentID: m.agentID, Type: typ, Description: m.Description, Status: StatusRunning, StartedAt: m.modTime,
 		}})
 		if m.Finished {
 			out[len(out)-1].Subagent.Status = StatusFinished

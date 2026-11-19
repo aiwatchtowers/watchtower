@@ -136,7 +136,19 @@ struct InboxDayPlanBlock: View {
                             onNavigateSource: { onOpenSource(item) }
                         )
                     }
+                    pressState(item)
                 }
+            }
+        }
+    }
+
+    /// The item's last press through the tower (mockup §8); Retry repeats it.
+    @ViewBuilder
+    private func pressState(_ item: DayPlanItem) -> some View {
+        let row = DayPlanViewModel.row(item.id)
+        if let state = plan.presses.state(row) {
+            TowerRowState(state: state, busyLabel: plan.presses.label(row)) {
+                Task { await plan.presses.retry(row) }
             }
         }
     }

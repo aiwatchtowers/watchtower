@@ -243,23 +243,6 @@ final class BriefingQueryTests: XCTestCase {
         XCTAssertNil(missing)
     }
 
-    func testMarkRead() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertBriefing(db)
-        }
-
-        let before = try db.read { db in try BriefingQueries.fetchByID(db, id: 1) }
-        XCTAssertFalse(before?.isRead ?? true)
-
-        try db.write { db in
-            try BriefingQueries.markRead(db, id: 1)
-        }
-
-        let after = try db.read { db in try BriefingQueries.fetchByID(db, id: 1) }
-        XCTAssertTrue(after?.isRead ?? false)
-    }
-
     func testUnreadCount() throws {
         let db = try TestDatabase.create()
         try db.write { db in

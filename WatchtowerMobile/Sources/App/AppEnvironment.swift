@@ -405,6 +405,7 @@ final class AppEnvironment {
     var workbenchReplica: WorkbenchReplicaModel { activeSession.workbenchReplica }
     var calendarReplica: CalendarReplicaModel { activeSession.calendarReplica }
     var chats: ChatsCenter { activeSession.chats }
+    var inbox: InboxCenter { activeSession.inbox }
     var phoneRecordings: PhoneRecordingsModel { activeSession.phoneRecordings }
     /// The held recordings the active hub's Recordings list shows: its own
     /// not yet adopted, and those waiting for a Mac the phone no longer has

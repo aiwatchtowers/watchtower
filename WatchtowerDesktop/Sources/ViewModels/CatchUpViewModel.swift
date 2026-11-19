@@ -1,14 +1,15 @@
 import Foundation
 import GRDB
 import WatchtowerCore
+import WatchtowerInterface
 
 // MARK: - Catch-Up absence-recap ViewModel
 //
 // Drives the recap document UX: a list of persisted `catchup_recaps` rows on the
 // left, one rendered recap on the right. Building and regenerating are delegated
 // to `watchtower catchup run` (which owns the window resolution, the coverage
-// top-up and the compose call); acknowledge is a direct DB write via
-// `CatchUpQueries.acknowledge` — the Swift half of the CATCHUP-01 dual path.
+// top-up and the compose call); acknowledge is Go's `catchup.acknowledge`
+// tower command (#1170 Task 12), the CATCHUP-01 write.
 
 /// The window a build covers. `auto` is the default and passes no flags at all,
 /// leaving the CLI to resolve "since I was last caught up".
@@ -107,14 +108,23 @@ final class CatchUpViewModel {
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
 
+    /// The acknowledge press through the tower and its row state.
+    let presses: TowerPresses
+
     init(
         dbPool: DatabasePool,
+        tower: (any TowerSending)? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
         self.dbPool = dbPool
         self.now = now
         self.sleep = sleep
+        presses = TowerPresses(tower: tower)
+        presses.reread = { [weak self] in
+            await self?.reload()
+            await self?.onRecapsChanged?()
+        }
     }
 
     // MARK: - Loading
@@ -385,18 +395,19 @@ final class CatchUpViewModel {
     /// "I'm caught up": marks the selected recap's whole window read across the
     /// five `read_at` surfaces and stamps `acknowledged_at` (CATCHUP-01), then
     /// reloads so the button flips to its label and the auto-window caption moves.
+    /// Go marks the window read and stamps the recap in one write; the list
+    /// re-reads after the answer (Go's write is another process's), and a
+    /// refusal stays on the recap's row with Retry.
     func acknowledge() async {
         guard let recap = selected else { return }
-        do {
-            try await dbPool.write { db in
-                try CatchUpQueries.acknowledge(db, recap: recap)
-            }
-            await reload()
-            await onRecapsChanged?()
-        } catch {
-            self.error = "Failed to acknowledge: \(error.localizedDescription)"
+        let id = recap.id
+        let _: ActResult? = await presses.send(.catchupAcknowledge, row: Self.row(id), label: TowerPressText.marking) {
+            ScreenIDRequest(requestID: $0, id: Int64(id))
         }
     }
+
+    /// The row key of recap `id`'s acknowledge.
+    static func row(_ id: Int) -> String { "recap:\(id)" }
 
     // MARK: - Inline source detail
 

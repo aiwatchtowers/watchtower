@@ -10,6 +10,8 @@ An agent stops at a permission prompt while you are away from your desk. The pho
 
 Both need a grant on the Mac. **Answer permission prompts from this phone** is its own switch with its own **Allow…** on the Mac's phone row; **Interrupt** rides on **Type into sessions from this phone**. See [Let the phone do more](iphone.md#let-the-phone-do-more).
 
+The same **Answer permission prompts** grant covers the phone's Inbox gestures that act for you: **Approve**, **Retry** and **Dismiss** on an approval, **Make a Task**, and a card's buttons. **Reply** needs typing instead. **Done**, **Snooze**, **Hide** and plan items need no grant.
+
 ## Using it
 
 ### Answer a permission prompt

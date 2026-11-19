@@ -86,6 +86,9 @@ final class RememberCenter {
         })
     }
 
+    /// `watchtower instructions remember`'s `not_owner_text` sentence (LIVE-01).
+    static let notOwnerText = "this conversation used Live Slack: only the owner's own words can be remembered"
+
     /// Removes the line this message added. A line already gone is not an
     /// error: the mark says so.
     func undo(messageID: Int64) async {

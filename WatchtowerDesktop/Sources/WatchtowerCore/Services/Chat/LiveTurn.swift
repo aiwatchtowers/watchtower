@@ -59,7 +59,6 @@ package final class LiveTurn {
     package private(set) var phase: Phase = .running
     package private(set) var endedAt: Date?
     package private(set) var usage: ChatUsage?
-    package internal(set) var persistError: String?
 
     /// Authoritative text — what is persisted.
     @ObservationIgnored package private(set) var fullText = ""

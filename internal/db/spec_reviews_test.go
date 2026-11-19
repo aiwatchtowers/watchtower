@@ -93,7 +93,7 @@ func TestSpecReview_RequeueKeepsMarks(t *testing.T) {
 	assert.Equal(t, 0, got.PID)
 	marks, err := d.ListSpecReviewMarks(askID)
 	require.NoError(t, err)
-	assert.Equal(t, SpecReviewMark{State: "comment", Body: "hi", About: "Threads stay muted", UpdatedAt: "x"}, marks["f1"])
+	assert.Equal(t, SpecReviewMark{ItemKey: "f1", State: "comment", Body: "hi", About: "Threads stay muted", UpdatedAt: "x"}, marks["f1"])
 }
 
 func TestSpecReview_CascadeOnAskDelete(t *testing.T) {

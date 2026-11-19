@@ -49,13 +49,15 @@ var blockTypes = []string{TypeHeading, TypeText, TypeList, TypeTable, TypePerson
 var Tones = []string{"neutral", "info", "success", "warning", "danger", "accent"}
 
 // Ref kinds of a list row; RefAction and RefReminder only from a built-in
-// automation.
+// automation, RefPlanItem only from the hub's projection of the Inbox's
+// legacy entries (Options.PlanItemRefs), never from a script.
 const (
 	RefInboxItem = "inbox_item"
 	RefTrack     = "track"
 	RefIdea      = "idea"
 	RefReminder  = "reminder"
 	RefAction    = "action"
+	RefPlanItem  = "plan_item"
 )
 
 var refKinds = []string{RefInboxItem, RefTrack, RefIdea, RefReminder, RefAction}

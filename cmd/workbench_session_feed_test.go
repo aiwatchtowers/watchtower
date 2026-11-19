@@ -336,3 +336,78 @@ func TestSessionFeed_SubagentActivity(t *testing.T) {
 	assert.Equal(t, "Read", act["tool"])
 	assert.Equal(t, "y.go", act["summary"])
 }
+
+func tailFixture(t *testing.T, n int) sessionFeedFx {
+	t.Helper()
+	fx := newSessionFeedFx(t, "conv-1")
+	var lines []string
+	for i := range n {
+		lines = append(lines, feedUser(fmt.Sprintf("u%d", i), "msg"))
+	}
+	fx.transcript(t, "conv-1", lines...)
+	return fx
+}
+
+func TestSessionFeed_TailPagesWithBeforeAndKeepsCursor(t *testing.T) {
+	fx := tailFixture(t, 70)
+	full := fx.feedJSON(t)
+	page := fx.feedJSON(t, "--tail", "60")
+	entries := page["entries"].([]any)
+	require.Len(t, entries, 60)
+	first := entries[0].(map[string]any)["id"]
+	assert.Equal(t, first, page["before"])
+	assert.Equal(t, full["cursor"], page["cursor"])
+	older := fx.feedJSON(t, "--tail", "60", "--before", first.(string))
+	assert.Len(t, older["entries"], 10)
+	assert.NotContains(t, older, "before")
+	assert.NotContains(t, full, "before")
+}
+
+func TestSessionFeed_TailSubagentsMatchFullRead(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1")
+	lines := []string{jsonRec(map[string]any{"type": "assistant", "uuid": "a2", "timestamp": "2026-10-01T10:00:06Z",
+		"message": map[string]any{"id": "m2", "role": "assistant", "content": []map[string]any{{
+			"type": "tool_use", "id": "toolu_1", "name": "Agent",
+			"input": map[string]any{"subagent_type": "Explore", "description": "look around"}}}}})}
+	for i := range 70 {
+		lines = append(lines, feedUser(fmt.Sprintf("u%d", i), "msg"))
+	}
+	fx.transcript(t, "conv-1", lines...)
+	full := fx.feedJSON(t)
+	tail := fx.feedJSON(t, "--tail", "5")
+	assert.Len(t, tail["entries"], 5)
+	require.Len(t, full["subagents"], 1)
+	assert.Equal(t, full["subagents"], tail["subagents"])
+}
+
+func TestSessionFeed_SubagentsItemsCarryStartedAt(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1")
+	fx.transcript(t, "conv-1",
+		feedUser("u1", "hello"),
+		feedAgent("a1", "m1", "hi there"),
+		jsonRec(map[string]any{"type": "assistant", "uuid": "a2", "timestamp": "2026-10-01T10:00:06Z",
+			"message": map[string]any{"id": "m2", "role": "assistant", "content": []map[string]any{{
+				"type": "tool_use", "id": "toolu_1", "name": "Agent",
+				"input": map[string]any{"subagent_type": "Explore", "description": "look around"}}}}}))
+	got := fx.feedJSON(t)
+	sub := got["subagents"].([]any)[0].(map[string]any)["subagent"].(map[string]any)
+	assert.Equal(t, "2026-10-01T10:00:06Z", sub["started_at"])
+	entry := got["entries"].([]any)[2].(map[string]any)["subagent"].(map[string]any)
+	assert.NotContains(t, entry, "started_at", "entries keep the five pinned keys")
+}
+
+func TestSessionFeed_TailFlagRules(t *testing.T) {
+	fx := tailFixture(t, 3)
+	_, err := fx.run(t, "--tail", "0")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--tail")
+	_, err = fx.run(t, "--before", "u1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--before needs --tail")
+	_, err = fx.run(t, "--tail", "2", "--after", "conv-1:0")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "none of the others can be")
+	_, err = fx.run(t, "--tail", "2", "--subagent", "toolu_x")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "none of the others can be")
+}

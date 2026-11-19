@@ -2,8 +2,13 @@ import ChatUI
 import ChatWire
 import Foundation
 import WatchtowerCore
+import WatchtowerInterface
 
 extension AppState {
+    /// The chat writes no engine op covers (embedded chats, drafts, meetings,
+    /// code questions) go to Go through the tower (mobile Inbox spec §8).
+    var chatWrites: ChatWrites { ChatWrites(tower: towerClient) }
+
     /// The main chat's window shell over the engine's client. A new automatic
     /// chat reads the current saved provider preference.
     func makeMainChatViewModel(_ db: DatabaseManager, client: any ChatClient) -> ChatViewModel {
