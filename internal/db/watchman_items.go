@@ -13,8 +13,6 @@ import (
 // the writers of the wait, leased by the twin worker, finished in the same
 // transaction as the answer. Go never writes the feedback columns (Desktop only).
 
-// ErrWatchmanItemExists reports that the wait point already has an item of the target kind.
-var ErrWatchmanItemExists = errors.New("watchman item of that kind already exists")
 
 // WatchmanItem is one wait point and the twin's handling of it.
 type WatchmanItem struct {
@@ -128,34 +126,6 @@ func scanWatchmanItem(sc interface{ Scan(...any) error }) (*WatchmanItem, error)
 		}
 	}
 	return &it, nil
-}
-
-// QueueWatchmanItem inserts a queued item; a wait point already queued (same
-// ref_kind, ref_id, kind) is left alone and its id returned with inserted false.
-func (db *DB) QueueWatchmanItem(it WatchmanItem) (id int64, inserted bool, err error) {
-	created := it.CreatedAt
-	if created.IsZero() {
-		created = time.Now()
-	}
-	q := []rune(it.Question)
-	if len(q) > watchmanQuestionMax {
-		q = q[:watchmanQuestionMax]
-	}
-	res, err := db.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, not_before, question, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(ref_kind, ref_id, kind) DO NOTHING`,
-		it.WorkbenchID, wmNullID(it.SessionID), wmNullID(it.TargetID), it.Kind, it.RefKind, it.RefID, wmNullTime(it.NotBefore), string(q), wmTime(created))
-	if err != nil {
-		return 0, false, fmt.Errorf("queueing watchman item %s/%d: %w", it.RefKind, it.RefID, err)
-	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		id, err = res.LastInsertId()
-		return id, true, err
-	}
-	err = db.QueryRow(`SELECT id FROM watchman_items WHERE ref_kind = ? AND ref_id = ? AND kind = ?`, it.RefKind, it.RefID, it.Kind).Scan(&id)
-	if err != nil {
-		return 0, false, fmt.Errorf("reading queued watchman item %s/%d: %w", it.RefKind, it.RefID, err)
-	}
-	return id, false, nil
 }
 
 // WatchmanAskItemKind is the item kind of an ask of askKind: a review is
@@ -444,18 +414,14 @@ func (db *DB) ParkWatchmanGuard(it WatchmanItem, at time.Time) error {
 	return nil
 }
 
-// LeaseWatchmanItem takes the oldest queued item (not_before reached) or
-// deciding item whose lease expired that eligible accepts, and moves it to
-// deciding with attempts+1 and lease_until = now+lease. Nil when none. The
-// move is a compare-and-set, so two workers never get the same item.
-func (db *DB) LeaseWatchmanItem(now time.Time, lease time.Duration, eligible func(WatchmanItem) bool) (*WatchmanItem, error) {
-	return db.leaseWatchmanItem(now, lease, eligible, false)
-}
-
-// LeaseArmedWatchmanItem is LeaseWatchmanItem for the twin: the
-// compare-and-set also requires the item's session to be armed at that
-// statement (armedSessionsFrom), so a disarm between the caller's arming
-// read and the lease leaves the item queued (WATCHMAN-04).
+// LeaseArmedWatchmanItem takes the oldest queued item (not_before reached)
+// or deciding item whose lease expired that eligible accepts, and moves it
+// to deciding with attempts+1 and lease_until = now+lease. Nil when none.
+// The move is a compare-and-set, so two workers never get the same item; it
+// also requires the item's session to be armed at that statement
+// (armedSessionsFrom; a handover by its arming row), so a disarm between
+// the caller's arming read and the lease leaves the item queued
+// (WATCHMAN-04). armedOnly false (tests) leaves the arming out.
 func (db *DB) LeaseArmedWatchmanItem(now time.Time, lease time.Duration, eligible func(WatchmanItem) bool) (*WatchmanItem, error) {
 	return db.leaseWatchmanItem(now, lease, eligible, true)
 }
@@ -801,20 +767,6 @@ func (db *DB) NoteWatchmanItemDelivery(id int64, delivery string) error {
 		return fmt.Errorf("noting watchman item %d delivery: %w", id, err)
 	}
 	return nil
-}
-
-// SetWatchmanItemKind changes the kind of a still queued item.
-func (db *DB) SetWatchmanItemKind(refKind string, refID int64, from, to string) (bool, error) {
-	res, err := db.Exec(`UPDATE watchman_items SET kind = ? WHERE ref_kind = ? AND ref_id = ? AND kind = ? AND state = 'queued'`,
-		to, refKind, refID, from)
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			return false, fmt.Errorf("changing watchman item kind %s/%d to %s: %w", refKind, refID, to, ErrWatchmanItemExists)
-		}
-		return false, fmt.Errorf("changing watchman item kind %s/%d: %w", refKind, refID, err)
-	}
-	n, err := res.RowsAffected()
-	return n > 0, err
 }
 
 // AddWatchmanGap records a span the Mac slept through.

@@ -13,7 +13,7 @@ import (
 
 func seedJournalItem(t *testing.T, d *db.DB, ref int64, choice, feedback, text string, at *time.Time) int64 {
 	t.Helper()
-	id, _, err := d.QueueWatchmanItem(db.WatchmanItem{WorkbenchID: 1, Kind: "ask", RefKind: "ask", RefID: ref, Question: "Which cache should the importer use?"})
+	id, _, err := queueItem(d, db.WatchmanItem{WorkbenchID: 1, Kind: "ask", RefKind: "ask", RefID: ref, Question: "Which cache should the importer use?"})
 	require.NoError(t, err)
 	var fbAt any
 	if at != nil {
@@ -74,7 +74,7 @@ func TestJournalSource_CorrectionWithoutTextIsSkipped(t *testing.T) {
 func TestJournalSource_LearnStoresASearchablePrecedent(t *testing.T) {
 	d, wb := learnDB(t)
 	at := learnT0.Add(-time.Hour)
-	id, _, err := d.QueueWatchmanItem(db.WatchmanItem{WorkbenchID: wb, Kind: "ask", RefKind: "ask", RefID: 7, Question: "Which cache should the importer use?"})
+	id, _, err := queueItem(d, db.WatchmanItem{WorkbenchID: wb, Kind: "ask", RefKind: "ask", RefID: 7, Question: "Which cache should the importer use?"})
 	require.NoError(t, err)
 	_, err = d.Exec(`UPDATE watchman_items SET state='done', outcome='answered', choice='sqlite', category='design', feedback='ok', feedback_at=? WHERE id=?`, stamp(at), id)
 	require.NoError(t, err)
@@ -88,4 +88,28 @@ func TestJournalSource_LearnStoresASearchablePrecedent(t *testing.T) {
 	require.Len(t, got, 1)
 	require.Equal(t, "sqlite", got[0].Choice)
 	require.Equal(t, SourceJournal, got[0].Source)
+}
+
+// queueItem inserts a queued item as a wait point's writer would (the
+// production writers check the arming; these tests set it up themselves).
+func queueItem(d *db.DB, it db.WatchmanItem) (id int64, inserted bool, err error) {
+	nullID := func(v int64) any {
+		if v == 0 {
+			return nil
+		}
+		return v
+	}
+	res, err := d.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, question, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(ref_kind, ref_id, kind) DO NOTHING`,
+		it.WorkbenchID, nullID(it.SessionID), nullID(it.TargetID), it.Kind, it.RefKind, it.RefID, it.Question,
+		time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return 0, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return 0, false, err
+	}
+	id, err = res.LastInsertId()
+	return id, true, err
 }

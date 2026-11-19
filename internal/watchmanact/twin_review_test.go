@@ -79,7 +79,7 @@ func (e *reviewEnv) queueReview() int64 {
 	if last != nil {
 		refKind, refID = "round", last.ID
 	}
-	id, inserted, err := e.db.QueueWatchmanItem(db.WatchmanItem{WorkbenchID: e.wb, SessionID: e.session, TargetID: e.target,
+	id, inserted, err := queueItem(e.db, db.WatchmanItem{WorkbenchID: e.wb, SessionID: e.session, TargetID: e.target,
 		Kind: "review_code", RefKind: refKind, RefID: refID, Question: "The export is done."})
 	e.must(err)
 	if !inserted {
@@ -557,7 +557,7 @@ func (e *twinEnv) reviewAsk(snapshot string) (askID, itemID int64) {
 		})
 		return err
 	}))
-	itemID, inserted, err := e.db.QueueWatchmanItem(db.WatchmanItem{WorkbenchID: e.wb, SessionID: e.session, TargetID: e.target,
+	itemID, inserted, err := queueItem(e.db, db.WatchmanItem{WorkbenchID: e.wb, SessionID: e.session, TargetID: e.target,
 		Kind: "review_doc", RefKind: "ask", RefID: askID, Question: "Review the export plan"})
 	e.must(err)
 	if !inserted {

@@ -165,7 +165,7 @@ func (e *twinEnv) fileAsk(kind, title, payload, itemKind string) (askID, itemID 
 		})
 		return err
 	}))
-	itemID, inserted, err := e.db.QueueWatchmanItem(db.WatchmanItem{WorkbenchID: e.wb, SessionID: e.session, TargetID: e.target,
+	itemID, inserted, err := queueItem(e.db, db.WatchmanItem{WorkbenchID: e.wb, SessionID: e.session, TargetID: e.target,
 		Kind: itemKind, RefKind: "ask", RefID: askID, Question: title})
 	e.must(err)
 	if !inserted {
@@ -1438,4 +1438,28 @@ func TestTwin_LostRaceReadErrorReleases(t *testing.T) {
 	}
 	e.run()
 	wantOutcome(t, e.item(itemID), OutcomeAnswered)
+}
+
+// queueItem inserts a queued item as a wait point's writer would (the
+// production writers check the arming; these tests set it up themselves).
+func queueItem(d *db.DB, it db.WatchmanItem) (id int64, inserted bool, err error) {
+	nullID := func(v int64) any {
+		if v == 0 {
+			return nil
+		}
+		return v
+	}
+	res, err := d.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, question, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(ref_kind, ref_id, kind) DO NOTHING`,
+		it.WorkbenchID, nullID(it.SessionID), nullID(it.TargetID), it.Kind, it.RefKind, it.RefID, it.Question,
+		time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return 0, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return 0, false, err
+	}
+	id, err = res.LastInsertId()
+	return id, true, err
 }

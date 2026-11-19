@@ -72,7 +72,7 @@ func (e *twinEnv) permission(tool, summary string, clipped bool) (reqID, itemID 
 	e.t.Helper()
 	reqID, err := e.db.OpenPermissionRequest(e.session, e.wb, "uuid", tool, summary, clipped, time.Now(), db.AgentOrder{})
 	e.must(err)
-	itemID, inserted, err := e.db.QueueWatchmanItem(db.WatchmanItem{WorkbenchID: e.wb, SessionID: e.session,
+	itemID, inserted, err := queueItem(e.db, db.WatchmanItem{WorkbenchID: e.wb, SessionID: e.session,
 		Kind: "permission", RefKind: "permission", RefID: reqID, Question: db.WatchmanPermissionText(tool, summary)})
 	e.must(err)
 	if !inserted {
@@ -308,7 +308,7 @@ func TestTwin_PermissionRetakenAfterRestart(t *testing.T) {
 		return permDecision(PermissionAllow), nil
 	}
 	reqID, itemID := e.permission("Bash", "go test ./...", false)
-	old, err := e.db.LeaseWatchmanItem(time.Now().Add(-LeaseFor-time.Minute), LeaseFor, func(db.WatchmanItem) bool { return true })
+	old, err := e.db.LeaseArmedWatchmanItem(time.Now().Add(-LeaseFor-time.Minute), LeaseFor, func(db.WatchmanItem) bool { return true })
 	e.must(err)
 	if old == nil || old.ID != itemID {
 		t.Fatal("the crashed worker's lease was not taken")

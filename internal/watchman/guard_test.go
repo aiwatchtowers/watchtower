@@ -74,7 +74,7 @@ func TestWATCHMAN03_SourcesAreOwnerOnly(t *testing.T) {
 		{Kind: "review_code", RefKind: "round", RefID: twinRound},
 	} {
 		it.WorkbenchID = 1
-		id, _, err := d.QueueWatchmanItem(it)
+		id, _, err := queueItem(d, it)
 		require.NoError(t, err)
 		_, err = d.Exec(`UPDATE watchman_items SET state = 'done', outcome = 'answered' WHERE id = ?`, id)
 		require.NoError(t, err)

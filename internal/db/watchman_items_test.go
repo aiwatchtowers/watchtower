@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -13,7 +14,7 @@ import (
 
 func wmQueueAsk(t *testing.T, d *DB, refID int64) int64 {
 	t.Helper()
-	id, ins, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "ask", RefKind: "ask", RefID: refID, Question: "q"})
+	id, ins, err := d.queueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "ask", RefKind: "ask", RefID: refID, Question: "q"})
 	require.NoError(t, err)
 	require.True(t, ins)
 	return id
@@ -25,7 +26,7 @@ func TestQueueWatchmanItem_OncePerWaitPoint(t *testing.T) {
 	d := openTestDB(t)
 	wmTestWorkbench(t, d, 1)
 	id1 := wmQueueAsk(t, d, 5)
-	id2, ins, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "ask", RefKind: "ask", RefID: 5})
+	id2, ins, err := d.queueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "ask", RefKind: "ask", RefID: 5})
 	require.NoError(t, err)
 	require.False(t, ins)
 	require.Equal(t, id1, id2)
@@ -45,7 +46,7 @@ func TestLeaseWatchmanItem_OneWinner(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			it, err := d.LeaseWatchmanItem(now, 10*time.Minute, wmAll)
+			it, err := d.leaseAnyWatchmanItem(now, 10*time.Minute, wmAll)
 			require.NoError(t, err)
 			got[i] = it
 		}()
@@ -65,19 +66,19 @@ func TestLeaseWatchmanItem_ExpiredLeaseRetaken(t *testing.T) {
 	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
 	_, err := d.Exec(`UPDATE watchman_items SET not_before = ? WHERE id = ?`, wmTime(now.Add(time.Hour)), future)
 	require.NoError(t, err)
-	first, err := d.LeaseWatchmanItem(now, 10*time.Minute, wmAll)
+	first, err := d.leaseAnyWatchmanItem(now, 10*time.Minute, wmAll)
 	require.NoError(t, err)
 	require.NotNil(t, first)
 	require.Equal(t, 1, first.Attempts)
-	none, err := d.LeaseWatchmanItem(now.Add(time.Minute), 10*time.Minute, wmAll)
+	none, err := d.leaseAnyWatchmanItem(now.Add(time.Minute), 10*time.Minute, wmAll)
 	require.NoError(t, err)
 	require.Nil(t, none, "live lease and a future not_before are both skipped")
-	again, err := d.LeaseWatchmanItem(now.Add(11*time.Minute), 10*time.Minute, wmAll)
+	again, err := d.leaseAnyWatchmanItem(now.Add(11*time.Minute), 10*time.Minute, wmAll)
 	require.NoError(t, err)
 	require.NotNil(t, again)
 	require.Equal(t, first.ID, again.ID)
 	require.Equal(t, 2, again.Attempts)
-	skip, err := d.LeaseWatchmanItem(now.Add(2*time.Hour), 10*time.Minute, func(it WatchmanItem) bool { return it.ID != future })
+	skip, err := d.leaseAnyWatchmanItem(now.Add(2*time.Hour), 10*time.Minute, func(it WatchmanItem) bool { return it.ID != future })
 	require.NoError(t, err)
 	require.NotNil(t, skip)
 	require.Equal(t, first.ID, skip.ID, "eligible filter is honoured")
@@ -98,9 +99,9 @@ func TestFinishWatchmanItem_StaleLeaseWritesNothing(t *testing.T) {
 	wmTestWorkbench(t, d, 1)
 	id := wmQueueAsk(t, d, 5)
 	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
-	first, err := d.LeaseWatchmanItem(now, 10*time.Minute, wmAll)
+	first, err := d.leaseAnyWatchmanItem(now, 10*time.Minute, wmAll)
 	require.NoError(t, err)
-	second, err := d.LeaseWatchmanItem(now.Add(11*time.Minute), 10*time.Minute, wmAll)
+	second, err := d.leaseAnyWatchmanItem(now.Add(11*time.Minute), 10*time.Minute, wmAll)
 	require.NoError(t, err)
 	require.NotNil(t, second)
 	require.False(t, wmFinish(t, d, id, *first.LeaseUntil, WatchmanOutcome{Outcome: "answered", Choice: "x"}))
@@ -109,7 +110,7 @@ func TestFinishWatchmanItem_StaleLeaseWritesNothing(t *testing.T) {
 	require.Equal(t, "deciding", state)
 	require.Equal(t, "", choice)
 	require.True(t, wmFinish(t, d, id, *second.LeaseUntil, WatchmanOutcome{Outcome: "answered", Choice: "x", PrecedentIDs: []int64{3, 4}}))
-	got, err := d.LeaseWatchmanItem(now.Add(time.Hour), time.Minute, wmAll)
+	got, err := d.leaseAnyWatchmanItem(now.Add(time.Hour), time.Minute, wmAll)
 	require.NoError(t, err)
 	require.Nil(t, got, "a done item is never leased")
 }
@@ -118,22 +119,22 @@ func TestRequeueWatchmanItem_AndSetKind(t *testing.T) {
 	d := openTestDB(t)
 	wmTestWorkbench(t, d, 1)
 	id := wmQueueAsk(t, d, 5)
-	ok, err := d.SetWatchmanItemKind("ask", 5, "ask", "check")
+	ok, err := d.setWatchmanItemKind("ask", 5, "ask", "check")
 	require.NoError(t, err)
 	require.True(t, ok)
 	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
-	it, err := d.LeaseWatchmanItem(now, time.Minute, wmAll)
+	it, err := d.leaseAnyWatchmanItem(now, time.Minute, wmAll)
 	require.NoError(t, err)
-	ok, err = d.SetWatchmanItemKind("ask", 5, "check", "ask")
+	ok, err = d.setWatchmanItemKind("ask", 5, "check", "ask")
 	require.NoError(t, err)
 	require.False(t, ok, "only while queued")
 	ok, err = d.RequeueWatchmanItem(id, *it.LeaseUntil, now.Add(time.Hour), "refused")
 	require.NoError(t, err)
 	require.True(t, ok)
-	none, err := d.LeaseWatchmanItem(now.Add(time.Minute*5), time.Minute, wmAll)
+	none, err := d.leaseAnyWatchmanItem(now.Add(time.Minute*5), time.Minute, wmAll)
 	require.NoError(t, err)
 	require.Nil(t, none)
-	back, err := d.LeaseWatchmanItem(now.Add(2*time.Hour), time.Minute, wmAll)
+	back, err := d.leaseAnyWatchmanItem(now.Add(2*time.Hour), time.Minute, wmAll)
 	require.NoError(t, err)
 	require.NotNil(t, back)
 	require.Equal(t, 2, back.Attempts)
@@ -147,7 +148,7 @@ func TestFinishWatchmanItem_NeverTouchesFeedback(t *testing.T) {
 	_, err := d.Exec(`UPDATE watchman_items SET feedback = 'ok' WHERE id = ?`, id)
 	require.NoError(t, err)
 	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
-	it, err := d.LeaseWatchmanItem(now, time.Minute, wmAll)
+	it, err := d.leaseAnyWatchmanItem(now, time.Minute, wmAll)
 	require.NoError(t, err)
 	require.True(t, wmFinish(t, d, id, *it.LeaseUntil, WatchmanOutcome{Outcome: "parked", ParkReason: "r"}))
 	var fb string
@@ -187,12 +188,12 @@ func TestLeaseWatchmanItem_PagesPastIneligibleOlderRows(t *testing.T) {
 	wmTestWorkbench(t, d, 1)
 	old := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	for i := int64(1); i <= watchmanLeaseScanMax+1; i++ {
-		_, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "ask", RefKind: "ask", RefID: i, CreatedAt: old})
+		_, _, err := d.queueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "ask", RefKind: "ask", RefID: i, CreatedAt: old})
 		require.NoError(t, err)
 	}
-	_, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "check", RefKind: "session", RefID: 1, CreatedAt: old.Add(time.Hour)})
+	_, _, err := d.queueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "check", RefKind: "session", RefID: 1, CreatedAt: old.Add(time.Hour)})
 	require.NoError(t, err)
-	it, err := d.LeaseWatchmanItem(time.Now(), time.Minute, func(it WatchmanItem) bool { return it.Kind == "check" })
+	it, err := d.leaseAnyWatchmanItem(time.Now(), time.Minute, func(it WatchmanItem) bool { return it.Kind == "check" })
 	require.NoError(t, err)
 	require.NotNil(t, it)
 	require.Equal(t, "check", it.Kind)
@@ -202,8 +203,8 @@ func TestLeaseWatchmanItem_KindChangedAfterReadIsNotLeased(t *testing.T) {
 	d := openTestDB(t)
 	wmTestWorkbench(t, d, 1)
 	wmQueueAsk(t, d, 5)
-	it, err := d.LeaseWatchmanItem(time.Now(), time.Minute, func(WatchmanItem) bool {
-		ok, err := d.SetWatchmanItemKind("ask", 5, "ask", "check")
+	it, err := d.leaseAnyWatchmanItem(time.Now(), time.Minute, func(WatchmanItem) bool {
+		ok, err := d.setWatchmanItemKind("ask", 5, "ask", "check")
 		require.NoError(t, err)
 		require.True(t, ok)
 		return true
@@ -213,17 +214,6 @@ func TestLeaseWatchmanItem_KindChangedAfterReadIsNotLeased(t *testing.T) {
 	var state string
 	require.NoError(t, d.QueryRow(`SELECT state FROM watchman_items WHERE ref_id = 5`).Scan(&state))
 	require.Equal(t, "queued", state)
-}
-
-func TestSetWatchmanItemKind_CollisionIsSentinel(t *testing.T) {
-	d := openTestDB(t)
-	wmTestWorkbench(t, d, 1)
-	wmQueueAsk(t, d, 5)
-	_, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "check", RefKind: "ask", RefID: 5})
-	require.NoError(t, err)
-	ok, err := d.SetWatchmanItemKind("ask", 5, "ask", "check")
-	require.False(t, ok)
-	require.ErrorIs(t, err, ErrWatchmanItemExists)
 }
 
 // wmArmSession arms session id directly.
@@ -298,7 +288,7 @@ func TestScanWatchmanWaitPoints_QueuesMissed(t *testing.T) {
 	require.Equal(t, 2, total, "the automation's asks and the unarmed session's wait points are never queued")
 
 	// An ask whose item changed kind (a handover) is not queued again as an ask.
-	ok, err := d.SetWatchmanItemKind("ask", askID, "ask", "handover")
+	ok, err := d.setWatchmanItemKind("ask", askID, "ask", "handover")
 	require.NoError(t, err)
 	require.True(t, ok)
 	n, err = d.ScanWatchmanWaitPoints(now, func(s string) string { return s })
@@ -353,7 +343,7 @@ func TestScanWatchmanWaitPoints_RaceWithWriterKeepsOneRow(t *testing.T) {
 	askID := mustInsertAsk(t, d, ask)
 	prev := watchmanScanBeforeInsert
 	watchmanScanBeforeInsert = func() {
-		_, ins, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: askID})
+		_, ins, err := d.queueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: askID})
 		require.NoError(t, err)
 		require.True(t, ins)
 	}
@@ -501,9 +491,9 @@ func TestDropWatchmanItem_OnlyUnderTheLease(t *testing.T) {
 	wmTestWorkbench(t, d, 1)
 	id := wmQueueAsk(t, d, 5)
 	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
-	first, err := d.LeaseWatchmanItem(now, 10*time.Minute, wmAll)
+	first, err := d.leaseAnyWatchmanItem(now, 10*time.Minute, wmAll)
 	require.NoError(t, err)
-	second, err := d.LeaseWatchmanItem(now.Add(11*time.Minute), 10*time.Minute, wmAll)
+	second, err := d.leaseAnyWatchmanItem(now.Add(11*time.Minute), 10*time.Minute, wmAll)
 	require.NoError(t, err)
 	ok, err := d.DropWatchmanItem(id, *first.LeaseUntil)
 	require.NoError(t, err)
@@ -525,7 +515,7 @@ func TestNoteWatchmanItemDelivery_OnlyDoneItems(t *testing.T) {
 	require.NoError(t, d.QueryRow(`SELECT delivery FROM watchman_items WHERE id = ?`, id).Scan(&delivery))
 	require.Equal(t, "", delivery, "a queued item is not noted")
 	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
-	it, err := d.LeaseWatchmanItem(now, 10*time.Minute, wmAll)
+	it, err := d.leaseAnyWatchmanItem(now, 10*time.Minute, wmAll)
 	require.NoError(t, err)
 	require.True(t, wmFinish(t, d, id, *it.LeaseUntil, WatchmanOutcome{Outcome: "answered"}))
 	_, err = d.Exec(`UPDATE watchman_items SET error = 'owed' WHERE id = ?`, id)
@@ -575,7 +565,7 @@ func TestParkWatchmanGuard_EachDenialIsItsOwnItemOnItsNight(t *testing.T) {
 		require.True(t, it.DecidedAt.Equal(at))
 	}
 	// A guard item never collides with another wait point's numbers.
-	_, ins, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "ask", RefKind: "ask", RefID: 1})
+	_, ins, err := d.queueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "ask", RefKind: "ask", RefID: 1})
 	require.NoError(t, err)
 	require.True(t, ins)
 }
@@ -604,7 +594,7 @@ func TestLeaseArmedWatchmanItem_DisarmBeforeTheLeaseLeavesQueued(t *testing.T) {
 	wb := newTestWorkbench(t, d)
 	s := newTestSession(t, d, wb)
 	wmArmSession(t, d, s)
-	id, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: 9, Question: "q"})
+	id, _, err := d.queueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: 9, Question: "q"})
 	require.NoError(t, err)
 	now := time.Now()
 	it, err := d.LeaseArmedWatchmanItem(now, time.Minute, func(WatchmanItem) bool {
@@ -628,7 +618,7 @@ func TestReleaseWatchmanItem_GivesTheAttemptBack(t *testing.T) {
 	wmTestWorkbench(t, d, 1)
 	id := wmQueueAsk(t, d, 5)
 	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
-	it, err := d.LeaseWatchmanItem(now, 10*time.Minute, wmAll)
+	it, err := d.leaseAnyWatchmanItem(now, 10*time.Minute, wmAll)
 	require.NoError(t, err)
 	ok, err := d.ReleaseWatchmanItem(id, *it.LeaseUntil, 0.25)
 	require.NoError(t, err)
@@ -640,7 +630,7 @@ func TestReleaseWatchmanItem_GivesTheAttemptBack(t *testing.T) {
 	require.Equal(t, "queued", state)
 	require.Equal(t, 0, attempts)
 	require.InDelta(t, 0.25, cost, 1e-9, "the released call's cost is kept")
-	it, err = d.LeaseWatchmanItem(now, 10*time.Minute, wmAll)
+	it, err = d.leaseAnyWatchmanItem(now, 10*time.Minute, wmAll)
 	require.NoError(t, err)
 	require.True(t, wmFinish(t, d, id, *it.LeaseUntil, WatchmanOutcome{Outcome: "answered", CostUSD: 0.5}))
 	require.NoError(t, d.QueryRow(`SELECT cost_usd FROM watchman_items WHERE id = ?`, id).Scan(&cost))
@@ -657,7 +647,7 @@ func TestPromoteWatchmanHandover_DecidingItemBecomesHandover(t *testing.T) {
 	ask := questionAsk(wb, "Left: images")
 	ask.SessionID = nullID(s)
 	askID := mustInsertAsk(t, d, ask)
-	_, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: askID, Question: "q"})
+	_, _, err := d.queueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: askID, Question: "q"})
 	require.NoError(t, err)
 	_, err = d.LeaseArmedWatchmanItem(time.Now(), time.Minute, wmAll)
 	require.NoError(t, err)
@@ -679,7 +669,7 @@ func TestDoneWatchmanItemsWithError_ListsAndClears(t *testing.T) {
 	require.NoError(t, err)
 	wmArmSession(t, d, 77) // the claim requires the arming
 	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
-	it, err := d.LeaseWatchmanItem(now, 10*time.Minute, wmAll)
+	it, err := d.leaseAnyWatchmanItem(now, 10*time.Minute, wmAll)
 	require.NoError(t, err)
 	require.True(t, wmFinish(t, d, id, *it.LeaseUntil, WatchmanOutcome{Outcome: "answered", Error: "owed"}))
 	got, err := d.DoneWatchmanItemsWithError("handover", "owed")
@@ -750,7 +740,7 @@ func TestPruneWatchmanArming_KeepsAnOpenHandoversSession(t *testing.T) {
 	wb := newTestWorkbench(t, d)
 	s := newTestSession(t, d, wb)
 	wmArmSession(t, d, s)
-	id, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
+	id, _, err := d.queueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
 	require.NoError(t, err)
 	_, err = d.Exec(`UPDATE terminal_sessions SET finished_at = '2026-11-18T02:00:00Z' WHERE id = ?`, s)
 	require.NoError(t, err)
@@ -777,9 +767,9 @@ func TestLeaseArmedWatchmanItem_HandoverOfAFinishedSession(t *testing.T) {
 	wb := newTestWorkbench(t, d)
 	s := newTestSession(t, d, wb)
 	wmArmSession(t, d, s)
-	_, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: 8, Question: "q"})
+	_, _, err := d.queueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: 8, Question: "q"})
 	require.NoError(t, err)
-	_, _, err = d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
+	_, _, err = d.queueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
 	require.NoError(t, err)
 	_, err = d.Exec(`UPDATE terminal_sessions SET finished_at = '2026-11-18T02:00:00Z' WHERE id = ?`, s)
 	require.NoError(t, err)
@@ -802,7 +792,7 @@ func TestPruneWatchmanArming_DeletedSessionGoesWithItsHandover(t *testing.T) {
 			wb := newTestWorkbench(t, d)
 			s := newTestSession(t, d, wb)
 			wmArmSession(t, d, s)
-			_, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
+			_, _, err := d.queueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
 			require.NoError(t, err)
 			if gone == "deleting" {
 				_, err = d.Exec(`UPDATE terminal_sessions SET finished_at = '2026-11-18T02:00:00Z', delete_requested_at = '2026-11-18T02:01:00Z' WHERE id = ?`, s)
@@ -832,7 +822,7 @@ func TestWatchmanItemArmed_SessionsTargetCovers(t *testing.T) {
 	armed, err := d.WatchmanItemArmed(s, 0)
 	require.NoError(t, err)
 	require.True(t, armed)
-	_, _, err = d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
+	_, _, err = d.queueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
 	require.NoError(t, err)
 	it, err := d.LeaseArmedWatchmanItem(time.Now(), time.Minute, wmAll)
 	require.NoError(t, err)
@@ -852,7 +842,7 @@ func TestWatchmanItemArmed_DeletingSessionsTargetDoesNotCover(t *testing.T) {
 	armed, err := d.WatchmanItemArmed(s, 0)
 	require.NoError(t, err)
 	require.False(t, armed)
-	_, _, err = d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
+	_, _, err = d.queueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
 	require.NoError(t, err)
 	it, err := d.LeaseArmedWatchmanItem(time.Now(), time.Minute, wmAll)
 	require.NoError(t, err)
@@ -892,7 +882,7 @@ func TestPromoteWatchmanHandover_HoldAndTwinAnsweredAsk(t *testing.T) {
 	ask := questionAsk(wb, "Left: images")
 	ask.SessionID = nullID(s)
 	askID := mustInsertAsk(t, d, ask)
-	id, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: askID, Question: "q"})
+	id, _, err := d.queueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: askID, Question: "q"})
 	require.NoError(t, err)
 	promoted, _, err := d.PromoteWatchmanHandover(WatchmanItem{WorkbenchID: wb, SessionID: s, RefID: askID, Question: "q"}, true)
 	require.NoError(t, err)
@@ -924,7 +914,7 @@ func TestPromoteWatchmanHandover_HoldAndTwinAnsweredAsk(t *testing.T) {
 		a := questionAsk(wb, name)
 		a.SessionID = nullID(s)
 		aID := mustInsertAsk(t, d, a)
-		_, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: aID, Question: "q"})
+		_, _, err := d.queueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: aID, Question: "q"})
 		require.NoError(t, err)
 		_, err = d.Exec(`UPDATE watchman_items SET state = 'done', outcome = ? WHERE ref_kind = 'ask' AND ref_id = ?`, outcome, aID)
 		require.NoError(t, err)
@@ -936,4 +926,50 @@ func TestPromoteWatchmanHandover_HoldAndTwinAnsweredAsk(t *testing.T) {
 		require.Equal(t, outcome == "answered", inserted, name)
 		require.Equal(t, outcome == "answered", twin, name)
 	}
+}
+
+// queueWatchmanItem (tests) inserts a queued item; a wait point already queued (same
+// ref_kind, ref_id, kind) is left alone and its id returned with inserted false.
+func (db *DB) queueWatchmanItem(it WatchmanItem) (id int64, inserted bool, err error) {
+	created := it.CreatedAt
+	if created.IsZero() {
+		created = time.Now()
+	}
+	q := []rune(it.Question)
+	if len(q) > watchmanQuestionMax {
+		q = q[:watchmanQuestionMax]
+	}
+	res, err := db.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, not_before, question, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(ref_kind, ref_id, kind) DO NOTHING`,
+		it.WorkbenchID, wmNullID(it.SessionID), wmNullID(it.TargetID), it.Kind, it.RefKind, it.RefID, wmNullTime(it.NotBefore), string(q), wmTime(created))
+	if err != nil {
+		return 0, false, fmt.Errorf("queueing watchman item %s/%d: %w", it.RefKind, it.RefID, err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		id, err = res.LastInsertId()
+		return id, true, err
+	}
+	err = db.QueryRow(`SELECT id FROM watchman_items WHERE ref_kind = ? AND ref_id = ? AND kind = ?`, it.RefKind, it.RefID, it.Kind).Scan(&id)
+	if err != nil {
+		return 0, false, fmt.Errorf("reading queued watchman item %s/%d: %w", it.RefKind, it.RefID, err)
+	}
+	return id, false, nil
+}
+
+// leaseAnyWatchmanItem (tests) is LeaseArmedWatchmanItem without the
+// arming check.
+func (db *DB) leaseAnyWatchmanItem(now time.Time, lease time.Duration, eligible func(WatchmanItem) bool) (*WatchmanItem, error) {
+	return db.leaseWatchmanItem(now, lease, eligible, false)
+}
+
+// setWatchmanItemKind (tests) changes the kind of a still queued item, as
+// finish_session's promotion does.
+func (db *DB) setWatchmanItemKind(refKind string, refID int64, from, to string) (bool, error) {
+	res, err := db.Exec(`UPDATE watchman_items SET kind = ? WHERE ref_kind = ? AND ref_id = ? AND kind = ? AND state = 'queued'`,
+		to, refKind, refID, from)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
