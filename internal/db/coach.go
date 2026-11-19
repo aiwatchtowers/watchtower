@@ -62,6 +62,9 @@ type CoachProposal struct {
 	// saw a repo_* edit at the folder's HEAD (zero = not yet, or not repo_*).
 	WrittenBranch string
 	MeasureFrom   time.Time
+	// PRURL is the pull request a repo_* Accept opened ("" = not a PR row);
+	// RevertPRURL the one a Rollback opened to undo it.
+	PRURL, RevertPRURL string
 }
 
 // PromptAddition is an owner-accepted addition to a Watchtower prompt.
@@ -90,7 +93,7 @@ func parseCoachStamp(s string) (time.Time, error) {
 const coachCols = `id, fingerprint, kind, destination, COALESCE(workbench_id, 0), prompt_id, title, why, metric,
 	before_text, after_text, evidence, sources, status, COALESCE(reverts_id, 0), created_at, decided_at,
 	baseline, baseline_n, verdict, verdict_value, verdict_at, origin, skill, conversation_id,
-	written_branch, COALESCE(measure_from, '')`
+	written_branch, COALESCE(measure_from, ''), pr_url, revert_pr_url`
 
 func scanCoachProposal(row interface{ Scan(...any) error }) (CoachProposal, error) {
 	var p CoachProposal
@@ -100,7 +103,7 @@ func scanCoachProposal(row interface{ Scan(...any) error }) (CoachProposal, erro
 	if err := row.Scan(&p.ID, &p.Fingerprint, &p.Kind, &p.Destination, &p.WorkbenchID, &p.PromptID, &p.Title,
 		&p.Why, &p.Metric, &p.BeforeText, &p.AfterText, &evidence, &p.Sources, &p.Status, &p.RevertsID,
 		&created, &decided, &baseline, &p.BaselineN, &p.Verdict, &verdictValue, &verdictAt,
-		&p.Origin, &p.Skill, &conv, &p.WrittenBranch, &measureFrom); err != nil {
+		&p.Origin, &p.Skill, &conv, &p.WrittenBranch, &measureFrom, &p.PRURL, &p.RevertPRURL); err != nil {
 		return CoachProposal{}, fmt.Errorf("scanning coach proposal: %w", err)
 	}
 	if err := json.Unmarshal([]byte(evidence), &p.Evidence); err != nil {
@@ -363,16 +366,25 @@ func (db *DB) DecideCoachProposal(id int64, from, to string, now time.Time) erro
 // branch a workbench repository file was written on ("" for every other
 // destination) and the metric baseline with the number of observations behind
 // it, measured at that moment. A nil baseline (nothing measurable) is stored
-// as NULL.
-func (db *DB) MarkCoachAccepted(id int64, after, branch string, baseline *float64, n int, now time.Time) error {
+// as NULL. prURL is the pull request a repo_* Accept opened ("" otherwise).
+func (db *DB) MarkCoachAccepted(id int64, after, branch, prURL string, baseline *float64, n int, now time.Time) error {
 	var b any
 	if baseline != nil {
 		b = *baseline
 	}
 	res, err := db.Exec(`UPDATE coach_proposals SET status = 'accepted', decided_at = ?, after_text = ?,
-		written_branch = ?, baseline = ?, baseline_n = ? WHERE id = ? AND status = 'open'`,
-		coachStamp(now), after, branch, b, n, id)
+		written_branch = ?, pr_url = ?, baseline = ?, baseline_n = ? WHERE id = ? AND status = 'open'`,
+		coachStamp(now), after, branch, prURL, b, n, id)
 	return coachCAS(res, err, "accepting coach proposal")
+}
+
+// MarkCoachRolledBack moves an accepted proposal to rolled_back and stores the
+// pull request the rollback opened ("" for a row without one); otherwise
+// ErrCoachStateChanged.
+func (db *DB) MarkCoachRolledBack(id int64, revertPRURL string, now time.Time) error {
+	res, err := db.Exec(`UPDATE coach_proposals SET status = 'rolled_back', decided_at = ?, revert_pr_url = ?
+		WHERE id = ? AND status = 'accepted'`, coachStamp(now), revertPRURL, id)
+	return coachCAS(res, err, "rolling back coach proposal")
 }
 
 // SetCoachMeasureFrom starts the verdict window of an accepted repo_* edit:
@@ -396,11 +408,20 @@ func (db *DB) SetCoachMeasureFrom(id int64, at time.Time) (bool, error) {
 // ListRepoProposalsAwaitingCommit returns the accepted workbench repository
 // edits whose commit has not been seen yet (measure_from NULL) and that have
 // no verdict (30 days without the commit is a final too_little_data), oldest
-// first.
+// first. A pull-request row (pr_url set) is not listed: the daemon never
+// writes its measure_from.
 func (db *DB) ListRepoProposalsAwaitingCommit() ([]CoachProposal, error) {
 	return queryCoachProposals(db, `SELECT `+coachCols+` FROM coach_proposals
 		WHERE status = 'accepted' AND destination LIKE 'repo\_%' ESCAPE '\'
-		AND measure_from IS NULL AND verdict = '' ORDER BY id`)
+		AND pr_url = '' AND measure_from IS NULL AND verdict = '' ORDER BY id`)
+}
+
+// ListPRProposalsAwaitingMerge returns the accepted proposals that opened a
+// pull request, not yet measured (measure_from NULL) and without a verdict,
+// oldest first.
+func (db *DB) ListPRProposalsAwaitingMerge() ([]CoachProposal, error) {
+	return queryCoachProposals(db, `SELECT `+coachCols+` FROM coach_proposals
+		WHERE status = 'accepted' AND pr_url <> '' AND measure_from IS NULL AND verdict = '' ORDER BY id`)
 }
 
 // SetCoachVerdict stores the outcome verdict of an accepted proposal, only

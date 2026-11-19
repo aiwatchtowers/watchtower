@@ -409,7 +409,7 @@ func TestAccept_RepoWorkbenchDeletedAfterWrite_Undone(t *testing.T) {
 		w, err := a.writeDestination(p, cur, p.AfterText, applyNow)
 		require.NoError(t, err, c.name)
 		require.NoError(t, d.DeleteWorkbench(wb), c.name)
-		require.ErrorIs(t, d.MarkCoachAccepted(id, w.result, "", nil, 0, applyNow), db.ErrCoachStateChanged, c.name)
+		require.ErrorIs(t, d.MarkCoachAccepted(id, w.result, "", "", nil, 0, applyNow), db.ErrCoachStateChanged, c.name)
 		require.NoError(t, w.undo(), c.name)
 		if c.before == "" {
 			assert.NoFileExists(t, path, c.name)

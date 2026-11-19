@@ -52,7 +52,7 @@ func acceptedRepoEdit(t *testing.T, database *db.DB) (folder string, id int64) {
 		Kind: "replace", Destination: coach.DestRepoClaudeMD, WorkbenchID: wb, Title: "Lint", Why: "Asked twice.",
 		Metric: "corrections", BeforeText: "Run tests.\n", AfterText: "Run lint.\n", Sources: 1}, nil, time.Now())
 	require.NoError(t, err)
-	require.NoError(t, database.MarkCoachAccepted(id, "Run lint.\n", "main", nil, 0, time.Now()))
+	require.NoError(t, database.MarkCoachAccepted(id, "Run lint.\n", "main", "", nil, 0, time.Now()))
 	require.NoError(t, os.WriteFile(filepath.Join(folder, "CLAUDE.md"), []byte("Run lint.\n"), 0o644))
 	return folder, id
 }

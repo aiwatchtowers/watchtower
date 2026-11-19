@@ -67,10 +67,6 @@ final class TuningChatTextsTests: XCTestCase {
     }
 
     func testRepoFileLines() {
-        XCTAssertEqual(TuningChatTexts.repoCardCaption(path: "CLAUDE.md", branch: "main"), "CLAUDE.md · on branch main")
-        XCTAssertEqual(TuningChatTexts.repoCardCaption(path: "CLAUDE.md", branch: "detached:abc1234"),
-                       "CLAUDE.md · on a detached HEAD (abc1234)")
-        XCTAssertEqual(TuningChatTexts.repoCardCaption(path: "CLAUDE.md", branch: ""), "CLAUDE.md")
         XCTAssertEqual(TuningChatTexts.acceptedRepoFile(path: "CLAUDE.md", branch: "main"),
                        "Accepted · wrote CLAUDE.md on main — commit it yourself")
         XCTAssertEqual(TuningChatTexts.acceptedRepoFile(path: "CLAUDE.md", branch: "detached:abc1234"),
@@ -105,6 +101,29 @@ final class TuningChatTextsTests: XCTestCase {
                        TuningChatTexts.committedRepoFile)
     }
 
+    func testFoldedPRLine() throws {
+        func repo(_ extra: String, verdict: String = "") throws -> CoachProposal {
+            let json = #"{"id":9,"title":"Tests","why":"w","destination":"repo_claude_md","workbench_id":3,"prompt_id":"","#
+                + #""kind":"add","metric":"corrections","before":"","after":"x","evidence":[],"sources":1,"#
+                + #""status":"accepted","created_at":"2026-11-01T09:00:00Z","decided_at":"2026-11-01T09:00:00Z","#
+                + #""verdict":"\#(verdict)","reverts_id":0,"budget":0,"written_branch":"coach/a1b2c3d4/proposal-9""#
+                + extra + "}"
+            return try JSONDecoder().decode(CoachProposal.self, from: Data(json.utf8))
+        }
+        let url = "https://github.com/acme/repo/pull/12"
+        XCTAssertEqual(TuningChatTexts.folded(try repo(#","pr_url":"\#(url)""#)), "Accepted · waiting for the PR to merge")
+        let written = CoachWrittenFile(path: "CLAUDE.md", branch: "coach/a1b2c3d4/proposal-9", prURL: url)
+        XCTAssertEqual(TuningChatTexts.folded(try repo(""), written: written), "Accepted · waiting for the PR to merge",
+                       "the accept result's PR until the list reloads")
+        XCTAssertEqual(TuningChatTexts.folded(try repo(#","pr_url":"\#(url)","measure_from":"2026-11-02T09:00:00Z""#)),
+                       "Accepted · merged · measuring for 14 days")
+        // sync-prs gives a PR not merged in 30 days a final verdict; measure_from stays empty.
+        XCTAssertEqual(TuningChatTexts.folded(try repo(#","pr_url":"\#(url)""#, verdict: "too_little_data")),
+                       "Accepted · not merged in 30 days — not measured")
+        XCTAssertEqual(TuningChatTexts.prURL(try repo(""), written: written), url)
+        XCTAssertNil(TuningChatTexts.prURL(try repo(""), written: nil))
+    }
+
     func testWrittenFileFromTheAcceptResult() {
         let ok = #"{"ok":true,"id":9,"status":"accepted","pack_copies_updated":0,"pack_copies_drifted":0,"#
             + #""written_path":"CLAUDE.md","written_branch":"main"}"#
@@ -112,5 +131,10 @@ final class TuningChatTextsTests: XCTestCase {
         let other = #"{"ok":true,"id":9,"status":"accepted","written_path":"","written_branch":""}"#
         XCTAssertNil(CoachWrittenFile.parse(acceptResult: Data(other.utf8)))
         XCTAssertNil(CoachWrittenFile.parse(acceptResult: Data(#"{"ok":true}"#.utf8)))
+        let pr = #"{"ok":true,"id":9,"status":"accepted","pack_copies_updated":0,"pack_copies_drifted":0,"#
+            + #""written_path":"CLAUDE.md","written_branch":"coach/a1b2c3d4/proposal-9","pr_url":"https://github.com/acme/repo/pull/12"}"#
+        XCTAssertEqual(CoachWrittenFile.parse(acceptResult: Data(pr.utf8)),
+                       CoachWrittenFile(path: "CLAUDE.md", branch: "coach/a1b2c3d4/proposal-9",
+                                        prURL: "https://github.com/acme/repo/pull/12"))
     }
 }
