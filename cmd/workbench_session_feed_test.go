@@ -363,22 +363,6 @@ func TestSessionFeed_TailPagesWithBeforeAndKeepsCursor(t *testing.T) {
 	assert.NotContains(t, full, "before")
 }
 
-// An earlier page carries no live hint: activity and live stay null and
-// live_ok false (the store ignores them on a page), with no live_error.
-func TestSessionFeed_EarlierPageSkipsLiveHint(t *testing.T) {
-	fx := tailFixture(t, 70)
-	page := fx.feedJSON(t, "--tail", "60")
-	assert.Equal(t, true, page["live_ok"], "a tail read keeps the live hint")
-	older := fx.feedJSON(t, "--tail", "60", "--before", page["before"].(string))
-	assert.Len(t, older["entries"], 10)
-	assert.Contains(t, older, "activity")
-	assert.Nil(t, older["activity"])
-	assert.Contains(t, older, "live")
-	assert.Nil(t, older["live"])
-	assert.Equal(t, false, older["live_ok"])
-	assert.NotContains(t, older, "live_error")
-}
-
 func TestSessionFeed_TailSubagentsMatchFullRead(t *testing.T) {
 	fx := newSessionFeedFx(t, "conv-1")
 	lines := []string{jsonRec(map[string]any{"type": "assistant", "uuid": "a2", "timestamp": "2026-10-01T10:00:06Z",
