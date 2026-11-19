@@ -17,6 +17,11 @@ struct WorkchatAgents: Equatable {
         case done(Int)
     }
 
+    /// The owner's choice for the Done section; `automatic` until they toggle it.
+    enum DoneDisclosure: Equatable {
+        case automatic, open, closed
+    }
+
     let working: [Row]
     /// Newest first.
     let done: [Row]
@@ -56,6 +61,15 @@ struct WorkchatAgents: Equatable {
 
     /// Done opens by itself when nothing works.
     var doneOpenByDefault: Bool { working.isEmpty && !done.isEmpty }
+
+    /// Whether Done shows: the owner's choice wins over the default.
+    func doneIsOpen(_ disclosure: DoneDisclosure) -> Bool {
+        switch disclosure {
+        case .automatic: doneOpenByDefault
+        case .open: true
+        case .closed: false
+        }
+    }
 }
 
 /// The agents button's and sheet's fixed strings.
@@ -67,4 +81,11 @@ enum WorkchatAgentsText {
 
     static func done(_ n: Int) -> String { "Done · \(n)" }
     static func doneBadge(_ n: Int) -> String { "✓ \(n)" }
+    /// The toolbar button's spoken value.
+    static func badgeValue(_ badge: WorkchatAgents.Badge) -> String {
+        switch badge {
+        case let .working(n): "\(n) working"
+        case let .done(n): "\(n) done"
+        }
+    }
 }

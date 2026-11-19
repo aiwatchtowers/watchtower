@@ -34,6 +34,7 @@ struct WorkchatView: View {
     @State private var openAsk: AskRoute?
     @State private var openSubagent: SessionChatRoute?
     @State private var showsAgents = false
+    @State private var doneDisclosure = WorkchatAgents.DoneDisclosure.automatic
     @State private var startingSession = false
     @State private var openSession: SessionRoute?
 
@@ -99,6 +100,7 @@ struct WorkchatView: View {
             if let model {
                 WorkchatAgentsSheet(
                     agents: model.agents,
+                    disclosure: $doneDisclosure,
                     onOpen: { route in
                         showsAgents = false
                         openSubagent = route

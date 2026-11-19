@@ -15,6 +15,7 @@ struct SessionChatView: View {
     @State private var viewModel: SessionChatViewModel
     @State private var openSubagent: SessionChatRoute?
     @State private var showsAgents = false
+    @State private var doneDisclosure = WorkchatAgents.DoneDisclosure.automatic
 
     init(replica: WorkbenchReplicaModel, route: SessionChatRoute, store: ReplicaStore, requester: SessionChatRequester) {
         self.replica = replica
@@ -38,16 +39,17 @@ struct SessionChatView: View {
         .navigationTitle("Subagent")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if let badge = viewModel.chat.map({ WorkchatAgents(entries: $0.entries, sessionID: viewModel.sessionID) })?.badge {
+            if let badge = agents?.badge {
                 ToolbarItem(placement: .topBarTrailing) {
                     WorkchatAgentsButton(badge: badge) { showsAgents = true }
                 }
             }
         }
         .sheet(isPresented: $showsAgents) {
-            if let chat = viewModel.chat {
+            if let agents {
                 WorkchatAgentsSheet(
-                    agents: WorkchatAgents(entries: chat.entries, sessionID: viewModel.sessionID),
+                    agents: agents,
+                    disclosure: $doneDisclosure,
                     onOpen: { route in
                         showsAgents = false
                         openSubagent = route
@@ -61,6 +63,11 @@ struct SessionChatView: View {
         }
         .onAppear { viewModel.appeared() }
         .onDisappear { viewModel.disappeared() }
+    }
+
+    /// The chat's subagents, built once per render for the button and the sheet.
+    private var agents: WorkchatAgents? {
+        viewModel.chat.map { WorkchatAgents(entries: $0.entries, sessionID: viewModel.sessionID) }
     }
 
     private var waiting: some View {
@@ -107,20 +114,12 @@ enum SessionChatText {
     static let tooLong = "Your tower has not sent this chat yet. Is it awake?"
 }
 
-/// The route of a subagent marker and its status word.
+/// The route of a subagent marker.
 enum SessionChatEntryRow {
     /// nil for a marker without its agent id or tool_use id: nothing to open.
     static func route(for subagent: SessionChat.Entry.Subagent, sessionID: Int64) -> SessionChatRoute? {
         guard !subagent.agentID.isEmpty, !subagent.toolUseID.isEmpty else { return nil }
         return SessionChatRoute(sessionID: sessionID, agentID: subagent.agentID, toolUseID: subagent.toolUseID)
-    }
-
-    static func statusText(_ status: String) -> String {
-        switch status {
-        case "running": "Running"
-        case "finished": "Finished"
-        default: ""
-        }
     }
 }
 

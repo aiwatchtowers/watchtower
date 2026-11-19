@@ -24,6 +24,7 @@ struct WorkchatAgentsButton: View {
             .frame(minHeight: PhoneMetrics.minTouch)
         }
         .accessibilityLabel(WorkchatAgentsText.title)
+        .accessibilityValue(WorkchatAgentsText.badgeValue(badge))
     }
 
     private var isDone: Bool {
@@ -36,12 +37,11 @@ struct WorkchatAgentsButton: View {
 /// nothing works. Closed with the toolbar's ✕; a row with a route dismisses the sheet and opens its chat.
 struct WorkchatAgentsSheet: View {
     let agents: WorkchatAgents
+    /// Held by the host, so it outlives the sheet.
+    @Binding var disclosure: WorkchatAgents.DoneDisclosure
     let onOpen: (SessionChatRoute) -> Void
     let onClose: () -> Void
-    /// The owner flipped Done from its default.
-    @State private var doneFlipped = false
-
-    private var doneOpen: Bool { agents.doneOpenByDefault != doneFlipped }
+    private var doneOpen: Bool { agents.doneIsOpen(disclosure) }
 
     /// The rows line up with the section header's text (its `Spacing.small` inset), not with the page.
     private static let rowInsets = EdgeInsets(top: Spacing.regular, leading: Spacing.small, bottom: Spacing.regular, trailing: Spacing.small)
@@ -81,7 +81,7 @@ struct WorkchatAgentsSheet: View {
 
     private var doneHeader: some View {
         Button {
-            doneFlipped.toggle()
+            disclosure = doneOpen ? .closed : .open
         } label: {
             HStack(spacing: Spacing.compact) {
                 Image(systemName: doneOpen ? "chevron.down" : "chevron.right")

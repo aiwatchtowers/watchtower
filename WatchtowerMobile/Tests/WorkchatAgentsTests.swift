@@ -55,6 +55,22 @@ final class WorkchatAgentsTests: XCTestCase {
         XCTAssertEqual(agents.working[0].description, "Look w1")
     }
 
+    func testOwnerDoneChoiceSurvivesDefaultChange() {
+        let working = WorkchatAgents(entries: [marker("w", "running"), marker("d", "finished")], sessionID: 3)
+        let idle = WorkchatAgents(entries: [marker("d", "finished")], sessionID: 3)
+        XCTAssertFalse(working.doneIsOpen(.automatic))
+        XCTAssertTrue(idle.doneIsOpen(.automatic))
+        XCTAssertTrue(working.doneIsOpen(.open), "opened while working, stays open once the default flips")
+        XCTAssertTrue(idle.doneIsOpen(.open))
+        XCTAssertFalse(idle.doneIsOpen(.closed), "closed by the owner beats the open default")
+        XCTAssertFalse(working.doneIsOpen(.closed))
+    }
+
+    func testBadgeValue() {
+        XCTAssertEqual(WorkchatAgentsText.badgeValue(.working(2)), "2 working")
+        XCTAssertEqual(WorkchatAgentsText.badgeValue(.done(3)), "3 done")
+    }
+
     func testStrings() {
         XCTAssertEqual(WorkchatAgentsText.done(9), "Done · 9")
         XCTAssertEqual(WorkchatAgentsText.running, "Running")
