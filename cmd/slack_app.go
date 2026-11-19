@@ -85,8 +85,10 @@ func init() {
 		c.Flags().Bool("json", false, "print one JSON line per step and a final result line")
 		slackAppCmd.AddCommand(c)
 	}
-	slackAppAdoptCmd.Flags().String("app-id", "", "the app's App ID (Basic Information page), when Watchtower does not know it")
+	slackAppAdoptCmd.Flags().String("app-id", "", "the app's App ID (Basic Information page) or its https://api.slack.com/apps/… URL, when Watchtower does not know it")
 	slackAppAdoptCmd.Flags().String("confirm-app-id", "", "repeat --app-id after checking the app's name (confirm_app)")
+	slackAppAdoptCmd.Flags().String("client-id", "", "the app's Client ID (Basic Information page), when no account on this Mac is on the app yet")
+	slackAppAdoptCmd.Flags().Bool("dry-run", false, "read the app and print what adopting it would change; change nothing")
 	slackAppAdoptCmd.Flags().Bool("enable-pkce", false, "agree to turn on PKCE sign-in for the app (one-way: only Slack support can turn it off)")
 	slackAppLinkCmd.Flags().String("team", "", "the workspace's team id (default: the token's workspace)")
 	slackAppAdoptCmd.Flags().String("team", "", "the workspace the app must be in; another workspace's token changes nothing (wrong_team)")
@@ -135,8 +137,10 @@ type slackAppResultJSON struct {
 	AppName     string `json:"app_name,omitempty"`
 	ClientID    string `json:"client_id"`
 	LinkWritten bool   `json:"link_written"`
-	Code        string `json:"code,omitempty"`
-	Error       string `json:"error,omitempty"`
+	// Changes: adopt read the app (what its update changes; dry_run).
+	Changes *slackapp.Changes `json:"changes,omitempty"`
+	Code    string            `json:"code,omitempty"`
+	Error   string            `json:"error,omitempty"`
 }
 
 func runSlackAppCreate(cmd *cobra.Command, _ []string) error {
@@ -150,8 +154,18 @@ func runSlackAppAdopt(cmd *cobra.Command, _ []string) error {
 	confirm, _ := cmd.Flags().GetString("confirm-app-id")
 	team, _ := cmd.Flags().GetString("team")
 	enablePKCE, _ := cmd.Flags().GetBool("enable-pkce")
+	clientID, _ := cmd.Flags().GetString("client-id")
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	// The company wizard passes the app's settings URL as the person pasted it.
+	if id, ok := slackapp.ParseSlackAppSettingsURL(appID); ok {
+		appID = id
+	}
+	if id, ok := slackapp.ParseSlackAppSettingsURL(confirm); ok {
+		confirm = id
+	}
 	return runSlackAppSetup(cmd, func(ctx context.Context, r *slackapp.Runner, tok string) (slackapp.Result, error) {
-		return r.Adopt(ctx, tok, strings.TrimSpace(team), strings.TrimSpace(appID), strings.TrimSpace(confirm), enablePKCE)
+		return r.AdoptWith(ctx, tok, slackapp.AdoptOptions{Team: strings.TrimSpace(team), AppID: strings.TrimSpace(appID),
+			ClientID: strings.TrimSpace(clientID), ConfirmAppID: strings.TrimSpace(confirm), EnablePKCE: enablePKCE, DryRun: dryRun})
 	})
 }
 
@@ -219,7 +233,8 @@ func finishSlackAppRun(cmd *cobra.Command, enc *json.Encoder, res slackapp.Resul
 	}
 	if asJSON {
 		return enc.Encode(slackAppResultJSON{Result: res.Kind, TeamID: res.TeamID, TeamName: res.TeamName,
-			AppID: res.AppID, AppName: res.AppName, ClientID: res.ClientID, LinkWritten: res.LinkWritten, Code: res.Code, Error: res.Error})
+			AppID: res.AppID, AppName: res.AppName, ClientID: res.ClientID, LinkWritten: res.LinkWritten, Code: res.Code, Error: res.Error,
+			Changes: res.Changes})
 	}
 	return printSlackAppResult(out, res)
 }
@@ -241,6 +256,11 @@ func printSlackAppResult(out io.Writer, res slackapp.Result) error {
 	case slackapp.KindNeedsPKCEConsent:
 		return fmt.Errorf("adopting app %s turns on PKCE sign-in, which only Slack support can turn off; "+
 			"run again with --enable-pkce to agree. Nothing was changed", res.AppID)
+	case slackapp.KindDryRun:
+		c := res.Changes
+		fmt.Fprintf(out, "Adopting app %s would add scopes %v, add redirect URLs %v, turn PKCE on: %t, and write the connect link. Nothing was changed.\n",
+			res.AppID, c.AddScopes, c.AddRedirectURLs, c.EnablePKCE)
+		return nil
 	case slackapp.KindExists:
 		fmt.Fprintf(out, "%s already has Watchtower's app %s (client id %s); nothing was created.\n", res.TeamName, res.AppID, res.ClientID)
 		return nil

@@ -27,11 +27,14 @@ const ReleasePage = "https://github.com/aiwatchtowers/watchtower/releases/latest
 
 // Link names what the About page's connect block points at: the workspace and
 // the app's client id. An empty ClientID (the create call, before Slack has
-// issued one) means no connect block.
+// issued one) means no connect block. About, when set, is a company's connect
+// text (`company publish`): the About page carries it in place of the
+// Slack-only block.
 type Link struct {
 	TeamID   string
 	TeamName string
 	ClientID string
+	About    string
 }
 
 // ConnectLink is the connect link of screens §4.1.
@@ -43,9 +46,12 @@ func (l Link) ConnectLink() string {
 // ConnectCode is the connect code of screens §4.1.
 func (l Link) ConnectCode() string { return l.TeamID + ":" + l.ClientID }
 
-// ConnectBlock is the text the About page starts with (screens §4.1); "" for
-// a Link without a client id.
+// ConnectBlock is the text the About page starts with (screens §4.1): l.About
+// when set, else the Slack-only block; "" for a Link without a client id.
 func ConnectBlock(l Link) string {
+	if l.About != "" {
+		return l.About
+	}
 	if l.ClientID == "" {
 		return ""
 	}
@@ -119,6 +125,32 @@ func MergeManifest(theirs Manifest, l Link) (Manifest, error) {
 	scopes["user"] = toAny(user)
 	oauth["pkce_enabled"] = true
 	return m, nil
+}
+
+// Changes is what MergeManifest changes in an existing app besides its About
+// text (screens §2.5 manifestDiff): the user scopes and redirect URL it
+// adds, and PKCE turned on.
+type Changes struct {
+	AddScopes       []string `json:"add_scopes"`
+	AddRedirectURLs []string `json:"add_redirect_urls"`
+	EnablePKCE      bool     `json:"enable_pkce"`
+}
+
+// ManifestChanges is what MergeManifest would change in theirs.
+func ManifestChanges(theirs Manifest) Changes {
+	oauth, _ := theirs["oauth_config"].(map[string]any)
+	scopes, _ := oauth["scopes"].(map[string]any)
+	have := toStrings(scopes["user"])
+	c := Changes{AddScopes: []string{}, AddRedirectURLs: []string{}, EnablePKCE: !theirs.PKCEEnabled()}
+	for _, s := range slackmanifest.UserScopes() {
+		if !slices.Contains(have, s) {
+			c.AddScopes = append(c.AddScopes, s)
+		}
+	}
+	if !slices.Contains(toStrings(oauth["redirect_urls"]), slackconnect.RedirectURL) {
+		c.AddRedirectURLs = append(c.AddRedirectURLs, slackconnect.RedirectURL)
+	}
+	return c
 }
 
 // WithLongDescription is theirs with only display_information.long_description

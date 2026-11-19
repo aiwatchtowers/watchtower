@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -391,6 +392,33 @@ func (s Store) DiscardDraft() error {
 		return err
 	}
 	defer unlock()
+	return s.discardLocked()
+}
+
+// DiscardDraftIf is DiscardDraft (a successful Publish) only while the draft
+// still equals published, checked under the draft lock: a draft saved
+// meanwhile, or one that cannot be read now, is kept (deleted=false).
+func (s Store) DiscardDraftIf(published Draft) (deleted bool, err error) {
+	unlock, err := s.lockDraft()
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	cur, err := readDraft(s.draftPath())
+	switch {
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, errDraftDamaged):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("reading the company draft: %w", err)
+	case !reflect.DeepEqual(cur, published):
+		return false, nil
+	}
+	return true, s.discardLocked()
+}
+
+// discardLocked deletes the draft and every set-aside draft; the caller
+// holds the draft lock.
+func (s Store) discardLocked() error {
 	bad, err := s.badDrafts()
 	if err != nil {
 		return err
