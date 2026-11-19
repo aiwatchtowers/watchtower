@@ -311,8 +311,8 @@ package final class CompanySetupWizardModel {
     // MARK: Entry points (A19)
 
     /// Where a Slack setup-record row opens the page (company screens spec
-    /// §0, A19): **Continue setup** and **Check again** at the Slack step,
-    /// **Add the link to the app** at Publish.
+    /// §0, A19, A32): **Add the link to the app** at Publish. `slackStep`
+    /// opens the Slack step for an app (no setup-record row uses it: A32).
     package enum Entry: Equatable, Sendable {
         case slackStep(appID: String)
         case publish(appID: String)

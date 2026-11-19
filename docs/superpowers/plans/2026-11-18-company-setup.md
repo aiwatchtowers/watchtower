@@ -714,6 +714,7 @@ enum CompanyVendorGuide { static func servicesRow(_:) -> (title: String, detail:
 - [ ] **Step 2:** FAIL → implement → PASS.
 - [ ] **Step 3: Shots:** re-render every `company-wizard-*` shot from the real views (`DesignShotsTests.testCompanySetupShotsRender` switches those fixtures to the production views); compare with the mockups.
 - [ ] **Step 4: Commit** `feat(desktop): company setup wizard page (#1887)`.
+- **As built (Task 22):** the Slack setup-record rows route through `AppState.routeSlackSetupRecord` / `CompanySetupWizardModel.Entry(record:)`: only `link_missing` (**Add the link to the app**) opens the wizard, at Publish (at the Slack step when the draft holds another app). `pending_create`, `install` and `approval` stay on plan B's sheet (screens spec A32, agent decision from the Task 22 review): the wizard's Slack step runs no admin connect, approval check or lost-create clear, so it would mark an app ready that was never installed. Connections → Slack's **Set up for my company** opens the page; onboarding's still opens plan B's sheet (Task 25a). **Connect this Mac** is hidden until Task 23 wires it. The `company-wizard-*` shots render the production page over a model walked on `CompanyScriptedCLI` (`Tests/Support`); two page states were added (`company-wizard-loading`, `-readFailed`).
 
 ### Task 23: C2 — `CompanyConnectFlowModel` and the connect sheet
 
