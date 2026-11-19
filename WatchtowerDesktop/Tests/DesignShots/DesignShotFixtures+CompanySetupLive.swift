@@ -25,7 +25,7 @@ enum CompanyWizardLive {
             .detailBackground())
     }
 
-    /// **Connect this Mac** is drawn (its flow is Task 23's); the shot never presses it.
+    /// **Connect this Mac** is drawn; the shot never presses it.
     private static func connectThisMac() {}
 
     /// The page's own states the mockups have no frame for: the draft being

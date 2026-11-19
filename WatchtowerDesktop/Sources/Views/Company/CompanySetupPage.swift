@@ -10,7 +10,7 @@ struct CompanySetupActions {
     var openQuickConnections: () -> Void = {}
     /// **Show file in Finder** for the set-aside draft (a file name next to the company setups).
     var showFile: (String) -> Void = { _ in }
-    /// **Connect this Mac** after Publish; nil hides it (the connect flow is Task 23's).
+    /// **Connect this Mac** after Publish (the company connect flow); nil hides it.
     var connectThisMac: (() -> Void)?
 }
 
