@@ -31,9 +31,10 @@ package struct SessionFeedSubagent: Decodable, Equatable, Sendable {
         self.startedAt = startedAt
     }
 
-    /// The status of `subagent` in the feed's current markers (a read
-    /// updates a marker in place); the copy itself when no marker has it —
-    /// a copy kept since it was opened would never see it finish.
+    /// The status of `subagent` in `entries`, the store's subagent list
+    /// (`SessionFeedStore.subagents`, which a read updates in place); the copy
+    /// itself when the list has no marker for it — a copy kept since it was
+    /// opened would never see it finish.
     package static func currentStatus(of subagent: Self, in entries: [SessionFeedEntry]) -> String {
         entries.last { $0.subagent?.toolUseID == subagent.toolUseID }?.subagent?.status ?? subagent.status
     }

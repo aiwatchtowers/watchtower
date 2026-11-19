@@ -102,7 +102,7 @@ changed: Agents left the conversation; finished ones sit under Done in the list.
 
 Subagents never show in the conversation. The agents button above the field (two people and a count) opens the list: **WORKING** rows show the type, task, latest action and timer, and **Done · N** lists every finished subagent, newest first. Click a row to read that agent's chat in the same pane, with **‹ Back** and a path bar that starts at **Workchat**; subagents are read-only.
 
-The button shows the working count, a dimmed **✓ N** when only finished agents remain, and **?** when the agent state is unavailable, which is not the same as none running. It stays while the session is idle or finished. Done is collapsed while agents work and opens by itself when none do; your own choice wins until you quit.
+The button shows the working count, a dimmed **✓ N** when only finished agents remain, and **?** when the agent state is unavailable, which is not the same as none running. It stays while there are finished agents. Done is collapsed while agents work and opens by itself when none do; your own choice wins until you quit.
 
 While the agent works, the steps of this turn show above the line, newest at the bottom: tool, summary and time. The line then reads **This turn · N steps**. Click the line, or press ⌥↓ in the field, to hide or show the list; Workchat remembers your choice for that pane. The list goes away when the turn ends or a permission card shows.
 
