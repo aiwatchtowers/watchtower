@@ -830,3 +830,64 @@ func TestParkedBy_WrapperChdirRelativeDelete(t *testing.T) {
 	both("timeout --foreground 10 go test ./...", "")
 	expectParked(t, cases)
 }
+
+// Residuals: every wrapper reads only its own options. A valued short
+// option takes its operand (sudo -r role), and a short letter that is none of the wrapper's own cannot be placed — its
+// operand could be the next word — so it parks, in both modes.
+func TestParkedBy_WrapperShortOptions(t *testing.T) {
+	var cases []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}
+	both := func(cmd string, limit HardLimit) {
+		strict, lenient := bash(cmd), bash(cmd)
+		lenient.Lenient = true
+		for _, r := range []PermissionAsk{strict, lenient} {
+			name := "strict " + cmd
+			if r.Lenient {
+				name = "lenient " + cmd
+			}
+			cases = append(cases, struct {
+				name  string
+				ask   PermissionAsk
+				limit HardLimit
+			}{name, r, limit})
+		}
+	}
+	// Valued short options take the next word.
+	both("sudo -r role rm -rf /x", LimitDeleteOutside)
+	both("sudo -t t rm -rf /x", LimitDeleteOutside)
+	both("sudo -a style -c class rm -rf /x", LimitDeleteOutside)
+	both("sudo -Er role rm -rf /x", LimitDeleteOutside)
+	both("sudo --role role rm -rf /x", LimitDeleteOutside)
+	both("sudo --other-user root rm -rf /x", LimitDeleteOutside)
+	both("doas -a style rm -rf /x", LimitDeleteOutside)
+	both("env -P /usr/bin rm -rf /x", LimitDeleteOutside)
+	both("xargs -J % rm -rf /x", LimitDeleteOutside)
+	both("xargs -R 2 -S 255 -I {} rm -rf /x", LimitDeleteOutside)
+	// Flags take nothing.
+	both("sudo -E rm -rf /x", LimitDeleteOutside)
+	both("nice -10 rm -rf /x", LimitDeleteOutside)
+	both("time -p rm -rf /x", LimitDeleteOutside)
+	both("timeout -v 5 rm -rf /x", LimitDeleteOutside)
+	both("caffeinate -dims rm -rf /x", LimitDeleteOutside)
+	both("xcrun -run rm -rf /x", LimitDeleteOutside)
+	both("xargs -0 -t rm -rf /x", LimitDeleteOutside)
+	// A short letter none of the wrapper's own parks.
+	both("sudo -Z rm -rf /x", LimitUnreadable)
+	both("sudo -EZ rm -rf /x", LimitUnreadable)
+	both("sudo -Z role git status", LimitUnreadable)
+	both("env -X rm -rf /x", LimitUnreadable)
+	both("caffeinate -z rm -rf /x", LimitUnreadable)
+	both("xargs -q rm -rf /x", LimitUnreadable)
+	both("stdbuf -x rm -rf /x", LimitUnreadable)
+	both("nohup -x rm -rf /x", LimitUnreadable)
+	// What stays harmless.
+	both("sudo -E go test ./...", "")
+	both("sudo -r role go test ./...", "")
+	both("nice -10 make build", "")
+	both("xargs -0 -n1 echo", "")
+	both("xcrun -sdk macosx swift build", "")
+	expectParked(t, cases)
+}

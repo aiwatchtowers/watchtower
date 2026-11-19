@@ -136,22 +136,27 @@ var chdirOpts = map[string]bool{"-C": true, "--chdir": true, "-D": true}
 
 const cwdUnknown = "?"
 
-// wrappers maps each wrapper program to the options that take an operand.
+// wrappers maps each wrapper program to the options that take an operand
+// (the macOS BSD and GNU man pages together).
 var wrappers = map[string]map[string]bool{
-	"sudo":    {"-u": true, "-g": true, "-h": true, "-p": true, "-C": true, "-D": true, "-R": true, "-T": true, "-U": true, "--user": true, "--group": true, "--host": true, "--prompt": true, "--chdir": true, "--chroot": true},
+	"sudo": {"-a": true, "-c": true, "-u": true, "-g": true, "-h": true, "-p": true, "-r": true, "-t": true, "-C": true, "-D": true, "-R": true, "-T": true, "-U": true,
+		"--auth-type": true, "--login-class": true, "--user": true, "--group": true, "--host": true, "--prompt": true, "--role": true, "--type": true,
+		"--close-from": true, "--chdir": true, "--chroot": true, "--command-timeout": true, "--other-user": true},
 	"command": {},
 	"time":    {"-f": true, "-o": true, "--format": true, "--output": true},
 	"nohup":   {},
-	"env":     {"-u": true, "-C": true, "-S": true, "--unset": true, "--chdir": true, "--split-string": true},
+	"env":     {"-u": true, "-C": true, "-S": true, "-L": true, "-P": true, "-U": true, "--unset": true, "--chdir": true, "--split-string": true},
 	"exec":    {"-a": true},
 	"nice":    {"-n": true, "--adjustment": true},
 	// timeout's command follows a duration as well (stripWrappers).
 	"timeout":    {"-s": true, "-k": true, "--signal": true, "--kill-after": true},
 	"caffeinate": {"-t": true, "-w": true},
-	"doas":       {"-u": true, "-C": true},
+	"doas":       {"-a": true, "-u": true, "-C": true},
 	"stdbuf":     {"-i": true, "-o": true, "-e": true, "--input": true, "--output": true, "--error": true},
 	"xcrun":      {"--sdk": true, "-sdk": true, "--toolchain": true, "-toolchain": true},
-	"xargs":      {"-n": true, "-L": true, "-I": true, "-P": true, "-s": true, "-d": true, "-E": true, "-a": true, "--max-args": true, "--max-lines": true, "--max-procs": true, "--max-chars": true, "--delimiter": true, "--arg-file": true, "--replace": true, "--eof": true},
+	"xargs": {"-a": true, "-d": true, "-E": true, "-I": true, "-J": true, "-L": true, "-n": true, "-P": true, "-R": true, "-s": true, "-S": true,
+		"--max-args": true, "--max-procs": true, "--max-chars": true, "--delimiter": true, "--arg-file": true, "--process-slot-var": true,
+		"--replace": true, "--eof": true, "--max-lines": true},
 }
 
 // unresolved stands for a command that cannot be read (a wrapper around
@@ -294,7 +299,7 @@ func stripWrappers(words []string, c *shellCmd) []string {
 			words = words[1:]
 			continue
 		}
-		valued, ok := wrappers[path.Base(w)]
+		_, ok := wrappers[path.Base(w)]
 		if !ok {
 			return words
 		}
@@ -309,7 +314,7 @@ func stripWrappers(words []string, c *shellCmd) []string {
 			if opt == "--" { // the end of the wrapper's options
 				break
 			}
-			name, takesNext, known := wrapperOption(opt, valued, wrapperFlags[path.Base(w)])
+			name, takesNext, known := wrapperOption(opt, path.Base(w))
 			if !known { // an option this reader cannot place: what follows may be its operand
 				return []string{unresolved}
 			}
@@ -329,32 +334,48 @@ func stripWrappers(words []string, c *shellCmd) []string {
 	return nil
 }
 
-// wrapperFlags are the wrappers' long options that take no operand; with
-// the valued ones of wrappers they are every long option this reader knows.
+// wrapperFlags are the wrappers' options that take no operand — short
+// ones, and long ones (xcrun's single-dash too); with the valued ones of
+// wrappers they are every option this reader knows. Any other option cannot be placed and parks
+// (wrapperOption). nice's digits are its legacy -N adjustment.
 var wrapperFlags = map[string][]string{
-	"sudo":    {"--preserve-env", "--non-interactive", "--login", "--shell", "--reset-timestamp", "--remove-timestamp", "--background", "--stdin", "--set-home", "--validate", "--list", "--edit", "--askpass", "--bell", "--preserve-groups", "--other-user"},
-	"env":     {"--ignore-environment", "--null", "--debug", "--default-signal", "--ignore-signal", "--block-signal", "--list-signal-handling"},
-	"time":    {"--verbose", "--portability", "--append", "--quiet"},
-	"timeout": {"--preserve-status", "--foreground", "--verbose"},
-	"xargs":   {"--null", "--no-run-if-empty", "--verbose", "--interactive", "--exit", "--open-tty", "--show-limits"},
-	"xcrun":   {"--run", "--verbose", "--no-cache", "--kill-cache", "--log"},
+	"sudo": {"-A", "-B", "-b", "-E", "-e", "-H", "-i", "-K", "-k", "-l", "-N", "-n", "-P", "-S", "-s", "-V", "-v",
+		"--preserve-env", "--non-interactive", "--login", "--shell", "--reset-timestamp", "--remove-timestamp", "--background",
+		"--stdin", "--set-home", "--validate", "--list", "--edit", "--askpass", "--bell", "--preserve-groups", "--no-update"},
+	"command": {"-p", "-V", "-v"},
+	"env": {"-0", "-i", "-v", "--ignore-environment", "--null", "--debug", "--default-signal", "--ignore-signal", "--block-signal",
+		"--list-signal-handling"},
+	"exec":       {"-c", "-l"},
+	"nice":       {"-0", "-1", "-2", "-3", "-4", "-5", "-6", "-7", "-8", "-9"},
+	"time":       {"-a", "-h", "-l", "-p", "-q", "-v", "-V", "--verbose", "--portability", "--append", "--quiet"},
+	"timeout":    {"-f", "-p", "-v", "--preserve-status", "--foreground", "--verbose"},
+	"caffeinate": {"-d", "-i", "-m", "-s", "-u"},
+	"doas":       {"-L", "-n", "-s"},
+	"xargs": {"-0", "-o", "-p", "-r", "-t", "-x", "--null", "--no-run-if-empty", "--verbose", "--interactive", "--exit", "--open-tty",
+		"--show-limits"},
+	"xcrun": {"-f", "-h", "-k", "-l", "-n", "-r", "-v", "-find", "-kill-cache", "-log", "-no-cache", "-run", "-verbose",
+		"--find", "--run", "--verbose", "--no-cache", "--kill-cache", "--log", "--show-sdk-path", "--show-sdk-version",
+		"--show-sdk-build-version", "--show-sdk-platform-path", "--show-sdk-platform-version"},
 }
 
-// wrapperOption reads one wrapper option word: name is the valued option it
-// sets ("" when it takes no operand) and takesNext reports that its operand
-// is the next word. An operand can be attached (-C/tmp, --chdir=/tmp) and a
-// short valued option can end a cluster of flags (env -iC/tmp, sudo -iu x).
-// A long option may be abbreviated to an unambiguous prefix, as getopt_long
-// takes it (--chd is --chdir); known is false for a long option that is
-// neither a known one nor such a prefix.
-func wrapperOption(opt string, valued map[string]bool, flags []string) (name string, takesNext, known bool) {
+// wrapperOption reads one option word of wrapper prog: name is the option
+// with an operand it sets ("" for a flag) and takesNext reports that its
+// operand is the next word. An operand can be attached (-C/tmp,
+// --chdir=/tmp) and a short valued option can end a cluster of
+// flags (env -iC/tmp, sudo -iu x). A long option may be
+// abbreviated to an unambiguous prefix, as getopt_long takes it (--chd is
+// --chdir). known is false for an option that is none of prog's own — a
+// long one neither known nor such a prefix, or a short letter in a cluster
+// that is not one of its flags: its operand, if any, could be the next word.
+func wrapperOption(opt, prog string) (name string, takesNext, known bool) {
+	valued, flags := wrappers[prog], wrapperFlags[prog]
 	if valued[opt] {
 		return opt, true, true
 	}
 	if strings.HasPrefix(opt, "--") {
 		long, _, attached := strings.Cut(opt, "=")
 		var hits []string
-		for _, cand := range append(slices.Collect(maps.Keys(valued)), flags...) {
+		for _, cand := range slices.Concat(slices.Collect(maps.Keys(valued)), flags) {
 			if cand == long {
 				hits = []string{cand}
 				break
@@ -372,9 +393,16 @@ func wrapperOption(opt string, valued map[string]bool, flags []string) (name str
 		}
 		return "", false, true
 	}
+	if slices.Contains(flags, opt) { // a single-dash long flag (xcrun -run)
+		return "", false, true
+	}
 	for i := 1; i < len(opt); i++ {
-		if short := "-" + opt[i:i+1]; valued[short] {
+		short := "-" + opt[i:i+1]
+		switch {
+		case valued[short]:
 			return short, i == len(opt)-1, true
+		case !slices.Contains(flags, short):
+			return "", false, false
 		}
 	}
 	return "", false, true
