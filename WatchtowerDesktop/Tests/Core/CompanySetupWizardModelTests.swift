@@ -977,17 +977,53 @@ final class CompanySetupWizardModelTests: XCTestCase {
         XCTAssertTrue(line.hasSuffix("Your setup is kept; try again."))
     }
 
-    func testPublishRenamedCompanyIsRefusedClearly() async {
+    /// Ask #1613: a name edited after a check stored the setup just publishes
+    /// (Go changes only the display name; the slug stays).
+    func testPublishUnderAnEditedNameJustPublishes() async {
         let (model, cli) = await publishReady()
         model.slackToken = token
         model.publishName = "Acme Corp"
-        cli.on(["company", "publish"], [#"{"result":"refused","reason":"company_renamed","#
-            + #""message":"this setup is stored as \"Acme\"; publish it under that name"}"#])
+        cli.on(["company", "publish"], [#"{"result":"ok","slug":"acme","link":"l","code":"c"}"#])
+        await model.next()
+        XCTAssertEqual(cli.calls(["company", "publish"]).first?.input, #"{"company":"Acme Corp","config_token":"\#(token)"}"#)
+        XCTAssertNil(model.publishRefusal)
+        XCTAssertEqual(model.publishState, .done(.init(slug: "acme", link: "l", code: "c", onSlackPage: true)))
+    }
+
+    /// Stored under the edited name, then Slack failed: the model's draft takes
+    /// the name Go gave the draft, so the next save does not write the old one back.
+    func testPublishUnderAnEditedNameKeepsItAfterAFailure() async {
+        let (model, cli) = await publishReady()
+        model.slackToken = token
+        model.publishName = "Acme Corp"
+        cli.on(["company", "publish"], [#"{"result":"token_expired","slug":"acme","message":"expired"}"#])
+        await model.next()
+        XCTAssertEqual(model.publishState, .tokenExpired)
+        XCTAssertEqual(model.draft.company, "Acme Corp")
+
+        // Refused before anything was stored (no slug): the draft keeps its name.
+        let (other, otherCLI) = await publishReady()
+        other.slackToken = token
+        other.publishName = "Globex"
+        otherCLI.on(["company", "publish"], [#"{"result":"refused","reason":"name_taken","message":"taken"}"#])
+        await other.next()
+        XCTAssertEqual(other.draft.company, "Acme")
+    }
+
+    func testPublishNameRefusalsAreClear() async {
+        let (model, cli) = await publishReady()
+        model.slackToken = token
+        model.publishName = " Globex "
+        cli.on(["company", "publish"], [#"{"result":"refused","reason":"name_taken","#
+            + #""message":"\"Globex\" is the name of another company on this Mac (globex); publish under another name"}"#])
         await model.next()
         XCTAssertEqual(model.publishState, .ready)
-        XCTAssertEqual(model.publishRefusal, "Your checks saved this setup as “Acme”, so it cannot be published as "
-            + "“Acme Corp” yet. Publish it as “Acme”.")
-        XCTAssertEqual(cli.calls(["company", "publish"]).first?.input, #"{"company":"Acme Corp","config_token":"\#(token)"}"#)
+        XCTAssertEqual(model.publishRefusal, "“Globex” is already the name of another company on this Mac, or of your "
+            + "own Google project. Choose another name.")
+
+        cli.on(["company", "publish"], [#"{"result":"refused","reason":"company_forced","message":"forced"}"#])
+        await model.next()
+        XCTAssertEqual(model.publishRefusal, "Your organization sets this company's name, so it is published as “Acme”.")
     }
 
     func testPublishWithoutSlackSendsNoToken() async {

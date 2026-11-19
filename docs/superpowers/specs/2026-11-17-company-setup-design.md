@@ -43,6 +43,7 @@ After this work:
 | D24 | New MDM keys: `AllowAtlassianAPIToken` (bool, default true) and `AllowOwnGoogleProject` (bool, default true; the personal Google project path, §4, stays allowed unless IT turns it off). No key forcing company apps only | ask #1476 ("свой проект можно + настройка MDM") |
 | D15 | ~~Sharing on our shared Atlassian app is turned off 30 days after company setup ships~~ — amended below | ask #1455 |
 | D15 amended | The public release stops baking the shared Jira client at once; shared-app Jira accounts get Re-login in that release, no 30-day countdown | ask #1600 |
+| D25 | Company name at Publish: only the display name changes; slug and account ties stay | ask #1613 |
 | D14 | Screens (wizard with the existing-app fork, confirmation, Connections rows, banners, the Atlassian API-token form, the MDM help links) get their own screens spec with DesignShotCatalog mockups for every state, as #1709 does for Slack. This spec holds no screen and no UI task: it fixes the behaviour, the data and the UI texts (in the models, tested — T3); the screens spec is a prerequisite of every UI task and the screen tasks are planned from it. Screens spec: [`2026-11-18-company-setup-screens-design.md`](2026-11-18-company-setup-screens-design.md) | decided by the agent |
 
 ## 1. The company bundle

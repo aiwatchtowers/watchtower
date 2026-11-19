@@ -360,10 +360,17 @@ extension CompanySetupWizardModel {
         "Publish did not go through: \(detail). Your setup is kept."
     }
 
-    /// `company_renamed`: a check stored the setup under its first name.
-    static func companyRenamed(stored: String, typed: String) -> String {
-        "Your checks saved this setup as “\(stored)”, so it cannot be published as “\(typed)” yet. Publish it as "
-            + "“\(stored)”."
+    /// `name_taken`: another company on this Mac (or the person's own Google
+    /// project) already has the typed name. A rename itself just publishes
+    /// (ask #1613: only the display name changes).
+    static func publishNameTaken(_ typed: String) -> String {
+        "“\(typed)” is already the name of another company on this Mac, or of your own Google project. "
+            + "Choose another name."
+    }
+
+    /// `company_forced`: the organization's managed preferences set the name.
+    static func publishNameForced(_ stored: String) -> String {
+        "Your organization sets this company's name, so it is published as “\(stored)”."
     }
 
     package static func publishStepLines(slack: Bool) -> [SlackAppSetupModel.StepLine] {
