@@ -5,7 +5,8 @@ import WatchtowerCore
 /// The Workchat's field and round button (#711, spec §4): Return sends,
 /// Shift-Return adds a line; the button is Send whenever the field holds
 /// something, even while the agent works (#2065 §5), and Stop only with an
-/// empty field while it works; Esc in the empty field stops too. A Stop
+/// empty field while it works; Esc stops exactly when the button is Stop. A
+/// pasted image or long text goes into the field as a token (#2065 §6). A Stop
 /// that did not go says why above the field (`WorkchatModel.stopError`); while an agent without mid-turn
 /// input works, one line says a message waits for the turn's end (U2).
 struct WorkchatComposer: View {
@@ -41,7 +42,9 @@ struct WorkchatComposer: View {
                     hasPendingContent: !model.attachments.isEmpty,
                     autoFocus: autoFocus,
                     focusRequest: focusRequest,
-                    sendWhileStreaming: true
+                    sendWhileStreaming: true,
+                    inlinePastes: true,
+                    livePasteNumbers: Set(model.pastes.keys)
                 ),
                 onSend: send,
                 onStop: stop,
@@ -52,7 +55,8 @@ struct WorkchatComposer: View {
                 attachmentError: model.attachmentError,
                 onAttachFiles: { model.attach(files: $0) },
                 onPasteData: { await model.attach(data: $0, name: $1) },
-                onRemoveAttachment: { model.removeAttachment($0) }
+                onRemoveAttachment: { model.removeAttachment($0) },
+                onInlinePaste: { await model.paste($0) }
             )
             .macComposerStyle()
         }
@@ -72,12 +76,16 @@ struct WorkchatComposer: View {
     }
 
     private func escape() {
-        Self.escape(working: working, draft: model.draft, stop: stop)
+        Self.escape(working: working, draft: model.draft, hasAttachments: !model.attachments.isEmpty, stop: stop)
     }
 
-    /// Esc in the empty field while the agent works is Stop; with text in the field, or while idle, nothing.
-    static func escape(working: Bool, draft: String, stop: () -> Void) {
-        if working && draft.isEmpty { stop() }
+    /// Esc is Stop exactly when the round button is (`ComposerButtonMode`): while the agent works and the field
+    /// holds nothing to send — no text after trimming (a paste token is text), no files. Otherwise nothing.
+    static func escape(working: Bool, draft: String, hasAttachments: Bool = false, stop: () -> Void) {
+        let canSend = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasAttachments
+        let mode = ComposerButtonMode.resolve(isStreaming: working, sendWhileStreaming: true, canSend: canSend,
+                                              canStop: true)
+        if case .stopButton = mode { stop() }
     }
 
     private func stop() {

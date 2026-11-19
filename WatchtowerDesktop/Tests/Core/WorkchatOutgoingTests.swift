@@ -84,4 +84,38 @@ final class WorkchatOutgoingTests: XCTestCase {
             }
         }
     }
+
+    /// #2065 §6: the transcript records the expanded text, so the echo is matched on `text`, not on the tokenized
+    /// draft in `typedText`.
+    func testEchoMatchesExpandedText() {
+        let sent = WorkchatOutgoing(
+            id: UUID(), text: "a x y", sentAt: sentAt, state: .sent, typedText: "a [Pasted text #1 +2 lines]"
+        )
+
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("a x\ny"), line: sent))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("a [Pasted text #1 +2 lines]"), line: sent))
+    }
+
+    /// An image token goes as its saved path, inside the text; Claude Code records it as "[Image #N]".
+    func testEchoWithImageTokenMatchesClaudeImageMarker() {
+        let sent = WorkchatOutgoing(
+            id: UUID(), text: "fix \"/x/p 1.png\" now", sentAt: sentAt, state: .sent,
+            typedText: "fix [Image #1] now", attachmentPaths: ["/x/p 1.png"]
+        )
+
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix [Image #1] now"), line: sent))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("fix \"/x/p 1.png\" now"), line: sent))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("fix [Image #1] later"), line: sent))
+    }
+
+    /// A path with a quote or a backslash goes escaped inside its quotes; the echo of it still matches.
+    func testEchoWithEscapedPathMatches() {
+        let path = #"/x/say "hi".png"#
+        let sent = WorkchatOutgoing(
+            id: UUID(), text: "see " + WorkchatOutgoing.quoted(path), sentAt: sentAt, state: .sent,
+            typedText: "see [Image #1]", attachmentPaths: [path]
+        )
+
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("see [Image #1]"), line: sent))
+    }
 }

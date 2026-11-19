@@ -30,4 +30,15 @@ final class WorkchatComposerTests: XCTestCase {
         WorkchatComposer.escape(working: false, draft: "") { stops += 1 }
         XCTAssertEqual(stops, 1)
     }
+
+    /// Esc stops only when the round button shows Stop (#2065): a field holding only an attachment, or a paste
+    /// token, shows Send, so Esc leaves the agent alone; a whitespace-only field shows Stop, so Esc stops.
+    func testEscWithOnlyAttachmentDoesNotStop() {
+        var stops = 0
+        WorkchatComposer.escape(working: true, draft: "", hasAttachments: true) { stops += 1 }
+        WorkchatComposer.escape(working: true, draft: "[Image #1]") { stops += 1 }
+        XCTAssertEqual(stops, 0)
+        WorkchatComposer.escape(working: true, draft: " \n\t") { stops += 1 }
+        XCTAssertEqual(stops, 1)
+    }
 }

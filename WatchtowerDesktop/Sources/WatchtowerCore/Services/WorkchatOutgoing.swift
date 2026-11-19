@@ -20,11 +20,11 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
     }
 
     package let id: UUID
-    /// What goes to the terminal: the typed text, then the attachment paths.
+    /// What goes to the terminal: the typed text with its paste tokens expanded, then the attachment paths.
     package let text: String
-    /// The owner's own words, without the attachment paths.
+    /// The owner's own words as typed, paste tokens unexpanded (#2065 §6), without the attachment paths.
     package let typedText: String
-    /// The files sent with the line, as written into `text` (quoted or not there).
+    /// The files sent with the line, as written into `text` (`quoted`): the chips' and the image tokens'.
     package let attachmentPaths: [String]
     /// When the owner sent it: an echo is dated at or after this.
     package let sentAt: Date
@@ -80,17 +80,30 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
 
     /// The feed's owner entry for this line: same text with whitespace collapsed
     /// (a "/name args" line equals the parser's slash entry), dated at or after sentAt.
+    /// Matched on `text`, the expanded line the transcript records (#2065 §6), not on the tokenized `typedText`.
     package static func matches(_ entry: SessionFeedEntry, line: Self) -> Bool {
         guard entry.kind == "owner", let at = entry.at, at >= line.sentAt else { return false }
-        var echoed = entry.text
+        if line.attachmentPaths.isEmpty { return collapsed(entry.text) == collapsed(line.text) }
         // Claude Code records a pasted image path as "[Image #N]"; the feed
         // may also show "[image]". A path comes back quoted or not.
-        for path in line.attachmentPaths {
-            echoed = echoed.replacingOccurrences(of: "\"\(path)\"", with: " ")
+        return withoutImageMarkers(withoutPaths(entry.text, line.attachmentPaths))
+            == withoutImageMarkers(withoutPaths(line.text, line.attachmentPaths))
+    }
+
+    /// A path as it goes into a line: one with a space, a double quote or a backslash in double quotes, with `\`
+    /// and `"` escaped inside, as a shell reads it. A line break never gets here (`WorkchatModel` refuses it).
+    package static func quoted(_ path: String) -> String {
+        guard path.contains(where: { $0 == " " || $0 == "\"" || $0 == "\\" }) else { return path }
+        let escaped = path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
+    }
+
+    private static func withoutPaths(_ text: String, _ paths: [String]) -> String {
+        paths.reduce(text) { text, path in
+            text.replacingOccurrences(of: quoted(path), with: " ")
+                .replacingOccurrences(of: "\"\(path)\"", with: " ")
                 .replacingOccurrences(of: path, with: " ")
         }
-        if line.attachmentPaths.isEmpty { return collapsed(echoed) == collapsed(line.text) }
-        return withoutImageMarkers(echoed) == withoutImageMarkers(line.typedText)
     }
 
     private static let imageMarker = try? NSRegularExpression(pattern: #"\[(?:Image #\d+|image)\]"#)

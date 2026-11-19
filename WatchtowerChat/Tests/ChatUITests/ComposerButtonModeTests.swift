@@ -7,24 +7,24 @@ import XCTest
 final class ComposerButtonModeTests: XCTestCase {
     func testSendWithTextInEveryStateWhenEnabled() {
         XCTAssertEqual(ComposerButtonMode.resolve(isStreaming: true, sendWhileStreaming: true, canSend: true, canStop: true),
-                       .send(active: true))
+                       .sendButton(active: true))
         XCTAssertEqual(ComposerButtonMode.resolve(isStreaming: true, sendWhileStreaming: true, canSend: false, canStop: true),
-                       .stop(active: true))
+                       .stopButton(active: true))
         XCTAssertEqual(ComposerButtonMode.resolve(isStreaming: false, sendWhileStreaming: true, canSend: false, canStop: true),
-                       .send(active: false))
+                       .sendButton(active: false))
         XCTAssertEqual(ComposerButtonMode.resolve(isStreaming: false, sendWhileStreaming: true, canSend: true, canStop: true),
-                       .send(active: true))
+                       .sendButton(active: true))
         XCTAssertEqual(ComposerButtonMode.resolve(isStreaming: true, sendWhileStreaming: true, canSend: false, canStop: false),
-                       .stop(active: false))
+                       .stopButton(active: false))
     }
 
     func testAIChatKeepsStopWhileStreaming() {
         XCTAssertEqual(ComposerButtonMode.resolve(isStreaming: true, sendWhileStreaming: false, canSend: true, canStop: true),
-                       .stop(active: true))
+                       .stopButton(active: true))
         XCTAssertEqual(ComposerButtonMode.resolve(isStreaming: true, sendWhileStreaming: false, canSend: true, canStop: false),
-                       .stop(active: false))
+                       .stopButton(active: false))
         XCTAssertEqual(ComposerButtonMode.resolve(isStreaming: false, sendWhileStreaming: false, canSend: true, canStop: true),
-                       .send(active: true))
+                       .sendButton(active: true))
         XCTAssertFalse(ChatComposerFieldConfig(placeholder: "").sendWhileStreaming)
     }
 }
