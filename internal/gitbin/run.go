@@ -215,6 +215,53 @@ func ExecFetch(ctx context.Context, dir string, unattended bool, name string, ar
 	return run(ctx, dir, env, nil, true, name, args...)
 }
 
+// ownerNetworkEnv is the network side of a fetch, ls-remote or push the
+// owner started (a coach Accept or Roll Back): never a prompt — no
+// terminal (Exec's GIT_TERMINAL_PROMPT=0), no askpass from anywhere, ssh in
+// batch mode — but, unlike fetchEnv, the owner's ssh agent stays reachable,
+// and a path remote is allowed (the owner's own origin; ext:: and remote
+// helpers stay out).
+var ownerNetworkEnv = []string{
+	"GIT_SSH_COMMAND=" + batchSSH,
+	"GIT_ASKPASS=", "SSH_ASKPASS=", "SSH_ASKPASS_REQUIRE=never",
+	"GIT_PROXY_COMMAND=",
+	"GIT_ALLOW_PROTOCOL=git:http:https:ssh:file",
+}
+
+// ownerNetworkArgs is the argv ExecOwnerNetwork runs: ReadArgs (no hook,
+// no fsmonitor) plus the owner's credentials for an https remote — every
+// configured helper cleared, then gh at ghPath as the only one (`gh auth
+// git-credential`, the login `gh auth status` checks); an ssh remote never
+// asks a credential helper. The folder's alternateRefsCommand never runs,
+// and a stalled HTTP transfer gives up on its own.
+func ownerNetworkArgs(ghPath string, args ...string) []string {
+	argv := slices.Clone(readConfig)
+	argv = append(argv,
+		"-c", "credential.helper=",
+		"-c", "credential.helper=!"+shellQuote(ghPath)+" auth git-credential",
+		"-c", "core.alternateRefsCommand=true",
+		"-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=10")
+	return append(argv, args...)
+}
+
+// shellQuote quotes s for sh (git runs a `!` credential helper through it).
+func shellQuote(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-") == "" {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// ExecOwnerNetwork runs a git network call the owner started (fetch,
+// ls-remote, push; args without git's -c prefix) with ownerNetworkArgs and
+// ownerNetworkEnv, in its own process group killed whole when ctx ends. It
+// is the one place the rule for an owner's network write lives (coach
+// repository PRs, spec 4.2): no prompt of any kind, the owner's credentials
+// through gh for https and the ssh agent in batch mode for ssh.
+func ExecOwnerNetwork(ctx context.Context, dir, ghPath, name string, args ...string) (stdout, stderr []byte, err error) {
+	return run(ctx, dir, ownerNetworkEnv, nil, true, name, ownerNetworkArgs(ghPath, args...)...)
+}
+
 // ExecEnv is Exec with extraEnv appended after the inherited repository
 // variables are dropped: a caller's own GIT_INDEX_FILE (the reviewer's
 // temporary index) reaches git, an inherited one never does.
