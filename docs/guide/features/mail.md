@@ -64,7 +64,7 @@ action: connect:imap
 -->
 
 1. Open **Connections**.
-2. For Gmail with Calendar, use **Google** and click **Add Google Account**. Leave **Gmail** switched on and click **Connect**.
+2. For Gmail with Calendar, use **Google**: your company's account connects from its group, or click **Use my own Google project**. **Connect Google Calendar** adds Calendar alone through Watchtower's app.
 3. For Gmail on its own, Outlook or another IMAP mailbox, use **Email** and click **Add Account**. Choose **Connect Gmail**, **Connect Outlook** or fill in the **IMAP** form (host, username, password; port, security and folder wait under **Advanced** with the usual 993, SSL and `INBOX`) and click **Test and Connect**.
 4. Wait for the next sync cycle, then check **Catch Up** or the next briefing.
 

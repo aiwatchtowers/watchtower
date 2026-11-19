@@ -186,6 +186,29 @@ final class CompanySetupMockCopyTests: XCTestCase {
         XCTAssertEqual(Copy.tokenLocked, Pres.lockCard(.atlassianAPIToken).text)
     }
 
+    /// Task 25b: the Google and Jira details' list states, empty states and
+    /// buttons (§4.2, §5.3, §6.4).
+    func testGoogleAndJiraDetailCopyLivesInThePresentation() {
+        XCTAssertEqual(Copy.accountsTitle, Pres.accountsTitle)
+        XCTAssertEqual(Copy.googleTitle, Pres.googleTitle)
+        XCTAssertEqual(Copy.jiraTitle, Pres.jiraTitle)
+        XCTAssertEqual(Copy.googleEmpty, Pres.googleEmpty)
+        XCTAssertEqual(Copy.jiraEmpty, Pres.jiraEmpty)
+        XCTAssertEqual(Copy.googleLoading, Pres.googleLoading)
+        XCTAssertEqual(Copy.jiraLoading, Pres.jiraLoading)
+        XCTAssertEqual(Copy.googleReadFailed, Pres.readFailed(.google, "database is locked"))
+        XCTAssertEqual(Copy.jiraReadFailed, Pres.readFailed(.atlassian, "database is locked"))
+        XCTAssertEqual(Copy.tryAgain, Pres.tryAgain)
+        XCTAssertEqual(Copy.connectCalendar, Pres.connectCalendar)
+        XCTAssertEqual(Copy.connectCompanyAtlassian, Pres.connectCompanyApp("Acme", .atlassian))
+        let google = Pres.detailActions(.google, companies: [], empty: true).map(\.title)
+        XCTAssertEqual(google, [Copy.connectCalendar, Copy.useOwnGoogle, Copy.pasteCode])
+        let jira = Pres.detailActions(.atlassian, companies: [], empty: true).map(\.title)
+        XCTAssertEqual(jira, [Copy.connectTokenButton, Copy.pasteCode])
+        XCTAssertEqual(Pres.detailActions(.atlassian, companies: [Self.acme], empty: false).map(\.title),
+                       [Copy.connectCompanyAtlassian, Copy.connectTokenButton])
+    }
+
     /// Task 21 moved the wizard's words into `CompanySetupWizardModel` and
     /// `CompanyVendorGuide`.
     func testWizardCopyLivesInTheModel() {

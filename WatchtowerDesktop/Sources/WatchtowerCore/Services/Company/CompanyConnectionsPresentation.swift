@@ -467,7 +467,7 @@ package enum CompanyConnectionsPresentation {
     }
 
     /// The managed company first, then by name.
-    private static func sorted(_ companies: [CompanyRef]) -> [CompanyRef] {
+    static func sorted(_ companies: [CompanyRef]) -> [CompanyRef] {
         companies.sorted {
             if $0.forced != $1.forced { return $0.forced }
             let order = $0.name.localizedCaseInsensitiveCompare($1.name)

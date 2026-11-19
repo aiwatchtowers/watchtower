@@ -1,3 +1,4 @@
+import DesignKit
 import SwiftUI
 import GRDB
 import WatchtowerCore
@@ -11,7 +12,7 @@ struct JiraSyncInfoView: View {
     @State private var observationTask: Task<Void, Never>?
 
     var body: some View {
-        Section("Sync") {
+        SettingsSection(title: "Sync") {
             LabeledContent("Last sync") {
                 if let syncTime = lastSyncTime,
                    !syncTime.isEmpty {

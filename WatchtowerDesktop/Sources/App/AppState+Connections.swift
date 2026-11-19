@@ -135,7 +135,7 @@ extension AppState {
             accounts: connectionAccounts(service),
             readError: connectionReadError(service),
             blocked: !PolicySourceMap.allowed(service.rawValue, policy: managedPolicy.policy),
-            notice: service == .slack ? slackOverviewNotice : nil
+            notice: service == .slack ? slackOverviewNotice : companyBannerCardLine(service)
         )
     }
 

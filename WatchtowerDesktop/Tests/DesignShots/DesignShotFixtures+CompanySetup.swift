@@ -82,15 +82,16 @@ enum CompanySetupShotFixtures {
             + [shot("overview-companies-narrow", 420) { CompaniesZoneScenes.overview(.companies) }]
     }
 
-    /// Slack, Linear and Outlook from the production groups and rows
-    /// (Task 25a); Google and Jira stay mocks until Task 25b.
+    /// Slack, Linear and Outlook (Task 25a), Google and Jira (Task 25b)
+    /// from the production sections and groups; the `-locked` and
+    /// `-tokenError` frames stay mocks until Tasks 26 and 27.
     private static var paneShots: [DesignShot] {
-        CompaniesZoneScenes.panes.map { name, view in shot(name, 640) { view } }
+        let details = CompanyDetailScenes.panes
+        return CompaniesZoneScenes.panes.map { name, view in shot(name, 640) { view } }
+            + details.map { name, view in shot(name, 640) { view } }
             + CompanyPaneScenes.scenes.map { name, sections in shot(name, 640) { MockPane(sections: sections) } }
             + ["google-detail", "jira-detail"].compactMap { name in
-                CompanyPaneScenes.scenes.first { $0.0 == name }.map { scene in
-                    shot("\(name)-narrow", 360) { MockPane(sections: scene.1) }
-                }
+                details.first { $0.0 == name }.map { scene in shot("\(name)-narrow", 360) { scene.1 } }
             }
     }
 
@@ -116,27 +117,19 @@ enum CompanySetupShotFixtures {
     }
 }
 
-// MARK: - Detail panes grouped by company
+// MARK: - Detail panes left as mocks (Tasks 26 and 27)
 
+/// The Google and Jira frames whose states later tasks build: the policy
+/// locks (Tasks 26, 27) and the dead API token (Task 27). The rest of those
+/// details renders production views (`CompanyDetailScenes`).
 @MainActor
 enum CompanyPaneScenes {
-    private static func ok(_ title: String, _ status: String = Copy.syncing, tag: String? = nil) -> MockBlock {
-        .account(MockAccount(title: title, status: status, tone: Tone.success, tag: tag))
+    private static func ok(_ title: String, tag: String? = nil) -> MockBlock {
+        .account(MockAccount(title: title, status: Copy.syncing, tone: Tone.success, tag: tag))
     }
 
     private static func stopped(_ title: String, tag: String? = nil) -> MockBlock {
         .account(MockAccount(title: title, status: Copy.stoppedByPolicy, tone: Tone.status("gray"), tag: tag))
-    }
-
-    private static func problem(
-        _ title: String,
-        _ status: String,
-        _ button: MockButton,
-        note: String? = nil,
-        tag: String? = nil
-    ) -> MockBlock {
-        .account(MockAccount(title: title, status: status, tone: Tone.error, tag: tag, button: button, note: note,
-                             statusIsProblem: true))
     }
 
     private static let lockBlocks: (String) -> [MockBlock] = { text in
@@ -145,53 +138,12 @@ enum CompanyPaneScenes {
          .managedBadge]
     }
 
-    private static let googleBanner = MockPaneSection(
-        title: Copy.googleBannerTitle, style: .banner,
-        blocks: [.body(Copy.googleBannerBody),
-                 .buttons(leading: [MockButton(title: Copy.useOwnGoogle), MockButton(title: Copy.pasteCode, kind: .quiet)],
-                          trailing: [])])
-
-    private static let atlassianBanner = MockPaneSection(
-        title: Copy.atlassianBannerTitle, style: .banner,
-        blocks: [.body(Copy.atlassianBannerBody),
-                 .buttons(leading: [MockButton(title: Copy.setUpForCompany),
-                                    MockButton(title: Copy.connectTokenButton, kind: .quiet)], trailing: [])])
-
     static var scenes: [(String, [MockPaneSection])] { googleScenes + jiraScenes }
 
     private static var googleScenes: [(String, [MockPaneSection])] {
-        let acme = MockPaneSection(title: "Acme", caption: Copy.groupAcmeGoogle,
-                                   blocks: [ok("alice@example.com")])
-        let own = MockPaneSection(title: Copy.groupOwnGoogle, caption: Copy.groupOwnGoogleCaption,
-                                  blocks: [ok("alice@example.net")])
-        let shared = MockPaneSection(title: Copy.groupShared, caption: Copy.groupSharedGoogleCaption,
-                                     blocks: [ok("bob@example.org", Copy.sharedSyncing, tag: Copy.sharedTag)])
-        let add = MockPaneSection(title: Copy.addAccountTitle, blocks: [
-            .buttons(leading: [MockButton(title: Copy.connectCalendar), MockButton(title: Copy.useOwnGoogle),
-                               MockButton(title: Copy.pasteCode, kind: .quiet)], trailing: [])
-        ])
-        let relogin = MockButton(title: Copy.relogin, kind: .primary)
+        let acme = MockPaneSection(title: "Acme", caption: Copy.groupAcmeGoogle, blocks: [ok("alice@example.com")])
         let paste = MockButton(title: Copy.pasteCode, kind: .quiet)
         return [
-            ("google-detail", [googleBanner, acme, own, shared, add]),
-            ("google-detail-relogin", [
-                MockPaneSection(title: "Acme", caption: Copy.groupAcmeGoogle, blocks: [
-                    problem("alice@example.com", Copy.reloginChanged, relogin),
-                    problem("dave@example.com", Copy.reloginNewLink, paste)
-                ]),
-                MockPaneSection(title: Copy.groupUnknown, caption: Copy.groupUnknownCaption, blocks: [
-                    problem("erin@example.com", Copy.reloginUntied, MockButton(title: Copy.pasteCode))
-                ])
-            ]),
-            ("google-detail-empty", [MockPaneSection(title: Copy.googleTitle, blocks: [
-                .body(Copy.googleEmpty),
-                .buttons(leading: [MockButton(title: Copy.connectCalendar, kind: .primary),
-                                   MockButton(title: Copy.useOwnGoogle), paste], trailing: [])
-            ])]),
-            ("google-detail-loading", [MockPaneSection(title: Copy.accountsTitle, blocks: [.busy(Copy.googleLoading)])]),
-            ("google-detail-readFailed", [MockPaneSection(title: Copy.accountsTitle, blocks: [
-                .problem(Copy.googleReadFailed, MockButton(title: Copy.tryAgain))
-            ])]),
             ("google-detail-locked", [
                 acme,
                 MockPaneSection(title: Copy.groupOwnGoogle, caption: Copy.groupOwnGoogleCaption,
@@ -206,29 +158,18 @@ enum CompanyPaneScenes {
     private static var jiraScenes: [(String, [MockPaneSection])] {
         let acme = MockPaneSection(title: "Acme", caption: Copy.groupAcmeAtlassian,
                                    blocks: [ok("alice@example.com · acme.atlassian.net")])
-        let tokens = MockPaneSection(title: Copy.groupTokens, caption: Copy.groupTokensCaption,
-                                     blocks: [ok("bob@example.com · beta.atlassian.net", tag: Copy.tokenTag)])
-        let shared = MockPaneSection(title: Copy.groupShared, blocks: [ok("old.atlassian.net", Copy.sharedSyncing, tag: Copy.sharedTag)])
         let deadToken = MockPaneSection(
             title: Copy.groupTokens, caption: Copy.groupTokensCaption,
-            blocks: [problem("bob@example.com · beta.atlassian.net", Copy.tokenDead,
-                             MockButton(title: Copy.pasteNewToken, kind: .primary), note: Copy.tokenLease, tag: Copy.tokenTag)])
+            blocks: [.account(MockAccount(title: "bob@example.com · beta.atlassian.net", status: Copy.tokenDead,
+                                          tone: Tone.error, tag: Copy.tokenTag,
+                                          button: MockButton(title: Copy.pasteNewToken, kind: .primary),
+                                          note: Copy.tokenLease, statusIsProblem: true))])
         let add = MockPaneSection(title: Copy.addAccountTitle, blocks: [
             .buttons(leading: [MockButton(title: Copy.connectCompanyAtlassian), MockButton(title: Copy.connectTokenButton)],
                      trailing: [])
         ])
         return [
-            ("jira-detail", [atlassianBanner, acme, tokens, shared, add]),
             ("jira-detail-tokenError", [acme, deadToken, add]),
-            ("jira-detail-empty", [MockPaneSection(title: Copy.jiraTitle, blocks: [
-                .body(Copy.jiraEmpty),
-                .buttons(leading: [MockButton(title: Copy.connectTokenButton, kind: .primary),
-                                   MockButton(title: Copy.pasteCode, kind: .quiet)], trailing: [])
-            ])]),
-            ("jira-detail-loading", [MockPaneSection(title: Copy.accountsTitle, blocks: [.busy(Copy.jiraLoading)])]),
-            ("jira-detail-readFailed", [MockPaneSection(title: Copy.accountsTitle, blocks: [
-                .problem(Copy.jiraReadFailed, MockButton(title: Copy.tryAgain))
-            ])]),
             ("jira-detail-locked", [
                 acme,
                 MockPaneSection(title: Copy.groupTokens, caption: Copy.groupTokensCaption,
