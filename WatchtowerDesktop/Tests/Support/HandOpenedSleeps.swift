@@ -174,4 +174,28 @@ package final class CallCountingAI: AIServiceProtocol, @unchecked Sendable {
         count = inner.calls.count
         return stream
     }
+
+    // swiftlint:disable:next function_parameter_count
+    package func stream(
+        prompt: String,
+        systemPrompt: String?,
+        dbPath: String?,
+        model: String?,
+        provider: String?,
+        toolMode: ChatToolMode?,
+        readFolder: String?,
+        ownerInstructions: Bool,
+        purpose: String?,
+        readFolderAskID: Int64?,
+        readFolderRoundID: Int64?,
+        persist: ChatQueryPersist
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        let stream = inner.stream(prompt: prompt, systemPrompt: systemPrompt, dbPath: dbPath, model: model,
+                                  provider: provider, toolMode: toolMode, readFolder: readFolder,
+                                  ownerInstructions: ownerInstructions, purpose: purpose,
+                                  readFolderAskID: readFolderAskID, readFolderRoundID: readFolderRoundID,
+                                  persist: persist)
+        count = inner.calls.count
+        return stream
+    }
 }

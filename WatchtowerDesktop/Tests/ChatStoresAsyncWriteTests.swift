@@ -81,7 +81,9 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
         held.release()
         await engine.finished()
 
-        XCTAssertTrue(ai.calls.isEmpty)
+        // The turn's process saves its rows itself, so it was started; the
+        // quit stops it before anything else is sent.
+        XCTAssertEqual(ai.terminated, [true])
         XCTAssertFalse(engine.isBusy)
         let rows = try await pool.read { try ChatMessageQueries.fetchByConversation($0, conversationID: conv) }
         XCTAssertEqual(rows.map(\.role), ["user", "assistant"])
@@ -171,24 +173,22 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
     /// buttons wait meanwhile, a second press does nothing, and the card
     /// leaves once the write landed.
     func testAReminderLeavesTheStripOnlyOnceItsDoneLanded() async throws {
-        let id = try await pool.write { db -> Int64 in
-            try db.execute(sql: """
-                INSERT INTO reminders (message_ref, note, remind_at, status)
-                VALUES ('C1@1','call back','2000-01-01T00:00:00Z','pending')
-                """)
-            return db.lastInsertedRowID
-        }
+        // Reminder 1, due; Go's next feed once it is done.
+        let tower = try FeedCaseTransport.seeded("desktop_strip_reminder_done", pool: pool)
+        let id: Int64 = 1
         let strip = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await strip.refresh()
+        await strip.followWriting(tower)
         XCTAssertEqual(strip.reminderRows.map(\.id), [id])
-        let held = HeldWriter(pool)
-        defer { held.release() }
+        // Hold the tower's answer, so the Done waits for it.
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        tower.actGate = { for await _ in gate { return } }
+        defer { open.finish() }
 
         let done = Task { await strip.markReminderDone(id) }
         _ = await eventually { strip.isWriting(reminder: id) }
         XCTAssertEqual(strip.reminderRows.map(\.id), [id], "the card stays while its write waits")
         await strip.markReminderDone(id)
-        held.release()
+        open.yield()
         await done.value
 
         XCTAssertFalse(strip.isWriting(reminder: id))
@@ -199,25 +199,17 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
     /// A Done that cannot be written keeps the card, says why, and gives
     /// the card its buttons back.
     func testAFailedStripWriteKeepsTheCardAndReEnablesIt() async throws {
-        let id = try await pool.write { db -> Int64 in
-            try db.execute(sql: """
-                INSERT INTO reminders (message_ref, note, remind_at, status)
-                VALUES ('C1@1','call back','2000-01-01T00:00:00Z','pending')
-                """)
-            let id = db.lastInsertedRowID
-            try db.execute(sql: """
-                CREATE TRIGGER fail_reminder BEFORE UPDATE ON reminders
-                BEGIN SELECT RAISE(ABORT, 'disk full'); END
-                """)
-            return id
-        }
+        // Reminder 1, due; Go's next feed once it is done (never, here).
+        let tower = try FeedCaseTransport.seeded("desktop_strip_reminder_done", pool: pool)
+        let id: Int64 = 1
         let strip = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await strip.refresh()
+        await strip.followWriting(tower)
+        tower.actRefusal = "Couldn't mark it done: the disk is full."
 
         await strip.markReminderDone(id)
 
         XCTAssertEqual(strip.reminderRows.map(\.id), [id], "the card stays")
-        XCTAssertNotNil(strip.lastError)
+        XCTAssertEqual(strip.rowErrors[.reminder(id)]?.message, "Couldn't mark it done: the disk is full.")
         XCTAssertFalse(strip.isWriting(reminder: id), "its buttons work again")
     }
 }

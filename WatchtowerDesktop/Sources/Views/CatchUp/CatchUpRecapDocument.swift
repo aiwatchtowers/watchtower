@@ -210,6 +210,7 @@ struct CatchUpRecapDocument: View {
             }
 
             HStack {
+                pressState
                 Spacer()
                 if recap.isAcknowledged {
                     Label(caughtUpLabel, systemImage: "checkmark.circle.fill")
@@ -225,6 +226,17 @@ struct CatchUpRecapDocument: View {
             }
         }
         .padding(12)
+    }
+
+    /// The acknowledge's state through the tower (mockup §8); Retry repeats it.
+    @ViewBuilder
+    private var pressState: some View {
+        let row = CatchUpViewModel.row(recap.id)
+        if let state = vm.presses.state(row) {
+            TowerRowState(state: state, busyLabel: vm.presses.label(row)) {
+                Task { await vm.presses.retry(row) }
+            }
+        }
     }
 
     private var caughtUpLabel: String {

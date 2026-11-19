@@ -128,7 +128,8 @@ final class PlansScreenTests: XCTestCase {
         for shot in PlansShotFixtures.shots {
             for (suffix, name) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                 let appearance = try XCTUnwrap(NSAppearance(named: name))
-                let data = try ViewRenderProbe(size: shot.size).png(shot.make(), appearance)
+                let make = try XCTUnwrap(shot.make, "the Plans shots build at once")
+                let data = try ViewRenderProbe(size: shot.size).png(make(), appearance)
                 try data.write(to: directory.appendingPathComponent("\(shot.name)-\(suffix).png"))
                 XCTAssertGreaterThan(data.count, 1000, "\(shot.name) should render production content")
             }

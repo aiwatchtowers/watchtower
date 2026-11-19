@@ -647,10 +647,17 @@ final class AppStateTests: XCTestCase {
         var accounts: [Int] = []
     }
 
-    /// Waits until `condition` holds, re-checking on every change of the
-    /// observable state it reads — no deadline.
-    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
-        await untilObserved(condition)
+    /// Waits until `condition` holds, re-checked once per main-actor turn and
+    /// bounded by a count of turns (`settles`): a condition over a fake's
+    /// plain state is re-checked too, and one that never holds fails here
+    /// instead of hanging the run.
+    private func waitUntil(
+        _ condition: @escaping @MainActor () -> Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let held = await settles(condition)
+        XCTAssertTrue(held, "the condition never held", file: file, line: line)
     }
 
     private func onboardingAppState(_ launches: RosterLaunches) -> AppState {
@@ -777,9 +784,10 @@ final class AppStateTests: XCTestCase {
         XCTAssertNil(appState.databaseManager)
     }
 
-    /// Fresh install: Goals opened the DB for Connect; leaving the last
-    /// step runs the whole completion sequence — onboarding_done written
-    /// first, then the daemon started exactly once — and wires the rest of
+    /// Fresh install: Goals opened the DB for Connect, which starts the
+    /// daemon without sync (mobile Inbox spec §3); leaving the last step runs
+    /// the whole completion sequence — onboarding_done written first, then
+    /// the daemon restarted with sync exactly once — and wires the rest of
     /// the app once.
     func testFinishAfterTheOnboardingOpenStartsTheDaemonOnce() async throws {
         let manager = try XCTUnwrap(dbManager)
@@ -792,11 +800,13 @@ final class AppStateTests: XCTestCase {
         appState.wireAppDatabaseOverride = { _ in appWirings += 1 }
         appState.needsOnboarding = true
 
-        // Goals → Connect: no daemon.
+        // Goals → Connect: the open starts the daemon without sync.
         let route = OnboardingRoute(goals: [.tasksAndJira])
         await appState.leaveOnboardingStep(.purpose, route: route) {}
+        await appState.daemonStartChain?.value
         XCTAssertEqual(appState.onboarding.currentStep, .connect)
-        XCTAssertEqual(daemon.starts + daemon.restarts, 0, "no step before finish touches the daemon")
+        XCTAssertEqual(daemon.startNoSync, [true], "the open starts the daemon without sync")
+        XCTAssertEqual(daemon.restarts, 0, "no step before finish restarts it")
 
         await appState.leaveOnboardingStep(.connect, route: route) { retries += 1 }
         // A stray second click after finish starts nothing more.
@@ -804,7 +814,7 @@ final class AppStateTests: XCTestCase {
         await appState.daemonStartChain?.value
 
         XCTAssertEqual(daemon.starts, 1)
-        XCTAssertEqual(daemon.restarts, 0)
+        XCTAssertEqual(daemon.restartNoSync, [false], "the finish restarts it once, with sync")
         XCTAssertEqual(appWirings, 1)
         XCTAssertEqual(retries, 1)
         XCTAssertFalse(appState.needsOnboarding)
@@ -982,8 +992,11 @@ final class AppStateTests: XCTestCase {
         let daemon = FakeDaemon()
         daemon.running = true
         appState.daemonControlOverride = daemon
+        let wipe = FakeCLIRunner()
+        appState.findWipeLLMRunner = { wipe }
 
         try await appState.resetLLMData(workspaceDir: dir)
+        XCTAssertEqual(wipe.invocations, [["db", "wipe-llm"]], "the wipe is Go's verb")
 
         XCTAssertEqual(daemon.stops, 1)
         XCTAssertEqual(daemon.restarts, 1)
@@ -1114,6 +1127,8 @@ final class AppStateTests: XCTestCase {
         daemon.running = true
         daemon.stopTimesOut = true
         appState.daemonControlOverride = daemon
+        let wipe = FakeCLIRunner()
+        appState.findWipeLLMRunner = { wipe }
 
         do {
             try await appState.resetLLMData(workspaceDir: dir)
@@ -1122,8 +1137,61 @@ final class AppStateTests: XCTestCase {
             XCTAssertEqual(error as? DaemonRestartError, .stopTimedOut(pid: 4242), "the first error is reported")
         }
 
+        XCTAssertEqual(wipe.invocations, [], "the wipe never ran")
         XCTAssertEqual(daemon.stops, 1)
         XCTAssertEqual(daemon.restarts, 1)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: dir)),
+                       Set(DaemonStampFiles.names + ["last_sync.json"]), "no stamp removed")
+    }
+
+    /// `db wipe-llm` exits non-zero (its transaction rolled back): the stamps
+    /// stay, the failure reaches Settings, and the daemon still restarts.
+    func testResetLLMDataReportsAFailedWipeAndStillRestarts() async throws {
+        let dir = try workspaceWithStamps()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let appState = AppState.isolated()
+        appState.databaseManager = dbManager
+        let daemon = FakeDaemon()
+        daemon.running = true
+        appState.daemonControlOverride = daemon
+        let wipe = FakeCLIRunner()
+        wipe.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: wiping LLM data: database is locked")
+        appState.findWipeLLMRunner = { wipe }
+
+        do {
+            try await appState.resetLLMData(workspaceDir: dir)
+            XCTFail("a failed wipe must reach the Settings error line")
+        } catch {
+            guard case .nonZeroExit(1, _)? = error as? CLIRunnerError else { return XCTFail("\(error)") }
+        }
+
+        XCTAssertEqual(wipe.invocations, [["db", "wipe-llm"]])
+        XCTAssertEqual(daemon.restarts, 1, "the reset never leaves the app without a daemon")
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: dir)),
+                       Set(DaemonStampFiles.names + ["last_sync.json"]), "no stamp removed after a failed wipe")
+    }
+
+    /// No CLI installed: nothing is wiped, `binaryNotFound` reaches Settings,
+    /// and the daemon still restarts.
+    func testResetLLMDataWithoutTheCLIWipesNothingAndStillRestarts() async throws {
+        let dir = try workspaceWithStamps()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let appState = AppState.isolated()
+        appState.databaseManager = dbManager
+        let daemon = FakeDaemon()
+        daemon.running = true
+        appState.daemonControlOverride = daemon
+        appState.findWipeLLMRunner = { nil }
+
+        do {
+            try await appState.resetLLMData(workspaceDir: dir)
+            XCTFail("a missing CLI must reach the Settings error line")
+        } catch {
+            guard case .binaryNotFound? = error as? CLIRunnerError else { return XCTFail("\(error)") }
+        }
+
+        XCTAssertEqual(daemon.stops, 1)
+        XCTAssertEqual(daemon.restarts, 1, "the reset never leaves the app without a daemon")
         XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: dir)),
                        Set(DaemonStampFiles.names + ["last_sync.json"]), "no stamp removed")
     }

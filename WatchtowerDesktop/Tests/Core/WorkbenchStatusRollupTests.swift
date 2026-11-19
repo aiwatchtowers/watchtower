@@ -21,11 +21,11 @@ final class WorkbenchStatusRollupTests: XCTestCase {
             let leaf = try TestDatabase.insertWorkbenchTarget(db, projectID: project, parentID: mid)
             XCTAssertEqual(try status(db, root), "todo")
 
-            try TargetQueries.updateStatus(db, id: Int(leaf), status: "in_progress")
+            try db.execute(sql: "UPDATE targets SET status = 'in_progress' WHERE id = ?", arguments: [leaf])
             XCTAssertEqual(try status(db, mid), "in_progress")
             XCTAssertEqual(try status(db, root), "in_progress")
 
-            try TargetQueries.updateStatus(db, id: Int(leaf), status: "done")
+            try db.execute(sql: "UPDATE targets SET status = 'done' WHERE id = ?", arguments: [leaf])
             XCTAssertEqual(try status(db, mid), "done")
             XCTAssertEqual(try status(db, root), "done")
         }
@@ -40,7 +40,7 @@ final class WorkbenchStatusRollupTests: XCTestCase {
             let open = try TestDatabase.insertWorkbenchTarget(db, projectID: project, parentID: parent)
             XCTAssertEqual(try status(db, parent), "in_progress")
 
-            try TargetQueries.updateStatus(db, id: Int(parent), status: "blocked")
+            try db.execute(sql: "UPDATE targets SET status = 'blocked' WHERE id = ?", arguments: [parent])
             XCTAssertEqual(try status(db, parent), "blocked", "the parent's own update is not rolled up")
 
             try TargetQueries.delete(db, id: Int(open))

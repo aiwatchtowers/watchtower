@@ -87,6 +87,8 @@ Per-feature notes — architecture, contracts, dual paths, v1 limits — live in
 - Strong-tier cost fixes — `strong-tier-cost-fixes.md`
 - Audit fix wave 5 — `audit-fix-wave-5.md`
 - Owner identity — `owner-identity.md`
+- Tower interface — `tower-interface.md`
+- Inbox core — `inbox-core.md`
 
 ---
 
@@ -102,10 +104,11 @@ The user-facing guide lives in `docs/guide/` (start at `docs/guide/README.md`). 
 - Go: test only the touched package — `go test ./internal/<pkg>` (add `-run TestName` to narrow further). The Go build/test cache makes this seconds; never add `-count=1` reflexively, it defeats the cache. The first `go test` after a clean cache compiles the SQLCipher amalgamation (~30 s); `CGO_ENABLED=0` no longer builds.
 - Swift: always filter — `make test-swift FILTER=<TestClass>` (a regex alternation such as `FILTER='ClassA|ClassB'` works too — the recipe quotes it) (or `cd WatchtowerDesktop && swift test --filter <TestClass>`). An unfiltered `swift test` re-links the whole ML stack and belongs to the gate only. Core-level code lives in `WatchtowerCore` and its tests in `Tests/Core`, which build without the ML stack — prefer testing there when touching Models/Database/pure Services (measured ~0:12 edit→test vs the ~0:35 pre-split baseline; see `docs/superpowers/specs/2026-08-11-local-build-speed-design.md`'s Phase 2 appendix — the shared test bundle still links ML at run time, so the win is in compile time, not in avoiding the link).
 - Mobile Kit: `make kit-test FILTER=<TestClass>` (`WatchtowerKit/`, no ML stack); an unfiltered `make test-swift` runs the Desktop suite and then the whole Kit suite.
+- Tower interface: `make gen-interface` rewrites the generated Swift (`WatchtowerInterface/…/Generated/`) and `internal/tower/interface_version.go` from the commands `internal/tower/commands` registers — run it after changing any `internal/tower/api` type or registration (never hand-edit a generated file); `make gen-interface-check` (CI's Go job and `make lint-all`) fails on a stale one. `make interface-test FILTER=<TestClass>` runs the Foundation-only `WatchtowerInterface/` package (its generated `GoldenRoundTripTests` read `internal/tower/api/testdata`); an unfiltered `make test-swift` runs it too. See `docs/features/tower-interface.md`.
 - iPhone app: `make mobile-build`, `make mobile-test MOBILE_FILTER=<TestClass>` (simulator `SIM`, default `iPhone 18 Pro`; override with one your Xcode has), `make mobile-gen` after editing `WatchtowerMobile/project.yml`. Builds are unsigned; tests are signed to run locally with the test-only `WatchtowerMobile/StoreKitTesting.entitlements`; device and archive signing come from the gitignored `WatchtowerMobile/Signing.xcconfig`.
 - Lint: `make lint-diff` (issues introduced vs origin/main). Full `make lint` is the gate.
 
-**Gate:** full `make test`, `make test-swift` (includes the Kit), `make lint-all` (lints the Desktop, Kit and phone trees); with phone changes also `make mobile-test`; plus every other job in `.github/workflows/*.yml` run locally by its own command (Leak Check included: `scripts/leak-check.sh`, since nothing is pushed before an umbrella merge). Any failure blocks the merge; a job that cannot run locally is named in the report.
+**Gate:** full `make test`, `make test-swift` (includes the Kit), `make lint-all` (lints the Desktop, Kit, chat text, interface and phone trees, and runs `make gen-interface-check`); with phone changes also `make mobile-test`; plus every other job in `.github/workflows/*.yml` run locally by its own command (Leak Check included: `scripts/leak-check.sh`, since nothing is pushed before an umbrella merge). Any failure blocks the merge; a job that cannot run locally is named in the report.
 - **Inside an umbrella:** no GitHub PR per target and no waiting on CI. The gate runs in the target's worktree before it is merged into the umbrella branch locally (`git merge`), and once more on the umbrella before its single PR into main.
 - **Outside an umbrella:** the gate runs before the PR.
 - Wherever this file says "before the PR", read it as these gate moments.

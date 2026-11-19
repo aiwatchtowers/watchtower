@@ -5,6 +5,7 @@ build.next/
 build.old/
 WatchtowerDesktop/.build/
 WatchtowerChatText/.build/
+WatchtowerInterface/.build/
 WatchtowerChat/.build/
 WatchtowerDesktop/*.app
 

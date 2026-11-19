@@ -103,7 +103,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let reply = """
         Done — marked it done.
         ```watchtower-action
@@ -146,7 +146,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let draft = """
         Adding it.
         ```watchtower-action
@@ -188,7 +188,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let draft = """
         ```watchtower-action
         { "type": "add_sub_item", "text": "first draft", "mode": "execute", "reason": "owner instructed" }
@@ -222,7 +222,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let mock = MockClaudeService()
         let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
 
@@ -252,7 +252,7 @@ final class TargetChatViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let root = try makeTarget(manager, intent: "x")
         let current = try makeChild(manager, parent: root)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let reply = """
         Closing the parent.
         ```watchtower-action
@@ -295,7 +295,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let reply = """
         Doing both.
         ```watchtower-action
@@ -342,7 +342,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let mock = MockClaudeService(error: StubStreamError())
         let chat = try makeChat(target: target, vm: vm, manager: manager,
                                 aiService: mock)
@@ -371,7 +371,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let reply = """
         I suggest we mark it done.
         ```watchtower-action
@@ -401,7 +401,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let reply = """
         Doing it.
         ```watchtower-action
@@ -466,7 +466,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: target, vm: vm, manager: manager,
                                 aiService: MockClaudeService())
 
@@ -490,7 +490,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: target, vm: vm, manager: manager,
                                 aiService: MockClaudeService())
 
@@ -515,7 +515,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: target, vm: vm, manager: manager,
                                 aiService: MockClaudeService())
 
@@ -545,7 +545,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let mock = MockClaudeService(eventSequence: [
             [.sessionID("s1"), .text("first reply"), .done],
             [.text("second reply"), .done]
@@ -586,7 +586,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: target, vm: vm, manager: manager,
                                 aiService: MockClaudeService())
 
@@ -629,7 +629,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: target, vm: vm, manager: manager,
                                 aiService: MockClaudeService())
 
@@ -655,7 +655,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: target, vm: vm, manager: manager,
                                 aiService: MockClaudeService())
 
@@ -685,7 +685,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: target, vm: vm, manager: manager,
                                 aiService: MockClaudeService())
 
@@ -718,7 +718,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let mock = MockClaudeService()
         let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
 
@@ -740,7 +740,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: target, vm: vm, manager: manager,
                                 aiService: MockClaudeService())
 
@@ -776,7 +776,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: target, vm: vm, manager: manager,
                                 aiService: MockClaudeService())
 
@@ -803,7 +803,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: target, vm: vm, manager: manager,
                                 aiService: MockClaudeService())
 
@@ -872,7 +872,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         // The first turn stays open until released: a turn that streamed to
         // its end before the approval would take the follow-up itself.
         let mock = MockClaudeService(eventSequence: [
@@ -920,7 +920,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         // Every turn streams, then hangs until cancelled: the approval's write
         // is awaited (board #670), so a turn that ended on its own meanwhile
         // would take the follow-up itself.
@@ -961,7 +961,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: target, vm: vm, manager: manager,
                                 aiService: MockClaudeService())
 
@@ -988,7 +988,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         addTeardownBlock { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let mock = MockClaudeService(events: [.text("Hello from Claude"), .done], thenAwaitsRelease: true)
         let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
         addTeardownBlock { @MainActor in
@@ -1025,7 +1025,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         addTeardownBlock { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let mock = MockClaudeService(events: [.text("Hello from Claude"), .done], thenAwaitsRelease: true)
         let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
         addTeardownBlock { @MainActor in
@@ -1065,7 +1065,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         addTeardownBlock { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let mock = MockClaudeService(events: [.text("Hello from Claude"), .done], thenAwaitsRelease: true)
         let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
         addTeardownBlock { @MainActor in
@@ -1107,7 +1107,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let mock = MockClaudeService(eventSequence: [[.sessionID("s1"), .text("reply"), .done]])
         let chat = try makeChat(target: target, vm: vm, manager: manager,
                                 aiService: mock)
@@ -1140,7 +1140,7 @@ final class TargetChatViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let child = try makeChild(manager, parent: target)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: target, vm: vm, manager: manager)
 
         let action = ProposedAction(type: .addSubItem, reason: "fill checklist",
@@ -1166,7 +1166,7 @@ final class TargetChatViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let root = try makeTarget(manager, intent: "x")
         let current = try makeChild(manager, parent: root)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: current, vm: vm, manager: manager)
 
         let action = ProposedAction(type: .updateStatus, reason: "parent done",
@@ -1186,7 +1186,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let root = try makeTarget(manager, intent: "x")
         let current = try makeChild(manager, parent: root)
         let sibling = try makeChild(manager, parent: root, text: "sibling task")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: current, vm: vm, manager: manager)
 
         let action = ProposedAction(type: .addSubItem, reason: "sneak",
@@ -1208,7 +1208,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: target, vm: vm, manager: manager)
 
         let action = ProposedAction(type: .updateStatus, reason: "ghost",
@@ -1228,7 +1228,7 @@ final class TargetChatViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let child = try makeChild(manager, parent: target)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: target, vm: vm, manager: manager)
 
         let action = ProposedAction(type: .createChildTarget, reason: "deeper",
@@ -1251,7 +1251,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let target = try makeTarget(manager, intent: "x")
         let childA = try makeChild(manager, parent: target, text: "child A")
         let childB = try makeChild(manager, parent: target, text: "child B")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let chat = try makeChat(target: target, vm: vm, manager: manager)
 
         let msgID = UUID()
@@ -1281,7 +1281,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let root = try makeTarget(manager, intent: "big goal")
         let current = try makeChild(manager, parent: root, text: "current task")
         let child = try makeChild(manager, parent: current, text: "leaf task")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         await vm.addSubItem(child, text: "leaf item")
 
         let prompt = TargetChatViewModel.buildSystemPrompt(target: current, dbPool: manager.dbPool)
@@ -1378,7 +1378,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let mock = MockClaudeService(events: [.text("ok"), .done])
         let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
         chat.inputText = "make a ticket"
@@ -1402,7 +1402,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         // The stream ends only once the test released it: the turn's rows are
         // written off the main thread (board #670), so the proposal goes in
         // while the turn is still running.
@@ -1436,7 +1436,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let mock = MockClaudeService(events: [.text("ok"), .done])
         let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock, toolsAvailable: false)
         chat.inputText = "make a ticket"
@@ -1462,7 +1462,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let ai = MockClaudeService(events: [], thenHangs: true)
         let center = EmbeddedChatCenter(gate: EmbeddedStreamGate(limit: 1)) { spec, gate in
             makeSurfaceEngine(spec, dbPool: manager.dbPool, ai: ai, gate: gate)
@@ -1501,7 +1501,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let mock = MockClaudeService(events: [.sessionID("s1"), .text("reply")], thenAwaitsRelease: true)
         let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
         let card = TargetActionCard(messageID: UUID(),
@@ -1528,7 +1528,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let reply = """
         Here is a step.
         ```watchtower-action
@@ -1553,7 +1553,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let block = """
         ```watchtower-action
         { "type": "update_status", "status": "done", "mode": "execute", "reason": "owner instructed" }
@@ -1603,7 +1603,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let mock = MockClaudeService(eventSequence: [
             addSubItemReply(reason: "owner instructed"),
             addSubItemReply(reason: "as the owner asked")
@@ -1655,7 +1655,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let mock = MockClaudeService(eventSequence: [addSubItemReply(reason: "r"), addSubItemReply(reason: "r")])
         let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
         try await failReplySaves(manager)
@@ -1684,7 +1684,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let reply = """
         ```watchtower-action
         { "type": "update_status", "mode": "execute", "reason": "owner instructed" }
@@ -1710,7 +1710,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let mock = MockClaudeService(events: [], thenAwaitsRelease: true)
         let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
         let convID = try XCTUnwrap(fetchConversationID(manager, targetID: target.id))
@@ -1759,7 +1759,7 @@ extension TargetChatViewModelTests {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         defer { ProviderCatalogFixture.seedShared() }
         for (provider, tools) in [("claude", true), ("codex", true), ("ollama", false)] {
             AIModelCatalog.shared.replaceProviders([])
@@ -1788,7 +1788,7 @@ extension TargetChatViewModelTests {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         defer { ProviderCatalogFixture.seedShared() }
         AIModelCatalog.shared.replaceProviders([])
         let mock = MockClaudeService(eventSequence: [[.text("one"), .done], [.text("two"), .done]], thenAwaitsRelease: true)

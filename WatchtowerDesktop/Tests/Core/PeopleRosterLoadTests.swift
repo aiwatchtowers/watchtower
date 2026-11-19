@@ -52,8 +52,18 @@ final class PeopleRosterLoadTests: XCTestCase {
 
     /// Waits until `condition` holds, re-checking on every change of the
     /// fake's observable state it reads — no deadline.
-    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
-        await untilObserved(condition)
+    /// `FakeRun`'s state is plain (not `@Observable`), which `untilObserved`
+    /// never re-checks: a condition false at its first check hung the run
+    /// (CI, `testRetryReloadsTheFailedAccount`, where Retry's run starts a
+    /// turn later). The wait re-checks once per main-actor turn, bounded by
+    /// a count of turns, so a run that never starts fails instead.
+    private func waitUntil(
+        _ condition: @escaping @MainActor () -> Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let held = await settles(condition)
+        XCTAssertTrue(held, "the condition never held", file: file, line: line)
     }
 
     private func started(_ load: PeopleRosterLoad, _ fake: FakeRun, account: Int = 1) async {

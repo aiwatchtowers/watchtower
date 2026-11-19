@@ -57,13 +57,12 @@ final class HomeLinkTests: XCTestCase {
     func testInboxOutputOpensItsCardOrTheRun() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let (output, automation, run) = try await pool.write { db -> (Int64, Int64, Int64) in
-            let automation = try TestDatabase.insertAutomation(db)
-            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
-            return (try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run), automation, run)
-        }
+        // Digest's run 1 wrote output 1.
+        let tower = try FeedCaseTransport.seeded("desktop_one_output_of_digest", pool: pool)
+        let (output, automation, run): (Int64, Int64, Int64) = (1, 1, 1)
         let appState = AppState.isolated()
         appState.initActionStrip(dbPool: pool)
+        await appState.actionStripViewModel?.follow(tower)
         appState.openHomeLink(.inboxOutput(id: output, automationID: automation, runID: run))
         XCTAssertEqual(appState.selectedDestination, .inbox)
         for _ in 0..<2000 where appState.actionStripViewModel?.selection == nil { await Task.yield() }

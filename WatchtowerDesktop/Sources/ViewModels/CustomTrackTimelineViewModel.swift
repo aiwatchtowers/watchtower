@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import WatchtowerCore
+import WatchtowerInterface
 
 /// Drives the Activity timeline on a CUSTOM track's detail view. Observes
 /// `track_events` for the track and, when the track is linked to a target,
@@ -23,6 +24,8 @@ final class CustomTrackTimelineViewModel {
     /// Every scan goes through the card's seam (C3 drives the track's watch
     /// recipe there).
     private let controls: any CustomTrackControlling
+    /// Where an event's dismiss goes (nil: it fails with the daemon's sentence).
+    private let tower: (any TowerSending)?
     /// Shared registry so the "scanning" indicator survives navigation away
     /// from this detail (the list/sidebar read it too).
     private let scanCenter: TrackScanCenter
@@ -51,8 +54,10 @@ final class CustomTrackTimelineViewModel {
          dbManager: DatabaseManager,
          actionRunner: any CLIRunnerProtocol,
          controls: any CustomTrackControlling,
-         scanCenter: TrackScanCenter) {
+         scanCenter: TrackScanCenter,
+         tower: (any TowerSending)? = nil) {
         self.track = track
+        self.tower = tower
         self.dbPool = dbManager.dbPool
         self.controls = controls
         self.actionPress = TrackActionPress(runner: actionRunner)
@@ -217,16 +222,22 @@ final class CustomTrackTimelineViewModel {
         refreshEvents()
     }
 
+    /// `tracks.event_status` (#1170 Task 12): Go writes it, in this view
+    /// model's chain; the observation never sees another process's write, so
+    /// the timeline re-reads after the answer.
     private func dismissNow(_ event: TrackEvent) async {
+        let id = Int64(event.id)
         do {
-            try await chained { db in
-                try TrackEventQueries.setActionStatus(db, id: event.id, status: "dismissed")
+            guard let tower else { throw TowerWriteError(TowerText.daemonDown) }
+            let _: ActResult = try await writes.runThrowing {
+                try await tower.perform(.tracksEventStatus) {
+                    TrackEventStatusRequest(requestID: $0, eventID: id, status: "dismissed")
+                }
             }
         } catch {
-            // The observation never sees another process's delete.
-            if error is RowNotFoundError { refreshEvents() }
             errorMessage = error.localizedDescription
         }
+        refreshEvents()
     }
 
     /// Cancels the GRDB observation. Call from the view's onDisappear / before
@@ -252,9 +263,4 @@ final class CustomTrackTimelineViewModel {
         }
     }
 
-    /// A database write in this view model's chain (board #670): it starts
-    /// only once every write asked for before it finished.
-    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
-        try await writes.runThrowing { try await self.dbPool.write(body) }
-    }
 }

@@ -99,66 +99,11 @@ final class TrackQueryTests: XCTestCase {
 
     // MARK: - Mark read
 
-    func testMarkRead() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertTrack(db, hasUpdates: true)
-            try TrackQueries.markRead(db, id: 1)
-        }
-        let track = try db.read { try TrackQueries.fetchByID($0, id: 1) }
-        XCTAssertTrue(try XCTUnwrap(track).isRead)
-        XCTAssertFalse(try XCTUnwrap(track).hasUpdates)
-    }
-
-    func testMarkReadCascadesToDigests() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertDigest(db)
-            try TestDatabase.insertTrack(db, hasUpdates: true, relatedDigestIDs: "[1]")
-            try TrackQueries.markRead(db, id: 1)
-        }
-        let readAt = try db.read { try String.fetchOne($0, sql: "SELECT read_at FROM digests WHERE id = 1") }
-        XCTAssertNotNil(readAt)
-    }
-
     // MARK: - Priority
-
-    func testUpdatePriority() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertTrack(db, priority: "medium")
-            try TrackQueries.updatePriority(db, id: 1, priority: "high")
-        }
-        let track = try db.read { try TrackQueries.fetchByID($0, id: 1) }
-        XCTAssertEqual(track?.priority, "high")
-    }
 
     // MARK: - Ownership
 
-    func testUpdateOwnership() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertTrack(db, ownership: "mine")
-            try TrackQueries.updateOwnership(db, id: 1, ownership: "delegated")
-        }
-        let track = try db.read { try TrackQueries.fetchByID($0, id: 1) }
-        XCTAssertEqual(track?.ownership, "delegated")
-    }
-
     // MARK: - Sub-items
-
-    func testUpdateSubItems() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertTrack(db)
-            let items = [TrackSubItem(text: "Do thing", status: "done")]
-            try TrackQueries.updateSubItems(db, id: 1, subItems: items)
-        }
-        let track = try db.read { try TrackQueries.fetchByID($0, id: 1) }
-        let items = try XCTUnwrap(track).decodedSubItems
-        XCTAssertEqual(items.count, 1)
-        XCTAssertTrue(items[0].isDone)
-    }
 
     // MARK: - fetchLatestCustom (dashboard create-track conversion, DASH-03)
 

@@ -171,10 +171,8 @@ final class AutomationQueriesTests: XCTestCase {
         XCTAssertEqual(byID[broken]?.recipeState, .parseError)
         XCTAssertEqual(byID[broken]?.recipeRemoved, false)
         XCTAssertEqual(byID[removed]?.recipeRemoved, true)
-        XCTAssertEqual(byID[removed].map(InboxCardAction.replyState), .removed)
         XCTAssertEqual(byID[live]?.recipeState, .runnable)
         XCTAssertEqual(byID[live]?.recipeRemoved, false)
-        XCTAssertEqual(byID[broken].map(InboxCardAction.replyState), .unreadable)
     }
 
     /// `since` and `limit` narrow the read (Home); without them every unread
@@ -194,45 +192,6 @@ final class AutomationQueriesTests: XCTestCase {
             XCTAssertEqual(try AutomationQueries.fetchInboxOutputs(db, since: since).map(\.id), [ids[2], ids[1]])
             XCTAssertEqual(try AutomationQueries.fetchInboxOutputs(db, since: since, limit: 1).map(\.id), [ids[2]])
         }
-    }
-
-    /// Read, Done and Dismiss are three states (ask #475): each write stamps
-    /// its own column once, and a done or dismissed card takes no other.
-    func testOutputWritesTouchOnlyTheirOwnColumn() throws {
-        let queue = try TestDatabase.create()
-        let (opened, done, dismissed) = try queue.write { db -> (Int64, Int64, Int64) in
-            let id = try TestDatabase.insertAutomation(db)
-            let run = try TestDatabase.insertAutomationRun(db, automationID: id)
-            return (try TestDatabase.insertAutomationOutput(db, automationID: id, runID: run, title: "a"),
-                    try TestDatabase.insertAutomationOutput(db, automationID: id, runID: run, title: "b"),
-                    try TestDatabase.insertAutomationOutput(db, automationID: id, runID: run, title: "c"))
-        }
-        let stamps: Set<String> = ["read_at", "done_at", "dismissed_at"]
-        let before = try queue.read { db in try Row.fetchAll(db, sql: "SELECT * FROM automation_outputs ORDER BY id") }
-        let later = now.addingTimeInterval(60)
-        try queue.write { db in
-            try AutomationQueries.markOutputOpened(db, id: opened, contentHash: "", now: now)
-            try AutomationQueries.markOutputDone(db, id: done, contentHash: "", now: now)
-            try AutomationQueries.dismissOutput(db, id: dismissed, contentHash: "", now: now)
-            // Guarded: opening twice keeps the first stamp, and a done or
-            // dismissed card takes no further stamp.
-            try AutomationQueries.markOutputOpened(db, id: opened, contentHash: "", now: later)
-            try AutomationQueries.markOutputOpened(db, id: done, contentHash: "", now: later)
-            try AutomationQueries.dismissOutput(db, id: done, contentHash: "", now: later)
-            try AutomationQueries.markOutputDone(db, id: dismissed, contentHash: "", now: later)
-            try AutomationQueries.markOutputOpened(db, id: dismissed, contentHash: "", now: later)
-        }
-        let after = try queue.read { db in try Row.fetchAll(db, sql: "SELECT * FROM automation_outputs ORDER BY id") }
-        XCTAssertEqual(after.count, before.count)
-        for (old, new) in zip(before, after) {
-            for column in old.columnNames where !stamps.contains(column) {
-                XCTAssertEqual(old[column] as DatabaseValue, new[column] as DatabaseValue, column)
-            }
-        }
-        let stamped = "2026-10-16T12:00:00Z"
-        XCTAssertEqual(after.map { $0["read_at"] as String? }, [stamped, nil, nil])
-        XCTAssertEqual(after.map { $0["done_at"] as String? }, [nil, stamped, nil])
-        XCTAssertEqual(after.map { $0["dismissed_at"] as String? }, [nil, nil, stamped])
     }
 
     /// The Inbox lists open read cards too; Home and the badge only unread ones.

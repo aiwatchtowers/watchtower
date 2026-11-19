@@ -67,6 +67,9 @@ public protocol ChatUIStyle {
     func approvalButton(_ title: String, prominent: Bool, action: @escaping () -> Void) -> AnyView
     /// A Slack proposal's message text, shown read-only.
     func approvalSlackText(_ text: String) -> AnyView
+    /// The note on a failed external proposal about what a Retry re-sends. The default is the Mac's orange; the
+    /// phone draws it in the secondary tone (orange there means only "waiting for you", mobile Inbox spec §12.4).
+    func approvalRetryNote(_ text: String) -> AnyView
 
     // MARK: The routing pill (#1822 T17). The defaults draw the phone's look; the Mac's DesignKitChatStyle its own.
 
@@ -295,6 +298,10 @@ extension ChatUIStyle {
 
     public func approvalButton(_ title: String, prominent: Bool, action: @escaping () -> Void) -> AnyView {
         prominent ? primaryButton(title, action: action) : secondaryButton(title, action: action)
+    }
+
+    public func approvalRetryNote(_ text: String) -> AnyView {
+        AnyView(Text(text).font(.caption).foregroundStyle(Tone.warning))
     }
 
     public func approvalSlackText(_ text: String) -> AnyView {

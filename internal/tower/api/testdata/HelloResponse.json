@@ -1,0 +1,6 @@
+{
+  "interface_version": "0123456789abcdef",
+  "build": "1.2.3",
+  "sync_paused": true,
+  "no_sync": false
+}

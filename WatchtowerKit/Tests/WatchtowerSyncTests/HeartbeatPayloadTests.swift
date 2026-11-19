@@ -1,7 +1,30 @@
 import XCTest
 @testable import WatchtowerSync
 
+/// The heartbeat's capabilities as the phone decodes them.
 final class HeartbeatPayloadTests: XCTestCase {
+    private func decode(_ capabilities: String) throws -> HeartbeatPayload {
+        let json = """
+            {"accounts":[],"app_version":"1.0.0",\(capabilities)"enabled_at":1730000000,"flavor":"default",
+            "hub_id":"AAAAAAAA-0000-4000-8000-000000000001","mac_name":"Test Hub","owner_user":"","relay_backlog":0,
+            "sharing":"none","updated_at":1730000100}
+            """
+        return try RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: Data(json.utf8))
+    }
+
+    /// The phone Inbox capability: "on", "policy_off" with its reason, and nil for an older hub that sends no key.
+    func testInboxCapabilityDecodes() throws {
+        let on = try decode(#""capabilities":{"inbox":"on"},"#)
+        XCTAssertEqual(on.capabilities?.inbox, "on")
+        XCTAssertNil(on.capabilities?.inboxReason)
+        let off = try decode(#""capabilities":{"inbox":"policy_off","inbox_reason":"policy"},"#)
+        XCTAssertEqual(off.capabilities?.inbox, "policy_off")
+        XCTAssertEqual(off.capabilities?.inboxReason, "policy")
+        let older = try decode(#""capabilities":{"recordings":"on"},"#)
+        XCTAssertNil(older.capabilities?.inbox)
+        XCTAssertNil(try decode("").capabilities?.inbox)
+    }
+
     private func decode(backgroundAI: String?) throws -> HeartbeatPayload {
         var json: [String: Any] = [
             "accounts": [], "app_version": "1.0.0", "enabled_at": 1_730_000_000, "flavor": "default",
@@ -19,5 +42,16 @@ final class HeartbeatPayloadTests: XCTestCase {
         XCTAssertEqual(try decode(backgroundAI: "organization").backgroundAI, .organization)
         XCTAssertEqual(try decode(backgroundAI: "allowed").backgroundAI, .allowed)
         XCTAssertEqual(try decode(backgroundAI: "paused").backgroundAI, .paused)
+    }
+
+    /// The chat's Retry and Dismiss (mobile Inbox spec §12.9): "retry_dismiss" from a hub that takes them, nil from an
+    /// older hub.
+    func testChatActionsCapabilityDecodes() throws {
+        let newer = try decode(#""capabilities":{"chat":"on","chat_actions":"retry_dismiss"},"#)
+        XCTAssertEqual(newer.capabilities?.chatActions, "retry_dismiss")
+        XCTAssertTrue(newer.capabilities?.chatRetryAndDismiss == true)
+        let older = try decode(#""capabilities":{"chat":"on"},"#)
+        XCTAssertNil(older.capabilities?.chatActions)
+        XCTAssertFalse(older.capabilities?.chatRetryAndDismiss == true)
     }
 }

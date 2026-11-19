@@ -1,13 +1,16 @@
 package sources
 
 import (
+	"context"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 
 	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/inboxfeed"
 	"watchtower/internal/policy"
+	"watchtower/internal/tower/api"
 )
 
 func registryKinds(t *testing.T, mode string) []string {
@@ -15,6 +18,7 @@ func registryKinds(t *testing.T, mode string) []string {
 	set, err := All(Config{
 		DB: openDB(t), Store: openSidecar(t), Watches: handlers.NewChatWatchRegistry(), Sealer: newSealer(t),
 		Mode: mode, AssetDir: filepath.Join(t.TempDir(), "assets"),
+		InboxFeed: func(context.Context, inboxfeed.Options) (api.Feed, error) { return api.Feed{}, nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +49,7 @@ func TestWorkbenchOnlyPublishesNoCalendarOrTranscripts(t *testing.T) {
 func TestAllowedAddsCalendarTranscriptsAndRecordingJobs(t *testing.T) {
 	got := registryKinds(t, policy.MobileAllowed)
 	want := append(append([]string(nil), workbenchOnlyKinds...), "calendar_event", "meeting_transcript", "recording_job",
-		"chat_list", "chat_feed", "chat_page", "chat_search")
+		"chat_list", "chat_feed", "chat_page", "chat_search", "inbox_folder", "inbox_card")
 	sort.Strings(want)
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("allowed kinds = %v", got)

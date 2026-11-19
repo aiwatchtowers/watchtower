@@ -23,24 +23,32 @@ const chatIdeaTitleLength = 120
 func (db *DB) CreateIdeaFromChat(kind, body string, conversationID, messageID int64) (int64, error) {
 	var id int64
 	err := db.WithTx(func(tx *sql.Tx) error {
-		var now string
-		if err := tx.QueryRow(`SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`).Scan(&now); err != nil {
-			return err
-		}
-		res, err := tx.Exec(`INSERT INTO ideas (kind, title, essence, status, source, last_mention_at, chat_born)
-			VALUES (?, ?, ?, 'active', 'owner', ?, 1)`, kind, chatIdeaTitle(body), body, now)
-		if err != nil {
-			return err
-		}
-		if id, err = res.LastInsertId(); err != nil {
-			return err
-		}
-		ref := "chat:" + strconv.FormatInt(conversationID, 10) + ":" + strconv.FormatInt(messageID, 10)
-		_, err = tx.Exec(`INSERT INTO idea_mentions (idea_id, source, ref, quote, said_at) VALUES (?, 'chat', ?, ?, ?)`,
-			id, ref, body, now)
+		var err error
+		id, err = CreateIdeaFromChatTx(tx, kind, body, conversationID, messageID)
 		return err
 	})
+	return id, err
+}
+
+// CreateIdeaFromChatTx is CreateIdeaFromChat in the caller's transaction
+// (the tower's ideas.create_from_chat).
+func CreateIdeaFromChatTx(tx *sql.Tx, kind, body string, conversationID, messageID int64) (int64, error) {
+	var now string
+	if err := tx.QueryRow(`SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`).Scan(&now); err != nil {
+		return 0, fmt.Errorf("creating idea from chat: %w", err)
+	}
+	res, err := tx.Exec(`INSERT INTO ideas (kind, title, essence, status, source, last_mention_at, chat_born)
+		VALUES (?, ?, ?, 'active', 'owner', ?, 1)`, kind, chatIdeaTitle(body), body, now)
 	if err != nil {
+		return 0, fmt.Errorf("creating idea from chat: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("creating idea from chat: %w", err)
+	}
+	ref := "chat:" + strconv.FormatInt(conversationID, 10) + ":" + strconv.FormatInt(messageID, 10)
+	if _, err := tx.Exec(`INSERT INTO idea_mentions (idea_id, source, ref, quote, said_at) VALUES (?, 'chat', ?, ?, ?)`,
+		id, ref, body, now); err != nil {
 		return 0, fmt.Errorf("creating idea from chat: %w", err)
 	}
 	return id, nil

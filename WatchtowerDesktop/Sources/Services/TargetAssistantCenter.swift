@@ -18,6 +18,8 @@ final class TargetAssistantCenter {
     /// Set by `AppState` once it starts: the tabs' engines come from it, so
     /// target turns count toward the app-wide embedded-chat limit.
     var embeddedChats: EmbeddedChatCenter?
+    /// Set by `AppState` with `embeddedChats`: the tabs' chat writes.
+    var chatWrites: ChatWrites = .notReady
     private var containers: [Int: TargetAssistantViewModel] = [:]
     /// Target ids in use order, least-recently-used first.
     private var usage: [Int] = []
@@ -54,7 +56,7 @@ final class TargetAssistantCenter {
     ) -> TargetAssistantViewModel {
         factory?(target, viewModel, dbManager)
             ?? TargetAssistantViewModel(target: target, viewModel: viewModel, dbManager: dbManager,
-                                        embeddedChats: embeddedChats)
+                                        writes: chatWrites, embeddedChats: embeddedChats)
     }
 
     /// Drops a target's container outright — the target was deleted, so its

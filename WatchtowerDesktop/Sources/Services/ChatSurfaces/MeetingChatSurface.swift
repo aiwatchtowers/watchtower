@@ -30,9 +30,9 @@ enum MeetingChatSurface {
     }
 
     /// The recording's conversation, created on first use.
-    static func conversationID(transcriptID: Int64, title: String, dbPool: DatabasePool) async throws -> Int64 {
+    static func conversationID(transcriptID: Int64, title: String, dbPool: DatabasePool, writes: ChatWrites) async throws -> Int64 {
         try await DatabaseEmbeddedChatStore.conversationID(
-            dbPool: dbPool, contextType: contextType, contextID: String(transcriptID),
+            dbPool: dbPool, writes: writes, contextType: contextType, contextID: String(transcriptID),
             title: "Meeting: \(String(title.prefix(60)))")
     }
 

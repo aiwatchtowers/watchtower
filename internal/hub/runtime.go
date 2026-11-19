@@ -560,6 +560,7 @@ func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFac
 			return h.lastRelay, !h.lastRelay.IsZero()
 		},
 		Chat:         h.chatAvailable,
+		Inbox:        h.inboxAvailable(),
 		BackgroundAI: func() string { return backgroundAIValue(aiconsent.Current()) },
 		Recordings: func() bool {
 			on, _, err := st.Recordings()
