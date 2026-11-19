@@ -303,20 +303,31 @@ func folderFiles(t *testing.T, folder string) map[string]string {
 	return out
 }
 
-// COACH-01 (amended, owner ask #1165): Watchtower never runs a git write for
-// the coach. (a) internal/coach imports no workbenchgit and starts no process:
-// the git state reaches Accept and ValidateChatProposal only through the
-// RepoState/RepoBranch seams, which have no default there. (b) The tuning
-// paths that fill them — the coach and tuning CLI code, which lives only in
-// cmd/coach*.go and cmd/tuning*.go, the daemon's commit check (in
-// internal/daemon/coach*.go) and every file of internal/tuning (matched by
-// package folder, whatever the file name) — call no workbenchgit helper but
-// PathStatus, ReadStatus and FileAtHead, and only those paths name the coach
-// and tuning seams (tuningGitProblems). (c) Those helpers run git
-// only with the read-only verbs status, rev-parse and show (pinned argv by
-// argv in workbenchgit's recording-runner tests: TestPathStatus_RunsOnlyStatus,
-// TestReadStatus_RunsOnlyReadVerbs, TestFileAtHead). Extend the lists with
-// each new read-only helper or caller; never relax them.
+// COACH-01 (amended, owner asks #1165 and #1606): Watchtower never writes
+// the owner's working copy or local refs through git, never pushes another
+// branch and never merges. The one git write is the pull-request route: on
+// the owner's Accept or Roll Back of a workbench repository file in a GitHub
+// folder, workbenchgit.Publish commits that one file in a detached scratch
+// worktree, pushes it to coach/proposal-<id> or coach/revert-<id> and opens
+// or closes the pull request (pinned by workbenchgit's
+// TestCOACH01_PublishTouchesOnlyItsBranch). (a) internal/coach imports no
+// workbenchgit and starts no process: git and GitHub reach Accept, Rollback,
+// SyncPRs and ValidateChatProposal only through the RepoState/RepoBranch and
+// RepoRoute/RepoPublish/RepoPRState/RepoClosePR seams, which have no default
+// there. (b) The tuning paths that fill them — the coach and tuning CLI code,
+// which lives only in cmd/coach*.go and cmd/tuning*.go, the daemon's commit
+// check (in internal/daemon/coach*.go) and every file of internal/tuning
+// (matched by package folder, whatever the file name) — call no workbenchgit
+// helper but PathStatus, ReadStatus and FileAtHead; the pull-request helpers
+// (OriginHost, IsGitHubFolder, GHReady, DefaultBase, Publish, PRState,
+// ClosePR) are allowed only in cmd/coach*.go, the processes the owner starts
+// — never in the daemon, cmd/tuning*.go or internal/tuning; and only those
+// paths name the coach and tuning seams (tuningGitProblems). (c) The
+// read-only helpers run git only with the read-only verbs status, rev-parse
+// and show (pinned argv by argv in workbenchgit's recording-runner tests:
+// TestPathStatus_RunsOnlyStatus, TestReadStatus_RunsOnlyReadVerbs,
+// TestFileAtHead). Extend the lists with each new read-only helper or caller;
+// never relax them.
 func TestCOACH01_NoGitWrites(t *testing.T) {
 	// (a)
 	for _, f := range parseDir(t, ".") {
@@ -355,6 +366,11 @@ func TestCOACH01_NoGitWrites(t *testing.T) {
 	problems, scanned := tuningGitProblems(files, tuningDir)
 	assert.Empty(t, problems)
 	assert.Positive(t, scanned, "the scan finds the coach's git reads (coachRepoState, coachRepoBranch)")
+	// The pull-request helpers, over every package of the module.
+	module := moduleFiles(t, filepath.Join("..", ".."))
+	assert.NotEmpty(t, module, "the scan finds workbenchgit's callers")
+	problems, _ = prHelperProblems(module)
+	assert.Empty(t, problems)
 
 	// (c)
 	helpers := map[string]bool{"PathStatus": true, "ReadStatus": true, "readStatus": true, "FileAtHead": true,
@@ -441,11 +457,82 @@ func tuningFileName(name string) bool {
 	return strings.HasPrefix(base, "coach") || strings.HasPrefix(base, "tuning")
 }
 
+// prHelpers are workbenchgit's pull-request helpers and their types:
+// allowed in cmd/coach*.go only (COACH-01 as amended for ask #1606).
+var prHelpers = map[string]bool{
+	"workbenchgit.OriginHost": true, "workbenchgit.IsGitHubFolder": true, "workbenchgit.GHReady": true,
+	"workbenchgit.DefaultBase": true, "workbenchgit.Publish": true,
+	"workbenchgit.PRState": true, "workbenchgit.ClosePR": true,
+	"workbenchgit.PublishRequest": true, "workbenchgit.PublishResult": true,
+	"workbenchgit.ErrNoGH": true, "workbenchgit.ErrBaseDiffers": true, "workbenchgit.ErrPushFailed": true,
+	"workbenchgit.ErrPRFailed": true, "workbenchgit.ErrTimeout": true,
+}
+
+// prHelperProblems is COACH-01 (b)'s pull-request rule over files of any
+// package: a pull-request helper named outside cmd/coach*.go. scanned
+// counts the pull-request selectors seen.
+func prHelperProblems(files []parsedFile) (problems []string, scanned int) {
+	for _, f := range files {
+		for sel := range selectors(f.file, importNames(f.file, tuningScanPkgs)) {
+			if !prHelpers[sel] {
+				continue
+			}
+			scanned++
+			if !cmdCoachFile(f.name) {
+				problems = append(problems, fmt.Sprintf("%s calls %s: the pull-request helpers belong in cmd/coach*.go only", f.name, sel))
+			}
+		}
+	}
+	slices.Sort(problems)
+	return problems, scanned
+}
+
+// moduleFiles parses every non-test Go file below root's cmd and internal
+// folders that imports workbenchgit, but workbenchgit's own.
+func moduleFiles(t *testing.T, root string) []parsedFile {
+	t.Helper()
+	var out []parsedFile
+	fset := token.NewFileSet()
+	own := filepath.Join(root, "internal", "workbenchgit")
+	for _, top := range []string{"cmd", "internal"} {
+		require.NoError(t, filepath.WalkDir(filepath.Join(root, top), func(path string, e fs.DirEntry, err error) error {
+			switch {
+			case err != nil:
+				return err
+			case e.IsDir() && path == own:
+				return filepath.SkipDir
+			case e.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go"):
+				return nil
+			}
+			f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+			if err != nil {
+				return err
+			}
+			for _, imp := range f.Imports {
+				if strings.Trim(imp.Path.Value, `"`) == "watchtower/internal/workbenchgit" {
+					out = append(out, parsedFile{name: path, file: f})
+					break
+				}
+			}
+			return nil
+		}))
+	}
+	return out
+}
+
+// cmdCoachFile is a coach* file of cmd: the only place the pull-request
+// helpers may be called (COACH-01 as amended for ask #1606).
+func cmdCoachFile(name string) bool {
+	clean := filepath.Clean(name)
+	return filepath.Base(filepath.Dir(clean)) == "cmd" && strings.HasPrefix(filepath.Base(clean), "coach")
+}
+
 // tuningGitProblems is COACH-01 (b) over files: a tuning path — a
 // coach*/tuning* file, or any file of the package in tuningDir (compared by
-// its cleaned folder) — calls no workbenchgit helper but the read-only ones;
-// any other file names none of the coach and tuning seams. scanned counts the
-// workbenchgit selectors seen in tuning paths.
+// its cleaned folder) — calls no workbenchgit helper but the read-only ones,
+// plus the pull-request helpers in a cmd/coach*.go file only; any other file
+// names none of the coach and tuning seams. scanned counts the workbenchgit
+// selectors seen in tuning paths.
 func tuningGitProblems(files []parsedFile, tuningDir string) (problems []string, scanned int) {
 	allowed := map[string]bool{
 		"workbenchgit.PathStatus": true, "workbenchgit.ReadStatus": true, "workbenchgit.FileAtHead": true,
@@ -453,7 +540,8 @@ func tuningGitProblems(files []parsedFile, tuningDir string) (problems []string,
 		"workbenchgit.Options": true, "workbenchgit.Status": true, "workbenchgit.PathState": true,
 		"workbenchgit.StatusFields": true,
 	}
-	seams := map[string]bool{"coach.Applier": true, "coach.Env": true, "coach.RepoFileState": true, "tuning.Deps": true}
+	seams := map[string]bool{"coach.Applier": true, "coach.Env": true, "coach.RepoFileState": true, "tuning.Deps": true,
+		"coach.RepoRoute": true, "coach.RepoPublishReq": true}
 	tuningDir = filepath.Clean(tuningDir)
 	for _, f := range files {
 		inTuning := tuningFileName(f.name) || filepath.Dir(filepath.Clean(f.name)) == tuningDir
@@ -463,7 +551,12 @@ func tuningGitProblems(files []parsedFile, tuningDir string) (problems []string,
 				problems = append(problems, fmt.Sprintf("%s: names %s: coach and tuning wiring lives in cmd/coach*.go, cmd/tuning*.go or internal/tuning", f.name, sel))
 			case inTuning && strings.HasPrefix(sel, "workbenchgit."):
 				scanned++
-				if !allowed[sel] {
+				switch {
+				case allowed[sel]:
+				case prHelpers[sel] && cmdCoachFile(f.name):
+				case prHelpers[sel]:
+					problems = append(problems, fmt.Sprintf("%s calls %s: the pull-request helpers belong in cmd/coach*.go only", f.name, sel))
+				default:
 					problems = append(problems, fmt.Sprintf("%s calls %s: only the read-only helpers", f.name, sel))
 				}
 			}
@@ -509,6 +602,62 @@ var _ coach.Env
 	assert.Contains(t, all, "tools_planted.go calls workbenchgit.Switch")
 	assert.Contains(t, all, "wiring.go: names coach.Env")
 	assert.NotContains(t, all, "tools_planted.go: names", "a seam is allowed anywhere in the tuning package")
+}
+
+// The pull-request helpers are allowed in cmd/coach*.go only: the same
+// calls in cmd/tuning*.go, a daemon coach file or internal/tuning are caught.
+func TestCOACH01_NoGitWrites_PRHelpersOnlyInCmdCoach(t *testing.T) {
+	root := t.TempDir()
+	src := func(pkg string) string {
+		return `package ` + pkg + `
+
+import (
+	"context"
+
+	"watchtower/internal/workbenchgit"
+)
+
+func planted() {
+	_, _ = workbenchgit.Publish(context.Background(), workbenchgit.Options{}, workbenchgit.PublishRequest{})
+	_ = workbenchgit.ClosePR(context.Background(), workbenchgit.Options{}, "u")
+}
+`
+	}
+	for _, rel := range []string{"cmd/coach_pr.go", "cmd/tuning_pr.go", "internal/daemon/coach_pr.go", "internal/tuning/tools_pr.go"} {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(src(filepath.Base(filepath.Dir(path)))), 0o644))
+	}
+	var files []parsedFile
+	for _, dir := range []string{"cmd", "internal/daemon", "internal/tuning"} {
+		files = append(files, parseDir(t, filepath.Join(root, filepath.FromSlash(dir)))...)
+	}
+	problems, scanned := tuningGitProblems(files, filepath.Join(root, "internal", "tuning"))
+	assert.Equal(t, 16, scanned, "Publish, Options, PublishRequest and ClosePR in four files")
+	all := strings.Join(problems, "\n")
+	for _, rel := range []string{"cmd/tuning_pr.go", "internal/daemon/coach_pr.go", "internal/tuning/tools_pr.go"} {
+		for _, sel := range []string{"Publish", "PublishRequest", "ClosePR"} {
+			assert.Contains(t, all, filepath.Join(root, filepath.FromSlash(rel))+" calls workbenchgit."+sel+
+				": the pull-request helpers belong in cmd/coach*.go only")
+		}
+	}
+	assert.Len(t, problems, 9, "nothing in cmd/coach_pr.go")
+
+	// Outside the tuning paths too: a non-coach cmd file, a daemon file and
+	// any other package, found by the module walk.
+	for _, rel := range []string{"cmd/workbench_x.go", "internal/daemon/anything.go", "internal/other/x.go"} {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(src(filepath.Base(filepath.Dir(path)))), 0o644))
+	}
+	problems, scanned = prHelperProblems(moduleFiles(t, root))
+	assert.Equal(t, 21, scanned, "Publish, PublishRequest and ClosePR in seven files")
+	all = strings.Join(problems, "\n")
+	for _, rel := range []string{"cmd/workbench_x.go", "internal/daemon/anything.go", "internal/other/x.go",
+		"cmd/tuning_pr.go", "internal/daemon/coach_pr.go", "internal/tuning/tools_pr.go"} {
+		assert.Contains(t, all, filepath.Join(root, filepath.FromSlash(rel))+" calls workbenchgit.Publish:")
+	}
+	assert.Len(t, problems, 18, "nothing in cmd/coach_pr.go")
 }
 
 type parsedFile struct {

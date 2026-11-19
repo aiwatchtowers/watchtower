@@ -478,6 +478,13 @@ func TestJudge_CutOfChatEditIsWeekly(t *testing.T) {
 // an accepted repo_claude_md edit decided at judgeDecided instead.
 func repoJudgeFixture(t *testing.T, sessions int) (dbs, int64) {
 	t.Helper()
+	return repoPRJudgeFixture(t, sessions, "")
+}
+
+// repoPRJudgeFixture is repoJudgeFixture whose Accept opened the pull
+// request prURL ("" = the working-copy route).
+func repoPRJudgeFixture(t *testing.T, sessions int, prURL string) (dbs, int64) {
+	t.Helper()
 	d := openDBs(t)
 	wb, ids := d.workbench(t, "a", 1)
 	for i := range sessions {
@@ -485,7 +492,7 @@ func repoJudgeFixture(t *testing.T, sessions int) (dbs, int64) {
 	}
 	id := propose(t, d, db.CoachProposal{Destination: DestRepoClaudeMD, WorkbenchID: wb,
 		BeforeText: "Run tests.\n", AfterText: "Run tests.\nKeep diffs small.\n"})
-	require.NoError(t, d.MarkCoachAccepted(id, "Run tests.\nKeep diffs small.\n", "main", "", fl(10), 3, judgeDecided))
+	require.NoError(t, d.MarkCoachAccepted(id, "Run tests.\nKeep diffs small.\n", "main", prURL, fl(10), 3, judgeDecided))
 	return d, id
 }
 
