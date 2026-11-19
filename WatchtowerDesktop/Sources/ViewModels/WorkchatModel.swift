@@ -122,8 +122,11 @@ final class WorkchatModel {
     /// whitespace-only draft is not sent. The field clears at once; a line
     /// that cannot go comes back to it. Paste tokens expand in place (#2065
     /// §6): a text token to its text, an image token to its saved path; an
-    /// image whose file is gone refuses the send and keeps the draft.
+    /// image whose file is gone refuses the send and keeps the draft. A paste
+    /// whose token the field has not inserted yet refuses it too (a Return in
+    /// that hop would clear the payload the token is about to land for).
     func send() async {
+        guard pendingPastes.isEmpty else { return }
         // Line breaks stay (owner ask #421); only the ends are trimmed.
         let typed = draft.replacingOccurrences(of: "\r\n", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -251,11 +254,13 @@ final class WorkchatModel {
     }
 
     /// Drops each payload whose token (number and kind) the draft no longer
-    /// holds, unless its token has not been inserted yet.
+    /// holds once (a typed copy beside it makes both literal), unless its
+    /// token has not been inserted yet.
     private func prunePastes() {
         guard !pastes.isEmpty else { return }
-        let live = PasteTokens.liveNumbers(in: draft, kinds: pastes.mapValues(\.kind))
-        pendingPastes.subtract(live)
+        let kinds = pastes.mapValues(\.kind)
+        pendingPastes.subtract(PasteTokens.heldNumbers(in: draft, kinds: kinds))
+        let live = PasteTokens.liveNumbers(in: draft, kinds: kinds)
         let kept = pastes.filter { live.contains($0.key) || pendingPastes.contains($0.key) }
         if kept.count != pastes.count { pastes = kept }
     }

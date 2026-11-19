@@ -1287,6 +1287,7 @@ final class WorkchatModelTests: XCTestCase {
         let model = try makeModel(session)
         _ = await model.paste(.image(Data([1]), name: "Pasted image.png"))
         _ = await model.paste(.text("secret\nstuff"))
+        model.draft = "only [Image #1] [Pasted text #2 +2 lines]"
         model.draft = "only [Image #1]"
 
         await model.send()
@@ -1423,6 +1424,63 @@ final class WorkchatModelTests: XCTestCase {
         await model.send()
 
         XCTAssertEqual(model.outgoing.first?.text, "[Pasted text #1 +3 lines]")
+    }
+
+    /// A label typed by hand beside the live token of the same number is plain text: the draft cannot tell the
+    /// copies apart, so neither expands and the payload goes (final fix, spec §6 "hand-typed stays literal").
+    func testHandTypedDuplicateOfALiveTokenStaysLiteral() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        let pasted = await model.paste(.image(Data([1]), name: "Pasted image.png"))
+        let label = try XCTUnwrap(pasted)
+        model.draft = "fix \(label)"
+        XCTAssertNotNil(model.pastes[1])
+
+        model.draft = "fix \(label) like [Image #1]"
+        XCTAssertTrue(model.pastes.isEmpty, "a duplicated label holds no payload")
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.first?.text, "fix [Image #1] like [Image #1]")
+        XCTAssertEqual(model.outgoing.first?.attachmentPaths, [])
+    }
+
+    /// Deleting the pasted token while a typed copy stays leaves the copy literal, not holding the payload.
+    func testDeletingTheRealTokenDropsThePayloadEvenWithATypedCopy() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        let pasted = await model.paste(.text("secret\nstuff"))
+        let label = try XCTUnwrap(pasted)
+        model.draft = "\(label) copy: [Pasted text #1 +2 lines]"
+
+        model.draft = " copy: [Pasted text #1 +2 lines]"
+        XCTAssertTrue(model.pastes.isEmpty)
+        await model.send()
+
+        let line = try XCTUnwrap(model.outgoing.first)
+        XCTAssertEqual(line.text, "copy: [Pasted text #1 +2 lines]")
+        XCTAssertFalse(line.text.contains("secret"))
+    }
+
+    /// A Return in the hop between the paste and its token landing does not send: the draft and the payload stay
+    /// for the token (final fix).
+    func testSendWaitsForAPendingPasteToken() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        model.draft = "see "
+        let pasted = await model.paste(.text("x\ny"))
+        let label = try XCTUnwrap(pasted)
+
+        await model.send()
+        XCTAssertTrue(model.outgoing.isEmpty, "the token has not landed yet")
+        XCTAssertEqual(model.draft, "see ")
+        XCTAssertEqual(model.pastes, [1: .text("x\ny")])
+
+        model.draft += label
+        await model.send()
+        XCTAssertEqual(model.outgoing.first?.text, "see x\ny")
     }
 
     func testPasteNumberIgnoresHugeHandTypedNumber() async throws {

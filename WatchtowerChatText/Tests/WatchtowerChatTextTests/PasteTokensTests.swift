@@ -67,4 +67,19 @@ final class PasteTokensTests: XCTestCase {
         XCTAssertEqual(PastePayload.image(path: "/p").kind, .image)
         XCTAssertEqual(PastePayload.text("t").kind, .text)
     }
+
+    /// A label held twice is no token: neither copy expands, is deleted whole or keeps its payload live (final fix).
+    func testDuplicateLabelIsNoToken() {
+        let text = "[Image #1] and [Image #1]"
+        let kinds: [Int: PasteKind] = [1: .image]
+        XCTAssertEqual(PasteTokens.liveNumbers(in: text, kinds: kinds), [])
+        XCTAssertEqual(PasteTokens.expand(text, payloads: [1: .image(path: "/p.png")]) { $0 }, text)
+        XCTAssertNil(PasteTokens.deletionRange(backwardFrom: 10, in: text, kinds: kinds))
+        XCTAssertNil(PasteTokens.deletionRange(backwardFrom: 25, in: text, kinds: kinds))
+        XCTAssertNil(PasteTokens.deletionRange(backwardFrom: 25, in: text, live: [1]))
+        XCTAssertEqual(PasteTokens.liveNumbers(in: "[Image #1] [Pasted text #1 +2 lines]", kinds: kinds), [1],
+                       "a label of the other kind is no copy")
+        XCTAssertEqual(PasteTokens.heldNumbers(in: text, kinds: kinds), [1], "held, though not a token")
+        XCTAssertEqual(PasteTokens.heldNumbers(in: "[Pasted text #1 +2 lines]", kinds: kinds), [])
+    }
 }

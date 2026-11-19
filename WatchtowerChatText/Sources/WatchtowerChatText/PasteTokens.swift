@@ -25,8 +25,10 @@ public enum InlinePaste: Sendable {
 }
 
 /// The inline paste tokens of the Workchat draft, as Claude Code shows them (#2065 §6): `[Image #N]` and
-/// `[Pasted text #N +L lines]`. A token is one only while its number has a payload; the same bracket text typed by
-/// hand is plain text (it is neither deleted whole nor expanded).
+/// `[Pasted text #N +L lines]`. A token is one only while its number has a payload and the draft holds its label (that
+/// number and kind) exactly once; the same bracket text typed by hand is plain text (it is neither deleted whole nor
+/// expanded). A label held twice is no token at all: the draft text cannot tell the pasted one from a typed copy, so
+/// both stay literal and the owner's model drops the payload.
 public enum PasteTokens {
     public static func imageLabel(_ n: Int) -> String { "[Image #\(n)]" }
 
@@ -55,6 +57,19 @@ public enum PasteTokens {
         var kind: PasteKind { isImage ? .image : .text }
     }
 
+    private struct Label: Hashable {
+        let number: Int
+        let isImage: Bool
+    }
+
+    /// The matches whose label (number and kind) occurs once in `text`: the only ones that can be tokens.
+    private static func singles(in text: String) -> [Match] {
+        let all = matches(in: text)
+        var counts: [Label: Int] = [:]
+        for match in all { counts[Label(number: match.number, isImage: match.isImage), default: 0] += 1 }
+        return all.filter { counts[Label(number: $0.number, isImage: $0.isImage)] == 1 }
+    }
+
     private static func matches(in text: String) -> [Match] {
         let string = text as NSString
         let all = token?.matches(in: text, range: NSRange(location: 0, length: string.length)) ?? []
@@ -69,17 +84,23 @@ public enum PasteTokens {
     /// The range one Backspace at `utf16Offset` (an empty selection) removes when a token with a payload ends
     /// there: the whole token. nil → an ordinary Backspace.
     public static func deletionRange(backwardFrom utf16Offset: Int, in text: String, live: Set<Int>) -> NSRange? {
-        matches(in: text).first { NSMaxRange($0.range) == utf16Offset && live.contains($0.number) }?.range
+        singles(in: text).first { NSMaxRange($0.range) == utf16Offset && live.contains($0.number) }?.range
     }
 
     /// Kind-aware `deletionRange`: only a token whose number has a payload of the token's own kind is removed whole
     /// (a hand-typed `[Pasted text #1 +3 lines]` beside a live `[Image #1]` is plain text).
     public static func deletionRange(backwardFrom utf16Offset: Int, in text: String, kinds: [Int: PasteKind]) -> NSRange? {
-        matches(in: text).first { NSMaxRange($0.range) == utf16Offset && kinds[$0.number] == $0.kind }?.range
+        singles(in: text).first { NSMaxRange($0.range) == utf16Offset && kinds[$0.number] == $0.kind }?.range
     }
 
-    /// The numbers in `kinds` whose token, of that kind, is in `text`: the payloads a draft still holds.
+    /// The numbers in `kinds` whose token, of that kind, is in `text` exactly once: the payloads a draft still holds.
     public static func liveNumbers(in text: String, kinds: [Int: PasteKind]) -> Set<Int> {
+        Set(singles(in: text).filter { kinds[$0.number] == $0.kind }.map(\.number))
+    }
+
+    /// The numbers in `kinds` whose label, of that kind, is in `text` at all (once or more): a token the field
+    /// inserted, whether or not it still counts as one.
+    public static func heldNumbers(in text: String, kinds: [Int: PasteKind]) -> Set<Int> {
         Set(matches(in: text).filter { kinds[$0.number] == $0.kind }.map(\.number))
     }
 
@@ -88,11 +109,11 @@ public enum PasteTokens {
         Set(matches(in: text).map(\.number))
     }
 
-    /// `text` with each token whose number has a payload of its kind replaced: a text token by its text, an image
-    /// token by `imagePath(path)`. Every other bracket text stays as it is.
+    /// `text` with each token whose number has a payload of its kind, and whose label occurs once, replaced: a text
+    /// token by its text, an image token by `imagePath(path)`. Every other bracket text stays as it is.
     public static func expand(_ text: String, payloads: [Int: PastePayload], imagePath: (String) -> String) -> String {
         let result = NSMutableString(string: text)
-        for match in matches(in: text).reversed() {
+        for match in singles(in: text).reversed() {
             let replacement: String
             switch (payloads[match.number], match.isImage) {
             case let (.text(pasted)?, false): replacement = pasted
