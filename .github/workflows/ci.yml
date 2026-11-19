@@ -255,8 +255,10 @@ jobs:
         with:
           version: "v2.11.4"
           # The Mac's cores are shared with the other jobs and the owner's
-          # own work: a slow lint there is not a broken one.
-          args: --timeout=${{ runner.environment == 'self-hosted' && '10m' || '5m' }}
+          # own work: a slow lint there is not a broken one. The Mac's eight
+          # runners share the ci user's lint lock, so a second lint there
+          # would fail at once ("parallel golangci-lint is running").
+          args: --timeout=${{ runner.environment == 'self-hosted' && '10m --allow-parallel-runners' || '5m' }}
           # The Mac keeps golangci-lint's own cache in the ci user's home.
           skip-cache: ${{ runner.environment == 'self-hosted' }}
 
