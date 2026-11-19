@@ -431,7 +431,7 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
     /// The pull reads its zones at once: both `changes` are in flight together, not one after the other. Over
     /// HTTPS their arrival order is not the pull's: the data zone's read is handed over first, but the client
     /// actor's hop to the HTTP layer lets the mailbox's read arrive before it on a loaded machine (CI, 2026-11-19).
-    /// The handover order is a socket property (one connection, writes in order), not asserted here.
+    /// The handover order is a socket property (one connection, writes in order): `testWakeHandsTheDataZoneReadOverFirst`.
     func testWakeReadsZonesConcurrently() async throws {
         let http = HTTPBox()
         let (phone, _, macs) = try await paired(macs: [1], wrapHTTP: http.wrap)
@@ -458,6 +458,23 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         try await pull.value
         XCTAssertEqual(try store.changes(in: .data, since: nil).changed.map(\.recordName), ["a1", "a2", "a3"])
         XCTAssertEqual(try store.changes(in: .relay, since: nil).changed.map(\.recordName), ["b1"])
+    }
+
+    /// What the pull guarantees about order (live link R6): each zone's first read is handed over before the next
+    /// zone starts, the data zone first. On a live socket the hand-over is the frame's place in the write chain
+    /// (one connection, writes in the order sent), so the socket writes the data zone's `changes` before the
+    /// mailbox's, whatever order the relay then answers in. Recorded at the phone's socket, not at the relay.
+    func testWakeHandsTheDataZoneReadOverFirst() async throws {
+        let sent = SentFrames()
+        let (phone, _, macs) = try await paired(macs: [1], sent: sent)
+        let session = HostedRelaySession(client: phone)
+        _ = await probe(session, zones: [])
+        await waitUntilLive(session)
+        let hub = try transport(session, mac: macs[0])
+
+        try await hub.pull()
+
+        XCTAssertEqual(sent.changedZones, [dataZone(macs[0]), mailbox(macs[0], phone)], "data zone's read written first")
     }
 
     /// The app leaves mid-read: the caller of the wake's reads is cancelled (`HubSession.setActive(false)` cancels its
@@ -769,11 +786,53 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         let tally: SocketTally
 
         var gate: DialGate?
+        var sent: SentFrames?
 
         func dial(_ url: URL, headers: [String: String]) async throws -> any RelaySocket {
             tally.dialed()
             try await gate?.pass()
-            return try await base.dial(url, headers: headers)
+            let socket = try await base.dial(url, headers: headers)
+            guard let sent else { return socket }
+            return RecordingSocket(base: socket, sent: sent)
+        }
+    }
+
+    /// The zones of the `changes` frames the phone's sockets wrote, in write order.
+    final class SentFrames: Sendable {
+        private let zones = OSAllocatedUnfairLock<[String]>(initialState: [])
+
+        var changedZones: [String] {
+            zones.withLock { $0 }
+        }
+
+        func record(_ data: Data) {
+            guard let frame = try? Relay_V1_Frame(serializedBytes: data),
+                  case .changes(let changes)? = frame.request.op
+            else { return }
+            zones.withLock { $0.append(changes.zone) }
+        }
+    }
+
+    /// A socket that records each frame as it is written.
+    struct RecordingSocket: RelaySocket {
+        let base: any RelaySocket
+        let sent: SentFrames
+
+        func send(_ data: Data) async throws {
+            sent.record(data)
+            try await base.send(data)
+        }
+
+        func receive() async throws -> RelaySocketMessage {
+            try await base.receive()
+        }
+
+        func ping() async throws {
+            try await base.ping()
+        }
+
+        func close(code: Int) async {
+            await base.close(code: code)
         }
     }
 
@@ -817,7 +876,10 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
 
     /// A paying phone (seed 2) whose dials are counted, paired with the Macs of `seeds`.
     private func paired(
-        macs seeds: [UInt8], wrapHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil, gate: DialGate? = nil
+        macs seeds: [UInt8],
+        wrapHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil,
+        gate: DialGate? = nil,
+        sent: SentFrames? = nil
     ) async throws -> (HostedRelayClient, SocketTally, [HostedRelayClient]) {
         let tally = SocketTally()
         let signer = try backend.signer(seed: 2)
@@ -828,7 +890,7 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
             kind: .phone,
             attestor: RelayAttestor(attest: fakeAttest(seed: 2), keys: InMemoryAppAttestKeyStore(), clock: clock),
             http: wrapHTTP?(backend.http) ?? backend.http,
-            sockets: CountingDialer(base: backend.sockets, tally: tally, gate: gate),
+            sockets: CountingDialer(base: backend.sockets, tally: tally, gate: gate, sent: sent),
             clock: clock,
             backoff: Self.quickBackoff
         ) { tally.displaced() }
