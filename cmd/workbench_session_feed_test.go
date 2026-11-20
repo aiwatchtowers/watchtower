@@ -302,6 +302,32 @@ func TestSessionFeed_ActivityOpenTool(t *testing.T) {
 	assert.Equal(t, "2026-10-01T10:00:09Z", act["started_at"])
 }
 
+// After a /clear the activity line and the live snapshot read the last
+// conversation only (sessionfeed.ReadChat's LiveConv), also with a cursor
+// still inside the first one; paths stay absolute and listed once.
+func TestSessionFeed_LiveAndActivityReadTheLastConversation(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1", "conv-2")
+	fx.transcript(t, "conv-1", feedUser("u1", "go"),
+		feedToolUse("a1", "toolu_a", "Bash", map[string]any{"command": "make old"}))
+	fx.transcript(t, "conv-2", feedUser("u2", "again"),
+		feedToolUse("a2", "toolu_b", "Bash", map[string]any{"command": "make new"}))
+	for _, args := range [][]string{nil, {"--after", "conv-1:0"}} {
+		got := fx.feedJSON(t, args...)
+		act, ok := got["activity"].(map[string]any)
+		require.True(t, ok, "%v", got["activity"])
+		assert.Equal(t, "make new", act["summary"])
+		live, ok := got["live"].(map[string]any)
+		require.True(t, ok, "%v", got["live"])
+		assert.Equal(t, "conv-2", live["conversation"])
+		assert.Equal(t, "make new", live["current"].(map[string]any)["summary"])
+		paths := feedPaths(t, got)
+		assert.Equal(t, []string{filepath.Join(fx.dir, "conv-1.jsonl"), filepath.Join(fx.dir, "conv-2.jsonl")}, paths)
+		for _, p := range paths {
+			assert.True(t, filepath.IsAbs(p), p)
+		}
+	}
+}
+
 func TestActivity_EmptyTailKeepsOpenTool(t *testing.T) {
 	fx := newSessionFeedFx(t, "conv-1")
 	fx.transcript(t, "conv-1", feedUser("u1", "go"),

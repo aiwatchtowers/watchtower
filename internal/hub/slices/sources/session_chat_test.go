@@ -457,8 +457,11 @@ func TestFeed05_LiveBlockRedactsSecrets(t *testing.T) {
 	pad := strings.Repeat("a", 90)
 	url := "echo " + pad + " https://deploy:hunter2hunter2hunter2@example.com/x" // leak-check:allow
 	ghp := "echo " + pad + " ghp_abcdefghijklmnopqrstuvwxyz0123456789"           // leak-check:allow
+	// A JWT whose second dot lies past the reader's redaction window (64 KiB):
+	// its prefix runs into the window's end and is masked whole.
+	jwt := "echo " + pad + " eyJhbGciOiJIUzI1NiJ9" + strings.Repeat("A", 70_000) + ".eyJzdWIiOiIxIn0.c2ln" // leak-check:allow
 	conv := filepath.Join(t.TempDir(), "conv.jsonl")
-	if err := os.WriteFile(conv, []byte(bashToolUses(t, url, ghp)), 0o600); err != nil {
+	if err := os.WriteFile(conv, []byte(bashToolUses(t, url, ghp, jwt)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	viaReader := newChatRig(t)
@@ -474,13 +477,13 @@ func TestFeed05_LiveBlockRedactsSecrets(t *testing.T) {
 		t.Fatalf("real path: items %v, %v", items, err)
 	}
 	payload := string(items[0].Payload)
-	for _, raw := range []string{"hunter2", "deploy:", "ghp_abc", "abcdefghijklmnop"} {
+	for _, raw := range []string{"hunter2", "deploy:", "ghp_abc", "abcdefghijklmnop", "eyJhbGci"} {
 		if strings.Contains(payload, raw) {
 			t.Errorf("the real path leaks %q", raw)
 		}
 	}
 	steps := decode(t, items[0].Payload)["activity_live"].(map[string]any)["steps"].([]any)
-	if len(steps) != 2 {
+	if len(steps) != 3 {
 		t.Fatalf("real path steps %v", steps)
 	}
 	for _, v := range steps {
@@ -1271,5 +1274,59 @@ func TestSessionChat_LiveStringsBoundedAndOversizeDropped(t *testing.T) {
 	p := decode(t, b)
 	if len(b) > MaxChatBytes || p["activity_live"] != nil || p["live_error"] != liveErrUnavailable || len(chatEntries(t, p)) != 1 {
 		t.Fatalf("oversize block: %d bytes, live_error %v", len(b), p["live_error"])
+	}
+}
+
+// More than 40 running steps: the newest 40 stay, the current step always,
+// and the rest are counted.
+func TestSessionChat_PhoneLiveCapsRunningSteps(t *testing.T) {
+	at := time.Unix(1_700_000_060, 0).UTC()
+	in := &sessionfeed.Live{}
+	for i := range 45 {
+		in.Steps = append(in.Steps, sessionfeed.LiveAction{ID: "r" + itoa(i), Tool: "Bash", Summary: "x", StartedAt: at})
+	}
+	in.Current = &in.Steps[1]
+	out := phoneLive(in)
+	var ids []string
+	for _, st := range out.Steps {
+		ids = append(ids, st.ID)
+	}
+	if len(ids) != 40 || out.StepsMore != 5 || ids[0] != "r1" || ids[1] != "r6" || ids[39] != "r44" {
+		t.Fatalf("%d steps %v, more %d", len(ids), ids, out.StepsMore)
+	}
+}
+
+// The session stops and the last read fails: the record keeps its dialog,
+// says not live, and drops the stale block without a live error; nothing is
+// read after that.
+func TestSessionChat_FailedReadAfterStopDropsTheBlock(t *testing.T) {
+	ctx := context.Background()
+	r := newChatRig(t)
+	r.live[7] = time.Now()
+	var readErr error
+	s := r.source(func(context.Context, int64, string) (ChatRead, error) {
+		return ChatRead{Entries: []sessionfeed.Entry{feedEntry(0, "hi")}, Live: sampleLive()}, readErr
+	}, ChatTiming{})
+	r.watch(7, "", "")
+	s.RunDue(ctx)
+	first := chatItems(t, s)["7"]
+	if first["activity_live"] == nil || first["live"] != true {
+		t.Fatalf("first read: %v", first)
+	}
+	delete(r.live, 7)
+	readErr = errors.New("unreadable")
+	r.clock.advance(3 * time.Second)
+	s.RunDue(ctx)
+	p := chatItems(t, s)["7"]
+	if p["live"] != false || p["activity_live"] != nil || p["live_error"] != nil || !reflect.DeepEqual(p["entries"], first["entries"]) {
+		t.Fatalf("after the stop: %v", p)
+	}
+	if r.nudges != 2 {
+		t.Fatalf("%d nudges, want 2", r.nudges)
+	}
+	r.clock.advance(60 * time.Second)
+	s.RunDue(ctx)
+	if r.callCount() != 2 {
+		t.Fatalf("%d reads after the session stopped, want 2", r.callCount())
 	}
 }

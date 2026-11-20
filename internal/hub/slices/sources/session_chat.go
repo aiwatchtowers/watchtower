@@ -359,12 +359,22 @@ func (s *SessionChatSource) run(ctx context.Context, k chatKey, gen int) {
 			reason, lineErr = "timed out", liveErrTimedOut
 		}
 		log.Printf("hub slices: session chat of session %d %s; keeping the last payload", k.session, reason)
-		if prev == nil || prev.ActivityLive == nil && prev.LiveError == "" {
+		if prev == nil {
 			return
 		}
 		marked := *prev
-		marked.LiveError = lineErr
-		doc, live = &marked, marked.Live
+		_, live = s.o.Liveness().Runs[k.session]
+		switch {
+		case !live:
+			// The session stopped: its last block is no longer current, and
+			// no live error either — the dialog stays, the liveness is real.
+			marked.Live, marked.ActivityLive, marked.LiveError = false, nil, ""
+		case prev.ActivityLive == nil && prev.LiveError == "":
+			return
+		default:
+			marked.LiveError = lineErr
+		}
+		doc = &marked
 	default:
 		_, live = s.o.Liveness().Runs[k.session]
 		block, lineErr := phoneLive(read.Live), ""
@@ -548,9 +558,9 @@ func chatDoc(feed []sessionfeed.Entry, sessionID int64, agentID string, live boo
 // redacted then cut at maxLiveSummary (sessionfeed already redacted them
 // before its own cut; this is the second layer), names cut at maxLiveName
 // and ids at maxLiveID, at most maxLiveSteps steps and maxLiveAgents
-// agents. Steps are cut from the oldest finished ones only (a running timer
-// never vanishes), counted in steps_more; agents past the cap in
-// agents_more. It never mutates l; nil stays nil.
+// agents. Steps are cut from the oldest finished ones first, then the
+// oldest running ones, never the current step, all counted in steps_more;
+// agents past the cap in agents_more. It never mutates l; nil stays nil.
 func phoneLive(l *sessionfeed.Live) *sessionfeed.Live {
 	if l == nil {
 		return nil
@@ -561,14 +571,31 @@ func phoneLive(l *sessionfeed.Live) *sessionfeed.Live {
 		Agents: []sessionfeed.LiveAgent{}, AgentsState: cutRunes(l.AgentsState, maxLiveName), AgentsMore: l.AgentsMore,
 		Steps: []sessionfeed.LiveAction{}, StepsMore: l.StepsMore,
 	}
-	drop := len(l.Steps) - maxLiveSteps
-	for _, st := range l.Steps {
-		if drop > 0 && !st.CompletedAt.IsZero() {
-			drop--
+	// Past maxLiveSteps the oldest finished steps go first, then the oldest
+	// running ones; the current step always stays.
+	keep := make([]bool, len(l.Steps))
+	for i := range keep {
+		keep[i] = true
+	}
+	excess := len(l.Steps) - maxLiveSteps
+	for pass := 0; pass < 2 && excess > 0; pass++ {
+		for i, st := range l.Steps {
+			if excess == 0 {
+				break
+			}
+			finished := !st.CompletedAt.IsZero()
+			if !keep[i] || (pass == 0) != finished || l.Current != nil && st.ID == l.Current.ID {
+				continue
+			}
+			keep[i] = false
+			excess--
 			out.StepsMore++
-			continue
 		}
-		out.Steps = append(out.Steps, *phoneAction(&st))
+	}
+	for i, st := range l.Steps {
+		if keep[i] {
+			out.Steps = append(out.Steps, *phoneAction(&st))
+		}
 	}
 	agents := l.Agents
 	if n := len(agents) - maxLiveAgents; n > 0 {
