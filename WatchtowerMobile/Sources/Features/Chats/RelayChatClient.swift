@@ -419,8 +419,11 @@ final class RelayChatClient: ChatClient {
     /// the `ChatUI` composer (the draft store is left alone). Retry is the relay's regenerate of that answer.
     private func turn(_ request: ChatTurnRequest) async throws -> ChatEcho {
         let mode = request.mode == .retry ? ChatTurnMode.regenerate : request.mode
-        // The files staged on the phone (the composer's pills) go with a send or an edit, uploaded first.
-        let files = mode == .send || mode == .edit ? center?.drafts.draft(request.conversationID).attachments ?? [] : []
+        // The files staged on the phone (the composer's pills) go with the composer's own send or edit, uploaded
+        // first. Only that turn carries the draft: a fixed reply (a question card's answer, a fallback's `chat_turn`)
+        // sends its text alone and leaves the staged files in the draft.
+        let takesDraftFiles = request.draft != nil && (mode == .send || mode == .edit)
+        let files = takesDraftFiles ? center?.drafts.draft(request.conversationID).attachments ?? [] : []
         let draft = request.draft.map { draft in
             ChatDraft(text: draft.text, quotes: draft.quotes.map { ChatQuoteDraft(quote: $0, comment: "") })
         }
