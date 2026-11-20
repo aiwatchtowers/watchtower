@@ -683,3 +683,60 @@ final class StartCounter: @unchecked Sendable {
         }
     }
 }
+
+/// `SocketLine.write` against a peer that never reads (a frozen engine): the line must fail within its bound.
+final class SocketLineWriteBoundTests: XCTestCase {
+    private var dir = ""
+    private var path = ""
+    private var listener: Int32 = -1
+
+    override func setUpWithError() throws {
+        dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("wtsl-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        path = dir + "/chat.sock"
+        // Listens but never accepts nor reads: the connection sits in the backlog and its buffer fills.
+        listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8)
+        withUnsafeMutableBytes(of: &addr.sun_path) { raw in for (i, b) in bytes.enumerated() { raw[i] = b } }
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        }
+        guard bound == 0, Darwin.listen(listener, 8) == 0 else { throw ChatSocketDropped() }
+    }
+
+    override func tearDown() {
+        if listener >= 0 { close(listener) }
+        try? FileManager.default.removeItem(atPath: dir)
+    }
+
+    func testLineLargerThanTheSendBufferFailsWithinTheBound() async throws {
+        let line = try SocketLine(path: path)
+        XCTAssertTrue(line.write(Data("{\"id\":\"m1\"}\n".utf8), bound: 0.2), "a small line fits the buffer")
+
+        let big = Data(repeating: UInt8(ascii: "x"), count: 4 << 20)
+        let done = expectation(description: "the write returns")
+        let result = LockedBox<(returned: Bool, ok: Bool)>((false, true))
+        Thread.detachNewThread {
+            result.set((true, line.write(big, bound: 0.2)))
+            done.fulfill()
+        }
+        await fulfillment(of: [done], timeout: 3)
+        let outcome = result.get()
+        XCTAssertTrue(outcome.returned, "a line the peer never takes must not block past its bound")
+        XCTAssertFalse(outcome.ok, "a line the peer never takes fails")
+        // A write still blocked holds the line's lock, so only a returned one lets the line shut down and close.
+        guard outcome.returned else { return }
+        line.shutdown()
+        for await _ in line.lines {}
+    }
+}
+
+private final class LockedBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Value
+    init(_ value: Value) { self.value = value }
+    func set(_ new: Value) { lock.withLock { value = new } }
+    func get() -> Value { lock.withLock { value } }
+}

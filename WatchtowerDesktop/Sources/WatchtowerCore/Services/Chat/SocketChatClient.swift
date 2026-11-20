@@ -621,8 +621,13 @@ extension SocketChatClient {
 }
 
 /// One unix-socket connection's two halves: the lines read by a reader thread (in order, ending when the socket
-/// does), and blocking writes bounded by a poll. The reader thread alone closes the descriptor, after its last read
-/// and under the lock the writes take, so no number is ever used after it may have been reused.
+/// does), and blocking writes bounded by a deadline. The reader thread alone closes the descriptor, after its last
+/// read and under the lock the writes take, so no number is ever used after it may have been reused.
+///
+/// The descriptor stays blocking (the reader thread's plain `read` relies on it); a write is bounded by
+/// `SO_SNDTIMEO`, set to what is left of the deadline before every `write`. On a blocking stream socket `POLLOUT`
+/// only says some space is free, so without the timeout a line larger than the free send buffer would block until
+/// the peer read all of it — forever when the engine stopped reading, with the actor and this lock held.
 final class SocketLine: @unchecked Sendable {
     /// A write the peer does not take within this long fails (a socket whose peer stopped reading).
     static let writeBound: Double = 5
@@ -686,11 +691,12 @@ final class SocketLine: @unchecked Sendable {
     }
 
     /// Writes the whole line; false when the socket refused it (the caller drops the connection).
-    func write(_ data: Data) -> Bool {
+    /// The whole line must be taken within `bound` seconds, across partial writes.
+    func write(_ data: Data, bound: Double = SocketLine.writeBound) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         guard !isShut, !isClosed else { return false }
-        let deadline = Date().addingTimeInterval(Self.writeBound)
+        let deadline = Date().addingTimeInterval(bound)
         var sent = 0
         while sent < data.count {
             let left = deadline.timeIntervalSinceNow
@@ -699,6 +705,13 @@ final class SocketLine: @unchecked Sendable {
             let ready = poll(&pfd, 1, Int32(max(1, left * 1000)))
             if ready < 0, errno == EINTR { continue }
             guard ready > 0, pfd.revents & Int16(POLLOUT) != 0 else { return false }
+            // A blocking write waits for the whole rest; the send timeout cuts it at the deadline (a partial count,
+            // or EAGAIN when nothing more went), and the loop then fails on the passed deadline.
+            let rest = max(deadline.timeIntervalSinceNow, 0.001)
+            var timeout = timeval(tv_sec: Int(rest), tv_usec: Int32((rest - rest.rounded(.down)) * 1_000_000))
+            guard setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0 else {
+                return false
+            }
             let n = data.withUnsafeBytes { raw -> Int in
                 guard let base = raw.baseAddress else { return 0 }
                 return Darwin.write(fd, base + sent, raw.count - sent)
