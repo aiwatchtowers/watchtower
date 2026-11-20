@@ -4,8 +4,8 @@ import SwiftTerm
 import XCTest
 @testable import WatchtowerDesktop
 
-/// The embedded terminal draws with SwiftTerm's Metal renderer while it is in
-/// a window, and keeps drawing with Core Graphics where Metal cannot start
+/// The embedded terminal draws with SwiftTerm's Metal renderer from its first
+/// window on, and keeps drawing with Core Graphics where Metal cannot start
 /// (board #2102). The assertions hold on a machine without Metal too (a CI
 /// VM): there the fallback is what runs.
 @MainActor
@@ -74,15 +74,18 @@ final class TerminalMetalTests: XCTestCase {
     /// fed while away is in the grid when it returns.
     func testLeavingTheWindowKeepsTheRendererAndTheText() throws {
         let view = terminal()
-        window().contentView?.addSubview(view)
+        let host = window()
+        host.contentView?.addSubview(view)
         try XCTSkipUnless(view.isUsingMetalRenderer, "Metal does not start on this machine")
+        let metal = try XCTUnwrap(view.subviews.first { $0 is MTKView })
         view.removeFromSuperview()
         XCTAssertTrue(view.isUsingMetalRenderer)
 
         view.feedOutput(Array("moved".utf8)[...])
-        window().contentView?.addSubview(view)
+        host.contentView?.addSubview(view)
         XCTAssertTrue(view.isUsingMetalRenderer)
         XCTAssertEqual(view.subviews.filter { $0 is MTKView }.count, 1)
+        XCTAssertTrue(view.subviews.first { $0 is MTKView } === metal, "the same renderer, not a rebuilt one")
         XCTAssertEqual(view.getTerminal().getLine(row: 0)?.translateToString(trimRight: true), "moved")
     }
 
