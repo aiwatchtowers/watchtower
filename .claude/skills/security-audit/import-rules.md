@@ -46,7 +46,8 @@ the value of `first_seen_run` / `last_seen_run`.
 **Ops.** A doc that does not exist is created with a `set` write. A doc that exists is
 changed with an `update` write (merge), naming content and run fields only, and pinned
 with `if_version` = the `version` the rule 1 read returned (or the version a `set` of this
-import returned). The wrapper never `set`s an existing doc and never `delete`s a doc. The
+import returned). The wrapper never `set`s an existing `findings` doc and never `delete`s a doc; the one
+`set` on an existing doc is the run row on a re-import (rule 7), pinned like an update. The
 examples show writes as entries of `ArtifactData batch`'s `writes` array.
 
 **An owner edit during the import.** The owner may change `status`, `note` or a legacy
@@ -70,7 +71,8 @@ Inputs, in this order:
    importing, because `/security-audit import <run-dir>` can be pointed at any dir. A
    failure imports nothing.
 3. `ArtifactData list findings` (every page) and `ArtifactData list runs` — the state the
-   rules below compare against. Read once, at import time (not reused from the triage-in
+   rules below compare against, each doc with its `version` (including
+   `runs/<run-id>` when an earlier attempt of this import already wrote it). Read once, at import time (not reused from the triage-in
    step: the owner may have edited since).
 
 **Example.** Run dir `…/watchtower/run-20261120-range/`:
@@ -317,8 +319,19 @@ docs with `verdict: "rejected"` and owner `status` `open` or `in_progress` (spec
 A disputed fingerprint is re-validated when either holds:
 
 - it is a record in this run's `findings.json` (any verdict), or
-- a unit in this run's ledger has it in live `result_fingerprints` and a nonempty
-  `local_checks` (live checks are this run's — archived ones sit in `attempts`).
+- a unit in this run's ledger has it in live `result_fingerprints` and at least one live
+  `local_checks` entry made by a **verifier** (live checks are this run's — archived ones
+  sit in `attempts`).
+
+**How a verifier check is identified.** The ledger has no role field; a check carries only
+its `agent_id`. The wrapper therefore tells the engine's parent (wrapper `SKILL.md`) to
+give every verifier a canonical ID starting `verifier-` and every hunter one starting
+`hunter-` (critics `critic-`, reconnaissance `recon-`) — all valid under the engine's
+`^[a-z0-9][a-z0-9_-]{0,63}$`. A verifier check is a live `local_checks` entry whose
+`agent_id` starts with `verifier-`. A hunter's own check (`hunter-…`) does not count, nor
+does a check by an ID outside the scheme. When the ledger shows no `verifier-` or
+`hunter-` IDs at all, the engine did not follow the naming: every disputed fingerprint
+not in `findings.json` is listed as not re-validated, and the terminal summary says why.
 
 Every other disputed fingerprint goes into the run row's `disputed_not_revalidated`
 (rule 7), the terminal summary, and stays in the next run's disputed list (its doc is
@@ -326,7 +339,7 @@ unchanged, so it is still disputed).
 
 **Example.** Disputed list: `example:csrf:form-post`, `example:auth:skip-check`. The
 first is in no record, but a unit of this run's ledger has it in `result_fingerprints`
-with a verifier check:
+with a verifier check (`agent_id: "verifier-02"`):
 
 ```json
 {"coverage_id": "internal%2Fexample%2Fform.go%23Submit::…", "status": "candidate",
@@ -336,7 +349,9 @@ with a verifier check:
    "result": "Token checked on every path.", "artifact": null}]}
 ```
 
-→ re-validated. The second is in no record and in no unit's `result_fingerprints` →
+→ re-validated. Had the unit's only check been the hunter's
+(`"agent_id": "hunter-05"`), it would not count. The second is in no record and in no
+unit's `result_fingerprints` →
 
 ```json
 "disputed_not_revalidated": ["example:auth:skip-check"]
@@ -344,7 +359,11 @@ with a verifier check:
 
 ## Rule 7 — The run row
 
-`set runs/<run-id>` (the wrapper is its only writer), with exactly the spec §7 fields:
+`set runs/<run-id>` with exactly the spec §7 fields. The wrapper is the row's only writer
+and a `set` replaces the whole row. First import: no row in the rule 1 `list runs` → plain
+`set`. Re-import of the same run dir (rule 8): the row exists → the same `set`, pinned with
+`if_version` = the version the rule 1 read returned (the tool refuses an unpinned write
+to an existing doc); a version conflict → re-`get` the row and resend.
 
 | Field | Source |
 |---|---|
@@ -384,6 +403,10 @@ run; `counts.regressed` = docs with `run_state: "regressed"` this run.
 ```
 
 (The accepted `confirmed`/`low` record is not in `by_verdict` or `by_severity`.)
+
+On a re-import of the same run dir, the rule 1 read returned `runs/run-20261120-range` at
+version 1, so the same write goes out as
+`{"op": "set", "collection": "runs", "doc_id": "run-20261120-range", "if_version": 1, "data": {…}}`.
 
 ## Rule 8 — Batching and order
 
