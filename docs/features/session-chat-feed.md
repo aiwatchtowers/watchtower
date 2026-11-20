@@ -127,7 +127,7 @@ Limits: no search, no paging, no chat of a session the owner did not open, no co
 The existing Desktop caption slot above the composer now uses `WorkchatLiveLine` and the pure
 `WorkchatLivePresentation`. It shows the current tool or `Last · …` (last completed tool in the
 current turn), never both as separate rows. With no recorded action it says `Working…` for both
-providers. The compact `person.2` count opens a click-only popover of flat agent rows; selecting one
+providers. The live model (`SessionFeedLive`, `SessionFeedSubagent`, `SessionFeedActivity`) and its presentation (`WorkchatLivePresentation`, `WorkchatActivityPresenter`) live in `WatchtowerChatText` (`Sources/WatchtowerChatText/Live/`), shared by the Mac and the phone; only `busy(_:)` and `done(from:)` over feed entries stay in Core (`WorkchatLivePresentation+Session`). The compact `person.2` count opens a click-only popover of flat agent rows; selecting one
 opens its existing read-only chat in place. No extra panel, tool entries, database copies or mobile
 activity publishing. Permission prompts keep hiding the whole line. The existing serialized 3 s
 poll and off-screen gates are unchanged.
