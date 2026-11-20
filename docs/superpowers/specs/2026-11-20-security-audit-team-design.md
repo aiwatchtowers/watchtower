@@ -69,14 +69,19 @@ Anti-goals (a failure even if it "works")
 - The test the verifier writes is itself steered by untrusted code, so it runs in an OS
   sandbox, not on trust: `sandboxed-go-test.sh` runs `go test -run <name>` under
   `sandbox-exec` with a profile that denies all network, denies writes outside the
-  scratch copy, the Go build cache and a per-run temp dir, and denies reads of the
+  scratch copy and a per-run temp dir, and denies reads of the
   owner's secrets and data (`~/.config/watchtower`, `~/Library/Application
   Support/Watchtower`, `~/.claude`, `~/.ssh`, the keychains). Child processes inherit the
-  sandbox. If `sandbox-exec` is missing or the profile fails to load, the script refuses
+  sandbox. The owner's Go caches are never writable: the script sets `GOCACHE` to a
+  per-run directory inside the scratch root (seeded once per run as an APFS clone,
+  `cp -c`, of the owner's cache so the SQLCipher build stays warm; the original is only
+  read), `GOMODCACHE` stays the owner's but is read-only in the profile, and
+  `GOPROXY=off`/`GOFLAGS=-mod=mod` keep it from fetching. The per-run cache is deleted
+  with the scratch root. If `sandbox-exec` is missing or the profile fails to load, the script refuses
   to run the test (the finding stays `plausible`). The hook and the sandbox profile have
   their own tests: allowed and denied command samples including injection-shaped ones,
-  and a test that tries network, an outside write and a secret read under the sandbox
-  and expects all three to fail.
+  and a test that tries network, an outside write, a write into the owner's `GOCACHE`
+  and a secret read under the sandbox and expects all four to fail.
 - Runs need the Agent tool and the `Artifact`/`ArtifactData` tools, so they start from a
   top-level Claude Code session with claude.ai artifacts available, not from a subagent.
 - Run from a plain terminal session, not a Watchtower workbench session: a workbench
