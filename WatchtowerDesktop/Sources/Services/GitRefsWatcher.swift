@@ -147,11 +147,11 @@ final class GitRefsWatcher: GitRefsWatching {
     }
 
     /// The stream's context for `relay`. FSEvents owns its reference through
-    /// the retain/release pair — it retains when it keeps the context and
-    /// releases what it retained, on every path, a refused create included —
-    /// so the watcher never releases the relay by hand. A hand-rolled
-    /// `passRetained` with `retain: nil` was released twice when FSEvents
-    /// refused a stream (a 0.29.0 crash in `start`).
+    /// the retain/release pair, and balances it itself: a refused create
+    /// retains and then releases the context before returning NULL (seen on
+    /// macOS 27 with an empty path list), so the watcher never releases the
+    /// relay by hand. The 0.29.0 crash in `start` was a hand-rolled
+    /// `passRetained` with `retain: nil`, released once more on that path.
     nonisolated static func context(for relay: Relay) -> FSEventStreamContext {
         FSEventStreamContext(
             version: 0,
@@ -169,10 +169,12 @@ final class GitRefsWatcher: GitRefsWatching {
         )
     }
 
-    private func start(latency: TimeInterval) {
-        let relay = Relay()
-        relay.watcher = self
-        var context = Self.context(for: relay)
+    /// A stream relaying to `relay`, or nil when FSEvents refuses it (FSEvents
+    /// has then dropped its reference again). `relay` is kept alive across
+    /// the create: the context hands it over unretained.
+    nonisolated static func makeStream(
+        relay: Relay, paths: [String], latency: TimeInterval
+    ) -> FSEventStreamRef? {
         let callback: FSEventStreamCallback = { _, info, count, paths, flags, ids in
             guard let info else { return }
             let relay = Unmanaged<Relay>.fromOpaque(info).takeUnretainedValue()
@@ -185,16 +187,22 @@ final class GitRefsWatcher: GitRefsWatching {
         }
         let flags = kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer
             | kFSEventStreamCreateFlagWatchRoot | kFSEventStreamCreateFlagUseCFTypes
+        return withExtendedLifetime(relay) {
+            var context = context(for: relay)
+            return FSEventStreamCreate(
+                kCFAllocatorDefault, callback, &context, paths as CFArray,
+                FSEventStreamEventId(kFSEventStreamEventIdSinceNow), latency, FSEventStreamCreateFlags(flags)
+            )
+        }
+    }
+
+    private func start(latency: TimeInterval) {
+        let relay = Relay()
+        relay.watcher = self
         let watched = Self.watchedPaths(gitDir: gitDir, commonDir: commonDir)
         startEventID = FSEventsGetCurrentEventId()
-        // `relay` is a strong local, alive across the create whatever FSEvents
-        // retains or releases on its way.
-        guard let created = FSEventStreamCreate(
-            kCFAllocatorDefault, callback, &context, watched as CFArray,
-            FSEventStreamEventId(kFSEventStreamEventIdSinceNow), latency, FSEventStreamCreateFlags(flags)
-        ) else {
-            // FSEvents refused the stream and balanced its own reference. The
-            // caller's timer and app-activation reads still refresh the
+        guard let created = Self.makeStream(relay: relay, paths: watched, latency: latency) else {
+            // The caller's timer and app-activation reads still refresh the
             // header.
             Self.log.error("could not watch \(watched.joined(separator: ", "), privacy: .private)")
             return
