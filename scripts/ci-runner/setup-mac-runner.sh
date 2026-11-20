@@ -13,14 +13,16 @@
 # asks for your sudo password. Safe to run again: it creates what is missing,
 # rewrites each runner's PATH, environment and LaunchAgent, and removes every
 # other actions-runner-* folder in ci's home (ci serves these runners only).
+# It also installs a daily LaunchDaemon (as ci) that trims ci's Go and
+# golangci-lint caches (trim-ci-caches.sh, README.md "Cache trim").
 # It never starts a runner: ci's login does, so after a run that changed
 # anything, log ci out (while no job runs) and in again.
 #
 # Usage: scripts/ci-runner/setup-mac-runner.sh [--uninstall] [--repo OWNER/NAME]
 #            [--xcode /Applications/Xcode.app] [--allow-open-home]
 #
-#   --uninstall        stop, unregister and delete the runners (the ci
-#                      user and its caches stay; the script prints how to
+#   --uninstall        stop, unregister and delete the runners and the cache
+#                      trim daemon (the ci user and its caches stay; the script prints how to
 #                      remove the user)
 #   --repo             repository the runners serve (default aiwatchtowers/watchtower)
 #   --xcode            the Xcode the jobs use, through DEVELOPER_DIR (default
@@ -50,6 +52,8 @@ RUNNER_URL="https://github.com/actions/runner/releases/download/v${RUNNER_VERSIO
 # Five: eight left a 16-core Mac at load 175-260 with the owner's own work,
 # and the tests that still wait on real time failed at random (ask #1624); a
 # second run's jobs queue instead of piling onto the same cores (#1705).
+TRIM_LABEL="dev.watchtower.ci-cache-trim"
+TRIM_PLIST="/Library/LaunchDaemons/$TRIM_LABEL.plist"
 INSTANCES="swift:wt-swift general-1:wt-general general-2:wt-general general-3:wt-general general-4:wt-general general-5:wt-general"
 
 die() {
@@ -167,6 +171,48 @@ runner_dirs() {
     sudo find "$1" -mindepth 1 -maxdepth 1 -type d -name 'actions-runner-*'
 }
 
+# remove_trim_daemon: unloads and deletes the daily cache trim.
+remove_trim_daemon() {
+    sudo launchctl bootout "system/$TRIM_LABEL" 2>/dev/null || true
+    sudo rm -f "$TRIM_PLIST"
+}
+
+# install_trim_daemon <home>: a daily LaunchDaemon, run as ci, that trims the
+# shared Go and golangci-lint caches (nothing else ever does, and they fill
+# the disk). The script is copied under ci's home so the daemon does not
+# depend on this checkout.
+install_trim_daemon() {
+    local home=$1 here script tmp
+    here=$(cd "$(dirname "$0")" && pwd)
+    script="$home/bin/trim-ci-caches.sh"
+    step "installing the daily cache trim ($TRIM_PLIST)"
+    as_ci mkdir -p "$home/bin"
+    as_ci tee "$script" <"$here/trim-ci-caches.sh" >/dev/null
+    as_ci chmod 755 "$script"
+    tmp=$(mktemp)
+    cat >"$tmp" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>$TRIM_LABEL</string>
+    <key>UserName</key><string>$CI_USER</string>
+    <key>ProgramArguments</key><array><string>/bin/bash</string><string>$script</string></array>
+    <key>EnvironmentVariables</key><dict><key>HOME</key><string>$home</string></dict>
+    <key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>30</integer></dict>
+    <key>Nice</key><integer>10</integer>
+    <key>StandardErrorPath</key><string>$home/Library/Logs/ci-cache-trim.err</string>
+</dict>
+</plist>
+PLIST
+    plutil -lint -s "$tmp" || die "the cache trim plist is invalid"
+    sudo launchctl bootout "system/$TRIM_LABEL" 2>/dev/null || true
+    sudo install -m 644 -o root -g wheel "$tmp" "$TRIM_PLIST"
+    rm -f "$tmp"
+    sudo launchctl bootstrap system "$TRIM_PLIST"
+    echo "   trims the Go and golangci-lint caches daily at 04:30; log: $home/Library/Logs/ci-cache-trim.log"
+}
+
 uninstall() {
     local home uid dir
     home=$(ci_home)
@@ -175,6 +221,7 @@ uninstall() {
     while IFS= read -r dir; do
         [ -n "$dir" ] && remove_runner "$uid" "$dir"
     done <<< "$(runner_dirs "$home")"
+    remove_trim_daemon
     echo
     echo "Runners removed. The $CI_USER user and its caches are still there; to delete them:"
     echo "  sudo sysadminctl -deleteUser $CI_USER"
@@ -307,6 +354,8 @@ install() {
         aqua_agent "$plist"
         echo "   wt-mac-$name: loaded at $CI_USER's login, in its Aqua session"
     done
+
+    install_trim_daemon "$home"
 
     echo
     if gui_session "$uid"; then

@@ -422,6 +422,8 @@ test-scripts:
 	done; \
 	echo "==> bash -n scripts/ci-runner/setup-mac-runner.sh"; \
 	bash -n scripts/ci-runner/setup-mac-runner.sh || rc=1; \
+	echo "==> bash -n scripts/ci-runner/trim-ci-caches.sh"; \
+	bash -n scripts/ci-runner/trim-ci-caches.sh || rc=1; \
 	exit $$rc
 
 # Copies the hosted relay's Go client + proto into internal/hub/transport/relay,
