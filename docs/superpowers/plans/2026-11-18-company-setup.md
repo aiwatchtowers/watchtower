@@ -90,6 +90,8 @@ This plan **does not rebuild them**; it builds on plan B's contracts as that pla
 
 **Depends on:** none. **Owner/controller, manual; starts on day 1 of the plan.** Its result is needed only by Task 18 (one flag) and Task 26 (one frame).
 
+Step-by-step runbook (console clicks, isolated-home CLI commands, day-8 check, cleanup, result table): [`2026-11-20-s2-personal-gmail-runbook.md`](2026-11-20-s2-personal-gmail-runbook.md).
+
 **Files:** Modify `docs/superpowers/specs/2026-11-17-company-setup-design.md` (§4 "Unverified so far" → the result), this plan's spike table.
 
 - [ ] **Step 1 (day 1):** a fresh @gmail.com; a new Google Cloud project; Gmail API on; consent screen External, the account as test user; **Publish app** to production, unverified; OAuth client Desktop app; `watchtower google add --client-id <id> --client-secret-stdin` on a **copy** of a workspace (never the live DB, memory rule); record the issue time.
