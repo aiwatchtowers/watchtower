@@ -253,7 +253,7 @@ regressed, new}, started_at, finished_at`.
 | `legacy_id` | wrapper, on create | legacy rows only |
 | `verdict` (needs_validation\|rejected\|confirmed), `title`, `description`, `root_cause`/`claimed_root_cause`, `trace[]`, `evidence[]`, `blockers[]`, `validation_plan`, `remediation`, `severity`, `reason` | wrapper, every run that sees it | copied from `findings.json` |
 | `first_seen_run`, `last_seen_run`, `run_state` (new\|still_open\|regressed\|not_refound\|fixed) | wrapper | |
-| `legacy_match` (a `legacy_id`) | wrapper, only while the field is empty and `legacy_decision` is unset | set when the engine's record says it is the old audit item (from the context's legacy list); once set, or once the owner decided, no run writes it again |
+| `legacy_match` (a `legacy_id`) | wrapper, only while the field is empty and `legacy_decision` is unset | the engine's schema has no such field, so the wrapper proposes it after the import: a legacy row sharing a file with the record's trace/evidence and describing the same weakness in its note; once set, or once the owner decided, no run writes it again |
 | `status` (open\|in_progress\|fixed\|accepted\|false_positive) | owner (wrapper only on create: `open`; legacy rows: from `baseline-import.json`) | |
 | `note` | owner (legacy rows: from `baseline-import.json` on create) | |
 | `legacy_decision` (merged\|split) | owner | **Merged**: the finding takes the legacy row's `status` and `note` (owner write), the legacy row gets `merged_into: <doc-id>` and leaves the list; **Split**: `legacy_match` stays for the record, the badge goes, both rows live on |
