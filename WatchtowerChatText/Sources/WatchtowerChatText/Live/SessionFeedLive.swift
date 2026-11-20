@@ -1,23 +1,23 @@
 import Foundation
 
 /// Additive, Desktop-only hint. Existing `activity` remains an open tool call.
-package struct SessionFeedLive: Decodable, Equatable, Sendable {
-    package var observedAt: Date?
-    package var conversation: String
-    package var turnAt: Date?
-    package var turnActive: Bool
-    package var current: SessionLiveAction?
-    package var latest: SessionLiveAction?
-    package var agents: [SessionLiveAgent]
-    package var agentsState: String
-    package var agentsMore: Int
+public struct SessionFeedLive: Decodable, Equatable, Sendable {
+    public var observedAt: Date?
+    public var conversation: String
+    public var turnAt: Date?
+    public var turnActive: Bool
+    public var current: SessionLiveAction?
+    public var latest: SessionLiveAction?
+    public var agents: [SessionLiveAgent]
+    public var agentsState: String
+    public var agentsMore: Int
     /// The current turn's tool steps in start order (#2065 spec §3): the last
     /// 40, plus any older one still open; `stepsMore` counts the completed
     /// steps cut ahead of them.
-    package var steps: [SessionLiveAction]
-    package var stepsMore: Int
+    public var steps: [SessionLiveAction]
+    public var stepsMore: Int
 
-    package init(
+    public init(
         observedAt: Date?,
         conversation: String = "",
         turnAt: Date? = nil,
@@ -39,11 +39,11 @@ package struct SessionFeedLive: Decodable, Equatable, Sendable {
         case current, latest, agents, agentsState = "agents_state", agentsMore = "agents_more"
         case steps, stepsMore = "steps_more"
     }
-    package init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        observedAt = SessionFeedEntry.parseDate(try c.decodeIfPresent(String.self, forKey: .observedAt))
+        observedAt = SessionFeedDate.parse(try c.decodeIfPresent(String.self, forKey: .observedAt))
         conversation = try c.decodeIfPresent(String.self, forKey: .conversation) ?? ""
-        turnAt = SessionFeedEntry.parseDate(try c.decodeIfPresent(String.self, forKey: .turnAt))
+        turnAt = SessionFeedDate.parse(try c.decodeIfPresent(String.self, forKey: .turnAt))
         turnActive = try c.decodeIfPresent(Bool.self, forKey: .turnActive) ?? false
         current = try c.decodeIfPresent(SessionLiveAction.self, forKey: .current)
         latest = try c.decodeIfPresent(SessionLiveAction.self, forKey: .latest)
@@ -55,43 +55,43 @@ package struct SessionFeedLive: Decodable, Equatable, Sendable {
     }
 }
 
-package struct SessionLiveAction: Decodable, Equatable, Sendable {
-    package var id: String
-    package var tool: String
-    package var summary: String
-    package var startedAt: Date?
-    package var completedAt: Date?
-    package var more: Int
+public struct SessionLiveAction: Decodable, Equatable, Sendable {
+    public var id: String
+    public var tool: String
+    public var summary: String
+    public var startedAt: Date?
+    public var completedAt: Date?
+    public var more: Int
 
-    package init(id: String = "", tool: String, summary: String, startedAt: Date? = nil, completedAt: Date? = nil, more: Int = 0) {
+    public init(id: String = "", tool: String, summary: String, startedAt: Date? = nil, completedAt: Date? = nil, more: Int = 0) {
         self.id = id; self.tool = tool; self.summary = summary; self.startedAt = startedAt; self.completedAt = completedAt; self.more = more
     }
     private enum CodingKeys: String, CodingKey { case id, tool, summary, startedAt = "started_at", completedAt = "completed_at", more }
-    package init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
         tool = try c.decodeIfPresent(String.self, forKey: .tool) ?? ""
         summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
-        startedAt = SessionFeedEntry.parseDate(try c.decodeIfPresent(String.self, forKey: .startedAt))
-        completedAt = SessionFeedEntry.parseDate(try c.decodeIfPresent(String.self, forKey: .completedAt))
+        startedAt = SessionFeedDate.parse(try c.decodeIfPresent(String.self, forKey: .startedAt))
+        completedAt = SessionFeedDate.parse(try c.decodeIfPresent(String.self, forKey: .completedAt))
         more = try c.decodeIfPresent(Int.self, forKey: .more) ?? 0
     }
 }
 
-package struct SessionLiveAgent: Decodable, Equatable, Sendable, Identifiable {
-    package var ref: SessionFeedSubagent
-    package var startedAt: Date?
-    package var action: SessionLiveAction?
-    package var canOpen: Bool
-    package var id: String { ref.toolUseID }
-    package init(ref: SessionFeedSubagent, startedAt: Date? = nil, action: SessionLiveAction? = nil, canOpen: Bool = false) {
+public struct SessionLiveAgent: Decodable, Equatable, Sendable, Identifiable {
+    public var ref: SessionFeedSubagent
+    public var startedAt: Date?
+    public var action: SessionLiveAction?
+    public var canOpen: Bool
+    public var id: String { ref.toolUseID }
+    public init(ref: SessionFeedSubagent, startedAt: Date? = nil, action: SessionLiveAction? = nil, canOpen: Bool = false) {
         self.ref = ref; self.startedAt = startedAt; self.action = action; self.canOpen = canOpen
     }
     private enum CodingKeys: String, CodingKey { case ref, startedAt = "started_at", action, canOpen = "can_open" }
-    package init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         ref = try c.decode(SessionFeedSubagent.self, forKey: .ref)
-        startedAt = SessionFeedEntry.parseDate(try c.decodeIfPresent(String.self, forKey: .startedAt))
+        startedAt = SessionFeedDate.parse(try c.decodeIfPresent(String.self, forKey: .startedAt))
         action = try c.decodeIfPresent(SessionLiveAction.self, forKey: .action)
         canOpen = try c.decodeIfPresent(Bool.self, forKey: .canOpen) ?? false
     }

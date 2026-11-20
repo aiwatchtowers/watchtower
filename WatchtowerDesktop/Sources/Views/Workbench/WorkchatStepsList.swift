@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// The current turn's steps above the live line (#2065 spec §3): a fixed
 /// six-row slot from the moment it appears, fewer steps bottom-aligned, the

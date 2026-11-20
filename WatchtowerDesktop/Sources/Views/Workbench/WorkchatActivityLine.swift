@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// The live line between the Workchat feed and the composer: a symbol, the
 /// agent's current step and how long it has lasted. The row keeps its height

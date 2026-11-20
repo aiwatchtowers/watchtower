@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// Where the session chat pane is: the main feed (empty stack) or a subagent
 /// opened in place, nested ones deeper. Level 0 is the main feed, level n

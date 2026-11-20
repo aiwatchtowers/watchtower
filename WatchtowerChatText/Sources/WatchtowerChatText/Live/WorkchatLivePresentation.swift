@@ -2,91 +2,91 @@ import Foundation
 
 /// All live-row and agent-picker copy. Time passage only changes this pure
 /// projection; the one existing poller owns the snapshot and retry.
-package enum WorkchatLivePresentation {
-    package static let staleAfter: TimeInterval = 10
-    package static let retryTitle = "Retry"
-    package static let agentsHelp = "Show running agents"
-    package static let unknownAgents = "Agent status unavailable"
-    package static let working = "Working…"
-    package static let loading = "Loading activity…"
-    package static let unavailable = "Activity unavailable"
+public enum WorkchatLivePresentation {
+    public static let staleAfter: TimeInterval = 10
+    public static let retryTitle = "Retry"
+    public static let agentsHelp = "Show running agents"
+    public static let unknownAgents = "Agent status unavailable"
+    public static let working = "Working…"
+    public static let loading = "Loading activity…"
+    public static let unavailable = "Activity unavailable"
     // The 👥 list (#2065 spec §2).
-    package static let listTitle = "Agents"
-    package static let workingTitle = "WORKING"
-    package static let noneWorking = "No agents working"
-    package static let listLoading = "Loading agents…"
-    package static let listError = "Couldn’t read the agents"
-    package static func doneTitle(_ count: Int) -> String { "Done · \(count)" }
+    public static let listTitle = "Agents"
+    public static let workingTitle = "WORKING"
+    public static let noneWorking = "No agents working"
+    public static let listLoading = "Loading agents…"
+    public static let listError = "Couldn’t read the agents"
+    public static func doneTitle(_ count: Int) -> String { "Done · \(count)" }
     /// Done shows at most this many rows, the rest scroll.
-    package static let maxDoneRows = 5
+    public static let maxDoneRows = 5
     // The live steps of the current turn (#2065 spec §3).
     /// The steps slot is this many rows tall from the moment it appears; more scroll.
-    package static let stepsVisibleRows = 6
-    package static func stepsHeight(rowHeight: CGFloat) -> CGFloat { CGFloat(stepsVisibleRows) * rowHeight }
+    public static let stepsVisibleRows = 6
+    public static func stepsHeight(rowHeight: CGFloat) -> CGFloat { CGFloat(stepsVisibleRows) * rowHeight }
     /// The live line's accessibility hint while it toggles the steps.
-    package static func stepsToggleHint(open: Bool) -> String { open ? "Hide this turn’s steps" : "Show this turn’s steps" }
-    package static func turnSummary(_ count: Int) -> String { "This turn · \(count) \(count == 1 ? "step" : "steps")" }
+    public static func stepsToggleHint(open: Bool) -> String { open ? "Hide this turn’s steps" : "Show this turn’s steps" }
+    public static func turnSummary(_ count: Int) -> String { "This turn · \(count) \(count == 1 ? "step" : "steps")" }
 
-    package struct Row: Equatable, Sendable {
-        package var symbol: String
-        package var text: String
-        package var elapsed: String?
-        package var agentsBadge: String?
-        package var warning: Bool
-        package var pulse: Bool
-        package var retry: Bool
-        package var agentsEnabled: Bool
+    public struct Row: Equatable, Sendable {
+        public var symbol: String
+        public var text: String
+        public var elapsed: String?
+        public var agentsBadge: String?
+        public var warning: Bool
+        public var pulse: Bool
+        public var retry: Bool
+        public var agentsEnabled: Bool
         /// false: no turn runs, the row holds only the 👥 button (no text or timer).
-        package var activity = true
+        public var activity = true
         /// "person.2" for working agents (or unknown), "checkmark" when only finished ones remain.
-        package var agentsSymbol = "person.2"
+        public var agentsSymbol = "person.2"
         /// The badge counts finished agents only: tertiary on a faint capsule.
-        package var agentsDimmed = false
+        public var agentsDimmed = false
         /// The steps disclosure: "chevron.up" closed, "chevron.down" open, nil without a steps slot.
-        package var chevron: String?
+        public var chevron: String?
     }
-    package struct StepRow: Equatable, Identifiable, Sendable {
-        package var id: String
-        package var symbol: String
-        package var summary: String
+    public struct StepRow: Equatable, Identifiable, Sendable {
+        public var id: String
+        public var symbol: String
+        public var summary: String
         /// The step's duration, or the running timer; nil without its times.
-        package var time: String?
-        package var running: Bool
+        public var time: String?
+        public var running: Bool
     }
-    package struct StepsSlot: Equatable, Sendable {
-        package var rows: [StepRow]
+    public struct StepsSlot: Equatable, Sendable {
+        public var rows: [StepRow]
         /// "This turn · N steps", counting the steps the cap cut.
-        package var title: String
+        public var title: String
     }
-    package struct AgentRow: Equatable, Identifiable, Sendable {
-        package var agent: SessionLiveAgent
-        package var title: String
-        package var action: String
-        package var elapsed: String?
-        package var id: String { agent.id }
+    public struct AgentRow: Equatable, Identifiable, Sendable {
+        public var agent: SessionLiveAgent
+        public var title: String
+        public var action: String
+        public var elapsed: String?
+        public var id: String { agent.id }
         /// The list row's first line: the agent's type (else the title).
-        package var heading: String { agent.ref.type.isEmpty ? title : agent.ref.type }
+        public var heading: String { agent.ref.type.isEmpty ? title : agent.ref.type }
         /// The list row's second line: the task, then what it does now.
-        package var subtitle: String { heading == title ? action : "\(title) · \(action)" }
+        public var subtitle: String { heading == title ? action : "\(title) · \(action)" }
     }
-    package struct DoneRow: Equatable, Identifiable, Sendable {
-        package var ref: SessionFeedSubagent
-        package var title: String
-        package var subtitle: String
-        package var id: String
+    public struct DoneRow: Equatable, Identifiable, Sendable {
+        public var ref: SessionFeedSubagent
+        public var title: String
+        public var subtitle: String
+        public var id: String
     }
-    package struct AgentsList: Equatable, Sendable {
-        package enum State: Equatable, Sendable { case ready, loading, error }
-        package var state: State
-        package var working: [AgentRow]
+    public struct AgentsList: Equatable, Sendable {
+        public enum State: Equatable, Sendable { case ready, loading, error }
+        public var state: State
+        public var working: [AgentRow]
         /// Said under WORKING when it has no rows; nil when rows show.
-        package var workingNote: String?
-        package var done: [DoneRow]
-        package var doneTitle: String
+        public var workingNote: String?
+        public var done: [DoneRow]
+        public var doneTitle: String
         /// Done opens by itself when nothing is known to work (C2).
-        package var doneOpenByDefault: Bool
+        public var doneOpenByDefault: Bool
     }
-    package static func row(
+    public static func row(
         snapshot: SessionFeedLive?,
         error: String?,
         loaded: Bool,
@@ -144,7 +144,7 @@ package enum WorkchatLivePresentation {
     /// stale read, the turn ended, or no steps yet. Stricter than `row`: a
     /// snapshot without `observedAt` hides the list even before `loaded`,
     /// since its freshness cannot be told.
-    package static func stepsSlot(snapshot: SessionFeedLive?, error: String?, working: Bool, now: Date) -> StepsSlot? {
+    public static func stepsSlot(snapshot: SessionFeedLive?, error: String?, working: Bool, now: Date) -> StepsSlot? {
         guard working, error == nil, let snapshot, snapshot.turnActive, !snapshot.steps.isEmpty,
               let observed = snapshot.observedAt, now.timeIntervalSince(observed) < staleAfter else { return nil }
         let rows = snapshot.steps.map { step in
@@ -156,15 +156,6 @@ package enum WorkchatLivePresentation {
                            time: time, running: running)
         }
         return StepsSlot(rows: rows, title: turnSummary(snapshot.steps.count + snapshot.stepsMore))
-    }
-
-    /// Busy for the live line and the 👥 list: the turn works, background
-    /// agents do, or the agent waits on an approval (a permission card pauses
-    /// the turn, it does not end it). Not busy = idle: a missing snapshot then
-    /// means no agents, and the live read stops.
-    package static func busy(_ state: SessionSwitcherPresentation.State?) -> Bool {
-        guard let state, state.live else { return false }
-        return [.working, .background, .needsApproval].contains(state.kind)
     }
 
     private static func workingRow(
@@ -205,21 +196,21 @@ package enum WorkchatLivePresentation {
         return result
     }
     private static func workingText(_ snapshot: SessionFeedLive) -> String { working }
-    package static func agentsTitle(count: Int) -> String { "Running agents · \(count)" }
+    public static func agentsTitle(count: Int) -> String { "Running agents · \(count)" }
     /// The 👥 button's help and accessibility label, naming its count; nil without a button.
-    package static func agentsLabel(_ row: Row) -> String? {
+    public static func agentsLabel(_ row: Row) -> String? {
         guard let badge = row.agentsBadge else { return nil }
         if badge == "?" { return "\(listTitle) · status unavailable" }
         return row.agentsDimmed ? "\(listTitle) · Done \(badge)" : "\(listTitle) · \(badge) working"
     }
-    package static func agentsTitle(snapshot: SessionFeedLive?) -> String {
+    public static func agentsTitle(snapshot: SessionFeedLive?) -> String {
         guard let snapshot, snapshot.agentsState == "known",
               !snapshot.agents.contains(where: { $0.ref.status == "unknown" }) else { return "Running agents · unknown" }
         let count = snapshot.agents.filter { $0.ref.status != "finished" }.count + snapshot.agentsMore
         return agentsTitle(count: count)
     }
-    package static func moreAgents(_ count: Int) -> String { "\(count) more agents" }
-    package static func agentRows(_ snapshot: SessionFeedLive?, error: String? = nil, now: Date) -> [AgentRow] {
+    public static func moreAgents(_ count: Int) -> String { "\(count) more agents" }
+    public static func agentRows(_ snapshot: SessionFeedLive?, error: String? = nil, now: Date) -> [AgentRow] {
         guard error == nil, let snapshot, let observed = snapshot.observedAt,
               now.timeIntervalSince(observed) < staleAfter else { return [] }
         return snapshot.agents.filter { $0.ref.status != "finished" }.map {
@@ -233,7 +224,7 @@ package enum WorkchatLivePresentation {
     /// the last good read survives a later failure (`feedLoaded`). `idle`: the
     /// session runs no turn; otherwise a missing or stale snapshot means the
     /// agents are not observed, never that none works.
-    package static func agentsList(
+    public static func agentsList(
         snapshot: SessionFeedLive?,
         error: String?,
         feedLoaded: Bool,
@@ -268,10 +259,11 @@ package enum WorkchatLivePresentation {
             || snapshot.agents.contains { $0.ref.status != "finished" && $0.ref.status != "running" }
     }
 
-    /// The finished subagents among the feed's markers: `started_at` newest
-    /// first; undated ones after them, ties and undated in the CLI's order.
-    package static func done(from subagents: [SessionFeedEntry]) -> [SessionFeedSubagent] {
-        let finished = subagents.compactMap(\.subagent).filter { $0.status == "finished" }
+    /// The finished subagents among the feed's markers' subagents:
+    /// `started_at` newest first; undated ones after them, ties and undated in
+    /// the CLI's order.
+    public static func done(from subagents: [SessionFeedSubagent]) -> [SessionFeedSubagent] {
+        let finished = subagents.filter { $0.status == "finished" }
         let ordered = finished.enumerated().sorted { lhs, rhs in
             switch (lhs.element.startedAt, rhs.element.startedAt) {
             case let (l?, r?) where l != r: l > r
@@ -283,7 +275,7 @@ package enum WorkchatLivePresentation {
         return ordered.map(\.element)
     }
 
-    package static func elapsed(from start: Date?, now: Date) -> String? {
+    public static func elapsed(from start: Date?, now: Date) -> String? {
         guard let start else { return nil }
         let seconds = max(0, Int(now.timeIntervalSince(start)))
         return String(format: "%d:%02d", seconds / 60, seconds % 60)

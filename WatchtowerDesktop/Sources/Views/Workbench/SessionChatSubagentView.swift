@@ -2,6 +2,7 @@ import ChatUI
 import ChatWire
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// A subagent's run opened in place in the session chat pane: the task it
 /// was given, what it said on the way and its final report. Read when it

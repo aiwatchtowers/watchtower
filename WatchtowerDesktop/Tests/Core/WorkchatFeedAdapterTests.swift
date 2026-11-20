@@ -2,6 +2,7 @@ import ChatWire
 import Foundation
 @testable import WatchtowerCore
 import XCTest
+import WatchtowerChatText
 
 /// Workchat's session feed reaches ChatUI's feed: the owner's lines and ask answers as the owner's, the agent's text as
 /// the answer, everything else as `system` lines the Mac draws itself.

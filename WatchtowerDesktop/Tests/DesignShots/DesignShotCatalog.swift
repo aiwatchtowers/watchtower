@@ -7,6 +7,7 @@ import XCTest
 @testable import WatchtowerDesktop
 @testable import WatchtowerCore
 import WatchtowerTestSupport
+import WatchtowerChatText
 
 /// One rendered shot of the Desktop design kit's reference screens (style
 /// guide #719, spec §6): `name` is the PNG's file stem, `size` the fixed

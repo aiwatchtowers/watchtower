@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// The existing caption slot: no new panel or feed entry. The 👥 list
 /// appears only by an explicit click and never changes the chat's layout.

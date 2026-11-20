@@ -3,6 +3,7 @@ import DesignKit
 import SwiftUI
 import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerChatText
 
 /// Workchat agents and live steps spec (#2065), design only: the 👥 list with
 /// Working and Done, the live steps disclosure and the feed without agent

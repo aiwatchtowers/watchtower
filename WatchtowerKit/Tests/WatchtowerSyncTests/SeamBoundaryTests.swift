@@ -39,4 +39,23 @@ final class SeamBoundaryTests: XCTestCase {
         }
         XCTAssertGreaterThan(checked, 0)
     }
+
+    /// The Workchat live model is the phone Kit's (#2112): WatchtowerKit links
+    /// WatchtowerChatText, the model-free sync core the Desktop takes never does.
+    func testWatchtowerSyncNeverImportsChatText() throws {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<3 { root.deleteLastPathComponent() }
+        let sources = root.appendingPathComponent("Sources/WatchtowerSync")
+        let walker = try XCTUnwrap(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
+        var checked = 0
+        for case let url as URL in walker where url.pathExtension == "swift" {
+            checked += 1
+            let text = try String(contentsOf: url, encoding: .utf8)
+            for line in text.split(separator: "\n")
+            where line.range(of: #"^(@\w+ )*import (\w+ )?WatchtowerChatText\b"#, options: .regularExpression) != nil {
+                XCTFail("\(url.path) imports WatchtowerChatText: \(line)")
+            }
+        }
+        XCTAssertGreaterThan(checked, 0)
+    }
 }

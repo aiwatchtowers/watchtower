@@ -3,18 +3,18 @@ import Foundation
 /// What the live line under the Workchat feed says (pure). The line is never
 /// an entry: it shows the agent's open tool call, "Agents working" or
 /// "Thinking…", and nothing while the agent is idle.
-package enum WorkchatActivityPresenter {
-    package struct Line: Equatable {
-        package let symbol: String
-        package let text: String
+public enum WorkchatActivityPresenter {
+    public struct Line: Equatable {
+        public let symbol: String
+        public let text: String
         /// The timer counts from here; nil = no timer.
-        package let since: Date?
+        public let since: Date?
     }
 
     /// nil = no line. `working`: `SessionControl.isWorking`; `background`: the
     /// state kind is Agents working; `stateAt`: the status stamp (Thinking…
     /// counts from it); `lastAgentAt`: the newest agent entry's `at`.
-    package static func line(
+    public static func line(
         activity: SessionFeedActivity?,
         working: Bool,
         background: Bool,
@@ -44,7 +44,7 @@ package enum WorkchatActivityPresenter {
 
     /// A subagent's own line: only while the session works and this
     /// subagent's marker says `running`.
-    package static func subagentLine(
+    public static func subagentLine(
         activity: SessionFeedActivity?,
         sessionWorking: Bool,
         subagentStatus: String,
@@ -55,7 +55,7 @@ package enum WorkchatActivityPresenter {
              runningSubagents: 0, stateAt: stateAt, lastAgentAt: lastAgentAt)
     }
 
-    package static func symbol(for tool: String) -> String {
+    public static func symbol(for tool: String) -> String {
         switch tool {
         case "Bash": "terminal"
         case "Edit", "Write", "MultiEdit", "NotebookEdit": "pencil"
