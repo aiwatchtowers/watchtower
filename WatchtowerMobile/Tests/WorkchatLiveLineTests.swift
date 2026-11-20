@@ -5,11 +5,13 @@ import XCTest
 @testable import WatchtowerMobile
 
 /// The phone's live line and the turn's steps (#2112 spec §4, §5): one case per row of §4's table, the tower's
-/// freshness, a card standing in, the steps toggle and its closing, Retry, and the record that counts as arrived.
+/// freshness, a card standing in, the steps toggle and its closing, a subagent's line, Retry, and the record that
+/// answers this opening (`open_id`).
 @MainActor
 final class WorkchatLiveLineTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
     private var stateAt: Date { now.addingTimeInterval(-194) }
+    private let route = SessionChatRoute(sessionID: 10, agentID: nil)
 
     private func live(conversation: String = "c1", turnActive: Bool = true, current: Bool = true, stepCount: Int = 2) -> SessionFeedLive {
         let steps = (0..<stepCount).map {
@@ -23,8 +25,20 @@ final class WorkchatLiveLineTests: XCTestCase {
         )
     }
 
-    private func chat(version: Int? = 1, live: SessionFeedLive? = nil, error: String? = nil) -> SessionChat {
-        SessionChat(sessionID: 10, live: true, entries: [], activityLive: live, liveVersion: version, liveError: error)
+    private func chat(version: Int? = 1, live: SessionFeedLive? = nil, error: String? = nil, openID: String? = nil) -> SessionChat {
+        SessionChat(sessionID: 10, live: true, entries: [], activityLive: live, liveVersion: version, liveError: error, openID: openID)
+    }
+
+    private func inputs(
+        _ chat: SessionChat?,
+        arrived: Bool = true,
+        working: Bool = true,
+        staleSince: Date? = nil,
+        card: Bool = false,
+        stepsOpen: Bool = false
+    ) -> WorkchatLiveLine.Inputs {
+        WorkchatLiveLine.Inputs(chat: chat, arrivedSinceOpen: arrived, working: working, stateAt: stateAt, staleSince: staleSince,
+                                cardShown: card, stepsOpen: stepsOpen)
     }
 
     private func row(
@@ -33,18 +47,15 @@ final class WorkchatLiveLineTests: XCTestCase {
         working: Bool = true,
         staleSince: Date? = nil,
         card: Bool = false,
-        stepsOpen: Bool = false,
-        at: Date? = nil
+        stepsOpen: Bool = false
     ) -> WorkchatLivePresentation.Row? {
         WorkchatLiveLine.row(
-            chat: chat, arrivedSinceOpen: arrived, working: working, stateAt: stateAt, staleSince: staleSince,
-            cardShown: card, stepsOpen: stepsOpen, now: at ?? now
+            inputs(chat, arrived: arrived, working: working, staleSince: staleSince, card: card, stepsOpen: stepsOpen), now: now
         )
     }
 
     private func steps(_ chat: SessionChat?, open: Bool = true, card: Bool = false) -> WorkchatLivePresentation.StepsSlot? {
-        WorkchatLiveLine.steps(chat: chat, arrivedSinceOpen: true, working: true, staleSince: nil, cardShown: card,
-                               stepsOpen: open, now: now)
+        WorkchatLiveLine.steps(inputs(chat, card: card, stepsOpen: open), now: now)
     }
 
     private func heartbeat(_ at: Date, stuckSince: Date? = nil) -> HeartbeatPayload {
@@ -55,23 +66,14 @@ final class WorkchatLiveLineTests: XCTestCase {
         )
     }
 
-    func testAStuckKindAloneDoesNotAgeTheLine() throws {
-        let beat = now.addingTimeInterval(-5)
-        let payload = heartbeat(beat, stuckSince: now.addingTimeInterval(-ReplicaFreshness.stuckAfter - 60))
-        let freshness = try XCTUnwrap(ReplicaFreshness(heartbeat: payload, linked: true, relayUnansweredSince: nil, now: now))
-        XCTAssertEqual(freshness.state, .stuck)
-        XCTAssertNil(WorkchatLiveLine.staleSince(freshness, heartbeat: payload))
-        XCTAssertNil(WorkchatLiveLine.staleSince(nil, heartbeat: payload))
-    }
-
     private func session(_ overrides: [String: Any]) throws -> TerminalSessionState {
         try mirror(TerminalSessionState.self, DemoSeed.JSON.session(10, workbench: DemoSeed.acmeID, overrides))
     }
 
     // MARK: - Spec §4's table
 
-    func testNoRecordSinceOpenSaysLoadingWithTheStateTimer() throws {
-        for cached in [nil, chat(live: live())] {
+    func testNoRecordForThisOpeningSaysLoadingWithTheStateTimer() throws {
+        for cached in [nil, chat(live: live(), openID: "earlier")] {
             let line = try XCTUnwrap(row(cached, arrived: false))
             XCTAssertEqual(line.text, "Loading activity…")
             XCTAssertEqual(line.elapsed, "3:14")
@@ -80,8 +82,15 @@ final class WorkchatLiveLineTests: XCTestCase {
         }
     }
 
-    func testAnOlderHubShowsNoLine() {
+    func testAnOlderHubShowsNoLineEvenBehindAStaleTower() {
         XCTAssertNil(row(chat(version: nil)))
+        XCTAssertNil(row(chat(version: nil), staleSince: now.addingTimeInterval(-2_400)))
+        XCTAssertNil(row(chat(version: nil), arrived: false, staleSince: now.addingTimeInterval(-2_400)))
+    }
+
+    func testNoRecordBehindAStaleTowerShowsNoLine() {
+        XCTAssertNil(row(nil, arrived: false, staleSince: now.addingTimeInterval(-2_400)),
+                     "nothing says the hub is live-capable yet")
     }
 
     func testALiveBlockShowsItsRunningStep() throws {
@@ -141,6 +150,14 @@ final class WorkchatLiveLineTests: XCTestCase {
         XCTAssertFalse(WorkchatLiveLine.working(try session(["state_kind": "working", "live": false])))
     }
 
+    func testASubagentWorksUntilItsOwnTurnEnds() throws {
+        let busy = try session(["state_kind": "working"])
+        XCTAssertTrue(WorkchatLiveLine.working(busy, subagent: chat(live: live())))
+        XCTAssertTrue(WorkchatLiveLine.working(busy, subagent: nil), "no record yet: Loading while the session works")
+        XCTAssertFalse(WorkchatLiveLine.working(busy, subagent: chat(live: live(turnActive: false))))
+        XCTAssertFalse(WorkchatLiveLine.working(try session(["state_kind": "waiting_on_ask"]), subagent: chat(live: live())))
+    }
+
     // MARK: - Time, freshness, cards
 
     func testAStepStartedAfterNowCountsFromZero() throws {
@@ -149,15 +166,15 @@ final class WorkchatLiveLineTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(row(chat(live: block))).elapsed, "0:00")
     }
 
-    func testAStaleTowerSaysOutOfDateWithRetryAndNoTimer() throws {
+    func testAStaleTowerSaysOutOfDateByTheRealAgeWithRetryAndNoTimer() throws {
         let beat = now.addingTimeInterval(-2_400)
         let freshness = try XCTUnwrap(ReplicaFreshness(heartbeat: heartbeat(beat), linked: true, relayUnansweredSince: nil, now: now))
         XCTAssertEqual(freshness.state, .stale)
-        let since = WorkchatLiveLine.staleSince(freshness, heartbeat: heartbeat(beat))
-        XCTAssertEqual(since, beat)
-        for (cached, arrived) in [(chat(live: live()), true), (nil, false), (chat(live: nil), true)] as [(SessionChat?, Bool)] {
-            let line = try XCTUnwrap(row(cached, arrived: arrived, staleSince: since))
-            XCTAssertEqual(line.text, "Activity out of date · 2400s ago")
+        XCTAssertEqual(freshness.staleSince, beat)
+        let records: [(SessionChat?, Bool)] = [(chat(live: live()), true), (chat(live: live(), openID: "earlier"), false), (chat(live: nil), true)]
+        for (cached, arrived) in records {
+            let line = try XCTUnwrap(row(cached, arrived: arrived, staleSince: freshness.staleSince))
+            XCTAssertEqual(line.text, "Activity out of date · 40m ago")
             XCTAssertEqual(line.symbol, "clock")
             XCTAssertNil(line.elapsed)
             XCTAssertFalse(line.pulse)
@@ -166,15 +183,17 @@ final class WorkchatLiveLineTests: XCTestCase {
         }
     }
 
-    func testRelayUnansweredWithARecentHeartbeatIsStillOutOfDate() throws {
-        let beat = now.addingTimeInterval(-5)
-        let freshness = try XCTUnwrap(ReplicaFreshness(
-            heartbeat: heartbeat(beat), linked: true, relayUnansweredSince: now.addingTimeInterval(-90), now: now
-        ))
-        XCTAssertEqual(freshness.state, .offline)
-        let line = try XCTUnwrap(row(chat(live: live()), staleSince: WorkchatLiveLine.staleSince(freshness, heartbeat: heartbeat(beat))))
-        XCTAssertEqual(line.text, "Activity out of date · 10s ago")
-        XCTAssertNil(line.elapsed)
+    func testTheTowerFreshnessIsTheReplicaFreshnessLines() throws {
+        let beat = now.addingTimeInterval(-90)
+        let offline = TowerFreshness(heartbeat: heartbeat(beat), linked: true, relayUnansweredSince: now.addingTimeInterval(-90))
+        XCTAssertEqual(offline.freshness(at: now)?.state, .offline)
+        XCTAssertEqual(offline.staleSince(at: now), beat)
+        let stuck = TowerFreshness(heartbeat: heartbeat(now, stuckSince: now.addingTimeInterval(-ReplicaFreshness.stuckAfter - 60)), linked: true)
+        XCTAssertEqual(stuck.freshness(at: now)?.state, .stuck)
+        XCTAssertNil(stuck.staleSince(at: now), "a kind stuck alone does not age the line")
+        XCTAssertNil(TowerFreshness(heartbeat: heartbeat(now), linked: true).staleSince(at: now))
+        XCTAssertEqual(WorkchatLiveLine.warningToneUse.tone, ReplicaFreshness.tone)
+        XCTAssertEqual(WorkchatLiveLine.warningToneUse.role, .status)
     }
 
     func testACardHidesTheLine() {
@@ -185,15 +204,19 @@ final class WorkchatLiveLineTests: XCTestCase {
 
     // MARK: - Steps
 
+    private func watch(_ block: SessionFeedLive?, working: Bool = true, card: Bool = false) -> WorkchatLiveLine.StepsWatch {
+        WorkchatLiveLine.StepsWatch(chat: chat(live: block), working: working, cardShown: card)
+    }
+
     func testStepsAreClosedByDefaultAndOpenOnATap() throws {
         let memory = WorkchatStepsMemory()
-        XCTAssertFalse(memory.isOpen(10))
-        XCTAssertNil(steps(chat(live: live()), open: memory.isOpen(10)))
+        XCTAssertFalse(memory.isOpen(route))
+        XCTAssertNil(steps(chat(live: live()), open: memory.isOpen(route)))
 
-        memory.toggle(10, conversation: "c1")
-        XCTAssertTrue(memory.isOpen(10))
-        XCTAssertFalse(memory.isOpen(11), "the toggle is per session")
-        let slot = try XCTUnwrap(steps(chat(live: live()), open: memory.isOpen(10)))
+        memory.toggle(route, watch(live()))
+        XCTAssertTrue(memory.isOpen(route))
+        XCTAssertFalse(memory.isOpen(SessionChatRoute(sessionID: 11, agentID: nil)), "the toggle is per chat")
+        let slot = try XCTUnwrap(steps(chat(live: live()), open: memory.isOpen(route)))
         XCTAssertEqual(slot.title, "This turn · 6 steps")
         XCTAssertEqual(slot.rows.last?.time, "0:12")
         XCTAssertTrue(slot.rows.last?.running == true)
@@ -204,32 +227,64 @@ final class WorkchatLiveLineTests: XCTestCase {
         XCTAssertEqual(line.elapsed, "1:47")
         XCTAssertEqual(line.chevron, "chevron.down")
 
-        memory.toggle(10, conversation: "c1")
-        XCTAssertFalse(memory.isOpen(10))
+        memory.toggle(route, watch(live()))
+        XCTAssertFalse(memory.isOpen(route))
     }
 
-    func testStepsCloseAtTurnEndStopCardAndANewConversation() {
-        let open = WorkchatLiveLine.StepsWatch(chat: chat(live: live()), working: true, cardShown: false)
-        var turnOver = open
-        turnOver.turnOver = true
-        var idle = open
-        idle.working = false
-        var card = open
-        card.cardShown = true
-        var cleared = open
-        cleared.conversation = "c2"
-        let unread = WorkchatLiveLine.StepsWatch(chat: chat(live: nil, error: "x"), working: true, cardShown: false)
+    func testStepsCloseAtTurnEndCardNewConversationAndNewTurn() {
+        var newTurn = live()
+        newTurn.turnAt = now.addingTimeInterval(-5)
+        let cases: [(WorkchatLiveLine.StepsWatch, Bool, String)] = [
+            (watch(live()), false, "the same turn"),
+            (WorkchatLiveLine.StepsWatch(chat: chat(error: "x"), working: true, cardShown: false), false, "a failed read hides it"),
+            (watch(live(turnActive: false)), true, "turn end"),
+            (watch(live(), working: false), true, "the session stopped"),
+            (watch(live(), card: true), true, "a card"),
+            (watch(live(conversation: "c2")), true, "a new conversation"),
+            (watch(newTurn), true, "a new turn")
+        ]
         let memory = WorkchatStepsMemory()
-
-        for (watch, closes) in [(open, false), (unread, false), (turnOver, true), (idle, true), (card, true), (cleared, true)] {
-            memory.toggle(10, conversation: "c1")
-            memory.note(10, watch)
-            XCTAssertEqual(memory.isOpen(10), !closes, "\(watch)")
-            memory.close(10)
+        for (next, closes, what) in cases {
+            memory.toggle(route, watch(live()))
+            memory.note(route, next)
+            XCTAssertEqual(memory.isOpen(route), !closes, what)
+            memory.close(route)
         }
-        memory.toggle(10, conversation: "c1")
-        memory.close(10)
-        XCTAssertFalse(memory.isOpen(10), "Stop closes it")
+    }
+
+    func testAConversationOrTurnAppearingLaterDoesNotClose() {
+        let memory = WorkchatStepsMemory()
+        var bare = live()
+        bare.conversation = ""
+        bare.turnAt = nil
+        var opened = watch(bare)
+        opened.conversation = nil
+        memory.toggle(route, opened)
+        memory.note(route, watch(live()))
+        XCTAssertTrue(memory.isOpen(route))
+    }
+
+    func testStopClosesTheStepsOnlyOnceTheStopIsAccepted() async {
+        struct Refused: Error {}
+        let memory = WorkchatStepsMemory()
+        memory.toggle(route, watch(live()))
+        do {
+            try await memory.close(route) { throw Refused() }
+            XCTFail("the refusal must reach the caller")
+        } catch {}
+        XCTAssertTrue(memory.isOpen(route), "a refused Stop leaves the steps open")
+        try? await memory.close(route) {}
+        XCTAssertFalse(memory.isOpen(route))
+    }
+
+    func testStepsOfRemovedSessionsArePruned() {
+        let memory = WorkchatStepsMemory()
+        let gone = SessionChatRoute(sessionID: 99, agentID: "a", toolUseID: "t")
+        memory.toggle(route, watch(live()))
+        memory.toggle(gone, watch(live()))
+        memory.prune(keeping: [10, 11])
+        XCTAssertTrue(memory.isOpen(route))
+        XCTAssertFalse(memory.isOpen(gone))
     }
 
     func testTheStringsComeFromTheSharedPresentation() {
@@ -239,29 +294,23 @@ final class WorkchatLiveLineTests: XCTestCase {
         XCTAssertEqual(WorkchatLivePresentation.retryTitle, "Retry")
         XCTAssertEqual(WorkchatLivePresentation.stepsToggleHint(open: false), "Show this turn’s steps")
         XCTAssertEqual(WorkchatLivePresentation.stepsToggleHint(open: true), "Hide this turn’s steps")
-        XCTAssertEqual(WorkchatLiveLine.warningTone, .red)
     }
 
-    // MARK: - Retry and the record since open
+    // MARK: - The record that answers this opening
 
-    /// A requester that never ticks, recording each request.
+    /// A requester that never ticks, naming opens "o1", "o2", … and recording each request.
     private final class Sent {
-        var routes: [String] = []
+        var requests: [SessionChatRequest] = []
+        var next = 0
     }
 
-    private func requester(_ sent: Sent, now: @escaping () -> Date = Date.init) -> SessionChatRequester {
-        let send: (SessionChatRoute) async throws -> Void = { sent.routes.append("\($0.sessionID)") }
-        return SessionChatRequester(ticks: { AsyncStream { _ in } }, now: now, send: send)
-    }
-
-    func testRetryAsksTheHubAtOnce() async throws {
-        let sent = Sent()
-        let model = SessionChatViewModel(sessionID: 10, agentID: nil, store: try TestPhone.replica(), requester: requester(sent))
-        model.appeared()
-        try await poll({ sent.routes == ["10"] }, "no request on appear")
-        model.retry()
-        try await poll({ sent.routes == ["10", "10"] }, "Retry did not ask at once")
-        model.disappeared()
+    private func requester(_ sent: Sent, echoes: Bool = true) -> SessionChatRequester {
+        let send: (SessionChatRequest) async throws -> Void = { sent.requests.append($0) }
+        let newOpenID: () -> String = {
+            sent.next += 1
+            return "o\(sent.next)"
+        }
+        return SessionChatRequester(ticks: { AsyncStream { _ in } }, newOpenID: newOpenID, hubEchoesOpenID: echoes, send: send)
     }
 
     private func demoStore(_ transport: InMemoryCloudTransport) async throws -> ReplicaStore {
@@ -271,48 +320,90 @@ final class WorkchatLiveLineTests: XCTestCase {
         return store
     }
 
-    func testTheStoredRecordIsNotAnArrivalButTheNextOneIs() async throws {
-        let transport = InMemoryCloudTransport()
-        let store = try await demoStore(transport)
-        let model = SessionChatViewModel(sessionID: 10, agentID: nil, store: store, requester: requester(Sent()))
-        model.appeared()
-        try await poll({ model.chat != nil }, "the stored record never showed")
-        XCTAssertFalse(model.recordArrivedSinceOpen, "the record held from before is not the hub's answer")
-
-        var json = DemoSeed.workingChatPayload(now: Date())
-        json["live_error"] = "Activity unavailable"
+    private func publish(_ json: [String: Any], over transport: InMemoryCloudTransport, into store: ReplicaStore) async throws {
         try await TestPhone.hub(over: transport, .demo).save([
             try DemoSeed.record(kind: .sessionChat, id: 10, json: json, modifiedAt: Date())
         ])
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
-        try await poll({ model.recordArrivedSinceOpen }, "the new record did not count")
-        XCTAssertEqual(model.chat?.liveError, "Activity unavailable")
+    }
+
+    func testOnlyARecordEchoingThisOpeningEndsLoading() async throws {
+        let transport = InMemoryCloudTransport()
+        let store = try await demoStore(transport)
+        let sent = Sent()
+        let model = SessionChatViewModel(sessionID: 10, agentID: nil, store: store, requester: requester(sent))
+        var json = DemoSeed.workingChatPayload(now: Date())
+        json["open_id"] = "earlier"
+        try await publish(json, over: transport, into: store)
+
+        model.appeared()
+        try await poll({ model.chat?.openID == "earlier" && sent.requests.count == 1 }, "the stored record never showed")
+        XCTAssertEqual(model.openID, "o1")
+        XCTAssertEqual(sent.requests.first?.openID, "o1", "the request names this opening")
+        XCTAssertFalse(model.recordArrivedSinceOpen, "a record answering an earlier opening is not this one's")
+
+        json["open_id"] = "someone-else"
+        try await publish(json, over: transport, into: store)
+        try await poll({ model.chat?.openID == "someone-else" }, "the other record never showed")
+        XCTAssertFalse(model.recordArrivedSinceOpen)
+
+        json["open_id"] = "o1"
+        try await publish(json, over: transport, into: store)
+        try await poll({ model.recordArrivedSinceOpen }, "the echo did not end Loading")
+        model.disappeared()
+
+        // Reopened: the record held answers the last opening, not this one.
+        model.appeared()
+        XCTAssertEqual(model.openID, "o2")
+        XCTAssertFalse(model.recordArrivedSinceOpen, "a stored record after reopening stays Loading")
         model.disappeared()
     }
 
-    func testReopeningWithinTheHubsWatchTrustsTheHeldRecord() async throws {
+    func testAnOlderHubsRecordCountsAsArrived() async throws {
         let transport = InMemoryCloudTransport()
         let store = try await demoStore(transport)
-        var clock = Date()
-        let sent = Sent()
-        let requests = requester(sent) { clock }
-        let first = SessionChatViewModel(sessionID: 10, agentID: nil, store: store, requester: requests)
-        first.appeared()
-        try await poll({ sent.routes.count == 1 && first.chat != nil }, "no request")
-        first.disappeared()
+        var json = DemoSeed.workingChatPayload(now: Date())
+        json["open_id"] = nil
+        json["activity_live"] = nil
+        json["live_version"] = nil
+        try await publish(json, over: transport, into: store)
+        let model = SessionChatViewModel(sessionID: 10, agentID: nil, store: store, requester: requester(Sent()))
+        model.appeared()
+        try await poll({ model.chat != nil }, "the stored record never showed")
+        XCTAssertTrue(model.recordArrivedSinceOpen, "a hub that echoes no id answers as before")
+        model.disappeared()
+    }
 
-        clock += 60
-        let again = SessionChatViewModel(sessionID: 10, agentID: nil, store: store, requester: requests)
-        again.appeared()
-        try await poll({ again.chat != nil && sent.routes.count == 2 }, "the stored record never showed")
-        XCTAssertTrue(again.recordArrivedSinceOpen, "the watch opened a minute ago published every change")
-        again.disappeared()
+    func testTheDemoHoldsItsRecordsAsAnswered() async throws {
+        let transport = InMemoryCloudTransport()
+        let store = try await demoStore(transport)
+        let model = SessionChatViewModel(sessionID: 10, agentID: nil, store: store, requester: requester(Sent(), echoes: false))
+        model.appeared()
+        try await poll({ model.chat != nil }, "the stored record never showed")
+        XCTAssertTrue(model.recordArrivedSinceOpen)
+        model.disappeared()
+    }
 
-        clock += SessionChatRequester.queuedRequestFreshness + 60
-        let late = SessionChatViewModel(sessionID: 10, agentID: nil, store: store, requester: requests)
-        late.appeared()
-        try await poll({ late.chat != nil }, "the stored record never showed")
-        XCTAssertFalse(late.recordArrivedSinceOpen, "past the watch the held record may be old")
-        late.disappeared()
+    func testRetryGoesOutAtOnceUnderANewOpeningPastAQueuedRepeat() async throws {
+        let store = try makePoolStore()
+        let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
+        var next = 0
+        let requests = SessionChatRequester.sending(through: outbox, store: store, ticks: { AsyncStream { _ in } }, newOpenID: {
+            next += 1
+            return "o\(next)"
+        })
+        let model = SessionChatViewModel(sessionID: 10, agentID: nil, store: store, requester: requests)
+        func openIDs() -> [String] {
+            ((try? store.pendingActions()) ?? []).compactMap {
+                if case let .string(id) = $0.action.params["open_id"] { return id }
+                return nil
+            }
+        }
+        model.appeared()
+        try await poll({ openIDs() == ["o1"] }, "no request on appear")
+        model.retry()
+        XCTAssertEqual(model.openID, "o2")
+        try await poll({ openIDs().sorted() == ["o1", "o2"] }, "Retry waited behind the queued request")
+        model.disappeared()
     }
 }

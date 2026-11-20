@@ -5,9 +5,12 @@ import WatchtowerSync
 /// A subagent's chat (board #486), pushed from its row in the workchat:
 /// read-only, in the workchat's bubbles (mockup 3) — the lines the subagent
 /// was given right, its text left, its own subagents in the agents sheet. Opens scrolled to the newest entry. The session's own chat is the workchat
-/// (`WorkchatView`), the only one with a composer.
+/// (`WorkchatView`), the only one with a composer. While the subagent works,
+/// its own live line sits at the foot (#2112 L8).
 struct SessionChatView: View {
     static let screen = ChatScreen.subagent
+
+    @Environment(AppEnvironment.self) private var env
 
     let replica: WorkbenchReplicaModel
     private let store: ReplicaStore
@@ -36,6 +39,16 @@ struct SessionChatView: View {
             }
         }
         .background(Color(.systemBackground))
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let session = replica.snapshot.session(viewModel.sessionID) {
+                WorkchatLiveSection(route: route, inputs: { liveInputs(session, now: $0) }, steps: env.workchatSteps,
+                                    onRetry: viewModel.retry)
+                .background(PhoneSurface.page)
+            }
+        }
+        .onChange(of: stepsWatch) { _, watch in
+            if let watch { env.workchatSteps.note(route, watch) }
+        }
         .navigationTitle("Subagent")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -63,6 +76,27 @@ struct SessionChatView: View {
         }
         .onAppear { viewModel.appeared() }
         .onDisappear { viewModel.disappeared() }
+    }
+
+    private var route: SessionChatRoute {
+        SessionChatRoute(sessionID: viewModel.sessionID, agentID: viewModel.agentID, toolUseID: viewModel.toolUseID)
+    }
+
+    private var stepsWatch: WorkchatLiveLine.StepsWatch? {
+        replica.snapshot.session(viewModel.sessionID).map {
+            WorkchatLiveLine.StepsWatch(
+                chat: viewModel.chat, working: WorkchatLiveLine.working($0, subagent: viewModel.chat), cardShown: false
+            )
+        }
+    }
+
+    /// The subagent's line at `now`: its own record's live block (the sidechain), no card on this screen.
+    private func liveInputs(_ session: TerminalSessionState, now: Date) -> WorkchatLiveLine.Inputs {
+        WorkchatLiveLine.Inputs(
+            chat: viewModel.chat, arrivedSinceOpen: viewModel.recordArrivedSinceOpen,
+            working: WorkchatLiveLine.working(session, subagent: viewModel.chat), stateAt: session.stateAt,
+            staleSince: env.towerFreshness.staleSince(at: now), stepsOpen: env.workchatSteps.isOpen(route)
+        )
     }
 
     /// The chat's subagents, built once per render for the button and the sheet.

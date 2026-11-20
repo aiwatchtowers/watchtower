@@ -147,8 +147,9 @@ struct WorkchatView: View {
         }
         .onChange(of: lines, initial: true) { _, rows in chat.noteOutgoing(rows.compactMap(SessionChatViewModel.Outgoing.init)) }
         .onChange(of: session.map { stepsWatch($0, model) }, initial: true) { _, watch in
-            if let watch { env.workchatSteps.note(sessionID, watch) }
+            if let watch { env.workchatSteps.note(route, watch) }
         }
+        .onChange(of: replica.snapshot.sessions.map(\.id)) { _, ids in env.workchatSteps.prune(keeping: Set(ids)) }
         .onAppear {
             chat.appeared()
             if let alertScreen { env.navigation.screenAppeared(alertScreen) }
@@ -186,7 +187,7 @@ struct WorkchatView: View {
             session: session, chat: chat.chat, snapshot: replica.snapshot, input: input(session, now: now),
             permission: PermissionCardModel.card(for: session, in: replica.snapshot, access: permissions, now: now),
             mac: env.macReachability(now: now), now: now,
-            relay: (env.linkedDevice != nil, env.activeSession.relayUnansweredSince),
+            tower: env.towerFreshness,
             sentRequestID: permissions.sentRequestID, finishDelivery: env.sessionInputs.finishDeliveries[session.id]
         )
     }
@@ -360,46 +361,21 @@ struct WorkchatView: View {
         WorkchatLiveLine.StepsWatch(chat: chat.chat, working: WorkchatLiveLine.working(session), cardShown: cardShown(model))
     }
 
-    /// When the tower stopped sending, at `now`; nil while it sends.
-    private func staleSince(_ now: Date) -> Date? {
-        let heartbeat = replica.snapshot.heartbeat
-        let freshness = ReplicaFreshness(
-            heartbeat: heartbeat, linked: env.linkedDevice != nil, relayUnansweredSince: env.activeSession.relayUnansweredSince, now: now
-        )
-        return WorkchatLiveLine.staleSince(freshness, heartbeat: heartbeat)
-    }
+    private var route: SessionChatRoute { SessionChatRoute(sessionID: sessionID, agentID: nil) }
 
-    /// A record came since the screen opened; the demo's records stand for the hub's answer.
-    private var arrived: Bool { chat.recordArrivedSinceOpen || env.backend == .inMemoryDemo }
-
-    /// The live line at `now`.
-    private func liveRow(_ session: TerminalSessionState, _ model: WorkchatModel, now: Date) -> WorkchatLivePresentation.Row? {
-        WorkchatLiveLine.row(
-            chat: chat.chat, arrivedSinceOpen: arrived,
-            working: WorkchatLiveLine.working(session), stateAt: session.stateAt, staleSince: staleSince(now), cardShown: cardShown(model),
-            stepsOpen: env.workchatSteps.isOpen(sessionID), now: now
+    /// What the live line reads at `now`.
+    private func liveInputs(_ session: TerminalSessionState, _ model: WorkchatModel, now: Date) -> WorkchatLiveLine.Inputs {
+        WorkchatLiveLine.Inputs(
+            chat: chat.chat, arrivedSinceOpen: chat.recordArrivedSinceOpen, working: WorkchatLiveLine.working(session),
+            stateAt: session.stateAt, staleSince: env.towerFreshness.staleSince(at: now), cardShown: cardShown(model),
+            stepsOpen: env.workchatSteps.isOpen(route)
         )
     }
 
     /// The line and its steps; nothing, and no timer, while no line shows.
-    @ViewBuilder
     private func live(_ session: TerminalSessionState, _ model: WorkchatModel) -> some View {
-        if liveRow(session, model, now: .now) != nil {
-            if env.workchatSteps.isOpen(sessionID) {
-                WorkchatStepsSlotView { now in
-                    WorkchatLiveLine.steps(
-                        chat: chat.chat, arrivedSinceOpen: arrived,
-                        working: WorkchatLiveLine.working(session), staleSince: staleSince(now), cardShown: cardShown(model),
-                        stepsOpen: true, now: now
-                    )
-                }
-            }
-            WorkchatLiveLineView(
-                row: { liveRow(session, model, now: $0) },
-                onToggleSteps: { env.workchatSteps.toggle(sessionID, conversation: chat.chat?.activityLive?.conversation) },
-                onRetry: { chat.retry() }
-            )
-        }
+        WorkchatLiveSection(route: route, inputs: { liveInputs(session, model, now: $0) }, steps: env.workchatSteps,
+                            onRetry: chat.retry)
     }
 
     @ViewBuilder
@@ -486,8 +462,7 @@ struct WorkchatView: View {
     }
 
     private func stop() {
-        env.workchatSteps.close(sessionID)
-        perform { try await env.sessionStarts.stop(sessionID: sessionID) }
+        perform { try await env.workchatSteps.close(route) { _ = try await env.sessionStarts.stop(sessionID: sessionID) } }
     }
 
     private func cancelLine(_ row: PendingAction) {

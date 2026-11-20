@@ -375,6 +375,13 @@ final class AppEnvironment {
     var boardWriter: BoardWriter { activeSession.boardWriter }
     var askDrafts: AskDraftStore { activeSession.askDrafts }
     var workchatSteps: WorkchatStepsMemory { activeSession.workchatSteps }
+    /// What `ReplicaFreshness` reads for the active hub, for a view that re-judges the tower on its own clock.
+    var towerFreshness: TowerFreshness {
+        TowerFreshness(
+            heartbeat: workbenchReplica.snapshot.heartbeat, linked: linkedDevice != nil,
+            relayUnansweredSince: activeSession.relayUnansweredSince
+        )
+    }
     var askAnswerer: AskAnswerer { activeSession.askAnswerer }
     var sessionStarts: SessionStarter { activeSession.sessionStarts }
     var sessionInputs: SessionInputSender { activeSession.sessionInputs }

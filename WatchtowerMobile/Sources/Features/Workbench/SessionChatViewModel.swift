@@ -22,10 +22,24 @@ struct SessionChatRoute: Hashable {
     }
 }
 
+/// One `session_chat_request`: the chat and the opening of its screen it
+/// answers (`open_id`, #2112 C9).
+struct SessionChatRequest: Equatable {
+    let route: SessionChatRoute
+    /// New on each open (and on Retry), the same on that open's repeats.
+    let openID: String
+
+    var sessionID: Int64 { route.sessionID }
+    var agentID: String? { route.agentID }
+    var toolUseID: String? { route.toolUseID }
+}
+
 /// Asks the Mac to publish a session's chat (`session_chat_request`): at
 /// once on `start`, then every 60 s until `stop`. The Mac watches a chat for
 /// five minutes after each request and publishes it only while watched, so
-/// the repeat keeps a screen that stays open fed (FEED-05).
+/// the repeat keeps a screen that stays open fed (FEED-05). Each start names
+/// the opening with a new `open_id`; the hub answers it with one record that
+/// echoes the id, changed or not.
 @MainActor
 final class SessionChatRequester {
     static let interval: TimeInterval = 60
@@ -33,40 +47,46 @@ final class SessionChatRequester {
     /// minute short of the Mac's five-minute watch.
     nonisolated static let queuedRequestFreshness: TimeInterval = 240
 
-    private let send: (SessionChatRoute) async throws -> Void
+    private let send: (SessionChatRequest) async throws -> Void
     private let ticks: () -> AsyncStream<Void>
-    private let now: () -> Date
+    private let newOpenID: () -> String
+    /// false for the demo, whose records no hub answers: a record held then
+    /// counts as this opening's.
+    let hubEchoesOpenID: Bool
     private var loop: Task<Void, Never>?
-    private var running: SessionChatRoute?
-    /// When each chat's last request went out, while the app runs.
-    private var sentAt: [SessionChatRoute: Date] = [:]
+    private var running: SessionChatRequest?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "SessionChatRequester")
 
     /// `ticks` yields once per repeat; the default waits `interval` between
     /// yields, tests feed their own.
     init(
         ticks: @escaping () -> AsyncStream<Void> = SessionChatRequester.clockTicks,
-        now: @escaping () -> Date = Date.init,
-        send: @escaping (SessionChatRoute) async throws -> Void
+        newOpenID: @escaping () -> String = { UUID().uuidString },
+        hubEchoesOpenID: Bool = true,
+        send: @escaping (SessionChatRequest) async throws -> Void
     ) {
         self.ticks = ticks
-        self.now = now
+        self.newOpenID = newOpenID
+        self.hubEchoesOpenID = hubEchoesOpenID
         self.send = send
     }
 
     /// The app's requester: one idempotent action through the outbox, the
-    /// session's own record as its entity. A request for the same chat that
-    /// still waits in the outbox (the Mac was away) is not queued again: the
-    /// Mac would otherwise see a backlog of repeats once it is back.
+    /// session's own record as its entity. A repeat of a request that still
+    /// waits in the outbox (the Mac was away) is not queued again: the Mac
+    /// would otherwise see a backlog of repeats once it is back. A new open
+    /// (or Retry) carries a new `open_id`, so it always goes out.
     static func sending(
         through outbox: ActionOutbox,
         store: ReplicaStore,
-        ticks: @escaping () -> AsyncStream<Void> = SessionChatRequester.clockTicks
+        ticks: @escaping () -> AsyncStream<Void> = SessionChatRequester.clockTicks,
+        newOpenID: @escaping () -> String = { UUID().uuidString },
+        hubEchoesOpenID: Bool = true
     ) -> SessionChatRequester {
-        SessionChatRequester(ticks: ticks) { route in
-            let entity = SliceKind.terminalSession.recordName(id: String(route.sessionID))
+        SessionChatRequester(ticks: ticks, newOpenID: newOpenID, hubEchoesOpenID: hubEchoesOpenID) { request in
+            let entity = SliceKind.terminalSession.recordName(id: String(request.sessionID))
             let params = try SessionChatRequestParams(
-                sessionID: route.sessionID, subagentID: route.agentID, toolUseID: route.toolUseID
+                sessionID: request.sessionID, subagentID: request.agentID, toolUseID: request.toolUseID, openID: request.openID
             ).wireParams()
             // A queued request older than this would reach the Mac too late
             // to open a watch (it opens none past five minutes), so a fresh
@@ -94,40 +114,45 @@ final class SessionChatRequester {
         }
     }
 
-    /// Starts (or restarts) the requests for one chat.
-    func start(sessionID: Int64, agentID: String?, toolUseID: String? = nil) {
+    /// Starts (or restarts) the requests for one chat under a new `open_id`,
+    /// which it returns: the record that echoes it answers this opening.
+    @discardableResult
+    func start(sessionID: Int64, agentID: String?, toolUseID: String? = nil) -> String {
         cancel()
-        let route = SessionChatRoute(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
-        running = route
+        let request = SessionChatRequest(
+            route: SessionChatRoute(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID), openID: newOpenID()
+        )
+        running = request
         let stream = ticks()
         loop = Task { [weak self] in
-            await self?.request(route)
+            await self?.request(request)
             for await _ in stream {
                 if Task.isCancelled { break }
-                await self?.request(route)
+                // Retry may have renamed the opening meanwhile.
+                guard let current = self?.running else { break }
+                await self?.request(current)
             }
         }
+        return request.openID
     }
 
-    /// One request for a chat now, beside its repeat (the live line's Retry):
-    /// the hub re-reads a chat whose last read failed on the request.
-    func requestNow(sessionID: Int64, agentID: String?, toolUseID: String? = nil) {
+    /// The live line's Retry: a request at once under a new `open_id` (so no
+    /// queued repeat holds it back), which the running repeats then carry;
+    /// returns it. The hub re-reads a chat whose last read failed on it.
+    @discardableResult
+    func requestNow(sessionID: Int64, agentID: String?, toolUseID: String? = nil) -> String {
         let route = SessionChatRoute(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
-        Task { [weak self] in await self?.request(route) }
-    }
-
-    /// A request for this chat went out within the hub's watch: the hub has
-    /// published every change since, so the record the phone holds is current.
-    func watchOpen(sessionID: Int64, agentID: String?, toolUseID: String? = nil) -> Bool {
-        let route = SessionChatRoute(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
-        return sentAt[route].map { now().timeIntervalSince($0) < Self.queuedRequestFreshness } ?? false
+        let request = SessionChatRequest(route: route, openID: newOpenID())
+        if running?.route == route { running = request }
+        Task { [weak self] in await self?.request(request) }
+        return request.openID
     }
 
     /// Stops the requests for one chat; a no-op unless it is the one
     /// running, so a screen leaving after its successor started (SwiftUI
     /// does not order the two) cannot stop the successor.
     func stop(sessionID: Int64, agentID: String?, toolUseID: String? = nil) {
-        guard running == SessionChatRoute(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID) else { return }
+        guard running?.route == SessionChatRoute(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID) else { return }
         cancel()
     }
 
@@ -137,10 +162,9 @@ final class SessionChatRequester {
         running = nil
     }
 
-    private func request(_ route: SessionChatRoute) async {
+    private func request(_ request: SessionChatRequest) async {
         do {
-            try await send(route)
-            sentAt[route] = now()
+            try await send(request)
         } catch {
             Self.logger.warning("session chat request failed: \(String(describing: error), privacy: .public)")
         }
@@ -162,11 +186,17 @@ final class SessionChatViewModel {
     /// Lines this phone sent whose outbox row is gone (the Mac applied
     /// them) and that the feed does not show yet.
     private(set) var sentLines: [SentLine] = []
-    /// The record shown came from the hub since the screen appeared, or the
-    /// hub's watch from an earlier visit was still open (it then published
-    /// every change, so the record held is current). Until then the live line
-    /// says Loading rather than a step from an expired watch (#2112 C9).
-    private(set) var recordArrivedSinceOpen = false
+    /// This opening's `open_id` (new on each appear and on Retry).
+    private(set) var openID: String?
+
+    /// The record answers this opening: it echoes `openID`, or it comes from
+    /// a hub too old to echo one (or the demo's, which none answers). Until
+    /// then the live line says Loading rather than a step read before the
+    /// screen opened (#2112 C9).
+    var recordArrivedSinceOpen: Bool {
+        guard let chat else { return false }
+        return !requester.hubEchoesOpenID || chat.openID == nil || chat.openID == openID
+    }
 
     @ObservationIgnored private let store: ReplicaStore
     @ObservationIgnored private let requester: SessionChatRequester
@@ -174,10 +204,6 @@ final class SessionChatViewModel {
     @ObservationIgnored private var cancellable: ResilientObservation?
     @ObservationIgnored private var patience: Task<Void, Never>?
     @ObservationIgnored private var shown = false
-    /// The observation's first value is the stored record, not an arrival.
-    @ObservationIgnored private var awaitingStored = false
-    /// The hub's watch was open when the screen appeared.
-    @ObservationIgnored private var watchWasOpen = false
     @ObservationIgnored private var tracked: [String: SentLine] = [:]
     @ObservationIgnored private var expiries: [String: Task<Void, Never>] = [:]
     @ObservationIgnored let decodeCache = ReplicaDecodeCache()
@@ -231,11 +257,8 @@ final class SessionChatViewModel {
     /// The screen appeared: observe and ask the Mac for the chat.
     func appeared() {
         shown = true
-        watchWasOpen = requester.watchOpen(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
-        recordArrivedSinceOpen = chat != nil && watchWasOpen
-        awaitingStored = cancellable == nil
         observe()
-        requester.start(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
+        openID = requester.start(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
         patience?.cancel()
         patience = nil
         waitingTooLong = false
@@ -244,7 +267,7 @@ final class SessionChatViewModel {
 
     /// Asks the hub for the chat at once (Retry on the live line).
     func retry() {
-        requester.requestNow(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
+        openID = requester.requestNow(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
     }
 
     /// The screen went away: stop asking.
@@ -337,7 +360,6 @@ final class SessionChatViewModel {
             },
             onWaitingForKeys: { [weak self] in self?.waitingForKeys = true },
             onChange: { [weak self] value in
-                self?.noteArrival(value)
                 self?.chat = value
                 if value != nil {
                     self?.waitingTooLong = false
@@ -351,17 +373,6 @@ final class SessionChatViewModel {
                 self?.waitingForKeys = false
             }
         )
-    }
-
-    private func noteArrival(_ value: SessionChat?) {
-        if value == nil {
-            recordArrivedSinceOpen = false
-        } else if awaitingStored {
-            recordArrivedSinceOpen = watchWasOpen
-        } else if shown {
-            recordArrivedSinceOpen = true
-        }
-        awaitingStored = false
     }
 
     /// Reads from an already-open database, inside the observation.

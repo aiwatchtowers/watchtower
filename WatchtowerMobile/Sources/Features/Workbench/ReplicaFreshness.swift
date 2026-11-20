@@ -23,6 +23,12 @@ struct ReplicaFreshness: Equatable {
 
     let state: State
     let text: String
+    /// The time the text names: the tower's last publish (stale, offline) or when the kind got stuck.
+    let at: Date
+
+    /// When the tower stopped sending, or nil while one kind is stuck alone (#2112 C4): what ages the live line
+    /// and the agents sheet.
+    var staleSince: Date? { state == .stuck ? nil : at }
 
     /// nil while fresh, unlinked, or before the first heartbeat (the screen's own empty or loading
     /// state stands). Offline wins over stale, stale over stuck. `relayUnansweredSince` is
@@ -54,6 +60,7 @@ struct ReplicaFreshness: Equatable {
             return nil
         }
         self.state = state
+        self.at = at
         let updated = "Updated \(Self.clock(at, now: now, calendar: calendar, locale: locale))"
         text = switch state {
         case .stuck: "\(updated) · \(name) is not sending some updates"
@@ -79,6 +86,20 @@ struct ReplicaFreshness: Equatable {
             Date.FormatStyle(locale: locale, calendar: calendar, timeZone: calendar.timeZone).month(.abbreviated).day())
         return "\(day), \(time)"
     }
+}
+
+/// What `ReplicaFreshness` reads, kept so a view's own clock re-judges the tower each tick without a redraw from
+/// its parent (the workchat's live line, the agents sheet).
+struct TowerFreshness: Equatable {
+    var heartbeat: HeartbeatPayload?
+    var linked = false
+    var relayUnansweredSince: Date?
+
+    func freshness(at now: Date) -> ReplicaFreshness? {
+        ReplicaFreshness(heartbeat: heartbeat, linked: linked, relayUnansweredSince: relayUnansweredSince, now: now)
+    }
+
+    func staleSince(at now: Date) -> Date? { freshness(at: now)?.staleSince }
 }
 
 /// The line itself: the glyph and the text in the model's tone, `.caption`. Empty while fresh.

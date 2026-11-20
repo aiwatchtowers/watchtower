@@ -28,10 +28,11 @@ extension ScreenshotTourTests {
         XCTAssertEqual(written.count, 2 * (WorkchatLiveMockups.frames.count + real))
     }
 
-    /// L1–L7 and L10 on the built `WorkchatView`, from demo records republished per state: session 10's chat with its
-    /// live block (running step, steps open, between tools, a failed read), a working session with no chat record
-    /// yet (Loading), the tower's heartbeat gone stale, "Board lanes" behind a permission card, and session 10 idle.
-    /// L8 (a subagent's chat) and L9 (the agents sheet, Task 8) have no capture here. Returns the frames.
+    /// L1–L8 and L10 on the built views, from demo records republished per state: session 10's chat with its live
+    /// block (running step, steps open, between tools, a failed read), a working session with no chat record yet
+    /// (Loading), the tower's heartbeat gone stale, "Board lanes" behind a permission card, a subagent's own chat with
+    /// its sidechain's block (`SessionChatView`), and session 10 idle. L9 (the agents sheet) is Task 8's
+    /// `workchat-agents` tour. Returns the frames.
     private func captureWorkchatLiveReal(_ env: AppEnvironment, demo: DemoHub, host: ScreenshotHost) async throws -> Int {
         try await poll({ Self.isHydrated(env) }, "the demo seed hydrated")
         let now = Date()
@@ -64,9 +65,10 @@ extension ScreenshotTourTests {
         try await publish([try chat10 { _ in }], "L1 block") { probe.chat?.activityLive?.current != nil }
         try await workchat("workchat-live-real-L1")
         // L2: the owner opened the steps.
-        env.workchatSteps.toggle(10, conversation: probe.chat?.activityLive?.conversation)
+        let route = SessionChatRoute(sessionID: 10, agentID: nil)
+        env.workchatSteps.toggle(route, WorkchatLiveLine.StepsWatch(chat: probe.chat, working: true, cardShown: false))
         try await workchat("workchat-live-real-L2")
-        env.workchatSteps.close(10)
+        env.workchatSteps.close(route)
         // L3: between tools.
         try await publish([try chat10 { $0["current"] = nil; $0["latest"] = nil }], "L3 block") {
             probe.chat?.activityLive?.current == nil && probe.chat?.activityLive != nil
@@ -100,6 +102,7 @@ extension ScreenshotTourTests {
                           "L7 card") { snapshot().pendingPermission(for: 12) != nil }
         try await workchat("workchat-live-real-L7", 12)
         try await sealing.delete(recordNames: [request.recordName], in: request.zone)
+        try await captureSubagentLine(env, now: now, host: host) { records, what, done in try await publish(records, what, until: done) }
         // L10: session 10 idle.
         let idle = try DemoSeed.record(kind: .terminalSession, id: 10, json: DemoSeed.JSON.session(10, workbench: DemoSeed.acmeID, [
             "title": "Session report", "state_kind": "waiting_on_ask", "state_caption": "Your turn", "state_tone": "orange",
@@ -108,6 +111,43 @@ extension ScreenshotTourTests {
         ]), modifiedAt: Date())
         try await publish([idle], "L10 idle") { snapshot().session(10)?.stateKind == .waitingOnAsk }
         try await workchat("workchat-live-real-L10")
-        return 8
+        return 9
+    }
+
+    /// L8: a subagent's own chat (`SessionChatView`) with its sidechain's live block.
+    private func captureSubagentLine(
+        _ env: AppEnvironment,
+        now: Date,
+        host: ScreenshotHost,
+        publish: ([CloudRecord], String, @escaping @MainActor () -> Bool) async throws -> Void
+    ) async throws {
+        // L8: a subagent's chat, its own live block (the sidechain's step).
+        let subagent = SessionChatRoute(sessionID: 10, agentID: "demo-3", toolUseID: "toolu_demo3")
+        let at: (TimeInterval) -> String = { now.addingTimeInterval(-$0).ISO8601Format() }
+        let grep: [String: Any] = ["id": "toolu_g1", "tool": "Grep", "summary": "\"func LiveOf\" in internal/", "started_at": at(4), "more": 0]
+        let subagentJSON: [String: Any] = [
+            "session_id": 10, "agent_id": "demo-3", "live": true, "entries_more": 0, "live_version": 1,
+            "entries": [
+                ["id": "s1", "kind": "owner", "at": DemoSeed.JSON.stamp(now.addingTimeInterval(-60)), "text": "Recon the DB layer"],
+                ["id": "s2", "kind": "agent", "at": DemoSeed.JSON.stamp(now.addingTimeInterval(-20)),
+                 "text": "Looking for where the live snapshot is read and who calls it."]
+            ],
+            "activity_live": [
+                "observed_at": at(1), "conversation": "demo-sidechain", "turn_at": at(60), "turn_active": true,
+                "current": grep, "agents": [] as [Any], "agents_state": "known", "agents_more": 0, "steps": [grep], "steps_more": 0
+            ] as [String: Any]
+        ]
+        let subagentRecord = CloudRecordFactory.record(for: SliceRecord(
+            kind: .sessionChat, id: "10-demo-3", modifiedAt: Date(),
+            payload: try JSONSerialization.data(withJSONObject: subagentJSON, options: [.sortedKeys])
+        ))
+        let subagentProbe = SessionChatViewModel(sessionID: 10, agentID: "demo-3", toolUseID: "toolu_demo3", store: env.store,
+                                                 requester: env.chatRequests)
+        subagentProbe.appeared()
+        try await publish([subagentRecord], "L8 record") { subagentProbe.chat?.activityLive != nil }
+        subagentProbe.disappeared()
+        try await host.capture("workchat-live-real-L8", NavigationStack {
+            SessionChatView(replica: env.workbenchReplica, route: subagent, store: env.store, requester: env.chatRequests)
+        }, settle: .milliseconds(1_500))
     }
 }
