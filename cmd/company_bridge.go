@@ -25,6 +25,7 @@ import (
 	"watchtower/internal/media"
 	"watchtower/internal/media/linkrule"
 	"watchtower/internal/oauthclient"
+	"watchtower/internal/slackmode"
 )
 
 // BuildCompanyName is the corp build's company (ldflags
@@ -182,15 +183,20 @@ func bridgeAccounts(workspaceDir string, database *db.DB) ([]bridgeAccount, erro
 	if err != nil {
 		return nil, err
 	}
-	// Slack keeps no per-account client: every account signed in through
-	// the build's shared app (env, else baked).
+	// A Slack row names the app it signed in through (migration 00196); a
+	// row still without one signed in through the build's app (env, else
+	// baked). A row on a workspace's own app is not on the baked client.
 	slackClient := os.Getenv("WATCHTOWER_OAUTH_CLIENT_ID")
 	if slackClient == "" {
 		slackClient = auth.DefaultClientID
 	}
 	for _, a := range slackAccts {
 		if live(a.Status) {
-			out = append(out, bridgeAccount{source: "slack", id: a.ID, slug: a.CompanySlug, key: a.TeamID, clientID: slackClient})
+			clientID := a.ClientID
+			if clientID == "" {
+				clientID = slackClient
+			}
+			out = append(out, bridgeAccount{source: "slack", id: a.ID, slug: a.CompanySlug, key: a.TeamID, clientID: clientID})
 		}
 	}
 
@@ -425,7 +431,10 @@ func bridgeTie(a bridgeAccount, eff companybundle.Bundle, baked corpBaked) (bool
 // and writes the company_migrated marker last. It runs at every launch of
 // the corp build and again before the app installs a public update, so
 // accounts added since are covered too. Any failure it sees undoes what this
-// run wrote (bundle, records, ties) and leaves the marker as it was; a run
+// run wrote (bundle, records, ties) and leaves the marker as it was — all
+// but the Slack client-id backfill it runs first, kept on purpose: it only
+// fills empty ids with this build's app, the value the daemon's start would
+// write anyway (A17); a run
 // killed mid-way (the app's 30 s step timeout) leaves at most a bundle or
 // records without ties, which change no account's client and which the next
 // run completes.
@@ -433,6 +442,14 @@ func runCompanyBridge(workspaceDir string, database *db.DB, companyName string, 
 	store := company.NewStore(workspaceDir)
 	slug, err := store.SlugFor(companyName, forced)
 	if err != nil {
+		return companyBridgeResult{}, err
+	}
+	// Slack rows from before migration 00196 carry no client id, and their
+	// token files name none; a tied row is never backfilled later, so fill
+	// them now, before the ties: on this build they signed in through its
+	// app. Without it the public build's setup finds no company app for the
+	// admin's adopt and Re-login drops to the code paste.
+	if _, err := slackmode.BackfillClientIDs(database); err != nil {
 		return companyBridgeResult{}, err
 	}
 	accts, err := bridgeAccounts(workspaceDir, database)
