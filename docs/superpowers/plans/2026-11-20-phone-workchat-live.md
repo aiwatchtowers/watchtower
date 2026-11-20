@@ -101,7 +101,7 @@ Depends on: Task 3.
 
 **Interfaces:**
 - Produces: `type FileWatcher interface { Add(path string) error; Remove(path string) error; Events() <-chan string; Errors() <-chan error; Close() error }`; `SessionChatOptions.NewWatcher func() (FileWatcher, error)` (nil = fsnotify); `ChatTiming.Debounce` (250 ms) and `ChatTiming.MinGap` (1 s) added to `StandardChatTiming`; `Every` (3 s) now only the fallback.
-- Paths per watch: **files only** — `ChatRead.Paths` (conversation files) plus the `.jsonl` of each subagent the last live block lists as running, ≤ 32; no directory watch (kqueue opens every file of a watched directory). A path that does not exist yet is retried on the next read. A new conversation after `/clear` is caught by the `Wake` loop comparing `sessionfeed.SessionConversations` (DB query + stat, no transcript read) with the watched list.
+- Paths per watch: **files only** — `ChatRead.Paths` (conversation files) plus the `.jsonl` of each subagent the last live block lists as running, ≤ 32; no directory watch (kqueue opens every file of a watched directory). A subagent path that does not exist yet is retried on the next read. A **conversation** path that does not exist yet (the session just started) is checked by the `Wake` loop with a stat (no read) until it appears; then it is added and read once. A new conversation after `/clear` is caught by the `Wake` loop comparing `sessionfeed.SessionConversations` (DB query + stat, no transcript read) with the watched list.
 
 - [ ] **Step 1: Failing tests** (all under `synctest`, fake watcher):
   - `TestChatFiles_EventReadsAfterDebounce`: one event → one read 250 ms later, none before.
@@ -110,6 +110,7 @@ Depends on: Task 3.
   - `TestChatFiles_RenameReresolves`: `Remove`/`Rename` of the watched conversation → re-resolve; the new path is added, read follows.
   - `TestChatFiles_NewConversationOnWake`: the resolved conversation list changes (new agent-session row) → the `Wake` loop swaps the watch to the new file and reads once.
   - `TestChatFiles_SubagentFileAddedAfterAgentStarts`: no subagent file at open; a read whose live block lists a running agent whose `.jsonl` appears later → the file is added on the next read and its writes trigger reads; the agent finishing removes it.
+  - `TestChatFiles_ConversationFileAppearsLater`: the watch opens before the conversation file exists → no read loop; the file is created → within one `Wake` (2 s, synctest) it is added and read once; its later writes trigger reads.
   - `TestChatFiles_HubRestartReadsOnFirstRequest`: a fresh source (no runs) gets a `session_chat_request` → one read at once and the watch armed.
   - `TestChatFiles_RealWatcherOnlyListedFiles` (real fsnotify, temp dir with 200 `.jsonl` files, 1 watched): the process's open descriptor count (`/dev/fd`) grows by ≤ 4 after arming.
   - `TestChatFiles_AddFailsFallsBackToTick`: `Add` error other than "does not exist" → reads every 3 s for that chat, logged once.

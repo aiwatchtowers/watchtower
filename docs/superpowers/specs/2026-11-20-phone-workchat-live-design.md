@@ -93,7 +93,8 @@ draining the battery.
   as running (≤ 32). No directory is watched: on macOS fsnotify's kqueue backend opens a descriptor for every file in
   a watched directory, and a Claude projects directory holds hundreds. A new subagent shows up in the main
   conversation first (its Agent call), so the read that follows adds its file; a file not created yet is retried on
-  the next read. macOS gets kqueue, Linux inotify — the hub runs on both.
+  the next read; a conversation file that does not exist yet (a session just started) is stat-checked on the `Wake`
+  loop until it appears, then watched and read. macOS gets kqueue, Linux inotify — the hub runs on both.
 - A new conversation after `/clear` changes the session's agent-session rows in the database (the existing
   `terminal_session_agent_sessions` triggers); the source's existing `Wake` loop compares the resolved conversation
   list (a database query and a stat, no transcript read) and re-arms the watch when it changed.
