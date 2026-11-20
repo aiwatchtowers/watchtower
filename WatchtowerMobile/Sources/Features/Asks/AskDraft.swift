@@ -67,18 +67,25 @@ struct AskDraft: Equatable {
     }
 
     /// The ask closed without an answer (the Mac's Dismiss, Go's `Answer.Dismissed`): the note alone, never the
-    /// picks, marks, comments or verdict (Go refuses a dismissal that carries any). nil while the note is over its
-    /// bound, which the Mac would refuse.
-    func dismissal() -> OwnerAskAnswer? {
-        let note = Self.trimmed(note)
+    /// picks, marks, comments or verdict (Go refuses a dismissal that carries any). A too-large ask goes with no note:
+    /// its screen shows no note field, so a note left in the draft would go unseen. nil when the Mac would not take
+    /// it: not open, a kind answered on the Mac only, or a note over its bound.
+    func dismissal(for ask: OwnerAsk) -> OwnerAskAnswer? {
+        guard Self.isDismissable(ask) else { return nil }
+        let note = Self.isTooLarge(ask) ? "" : Self.trimmed(note)
         guard note.unicodeScalars.count <= Self.noteLimit else { return nil }
         return OwnerAskAnswer(note: note, dismissed: true)
     }
 
-    /// Whether the Mac takes a dismissal of this ask from the phone: one of the kinds the phone knows (a folder
+    /// Whether Close without answering is offered on the ask: open, and one of the kinds the phone knows (a folder
     /// suggestion, or a kind from a newer Mac, is answered on the Mac only).
     static func isDismissable(_ ask: OwnerAsk) -> Bool {
         ask.status == .open && OwnerAsk.Kind.knownValues.contains(ask.kind)
+    }
+
+    /// The ask's payload did not reach the phone (over 64 KiB): it is answered on the Mac.
+    static func isTooLarge(_ ask: OwnerAsk) -> Bool {
+        ask.payloadClipped == true || ask.payload == nil
     }
 
     /// Whether the Mac will take this answer: a review's verdict; every

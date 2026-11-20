@@ -57,7 +57,7 @@ final class NotDeliveredModelTests: XCTestCase {
             (.askAnswer, "owner_ask-109", pick, "Answer “Which menu wording?” — Archive Now"),
             (.askAnswer, "owner_ask-110", approve, "Answer “Review the ask guard plan” — Approved"),
             (.askAnswer, "owner_ask-999", pick, "Answer an ask — Archive Now"),
-            (.askAnswer, "owner_ask-110", dismissal, "Answer “Review the ask guard plan” — Closed without answering"),
+            (.askAnswer, "owner_ask-110", dismissal, "Close “Review the ask guard plan” without answering"),
             (.boardTargetStatus, "workbench_target-416", done, "Move “Undo Archive Now” to Done"),
             (.boardTargetStatus, "workbench_target-999", done, "Move a task to Done"),
             (.boardCommentAdd, "workbench_target-415", comment, "Comment on “Archive Closed Targets Now”"),

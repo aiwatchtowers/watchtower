@@ -65,7 +65,9 @@ enum ActionSummary {
         switch item.kind {
         case .askAnswer:
             let title = quoted(entity.flatMap { id in snapshot.asks.first { $0.id == id }?.title }, or: "an ask")
-            let answer = (try? AskAnswerParams(wireParams: item.params)).flatMap { verdict($0.answer) }
+            let params = try? AskAnswerParams(wireParams: item.params)
+            if params?.answer.dismissed == true { return "Close \(title) without answering" }
+            let answer = params.flatMap { verdict($0.answer) }
             return ["Answer \(title)", answer].compactMap { $0 }.joined(separator: " — ")
         case .boardTargetStatus:
             let column = (try? BoardTargetStatusParams(wireParams: item.params)).map { BoardRowModel.statusLabel($0.status) }
@@ -124,7 +126,6 @@ enum ActionSummary {
 
     /// A review's verdict, else the first question's picks (or its "Other"); nil for a checklist.
     private static func verdict(_ answer: OwnerAskAnswer) -> String? {
-        if answer.dismissed { return AskText.dismissedLabel }
         if answer.verdict == .approved { return "Approved" }
         if answer.verdict == .changes { return "Changes requested" }
         guard let first = answer.answers.first else { return nil }

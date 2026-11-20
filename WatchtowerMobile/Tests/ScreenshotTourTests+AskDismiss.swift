@@ -4,9 +4,9 @@ import WatchtowerKit
 import XCTest
 @testable import WatchtowerMobile
 
-/// The #2114 frames of the tour: Close without answering on the ask forms, a dismissal on its way and the ask once
-/// closed. The confirmation is presented as an alert, which iOS 26 draws outside drawHierarchy; its words are
-/// asserted in `AskDismissTests`.
+/// The #2114 frames of the tour: Close without answering on the ask forms, a dismissal on its way, the ask once
+/// closed, and a too-large ask's bar with Close alone. The confirmation is presented as an alert, which iOS 26
+/// draws outside drawHierarchy; its words are asserted in `AskDismissTests`.
 extension ScreenshotTourTests {
     /// `SHOTS_ONLY=ask-dismiss` runs `testTheAskDismissShots` alone.
     static let onlyAskDismiss = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "ask-dismiss"
@@ -35,7 +35,7 @@ extension ScreenshotTourTests {
         XCTAssertTrue(sent)
         try await host.capture("ask-dismiss-3-sending", ask(111))
 
-        // Closed: the replica's dismissed ask.
+        // Closed: the replica's dismissed ask; too large: a question whose payload did not reach the phone.
         let now = Date()
         let closed = DemoSeed.JSON.ask(153, workbench: DemoSeed.acmeID, [
             "kind": "check", "status": "answered", "title": "Check the archive view",
@@ -43,13 +43,20 @@ extension ScreenshotTourTests {
             "answer": ["verdict": "", "answers": [Any](), "checklist": [Any](), "comments": [Any](),
                        "dismissed": true, "note": "Not needed this sprint"]
         ])
+        let tooLarge = DemoSeed.JSON.ask(154, workbench: DemoSeed.acmeID, [
+            "kind": "question", "title": "Which of the 40 lanes stay?", "payload_clipped": true
+        ])
         let sealing = DemoSeed.hubTransport(inner: demo.transport, seq: DemoSeed.hubSeq(defaults: demo.defaults, now: now))
-        try await sealing.save([try DemoSeed.record(kind: .ownerAsk, id: 153, json: closed, modifiedAt: now)])
+        try await sealing.save([
+            try DemoSeed.record(kind: .ownerAsk, id: 153, json: closed, modifiedAt: now),
+            try DemoSeed.record(kind: .ownerAsk, id: 154, json: tooLarge, modifiedAt: now)
+        ])
         _ = await env.refresh(.pull)
-        try await poll({ env.workbenchReplica.snapshot.asks.contains { $0.id == 153 } }, "the dismissed ask arrived")
+        try await poll({ env.workbenchReplica.snapshot.asks.contains { $0.id == 154 } }, "the closed and too-large asks arrived")
         try await host.capture("ask-dismiss-4-closed", ask(153))
+        try await host.capture("ask-dismiss-5-too-large", ask(154))
 
         let written = try FileManager.default.contentsOfDirectory(atPath: path).filter { $0.hasPrefix("ask-dismiss-") }
-        XCTAssertEqual(written.count, 8)
+        XCTAssertEqual(written.count, 10)
     }
 }

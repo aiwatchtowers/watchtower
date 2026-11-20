@@ -87,9 +87,8 @@ struct AskView: View {
         .background(Color(.systemBackground))
         .scrollDismissesKeyboard(.interactively)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            // A too-large ask's bar is Close without answering alone.
-            if form.closedStatus == nil, form.openOnMac == nil || form.showsDismiss {
-                AskSendBar(form: form, ask: ask, model: model)
+            if let bar = form.bar {
+                AskSendBar(form: form, bar: bar, ask: ask, model: model)
             }
         }
     }
@@ -301,25 +300,25 @@ struct AskStatusRow: View {
     }
 }
 
-/// Send (or Next question on a question page that is not the last), or
-/// Request changes and Approve on a review (mockup 10); Previous and Close
-/// without answering under them; the footer. A too-large ask's bar is Close
-/// without answering alone.
+/// The ask's bottom bar, as `AskFormModel.Bar` says: Close without answering
+/// beside Send or Next question (the Mac's Dismiss beside its answer
+/// buttons), or under a review's Request changes and Approve (mockup 10), or
+/// alone on a too-large ask; Previous and the footer under it.
 private struct AskSendBar: View {
     let form: AskFormModel
+    let bar: AskFormModel.Bar
     let ask: OwnerAsk
     let model: AskViewModel
     @State private var confirmingDismiss = false
 
     var body: some View {
         VStack(spacing: 0) {
-            if form.openOnMac == nil {
-                actions
-            } else {
-                Divider()
+            main
+            if bar.showsPrevious {
+                Button(AskText.previous) { model.previous() }
+                    .frame(minHeight: PhoneMetrics.minTouch)
             }
-            secondaryRow
-            if form.openOnMac == nil {
+            if bar.showsFooter {
                 Text(form.footer)
                     .font(TypeScale.meta)
                     .foregroundStyle(.secondary)
@@ -335,42 +334,39 @@ private struct AskSendBar: View {
         }
     }
 
-    /// Previous on a later question page, and Close without answering: quiet text buttons, the bar's one prominent
-    /// action stays Send (or the verdicts).
-    @ViewBuilder private var secondaryRow: some View {
-        let previous = form.question.map { $0.index > 0 } == true && form.review == nil && form.openOnMac == nil
-        if previous || form.showsDismiss {
-            HStack(spacing: Spacing.regular) {
-                if previous {
-                    Button(AskText.previous) { model.previous() }
-                        .frame(minHeight: PhoneMetrics.minTouch)
-                }
-                Spacer(minLength: 0)
-                if form.showsDismiss {
-                    Button(AskText.dismiss) { confirmingDismiss = true }
-                        .disabled(!form.canDismiss)
-                        .frame(minHeight: PhoneMetrics.minTouch)
-                }
+    /// Close without answering as the bar's secondary action; nil when it is not offered.
+    private var close: BarAction? {
+        bar.showsClose ? BarAction(title: AskText.dismiss, isEnabled: form.canDismiss) { confirmingDismiss = true } : nil
+    }
+
+    @ViewBuilder private var main: some View {
+        switch bar.main {
+        case .verdicts:
+            reviewBar
+        case .next:
+            if let page = form.question {
+                PrimaryActionBar(primary: BarAction(title: AskText.next) { model.next(of: page.count) }, secondary: close)
             }
-            .padding(.horizontal, Spacing.large)
+        case .send:
+            PrimaryActionBar(primary: BarAction(title: AskText.send, isEnabled: form.canSend) {
+                Task { await model.send(ask) }
+            }, secondary: close)
+        case .none:
+            if let close {
+                BottomActionBar { closeButton(close) }
+            }
         }
     }
 
-    @ViewBuilder private var actions: some View {
-        if form.review != nil {
-            reviewBar
-        } else if let page = form.question, !page.isLast {
-            PrimaryActionBar(primary: BarAction(title: AskText.next) { model.next(of: page.count) })
-        } else {
-            PrimaryActionBar(primary: BarAction(title: AskText.send, isEnabled: form.canSend) {
-                Task { await model.send(ask) }
-            })
-        }
+    private func closeButton(_ close: BarAction) -> some View {
+        Button(close.title, action: close.action)
+            .buttonStyle(SecondaryActionStyle())
+            .disabled(!close.isEnabled)
     }
 
     /// A review's bar (#1787): the note always in view above Request
     /// changes · Approve, riding over the keyboard; Request changes waits
-    /// for a note or a comment and says so.
+    /// for a note or a comment and says so. Close without answering under them.
     private var reviewBar: some View {
         BottomActionBar {
             VStack(alignment: .leading, spacing: Spacing.regular) {
@@ -382,6 +378,7 @@ private struct AskSendBar: View {
                     HStack(spacing: Spacing.regular) { verdictButtons }
                     VStack(spacing: Spacing.regular) { verdictButtons }
                 }
+                if let close { closeButton(close) }
             }
         }
     }

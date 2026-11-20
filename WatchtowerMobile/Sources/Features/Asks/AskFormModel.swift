@@ -178,8 +178,13 @@ struct AskFormModel {
     /// Close without answering is offered (#2114): an open ask of a kind the phone knows, too-large ones included
     /// (a dismissal needs no payload).
     let showsDismiss: Bool
-    /// …and would send now: no answer on its way or applied, not refused as no longer open, the note within bound.
+    /// …and would send now: no answer on its way or applied, not refused as no longer open, the note within bound
+    /// (a too-large ask's dismissal has no note).
     let canDismiss: Bool
+    /// Close without answering's confirmation line; names the note only when one goes with it.
+    let dismissConfirmMessage: String
+    /// The bottom bar; nil when there is none (a closed ask, a too-large one with nothing to send).
+    let bar: Bar?
 
     init?(
         askID: Int64,
@@ -210,7 +215,7 @@ struct AskFormModel {
         headerTone = open ? .waitingForYou : .secondary
         status = Self.status(ask, snapshot: snapshot, now: now, applied: applied)
         let payload = ask.payload
-        let clipped = ask.payloadClipped == true || payload == nil
+        let clipped = AskDraft.isTooLarge(ask)
         openOnMac = open && clipped ? AskText.openOnMac : nil
         focus = (payload?.focus ?? []).map(\.text)
         isEditable = open && !clipped && !isSending && applied == nil && !Self.isPending(status)
@@ -226,28 +231,28 @@ struct AskFormModel {
         let saidSomething = !AskDraft.trimmed(draft.note).isEmpty || draft.comments.contains { !AskDraft.trimmed($0.body).isEmpty }
         canRequestChanges = canSendVerdict && saidSomething
         showsDismiss = AskDraft.isDismissable(ask)
-        canDismiss = showsDismiss && !isSending && applied == nil && !Self.isPending(status) && !Self.isNotOpen(status)
-            && draft.dismissal() != nil
+        let dismissal = draft.dismissal(for: ask)
+        canDismiss = dismissal != nil && !isSending && applied == nil && !Self.isPending(status) && !Self.isNotOpen(status)
+        // A too-large ask's dismissal goes without the note (its screen has no note field).
+        dismissConfirmMessage = AskText.dismissConfirmMessage(hasNote: !clipped && !AskDraft.trimmed(draft.note).isEmpty)
         requestChangesHint = canSendVerdict && !saidSomething ? AskText.requestChangesNeedsWords : nil
 
         let questions = open && !clipped ? payload?.questions ?? [] : []
         let shown = questions.isEmpty ? 0 : min(max(page, 0), questions.count - 1)
-        question = questions.isEmpty ? nil : Self.page(questions[shown], index: shown, count: questions.count, draft: draft)
+        let question = questions.isEmpty ? nil : Self.page(questions[shown], index: shown, count: questions.count, draft: draft)
+        self.question = question
         pageText = questions.count > 1 ? "\(shown + 1) of \(questions.count)" : nil
-        review = open && !clipped && ask.kind == .review ? Self.review(ask, draft: draft, render: render, split: paragraphs) : nil
+        let isReview = open && !clipped && ask.kind == .review
+        review = isReview ? Self.review(ask, draft: draft, render: render, split: paragraphs) : nil
         checks = open && !clipped ? (payload?.checklist ?? []).map { Self.checkRow($0, draft: draft) } : []
         note = draft.note
         noteHint = AskDraft.trimmed(draft.note).unicodeScalars.count > AskDraft.noteLimit ? AskText.noteTooLong : nil
         closedStatus = open ? nil : AskText.status(ask)
         closedLines = open ? [] : Self.closedLines(ask)
+        bar = Self.bar(open: open, tooLarge: clipped, question: question, isReview: isReview, showsClose: AskDraft.isDismissable(ask))
     }
 
     var footer: String { AskText.footer }
-
-    /// Close without answering's confirmation line; names the note only when one goes with it.
-    var dismissConfirmMessage: String {
-        AskText.dismissConfirmMessage(hasNote: !AskDraft.trimmed(note).isEmpty)
-    }
 
     var toneUses: [ToneUse] {
         [ToneUse(element: "ask \(askID) form header", tone: headerTone, role: .ask)]

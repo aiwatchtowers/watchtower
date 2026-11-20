@@ -247,10 +247,6 @@ final class AskDismissTests: XCTestCase {
             try form(AskViewModel(askID: id, drafts: fixture.drafts, answerer: fixture.answerer), try replica([try makeAsk(id, overrides)], fixture))
         }
 
-        let tooLarge = try shown(150, ["kind": "question", "payload_clipped": true])
-        XCTAssertNotNil(tooLarge.openOnMac)
-        XCTAssertTrue(tooLarge.showsDismiss && tooLarge.canDismiss, "a dismissal needs no payload")
-
         let folder = try makeAsk(151, ["kind": "folder", "payload": ["path": "/code/app"]])
         XCTAssertFalse(try shown(151, ["kind": "folder", "payload": ["path": "/code/app"]]).showsDismiss, "answered on the Mac")
         let folderSent = try await fixture.answerer.sendDismissal(folder)
@@ -267,5 +263,102 @@ final class AskDismissTests: XCTestCase {
         XCTAssertFalse(longSent)
         XCTAssertEqual(long.dismissConfirmMessage, "The agent goes on without an answer. Your note goes with it.")
         XCTAssertEqual(try shown(154, Self.question).dismissConfirmMessage, "The agent goes on without an answer.")
+    }
+
+    /// A too-large ask has no note field: its dismissal goes with no note whatever the draft carries (a note over the
+    /// bound left from earlier included), and the confirmation names none.
+    func testATooLargeAskClosesWithoutTheDraftsNote() async throws {
+        let fixture = try await makeFixture()
+        let ask = try makeAsk(150, ["kind": "question", "payload_clipped": true])
+        fixture.drafts.update(150) { $0.note = String(repeating: "a", count: AskDraft.noteLimit + 1) }
+        let model = AskViewModel(askID: 150, drafts: fixture.drafts, answerer: fixture.answerer)
+
+        let shown = try form(model, try replica([ask], fixture))
+        XCTAssertNotNil(shown.openOnMac)
+        XCTAssertTrue(shown.showsDismiss)
+        XCTAssertTrue(shown.canDismiss, "a dismissal needs no payload, and this one no note")
+        XCTAssertEqual(shown.dismissConfirmMessage, "The agent goes on without an answer.")
+
+        await model.sendDismissal(ask)
+        let sent = try sentAnswer(fixture.store)
+        XCTAssertTrue(sent.dismissed)
+        XCTAssertEqual(sent.note, "")
+    }
+
+    /// The save into the outbox throws: the overlay goes at once, the error shows, and Close is offered again.
+    func testASaveThatThrowsTakesTheDismissalBack() async throws {
+        struct Full: LocalizedError {
+            var errorDescription: String? { "The phone's storage is full" }
+        }
+        let drafts = AskDraftStore()
+        let book = OverlayBook(hubID: "hub")
+        let answerer = AskAnswerer(drafts: drafts, enqueue: { _, _, _ in throw Full() }, remove: { _ in }, overlays: book)
+        let ask = try makeAsk(140, Self.question)
+        let model = AskViewModel(askID: 140, drafts: drafts, answerer: answerer)
+
+        await model.sendDismissal(ask)
+
+        XCTAssertEqual(model.sendError, "The phone's storage is full")
+        XCTAssertTrue(book.overlays.isEmpty, "the save threw: nothing shows as sent")
+        XCTAssertFalse(answerer.isSending(140))
+        var snapshot = WorkbenchReplicaSnapshot()
+        snapshot.asks = [ask]
+        let again = try XCTUnwrap(model.form(snapshot: snapshot, now: now))
+        XCTAssertEqual(again.status, .none)
+        XCTAssertTrue(again.canDismiss)
+    }
+
+    /// While an answer to the ask waits in the outbox, neither a dismissal nor another answer is queued behind it;
+    /// once the tower refused it, a new one goes and the refusal row with it.
+    func testNothingIsQueuedBehindAnAnswerStillInTheOutbox() async throws {
+        let fixture = try await makeFixture()
+        let ask = try makeAsk(140, Self.question)
+        let model = AskViewModel(askID: 140, drafts: fixture.drafts, answerer: fixture.answerer)
+        let page = try XCTUnwrap(try form(model, try replica([ask], fixture)).question)
+        model.pick("Yes", in: page)
+        let answered = try await fixture.answerer.send(ask)
+        XCTAssertTrue(answered)
+
+        let dismissed = try await fixture.answerer.sendDismissal(ask)
+        let again = try await fixture.answerer.send(ask)
+        XCTAssertFalse(dismissed)
+        XCTAssertFalse(again)
+        XCTAssertEqual(try fixture.store.pendingActions().count, 1)
+
+        try await echo(fixture, .failed, reason: .invalidAnswer, message: "Not now")
+        let afterRefusal = try await fixture.answerer.sendDismissal(ask)
+        XCTAssertTrue(afterRefusal)
+        let rows = try fixture.store.pendingActions()
+        XCTAssertEqual(rows.map(\.state), [.pending], "the refused row went once the dismissal was queued")
+        XCTAssertTrue(try sentAnswer(fixture.store).dismissed)
+    }
+
+    // MARK: - The bar
+
+    func testTheBarFollowsTheAsk() async throws {
+        let fixture = try await makeFixture()
+        func bar(_ id: Int64, _ overrides: [String: Any], page: Bool = false) throws -> AskFormModel.Bar? {
+            let model = AskViewModel(askID: id, drafts: fixture.drafts, answerer: fixture.answerer)
+            let snapshot = try replica([try makeAsk(id, overrides)], fixture)
+            if page { model.next(of: 2) }
+            return try form(model, snapshot).bar
+        }
+        typealias Bar = AskFormModel.Bar
+        let twoQuestions: [String: Any] = ["kind": "question", "payload": ["questions": [
+            ["id": "a", "question": "A?", "options": [["label": "Yes"]]], ["id": "b", "question": "B?", "options": [["label": "No"]]]
+        ]]]
+
+        XCTAssertEqual(try bar(160, twoQuestions), Bar(main: .next, showsPrevious: false, showsClose: true, showsFooter: true))
+        XCTAssertEqual(try bar(160, twoQuestions, page: true), Bar(main: .send, showsPrevious: true, showsClose: true, showsFooter: true))
+        XCTAssertEqual(try bar(161, ["kind": "check", "payload": ["checklist": [["id": "1", "text": "Open"]]]]),
+                       Bar(main: .send, showsPrevious: false, showsClose: true, showsFooter: true))
+        XCTAssertEqual(try bar(162, ["kind": "review", "doc_snapshot": "# Plan\n", "payload": [String: Any]()]),
+                       Bar(main: .verdicts, showsPrevious: false, showsClose: true, showsFooter: true))
+        XCTAssertEqual(try bar(163, ["kind": "question", "payload_clipped": true]),
+                       Bar(main: .none, showsPrevious: false, showsClose: true, showsFooter: false), "Close without answering alone")
+        XCTAssertNil(try bar(164, ["kind": "folder", "payload_clipped": true]), "nothing to send from the phone")
+        XCTAssertEqual(try bar(165, ["kind": "folder", "payload": ["path": "/code/app"]]),
+                       Bar(main: .send, showsPrevious: false, showsClose: false, showsFooter: true))
+        XCTAssertNil(try bar(166, Self.question.merging(["status": "answered"]) { _, new in new }), "a closed ask has no bar")
     }
 }

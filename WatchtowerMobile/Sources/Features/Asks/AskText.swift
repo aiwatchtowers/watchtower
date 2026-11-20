@@ -24,7 +24,7 @@ enum AskText {
     static let dismiss = "Close without answering"
     static let dismissConfirmTitle = "Close this ask without answering?"
     static let cancel = "Cancel"
-    /// What a dismissal is called once sent: the caption on its way, the outbox's summary.
+    /// What a dismissal is called once sent: the caption on its way, the closed ask's line.
     static let dismissedLabel = "Closed without answering"
 
     /// The confirmation's line: the agent goes on without an answer; the note, when there is one, goes with it.
