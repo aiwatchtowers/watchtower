@@ -102,16 +102,19 @@ Anti-goals
   0700 (dirs) / 0600 (files) from the first byte: the wrapper creates the dirs 0700 and
   runs the session's file-writing steps under `umask 077` before the engine starts, then
   re-applies the modes after the run as a safety net; and excluded from Time
-  Machine (`tmutil addexclusion`). Retention: the wrapper keeps the newest Full run and
-  every run after it as engine history; an older run dir is reduced to its reports
+  Machine (`tmutil addexclusion`). Retention: the wrapper keeps the newest complete Full run and
+  every run after it as engine history; an older run dir that the triage Artifact has a
+  run row for is reduced to its reports and its coverage ledger
   (`REPORT.md`, `FINDINGS-DETAIL.md`, `NEEDS-VALIDATION.md`, `findings.json`,
-  `run-metadata.json`) and moved to `~/security-audit-skill/watchtower-archive/`, which
-  the engine never reads — the bulky per-agent dirs and ledgers are deleted, the full
+  `run-metadata.json`, `coverage-ledger.json` — the import's not-re-found check reads the
+  ledger of a finding's last run) and moved to `~/security-audit-skill/watchtower-archive/`, which
+  the engine never reads; a run dir without a run row is never archived (the owner is told
+  to import it) — the bulky per-agent dirs are deleted, the full
   reports are kept for 180 days after the run and then deleted (by then the triage
   Artifact holds what the owner decided); `watchtower-aborted/` and `watchtower-test/` are emptied after 7
   days. Wrapper state: `~/.config/watchtower/security-audit/` (`config.json` with
   the report URL, `lock`). Audit target: a detached worktree of the pinned commit under
-  `~/Library/Caches/watchtower-security-audit/<run-id>/`, removed after the run.
+  `~/Library/Caches/watchtower-security-audit/<root>-run-<N>/`, removed after the run.
 - Runs need the Agent, `Artifact` and `ArtifactData` tools, so they start from a
   top-level Claude Code session with claude.ai artifacts — not a subagent and not a
   Watchtower workbench session (its transcript shows in Workchat and can reach the phone).
@@ -165,8 +168,9 @@ reasoning):
     if the code behind the claim changed the claim is live again (a changed accepted risk
     deserves a fresh look — deliberate);
   - `fixed` fingerprints — re-checked; found again → regressed;
-  - **disputed rejections** — fingerprints the engine `rejected` that the owner set to
-    `open` or `in_progress`: handed to the engine as current work with the owner's note,
+  - **disputed rejections** — fingerprints the engine `rejected` that the owner disputed
+    on the page (the owner field `disputed: true`, written by the Dispute button or by
+    reopening a rejected finding) and keeps `open` or `in_progress`: handed to the engine as current work with the owner's note,
     to be re-validated by a fresh verifier, never suppressed. **The owner's list wins over
     the engine's own history**: the wrapper instructs the engine's parent that a disputed
     fingerprint is never carried as a prior `rejected` record and is seeded as a `planned`
@@ -175,7 +179,11 @@ reasoning):
     with a verifier check from this run, or in this run's `findings.json` with a fresh
     verdict. One that does not is reported in the terminal summary and on the run row
     (`disputed_not_revalidated: [...]`), shown on the page as **Your dispute was not
-    re-checked**, and stays in the next run's disputed list.
+    re-checked**, and stays in the next run's disputed list. One re-checked and rejected
+    again is reported the same way (`disputed_rejected_again: [...]`, **Re-checked:
+    rejected again**) and stays on the list until the owner sets `false_positive`. A
+    verdict that flips to `rejected` on a finding the owner still has open is not a
+    dispute: the page shows **The engine now rejects it** and the owner decides.
 
 ### 5.2 `docs/security/surfaces.md`
 
@@ -241,8 +249,8 @@ Collections and the writer of every field:
 
 `runs/<run-id>` — all written by the wrapper: `engine_run_dir, kind (full|range), from,
 to, sha, profile, budget, run_status (complete|incomplete), incomplete_reason,
-coverage {covered, deferred, out_of_scope, blocked}, disputed_not_revalidated[], counts {by verdict, by severity,
-regressed, new}, started_at, finished_at`.
+coverage {covered, deferred, out_of_scope, blocked}, disputed_not_revalidated[], disputed_rejected_again[],
+counts {by verdict, by severity, regressed, resurfaced, new}, started_at, finished_at`.
 
 `findings/<doc-id>` (doc id = first 16 hex of SHA-256 of the engine fingerprint, or
 `legacy-<legacy_id>` for a baseline row):
@@ -252,10 +260,11 @@ regressed, new}, started_at, finished_at`.
 | `fingerprint` | wrapper, on create | absent on legacy rows |
 | `legacy_id` | wrapper, on create | legacy rows only |
 | `verdict` (needs_validation\|rejected\|confirmed), `title`, `description`, `root_cause`/`claimed_root_cause`, `trace[]`, `evidence[]`, `blockers[]`, `validation_plan`, `remediation`, `severity`, `reason` | wrapper, every run that sees it | copied from `findings.json` |
-| `first_seen_run`, `last_seen_run`, `run_state` (new\|still_open\|regressed\|not_refound\|fixed) | wrapper | |
+| `first_seen_run`, `last_seen_run`, `run_state` (new\|still_open\|regressed\|resurfaced\|not_refound\|fixed) | wrapper | `resurfaced`: an `accepted`/`false_positive` finding found again as `confirmed`/`needs_validation` (its code changed) |
 | `legacy_match` (a `legacy_id`) | wrapper, only while the field is empty and `legacy_decision` is unset | the engine's schema has no such field, so the wrapper proposes it after the import: a legacy row sharing a file with the record's trace/evidence and describing the same weakness in its note; once set, or once the owner decided, no run writes it again |
-| `status` (open\|in_progress\|fixed\|accepted\|false_positive) | owner (wrapper only on create: `open`; legacy rows: from `baseline-import.json`) | |
-| `note` | owner (legacy rows: from `baseline-import.json` on create) | |
+| `status` (open\|in_progress\|fixed\|accepted\|false_positive) | owner (wrapper only on create: `open`, or `false_positive` for an engine-`rejected` record; legacy rows: from `baseline-import.json`) | |
+| `note` | owner (wrapper on create: "Rejected by the engine's verifier." for an engine-`rejected` record; legacy rows: from `baseline-import.json`) | |
+| `disputed` (bool) | owner | `true` when the owner disputes a `rejected` finding (Dispute button, or reopening it to `open`/`in_progress`); the disputed list = `verdict: rejected`, `disputed: true`, `status` open\|in_progress; the wrapper never writes it |
 | `legacy_decision` (merged\|split) | owner | **Merged**: the finding takes the legacy row's `status` and `note` (owner write), the legacy row gets `merged_into: <doc-id>` and leaves the list; **Split**: `legacy_match` stays for the record, the badge goes, both rows live on |
 | `merged_into` | owner (on the legacy row) | |
 
@@ -266,8 +275,9 @@ naming wrapper fields from this table, and creates with `set`.
 `import-rules.md` (deterministic, with worked examples): create a new fingerprint with
 `set` and `status: open` — except a record the engine `rejected`, created with
 `status: false_positive` and the note "Rejected by the engine's verifier.", so that only
-an owner reopening it makes it a dispute; `run_state` = `regressed` when the owner's status is `fixed`
-and the fingerprint is back, `still_open` when it is open/in_progress, `not_refound` for
+an owner act (`disputed: true`) makes it a dispute; `run_state` = `regressed` when the owner's status is `fixed`
+and the fingerprint is back, `still_open` when it is open/in_progress, `resurfaced` when
+it is `accepted`/`false_positive` and the record is `confirmed`/`needs_validation`, `not_refound` for
 an open finding the run's coverage ledger marks its unit `covered` without re-finding it,
 and `fixed` only when additionally its source changed since it was last seen; findings in
 units the run did not cover are left untouched.
@@ -310,7 +320,7 @@ The full engine reports stay in the engine run dir; the page links to nothing lo
 | Use Cloudflare's security-audit-skill as the engine, Watchtower layer around it | Owner, chat 2026-11-20 |
 | Agents on Mythos via `CLAUDE_CODE_SUBAGENT_MODEL`, main thread on another model | Owner question, chat 2026-11-20 |
 | Engine vendored, pinned to a commit, SHA-256 manifest checked at every run; updates are reviewed PRs | Builder |
-| Only validated real runs are engine history; aborted and test runs kept apart; run dirs 0700/0600 from creation (umask 077), out of Time Machine; runs older than the newest Full reduced to their reports in an archive the engine never reads, deleted 180 days after the run | Builder |
+| Only validated real runs are engine history; aborted and test runs kept apart; run dirs 0700/0600 from creation (umask 077), out of Time Machine; imported runs older than the newest complete Full reduced to their reports and coverage ledger in an archive the engine never reads, deleted 180 days after the run | Builder |
 | Owner's disputed rejections handed back to the engine for re-validation | Builder |
 | Full = `deep` profile, Range = scoped `standard` | Builder |
 | Both engine roles → one read-only `sec-audit-agent` | Builder (follows from read-only) |
