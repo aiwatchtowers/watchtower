@@ -1145,3 +1145,100 @@ func pairOverMemfake(t *testing.T, r *rig, c *ControlClient, relayDeviceID strin
 	})
 	return lp, qr, sas, phone
 }
+
+// queueingWatcher is the memfake with the relay's WatchZone: confirmed
+// (nil) until queued is set, then queued for the next connect
+// (transport.ErrWatchQueued), as the relay client answers while
+// disconnected. Its events carry only errors and controls: a relay that is
+// down delivers no zone write (each would say it is reachable).
+type queueingWatcher struct {
+	*memfake.Fake
+	queued atomic.Bool
+	mu     sync.Mutex
+	calls  map[string]int
+	events chan transport.Event
+}
+
+func newQueueingWatcher(t *testing.T, f *memfake.Fake) *queueingWatcher {
+	w := &queueingWatcher{Fake: f, calls: map[string]int{}, events: make(chan transport.Event)}
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case ev := <-f.Events():
+				if ev.Err == nil && ev.Control == nil {
+					continue
+				}
+				select {
+				case w.events <- ev:
+				case <-done:
+					return
+				}
+			}
+		}
+	}()
+	return w
+}
+
+func (w *queueingWatcher) Events() <-chan transport.Event { return w.events }
+
+func (w *queueingWatcher) WatchZone(_ context.Context, zone string) error {
+	w.mu.Lock()
+	w.calls[zone]++
+	w.mu.Unlock()
+	if w.queued.Load() {
+		return transport.ErrWatchQueued
+	}
+	return nil
+}
+
+func (w *queueingWatcher) count(zone string) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.calls[zone]
+}
+
+// TestQueuedResubscribeKeepsTheHubUnreachable: while the relay is down, a
+// dropped zone's resubscription only queues (the client subscribes it on
+// its next connect): the zone counts as watched — no retries — but the
+// status stays relay_unreachable until an event or a confirmed
+// subscription says otherwise.
+func TestQueuedResubscribeKeepsTheHubUnreachable(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		dir := shortDir(t)
+		setMeta(t, dir, state.MetaEnabled, "1")
+		linkPhoneDirectly(t, dir)
+		r := newBubbleRig(t, dir)
+		w := newQueueingWatcher(t, r.fake)
+		o := r.options()
+		o.newTransport = func(context.Context, identity.Identity, *state.Store, []string) (transport.Transport, error) {
+			return w, nil
+		}
+		o.linkEvery = 50 * time.Millisecond
+		r.start(o)
+		r.waitState(StateRunning, "")
+		s, err := ReadStatus(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := transport.DataZone(s.RelayDeviceID)
+		eventually(t, "the data zone subscribed", func() bool { return w.count(data) == 1 })
+		w.queued.Store(true)
+		r.fake.SendEvent(transport.Event{Err: transport.ErrUnavailable})
+		r.waitState(StateRunning, ReasonRelayUnreachable)
+		r.fake.SendEvent(transport.Event{Zone: data, Err: transport.ErrForbidden})
+		eventually(t, "the dropped data zone subscribed again", func() bool { return w.count(data) == 2 })
+		time.Sleep(300 * time.Millisecond) // several more upkeeps
+		synctest.Wait()
+		if n := w.count(data); n != 2 {
+			t.Fatalf("a queued subscription was retried: %d calls", n)
+		}
+		if st := r.rec.last(); st.Reason != ReasonRelayUnreachable {
+			t.Fatalf("status %s/%s after a queued resubscription, want relay_unreachable", st.State, st.Reason)
+		}
+	})
+}

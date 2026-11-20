@@ -17,6 +17,35 @@ public struct LatencySample: Equatable, Sendable {
     }
 }
 
+/// One wake (live link R7): the app became active and every zone was read `wakeMs` later, on `transport`. No ids.
+public struct WakeSample: Equatable, Sendable {
+    public let at: Date
+    public let transport: TransportKind
+    public let wakeMs: Int
+
+    public init(at: Date, transport: TransportKind, wakeMs: Int) {
+        self.at = at
+        self.transport = transport
+        self.wakeMs = wakeMs
+    }
+}
+
+/// One tap → `applied` echo timing (live link R7): when the echo arrived, on which transport, the action kind and
+/// the milliseconds since the tap. No ids or text.
+public struct ConfirmSample: Equatable, Sendable {
+    public let at: Date
+    public let transport: TransportKind
+    public let kind: String
+    public let confirmMs: Int
+
+    public init(at: Date, transport: TransportKind, kind: String, confirmMs: Int) {
+        self.at = at
+        self.transport = transport
+        self.kind = kind
+        self.confirmMs = confirmMs
+    }
+}
+
 /// The phone's action timings (relay client Phase 4). `latency_pending` holds an open action's id, kind and three
 /// stamps and is deleted when it settles or expires; `latency_samples` holds the content-free results. Nothing
 /// leaves the phone. One writer per replica; every call is a short transaction of its own, never joined to the
@@ -37,7 +66,13 @@ extension ReplicaStore {
             answer_ms INTEGER NOT NULL,
             result_ms INTEGER NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_latency_samples_at ON latency_samples(at)
+        CREATE INDEX IF NOT EXISTS idx_latency_samples_at ON latency_samples(at);
+        CREATE TABLE IF NOT EXISTS latency_wake (
+            at REAL NOT NULL,
+            transport TEXT NOT NULL,
+            wake_ms INTEGER NOT NULL
+        );
+        \(latencyConfirmSQL)
         """
 
     /// An open row older than this is dropped: the hub's `SaveWait`.
@@ -133,6 +168,36 @@ extension ReplicaStore {
         }
     }
 
+    /// A wake that read every zone `ms` after the app became active, ending at `at` (live link R7). A negative span
+    /// (a clock moved) records nothing; rows past `latencyWindow` or beyond `latencyMaxRows` go, as the action
+    /// samples do. A failure logs its error type only and never fails the caller.
+    public func recordWake(ms: Int, transport: TransportKind, at: Date) {
+        guard ms >= 0 else { return }
+        do {
+            try writer.write { db in
+                try db.execute(
+                    sql: "INSERT INTO latency_wake (at, transport, wake_ms) VALUES (?, ?, ?)",
+                    arguments: [at.timeIntervalSince1970, transport.rawValue, ms])
+                try Self.pruneWakes(db, now: at)
+            }
+        } catch {
+            logger.error("wake sample failed: \(String(describing: type(of: error)), privacy: .public)")
+        }
+    }
+
+    /// The wakes that ended at or after `since`, oldest first.
+    public func wakeSamples(since: Date) throws -> [WakeSample] {
+        try writer.read { db in
+            let rows = try Row.fetchAll(
+                db, sql: "SELECT at, transport, wake_ms FROM latency_wake WHERE at >= ? ORDER BY at, rowid",
+                arguments: [since.timeIntervalSince1970])
+            return rows.compactMap { row in
+                guard let transport = TransportKind(rawValue: row["transport"]) else { return nil }
+                return WakeSample(at: Date(timeIntervalSince1970: row["at"]), transport: transport, wakeMs: row["wake_ms"])
+            }
+        }
+    }
+
     /// The kind of an open ordered or legacy action (the outbox row carries none).
     func actionKindForLatency(id: String) throws -> String? {
         try writer.read { db in
@@ -155,6 +220,16 @@ extension ReplicaStore {
             sql: """
                 DELETE FROM latency_samples WHERE rowid IN
                     (SELECT rowid FROM latency_samples ORDER BY at DESC, rowid DESC LIMIT -1 OFFSET ?)
+                """,
+            arguments: [latencyMaxRows])
+    }
+
+    private static func pruneWakes(_ db: Database, now: Date) throws {
+        try db.execute(sql: "DELETE FROM latency_wake WHERE at < ?", arguments: [now.timeIntervalSince1970 - latencyWindow])
+        try db.execute(
+            sql: """
+                DELETE FROM latency_wake WHERE rowid IN
+                    (SELECT rowid FROM latency_wake ORDER BY at DESC, rowid DESC LIMIT -1 OFFSET ?)
                 """,
             arguments: [latencyMaxRows])
     }
@@ -183,5 +258,61 @@ extension ReplicaStore {
                 arguments: [max(answered, effect), row["transport"] as String, answerMs, resultMs])
         }
         try prune(db, now: now)
+    }
+}
+
+// MARK: - Confirm (live link R7)
+
+extension ReplicaStore {
+    /// `latency_confirm`: one row per confirmed action, pruned like `latency_samples` (same window and row cap).
+    static let latencyConfirmSQL = """
+        CREATE TABLE IF NOT EXISTS latency_confirm (
+            at REAL NOT NULL,
+            transport TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            confirm_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_latency_confirm_at ON latency_confirm(at)
+        """
+
+    /// Tap → `applied` echo of a `kind` action, stamped at `at`, the moment the echo arrived (never when the
+    /// optimistic overlay clears). A negative time (a clock moved) records nothing; a failure logs its error type
+    /// only and never fails the caller.
+    public func recordConfirm(kind: ActionKind, ms: Int, transport: TransportKind, at: Date) {
+        guard ms >= 0 else { return }
+        do {
+            try writer.write { db in
+                try db.execute(
+                    sql: "INSERT INTO latency_confirm (at, transport, kind, confirm_ms) VALUES (?, ?, ?, ?)",
+                    arguments: [at.timeIntervalSince1970, transport.rawValue, kind.rawValue, ms])
+                try db.execute(
+                    sql: "DELETE FROM latency_confirm WHERE at < ?",
+                    arguments: [at.timeIntervalSince1970 - Self.latencyWindow])
+                try db.execute(
+                    sql: """
+                        DELETE FROM latency_confirm WHERE rowid IN
+                            (SELECT rowid FROM latency_confirm ORDER BY at DESC, rowid DESC LIMIT -1 OFFSET ?)
+                        """,
+                    arguments: [Self.latencyMaxRows])
+            }
+        } catch {
+            logger.error("confirm stamp failed: \(String(describing: type(of: error)), privacy: .public)")
+        }
+    }
+
+    /// The confirm rows stamped at or after `since`, oldest first.
+    public func confirmSamples(since: Date) throws -> [ConfirmSample] {
+        try writer.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: "SELECT at, transport, kind, confirm_ms FROM latency_confirm WHERE at >= ? ORDER BY at, rowid",
+                arguments: [since.timeIntervalSince1970])
+            return rows.compactMap { row in
+                guard let transport = TransportKind(rawValue: row["transport"]) else { return nil }
+                return ConfirmSample(
+                    at: Date(timeIntervalSince1970: row["at"]), transport: transport, kind: row["kind"],
+                    confirmMs: row["confirm_ms"])
+            }
+        }
     }
 }

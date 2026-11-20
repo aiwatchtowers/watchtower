@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"watchtower/internal/agentfiles"
@@ -66,6 +68,20 @@ type block struct {
 	Input     json.RawMessage `json:"input"`
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error"`
+}
+
+// recordPeerResults hands the tool_results of a user record to the peer tracker.
+func (st *state) recordPeerResults(rec record, at time.Time) {
+	var blocks []block
+	if json.Unmarshal(rec.Message.Content, &blocks) != nil {
+		return
+	}
+	for _, b := range blocks {
+		if b.Type == "tool_result" {
+			st.peers.result(b.ToolUseID, resultText(b.Content), b.IsError, at)
+		}
+	}
 }
 
 // state is the mutable parse state of one pass over a transcript file.
@@ -74,6 +90,7 @@ type state struct {
 	conv      string
 	byMsg     map[string]int // assistant message id -> index in res.Entries
 	markers   map[string]int // Agent tool_use id -> index in res.Entries
+	peers     peerTracker    // send_to_session / start_session calls and their results
 	sidechain bool           // reading a subagent file: its records are the feed
 	hasTask   bool
 	handback  string
@@ -92,37 +109,90 @@ func parse(r io.Reader, startOffset int64, conv string, limit int) (*Result, err
 }
 
 func newState(conv string, startOffset int64, sidechain bool) *state {
+	res := &Result{Offset: startOffset, Unknown: map[string]int{}}
 	return &state{
-		res:  &Result{Offset: startOffset, Unknown: map[string]int{}},
-		conv: conv, byMsg: map[string]int{}, markers: map[string]int{}, sidechain: sidechain,
+		res:  res,
+		conv: conv, byMsg: map[string]int{}, markers: map[string]int{}, peers: newPeerTracker(res, conv), sidechain: sidechain,
 	}
 }
 
+// Lines are decoded in batches: the top-level JSON decode of a record is pure
+// and most of a parse's cost, so a batch is decoded in parallel and then
+// handled in file order. A batch is bounded in lines and bytes.
+const (
+	decodeBatchLines = 512
+	decodeBatchBytes = 4 << 20
+	minParallelLines = 64
+)
+
+// pendingLine is one read line: raw is nil for an over-long line.
+type pendingLine struct {
+	raw []byte
+	n   int64
+	rec record
+	err error
+}
+
 func (st *state) run(r io.Reader, limit int) (*Result, error) {
-	res := st.res
 	br := bufio.NewReaderSize(r, 64<<10)
+	batch := make([]pendingLine, 0, decodeBatchLines)
+	size := 0
 	for {
 		raw, n, complete, err := agentfiles.NextLine(br, limit)
+		if complete {
+			batch = append(batch, pendingLine{raw: raw, n: n})
+			size += len(raw)
+		}
+		if !complete || len(batch) == decodeBatchLines || size >= decodeBatchBytes {
+			st.handleBatch(batch)
+			batch, size = batch[:0], 0
+		}
 		if !complete {
 			if err != nil && !errors.Is(err, io.EOF) {
 				return nil, fmt.Errorf("reading transcript: %w", err)
 			}
-			break
-		}
-		res.Offset += n
-		if raw == nil {
-			res.Skipped++
-		} else {
-			st.handle(raw)
+			return st.res, nil
 		}
 	}
-	return res, nil
 }
 
-func (st *state) handle(raw []byte) {
+// handleBatch decodes the batch's records, in parallel when it is large
+// enough to pay for it, then handles them in order.
+func (st *state) handleBatch(batch []pendingLine) {
+	decode := func(ls []pendingLine) {
+		for i := range ls {
+			if ls[i].raw != nil {
+				ls[i].err = json.Unmarshal(ls[i].raw, &ls[i].rec)
+			}
+		}
+	}
+	workers := min(runtime.GOMAXPROCS(0), len(batch)/minParallelLines)
+	if workers < 2 {
+		decode(batch)
+	} else {
+		var wg sync.WaitGroup
+		per := (len(batch) + workers - 1) / workers
+		for lo := 0; lo < len(batch); lo += per {
+			part := batch[lo:min(lo+per, len(batch))]
+			wg.Go(func() { decode(part) })
+		}
+		wg.Wait()
+	}
+	for i := range batch {
+		l := &batch[i]
+		st.res.Offset += l.n
+		if l.raw == nil {
+			st.res.Skipped++
+		} else {
+			st.handle(l.rec, l.err)
+		}
+		*l = pendingLine{} // drop the line's bytes once handled
+	}
+}
+
+func (st *state) handle(rec record, decodeErr error) {
 	res, conv := st.res, st.conv
-	var rec record
-	if err := json.Unmarshal(raw, &rec); err != nil {
+	if decodeErr != nil {
 		res.Unknown["<invalid>"]++
 		return
 	}
@@ -157,6 +227,9 @@ func (st *state) handleUser(rec record, at time.Time) {
 		return
 	}
 	st.recordParentReport(rec)
+	if !st.sidechain {
+		st.recordPeerResults(rec, at)
+	}
 	if st.sidechain {
 		// only the first plain-string record is the task
 		var task string
@@ -246,6 +319,10 @@ func classifyUserText(uuid, text string) (Entry, bool) {
 		return noticeEntry(uuid, text), true
 	}
 	e := Entry{ID: uuid, Kind: KindOwner, Text: text}
+	if peer, body, ok := parsePeerLine(text); ok {
+		e.Kind, e.Peer, e.Text = KindPeer, peer, body
+		return e, true
+	}
 	switch {
 	case strings.HasPrefix(text, "<command-name>"):
 		name := firstGroup(cmdNameRe, text)
@@ -324,12 +401,15 @@ func (st *state) assistant(rec record, at time.Time) {
 	}
 	var parts []string
 	var calls []block
+	var peers []block
 	for _, b := range blocks {
 		switch {
 		case b.Type == "text" && strings.TrimSpace(b.Text) != "":
 			parts = append(parts, strings.TrimSpace(b.Text))
 		case b.Type == "tool_use" && b.Name == "Agent":
 			calls = append(calls, b)
+		case b.Type == "tool_use" && !st.sidechain && isPeerTool(b.Name):
+			peers = append(peers, b)
 		case b.Type == "tool_use" && b.Name == handbackTool && st.sidechain:
 			var in struct {
 				Message string `json:"message"`
@@ -354,6 +434,9 @@ func (st *state) assistant(rec record, at time.Time) {
 	}
 	for _, b := range calls {
 		st.marker(b, at)
+	}
+	for _, b := range peers {
+		st.peers.call(b.ID, b.Name, b.Input, at)
 	}
 }
 

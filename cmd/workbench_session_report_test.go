@@ -10,10 +10,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/db"
 	"watchtower/internal/gitbin"
 	"watchtower/internal/sessionreport"
 )
@@ -31,15 +33,22 @@ func sessionReportWorkbench(t *testing.T, folder string) {
 }
 
 // loadSessionReportFixture loads the SQL fixture at path into the command's
-// database and binds workbench 1 to folder.
+// database and binds workbench 1 to folder. The command's merge refresh
+// runs on a fixed clock: no time budget on the wall for its git reads.
 func loadSessionReportFixture(t *testing.T, path, folder string) {
 	t.Helper()
+	now := time.Now()
+	sessionReportClock = func() time.Time { return now }
+	t.Cleanup(func() { sessionReportClock = nil })
 	database := writeActionsConfig(t)
 	script, err := os.ReadFile(path)
 	require.NoError(t, err)
 	_, err = database.Exec(string(script))
 	require.NoError(t, err)
+	db.SeedTestHomeFolders(t, database)
 	_, err = database.Exec(`UPDATE projects SET folder_path = ? WHERE id = 1`, folder)
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE workbench_folders SET folder_path = ? WHERE workbench_id = 1 AND position = 0`, folder)
 	require.NoError(t, err)
 }
 

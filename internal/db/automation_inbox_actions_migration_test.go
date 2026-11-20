@@ -45,7 +45,7 @@ func TestMigration00149_BackfillsDoneAtFromReadAt(t *testing.T) {
 	require.NoError(t, gooseDownTo(d.DB, "migrations", 148))
 	before := automationRunObjects(t, d)
 
-	wb := newTestWorkbench(t, d)
+	wb := newOldSchemaWorkbench(t, d)
 	a := seedAutomationRow(t, d, "digest", "/acme/automations/digest.md", "h1")
 	_, err := d.Exec(`INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES
 		(1, ?, 'manual', 'succeeded'), (2, ?, 'schedule', 'waiting'), (3, ?, 'manual', 'queued')`, a, a, a)

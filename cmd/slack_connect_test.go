@@ -148,7 +148,11 @@ func TestSlackLinkConnect_NewAccount(t *testing.T) {
 	assert.Equal(t, connNewID, a.ClientID)
 	assert.Equal(t, connAppID, a.AppID)
 	assert.Equal(t, watchtowerslack.Namespace(id, connUser), a.CurrentUserID)
-	assert.Empty(t, a.RefreshTokenExpiresAt, "Slack sent no refresh-token lifetime")
+	// Slack sent no refresh-token lifetime: the rotating token gets the
+	// 30-day default, as a refresh does (slackauth.IssuedExpiries, review m2).
+	at, err := time.Parse(time.RFC3339, a.RefreshTokenExpiresAt)
+	require.NoError(t, err)
+	assert.WithinDuration(t, before.Add(30*24*time.Hour), at, time.Minute)
 
 	tok, err := env.store(id).Load()
 	require.NoError(t, err)
@@ -157,6 +161,23 @@ func TestSlackLinkConnect_NewAccount(t *testing.T) {
 	assert.Equal(t, connNewID, tok.ClientID)
 	assert.Equal(t, connAppID, tok.AppID)
 	assert.WithinDuration(t, before.Add(12*time.Hour), tok.ExpiresAt, time.Minute)
+	assert.WithinDuration(t, before.Add(30*24*time.Hour), tok.RefreshExpiresAt, time.Minute)
+}
+
+// A grant without expires_in still gets the 12-hour access expiry when it
+// rotates, so the refresher ever renews it (review m2); a grant without a
+// refresh token keeps no expiry.
+func TestSlackGrantToken_DefaultExpiries(t *testing.T) {
+	now := time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)
+	g := connGrant(connNewID)
+	g.ExpiresIn = 0
+	tok := slackGrantToken(g, slackIdentity{TeamID: connTeam}, now)
+	assert.Equal(t, now.Add(12*time.Hour), tok.ExpiresAt)
+	assert.Equal(t, now.Add(30*24*time.Hour), tok.RefreshExpiresAt)
+	g.RefreshToken = ""
+	tok = slackGrantToken(g, slackIdentity{TeamID: connTeam}, now)
+	assert.True(t, tok.ExpiresAt.IsZero())
+	assert.True(t, tok.RefreshExpiresAt.IsZero())
 }
 
 func TestSlackLinkConnect_RefreshExpiryRecorded(t *testing.T) {
@@ -390,7 +411,7 @@ func TestSlackLinkConnect_RebindRestartMidway(t *testing.T) {
 	accounts, err := env.db.ListSlackAccounts()
 	require.NoError(t, err)
 	var out bytes.Buffer
-	require.NoError(t, writeSlackAccountsJSON(&out, accounts))
+	require.NoError(t, writeSlackAccountsJSON(&out, env.db, accounts))
 	var doc struct {
 		Accounts []struct {
 			ID        int64 `json:"id"`
@@ -607,6 +628,49 @@ func TestSlackLogin_WorkspaceAppAccountUsesPKCE(t *testing.T) {
 	assert.Len(t, accounts, 1)
 }
 
+// slack login on a legacy account #1 that a pre-#915 Re-login moved to
+// another team signs into the home team of its stored data (the legacy
+// workspace row), not the row's moved team_id (review m4).
+func TestSlackLogin_ConnectTargetsTheHomeTeam(t *testing.T) {
+	_, configPath := workspaceInitHome(t)
+	_, err := initWorkspace(configPath, "", "default", false)
+	require.NoError(t, err)
+	setSlackBuild(t, "", "", connRetiredID)
+	policytest.Set(t, nil)
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	id := connectEnv{cfg: cfg, db: database}.seedAccount(t, connOtherTeam, connNewID)
+	require.Equal(t, int64(1), id)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: connTeam, Name: "Acme"}))
+	require.NoError(t, database.Close())
+	stubSlackIdentityServer(t, connUser, connTeam, "Acme", "acme")
+	ln, err := slackconnect.Listen(0)
+	require.NoError(t, err)
+	opened := make(chan string, 1)
+	slackConnectTestDeps(t, ln, func(string, string) (slackconnect.Grant, error) { return connGrant(connNewID), nil }, opened)
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := runRootCmd(t, []*cobra.Command{slackCmd, slackLoginCmd}, "slack", "login", "--account", "1", "--config", configPath)
+		done <- err
+	}()
+	u, err := url.Parse(<-opened)
+	require.NoError(t, err)
+	assert.Equal(t, connTeam, u.Query().Get("team"), "the home team, not the moved row's")
+	resp, err := http.Get("http://" + ln.Addr().String() + "/callback?state=" + url.QueryEscape(u.Query().Get("state")) + "&code=c")
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.NoError(t, <-done)
+	database, err = db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	defer database.Close()
+	a, err := database.GetSlackAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, connTeam, a.TeamID, "the row is back on its home team")
+}
+
 func TestSlackConnectReason_EveryOutcome(t *testing.T) {
 	assert.Equal(t, "other", slackConnectReason(errors.New("boom")))
 	err := slackOtherTeamError(slackIdentity{TeamID: connOtherTeam}, db.SlackHomeTeam{ID: connTeam, Name: "Acme"})
@@ -697,4 +761,35 @@ func stubSlackIdentity(t *testing.T, user, team string) *identityStub {
 	}
 	t.Cleanup(func() { newSlackClientForToken = orig })
 	return stub
+}
+
+// `auth login` re-consents account #1 through the build's app; an account
+// #1 on a company app (relogin connect) or the retired shared app (move) is
+// refused with a pointer instead of being overwritten (review m6). Nothing
+// reaches Slack: no browser opens.
+func TestAuthLogin_RefusedOffTheBuiltinApp(t *testing.T) {
+	for _, tc := range []struct {
+		name, clientID, want string
+	}{
+		{name: "connect", clientID: connNewID, want: "watchtower slack login --account 1"},
+		{name: "move", clientID: connRetiredID, want: "retired shared Slack app"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, configPath := workspaceInitHome(t)
+			_, err := initWorkspace(configPath, "", "default", false)
+			require.NoError(t, err)
+			setSlackBuild(t, connCorpID, "test-secret", connRetiredID)
+			cfg, err := config.Load(configPath)
+			require.NoError(t, err)
+			database, err := db.Open(cfg.DBPath())
+			require.NoError(t, err)
+			id := connectEnv{cfg: cfg, db: database}.seedAccount(t, connTeam, tc.clientID)
+			require.Equal(t, int64(1), id)
+			require.NoError(t, database.Close())
+
+			_, _, err = runRootCmd(t, []*cobra.Command{authCmd, authLoginCmd}, "auth", "login", "--no-open", "--config", configPath)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
 }

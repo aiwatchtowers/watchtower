@@ -46,6 +46,9 @@ struct ProfileSettings: View {
                 SkillsSettingsSection()
                 Section("Instructions") { InstructionsSettingsSection() }
                     .id(SettingsAnchor.instructions)
+                if let watchman = appState.watchmanCenter {
+                    Section(WatchmanSettingsCopy.sectionTitle) { WatchmanSettingsSection(center: watchman) }
+                }
                 AssistantToolsSettingsSection()
                 ClaudeAIConnectorsSection(
                     model: appState.claudeAIConnectors, lockedOff: !appState.managedPolicy.policy.claudeAIToolsAllowed

@@ -615,6 +615,70 @@ func TestCloseGoingAwayWithoutFrame(t *testing.T) {
 	}
 }
 
+// TestSendWithoutSocketIsNotSent: a request made while the connection has no socket was never
+// written, so Send says ErrNotSent (the caller may send it another way), which still matches
+// ErrDisconnected.
+func TestSendWithoutSocketIsNotSent(t *testing.T) {
+	s := newFakeServer(t)
+	s.ws = func(w http.ResponseWriter, r *http.Request) {
+		if ws := acceptHello(t, w, r, nil); ws != nil {
+			_, _, _ = ws.Read(r.Context()) // hold the socket until the client closes
+		}
+	}
+	conn, err := newClient(t, s).Connect(t.Context())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	_ = conn.Close()
+	_, err = conn.Send(t.Context(), &relayv1.Request{Op: &relayv1.Request_Changes{Changes: &relayv1.Changes{Zone: "z"}}})
+	if !errors.Is(err, client.ErrNotSent) || !errors.Is(err, client.ErrDisconnected) {
+		t.Fatalf("Send after close = %v, want ErrNotSent matching ErrDisconnected", err)
+	}
+}
+
+// TestSendRetryAfterDropIsNotNotSent: attempt 1 was written and answered UNAVAILABLE, then the socket
+// dropped before the retry. The server saw the request, so Send must not say ErrNotSent (a caller
+// would send it again another way); it is a plain ErrDisconnected.
+func TestSendRetryAfterDropIsNotNotSent(t *testing.T) {
+	s := newFakeServer(t)
+	s.ws = func(w http.ResponseWriter, r *http.Request) {
+		ws := acceptHello(t, w, r, nil)
+		if ws == nil {
+			return
+		}
+		_, b, err := ws.Read(r.Context())
+		var f relayv1.Frame
+		if err != nil || proto.Unmarshal(b, &f) != nil {
+			t.Errorf("read request: %v", err)
+			return
+		}
+		resp := unavailable()
+		resp.Id = f.GetRequest().GetId()
+		out, _ := proto.Marshal(&relayv1.Frame{Kind: &relayv1.Frame_Response{Response: resp}})
+		_ = ws.Write(r.Context(), websocket.MessageBinary, out)
+		_ = ws.Close(websocket.StatusInternalError, "gone")
+	}
+	clk := newFakeClock()
+	// The reconnect waits an hour of the fake clock, so the retry finds no socket.
+	conn, err := newClient(t, s, client.WithClock(clk), client.WithBackoff(func(int) time.Duration { return time.Hour })).Connect(t.Context())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	done := make(chan error, 1)
+	go func() {
+		_, err := conn.Send(t.Context(), &relayv1.Request{Op: &relayv1.Request_Changes{Changes: &relayv1.Changes{Zone: "z"}}})
+		done <- err
+	}()
+	clk.waitBetween(t, 500*time.Millisecond, 500*time.Millisecond) // the UNAVAILABLE retry delay
+	clk.waitBetween(t, time.Hour, time.Hour)                       // the socket dropped: reconnect waits
+	clk.Advance(500 * time.Millisecond)
+	err = <-done
+	if errors.Is(err, client.ErrNotSent) || !errors.Is(err, client.ErrDisconnected) {
+		t.Fatalf("Send = %v, want ErrDisconnected but not ErrNotSent", err)
+	}
+}
+
 // TestNon200WithoutAnErrorIsNoAnswer (#1872): an HTTP error status whose body
 // decodes to a Response without an error (an empty 502/503 from the edge
 // decodes as an empty Response) is no answer, never a success: Do fails with

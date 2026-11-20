@@ -153,12 +153,10 @@ func TestServiceInstallRefusesATemporaryBuildBeforeWritingAnything(t *testing.T)
 
 func runService(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	// The verbs' own flags go back to their defaults. The root's persistent
-	// flags the run set (--config always, --workspace sometimes) lose their
-	// Changed mark too, but --config and --workspace keep the values the test
-	// gave them: their defaults would point the next run at the real config.
-	// A leftover Changed --config made the next runWorkbench's flag reset do
-	// exactly that, mid-test.
+	// Only the verbs' own flags are reset: resetting the inherited --config
+	// would point the next run at the real config file. The marks of the
+	// inherited --config and --workspace are cleared, though: left set, a
+	// later run's resetSetFlags would reset them.
 	cfgPath, ws := flagConfig, flagWorkspace
 	var out, errOut bytes.Buffer
 	rootCmd.SetOut(&out)
@@ -171,6 +169,9 @@ func runService(t *testing.T, args ...string) (string, error) {
 	}
 	resetSetFlags(rootCmd)
 	flagConfig, flagWorkspace = cfgPath, ws
+	for _, name := range []string{"config", "workspace"} {
+		rootCmd.PersistentFlags().Lookup(name).Changed = false
+	}
 	return out.String(), err
 }
 

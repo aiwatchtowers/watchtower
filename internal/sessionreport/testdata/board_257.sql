@@ -2,6 +2,7 @@
 -- leaves and two todo leaves. Two targets share PR 140; a branch whose cached
 -- row names PR 146 joins that PR; one branch was never checked.
 INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme');
+INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name) VALUES (1, 1, '/tmp/acme', 0, 'owner', 'acme');
 
 INSERT INTO targets (id, text, period_start, period_end, parent_id, status, project_id, branch, pr) VALUES
     (257, 'Inbox rework', '2026-09-28', '2026-10-05', NULL, 'in_progress', 1, '', ''),
@@ -26,9 +27,9 @@ INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_pa
 INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_path) VALUES
     (5, 1, 'shell', 'Shell', 257, '/tmp/acme');
 
-INSERT INTO workbench_pr_states (project_id, ref, state, pr_number, title, additions, deletions, merged_at, checked_at) VALUES
-    (1, 'pr:140', 'merged', 140, 'Inbox list', 300, 20, '2026-10-01T18:00:00Z', '2026-10-02T10:00:00Z'),
-    (1, 'pr:146', 'merged', 146, 'Inbox detail', 150, 40, '2026-10-02T18:00:00Z', '2026-10-02T19:00:00Z'),
-    (1, 'branch:feat/detector-b', 'merged', 146, 'Inbox detail', 150, 40, '2026-10-02T18:00:00Z', '2026-10-02T19:00:00Z'),
-    (1, 'branch:feat/inbox-list', 'merged', 140, 'Inbox list', 300, 20, '2026-10-01T18:00:00Z', '2026-10-02T10:00:00Z'),
-    (1, 'branch:feat/inbox-detail', 'merged', 146, 'Inbox detail', 150, 40, '2026-10-02T18:00:00Z', '2026-10-02T19:00:00Z');
+INSERT INTO workbench_pr_states (project_id, workbench_folder_id, ref, state, pr_number, title, additions, deletions, merged_at, checked_at) VALUES
+    (1, 1, 'pr:140', 'merged', 140, 'Inbox list', 300, 20, '2026-10-01T18:00:00Z', '2026-10-02T10:00:00Z'),
+    (1, 1, 'pr:146', 'merged', 146, 'Inbox detail', 150, 40, '2026-10-02T18:00:00Z', '2026-10-02T19:00:00Z'),
+    (1, 1, 'branch:feat/detector-b', 'merged', 146, 'Inbox detail', 150, 40, '2026-10-02T18:00:00Z', '2026-10-02T19:00:00Z'),
+    (1, 1, 'branch:feat/inbox-list', 'merged', 140, 'Inbox list', 300, 20, '2026-10-01T18:00:00Z', '2026-10-02T10:00:00Z'),
+    (1, 1, 'branch:feat/inbox-detail', 'merged', 146, 'Inbox detail', 150, 40, '2026-10-02T18:00:00Z', '2026-10-02T19:00:00Z');

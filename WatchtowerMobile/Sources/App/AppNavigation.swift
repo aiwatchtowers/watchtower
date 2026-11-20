@@ -23,6 +23,8 @@ final class AppNavigation {
     var calendarPath: [CalendarRoute] = []
     /// The Chats tab's stack: a conversation, a new chat.
     var chatsPath: [ChatRoute] = []
+    /// The Inbox tab's stack: a folder, a card, a row's detail.
+    var inboxPath: [InboxRoute] = []
     /// Now's stack, so another tab can open Settings on it.
     var nowPath = NavigationPath()
     /// The Workbench tab's stack: a tapped alert pushes its screen here.
@@ -103,6 +105,7 @@ final class AppNavigation {
     func resetStacks() {
         calendarPath = []
         chatsPath = []
+        inboxPath = []
         nowPath = NavigationPath()
         workbenchPath = NavigationPath()
         openedAlert = nil

@@ -28,7 +28,7 @@ type GoogleAccount struct {
 	UpdatedAt                  string
 	// CompanySlug ties the account to a company bundle's OAuth client; '' =
 	// our shared client or an own per-account credentials file (migration
-	// 00198).
+	// 00210).
 	CompanySlug string
 }
 

@@ -25,6 +25,9 @@ package enum OwnerAskPresentation {
              AnswerAction(label: "Approve", verdict: .approved, isPrimary: true)]
         case .check: [AnswerAction(label: "Send", verdict: nil, isPrimary: true)]
         case .question: [AnswerAction(label: "Answer", verdict: nil, isPrimary: true)]
+        // A folder suggestion is answered on its own card (Put on Bench, Not
+        // Now, Never for This Folder), never with a plain answer.
+        case .folder: []
         }
     }
 
@@ -126,6 +129,9 @@ package enum OwnerAskPresentation {
         }
     }
 
+    /// A folder suggestion's next step in "Waiting for you".
+    package static let folderNextStep = FolderSuggestionPresentation.putOnBench
+
     /// A "Waiting for you" row's next step (board #366): "Review doc",
     /// "Answer 2 questions", "Run 1 check".
     package static func nextStep(for ask: OwnerAsk) -> String {
@@ -133,6 +139,7 @@ package enum OwnerAskPresentation {
         case .review: "Review doc"
         case .question: counted("Answer", ask.payload.questions.count, "question")
         case .check: counted("Run", ask.payload.checklist.count, "check")
+        case .folder: folderNextStep
         }
     }
 
@@ -231,6 +238,7 @@ package enum OwnerAskPresentation {
         case .review: "doc.text.magnifyingglass"
         case .check: "checklist"
         case .question: "questionmark.bubble"
+        case .folder: FolderSuggestionPresentation.icon
         }
     }
 
@@ -239,6 +247,7 @@ package enum OwnerAskPresentation {
         case .review: "Review"
         case .check: "Check"
         case .question: "Question"
+        case .folder: "Folder"
         }
     }
 

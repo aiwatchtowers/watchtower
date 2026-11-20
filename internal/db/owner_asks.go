@@ -19,7 +19,7 @@ type OwnerAsk struct {
 	WorkbenchID     int64
 	SessionID       sql.NullInt64 // terminal_sessions row; NULL = an external terminal or a gone session
 	TargetID        sql.NullInt64
-	Kind            string // review | check | question
+	Kind            string // review | check | question | folder (AskKind*)
 	Title           string
 	Summary         string
 	Changes         string // review re-round: what changed
@@ -41,7 +41,19 @@ type OwnerAsk struct {
 	AutomationRunID sql.NullInt64
 	// DocType is a review ask's document kind (00158): spec | plan | other; '' for any other ask.
 	DocType string
+	// DocFolderID is the workbench folder DocPath is relative to (00209);
+	// NULL = the home folder.
+	DocFolderID sql.NullInt64
 }
+
+// The kinds of an ask (owner_asks.kind); folder is the agent's suggestion to
+// put a folder on the bench (00209).
+const (
+	AskKindReview   = "review"
+	AskKindCheck    = "check"
+	AskKindQuestion = "question"
+	AskKindFolder   = "folder"
+)
 
 // OwnerAskFilter selects the asks of one workbench.
 type OwnerAskFilter struct {
@@ -77,11 +89,32 @@ const (
 	ownerAskHead = `a.id, a.project_id, a.session_id, a.target_id, a.kind, a.title, a.summary, a.changes,
 	a.payload, a.doc_path, `
 	ownerAskTail = `, a.previous_ask_id, a.status, a.withdrawn_reason, a.answer, a.created_at,
-	a.answered_at, a.delivered_at, a.level, a.origin, a.chat_asked_at, a.withdrawn_at, a.automation_run_id, a.doc_type`
-	ownerAskCols = ownerAskHead + `a.doc_snapshot` + ownerAskTail
+	a.answered_at, a.delivered_at, a.level, a.origin, a.chat_asked_at, a.withdrawn_at, a.automation_run_id, a.doc_type, `
 	// ownerAskListCols leaves doc_snapshot out: it holds up to 2 MiB a row.
-	ownerAskListCols = ownerAskHead + `''` + ownerAskTail
+	// Writes only (the database is migrated); readers use askCols.
+	ownerAskListCols = ownerAskHead + `''` + ownerAskTail + `a.doc_folder_id`
 )
+
+// askCols is the ask columns, doc_snapshot included when withSnapshot, for a reader
+// outside a transaction. doc_folder_id (00209) reads as NULL on a database
+// not yet migrated past it: `workbench asks` and the ask guard open the
+// database without migrating. A write path (the database is migrated) uses
+// the constants.
+func (db *DB) askCols(withSnapshot bool) (string, error) {
+	snapshot := `''`
+	if withSnapshot {
+		snapshot = `a.doc_snapshot`
+	}
+	folder := `a.doc_folder_id`
+	ok, err := db.hasColumnsCached("owner_asks", "doc_folder_id")
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		folder = `NULL`
+	}
+	return ownerAskHead + snapshot + ownerAskTail + folder, nil
+}
 
 // answeredForSessionPredicate (over alias a, s = the LEFT JOINed session):
 // the ask's session is the given one, none, or a row that is gone.
@@ -96,7 +129,7 @@ func scanOwnerAsk(row interface{ Scan(...any) error }) (*OwnerAsk, error) {
 	var a OwnerAsk
 	if err := row.Scan(&a.ID, &a.WorkbenchID, &a.SessionID, &a.TargetID, &a.Kind, &a.Title, &a.Summary, &a.Changes,
 		&a.Payload, &a.DocPath, &a.DocSnapshot, &a.PreviousAskID, &a.Status, &a.WithdrawnReason, &a.Answer,
-		&a.CreatedAt, &a.AnsweredAt, &a.DeliveredAt, &a.Level, &a.Origin, &a.ChatAskedAt, &a.WithdrawnAt, &a.AutomationRunID, &a.DocType); err != nil {
+		&a.CreatedAt, &a.AnsweredAt, &a.DeliveredAt, &a.Level, &a.Origin, &a.ChatAskedAt, &a.WithdrawnAt, &a.AutomationRunID, &a.DocType, &a.DocFolderID); err != nil {
 		return nil, err
 	}
 	return &a, nil
@@ -134,6 +167,11 @@ func (db *DB) InsertOwnerAsk(tx *sql.Tx, a OwnerAsk) (id, superseded int64, err 
 			return 0, 0, err
 		}
 	}
+	if a.DocFolderID.Valid {
+		if err := checkOwnedBy(tx, workbenchFolderOwnerQuery, "workbench folder", a.WorkbenchID, a.DocFolderID.Int64); err != nil {
+			return 0, 0, err
+		}
+	}
 	if a.PreviousAskID.Valid {
 		if superseded, err = supersedeOwnerAsk(tx, a); err != nil {
 			return 0, 0, err
@@ -151,10 +189,11 @@ func (db *DB) InsertOwnerAsk(tx *sql.Tx, a OwnerAsk) (id, superseded int64, err 
 	}
 	res, err := tx.Exec(`INSERT INTO owner_asks
 		(project_id, session_id, target_id, kind, title, summary, changes, payload, doc_path, doc_snapshot, previous_ask_id,
-		 level, origin, chat_asked_at, automation_run_id, doc_type)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 level, origin, chat_asked_at, automation_run_id, doc_type, doc_folder_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.WorkbenchID, a.SessionID, a.TargetID, a.Kind, a.Title, a.Summary, a.Changes, a.Payload,
-		a.DocPath, a.DocSnapshot, a.PreviousAskID, a.Level, a.Origin, a.ChatAskedAt, a.AutomationRunID, a.DocType)
+		a.DocPath, a.DocSnapshot, a.PreviousAskID, a.Level, a.Origin, a.ChatAskedAt, a.AutomationRunID, a.DocType,
+		a.DocFolderID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("inserting ask: %w", err)
 	}
@@ -177,6 +216,40 @@ func (db *DB) OpenSpecAskOfSession(sessionID int64) (int64, error) {
 	}
 	if err != nil {
 		return 0, fmt.Errorf("finding the session's open spec ask: %w", err)
+	}
+	return id, nil
+}
+
+// FolderAskPayload is a folder ask's payload (00209, spec 2026-11-18 §4 item
+// 4): the folder the agent suggests, its repository root, how many tool
+// calls of the session touched it, the agent's reason and, when the folder
+// is on another bench, that bench (the card offers the merge).
+type FolderAskPayload struct {
+	Path       string           `json:"path"`
+	RepoRoot   string           `json:"repo_root"`
+	Touches    int              `json:"touches"`
+	Why        string           `json:"why"`
+	OtherBench *FolderAskOthers `json:"other_bench,omitempty"`
+}
+
+// FolderAskOthers is the bench a suggested folder is on.
+type FolderAskOthers struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// OpenFolderAsk is the id of workbench workbenchID's open folder ask for
+// path (its payload's path, compared NOCASE), read inside tx; 0 when there
+// is none. One open folder ask per bench and path (spec §6.7).
+func (db *DB) OpenFolderAsk(tx *sql.Tx, workbenchID int64, path string) (int64, error) {
+	var id int64
+	err := tx.QueryRow(`SELECT id FROM owner_asks WHERE project_id = ? AND kind = 'folder' AND status = 'open'
+		AND json_extract(payload, '$.path') = ? COLLATE NOCASE ORDER BY id LIMIT 1`, workbenchID, path).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("finding the open folder ask of workbench %d for %s: %w", workbenchID, path, err)
 	}
 	return id, nil
 }
@@ -230,7 +303,11 @@ const askNowSQL = `strftime('%Y-%m-%dT%H:%M:%SZ','now')`
 // withdrawn before migration 00107 has no withdrawn_at and never matches.
 // DocSnapshot is left empty.
 func (db *DB) LastWithdrawnByTitle(workbenchID int64, kind, normTitle string, since time.Time) (*OwnerAsk, error) {
-	list, err := db.queryOwnerAsks(`SELECT `+ownerAskListCols+` FROM owner_asks a
+	cols, err := db.askCols(false)
+	if err != nil {
+		return nil, err
+	}
+	list, err := db.queryOwnerAsks(`SELECT `+cols+` FROM owner_asks a
 		WHERE a.project_id = ? AND a.kind = ? AND a.status = 'withdrawn' AND a.withdrawn_reason = ? AND a.withdrawn_at >= ?
 		AND `+notAutomationAsk+`
 		ORDER BY a.withdrawn_at DESC, a.id DESC`, workbenchID, kind, WithdrawnByAgent, since.UTC().Format(askCreatedAtLayout))
@@ -252,7 +329,11 @@ func (db *DB) LastWithdrawnByTitle(workbenchID int64, kind, normTitle string, si
 // it before filing the new ask, which would otherwise find itself.
 // DocSnapshot is left empty.
 func (db *DB) RecentOpenQuestionAsk(sessionID int64, since time.Time, excludeID int64) (*OwnerAsk, error) {
-	list, err := db.queryOwnerAsks(`SELECT `+ownerAskListCols+` FROM owner_asks a
+	cols, err := db.askCols(false)
+	if err != nil {
+		return nil, err
+	}
+	list, err := db.queryOwnerAsks(`SELECT `+cols+` FROM owner_asks a
 		WHERE a.session_id = ? AND a.status = 'open' AND a.kind = 'question' AND a.created_at >= ? AND a.id != ?
 		AND `+notAutomationAsk+`
 		ORDER BY a.id DESC LIMIT 1`, sessionID, since.UTC().Format(askCreatedAtLayout), excludeID)
@@ -265,13 +346,21 @@ func (db *DB) RecentOpenQuestionAsk(sessionID int64, since time.Time, excludeID 
 // GetOwnerAsk returns ask id of workbench workbenchID, snapshot included;
 // another workbench's ask is ErrAskNotFound.
 func (db *DB) GetOwnerAsk(workbenchID, id int64) (*OwnerAsk, error) {
-	return getOwnerAsk(db, ownerAskCols, workbenchID, id)
+	cols, err := db.askCols(true)
+	if err != nil {
+		return nil, err
+	}
+	return getOwnerAsk(db, cols, workbenchID, id)
 }
 
 // GetOwnerAskByID returns ask id of any workbench, snapshot included, or
 // ErrAskNotFound: for a caller that knows only the id (the spec reviewer).
 func (db *DB) GetOwnerAskByID(id int64) (*OwnerAsk, error) {
-	a, err := scanOwnerAsk(db.QueryRow(`SELECT `+ownerAskCols+` FROM owner_asks a WHERE a.id = ?`, id))
+	cols, err := db.askCols(true)
+	if err != nil {
+		return nil, err
+	}
+	a, err := scanOwnerAsk(db.QueryRow(`SELECT `+cols+` FROM owner_asks a WHERE a.id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("ask %d: %w", id, ErrAskNotFound)
 	}
@@ -314,7 +403,11 @@ func (db *DB) ListOwnerAsks(workbenchID int64, f OwnerAskFilter) ([]OwnerAsk, er
 	if len(statuses) == 0 {
 		statuses = []string{"answered", "open"}
 	}
-	q := `SELECT ` + ownerAskListCols + ` FROM owner_asks a WHERE a.project_id = ?
+	cols, err := db.askCols(false)
+	if err != nil {
+		return nil, err
+	}
+	q := `SELECT ` + cols + ` FROM owner_asks a WHERE a.project_id = ?
 		AND a.status IN (?` + strings.Repeat(", ?", len(statuses)-1) + `)`
 	args := []any{workbenchID}
 	for _, s := range statuses {
@@ -363,6 +456,10 @@ func (db *DB) WithdrawOwnerAsk(workbenchID, id int64, reason string) error {
 	if reason != WithdrawnByAgent && reason != WithdrawnSuperseded {
 		return fmt.Errorf("invalid withdrawn reason %q", reason)
 	}
+	cols, err := db.askCols(false) // before the transaction: the pool holds one connection
+	if err != nil {
+		return err
+	}
 	return db.WithTx(func(tx *sql.Tx) error {
 		res, err := tx.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = ?, withdrawn_at = `+askNowSQL+`
 			WHERE id = ? AND project_id = ? AND status = 'open'`, reason, id, workbenchID)
@@ -376,7 +473,7 @@ func (db *DB) WithdrawOwnerAsk(workbenchID, id int64, reason string) error {
 		if n == 1 {
 			return nil
 		}
-		a, err := getOwnerAsk(tx, ownerAskListCols, workbenchID, id)
+		a, err := getOwnerAsk(tx, cols, workbenchID, id)
 		if err != nil {
 			return err
 		}
@@ -409,7 +506,11 @@ func (db *DB) MarkOwnerAskDelivered(workbenchID, id int64) (bool, error) {
 func (db *DB) AnsweredAsksForBrief(workbenchID, sessionID int64) (list []OwnerAsk, others int, err error) {
 	const from = ` FROM owner_asks a LEFT JOIN terminal_sessions s ON s.id = a.session_id
 		WHERE a.project_id = ? AND a.status = 'answered' AND ` + notAutomationAsk + ` AND `
-	list, err = db.queryOwnerAsks(`SELECT `+ownerAskListCols+from+answeredForSessionPredicate+
+	cols, err := db.askCols(false)
+	if err != nil {
+		return nil, 0, err
+	}
+	list, err = db.queryOwnerAsks(`SELECT `+cols+from+answeredForSessionPredicate+
 		` ORDER BY a.answered_at, a.id`, workbenchID, sessionID)
 	if err != nil {
 		return nil, 0, err

@@ -32,7 +32,7 @@ final class DigestViewModelTests: XCTestCase {
             try TestDatabase.insertDigest(db, channelID: "C001", summary: "Daily standup recap")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(vm.digests.count, 1)
@@ -48,7 +48,7 @@ final class DigestViewModelTests: XCTestCase {
             try TestDatabase.insertDigest(db, channelID: "", periodFrom: 100, periodTo: 200, type: "daily")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.selectedType = "daily"
         vm.load()
 
@@ -63,7 +63,7 @@ final class DigestViewModelTests: XCTestCase {
             try TestDatabase.insertDigest(db, channelID: "C001")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(vm.channelName(for: vm.digests[0]), "general")
@@ -77,7 +77,7 @@ final class DigestViewModelTests: XCTestCase {
             try TestDatabase.insertDigest(db, channelID: "D001")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(vm.channelName(for: vm.digests[0]), "DM: Alice")
@@ -89,7 +89,7 @@ final class DigestViewModelTests: XCTestCase {
             try TestDatabase.insertDigest(db, channelID: "", type: "daily")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertNil(vm.channelName(for: vm.digests[0]))
@@ -102,7 +102,7 @@ final class DigestViewModelTests: XCTestCase {
             try TestDatabase.insertDigest(db, channelID: "C001")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(vm.slackChannelURL(channelID: "C001")?.absoluteString, "slack://channel?team=T001&id=C001")
@@ -115,7 +115,7 @@ final class DigestViewModelTests: XCTestCase {
             try TestDatabase.insertDigest(db)
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertNil(vm.slackChannelURL(channelID: "C001"))
@@ -128,7 +128,7 @@ final class DigestViewModelTests: XCTestCase {
             try TestDatabase.insertDigest(db)
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         let url = vm.slackMessageURL(channelID: "C001", messageTS: "1740577800.000100")
@@ -145,7 +145,7 @@ final class DigestViewModelTests: XCTestCase {
             try TestDatabase.insertDigest(db, channelID: "", periodFrom: 1700000000, periodTo: 1700086400, type: "daily", summary: "daily")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         let dailyDigest = try XCTUnwrap(vm.digests.first { $0.type == "daily" })
@@ -171,7 +171,7 @@ final class DigestViewModelTests: XCTestCase {
             try TestDatabase.insertDigest(db, channelID: "", periodFrom: 1700000000, periodTo: 1700086400, type: "daily", summary: "daily")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         let daily = try XCTUnwrap(vm.digests.first { $0.type == "daily" })
@@ -187,7 +187,7 @@ final class DigestViewModelTests: XCTestCase {
             try TestDatabase.insertDigest(db, channelID: "C001", type: "channel")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertTrue(vm.contributingChannels(for: vm.digests[0]).isEmpty)
@@ -199,13 +199,13 @@ final class DigestViewModelTests: XCTestCase {
             try TestDatabase.insertDigest(db, summary: "Target digest")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         XCTAssertEqual(vm.digestByID(1)?.summary, "Target digest")
     }
 
     @MainActor
     func testLoadEmptyDB() {
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertTrue(vm.digests.isEmpty)
@@ -416,7 +416,7 @@ final class TracksViewModelTests: XCTestCase {
             try TestDatabase.insertTrack(db, text: "Write docs", priority: "low")
         }
 
-        let vm = TracksViewModel(dbManager: dbManager)
+        let vm = TracksViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertNil(vm.errorMessage, "load() error: \(vm.errorMessage ?? "")")
@@ -433,7 +433,7 @@ final class TracksViewModelTests: XCTestCase {
 
     @MainActor
     func testLoadEmptyDB() {
-        let vm = TracksViewModel(dbManager: dbManager)
+        let vm = TracksViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertTrue(vm.updatedTracks.isEmpty)
@@ -450,7 +450,7 @@ final class TracksViewModelTests: XCTestCase {
             try TestDatabase.insertTrack(db, text: "Fix it", hasUpdates: true)
         }
 
-        let vm = TracksViewModel(dbManager: dbManager)
+        let vm = TracksViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         XCTAssertEqual(vm.updatedTracks.count, 1)
 
@@ -472,7 +472,7 @@ final class TracksViewModelTests: XCTestCase {
             try TestDatabase.insertTrack(db)
         }
 
-        let vm = TracksViewModel(dbManager: dbManager)
+        let vm = TracksViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         let url = vm.slackMessageURL(channelID: "C001", messageTS: "1740577800.000100")
@@ -481,7 +481,7 @@ final class TracksViewModelTests: XCTestCase {
 
     @MainActor
     func testSlackMessageURLWithoutDomain() {
-        let vm = TracksViewModel(dbManager: dbManager)
+        let vm = TracksViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         // No workspace loaded — teamID is nil, so URL should be nil
@@ -516,7 +516,7 @@ final class DigestViewModelAdditionalTests: XCTestCase {
             try TestDatabase.insertDigest(db, channelID: "C001", summary: "Test")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(vm.unreadDigestCount, 1)
@@ -536,7 +536,7 @@ final class DigestViewModelAdditionalTests: XCTestCase {
             try TestDatabase.insertDigest(db, channelID: "C003", periodFrom: 100, periodTo: 200, summary: "D3")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(vm.unreadDigestCount, 3)
@@ -550,7 +550,7 @@ final class DigestViewModelAdditionalTests: XCTestCase {
 
     @MainActor
     func testDigestByIDNotFound() {
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         XCTAssertNil(vm.digestByID(999))
     }
 }

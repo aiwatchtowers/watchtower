@@ -100,14 +100,10 @@ func init() {
 	slackCmd.AddCommand(slackAppCmd)
 }
 
-// Seams for the tests: the Slack API the setup calls and the retired shared
-// app's client id.
-var (
-	slackAppAPI = func() slackapp.API { return slackapp.NewClient(slackapp.DefaultBaseURL) }
-	// slackAppRetiredClientID is the retired public shared app's client id;
-	// an account on it is not on a company app.
-	slackAppRetiredClientID = func() string { return auth.RetiredSharedClientID }
-)
+// slackAppAPI is the Slack API the setup calls; a test seam. The retired
+// and built-in client ids come from auth like everywhere else in cmd (tests
+// set them with setSlackBuild).
+var slackAppAPI = func() slackapp.API { return slackapp.NewClient(slackapp.DefaultBaseURL) }
 
 // slackAppSetupLock is the setup's lock file in the workspace directory.
 const slackAppSetupLock = "slack_app_setup.lock"
@@ -213,7 +209,8 @@ func newSlackAppRunner(cmd *cobra.Command, cfg *config.Config, database *db.DB, 
 		DB:              database,
 		API:             slackAppAPI(),
 		LockPath:        filepath.Join(cfg.WorkspaceDir(), slackAppSetupLock),
-		RetiredClientID: slackAppRetiredClientID(),
+		RetiredClientID: auth.RetiredSharedClientID,
+		BuiltinClientID: slackBuiltinClientID(),
 		Emit: func(s slackapp.Step) {
 			if asJSON {
 				_ = enc.Encode(s)
@@ -263,6 +260,10 @@ func printSlackAppResult(out io.Writer, res slackapp.Result) error {
 		fmt.Fprintf(out, "Adopting app %s would add scopes %v, add redirect URLs %v, turn PKCE on: %t, and write the connect link. Nothing was changed.\n",
 			res.AppID, c.AddScopes, c.AddRedirectURLs, c.EnablePKCE)
 		return nil
+	case slackapp.KindBuiltinPKCEDeferred:
+		return fmt.Errorf("%s connects through this build's own Slack app (client id %s), which switches to the "+
+			"new sign-in with a later Watchtower update; until then there is nothing to set up. Nothing was changed",
+			res.TeamName, res.ClientID)
 	case slackapp.KindExists:
 		fmt.Fprintf(out, "%s already has Watchtower's app %s (client id %s); nothing was created.\n", res.TeamName, res.AppID, res.ClientID)
 		return nil

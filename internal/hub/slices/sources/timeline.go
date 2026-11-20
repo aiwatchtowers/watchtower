@@ -288,6 +288,8 @@ func stateText(st sessionState) string {
 		return st.caption()
 	case kindSpecReview:
 		return "Spec review" // no round: a round change adds no milestone (#1945)
+	case kindSubSessionsWorking:
+		return "Sub-sessions working"
 	case kindNotStarted:
 	}
 	return ""

@@ -14,6 +14,7 @@ The first line of the menu reports the daemon's real state:
 
 - **Syncing: Messages · 34/105 channels** while a sync runs. The phase and counter refresh every few seconds.
 - **Daemon running · idle** between syncs.
+- **Sync paused** while you have paused sync.
 - **Sync daemon not running** when there is no daemon.
 
 Other lines appear only when they apply:
@@ -32,6 +33,8 @@ The window is held back while a recording or transcription is running, and appea
 Installing replaces the app in place and restarts it. Before it swaps anything, it checks that the new app is signed by the same developer as the one you run. A build that is distributed outside the public releases shows "Updates for this build are distributed out of band" instead, and never updates from the public feed.
 
 The first launch of a new version opens the **Software Update** window once more, on **What's New in Watchtower <version>**, so you see what changed.
+
+Some releases are required: older versions stop working with the services Watchtower connects to. Then the window title reads **Update required: Watchtower <version>**, it opens at every launch and every check, and it has no **Later**. Its close button is off; **Quit Watchtower** still works.
 
 ## Using it
 
@@ -57,6 +60,7 @@ action: nav:automations
 -->
 
 - **Sync Now** asks the running daemon to sync immediately. It is greyed out when no daemon runs, and a sync already in progress finishes first.
+- **Pause Sync** stops syncing but keeps the daemon running: the Inbox, the iPhone and every write keep working, and the pause survives a restart. **Resume Sync** takes its place and syncs at once.
 - **Run automation** lists your recipes with their last result; clicking one runs it without opening the window. **Open Automations…** opens the tab.
 - **New Voice Idea** opens Quick Capture and starts dictating. The shortcut is **⌃⌥D** from anywhere.
 - **Voices to label (N)** shows while the queue is not empty. **Review voices** and **Train voices** open the Voices window.
@@ -109,6 +113,7 @@ Settings → System → **Update** does the same: **Check for Updates** checks o
 - **"Install & Restart" is greyed out.** A recording or transcription is in progress. Finish it, then install.
 - **No update shows.** Your build may have no update channel ("distributed out of band"), or you are already on the latest. Press **Check for Updates** to see.
 - **"Update error".** The message under it says why (a failed download or a checksum mismatch). **Retry** checks again.
+- **The Software Update window keeps coming back and will not close.** The update is required. Press **Update Now**; if a recording is running, finish it first, then **Install & Restart**.
 - **Window closed but you wanted Watchtower gone.** Use **Quit Watchtower**, not the red button.
 
 Sync not running or stuck? See [Sync is stuck or slow](../troubleshooting/sync-stuck-or-slow.md).

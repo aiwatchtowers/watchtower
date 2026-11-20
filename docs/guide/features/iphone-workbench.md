@@ -8,7 +8,7 @@ You leave your desk while an agent works through a target. On the phone you foll
 
 ## How it works
 
-The phone never gets terminal output. The Mac sends the session's dialog only while the screen is open, plus five minutes, and refreshes it every few seconds while the agent works. You see your lines, the agent's text, subagents and Watchtower's notes, never tool calls; the newest 300 entries, with **N earlier messages — open on the tower** above them.
+The phone never gets terminal output. The Mac sends the session's dialog only while the screen is open, plus five minutes, and refreshes it every few seconds while the agent works. You see your lines, the agent's text and Watchtower's notes, never tool calls; the newest 300 entries, with **N earlier messages — open on the tower** above them.
 
 A Claude Code session takes your line while it works and reads it at its next step. A Codex session takes your line when it is idle: while it works, the Mac holds the line and sends it once Codex stops (an older Mac shows no field for Codex: write to it on the Mac). If the Mac refuses a line, the line shows the Mac's reason, for example **The session is not running on your tower**. Writing needs **Type into sessions from this phone** and the Mac's **Allow…**; see [Let the phone do more](iphone.md#let-the-phone-do-more).
 
@@ -34,7 +34,7 @@ since: 0.28.3
 
 The **Now** tab's badge counts what waits for you on the tower on screen; the app icon's, on all your towers.
 
-A workbench opens on its sessions: **Waiting for you** (an ask, a permission prompt, a check, a failed session to continue), **Working**, **Ended** (stopped, finished or failed in the last 24 hours), then **N older** folded. **N closed** at the end holds answered asks. The board's counts show on **Board**; a group there counts its sub-targets as **0/2 · 1 archived**: done of those on the board, then those in the archive, and **N more on the tower** for any the phone does not hold.
+A workbench opens on its sessions, split as on **Now** (checks count as waiting), then **N older** folded. **N closed** at the end holds answered asks. The board's counts show on **Board**; a group there counts its sub-targets as **0/2 · 1 archived**: done of those on the board, then those in the archive, and **N more on the tower** for any the phone does not hold.
 
 ### Follow a session
 <!-- learn
@@ -58,7 +58,7 @@ kind: tip
 since: 0.28.3
 -->
 
-Tap a session in **Now** or a workbench. The top shows the workbench, the title and one state line: a timer like **Working · 3:14** while the agent works, an age like **Needs approval · 1m** while it waits on you. Your lines sit on the right, the agent's text on the left. **Brief** opens what the session was told at start, and a subagent row opens that subagent's own chat, which is read-only.
+Tap a session in **Now** or a workbench. The top shows the workbench, the title and one state line: a timer like **Working · 3:14** while the agent works, an age like **Needs approval · 1m** while it waits on you. Your lines sit on the right, the agent's text on the left. **Brief** opens what the session was told at start. The agents button (**✓ N** once all finish) opens **Working** and **Done · N**; a row opens its read-only chat.
 
 Under it, once the turn is over, a card says what's next, even before the chat loads: a finished session's summary, PR and **Report**; after an error, **Continue** (sends "Continue") and **New session** on its target; a session no longer running, **New session**. The phone can't restart a session.
 
@@ -88,7 +88,7 @@ Type into **Message the session…** and send. Your line shows under it:
 
 ### Stop, finish or see the report
 
-The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interrupt**, **Report and timeline** and **Open board target**. A Codex session takes no **Interrupt** from the phone; stop it on the Mac. The report shows the targets' progress, the pull requests and the session's milestones. Tasks not done yet whose branch is already merged into the branch of the task above them are counted apart, as on the Mac: "1 / 3 targets · 1 merged".
+The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interrupt**, **Report and timeline** and **Open board target**. A Codex session takes no **Interrupt** from the phone; stop it on the Mac. Tasks not done yet whose branch is already merged into the branch of the task above them are counted apart, as on the Mac: "1 / 3 targets · 1 merged".
 
 ### Find a target on the board
 <!-- learn
@@ -102,6 +102,8 @@ since: 0.28.3
 -->
 
 The **Board** opens on **Waiting for me** (an ask or permission prompt on the target or its session), else **Sessions running**, else **All**. **High**, **Blocked**, **Done** and **Archive** sit beside them. Search by title, `#number` or branch covers the whole board, archive too. Lanes follow the Mac's columns. Under **All**, groups and the **Backlog** and **Done** lanes start folded; the phone remembers what you open.
+
+Your board changes and answers show at once. Until your tower confirms, they read **Sending…**, or **Waiting for your tower** while it is asleep; a refused one goes back with **Your tower could not make this change**.
 
 ### Run an automation
 

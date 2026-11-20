@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/oauthpage"
 	"watchtower/internal/policy"
 	watchtowerslack "watchtower/internal/slack"
+	"watchtower/internal/slackauth"
 	"watchtower/internal/slackconnect"
 	"watchtower/internal/slackmode"
 )
@@ -63,10 +64,14 @@ func init() {
 }
 
 // slackConnectPortBusyExitCode is the one-shot connect's exit when another
-// process (the Watchtower app's child) holds the port.
+// process (the Watchtower app's child) holds the port. It shares 2 with the
+// one-shot's usage errors: both mean "nothing was started, read stderr".
 const slackConnectPortBusyExitCode = 2
 
-// slackConnectServePortBusyExitCode is serve's exit after port_busy.
+// slackConnectServePortBusyExitCode is serve's exit after port_busy. Serve
+// has its own code: the Desktop reads the port_busy line, and the exit
+// status only tells a busy port (3) from a crash (1) or a clean stdin EOF
+// (0) in logs and the serve tests; nothing parses the one-shot's 2 there.
 const slackConnectServePortBusyExitCode = 3
 
 // slackConnectDeps are the connect flow's outside edges; tests swap them.
@@ -300,12 +305,8 @@ func writeSlackGrant(ctx context.Context, cfg *config.Config, database *db.DB, i
 			return err
 		}
 		if moved {
-			covered, err := rewindMovedSlackAccount(database, id)
-			if err != nil {
-				return fmt.Errorf("rewinding the search of slack account %d: %w", id, err)
-			}
-			if !covered {
-				fmt.Fprintf(warn, "warning: slack account %d is back on its workspace, but the next sync may not fetch the days it missed\n", id)
+			if err := rewindMovedSlackAccountOrWarn(database, id, warn); err != nil {
+				return err
 			}
 		}
 		reboundFrom = acct.ClientID
@@ -333,8 +334,9 @@ func writeSlackGrant(ctx context.Context, cfg *config.Config, database *db.DB, i
 	return reboundFrom, nil
 }
 
-// slackGrantToken is the token file a grant writes. A refresh token's expiry
-// is set only when Slack sends its lifetime.
+// slackGrantToken is the token file a grant writes. Its expiries follow
+// slackauth.IssuedExpiries, as a refresh's do: a rotating token's unstated
+// lifetimes are 12 h (access) and 30 days (refresh).
 func slackGrantToken(g slackconnect.Grant, identity slackIdentity, now time.Time) *watchtowerslack.Token {
 	tok := &watchtowerslack.Token{
 		AccessToken:  g.AccessToken,
@@ -346,12 +348,7 @@ func slackGrantToken(g slackconnect.Grant, identity slackIdentity, now time.Time
 		ClientID:     g.ClientID,
 		AppID:        g.AppID,
 	}
-	if g.ExpiresIn > 0 {
-		tok.ExpiresAt = now.Add(time.Duration(g.ExpiresIn) * time.Second).UTC()
-	}
-	if g.RefreshToken != "" && g.RefreshExpiresIn > 0 {
-		tok.RefreshExpiresAt = now.Add(time.Duration(g.RefreshExpiresIn) * time.Second).UTC()
-	}
+	tok.ExpiresAt, tok.RefreshExpiresAt = slackauth.IssuedExpiries(g.RefreshToken, g.ExpiresIn, g.RefreshExpiresIn, now)
 	return tok
 }
 
@@ -615,13 +612,20 @@ func serveSlackConnectListener(ln net.Listener, reg *slackconnect.Registry, even
 
 // slackLoginConnect is `slack login --account N` for an account that signs
 // in again through the connect flow (relogin "connect"): the one-shot PKCE
-// flow on the account's own client id.
+// flow on the account's own client id, into the team its stored data belongs
+// to (db.SlackAccountHomeTeam) — a legacy account #1 a pre-#915 Re-login
+// moved to another team signs back into its home team, the only one the
+// write accepts (review m4).
 func slackLoginConnect(cmd *cobra.Command, cfg *config.Config, database *db.DB, acct db.SlackAccount) error {
 	if acct.ClientID == "" {
 		return fmt.Errorf("slack account %d has no Slack app on record; connect it with the link or code from "+
 			"your company's Watchtower app (`watchtower slack connect --code ...`)", acct.ID)
 	}
-	t, err := slackconnect.ParseConnectInput(acct.TeamID + ":" + acct.ClientID)
+	team, err := slackAccountConnectTeam(database, acct)
+	if err != nil {
+		return err
+	}
+	t, err := slackconnect.ParseConnectInput(team + ":" + acct.ClientID)
 	if err != nil {
 		return fmt.Errorf("slack account %d: its team or client id is not usable for a connect: %w", acct.ID, err)
 	}
@@ -633,6 +637,19 @@ func slackLoginConnect(cmd *cobra.Command, cfg *config.Config, database *db.DB, 
 	opts.noOpen, _ = cmd.Flags().GetBool("no-open")
 	opts.appReturn, _ = cmd.Flags().GetBool("app-return")
 	return runSlackConnectOnce(cmd, cfg, database, t, opts)
+}
+
+// slackAccountConnectTeam is the team a connect re-login of acct signs
+// into: the home team of its stored data, else the row's team.
+func slackAccountConnectTeam(database *db.DB, acct db.SlackAccount) (string, error) {
+	home, err := database.SlackAccountHomeTeam(acct)
+	if err != nil {
+		return "", err
+	}
+	if home.ID != "" {
+		return home.ID, nil
+	}
+	return acct.TeamID, nil
 }
 
 // slackBuiltinClientID is the client id of the build's own Slack app, "" when

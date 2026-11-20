@@ -53,7 +53,7 @@ func TestCoachProposal_RoundTrip(t *testing.T) {
 	assert.Equal(t, 2, n)
 
 	base := 2.5
-	require.NoError(t, d.MarkCoachAccepted(id, "after edited", "", &base, 4, now.Add(time.Hour)))
+	require.NoError(t, d.MarkCoachAccepted(id, "after edited", "", "", &base, 4, now.Add(time.Hour)))
 	acc, err := d.ListCoachProposals("accepted")
 	require.NoError(t, err)
 	require.Len(t, acc, 1)
@@ -61,7 +61,7 @@ func TestCoachProposal_RoundTrip(t *testing.T) {
 	assert.Equal(t, 2.5, *acc[0].Baseline)
 	assert.Equal(t, 4, acc[0].BaselineN)
 	assert.Equal(t, "after edited", acc[0].AfterText)
-	assert.Error(t, d.MarkCoachAccepted(id, "x", "", nil, 1, now), "only from open")
+	assert.Error(t, d.MarkCoachAccepted(id, "x", "", "", nil, 1, now), "only from open")
 
 	v := 1.0
 	require.NoError(t, d.SetCoachVerdict(id, "works", &v, now.Add(2*time.Hour)))
@@ -431,7 +431,7 @@ func TestCoachProposal_WrittenBranchAndMeasureFrom(t *testing.T) {
 	other, err := d.InsertCoachProposal(coachFixture("s1"), now)
 	require.NoError(t, err)
 	for _, id := range []int64{a, b, c, rolled, other} {
-		require.NoError(t, d.MarkCoachAccepted(id, "a\nb", "feature/x", nil, 0, now))
+		require.NoError(t, d.MarkCoachAccepted(id, "a\nb", "feature/x", "", nil, 0, now))
 	}
 	require.NoError(t, d.SetCoachVerdict(c, "too_little_data", nil, now.Add(31*24*time.Hour)))
 	require.NoError(t, d.DecideCoachProposal(rolled, "accepted", "rolled_back", now))
@@ -470,4 +470,53 @@ func TestCoachProposal_WrittenBranchAndMeasureFrom(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, awaiting, 1)
 	assert.Equal(t, b, awaiting[0].ID)
+}
+
+// A pull-request row stores pr_url at Accept and revert_pr_url at rollback;
+// the commit-awaiting list skips it and the merge-awaiting list holds only PR
+// rows.
+func TestCoachProposal_PRURLs(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
+	wb := newTestWorkbench(t, d)
+	repo := func(fp string) int64 {
+		p := coachFixture(fp)
+		p.Destination, p.WorkbenchID = "repo_claude_md", wb
+		id, err := d.InsertCoachProposal(p, now)
+		require.NoError(t, err)
+		return id
+	}
+	pr, plain, open := repo("p1"), repo("p2"), repo("p3")
+	require.NoError(t, d.MarkCoachAccepted(pr, "a", "main", "https://example.com/o/r/pull/1", nil, 0, now))
+	require.NoError(t, d.MarkCoachAccepted(plain, "a", "main", "", nil, 0, now))
+
+	got, err := d.GetCoachProposal(pr)
+	require.NoError(t, err)
+	assert.Equal(t, "https://example.com/o/r/pull/1", got.PRURL)
+	assert.Empty(t, got.RevertPRURL)
+
+	ids := func(ps []CoachProposal, err error) []int64 {
+		require.NoError(t, err)
+		var out []int64
+		for _, p := range ps {
+			out = append(out, p.ID)
+		}
+		return out
+	}
+	assert.Equal(t, []int64{plain}, ids(d.ListRepoProposalsAwaitingCommit()), "a PR row is skipped (%d)", pr)
+	assert.Equal(t, []int64{pr}, ids(d.ListPRProposalsAwaitingMerge()), "only PR rows (%d, %d)", plain, open)
+
+	set, err := d.SetCoachMeasureFrom(pr, now.Add(time.Hour))
+	require.NoError(t, err)
+	require.True(t, set)
+	assert.Empty(t, ids(d.ListPRProposalsAwaitingMerge()), "measured")
+
+	require.NoError(t, d.MarkCoachRolledBack(pr, "https://example.com/o/r/pull/2", now.Add(2*time.Hour)))
+	got, err = d.GetCoachProposal(pr)
+	require.NoError(t, err)
+	assert.Equal(t, "rolled_back", got.Status)
+	assert.Equal(t, "https://example.com/o/r/pull/2", got.RevertPRURL)
+	assert.ErrorIs(t, d.MarkCoachRolledBack(pr, "x", now), ErrCoachStateChanged, "only from accepted")
+	assert.ErrorIs(t, d.MarkCoachRolledBack(open, "", now), ErrCoachStateChanged, "an open row")
+	require.NoError(t, d.MarkCoachRolledBack(plain, "", now))
 }

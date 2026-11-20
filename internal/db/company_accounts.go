@@ -10,7 +10,7 @@ import (
 	"watchtower/internal/oauthclient"
 )
 
-// Company ties on account rows (#1887, migration 00198): company_slug names
+// Company ties on account rows (#1887, migration 00210): company_slug names
 // the company bundle (<workspace>/company/<slug>.json) whose OAuth client an
 // account signed in with; '' = our shared client. Go owns the column; Swift
 // only reads it.

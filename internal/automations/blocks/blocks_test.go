@@ -192,6 +192,19 @@ func TestValidate_ActionRefsOnlyBuiltIn(t *testing.T) {
 	}
 }
 
+// TestValidate_PlanItemRefsOnlyForTheHub: a plan_item ref is the hub's
+// projection of the Morning brief only; a script, built-in or not, is
+// refused it, and the refusal lists the script's kinds only.
+func TestValidate_PlanItemRefsOnlyForTheHub(t *testing.T) {
+	expr := `[{type: "list", rows: [{title: "t", ref: {kind: "plan_item", id: 3}}]}]`
+	for _, o := range []blocks.Options{{}, {BuiltIn: true}} {
+		wantRefused(t, expr, o, "ref.kind must be one of inbox_item, track, idea, reminder, action")
+	}
+	if _, err := validate(t, expr, blocks.Options{BuiltIn: true, PlanItemRefs: true}); err != nil {
+		t.Fatalf("the hub's plan_item ref refused: %v", err)
+	}
+}
+
 func TestValidate_AllowKindRefusalSurfaces(t *testing.T) {
 	denied := errors.New("permission denied: the recipe needs output:target")
 	var asked []string

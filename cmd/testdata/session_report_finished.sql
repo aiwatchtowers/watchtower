@@ -2,6 +2,7 @@
 -- a finish summary, one open ask, a leaf in progress on a branch whose cached
 -- row names its open PR, a todo leaf, two phases and a merged PR.
 INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme');
+INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name) VALUES (1, 1, '/tmp/acme', 0, 'owner', 'acme');
 
 INSERT INTO targets (id, text, period_start, period_end, parent_id, status, project_id, branch, pr) VALUES
     (400, 'Export feature', '2026-09-28', '2026-10-05', NULL, 'in_progress', 1, '', ''),
@@ -33,8 +34,8 @@ The progress sheet is open in PR #151 and waits on your answer about the file na
 INSERT INTO owner_asks (id, project_id, session_id, target_id, kind, title, created_at) VALUES
     (7, 1, 3, 422, 'question', 'Which default file name should the export use?', '2026-10-02T15:58:00Z');
 
-INSERT INTO workbench_pr_states (project_id, ref, state, pr_number, title, additions, deletions, merged_at, checked_at) VALUES
-    (1, 'pr:150', 'merged', 150, 'Exporter', 420, 35, '2026-10-02T12:00:00Z', '2026-10-02T15:00:00Z'),
-    (1, 'branch:feat/exporter', 'merged', 150, 'Exporter', 420, 35, '2026-10-02T12:00:00Z', '2026-10-02T15:00:00Z'),
-    (1, 'pr:151', 'open', 151, 'Export progress sheet', 180, 12, '', '2026-10-02T15:30:00Z'),
-    (1, 'branch:feat/export-ui', 'open', 151, 'Export progress sheet', 180, 12, '', '2026-10-02T15:30:00Z');
+INSERT INTO workbench_pr_states (project_id, workbench_folder_id, ref, state, pr_number, title, additions, deletions, merged_at, checked_at) VALUES
+    (1, 1, 'pr:150', 'merged', 150, 'Exporter', 420, 35, '2026-10-02T12:00:00Z', '2026-10-02T15:00:00Z'),
+    (1, 1, 'branch:feat/exporter', 'merged', 150, 'Exporter', 420, 35, '2026-10-02T12:00:00Z', '2026-10-02T15:00:00Z'),
+    (1, 1, 'pr:151', 'open', 151, 'Export progress sheet', 180, 12, '', '2026-10-02T15:30:00Z'),
+    (1, 1, 'branch:feat/export-ui', 'open', 151, 'Export progress sheet', 180, 12, '', '2026-10-02T15:30:00Z');

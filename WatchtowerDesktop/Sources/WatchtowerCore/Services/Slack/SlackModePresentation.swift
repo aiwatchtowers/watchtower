@@ -63,7 +63,8 @@ package struct SlackModePresentation: Equatable, Sendable {
     private let sharedLabel: String
 
     /// - Parameter sharedAppAccountIDs: accounts `slack accounts --json`
-    ///   reports with `shared_app` (Go decides; empty until it is wired).
+    ///   reports with `shared_app` (Go decides; empty before the first read,
+    ///   `SlackAccountsViewModel.sharedAppAccountIDs`).
     package init(
         accounts: [SlackAccount],
         sharedAppAccountIDs: Set<Int>,

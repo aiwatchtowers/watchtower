@@ -345,4 +345,276 @@ final class CoachCenterTests: XCTestCase {
         XCTAssertNil(center.cardErrors[9])
         XCTAssertEqual(center.written[9], CoachWrittenFile(path: "CLAUDE.md", branch: "main"))
     }
+
+    // MARK: - Pull-request edits (spec 2026-11-19 §4.4–§4.6)
+
+    /// #9 as an open repository proposal, #10 as an accepted PR edit.
+    nonisolated private static let prList = #"{"ok":true,"proposals":[{"id":9,"title":"Tests","why":"w","#
+        + #""destination":"repo_claude_md","workbench_id":3,"prompt_id":"","kind":"add","metric":"corrections","#
+        + #""before":"","after":"x","evidence":[],"sources":1,"status":"open","created_at":"2026-11-01T09:00:00Z","#
+        + #""decided_at":null,"verdict":"","reverts_id":0,"budget":0,"folder_branch":"main"},"#
+        + #"{"id":10,"title":"Fixtures","why":"w","destination":"repo_claude_md","workbench_id":3,"prompt_id":"","#
+        + #""kind":"add","metric":"corrections","before":"","after":"y","evidence":[],"sources":1,"#
+        + #""status":"accepted","created_at":"2026-11-01T09:00:00Z","decided_at":"2026-11-02T09:00:00Z","#
+        + #""verdict":"","reverts_id":0,"budget":0,"written_branch":"coach/a1b2c3d4/proposal-10","#
+        + #""pr_url":"https://github.com/acme/repo/pull/12","revert_pr_url":""}]}"#
+
+    /// A failure object as `coach accept|rollback --json` prints it: the
+    /// Applier's id prefix, Go's sentence, the seam's words.
+    nonisolated private static func prFailure(_ id: Int, _ code: String, _ sentence: String, _ words: String) -> Error {
+        let error = "coach proposal \(id) (repo_claude_md): \(sentence) (\(words))"
+        let data = try? JSONSerialization.data(withJSONObject: ["ok": false, "error": error, "code": code])
+        return failure(String(bytes: data ?? Data(), encoding: .utf8) ?? "")
+    }
+
+    func testPRAcceptRefusalsNameTheCardAndOfferRetry() async throws {
+        struct Case {
+            let code: String, sentence: String, words: String, line: String, retry: Bool
+            init(_ code: String, _ sentence: String, _ words: String, _ line: String, _ retry: Bool) {
+                (self.code, self.sentence, self.words, self.line, self.retry) = (code, sentence, words, line, retry)
+            }
+        }
+        let cases: [Case] = [
+            Case("no_gh", CoachPRTexts.noGH, "gh: not logged in", CoachPRTexts.noGH, false),
+            Case("base_differs", CoachPRTexts.baseDiffers(path: "CLAUDE.md"), "CLAUDE.md on main",
+                 CoachPRTexts.baseDiffers(path: "CLAUDE.md"), false),
+            Case("push_failed", CoachPRTexts.pushFailed, "remote: Permission to acme/repo.git denied",
+                 CoachPRTexts.pushFailed + " (remote: Permission to acme/repo.git denied)", true),
+            Case("pr_failed", CoachPRTexts.prFailed, "gh: HTTP 502", CoachPRTexts.prFailed + " (gh: HTTP 502)", true),
+            Case("timeout", CoachPRTexts.timeout, "context deadline exceeded", CoachPRTexts.timeout, true),
+            Case("github_unreachable", CoachPRTexts.unreachable, "gh auth status: error connecting to api.github.com",
+                 CoachPRTexts.unreachable, true),
+            Case("in_progress", CoachPRTexts.inProgress, "coach.ErrInProgress", CoachPRTexts.inProgress, false)
+        ]
+        for c in cases {
+            let runner = ScriptedCoachRunner { args in
+                switch args.dropFirst().first {
+                case "proposals": return Data(Self.prList.utf8)
+                case "accept": throw Self.prFailure(9, c.code, c.sentence, c.words)
+                default: return Data(#"{"ok":true}"#.utf8)
+                }
+            }
+            let center = makeCenter(runner)
+            center.refreshProposals()
+            await waitUntil { center.proposals?.value != nil }
+            await center.accept(9, editedText: "edited")
+            XCTAssertEqual(center.cardErrors[9], c.line, c.code)
+            XCTAssertEqual(center.retries[9], c.retry ? .accept(editedText: "edited") : nil, c.code)
+        }
+    }
+
+    func testRetryRunsTheSameAcceptAndClearsOnSuccess() async {
+        let runner = ScriptedCoachRunner { args in
+            switch args.dropFirst().first {
+            case "proposals": return Data(Self.prList.utf8)
+            case "accept": throw Self.prFailure(9, "timeout", CoachPRTexts.timeout, "deadline")
+            default: return Data(#"{"ok":true}"#.utf8)
+            }
+        }
+        let center = makeCenter(runner)
+        await center.accept(9, editedText: nil)
+        XCTAssertEqual(center.retries[9], .accept(editedText: nil))
+        runner.answer { args in
+            if args.dropFirst().first == "accept" {
+                let ok = #"{"ok":true,"id":9,"status":"accepted","written_path":"CLAUDE.md","#
+                    + #""written_branch":"coach/a1b2c3d4/proposal-9","pr_url":"https://github.com/acme/repo/pull/12"}"#
+                return Data(ok.utf8)
+            }
+            return Data(Self.prList.utf8)
+        }
+        await center.accept(9, editedText: nil)
+        XCTAssertNil(center.cardErrors[9])
+        XCTAssertNil(center.retries[9])
+        XCTAssertEqual(center.written[9]?.prURL, "https://github.com/acme/repo/pull/12")
+    }
+
+    /// Finding 1: a merged PR whose file moved on the default branch comes
+    /// back `changed_since` with the diff. The center hands the diff to the
+    /// sheet (no card error, no Retry), and the sheet for a PR edit offers no
+    /// Roll Back Anyway — `--force` cannot revert a pull request — so the
+    /// owner is never led into a rollback that fails forever.
+    func testPRRollbackChangedSinceOpensTheSheetWithoutForce() async throws {
+        let runner = ScriptedCoachRunner { args in
+            switch args.dropFirst().first {
+            case "proposals": return Data(Self.prList.utf8)
+            case "rollback":
+                throw Self.failure(#"{"ok":false,"error":"changed","code":"changed_since","diff":"-y\n+y\n+z"}"#)
+            default: return Data(#"{"ok":true}"#.utf8)
+            }
+        }
+        let center = makeCenter(runner)
+        center.refreshProposals()
+        await waitUntil { center.proposals?.value != nil }
+        let diff = await center.rollback(10, force: false)
+        XCTAssertEqual(diff, "-y\n+y\n+z")
+        XCTAssertNil(center.cardErrors[10])
+        XCTAssertNil(center.retries[10])
+        let proposal = try XCTUnwrap(center.proposals?.value?.first { $0.id == 10 })
+        let texts = CoachRollbackTexts(proposal)
+        XCTAssertFalse(texts.offersForce)
+        XCTAssertEqual(texts.body,
+                       "CLAUDE.md on the default branch changed since the merge — revert it by hand in a pull request.")
+        XCTAssertFalse(runner.invocations.contains { $0.contains("--force") }, "nothing forced")
+    }
+
+    func testPRRollbackRefusalOffersRetry() async {
+        let runner = ScriptedCoachRunner { args in
+            switch args.dropFirst().first {
+            case "proposals": return Data(Self.prList.utf8)
+            case "rollback":
+                throw Self.prFailure(10, "pr_unreadable", CoachPRTexts.prUnreadable("#12"), "gh: offline")
+            default: return Data(#"{"ok":true}"#.utf8)
+            }
+        }
+        let center = makeCenter(runner)
+        center.refreshProposals()
+        await waitUntil { center.proposals?.value != nil }
+        let diff = await center.rollback(10, force: false)
+        XCTAssertNil(diff)
+        XCTAssertEqual(center.cardErrors[10], CoachPRTexts.prUnreadable("#12") + " (gh: offline)")
+        XCTAssertEqual(center.retries[10], .rollback)
+
+        runner.answer { args in
+            if args.dropFirst().first == "rollback" {
+                throw Self.prFailure(10, "origin_moved", CoachPRTexts.originMoved, "github.com/acme/other")
+            }
+            return Data(Self.prList.utf8)
+        }
+        _ = await center.rollback(10, force: false)
+        XCTAssertEqual(center.cardErrors[10], CoachPRTexts.originMoved)
+        XCTAssertNil(center.retries[10], "a moved origin is not retried")
+    }
+
+    func testSyncPRsReloadsWhenRowsChanged() async {
+        let runner = ScriptedCoachRunner { args in
+            switch args.dropFirst().first {
+            case "sync-prs": return Data(#"{"ok":true,"changed":1,"sync_error":"","sync_code":""}"#.utf8)
+            case "proposals": return Data(Self.prList.utf8)
+            default: return Data(#"{"ok":true}"#.utf8)
+            }
+        }
+        let center = makeCenter(runner)
+        center.syncPRs()
+        await runner.untilCalls { $0.contains(["coach", "proposals", "--status", "all", "--json"]) }
+        XCTAssertEqual(runner.invocations.first, ["coach", "sync-prs", "--json"])
+        await waitUntil { !center.syncing }
+        XCTAssertNil(center.syncLine)
+    }
+
+    func testSyncPRsWithNothingChangedDoesNotReload() async {
+        let runner = ScriptedCoachRunner { _ in Data(#"{"ok":true,"changed":0,"sync_error":"","sync_code":""}"#.utf8) }
+        let center = makeCenter(runner)
+        center.syncPRs()
+        await waitUntil { !center.syncing }
+        XCTAssertEqual(runner.invocations, [["coach", "sync-prs", "--json"]])
+    }
+
+    func testSyncPRsRunsOnceAtATime() async {
+        let runner = ScriptedCoachRunner { _ in Data(#"{"ok":true,"changed":0,"sync_error":"","sync_code":""}"#.utf8) }
+        runner.hold()
+        let center = makeCenter(runner)
+        center.syncPRs()
+        await runner.untilCalls { !$0.isEmpty }
+        center.syncPRs()
+        center.syncPRs()
+        XCTAssertTrue(center.syncing)
+        runner.release(0)
+        await waitUntil { !center.syncing }
+        XCTAssertEqual(runner.invocations.count, 1)
+    }
+
+    /// The real `coach sync-prs --json` of two unreadable rows: `sync_error` is Go's errors.Join of
+    /// "syncing coach proposal N: <sentence> (<gh's words>)" lines. The owner's line takes none of it.
+    nonisolated private static let joinedSyncError: String = {
+        let rows = [
+            "syncing coach proposal 10: Could not read pull request #12 from GitHub — try again. "
+                + "(coach: pull request unreadable: gh: could not resolve host api.github.com)",
+            "syncing coach proposal 11: Could not read pull request #14 from GitHub — try again. "
+                + "(coach: pull request unreadable: gh: HTTP 502)"
+        ]
+        let object: [String: Any] = ["ok": true, "changed": 0, "sync_error": rows.joined(separator: "\n"),
+                                     "sync_code": "pr_unreadable"]
+        let data = (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
+        return String(bytes: data, encoding: .utf8) ?? ""
+    }()
+
+    func testSyncPRsLineNeverShowsTheJoinedCLIError() async throws {
+        let runner = ScriptedCoachRunner { _ in Data(Self.joinedSyncError.utf8) }
+        let center = makeCenter(runner)
+        center.syncPRs()
+        await waitUntil { !center.syncing }
+        let line = try XCTUnwrap(center.syncLine)
+        XCTAssertEqual(line, CoachPRTexts.syncFailed)
+        XCTAssertFalse(line.contains("proposal"), "no proposal id")
+        XCTAssertFalse(line.contains("10") || line.contains("11"), "no proposal id")
+        XCTAssertFalse(line.contains("gh:") || line.contains("("), "no gh words")
+        XCTAssertFalse(line.contains("\n"), "one sentence, not one per row")
+    }
+
+    func testSyncPRsLines() async {
+        let noGH = #"{"ok":true,"changed":0,"sync_error":"syncing coach proposal 10: Log in with `gh auth login` "#
+            + #"to let Watchtower open the pull request. (workbenchgit: gh: not logged in)","sync_code":"no_gh"}"#
+        let runner = ScriptedCoachRunner { _ in Data(noGH.utf8) }
+        let center = makeCenter(runner)
+        center.syncPRs()
+        await waitUntil { !center.syncing }
+        XCTAssertEqual(center.syncLine, CoachPRTexts.noGH)
+
+        let timeout = #"{"ok":true,"changed":0,"sync_error":"syncing coach proposal 10: GitHub did not answer in "#
+            + #"time; nothing changed — try again. (context deadline exceeded)","sync_code":"timeout"}"#
+        runner.answer { _ in Data(timeout.utf8) }
+        center.syncPRs()
+        await waitUntil { !center.syncing }
+        XCTAssertEqual(center.syncLine, CoachPRTexts.timeout)
+
+        runner.answer { _ in throw Self.failure(#"{"ok":false,"error":"refused under an AI agent"}"#) }
+        center.syncPRs()
+        await waitUntil { !center.syncing }
+        XCTAssertEqual(center.syncLine, CoachPRTexts.syncFailed)
+
+        runner.answer { _ in Data(#"{"ok":true,"changed":0,"sync_error":"","sync_code":""}"#.utf8) }
+        center.syncPRs()
+        await waitUntil { !center.syncing }
+        XCTAssertNil(center.syncLine, "a sync that read every PR clears the line")
+    }
+
+    /// A Roll Back refused while the PR could not be read leaves an error and a Retry; once a sync
+    /// moves the proposal to rolled_back, the reload drops both (the Retry could only fail).
+    func testStatusChangeOnReloadDropsTheCardsErrorAndRetry() async {
+        let rolledBack = Self.prList.replacingOccurrences(of: #""status":"accepted""#, with: #""status":"rolled_back""#)
+        let runner = ScriptedCoachRunner { args in
+            switch args.dropFirst().first {
+            case "proposals": return Data(Self.prList.utf8)
+            case "rollback": throw Self.prFailure(10, "pr_unreadable", CoachPRTexts.prUnreadable("#12"), "gh: offline")
+            default: return Data(#"{"ok":true}"#.utf8)
+            }
+        }
+        let center = makeCenter(runner)
+        center.refreshProposals()
+        await waitUntil { center.proposals?.value != nil }
+        _ = await center.rollback(10, force: false)
+        XCTAssertEqual(center.retries[10], .rollback)
+
+        // A reload with the same status keeps them.
+        let renamed = Self.prList.replacingOccurrences(of: #""title":"Fixtures""#, with: #""title":"Fixtures 2""#)
+        runner.answer { args in
+            if args.dropFirst().first == "proposals" { return Data(renamed.utf8) }
+            return Data(#"{"ok":true}"#.utf8)
+        }
+        center.refreshProposals()
+        await waitUntil { center.proposals?.value?.first { $0.id == 10 }?.title == "Fixtures 2" }
+        XCTAssertNotNil(center.cardErrors[10])
+        XCTAssertEqual(center.retries[10], .rollback)
+
+        runner.answer { args in
+            if args.dropFirst().first == "sync-prs" {
+                return Data(#"{"ok":true,"changed":1,"sync_error":"","sync_code":""}"#.utf8)
+            }
+            return Data(rolledBack.utf8)
+        }
+        center.syncPRs()
+        await waitUntil { center.proposals?.value?.first { $0.id == 10 }?.status == "rolled_back" }
+        XCTAssertNil(center.cardErrors[10])
+        XCTAssertNil(center.retries[10])
+    }
 }

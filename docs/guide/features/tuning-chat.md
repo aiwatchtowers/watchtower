@@ -33,7 +33,9 @@ Chat proposals do not count toward the weekly pass's three open suggestions, and
 
 The chat can also edit five files in the workbench's own folder, never in a session's worktree: `CLAUDE.md`, `AGENTS.md`, `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md` and `.watchtower/workflow.md`. Only `CLAUDE.md` and `AGENTS.md` may be created; the others must exist.
 
-**Accept** writes the file and nothing else: Watchtower runs no git command that changes anything, so you review the change and commit it yourself. The card names the branch the edit lands on. The 14-day verdict starts once the commit is seen, because new sessions start from the folder's last commit.
+If the folder's `origin` is on github.com, or on another host where `gh` is logged in (GitHub Enterprise), **Accept** opens a pull request with the one file against the default branch and leaves your working copy and branches alone. You review and merge it on GitHub, then pull the default branch into the workbench folder: sessions start from that checkout, so they get the edit only after the pull. The card links the PR, and the 14-day verdict starts at the merge, so pull soon after merging or the first days measure sessions without the edit. A GitHub folder needs the GitHub CLI logged in (`gh auth login`); without it **Accept** is refused, never silently written to your working copy.
+
+For any other folder (no `origin`, or an ssh host alias that is not github.com), **Accept** writes the file and nothing else: Watchtower runs no git command that changes anything, so you review the change and commit it yourself. The 14-day verdict starts once the commit is seen.
 
 ## Using it
 
@@ -43,7 +45,7 @@ The chat can also edit five files in the workbench's own folder, never in a sess
 4. On a proposal card, **Accept** applies it, **Edit…** lets you change the text first (not for Claude Code allow rules), and **Decline** closes it for good. An accepted card folds to **Accepted · measuring for 14 days** with **Show in Accepted edits**, where **Roll Back** lives.
 5. **New** starts another tuning chat; the title menu switches between this workbench's recent ones. Tuning chats are not listed in **Chats**.
 
-For a workbench file the folded line reads **Accepted · wrote CLAUDE.md on main — commit it yourself** until you commit, then **Accepted · committed · measuring for 14 days**. Rolling one back restores the file, and you commit that too.
+For a workbench file in a GitHub folder the folded line reads **Accepted · waiting for the PR to merge** next to the PR link, then **Accepted · merged · measuring for 14 days**. Rolling it back closes the PR if it is open, or opens a revert PR if it merged; merge that to remove the edit. If the file changed on the default branch since the merge, the roll-back shows the difference and asks you to revert it by hand in a pull request. In other folders the line reads **Accepted · wrote CLAUDE.md on main — commit it yourself**, and a roll-back restores the file for you to commit.
 
 ## When it's empty or wrong
 
@@ -54,7 +56,9 @@ For a workbench file the folded line reads **Accepted · wrote CLAUDE.md on main
 - **The text changed since — this proposal is closed**. The file or text changed after the proposal was made; ask again.
 - **"Codex sees this skill in two folders …"** The skill is in both `~/.agents/skills` and `~/.codex/skills`. Remove one copy.
 - **It gives the text instead of a proposal.** New skills and a new `.watchtower/workflow.md` are not created; save the text yourself.
-- **Accepted · waiting for your commit** in **Accepted edits**. Commit the file; after 30 days without a commit the row reads **Not committed in 30 days — not measured**.
+- **"Log in with `gh auth login` to let Watchtower open the pull request."** The GitHub CLI is missing or logged out, so **Accept** changed nothing. Log in, then press **Accept** again. Other refusals (**Retry**) mean GitHub did not answer, could not be reached, or refused the branch. Your files and the proposal are unchanged; a branch may already be on GitHub, and **Retry** reuses it.
+- **Waiting for the merge** (yellow dot, next to the **PR #12** link) in **Accepted edits**. Merge the PR to start the measuring. After 30 days unmerged the row reads **Not merged in 30 days — not measured**. A PR closed without merging counts as rolled back (grey dot).
+- **Accepted · waiting for your commit** in **Accepted edits** (other folders). Commit the file; after 30 days without a commit the row reads **Not committed in 30 days — not measured**.
 
 ## Related
 

@@ -490,7 +490,7 @@ package final class CompanyConnectFlowModel {
             chainFlow = nil
             awaitingStart = false
             show(.problem(Self.anotherRunning))
-        case .listening, .portBusy, .link, .browser, .connected, .failed:
+        case .listening, .portBusy, .link, .linkBusy, .browser, .connected, .failed:
             break
         }
     }

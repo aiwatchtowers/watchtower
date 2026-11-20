@@ -13,7 +13,11 @@ const (
 	ReasonWorkbenchFolder    = "workbench_folder"
 	ReasonLocked             = "locked"
 	ReasonUncommittedChanges = "uncommitted_changes"
-	ReasonProcessRunning     = "process_running"
+	// ReasonIgnoredFiles: git-ignored files that are not a cache or
+	// Watchtower's integration (a plan ledger, notes); the first one's path
+	// is in detail (#1878).
+	ReasonIgnoredFiles   = "ignored_files"
+	ReasonProcessRunning = "process_running"
 	// ReasonProcessUnknown: a process of the current user whose cwd the
 	// scan could not see; it may be working inside, so the worktree stays.
 	ReasonProcessUnknown      = "process_unknown"
@@ -47,14 +51,14 @@ const (
 	recentOwnerWindow = 7 * 24 * time.Hour
 )
 
-// nestedScanBudget bounds W9's walk of one worktree; over it the worktree
-// is kept (check_failed).
+// nestedScanBudget bounds W9's walk of one worktree, and W10's; over it
+// the worktree is kept (check_failed).
 const nestedScanBudget = 20 * time.Second
 
 // worktreeCatch returns the reason a worktree is kept, "" to let it pass.
 type worktreeCatch func(ctx context.Context, b *builder, w worktree) (reason, detail string, err error)
 
-// worktreeCatches is W1–W9 in order (spec §5); the sweep swaps W2 for the
+// worktreeCatches is W1–W10 in order (spec §5; W10 #1878); the sweep swaps W2 for the
 // recent-owner rule, and a prunable worktree (its directory is gone) meets
 // the folder, ownership and unpushed catches: pruning drops its HEAD, which
 // may be the only ref to its commits.
@@ -67,7 +71,7 @@ func (b *builder) worktreeCatches(w worktree) []worktreeCatch {
 		return []worktreeCatch{catchClaudeHome, catchFolders, own, catchUnpushed}
 	}
 	return []worktreeCatch{catchClaudeHome, catchFolders, own, catchLocked, catchUncommitted, catchProcesses,
-		catchSessionInIt, catchUnpushed, catchOperation, catchNested}
+		catchSessionInIt, catchUnpushed, catchOperation, catchNested, catchIgnoredWork}
 }
 
 // catchClaudeHome keeps anything under the owner's ~/.claude, and every
@@ -99,8 +103,13 @@ func catchFolders(_ context.Context, b *builder, w worktree) (string, string, er
 }
 
 // catchOwnWorktree is W2: observed by the session and born after it, or
-// the placed row's own worktree (owned by record, spec 2026-10-14 §9).
+// the placed row's own worktree (owned by record, spec 2026-10-14 §9). In a
+// folder that left the bench only a root of the session's own cwd ledger
+// can pass (PROJ-18, #2003): the folder is the owner's now.
 func catchOwnWorktree(_ context.Context, b *builder, w worktree) (string, string, error) {
+	if b.session.FolderRemoved && !b.ledgerRoots[w.Root] {
+		return ReasonNotThisSession, detailFolderLeft, nil
+	}
 	if b.seen.placedRoot != "" && w.Root == b.seen.placedRoot {
 		return "", "", nil
 	}
@@ -158,6 +167,17 @@ func catchUncommitted(ctx context.Context, b *builder, w worktree) (string, stri
 		return "", "", err
 	}
 	return ReasonUncommittedChanges, "", nil
+}
+
+// catchIgnoredWork is W10: git-ignored files that are not regenerable
+// (ignored.go, #1878). It runs after W9 so a nested worktree or repository
+// keeps its own reason; the sweep runs it too.
+func catchIgnoredWork(ctx context.Context, b *builder, w worktree) (string, string, error) {
+	first, err := b.ignoredWork(ctx, w.Root, nestedScanBudget)
+	if err != nil || first == "" {
+		return "", "", err
+	}
+	return ReasonIgnoredFiles, "ignored file: " + first, nil
 }
 
 // catchProcesses is W5: a process inside that is not an orphan of this
@@ -319,6 +339,9 @@ func catchCheckedOut(_ context.Context, b *builder, br branchRef) (string, strin
 // §2c candidate another worktree's unreadable HEAD log left undecided is
 // created_unknown (auto cleanup spec 2026-11-10 §2c).
 func catchOwnBranch(_ context.Context, b *builder, br branchRef) (string, string, error) {
+	if b.session.FolderRemoved { // every branch of a folder that left the bench is the owner's (#2003)
+		return ReasonNotThisSession, detailFolderLeft, nil
+	}
 	if b.seen.placedBranch != "" && br.Name == b.seen.placedBranch { // observePlacement set it only when born no later than the row
 		return "", "", nil
 	}

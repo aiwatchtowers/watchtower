@@ -54,7 +54,7 @@ final class DigestFeedListTests: XCTestCase {
 
     @MainActor
     private func loadedEntries() -> [DigestFeedEntry] {
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         return vm.feedEntries
     }

@@ -99,7 +99,8 @@ public struct ChatAgentAction: Identifiable, Equatable, Sendable {
             turnID: payload.turnID,
             status: payload.status,
             resultJSON: Self.json(payload.result),
-            error: payload.error
+            error: payload.error,
+            dismissedAt: payload.dismissedAt
         )
     }
 

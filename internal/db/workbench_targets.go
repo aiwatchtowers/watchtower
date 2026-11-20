@@ -21,6 +21,10 @@ type WorkbenchTargetInput struct {
 	BatchParent int
 	Branch      string // the git branch carrying the work (board drift, PROJ-07); "" = none
 	PR          string // the pull request, a number or URL; "" = none
+	// FolderID is the workbench folder the work is in (spec 2026-11-18
+	// §6.10); invalid = none (the home folder). A folder of another
+	// workbench fails the item with ErrNotInWorkbench.
+	FolderID sql.NullInt64
 }
 
 // CreateWorkbenchTargetsTx inserts items, in order, as targets of workbench
@@ -66,12 +70,17 @@ func insertWorkbenchTarget(tx *sql.Tx, workbenchID int64, day, actor string, it 
 	if err != nil {
 		return 0, err
 	}
+	if it.FolderID.Valid {
+		if err := checkOwnedBy(tx, workbenchFolderOwnerQuery, "workbench folder", workbenchID, it.FolderID.Int64); err != nil {
+			return 0, err
+		}
+	}
 	res, err := tx.Exec(`INSERT INTO targets
 		(text, intent, level, custom_label, period_start, period_end, parent_id,
-		 status, priority, ownership, source_type, project_id, status_actor, branch, pr)
-		VALUES (?, ?, 'custom', 'project', ?, ?, ?, 'todo', ?, 'mine', 'chat', ?, ?, ?, ?)`,
+		 status, priority, ownership, source_type, project_id, status_actor, branch, pr, workbench_folder_id)
+		VALUES (?, ?, 'custom', 'project', ?, ?, ?, 'todo', ?, 'mine', 'chat', ?, ?, ?, ?, ?)`,
 		title, strings.TrimSpace(it.Intent), day, day, parent, priority, workbenchID, actor,
-		strings.TrimSpace(it.Branch), strings.TrimSpace(it.PR))
+		strings.TrimSpace(it.Branch), strings.TrimSpace(it.PR), it.FolderID)
 	if err != nil {
 		return 0, fmt.Errorf("inserting workbench target: %w", err)
 	}

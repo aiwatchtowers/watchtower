@@ -301,6 +301,8 @@ final class SlackConnectFlowModelTests: XCTestCase {
     func testUnknownFlowsAreDropped() async {
         let rig = await makeRig()
         rig.emit(.browser(flow: "zz"))
+        XCTAssertEqual(rig.sent, [#"{"cmd":"cancel","flow":"zz"}"#],
+                       "a browser flow nobody here owns is cancelled: it has no deadline (A22)")
         rig.emit(.connected(SlackConnectedAccount(flow: "zz", accountID: 9, teamID: "T0ACME", teamName: "acme", reboundFrom: "")))
         rig.emit(.failed(flow: "zz", reason: .denied, message: ""))
         rig.emit(.busy(flow: "zz"))
@@ -309,6 +311,34 @@ final class SlackConnectFlowModelTests: XCTestCase {
         rig.emit(.failed(flow: "zz", reason: .denied, message: ""))
         rig.emit(.connected(SlackConnectedAccount(flow: "zz", accountID: 9, teamID: "T0ACME", teamName: "acme", reboundFrom: "")))
         XCTAssertEqual(rig.model.step, .browser(flow: "f1", target: target, since: clock))
+    }
+
+    /// A link refused while a cancelled flow still held the child arrives
+    /// late as `link_busy`: it never fails the new start, and the new start's
+    /// `browser` still shows (review m5).
+    func testLateLinkBusyNeverFailsANewStart() async {
+        let rig = await makeRig()
+        XCTAssertTrue(rig.model.start(target))
+        rig.emit(.linkBusy(flow: "f0"))
+        XCTAssertEqual(rig.model.step, .starting(target))
+        rig.emit(.browser(flow: "f1"))
+        XCTAssertEqual(rig.model.step, .browser(flow: "f1", target: target, since: clock))
+        rig.emit(.linkBusy(flow: "f1"))
+        XCTAssertEqual(rig.model.step, .browser(flow: "f1", target: target, since: clock))
+        XCTAssertEqual(rig.sent, [startLine], "nothing cancelled: f1 is ours")
+    }
+
+    /// A start given up on (Cancel while starting) whose answer is lost to a
+    /// `busy` is followed by a browser for that flow: it is cancelled, not
+    /// left holding the child.
+    func testBrowserOfAFlowWeGaveUpIsCancelled() async {
+        let rig = await makeRig()
+        XCTAssertTrue(rig.model.start(target))
+        rig.model.cancel()
+        rig.emit(.busy(flow: "f0")) // the cancelled start's answer
+        rig.emit(.browser(flow: "f7"))
+        XCTAssertEqual(rig.sent, [startLine, #"{"cmd":"cancel","flow":"f7"}"#])
+        XCTAssertEqual(rig.model.step, .idle)
     }
 
     func testBusyAnswerFailsStart() async {
@@ -380,6 +410,20 @@ final class SlackConnectFlowModelTests: XCTestCase {
         XCTAssertEqual(rig.sent, [#"{"account_id":7,"client_id":"1111.2222","cmd":"start","team_id":"T0ACME"}"#],
                        "through the running child, never `slack login` on 18551")
         XCTAssertEqual(rig.model.connectSectionRequest, 0)
+    }
+
+    /// A legacy account #1 a pre-#915 Re-login moved to another team
+    /// re-logs into the home team of its data (`home_team_id`, review m4);
+    /// an older CLI without the field keeps `team_id`.
+    func testReloginTargetsTheHomeTeam() throws {
+        let json = #"{"builtin_app":false,"accounts":[{"id":1,"team_id":"T0OTHER","client_id":"1111.2222","#
+            + #""shared_app":false,"relogin":"connect","home_team_id":"T0ACME"}]}"#
+        let moved = try JSONDecoder().decode(SlackAccountsDocument.self, from: Data(json.utf8))
+        XCTAssertEqual(SlackReloginRoute.route(accountID: 1, in: moved),
+                       .flow(SlackConnectTarget(teamID: "T0ACME", clientID: "1111.2222", accountID: 1)))
+        let older = doc([.init(id: 1, teamID: "T0OTHER", clientID: "1111.2222", relogin: "connect")])
+        XCTAssertEqual(SlackReloginRoute.route(accountID: 1, in: older),
+                       .flow(SlackConnectTarget(teamID: "T0OTHER", clientID: "1111.2222", accountID: 1)))
     }
 
     func testReloginConnectWithoutClientIDOpensConnectSection() async {

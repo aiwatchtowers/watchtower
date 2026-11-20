@@ -1,0 +1,46 @@
+import Foundation
+
+/// The Desktop's half of the launch backstop after a bench merge (#2003, spec
+/// §6.13, D37): before the Desktop launches an agent itself (resume, Start
+/// fresh), it reads which workbench the folder's hooks name. A folder whose
+/// install names another workbench — alone or beside the row's own — asks Go
+/// to reinstall (`workbench session ensure-install`); a folder with no
+/// install, or with only the row's, launches as it always did. Go's twin is
+/// `devpack.InstalledWorkbenchIDs`.
+package enum WorkbenchInstallCheck {
+    /// The state hook's command tail: ` workbench session-state --workbench <id>`.
+    private static let marker = " workbench session-state --workbench "
+
+    /// Every workbench id whose UserPromptSubmit state hook is in the
+    /// settings file's JSON, in file order; empty for anything unreadable.
+    package static func installedIDs(settings data: Data) -> [Int64] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let hooks = root["hooks"] as? [String: Any],
+              let groups = hooks["UserPromptSubmit"] as? [Any] else { return [] }
+        var ids: [Int64] = []
+        for case let group as [String: Any] in groups {
+            for case let hook as [String: Any] in (group["hooks"] as? [Any]) ?? [] {
+                guard let command = hook["command"] as? String,
+                      let range = command.range(of: marker, options: .backwards),
+                      let id = Int64(command[range.upperBound...].trimmingCharacters(in: .whitespaces)),
+                      !ids.contains(id) else { continue }
+                ids.append(id)
+            }
+        }
+        return ids
+    }
+
+    /// The settings file the hooks live in.
+    package static func settingsPath(folder: String) -> String {
+        (folder as NSString).appendingPathComponent(".claude/settings.local.json")
+    }
+
+    /// Whether `folder`'s install names any workbench but `workbenchID` — a
+    /// merged bench's, even beside the row's own: Go repairs it (it takes out
+    /// the ids whose workbench is gone). No install, or only the row's
+    /// (a partial one is Repair's), is left alone.
+    package static func needsReinstall(folder: String, workbenchID: Int64) -> Bool {
+        guard let data = FileManager.default.contents(atPath: settingsPath(folder: folder)) else { return false }
+        return installedIDs(settings: data).contains { $0 != workbenchID }
+    }
+}

@@ -1,12 +1,13 @@
 import Foundation
 
-/// Design-only string table of the Slack Full / Live screens spec
-/// (`docs/superpowers/specs/2026-11-15-slack-full-live-screens-design.md`).
-/// The implementation moves each group into the view model the spec names
-/// (`SlackModePresentation`, `SlackAppSetupModel`, `SlackConnectFlowModel`,
-/// `FeatureReadiness`) and pins it there; `SlackFullLiveMockCopyTests` pins
-/// this table so the mockups and the spec cannot drift apart. Sample data
-/// only: `acme`, made-up ids.
+/// Test-only string table of the Slack Full / Live screens spec
+/// (`docs/superpowers/specs/2026-11-15-slack-full-live-screens-design.md`),
+/// read by the design-shot fixtures and sheet tests. The app's strings live
+/// in the view models (`SlackModePresentation`, `SlackAppSetupModel`,
+/// `SlackConnectFlowModel`, `FeatureReadiness`) and are pinned there;
+/// `SlackFullLiveMockCopyTests` pins this table against the spec and, where
+/// a string has one, against its production twin. Sample data only: `acme`,
+/// made-up ids.
 enum SlackFullLiveMockCopy {
     // MARK: Connections → Slack: the mode
 

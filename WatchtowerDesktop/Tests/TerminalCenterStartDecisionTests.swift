@@ -502,7 +502,7 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
         let fetched = try await pool.read { try WorkbenchQueries.fetch($0, id: a) }
         let project = try XCTUnwrap(fetched)
 
-        await vm.startNewSession(project: project, title: "codex", agent: .codex)
+        await vm.startNewSession(project: project, title: "codex", agent: .codex, folder: .home)
 
         let row = try XCTUnwrap(vm.terminalSessions[a]?.first)
         XCTAssertEqual(row.kind, .codex)

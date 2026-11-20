@@ -437,6 +437,7 @@ CREATE TABLE IF NOT EXISTS targets (
     branch              TEXT NOT NULL DEFAULT '',  -- project targets: the git branch carrying the work (00089)
     pr                  TEXT NOT NULL DEFAULT '',  -- project targets: the pull request, a number or URL (00089)
     board_column_id     INTEGER NULL REFERENCES workbench_board_columns(id) ON DELETE SET NULL, -- workbench targets: the board column, of the same workbench and status; NULL = the status's first column (00125)
+    workbench_folder_id INTEGER REFERENCES workbench_folders(id) ON DELETE SET NULL, -- workbench targets: the folder the work is in; NULL = the home folder; a removed folder is told apart by its row's removed_at (00209)
     CHECK(status != 'in_review' OR project_id IS NOT NULL)  -- in_review exists only on a project board (00086)
 );
 CREATE INDEX IF NOT EXISTS idx_targets_level       ON targets(level);
@@ -922,9 +923,9 @@ CREATE TABLE IF NOT EXISTS jira_accounts (
     owner_display_name            TEXT NOT NULL DEFAULT '',
     access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
     revoked_at        TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
-    company_slug      TEXT NOT NULL DEFAULT '',  -- company bundle (<workspace>/company/<slug>.json) whose OAuth client the account signed in with; '' = our shared client (see 00198)
-    auth_kind         TEXT NOT NULL DEFAULT 'oauth' CHECK (auth_kind IN ('oauth','api_token')),  -- OAuth token or Atlassian API token (see 00198)
-    last_pdr_at       TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC of the last whole-account Personal Data Reporting pass; '' = never (see 00198)
+    company_slug      TEXT NOT NULL DEFAULT '',  -- company bundle (<workspace>/company/<slug>.json) whose OAuth client the account signed in with; '' = our shared client (see 00210)
+    auth_kind         TEXT NOT NULL DEFAULT 'oauth' CHECK (auth_kind IN ('oauth','api_token')),  -- OAuth token or Atlassian API token (see 00210)
+    last_pdr_at       TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC of the last whole-account Personal Data Reporting pass; '' = never (see 00210)
 );
 
 -- Jira boards
@@ -1096,7 +1097,7 @@ CREATE TABLE IF NOT EXISTS linear_accounts (
     created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
     revoked_at        TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
-    company_slug      TEXT NOT NULL DEFAULT ''   -- company bundle (<workspace>/company/<slug>.json) whose OAuth client the account signed in with; '' = our shared client (see 00198)
+    company_slug      TEXT NOT NULL DEFAULT ''   -- company bundle (<workspace>/company/<slug>.json) whose OAuth client the account signed in with; '' = our shared client (see 00210)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_linear_accounts_org ON linear_accounts(org_id) WHERE org_id != '';
 
@@ -1593,7 +1594,7 @@ CREATE TABLE IF NOT EXISTS google_accounts (
     updated_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
     revoked_at        TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
-    company_slug      TEXT NOT NULL DEFAULT ''   -- company bundle (<workspace>/company/<slug>.json) whose OAuth client the account signed in with; '' = our shared client (see 00198)
+    company_slug      TEXT NOT NULL DEFAULT ''   -- company bundle (<workspace>/company/<slug>.json) whose OAuth client the account signed in with; '' = our shared client (see 00210)
 );
 
 -- Multi-account Slack source: one row per connected Slack workspace.
@@ -1624,7 +1625,7 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     client_id         TEXT NOT NULL DEFAULT '',  -- Slack app client id the token was issued through; '' = connected before 00196, backfilled once (see 00196)
     app_id            TEXT NOT NULL DEFAULT '',  -- Slack App ID from oauth.v2.access; '' = unknown (see 00196)
     refresh_token_expires_at TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC expiry of a rotated token's refresh token; '' = no rotation (see 00196)
-    company_slug      TEXT NOT NULL DEFAULT ''   -- company bundle (<workspace>/company/<slug>.json) whose OAuth client the account signed in with; '' = our shared client (see 00198)
+    company_slug      TEXT NOT NULL DEFAULT ''   -- company bundle (<workspace>/company/<slug>.json) whose OAuth client the account signed in with; '' = our shared client (see 00210)
 );
 
 -- One row per team whose own Slack app this install set up (slack app
@@ -1661,7 +1662,7 @@ CREATE TABLE IF NOT EXISTS email_accounts (
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     ideas_email_floor REAL NOT NULL DEFAULT 0,    -- ideas registry floor: unix seconds of the newest imap_messages.internal_date the email pre-digest mined (see 00135)
-    company_slug   TEXT NOT NULL DEFAULT ''       -- Outlook only: company bundle whose Microsoft client the account signed in with; '' = our shared client (see 00198)
+    company_slug   TEXT NOT NULL DEFAULT ''       -- Outlook only: company bundle whose Microsoft client the account signed in with; '' = our shared client (see 00210)
 );
 
 CREATE TABLE IF NOT EXISTS imap_messages (
@@ -2640,7 +2641,7 @@ END;
 CREATE TABLE IF NOT EXISTS projects (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT NOT NULL,
-    folder_path TEXT NOT NULL UNIQUE,
+    folder_path TEXT NOT NULL UNIQUE, -- the home folder: a live workbench_folders row of this workbench (00209)
     description TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
@@ -2658,6 +2659,36 @@ CREATE TABLE IF NOT EXISTS projects (
     finish_check_carried_at TEXT NULL, -- when finish_check was carried over from the folder file; NULL = the owner's pick, or never carried (00133)
     session_instructions TEXT NULL, -- the owner's instructions for sessions in this workbench; NULL = none (00137)
     target_procedure TEXT NULL -- the owner's procedure for working a target in this workbench; NULL = none (00137)
+);
+
+-- The folders of a workbench (00209, multi-folder workbench): all equal; the
+-- home folder is the live row whose path equals projects.folder_path (the one
+-- the workbench was opened with, kept there for older readers). folder_path is
+-- absolute and symlink-resolved; one live row per path globally and one live
+-- name per bench (both NOCASE: APFS). Removing a folder sets removed_at and
+-- keeps the row, so targets and sessions can still name it; putting the same
+-- path back on the same bench clears it. The Go CLI is the only writer.
+CREATE TABLE IF NOT EXISTS workbench_folders (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    folder_path  TEXT NOT NULL,
+    position     INTEGER NOT NULL,
+    added_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    added_by     TEXT NOT NULL CHECK (added_by IN ('owner','agent_suggestion')),
+    removed_at   TEXT, -- NULL while on the bench
+    name         TEXT NOT NULL -- the folder's short name: its last path component, else <parent>-<last>(-N) (db.UniqueFolderName)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workbench_folders_live_path ON workbench_folders(folder_path COLLATE NOCASE) WHERE removed_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workbench_folders_live_name ON workbench_folders(workbench_id, name COLLATE NOCASE) WHERE removed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_workbench_folders_bench ON workbench_folders(workbench_id, position);
+
+-- "Never for This Folder" (00209): the agent never suggests this folder for
+-- this workbench again.
+CREATE TABLE IF NOT EXISTS workbench_folder_declines (
+    workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    folder_path  TEXT NOT NULL COLLATE NOCASE,
+    declined_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    PRIMARY KEY (workbench_id, folder_path)
 );
 
 -- Workbench board columns (00125, PROJ-19): named columns inside one status
@@ -2794,14 +2825,18 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     agent_watch_issue_at TEXT, -- when that issue was written, agent_state_at format; NULL with agent_watch_issue
     start_notice      TEXT, -- Go's start (`workbench session start`): the owner's line about the place (worktree warnings, "Started in the folder: …", the setup command that did not run, a failed move); NULL/'' = nothing to say (00179)
     delete_requested_at TEXT, -- the owner confirmed the delete and its background cleanup has not finished (Desktop only, 00192); NULL = not deleting
+    workbench_folder_id INTEGER REFERENCES workbench_folders(id) ON DELETE SET NULL, -- the workbench folder the session was started for (its cwd is that folder or a worktree of it); NULL = a standalone terminal, or a row the Desktop wrote without the CLI (read as the home folder) (00209)
+    parent_session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL, -- the session that started this one as a sub-session; NULL = none (00209)
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_project ON terminal_sessions(project_id, last_active_at);
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_target ON terminal_sessions(target_id);
+CREATE INDEX IF NOT EXISTS idx_terminal_sessions_parent ON terminal_sessions(parent_session_id);
 
 -- Asks the workbench agent puts to the owner (00100): a document review, a
--- check or questions. Go writes open/withdrawn/delivered; the Desktop writes
+-- check, questions or a folder suggestion (kind 'folder', 00209; payload
+-- {"path","repo_root","touches","why","other_bench"?:{"id","name"}}). Go writes open/withdrawn/delivered; the Desktop writes
 -- only open -> answered (answer + answered_at, guarded on status = 'open').
 -- delivered = get_ask has read the answer. At most 30 open per workbench.
 CREATE TABLE IF NOT EXISTS owner_asks (
@@ -2809,12 +2844,12 @@ CREATE TABLE IF NOT EXISTS owner_asks (
     project_id       INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     session_id       INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
     target_id        INTEGER REFERENCES targets(id) ON DELETE SET NULL,
-    kind             TEXT NOT NULL CHECK(kind IN ('review','check','question')),
+    kind             TEXT NOT NULL CHECK(kind IN ('review','check','question','folder')),
     title            TEXT NOT NULL CHECK(title != ''),
     summary          TEXT NOT NULL DEFAULT '',
     changes          TEXT NOT NULL DEFAULT '',   -- review re-round: what changed, agent-written
     payload          TEXT NOT NULL DEFAULT '{}', -- JSON: focus[], questions[], checklist[]
-    doc_path         TEXT NOT NULL DEFAULT '',   -- review only: rel path inside the folder
+    doc_path         TEXT NOT NULL DEFAULT '',   -- review only: rel path inside its folder (doc_folder_id)
     doc_snapshot     TEXT NOT NULL DEFAULT '',   -- review only: file text at ask time
     previous_ask_id  INTEGER REFERENCES owner_asks(id) ON DELETE SET NULL,
     status           TEXT NOT NULL DEFAULT 'open'
@@ -2830,11 +2865,49 @@ CREATE TABLE IF NOT EXISTS owner_asks (
     withdrawn_at     TEXT NOT NULL DEFAULT '',   -- when it was withdrawn (00107); '' while not, and for asks withdrawn before 00107
     automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- the automation run the ask belongs to (00122); NULL = not an automation's
     doc_type         TEXT NOT NULL DEFAULT '',   -- review asks: spec | plan | other (00158); '' for any other ask
+    doc_folder_id    INTEGER REFERENCES workbench_folders(id) ON DELETE SET NULL, -- review asks: the folder doc_path is relative to; NULL = the home folder (00209)
     CHECK ((kind = 'review') = (doc_path != '')),
     CHECK ((status IN ('answered','delivered')) = (answer != ''))
 );
 CREATE INDEX IF NOT EXISTS idx_owner_asks_project ON owner_asks(project_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_owner_asks_session ON owner_asks(session_id);
+
+-- Messages between the live sessions of one workbench (00209). Persisted so a
+-- daemon restart resumes delivery; the daemon is the only deliverer:
+-- queued -> delivering (claimed by one autocommit update) -> delivered |
+-- failed, or back to queued when the session host held it. reason names
+-- why (typed_not_submitted, not_running, unknown_after_restart, …).
+-- prompt_cleared_at: on a typed_not_submitted row, when the text left the
+-- receiver's prompt; NULL while it may still sit there. The text is never
+-- indexed and never leaves the Mac.
+CREATE TABLE IF NOT EXISTS session_messages (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    workbench_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    from_session_id   INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+    to_session_id     INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+    kind              TEXT NOT NULL CHECK (kind IN ('message','finished','failure')),
+    text              TEXT NOT NULL,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    state             TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','delivering','delivered','failed')),
+    reason            TEXT NOT NULL DEFAULT '',
+    delivered_at      TEXT, -- when it was delivered (RFC 3339 UTC); NULL otherwise
+    prompt_cleared_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_messages_state ON session_messages(state);
+CREATE INDEX IF NOT EXISTS idx_session_messages_to ON session_messages(to_session_id, state);
+
+-- A session's tool calls outside its workbench's folders, per repository root
+-- (00209): the folder-suggestion hook's counter. One autocommit upsert per
+-- counted call. nudged_at = the agent was told once; quiet = the owner's
+-- Not Now for this root in this session.
+CREATE TABLE IF NOT EXISTS session_outside_touches (
+    session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+    repo_root  TEXT NOT NULL,
+    touches    INTEGER NOT NULL DEFAULT 0,
+    nudged_at  TEXT,
+    quiet      INTEGER NOT NULL DEFAULT 0 CHECK (quiet IN (0,1)),
+    PRIMARY KEY (session_id, repo_root)
+);
 
 -- Spec review (00158): one reviewer-agent run per review ask. queued -> running
 -- (claimed by a pid) -> done | failed; skipped = no review runs (reason).
@@ -2934,7 +3007,9 @@ CREATE TABLE IF NOT EXISTS coach_proposals (
     skill           TEXT NOT NULL DEFAULT '',  -- the skill a skill or pack_overlay destination names
     conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL, -- the tuning conversation of a chat proposal
     written_branch  TEXT NOT NULL DEFAULT '',  -- repo_*: the branch Accept wrote on
-    measure_from    TEXT                       -- repo_*: when the edit was first seen at HEAD; NULL = not yet / not repo_*
+    measure_from    TEXT,                      -- repo_*: when the edit was first seen at HEAD; NULL = not yet / not repo_*
+    pr_url          TEXT NOT NULL DEFAULT '',  -- 00208: the pull request a repo_* Accept opened ('' = not a PR row)
+    revert_pr_url   TEXT NOT NULL DEFAULT ''   -- 00208: the pull request a Rollback opened to undo it
 );
 CREATE INDEX IF NOT EXISTS coach_proposals_conversation ON coach_proposals(conversation_id);
 
@@ -3020,9 +3095,11 @@ CREATE TABLE IF NOT EXISTS agent_session_tombstones (
     deleted_at       TEXT NOT NULL -- UTC ISO-8601 seconds
 );
 
--- Go-only cache of a workbench's PR/branch state for session reports (00101).
+-- Go-only cache of a workbench's PR/branch state for session reports (00101),
+-- per folder of the workbench (00209: two folders may share a branch name).
 CREATE TABLE IF NOT EXISTS workbench_pr_states (
     project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    workbench_folder_id INTEGER NOT NULL REFERENCES workbench_folders(id) ON DELETE CASCADE, -- the folder whose repository the ref is of (00209)
     ref         TEXT NOT NULL, -- 'pr:<number>', 'branch:<name>' or 'into:<base>:<branch>' (a merge verdict, board #986)
     state       TEXT NOT NULL CHECK(state IN ('merged','open','closed','none','unknown')),
     pr_number   INTEGER, -- set for a pr ref, and for a branch whose PR gh found
@@ -3031,7 +3108,7 @@ CREATE TABLE IF NOT EXISTS workbench_pr_states (
     deletions   INTEGER,
     merged_at   TEXT NOT NULL DEFAULT '',
     checked_at  TEXT NOT NULL,
-    PRIMARY KEY (project_id, ref)
+    PRIMARY KEY (project_id, workbench_folder_id, ref)
 );
 
 -- Automations (00113, design spec 2026-10-14 §9.1–§9.4). Go writes every
@@ -3504,16 +3581,17 @@ CREATE TABLE IF NOT EXISTS review_lessons (
   decided_at         TEXT
 );
 
--- The independent reviewer's thread per branch of a workbench (00180, Desktop writer).
--- branch = the round's branch, else the folder's checked-out branch; a detached HEAD
--- keys by 'session:<id>'. conversation_id is a chat_conversations row of context type
+-- The independent reviewer's thread per branch of a workbench folder (00180, Desktop writer;
+-- the folder joined the key in 00209). branch = the round's branch, else the folder's
+-- checked-out branch; a detached HEAD keys by 'session:<id>'. conversation_id is a chat_conversations row of context type
 -- 'review_reviewer', deleted with its thread row.
 CREATE TABLE IF NOT EXISTS review_reviewer_threads (
   project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  workbench_folder_id INTEGER NOT NULL REFERENCES workbench_folders(id) ON DELETE CASCADE, -- (00209)
   branch          TEXT NOT NULL CHECK (branch != ''),
   conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-  PRIMARY KEY (project_id, branch)
+  PRIMARY KEY (project_id, workbench_folder_id, branch)
 );
 CREATE TRIGGER IF NOT EXISTS review_reviewer_threads_ad AFTER DELETE ON review_reviewer_threads
 BEGIN
@@ -3532,7 +3610,7 @@ CREATE TABLE IF NOT EXISTS permission_requests (
     status              TEXT NOT NULL CHECK (status IN ('pending','allowed','denied','answered_on_mac','expired')),
     created_at          TEXT NOT NULL,                       -- agent-state stamp layout
     decided_at          TEXT,
-    decided_by          TEXT                                 -- the phone's name; NULL otherwise
+    decided_by          TEXT                                 -- the phone's name, or 'watchman'; NULL otherwise
 );
 CREATE INDEX IF NOT EXISTS idx_permission_requests_session ON permission_requests(terminal_session_id, status);
 
@@ -3889,4 +3967,181 @@ CREATE TABLE IF NOT EXISTS chat_turn_leases (
     started_at_ms          INTEGER NOT NULL,
     heartbeat_at_ms        INTEGER NOT NULL,
     cancel_requested_at_ms INTEGER                               -- set by the other side's Stop
+);
+
+-- Tower request ledger (00197). Go-written by internal/tower: the request ledger, exactly-once writes for the socket and the hub. Rows older than the hub ledger window (8 days) are pruned by the daemon.
+CREATE TABLE IF NOT EXISTS tower_requests (
+    request_id  TEXT PRIMARY KEY,                                  -- the client's UUID, kept across retries of one press
+    command     TEXT NOT NULL,                                     -- the tower command name (domain.verb)
+    state       TEXT NOT NULL CHECK (state IN ('begun','done')),   -- begun: a non-idempotent command is acting; done: its write committed
+    result_json TEXT NOT NULL DEFAULT '',                          -- the marshalled response a repeat returns ('' while begun or refused)
+    refusal_json TEXT NOT NULL DEFAULT '',                         -- a non-idempotent command's marshalled refusal on a done row ('' otherwise)
+    at          TEXT NOT NULL                                      -- last write, UTC %Y-%m-%dT%H:%M:%SZ
+);
+CREATE INDEX IF NOT EXISTS idx_tower_requests_at ON tower_requests(at);
+
+-- Watchman (00198): precedents, profile and backtests of the phase-1 learning loop.
+CREATE TABLE IF NOT EXISTS watchman_workbenches (
+    workbench_id       INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    enabled_at         TEXT NOT NULL,
+    estimated_decisions INTEGER NOT NULL DEFAULT 0,  -- taken at start; the learning progress's denominator
+    unlabelled         INTEGER NOT NULL DEFAULT 0,   -- decisions seen but not placed in a category
+    learned_through    TEXT                          -- set when every source reports done on its backfill
+);
+
+CREATE TABLE IF NOT EXISTS watchman_precedents (
+    id           INTEGER PRIMARY KEY,
+    workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    source       TEXT NOT NULL CHECK (source IN ('ask','review','spec','permission','journal','turn','git')),
+    source_key   TEXT NOT NULL,
+    category     TEXT NOT NULL CHECK (category IN ('design','scope','ux_text','tests','review_code','review_doc','permission','finish')),
+    situation    TEXT NOT NULL DEFAULT '',
+    choice       TEXT NOT NULL DEFAULT '',
+    owner_words  TEXT NOT NULL DEFAULT '',
+    decided_at   TEXT NOT NULL,
+    weight       REAL NOT NULL DEFAULT 1,
+    is_decision  INTEGER,  -- §9.1: NULL = not flagged yet (a candidate), 0/1 set by the learner's relabel pass
+    parked       INTEGER,  -- §9.1: NULL/0 = usable, 1 = parked out of the backtest
+    flags_at     TEXT,     -- §9.1: when the relabel pass tried the row (even if both flags stayed NULL)
+    UNIQUE (workbench_id, source, source_key)
+);
+CREATE INDEX IF NOT EXISTS idx_watchman_precedents_wb ON watchman_precedents(workbench_id, category, decided_at);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS watchman_fts USING fts5(
+    situation, choice, owner_words,
+    content='watchman_precedents', content_rowid='id',
+    tokenize='porter unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER IF NOT EXISTS watchman_precedents_ai AFTER INSERT ON watchman_precedents BEGIN
+    INSERT INTO watchman_fts(rowid, situation, choice, owner_words) VALUES (NEW.id, NEW.situation, NEW.choice, NEW.owner_words);
+END;
+CREATE TRIGGER IF NOT EXISTS watchman_precedents_ad AFTER DELETE ON watchman_precedents BEGIN
+    INSERT INTO watchman_fts(watchman_fts, rowid, situation, choice, owner_words) VALUES ('delete', OLD.id, OLD.situation, OLD.choice, OLD.owner_words);
+END;
+CREATE TRIGGER IF NOT EXISTS watchman_precedents_au AFTER UPDATE ON watchman_precedents BEGIN
+    INSERT INTO watchman_fts(watchman_fts, rowid, situation, choice, owner_words) VALUES ('delete', OLD.id, OLD.situation, OLD.choice, OLD.owner_words);
+    INSERT INTO watchman_fts(rowid, situation, choice, owner_words) VALUES (NEW.id, NEW.situation, NEW.choice, NEW.owner_words);
+END;
+
+CREATE TABLE IF NOT EXISTS watchman_cursors (
+    workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    source       TEXT NOT NULL,
+    cursor       TEXT NOT NULL DEFAULT '',
+    updated_at   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (workbench_id, source)
+);
+
+CREATE TABLE IF NOT EXISTS watchman_profile (
+    workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    key          TEXT NOT NULL,                      -- a category or 'sleep_window'
+    text         TEXT NOT NULL DEFAULT '',
+    pinned       INTEGER NOT NULL DEFAULT 0,
+    version      INTEGER NOT NULL DEFAULT 1,
+    updated_at   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (workbench_id, key)
+);
+
+CREATE TABLE IF NOT EXISTS watchman_backtests (
+    id           INTEGER PRIMARY KEY,
+    workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    started_at   TEXT NOT NULL,
+    finished_at  TEXT,
+    status       TEXT NOT NULL CHECK (status IN ('running','done','failed')),
+    error        TEXT NOT NULL DEFAULT '',
+    verdict      TEXT NOT NULL DEFAULT '' CHECK (verdict IN ('','go','stop')),
+    cost_usd     REAL NOT NULL DEFAULT 0,
+    progress     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_watchman_backtests_wb ON watchman_backtests(workbench_id, id);
+
+CREATE TABLE IF NOT EXISTS watchman_backtest_rows (
+    backtest_id INTEGER NOT NULL REFERENCES watchman_backtests(id) ON DELETE CASCADE,
+    category    TEXT NOT NULL,
+    total       INTEGER NOT NULL DEFAULT 0,
+    agree       INTEGER NOT NULL DEFAULT 0,  -- decisions the judge graded same as the owner's
+    wrong_high  INTEGER NOT NULL DEFAULT 0,  -- decisions graded bad while the twin's confidence was high
+    cost_usd    REAL NOT NULL DEFAULT 0,
+    baseline    REAL NOT NULL DEFAULT 0,  -- share of the most common owner choice among the hidden items (informational)
+    status      TEXT NOT NULL CHECK (status IN ('strong','weak','not_measured')),
+    acceptable  INTEGER NOT NULL DEFAULT 0,  -- a different but reasonable decision
+    bad         INTEGER NOT NULL DEFAULT 0,  -- a decision the owner would have had to undo; strong = bad <= 5 % and wrong_high = 0
+    rec_baseline REAL NOT NULL DEFAULT 0,    -- share of decisions where the owner picked the agent's recommended option (informational)
+    handed      INTEGER NOT NULL DEFAULT 0,  -- §9.1: decisions the twin handed to the owner (not scored)
+    PRIMARY KEY (backtest_id, category)
+);
+
+-- Decisions a watchman source offered that the learner did not store (no
+-- category); a source's lookback does not offer them again.
+CREATE TABLE IF NOT EXISTS watchman_skipped_keys (
+    workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    source       TEXT NOT NULL,
+    source_key   TEXT NOT NULL,
+    skipped_at   TEXT NOT NULL,
+    PRIMARY KEY (workbench_id, source, source_key)
+);
+
+-- Watchman phase 2 (00202; spec §§2, 4, 6 and the phase-2 plan's item enums).
+CREATE TABLE IF NOT EXISTS watchman_arming (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope    TEXT NOT NULL CHECK (scope IN ('session','target')),
+    ref_id   INTEGER NOT NULL,            -- session or target id
+    armed_at TEXT NOT NULL,               -- RFC 3339 UTC
+    armed_by TEXT NOT NULL,               -- 'desktop' | 'cli'
+    UNIQUE (scope, ref_id)
+);
+
+CREATE TABLE IF NOT EXISTS watchman_items (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    workbench_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_id    INTEGER,
+    target_id     INTEGER,
+    kind          TEXT NOT NULL CHECK (kind IN ('ask','review_doc','check','handover','permission','review_code','guard')),
+    ref_kind      TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round','guard')),  -- 'guard': a guard hook denial, ref_id its own number (00205)
+    ref_id        INTEGER NOT NULL,
+    state         TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','deciding','done')),
+    outcome       TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('','answered','handed','parked','owner_first','approved','changes','superseded')),
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    lease_until   TEXT,
+    not_before    TEXT,
+    question      TEXT NOT NULL DEFAULT '',  -- redacted, at most 2048 runes
+    choice        TEXT NOT NULL DEFAULT '',
+    rationale     TEXT NOT NULL DEFAULT '',
+    precedent_ids TEXT NOT NULL DEFAULT '[]',  -- JSON array of watchman_precedents ids
+    confidence    TEXT NOT NULL DEFAULT '',
+    importance    TEXT NOT NULL DEFAULT '',
+    category      TEXT NOT NULL DEFAULT '',
+    unsure        INTEGER NOT NULL DEFAULT 1 CHECK (unsure IN (0, 1)),  -- every twin decision is journalled unsure (D43)
+    park_reason   TEXT NOT NULL DEFAULT '',
+    delivery      TEXT NOT NULL DEFAULT '',
+    round_id      INTEGER,
+    cost_usd      REAL NOT NULL DEFAULT 0,
+    error         TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL,
+    decided_at    TEXT,
+    feedback      TEXT NOT NULL DEFAULT '' CHECK (feedback IN ('','ok','corrected')),  -- written by the Desktop only
+    feedback_text TEXT NOT NULL DEFAULT '',
+    feedback_at   TEXT,
+    check_done_at TEXT,
+    owner_done_at TEXT,       -- the owner marked a waiting item done (Desktop only)
+    correction_sent_at TEXT,  -- the owner's correction reached a session (Desktop only)
+    moves         INTEGER,    -- review_code: times its diff moved after the decision (00207)
+    UNIQUE (ref_kind, ref_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_watchman_items_queue ON watchman_items(state, not_before);
+CREATE INDEX IF NOT EXISTS idx_watchman_items_wb ON watchman_items(workbench_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_watchman_items_created ON watchman_items(created_at);
+
+CREATE TABLE IF NOT EXISTS watchman_gaps (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    ended_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS watchman_extra_limits (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT NOT NULL CHECK (kind IN ('command','tool')),
+    pattern    TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (kind, pattern)
 );

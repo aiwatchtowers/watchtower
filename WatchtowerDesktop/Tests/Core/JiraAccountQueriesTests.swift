@@ -49,7 +49,7 @@ final class JiraAccountQueriesTests: XCTestCase {
         XCTAssertTrue(accounts.isEmpty)
     }
 
-    /// Migration 00198's columns read back: defaults on a plain row, stored
+    /// Migration 00210's columns read back: defaults on a plain row, stored
     /// values on a company API-token row.
     func testFetchAllDecodesCompanySlugAndAuthKind() throws {
         let pool = try makePool()

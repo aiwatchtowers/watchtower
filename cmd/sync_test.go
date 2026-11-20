@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/config"
+	"watchtower/internal/daemon"
 )
 
 func TestSyncCommandRegistered(t *testing.T) {
@@ -108,4 +109,19 @@ func TestRunSync_AcceptsConfigWithoutWorkspacesBlock(t *testing.T) {
 	err := syncCmd.RunE(syncCmd, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "--detach requires --daemon")
+}
+
+// The app starts the daemon as `sync --daemon --detach --no-sync` before
+// onboarding finishes; the detached child must get --no-sync too.
+func TestSyncDetach_ForwardsNoSync(t *testing.T) {
+	f := syncCmd.Flags().Lookup("no-sync")
+	require.NotNil(t, f, "sync has a --no-sync flag")
+	assert.Equal(t, "false", f.DefValue)
+
+	child := detachedChild("/opt/watchtower/watchtower", []string{"sync", "--daemon", "--detach", "--no-sync"})
+	assert.Equal(t, []string{"/opt/watchtower/watchtower", "sync", "--daemon", "--detach", "--no-sync"}, child.Args)
+	assert.Contains(t, child.Env, daemon.DetachEnvKey+"=1")
+
+	child = detachedChild("/opt/watchtower/watchtower", []string{"sync", "--daemon", "--detach"})
+	assert.NotContains(t, child.Args, "--no-sync")
 }

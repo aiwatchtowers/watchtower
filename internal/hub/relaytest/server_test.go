@@ -320,6 +320,13 @@ func TestRelaytestIsImportedOnlyByTests(t *testing.T) {
 
 func dialWS(t *testing.T, srv *relaytest.Server, device string) *websocket.Conn {
 	t.Helper()
+	ws, _ := dialWSHello(t, srv, device)
+	return ws
+}
+
+// dialWSHello is dialWS that also returns the relay's HelloOk.
+func dialWSHello(t *testing.T, srv *relaytest.Server, device string) (*websocket.Conn, *relayv1.HelloOk) {
+	t.Helper()
 	ws, _, err := websocket.Dial(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/ws",
 		&websocket.DialOptions{HTTPClient: srv.HTTPClient()})
 	if err != nil {
@@ -332,10 +339,11 @@ func dialWS(t *testing.T, srv *relaytest.Server, device string) *websocket.Conn 
 	if err := ws.Write(t.Context(), websocket.MessageBinary, hello); err != nil {
 		t.Fatal(err)
 	}
-	if fr := readFrame(t, ws); fr == nil || fr.GetHelloOk() == nil {
+	fr := readFrame(t, ws)
+	if fr == nil || fr.GetHelloOk() == nil {
 		t.Fatalf("no hello_ok: %v", fr)
 	}
-	return ws
+	return ws, fr.GetHelloOk()
 }
 
 // subscribeWS subscribes zones and waits for the answer.

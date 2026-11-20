@@ -108,7 +108,15 @@ func runDiag(t *testing.T, args ...string) (string, int) {
 	os.Args = append([]string{"watchtower"}, args...)
 	rootCmd.SetArgs(args)
 	rootCmd.SetOut(&out)
+	// The run parses --config and --workspace into the shared globals: put
+	// them back with their Changed marks cleared, or a later run's
+	// resetSetFlags would reset them.
+	cfgPath, ws := flagConfig, flagWorkspace
 	code := Execute()
+	flagConfig, flagWorkspace = cfgPath, ws
+	for _, name := range []string{"config", "workspace"} {
+		rootCmd.PersistentFlags().Lookup(name).Changed = false
+	}
 	return out.String(), code
 }
 

@@ -15,7 +15,7 @@ package struct GoogleAccount: FetchableRecord, Identifiable, Equatable {
     package let error: String
 
     /// The company bundle whose OAuth client this account signed in with
-    /// (`company_slug`, migration 00198); "" = our shared client. Go writes
+    /// (`company_slug`, migration 00210); "" = our shared client. Go writes
     /// it; the app only reads it.
     package let companySlug: String
 

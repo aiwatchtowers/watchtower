@@ -1,12 +1,14 @@
 package sessionstart
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,11 +29,14 @@ import (
 	"watchtower/internal/hub/transport/memfake"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/sessionhost"
+	"watchtower/internal/sessionmsg"
 )
 
 const (
-	pasteOpen  = "\x1b[200~"
-	pasteClose = "\x1b[201~"
+	pasteOpen = "\x1b[200~"
+	// pasteModeOn is the stub's bracketed-paste switch (DEC mode 2004).
+	pasteModeOn = "\x1b[?2004h"
+	pasteClose  = "\x1b[201~"
 )
 
 // ptyMark is the marker ptyBefore types.
@@ -65,17 +70,43 @@ func (w *world) port() *Port {
 }
 
 // startedSession is a claude session started through the port, launched and
-// idle for its run (a Stop hook after its start).
+// idle for its run (a Stop hook after its start). The hook is written once
+// the host has read the stub's bracketed-paste switch, as a real agent's
+// Stop hook comes after it drew its prompt: stamped earlier, a line could
+// reach the host before the switch and end cannot_type (CI, 2026-11-19).
 func (w *world) startedSession(p *Port) (int64, sessionhost.SessionInfo) {
 	w.t.Helper()
 	res, err := p.Start(context.Background(), handlers.StartRequest{Workbench: w.wb, Brief: "go"})
 	require.NoError(w.t, err)
 	require.Equal(w.t, StateRunning, res.State, "the port answers after the launch was checked")
 	info := w.launched(res.SessionID)
+	w.waitPasteMode(info)
 	_, err = w.db.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ? WHERE id = ?`,
 		db.AgentStateStamp(time.Now().Add(time.Second)), res.SessionID)
 	require.NoError(w.t, err)
 	return res.SessionID, info
+}
+
+// waitPasteMode returns once the host has read the session's bracketed-paste
+// switch (DEC 2004), on a pane attached and closed again: an attach replays
+// the host's tracked modes before the output, and the host tracks a chunk's
+// modes before it forwards the chunk, so the switch on the pane means the
+// host holds it. No clock: the pane's frames are the event.
+func (w *world) waitPasteMode(info sessionhost.SessionInfo) {
+	w.t.Helper()
+	pane := attach(w.t, w.socket, info)
+	defer func() { _ = pane.nc.Close() }()
+	var seen []byte
+	for !bytes.Contains(seen, []byte(pasteModeOn)) {
+		ft, b, err := sessionhost.ReadFrame(pane.nc)
+		require.NoError(w.t, err)
+		if ft == sessionhost.Exit || ft == sessionhost.Error {
+			w.t.Fatalf("session %d ended before its paste mode (%s): %q", info.Row, b, seen)
+		}
+		if ft == sessionhost.Output {
+			seen = append(seen, b...)
+		}
+	}
 }
 
 func TestPortLiveSeesOnlyThisScope(t *testing.T) {
@@ -150,6 +181,32 @@ func TestPortInterruptIsOneEscAndNoDraft(t *testing.T) {
 	w.waitPTY(sid, "\x1b"+pasteOpen+"after"+pasteClose+"\r")
 }
 
+// PromptState reads the run's prompt through the host and types nothing: an
+// empty prompt, then the owner's draft; another launch is not running and
+// never "empty".
+func TestPortPromptStateReadsTheDraftAndTypesNothing(t *testing.T) {
+	w := newWorld(t)
+	p := w.port()
+	sid, info := w.startedSession(p)
+	holds, known, err := p.PromptState(context.Background(), sid, info.Launch)
+	require.NoError(t, err)
+	assert.True(t, known)
+	assert.False(t, holds, "an empty prompt")
+
+	pane := attach(t, w.socket, info)
+	pane.send(sessionhost.Input, []byte("my draft"))
+	w.waitPTY(sid, "my draft")
+	holds, known, err = p.PromptState(context.Background(), sid, info.Launch)
+	require.NoError(t, err)
+	assert.True(t, known)
+	assert.True(t, holds, "the owner's draft")
+	assert.Equal(t, "my draft", w.ptyBefore(sid, pane), "not one byte from the read")
+
+	_, known, err = p.PromptState(context.Background(), sid, info.Launch+1)
+	assert.ErrorIs(t, err, ErrNotRunning)
+	assert.False(t, known)
+}
+
 // relay is the hub's handlers over the real port, behind a real processor on
 // a memfake relay, with one linked phone allowed to type.
 type relay struct {
@@ -212,7 +269,12 @@ func (r *relay) line(sid int64, text string) uint64 {
 	return seq
 }
 
+// finalStatuses are the echo statuses that never change again.
+var finalStatuses = []string{wire.StatusApplied, wire.StatusFailed, wire.StatusExpired, wire.StatusCancelled}
+
 // echo passes the processor and syncs the phone until seq's echo satisfies ok.
+// A final echo that does not fails the test at once instead of waiting for an
+// echo that cannot come.
 func (r *relay) echo(seq uint64, what string, ok func(wire.ActionRequest) bool) wire.ActionRequest {
 	r.t.Helper()
 	var e wire.ActionRequest
@@ -222,6 +284,13 @@ func (r *relay) echo(seq uint64, what string, ok func(wire.ActionRequest) bool) 
 		_, err = r.phone.Sync()
 		require.NoError(r.t, err)
 		e = r.phone.Echoes[seq]
+		if !ok(e) && slices.Contains(finalStatuses, e.Status) {
+			reason := ""
+			if e.Reason != nil {
+				reason = *e.Reason
+			}
+			r.t.Fatalf("%s: the echo ended %s (reason %q, result %v)", what, e.Status, reason, e.Result)
+		}
 		return ok(e)
 	})
 	return e
@@ -309,6 +378,35 @@ func TestPortStartFailuresAreNeverStarted(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, StateFailed, res.State)
 	assert.Equal(t, "the session host is not running", w.row(res.SessionID).agentError)
+}
+
+// A sub-session whose launch fails after the host answered stays a failed
+// start, and its parent gets a failure line (spec §7 "sub-session start",
+// amended); a failed start with no parent tells no one.
+func TestFailedSubSessionStartTellsTheParent(t *testing.T) {
+	w := newWorld(t)
+	w.installHome()
+	ctx := context.Background()
+	parent, err := w.db.CreateTerminalSession(ctx, db.NewTerminalSession{WorkbenchID: w.wb, Kind: "codex", Title: "Lead", FolderPath: w.folder})
+	require.NoError(t, err)
+	refused := w.portWith(func(d *Deps) { d.Shell = filepath.Join(w.stub, "no-such-shell") })
+
+	res, err := refused.Start(ctx, handlers.StartRequest{Workbench: w.wb, Brief: "go", ParentSessionID: parent})
+	require.Error(t, err)
+	assert.Equal(t, StateFailed, res.State)
+	reason := w.row(res.SessionID).agentError
+	require.Contains(t, reason, "launch refused: ")
+
+	_, err = refused.Start(ctx, handlers.StartRequest{Workbench: w.wb, Brief: "go"})
+	require.Error(t, err)
+
+	msgs, err := w.db.QueuedSessionMessages(ctx)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1, "only the sub-session's failure is told")
+	assert.Equal(t, sessionmsg.KindFailure, msgs[0].Kind)
+	assert.Equal(t, parent, msgs[0].ToSessionID.Int64)
+	assert.Equal(t, res.SessionID, msgs[0].FromSessionID.Int64)
+	assert.Equal(t, sessionmsg.FailureLine(res.SessionID, sessionmsg.StartFailureReason(reason)), msgs[0].Text)
 }
 
 // Swift's launch watch: a launch that exits 127 at once (no claude on the

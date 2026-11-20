@@ -25,9 +25,10 @@ type record struct {
 	env    []byte
 	expect state.Control
 	at     time.Time // the transport's ServerAt (zero for a held action)
-	// readAt is when the processor got the record's page from the transport:
-	// zero for a held action drained later and for the hub's own echo, so
-	// only an action applied on its first read is timed.
+	// readAt is when the processor reached the record in its page (per
+	// record, so an earlier record's handler time is not counted): zero for
+	// a held action drained later and for the hub's own echo, so only an
+	// action applied on its first read is timed.
 	readAt time.Time
 }
 
@@ -332,7 +333,7 @@ func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Ope
 	if run {
 		p.contact(now) // admitted: the phone was in touch
 	}
-	if run && reg.opts.NonIdempotent {
+	if run && reg.opts.nonIdempotent(a) {
 		claimed, err := p.claim(ctx, b, r, o, a, key, plain, reg.opts.ReceivedEcho, now, ps)
 		if err != nil {
 			return err
@@ -400,7 +401,7 @@ func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Ope
 		ps.nudges = append(ps.nudges, reg.opts.Nudges...)
 		if run && p.cfg.Latency != nil && !r.readAt.IsZero() {
 			// Committed above: the stamp is outside the transaction.
-			p.cfg.Latency.Applied(string(p.cfg.Transport.Kind()), r.readAt, p.cfg.Clock(), reg.opts.Nudges)
+			p.cfg.Latency.Applied(string(p.cfg.Transport.Kind()), a.Kind, r.readAt, p.cfg.Clock(), reg.opts.Nudges)
 		}
 	}
 	return nil
@@ -417,7 +418,10 @@ func unencodable(device secure.ID) Outcome {
 
 // claim commits the ledger key as begun with the rollback mark (and the
 // received echo, written at once so the phone sees it before the handler
-// runs). claimed is false when the ledger already holds the record.
+// runs). claimed is false when the ledger already holds the record. p.mu is
+// held, and released for the echo's write: the action is begun in the
+// ledger and b's mailbox lock is held by the pass, so nothing else decides
+// it meanwhile, and another mailbox's apply does not wait for this write.
 func (p *Processor) claim(ctx context.Context, b mailbox, r record, o secure.Opened, a wire.ActionRequest, key, plain string, received bool, now time.Time, ps *pass) (claimed bool, err error) {
 	var recv *queued
 	if received {
@@ -447,7 +451,10 @@ func (p *Processor) claim(ctx context.Context, b mailbox, r record, o secure.Ope
 	}
 	if recv != nil {
 		ps.report.Echoed++
-		if _, _, err := p.flushMailbox(ctx, b); err != nil {
+		p.mu.Unlock()
+		err := p.flushBox(ctx, b)
+		p.lockMu()
+		if err != nil {
 			return true, err
 		}
 	}

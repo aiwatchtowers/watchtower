@@ -96,46 +96,6 @@ final class DatabaseManager: Sendable {
         return total
     }
 
-    // MARK: - Wipe LLM Data
-
-    /// Delete all AI-generated data from the database, preserving raw Slack data, config, and user profile.
-    func wipeLLMData() async throws {
-        try await dbPool.write { db in
-            // AI-generated content tables
-            try db.execute(sql: "DELETE FROM digests")
-            try db.execute(sql: "DELETE FROM user_analyses")
-            try db.execute(sql: "DELETE FROM period_summaries")
-            try db.execute(sql: "DELETE FROM tracks")
-            try db.execute(sql: "DELETE FROM people_cards")
-
-            // AI-generated summary tables
-            try db.execute(sql: "DELETE FROM people_card_summaries")
-
-            // Briefings
-            try db.execute(sql: "DELETE FROM briefings")
-
-            // Targets: only AI-sourced ones — user-created (manual/jira/slack/promoted_subitem)
-            // are preserved, and so is every project board (PROJ-02: only a project
-            // delete removes its targets; their comments would cascade with them).
-            try db.execute(sql: """
-                DELETE FROM targets
-                WHERE source_type IN ('extract','track','digest','briefing','chat','inbox')
-                  AND project_id IS NULL
-                """)
-            try db.execute(sql: "DELETE FROM inbox_items")
-            try db.execute(sql: "UPDATE workspace SET inbox_last_processed_ts = 0")
-
-            // Pipeline run history
-            try db.execute(sql: "DELETE FROM pipeline_steps")
-            try db.execute(sql: "DELETE FROM pipeline_runs")
-
-            // Feedback & training signal (tied to wiped content)
-            try db.execute(sql: "DELETE FROM feedback")
-            try db.execute(sql: "DELETE FROM decision_reads")
-            try db.execute(sql: "DELETE FROM user_interactions")
-        }
-    }
-
     // MARK: - CLI Migrations
 
     /// Run the bundled Go CLI to apply all pending DB migrations before opening the pool.

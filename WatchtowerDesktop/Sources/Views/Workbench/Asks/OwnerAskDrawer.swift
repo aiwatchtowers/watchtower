@@ -239,7 +239,7 @@ struct OwnerAskDrawer: View {
                     VStack(alignment: .leading, spacing: 14) {
                         topSections
                         kindBody
-                        noteView
+                        if takesNote { noteView }
                     }
                     .padding(14)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -364,6 +364,7 @@ struct OwnerAskDrawer: View {
         specReviewLoadedFor = nil
         guard specReviewApplies, let cli = vm.cli else { return }
         let model = SpecReviewModel(ask: ask, dbPool: vm.dbPool, cli: cli, asks: asks, chats: appState?.embeddedChatCenter,
+                                    chatWrites: appState?.chatWrites ?? .notReady,
                                     threadCenter: appState?.specReviewThreadCenter)
         await model.load()
         guard !Task.isCancelled else { return }
@@ -457,8 +458,17 @@ struct OwnerAskDrawer: View {
                 onLeaveField: leaveField
             )
         case .question: EmptyView()
+        // An open folder suggestion answers on its card (#2003, §6.7); a
+        // closed one shows the answer line it got as its note.
+        case .folder:
+            if ask.isOpen || asks.heldFolderAsks[ask.id] != nil, let suggestion = ask.folderSuggestion {
+                FolderSuggestionAskCard(vm: vm, ask: ask, suggestion: suggestion)
+            }
         }
     }
+
+    /// A folder suggestion takes no typed note: its card's three answers say it all.
+    private var takesNote: Bool { ask.kind != .folder || !ask.isOpen }
 
     @ViewBuilder
     private var noteView: some View {

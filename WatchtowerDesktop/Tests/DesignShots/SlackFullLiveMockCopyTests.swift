@@ -4,8 +4,8 @@ import XCTest
 
 /// Pins the Slack Full / Live screens spec's string table
 /// (`docs/superpowers/specs/2026-11-15-slack-full-live-screens-design.md`)
-/// so the mockups and the spec text cannot drift. The implementation moves
-/// these strings into the view models the spec names and pins them there.
+/// so the fixtures and the spec text cannot drift; where the app has the
+/// string (the view models the spec names), it is compared with it here.
 @MainActor
 final class SlackFullLiveMockCopyTests: XCTestCase {
     func testModeChipsAndSummaries() {

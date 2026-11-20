@@ -140,6 +140,24 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertFalse(older.needsRepair)
     }
 
+    /// Watchman phase 2 (hand-off from Task 7): a folder set up before the
+    /// `workbench watchman-guard` hook is offered Repair; an older CLI
+    /// without the `watchman_guard` key has nothing to install.
+    func testMissingWatchmanGuardNeedsRepair() throws {
+        let base = #""skill":"unchanged","hook":true,"stop_hook":true,"state_hooks":true,"mcp":true"#
+        let missing = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            "{\(base),\"watchman_guard\":false}".utf8))
+        XCTAssertFalse(missing.watchmanGuard)
+        XCTAssertTrue(missing.claudeNeedsRepair)
+        XCTAssertTrue(missing.repairHelp.contains("Watchman guard missing"), missing.repairHelp)
+        let present = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            "{\(base),\"watchman_guard\":true}".utf8))
+        XCTAssertFalse(present.needsRepair)
+        let older = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data("{\(base)}".utf8))
+        XCTAssertTrue(older.watchmanGuard)
+        XCTAssertFalse(older.needsRepair)
+    }
+
     func testCheckDriftRunsOfflineAndDecodesTheReport() async throws {
         let runner = FakeCLIRunner(stdout: Data(#"{"project_id":4,"git":true,"base":"main","findings":[]}"#.utf8))
         let report = try await WorkbenchCLI(runner: runner).checkDrift(projectID: 4)

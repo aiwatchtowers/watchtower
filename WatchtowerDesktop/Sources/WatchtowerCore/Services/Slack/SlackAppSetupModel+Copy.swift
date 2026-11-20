@@ -221,6 +221,8 @@ extension SlackAppSetupModel {
         case let .problem(.notCollaborator(workspace)):
             Notice(icon: "exclamationmark.triangle.fill", tone: .warning, title: isAdopt ? Self.adoptTitle(workspace) : nil,
                    body: Self.notCollaboratorBody)
+        case let .builtinAppDeferred(workspace):
+            Notice(icon: "info.circle", tone: .blue, title: Self.adoptTitle(workspace), body: Self.builtinAppDeferredBody(workspace))
         case let .problem(problem):
             Notice(icon: "exclamationmark.triangle.fill", tone: .warning, title: nil, body: problemLine(problem))
         }
@@ -241,6 +243,15 @@ extension SlackAppSetupModel {
     package static let clientIDFormatLine = "That is not a Client ID: two numbers joined by a dot."
 
     package static let busyBody = "Another setup is already running on this Mac. Try again once it has finished."
+    package static let unreadableAnswerBody = "Watchtower could not read the setup's answer, so it does not know how "
+        + "the setup ended. Connections → Slack shows where it got to; the app is never created twice."
+
+    /// The workspace's app is the one this Watchtower signs in through
+    /// (`builtin_app_pkce_deferred`, review M1).
+    package static func builtinAppDeferredBody(_ workspace: String) -> String {
+        "This version of Watchtower signs in to \(workspace) through this app already. The app moves to the new "
+            + "sign-in with a later Watchtower update; until then there is nothing to set up. Nothing was changed."
+    }
     /// The storage line names the button the setup's record row shows; with
     /// no row, the owner tries again.
     package static func storageBody(rowAction: String?) -> String {
@@ -271,13 +282,11 @@ extension SlackAppSetupModel {
     package func problemLine(_ problem: Problem) -> String {
         let nothing = changesNothingCreated ? "Nothing was created." : "Nothing was changed."
         switch problem {
-        case .badToken: return Self.badTokenBody
-        case .notAllowed: return Self.notAllowedBody
-        case .notCollaborator: return Self.notCollaboratorBody
+        case .badToken, .notAllowed, .notCollaborator, .busy, .saveFailed, .unreadableAnswer:
+            return Self.fixedProblemLine(problem) ?? ""
         case let .network(error): return "Could not reach Slack: \(error). \(nothing)"
         case let .refused(code):
             return changesNothingCreated ? "Slack refused the app: \(code). \(nothing)" : "Slack refused the change: \(code). \(nothing)"
-        case .busy: return Self.busyBody
         case let .storage(teamID):
             return Self.storageBody(rowAction: recordRows.first { $0.record.teamID == teamID && !teamID.isEmpty }?.label)
         case let .wrongTeam(workspace):
@@ -293,11 +302,22 @@ extension SlackAppSetupModel {
             return clientID ? Self.clientIDFormatLine : Self.appIDFormatLine
         case let .notPending(workspace):
             return Self.notPendingLine(workspace)
-        case .saveFailed:
-            return Self.saveFailedBody
         case let .stopped(detail):
             return "The setup stopped before it finished: \(detail). Connections → Slack shows where it got to; "
                 + "the app is never created twice."
+        }
+    }
+
+    /// The line of a problem whose words never vary; nil for the others.
+    private static func fixedProblemLine(_ problem: Problem) -> String? {
+        switch problem {
+        case .badToken: badTokenBody
+        case .notAllowed: notAllowedBody
+        case .notCollaborator: notCollaboratorBody
+        case .busy: busyBody
+        case .saveFailed: saveFailedBody
+        case .unreadableAnswer: unreadableAnswerBody
+        default: nil
         }
     }
 
@@ -344,7 +364,7 @@ extension SlackAppSetupModel {
         case .notConnected: [button(.close), button(.continueSetup, prominent: true)]
         case .approval: [button(.close), button(.checkAgain, prominent: true)]
         case .linkFailed: [button(.close), button(.showAddLink, prominent: true)]
-        case .linkDone, .problem(.notPending): [button(.done, prominent: true)]
+        case .linkDone, .builtinAppDeferred, .problem(.notPending): [button(.done, prominent: true)]
         case .problem(.notAllowed), .problem(.notCollaborator):
             [button(.cancel), button(.copyAdminNote), button(.tryAgain, prominent: true)]
         case .problem: [button(.cancel), button(.tryAgain, prominent: true)]

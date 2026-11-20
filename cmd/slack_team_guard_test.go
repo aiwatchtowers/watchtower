@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	watchtowerslack "watchtower/internal/slack"
+	"watchtower/internal/slackconnect"
 	"watchtower/internal/sync"
 )
 
@@ -186,6 +187,24 @@ func TestConnectSlackAccount_RepairOnTheWatermarkDayWarnsOnce(t *testing.T) {
 	assert.Equal(t, "2026-03-05", acct.SearchLastDate)
 }
 
+// The connect flow's write repairs a moved account the same way and warns
+// with the same backfill pointer (review m7).
+func TestWriteSlackGrant_RepairOnTheWatermarkDayWarnsWithBackfill(t *testing.T) {
+	env := newTeamGuardEnv(t, "T_OTHER", "Dev Sandbox")
+	require.NoError(t, env.db.SetSlackAccountSearchWatermark(env.id, "2026-03-05"))
+	env.addMessage(t, time.Date(2026, 3, 5, 12, 0, 0, 0, time.Local))
+
+	var warn bytes.Buffer
+	_, err := writeSlackGrant(context.Background(), env.cfg, env.db, env.id,
+		slackIdentity{TeamID: "T_HOME", TeamName: "Acme", UserID: "U_OWNER"},
+		slackconnect.Grant{AccessToken: "xoxp-new", ClientID: "5555.6666", TeamID: "T_HOME", UserID: "U_OWNER"}, "", &warn)
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(warn.String(), "watchtower slack backfill --account 1"), warn.String())
+	acct, err := env.db.GetSlackAccount(env.id)
+	require.NoError(t, err)
+	assert.Equal(t, "T_HOME", acct.TeamID)
+}
+
 // `slack add` of a team another live account already holds would sync the
 // same team twice under two namespaces: refused, the new row rolled back.
 func TestConnectSlackAccount_NewRowRefusesATeamAlreadyConnected(t *testing.T) {
@@ -300,4 +319,84 @@ func TestWireSlackSyncers_PassesTheTokenTeam(t *testing.T) {
 	has, herr := database.SlackAccountHasMessages(1)
 	require.NoError(t, herr)
 	assert.False(t, has, "nothing is synced for another team's token")
+}
+
+// A sign-in through the build's app never replaces the token of the row it
+// resolved to when that row is on a company app (connect) or the retired
+// shared app (move): whatever account `auth login` or `slack login` landed
+// on, the credential stays (verify round 1).
+func TestConnectSlackAccount_BuiltinSignInRefusedOnACompanyAppRow(t *testing.T) {
+	for _, tc := range []struct{ name, rowClient, want string }{
+		{name: "company app", rowClient: "4000.0004", want: "watchtower slack login --account 1"},
+		{name: "retired shared app", rowClient: "1000.0001", want: "retired shared Slack app"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setSlackBuild(t, "2000.0002", "test-secret", "1000.0001")
+			env := newTeamGuardEnv(t, "T_HOME", "Acme")
+			require.NoError(t, env.db.SetSlackAccountClientID(env.id, tc.rowClient))
+			stubSlackIdentityServer(t, "U_OWNER", "T_HOME", "Acme", "acme")
+
+			_, err := connectSlackAccount(context.Background(), env.cfg, env.db, env.id,
+				&auth.OAuthResult{AccessToken: "xoxp-builtin"}, false, "2000.0002", &bytes.Buffer{})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.Equal(t, "xoxp-old", env.token(t).AccessToken, "the credential is not replaced")
+			acct, err := env.db.GetSlackAccount(env.id)
+			require.NoError(t, err)
+			assert.Equal(t, tc.rowClient, acct.ClientID)
+		})
+	}
+}
+
+// The build's own app re-consenting its own row still works.
+func TestConnectSlackAccount_BuiltinSignInOnItsOwnRow(t *testing.T) {
+	setSlackBuild(t, "2000.0002", "test-secret", "1000.0001")
+	env := newTeamGuardEnv(t, "T_HOME", "Acme")
+	require.NoError(t, env.db.SetSlackAccountClientID(env.id, "2000.0002"))
+	stubSlackIdentityServer(t, "U_OWNER", "T_HOME", "Acme", "acme")
+	_, err := connectSlackAccount(context.Background(), env.cfg, env.db, env.id,
+		&auth.OAuthResult{AccessToken: "xoxp-builtin"}, false, "2000.0002", &bytes.Buffer{})
+	require.NoError(t, err)
+	assert.Equal(t, "xoxp-builtin", env.token(t).AccessToken)
+}
+
+// A connect that saved the company app's token file and stopped before the
+// row update leaves the row naming the build's app: the token file's
+// client_id wins, so a builtin sign-in still does not replace the rotating
+// company credential (verify round 2, A6).
+func TestConnectSlackAccount_BuiltinSignInReadsTheTokenFilesApp(t *testing.T) {
+	setSlackBuild(t, "2000.0002", "test-secret", "1000.0001")
+	env := newTeamGuardEnv(t, "T_HOME", "Acme")
+	require.NoError(t, env.db.SetSlackAccountClientID(env.id, "2000.0002"))
+	require.NoError(t, watchtowerslack.NewTokenStore(env.cfg.WorkspaceDir(), env.id).Save(&watchtowerslack.Token{
+		AccessToken: "xoxe.xoxp-company", TeamID: "T_HOME", RefreshToken: "xoxe-1-company", ClientID: "4000.0004",
+	}))
+	stubSlackIdentityServer(t, "U_OWNER", "T_HOME", "Acme", "acme")
+
+	_, err := connectSlackAccount(context.Background(), env.cfg, env.db, env.id,
+		&auth.OAuthResult{AccessToken: "xoxp-builtin"}, false, "2000.0002", &bytes.Buffer{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "watchtower slack login --account 1")
+	assert.Equal(t, "xoxe.xoxp-company", env.token(t).AccessToken, "the company credential stays")
+}
+
+// A refused builtin sign-in changes nothing: not the connection columns,
+// not the search watermark of a moved account (verify round 2).
+func TestConnectSlackAccount_RefusedSignInWritesNothing(t *testing.T) {
+	setSlackBuild(t, "2000.0002", "test-secret", "1000.0001")
+	env := newTeamGuardEnv(t, "T_OTHER", "Dev Sandbox")
+	require.NoError(t, env.db.SetSlackAccountClientID(env.id, "4000.0004"))
+	require.NoError(t, env.db.SetSlackAccountSearchWatermark(env.id, "2026-03-09"))
+	env.addMessage(t, time.Date(2026, 3, 5, 12, 0, 0, 0, time.Local))
+	before, err := env.db.GetSlackAccount(env.id)
+	require.NoError(t, err)
+	stubSlackIdentityServer(t, "U_OWNER", "T_HOME", "Acme", "acme")
+
+	_, err = connectSlackAccount(context.Background(), env.cfg, env.db, env.id,
+		&auth.OAuthResult{AccessToken: "xoxp-builtin"}, false, "2000.0002", &bytes.Buffer{})
+	require.Error(t, err)
+	after, err := env.db.GetSlackAccount(env.id)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "team, user and watermark unchanged")
+	assert.Equal(t, "xoxp-old", env.token(t).AccessToken)
 }

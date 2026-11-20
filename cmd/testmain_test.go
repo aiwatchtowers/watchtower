@@ -126,6 +126,11 @@ func TestMain(m *testing.M) {
 	askOwnerDesktop = func(context.Context, string, ownerconfirm.Request) (ownerconfirm.Reply, error) {
 		return ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil
 	}
+	// No cmd test may ask GitHub for a branch protection through a real gh;
+	// the arm tests that want one put a fake gh on PATH (withFakeGh).
+	watchmanProtectionRun = func(context.Context, string, string, ...string) ([]byte, error) {
+		return nil, errors.New("gh is stubbed out in cmd tests")
+	}
 	// No cmd test may call Slack: `slack remove` revokes at a refused local
 	// port unless a test points slackRevokeAPIURL at its own server.
 	slackRevokeAPIURL = "http://127.0.0.1:1/"
@@ -155,6 +160,10 @@ func TestMain(m *testing.M) {
 	// workspace's database under the temp home, which later tests expecting
 	// "no workspace" then auto-pick (order-dependent failures).
 	flagConfig = filepath.Join(home, ".config", "watchtower", "config.yaml")
+	// The flag's default moves with it: a reset to the default (a helper
+	// putting back a --config it parsed) lands on the test home, never on
+	// the owner's real config and database. --workspace's default is "".
+	rootCmd.PersistentFlags().Lookup("config").DefValue = flagConfig
 	// The codex chat disables the servers of every codex config layer; the
 	// machine's own /etc/codex must not leak into a test's argv, and no
 	// test reads the developer's CODEX_HOME.

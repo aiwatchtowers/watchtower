@@ -90,6 +90,10 @@ final class ReviewChangesModel {
     /// Bumped per `showLocation` into the preview: the same place asked again
     /// is revealed again.
     private(set) var previewSerial = 0
+    /// Bumped per tree read of a refresh (#2003): the reviewer's folder
+    /// status is read again on every Refresh, even when the round and its
+    /// diff key stay (the folder may have switched branches).
+    private(set) var treeReads = 0
     /// The preview's cursor, as its page last reported it.
     private var previewCursor: CodeNavLocation?
     /// A line the diff puts on screen once its file is shown (`wt.focus`).
@@ -478,6 +482,7 @@ final class ReviewChangesModel {
             let diffChanged = round?.diffKey != info.diffKey
             let baseChanged = commentsPlacedOn != Self.placement(info)
             round = info
+            treeReads += 1
             placeMissing = start.placeMissing ?? false
             previousTreeLost = start.previousTreeLost ?? info.prevTreeLost
             // No previous round, or its tree is lost (pruned, or of another

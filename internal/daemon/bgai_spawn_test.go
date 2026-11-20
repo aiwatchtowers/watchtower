@@ -41,6 +41,7 @@ var bgaiSpawnRoots = []spawnRoot{
 	{"internal/daemon", spawnBackground},
 	{"internal/automations", spawnBackground},
 	{"cmd/workbench_spec_review_launch.go", spawnBackground},
+	{"cmd/watchman_backtest.go", spawnBackground},
 	{"cmd/automations_backends.go", spawnBackground},
 	{"internal/chatengine", spawnOwner},
 	{"internal/hub", spawnOwner},

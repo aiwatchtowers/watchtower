@@ -152,7 +152,9 @@ type WorkbenchStatus struct {
 	StateHooks     bool // every session state hook (stateHookSpecs: the core four, SubagentStop/Start, PreToolUse, PostToolUseFailure)
 	AskGuard       bool // the Stop command hook sending a plain-text request to ask_owner (PROJ-13); an old marker prompt alone is false
 	PermissionWait bool // the PermissionRequest hook holding a dialog for the phone (#517)
+	OutsideTouch   bool // the PostToolUse entry counting touches outside the bench (multi-folder §6.7)
 	AskToolBlock   bool // the PreToolUse hook denying AskUserQuestion (PROJ-13)
+	WatchmanGuard  bool // the PreToolUse hook denying hard-limit actions in a session handed to Watchman (WATCHMAN-05)
 	// CleanupPermission: the permissions.allow rule letting the agent run
 	// `watchtower workbench cleanup` (PROJ-04, session cleanup §10).
 	CleanupPermission bool
@@ -505,7 +507,13 @@ func statusHooks(o WorkbenchInstallOptions, ps *WorkbenchStatus) []error {
 	if ps.AskToolBlock, err = HasAskToolBlockHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
 		errs = append(errs, err)
 	}
+	if ps.WatchmanGuard, err = HasWatchmanGuardHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
+		errs = append(errs, err)
+	}
 	if ps.PermissionWait, err = HasPermissionWaitHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
+		errs = append(errs, err)
+	}
+	if ps.OutsideTouch, err = HasOutsideTouchHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
 		errs = append(errs, err)
 	}
 	if ps.CleanupPermission, err = HasCleanupPermission(o.Folder); err != nil && !bothMalformed(startErr, err) {

@@ -724,6 +724,44 @@ func TestAutomationsCLI_SaveAndDeleteInWorkbenchFolder(t *testing.T) {
 	assert.NoFileExists(t, target)
 }
 
+// Multi-folder workbench (spec §6.11): a recipe saved into a secondary
+// folder's .watchtower/automations belongs to that bench, and delete removes
+// its file; once the folder leaves the bench, a save there is refused.
+func TestAutomationsCLI_SaveAndDeleteInASecondaryFolder(t *testing.T) {
+	c := newAutoCLI(t)
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	wbID, err := c.d.CreateWorkbench("beta", home)
+	require.NoError(t, err)
+	hub, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	res, err := c.d.Exec(`INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
+		VALUES (?, ?, 1, 'owner', 'hub')`, wbID, hub)
+	require.NoError(t, err)
+	hubID, err := res.LastInsertId()
+	require.NoError(t, err)
+	src := writeRecipe(t, t.TempDir(), "draft", autoCLIRecipeText(`return 1`))
+	target := filepath.Join(automations.WorkbenchDir(hub), "wb.md")
+
+	saved := runAutomationsJSON(t, "save", "--file", src, "--path", target)
+	assert.FileExists(t, target)
+	a, err := c.d.GetAutomation(int64(saved["automation_id"].(float64)))
+	require.NoError(t, err)
+	assert.Equal(t, string(automations.ScopeWorkbench), a.Scope)
+	assert.Equal(t, wbID, a.ProjectID)
+	assert.Equal(t, target, a.Path)
+
+	out, err := runAutomations(t, "delete", idArg(a.ID))
+	require.NoError(t, err, out)
+	assert.NoFileExists(t, target, "delete removes a secondary folder's recipe file")
+
+	_, err = c.d.Exec(`UPDATE workbench_folders SET removed_at = '2026-11-18T00:00:00Z' WHERE id = ?`, hubID)
+	require.NoError(t, err)
+	out, err = runAutomations(t, "save", "--file", src, "--path", target, "--json")
+	require.Error(t, err, out)
+	assert.Contains(t, err.Error(), "cannot save to")
+}
+
 // PROJ-03 (amended, ask #272): in a workbench folder, save writes only
 // <folder>/.watchtower/automations/<slug>.md — any other path of the folder
 // is refused before anything is written.
@@ -1279,4 +1317,29 @@ func TestAutomationsShow_WatchBlock(t *testing.T) {
 	}
 	assert.Equal(t, float64(id), byID[float64(a.ID)])
 	assert.Zero(t, byID[float64(owner.ID)])
+}
+
+// A wait point's wake signals only a daemon that advertises the Watchman
+// wake; an older daemon (the automations wake alone) and no daemon at all are
+// no error — the cycle scan picks the item up.
+func TestWatchmanWake_SignalsOnlyCapableDaemon(t *testing.T) {
+	writeActionsConfig(t)
+	cfg, err := loadAutomationsConfig()
+	require.NoError(t, err)
+	var sent []syscall.Signal
+	prev := automationWakeKill
+	automationWakeKill = func(_ int, sig syscall.Signal) error { sent = append(sent, sig); return nil }
+	t.Cleanup(func() { automationWakeKill = prev })
+
+	require.NoError(t, wakeWatchman(cfg), "no daemon")
+	assert.Empty(t, sent)
+
+	writeDaemonPID(t, true) // advertises the automations wake only
+	require.NoError(t, wakeWatchman(cfg))
+	assert.Empty(t, sent, "a daemon without the Watchman wake is not signalled")
+
+	body := idArg(int64(os.Getpid())) + "\n" + daemon.AutomationWakeCapability + "\n" + daemon.WatchmanWakeCapability + "\n"
+	require.NoError(t, os.WriteFile(daemon.CapsPath(pidFilePath(cfg)), []byte(body), 0o600))
+	require.NoError(t, wakeWatchman(cfg))
+	assert.Equal(t, []syscall.Signal{daemon.AutomationWakeSignal}, sent)
 }

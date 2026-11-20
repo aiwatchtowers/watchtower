@@ -17,5 +17,6 @@ extension AppState {
         calendarViewModel?.setOnScreen(onScreen)
         workbenchesViewModel?.setOnScreen(onScreen)
         workbenchesViewModel?.codeFiles.setOnScreen(onScreen)
+        actionStripViewModel?.setWindowOnScreen(onScreen)
     }
 }

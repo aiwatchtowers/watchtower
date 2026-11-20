@@ -438,7 +438,8 @@ final class FakeHostedRelayTests: XCTestCase {
 
         let socket = try await relay.sockets.dial(url, headers: bearer)
         try await socket.send(hello(phone.token))
-        guard case .helloOk = try await frame(socket).kind else { return XCTFail("want HelloOk") }
+        guard case .helloOk(let helloOk) = try await frame(socket).kind else { return XCTFail("want HelloOk") }
+        XCTAssertEqual(helloOk.capabilities, ["records_inline"])
         var subscribe = Relay_V1_Frame()
         subscribe.request = request(.subscribe(Relay_V1_Subscribe.with { $0.zones = [zone] }))
         try await socket.send(subscribe.serializedData())
@@ -449,16 +450,21 @@ final class FakeHostedRelayTests: XCTestCase {
         _ = try saveResult(relay, mac, [item(zone, "small", "s")])
         let small = try await frame(socket).event.zoneChanged
         XCTAssertEqual(small.seq, 1)
-        XCTAssertEqual(small.record.name, "small")
-        XCTAssertEqual(small.record.envelope, Data("s".utf8))
+        XCTAssertEqual(small.records.map(\.name), ["small"])
+        XCTAssertEqual(small.records.first?.envelope, Data("s".utf8))
+        XCTAssertEqual(small.records.first?.recordSeq, 1)
+        XCTAssertEqual(small.record, small.records.first, "one record within 64 KiB: also the single record")
         _ = try saveResult(relay, mac, [item(zone, "big", String(repeating: "b", count: (64 << 10) + 1))])
         let big = try await frame(socket).event.zoneChanged
         XCTAssertEqual(big.seq, 2)
-        XCTAssertFalse(big.hasRecord, "over 64 KiB: no record inline")
+        XCTAssertEqual(big.records.map(\.name), ["big"])
+        XCTAssertFalse(big.hasRecord, "over 64 KiB: not the single record")
         _ = try saveResult(relay, mac, [item(zone, "x", "1"), item(zone, "y", "2")])
         let two = try await frame(socket).event.zoneChanged
         XCTAssertEqual(two.seq, 4)
-        XCTAssertFalse(two.hasRecord, "two records: no record inline")
+        XCTAssertEqual(two.records.map(\.name), ["x", "y"], "every record of the save, oldest first")
+        XCTAssertEqual(two.records.map(\.recordSeq), [3, 4])
+        XCTAssertFalse(two.hasRecord, "two records: no single record")
 
         // A control goes to the live socket, not to the queue.
         try await relay.setEntitlement(accountID: phone.accountID, state: "expired", for: .zero)
@@ -482,6 +488,109 @@ final class FakeHostedRelayTests: XCTestCase {
         let deleted = try await frame(socket).event.zoneChanged
         XCTAssertEqual(deleted.seq, 2)
         XCTAssertFalse(deleted.hasRecord, "a tombstone is never inlined")
+        XCTAssertEqual(deleted.records, [], "a tombstone is never inlined")
+    }
+
+    /// A save over the 256 KiB frame budget comes as several events, split by record, each chunk's records
+    /// ending at its seq; a record over the budget alone is a bare event of its own.
+    func testASaveOverTheFrameBudgetIsSplitByRecord() async throws {
+        let (relay, mac, phone) = try await pairedWorld()
+        let zone = "data/\(mac.id)"
+        let socket = try await liveSocket(relay, phone, subscribe: [zone])
+        let part = String(repeating: "p", count: 100 << 10)
+        _ = try saveResult(relay, mac, [item(zone, "a", part), item(zone, "b", part), item(zone, "c", part)])
+        let first = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(first.seq, 2)
+        XCTAssertEqual(first.records.map(\.name), ["a", "b"])
+        let second = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(second.seq, 3)
+        XCTAssertEqual(second.records.map(\.name), ["c"])
+        XCTAssertFalse(second.hasRecord, "over 64 KiB")
+
+        let huge = String(repeating: "h", count: (256 << 10) + 1)
+        _ = try saveResult(relay, mac, [item(zone, "d", "1"), item(zone, "e", huge), item(zone, "f", "2")])
+        let before = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(before.seq, 4)
+        XCTAssertEqual(before.records.map(\.name), ["d"])
+        let bare = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(bare.seq, 5)
+        XCTAssertEqual(bare.records, [], "over the budget alone: bare")
+        XCTAssertFalse(bare.hasRecord)
+        let after = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(after.seq, 6)
+        XCTAssertEqual(after.records.map(\.name), ["f"])
+    }
+
+    /// The frame budget counts a record's envelope, name, zone and attachment id plus 32 bytes.
+    func testTheFrameBudgetCountsNamesAndOverhead() async throws {
+        let (relay, mac, phone) = try await pairedWorld()
+        let zone = "data/\(mac.id)"
+        let socket = try await liveSocket(relay, phone, subscribe: [zone])
+        // Two records filling the budget exactly: envelope + 1 (name) + zone + 32 each.
+        let fill = (128 << 10) - 1 - zone.utf8.count - 32
+        let half = String(repeating: "x", count: fill)
+        _ = try saveResult(relay, mac, [item(zone, "a", half), item(zone, "b", half)])
+        let fits = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(fits.records.map(\.name), ["a", "b"], "exactly the budget fits")
+        let over = String(repeating: "y", count: fill + 1)
+        _ = try saveResult(relay, mac, [item(zone, "c", String(repeating: "x", count: fill)), item(zone, "d", over)])
+        let first = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(first.records.map(\.name), ["c"], "one byte over: split")
+        let second = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(second.records.map(\.name), ["d"])
+    }
+
+    /// A device over its traffic budget gets bare events; the other readers still get the records.
+    func testADeviceOverItsTrafficBudgetGetsBareEvents() async throws {
+        let (relay, mac, phone) = try await pairedWorld()
+        let zone = "data/\(mac.id)"
+        let socket = try await liveSocket(relay, phone, subscribe: [zone])
+        let hub = try await liveSocket(relay, mac, subscribe: [zone])
+        relay.setTrafficOver(true, deviceID: phone.id)
+        _ = try saveResult(relay, mac, [item(zone, "a", "1")])
+        let bare = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(bare.seq, 1)
+        XCTAssertEqual(bare.records, [])
+        XCTAssertFalse(bare.hasRecord)
+        let full = try await frame(hub).event.zoneChanged
+        XCTAssertEqual(full.records.map(\.name), ["a"], "the writer's own socket is within its budget")
+
+        relay.setTrafficOver(false, deviceID: phone.id)
+        _ = try saveResult(relay, mac, [item(zone, "b", "2")])
+        let again = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(again.records.map(\.name), ["b"])
+    }
+
+    /// The relay before `ZoneChanged.records`: no capability, the single record of a one-record save only.
+    func testWithoutRecordsInlineOnlyTheSingleRecordIsSent() async throws {
+        let (relay, mac, phone) = try await pairedWorld()
+        relay.setRecordsInline(false)
+        let zone = "data/\(mac.id)"
+        let socket = try await relay.sockets.dial(Self.socketURL, headers: ["Authorization": "Bearer \(phone.token)"])
+        try await socket.send(hello(phone.token))
+        guard case .helloOk(let helloOk) = try await frame(socket).kind else { return XCTFail("want HelloOk") }
+        XCTAssertEqual(helloOk.capabilities, [])
+        try await socket.send(subscribeFrame([zone], id: 1))
+        let subscribed = try await frame(socket).response
+        XCTAssertNil(code(subscribed))
+
+        _ = try saveResult(relay, mac, [item(zone, "one", "1")])
+        let one = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(one.record.name, "one")
+        XCTAssertEqual(one.records, [])
+        _ = try saveResult(relay, mac, [item(zone, "x", "1"), item(zone, "y", "2")])
+        let two = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(two.seq, 3)
+        XCTAssertFalse(two.hasRecord, "two records: nothing inline")
+        XCTAssertEqual(two.records, [])
+        let part = String(repeating: "p", count: 200 << 10)
+        _ = try saveResult(relay, mac, [item(zone, "p", part), item(zone, "q", part)])
+        let split = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(split.seq, 5, "one event per write")
+        XCTAssertEqual(split.records, [])
+        _ = try saveResult(relay, mac, [item(zone, "last", "1")])
+        let last = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(last.seq, 6, "no second event for the split save")
     }
 
     // MARK: - Faults

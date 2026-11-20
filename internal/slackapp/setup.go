@@ -11,6 +11,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/slackconnect"
 )
 
 // Result kinds of a setup run (the final JSON line's "result").
@@ -47,6 +48,12 @@ const (
 	// KindDryRun: adopt --dry-run read the app; Changes lists what the
 	// update would do. Nothing was changed.
 	KindDryRun = "dry_run"
+	// KindBuiltinPKCEDeferred: the team's company app is the one this build
+	// signs in through (Runner.BuiltinClientID). Create and adopt change
+	// nothing: adopting would turn PKCE on, and the build's own sign-in
+	// (auth.Login: loopback with the client secret, no PKCE) would stop
+	// working. The build's app switches with a later update (plan B Task 18).
+	KindBuiltinPKCEDeferred = "builtin_app_pkce_deferred"
 )
 
 // Codes of a KindNeedAppID or KindBadIDs result.
@@ -206,6 +213,10 @@ type Runner struct {
 	// RetiredClientID is the retired public shared app's client id; an
 	// account on it is not on a company app. "" = nothing is shared.
 	RetiredClientID string
+	// BuiltinClientID is the client id of the app this build signs in
+	// through (auth.BuiltinApp); "" = none. Its team gets
+	// KindBuiltinPKCEDeferred from create and adopt.
+	BuiltinClientID string
 	// Emit receives every step; nil drops them.
 	Emit func(Step)
 }
@@ -300,10 +311,16 @@ func (r *Runner) companyAccount(team string) (db.SlackAccount, bool, error) {
 	return db.SlackAccount{}, false, nil
 }
 
+// builtin reports whether acct is on the app this build signs in through.
+func (r *Runner) builtin(acct db.SlackAccount) bool {
+	return r.BuiltinClientID != "" && acct.ClientID == r.BuiltinClientID
+}
+
 // Create makes Watchtower's app in the token's workspace: check_token →
 // create_app → write_link. A team with a setup record answers KindExists
 // (KindPendingCreate while its create is unresolved) and a team with a live
-// company-app account KindExistingApp; neither creates anything. A pending
+// company-app account KindExistingApp (KindBuiltinPKCEDeferred when that app
+// is the build's own); none creates anything. A pending
 // record (no ids) is inserted before apps.manifest.create and filled from
 // its answer, so neither a run cut off after the create nor a lost answer
 // ever leads to a second app.
@@ -323,7 +340,11 @@ func (r *Runner) Create(ctx context.Context, cfgToken string) (Result, error) {
 			return Result{}, err
 		}
 		if ok {
-			return Result{Kind: KindExistingApp, TeamID: teamID, TeamName: teamName,
+			kind := KindExistingApp
+			if r.builtin(acct) {
+				kind = KindBuiltinPKCEDeferred // never offer the adopt
+			}
+			return Result{Kind: kind, TeamID: teamID, TeamName: teamName,
 				AppID: acct.AppID, ClientID: acct.ClientID}, nil
 		}
 
@@ -412,11 +433,7 @@ func (r *Runner) writeLink(ctx context.Context, cfgToken, appID string, link Lin
 	return nil
 }
 
-var (
-	appIDPattern = regexp.MustCompile(`^A[A-Z0-9]+$`)
-	// clientIDPattern is the shape slackconnect.ParseConnectInput accepts.
-	clientIDPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
-)
+var appIDPattern = regexp.MustCompile(`^A[A-Z0-9]+$`)
 
 // appName is the exported manifest's display name, "" when it has none.
 func appName(m Manifest) string {
@@ -458,6 +475,9 @@ func adoptAppID(acct db.SlackAccount, appIDFlag string) (appID string, fromFlag 
 // changing nothing, until confirmAppID repeats that App ID; then
 // check_token → read_app → update_app. The record (link written) is
 // inserted only after the update succeeded.
+//
+// The team's app being the build's own (BuiltinClientID) is
+// KindBuiltinPKCEDeferred before any Slack call but check_token.
 //
 // The update turns PKCE on (MergeManifest), which Slack cannot undo without
 // its support. Unless enablePKCE (the owner's opt-in, --enable-pkce) is set
@@ -517,7 +537,7 @@ func (r *Runner) AdoptWith(ctx context.Context, cfgToken string, opts AdoptOptio
 		}
 		base := Result{TeamID: teamID, TeamName: teamName}
 		switch {
-		case opts.ClientID != "" && !clientIDPattern.MatchString(opts.ClientID):
+		case opts.ClientID != "" && !slackconnect.ClientIDPattern.MatchString(opts.ClientID):
 			base.Kind, base.Code = KindBadIDs, CodeClientIDFormat
 			base.Error = fmt.Sprintf("%q is not a Client ID (digits.digits; Basic Information page)", opts.ClientID)
 			return base, nil
@@ -534,6 +554,11 @@ func (r *Runner) AdoptWith(ctx context.Context, cfgToken string, opts AdoptOptio
 			return base, nil
 		}
 		base.ClientID = acct.ClientID
+		if r.builtin(acct) {
+			// Before anything is read or changed, --enable-pkce or not.
+			base.Kind, base.AppID = KindBuiltinPKCEDeferred, acct.AppID
+			return base, nil
+		}
 		appID, fromFlag, fail := adoptAppID(acct, appIDFlag)
 		if fail != nil {
 			base.Kind, base.Code, base.Error = fail.Kind, fail.Code, fail.Error
@@ -691,7 +716,7 @@ func (r *Runner) AttachPending(team, appID, clientID string) (Result, error) {
 			return Result{Kind: KindBadIDs, Code: CodeAppIDFormat, TeamID: team,
 				Error: fmt.Sprintf("%q is not an App ID (it starts with A; Basic Information page)", appID)}, nil
 		}
-		if !clientIDPattern.MatchString(clientID) {
+		if !slackconnect.ClientIDPattern.MatchString(clientID) {
 			return Result{Kind: KindBadIDs, Code: CodeClientIDFormat, TeamID: team,
 				Error: fmt.Sprintf("%q is not a Client ID (digits.digits; Basic Information page)", clientID)}, nil
 		}

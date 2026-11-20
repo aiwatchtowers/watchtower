@@ -2,11 +2,14 @@ package cmd
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -15,6 +18,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	watchtowerslack "watchtower/internal/slack"
+	"watchtower/internal/slackauth"
 )
 
 // revokeFake is a Slack server that records auth.revoke calls and whether the
@@ -221,4 +225,45 @@ func TestSlackRemove_RetryKeepsTheRemovedAccountsPurgeRow(t *testing.T) {
 	require.Len(t, open, 1, "the retry keeps the scheduled row")
 	assert.Equal(t, "scheduled", open[0].State)
 	assert.Equal(t, "2026-10-24T12:00:00Z", open[0].DueAt)
+}
+
+// A rotating token whose access token is due is refreshed inside the remove's
+// locked section before the revoke, so Slack revokes a token it still
+// accepts (review m8); a failed refresh still revokes what the file holds.
+func TestSlackRemove_RefreshesADueTokenBeforeRevoke(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		refreshErr  error
+		wantRevoked string
+	}{
+		{name: "refreshed", wantRevoked: "Bearer xoxe.xoxp-new"},
+		{name: "refresh failed", refreshErr: errors.New("dial tcp: network is unreachable"), wantRevoked: "Bearer xoxe.xoxp-old"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, store, id := setupSlackRemove(t)
+			require.NoError(t, store.Save(&watchtowerslack.Token{
+				AccessToken: "xoxe.xoxp-old", TeamID: "T1", RefreshToken: "xoxe-1-old",
+				ExpiresAt: time.Now().Add(-time.Minute), ClientID: "111.222",
+			}))
+			fake := &revokeFake{}
+			fake.serve(t, store.Path(), http.StatusOK, `{"ok":true,"revoked":true}`)
+			original := slackTokenRefresher
+			slackTokenRefresher = func() slackauth.Refresher {
+				return func(context.Context, string, string) (slackauth.Refreshed, error) {
+					if tc.refreshErr != nil {
+						return slackauth.Refreshed{}, tc.refreshErr
+					}
+					return slackauth.Refreshed{AccessToken: "xoxe.xoxp-new", RefreshToken: "xoxe-1-new", ExpiresIn: 43200}, nil
+				}
+			}
+			t.Cleanup(func() { slackTokenRefresher = original })
+
+			database, err := db.Open(cfg.DBPath())
+			require.NoError(t, err)
+			defer database.Close()
+			require.NoError(t, removeSlackAccount(context.Background(), cfg, database, id, &bytes.Buffer{}, &bytes.Buffer{}))
+			assert.Equal(t, []string{tc.wantRevoked}, fake.auths)
+			assert.False(t, store.Exists(), "the token file is deleted")
+		})
+	}
 }

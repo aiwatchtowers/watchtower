@@ -10,6 +10,22 @@ package enum WorkchatLivePresentation {
     package static let working = "Working…"
     package static let loading = "Loading activity…"
     package static let unavailable = "Activity unavailable"
+    // The 👥 list (#2065 spec §2).
+    package static let listTitle = "Agents"
+    package static let workingTitle = "WORKING"
+    package static let noneWorking = "No agents working"
+    package static let listLoading = "Loading agents…"
+    package static let listError = "Couldn’t read the agents"
+    package static func doneTitle(_ count: Int) -> String { "Done · \(count)" }
+    /// Done shows at most this many rows, the rest scroll.
+    package static let maxDoneRows = 5
+    // The live steps of the current turn (#2065 spec §3).
+    /// The steps slot is this many rows tall from the moment it appears; more scroll.
+    package static let stepsVisibleRows = 6
+    package static func stepsHeight(rowHeight: CGFloat) -> CGFloat { CGFloat(stepsVisibleRows) * rowHeight }
+    /// The live line's accessibility hint while it toggles the steps.
+    package static func stepsToggleHint(open: Bool) -> String { open ? "Hide this turn’s steps" : "Show this turn’s steps" }
+    package static func turnSummary(_ count: Int) -> String { "This turn · \(count) \(count == 1 ? "step" : "steps")" }
 
     package struct Row: Equatable, Sendable {
         package var symbol: String
@@ -20,6 +36,27 @@ package enum WorkchatLivePresentation {
         package var pulse: Bool
         package var retry: Bool
         package var agentsEnabled: Bool
+        /// false: no turn runs, the row holds only the 👥 button (no text or timer).
+        package var activity = true
+        /// "person.2" for working agents (or unknown), "checkmark" when only finished ones remain.
+        package var agentsSymbol = "person.2"
+        /// The badge counts finished agents only: tertiary on a faint capsule.
+        package var agentsDimmed = false
+        /// The steps disclosure: "chevron.up" closed, "chevron.down" open, nil without a steps slot.
+        package var chevron: String?
+    }
+    package struct StepRow: Equatable, Identifiable, Sendable {
+        package var id: String
+        package var symbol: String
+        package var summary: String
+        /// The step's duration, or the running timer; nil without its times.
+        package var time: String?
+        package var running: Bool
+    }
+    package struct StepsSlot: Equatable, Sendable {
+        package var rows: [StepRow]
+        /// "This turn · N steps", counting the steps the cap cut.
+        package var title: String
     }
     package struct AgentRow: Equatable, Identifiable, Sendable {
         package var agent: SessionLiveAgent
@@ -27,6 +64,27 @@ package enum WorkchatLivePresentation {
         package var action: String
         package var elapsed: String?
         package var id: String { agent.id }
+        /// The list row's first line: the agent's type (else the title).
+        package var heading: String { agent.ref.type.isEmpty ? title : agent.ref.type }
+        /// The list row's second line: the task, then what it does now.
+        package var subtitle: String { heading == title ? action : "\(title) · \(action)" }
+    }
+    package struct DoneRow: Equatable, Identifiable, Sendable {
+        package var ref: SessionFeedSubagent
+        package var title: String
+        package var subtitle: String
+        package var id: String
+    }
+    package struct AgentsList: Equatable, Sendable {
+        package enum State: Equatable, Sendable { case ready, loading, error }
+        package var state: State
+        package var working: [AgentRow]
+        /// Said under WORKING when it has no rows; nil when rows show.
+        package var workingNote: String?
+        package var done: [DoneRow]
+        package var doneTitle: String
+        /// Done opens by itself when nothing is known to work (C2).
+        package var doneOpenByDefault: Bool
     }
     package static func row(
         snapshot: SessionFeedLive?,
@@ -34,9 +92,88 @@ package enum WorkchatLivePresentation {
         loaded: Bool,
         working: Bool,
         stateAt: Date?,
-        now: Date
+        now: Date,
+        done: [SessionFeedSubagent] = [],
+        activityHidden: Bool = false,
+        stepsOpen: Bool = false
     ) -> Row? {
-        guard working else { return nil }
+        guard working else {
+            // Idle or ended: only the 👥 button, and only with finished agents to list.
+            guard !done.isEmpty else { return nil }
+            return Row(symbol: "", text: "", elapsed: nil, agentsBadge: String(done.count), warning: false, pulse: false,
+                       retry: false, agentsEnabled: true, activity: false, agentsSymbol: "checkmark", agentsDimmed: true)
+        }
+        // An agent already in Done is never counted as working (the list filters it too).
+        var counted = snapshot
+        if !done.isEmpty {
+            let doneIDs = Set(done.map(\.toolUseID))
+            counted?.agents.removeAll { doneIDs.contains($0.id) }
+        }
+        var result = workingRow(snapshot: counted, error: error, loaded: loaded, stateAt: stateAt, now: now)
+        let unknown = result.agentsBadge == "?"
+        if result.agentsBadge == nil, !done.isEmpty {
+            result.agentsBadge = String(done.count)
+            result.agentsSymbol = "checkmark"
+            result.agentsDimmed = true
+        }
+        // Unknown live status still opens the list when Done has rows to read.
+        result.agentsEnabled = result.agentsBadge != nil && (!unknown || !done.isEmpty)
+        if activityHidden {
+            // A permission card stands in for the step and its timer; the 👥 button keeps the real count.
+            result.activity = false
+            result.elapsed = nil
+            result.pulse = false
+            result.retry = false
+            result.warning = false
+        } else if let snapshot, let slot = stepsSlot(snapshot: snapshot, error: error, working: true, now: now) {
+            result.chevron = stepsOpen ? "chevron.down" : "chevron.up"
+            if stepsOpen {
+                // The list shows the newest step; the line sums up the turn.
+                result.symbol = "list.bullet"
+                result.text = slot.title
+                result.elapsed = elapsed(from: snapshot.turnAt ?? stateAt, now: now)
+                result.pulse = false
+            }
+        }
+        return result
+    }
+
+    /// The current turn's steps above the live line, or nil when the slot
+    /// hides: not working (stop, the host or session closed), no snapshot
+    /// (the pane passes none while a permission card shows), a failed or
+    /// stale read, the turn ended, or no steps yet. Stricter than `row`: a
+    /// snapshot without `observedAt` hides the list even before `loaded`,
+    /// since its freshness cannot be told.
+    package static func stepsSlot(snapshot: SessionFeedLive?, error: String?, working: Bool, now: Date) -> StepsSlot? {
+        guard working, error == nil, let snapshot, snapshot.turnActive, !snapshot.steps.isEmpty,
+              let observed = snapshot.observedAt, now.timeIntervalSince(observed) < staleAfter else { return nil }
+        let rows = snapshot.steps.map { step in
+            let running = step.completedAt == nil
+            let time = step.startedAt.flatMap { start in
+                (running ? now : step.completedAt).flatMap { elapsed(from: start, now: $0) }
+            }
+            return StepRow(id: step.id, symbol: WorkchatActivityPresenter.symbol(for: step.tool), summary: step.summary,
+                           time: time, running: running)
+        }
+        return StepsSlot(rows: rows, title: turnSummary(snapshot.steps.count + snapshot.stepsMore))
+    }
+
+    /// Busy for the live line and the 👥 list: the turn works, background
+    /// agents do, or the agent waits on an approval (a permission card pauses
+    /// the turn, it does not end it). Not busy = idle: a missing snapshot then
+    /// means no agents, and the live read stops.
+    package static func busy(_ state: SessionSwitcherPresentation.State?) -> Bool {
+        guard let state, state.live else { return false }
+        return [.working, .background, .needsApproval].contains(state.kind)
+    }
+
+    private static func workingRow(
+        snapshot: SessionFeedLive?,
+        error: String?,
+        loaded: Bool,
+        stateAt: Date?,
+        now: Date
+    ) -> Row {
         let stale = snapshot?.observedAt.map { now.timeIntervalSince($0) >= staleAfter } ?? false
         if error != nil || stale || (loaded && (snapshot == nil || snapshot?.observedAt == nil)) {
             let text: String
@@ -69,6 +206,12 @@ package enum WorkchatLivePresentation {
     }
     private static func workingText(_ snapshot: SessionFeedLive) -> String { working }
     package static func agentsTitle(count: Int) -> String { "Running agents · \(count)" }
+    /// The 👥 button's help and accessibility label, naming its count; nil without a button.
+    package static func agentsLabel(_ row: Row) -> String? {
+        guard let badge = row.agentsBadge else { return nil }
+        if badge == "?" { return "\(listTitle) · status unavailable" }
+        return row.agentsDimmed ? "\(listTitle) · Done \(badge)" : "\(listTitle) · \(badge) working"
+    }
     package static func agentsTitle(snapshot: SessionFeedLive?) -> String {
         guard let snapshot, snapshot.agentsState == "known",
               !snapshot.agents.contains(where: { $0.ref.status == "unknown" }) else { return "Running agents · unknown" }
@@ -85,6 +228,61 @@ package enum WorkchatLivePresentation {
                      elapsed: elapsed(from: $0.startedAt, now: now))
         }
     }
+    /// The 👥 list: Working from the live snapshot (minus any id already in
+    /// Done), Done from the feed's finished markers (`done(from:)`). Done from
+    /// the last good read survives a later failure (`feedLoaded`). `idle`: the
+    /// session runs no turn; otherwise a missing or stale snapshot means the
+    /// agents are not observed, never that none works.
+    package static func agentsList(
+        snapshot: SessionFeedLive?,
+        error: String?,
+        feedLoaded: Bool,
+        feedError: String?,
+        done: [SessionFeedSubagent],
+        idle: Bool,
+        now: Date
+    ) -> AgentsList {
+        let state: AgentsList.State = feedLoaded ? .ready : (feedError == nil ? .loading : .error)
+        let doneIDs = Set(done.map(\.toolUseID))
+        let working = agentRows(snapshot, error: error, now: now).filter { !doneIDs.contains($0.id) }
+        var counted = snapshot
+        counted?.agents.removeAll { doneIDs.contains($0.id) }
+        let unknown = workingUnknown(counted, error: error, idle: idle, now: now)
+        let note: String? = unknown ? unknownAgents : (working.isEmpty ? noneWorking : nil)
+        let rows = done.map {
+            DoneRow(ref: $0, title: $0.type.isEmpty ? "Subagent" : $0.type, subtitle: $0.description, id: $0.toolUseID)
+        }
+        return AgentsList(state: state, working: working, workingNote: note, done: rows, doneTitle: doneTitle(done.count),
+                          doneOpenByDefault: working.isEmpty || unknown)
+    }
+
+    /// The live snapshot cannot say who works: a read error, no fresh snapshot
+    /// while the session is busy, agents state not known, or an agent whose
+    /// status is not resolved. An idle session's missing or old read is none.
+    private static func workingUnknown(_ snapshot: SessionFeedLive?, error: String?, idle: Bool, now: Date) -> Bool {
+        if error != nil { return true }
+        guard let snapshot, let observed = snapshot.observedAt, now.timeIntervalSince(observed) < staleAfter else {
+            return !idle
+        }
+        return snapshot.agentsState != "known"
+            || snapshot.agents.contains { $0.ref.status != "finished" && $0.ref.status != "running" }
+    }
+
+    /// The finished subagents among the feed's markers: `started_at` newest
+    /// first; undated ones after them, ties and undated in the CLI's order.
+    package static func done(from subagents: [SessionFeedEntry]) -> [SessionFeedSubagent] {
+        let finished = subagents.compactMap(\.subagent).filter { $0.status == "finished" }
+        let ordered = finished.enumerated().sorted { lhs, rhs in
+            switch (lhs.element.startedAt, rhs.element.startedAt) {
+            case let (l?, r?) where l != r: l > r
+            case (.some, nil): true
+            case (nil, .some): false
+            default: lhs.offset < rhs.offset
+            }
+        }
+        return ordered.map(\.element)
+    }
+
     package static func elapsed(from start: Date?, now: Date) -> String? {
         guard let start else { return nil }
         let seconds = max(0, Int(now.timeIntervalSince(start)))

@@ -11,18 +11,30 @@ package struct SessionFeedSubagent: Decodable, Equatable, Sendable {
     package var description: String
     /// "running", "finished" or "unknown".
     package var status: String
+    /// When the Agent call started; only the feed's `subagents` list carries
+    /// it (`started_at`). nil when absent or Go's zero time.
+    package var startedAt: Date?
 
-    package init(toolUseID: String, agentID: String = "", type: String = "", description: String = "", status: String = "unknown") {
+    package init(
+        toolUseID: String,
+        agentID: String = "",
+        type: String = "",
+        description: String = "",
+        status: String = "unknown",
+        startedAt: Date? = nil
+    ) {
         self.toolUseID = toolUseID
         self.agentID = agentID
         self.type = type
         self.description = description
         self.status = status
+        self.startedAt = startedAt
     }
 
-    /// The status of `subagent` in the feed's current markers (a read
-    /// updates a marker in place); the copy itself when no marker has it —
-    /// a copy kept since it was opened would never see it finish.
+    /// The status of `subagent` in `entries`, the store's subagent list
+    /// (`SessionFeedStore.subagents`, which a read updates in place); the copy
+    /// itself when the list has no marker for it — a copy kept since it was
+    /// opened would never see it finish.
     package static func currentStatus(of subagent: Self, in entries: [SessionFeedEntry]) -> String {
         entries.last { $0.subagent?.toolUseID == subagent.toolUseID }?.subagent?.status ?? subagent.status
     }
@@ -30,6 +42,7 @@ package struct SessionFeedSubagent: Decodable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case toolUseID = "tool_use_id"
         case agentID = "agent_id"
+        case startedAt = "started_at"
         case type, description, status
     }
 
@@ -40,15 +53,65 @@ package struct SessionFeedSubagent: Decodable, Equatable, Sendable {
         type = try c.decodeIfPresent(String.self, forKey: .type) ?? ""
         description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
         status = try c.decodeIfPresent(String.self, forKey: .status) ?? "unknown"
+        startedAt = SessionFeedEntry.parseDate(try c.decodeIfPresent(String.self, forKey: .startedAt))
+    }
+}
+
+/// The `peer` payload (Go `sessionfeed.PeerRef`): another agent of the workbench
+/// speaking to this session or this session speaking to one.
+package struct SessionFeedPeer: Decodable, Equatable, Sendable {
+    /// "in" or "out".
+    package var direction: String
+    /// "message", "finished" or "started".
+    package var kind: String
+    package var sessionID: Int64
+    package var title: String
+    package var folder: String
+    package var worktree: String
+    /// Why the call was refused; "" when it was not.
+    package var error: String
+
+    package init(
+        direction: String,
+        kind: String,
+        sessionID: Int64 = 0,
+        title: String = "",
+        folder: String = "",
+        worktree: String = "",
+        error: String = ""
+    ) {
+        self.direction = direction
+        self.kind = kind
+        self.sessionID = sessionID
+        self.title = title
+        self.folder = folder
+        self.worktree = worktree
+        self.error = error
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case direction, kind, title, folder, worktree, error
+        case sessionID = "session_id"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        direction = try c.decodeIfPresent(String.self, forKey: .direction) ?? ""
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? ""
+        sessionID = try c.decodeIfPresent(Int64.self, forKey: .sessionID) ?? 0
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        folder = try c.decodeIfPresent(String.self, forKey: .folder) ?? ""
+        worktree = try c.decodeIfPresent(String.self, forKey: .worktree) ?? ""
+        error = try c.decodeIfPresent(String.self, forKey: .error) ?? ""
     }
 }
 
 package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
     /// Kinds this app renders; anything else is forward-compatible noise.
     package static let knownKinds: Set<String> = [
-        "owner", "agent", "ask_answer", "watchtower", "brief", "subagent", "separator", "event"
+        "owner", "agent", "ask_answer", "watchtower", "brief", "subagent", "separator", "event", "peer"
     ]
-    /// Kinds the phone slice carries (FEED-02); `event` is Desktop only.
+    /// Kinds the phone slice carries (FEED-02); `event` and `peer` are Desktop only (the phone shows no peer bubbles in v1).
     package static let phoneKinds: Set<String> = [
         "owner", "agent", "ask_answer", "watchtower", "brief", "subagent", "separator"
     ]
@@ -65,6 +128,8 @@ package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
     /// "task" or "teammate" on an `event` entry.
     package var eventType: String?
     package var subagent: SessionFeedSubagent?
+    /// Who a `peer` entry is from or to.
+    package var peer: SessionFeedPeer?
 
     package init(
         id: String,
@@ -76,7 +141,8 @@ package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
         title: String? = nil,
         via: String? = nil,
         eventType: String? = nil,
-        subagent: SessionFeedSubagent? = nil
+        subagent: SessionFeedSubagent? = nil,
+        peer: SessionFeedPeer? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -88,10 +154,11 @@ package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
         self.via = via
         self.eventType = eventType
         self.subagent = subagent
+        self.peer = peer
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, kind, at, text, conversation, title, via, subagent
+        case id, kind, at, text, conversation, title, via, subagent, peer
         case askID = "ask_id"
         case eventType = "event_type"
     }
@@ -108,18 +175,23 @@ package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
         via = try c.decodeIfPresent(String.self, forKey: .via)
         eventType = try c.decodeIfPresent(String.self, forKey: .eventType)
         subagent = try c.decodeIfPresent(SessionFeedSubagent.self, forKey: .subagent)
+        peer = try c.decodeIfPresent(SessionFeedPeer.self, forKey: .peer)
     }
 
     /// RFC 3339 with or without fractional seconds; Go's zero time and
-    /// anything unparsable mean "no time".
+    /// anything unparsable mean "no time". The formatters are made once: a
+    /// formatter per date cost most of a large feed's decode (#2065).
     package static func parseDate(_ s: String?) -> Date? {
         guard let s, !s.isEmpty, !s.hasPrefix("0001-01-01") else { return nil }
-        let plain = ISO8601DateFormatter()
-        if let d = plain.date(from: s) { return d }
-        let frac = ISO8601DateFormatter()
-        frac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return frac.date(from: s)
+        return fractionalDate.date(from: s) ?? plainDate.date(from: s)
     }
+
+    private static let plainDate = ISO8601DateFormatter()
+    private static let fractionalDate: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
 }
 
 package struct SessionFeedPayload: Decodable, Sendable {
@@ -135,10 +207,13 @@ package struct SessionFeedPayload: Decodable, Sendable {
     package var live: SessionFeedLive?
     package var liveOK: Bool
     package var liveError: String?
+    /// A `--tail` read's page start: the id to pass as `--before` for the
+    /// page before it; "" when absent (nothing earlier, or not a tail read).
+    package var before: String
 
     private enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
-        case cursor, entries, subagents, activity, live
+        case cursor, entries, subagents, activity, live, before
         case liveOK = "live_ok", liveError = "live_error"
     }
 
@@ -152,5 +227,6 @@ package struct SessionFeedPayload: Decodable, Sendable {
         live = try c.decodeIfPresent(SessionFeedLive.self, forKey: .live)
         liveOK = try c.decodeIfPresent(Bool.self, forKey: .liveOK) ?? false
         liveError = try c.decodeIfPresent(String.self, forKey: .liveError)
+        before = try c.decodeIfPresent(String.self, forKey: .before) ?? ""
     }
 }

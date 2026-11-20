@@ -465,8 +465,8 @@ func TestCompanyChain_SlackFlowMakesChainBusy(t *testing.T) {
 }
 
 // A Slack link that arrives while a chain runs never holds the registry:
-// its flow is cancelled and busy names the chain, so a later Slack connect
-// is free.
+// its flow is cancelled and link_busy (not busy, which answers a start)
+// names the chain, so a later Slack connect is free.
 func TestCompanyChain_SlackLinkDuringChainIsBusy(t *testing.T) {
 	env := newConnectEnv(t)
 	started := make(chan string, 1)
@@ -475,7 +475,7 @@ func TestCompanyChain_SlackLinkDuringChainIsBusy(t *testing.T) {
 	h.expectVendor(t, "google", chainWaiting)
 	<-started
 	h.link(t, connTeam, connNewID)
-	assert.Equal(t, "f1", h.expect(t, "busy")["flow"])
+	assert.Equal(t, "f1", h.expect(t, "link_busy")["flow"])
 	h.send(t, `{"cmd":"company_stop","flow":"f1"}`)
 	h.expectVendor(t, "google", chainSkipped)
 	h.expect(t, "company_done")

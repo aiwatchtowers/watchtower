@@ -66,8 +66,9 @@ final class SessionControlTests: XCTestCase {
         )
     }
 
-    private func liveSession() async throws -> Int64 {
-        let acme = folder.path
+    private func liveSession(subfolder: String? = nil) async throws -> Int64 {
+        let acme = subfolder.map { folder.appendingPathComponent($0).path } ?? folder.path
+        try FileManager.default.createDirectory(atPath: acme, withIntermediateDirectories: true)
         let session = try await pool.write { db -> TerminalSession in
             let project = try TestDatabase.insertWorkbench(db, folder: acme)
             return try TerminalSessionQueries.create(db, .init(
@@ -223,6 +224,64 @@ final class SessionControlTests: XCTestCase {
                 }
             }
         }
+    }
+
+    /// #2065 §5: the "locked" report reproduced against the state machine —
+    /// each state × live × a line just submitted × text in the prompt, with
+    /// the answer the spec gives (Working and Agents working go like idle).
+    func testWorkchatLineCheckPerState() async throws {
+        let control = try makeControl()
+        var sessions: [(submitted: Bool, text: Bool, id: Int64)] = []
+        for (submitted, text) in [(false, false), (true, false), (false, true), (true, true)] {
+            let id = try await liveSession(subfolder: "s\(submitted)-t\(text)")
+            if submitted {
+                setState(id, .stopped)
+                let sent = await delivery.deliverLine("First", key: .input("line-\(id)"), sessionID: id) { _ in }
+                XCTAssertEqual(sent, .submitted)
+            }
+            if text { try XCTUnwrap(processes.last).onOwnerInput?(Array("fix the".utf8)) }
+            sessions.append((submitted, text, id))
+        }
+        // Sub-sessions working is the parent's own turn ended (PROJ-11, #2003): idle.
+        let idle: Set<SessionSwitcherPresentation.State.Kind> = [
+            .stopped, .finished, .waitingOnAsk, .readyToCheck, .failed, .specReview, .subSessionsWorking
+        ]
+        for kind in SessionSwitcherPresentation.State.Kind.allCases {
+            for live in [true, false] {
+                for session in sessions {
+                    // The hook stamp predates the submit: the agent has not turned to the line yet.
+                    statuses[session.id] = SessionAgentStatus(
+                        sessionID: session.id, workbenchID: workbenchID, workbenchName: "acme", title: "Ship it",
+                        state: .init(kind: kind, live: live), at: "2026-10-12T10:00:00.000Z"
+                    )
+                    let expected: SessionControl.LineCheck
+                    if kind == .needsApproval {
+                        expected = .hold(.needsApproval)
+                    } else if !live || !(idle.contains(kind) || kind == .working || kind == .background) {
+                        expected = .hold(.agentBusy)
+                    } else if session.submitted {
+                        expected = .hold(.agentBusy)
+                    } else if session.text {
+                        expected = .hold(.promptHasText)
+                    } else {
+                        expected = .go
+                    }
+                    XCTAssertEqual(
+                        control.workchatLineCheck(session.id), expected,
+                        "\(kind) live=\(live) submitted=\(session.submitted) text=\(session.text)"
+                    )
+                }
+            }
+        }
+    }
+
+    /// Agents working in the background, no line just submitted, an empty
+    /// prompt: the line goes at once.
+    func testBackgroundLineGoesAtOnce() async throws {
+        let session = try await liveSession()
+        setState(session, .background)
+
+        XCTAssertEqual(try makeControl().workchatLineCheck(session), .go)
     }
 
     /// PROJ-16 guard: `lineCheck` still holds a working agent. The hub uses it

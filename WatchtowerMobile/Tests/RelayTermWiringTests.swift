@@ -29,11 +29,14 @@ final class RelayTermWiringTests: XCTestCase {
 
     /// A relay-only link, the phone paying with the Mac in its slot, the account center wired.
     private func rig(
-        farewellLive: Bool = false, secondRelayHub: String? = nil, relayHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil
+        farewellLive: Bool = false,
+        secondRelayHub: String? = nil,
+        relayHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil,
+        relaySockets: ((any RelaySocketDialer) -> any RelaySocketDialer)? = nil
     ) async throws -> Rig {
         let bed = try await Bed.make(
-            self, on: .relay, hubTransports: ["relay"], relayHTTP: relayHTTP, farewellLive: farewellLive,
-            secondRelayHub: secondRelayHub)
+            self, on: .relay, hubTransports: ["relay"], relayHTTP: relayHTTP, relaySockets: relaySockets,
+            farewellLive: farewellLive, secondRelayHub: secondRelayHub)
         let session = try await bed.orderedSession()
         let store = FakeSubscriptionStore()
         bed.root.wireRelayAccount { store }
@@ -461,13 +464,7 @@ final class RelayTermWiringTests: XCTestCase {
     /// read starts (it answered paying); the lapse's read lands first, overtaken, then the newer one. The phone's last
     /// read had failed, so no paying phase holds the lapse back: only the superseded guard does.
     func testASupersededLapseReadDoesNotLapse() async throws {
-        var made: SubmitGateHTTP?
-        let rig = try await rig { inner in
-            let gate = SubmitGateHTTP(inner: inner)
-            made = gate
-            return gate
-        }
-        let gate = try XCTUnwrap(made)
+        let (rig, gate) = try await gatedRig()
         let center = try rig.center
         let mac = rig.bed.mac.deviceID
         // The socket's `.reachable(true)` is the first event: its pass reads paying.
@@ -494,6 +491,44 @@ final class RelayTermWiringTests: XCTestCase {
         XCTAssertEqual(center.phase, .paying(grace: false, macs: [mac]))
         XCTAssertNil(try rig.bed.row()?.link.relayRefused, "no lapse marked a paying phone")
         XCTAssertTrue(rig.session.waitsForKeybox, "the key source stays")
+    }
+
+    /// Live link R2: the account read rides the socket, so a gate on HTTPS alone held nothing and a test waiting on it
+    /// never ended. The gate holds the socket's read; the wait is a bounded number of yields, a failure past it.
+    func testAGatedReadIsHeldOnTheSocket() async throws {
+        let (rig, gate) = try await gatedRig()
+        let center = try rig.center
+        let mac = rig.bed.mac.deviceID
+        let (overHTTP, overSocket) = (gate.readsOverHTTP, gate.readsOverSocket)
+
+        gate.holdReadAnswers()
+        let read = Task { await center.refresh() }
+        var yields = 0
+        while gate.heldReads == 0, yields < 50_000 {
+            await Task.yield()
+            yields += 1
+        }
+        XCTAssertEqual(gate.heldReads, 1, "the read waits at the gate")
+        gate.releaseReads()
+        await read.value
+        XCTAssertEqual(center.phase, .paying(grace: false, macs: [mac]))
+        XCTAssertEqual(gate.readsOverSocket, overSocket + 1, "the read rode the socket")
+        XCTAssertEqual(gate.readsOverHTTP, overHTTP, "none over HTTPS")
+    }
+
+    /// A rig whose account reads, over HTTPS and over the socket, pass a gate. Held reads are let go at teardown.
+    private func gatedRig() async throws -> (Rig, SubmitGateHTTP) {
+        var made: SubmitGateHTTP?
+        let rig = try await rig(
+            relayHTTP: { inner in
+                let gate = SubmitGateHTTP(inner: inner)
+                made = gate
+                return gate
+            },
+            relaySockets: { made?.sockets($0) ?? $0 })
+        let gate = try XCTUnwrap(made)
+        addTeardownBlock { gate.releaseReads() }
+        return (rig, gate)
     }
 
     /// Review M4: two relay-only Macs whose terms end in one foreground each get their notice, one at a time.

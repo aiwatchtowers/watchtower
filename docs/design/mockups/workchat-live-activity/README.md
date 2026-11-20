@@ -1,8 +1,9 @@
 # Workchat live activity
 
 The approved proposal images sit beside this file. The implementation snapshots
-in `implemented/` use the production `WorkchatLiveLine` and
-`WorkchatRunningAgentsPicker`, with the same composer scaffold as the proposal.
+in `implemented/` use the production `WorkchatLiveLine` and its 👥 agents
+popover (`WorkchatAgentsPopover`), with the same composer scaffold as the
+proposal.
 All fixture data is synthetic. Both sets are registered in `DesignShotCatalog`.
 
 Render only these states in light and dark mode:

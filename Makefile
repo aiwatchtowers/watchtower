@@ -48,7 +48,7 @@ LINK_FETCH_DENY_HOSTS ?= $(WATCHTOWER_LINK_FETCH_DENY_HOSTS)
 COMPANY_NAME := $(subst ',,$(subst ",,$(BUILD_COMPANY_NAME)))
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X 'watchtower/cmd.BuildCompanyName=$(COMPANY_NAME)' -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/auth.RetiredSharedClientID=$(RETIRED_SLACK_CLIENT_ID) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS) -X watchtower/internal/hub/identity.KeychainBuildFlag=false"
 
-.PHONY: golangci-version-check build bridge-build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test chattext-test chat-test e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check cloudkit-subscriptions-deployed relay-go relay-proto relay-interop relay-interop-kit relay-interop-kit-hub hub-smoke hub-staging
+.PHONY: golangci-version-check build bridge-build test test-verbose test-cover cover-packages test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test chattext-test chat-test interface-test gen-interface gen-interface-check e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check cloudkit-subscriptions-deployed relay-go relay-proto relay-interop relay-interop-kit relay-interop-kit-hub hub-smoke hub-staging
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -90,8 +90,14 @@ test-codeindex-full:
 # Coverage gate — fails when any package in coverage.thresholds
 # regresses below its declared floor. Run after touching production
 # code to confirm tests still cover the moved/changed paths.
+# SHARD=K/N runs and checks only the K-th of N package slices (CI's go-test
+# matrix); without SHARD everything runs, as before. `make cover-packages
+# [SHARD=K/N]` prints a slice's list. The split lives in the script.
 test-cover:
-	./scripts/coverage-gate.sh
+	SHARD='$(SHARD)' ./scripts/coverage-gate.sh
+
+cover-packages:
+	@SHARD='$(SHARD)' ./scripts/coverage-gate.sh --packages
 
 # The race pass (CI on main pushes and workflow_dispatch, the release gate):
 # every package but cmd (CLI glue over file-backed SQLite fixtures; its
@@ -150,12 +156,13 @@ test-race:
 # class (a regex alternation works too: FILTER='ClassA|ClassB' — the recipe
 # single-quotes it so the | never reaches the shell); without FILTER the full
 # suite runs as before, followed by the mobile Kit suite (kit-test), the chat
-# text package (chattext-test) and the chat package (chat-test), so the
-# gate covers every package.
+# text package (chattext-test), the interface package (interface-test) and the
+# chat package (chat-test), so the gate covers every package.
 test-swift:
 	cd WatchtowerDesktop && caffeinate -i swift test $(if $(FILTER),--filter '$(FILTER)',)
 	$(if $(FILTER),,caffeinate -i $(MAKE) kit-test)
 	$(if $(FILTER),,caffeinate -i $(MAKE) chattext-test)
+	$(if $(FILTER),,caffeinate -i $(MAKE) interface-test)
 	$(if $(FILTER),,caffeinate -i $(MAKE) chat-test)
 
 # Inner-loop tests for the shared mobile Kit package (WatchtowerSync +
@@ -169,6 +176,21 @@ kit-test:
 # Mac and the phone, no GRDB, no ML stack): make chattext-test FILTER=SomeTestClass.
 chattext-test:
 	cd WatchtowerChatText && swift test $(if $(FILTER),--filter '$(FILTER)',)
+
+# Inner-loop tests for WatchtowerInterface (the tower interface's Swift side,
+# Foundation only): make interface-test FILTER=SomeTestClass. Its generated
+# GoldenRoundTripTests read internal/tower/api/testdata.
+interface-test:
+	cd WatchtowerInterface && swift test $(if $(FILTER),--filter '$(FILTER)',)
+
+# Writes the tower interface's generated files (WatchtowerInterface/.../Generated,
+# internal/tower/interface_version.go) from the commands internal/tower/commands
+# registers; gen-interface-check exits 1 with a diff when they are out of date.
+gen-interface:
+	go run ./internal/tower/gen -root .
+
+gen-interface-check:
+	go run ./internal/tower/gen -root . -check
 
 # Inner-loop tests for WatchtowerChat (ChatWire: the chat wire models, operations
 # and stores; ChatUI: the chat views and models; both shared by the Mac and the
@@ -238,7 +260,10 @@ SHOTS_DIR ?= build/mobile-shots
 # SHOTS_ONLY=relay-phase4 runs only the relay client Phase 4 frames (S01 upward), into the same folder;
 # SHOTS_ONLY=relay-phase5 only the Phase 5 frames (S58 upward).
 # SHOTS_ONLY=chat only the Chats tab's frames (C1a upward, iPhone chat mockups 1a–1j).
+# SHOTS_ONLY=inbox only the Inbox tab's frames (inbox-*, mobile Inbox mockups §§1–6).
 # SHOTS_ONLY=spec-review only the Sessions tab with a session in Spec review (board #1945).
+# SHOTS_ONLY=inbox-approval only the Inbox approval card's mockups (inbox-approval-*, mobile Inbox spec §12).
+# SHOTS_ONLY=workchat-agents only the session chat's agents sheet mockups (#2065, P1–P4).
 SHOTS_ONLY ?=
 mobile-shots:
 	xcrun simctl boot "$(SIM)" 2>/dev/null || true
@@ -246,7 +271,7 @@ mobile-shots:
 	mkdir -p "$(SHOTS_DIR)"
 	TEST_RUNNER_WATCHTOWER_SHOTS_ONLY="$(SHOTS_ONLY)" TEST_RUNNER_WATCHTOWER_SHOTS_DIR="$(abspath $(SHOTS_DIR))" xcodebuild test -project $(MOBILE_PROJ) \
 		-scheme WatchtowerMobile -destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO $(MOBILE_XCB) \
-		-only-testing:WatchtowerMobileTests/ScreenshotTourTests$(if $(filter relay-phase5,$(SHOTS_ONLY)),/testTheRelayPhase5Shots,$(if $(filter chat,$(SHOTS_ONLY)),/testTheChatShots,$(if $(filter spec-review,$(SHOTS_ONLY)),/testTheSpecReviewShots,$(if $(SHOTS_ONLY),/testTheRelayPhase4Shots))))
+		-only-testing:WatchtowerMobileTests/ScreenshotTourTests$(if $(filter relay-phase5,$(SHOTS_ONLY)),/testTheRelayPhase5Shots,$(if $(filter chat,$(SHOTS_ONLY)),/testTheChatShots,$(if $(filter inbox,$(SHOTS_ONLY)),/testTheInboxShots,$(if $(filter inbox-approval,$(SHOTS_ONLY)),/testTheInboxApprovalMockShots,$(if $(filter spec-review,$(SHOTS_ONLY)),/testTheSpecReviewShots,$(if $(filter workchat-agents,$(SHOTS_ONLY)),/testTheWorkchatAgentsShots,$(if $(SHOTS_ONLY),/testTheRelayPhase4Shots)))))))
 
 # The Desktop style guide's shots (WatchtowerDesktop/Tests/DesignShots, #719):
 # every DesignShotCatalog entry in light and dark mode as PNGs, written to
@@ -388,12 +413,16 @@ test-swift-strict-pool:
 
 # Shell-level tests for build-app.sh and the app-swap/app-install scripts. They
 # extract marked blocks or run the scripts in a temp tree against stubbed
-# binaries — no real build, no codesign.
+# binaries — no real build, no codesign. The self-hosted runner setup needs
+# sudo, so it gets only a syntax check.
 test-scripts:
 	@rc=0; for t in scripts/tests/test-*.sh; do \
 	  echo "==> $$t"; \
 	  bash "$$t" || rc=1; \
-	done; exit $$rc
+	done; \
+	echo "==> bash -n scripts/ci-runner/setup-mac-runner.sh"; \
+	bash -n scripts/ci-runner/setup-mac-runner.sh || rc=1; \
+	exit $$rc
 
 # Copies the hosted relay's Go client + proto into internal/hub/transport/relay,
 # pinned to REF (default: the commit in that dir's VERSION). Refuses a dirty or
@@ -486,10 +515,11 @@ lint-swift:
 	cd WatchtowerDesktop && swiftlint lint --strict --baseline .swiftlint-baseline.json
 	cd WatchtowerKit && swiftlint lint --strict
 	cd WatchtowerChatText && swiftlint lint --strict
+	cd WatchtowerInterface && swiftlint lint --strict
 	cd WatchtowerChat && swiftlint lint --strict
 	cd WatchtowerMobile && swiftlint lint --strict
 
-lint-all: lint lint-swift
+lint-all: lint lint-swift gen-interface-check
 
 install:
 	go install $(LDFLAGS) .

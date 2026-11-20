@@ -23,7 +23,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let action = ProposedAction(type: .updateStatus, reason: "done", status: "done")
         _ = try await TargetActionExecutor.apply(action, target: target, viewModel: vm)
@@ -36,7 +36,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let action = ProposedAction(type: .updateProgress, reason: "half", progress: 50)
         _ = try await TargetActionExecutor.apply(action, target: target, viewModel: vm)
@@ -49,7 +49,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let action = ProposedAction(type: .updateNotes, reason: "log", note: "spoke to Bob")
         _ = try await TargetActionExecutor.apply(action, target: target, viewModel: vm)
@@ -62,7 +62,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let action = ProposedAction(type: .addSubItem, reason: "step", text: "draft reply")
         _ = try await TargetActionExecutor.apply(action, target: target, viewModel: vm)
@@ -75,7 +75,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let action = ProposedAction(type: .createChildTarget, reason: "spin off",
                                     text: "Ping Bob", intent: "unblock", priority: "high")
@@ -99,7 +99,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let otherID = try await manager.dbPool.write { db in
             try TargetQueries.create(db, text: "other", periodStart: "2026-06-01", periodEnd: "2026-06-30")
         }
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let action = ProposedAction(type: .linkTarget, reason: "blocks it",
                                     targetId: otherID, relation: "blocks")
@@ -119,7 +119,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         // The AI hallucinated an id — no such row. The executor must throw at
         // apply time, and no dangling link row may be written.
@@ -141,7 +141,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         // Close the pool so every mutator write fails with the SAME error text
         // each time — the shape a prior-error snapshot used to mask: the second
         // failure looked identical to the stale snapshot and read as success.
@@ -157,7 +157,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let action = ProposedAction(type: .linkTarget, reason: "x",
                                     targetId: target.id, relation: "blocks")
@@ -168,7 +168,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let action = ProposedAction(type: .updateTitle, reason: "clean title", text: "Ship the registry")
         let summary = try await TargetActionExecutor.apply(action, target: target, viewModel: vm)
@@ -182,7 +182,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let action = ProposedAction(type: .updatePriority, reason: "deadline", priority: "high")
         let summary = try await TargetActionExecutor.apply(action, target: target, viewModel: vm)
@@ -196,7 +196,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let action = ProposedAction(type: .updateIntent, reason: "directive", text: "Unblock the API team first")
         let summary = try await TargetActionExecutor.apply(action, target: target, viewModel: vm)
@@ -210,7 +210,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let action = ProposedAction(type: .addLabel, reason: "grouping", text: "ops")
         let summary = try await TargetActionExecutor.apply(action, target: target, viewModel: vm)
@@ -224,7 +224,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let action = ProposedAction(type: .addLabel, reason: "grouping", text: "  ops ")
         _ = try await TargetActionExecutor.apply(action, target: target, viewModel: vm)
@@ -237,7 +237,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         try await manager.dbPool.write { db in
             try TargetQueries.addTag(db, id: target.id, tag: "ops")
             try TargetQueries.addTag(db, id: target.id, tag: "infra")
@@ -254,7 +254,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         try await manager.dbPool.write { db in
             _ = try TargetQueries.addTag(db, id: target.id, tag: "ops")
         }
@@ -269,7 +269,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let action = ProposedAction(type: .removeLabel, reason: "obsolete", text: "ops")
         let summary = try await TargetActionExecutor.apply(action, target: target, viewModel: vm)
@@ -281,7 +281,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let action = ProposedAction(type: .addLabel, reason: "x", text: "   ")
         await assertThrowsAsync { try await TargetActionExecutor.apply(action, target: target, viewModel: vm) }
@@ -291,7 +291,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         // A whitespace-only title would silently no-op in the ViewModel; the
         // executor must throw instead of reporting a false rename.
@@ -306,7 +306,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         // update_status without a status must throw, not silently no-op.
         let action = ProposedAction(type: .updateStatus, reason: "x", status: nil)
@@ -332,7 +332,7 @@ final class TargetActionExecutorTests: XCTestCase {
     func testApplyToggleSubItem() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let target = try await makeTargetWithSubItems(manager, vm: vm)
 
         let action = ProposedAction(type: .toggleSubItem, reason: "user did it",
@@ -347,7 +347,7 @@ final class TargetActionExecutorTests: XCTestCase {
     func testApplyToggleSubItemAlreadyInStateIsNoOp() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let target = try await makeTargetWithSubItems(manager, vm: vm)
 
         let action = ProposedAction(type: .toggleSubItem, reason: "r",
@@ -362,7 +362,7 @@ final class TargetActionExecutorTests: XCTestCase {
     func testApplyEditSubItem() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let target = try await makeTargetWithSubItems(manager, vm: vm)
 
         let action = ProposedAction(type: .editSubItem, reason: "reword",
@@ -376,7 +376,7 @@ final class TargetActionExecutorTests: XCTestCase {
     func testApplyDeleteSubItem() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let target = try await makeTargetWithSubItems(manager, vm: vm)
 
         let action = ProposedAction(type: .deleteSubItem, reason: "obsolete",
@@ -392,7 +392,7 @@ final class TargetActionExecutorTests: XCTestCase {
     func testApplyDeleteSubItemStaleIndexResolvesByText() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let target = try await makeTargetWithSubItems(manager, vm: vm)
 
         let action = ProposedAction(type: .deleteSubItem, reason: "obsolete",
@@ -406,7 +406,7 @@ final class TargetActionExecutorTests: XCTestCase {
     func testApplyDeleteSubItemNoMatchThrows() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let target = try await makeTargetWithSubItems(manager, vm: vm)
 
         let action = ProposedAction(type: .deleteSubItem, reason: "r",
@@ -420,7 +420,7 @@ final class TargetActionExecutorTests: XCTestCase {
     func testApplySetSubItemDueAndClear() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let target = try await makeTargetWithSubItems(manager, vm: vm)
 
         let set = ProposedAction(type: .setSubItemDue, reason: "deadline",
@@ -441,7 +441,7 @@ final class TargetActionExecutorTests: XCTestCase {
     func testApplySummariesTruncateLongItemText() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let target = try makeTarget(manager)
         let longText = String(repeating: "release checklist item ", count: 8) // ~180 chars
         await vm.addSubItem(target, text: longText)
@@ -460,7 +460,7 @@ final class TargetActionExecutorTests: XCTestCase {
     func testApplyEditSubItemSummaryOmitsOldText() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let target = try await makeTargetWithSubItems(manager, vm: vm)
 
         let action = ProposedAction(type: .editSubItem, reason: "reword",
@@ -477,7 +477,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let action = ProposedAction(type: .updateDueDate, reason: "agreed", dueDate: "2026-08-22")
         let summary = try await TargetActionExecutor.apply(action, target: target, viewModel: vm)
@@ -491,7 +491,7 @@ final class TargetActionExecutorTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let action = ProposedAction(type: .updateBallOn, reason: "handed off", ballOn: "@petya")
         _ = try await TargetActionExecutor.apply(action, target: target, viewModel: vm)

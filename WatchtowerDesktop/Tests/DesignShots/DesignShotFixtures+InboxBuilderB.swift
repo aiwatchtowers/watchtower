@@ -29,17 +29,17 @@ enum InboxBuilderBShotFixtures {
                      "inbox-b-menu-changed", "inbox-b-menu-cli-unavailable", "inbox-b-menu-write-refused",
                      "inbox-b-menu-move-pending", "inbox-b-folder-delete-confirm"]
         return [
-            DesignShot(name: "inbox-b-menu-root", size: NSSize(width: 1180, height: 640)) {
-                InboxFoldersShotFixtures.root()
-            }
+            DesignShot(name: "inbox-b-menu-root", prepare: {
+                await InboxFoldersShotFixtures.root()
+            }, size: NSSize(width: 1180, height: 640))
         ] + names.map { name in
-            DesignShot(name: name, size: NSSize(width: 260, height: 300)) {
+            DesignShot(name: name, prepare: {
                 do {
-                    return menuColumn(try InboxFolderMenuShotFixtures.content(name))
+                    return menuColumn(try await InboxFolderMenuShotFixtures.content(name))
                 } catch {
                     return DesignShotFixtures.failure(error)
                 }
-            }
+            }, size: NSSize(width: 260, height: 300))
         }
     }
 
@@ -241,8 +241,8 @@ enum InboxBuilderBShotFixtures {
                             badge: row.badge.map { ArtifactBadge(text: $0, tone: row.tone ?? .neutral) },
                             tone: row.tone, ref: row.ref(Int64(index + 1)))
         }
-        let byRef = Dictionary(uniqueKeysWithValues: rows.enumerated().map { index, row in
-            (InboxRefHooks.inboxRef(row.ref(Int64(index + 1))), row.actions)
+        let byRef = Dictionary(uniqueKeysWithValues: rows.enumerated().compactMap { index, row in
+            InboxRefHooks.inboxRef(row.ref(Int64(index + 1))).map { ($0, row.actions) }
         })
         let hooks = InboxRefHooks.make(isShown: { byRef[$0] != nil }, content: { ref, _ in byRef[ref] })
         return VStack(alignment: .leading, spacing: Spacing.small) {

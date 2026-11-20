@@ -21,7 +21,7 @@ final class TargetsViewModelMissingTargetTests: XCTestCase {
         let id = try await manager.dbPool.write { db in
             try TargetQueries.create(db, text: "gone soon", periodStart: "2026-09-01", periodEnd: "2026-09-30")
         }
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         vm.load()
         let stale = try XCTUnwrap((vm.todayTargets + vm.allTargets).first { $0.id == id })
 
@@ -44,7 +44,7 @@ final class TargetsViewModelMissingTargetTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let parent = try makeStaleTarget(manager, text: "parent")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         let childID = await vm.createChild(parent, text: "child", intent: "", priority: "medium")
         XCTAssertNil(childID)
@@ -62,7 +62,7 @@ final class TargetsViewModelMissingTargetTests: XCTestCase {
             try TargetQueries.create(db, text: "other", periodStart: "2026-09-01", periodEnd: "2026-09-30")
         }
         let source = try makeStaleTarget(manager, text: "source")
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
 
         await vm.createLink(from: source.id, to: other, relation: "blocks")
 
@@ -78,7 +78,7 @@ final class TargetsViewModelMissingTargetTests: XCTestCase {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let stale = try makeStaleTarget(manager, text: "gone", subItems: #"[{"text":"a","done":true}]"#)
-        let vm = TargetsViewModel(dbManager: manager)
+        let vm = TargetsViewModel(dbManager: manager, tower: manager.fakeTower)
         let action = ProposedAction(type: .toggleSubItem, reason: "r", index: 0, match: "a", done: true)
 
         await assertThrowsAsync({ try await TargetActionExecutor.apply(action, target: stale, viewModel: vm) }, {
@@ -106,7 +106,7 @@ final class TargetsViewModelMissingTargetTests: XCTestCase {
             ).id
         }
         let chat = TargetChatViewModel(
-            target: target, viewModel: TargetsViewModel(dbManager: manager), dbManager: manager,
+            target: target, viewModel: TargetsViewModel(dbManager: manager, tower: manager.fakeTower), dbManager: manager,
             conversationID: conversationID, aiService: mock, toolsAvailable: true
         )
         try await manager.dbPool.write { db in try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [live]) }

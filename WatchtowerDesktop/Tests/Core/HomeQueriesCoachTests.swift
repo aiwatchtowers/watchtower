@@ -121,9 +121,10 @@ final class HomeQueriesCoachTests: XCTestCase {
             try d.execute(sql: """
                 INSERT INTO coach_proposals (fingerprint, kind, destination, title, why, metric, after_text,
                                              sources, status, created_at, origin, skill, conversation_id,
-                                             written_branch, measure_from)
+                                             written_branch, measure_from, pr_url, revert_pr_url)
                 VALUES ('f', 'add', 'claude_skill_user', 't', 'w', 'corrections', 'x', 1, 'open',
-                        '2026-11-01T09:00:00Z', 'chat', 'review-pr', ?, 'main', '2026-11-02T09:00:00Z')
+                        '2026-11-01T09:00:00Z', 'chat', 'review-pr', ?, 'main', '2026-11-02T09:00:00Z',
+                        'https://github.com/acme/repo/pull/12', 'https://github.com/acme/repo/pull/13')
                 """, arguments: [conv])
             return (try Row.fetchOne(d, sql: "SELECT * FROM coach_proposals"), conv)
         }
@@ -134,6 +135,8 @@ final class HomeQueriesCoachTests: XCTestCase {
         XCTAssertEqual(p.writtenBranch, "main")
         XCTAssertEqual(p.measureFrom, "2026-11-02T09:00:00Z")
         XCTAssertNil(p.folderBranch)
+        XCTAssertEqual(p.prURL, "https://github.com/acme/repo/pull/12")
+        XCTAssertEqual(p.revertPRURL, "https://github.com/acme/repo/pull/13")
     }
 
     func testRowReaderDefaultsOfAWeeklyRow() throws {
@@ -145,5 +148,7 @@ final class HomeQueriesCoachTests: XCTestCase {
         XCTAssertNil(p.conversationID)
         XCTAssertEqual(p.writtenBranch, "")
         XCTAssertNil(p.measureFrom)
+        XCTAssertEqual(p.prURL, "")
+        XCTAssertEqual(p.revertPRURL, "")
     }
 }

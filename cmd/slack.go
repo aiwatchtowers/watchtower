@@ -168,27 +168,37 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 	if err := refuseLoginDuringPurge(database, "slack", id); err != nil {
 		return slackIdentity{}, err
 	}
-	// First of the writes, so a failure leaves the row moved and the next
-	// sign-in tries again; once the row is home, nothing would.
-	if moved {
-		if err := rewindMovedSlackAccountOrWarn(database, id, warnOut); err != nil {
+	store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id)
+	if !isNewRow {
+		// Before the lock wait; checked again under the lock below.
+		if err := refuseSlackBuiltinSignIn(database, store, id, clientID); err != nil {
 			return slackIdentity{}, err
 		}
 	}
 
+	// Every write — the watermark rewind, the connection, the token file and
+	// the row's client id — runs under the account's token lock after the
+	// locked refusal, so a refused sign-in changes nothing and a refresh or
+	// repair in another process (slackauth.LoadFresh) never sees the token
+	// without its client id.
 	namespacedUser := watchtowerslack.Namespace(id, identity.UserID)
-	if err := database.UpdateSlackAccountConnection(id, identity.TeamID, identity.TeamName, identity.TeamDomain, namespacedUser); err != nil {
-		if isNewRow {
-			rollbackSlackAccount(database, id, warnOut)
-		}
-		return slackIdentity{}, fmt.Errorf("recording connection: %w", err)
-	}
-
-	// The token file and the row's client id are written under the account's
-	// token lock, so a refresh or repair in another process (slackauth.LoadFresh)
-	// never sees one without the other.
-	store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id)
 	err = withSlackTokenLock(ctx, store, func() error {
+		if !isNewRow {
+			// A connect flow may have moved the account to a company app since.
+			if err := refuseSlackBuiltinSignIn(database, store, id, clientID); err != nil {
+				return err
+			}
+		}
+		// First of the writes, so a failure leaves the row moved and the
+		// next sign-in tries again; once the row is home, nothing would.
+		if moved {
+			if err := rewindMovedSlackAccountOrWarn(database, id, warnOut); err != nil {
+				return err
+			}
+		}
+		if err := database.UpdateSlackAccountConnection(id, identity.TeamID, identity.TeamName, identity.TeamDomain, namespacedUser); err != nil {
+			return fmt.Errorf("recording connection: %w", err)
+		}
 		if err := store.Save(&watchtowerslack.Token{
 			AccessToken: accessToken,
 			TeamID:      identity.TeamID,
@@ -231,6 +241,24 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 			"workspace; the Slack app's user scopes (or the workspace admin) must allow it first\n", watchtowerslack.SendScope)
 	}
 	return identity, nil
+}
+
+// refuseSlackBuiltinSignIn is slackBuiltinSignInRefusal on account id: a
+// sign-in through the build's app (`auth login`, `slack login` on its
+// builtin route) never replaces a company app's token, whichever row it
+// resolved to (review verify rounds 1–2). The token file's non-empty
+// client_id wins over the row's — a connect that saved its file and stopped
+// before the row update left the row naming the old app (A6, the recovery
+// contract of slackauth.LoadFresh). An unreadable file falls back to the row.
+func refuseSlackBuiltinSignIn(database *db.DB, store *watchtowerslack.TokenStore, id int64, clientID string) error {
+	acct, err := database.GetSlackAccount(id)
+	if err != nil {
+		return err
+	}
+	if tok, err := store.Load(); err == nil && tok != nil && tok.ClientID != "" {
+		acct.ClientID = tok.ClientID
+	}
+	return slackBuiltinSignInRefusal(acct, clientID)
 }
 
 // recordSlackClientID writes clientID onto account id's row in one statement
@@ -535,7 +563,7 @@ func runSlackAccounts(cmd *cobra.Command, _ []string) error {
 
 	out := cmd.OutOrStdout()
 	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
-		return writeSlackAccountsJSON(out, accounts)
+		return writeSlackAccountsJSON(out, database, accounts)
 	}
 	if len(accounts) == 0 {
 		fmt.Fprintln(out, "No Slack accounts connected.")
@@ -567,25 +595,34 @@ type slackAccountJSONItem struct {
 	SharedApp bool `json:"shared_app"`
 	// Relogin is slackmode.Relogin: "builtin" | "connect" | "move".
 	Relogin string `json:"relogin"`
+	// HomeTeamID is the team a connect re-login signs into
+	// (slackAccountConnectTeam): the home team of the account's stored
+	// data, else team_id. The Desktop's Re-login start targets it.
+	HomeTeamID string `json:"home_team_id"`
 }
 
 // writeSlackAccountsJSON writes every account, removed rows included (the
 // Desktop filters them).
-func writeSlackAccountsJSON(out io.Writer, accounts []db.SlackAccount) error {
+func writeSlackAccountsJSON(out io.Writer, database *db.DB, accounts []db.SlackAccount) error {
 	builtinID := slackBuiltinClientID()
 	retired := auth.RetiredSharedClientID
 	doc := slackAccountsDoc{BuiltinApp: builtinID != "", Accounts: make([]slackAccountJSONItem, 0, len(accounts))}
 	for _, a := range accounts {
+		home, err := slackAccountConnectTeam(database, a)
+		if err != nil {
+			return fmt.Errorf("reading the home team of slack account %d: %w", a.ID, err)
+		}
 		doc.Accounts = append(doc.Accounts, slackAccountJSONItem{
-			ID:        a.ID,
-			TeamID:    a.TeamID,
-			TeamName:  a.TeamName,
-			Label:     a.Label,
-			Status:    a.Status,
-			Enabled:   a.Enabled,
-			ClientID:  a.ClientID,
-			SharedApp: a.Status != "removed" && slackmode.SharedApp(a, retired),
-			Relogin:   slackmode.Relogin(a, retired, builtinID),
+			ID:         a.ID,
+			TeamID:     a.TeamID,
+			TeamName:   a.TeamName,
+			Label:      a.Label,
+			Status:     a.Status,
+			Enabled:    a.Enabled,
+			ClientID:   a.ClientID,
+			SharedApp:  a.Status != "removed" && slackmode.SharedApp(a, retired),
+			Relogin:    slackmode.Relogin(a, retired, builtinID),
+			HomeTeamID: home,
 		})
 	}
 	enc := json.NewEncoder(out)
@@ -722,7 +759,14 @@ func removeSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB
 	store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id)
 	logger := log.New(logOut, "[slack] ", log.LstdFlags)
 	err = withSlackTokenLock(ctx, store, func() error {
-		tok, loadErr := store.Load()
+		// A rotating token is refreshed first when due, so the revoke goes
+		// out with an access token Slack still accepts (review m8). A failed
+		// refresh revokes what the file holds.
+		tok, loadErr := slackauth.LoadFreshHeld(ctx, store, database, id, slackTokenRefresher(), time.Now)
+		if loadErr != nil {
+			logger.Printf("revoking slack account %d: refreshing its token: %v", id, loadErr)
+			tok, loadErr = store.Load()
+		}
 		switch {
 		case loadErr != nil:
 			logger.Printf("revoking slack account %d: reading its token: %v", id, loadErr)
@@ -736,10 +780,14 @@ func removeSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB
 				fmt.Fprintln(warnOut, slackRevokeWarning)
 			}
 		}
-		return store.Delete()
+		if err := store.Delete(); err != nil {
+			return fmt.Errorf("deleting token file: %w", err)
+		}
+		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("deleting token file: %w", err)
+		// The lock wait (another process's refresh) or the delete above.
+		return fmt.Errorf("removing the token of slack account %d: %w", id, err)
 	}
 	return database.SetSlackAccountRemoved(id)
 }

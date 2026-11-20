@@ -31,6 +31,7 @@ final class SlackConnectListenerHostTests: XCTestCase {
         XCTAssertTrue(events.contains { if case .browser = $0 { true } else { false } })
         XCTAssertTrue(events.contains { if case .connected = $0 { true } else { false } })
         XCTAssertTrue(events.contains { if case .busy = $0 { true } else { false } })
+        XCTAssertTrue(events.contains { if case .linkBusy = $0 { true } else { false } }, "a refused link is its own event")
         let reasons = Set(events.compactMap { if case let .failed(_, reason, _) = $0 { reason } else { nil } })
         XCTAssertEqual(reasons, [.teamMismatch, .otherUser, .denied, .cancelled, .exchange, .policy, .purgeRunning, .other])
 

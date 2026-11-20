@@ -49,9 +49,12 @@ package enum SlackConnectEvent: Codable, Equatable, Sendable {
     case browser(flow: String)
     case connected(SlackConnectedAccount)
     case failed(flow: String, reason: SlackConnectFailure, message: String)
-    /// A second start was refused; `flow` is the running one (a Slack flow,
-    /// or a company chain).
+    /// A start was refused; `flow` is the running one (a Slack flow, or a
+    /// company chain).
     case busy(flow: String)
+    /// A link that arrived while `flow` runs was refused; never the answer
+    /// to a start (review m5).
+    case linkBusy(flow: String)
     /// A company link waits for the person's confirm (#1887 Task 10):
     /// `bundle` is its wire form; nothing is stored before the app confirms.
     case companyLink(flow: String, bundle: String)
@@ -66,6 +69,7 @@ package enum SlackConnectEvent: Codable, Equatable, Sendable {
         case companyLink = "company_link"
         case companyVendor = "company_vendor"
         case companyDone = "company_done"
+        case linkBusy = "link_busy"
     }
 
     private enum Keys: String, CodingKey {
@@ -123,6 +127,7 @@ package enum SlackConnectEvent: Codable, Equatable, Sendable {
                 if let vendor = CompanyVendor(rawValue: key) { states[vendor] = state }
             }
             self = .companyDone(flow: try box.decode(String.self, forKey: .flow), states: states)
+        case .linkBusy: self = .linkBusy(flow: try box.decode(String.self, forKey: .flow))
         }
     }
 
@@ -173,6 +178,9 @@ package enum SlackConnectEvent: Codable, Equatable, Sendable {
             try box.encode(Kind.companyDone, forKey: .event)
             try box.encode(flow, forKey: .flow)
             try box.encode(Dictionary(uniqueKeysWithValues: states.map { ($0.key.rawValue, $0.value) }), forKey: .states)
+        case let .linkBusy(flow):
+            try box.encode(Kind.linkBusy, forKey: .event)
+            try box.encode(flow, forKey: .flow)
         }
     }
 }

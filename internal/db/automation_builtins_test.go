@@ -416,7 +416,7 @@ func TestMigration00150_KeepsRunsAndChildren(t *testing.T) {
 	require.NoError(t, gooseDownTo(d.DB, "migrations", 149))
 	before := automationObjects()
 
-	wb := newTestWorkbench(t, d)
+	wb := newOldSchemaWorkbench(t, d)
 	a := seedAutomationRow(t, d, "digest", "/acme/automations/digest.md", "h1")
 	gone := seedAutomationRow(t, d, "gone", "/acme/automations/gone.md", "h2")
 	_, err := d.Exec(`DELETE FROM automations WHERE id = ?`, gone)

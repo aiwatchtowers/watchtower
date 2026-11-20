@@ -80,6 +80,29 @@ private final class FolderReadingAIService: AIServiceProtocol, @unchecked Sendab
         }
         return seen
     }
+
+    /// A database chat's turn (`ai query --persist`): the scripted events
+    /// with the run's writes (`FakeEmbeddedPersist.wrap`).
+    func stream( // swiftlint:disable:this function_parameter_count
+        prompt: String,
+        systemPrompt: String?,
+        dbPath: String?,
+        model: String?,
+        provider: String?,
+        toolMode: ChatToolMode?,
+        readFolder: String?,
+        ownerInstructions: Bool,
+        purpose: String?,
+        readFolderAskID: Int64?,
+        readFolderRoundID: Int64?,
+        persist: ChatQueryPersist
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        FakeEmbeddedPersist.wrap({ [self] in
+            stream(prompt: prompt, systemPrompt: systemPrompt, sessionID: nil, dbPath: dbPath, model: model,
+                   provider: provider, toolMode: toolMode, readFolder: readFolder, ownerInstructions: ownerInstructions,
+                   purpose: purpose, readFolderAskID: readFolderAskID, readFolderRoundID: readFolderRoundID)
+        }, dbPath: dbPath, persist: persist, provider: provider)
+    }
 }
 
 @MainActor
@@ -167,7 +190,7 @@ final class ReviewerCenterTests: XCTestCase {
 
         let place = SessionPlace.worktree(name: "registry", root: worktree,
                                           status: WorkbenchGitStatus(branch: "feature/registry"))
-        let context = try XCTUnwrap(ReviewerSurface.context(projectID: h.projectID, sessionID: sessionID,
+        let context = try XCTUnwrap(ReviewerSurface.context(projectID: h.projectID, sessionID: sessionID, folderID: nil,
                                                             round: h.model.round, place: place, mainStatus: nil))
         XCTAssertEqual(context.branch, "feature/registry")
         XCTAssertEqual(context.roundID, 7)
@@ -198,7 +221,7 @@ final class ReviewerCenterTests: XCTestCase {
                       "diff": diffJSON(["a.go"])])
         await h.model.open()
         let context = try XCTUnwrap(ReviewerSurface.context(
-            projectID: h.projectID, sessionID: h.sessionID, round: h.model.round, place: .main,
+            projectID: h.projectID, sessionID: h.sessionID, folderID: nil, round: h.model.round, place: .main,
             mainStatus: WorkbenchGitStatus(branch: "feature/a")))
         let ai = ScriptedAIService()
         let (center, engine) = try await engine(h, context: context, ai: ai)
@@ -289,7 +312,7 @@ final class ReviewerCenterTests: XCTestCase {
                       "diff": diffJSON(["a.go"])])
         await h.model.open()
         let context = try XCTUnwrap(ReviewerSurface.context(
-            projectID: h.projectID, sessionID: h.sessionID, round: h.model.round, place: .main,
+            projectID: h.projectID, sessionID: h.sessionID, folderID: nil, round: h.model.round, place: .main,
             mainStatus: WorkbenchGitStatus(branch: "feature/a")))
         let ai = ScriptedAIService()
         let (_, engine) = try await engine(h, context: context, ai: ai)
@@ -313,14 +336,14 @@ final class ReviewerCenterTests: XCTestCase {
 
     func testContextNeedsARoundAndAKnownBranch() async throws {
         let h = try harness()
-        XCTAssertNil(ReviewerSurface.context(projectID: 1, sessionID: 2, round: nil, place: .main,
+        XCTAssertNil(ReviewerSurface.context(projectID: 1, sessionID: 2, folderID: nil, round: nil, place: .main,
                                              mainStatus: WorkbenchGitStatus(branch: "main")))
         h.cli.script(["start": roundJSON(folder: "/tmp/acme"), "context": #"{"ok":true,"items":[]}"#,
                       "diff": diffJSON(["a.go"])])
         await h.model.open()
-        XCTAssertNil(ReviewerSurface.context(projectID: 1, sessionID: 2, round: h.model.round, place: .main, mainStatus: nil))
+        XCTAssertNil(ReviewerSurface.context(projectID: 1, sessionID: 2, folderID: nil, round: h.model.round, place: .main, mainStatus: nil))
         let detached = try XCTUnwrap(ReviewerSurface.context(
-            projectID: 1, sessionID: 2, round: h.model.round, place: .main,
+            projectID: 1, sessionID: 2, folderID: nil, round: h.model.round, place: .main,
             mainStatus: WorkbenchGitStatus(detached: true, head: "abc1234")))
         XCTAssertEqual(detached.branch, "session:2")
         XCTAssertEqual(detached.branchLabel, "")

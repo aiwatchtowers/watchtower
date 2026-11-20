@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"watchtower/internal/agentlogdb"
 	"watchtower/internal/aiconsent"
+	"watchtower/internal/askanswer"
 	"watchtower/internal/atlassianpdr"
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
@@ -34,12 +35,16 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/extsync"
+	"watchtower/internal/features"
 	"watchtower/internal/fsutil"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/hub"
+	"watchtower/internal/hub/actions/handlers"
+	hubplatform "watchtower/internal/hub/platform"
 	"watchtower/internal/imap"
 	"watchtower/internal/inbox"
+	"watchtower/internal/inboxfeed"
 	"watchtower/internal/issuekey"
 	"watchtower/internal/jira"
 	"watchtower/internal/linear"
@@ -47,20 +52,26 @@ import (
 	"watchtower/internal/logredact"
 	"watchtower/internal/media"
 	"watchtower/internal/oauthclient"
+	"watchtower/internal/ownerconfirm"
 	"watchtower/internal/platform"
 	"watchtower/internal/policy"
 	"watchtower/internal/powerstate"
 	"watchtower/internal/prompts"
 	"watchtower/internal/providerhealth"
 	"watchtower/internal/providerrouting"
+	"watchtower/internal/sessionmsg/delivery"
+	"watchtower/internal/sessionstart"
 	"watchtower/internal/skills"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/slackauth"
 	"watchtower/internal/slackmode"
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
+	"watchtower/internal/tower"
+	"watchtower/internal/tower/commands"
 	"watchtower/internal/tracks"
 	"watchtower/internal/ui"
+	"watchtower/internal/watchmanact"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -72,6 +83,7 @@ var (
 	syncFlagDetach       bool
 	syncFlagStop         bool
 	syncFlagNow          bool
+	syncFlagNoSync       bool
 	syncFlagChannels     []string
 	syncFlagWorkers      int
 	syncFlagSkipDMs      bool
@@ -127,6 +139,7 @@ func init() {
 	syncCmd.Flags().BoolVar(&syncFlagDaemon, "daemon", false, "run in daemon mode with periodic syncing")
 	syncCmd.Flags().BoolVar(&syncFlagDetach, "detach", false, "start daemon in the background (requires --daemon)")
 	syncCmd.Flags().BoolVar(&syncFlagStop, "stop", false, "stop a running detached daemon")
+	syncCmd.Flags().BoolVar(&syncFlagNoSync, "no-sync", false, "with --daemon: serve the tower socket and run no sync cycle, scheduled automation or plan-usage poll (the app's start before onboarding finishes; never stored)")
 	syncCmd.Flags().BoolVar(&syncFlagNow, "now", false, "ask the running daemon to sync immediately instead of waiting for its next poll")
 	syncCmd.Flags().StringSliceVar(&syncFlagChannels, "channels", nil, "limit sync to specific channel names or IDs")
 	syncCmd.Flags().IntVar(&syncFlagWorkers, "workers", 0, "number of concurrent sync workers (0 = use config default)")
@@ -539,9 +552,7 @@ func runSyncDetach(cfg *config.Config) error {
 		return fmt.Errorf("finding executable: %w", err)
 	}
 
-	// Re-exec ourselves with the detach env var set.
-	child := exec.Command(exe, os.Args[1:]...)
-	child.Env = detachedChildEnv(os.Environ())
+	child := detachedChild(exe, os.Args[1:])
 	child.Stdout = logFile
 	child.Stderr = logFile
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -553,6 +564,14 @@ func runSyncDetach(cfg *config.Config) error {
 	fmt.Printf("Daemon started (PID %d)\n", child.Process.Pid)
 	fmt.Printf("Log: %s\n", logPath)
 	return nil
+}
+
+// detachedChild re-execs exe with args (this process's own, so --no-sync and
+// every other flag carry over) and the detach env var set.
+func detachedChild(exe string, args []string) *exec.Cmd {
+	child := exec.Command(exe, args...)
+	child.Env = detachedChildEnv(os.Environ())
+	return child
 }
 
 // detachedChildEnv is the detached daemon's environment: the parent's,
@@ -635,6 +654,9 @@ func runSync(cmd *cobra.Command, args []string) error {
 
 	// --detach re-execs the process in the background.
 	// Skip if we're already the detached child (env key is set).
+	if syncFlagNoSync && !syncFlagDaemon {
+		return fmt.Errorf("--no-sync requires --daemon")
+	}
 	if syncFlagDetach && os.Getenv(daemon.DetachEnvKey) != "1" {
 		if !syncFlagDaemon {
 			return fmt.Errorf("--detach requires --daemon")
@@ -1031,11 +1053,24 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	d.SetDB(database)
 	// #880: no scheduled cycle starts in a Power Nap dark wake.
 	d.SetFullWakeProbe(powerstate.Probe)
+	// The owner's pause (sync.paused, sync.pause/sync.resume) and --no-sync
+	// both hold sync; tower.hello reports them apart.
+	ws, noSync := cfg.WorkspaceDir(), syncFlagNoSync
+	d.SetSyncPaused(func() bool { return noSync || tower.IsPaused(ws) })
+	if noSync {
+		logger.Println("--no-sync: no sync cycle, scheduled automation or plan-usage poll runs")
+	}
 	if al != nil {
 		defer al.Close()
 		d.SetAgentLogDB(al, agentlogdb.PathFor(cfg.DBPath()))
 	}
 	d.SetPIDPath(pidFilePath(cfg))
+	// Agent messages (spec 2026-11-18 §6.6): this daemon, the sync lock's
+	// single instance, is their one deliverer. The port dials the session
+	// host only once its list shows the receiving session running.
+	messagePort := sessionstart.NewPort(sessionStartDeps(cfg, database), nil)
+	defer func() { _ = messagePort.Close() }()
+	d.SetMessageDeliverer(&delivery.Deliverer{DB: database, Port: messagePort, Log: logger.Printf})
 	// The sweep's relaunch is background work: the reviewer carries its
 	// origin (D20 of #1886).
 	d.SetSpecReviewLaunch(func(ctx context.Context, askID int64) error {
@@ -1044,6 +1079,25 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 			return fmt.Errorf("locating the watchtower binary: %w", err)
 		}
 		return LaunchSpecReview(exe, askID, filepath.Join(cfg.WorkspaceDir(), "logs"), aiconsent.ChildEnv(ctx))
+	})
+	// While anything is handed to Watchman the daemon keeps the Mac awake
+	// under its own reason (daemon.WatchmanAwakeReason).
+	d.SetWatchmanAwake(hubplatform.NewAwake().Hold)
+	// Every armed session's worktree keeps Watchman's git hooks (spec §5 item 1).
+	d.SetWatchmanHooks(func(ctx context.Context, worktree string) error {
+		return watchmanact.EnsureHooks(ctx, worktree, cfg.WorkspaceDir())
+	})
+	// The twin worker: its own Answerer and session port, beside the hub's.
+	defer wireWatchmanTwin(d, cfg, database)()
+	// The weekly backtest is background work: the child carries its origin
+	// (BGAI-01), as the spec review sweep's does.
+	d.SetWatchmanBacktestLaunch(func(ctx context.Context, workbenchID int64) error {
+		exe, err := watchmanBacktestExe()
+		if err != nil {
+			return fmt.Errorf("locating the watchtower binary: %w", err)
+		}
+		return LaunchWatchmanBacktest(exe, workbenchID, cfg.ActiveWorkspace, flagConfig,
+			filepath.Join(cfg.WorkspaceDir(), "logs"), aiconsent.ChildEnv(ctx))
 	})
 	// Every pipeline is constructed unconditionally now (Task 3 demoted
 	// digest.enabled from a master switch to a per-phase gate) — each is a
@@ -1137,9 +1191,32 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// Refresh the shipped assistant skills in the workspace. Log-only: a skills
 	// directory we cannot write is not a reason to refuse to run the daemon.
 	deployShippedSkills(cfg, logger)
+	// The tower, one for the socket and the hub: what the hub's approvals
+	// run in the background is waited for (at most towerBackgroundBudget)
+	// after the hub and the socket stopped, before the database closes.
+	// The tower's reads run on a read-only handle of their own, closed
+	// last (after the socket, the hub and the background runs stopped).
+	reads, closeReads := openTowerReads(ctx, database, logger)
+	defer closeReads()
+	bg := &towerBackground{}
+	defer bg.wait(towerBackgroundBudget)
+	tw := newDaemonTower(ws, database, reads, noSync, commands.Deps{
+		DisabledFeatures: towerDisabledFeatures(cfg, logger),
+		Act:              towerActDeps(cfg, database, d.WakeAutomations, bg.run),
+	}, logger)
 	// The chat engine before the Go hub, stopped after it (unified chat §7):
-	// chat.sock is served whatever the hub does.
-	return withChatAndHub(ctx, cfg, database, logger, func() error { return d.Run(ctx) })
+	// chat.sock is served whatever the hub does. The hub gets the tower too
+	// (the phone Inbox). Stop order: the tower socket, the prune loop, the
+	// hub, the engine, then the background runs and the reads above.
+	return withChatAndHub(ctx, cfg, database, tw, logger, func() error {
+		// The tower request ledger: pruned at start and hourly, hub or no
+		// hub; the loop has returned before the database closes.
+		defer tower.StartPrune(ctx, database, time.Now)()
+		// The tower socket, hub or no hub: stopped (its calls waited for)
+		// before the database closes.
+		defer serveTower(ctx, ws, tw, logger)()
+		return d.Run(ctx)
+	})
 }
 
 // The daemon's chat engine and Go hub starters (test seams).
@@ -1148,12 +1225,13 @@ var (
 	startGoHubFn      = startGoHub
 )
 
-// withChatAndHub starts the chat engine, then the Go hub with it, runs run,
-// then stops the hub and after it the engine (unified chat spec §7).
-func withChatAndHub(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger, run func() error) error {
+// withChatAndHub starts the chat engine, then the Go hub with it and the
+// tower tw, runs run, then stops the hub and after it the engine (unified
+// chat spec §7).
+func withChatAndHub(ctx context.Context, cfg *config.Config, database *db.DB, tw *tower.Tower, logger *log.Logger, run func() error) error {
 	eng, stopChat := startChatEngineFn(ctx, cfg, logger)
 	defer stopChat()
-	defer startGoHubFn(ctx, cfg, database, eng, logger)()
+	defer startGoHubFn(ctx, cfg, database, tw, eng, logger)()
 	return run()
 }
 
@@ -1264,16 +1342,149 @@ func chatRoutingCatalog(cfg *config.Config) func(context.Context) *chatengine.Ro
 	}
 }
 
+// watchmanHeldKey is the twin's held answer lines' key (its own ledger file
+// in the workspace; the hub's stays under askanswer.HeldMetaKey in its store).
+const watchmanHeldKey = "watchman_held_asks"
+
+// wireWatchmanTwin gives the daemon the twin worker (spec
+// 2026-11-16-watchman-design §§3, 4): an Answerer of its own over a session
+// port of its own — the hub, on or off, keeps its own — whose held lines
+// live in the workspace, and the session start of a handover the twin
+// continues (no arming: a new session is armed only through its target's).
+// The returned func closes the port.
+func wireWatchmanTwin(d *daemon.Daemon, cfg *config.Config, database *db.DB) (closePort func()) {
+	port := sessionstart.NewPort(sessionStartDeps(cfg, database), nil)
+	answerer := askanswer.New(askanswer.Deps{
+		DB: database, Sessions: port,
+		Held: watchmanact.FileHeldStore{Dir: cfg.WorkspaceDir()}, HeldKey: watchmanHeldKey,
+	})
+	d.SetWatchmanTwin(answerer, func(ctx context.Context, workbenchID, targetID int64, brief string) error {
+		_, err := port.Start(ctx, handlers.StartRequest{Workbench: workbenchID, Target: &targetID, Brief: brief})
+		return err
+	})
+	return func() { _ = port.Close() }
+}
+
+// openTowerReads opens the tower's read handle (tower.OpenReads). A handle
+// that cannot be opened is logged and the daemon runs without it: reads then
+// fall back to the daemon's own pool (Options.ReadDB nil), as before the
+// handle existed — slower under load, never refused. The returned func
+// closes it.
+func openTowerReads(ctx context.Context, database *db.DB, logger *log.Logger) (*db.DB, func()) {
+	reads, err := tower.OpenReads(ctx, database)
+	if err != nil {
+		logger.Printf("tower: reads share the daemon's pool: %v", err)
+		return nil, func() {}
+	}
+	return reads, func() { _ = reads.Close() }
+}
+
+// newDaemonTower is the daemon's tower: every registered command, the change
+// watch and the pause, the Desktop's signature check for the owner's
+// gestures over the socket and the owner's sentences for faults. The socket
+// and the hub call the same tower. Writes and the request ledger use
+// database — the daemon's one-connection pool, shared with the sync cycle,
+// automations, the plan poll and the hub; Spec.Read commands (inbox.feed for
+// the Mac and the hub's phone feed, tower.hello, tower.ping) use reads when
+// it is non-nil, so they never queue behind that pool.
+func newDaemonTower(ws string, database, reads *db.DB, noSync bool, deps commands.Deps, logger *log.Logger) *tower.Tower {
+	var reg tower.Registry
+	commands.RegisterAll(&reg, deps)
+	return tower.New(database, tower.Options{
+		ReadDB:    reads,
+		Registry:  &reg,
+		Build:     Version,
+		Workspace: ws,
+		NoSync:    noSync,
+		Changes:   tower.NewChanges(database, tower.PollInterval),
+		// AGENT-07 over the socket: an owner gesture is the signed
+		// Desktop's only, checked as owner-confirm.sock's peer is.
+		VerifyDesktop: ownerconfirm.VerifyDesktopPeer,
+		// A fault's own text goes to the log; the owner reads a sentence.
+		Sentence: func(command string, err error) string {
+			logger.Printf("tower: %s: %v", command, err)
+			return inboxfeed.FaultSentence(command, err)
+		},
+	})
+}
+
+// serveTower serves t on the workspace's socket (tower.ServeWorkspace); a
+// socket that cannot be served is logged and the daemon runs without it.
+// The returned func stops it.
+func serveTower(ctx context.Context, ws string, t *tower.Tower, logger *log.Logger) (stop func()) {
+	stop, err := tower.ServeWorkspace(ctx, ws, t)
+	if err != nil {
+		logger.Printf("tower: socket not served: %v", err)
+		return func() {}
+	}
+	return stop
+}
+
+// towerActDeps are inbox.act's dependencies in the daemon: the tools
+// registry `watchtower actions` uses, Run Now as `automations run` queues it
+// (a slot run asks for a sync now, as the CLI does; any other wakes the
+// executor), the in-process executor wake, and `tracks start` for an
+// approved create_track; background runs the tool a phone approval applies
+// after the hub answered.
+func towerActDeps(cfg *config.Config, database *db.DB, wake func(), background func(fn func())) inboxfeed.ActDeps {
+	return inboxfeed.ActDeps{
+		Registry: buildToolRegistry(cfg, database),
+		RunNow: func(_ context.Context, automationID int64) (int64, error) {
+			a, err := database.GetAutomation(automationID)
+			if errors.Is(err, db.ErrAutomationNotFound) {
+				return 0, &inboxfeed.CannotRunError{Reason: "this automation no longer exists"}
+			}
+			if err != nil {
+				return 0, err
+			}
+			q, err := queueRun(cfg, database, a, "", 0)
+			if err != nil {
+				return 0, err
+			}
+			if !q.slot {
+				wake()
+			} else if _, err := builtinRunSignal(cfg); err != nil {
+				log.Printf("tower: Run Now of automation %d: asking for a sync: %v", automationID, err)
+			}
+			return q.runID, nil
+		},
+		Wake:       wake,
+		Background: background,
+		// An approved create_track is watched at once, as `tracks start`
+		// (the Mac's startWatchingIfTrack) starts it.
+		StartWatch: towerStartWatch(cfg, database),
+	}
+}
+
+// towerDisabledFeatures returns the feature ids config.yaml has off, read
+// again at each call: the owner turns features on and off (`features
+// enable|disable`, the Desktop's Feature Manager) while the daemon runs. A
+// config that cannot be read now is logged and the daemon's start config
+// answers instead.
+func towerDisabledFeatures(start *config.Config, logger *log.Logger) func() []string {
+	return func() []string {
+		cfg, err := config.Load(flagConfig)
+		if err != nil {
+			logger.Printf("tower: reading the feature switches: %v (the start config is used)", err)
+			cfg = start
+		}
+		return features.DisabledIDs(cfg)
+	}
+}
+
 // startGoHub starts the Go hub beside the daemon when hub.Resolve says so
 // and logs whether it did; the returned func stops it and waits. Its cycle
-// tick is the daemon's poll interval; eng is the daemon's chat engine (nil =
-// chat off on the phone).
-func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, eng *chatengine.Engine, logger *log.Logger) (stop func()) {
+// tick is the daemon's poll interval; tw is the daemon's tower (the phone
+// Inbox), eng the daemon's chat engine (nil = chat off on the phone).
+func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, tw *tower.Tower, eng *chatengine.Engine, logger *log.Logger) (stop func()) {
 	o, err := hub.Resolve(cfg, database, hostProbe())
 	if err != nil {
 		logger.Printf("hub: off (%s)", hub.Refusal(err))
 		return func() {}
 	}
+	// The phone Inbox reads and writes through the daemon's tower (the
+	// socket's), as the hub.
+	o.Tower = tw
 	// The session port's seams; the socket stays Resolve's (test mode: the
 	// override only, never the Desktop's host; live: the default socket).
 	sd := sessionStartDeps(cfg, database)

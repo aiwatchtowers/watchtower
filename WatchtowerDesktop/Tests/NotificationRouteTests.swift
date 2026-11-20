@@ -323,13 +323,13 @@ final class NotificationRouteTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         // Track 7 exists: a route selects only a listed card. An owner, so
         // the root lists today's day card (OWNER-02).
-        try await pool.write { db in
-            let track = try TestDatabase.insertTrack(db, text: "Launch")
-            try db.execute(sql: "UPDATE tracks SET id = 7 WHERE id = ?", arguments: [track])
-            _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1")
-        }
+        let tower = try FeedCaseTransport.seeded("desktop_notification_track_and_owner", pool: pool)
         let savedFolder = UserDefaults.standard.object(forKey: ActionStripViewModel.folderKey)
         defer { UserDefaults.standard.set(savedFolder, forKey: ActionStripViewModel.folderKey) }
+        // The app's today is the case's (Go built its feed at that moment).
+        let caseNow = try XCTUnwrap(AutomationDates.parse("2026-11-16T12:00:00Z"))
+        AppState.inboxNow = { caseNow }
+        defer { AppState.inboxNow = { Date() } }
         let today = AppState.inboxToday()
         let forwardedUpdate = try XCTUnwrap(
             NotificationForwarding.encode(actionID: UNNotificationDefaultActionIdentifier,
@@ -347,6 +347,7 @@ final class NotificationRouteTests: XCTestCase {
             UserDefaults.standard.removeObject(forKey: ActionStripViewModel.folderKey)
             let appState = AppState.isolated()
             appState.initActionStrip(dbPool: pool)
+            await appState.actionStripViewModel?.follow(tower)
             await NotificationDelegate.route(
                 actionID: UNNotificationDefaultActionIdentifier, userInfo: userInfo, appState: appState, forwarded: true)
             let vm = try XCTUnwrap(appState.actionStripViewModel)

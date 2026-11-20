@@ -178,6 +178,22 @@
       "refs": []
     },
     {
+      "name": "plan-items",
+      "card_actions": [],
+      "document": {
+        "v": 1,
+        "blocks": [
+          {"type": "heading", "text": "Plan · 1 of 2", "level": 2},
+          {"type": "list", "title": "", "empty": "Nothing planned", "rows": [
+            {"title": "Review ACME-412 fix", "subtitle": "09:00", "tone": "success", "link": "", "actions": [], "ref": {"kind": "plan_item", "id": 21}},
+            {"title": "Sign off the 2.0 checklist", "subtitle": "11:00 · from Waiting for me", "link": "", "actions": [], "ref": {"kind": "plan_item", "id": 22}}
+          ]}
+        ]
+      },
+      "actions": 0,
+      "refs": [{"kind": "plan_item", "id": 21}, {"kind": "plan_item", "id": 22}]
+    },
+    {
       "name": "no-blocks",
       "card_actions": [],
       "document": {"v": 1, "blocks": []},

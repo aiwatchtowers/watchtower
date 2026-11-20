@@ -6,7 +6,12 @@ import WatchtowerTestSupport
 @MainActor
 final class PeopleRosterLoadTests: XCTestCase {
     /// A scripted `Run`: records each launch and parks until the test ends
-    /// it (or the run is cancelled).
+    /// it (or the run is cancelled). On the main actor, as the test: a nested
+    /// type does not take its enclosing type's isolation, and a nonisolated
+    /// `run` set `exit` on the global executor, which a loaded machine
+    /// reached only after the turn-bounded wait gave up — `finish` then
+    /// resumed nothing and `waitForCompletion` hung (CI, 2026-11-19).
+    @MainActor
     @Observable
     final class FakeRun {
         var launches: [Int] = []
@@ -51,7 +56,8 @@ final class PeopleRosterLoadTests: XCTestCase {
     }
 
     /// Waits until `condition` holds, re-checking on every change of the
-    /// fake's observable state it reads — no deadline.
+    /// fake's observable state it reads (`FakeRun` is `@Observable`) — no
+    /// deadline and no count of turns: the wait ends on the event.
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
         await untilObserved(condition)
     }

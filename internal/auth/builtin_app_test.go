@@ -2,24 +2,33 @@ package auth
 
 import "testing"
 
-func TestBuiltinApp_EnvOverridesBakedAndBothAreNeeded(t *testing.T) {
-	origID, origSecret := DefaultClientID, DefaultClientSecret
-	t.Cleanup(func() { DefaultClientID, DefaultClientSecret = origID, origSecret })
-
-	DefaultClientID, DefaultClientSecret = "baked-id", "baked-secret"
-	t.Setenv("WATCHTOWER_OAUTH_CLIENT_ID", "")
-	t.Setenv("WATCHTOWER_OAUTH_CLIENT_SECRET", "")
-	if cfg, ok := BuiltinApp(); !ok || cfg.ClientID != "baked-id" || cfg.ClientSecret != "baked-secret" {
-		t.Fatalf("baked: got %+v ok=%v", cfg, ok)
+func TestBuiltinApp(t *testing.T) {
+	cases := []struct {
+		name                 string
+		envID, envSecret     string
+		bakedID, bakedSecret string
+		wantID, wantSecret   string
+		wantOK               bool
+	}{
+		{name: "nothing set"},
+		{name: "baked only", bakedID: "1.2", bakedSecret: "s", wantID: "1.2", wantSecret: "s", wantOK: true},
+		{name: "env wins over baked", envID: "3.4", envSecret: "e", bakedID: "1.2", bakedSecret: "s", wantID: "3.4", wantSecret: "e", wantOK: true},
+		{name: "env id with baked secret", envID: "3.4", bakedSecret: "s", wantID: "3.4", wantSecret: "s", wantOK: true},
+		{name: "id without secret", bakedID: "1.2", wantID: "1.2"},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("WATCHTOWER_OAUTH_CLIENT_ID", tc.envID)
+			t.Setenv("WATCHTOWER_OAUTH_CLIENT_SECRET", tc.envSecret)
+			oldID, oldSecret := DefaultClientID, DefaultClientSecret
+			t.Cleanup(func() { DefaultClientID, DefaultClientSecret = oldID, oldSecret })
+			DefaultClientID, DefaultClientSecret = tc.bakedID, tc.bakedSecret
 
-	t.Setenv("WATCHTOWER_OAUTH_CLIENT_ID", "env-id")
-	if cfg, ok := BuiltinApp(); !ok || cfg.ClientID != "env-id" || cfg.ClientSecret != "baked-secret" {
-		t.Fatalf("env id: got %+v ok=%v", cfg, ok)
-	}
-
-	DefaultClientSecret = ""
-	if cfg, ok := BuiltinApp(); ok || cfg.ClientID != "env-id" {
-		t.Fatalf("no secret: got %+v ok=%v, want ok=false with the id kept", cfg, ok)
+			cfg, ok := BuiltinApp()
+			if cfg.ClientID != tc.wantID || cfg.ClientSecret != tc.wantSecret || ok != tc.wantOK {
+				t.Fatalf("BuiltinApp() = (%q, %q, %v), want (%q, %q, %v)",
+					cfg.ClientID, cfg.ClientSecret, ok, tc.wantID, tc.wantSecret, tc.wantOK)
+			}
+		})
 	}
 }

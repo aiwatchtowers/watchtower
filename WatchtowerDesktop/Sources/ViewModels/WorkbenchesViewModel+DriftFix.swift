@@ -61,7 +61,9 @@ extension WorkbenchesViewModel {
             let ticket = beginSwitch(projectID: projectID)
             guard let project = await project(id: projectID) else { return }
             started = await startNewSession(
-                project: project, title: Self.driftFixTitle, prompt: prompt, ticket: ticket, agent: currentDefaultAgent()
+                project: project, title: Self.driftFixTitle, prompt: prompt, ticket: ticket, agent: currentDefaultAgent(),
+                // A finding names no folder: every finding's fix starts in home.
+                folder: .home
             )
         }
         guard let started else { return }

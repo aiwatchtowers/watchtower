@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"watchtower/internal/gitbin"
+	"watchtower/internal/gitdir"
 )
 
 // FolderScope is where a requested folder sits relative to the workbench's
@@ -58,6 +59,9 @@ type ResolvedFolder struct {
 	// MainTopLevel is the top level of the worktree holding the workbench
 	// folder, "" when git was not asked.
 	MainTopLevel string `json:"-"`
+	// FolderPath is the workbench folder resolved against: Options.Folder,
+	// or the bench folder ResolveFolder chose from Options.Folders.
+	FolderPath string `json:"workbench_folder_path"`
 }
 
 // OutsideTheRepository reports a folder no git may run in: outside the
@@ -67,8 +71,12 @@ func (f ResolvedFolder) OutsideTheRepository() bool {
 }
 
 // ResolveFolder resolves requested against the worktrees of the repository
-// holding o.Folder (the workbench folder). "" is the workbench folder
-// itself. git runs only in o.Folder (`git worktree list`), never in
+// holding o.Folder (the workbench folder). A requested folder in another
+// repository's work tree (repoOf, files only) is outside before any git
+// runs, even when the workbench folder encloses it. With o.Folder "" the workbench
+// folder is first chosen from o.Folders without running git
+// (benchFolderFor), so one folder's worktrees are listed at most. "" is the
+// workbench folder itself. git runs only in o.Folder (`git worktree list`), never in
 // requested, and not at all when requested is missing or not absolute, git
 // is unavailable, or o.Folder is outside a repository. Without git the
 // scope is unresolved and Root the workbench folder, so the caller's own
@@ -77,7 +85,10 @@ func (f ResolvedFolder) OutsideTheRepository() bool {
 // (an unreadable parent) failing; the scope is then unresolved and Root
 // the workbench folder.
 func ResolveFolder(ctx context.Context, o Options, requested string) (ResolvedFolder, error) {
-	res := ResolvedFolder{Requested: requested, Scope: ScopeOutside, Root: o.Folder}
+	if o.Folder == "" {
+		o.Folder = benchFolderFor(o.Folders, requested)
+	}
+	res := ResolvedFolder{Requested: requested, Scope: ScopeOutside, Root: o.Folder, FolderPath: o.Folder}
 	if requested == "" {
 		res.Scope = ScopeMain
 		return res, nil
@@ -96,6 +107,12 @@ func ResolveFolder(ctx context.Context, o Options, requested string) (ResolvedFo
 	if err != nil {
 		res.Scope = ScopeUnresolved
 		return res, err
+	}
+	if reqRepo, wbRepo := repoOf(reqReal), repoOf(wbReal); reqRepo != "" && wbRepo != "" && !samePath(reqRepo, wbRepo) {
+		// Another repository's work tree (a nested repository, or another
+		// repository's worktree inside the workbench folder): outside,
+		// though the workbench folder's own work tree encloses it.
+		return res, nil
 	}
 	out, err := r.git(ctx, "worktree", "list", "--porcelain", "-z")
 	if err != nil {
@@ -117,6 +134,85 @@ func ResolveFolder(ctx context.Context, o Options, requested string) (ResolvedFo
 		res.Scope = ScopeMain
 	}
 	return res, nil
+}
+
+// benchFolderFor is the bench folder requested belongs to, chosen by
+// repository first: the deepest folder holding requested when it is in the
+// same repository (repoOf); else the first folder of requested's own
+// repository (a linked worktree anywhere on disk, even inside another bench
+// folder); else folders[0] (the home folder). A sole folder is taken as is;
+// "" for none. No git runs: the caller's one listing, in the folder chosen,
+// decides the scope.
+func benchFolderFor(folders []string, requested string) string {
+	if len(folders) == 0 {
+		return ""
+	}
+	if len(folders) == 1 || !filepath.IsAbs(requested) {
+		return folders[0]
+	}
+	reqReal, err := filepath.EvalSymlinks(requested)
+	if err != nil {
+		return folders[0]
+	}
+	reqRepo := repoOf(reqReal)
+	reals := make([]string, len(folders))
+	best := -1
+	for i, f := range folders {
+		reals[i] = f
+		if r, err := filepath.EvalSymlinks(f); err == nil {
+			reals[i] = r
+		}
+		if within(reqReal, reals[i]) && (best < 0 || len(reals[i]) > len(reals[best])) {
+			best = i
+		}
+	}
+	if best >= 0 && (reqRepo == "" || sameRepo(repoOf(reals[best]), reqRepo)) {
+		return folders[best]
+	}
+	if reqRepo != "" {
+		for i, f := range folders {
+			if sameRepo(repoOf(reals[i]), reqRepo) {
+				return f
+			}
+		}
+	}
+	return folders[0]
+}
+
+// repoOf is the repository whose work tree holds path, as its common git
+// dir (symlinks resolved), read from files only (internal/gitdir: the
+// nearest .git entry, a linked worktree's gitdir and commondir); "" when
+// path is in no work tree or the files cannot be read. A file path is
+// looked up from its directory.
+func repoOf(path string) string {
+	if fi, err := os.Stat(path); err == nil && !fi.IsDir() {
+		path = filepath.Dir(path)
+	}
+	_, gitDir, found, err := gitdir.FindWorkTree(path)
+	if err != nil || !found {
+		return ""
+	}
+	common, err := gitdir.CommonDir(gitDir)
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(common); err == nil {
+		return resolved
+	}
+	return filepath.Clean(common)
+}
+
+// SameRepository reports whether paths a and b lie in work trees of one
+// repository (the main work tree or any linked worktree), read from the git
+// files only (repoOf: no git runs); false when either is in no work tree.
+func SameRepository(a, b string) bool {
+	return sameRepo(repoOf(a), repoOf(b))
+}
+
+// sameRepo reports whether two repoOf results name one repository; ""
+// (unknown) matches nothing.
+func sameRepo(a, b string) bool {
+	return a != "" && b != "" && samePath(a, b)
 }
 
 // scopeWithoutRepo is the scope when open refused: unresolved without git

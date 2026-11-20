@@ -16,6 +16,7 @@ final class SessionCleanupPresentationTests: XCTestCase {
         "workbench_folder": "a workbench folder",
         "locked": "locked",
         "uncommitted_changes": "uncommitted changes",
+        "ignored_files": "unsaved ignored files",
         "process_running": "a process is running in it",
         "process_unknown": "a process could not be checked",
         "session_in_it": "another session works in it",

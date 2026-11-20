@@ -82,7 +82,7 @@ struct WorkbenchBoardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             if viewModel == nil, let pool = appState.databaseManager?.dbPool {
-                let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: projectID)
+                let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: projectID, tower: appState.screenTower)
                 vm.onOwnerWrite = { [weak projects = appState.workbenchesViewModel] project, subject in
                     projects?.onOwnerWrite?(project, subject)
                 }
@@ -107,6 +107,9 @@ struct WorkbenchBoardView: View {
             takeFocus()
             takeKanbanRequest()
             viewModel?.startPolling()
+        }
+        .onChange(of: appState.workbenchesViewModel?.benchFolders[projectID], initial: true) { _, folders in
+            viewModel?.folders = folders
         }
         // A target id in the Session view opens its card here.
         .onChange(of: appState.workbenchesViewModel?.boardFocus[projectID]) { _, _ in takeFocus() }
@@ -361,6 +364,7 @@ struct WorkbenchBoardView: View {
                     row: row,
                     isSelected: vm.selectedTargetID == row.id,
                     isCollapsed: vm.collapsed.contains(row.id),
+                    folders: vm.folders,
                     onToggle: { vm.toggle(row.id) },
                     trailing: { hovering in
                         WorkOnTargetButton(target: row.node.target, compact: true,
@@ -405,7 +409,9 @@ struct WorkbenchBoardView: View {
                 return projects.asks.loadErrors[projectID]
             },
             onOpenGroup: { id in enterScopeAndFocus(vm, id) { vm.enterScope($0) } },
-            onClose: { closePanel(vm) }
+            onClose: { closePanel(vm) },
+            watchman: appState.watchmanCenter,
+            workbenchName: workbenchName
         )
         .frame(maxWidth: dragPanelWidth ?? clampedPanelWidth, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))

@@ -67,9 +67,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
     ) -> EmbeddedChatEngine {
         let spec = spec ?? self.spec()
         let clock = self.clock
-        let store = store ?? DatabaseEmbeddedChatStore(dbPool: pool, conversationID: spec.key.conversationID ?? 0) {
-            clock.now
-        }
+        let store = store ?? DatabaseEmbeddedChatStore(dbPool: pool, conversationID: spec.key.conversationID ?? 0)
         return EmbeddedChatEngine(spec: spec, store: store, aiService: ai, gate: gate, draftMirror: mirror) { clock.now }
     }
 
@@ -134,6 +132,39 @@ final class EmbeddedChatEngineTests: XCTestCase {
         let conv = conversationID
         let sessionID = try await pool.read { db in try ChatConversationQueries.fetchByID(db, id: conv)?.sessionID }
         XCTAssertNil(sessionID, "no session is resumed, so its id is not kept (#604 G11)")
+    }
+
+    /// `ai query --persist` could not write the reply (`save_error`): the
+    /// embedded chat shows Go's sentence as the main chat does, and it stays
+    /// after the turn ends — the answer is not silently gone on reload.
+    func testAProcessSaveErrorIsShownAndOutlivesTheTurn() async throws {
+        let engine = makeEngine()
+        XCTAssertTrue(engine.send("Hi"))
+        await engine.finished()
+        ai.emit(.text("Answer."), .saveError("Couldn't save the reply: disk I/O error"))
+        expectTrue(await waitForCondition { engine.bannerError != nil })
+        XCTAssertEqual(engine.bannerError, "Couldn't save the reply: disk I/O error", "Go's sentence, no doubled prefix")
+        ai.emit(.done)
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(engine.bannerError, "Couldn't save the reply: disk I/O error", "raised while the turn ran: it stays")
+    }
+
+    /// The same save failure on two turns in a row: the second turn's
+    /// warning survives its end too (tracked per turn, not by its text).
+    func testTheSameSaveErrorOnTheNextTurnStillOutlivesIt() async throws {
+        let sentence = "Couldn't save the reply: disk I/O error"
+        let engine = makeEngine()
+        for turn in 1...2 {
+            XCTAssertTrue(engine.send("Hi \(turn)"))
+            await engine.finished()
+            ai.emit(.text("Answer."), .saveError(sentence))
+            expectTrue(await waitForCondition { [ai] in ai?.calls.count == turn && engine.bannerError == sentence })
+            ai.emit(.done)
+            ai.finish()
+            expectTrue(await waitIdle(engine))
+            XCTAssertEqual(engine.bannerError, sentence, "turn \(turn): raised while it ran, so it stays")
+        }
     }
 
     /// `ai query --events v2` (claude and codex): a tool call is a step on the
@@ -216,15 +247,18 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertTrue(call.prompt.hasSuffix(EmbeddedChatReplay.footer + "\n\nagain"), call.prompt)
     }
 
-    func testTextIsFlushedAtMostOncePerInterval() async throws {
+    /// The streamed text shows live and reaches the reply's `partial` row, so
+    /// a crash keeps it. The row is the `--persist` run's: its flush cadence
+    /// (first delta at once, then at most once a second) is pinned in Go by
+    /// `TestEmbeddedTurn_FlushCadence`.
+    func testStreamedTextReachesThePartialRow() async throws {
         let engine = makeEngine()
         engine.send("q")
         await engine.finished()
         ai.emit(.text("a"))
         expectTrue(await waitForCondition { engine.liveTurn?.fullText == "a" })
-        XCTAssertEqual(try rows().last?.text, "", "inside the flush interval")
-        clock.advance(1.1)
         ai.emit(.text("b"))
+        expectTrue(await waitForCondition { engine.liveTurn?.fullText == "ab" })
         expectTrue(await waitForCondition { (try? self.rows().last?.text) == "ab" })
         XCTAssertEqual(try rows().last?.status, "partial", "a crash now keeps the partial text")
     }
@@ -429,6 +463,27 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertEqual(mode?.contextType, "idea")
     }
 
+    /// A database chat's run writes the owner's row (review I3): the
+    /// message shows at once while it does, and Stop is offered — the turn
+    /// ends as stopped once the rows landed (the owner's message stays with
+    /// a `partial` reply), as for a Stop after the start.
+    func testTheOwnersMessageShowsWhileItsRunWritesItAndStopsThere() async throws {
+        let engine = makeEngine()
+        engine.draft = "my words"
+        XCTAssertTrue(engine.sendDraft())
+        XCTAssertTrue(engine.isStarting)
+        XCTAssertEqual(engine.pendingOwnerText, "my words", "shown before the run wrote it")
+        engine.stop()
+        await engine.finished()
+        expectTrue(await waitIdle(engine))
+        XCTAssertNil(engine.pendingOwnerText)
+        let stored = try rows()
+        XCTAssertEqual(stored.map(\.role), ["user", "assistant"])
+        XCTAssertEqual(stored.first?.text, "my words")
+        expectTrue(await waitForCondition { (try? self.rows().last?.status) == "partial" })
+        XCTAssertEqual(engine.draft, "", "the message was sent, not given back")
+    }
+
     // MARK: - Failures writing
 
     func testASendThatCannotBeSavedSendsNothingAndKeepsTheText() async throws {
@@ -438,7 +493,11 @@ final class EmbeddedChatEngineTests: XCTestCase {
         engine.draft = "my words"
         XCTAssertTrue(engine.sendDraft())
         await engine.finished()
-        XCTAssertEqual(ai.calls.count, 0, "nothing goes out without the owner row")
+        // The send is the `--persist` run alone: it found no chat, wrote no
+        // row and never reached the provider (Go:
+        // TestEmbeddedTurn_GoneConversationWritesNothing).
+        XCTAssertEqual(ai.calls.map { $0.persist?.conversationID }, [conv], "only the --persist run")
+        XCTAssertTrue(try rows().isEmpty, "nothing goes out without the owner row")
         XCTAssertEqual(engine.draft, "my words")
         XCTAssertEqual(engine.bannerError, "This chat no longer exists.")
         XCTAssertFalse(engine.isBusy)
@@ -736,7 +795,8 @@ final class EmbeddedChatEngineTests: XCTestCase {
         ai.finish(call: 0)
         expectTrue(await waitForCondition { self.ai.calls.count == 4 })
         XCTAssertFalse(fourth.isQueued)
-        XCTAssertTrue(fourth.isStreaming)
+        // Streaming from the run's `started`, once its rows are written.
+        expectTrue(await waitForCondition { fourth.isStreaming })
         XCTAssertEqual(try rows(fourth.spec.key.conversationID).map(\.role), ["user", "assistant"])
     }
 
@@ -1213,11 +1273,16 @@ extension EmbeddedChatEngineTests {
             await engine.finished()
             let failure = ChatSessionError(turnID: nil, code: .rateLimit, message: "Quota reached",
                                            retryable: false, reason: "quota_exhausted")
-            ai.emit(.text(text), .failure(failure), .routing(provider: "codex", model: "consumed-after-quota", metadata: nil))
-            // A subsequent ordered metadata write proves the error was consumed,
-            // while the scripted process deliberately keeps stdout/EOF open.
-            let consumed = await waitForCondition { (try? self.rows().last?.model) == "consumed-after-quota" }
-            XCTAssertTrue(consumed)
+            // The run writes the typed error (Go ends an embedded turn at its
+            // error event) BEFORE the event reaches the engine, and the
+            // scripted process deliberately keeps stdout/EOF open. The save
+            // error behind it is a marker: events are consumed in order, so
+            // its banner means the engine has seen the failure. Stopping on
+            // the row alone could win the race against the event (under load
+            // it did) and end the turn as a plain stop.
+            ai.emit(.text(text), .failure(failure), .saveError("marker"))
+            await untilObserved { engine.bannerError != nil }
+            XCTAssertEqual(try rows().last?.errorCode, "quota_exhausted")
             XCTAssertTrue(engine.isStreaming)
             let beforeStop = try XCTUnwrap(try rows().last)
             let convID = conversationID

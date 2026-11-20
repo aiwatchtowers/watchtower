@@ -19,8 +19,10 @@ import (
 
 // AutomationWakeSignal asks a running daemon to tick the automations
 // scheduler and poll the executor now (spec 2026-10-14 §20 D1): the CLI sends
-// it after `automations run`, a recipe save or an approval. It never starts a
-// sync — TriggerSignal (SIGUSR1) keeps meaning that.
+// it after `automations run`, a recipe save or an approval. Every one also
+// ticks the Watchman twin's wake (WatchmanWakeCapability): a wait point of an
+// armed session sends it after queueing its item. It never starts a sync —
+// TriggerSignal (SIGUSR1) keeps meaning that.
 const AutomationWakeSignal = syscall.SIGUSR2
 
 // AutomationWakeCapability is the line a daemon whose scheduler and executor
@@ -32,13 +34,25 @@ const AutomationWakeSignal = syscall.SIGUSR2
 // and otherwise says so.
 const AutomationWakeCapability = "automations-wake"
 
+// WatchmanWakeCapability is the capabilities-file line of a daemon whose
+// AutomationWakeSignal also wakes the Watchman twin (spec
+// 2026-11-16-watchman-design §4): every daemon that writes the file. A wait
+// point signals only a daemon that advertises it; an older one would take the
+// signal for an automations wake alone, and the item waits for the next
+// cycle's scan.
+const WatchmanWakeCapability = "watchman-wake"
+
 // CapsPath is the capabilities file beside a daemon's PID file: its first
 // line is the daemon's pid, each further line one capability.
 func CapsPath(pidPath string) string { return pidPath + ".caps" }
 
-// writeCaps writes this process's capabilities file beside pidPath.
-func writeCaps(pidPath string) error {
-	body := strconv.Itoa(os.Getpid()) + "\n" + AutomationWakeCapability + "\n"
+// writeCaps writes this process's capabilities file beside pidPath, one
+// line per capability.
+func writeCaps(pidPath string, caps []string) error {
+	body := strconv.Itoa(os.Getpid()) + "\n"
+	for _, c := range caps {
+		body += c + "\n"
+	}
 	if err := fsutil.WriteFileAtomic(CapsPath(pidPath), []byte(body), 0o600); err != nil {
 		return fmt.Errorf("writing capabilities file: %w", err)
 	}
@@ -53,15 +67,21 @@ func removeCaps(pidPath string) {
 }
 
 // advertiseCaps writes the capabilities file beside the PID file and returns
-// its removal — only while automationsActive; otherwise it writes nothing
-// and the CLI never signals this daemon. A failed write is logged, not
-// fatal: the daemon runs, the CLI just never wakes it.
+// its removal: WatchmanWakeCapability always, AutomationWakeCapability only
+// while automationsActive (otherwise the CLI never signals this daemon for
+// an automation), SessionMessagesWakeCapability only with a message
+// deliverer. A failed write is logged, not fatal: the daemon runs, the CLI
+// just never wakes it.
 func (d *Daemon) advertiseCaps() (remove func()) {
-	if !d.automationsActive() {
-		return func() {}
+	caps := []string{WatchmanWakeCapability}
+	if d.automationsActive() {
+		caps = append([]string{AutomationWakeCapability}, caps...)
 	}
-	if err := writeCaps(d.pidPath); err != nil {
-		d.logger.Printf("automations: %v (the CLI will not wake this daemon)", err)
+	if d.messages != nil {
+		caps = append(caps, SessionMessagesWakeCapability)
+	}
+	if err := writeCaps(d.pidPath, caps); err != nil {
+		d.logger.Printf("daemon: %v (the CLI will not wake this daemon)", err)
 		return func() {}
 	}
 	return func() { removeCaps(d.pidPath) }
@@ -160,6 +180,10 @@ func (d *Daemon) wakeAutomationExecutor() {
 	}
 }
 
+// WakeAutomations is wakeAutomationExecutor for the daemon's tower commands
+// (inbox.act's reply press, Run Now and reminder hook).
+func (d *Daemon) WakeAutomations() { d.wakeAutomationExecutor() }
+
 // installApprovalHook sets the database's approval hook to builtin.Fire with
 // the in-process executor wake, replacing a hook a tool registry built during
 // wiring may have set (cmd's SIGUSR2 wake, which would signal this process).
@@ -177,11 +201,11 @@ func (d *Daemon) automationsActive() bool {
 	return d.automationScheduler != nil && d.automationExecutor != nil
 }
 
-// startAutomations starts the scheduler, the executor and the wake forwarder
-// as goroutines of their own — never inside the sync loop, so a wake is
-// served while a sync runs and never triggers one. With nothing wired it
-// starts nothing. The returned stop cancels
-// them and waits until all three have returned (the executor finishes or
+// startAutomations starts the scheduler and the executor as goroutines of
+// their own — never inside the sync loop, so a wake is served while a sync
+// runs and never triggers one. With nothing wired it starts nothing. While
+// sync is paused the scheduler is stopped (pause.go). The returned stop
+// cancels them and waits until both have returned (the executor finishes or
 // interrupts its in-flight runs first), so no goroutine outlives Run.
 func (d *Daemon) startAutomations(ctx context.Context) (stop func()) {
 	if !d.automationsActive() {
@@ -189,15 +213,15 @@ func (d *Daemon) startAutomations(ctx context.Context) (stop func()) {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	var wg gosync.WaitGroup
-	for name, r := range map[string]AutomationRunner{"scheduler": d.automationScheduler, "executor": d.automationExecutor} {
-		wg.Go(func() {
-			if err := r.Run(runCtx); err != nil {
-				d.logger.Printf("automations: %s stopped: %v", name, err)
-			}
-		})
-	}
+	// The scheduler runs only while sync is not paused (no scheduled run
+	// starts); the executor always does (Run Now, approval apply).
 	wg.Go(func() {
-		d.forwardAutomationWakes(runCtx)
+		d.runUnlessPaused(runCtx, "automations: scheduler", d.automationScheduler.Run)
+	})
+	wg.Go(func() {
+		if err := d.automationExecutor.Run(runCtx); err != nil {
+			d.logger.Printf("automations: executor stopped: %v", err)
+		}
 	})
 	d.logger.Println("automations: scheduler and executor started")
 	return func() {
@@ -206,9 +230,31 @@ func (d *Daemon) startAutomations(ctx context.Context) (stop func()) {
 	}
 }
 
-// forwardAutomationWakes hands every wake to both runners until ctx is done
-// or the wake channel closes.
-func (d *Daemon) forwardAutomationWakes(ctx context.Context) {
+// startWakeForwarder starts the goroutine that hands every
+// AutomationWakeSignal to the automations runners (when active), the agent
+// message deliverer (when wired) and the Watchman twin; the returned stop
+// cancels it and waits for it.
+func (d *Daemon) startWakeForwarder(ctx context.Context) (stop func()) {
+	if d.watchmanWakeCh == nil {
+		d.watchmanWakeCh = make(chan struct{}, 1)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.forwardWakes(runCtx)
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+// forwardWakes hands every wake to both automations runners (when active)
+// and the agent message deliverer (when wired), and ticks the twin's
+// channel — non-blocking, so a burst collapses into the tick already queued —
+// until ctx is done or the wake channel closes.
+func (d *Daemon) forwardWakes(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -217,8 +263,15 @@ func (d *Daemon) forwardAutomationWakes(ctx context.Context) {
 			if !ok {
 				return
 			}
-			d.automationScheduler.Wake()
-			d.automationExecutor.Wake()
+			if d.automationsActive() {
+				d.automationScheduler.Wake()
+				d.automationExecutor.Wake()
+			}
+			d.wakeMessages()
+			select {
+			case d.watchmanWakeCh <- struct{}{}:
+			default:
+			}
 		}
 	}
 }

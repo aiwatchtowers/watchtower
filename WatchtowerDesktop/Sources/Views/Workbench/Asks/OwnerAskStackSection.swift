@@ -28,8 +28,9 @@ struct OwnerAskStackSection: View {
         let outsideClosed = asks.closedCounts[project.id]?[nil] ?? 0
         let automationClosed = asks.closedAutomationCounts[project.id] ?? 0
         let notices = asks.quickNotices(projectID: project.id)
+        let heldFolders = asks.heldFolderCards(projectID: project.id)
         let inReview = vm.specReviewLoop?.hidden.filter { $0.projectID == project.id } ?? []
-        if !stack.asks.isEmpty || !notices.isEmpty || outsideClosed > 0 || automationClosed > 0
+        if !stack.asks.isEmpty || !notices.isEmpty || !heldFolders.isEmpty || outsideClosed > 0 || automationClosed > 0
             || !inReview.isEmpty || asks.loadErrors[project.id] != nil {
             VStack(alignment: .leading, spacing: 2) {
                 if !stack.asks.isEmpty {
@@ -41,20 +42,34 @@ struct OwnerAskStackSection: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 2) {
                             ForEach(stack.asks) { ask in
-                                OwnerAskStackRow(
-                                    vm: vm,
-                                    ask: ask,
-                                    sessionTitle: vm.askSessionTitle(ask),
-                                    isSelected: asks.drawerAskIDs[project.id] == ask.id,
-                                    cardFocus: OwnerAskCardFocus(focus: $focusedAsk, value: ask.id, keys: cardKeys(ask, stack: stack))
-                                ) {
-                                    Task { await vm.showAsk(ask.id, projectID: project.id) }
+                                if let suggestion = ask.folderSuggestion {
+                                    // The agent's folder suggestion answers on its own card (#2003, §6.7);
+                                    // it is a keyboard stop like every other row (A, ⌃⌘A, J/K, Return).
+                                    FolderSuggestionAskCard(vm: vm, ask: ask, suggestion: suggestion)
+                                        .modifier(OwnerAskCardFocus(focus: $focusedAsk, value: ask.id, keys: cardKeys(ask, stack: stack)))
+                                        .padding(.horizontal, Spacing.small)
+                                } else {
+                                    OwnerAskStackRow(
+                                        vm: vm,
+                                        ask: ask,
+                                        sessionTitle: vm.askSessionTitle(ask),
+                                        isSelected: asks.drawerAskIDs[project.id] == ask.id,
+                                        cardFocus: OwnerAskCardFocus(focus: $focusedAsk, value: ask.id, keys: cardKeys(ask, stack: stack))
+                                    ) {
+                                        Task { await vm.showAsk(ask.id, projectID: project.id) }
+                                    }
                                 }
                             }
                         }
                         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { rowsHeight = $0 })
                     }
                     .frame(height: min(rowsHeight, Self.maxRowsHeight))
+                }
+                // Folder cards answered with a failed add: their reason, until OK.
+                ForEach(heldFolders) { ask in
+                    if let suggestion = ask.folderSuggestion {
+                        FolderSuggestionAskCard(vm: vm, ask: ask, suggestion: suggestion).padding(.horizontal, Spacing.small)
+                    }
                 }
                 // Spec and plan asks still between the reviewer and the author.
                 if !inReview.isEmpty {

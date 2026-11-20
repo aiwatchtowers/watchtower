@@ -45,6 +45,11 @@ type Item struct {
 	// Worktree is the root a bundle's lsreg item or an orphan's process
 	// item belongs to; "" for a stale LaunchServices entry.
 	Worktree string `json:"worktree,omitempty"`
+	// BranchKey is a worktree item's branch as a branch item's key
+	// ("branch:<name>", or "branch:<folder>:<name>" in a sweep of a bench of
+	// several folders): the Desktop pairs the worktree row with its branch
+	// by this key, never by name. "" when the worktree has no branch.
+	BranchKey string `json:"branch_key,omitempty"`
 }
 
 // OwnerHint is the sweep's guess at whose an item is: the session that
@@ -72,6 +77,7 @@ var reasonPhrases = map[string]string{
 	ReasonWorkbenchFolder:      "a workbench folder",
 	ReasonLocked:               "locked",
 	ReasonUncommittedChanges:   "uncommitted changes",
+	ReasonIgnoredFiles:         "unsaved ignored files",
 	ReasonProcessRunning:       "a process is running in it",
 	ReasonProcessUnknown:       "a process could not be checked",
 	ReasonSessionInIt:          "another session works in it",

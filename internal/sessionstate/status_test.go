@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -27,6 +28,8 @@ type fixtureRow struct {
 	OpenReviewAsks        int     `json:"open_review_asks"`
 	SpecReviewRound       int     `json:"spec_review_round"`
 	RunStartedAt          string  `json:"run_started_at"`
+	// LiveChildren is Row.LiveChildren (absent = 0).
+	LiveChildren int `json:"live_children"`
 }
 
 type fixtureCase struct {
@@ -68,6 +71,7 @@ func TestStatusFixtures(t *testing.T) {
 				AgentBackgroundShells: c.Row.AgentBackgroundShells,
 				OpenAsks:              c.Row.OpenAsks, OpenQuestionAsks: c.Row.OpenQuestionAsks,
 				OpenReviewAsks: c.Row.OpenReviewAsks, SpecReviewRound: c.Row.SpecReviewRound, RunStartedAt: c.Row.RunStartedAt,
+				LiveChildren: c.Row.LiveChildren,
 			}
 			s := Resolve(r, now)
 			if string(s) != c.Expect.State {
@@ -162,6 +166,76 @@ func TestWorkbenchStatus_IgnoresDeletingRow(t *testing.T) {
 	mustExec(t, d, `UPDATE terminal_sessions SET delete_requested_at = '2026-11-10T12:00:00Z' WHERE id = 7`)
 	if _, err := Load(context.Background(), d, 7); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("deleting row err = %v, want sql.ErrNoRows", err)
+	}
+}
+
+// PROJ-11 (amended, ask #1545): a live parent whose own turn ended shows
+// Sub-sessions working while a sub-session of it is live — idle for a line,
+// not working — and its stored state again once the last child stops (§7
+// "parent waits"). Only a turn end with nothing for the owner turns into it.
+func TestProj11_SubSessionsWorkingWhileAChildIsLive(t *testing.T) {
+	s := func(v string) *string { return &v }
+	run, at := "2026-10-31T11:00:00.000Z", "2026-10-31T11:30:00.000Z"
+	now, _ := db.ParseAgentStateStamp("2026-10-31T12:00:00.000Z")
+	idle := Row{ID: 1, Kind: "claude", AgentState: s("waiting"), AgentStateAt: s(at), RunStartedAt: run}
+	finished := idle
+	finished.FinishedAt = s(at)
+	for _, base := range []Row{idle, finished} {
+		r := base
+		r.LiveChildren = 2
+		st := Resolve(r, now)
+		if st != StateSubSessionsWorking || !IsIdle(r, st) || IsWorking(st) || NeedsApproval(st) {
+			t.Errorf("finished=%v with live children: state %q idle %v working %v", base.FinishedAt != nil, st, IsIdle(r, st), IsWorking(st))
+		}
+		r.LiveChildren = 0
+		want := StateStopped
+		if base.FinishedAt != nil {
+			want = StateFinished
+		}
+		if st := Resolve(r, now); st != want {
+			t.Errorf("last child stopped: state %q, want %q", st, want)
+		}
+	}
+	// What waits on the owner, or works, is never hidden behind its children.
+	for name, r := range map[string]Row{
+		"question ask": {Kind: "claude", AgentState: s("waiting"), AgentStateAt: s(at), RunStartedAt: run, OpenAsks: 1, OpenQuestionAsks: 1},
+		"approval":     {Kind: "claude", AgentState: s("approval"), AgentStateAt: s(at), RunStartedAt: run},
+		"working":      {Kind: "claude", AgentState: s("working"), AgentStateAt: s(at), RunStartedAt: run},
+		"not live":     {Kind: "claude", FinishedAt: s(at)},
+	} {
+		r.LiveChildren = 1
+		if st := Resolve(r, now); st == StateSubSessionsWorking {
+			t.Errorf("%s: resolved as %q", name, st)
+		}
+	}
+}
+
+// No chat question of a parent is raised to an owner ask while a sub-session
+// of it is live (spec 2026-11-18 §6.5); once the last child stops it may be.
+func TestNoEscalationWhileChildrenAreLive(t *testing.T) {
+	if MayEscalate(Row{LiveChildren: 1}) {
+		t.Error("a live child: MayEscalate = true")
+	}
+	if !MayEscalate(Row{}) {
+		t.Error("no live child: MayEscalate = false")
+	}
+}
+
+// CountLiveChildren counts the direct sub-sessions the host runs, never one
+// being deleted, a grandchild or another session's child.
+func TestCountLiveChildren(t *testing.T) {
+	d := openTestDB(t)
+	mustExec(t, d, `INSERT INTO projects(id,name,folder_path) VALUES (1,'wb','/tmp/wb')`)
+	mustExec(t, d, `INSERT INTO terminal_sessions(id,project_id,kind,title,folder_path,claude_session_id) VALUES (1,1,'claude','p','/tmp/wb','a')`)
+	for _, c := range []struct{ id, parent int64 }{{2, 1}, {3, 1}, {4, 1}, {5, 2}, {6, 1}} {
+		mustExec(t, d, `INSERT INTO terminal_sessions(id,project_id,kind,title,folder_path,claude_session_id,parent_session_id)
+			VALUES (?,1,'claude','c','/tmp/wb',?,?)`, c.id, "s"+strconv.FormatInt(c.id, 10), c.parent)
+	}
+	mustExec(t, d, `UPDATE terminal_sessions SET delete_requested_at = '2026-11-18T12:00:00Z' WHERE id = 6`)
+	live := map[int64]bool{2: true, 4: true, 5: true, 6: true}
+	n, err := CountLiveChildren(context.Background(), d, 1, func(id int64) bool { return live[id] })
+	if err != nil || n != 2 {
+		t.Fatalf("CountLiveChildren = %d, %v; want 2 (rows 2 and 4)", n, err)
 	}
 }
 

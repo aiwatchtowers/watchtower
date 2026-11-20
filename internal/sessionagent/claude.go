@@ -54,6 +54,12 @@ var claudeHookSpecs = []HookSpec{
 	// own DB wait well under this timeout and always exits 0.
 	{Event: "PreToolUse", Subcommand: "workbench ask-guard --workbench",
 		Flags: " --pre-tool-use", TimeoutSec: 5, Matcher: "AskUserQuestion"},
+	// The Watchman guard (spec 2026-11-16-watchman-design §5 item 3,
+	// WATCHMAN-05): every tool call of a session handed to Watchman is
+	// checked against the hard limits. Its own group with matcher "*", beside
+	// the ask tool block and the state hook. `workbench watchman-guard`
+	// bounds its own DB wait well under this timeout and always exits 0.
+	{Event: "PreToolUse", Subcommand: "workbench watchman-guard --workbench", TimeoutSec: 5, Matcher: "*"},
 	// The synchronous PermissionRequest hook that holds a permission dialog
 	// open for an answer from the phone (#517). 86400 s holds past the 600 s
 	// default (probe on Claude Code 2.1.302).
@@ -74,7 +80,18 @@ var claudeHookSpecs = []HookSpec{
 	// (board #988, ask #525).
 	withMatcher(claudeStateHook("PreToolUse"), "*"),
 	claudeStateHook("PostToolUseFailure"),
+	// The outside-bench detection (spec 2026-11-18 §6.7): a synchronous
+	// PostToolUse entry of its own, beside the silent state hook, that counts
+	// the tool's path arguments outside the bench and adds a context line on
+	// the third touch of one repository. `workbench outside-touch` bounds its
+	// one write well under this timeout and always exits 0.
+	{Event: "PostToolUse", Subcommand: "workbench outside-touch --workbench", TimeoutSec: 5,
+		Matcher: OutsideTouchMatcher},
 }
+
+// OutsideTouchMatcher is the tools whose path arguments the outside-bench
+// hook reads (spec 2026-11-18 §6.7) — never Bash.
+const OutsideTouchMatcher = "Read|Edit|Write|MultiEdit|NotebookEdit|Glob|Grep"
 
 func withMatcher(spec HookSpec, matcher string) HookSpec {
 	spec.Matcher = matcher

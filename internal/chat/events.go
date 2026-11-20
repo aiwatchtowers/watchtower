@@ -30,6 +30,15 @@ const (
 	EventUsage    = "usage"
 	EventTurnDone = "turn_done"
 	EventError    = "error"
+	// EventStarted (`ai query --persist`, an embedded chat's turn): the
+	// turn's starting rows are committed — ConversationID, OwnerMessageID
+	// (0 = none written), AssistantMessageID, TurnID — before its first
+	// delta.
+	EventStarted = "started"
+	// EventSaveError (`ai query --persist`): a write of the turn's reply
+	// failed (a flush, its end); Message says which and why, for the Mac to
+	// show under the thread (the reply on disk may be stale).
+	EventSaveError = "save_error"
 )
 
 // The `ai session --listen` socket's own events (unified chat spec §7):
@@ -107,6 +116,11 @@ type Event struct {
 	Message           string   `json:"message,omitempty"`
 	Retryable         bool     `json:"retryable,omitempty"`
 	ActionID          int64    `json:"action_id,omitempty"`
+	// ConversationID, OwnerMessageID and AssistantMessageID: a started
+	// event's rows.
+	ConversationID     int64 `json:"conversation_id,omitempty"`
+	OwnerMessageID     int64 `json:"owner_message_id,omitempty"`
+	AssistantMessageID int64 `json:"assistant_message_id,omitempty"`
 	// Capabilities is the actual provider's capability row on a
 	// session_ready (EventWriter fills it from Provider): what this
 	// session's transport offers, a fallback route's included.

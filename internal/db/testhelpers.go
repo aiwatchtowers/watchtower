@@ -25,6 +25,18 @@ func OpenTestDB(t *testing.T) *DB {
 	return d
 }
 
+// SeedTestHomeFolders gives every workbench a fixture planted with raw SQL
+// (an INSERT INTO projects) its home folder row, as CreateWorkbench and
+// migration 00209 do; a workbench that has one is left alone.
+func SeedTestHomeFolders(t *testing.T, d *DB) {
+	t.Helper()
+	if _, err := d.Exec(`INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
+		SELECT p.id, p.folder_path, 0, 'owner', 'home-' || p.id FROM projects p
+		WHERE NOT EXISTS (SELECT 1 FROM workbench_folders f WHERE f.workbench_id = p.id)`); err != nil {
+		t.Fatalf("seeding home folders: %v", err)
+	}
+}
+
 // SeedTestJiraAccount inserts a jira_accounts row and returns its id, so
 // tests can write into the account-scoped jira_* tables (their account_id
 // FK requires a parent row). Each call mints a NEW account — call it once per

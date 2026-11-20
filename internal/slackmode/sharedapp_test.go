@@ -134,6 +134,20 @@ func TestBackfillSlackClientIDs_AfterRetirement(t *testing.T) {
 		assert.Equal(t, sharedID, got)
 		assert.True(t, SharedApp(db.SlackAccount{ClientID: got}, auth.RetiredSharedClientID))
 	})
+	t.Run("corp id without a secret: empty rows get the corp id, Re-login connects", func(t *testing.T) {
+		withBuild(t, corpID, "", "")
+		_, builtin := auth.BuiltinApp()
+		assert.False(t, builtin, "an id without a secret is no built-in app")
+		d, id := openBackfillDB(t)
+		got := backfilledClientID(t, d, id)
+		assert.Equal(t, corpID, got)
+		assert.Equal(t, ReloginConnect, Relogin(db.SlackAccount{ClientID: got}, auth.RetiredSharedClientID, ""))
+	})
+	t.Run("env id without a secret is the source", func(t *testing.T) {
+		withBuild(t, "", "", sharedID)
+		t.Setenv("WATCHTOWER_OAUTH_CLIENT_ID", corpID)
+		assert.Equal(t, corpID, BackfillSource())
+	})
 	t.Run("nothing baked and no retired id: rows stay empty", func(t *testing.T) {
 		withBuild(t, "", "", "")
 		assert.Empty(t, BackfillSource())

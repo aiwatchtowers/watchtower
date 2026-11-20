@@ -137,9 +137,7 @@ Neither Go nor Swift ever cascade-deletes mentions or chat on a status transitio
 
 **Test guards:**
 - `internal/ideas/consolidate_test.go::TestIdeas03_AttachMentionMergedIdeaLandsOnTarget`
-- `WatchtowerDesktop/Tests/Core/IdeaQueriesTests.swift::testIdeas03_MergeReparentsMentionsAndFollowsLink`
-- `WatchtowerDesktop/Tests/Core/IdeaQueriesTests.swift::testIdeas03_MarkConvertedSetsStatusAndTargetLink`
-- `WatchtowerDesktop/Tests/Core/IdeaQueriesTests.swift::testIdeas03_MarkConvertedKeepsMentionsAndChat`
+- `internal/inboxfeed/screen_guards_test.go::TestIdeas03_MergeReparentsMentionsAndFollowsLink`, `::TestIdeas03_MarkConvertedSetsStatusAndTargetLink`, `::TestIdeas03_MarkConvertedKeepsMentionsAndChat` (the Desktop's `ideas.merge` / `ideas.converted`; moved from `IdeaQueriesTests` with their names and assertions, 2026-11-17)
 
 **Locked since:** 2026-08-07
 
@@ -156,8 +154,7 @@ The flag must always be *clearable*: every Swift owner action — `setStatus`, `
 **Test guards:**
 - `internal/ideas/consolidate_test.go::TestIdeas04_AttachMentionRejectedIdeaNeedsReview`
 - `internal/db/ideas_test.go::TestIdeas04_SetIdeaNeedsReviewTx`
-- `WatchtowerDesktop/Tests/Core/IdeaQueriesTests.swift::testIdeas04_SetStatusClearsNeedsReview`
-- `WatchtowerDesktop/Tests/Core/IdeaQueriesTests.swift::testIdeas04_EveryOwnerActionClearsNeedsReview`
+- `internal/inboxfeed/screen_guards_test.go::TestIdeas04_SetStatusClearsNeedsReview`, `::TestIdeas04_EveryOwnerActionClearsNeedsReview` (the Desktop's `ideas.*` commands; moved from `IdeaQueriesTests` with their names and assertions, 2026-11-17)
 - `WatchtowerDesktop/Tests/IdeasViewModelTests.swift::testIdeas04_ResurfacedRejectedIdeaLeavesReviewQueueViaActivate`
 
 **Locked since:** 2026-08-07
@@ -184,6 +181,8 @@ The check is a lookup per mention inside `applyConsolidateOps`, backed by `idx_i
 **Locked since:** 2026-08-08
 
 ## Changelog
+
+- 2026-11-17 (#1170 Task 12, the other screens write through the tower; spec `docs/superpowers/specs/2026-11-15-mobile-inbox-design.md` §5.2, owner approved in ask #1368): moves, no contract changed and no guard relaxed. Every owner verdict on an idea (`IdeasViewModel`, the Decisions ledger, quick capture, a chat's knowledge prefix) is now a tower command (`ideas.status`/`snooze`/`merge`/`supersede`/`rating`/`create`/`delete`/`converted`/`decision_seen`/`decisions_seen_all`/`create_from_chat`/`undo_chat`), written by Go's `internal/db/screen_writes.go` twins of the deleted `IdeaQueries` writers, each clearing `needs_review` as before (IDEA-04) and keeping mentions and chat on a converted or merged idea (IDEA-03); `ideas.delete` deletes the idea's Discuss chat in Go, so the Desktop writes no chat row. The `IdeaQueriesTests` guards moved to `internal/inboxfeed/screen_guards_test.go` with the same names (`TestIdeas03_*`, `TestIdeas04_*`) and assertions, over the command the Mac sends (a converted idea's link is the target Go created). `IdeasViewModelTests::testIdeas04_ResurfacedRejectedIdeaLeavesReviewQueueViaActivate` stays in Swift with its name and assertions, over a fake tower that makes Go's write on the test database (`FakeScreenTower.applying`).
 
 - 2026-10-25 (images and links become knowledge, board #907, spec `docs/superpowers/specs/2026-10-25-media-knowledge-design.md`, **IDEA-01 and IDEA-02 extended, owner approved in asks #576, #590 and #594**): owner chat turns carry labelled image description lines; a pending image holds the chat floor below its turn for at most 2 h (IDEA-01); the stored quote stays the typed text and `ideas.consolidate` is v6 (IDEA-02). Guards added: `TestIdeas01_PendingChatImageHoldsTheFloor`, `TestIdeas01_ChatImageHoldIsBounded`, `TestConsolidate_ChatImageLinesRenderedButNeverStoredAsQuote`, with support tests listed. No guard relaxed.
 

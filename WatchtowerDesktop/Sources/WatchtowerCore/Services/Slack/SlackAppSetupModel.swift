@@ -191,6 +191,10 @@ package final class SlackAppSetupModel {
         case approval(SlackSetupTarget)
         case linkFailed(SlackSetupTarget)
         case linkDone
+        /// The workspace's app is the one this build signs in through: it
+        /// moves to PKCE with a later update, nothing is set up now
+        /// (`builtin_app_pkce_deferred`, review M1).
+        case builtinAppDeferred(workspace: String)
         case problem(Problem)
     }
 
@@ -216,6 +220,9 @@ package final class SlackAppSetupModel {
         case saveFailed
         /// The CLI ended without a result line (crashed, killed, refused to start).
         case stopped(String)
+        /// The CLI's result line could not be read: how the run ended is
+        /// unknown (the raw line is logged).
+        case unreadableAnswer
     }
 
     /// Who drives the runs: plan B's sheet, or the company wizard's Slack step.
@@ -537,6 +544,10 @@ package final class SlackAppSetupModel {
             return createdApp ? .created(appID: target.appID) : .reused(appID: target.appID)
         case let .problem(problem):
             return .failed(problem)
+        case let .builtinAppDeferred(workspace):
+            // The build's own app cannot be the company's yet: the wizard
+            // shows why and nothing was changed.
+            return .failed(.stopped(Self.builtinAppDeferredBody(workspace)))
         case .linkDone:
             return nil
         }
@@ -596,6 +607,8 @@ package final class SlackAppSetupModel {
             await finishSetup(target)
         case "existing_app":
             reset(.adopt(Adopt(target: target)))
+        case "builtin_app_pkce_deferred":
+            phase = .finished(.builtinAppDeferred(workspace: target.workspace))
         case "pending_create":
             reset(.pending(target))
         default:
@@ -639,17 +652,7 @@ package final class SlackAppSetupModel {
             phase = .finished(.problem(.stopped(Self.noAnswer)))
             return
         }
-        // --enable-pkce: Update the app is pressed only on a screen showing
-        // adoptPKCEWarning (the adopt body or the App ID check).
-        var args = ["slack", "app", "adopt", "--json", "--enable-pkce"]
-        // The workspace the sheet names: a token of another one changes nothing (wrong_team).
-        if !adopt.target.teamID.isEmpty { args += ["--team", adopt.target.teamID] }
-        if !appID.isEmpty {
-            args += ["--app-id", appID]
-            if adopt.confirm?.appID == appID { args += ["--confirm-app-id", appID] }
-        }
-        if !clientID.isEmpty { args += ["--client-id", clientID] }
-        if dryRun { args.append("--dry-run") }
+        let args = Self.adoptArgs(adopt, appID: appID, clientID: clientID, dryRun: dryRun)
         guard let result = await stream(args, token: token) else { return }
         var next = adopt
         next.target = result.target(fallback: adopt.target)
@@ -676,9 +679,27 @@ package final class SlackAppSetupModel {
             continueAfterExists(record?.target ?? next.target, connected: record?.connected ?? false)
         case "pending_create":
             reset(.pending(next.target))
+        case "builtin_app_pkce_deferred":
+            phase = .finished(.builtinAppDeferred(workspace: next.target.workspace))
         default:
             finishWithProblem(result, workspace: next.target.workspace)
         }
+    }
+
+    /// `slack app adopt`'s arguments for a run of `adopt`.
+    private static func adoptArgs(_ adopt: Adopt, appID: String, clientID: String, dryRun: Bool) -> [String] {
+        // --enable-pkce: Update the app is pressed only on a screen showing
+        // adoptPKCEWarning (the adopt body or the App ID check).
+        var args = ["slack", "app", "adopt", "--json", "--enable-pkce"]
+        // The workspace the sheet names: a token of another one changes nothing (wrong_team).
+        if !adopt.target.teamID.isEmpty { args += ["--team", adopt.target.teamID] }
+        if !appID.isEmpty {
+            args += ["--app-id", appID]
+            if adopt.confirm?.appID == appID { args += ["--confirm-app-id", appID] }
+        }
+        if !clientID.isEmpty { args += ["--client-id", clientID] }
+        if dryRun { args.append("--dry-run") }
+        return args
     }
 
     /// The App ID field's problem line for a `need_app_id`/`app_not_found` answer.
@@ -847,22 +868,41 @@ package final class SlackAppSetupModel {
 
     /// Runs one verb: step lines move the marks, the last result line is
     /// returned. A run without a result line (the CLI died, was refused,
-    /// or is missing) finishes as `stopped`, unless `keepPhase` (the link
-    /// retry inside a run, whose failure is the outcome's).
+    /// or is missing) finishes as `stopped`, one whose result line does not
+    /// decode as `unreadableAnswer`, unless `keepPhase` (the link retry
+    /// inside a run, whose failure is the outcome's).
     private func stream(_ args: [String], token: String?, keepPhase: Bool = false) async -> ResultLine? {
         let stdin = token.map { Data(($0 + "\n").utf8) }
         var result: ResultLine?
+        var unreadable = false
         var failure: String?
         if let streamer {
             do {
                 for try await text in streamer.lines(args: args, stdin: stdin) {
-                    guard let data = text.data(using: .utf8), let line = try? JSONDecoder().decode(Line.self, from: data) else {
+                    guard let data = text.data(using: .utf8) else { continue }
+                    guard let line = try? JSONDecoder().decode(Line.self, from: data) else {
+                        // A line with a `result` key whose fields have the
+                        // wrong types is still the run's answer (verify round 1).
+                        if Self.hasResultKey(data) {
+                            print("[SlackAppSetup] unreadable result line: \(text)")
+                            result = nil
+                            unreadable = true
+                        }
                         continue
                     }
                     if let step = line.step, let state = line.state {
                         mark(step, Self.mark(state))
                     } else if line.result != nil {
-                        result = try? JSONDecoder().decode(ResultLine.self, from: data)
+                        // A result line that does not decode is its own
+                        // outcome, never "no answer" (review m3).
+                        do {
+                            result = try JSONDecoder().decode(ResultLine.self, from: data)
+                            unreadable = false
+                        } catch {
+                            print("[SlackAppSetup] unreadable result line: \(text) (\(error))")
+                            result = nil
+                            unreadable = true
+                        }
                     }
                 }
             } catch {
@@ -878,9 +918,15 @@ package final class SlackAppSetupModel {
             return line
         }
         if !keepPhase {
-            phase = .finished(.problem(.stopped(failure ?? Self.noAnswer)))
+            phase = .finished(.problem(unreadable ? .unreadableAnswer : .stopped(failure ?? Self.noAnswer)))
         }
         return nil
+    }
+
+    /// Whether `data` is a JSON object with a `result` key, whatever its type.
+    private static func hasResultKey(_ data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return object["result"] != nil
     }
 
     private static func mark(_ state: String) -> StepMark {

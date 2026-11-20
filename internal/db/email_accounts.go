@@ -27,7 +27,7 @@ type EmailAccount struct {
 	CreatedAt    string
 	UpdatedAt    string
 	// CompanySlug ties an Outlook account to a company bundle's Microsoft
-	// client; '' = our shared client. Always '' for IMAP (migration 00198).
+	// client; '' = our shared client. Always '' for IMAP (migration 00210).
 	CompanySlug string
 }
 

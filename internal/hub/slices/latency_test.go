@@ -18,10 +18,14 @@ type saveStamp struct {
 	readAt, doneAt  time.Time
 }
 
-type fakeSaveLatency struct{ stamps []saveStamp }
+type fakeSaveLatency struct{ stamps, done []saveStamp }
 
 func (f *fakeSaveLatency) Saved(transport, kind string, readAt, doneAt time.Time) {
 	f.stamps = append(f.stamps, saveStamp{transport, kind, readAt, doneAt})
+}
+
+func (f *fakeSaveLatency) NudgeCycleDone(transport, kind string, readAt, doneAt time.Time) {
+	f.done = append(f.done, saveStamp{transport, kind, readAt, doneAt})
 }
 
 // advancingSource moves the rig's clock while its kind is read, so a stamp's
@@ -67,7 +71,8 @@ func TestSliceSaveStampsEachWrittenKind(t *testing.T) {
 
 // TestSliceSaveResolvesAppliedSaved: an ask_answer applied before a cycle
 // that saves owner_ask gives applied_saved and read_saved through the real
-// recorder; the read_saved is read → done of the same action.
+// recorder, and nudge_saved at that cycle's end; the read_saved is read →
+// done of the same action.
 func TestSliceSaveResolvesAppliedSaved(t *testing.T) {
 	r := newRig(t, transport.KindRelay)
 	rec := measure.New(r.st, r.clock)
@@ -76,7 +81,7 @@ func TestSliceSaveResolvesAppliedSaved(t *testing.T) {
 	p := r.publisherWith(Config{Latency: rec}, advancingSource{asks, r, 100 * time.Millisecond})
 	read := r.clock()
 	r.advance(30 * time.Millisecond)
-	rec.Applied("relay", read, r.clock(), []string{"owner_ask"})
+	rec.Applied("relay", "", read, r.clock(), []string{"owner_ask"})
 	r.advance(10 * time.Millisecond)
 	r.cycle(p)
 	if err := rec.Flush(); err != nil {
@@ -89,6 +94,7 @@ func TestSliceSaveResolvesAppliedSaved(t *testing.T) {
 	ms := func(n int) time.Duration { return time.Duration(n) * time.Millisecond }
 	want := []state.LatencyRow{
 		{Step: state.StepAppliedSaved, Transport: "relay", P50: ms(110), P90: ms(110), Samples: 1},
+		{Step: state.StepNudgeSaved, Transport: "relay", P50: ms(110), P90: ms(110), Samples: 1}, // the same cycle's end
 		{Step: state.StepReadApplied, Transport: "relay", P50: ms(30), P90: ms(30), Samples: 1},
 		{Step: state.StepReadSaved, Transport: "relay", P50: ms(140), P90: ms(140), Samples: 1},
 	}
@@ -122,11 +128,11 @@ func TestApplyMidCycleBeforeTheKindsReadIsCreditedByThatCycle(t *testing.T) {
 	cycleStart := r.clock()
 	asks.during = func() { // mid-cycle, before workbench is read
 		r.advance(ms(10))
-		rec.Applied("relay", cycleStart, r.clock(), []string{"workbench"})
+		rec.Applied("relay", "", cycleStart, r.clock(), []string{"workbench"})
 		r.advance(ms(10))
 	}
 	board.during = func() { // during workbench's own read: not seen by it
-		rec.Applied("relay", r.clock(), r.clock(), []string{"workbench"})
+		rec.Applied("relay", "", r.clock(), r.clock(), []string{"workbench"})
 		r.advance(ms(5))
 	}
 	p := r.publisherWith(Config{Latency: rec}, asks, board)
@@ -184,5 +190,74 @@ func TestSaveStampTaggedWithTheTransportOfTheWrite(t *testing.T) {
 	r.cycle(p)
 	if len(lat.stamps) != 1 || lat.stamps[0].transport != "relay" {
 		t.Fatalf("stamps %+v, want one tagged relay (the transport the save went to)", lat.stamps)
+	}
+}
+
+// TestCycleEndStampsEachHandledKind: at the end of a cycle every kind it
+// handled, written or not, is handed to NudgeCycleDone with its own read
+// start and the cycle's end; a kind kept back by the spacing is not.
+func TestCycleEndStampsEachHandledKind(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	lat := &fakeSaveLatency{}
+	asks := &fakeSource{kind: "owner_ask"}
+	asks.set(item("1", `{"q":"ship?"}`))
+	board := &fakeSource{kind: "workbench"}
+	p := r.publisherWith(Config{Latency: lat}, advancingSource{asks, r, 20 * time.Millisecond}, advancingSource{board, r, 5 * time.Millisecond})
+	start := r.clock()
+	r.cycle(p)
+	end := start.Add(25 * time.Millisecond)
+	want := []saveStamp{
+		{"relay", "owner_ask", start, end},
+		{"relay", "workbench", start.Add(20 * time.Millisecond), end},
+	}
+	if !slices.Equal(lat.done, want) {
+		t.Fatalf("cycle-end stamps\n got  %+v\n want %+v", lat.done, want)
+	}
+	// Within owner_ask's spacing (it just wrote): only workbench is handled.
+	lat.done = nil
+	r.cycle(p)
+	if len(lat.done) != 1 || lat.done[0].kind != "workbench" {
+		t.Fatalf("within the spacing: done %+v, want workbench alone", lat.done)
+	}
+	// Unchanged and past the spacing: both handled again, nothing written.
+	r.advance(time.Second)
+	lat.done = nil
+	r.cycle(p)
+	if len(lat.done) != 2 || len(lat.stamps) != 1 {
+		t.Fatalf("an unchanged cycle: done %+v, saved %+v", lat.done, lat.stamps)
+	}
+}
+
+// TestUnchangedCycleResolvesNudgeSaved: through the real recorder, an apply
+// whose kind's next cycle writes nothing still gets its nudge_saved.
+func TestUnchangedCycleResolvesNudgeSaved(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	rec := measure.New(r.st, r.clock)
+	board := &fakeSource{kind: "workbench"}
+	board.set(item("1", `{"v":1}`))
+	p := r.publisherWith(Config{Latency: rec}, advancingSource{board, r, 10 * time.Millisecond})
+	r.cycle(p)
+	r.advance(time.Second)
+	applied := r.clock()
+	rec.Applied("relay", "board_target_create", applied, applied, []string{"workbench"})
+	r.advance(30 * time.Millisecond)
+	r.cycle(p) // same payload: no write
+	if err := rec.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := r.st.LatencyStatsByKind(applied.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []state.LatencyRow
+	for _, row := range rows {
+		if row.Step == state.StepNudgeSaved {
+			got = append(got, row)
+		}
+	}
+	d := 40 * time.Millisecond
+	want := []state.LatencyRow{{Step: state.StepNudgeSaved, Transport: "relay", Kind: "board_target_create", P50: d, P90: d, Samples: 1}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("nudge_saved rows %+v, want %+v", got, want)
 	}
 }

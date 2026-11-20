@@ -69,7 +69,8 @@ final class SpecReviewModelTests: XCTestCase {
         self.asks = asks
         await asks.load(projectID: projectID)
         let ask = try XCTUnwrap(asks.openAsks[projectID]?.first { $0.id == askID })
-        return SpecReviewModel(ask: ask, dbPool: pool, cli: WorkbenchCLI(runner: runner), asks: asks, sleep: sleep)
+        return SpecReviewModel(ask: ask, dbPool: pool, cli: WorkbenchCLI(runner: runner), asks: asks,
+                               chatWrites: .fake(pool), sleep: sleep)
     }
 
     /// The asks view model alone, no SpecReviewModel ever built: the
@@ -736,6 +737,7 @@ final class SpecReviewModelTests: XCTestCase {
         }
         threadCenter = center
         let model = SpecReviewModel(ask: base.ask, dbPool: pool, cli: WorkbenchCLI(runner: runner), asks: asks, chats: center,
+                                    chatWrites: .fake(pool),
                                     threadCenter: threads, sleep: sleep, now: now)
         model.configuredProvider = { .claude }
         return model

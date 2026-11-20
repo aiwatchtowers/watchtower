@@ -36,8 +36,11 @@ type slackLinkEvent struct {
 	ClientID string `json:"client_id"`
 }
 
-// slackFlowEvent is browser (the authorize URL was opened) and busy (a
-// second start or link was refused; flow is the running one).
+// slackFlowEvent is browser (the authorize URL was opened), busy (a start
+// was refused: another flow runs; flow is the running one) and link_busy (a
+// link that arrived while a flow runs was refused; flow is the running one).
+// The two refusals are distinct events so the Desktop never reads a link's
+// refusal as the answer to its own start (review m5).
 type slackFlowEvent struct {
 	Event string `json:"event"`
 	Flow  string `json:"flow"`
@@ -334,9 +337,10 @@ func (s *slackConnectServer) handleEvent(ev slackconnect.Event) error {
 	case slackconnect.EventLink:
 		if s.chain != nil {
 			// The chain holds the shared guard: the link's flow must not keep
-			// the registry's slot while nobody can confirm it.
+			// the registry's slot while nobody can confirm it. A refused link
+			// is link_busy, never busy: busy answers a start (review m5).
 			s.reg.Cancel(ev.Flow)
-			return s.chainBusy()
+			return s.emit(slackFlowEvent{Event: "link_busy", Flow: s.chain.chain.flow})
 		}
 		if err := sourceRefusal("slack"); err != nil {
 			s.reg.Cancel(ev.Flow)
@@ -344,7 +348,7 @@ func (s *slackConnectServer) handleEvent(ev slackconnect.Event) error {
 		}
 		return s.emit(slackLinkEvent{Event: "link", Flow: string(ev.Flow), TeamID: ev.Target.TeamID, ClientID: ev.Target.ClientID})
 	case slackconnect.EventBusy:
-		return s.emit(slackFlowEvent{Event: "busy", Flow: string(ev.Flow)})
+		return s.emit(slackFlowEvent{Event: "link_busy", Flow: string(ev.Flow)})
 	case slackconnect.EventCallback:
 		if done := s.chainWaiters.get(ev.Flow); done != nil {
 			s.chainCallback(ev, done)

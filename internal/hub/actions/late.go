@@ -6,11 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
 )
+
+// LateEchoWriteTimeout bounds a late echo's write (the transports' own
+// per-op bound: CloudKit's write timeout, the relay's HTTP one): its caller
+// may have no deadline (a held line's writer), and the write holds PauseFor
+// while it runs. An unwritten echo stays queued for the next pass.
+const LateEchoWriteTimeout = 30 * time.Second
 
 // ErrNotDecided refuses a late echo of an action the ledger does not hold as
 // done with a held echo under the phone's current link: a removed or
@@ -22,13 +29,16 @@ var ErrNotDecided = errors.New("actions: no decided action of a linked phone at 
 // outcome (a held phone line that went, failed, expired or was cancelled:
 // Swift RelayProcessor.lateEcho, mobile POC spec §6.6): the phone's record
 // gets the new echo and the ledger's stored echo is replaced in the same
-// transaction, so a lost ack re-echoes the final outcome. It runs under the
-// pass lock, so it lands after the pass that echoed held for the same
-// record; a handler must never call it from inside its own dispatch (the
-// lock is not re-entrant) — the handlers queue it on a goroutine of their
-// own. E2E: sealed relayToPhone to r.Device like every echo, never written
-// in the clear. The queued write is flushed at once (best effort: a failed
-// write stays queued for the next pass), except while paused (SetPaused).
+// transaction, so a lost ack re-echoes the final outcome. Its decision runs
+// under p.mu, which the apply that echoed held holds until that echo is
+// queued, so the late echo is queued after it and the queue's flush lock
+// writes them in that order; a handler must never call it from inside its
+// own dispatch (p.mu is not re-entrant) — the handlers queue it on a
+// goroutine of their own. E2E: sealed relayToPhone to r.Device like every
+// echo, never written in the clear. The queued write is flushed at once,
+// with p.mu released and p.run held shared, as a pass's (best effort: a
+// failed write stays queued for the next pass), except while paused
+// (SetPaused).
 func (p *Processor) LateEcho(ctx context.Context, r Request, o Outcome) error {
 	if p.cfg.Sealer == nil {
 		return errors.New("actions: no sealer for a late echo")
@@ -37,11 +47,34 @@ func (p *Processor) LateEcho(ctx context.Context, r Request, o Outcome) error {
 	if _, err := o.result(); err != nil {
 		return err
 	}
+	b, err := p.decideLate(ctx, r, o)
+	if err != nil {
+		return err
+	}
+	// The write is a pass's as PauseFor sees it: a pause returns only after
+	// a write already past this check, and none starts after it.
+	p.run.RLock()
+	defer p.run.RUnlock()
+	if p.paused.Load() {
+		// Queued: the first pass after the pause writes it.
+		return nil
+	}
+	wctx, cancel := context.WithTimeout(ctx, LateEchoWriteTimeout)
+	defer cancel()
+	if err := p.flushBox(wctx, b); err != nil {
+		log.Printf("hub: flushing device %s's mailbox after a late echo: %s", b.id, errClass(err))
+	}
+	return nil
+}
+
+// decideLate commits LateEcho's outcome and queues its echo, under p.mu,
+// and returns the phone's mailbox.
+func (p *Processor) decideLate(ctx context.Context, r Request, o Outcome) (mailbox, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	boxes, err := p.mailboxes()
 	if err != nil {
-		return err
+		return mailbox{}, err
 	}
 	var b mailbox
 	found := false
@@ -52,7 +85,7 @@ func (p *Processor) LateEcho(ctx context.Context, r Request, o Outcome) error {
 		}
 	}
 	if !found {
-		return ErrNotDecided
+		return mailbox{}, ErrNotDecided
 	}
 	var seq uint64
 	if r.Action.ActionSeq != nil {
@@ -61,24 +94,24 @@ func (p *Processor) LateEcho(ctx context.Context, r Request, o Outcome) error {
 	key := b.ledgerKey(r.RecordName, seq)
 	phase, _, before, err := p.cfg.Store.Phase(key)
 	if err != nil {
-		return err
+		return mailbox{}, err
 	}
 	// Only a held echo is replaced: a final one (applied, failed, expired,
 	// cancelled, outcome_unknown after a timeout) is never rewritten.
 	if prev, ok := decodeStored(before); phase != state.PhaseDone || !ok || prev.Status != wire.StatusHeld {
-		return ErrNotDecided
+		return mailbox{}, ErrNotDecided
 	}
 	wireName, err := p.cfg.Sealer.WireName(secure.ZoneRelay, r.RecordName)
 	if err != nil {
-		return fmt.Errorf("actions: a late echo's wire name: %w", err)
+		return mailbox{}, fmt.Errorf("actions: a late echo's wire name: %w", err)
 	}
 	q, err := p.sealEcho(b, wireName, r.RecordName, r.Action, o, state.Control{Expect: state.ExpectNone})
 	if err != nil {
-		return err
+		return mailbox{}, err
 	}
 	stored, err := encodeStored(o)
 	if err != nil {
-		return err
+		return mailbox{}, err
 	}
 	if err := p.decide(ctx, b, func(tx *sql.Tx) error {
 		if err := state.MarkDone(tx, key, ledgerOutcome(o), stored, nil, p.cfg.Clock()); err != nil {
@@ -87,16 +120,9 @@ func (p *Processor) LateEcho(ctx context.Context, r Request, o Outcome) error {
 		return state.Enqueue(tx, q.control(b.queue))
 	}); err != nil {
 		if errors.Is(err, errRelinked) {
-			return ErrNotDecided
+			return mailbox{}, ErrNotDecided
 		}
-		return err
+		return mailbox{}, err
 	}
-	if p.paused.Load() {
-		// Queued: the first pass after the pause writes it.
-		return nil
-	}
-	if _, _, err := p.flushMailbox(ctx, b); err != nil {
-		log.Printf("hub: flushing device %s's mailbox after a late echo: %s", b.id, errClass(err))
-	}
-	return nil
+	return b, nil
 }

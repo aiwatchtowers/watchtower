@@ -25,6 +25,7 @@ import (
 	"watchtower/internal/providers"
 	"watchtower/internal/providers/transport"
 	"watchtower/internal/tools"
+	"watchtower/internal/workbenchfolders"
 )
 
 // readFolderFixture is a config whose claude is a stub that answers with its
@@ -146,6 +147,39 @@ func TestAIQueryReadFolder_RunsClaudeInTheFolder(t *testing.T) {
 	assert.Equal(t, "ToolSearch,Read,Grep,Glob,LS", parts[3], "the --tools allowlist adds only the reads")
 }
 
+// TestAIQueryReadFolder_RunsInANonHomeBenchFolder: any folder on a bench is
+// a workbench folder (multi-folder workbench, spec 2026-11-18 §6.1), and the
+// run reads that folder, not the bench's home; one taken off the bench is
+// none.
+func TestAIQueryReadFolder_RunsInANonHomeBenchFolder(t *testing.T) {
+	f := newReadFolderFixture(t)
+	hub, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	gone, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	database, err := db.Open(f.dbPath)
+	require.NoError(t, err)
+	wb, err := database.WorkbenchByFolder(f.folder)
+	require.NoError(t, err)
+	ctx := context.Background()
+	_, err = workbenchfolders.Add(ctx, database, wb.ID, hub, workbenchfolders.AddedByOwner, nil)
+	require.NoError(t, err)
+	removed, err := workbenchfolders.Add(ctx, database, wb.ID, gone, workbenchfolders.AddedByOwner, nil)
+	require.NoError(t, err)
+	_, err = workbenchfolders.Remove(ctx, database, removed.ID, nil)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	code, stdout, stderr := f.run(t, "--read-folder", hub)
+	require.Equal(t, 0, code, stderr)
+	assert.Equal(t, hub, strings.Split(firstText(t, stdout), "|")[0], "cwd is the bench's hub folder")
+
+	code, stdout, stderr = f.run(t, "--read-folder", gone)
+	assert.Equal(t, 2, code)
+	assert.Contains(t, stderr, "not a workbench folder")
+	assert.Empty(t, stdout)
+}
+
 // Without --read-folder the run is today's: temp-dir cwd, read tools hidden.
 func TestAIQueryReadFolder_AbsentKeepsTodaysRun(t *testing.T) {
 	f := newReadFolderFixture(t)
@@ -261,6 +295,23 @@ func firstText(t *testing.T, lines []string) string {
 	return ""
 }
 
+// linkedWorktreeOf makes folder a repository and returns a new directory
+// that is a linked worktree of it, written as git's files (a .git
+// directory, worktrees/<name>/commondir, the worktree's gitdir file) so no
+// git runs: the reviewer reads a session's cwd only inside the document
+// folder's repository (spec §6.9).
+func linkedWorktreeOf(t *testing.T, folder string) (string, error) {
+	t.Helper()
+	wtGit := filepath.Join(folder, ".git", "worktrees", filepath.Base(t.Name()))
+	require.NoError(t, os.MkdirAll(wtGit, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wtGit, "commondir"), []byte("../..\n"), 0o644))
+	wt, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		return "", err
+	}
+	return wt, os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+wtGit+"\n"), 0o644)
+}
+
 // addAsk files an ask of kind/docType on the fixture's workbench, bound to a
 // new claude session whose recorded working directory is cwd ("" = none,
 // and no session when bound is false); it returns the ask id.
@@ -301,7 +352,7 @@ func (f readFolderFixture) addAsk(t *testing.T, kind, docType string, bound bool
 // folder — symlink-resolved.
 func TestAIQueryReadFolderAsk_ReadsTheReviewersFolder(t *testing.T) {
 	f := newReadFolderFixture(t)
-	worktree, err := filepath.EvalSymlinks(t.TempDir())
+	worktree, err := linkedWorktreeOf(t, f.folder)
 	require.NoError(t, err)
 	// A recorded cwd that is now a symlink: the reviewer reads the same raw
 	// path, so both end up in its target.
@@ -359,7 +410,7 @@ func TestAIQueryReadFolderAsk_Refusals(t *testing.T) {
 // stub's `pwd -P` cannot tell a link from its target).
 func TestResolveReviewReadFolder_ResolvesASymlinkedCwd(t *testing.T) {
 	f := newReadFolderFixture(t)
-	worktree, err := filepath.EvalSymlinks(t.TempDir())
+	worktree, err := linkedWorktreeOf(t, f.folder)
 	require.NoError(t, err)
 	link := filepath.Join(t.TempDir(), "moved")
 	require.NoError(t, os.Symlink(worktree, link))

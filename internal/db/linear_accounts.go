@@ -27,7 +27,7 @@ type LinearAccount struct {
 	OwnerDisplayName string
 	CreatedAt        string
 	// CompanySlug ties the account to a company bundle's OAuth client; '' =
-	// our shared client (migration 00198).
+	// our shared client (migration 00210).
 	CompanySlug string
 }
 

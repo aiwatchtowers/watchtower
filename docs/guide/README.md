@@ -67,6 +67,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Workbench](features/workbench/README.md) — a folder, a board, agent sessions and asks: what a workbench is and how to start one
 - [Board and targets](features/workbench/board-and-targets.md) — the plan the agent and you share: Kanban, grouping, archive and the git drift check
 - [Sessions](features/workbench/sessions.md) — what each session's state means, and how to start, find, resume and clear them
+- [Folders and sub-sessions](features/workbench/folders.md) — put several repositories on one bench, let an agent start a sub-session in another folder, and merge two benches
 - [Workchat](features/workbench/workchat.md) — read a session's dialog as a chat, write to the agent, stop it and answer its permission prompts
 - [Session report and analytics](features/workbench/session-report.md) — a session's progress line, its Session view and what its agents cost
 - [Updates and quitting](features/workbench/updates-and-quitting.md) — what keeps running when you update, quit or restart with sessions at work
@@ -85,6 +86,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Agent analytics](features/agent-analytics.md) — tokens, cost and tool use of the agent sessions in a workbench, on the Analytics view or from the command line
 - [Agent coach](features/agent-coach.md) — weekly suggestions to improve your instructions, prompts and agent settings, each applied only when you accept it
 - [Tuning chat](features/tuning-chat.md) — ask why your agents or Watchtower's prompts cost or fail, and accept the edit the chat proposes to a prompt, skill or instruction file
+- [Watchman](features/watchman.md) — learns how you decide in a workbench and tests, on your own past decisions, how often a stand-in would choose as you did; it never acts yet
 
 ## Automations & AI
 

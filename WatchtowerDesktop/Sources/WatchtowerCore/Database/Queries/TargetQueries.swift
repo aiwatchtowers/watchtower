@@ -50,6 +50,19 @@ package struct TargetCounts {
     package let highPriority: Int
 }
 
+/// A folder write the target or the bench refuses (`setFolder`).
+package enum TargetFolderError: LocalizedError, Equatable {
+    case notOnABoard(Int)
+    case notAFolderOfTheBench(Int64)
+
+    package var errorDescription: String? {
+        switch self {
+        case let .notOnABoard(id): "target #\(id) is not on a workbench board"
+        case .notAFolderOfTheBench: "that folder is not on this workbench"
+        }
+    }
+}
+
 /// A write addressed a target that no longer exists — typically deleted in
 /// another process (the agent over the project MCP server, the CLI, a second
 /// window) after the screen loaded it. The update touched no row, so the
@@ -324,80 +337,9 @@ package enum TargetQueries {
         guard db.changesCount > 0 else { throw TargetNotFoundError(id: id) }
     }
 
-    /// Every Desktop status write claims the owner (`status_actor`, migration
-    /// 00086): a project target's status history records it as the owner's
-    /// (PROJ-06); the history trigger clears the claim again.
-    package static func updateStatus(_ db: Database, id: Int, status: String) throws {
-        try db.execute(
-            sql: """
-                UPDATE targets SET status = ?, status_actor = 'owner',
-                    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ?
-                """,
-            arguments: [status, id]
-        )
-        try afterStatusWrite(db, id: id, status: status)
-    }
-
-    /// `updateStatus` that also places the target in board column
-    /// `boardColumnID` (nil = the status's first column), in the same
-    /// statement so the PROJ-19 check sees the new status and column
-    /// together. A column of another status or workbench is refused by the
-    /// trigger; a move between columns of one status writes no history
-    /// (PROJ-06 fires on a status change only). Twin of Go
-    /// `SetTargetColumnTx` (internal/db/board_columns.go).
-    ///
-    /// With the status unchanged it is no status write: only the column
-    /// (and `updated_at`, so the board polls see the move) — the progress,
-    /// the status claim and the closing follow-ups stay as they were.
-    package static func updateStatus(_ db: Database, id: Int, status: String, boardColumnID: Int64?) throws {
-        let current = try String.fetchOne(db, sql: "SELECT status FROM targets WHERE id = ?", arguments: [id])
-        guard let current else { throw TargetNotFoundError(id: id) }
-        if current == status {
-            try db.execute(
-                sql: """
-                    UPDATE targets SET board_column_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                    WHERE id = ?
-                    """,
-                arguments: [boardColumnID, id]
-            )
-            return
-        }
-        try db.execute(
-            sql: """
-                UPDATE targets SET status = ?, board_column_id = ?, status_actor = 'owner',
-                    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ?
-                """,
-            arguments: [status, boardColumnID, id]
-        )
-        try afterStatusWrite(db, id: id, status: status)
-    }
-
-    /// The follow-ups of an owner status write, right after its UPDATE.
-    private static func afterStatusWrite(_ db: Database, id: Int, status: String) throws {
-        try requireUpdated(db, id: id)
-        try applyStatusProgress(db, id: id, status: status)
-
-        // BEHAVIOR INBOX-02 — closing a target resolves its pending `target_due`
-        // inbox items so the user never has to close the same thing twice.
-        // Mirrors the Go-side cascade in `UpdateTargetStatus`
-        // (internal/db/targets.go); Desktop "Done" bypasses Go, so the two
-        // paths must stay in sync (same dual-path convention as
-        // `CatchUpQueries.acknowledge`).
-        if status == "done" || status == "dismissed" {
-            try db.execute(
-                sql: """
-                    UPDATE inbox_items
-                    SET status = 'resolved',
-                        resolved_reason = 'target_closed',
-                        updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                    WHERE target_id = ? AND trigger_type = 'target_due' AND status = 'pending'
-                    """,
-                arguments: [id]
-            )
-        }
-    }
+    // A status write (and a snooze) is Go's: `targets.set_status`,
+    // `targets.set_column`, `targets.snooze` (#1170 Task 12), with the owner
+    // claim (PROJ-06), the rollup (PROJ-05) and INBOX-02's cascade.
 
     package static func updatePriority(_ db: Database, id: Int, priority: String) throws {
         try db.execute(
@@ -408,6 +350,32 @@ package enum TargetQueries {
             arguments: [priority, id]
         )
         try requireUpdated(db, id: id)
+    }
+
+    /// The owner's folder pick for a workbench target (spec 2026-11-18
+    /// §6.10): nil = the home folder. The folder must be a live one of the
+    /// target's own workbench, as Go's `SetTargetFolderTx` demands. The CLI
+    /// (`update_target`) writes the same column: the last write wins.
+    package static func setFolder(_ db: Database, targetID: Int, folderID: Int64?) throws {
+        guard let row = try Row.fetchOne(
+            db, sql: "SELECT project_id FROM targets WHERE id = ?", arguments: [targetID]
+        ) else { throw TargetNotFoundError(id: targetID) }
+        guard let projectID: Int64 = row["project_id"] else { throw TargetFolderError.notOnABoard(targetID) }
+        if let folderID {
+            let owned = try Bool.fetchOne(db, sql: """
+                SELECT EXISTS (SELECT 1 FROM workbench_folders
+                               WHERE id = ? AND workbench_id = ? AND removed_at IS NULL)
+                """, arguments: [folderID, projectID]) ?? false
+            guard owned else { throw TargetFolderError.notAFolderOfTheBench(folderID) }
+        }
+        try db.execute(
+            sql: """
+                UPDATE targets SET workbench_folder_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [folderID, targetID]
+        )
+        try requireUpdated(db, id: targetID)
     }
 
     package static func updateText(_ db: Database, id: Int, text: String) throws {
@@ -641,44 +609,6 @@ package enum TargetQueries {
                 ORDER BY value COLLATE NOCASE
                 """
         )
-    }
-
-    package static func snooze(_ db: Database, id: Int, until: Date) throws {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd"
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        let dateStr = fmt.string(from: until)
-        try db.execute(
-            sql: """
-                UPDATE targets SET status = 'snoozed', snooze_until = ?, status_actor = 'owner',
-                    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ?
-                """,
-            arguments: [dateStr, id]
-        )
-        try requireUpdated(db, id: id)
-        try applyStatusProgress(db, id: id, status: "snoozed")
-    }
-
-    /// Snoozes to an instant (Home's Hide): `snooze_until` holds it as a UTC
-    /// "yyyy-MM-ddTHH:mm" minute, the form Go's `UnsnoozeExpiredTargets`
-    /// compares against, so the target comes back at that instant. The
-    /// bare-date overload above is the Targets tab's day picker.
-    package static func snooze(_ db: Database, id: Int, untilInstant: Date) throws {
-        let fmt = DateFormatter()
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        fmt.timeZone = TimeZone(identifier: "UTC")
-        fmt.dateFormat = "yyyy-MM-dd'T'HH:mm"
-        try db.execute(
-            sql: """
-                UPDATE targets SET status = 'snoozed', snooze_until = ?, status_actor = 'owner',
-                    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ?
-                """,
-            arguments: [fmt.string(from: untilInstant), id]
-        )
-        try requireUpdated(db, id: id)
-        try applyStatusProgress(db, id: id, status: "snoozed")
     }
 
     // MARK: - Delete

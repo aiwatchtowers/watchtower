@@ -182,19 +182,19 @@ final class CoachPresentationTests: XCTestCase {
         XCTAssertEqual(TuningChatTexts.repoNotGit, lines.not_git)
     }
 
-    func testOpenRepoCardCaptionNamesTheBranch() {
+    /// No branch: before Accept the Desktop cannot tell a pull request from a working-copy write.
+    func testOpenRepoCardCaptionIsTheFile() {
         func caption(_ branch: Any?) -> String {
             proposal(destination: "repo_claude_md", workbench: 3, extra: branch.map { ["folder_branch": $0] } ?? [:])
                 .diffCaption
         }
-        XCTAssertEqual(caption("main"), "CLAUDE.md · on branch main")
-        XCTAssertEqual(caption("main"), TuningChatTexts.repoCardCaption(path: "CLAUDE.md", branch: "main"))
-        XCTAssertEqual(caption("detached:abc1234"), "CLAUDE.md · on a detached HEAD (abc1234)")
+        XCTAssertEqual(caption("main"), "CLAUDE.md")
+        XCTAssertEqual(caption("detached:abc1234"), "CLAUDE.md")
         XCTAssertEqual(caption(""), "CLAUDE.md")
         XCTAssertEqual(caption(nil), "CLAUDE.md")
         XCTAssertEqual(proposal(destination: "repo_claude_md", workbench: 3, before: "a", after: "ab", budget: 2002,
                                 extra: ["folder_branch": "main"]).diffCaption,
-                       "CLAUDE.md · on branch main · 1 → 2 of 2002")
+                       "CLAUDE.md · 1 → 2 of 2002")
         XCTAssertEqual(proposal(destination: "session", workbench: 1).diffCaption, "Session instructions")
     }
 
@@ -220,6 +220,138 @@ final class CoachPresentationTests: XCTestCase {
                        TuningChatTexts.rolledBackRepoFile(path: "AGENTS.md"))
         XCTAssertEqual(proposal(destination: "session", status: "rolled_back").verdictLine(hasCut: false, now: now),
                        "rolled back")
+    }
+
+    // MARK: Pull-request edits (spec 2026-11-19 §4.4–§4.6)
+
+    private let prURL = "https://github.com/acme/repo/pull/12"
+    private let revertURL = "https://github.com/acme/repo/pull/13"
+
+    func testPRNumberAndLabel() {
+        XCTAssertEqual(CoachPRTexts.number(prURL), "#12")
+        XCTAssertEqual(CoachPRTexts.number(prURL + "/"), "#12")
+        XCTAssertEqual(CoachPRTexts.number("https://ghe.example.com/acme/repo/pull/7"), "#7")
+        XCTAssertNil(CoachPRTexts.number("https://github.com/acme/repo"))
+        XCTAssertNil(CoachPRTexts.number("https://github.com/acme/repo/pull/"))
+        XCTAssertNil(CoachPRTexts.number("https://github.com/acme/repo/pull/12/files"))
+        XCTAssertEqual(CoachPRTexts.label(prURL), "PR #12")
+        XCTAssertEqual(CoachPRTexts.label("not a url"), "PR")
+        XCTAssertEqual(proposal(extra: ["pr_url": prURL]).prLabel, "PR #12")
+    }
+
+    func testPRAcceptedRowLines() {
+        let now = Date()
+        func pr(_ status: String = "accepted", verdict: String = "", extra: [String: Any] = [:]) -> CoachProposal {
+            proposal(destination: "repo_claude_md", status: status, decided: "2026-11-01T09:00:00Z", verdict: verdict,
+                     extra: extra.merging(["pr_url": prURL]) { $1 })
+        }
+        // The "PR #12" link sits beside the line: the line does not name the PR again.
+        XCTAssertEqual(pr().verdictLine(hasCut: false, now: now), "Waiting for the merge")
+        XCTAssertEqual(pr().verdictLine(hasCut: false, now: now, writtenPath: "CLAUDE.md"), "Waiting for the merge",
+                       "a PR row never says to commit it yourself")
+        XCTAssertEqual(pr(verdict: "too_little_data").verdictLine(hasCut: false, now: now),
+                       "Not merged in 30 days — not measured")
+        let merged = pr(extra: ["measure_from": "2026-11-05T09:00:00Z"])
+        XCTAssertEqual(merged.verdictLine(hasCut: false, now: now), "measuring · verdict on Nov 19",
+                       "the 14 days start at the merge")
+        let works = pr(verdict: "works", extra: ["measure_from": "2026-11-05T09:00:00Z"])
+        XCTAssertEqual(proposal(status: "accepted", verdict: "works", baseline: 3, verdictValue: 2.1,
+                                extra: ["pr_url": prURL, "measure_from": "2026-11-05T09:00:00Z"])
+                        .verdictLine(hasCut: false, now: now),
+                       "works · corrections 3 → 2.1 since this edit")
+        XCTAssertEqual(works.verdictLine(hasCut: false, now: now), "works · corrections ? → ? since this edit")
+        XCTAssertNil(pr().revertLine)
+
+        let closed = pr("rolled_back")
+        XCTAssertEqual(closed.verdictLine(hasCut: false, now: now), "Rolled back · PR closed")
+        XCTAssertNil(closed.revertLine)
+        let reverted = pr("rolled_back", extra: ["revert_pr_url": revertURL])
+        XCTAssertEqual(reverted.verdictLine(hasCut: false, now: now), "Rolled back")
+        XCTAssertEqual(reverted.revertLine, "Revert: PR #13 — merge it to remove the edit.")
+        XCTAssertEqual(CoachPRTexts.revertLine("PR #13"),
+                       [CoachPRTexts.revertLead, "PR #13", CoachPRTexts.revertTail].joined(separator: " "),
+                       "the view draws the lead, the link and the tail")
+    }
+
+    /// The Desktop's sentences are Go's `coach.*Line` (internal/coach/repopr.go), word for word.
+    func testPRRefusalLines() {
+        func line(_ code: String, _ cli: String = "", path: String? = "CLAUDE.md", url: String? = nil) -> String? {
+            CoachPRTexts.refusal(code: code, cliError: cli, path: path, prURL: url ?? prURL)
+        }
+        XCTAssertEqual(line("no_gh"), "Log in with `gh auth login` to let Watchtower open the pull request.")
+        XCTAssertEqual(line("base_differs"),
+                       "CLAUDE.md on the default branch differs from the one the chat read — pull, then ask the chat again.")
+        XCTAssertNil(line("base_differs", path: nil), "no file to name: the CLI's own line")
+        XCTAssertEqual(line("push_failed"), "GitHub refused the branch, or the push needed a password prompt.")
+        XCTAssertEqual(line("pr_failed"),
+                       "GitHub did not open or close the pull request — press the button again to retry.")
+        XCTAssertEqual(line("timeout"), "GitHub did not answer in time; nothing changed — try again.")
+        XCTAssertEqual(line("pr_unreadable"), "Could not read pull request #12 from GitHub — try again.")
+        XCTAssertNil(line("pr_unreadable", url: ""))
+        XCTAssertEqual(line("origin_moved"),
+                       "This folder's origin is no longer the repository the pull request is in; nothing changed.")
+        XCTAssertEqual(line("github_unreachable"),
+                       "Could not reach GitHub to check your gh login; nothing changed — try again.")
+        XCTAssertEqual(line("in_progress"),
+                       "This proposal is already being accepted, declined or rolled back — wait for it to finish.")
+        XCTAssertNil(line("dirty"))
+        XCTAssertNil(line("failed"))
+
+        // git's or gh's words after the sentence stay where they say what went wrong; the id prefix goes.
+        let push = "coach proposal 9 (repo_claude_md): " + CoachPRTexts.pushFailed
+            + " (workbenchgit: push failed: remote: Permission to acme/repo.git denied)"
+        XCTAssertEqual(line("push_failed", push),
+                       CoachPRTexts.pushFailed + " (workbenchgit: push failed: remote: Permission to acme/repo.git denied)")
+        let noGH = "coach proposal 9 (repo_claude_md): " + CoachPRTexts.noGH + " (workbenchgit: gh: not logged in)"
+        XCTAssertEqual(line("no_gh", noGH), CoachPRTexts.noGH, "the login line needs no gh words")
+        XCTAssertEqual(line("pr_failed", "something else entirely"), CoachPRTexts.prFailed)
+
+        XCTAssertTrue(CoachPRTexts.retryable("push_failed"))
+        XCTAssertTrue(CoachPRTexts.retryable("pr_failed"))
+        XCTAssertTrue(CoachPRTexts.retryable("timeout"))
+        XCTAssertTrue(CoachPRTexts.retryable("pr_unreadable"))
+        XCTAssertTrue(CoachPRTexts.retryable("github_unreachable"), "offline: nothing changed, Retry")
+        XCTAssertFalse(CoachPRTexts.retryable("in_progress"), "the other decision moves the proposal on")
+        XCTAssertFalse(CoachPRTexts.retryable("no_gh"))
+        XCTAssertFalse(CoachPRTexts.retryable("base_differs"))
+        XCTAssertFalse(CoachPRTexts.retryable(nil))
+        XCTAssertEqual(CoachPRTexts.retry, "Retry")
+        XCTAssertEqual(CoachPRTexts.syncLine(code: "no_gh"), CoachPRTexts.noGH)
+        XCTAssertEqual(CoachPRTexts.syncLine(code: "timeout"), CoachPRTexts.timeout)
+        XCTAssertEqual(CoachPRTexts.syncLine(code: "pr_unreadable"),
+                       "Couldn't check the pull requests on GitHub — they are checked again next time you open this list.")
+        XCTAssertEqual(CoachPRTexts.syncLine(code: ""), CoachPRTexts.syncFailed)
+    }
+
+    /// The Roll Back sheet after `changed_since`: a working-copy edit may be
+    /// forced; a pull-request edit cannot (its revert needs the merged text on
+    /// the default branch), so it names the file, says to revert by hand and
+    /// only closes.
+    func testRollbackSheetTexts() {
+        let local = CoachRollbackTexts(proposal(destination: "repo_claude_md", status: "accepted"))
+        XCTAssertEqual(local.title, "The text changed since you accepted")
+        XCTAssertEqual(local.body, "Workbench CLAUDE.md was edited after “t”. Rolling back overwrites those edits.")
+        XCTAssertTrue(local.offersForce)
+        XCTAssertEqual(local.dismiss, "Cancel")
+
+        let pr = CoachRollbackTexts(proposal(destination: "repo_claude_md", status: "accepted", extra: ["pr_url": prURL]))
+        XCTAssertEqual(pr.title, "The file changed since the merge")
+        XCTAssertEqual(pr.body,
+                       "CLAUDE.md on the default branch changed since the merge — revert it by hand in a pull request.")
+        XCTAssertFalse(pr.offersForce, "no Roll Back Anyway: --force does not apply to a pull request")
+        XCTAssertEqual(pr.dismiss, "Close")
+        XCTAssertEqual(CoachRollbackTexts.rollBackAnyway, "Roll Back Anyway")
+        XCTAssertEqual(CoachRollbackTexts.noDiff, "No diff available.")
+    }
+
+    func testStyledMakesBacktickSpansCode() {
+        let styled = CoachPRTexts.styled(CoachPRTexts.noGH)
+        XCTAssertEqual(String(styled.characters), "Log in with gh auth login to let Watchtower open the pull request.")
+        let code = styled.runs.filter { $0.inlinePresentationIntent == .code }
+            .map { String(styled[$0.range].characters) }
+        XCTAssertEqual(code, ["gh auth login"])
+        XCTAssertEqual(String(CoachPRTexts.styled("a ` b").characters), "a ` b", "an odd backtick stays")
+        XCTAssertTrue(CoachPRTexts.styled("plain").runs.allSatisfy { $0.inlinePresentationIntent == nil })
     }
 
     func testDiffLines() {

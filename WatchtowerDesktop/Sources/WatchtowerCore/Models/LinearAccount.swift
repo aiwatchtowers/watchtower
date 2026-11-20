@@ -15,7 +15,7 @@ package struct LinearAccount: Decodable, Equatable, Identifiable, Sendable {
     /// "oauth" | "api_key" | "" (no token file) | "error" (unreadable token file)
     package let auth: String
     /// The company bundle whose OAuth client this account signed in with
-    /// (`company_slug`, migration 00198); "" = our shared client. Go writes
+    /// (`company_slug`, migration 00210); "" = our shared client. Go writes
     /// it; the app only reads it.
     package let companySlug: String
 
@@ -47,7 +47,7 @@ package struct LinearAccount: Decodable, Equatable, Identifiable, Sendable {
         self.companySlug = companySlug
     }
 
-    /// `company_slug` is optional so a CLI older than migration 00198 still
+    /// `company_slug` is optional so a CLI older than migration 00210 still
     /// decodes.
     package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)

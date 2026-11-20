@@ -22,12 +22,21 @@ const runnerMinimumGap = 5 * time.Second
 var errRunTimedOut = errors.New("the run timed out")
 
 // runnerWake is HubRunnerWake: the wait between two passes of a runner. A
-// signal — a session state change, a phone request — ends the wait; one sent
-// during a pass ends the next wait, so none is lost. A signalled wait still
-// lasts minimumGap from its start, so a burst of signals costs one pass per
-// gap. With no signal a wait lasts its full duration; a cancelled ctx ends it.
+// signal — a session state change (SessionStateChanged of the report runner
+// and the git refresher) — ends the wait; one sent during a pass ends the
+// next wait, so none is lost. A deferred run is not a signal: the runner
+// shortens the wait's d to when it is due. A signalled
+// wait still lasts minimumGap from its start, so a burst of signals costs one
+// pass per gap. signalNow is a phone request's (runners on request, #1996):
+// it ends the wait, or the gap a signal started, at once. Either kind sent
+// during a pass costs exactly one follow-up pass: the wait that ends takes
+// every pending signal of both kinds. With no signal a wait lasts its full
+// duration. A cancelled ctx ends the wait; one entered with ctx already
+// ended consumes nothing, while one cancelled as it blocks may have taken a
+// pending signal — which does not matter, as a cancelled ctx ends the
+// runner's loop.
 type runnerWake struct {
-	ch         chan struct{}
+	ch, now    chan struct{}
 	minimumGap time.Duration
 }
 
@@ -37,19 +46,26 @@ func newRunnerWake(gap time.Duration) *runnerWake {
 	if gap <= 0 {
 		gap = runnerMinimumGap
 	}
-	return &runnerWake{ch: make(chan struct{}, 1), minimumGap: gap}
+	return &runnerWake{ch: make(chan struct{}, 1), now: make(chan struct{}, 1), minimumGap: gap}
 }
 
-// signal ends the wait in progress, or the next one.
-func (w *runnerWake) signal() {
+// signal ends the wait in progress, or the next one, minimumGap after the
+// wait's start.
+func (w *runnerWake) signal() { notify(w.ch) }
+
+// signalNow ends the wait in progress, or the next one, at once.
+func (w *runnerWake) signalNow() { notify(w.now) }
+
+// notify puts a token in ch unless one is there.
+func notify(ch chan struct{}) {
 	select {
-	case w.ch <- struct{}{}:
+	case ch <- struct{}{}:
 	default:
 	}
 }
 
 // wait returns after d, on a signal (no sooner than minimumGap after the
-// call, capped at d), or when ctx ends.
+// call, capped at d), on an urgent signal at once, or when ctx ends.
 func (w *runnerWake) wait(ctx context.Context, d time.Duration) {
 	if d <= 0 || ctx.Err() != nil {
 		return
@@ -62,21 +78,25 @@ func (w *runnerWake) wait(ctx context.Context, d time.Duration) {
 		return
 	case <-t.C:
 		return
+	case <-w.now:
 	case <-w.ch:
-	}
-	if rest := min(w.minimumGap, d) - time.Since(start); rest > 0 {
-		gap := time.NewTimer(rest)
-		defer gap.Stop()
-		select {
-		case <-ctx.Done():
-			return
-		case <-gap.C:
+		if rest := min(w.minimumGap, d) - time.Since(start); rest > 0 {
+			gap := time.NewTimer(rest)
+			defer gap.Stop()
+			select {
+			case <-ctx.Done():
+				return
+			case <-gap.C:
+			case <-w.now:
+			}
 		}
 	}
-	// The pass that follows covers every signal sent during the gap.
-	select {
-	case <-w.ch:
-	default:
+	// The pass that follows covers every signal sent so far.
+	for _, ch := range []chan struct{}{w.ch, w.now} {
+		select {
+		case <-ch:
+		default:
+		}
 	}
 }
 
@@ -141,6 +161,8 @@ type cadenceEntry[T any] struct {
 	hasValue  bool
 	last      time.Time // zero = never attempted
 	requested bool
+	// urgent: the request skips minSpacing once (a phone request).
+	urgent bool
 }
 
 // cadenceTaken is one due run and what takeDue changed, so a pass that did
@@ -149,6 +171,7 @@ type cadenceTaken struct {
 	id            int64
 	prevLast      time.Time
 	prevRequested bool
+	prevUrgent    bool
 	stamp         time.Time
 }
 
@@ -180,7 +203,13 @@ func (c *cadence[T]) ids() []int64 {
 
 // request marks id for a run no sooner than minSpacing after its last one;
 // known only requests a workbench a pass has already listed.
-func (c *cadence[T]) request(id int64, knownOnly bool) {
+func (c *cadence[T]) request(id int64, knownOnly bool) { c.mark(id, knownOnly, false) }
+
+// requestNow marks id for a run at the next pass, skipping minSpacing once
+// (a phone request, runners on request); id gets an entry when it has none.
+func (c *cadence[T]) requestNow(id int64) { c.mark(id, false, true) }
+
+func (c *cadence[T]) mark(id int64, knownOnly, urgent bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[id]
@@ -192,13 +221,14 @@ func (c *cadence[T]) request(id int64, knownOnly bool) {
 		c.entries[id] = e
 	}
 	e.requested = true
+	e.urgent = e.urgent || urgent
 }
 
 // takeDue forgets the workbenches not in keep, then stamps the due ones of
 // candidates in keep (in order) as attempted at now: one never attempted when
 // first(id, requested) says so, an attempted one every `every` when
-// regular(id), and a requested one minSpacing after its last attempt. It
-// notes when the earliest deferred request is due.
+// regular(id), a requested one minSpacing after its last attempt and an
+// urgent one at once. It notes when the earliest deferred request is due.
 func (c *cadence[T]) takeDue(candidates []int64, keep map[int64]bool, now time.Time,
 	first func(id int64, requested bool) bool, regular func(id int64) bool,
 ) []cadenceTaken {
@@ -224,12 +254,12 @@ func (c *cadence[T]) takeDue(candidates []int64, keep map[int64]bool, now time.T
 			isDue = first(id, e.requested)
 		} else {
 			elapsed := now.Sub(e.last)
-			isDue = (regular(id) && elapsed >= c.every) || (e.requested && elapsed >= c.minSpacing)
+			isDue = (regular(id) && elapsed >= c.every) || (e.requested && (e.urgent || elapsed >= c.minSpacing))
 		}
 		switch {
 		case isDue:
-			due = append(due, cadenceTaken{id: id, prevLast: e.last, prevRequested: e.requested, stamp: now})
-			e.last, e.requested = now, false
+			due = append(due, cadenceTaken{id: id, prevLast: e.last, prevRequested: e.requested, prevUrgent: e.urgent, stamp: now})
+			e.last, e.requested, e.urgent = now, false, false
 		case e.requested && !e.last.IsZero():
 			if at := e.last.Add(c.minSpacing); c.nextDue.IsZero() || at.Before(c.nextDue) {
 				c.nextDue = at
@@ -252,6 +282,7 @@ func (c *cadence[T]) restore(unfinished []cadenceTaken) {
 		}
 		e.last = t.prevLast
 		e.requested = e.requested || t.prevRequested
+		e.urgent = e.urgent || t.prevUrgent
 	}
 }
 

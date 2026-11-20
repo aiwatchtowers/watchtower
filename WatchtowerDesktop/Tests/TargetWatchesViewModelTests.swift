@@ -203,4 +203,39 @@ final class TargetWatchesViewModelTests: XCTestCase {
         }
         XCTAssertEqual(status, "todo")
     }
+    /// A watch write the tower refused shows Go's sentence as is (it already
+    /// says what failed: no "Failed to …:" prefix doubled on it); any other
+    /// error keeps the tab's own prefix (final review M7).
+    func testWatchWriteFailureShowsTheTowersSentenceOnce() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let targetID = try await manager.dbPool.write { db -> Int in
+            try TargetQueries.create(db, text: "goal", periodStart: "2026-06-01", periodEnd: "2026-06-30")
+        }
+        let targetRow = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: targetID) }
+        let target = try XCTUnwrap(targetRow)
+        try await manager.dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO tracks (assignee_user_id, text, context, category, ownership, priority,
+                    origin, instruction, enabled, linked_target_id)
+                VALUES ('U1', 'watch A', '', 'task', 'watching', 'medium', 'custom', 'watch', 1, ?)
+                """, arguments: [targetID])
+        }
+        let watchRows = try await manager.dbPool.read { db in try TrackQueries.fetchByLinkedTarget(db, targetID: targetID) }
+        let watch = try XCTUnwrap(watchRows.first)
+        let tower = FakeScreenTower()
+        let sentence = "Couldn't update the watch: the database is busy."
+        tower.next(.tracksEnabled, .refused(sentence))
+        let vm = TargetWatchesViewModel(
+            target: target, dbManager: manager,
+            scanService: TrackScanService(runner: FakeCLIRunner(stdout: Data("[]".utf8))),
+            actionRunner: FakeCLIRunner(), scanCenter: TrackScanCenter(), tower: tower)
+        await vm.setCollecting(watch, false)
+        XCTAssertEqual(vm.errorMessage, sentence)
+
+        struct Local: LocalizedError { var errorDescription: String? { "disk full" } }
+        XCTAssertEqual(TargetWatchesViewModel.failure("Failed to delete the watch", Local()),
+                       "Failed to delete the watch: disk full")
+        XCTAssertEqual(TargetWatchesViewModel.failure("Failed to dismiss", TowerWriteError("Go's sentence.")), "Go's sentence.")
+    }
 }

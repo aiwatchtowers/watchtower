@@ -402,6 +402,38 @@ final class SlackAppSetupModelTests: XCTestCase {
         XCTAssertFalse(model.holdsToken)
     }
 
+    /// A result line that does not decode is its own state, not "no answer"
+    /// (review m3): the setup may have finished on Slack's side.
+    func testUnreadableResultLine() async {
+        let typed = await problem(#"{"result":42}"#)
+        guard case .finished(.problem(.unreadableAnswer)) = typed.phase else {
+            return XCTFail("a wrongly typed result is unreadable, not no answer: \(typed.phase)")
+        }
+        let model = await problem(#"{"result":"ok","link_written":"yes"}"#)
+        guard case .finished(.problem(.unreadableAnswer)) = model.phase else { return XCTFail("\(model.phase)") }
+        XCTAssertEqual(model.notice?.body, "Watchtower could not read the setup's answer, so it does not know how the "
+            + "setup ended. Connections → Slack shows where it got to; the app is never created twice.")
+        XCTAssertEqual(labels(model), ["Cancel", "Try again"])
+        XCTAssertFalse(model.holdsToken)
+    }
+
+    /// The team's app is the one this build signs in through (review M1):
+    /// create and adopt say so plainly and offer no token, no adopt.
+    func testBuiltinAppDeferred() async {
+        let line = result("builtin_app_pkce_deferred", appID: "A0CORP")
+        for form in [Model.Form.create, adopt] {
+            let model = await problem(line, form: form)
+            guard case .finished(.builtinAppDeferred("acme")) = model.phase else { return XCTFail("\(model.phase)") }
+            XCTAssertEqual(model.notice?.title, "Watchtower's app already exists in acme")
+            XCTAssertEqual(model.notice?.body, "This version of Watchtower signs in to acme through this app already. "
+                + "The app moves to the new sign-in with a later Watchtower update; until then there is nothing to set "
+                + "up. Nothing was changed.")
+            XCTAssertEqual(labels(model), ["Done"])
+            XCTAssertFalse(model.showsTokenForm, "no token fixes it")
+            XCTAssertFalse(model.showsAppIDField)
+        }
+    }
+
     func testNoCLIStops() async {
         let model = Model(streamer: nil)
         model.startCreate(token: token)
@@ -969,6 +1001,15 @@ final class SlackAppSetupModelTests: XCTestCase {
         model.startCreate(token: token)
         await reported(box)
         XCTAssertEqual(box.outcomes, [.failed(.stopped(Model.noAnswer))], "an empty App ID is never reported as an app")
+    }
+
+    /// The build's own app (`builtin_app_pkce_deferred`) is never reported
+    /// as created or reused: the wizard gets a failure that says why.
+    func testWizardBuiltinAppDeferredIsAFailure() async {
+        let (model, _, _, box) = makeWizard([reply(result("builtin_app_pkce_deferred", appID: "A0CORP")), noSetups])
+        model.startCreate(token: token)
+        await reported(box)
+        XCTAssertEqual(box.outcomes, [.failed(.stopped(Model.builtinAppDeferredBody("acme")))])
     }
 
     func testOutcomeIsTheRunsEvenWhenTheNextRunStartsDuringItsRead() async {

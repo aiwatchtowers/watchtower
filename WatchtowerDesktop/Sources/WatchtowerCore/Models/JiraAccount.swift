@@ -22,11 +22,11 @@ package struct JiraAccount: FetchableRecord, Identifiable, Equatable {
     package let ownerDisplayName: String
 
     /// The company bundle whose OAuth client this account signed in with
-    /// (`company_slug`, migration 00198); "" = our shared client. Go writes
+    /// (`company_slug`, migration 00210); "" = our shared client. Go writes
     /// it; the app only reads it.
     package let companySlug: String
     /// How the account signs in: "oauth" or "api_token" (`auth_kind`,
-    /// migration 00198).
+    /// migration 00210).
     package let authKind: String
 
     package init(row: Row) {

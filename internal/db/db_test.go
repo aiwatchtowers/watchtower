@@ -189,6 +189,7 @@ func TestAllTablesExist(t *testing.T) {
 		"external_connections",
 		"external_connection_tools",
 		"kb_documents", "kb_chunks", "kb_sources", "kb_dirty",
+		"watchman_workbenches", "watchman_precedents", "watchman_cursors", "watchman_profile", "watchman_backtests", "watchman_backtest_rows", "watchman_skipped_keys", "watchman_arming", "watchman_items", "watchman_gaps", "watchman_extra_limits",
 		"ext_sources", "ext_documents", "ext_comments", "ext_users",
 		"doc_links", "ext_link_state",
 		"chat_conversations", "chat_messages", "chat_turn_steps", "chat_attachments",
@@ -198,6 +199,7 @@ func TestAllTablesExist(t *testing.T) {
 		"projects", "project_sources", "project_comments", "project_target_images",
 		"terminal_sessions", "target_status_history", "owner_asks", "workbench_board_columns",
 		"terminal_session_targets", "workbench_pr_states", "owner_presence",
+		"workbench_folders", "workbench_folder_declines", "session_messages", "session_outside_touches",
 		"review_rounds", "review_comments", "review_viewed", "review_checks",
 		"review_notes", "review_overviews", "review_overview_parts", "review_reverts", "review_lessons", "review_reviewer_threads", "permission_requests", "owner_instructions", "instruction_suggestions", "instruction_chat_lines",
 		"terminal_session_worktrees", "terminal_session_agent_sessions", "agent_session_tombstones",
@@ -208,7 +210,7 @@ func TestAllTablesExist(t *testing.T) {
 		"plan_usage_samples", "plan_usage_status", "history_backfill",
 		"automation_tool_grants", "linear_workflow_states", "linear_labels", "builtin_migrations",
 		"db_maintenance", "account_purges", "spec_reviews", "spec_review_marks", "spec_review_questions", "spec_review_thread_findings", "learn_seen", "coach_proposals", "prompt_additions", "skill_pack_overlays", "llm_calls",
-		"inbox_folders", "inbox_folder_state", "inbox_folder_routes",
+		"inbox_folders", "inbox_folder_state", "inbox_folder_routes", "tower_requests",
 	}
 
 	for _, table := range expectedTables {

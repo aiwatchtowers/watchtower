@@ -42,6 +42,8 @@ final class ScreenshotTourTests: XCTestCase {
     private static let onlyRelayPhase5 = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "relay-phase5"
     /// `SHOTS_ONLY=chat` runs `testTheChatShots` alone: the Chats tab's states (iPhone chat mockups 1a–1j).
     private static let onlyChat = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "chat"
+    /// `SHOTS_ONLY=inbox` runs `testTheInboxShots` alone: the Inbox tab's frames (mobile Inbox mockups §§1–6).
+    private static let onlyInbox = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "inbox"
     private static let onlySpecReview = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "spec-review"
 
     func testTheRelayPhase4Shots() async throws {
@@ -103,9 +105,27 @@ final class ScreenshotTourTests: XCTestCase {
         XCTAssertEqual(written.count, 3 * rows.count)
     }
 
+    /// Every frame of mobile Inbox mockups §§1–6 as one named shot (`InboxTourFrames`), light and dark.
+    func testTheInboxShots() async throws {
+        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], Self.onlyInbox else {
+            throw XCTSkip("Only with make mobile-shots SHOTS_ONLY=inbox")
+        }
+        let dir = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let (root, demo) = try makeDemoRoot()
+        try await poll({ Self.isHydrated(root.env) }, "the demo seed hydrated")
+        let rows = try await captureInbox(host: ScreenshotHost(directory: dir, env: root.env, linking: root.linking)) {
+            try await self.putDemoMacToSleep(demo, env: root.env)
+        }
+        XCTAssertEqual(rows.map(\.number), InboxTourFrames.all.map(\.slug))
+        let written = try FileManager.default.contentsOfDirectory(atPath: path)
+            .filter { name in rows.contains { name.hasPrefix($0.number + "-") } && name.hasSuffix(".png") }
+        XCTAssertEqual(written.count, 2 * rows.count)
+    }
+
     func testTheTour() async throws {
         guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], !Self.onlyRelayPhase4, !Self.onlyRelayPhase5,
-              !Self.onlyChat else {
+              !Self.onlyChat, !Self.onlyInbox else {
             throw XCTSkip("Screenshot tour: run make mobile-shots")
         }
         let dir = URL(fileURLWithPath: path, isDirectory: true)
@@ -120,6 +140,9 @@ final class ScreenshotTourTests: XCTestCase {
         }
         let meetingRows = try await captureMeetingSoon(host: host)
         // Before the Mac falls asleep for good: the chat frames' chip is online but in 1d.
+        // Before the chats: their last frame, like the Inbox's, puts the demo Mac to sleep.
+        let inboxRows = try await captureInbox(host: host) { try await self.putDemoMacToSleep(demo, env: root.env) }
+        try await wakeDemoMac(demo, env: root.env)
         let chatRows = try await captureChats(demo: demo, host: host)
         let asleepRows = try await captureMacAsleep(root.env, demo: demo, host: host)
             + (try await captureSessionStates(root.env, demo: demo, host: host))
@@ -132,7 +155,7 @@ final class ScreenshotTourTests: XCTestCase {
         let phase5Rows = try await captureParkedFeed(into: dir, linking: root.linking)
         try ScreenshotHost.writeIndex(
             Self.indexRows(shots) + meetingRows + asleepRows + recorderRows + outboxRows + relayRows + onRelayRows + phase4Rows + phase5Rows
-                + chatRows,
+                + chatRows + inboxRows,
             to: dir)
 
         let pngs = try FileManager.default
@@ -140,7 +163,8 @@ final class ScreenshotTourTests: XCTestCase {
             .filter { $0.pathExtension == "png" }
         XCTAssertEqual(
             pngs.count,
-            2 * (shots.count + shots.filter(\.hasEnd).count + meetingRows.count + asleepRows.count + recorderRows.count + outboxRows.count)
+            2 * (shots.count + shots.filter(\.hasEnd).count + meetingRows.count + asleepRows.count + recorderRows.count + outboxRows.count
+                + inboxRows.count)
                 + 3 * (relayRows.count + onRelayRows.count + phase4Rows.count + phase5Rows.count + chatRows.count)
         )
         for png in pngs {
@@ -152,12 +176,12 @@ final class ScreenshotTourTests: XCTestCase {
 
     /// The primary demo Mac's transport and the defaults holding its seq
     /// ceiling, for a later save in the hub's name.
-    private struct DemoHub {
+    struct DemoHub {
         let transport: InMemoryCloudTransport
         let defaults: UserDefaults
     }
 
-    private func makeDemoRoot() throws -> (AppRoot, DemoHub) {
+    func makeDemoRoot() throws -> (AppRoot, DemoHub) {
         let defaults = try makeDefaults()
         var primary: InMemoryCloudTransport?
         let env = AppEnvironment(backend: .inMemoryDemo, defaults: defaults)
@@ -264,11 +288,7 @@ final class ScreenshotTourTests: XCTestCase {
 
         // 1d: the Mac asleep (its heartbeat 40 min old), the last list the phone holds.
         let stale = now.addingTimeInterval(-2_400)
-        let beat = try XCTUnwrap(DemoSeed.records(now: stale).first { $0.recordName == HeartbeatPayload.recordName })
-        let sealing = DemoSeed.hubTransport(inner: demo.transport, seq: DemoSeed.hubSeq(defaults: demo.defaults, now: Date()))
-        try await sealing.save([beat])
-        _ = await env.refresh(.pull)
-        try await poll({ env.macReachability(now: Date()) != .online }, "the demo Mac fell asleep")
+        try await putDemoMacToSleep(demo, env: env, at: stale)
         try await shot(
             "C1d", "chats-mac-asleep", "Mac asleep, the held list",
             ChatsShot(
@@ -277,6 +297,24 @@ final class ScreenshotTourTests: XCTestCase {
             )
         )
         return rows
+    }
+
+    /// The demo Mac asleep: its heartbeat `at` (40 min ago by default), published and fetched, so every chip reads it.
+    private func putDemoMacToSleep(_ demo: DemoHub, env: AppEnvironment, at stale: Date = Date().addingTimeInterval(-2_400)) async throws {
+        let beat = try XCTUnwrap(DemoSeed.records(now: stale).first { $0.recordName == HeartbeatPayload.recordName })
+        let sealing = DemoSeed.hubTransport(inner: demo.transport, seq: DemoSeed.hubSeq(defaults: demo.defaults, now: Date()))
+        try await sealing.save([beat])
+        _ = await env.refresh(.pull)
+        try await poll({ env.macReachability(now: Date()) != .online }, "the demo Mac fell asleep")
+    }
+
+    /// The demo Mac awake again: a fresh heartbeat, published and fetched.
+    private func wakeDemoMac(_ demo: DemoHub, env: AppEnvironment) async throws {
+        let beat = try XCTUnwrap(DemoSeed.records(now: Date()).first { $0.recordName == HeartbeatPayload.recordName })
+        let sealing = DemoSeed.hubTransport(inner: demo.transport, seq: DemoSeed.hubSeq(defaults: demo.defaults, now: Date()))
+        try await sealing.save([beat])
+        _ = await env.refresh(.pull)
+        try await poll({ env.macReachability(now: Date()) == .online }, "the demo Mac woke")
     }
 
     /// The composer states the phone gains from the shared composer (#1822 T13): the quote batch with its comments,
@@ -1257,7 +1295,7 @@ final class ScreenshotTourTests: XCTestCase {
     static let alertGap = "The alert is not captured (iOS 26 draws it outside drawHierarchy); its copy is asserted in "
         + "RelaySlotsModelTests and MacsModelTests; the owner checks it on a device"
 
-    private static func isHydrated(_ env: AppEnvironment) -> Bool {
+    static func isHydrated(_ env: AppEnvironment) -> Bool {
         env.activeSession.isBootstrapped && !env.workbenchReplica.snapshot.workbenches.isEmpty
             && !env.calendarReplica.snapshot.events.isEmpty && !env.phoneRecordings.snapshot.recordings.isEmpty
     }

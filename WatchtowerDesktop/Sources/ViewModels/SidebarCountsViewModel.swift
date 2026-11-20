@@ -76,10 +76,15 @@ final class SidebarCountsViewModel {
     /// A view model with its counts loaded and its observation started;
     /// nil when the calling task is cancelled meanwhile (a test's database
     /// going away, board #526).
-    static func started(dbPool: DatabasePool, disabledFeatures: Set<String> = []) async -> SidebarCountsViewModel? {
+    static func started(
+        dbPool: DatabasePool,
+        disabledFeatures: Set<String> = [],
+        towerInboxBadge: (@MainActor () async -> Int?)? = nil
+    ) async -> SidebarCountsViewModel? {
         guard !Task.isCancelled else { return nil }
         let countsVM = SidebarCountsViewModel(dbPool: dbPool)
         countsVM.disabledFeatures = disabledFeatures
+        countsVM.towerInboxBadge = towerInboxBadge
         await countsVM.loadInitial()
         guard !Task.isCancelled else { return nil }
         countsVM.startObserving()
@@ -88,10 +93,44 @@ final class SidebarCountsViewModel {
 
     /// Loads the counts once and updates the published properties.
     /// Awaiting this guarantees the sidebar badges reflect real DB state before the splash screen hides.
+    /// The Inbox badge's first tower read is awaited too, so it is right
+    /// before the splash hides when the daemon answers; a link that fails
+    /// ends that wait with the failure (the badge keeps its last value).
+    /// Only this first load waits: `refresh()` and the observation loop
+    /// never await the tower.
     func loadInitial() async {
-        let counts = await fetch()
-        apply(counts)
+        apply(await fetch())
+        await requestTowerBadge()?.value
     }
+
+    /// Reads the tower's Inbox badge in its own task; the latest request
+    /// wins, so an older read that answers late never overwrites a newer
+    /// one. Nil without a tower.
+    @discardableResult
+    func requestTowerBadge() -> Task<Void, Never>? {
+        guard let towerInboxBadge else { return nil }
+        towerBadgeGeneration += 1
+        let generation = towerBadgeGeneration
+        let read = Task { [weak self] in
+            let badge = await towerInboxBadge()
+            guard let self, generation == self.towerBadgeGeneration, let badge else { return }
+            self.towerBadgeKnown = true
+            self.inboxStripCount = badge
+        }
+        towerBadgeRead = read
+        return read
+    }
+
+    /// The tower badge read last started (tests await it).
+    private(set) var towerBadgeRead: Task<Void, Never>?
+    private var towerBadgeGeneration = 0
+
+    /// The Inbox badge from the tower (mobile Inbox spec §5.1: the sum of
+    /// the visible folders' counts, `InboxRootModel.countBadge`); nil keeps
+    /// the last count (no tower wired, or it did not answer).
+    var towerInboxBadge: (@MainActor () async -> Int?)?
+    /// Once the tower has answered, the local count never replaces its badge.
+    private var towerBadgeKnown = false
 
     /// Reloads the counts on demand. The observation below only sees writes made
     /// by THIS process, so a feature that shells out to the CLI (Catch-Up's
@@ -100,7 +139,11 @@ final class SidebarCountsViewModel {
     /// The daemon's automation inbox outputs arrive the same way: the
     /// Automations poll asks for a refresh when their unread count moves.
     func refresh() async {
-        await loadInitial()
+        apply(await fetch())
+        // Off this path: a tower that is down or restarting answers only
+        // when it comes back or fails (up to 15 s), and must hold back
+        // neither the other badges nor whoever awaits this.
+        requestTowerBadge()
     }
 
     /// Begins observing the source tables and refreshes counts on each change.
@@ -131,6 +174,10 @@ final class SidebarCountsViewModel {
                         let counts = await self.fetch()
                         guard !Task.isCancelled else { return }
                         self.apply(counts)
+                        // A write here can change what the tower lists (Waiting
+                        // for me turned off): its badge is read again too, in
+                        // its own task, never holding back the next change.
+                        self.requestTowerBadge()
                     }
                     return
                 } catch {
@@ -227,13 +274,9 @@ final class SidebarCountsViewModel {
                 // pre-catchup_recaps schema like the reads below it.
                 let hasWaitingRecap = (try? CatchUpQueries.hasUnacknowledgedReady(db)) ?? false
                 let waitingRecap = hasWaitingRecap ? 1 : 0
-                // The Inbox badge: the visible folders' counts summed,
-                // user-independent and tolerant of a schema predating any of
-                // its sources (a missing table counts 0; any other read error
-                // fails the fetch).
-                let nowUTC = ISO8601DateFormatter().string(from: Date())
-                let stripCount = try ActionStripViewModel.badgeCount(
-                    db, nowUTC: nowUTC, disabledFeatures: disabledFeatures)
+                // The Inbox badge is the tower's (`towerInboxBadge`, after
+                // this read): no Swift code counts the Inbox (spec §4.1).
+                let stripCount = 0
                 // Memory disputes, tolerant of a pre-memory schema.
                 let disputed = (try? MemoryQueries.fetchDisputedCount(db)) ?? 0
                 // Digests-tab feed counts, tolerant of a pre-stream/ideas schema.
@@ -301,7 +344,7 @@ final class SidebarCountsViewModel {
         recommendationCount = c.recommendationCount
         activeTaskCount = c.activeTaskCount
         overdueTaskCount = c.overdueTaskCount
-        inboxStripCount = c.inboxStripCount
+        if !towerBadgeKnown { inboxStripCount = c.inboxStripCount }
         memoryDisputedCount = c.memoryDisputedCount
         unacknowledgedRecapCount = c.unacknowledgedRecapCount
     }

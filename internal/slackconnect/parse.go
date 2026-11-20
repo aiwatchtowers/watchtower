@@ -55,9 +55,14 @@ type Target struct {
 	CompanySlug string
 }
 
+// TeamIDPattern and ClientIDPattern are the shapes of a Slack team id and
+// app client id the connect input, the MDM key SlackApps (policy) and the
+// setup's --client-id (slackapp) accept: one pair, so the three never drift.
+// Swift twins: SlackConnectTarget.parse, ManagedPolicy.isSlackTeamID /
+// isSlackClientID.
 var (
-	teamIDPattern   = regexp.MustCompile(`^[TE][A-Z0-9]{2,}$`)
-	clientIDPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
+	TeamIDPattern   = regexp.MustCompile(`^[TE][A-Z0-9]{2,}$`)
+	ClientIDPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
 )
 
 // ParseConnectInput reads what the owner pasted (or a link the listener
@@ -92,7 +97,7 @@ func parseLink(s string) (Target, error) {
 }
 
 func validTarget(team, client string) (Target, error) {
-	if !teamIDPattern.MatchString(team) || !clientIDPattern.MatchString(client) {
+	if !TeamIDPattern.MatchString(team) || !ClientIDPattern.MatchString(client) {
 		return Target{}, ErrNotConnectInput
 	}
 	return Target{TeamID: team, ClientID: client}, nil

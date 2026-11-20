@@ -42,7 +42,7 @@ final class WorkbenchBoardLanesViewModelTests: XCTestCase {
     }
 
     private func makeVM(project: Int64) -> WorkbenchBoardViewModel {
-        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: project, defaults: defaults)
+        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: project, defaults: defaults, tower: dbManager.fakeTower)
         vm.load()
         return vm
     }

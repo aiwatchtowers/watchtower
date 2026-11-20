@@ -48,6 +48,9 @@ var codexHookSpecs = []HookSpec{
 	// Interrupt (the owner's Esc) ends the turn with no Stop: board #959.
 	{Event: "Interrupt", Subcommand: "workbench session-state --agent codex", TimeoutSec: 5},
 	{Event: "PreToolUse", Matcher: "request_user_input", Subcommand: "workbench ask-guard --agent codex --pre-tool-use", TimeoutSec: 5},
+	// The Watchman guard, every tool (no matcher), in its own group after the
+	// ask guard's so that group's trust key stays.
+	{Event: "PreToolUse", Subcommand: "workbench watchman-guard --agent codex", TimeoutSec: 5, Group: 1},
 	{Event: "Stop", Subcommand: "workbench check --agent codex --stop-hook", TimeoutSec: 15},
 	{Event: "Stop", Subcommand: "workbench ask-guard --agent codex --stop", TimeoutSec: 30, Group: 1},
 }

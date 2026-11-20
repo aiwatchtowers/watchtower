@@ -456,6 +456,9 @@ type Target struct {
 	WorkbenchID         sql.NullInt64 `json:"ProjectID"` // set = lives only on that workbench's board (migration 00081, PROJ-01); the key stays ProjectID, the `targets list --json`/MCP wire key (spec 2026-10-02 A1)
 	Branch              string        // workbench targets: the git branch carrying the work, "" = none (00089)
 	PR                  string        // workbench targets: the pull request, a number or URL, "" = none (00089)
+	// WorkbenchFolderID is the workbench folder the work is in (00209);
+	// NULL = the home folder. A removed folder still names its row.
+	WorkbenchFolderID sql.NullInt64 `json:"WorkbenchFolderID"`
 }
 
 // TargetNote represents a single note entry in a target's notes JSON array.

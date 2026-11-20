@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerInterface
 import WatchtowerTestSupport
 
 @MainActor
@@ -69,7 +70,7 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
     }
 
     private func makeVM(project: Int64) -> WorkbenchBoardViewModel {
-        WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: project, defaults: defaults)
+        WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: project, defaults: defaults, tower: dbManager.fakeTower)
     }
 
     // MARK: - Tree
@@ -304,7 +305,12 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
             let leaf = try Self.insertTarget(db, project: pid, text: "Task", parent: mid)
             return (pid, root, mid, leaf)
         }
-        let vm = makeVM(project: pid)
+        // Go's answer for this chain: the fixture case's `rolled_up`.
+        let fixture = try Self.screenWritesResult("targets_set_status_rolls_up_two_ancestors")
+        XCTAssertEqual([root, mid, leaf], [1, 2, 3], "fixture: the case's chain")
+        let tower = FakeScreenTower()
+        tower.next(.targetsSetStatus, .ok(fixture.json))
+        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults, tower: tower)
         var reported: [WorkbenchSubject] = []
         vm.onOwnerWrite = { _, subject in reported.append(subject) }
         vm.load()
@@ -312,8 +318,80 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         vm.setStatus("done")
         await vm.writesSettled()
 
-        XCTAssertEqual(mid, root + 1, "fixture: the parents are reported in id order")
+        XCTAssertEqual(tower.calls(.targetsSetStatus).map { $0.params["id"] as? Int }, [Int(leaf)])
+        XCTAssertEqual(reported, [.target(leaf)] + fixture.rolledUp.map { .target($0) },
+                       "the named target, then exactly the parents Go says the rollup moved")
+    }
+
+    /// A Kanban card move (`targets.set_column`) reports the parents Go's
+    /// rollup moved, as a status write does.
+    func testColumnMoveReportsTheParentsTheRollupMoved() async throws {
+        let ids = try await dbManager.dbPool.write { db -> [Int64] in
+            let pid = try Self.insertWorkbench(db)
+            let root = try Self.insertTarget(db, project: pid, text: "Plan")
+            let mid = try Self.insertTarget(db, project: pid, text: "Feature", parent: root)
+            let leaf = try Self.insertTarget(db, project: pid, text: "Task", parent: mid)
+            let code = try Self.insertColumn(db, project: pid, status: "in_progress", title: "Code", position: 0)
+            return [pid, root, mid, leaf, code]
+        }
+        let (pid, root, mid, leaf, code) = (ids[0], ids[1], ids[2], ids[3], ids[4])
+        let vm = makeVM(project: pid)
+        var reported: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in reported.append(subject) }
+        vm.load()
+
+        let moved = await vm.moveCard(Int(leaf), status: "in_progress", columnID: code)
+
+        XCTAssertTrue(moved)
         XCTAssertEqual(reported, [.target(leaf), .target(root), .target(mid)])
+        let column = try await dbManager.dbPool.read { db in
+            try Int64.fetchOne(db, sql: "SELECT board_column_id FROM targets WHERE id = ?", arguments: [leaf])
+        }
+        XCTAssertEqual(column, code)
+    }
+
+    /// The owner's Done on a board card, which rolls its parents up to done
+    /// too, raises no notice: every target the write moved is reported as the
+    /// owner's, so the notification poll leaves them out.
+    func testOwnerMoveRaisesNoDoneNotice() async throws {
+        let (pid, leaf) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            let root = try Self.insertTarget(db, project: pid, text: "Plan")
+            let leaf = try Self.insertTarget(db, project: pid, text: "Task", parent: root)
+            return (pid, leaf)
+        }
+        let suite = "WorkbenchBoardViewModelTests.notices.\(UUID().uuidString)"
+        let noticeDefaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { noticeDefaults.removePersistentDomain(forName: suite) }
+        let notifier = RecordingWorkbenchNotifier()
+        let notices = WorkbenchNotificationCenter(dbPool: dbManager.dbPool, notifier: notifier,
+                                                  activityReader: DefaultWorkbenchActivityReader(), defaults: noticeDefaults)
+        await notices.poll()
+        let vm = makeVM(project: pid)
+        vm.onOwnerWrite = { [weak notices] project, subject in notices?.recordOwnerWrite(projectID: project, subject: subject) }
+        vm.load()
+
+        let wrote = await vm.setStatus("done", for: Int(leaf))
+        await notices.poll()
+
+        XCTAssertTrue(wrote)
+        XCTAssertTrue(notifier.sent.isEmpty, "no notice for the target or a rolled-up parent: \(notifier.sent.map(\.title))")
+    }
+
+    /// The `expect.result` of Go's screen-writes fixture case `name`
+    /// (`internal/inboxfeed/testdata/screen_writes.json`).
+    nonisolated private static func screenWritesResult(_ name: String) throws -> (json: String, rolledUp: [Int64]) {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // …/Tests
+            .deletingLastPathComponent() // …/WatchtowerDesktop
+            .deletingLastPathComponent() // the repository
+            .appendingPathComponent("internal/inboxfeed/testdata/screen_writes.json")
+        let cases = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
+        let found = try XCTUnwrap(cases.first { $0["name"] as? String == name })
+        let result = try XCTUnwrap((found["expect"] as? [String: Any])?["result"])
+        let data = try JSONSerialization.data(withJSONObject: result)
+        let rolled = try JSONDecoder().decode(TargetStatusResult.self, from: data).rolledUp
+        return (try XCTUnwrap(String(bytes: data, encoding: .utf8)), rolled)
     }
 
     // MARK: - Move (board #186)
@@ -459,15 +537,15 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let pid = try dbManager.dbPool.write { try Self.insertWorkbench($0) }
 
-        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
+        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults, tower: dbManager.fakeTower)
         XCTAssertEqual(vm.mode, .list)
         vm.mode = .kanban
         WorkbenchBoardPreferences(workbenchID: pid, defaults: defaults).boardScopeID = 7
 
-        let reopened = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
+        let reopened = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults, tower: dbManager.fakeTower)
         XCTAssertEqual(reopened.mode, .kanban)
         XCTAssertEqual(reopened.boardScopeID, 7)
-        let other = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid + 1, defaults: defaults)
+        let other = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid + 1, defaults: defaults, tower: dbManager.fakeTower)
         XCTAssertEqual(other.mode, .list)
         XCTAssertNil(other.boardScopeID)
     }

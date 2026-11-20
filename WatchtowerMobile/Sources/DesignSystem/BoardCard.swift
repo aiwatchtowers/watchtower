@@ -36,11 +36,12 @@ struct BoardCardModel: Equatable {
     /// `statusText` is the column's or status's label (the screen's
     /// `BoardRowModel.statusLabel`); `progress` is 0…1, nil for no bar.
     init(
-        number: Int64,
+        number: Int64?,
         title: String,
         status: WorkbenchTargetStatus,
         statusText: String,
         priority: WorkbenchTargetPriority,
+        unnumbered: String = "",
         counter: String? = nil,
         progress: Double? = nil,
         liveSessions: Int = 0,
@@ -49,7 +50,8 @@ struct BoardCardModel: Equatable {
         statusChip: Bool = true
     ) {
         let style = TargetStatusStyle.of(status)
-        numberText = "#\(number)"
+        // nil: a new target the phone just asked for, not numbered yet: `unnumbered` stands in.
+        numberText = number.map { "#\($0)" } ?? unnumbered
         self.title = title.isEmpty ? "Untitled" : title
         glyph = style.glyph
         tone = style.tone

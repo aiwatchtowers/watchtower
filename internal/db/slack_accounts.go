@@ -24,7 +24,7 @@ type SlackAccount struct {
 	SearchLastDate string
 	CreatedAt      string
 	// CompanySlug ties the account to a company bundle's Slack app; '' = our
-	// shared app (migration 00198).
+	// shared app (migration 00210).
 	CompanySlug string
 	// ClientID is the Slack app the token was issued through; "" = connected
 	// before migration 00196 and not yet backfilled (BackfillSlackClientIDs).

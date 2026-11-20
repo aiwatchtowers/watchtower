@@ -3,6 +3,7 @@ package slackauth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -475,7 +476,9 @@ func TestSlackRefresh_CallerCancelStillSaves(t *testing.T) {
 
 // Expiries Slack's answer does not state: a new refresh token gets the
 // 30-day default, an unrotated one keeps its expiry, and a missing
-// expires_in keeps the access token's.
+// expires_in keeps the access token's. The next read never refreshes again
+// (review m1): a refresh that could not move an expiry out of its window is
+// not repeated on every read.
 func TestSlackRefresh_UnstatedExpiries(t *testing.T) {
 	t.Parallel()
 	oldAccess := t0.Add(10 * time.Minute)
@@ -511,6 +514,11 @@ func TestSlackRefresh_UnstatedExpiries(t *testing.T) {
 			got:        Refreshed{AccessToken: "xoxe.xoxp-old", RefreshToken: "r2", RefreshExpiresIn: 3600},
 			wantAccess: oldAccess, wantRefresh: t0.Add(time.Hour), wantRefreshToken: "r2",
 		},
+		{
+			name:       "nothing rotated, no lifetimes",
+			got:        Refreshed{AccessToken: "xoxe.xoxp-old", RefreshToken: "xoxe-1-old"},
+			wantAccess: oldAccess, wantRefresh: oldRefresh, wantRefreshToken: "xoxe-1-old",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t, "111.222", "")
@@ -522,6 +530,10 @@ func TestSlackRefresh_UnstatedExpiries(t *testing.T) {
 			assert.True(t, tc.wantRefresh.Equal(tok.RefreshExpiresAt), "refresh expiry %v", tok.RefreshExpiresAt)
 			assert.Equal(t, tc.wantRefreshToken, tok.RefreshToken)
 			assert.Equal(t, tc.wantRefresh.UTC().Format(time.RFC3339), f.row(t).RefreshTokenExpiresAt, "the column is never blanked")
+
+			next, err := LoadFresh(context.Background(), f.dir, f.db, f.id, mustNotRefresh(t), clockAt(t0.Add(time.Minute)))
+			require.NoError(t, err)
+			assert.Equal(t, tok.AccessToken, next.AccessToken, "no refresh storm: the next read uses the saved token")
 		})
 	}
 }
@@ -583,4 +595,68 @@ func TestSlackRefresh_CancelledBeforeRefreshStartsNone(t *testing.T) {
 	saved, err := f.store().Load()
 	require.NoError(t, err)
 	assert.Equal(t, "xoxe-1-old", saved.RefreshToken)
+}
+
+// A refresh that left the refresh token's expiry in its window is not
+// repeated, but the access token's next window still refreshes.
+func TestSlackRefresh_StuckExpiryStillRefreshesTheAccessToken(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, "111.222", "")
+	f.save(t, rotated(t0.Add(10*time.Minute), t0.Add(5*24*time.Hour)))
+	calls := 0
+	refresh := func(context.Context, string, string) (Refreshed, error) {
+		calls++
+		return Refreshed{AccessToken: fmt.Sprintf("a%d", calls), RefreshToken: "xoxe-1-old", ExpiresIn: 43200}, nil
+	}
+	for _, at := range []time.Duration{0, time.Minute, 10 * time.Hour} {
+		_, err := LoadFresh(context.Background(), f.dir, f.db, f.id, refresh, clockAt(t0.Add(at)))
+		require.NoError(t, err)
+	}
+	assert.Equal(t, 1, calls, "the refresh token's window alone does not refresh again")
+	tok, err := LoadFresh(context.Background(), f.dir, f.db, f.id, refresh, clockAt(t0.Add(11*time.Hour+30*time.Minute)))
+	require.NoError(t, err)
+	assert.Equal(t, 2, calls, "the access token's own window refreshes")
+	assert.Equal(t, "a2", tok.AccessToken)
+}
+
+func TestIssuedExpiries(t *testing.T) {
+	t.Parallel()
+	access, refresh := IssuedExpiries("r", 0, 0, t0)
+	assert.True(t, t0.Add(12*time.Hour).Equal(access))
+	assert.True(t, t0.Add(30*24*time.Hour).Equal(refresh))
+	access, refresh = IssuedExpiries("r", 60, 120, t0)
+	assert.True(t, t0.Add(time.Minute).Equal(access))
+	assert.True(t, t0.Add(2*time.Minute).Equal(refresh))
+	access, refresh = IssuedExpiries("", 0, 0, t0)
+	assert.True(t, access.IsZero(), "no rotation: no access expiry assumed")
+	assert.True(t, refresh.IsZero())
+	access, _ = IssuedExpiries("", 60, 0, t0)
+	assert.True(t, t0.Add(time.Minute).Equal(access), "a stated lifetime is kept")
+}
+
+// The cooldown never outlives the token: once the access token Slack kept
+// has expired, the next read refreshes again instead of returning a token
+// known to be expired (verify round 1).
+func TestSlackRefresh_ExpiredTokenAlwaysRetries(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, "111.222", "")
+	expiry := t0.Add(10 * time.Minute)
+	f.save(t, rotated(expiry, t0.Add(20*24*time.Hour)))
+	calls := 0
+	refresh := func(context.Context, string, string) (Refreshed, error) {
+		calls++
+		if calls == 1 {
+			return Refreshed{AccessToken: "xoxe.xoxp-old", RefreshToken: "xoxe-1-old"}, nil // nothing moved
+		}
+		return Refreshed{AccessToken: "xoxe.xoxp-new", RefreshToken: "xoxe-1-new", ExpiresIn: 43200}, nil
+	}
+	_, err := LoadFresh(context.Background(), f.dir, f.db, f.id, refresh, clockAt(t0))
+	require.NoError(t, err)
+	_, err = LoadFresh(context.Background(), f.dir, f.db, f.id, refresh, clockAt(t0.Add(5*time.Minute)))
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls, "still usable: the cooldown holds")
+	tok, err := LoadFresh(context.Background(), f.dir, f.db, f.id, refresh, clockAt(expiry))
+	require.NoError(t, err)
+	assert.Equal(t, 2, calls, "expired: refreshed again")
+	assert.Equal(t, "xoxe.xoxp-new", tok.AccessToken)
 }

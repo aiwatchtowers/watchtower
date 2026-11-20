@@ -59,6 +59,15 @@ struct SessionHostHello: Codable, Equatable {
 
     let version: Int
     var pid: Int?
+    /// The optional requests the host serves (Go `HelloMsg.Features`, a
+    /// HelloOK's only; nil in a hello the app sends and from a host that
+    /// predates it).
+    var features: [String]?
+
+    /// The read-only prompt request (Go `FeaturePromptState`, spec
+    /// 2026-11-18 §5, D41): the daemon learns a prompt was cleared through
+    /// it, so the owner needs no Dismiss.
+    static let promptStateFeature = "prompt_state"
 }
 
 struct SessionHostErrorMessage: Codable, Equatable {
@@ -273,6 +282,18 @@ final class SessionHostClient {
     /// connection drops: a pid is only trusted while its connection lives.
     private(set) var hostPID: Int?
 
+    /// The connected host's optional requests from its last HelloOK; nil
+    /// until a control connection said Hello. Kept when the connection
+    /// drops: the host that answered last is still the one running.
+    private(set) var hostFeatures: [String]?
+
+    /// The host is known to lack `PromptState` (spec 2026-11-18 §5): an
+    /// agent message left in a prompt is cleared only by the run's end or a
+    /// submit, so the notice offers Dismiss. False while unknown.
+    var lacksPromptState: Bool {
+        hostFeatures.map { !$0.contains(SessionHostHello.promptStateFeature) } ?? false
+    }
+
     /// Ends the control connection — the host it reached was replaced (the
     /// v1-host restart stopped it) — so the next `ensureRunning` connects
     /// afresh, or starts a host, and settles `hostVersion` again.
@@ -348,7 +369,9 @@ final class SessionHostClient {
         control = transport
         do {
             let reply = try await request(.json(.hello, SessionHostHello(version: version)), expecting: .helloOK)
-            hostPID = (try? reply.decoded(SessionHostHello.self))?.pid
+            let hello = try? reply.decoded(SessionHostHello.self)
+            hostPID = hello?.pid
+            hostFeatures = hello?.features ?? []
             return .connected
         } catch {
             if control === transport { dropControl() }

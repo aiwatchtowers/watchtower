@@ -19,6 +19,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
+	"watchtower/internal/workbenchcheck"
 )
 
 // nestedSessionID is a `claude -p` the agent ran from its shell: it inherits
@@ -392,6 +393,7 @@ func TestProj11_NestedSessionNeverMovesTheRow(t *testing.T) {
 		assert.Empty(t, errOut)
 	}
 	// The nested run's Stop hook too.
+	stubStopHookCheck(t)
 	out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), withCwd(t, statePayload("Stop", nestedSessionID, ""), nestedCwd))
 	assert.Empty(t, out)
 	assert.Empty(t, errOut)
@@ -427,6 +429,11 @@ func stopStateFixture(t *testing.T, branch string) (database *db.DB, pid, row in
 	database = writeActionsConfig(t)
 	folder := driftRepo(t)
 	pid, _ = driftWorkbench(t, database, folder, branch)
+	if branch == "open" {
+		// An open branch is no drift by construction; these tests are about
+		// the turn state, so the check need not race its wall-clock budget.
+		stubStopHookCheck(t)
+	}
 	_, err := devpack.InstallStateHooks(folder, "watchtower", pid)
 	require.NoError(t, err)
 	res, err := database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
@@ -1503,6 +1510,7 @@ func hookStep(t *testing.T, database *db.DB, pid, row int64, at func(int), sec i
 	at(sec)
 	var out, errOut string
 	if strings.Contains(input, `"hook_event_name": "Stop"`) || strings.Contains(input, `"hook_event_name":"Stop"`) {
+		stubStopHookCheck(t)
 		out, errOut = stopHookIO(t, strconv.FormatInt(pid, 10), input)
 	} else {
 		var err error
@@ -2449,4 +2457,18 @@ func TestProj11_ShellsNeverMoveTheTurnEndStamp(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, s.BackgroundShells.Valid, "the probe ended the shells")
 	assert.Equal(t, turnEnd, s.AgentStateAt, "the shells ended by the probe")
+}
+
+// stubStopHookCheck makes the Stop hook's drift check find nothing for the
+// rest of t, for tests whose subject is the turn state, not the board: the
+// real check runs git under a wall-clock budget, and on a loaded machine its
+// "ran out of time" line on stderr would fail them for nothing. The drift
+// path itself stays covered by the PROJ-07 tests in workbench_check_test.go.
+func stubStopHookCheck(t *testing.T) {
+	t.Helper()
+	check := stopHookCheck
+	stopHookCheck = func(context.Context, *db.DB, int64, workbenchcheck.Options) (workbenchcheck.Report, error) {
+		return workbenchcheck.Report{}, nil
+	}
+	t.Cleanup(func() { stopHookCheck = check })
 }

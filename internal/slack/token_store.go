@@ -26,6 +26,9 @@ type Token struct {
 	RefreshToken     string    `json:"refresh_token,omitempty"`
 	ExpiresAt        time.Time `json:"expires_at,omitzero"`
 	RefreshExpiresAt time.Time `json:"refresh_expires_at,omitzero"`
+	// RefreshedAt is when slackauth last refreshed the token (zero: never);
+	// a refresh that left an expiry inside its window is not repeated.
+	RefreshedAt time.Time `json:"refreshed_at,omitzero"`
 	// ClientID and AppID name the Slack app the token was issued through.
 	// When they differ from the account row, the file is the truth (A6);
 	// empty on files written before they were recorded.

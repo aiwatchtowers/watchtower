@@ -25,7 +25,7 @@ final class LinearAccountTests: XCTestCase {
         XCTAssertEqual(accounts[1].authLabel, "Signed in with Linear")
     }
 
-    /// `company_slug` (migration 00198) decodes when present and defaults to
+    /// `company_slug` (migration 00210) decodes when present and defaults to
     /// "" for a CLI that predates it.
     func testDecodesCompanySlugAndToleratesItsAbsence() throws {
         let json = """

@@ -32,7 +32,7 @@ type JiraAccount struct {
 	OwnerEmail       string
 	OwnerDisplayName string
 	// CompanySlug ties the account to the company bundle whose OAuth client
-	// it signed in with; '' = our shared client (migration 00198).
+	// it signed in with; '' = our shared client (migration 00210).
 	CompanySlug string
 	// AuthKind is "oauth" or "api_token"; CreateJiraAccount stores "" as
 	// "oauth".

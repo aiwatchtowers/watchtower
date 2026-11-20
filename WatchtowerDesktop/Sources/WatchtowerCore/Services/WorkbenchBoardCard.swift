@@ -54,6 +54,24 @@ package struct WorkbenchBoardCard: Equatable {
         package var fraction: Double { Double(done) / Double(total) }
     }
 
+    /// The folder a card names (spec 2026-11-18 §6.10), after the status chip.
+    package enum FolderChip: Equatable {
+        /// The target's folder, on a bench of more than one live folder.
+        case folder(String)
+        /// The target's folder left the bench: `· folder removed`, in the
+        /// warning Tone, instead of the chip.
+        case removed
+
+        package var text: String {
+            switch self {
+            case let .folder(name): name
+            case .removed: WorkbenchBoardCard.folderRemovedText
+            }
+        }
+    }
+
+    package static let folderRemovedText = "· folder removed"
+
     package let title: String
     package let isClosed: Bool
     package let isDone: Bool
@@ -62,9 +80,15 @@ package struct WorkbenchBoardCard: Equatable {
     package let children: ChildProgress?
     /// A leaf's own partial progress (strictly between 0 and 1), else nil.
     package let leafProgress: Double?
+    /// nil on a one-folder bench (the card looks as before), for a target
+    /// with no folder row to name, and while the bench's folders are unread.
+    package let folderChip: FolderChip?
 
-    package init(_ node: WorkbenchBoardNode) {
+    /// `folders`: the bench's folders as one read gives them. A target
+    /// stores no folder (nil) for the home folder.
+    package init(_ node: WorkbenchBoardNode, folders: BenchFolders? = nil) {
         let target = node.target
+        folderChip = Self.folderChip(folderID: target.workbenchFolderID, folders: folders)
         title = Self.title(target.text)
         isDone = target.status == "done"
         isClosed = isDone || target.status == "dismissed"
@@ -79,6 +103,30 @@ package struct WorkbenchBoardCard: Equatable {
             )
             leafProgress = nil
         }
+    }
+
+    /// A removed folder always says so (the work in it cannot be checked
+    /// any more); a live one is named only on a bench of several.
+    package static func folderChip(folderID: Int64?, folders: BenchFolders?) -> FolderChip? {
+        guard let folders, let folder = folders.folder(folderID) else { return nil }
+        if folder.isRemoved { return .removed }
+        return folders.live.count > 1 ? .folder(folder.name) : nil
+    }
+
+    /// The panel's Folder menu (spec 2026-11-18 §6.10): on a bench of several
+    /// live folders, and also for a target left on a removed folder while a
+    /// live one can take it back (the menu then lists the live folders).
+    package static func showsFolderMenu(folderID: Int64?, folders: BenchFolders?) -> Bool {
+        guard let folders else { return false }
+        if folders.live.count > 1 { return true }
+        return folders.folder(folderID)?.isRemoved == true && !folders.live.isEmpty
+    }
+
+    /// The panel's Folder menu title: the folder's name, `Folder removed` for
+    /// one that left the bench, `Folder` for one this bench does not know.
+    package static func folderMenuTitle(_ folder: WorkbenchFolder?) -> String {
+        guard let folder else { return "Folder" }
+        return folder.isRemoved ? "Folder removed" : folder.name
     }
 
     /// The first non-blank line of a target's text.

@@ -44,7 +44,7 @@ Your reply does not close a mail item. Slack, Jira and calendar items resolve wh
 <!-- learn
 id: mail-connect-gmail
 title: Bring your Gmail in
-text: Connect Gmail in **Connections → Google** through your company's Google project or your own; mail to you joins Slack and Jira.
+text: Add Gmail in **Connections → Google** with your company's Google project or your own; your mail joins Slack and Jira.
 area: communication
 level: basics
 kind: feature

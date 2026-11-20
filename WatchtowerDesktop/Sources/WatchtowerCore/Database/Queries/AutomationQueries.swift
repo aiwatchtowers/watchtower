@@ -145,7 +145,8 @@ package enum AutomationQueries {
         since: Date? = nil,
         limit: Int? = nil,
         includeRead: Bool = false,
-        excludingAutomation: Int64? = nil
+        excludingAutomation: Int64? = nil,
+        ids: [Int64]? = nil
     ) throws -> [AutomationOutputCard] {
         // needs_confirmation and runnable are `Automation.needsConfirmation`
         // and `Automation.isRunnable` (Go `Runnable()`), in SQL.
@@ -161,9 +162,10 @@ package enum AutomationQueries {
                 (a.parse_error = '' AND a.enabled AND a.removed_at IS NULL AND a.confirmed_hash != ''
                     AND a.confirmed_hash = a.approval_hash) AS runnable
             FROM automation_outputs o JOIN automations a ON a.id = o.automation_id
-            WHERE \(includeRead ? openInbox : unreadInbox)
+            WHERE \(ids.map { "o.id IN (" + $0.map { _ in "?" }.joined(separator: ",") + ")" }
+                ?? (includeRead ? openInbox : unreadInbox))
             """
-        var arguments = StatementArguments()
+        var arguments = StatementArguments(ids ?? [])
         if let since {
             sql += " AND o.changed_at >= ?"
             arguments += [AutomationDates.format(since)]
@@ -242,42 +244,6 @@ package enum AutomationQueries {
     /// The badge and Home: unread open cards.
     package static func inboxOutputCount(_ db: Database) throws -> Int {
         try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM automation_outputs o WHERE \(unreadInbox)") ?? 0
-    }
-
-    /// The owner opened a card: writes `read_at` only, once, on an open card
-    /// still at `contentHash` (the version drawn). False when nothing
-    /// changed — the card was rewritten under the view, closed, or already
-    /// read: the caller re-reads instead of assuming the mark landed.
-    @discardableResult
-    package static func markOutputOpened(_ db: Database, id: Int64, contentHash: String, now: Date) throws -> Bool {
-        try stampOnce(db, column: "read_at", id: id, contentHash: contentHash, now: now, extra: " AND read_at IS NULL")
-    }
-
-    /// Done on a card: writes `done_at` only, once, at the drawn version.
-    @discardableResult
-    package static func markOutputDone(_ db: Database, id: Int64, contentHash: String, now: Date) throws -> Bool {
-        try stampOnce(db, column: "done_at", id: id, contentHash: contentHash, now: now)
-    }
-
-    /// Dismiss on a card: writes `dismissed_at` only, once, at the drawn version.
-    @discardableResult
-    package static func dismissOutput(_ db: Database, id: Int64, contentHash: String, now: Date) throws -> Bool {
-        try stampOnce(db, column: "dismissed_at", id: id, contentHash: contentHash, now: now)
-    }
-
-    /// Stamps one state column of an open card (neither done nor dismissed)
-    /// whose `content_hash` is still the drawn one. A living rewrite between
-    /// the render and the press changes the hash, so a version the owner
-    /// never saw is never marked; a row from before the migration has `''`
-    /// and the card read it as `''`. True when the row changed.
-    private static func stampOnce(
-        _ db: Database, column: String, id: Int64, contentHash: String, now: Date, extra: String = ""
-    ) throws -> Bool {
-        try db.execute(sql: """
-            UPDATE automation_outputs SET \(column) = ?
-            WHERE id = ? AND content_hash = ? AND done_at IS NULL AND dismissed_at IS NULL\(extra)
-            """, arguments: [AutomationDates.format(now), id, contentHash])
-        return db.changesCount > 0
     }
 
     // MARK: - Labels

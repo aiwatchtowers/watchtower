@@ -44,6 +44,7 @@ import (
 	"sync"
 	"time"
 
+	"watchtower/internal/askanswer"
 	"watchtower/internal/chatengine"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -64,6 +65,7 @@ import (
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstart"
 	"watchtower/internal/tools"
+	"watchtower/internal/tower"
 )
 
 // The phase-1 environment.
@@ -150,6 +152,10 @@ type Options struct {
 	// port (sessionstart.Port) over SessionStart, whose DB and DBPath the
 	// runtime fills from DB.
 	Sessions handlers.SessionPort
+	// Answerer is the one answer path of asks and permission requests the
+	// handlers write through; the daemon passes the one it shares with
+	// Watchman, nil = the hub builds its own (tests).
+	Answerer *askanswer.Answerer
 	// SessionStart is what the real port starts sessions with: the host
 	// socket (FromEnv: WATCHTOWER_SESSION_HOST_SOCKET only — the phase-1
 	// test workspace never reaches the host the Desktop uses; "" leaves
@@ -186,6 +192,10 @@ type Options struct {
 	// (unified chat T17): the providers, their pair and capability rows and
 	// the routing status, read on every build. nil leaves `routing` out.
 	ChatRouting func(context.Context) *chatengine.RoutingCatalog
+	// Tower is the daemon's tower (the socket's): the phone Inbox's feed
+	// (inbox.feed) and writes (inbox.act, as the hub) go through it. nil =
+	// no Inbox on the phone and no inbox capability in the heartbeat.
+	Tower *tower.Tower
 
 	// Test seams (zero = production).
 	newTransport func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error)

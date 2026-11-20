@@ -247,7 +247,7 @@ func TestSlackConnectServe_SecondStartBusy(t *testing.T) {
 	h.send(t, start)
 	assert.Equal(t, flow, h.expect(t, "busy")["flow"])
 	h.link(t, connTeam, connNewID)
-	assert.Equal(t, flow, h.expect(t, "busy")["flow"], "a link is refused too")
+	assert.Equal(t, flow, h.expect(t, "link_busy")["flow"], "a link is refused too, as its own event")
 	assert.Len(t, h.browserURLs(), 1)
 }
 
@@ -370,6 +370,8 @@ func TestSlackConnectServe_WireGolden(t *testing.T) {
 	flow := h.expect(t, "link")["flow"].(string)
 	h.send(t, start)
 	h.expect(t, "busy")
+	h.link(t, connTeam, connNewID)
+	h.expect(t, "link_busy")
 	h.send(t, `{"cmd":"confirm","flow":"`+flow+`"}`)
 	h.expect(t, "browser")
 	h.callback(t, "code-1")

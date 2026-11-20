@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"watchtower/internal/sessionagent"
 )
 
 // The session state hooks (UserPromptSubmit, Notification, PostToolUse,
@@ -40,6 +42,9 @@ func TestWorkbenchSessionStateHookCommand(t *testing.T) {
 // notification type), one async command entry with timeout 5.
 func assertOneAsyncStateEntry(t *testing.T, event string, groups []any, cmd string) {
 	t.Helper()
+	if event == "PostToolUse" {
+		groups = withoutOutsideTouchGroup(t, groups, strings.Replace(cmd, " session-state ", " outside-touch ", 1))
+	}
 	if len(groups) != 1 || countCommand(groups, cmd) != 1 {
 		t.Fatalf("expected one %s group running %q, got %#v", event, cmd, groups)
 	}
@@ -51,6 +56,36 @@ func assertOneAsyncStateEntry(t *testing.T, event string, groups []any, cmd stri
 	if h["async"] != true || h["timeout"] != float64(5) || h["type"] != "command" {
 		t.Fatalf("%s: entry %#v, want an async command with timeout 5", event, h)
 	}
+}
+
+// withoutOutsideTouchGroup checks that PostToolUse holds the outside-bench
+// entry (multi-folder workbench §6.7) — alone in its group with the path
+// tools' matcher, one synchronous command entry with timeout 5 running cmd
+// — and returns the other groups.
+func withoutOutsideTouchGroup(t *testing.T, groups []any, cmd string) []any {
+	t.Helper()
+	var rest []any
+	found := 0
+	for _, g := range groups {
+		gm := g.(map[string]any)
+		if countCommand([]any{g}, cmd) == 0 {
+			rest = append(rest, g)
+			continue
+		}
+		found++
+		hs := gm["hooks"].([]any)
+		h := hs[0].(map[string]any)
+		if gm["matcher"] != sessionagent.OutsideTouchMatcher || len(hs) != 1 {
+			t.Fatalf("PostToolUse: the outside-bench entry sits alone in its matcher group: %#v", gm)
+		}
+		if _, async := h["async"]; async || h["timeout"] != float64(5) || h["type"] != "command" {
+			t.Fatalf("PostToolUse: outside-bench entry %#v, want a synchronous command with timeout 5", h)
+		}
+	}
+	if found != 1 {
+		t.Fatalf("expected one PostToolUse group running %q, got %#v", cmd, groups)
+	}
+	return rest
 }
 
 // assertToolStartEntry: PreToolUse holds exactly one group with matcher "*"
@@ -90,11 +125,12 @@ func TestInstallWorkbenchInstallsTheStateHooks(t *testing.T) {
 	for _, event := range stateEvents {
 		assertOneAsyncStateEntry(t, event, eventGroups(t, m, event), cmd)
 	}
-	// PreToolUse holds the ask tool block's AskUserQuestion group and our
-	// "*" state group side by side.
+	// PreToolUse holds the ask tool block's AskUserQuestion group, our "*"
+	// state group and the Watchman guard's "*" group side by side.
 	preToolUse := eventGroups(t, m, "PreToolUse")
 	assertToolStartEntry(t, preToolUse, cmd)
-	if len(preToolUse) != 2 || countCommand(preToolUse, WorkbenchAskGuardHookCommand(o.Bin, 7)) != 1 {
+	if len(preToolUse) != 3 || countCommand(preToolUse, WorkbenchAskGuardHookCommand(o.Bin, 7)) != 1 ||
+		countCommand(preToolUse, watchmanGuardSpec.command(o.Bin, 7)) != 1 {
 		t.Fatalf("PreToolUse must hold the ask tool block and the state entry: %#v", preToolUse)
 	}
 	// Stop keeps its one synchronous drift entry, next to the ask guard's
@@ -362,9 +398,10 @@ func TestInstallStateHooksRepairsASixHookFolder(t *testing.T) {
 	if full, err := HasStateHooks(folder, 7); err != nil || full {
 		t.Fatalf("the six-hook folder reads complete: %v err=%v", full, err)
 	}
+	// The Watchman guard's "*" group (installed with the ask guard) follows.
 	beforePre := eventGroups(t, decodeSettings(t, folder), "PreToolUse")
-	if len(beforePre) != 1 || beforePre[0].(map[string]any)["matcher"] != "AskUserQuestion" {
-		t.Fatalf("expected the ask block's group alone: %#v", beforePre)
+	if len(beforePre) != 2 || beforePre[0].(map[string]any)["matcher"] != "AskUserQuestion" {
+		t.Fatalf("expected the ask block's group first and the Watchman guard's: %#v", beforePre)
 	}
 
 	changed, err := InstallStateHooks(folder, o.Bin, 7)
@@ -375,7 +412,7 @@ func TestInstallStateHooksRepairsASixHookFolder(t *testing.T) {
 	m := decodeSettings(t, folder)
 	assertOneAsyncStateEntry(t, "PostToolUseFailure", eventGroups(t, m, "PostToolUseFailure"), cmd)
 	pre := eventGroups(t, m, "PreToolUse")
-	if len(pre) != 2 || !reflect.DeepEqual(pre[0], beforePre[0]) {
+	if len(pre) != 3 || !reflect.DeepEqual(pre[0], beforePre[0]) {
 		t.Fatalf("the ask block's group must stay first and as it was: %#v", pre)
 	}
 	assertToolStartEntry(t, pre, cmd)
@@ -384,5 +421,31 @@ func TestInstallStateHooksRepairsASixHookFolder(t *testing.T) {
 	}
 	if full, err := HasStateHooks(folder, 7); err != nil || !full {
 		t.Fatalf("after the repair: HasStateHooks = %v err=%v", full, err)
+	}
+}
+
+// InstalledWorkbenchIDs reads which workbench a folder is installed for: a
+// merged bench's folder still names the old id until it is reinstalled
+// (spec 2026-11-18 §6.13, the launch backstop).
+func TestInstalledWorkbenchIDs(t *testing.T) {
+	dir := t.TempDir()
+	if ids, err := InstalledWorkbenchIDs(dir); err != nil || len(ids) != 0 {
+		t.Fatalf("no settings: ids=%v err=%v", ids, err)
+	}
+	if _, err := InstallStateHooks(dir, "/Applications/Watch Tower/watchtower", 7); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstallStateHooks(dir, "watchtower", 12); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := InstalledWorkbenchIDs(dir)
+	if err != nil || !slices.Equal(ids, []int64{7, 12}) {
+		t.Fatalf("ids=%v err=%v, want [7 12]", ids, err)
+	}
+	if _, err := RemoveStateHooks(dir, 7); err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := InstalledWorkbenchIDs(dir); err != nil || !slices.Equal(ids, []int64{12}) {
+		t.Fatalf("after removing 7: ids=%v err=%v", ids, err)
 	}
 }

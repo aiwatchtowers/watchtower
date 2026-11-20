@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import WatchtowerCore
+import WatchtowerInterface
 
 @MainActor
 @Observable
@@ -33,12 +34,18 @@ final class TargetsViewModel {
     /// Optional injected runner for tests; production uses ProcessCLIRunner.makeDefault().
     private let cliRunner: CLIRunnerProtocol?
 
+    /// The status presses through the tower and each target row's state.
+    let presses: TowerPresses
+
     init(
         dbManager: DatabaseManager,
-        cliRunner: CLIRunnerProtocol? = nil
+        cliRunner: CLIRunnerProtocol? = nil,
+        tower: (any TowerSending)? = nil
     ) {
         self.dbManager = dbManager
         self.cliRunner = cliRunner
+        presses = TowerPresses(tower: tower)
+        presses.reread = { [weak self] in self?.load() }
     }
 
     func startObserving() {
@@ -197,10 +204,23 @@ final class TargetsViewModel {
         await updateStatus(target, to: "dismissed")
     }
 
+    /// Snooze to the owner's picked day (`targets.snooze`, a bare
+    /// `yyyy-MM-dd` date, as the Targets tab's day picker wrote it).
     @discardableResult
     func snooze(_ target: Target, until: Date) async -> Bool {
-        let id = target.id
-        return await perform("snooze") { db in try TargetQueries.snooze(db, id: id, until: until) } != nil
+        let id = Int64(target.id)
+        let day = Self.snoozeDay(until)
+        return await statusPress(.targetsSnooze, target.id, label: TowerPressText.snoozing, variant: day) {
+            TargetSnoozeRequest(requestID: $0, id: id, until: day)
+        } != nil
+    }
+
+    /// `until`'s owner-local day, the form a snooze from the Targets tab stores.
+    nonisolated static func snoozeDay(_ until: Date) -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        return fmt.string(from: until)
     }
 
     /// Checks or unchecks the sub-item at `index` as the owner saw it: it
@@ -490,12 +510,42 @@ final class TargetsViewModel {
         } != nil
     }
 
+    /// The owner's status (`targets.set_status`): Go writes it with history
+    /// actor `owner` (PROJ-06), rolls the parents up (PROJ-05) and closes the
+    /// target's open Inbox items on done (INBOX-02) in one write.
     @discardableResult
     func updateStatus(_ target: Target, to status: String) async -> Bool {
-        let id = target.id
-        return await perform("update status") { db in
-            try TargetQueries.updateStatus(db, id: id, status: status)
+        let id = Int64(target.id)
+        return await statusPress(.targetsSetStatus, target.id, label: TowerPressText.updating, variant: status) {
+            TargetStatusRequest(requestID: $0, id: id, status: status)
         } != nil
+    }
+
+    /// The row key of target `id`'s status presses.
+    static func row(_ id: Int) -> String { "target:\(id)" }
+
+    /// A status press: Go writes it, the row keeps its state (`presses`), a
+    /// failure also says why in `errorMessage`. The list re-reads after an
+    /// answer (Go's write is another process's), which shows the parents the
+    /// rollup moved too. It stays out of the local edits' chain (`writes`):
+    /// a press waiting out the daemon (up to the client's 15 s) never holds
+    /// a note or a tag edit of another target behind it. Presses on one
+    /// target still go in order (`TowerPresses` queues them per row); a
+    /// local edit and a status press touch other columns, so their order
+    /// does not matter.
+    private func statusPress<Params: Encodable & Sendable>(
+        _ command: TowerCommand,
+        _ id: Int,
+        label: String,
+        variant: String,
+        _ params: @escaping (String) -> Params
+    ) async -> TargetStatusResult? {
+        let row = Self.row(id)
+        let result: TargetStatusResult? = await presses.send(command, row: row, label: label, variant: variant, params: params)
+        if result == nil, case .refused(let sentence) = presses.state(row) {
+            errorMessage = sentence
+        }
+        return result
     }
 
     @discardableResult

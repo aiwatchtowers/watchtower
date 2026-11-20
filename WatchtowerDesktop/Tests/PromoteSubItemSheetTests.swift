@@ -40,7 +40,7 @@ final class PromoteSubItemSheetTests: XCTestCase {
     func testSheetInitializesWithSubItemDefaults() async throws {
         let (mgr, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let vm = TargetsViewModel(dbManager: mgr)
+        let vm = TargetsViewModel(dbManager: mgr, tower: mgr.fakeTower)
         let parent = try await makeParent(mgr: mgr)
         let subItem = TargetSubItem(text: "first", done: false, dueDate: nil)
 
@@ -59,7 +59,7 @@ final class PromoteSubItemSheetTests: XCTestCase {
     func testSheetInitializesWithSubItemDueDateOverride() async throws {
         let (mgr, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let vm = TargetsViewModel(dbManager: mgr)
+        let vm = TargetsViewModel(dbManager: mgr, tower: mgr.fakeTower)
         let parent = try await makeParent(mgr: mgr)
         // Sub-item carries its own due date — sheet should pre-toggle the
         // due-date control instead of falling back to the parent's empty due_date.
@@ -77,7 +77,7 @@ final class PromoteSubItemSheetTests: XCTestCase {
     func testSheetInitializesWhenParentDueDatePresent() async throws {
         let (mgr, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let vm = TargetsViewModel(dbManager: mgr)
+        let vm = TargetsViewModel(dbManager: mgr, tower: mgr.fakeTower)
         let parent = try await makeParent(mgr: mgr, dueDate: "2026-04-30T17:00")
         let subItem = TargetSubItem(text: "x", done: false, dueDate: nil)
 
@@ -95,7 +95,7 @@ final class PromoteSubItemSheetTests: XCTestCase {
     func testSheetInitializesWithInjectedCLIRunner() async throws {
         let (mgr, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let vm = TargetsViewModel(dbManager: mgr)
+        let vm = TargetsViewModel(dbManager: mgr, tower: mgr.fakeTower)
         let parent = try await makeParent(mgr: mgr)
         let subItem = TargetSubItem(text: "first", done: false, dueDate: nil)
         let runner = FakeCLIRunner(stdout: Data("{}".utf8))

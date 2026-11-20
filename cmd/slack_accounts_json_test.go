@@ -101,8 +101,9 @@ func TestSlackAccountsJSON_Shape(t *testing.T) {
 	accounts := jsonAccounts(t, doc)
 	require.Len(t, accounts, 1)
 	assert.Equal(t, []string{
-		"client_id", "enabled", "id", "label", "relogin", "shared_app", "status", "team_id", "team_name",
+		"client_id", "enabled", "home_team_id", "id", "label", "relogin", "shared_app", "status", "team_id", "team_name",
 	}, slackAccountsDocKeys(accounts[0]))
+	assert.Equal(t, accounts[0]["team_id"], accounts[0]["home_team_id"], "no legacy workspace row: the row's team")
 	assert.Equal(t, jsonSetupID, accounts[0]["client_id"])
 	assert.Equal(t, "ok", accounts[0]["status"])
 	assert.Equal(t, true, accounts[0]["enabled"])
@@ -166,6 +167,24 @@ func TestSlackAccountsJSON_Relogin(t *testing.T) {
 			assert.Equal(t, tc.clientID, accounts[0]["client_id"])
 			assert.Equal(t, tc.want, accounts[0]["relogin"])
 		})
+	}
+}
+
+// The one-release Task 18 corp build (ask #1632) keeps the corp app's client
+// id without its secret: an old row without a client id is backfilled to the
+// corp id (A17), the build has no built-in app, and the row re-logs in
+// through the PKCE connect flow.
+func TestSlackAccountsJSON_CorpIDWithoutSecret(t *testing.T) {
+	setSlackBuild(t, jsonCorpID, "", "")
+	configPath, _ := slackAccountsWorkspace(t, "", jsonCorpID)
+	doc := runSlackAccountsJSON(t, configPath)
+	assert.Equal(t, false, doc["builtin_app"])
+	accounts := jsonAccounts(t, doc)
+	require.Len(t, accounts, 2)
+	for _, a := range accounts {
+		assert.Equal(t, jsonCorpID, a["client_id"], "backfilled from the id alone")
+		assert.Equal(t, false, a["shared_app"])
+		assert.Equal(t, "connect", a["relogin"])
 	}
 }
 
@@ -250,4 +269,24 @@ func TestConnectSlackAccount_BackfillsOtherRows(t *testing.T) {
 	acct, err := database.GetSlackAccount(id)
 	require.NoError(t, err)
 	assert.Equal(t, jsonSetupID, acct.ClientID)
+}
+
+// Account #1 a pre-#915 Re-login moved to another team: home_team_id names
+// the team its stored data belongs to (the legacy workspace row), which the
+// Desktop's connect Re-login targets (review m4).
+func TestSlackAccountsJSON_HomeTeamOfAMovedAccount(t *testing.T) {
+	setSlackBuild(t, "", "", "")
+	configPath, ids := slackAccountsWorkspace(t, jsonSetupID)
+	require.Equal(t, int64(1), ids[0])
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T0HOME", Name: "Acme"}))
+	require.NoError(t, database.Close())
+
+	accounts := jsonAccounts(t, runSlackAccountsJSON(t, configPath))
+	require.Len(t, accounts, 1)
+	assert.Equal(t, "T0ACMEA", accounts[0]["team_id"])
+	assert.Equal(t, "T0HOME", accounts[0]["home_team_id"])
 }

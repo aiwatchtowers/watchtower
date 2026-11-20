@@ -1,0 +1,238 @@
+import Foundation
+
+/// Design-only string table of the Watchman spec
+/// (`docs/superpowers/specs/2026-11-16-watchman-design.md` §2, §10, §11).
+/// The implementation moves each group into the view model that owns the
+/// screen (the journal, the Home row, the arming controls, Settings →
+/// Watchman) and pins it there; `WatchmanMockCopyTests` pins this table so
+/// the mockups and the spec cannot drift apart. Sample data only: `acme`,
+/// made-up ids.
+enum WatchmanMockCopy {
+    /// One category's line of the backtest table.
+    struct BacktestRow {
+        let category: String
+        let agreement: String
+        let wrongHigh: String
+        let rating: String
+    }
+
+    // MARK: Inbox → Watchman: the reading list
+
+    static let journalTitle = "Watchman"
+    static let scopeAll = "All workbenches"
+    static let scopeOne = "acme-api"
+    static let nightTonight = "Tonight"
+    static let nightTonightLine = "In progress · 3 decided so far"
+    static let night16 = "Night of 16 Nov"
+    static let night16Line = "14 decided · 2 unsure · 2 waiting"
+    static let night15 = "Night of 15 Nov"
+    static let night15Line = "9 decided · all sure"
+    static let night13 = "Night of 13 Nov"
+    static let night13Line = "4 decided · 1 unsure"
+
+    // MARK: The night
+
+    static let nightSpan = "01:40–07:30 · the Mac stayed awake"
+    static let nightCost = "Cost tonight $3.40"
+    static let busySpan = "Since 01:40 · Watchman is on"
+    static let busySummary = "1 unsure · 2 sure"
+    static let waitingTitle = "Waiting for you"
+    static let decidedTitle = "Decided"
+    static let decidedSummary = "2 unsure · 12 sure"
+    static let parkedTitle = "#1830 Merge feature/store-window → main"
+    static let parkedReason = "Parked: merging to main is yours"
+    static let parkedSession = "acme-api · session 4 · 05:12"
+    // Phase 1b (§4, ask #1486): only what needs the owner's own hands.
+    static let handedTitle = "#1834 Rotate the deploy token"
+    static let handedReason = "Handed to you: issue a new token in the provider's console"
+    static let handedSession = "acme-api · session 5 · 03:47"
+    static let openSession = "Open session"
+
+    static let unsureBadge = "Unsure"
+    static let choseLabel = "Chose"
+    static let leanedOn = "Leaned on"
+
+    static let unsure1Session = "acme-api · session 3 · 02:14"
+    static let unsure1Question = "#1826 Store the window per workbench or global?"
+    static let unsure1Choice = "Per workbench"
+    static let unsure1Rationale = "You split settings per workbench in #1201, #1288 and kept global only "
+        + "what every workbench shares. A window's place differs per folder."
+    static let unsure1Precedents = ["#1201 Sidebar width per workbench", "#1288 Terminal font per workbench"]
+    static let unsure1Meta = "confidence low · design · strong 84 %"
+    static let unsure1Outcome = "Merged into feature/store-window · PR #912"
+
+    static let unsure2Session = "acme-web · session 7 · 03:40"
+    static let unsure2Question = "#1829 Rename the \"Hold\" button to \"Pause\"?"
+    static let unsure2Choice = "Keep \"Hold\""
+    static let unsure2Rationale = "You turned down renames of shipped buttons in #1144 unless the guide "
+        + "page changed in the same PR. This one doesn't."
+    static let unsure2Precedents = ["#1144 Keep \"Archive\" on the board"]
+    static let unsure2Meta = "confidence low · ux_text · weak 61 %"
+    static let unsure2Outcome = "Session continued · not merged yet"
+
+    static let sureRows: [(title: String, meta: String)] = [
+        ("#1827 Allow go test ./internal/watchman", "permission · high"),
+        ("#1826 Review round 2: Approve", "review_code · high"),
+        ("#1828 Plan: split the store into two tasks", "scope · high"),
+        ("#1826 Finish: accept as done", "finish · medium")
+    ]
+    static let moreSure = "8 more sure decisions"
+    static let skippedTitle = "#1831 Check the tray menu on a second display"
+    static let skippedLine = "Not run by you — Watchman continued"
+    static let skippedMeta = "check · skipped"
+
+    static let ok = "OK"
+    static let correct = "Correct…"
+
+    // MARK: Journal states
+
+    static let emptyTitle = "No night yet"
+    static let emptyBody = "When you hand a session to Watchman and leave, the decisions it takes for you "
+        + "land here: what was asked, what it chose, why, and how sure it was."
+    static let emptyHint = "Use Hand to Watchman on a session strip, or Hand all running sessions to Watchman "
+        + "in the menu bar."
+    static let loading = "Reading the journal…"
+    static let readFailed = "Couldn't read the journal. The decisions are stored; nothing was lost."
+    static let retry = "Retry"
+    static let deciding = "Deciding: #1826 'Store window per workbench?' …"
+    // Phase 2: `journal-not-running` (the last night kept below the line)
+    // and `journal-night-unsure` (every decision journalled unsure, D43).
+    static let daemonStopped = "Watchman is not running — the daemon is stopped"
+
+    // MARK: Correct… sheet
+
+    static let correctTitle = "Correct this decision"
+    static let correctQuestion = "What would you have decided?"
+    static let correctDraft = "Global. One window position for every workbench is enough here; "
+        + "per-workbench settings are for things that differ by folder."
+    static let correctSessionEnded = "Session 3 has ended, so a new session starts on #1826 with your "
+        + "correction. Your answer also teaches Watchman."
+    static let cancel = "Cancel"
+    static let sendCorrection = "Send Correction"
+
+    // MARK: Home
+
+    static let homeRow = "Overnight Watchman decided 14 — 2 unsure, 2 waiting for you"
+
+    // MARK: Arming
+
+    static let stripSession = "#1826 Store window"
+    static let stripPlace = "acme-api"
+    static let stripBranch = "feature/store-window"
+    static let armedChip = "Watchman · Sleep since 01:40"
+    static let takeBack = "Take back"
+    static let handTo = "Hand to Watchman"
+    static let workchat = "Workchat"
+    static let report = "Report"
+
+    static let armTitle = "Hand acme-api to Watchman?"
+    static let armBody = "Watchman answers for you in this workbench's sessions while you sleep or are away. "
+        + "Every decision lands in the morning journal with its reason."
+    static let armAnalytics = "Agent analytics turned on — Watchman learns from your sessions"
+    static let armHistory = "Learning from your history: ~1 850 decisions, est. 1.6 M tokens"
+    static let armNoProtection = "main has no branch protection. Watchman never merges to main, "
+        + "but an agent with allow rules could push there. Turn protection on first."
+    static let armLimits = "Merging to main, messages to people and releases stay yours: Watchman parks them."
+    static let notNow = "Not now"
+    static let start = "Start"
+
+    // MARK: Menu bar
+
+    static let trayStatus = "Synced 2 min ago"
+    static let traySyncNow = "Sync Now"
+    static let trayWatchmanStatus = "Watchman · Sleep · 3 sessions"
+    static let trayHandAll = "Hand all running sessions to Watchman"
+    static let trayGoingToSleep = "Going to sleep"
+    static let trayVoiceIdea = "New Voice Idea"
+    static let trayVoiceShortcut = "⌃⌥D"
+    static let trayOpen = "Open Watchtower"
+    static let traySettings = "Settings…"
+    static let trayQuit = "Quit Watchtower"
+
+    // MARK: Target panel
+
+    static let targetNumber = "#1820"
+    static let targetGroup = "GROUP"
+    static let targetWorkOnIt = "Work on It"
+    static let targetTitle = "Store the window per workbench"
+    static let targetStatus = "In progress"
+    static let targetPriority = "High"
+    static let targetProgress = "3 of 5 done"
+    static let targetArmed = "Watchman has this target · Sleep since 01:40"
+    static let targetArmedCaption = "Answers for you in the 3 running sessions under #1820 and in the ones "
+        + "started under it."
+    static let targetUnarmedCaption = "Watchman answers for you in every session under #1820 while you sleep "
+        + "or are away."
+    static let targetChildrenTitle = "Tasks"
+    static let targetChildren: [(title: String, status: String)] = [
+        ("#1826 Store window frame per workbench", "In progress"),
+        ("#1827 Migration for the window column", "Done"),
+        ("#1828 Settings row for the window", "In progress"),
+        ("#1829 Guide page update", "To do")
+    ]
+
+    // MARK: Inbox source list
+
+    static let inboxRoot = "Inbox"
+    static let inboxWatchmanSummary = "2 waiting"
+    static let inboxWatchmanDetail = "Night of 16 Nov · 14 decided · 2 unsure"
+    /// The Inbox root's other built-in entries, as the app names them today.
+    static let inboxOthers: [(id: String, title: String, summary: String, detail: String)] = [
+        ("day", "Morning brief", "today", "Your day · Mon 16 Nov"),
+        ("tracks", "Track my threads", "2 unread", "updated 1 h ago"),
+        ("ideas", "Idea finder", "1 to judge", "updated 3 h ago")
+    ]
+
+    // MARK: Settings → Watchman
+
+    static let notLearnedTitle = "Workbenches"
+    static let notLearnedIntro = "Watchman hasn't learned any workbench yet. It reads your past decisions on a "
+        + "workbench before it can answer for you there; nothing acts until you hand it a session."
+    static let notLearnedRows: [(name: String, estimate: String)] = [
+        ("acme-api", "~1 850 decisions · est. 1.6 M tokens"),
+        ("acme-web", "~620 decisions · est. 0.5 M tokens")
+    ]
+    static let startLearning = "Start Learning"
+    static let learningProgress = "Learning… 340 of 1 850"
+
+    static let sleepTitle = "Sleep window"
+    static let sleepCaption = "Learned from when you stop and start working on workbenches. Recomputed weekly."
+    static let sleepValue = "00:30–07:45"
+    static let sleepLearned = "Learned"
+    static let sleepNotLearned = "Not learned yet: Watchman needs a week of your activity."
+    // The editing frames (profile texts, the sleep window, the hard limits)
+    // draw the real view: their strings are `WatchmanSettingsCopy`'s.
+
+    static let backtestTitle = "Backtest"
+    static let backtestCaption = "Last run 15 Nov, 03:12 · your latest 30 decisions per category, hidden and "
+        + "decided again by Watchman."
+    static let columnCategory = "Category"
+    static let columnAgreement = "Agreement"
+    static let columnWrongHigh = "Bad while sure"
+    static let columnRating = "Rating"
+    static let strong = "Strong"
+    static let weak = "Weak"
+    static let notMeasured = "Not measured"
+    static let backtestRows: [BacktestRow] = [
+        BacktestRow(category: "design", agreement: "84 %", wrongHigh: "0 %", rating: strong),
+        BacktestRow(category: "scope", agreement: "81 %", wrongHigh: "0 %", rating: strong),
+        BacktestRow(category: "ux_text", agreement: "61 %", wrongHigh: "9 %", rating: weak),
+        BacktestRow(category: "tests", agreement: "88 %", wrongHigh: "0 %", rating: strong),
+        BacktestRow(category: "review_code", agreement: "79 %", wrongHigh: "6 %", rating: weak),
+        BacktestRow(category: "review_doc", agreement: "83 %", wrongHigh: "0 %", rating: strong),
+        BacktestRow(category: "permission", agreement: "96 %", wrongHigh: "0 %", rating: strong),
+        BacktestRow(category: "finish", agreement: "—", wrongHigh: "—", rating: notMeasured)
+    ]
+    static let barNote = "Strong: 5 % or less of its decisions bad (ones you would have had to undo) "
+        + "and none bad while sure; a different but reasonable decision does not count against it. "
+        + "Below that Watchman marks every night decision unsure. Under 30 decisions: not measured."
+    static let analyticsOffNote = "Agent analytics is off on acme-web, so your typed corrections there are not used."
+    static let runBacktest = "Run Backtest Now"
+    static let backtestNeverRun = "Watchman hasn't checked itself yet. The backtest hides your latest decisions "
+        + "and asks Watchman to take them; nothing acts until you've seen the numbers."
+    static let backtestRunning = "Backtest running · ux_text, 18 of 30 · 3 of 8 categories done"
+    static let backtestRunningButton = "Running…"
+    static let lastResults = "Last results, 15 Nov"
+    static let backtestFailed = "The backtest stopped: the AI provider hit your plan limit. "
+        + "Nothing changed; the last results stay."
+}

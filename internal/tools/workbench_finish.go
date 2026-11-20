@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"watchtower/internal/db"
+	"watchtower/internal/sessionmsg"
 )
 
 // ---- session links -----------------------------------------------------
@@ -81,8 +82,12 @@ type finishSessionArgs struct {
 var errNoTerminalSession = &ValidationError{Msg: "finish_session needs a Watchtower terminal session"}
 
 // NewFinishSession marks this terminal session finished with the agent's
-// summary. sessionEnv returns the terminal session env (TerminalSessionEnv).
-func NewFinishSession(sessionEnv func() string) *Tool {
+// summary; a sub-session's summary is also queued to its parent (spec
+// 2026-11-18 §6.6 "Finish"). sessionEnv returns the terminal session env
+// (TerminalSessionEnv); wake asks the daemon to run the Watchman twin after an
+// armed session's finish queued its review (nil = none); msgs reaches the
+// daemon that delivers the parent's message.
+func NewFinishSession(sessionEnv func() string, wake func(), msgs SessionDeps) *Tool {
 	return &Tool{
 		Name: "finish_session",
 		Description: "Mark this terminal session finished once the work it was started for is done or handed to the " +
@@ -115,14 +120,14 @@ func NewFinishSession(sessionEnv func() string) *Tool {
 			if err != nil {
 				return err
 			}
-			return checkFinishGates(ctx, d, p, session, a)
+			return checkFinishGates(ctx, d, p, session, a, wake)
 		},
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a finishSessionArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding finish_session args: %w", err)
 			}
-			return finishSession(ctx, d, call.Binding, a, sessionEnv)
+			return finishSession(ctx, d, call.Binding, a, sessionEnv, wake, msgs)
 		},
 	}
 }
@@ -173,7 +178,7 @@ func scopeFinishSession(ctx context.Context, d *db.DB, b Binding, a finishSessio
 // session's open asks — a finished session may still wait on the owner. A
 // failed count after the write is an error; the agent's retry rewrites the
 // same finish.
-func finishSession(ctx context.Context, d *db.DB, b Binding, a finishSessionArgs, sessionEnv func() string) (any, error) {
+func finishSession(ctx context.Context, d *db.DB, b Binding, a finishSessionArgs, sessionEnv func() string, wake func(), msgs SessionDeps) (any, error) {
 	summary, err := finishSummary(a.Summary)
 	if err != nil {
 		return nil, err
@@ -183,12 +188,17 @@ func finishSession(ctx context.Context, d *db.DB, b Binding, a finishSessionArgs
 		return nil, err
 	}
 	at := time.Now().UTC()
-	err = d.FinishTerminalSession(sessionID, summary, at)
+	// The finish and the settling of a Watchman handover held by the gate
+	// are one write: the handover is released only when the finish lands.
+	released, err := d.FinishTerminalSessionSettling(sessionID, summary, at, a.HandoverAskID)
 	if errors.Is(err, db.ErrTerminalSessionNotFound) {
 		return nil, errNoTerminalSession // the session row went since Scope ran
 	}
 	if err != nil {
 		return nil, err
+	}
+	if released && wake != nil {
+		wake()
 	}
 	out := map[string]any{"session_id": sessionID, "finished_at": at.Format(finishedAtLayout)}
 	if a.HandoverAskID != 0 {
@@ -197,10 +207,47 @@ func finishSession(ctx context.Context, d *db.DB, b Binding, a finishSessionArgs
 	if a.TargetID != 0 {
 		reportLinkFailure(out, linkTargets(d, sessionID, false, []int64{a.TargetID}))
 	}
+	tellParentOfFinish(ctx, d, sessionID, summary, msgs, out)
 	open, err := d.ListOwnerAsks(b.WorkbenchID, db.OwnerAskFilter{Statuses: []string{"open"}, SessionID: sessionID})
 	if err != nil {
 		return nil, err
 	}
 	out["open_asks"] = len(open)
 	return out, nil
+}
+
+// tellParentOfFinish queues sub-session sessionID's finish line to its
+// parent (spec 2026-11-18 §6.6 "Finish"): result parent_message_id, plus the
+// daemon_not_running warning when no daemon runs to deliver it. A session
+// with no parent tells no one; a parent deleted meanwhile drops the line
+// (logged, never re-routed up the chain). The finish itself is already
+// stored, so a failure here is a warning, never an error.
+func tellParentOfFinish(ctx context.Context, d *db.DB, sessionID int64, summary string, msgs SessionDeps, out map[string]any) {
+	child, ok, err := sessionmsg.LoadSession(ctx, d, sessionID)
+	if err != nil || !ok || !child.ParentSessionID.Valid {
+		reportParentFailure(out, err)
+		return
+	}
+	id, queued, err := sessionmsg.QueueFinished(ctx, d, child, summary)
+	if err != nil {
+		reportParentFailure(out, err)
+		return
+	}
+	if !queued {
+		fmt.Fprintf(os.Stderr, "watchtower: session %d's parent #%d is gone; its finish line was dropped\n",
+			sessionID, child.ParentSessionID.Int64)
+		return
+	}
+	out["parent_message_id"] = id
+	msgs.queued(out)
+}
+
+// reportParentFailure turns a failed parent message into one stderr line
+// and the result's parent_message_warning; nil changes nothing.
+func reportParentFailure(out map[string]any, err error) {
+	if err == nil {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "watchtower: telling the parent session of the finish: %v\n", err)
+	out["parent_message_warning"] = "the finish is stored, but the parent session was not told: " + err.Error()
 }

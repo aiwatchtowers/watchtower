@@ -20,18 +20,23 @@ const liveWindow = 4 << 20
 const maxLiveAgents = 32
 const maxLiveAgentCandidates = 128
 
+// maxLiveSteps caps the current turn's step list; steps_more counts the cut.
+const maxLiveSteps = 40
+
 // Live is an on-demand, cursor-independent snapshot. Activity keeps its old
 // meaning; completed actions and agent state live only in this new envelope.
 type Live struct {
-	ObservedAt      time.Time   `json:"observed_at"`
-	Conversation    string      `json:"conversation"`
-	TurnAt          time.Time   `json:"turn_at"`
-	TurnActive      bool        `json:"turn_active"`
-	Current         *LiveAction `json:"current"`
-	Latest          *LiveAction `json:"latest"`
-	Agents          []LiveAgent `json:"agents"`
-	AgentsState     string      `json:"agents_state"`
-	AgentsMore      int         `json:"agents_more"`
+	ObservedAt      time.Time    `json:"observed_at"`
+	Conversation    string       `json:"conversation"`
+	TurnAt          time.Time    `json:"turn_at"`
+	TurnActive      bool         `json:"turn_active"`
+	Current         *LiveAction  `json:"current"`
+	Latest          *LiveAction  `json:"latest"`
+	Agents          []LiveAgent  `json:"agents"`
+	AgentsState     string       `json:"agents_state"`
+	AgentsMore      int          `json:"agents_more"`
+	Steps           []LiveAction `json:"steps"`
+	StepsMore       int          `json:"steps_more"`
 	inspectedAgents int
 }
 type LiveAction struct {
@@ -53,6 +58,8 @@ type LiveAgent struct {
 type liveReader struct {
 	live       *Live
 	open       []LiveAction
+	steps      []LiveAction
+	stepIdx    map[string]int // step id -> index in steps
 	agents     map[string]*LiveAgent
 	codex      bool
 	sidechain  bool
@@ -74,7 +81,7 @@ func LiveOf(c Conversation, sidechain bool, now time.Time) (*Live, error) {
 	if err != nil {
 		return nil, err
 	}
-	live := &Live{ObservedAt: now.UTC(), Conversation: c.AgentSessionID, TurnActive: true, Agents: []LiveAgent{}, AgentsState: "known"}
+	live := &Live{ObservedAt: now.UTC(), Conversation: c.AgentSessionID, TurnActive: true, Agents: []LiveAgent{}, AgentsState: "known", Steps: []LiveAction{}}
 	r := liveReader{live: live, agents: map[string]*LiveAgent{}, codex: c.Codex, sidechain: sidechain, path: c.Path}
 	if cut {
 		live.AgentsState = "unknown"
@@ -103,6 +110,19 @@ func LiveOf(c Conversation, sidechain bool, now time.Time) (*Live, error) {
 	if !live.TurnActive {
 		live.Current = nil
 		live.Latest = nil
+	} else if n := len(r.steps); n > maxLiveSteps {
+		// The last maxLiveSteps by start order, plus any still-open step that
+		// started earlier (a running timer must not vanish); steps_more counts
+		// only the finished steps that were cut.
+		for i, st := range r.steps {
+			if i >= n-maxLiveSteps || st.CompletedAt.IsZero() {
+				live.Steps = append(live.Steps, st)
+			} else {
+				live.StepsMore++
+			}
+		}
+	} else {
+		live.Steps = append(live.Steps, r.steps...)
 	}
 	if !c.Codex {
 		r.claudeAgents()
@@ -116,12 +136,23 @@ func (r *liveReader) reset(at time.Time) {
 	r.live.Current = nil
 	r.live.Latest = nil
 	r.open = nil
+	r.steps = nil
+	r.stepIdx = nil
 }
 func (r *liveReader) start(a LiveAction) {
 	if a.ID == "" {
 		return
 	}
 	r.live.TurnActive = true
+	if i, ok := r.stepIdx[a.ID]; ok {
+		r.steps[i] = a
+	} else {
+		if r.stepIdx == nil {
+			r.stepIdx = map[string]int{}
+		}
+		r.stepIdx[a.ID] = len(r.steps)
+		r.steps = append(r.steps, a)
+	}
 	for i := range r.open {
 		if r.open[i].ID == a.ID {
 			r.open[i] = a
@@ -131,6 +162,9 @@ func (r *liveReader) start(a LiveAction) {
 	r.open = append(r.open, a)
 }
 func (r *liveReader) complete(id string, at time.Time) {
+	if i, ok := r.stepIdx[id]; ok {
+		r.steps[i].CompletedAt = at
+	}
 	for i, a := range r.open {
 		if a.ID == id {
 			a.CompletedAt = at
@@ -149,7 +183,7 @@ func (r *liveReader) claudeLine(line []byte) {
 	if rec.Type == "user" && !rec.IsMeta && !rec.IsCompact {
 		if e, ok := userEntry(rec); ok {
 			r.recognized = true
-			if e.Kind == KindOwner || e.Kind == KindAskAnswer || e.Kind == KindWatchtower {
+			if e.Kind == KindOwner || e.Kind == KindAskAnswer || e.Kind == KindWatchtower || e.Kind == KindPeer {
 				r.reset(at)
 			}
 		}
@@ -629,12 +663,15 @@ func (r *liveReader) reconcileAgents() {
 		ids = ids[:maxLiveAgentCandidates]
 		r.live.AgentsState = "unknown"
 	}
+	claudePaths := map[string]string{} // id -> transcript; read only for visible rows
 	for _, id := range ids {
 		a := r.agents[id]
 		r.live.inspectedAgents++
 		if path, ok := r.agentPath(a.Ref); ok {
 			a.CanOpen = true
-			if r.codex {
+			if !r.codex {
+				claudePaths[id] = path
+			} else {
 				action, status, at, err := codexChildHint(path)
 				if err != nil {
 					a.Ref.Status = StatusUnknown
@@ -652,8 +689,6 @@ func (r *liveReader) reconcileAgents() {
 						a.Action = action
 					}
 				}
-			} else if activity, err := ActivityOf(path, false, true); err == nil && activity != nil {
-				a.Action = &LiveAction{Tool: activity.Tool, Summary: activity.Summary, StartedAt: activity.StartedAt}
 			}
 		}
 		if a.Ref.Status == StatusUnknown {
@@ -678,6 +713,13 @@ func (r *liveReader) reconcileAgents() {
 				r.live.AgentsMore++
 			}
 			continue
+		}
+		// A Claude child's open call changes no status or order, so only the
+		// visible rows pay for reading their transcript tails.
+		if path, ok := claudePaths[id]; ok {
+			if activity, err := ActivityOf(path, false, true); err == nil && activity != nil {
+				a.Action = &LiveAction{Tool: activity.Tool, Summary: activity.Summary, StartedAt: activity.StartedAt}
+			}
 		}
 		r.live.Agents = append(r.live.Agents, *a)
 	}

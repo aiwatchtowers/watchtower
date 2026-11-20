@@ -68,7 +68,8 @@ final class FakeLapseTarget: RelayLapseTarget {
 }
 
 /// The relay's HTTP with two faults the fake has no word for: a request for one JWS held until released (a submit
-/// still in flight), and a scripted entitlement answer to the next `submit_transaction`s.
+/// still in flight), and a scripted entitlement answer to the next `submit_transaction`s. An account read rides the
+/// socket while one is live (live link R2): `sockets(_:)` holds it there the same way.
 final class SubmitGateHTTP: RelayHTTP, @unchecked Sendable {
     private let inner: any RelayHTTP
     private let lock = NSLock()
@@ -77,6 +78,8 @@ final class SubmitGateHTTP: RelayHTTP, @unchecked Sendable {
     private var answers: [Relay_V1_EntitlementKind] = []
     /// Held reads are answered by the fake first and wait with the answer (`holdReadAnswers()`).
     private var readsAnswerFirst = false
+    private var httpReads = 0
+    private var socketReads = 0
 
     init(inner: any RelayHTTP) {
         self.inner = inner
@@ -126,6 +129,31 @@ final class SubmitGateHTTP: RelayHTTP, @unchecked Sendable {
         lock.withLock { waiting[Self.readKey]?.count ?? 0 }
     }
 
+    /// Account reads asked over HTTPS, and over a socket of `sockets(_:)`.
+    var readsOverHTTP: Int { lock.withLock { httpReads } }
+    var readsOverSocket: Int { lock.withLock { socketReads } }
+
+    /// The relay's sockets with the account reads written to them held as the HTTPS ones are.
+    func sockets(_ inner: any RelaySocketDialer) -> any RelaySocketDialer {
+        GatedDialer(inner: inner, gate: self)
+    }
+
+    /// An account read is about to be written to a socket: waits while reads are held before they are asked; true
+    /// when its answer is the one to hold (`holdReadAnswers()`).
+    fileprivate func socketReadStarts() async -> Bool {
+        let answersFirst = lock.withLock {
+            socketReads += 1
+            return readsAnswerFirst
+        }
+        if !answersFirst { await waitIfHeld(Self.readKey) }
+        return answersFirst
+    }
+
+    /// A socket read's answer came: waits while reads are held.
+    fileprivate func socketReadAnswered() async {
+        await waitIfHeld(Self.readKey)
+    }
+
     /// The oldest waiting read goes on; the others and later ones still wait.
     func releaseFirstRead() {
         let waiter: CheckedContinuation<Void, Never>? = lock.withLock {
@@ -145,7 +173,11 @@ final class SubmitGateHTTP: RelayHTTP, @unchecked Sendable {
     func post(_ url: URL, body: Data, headers: [String: String]) async throws -> (status: Int, body: Data) {
         let request = try? Relay_V1_Request(serializedBytes: body)
         if case .getAccountState? = request?.op {
-            guard lock.withLock({ readsAnswerFirst }) else {
+            let answersFirst = lock.withLock {
+                httpReads += 1
+                return readsAnswerFirst
+            }
+            guard answersFirst else {
                 await waitIfHeld(Self.readKey)
                 return try await inner.post(url, body: body, headers: headers)
             }
@@ -182,6 +214,81 @@ final class SubmitGateHTTP: RelayHTTP, @unchecked Sendable {
             }
             if !parked { waiter.resume() }
         }
+    }
+}
+
+private struct GatedDialer: RelaySocketDialer {
+    let inner: any RelaySocketDialer
+    let gate: SubmitGateHTTP
+
+    func dial(_ url: URL, headers: [String: String]) async throws -> any RelaySocket {
+        GatedSocket(inner: try await inner.dial(url, headers: headers), gate: gate)
+    }
+}
+
+/// A socket whose `get_account_state` requests the gate holds: before the write (`holdReads()`), or with the relay's
+/// answer in hand (`holdReadAnswers()`). Every other frame passes at once, a held answer's later ones included: the
+/// frames are read off the inner socket by a pump, so a held answer does not stop the reader.
+private final class GatedSocket: RelaySocket, @unchecked Sendable {
+    private let inner: any RelaySocket
+    private let gate: SubmitGateHTTP
+    private let lock = NSLock()
+    /// The requests whose answers are held.
+    private var heldIDs: Set<UInt64> = []
+    private let frames: AsyncThrowingStream<RelaySocketMessage, any Error>
+
+    init(inner: any RelaySocket, gate: SubmitGateHTTP) {
+        self.inner = inner
+        self.gate = gate
+        let (frames, sink) = AsyncThrowingStream.makeStream(of: RelaySocketMessage.self)
+        self.frames = frames
+        Task { [weak self] in
+            while true {
+                let message: RelaySocketMessage
+                do {
+                    message = try await inner.receive()
+                } catch {
+                    return sink.finish(throwing: error)
+                }
+                if case .binary(let data) = message, self?.takeHeld(data) == true {
+                    Task {
+                        await gate.socketReadAnswered()
+                        sink.yield(message)
+                    }
+                    continue
+                }
+                sink.yield(message)
+                if case .closed = message { return sink.finish() }
+            }
+        }
+    }
+
+    /// Whether `data` answers a request whose answer is held (asked once per answer).
+    private func takeHeld(_ data: Data) -> Bool {
+        guard case .response(let response)? = (try? Relay_V1_Frame(serializedBytes: data))?.kind else { return false }
+        return lock.withLock { heldIDs.remove(response.id) != nil }
+    }
+
+    func send(_ data: Data) async throws {
+        if case .request(let request)? = (try? Relay_V1_Frame(serializedBytes: data))?.kind, case .getAccountState? = request.op,
+           await gate.socketReadStarts() {
+            lock.withLock { _ = heldIDs.insert(request.id) }
+        }
+        try await inner.send(data)
+    }
+
+    func receive() async throws -> RelaySocketMessage {
+        var iterator = frames.makeAsyncIterator()
+        guard let message = try await iterator.next() else { throw CancellationError() }
+        return message
+    }
+
+    func ping() async throws {
+        try await inner.ping()
+    }
+
+    func close(code: Int) async {
+        await inner.close(code: code)
     }
 }
 

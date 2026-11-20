@@ -32,21 +32,22 @@ final class EmbeddedDraftMirrorTests: XCTestCase {
     }
 
     /// The writes are async in call order; a sync write waits behind them.
-    private func settled() throws {
-        try pool.write { _ in }
+    /// The mirror's writes (`chat.draft.*`, in order) have landed.
+    private func settled(_ mirror: DatabaseDraftMirror) async {
+        await mirror.writesSettled()
     }
 
     private func row(_ key: EmbeddedChatKey) throws -> String? {
         try pool.read { try QueuedDraftQueries.text($0, key: key.description) }
     }
 
-    func testQueuedDraftSurvivesRelaunch() throws {
+    func testQueuedDraftSurvivesRelaunch() async throws {
         let mirror = mirror()
         mirror.writer = pool
         mirror.save("queued words", for: first)
         XCTAssertEqual(mirror.restore(for: first), "queued words")
         XCTAssertNil(mirror.restore(for: second))
-        try settled()
+        await settled(mirror)
 
         let relaunched = self.mirror()
         relaunched.writer = pool
@@ -55,16 +56,16 @@ final class EmbeddedDraftMirrorTests: XCTestCase {
                      "nothing goes to UserDefaults")
     }
 
-    func testQueuedBeforePoolIsFlushed() throws {
+    func testQueuedBeforePoolIsFlushed() async throws {
         let mirror = mirror()
         mirror.save("early", for: first)
         XCTAssertEqual(mirror.restore(for: first), "early", "kept in memory before the database opens")
         mirror.writer = pool
-        try settled()
+        await settled(mirror)
         XCTAssertEqual(try row(first), "early")
     }
 
-    func testLegacyDefaultsImportedAndRemoved() throws {
+    func testLegacyDefaultsImportedAndRemoved() async throws {
         let legacyFirst = DatabaseDraftMirror.legacyPrefix + first.description
         let legacySecond = DatabaseDraftMirror.legacyPrefix + second.description
         defaults.set("from defaults", forKey: legacyFirst)
@@ -73,22 +74,21 @@ final class EmbeddedDraftMirrorTests: XCTestCase {
         mirror.clear(for: second) // this process's clear wins over the legacy text
         mirror.writer = pool
         XCTAssertEqual(mirror.restore(for: first), "from defaults", "seen before the write lands")
-        try settled()
+        await settled(mirror)
         XCTAssertEqual(try row(first), "from defaults")
         XCTAssertNil(try row(second))
         XCTAssertEqual(mirror.restore(for: first), "from defaults")
-        // The keys go in the write's completion, which runs on the writer
-        // queue before the barrier write in `settled()`.
+        // The keys go once the writes landed.
         XCTAssertNil(defaults.string(forKey: legacyFirst))
         XCTAssertNil(defaults.string(forKey: legacySecond))
     }
 
-    func testClearRemovesRow() throws {
+    func testClearRemovesRow() async throws {
         let mirror = mirror()
         mirror.writer = pool
         mirror.save("queued", for: first)
         mirror.clear(for: first)
-        try settled()
+        await settled(mirror)
         XCTAssertNil(try row(first))
         XCTAssertNil(mirror.restore(for: first))
     }

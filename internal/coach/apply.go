@@ -50,6 +50,22 @@ type Applier struct {
 	// refuses every Accept of a repository file.
 	RepoState  func(folder, rel string) (RepoFileState, error)
 	RepoBranch func(folder string) (string, error)
+	// The pull-request seams (repopr.go), filled by cmd only — the coach CLI
+	// processes the owner starts — over workbenchgit; the daemon leaves them
+	// nil. RepoRoute decides how a workbench folder takes a repository edit:
+	// PR true opens a pull request (a GitHub folder), false keeps the
+	// working-copy route; ErrNoGH for a GitHub folder without a logged-in gh.
+	// A nil RepoRoute is the working-copy route for every folder. RepoPublish
+	// commits req.After over req.Before on req.Branch and opens (or finds)
+	// its pull request, returning its URL and the branch pushed; RepoPRState
+	// reads a pull request's state (OPEN, CLOSED or MERGED) and when it was
+	// merged; RepoClosePR closes an open one. Their failures carry the
+	// mirrored sentinels (ErrNoGH, ErrBaseDiffers, ErrPushFailed, ErrPRFailed,
+	// ErrTimeout).
+	RepoRoute   func(folder string) (RepoRoute, error)
+	RepoPublish func(folder string, req RepoPublishReq) (prURL, branch string, err error)
+	RepoPRState func(folder, url string) (state string, mergedAt time.Time, err error)
+	RepoClosePR func(folder, url string) error
 }
 
 // env is where a's file destinations live.
@@ -70,10 +86,13 @@ func (a *Applier) now() time.Time {
 // repository file, the file written, relative to the workbench folder, and
 // the branch checked out there at the write ("detached:<short sha>" for a
 // detached HEAD; "" when it could not be read, and for every other
-// destination).
+// destination). An Accept that opened a pull request has its URL in PRURL
+// and its branch (coach/<workspace token>/proposal-<id>) in WrittenBranch; the working copy
+// was not written.
 type AcceptResult struct {
 	PackCopiesUpdated, PackCopiesDrifted int
 	WrittenPath, WrittenBranch           string
+	PRURL                                string
 }
 
 // Accept applies an open proposal (accept); a pack overlay then re-renders
@@ -83,11 +102,10 @@ func (a *Applier) Accept(id int64, edited string) (AcceptResult, error) {
 	if err != nil {
 		return AcceptResult{}, err
 	}
-	branch, err := a.accept(p, edited)
+	r, err := a.accept(p, edited)
 	if err != nil {
 		return AcceptResult{}, err
 	}
-	r := AcceptResult{WrittenBranch: branch}
 	if p.Destination == DestPackOverlay {
 		r.PackCopiesUpdated, r.PackCopiesDrifted = a.rerenderPack(p.Skill)
 	}
@@ -107,18 +125,39 @@ func (a *Applier) Accept(id int64, edited string) (AcceptResult, error) {
 // status is written; an edited text never takes that shortcut. The
 // destination is written first, then the status; when the status write fails
 // the before-state is put back. A workbench repository file's branch is read
-// between the two and returned ("" for any other destination).
-func (a *Applier) accept(p db.CoachProposal, edited string) (string, error) {
+// between the two and returned ("" for any other destination). A workbench
+// repository file of a folder RepoRoute sends to a pull request takes
+// acceptPR instead: nothing local is read or written.
+func (a *Applier) accept(p db.CoachProposal, edited string) (AcceptResult, error) {
 	id := p.ID
 	if p.Status != "open" {
-		return "", fmt.Errorf("coach proposal %d is %s, not open: %w", id, p.Status, db.ErrCoachStateChanged)
+		return AcceptResult{}, fmt.Errorf("coach proposal %d is %s, not open: %w", id, p.Status, db.ErrCoachStateChanged)
 	}
 	now := a.now()
-	// The slow measure runs first so the read and the write stay adjacent.
+	folder, pr := "", false
+	if repoDestinations[p.Destination] {
+		var err error
+		if folder, pr, err = a.repoRoute(p); err != nil { // a no_gh refusal needs no measure
+			return AcceptResult{}, fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
+		}
+	}
+	// The slow measure runs before the destination is read, so the read and
+	// the write stay adjacent.
 	baseline, n, err := a.baseline(p, now)
 	if err != nil {
-		return "", fmt.Errorf("coach proposal %d: measuring the baseline: %w", id, err)
+		return AcceptResult{}, fmt.Errorf("coach proposal %d: measuring the baseline: %w", id, err)
 	}
+	if pr {
+		return a.acceptPR(p, folder, edited, baseline, n, now)
+	}
+	branch, err := a.acceptLocal(p, edited, baseline, n, now)
+	return AcceptResult{WrittenBranch: branch}, err
+}
+
+// acceptLocal is accept's working-copy route: every destination but a
+// repository file of a pull-request folder.
+func (a *Applier) acceptLocal(p db.CoachProposal, edited string, baseline *float64, n int, now time.Time) (string, error) {
+	id := p.ID
 	if repoDestinations[p.Destination] {
 		// The git check is not repeated after the write, which makes the path
 		// dirty itself (spec §4.3a).
@@ -139,7 +178,7 @@ func (a *Applier) accept(p db.CoachProposal, edited string) (string, error) {
 		if cur.Text == p.AfterText {
 			// The branch now, which may not be the one of the earlier write.
 			branch := a.writtenBranch(p)
-			if err := a.DB.MarkCoachAccepted(id, cur.Text, branch, baseline, n, now); err != nil {
+			if err := a.DB.MarkCoachAccepted(id, cur.Text, branch, "", baseline, n, now); err != nil {
 				return "", fmt.Errorf("accepting coach proposal %d: %w", id, err)
 			}
 			return branch, nil
@@ -158,7 +197,7 @@ func (a *Applier) accept(p db.CoachProposal, edited string) (string, error) {
 		return "", fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
 	}
 	branch := a.writtenBranch(p)
-	if err := a.DB.MarkCoachAccepted(id, w.result, branch, baseline, n, now); err != nil {
+	if err := a.DB.MarkCoachAccepted(id, w.result, branch, "", baseline, n, now); err != nil {
 		err = fmt.Errorf("accepting coach proposal %d: %w", id, err)
 		if uerr := w.undo(); uerr != nil {
 			return "", errors.Join(err, fmt.Errorf("restoring %s of coach proposal %d: %w", p.Destination, id, uerr))
@@ -190,15 +229,38 @@ func (a *Applier) Decline(id int64) error {
 // before-text back; a prompt or a pack skill's overlay loses the lines this
 // proposal made and gets back the ones it removed (an overlay then re-renders
 // the skill's installed copies); the allow list loses the rules this proposal
-// added, every other key and rule staying as it is.
+// added, every other key and rule staying as it is. A proposal whose Accept
+// opened a pull request is undone on GitHub instead (rollbackPR).
 func (a *Applier) Rollback(id int64, force bool) (string, error) {
+	r, err := a.RollbackWithResult(id, force)
+	return r.Diff, err
+}
+
+// RollbackResult is what a Rollback returns: the diff (accepted → now) that
+// refused it with ErrChangedSince, and the revert pull request a rollback of
+// a merged pull request opened.
+type RollbackResult struct{ Diff, RevertPRURL string }
+
+// RollbackWithResult is Rollback, reporting the revert pull request too.
+func (a *Applier) RollbackWithResult(id int64, force bool) (RollbackResult, error) {
 	p, err := a.DB.GetCoachProposal(id)
 	if err != nil {
-		return "", err
+		return RollbackResult{}, err
 	}
 	if p.Status != "accepted" {
-		return "", fmt.Errorf("coach proposal %d is %s, not accepted: %w", id, p.Status, db.ErrCoachStateChanged)
+		return RollbackResult{}, fmt.Errorf("coach proposal %d is %s, not accepted: %w", id, p.Status, db.ErrCoachStateChanged)
 	}
+	if p.PRURL != "" {
+		url, diff, err := a.rollbackPR(p)
+		return RollbackResult{Diff: diff, RevertPRURL: url}, err
+	}
+	diff, err := a.rollbackLocal(p, force)
+	return RollbackResult{Diff: diff}, err
+}
+
+// rollbackLocal is Rollback of an edit Accept wrote itself.
+func (a *Applier) rollbackLocal(p db.CoachProposal, force bool) (string, error) {
+	id := p.ID
 	cur, err := a.readCurrent(p)
 	if err != nil {
 		return "", fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
@@ -221,7 +283,7 @@ func (a *Applier) Rollback(id int64, force bool) (string, error) {
 	}
 	// The destination is back; only the status is left. An accepted proposal
 	// can only move to rolled_back, so a failed CAS means another rollback won.
-	if err := a.DB.DecideCoachProposal(id, "accepted", "rolled_back", now); err != nil {
+	if err := a.DB.MarkCoachRolledBack(id, "", now); err != nil {
 		return "", fmt.Errorf("rolling back coach proposal %d: %w", id, err)
 	}
 	return "", nil

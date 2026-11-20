@@ -6,7 +6,36 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/db"
 )
+
+// A missing home folder never fails a report: a legacy bench whose only row
+// is removed reads its cache, a bench with no row reads none.
+func TestReports_SurviveAMissingHomeFolder(t *testing.T) {
+	ctx := context.Background()
+	d := loadFixture(t, "board_314.sql")
+	runSQL(t, d, `UPDATE workbench_folders SET removed_at = '2026-11-18T00:00:00Z' WHERE workbench_id = 1`)
+	assert.Equal(t, "PR #147 open", onlySummary(t, d).PRLine, "the removed home row still keys the cache")
+	_, err := Build(ctx, d, 1, 1, Options{})
+	require.NoError(t, err)
+
+	runSQL(t, d, `DELETE FROM workbench_folders WHERE workbench_id = 1`)
+	assert.NotEqual(t, "PR #147 open", onlySummary(t, d).PRLine, "no folder row: no cache, no error")
+	_, err = Build(ctx, d, 1, 1, Options{})
+	require.NoError(t, err)
+	_, res, err := RefreshedSummaries(ctx, d, 1, RefreshOptions{})
+	require.NoError(t, err)
+	assert.NotEmpty(t, res.Note)
+}
+
+func onlySummary(t *testing.T, d *db.DB) Summary {
+	t.Helper()
+	list, err := Summaries(context.Background(), d, 1)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	return list[0]
+}
 
 func summaries(t *testing.T, fixture string) map[int64]Summary {
 	t.Helper()
@@ -57,8 +86,8 @@ func TestSummaries_NoPRYetAndEmpty(t *testing.T) {
 	assert.Nil(t, list[2].TargetID)
 	assert.Equal(t, 0, list[2].Total)
 
-	_, err = d.Exec(`INSERT INTO workbench_pr_states (project_id, ref, state, checked_at)
-		VALUES (1, 'branch:feat/linked', 'none', '2026-10-02T12:00:00.000Z')`)
+	_, err = d.Exec(`INSERT INTO workbench_pr_states (project_id, workbench_folder_id, ref, state, checked_at)
+		VALUES (1, 1, 'branch:feat/linked', 'none', '2026-10-02T12:00:00.000Z')`)
 	require.NoError(t, err)
 	list, err = Summaries(context.Background(), d, 1)
 	require.NoError(t, err)

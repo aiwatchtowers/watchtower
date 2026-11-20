@@ -25,6 +25,11 @@ struct WorkbenchTargetPanel: View {
     /// Part 4).
     let onOpenGroup: (Int) -> Void
     let onClose: () -> Void
+    /// Watchman (#1823): Hand to Watchman / Take back for the target's
+    /// whole subtree; nil = no Watchman block.
+    var watchman: WatchmanCenter?
+    /// The workbench the arm sheet's title names.
+    var workbenchName = ""
 
     private enum Mode {
         case task
@@ -70,6 +75,7 @@ struct WorkbenchTargetPanel: View {
                 case .group: groupStatus
                 }
                 priorityMenu
+                folderMenu
                 ForEach(findings) { finding in
                     Chip(
                         text: finding.kindLabel,
@@ -83,6 +89,9 @@ struct WorkbenchTargetPanel: View {
                 WorkbenchGroupProgress(summary: WorkbenchGroupSummary(node, showArchived: vm.showArchived))
             } else if target.progress > 0 {
                 progress
+            }
+            if let watchman {
+                WatchmanArmControl(center: watchman, scope: .target(Int64(target.id)), workbench: workbenchName, style: .panel)
             }
             gitLinks
         }
@@ -276,6 +285,35 @@ struct WorkbenchTargetPanel: View {
         )
         .fixedSize()
         .help("A group's status follows its sub-tasks")
+    }
+
+    /// The target's folder (spec 2026-11-18 §6.10), only on a bench of
+    /// several: the owner moves the work to another one, or back home. A
+    /// removed folder keeps showing as `folder removed` until another is picked.
+    @ViewBuilder
+    private var folderMenu: some View {
+        if let folders = vm.folders,
+           WorkbenchBoardCard.showsFolderMenu(folderID: target.workbenchFolderID, folders: folders) {
+            let current = folders.folder(target.workbenchFolderID)
+            Menu {
+                ForEach(folders.live) { folder in
+                    Toggle(folder.name, isOn: Binding(
+                        get: { current?.id == folder.id },
+                        set: { if $0 { vm.setFolder(folder.id == folders.homeID ? nil : folder.id) } }
+                    ))
+                }
+            } label: {
+                MenuLabel(
+                    text: WorkbenchBoardCard.folderMenuTitle(current),
+                    systemImage: "folder",
+                    color: current?.isRemoved == true ? Tone.warning : .secondary
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Folder")
+        }
     }
 
     private var priorityMenu: some View {
