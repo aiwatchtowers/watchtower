@@ -110,4 +110,13 @@ final class WorkchatAgentsListTests: XCTestCase {
         XCTAssertEqual(row.subtitle, "Recon · Grep migrations/")
         XCTAssertEqual(row.elapsed, "0:30")
     }
+
+    func testAgentRowSymbolFollowsTheStepsTool() {
+        var grep = running("g")
+        grep.action = SessionLiveAction(tool: "Grep", summary: "func LiveOf")
+        var unknown = grep
+        unknown.ref.status = "unknown"
+        let rows = WorkchatLivePresentation.agentRows(snapshot(agents: [grep, running("w"), unknown]), now: now)
+        XCTAssertEqual(rows.map(\.symbol), [WorkchatActivityPresenter.symbol(for: "Grep"), nil, nil])
+    }
 }

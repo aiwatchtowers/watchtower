@@ -101,6 +101,7 @@ struct WorkchatModel: Equatable {
         permission: PermissionCardModel?,
         mac: MacReachability,
         now: Date,
+        freshness: ReplicaFreshness? = nil,
         sentRequestID: Int64? = nil,
         finishDelivery: SessionInputDelivery? = nil
     ) {
@@ -112,7 +113,11 @@ struct WorkchatModel: Equatable {
         banner = MacAwayBanner(mac, name: snapshot.heartbeat?.macName ?? "", now: now)
         finishNotice = finishDelivery.map { "Finish · \($0.resolved(for: session).text)" }
         entries = WorkchatAgents.dialog(chat?.entries ?? [])
-        agents = WorkchatAgents(entries: chat?.entries ?? [], sessionID: session.id)
+        agents = WorkchatAgents(
+            entries: chat?.entries ?? [], sessionID: session.id, live: chat?.activityLive, liveError: chat?.liveError,
+            sessionWorking: session.live && [.working, .needsApproval].contains(session.stateKind),
+            staleSince: Self.staleSince(freshness, heartbeat: snapshot.heartbeat), now: now
+        )
         let asks = snapshot.asks
             .filter { $0.status == .open && $0.sessionID == session.id }
             .sorted(by: WorkbenchReplicaSnapshot.newestFirst)
@@ -141,6 +146,13 @@ struct WorkchatModel: Equatable {
     /// The Mac's glyph, tone and caption; a timer while working, an age
     /// while waiting for the owner, the last activity once stopped, and
     /// "as of" the last contact while the Mac is away.
+    /// When the tower stopped sending, or nil while it sends (spec §4, C4): its last publish once `ReplicaFreshness`
+    /// says stale or offline; a kind stuck alone does not age the live block.
+    static func staleSince(_ freshness: ReplicaFreshness?, heartbeat: HeartbeatPayload?) -> Date? {
+        guard let freshness, freshness.state != .stuck else { return nil }
+        return heartbeat.map { $0.lastPublishAt ?? $0.updatedAt } ?? .distantPast
+    }
+
     static func stateLine(_ session: TerminalSessionState, asOf: Date?, now: Date) -> StateLineModel {
         let waiting = [.waitingOnAsk, .needsApproval].contains(session.stateKind)
         let counts = session.live && (waiting || session.stateKind == .working)

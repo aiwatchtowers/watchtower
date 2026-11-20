@@ -175,6 +175,10 @@ struct WorkchatView: View {
             session: session, chat: chat.chat, snapshot: replica.snapshot, input: input(session, now: now),
             permission: PermissionCardModel.card(for: session, in: replica.snapshot, access: permissions, now: now),
             mac: env.macReachability(now: now), now: now,
+            freshness: ReplicaFreshness(
+                heartbeat: replica.snapshot.heartbeat, linked: env.linkedDevice != nil,
+                relayUnansweredSince: env.activeSession.relayUnansweredSince, now: now
+            ),
             sentRequestID: permissions.sentRequestID, finishDelivery: env.sessionInputs.finishDeliveries[session.id]
         )
     }
