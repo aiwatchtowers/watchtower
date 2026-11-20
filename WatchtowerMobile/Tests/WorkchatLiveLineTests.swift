@@ -152,10 +152,26 @@ final class WorkchatLiveLineTests: XCTestCase {
 
     func testASubagentWorksUntilItsOwnTurnEnds() throws {
         let busy = try session(["state_kind": "working"])
-        XCTAssertTrue(WorkchatLiveLine.working(busy, subagent: chat(live: live())))
-        XCTAssertTrue(WorkchatLiveLine.working(busy, subagent: nil), "no record yet: Loading while the session works")
-        XCTAssertFalse(WorkchatLiveLine.working(busy, subagent: chat(live: live(turnActive: false))))
-        XCTAssertFalse(WorkchatLiveLine.working(try session(["state_kind": "waiting_on_ask"]), subagent: chat(live: live())))
+        XCTAssertTrue(WorkchatLiveLine.working(busy, subagent: chat(live: live()), staleSince: nil))
+        XCTAssertTrue(WorkchatLiveLine.working(busy, subagent: nil, staleSince: nil), "no record yet: Loading while the session works")
+        XCTAssertFalse(WorkchatLiveLine.working(busy, subagent: chat(live: live(turnActive: false)), staleSince: nil))
+        XCTAssertFalse(WorkchatLiveLine.working(try session(["state_kind": "waiting_on_ask"]), subagent: chat(live: live()), staleSince: nil))
+    }
+
+    func testOnlyACurrentBlockSaysTheSubagentStopped() throws {
+        let busy = try session(["state_kind": "working"])
+        let over = live(turnActive: false)
+        let failed = chat(live: over, error: "Activity unavailable")
+        XCTAssertTrue(WorkchatLiveLine.working(busy, subagent: failed, staleSince: nil), "a failed read cannot say it stopped")
+        let unavailable = try XCTUnwrap(row(failed, working: WorkchatLiveLine.working(busy, subagent: failed, staleSince: nil)))
+        XCTAssertEqual(unavailable.text, "Activity unavailable")
+        XCTAssertTrue(unavailable.retry)
+
+        let since = now.addingTimeInterval(-2_400)
+        XCTAssertTrue(WorkchatLiveLine.working(busy, subagent: chat(live: over), staleSince: since), "nor a stale tower's")
+        let stale = try XCTUnwrap(row(chat(live: over), working: true, staleSince: since))
+        XCTAssertEqual(stale.text, "Activity out of date · 40m ago")
+        XCTAssertTrue(stale.retry)
     }
 
     // MARK: - Time, freshness, cards
@@ -350,6 +366,12 @@ final class WorkchatLiveLineTests: XCTestCase {
         json["open_id"] = "o1"
         try await publish(json, over: transport, into: store)
         try await poll({ model.recordArrivedSinceOpen }, "the echo did not end Loading")
+
+        // Another phone's opening comes next: this one stays answered.
+        json["open_id"] = "another-phone"
+        try await publish(json, over: transport, into: store)
+        try await poll({ model.chat?.openID == "another-phone" }, "the other phone's record never showed")
+        XCTAssertTrue(model.recordArrivedSinceOpen, "an answered opening does not go back to Loading")
         model.disappeared()
 
         // Reopened: the record held answers the last opening, not this one.
@@ -371,6 +393,20 @@ final class WorkchatLiveLineTests: XCTestCase {
         model.appeared()
         try await poll({ model.chat != nil }, "the stored record never showed")
         XCTAssertTrue(model.recordArrivedSinceOpen, "a hub that echoes no id answers as before")
+        model.disappeared()
+    }
+
+    func testALiveCapableRecordWithoutAnEchoIsNotTheAnswer() async throws {
+        let transport = InMemoryCloudTransport()
+        let store = try await demoStore(transport)
+        var json = DemoSeed.workingChatPayload(now: Date())
+        json["open_id"] = nil
+        try await publish(json, over: transport, into: store)
+        let model = SessionChatViewModel(sessionID: 10, agentID: nil, store: store, requester: requester(Sent()))
+        model.appeared()
+        try await poll({ model.chat?.liveVersion == 1 }, "the stored record never showed")
+        XCTAssertNil(model.chat?.openID)
+        XCTAssertFalse(model.recordArrivedSinceOpen, "a hub that knows the live block echoes the id: wait for it")
         model.disappeared()
     }
 

@@ -17,9 +17,12 @@ enum WorkchatLiveLine {
         session.live && [.working, .needsApproval].contains(session.stateKind)
     }
 
-    /// A subagent's line runs while the session works and the subagent's own turn has not ended.
-    static func working(_ session: TerminalSessionState, subagent chat: SessionChat?) -> Bool {
-        working(session) && chat?.activityLive?.turnActive != false
+    /// A subagent's line runs while the session works and the subagent's own turn has not ended. Only a current
+    /// block (the tower sends, the read did not fail) can say it ended; otherwise the line stays to say so, with Retry.
+    static func working(_ session: TerminalSessionState, subagent chat: SessionChat?, staleSince: Date?) -> Bool {
+        guard working(session) else { return false }
+        let current = staleSince == nil && chat?.liveError == nil
+        return !(current && chat?.activityLive?.turnActive == false)
     }
 
     /// What one chat screen feeds the line at a moment.

@@ -85,17 +85,20 @@ struct SessionChatView: View {
     private var stepsWatch: WorkchatLiveLine.StepsWatch? {
         replica.snapshot.session(viewModel.sessionID).map {
             WorkchatLiveLine.StepsWatch(
-                chat: viewModel.chat, working: WorkchatLiveLine.working($0, subagent: viewModel.chat), cardShown: false
+                chat: viewModel.chat,
+                working: WorkchatLiveLine.working($0, subagent: viewModel.chat, staleSince: env.towerFreshness.staleSince(at: .now)),
+                cardShown: false
             )
         }
     }
 
     /// The subagent's line at `now`: its own record's live block (the sidechain), no card on this screen.
     private func liveInputs(_ session: TerminalSessionState, now: Date) -> WorkchatLiveLine.Inputs {
-        WorkchatLiveLine.Inputs(
+        let staleSince = env.towerFreshness.staleSince(at: now)
+        return WorkchatLiveLine.Inputs(
             chat: viewModel.chat, arrivedSinceOpen: viewModel.recordArrivedSinceOpen,
-            working: WorkchatLiveLine.working(session, subagent: viewModel.chat), stateAt: session.stateAt,
-            staleSince: env.towerFreshness.staleSince(at: now), stepsOpen: env.workchatSteps.isOpen(route)
+            working: WorkchatLiveLine.working(session, subagent: viewModel.chat, staleSince: staleSince), stateAt: session.stateAt,
+            staleSince: staleSince, stepsOpen: env.workchatSteps.isOpen(route)
         )
     }
 

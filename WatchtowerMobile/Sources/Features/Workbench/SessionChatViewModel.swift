@@ -188,6 +188,10 @@ final class SessionChatViewModel {
     private(set) var sentLines: [SentLine] = []
     /// This opening's `open_id` (new on each appear and on Retry).
     private(set) var openID: String?
+    /// A record echoed this opening's `open_id`: it stays answered until the
+    /// next opening or Retry, whatever opening a later record names (another
+    /// phone's open does not send this one back to Loading).
+    private var acknowledged = false
 
     /// The record answers this opening: it echoes `openID`, or it comes from
     /// a hub too old to echo one (or the demo's, which none answers). Until
@@ -195,7 +199,9 @@ final class SessionChatViewModel {
     /// screen opened (#2112 C9).
     var recordArrivedSinceOpen: Bool {
         guard let chat else { return false }
-        return !requester.hubEchoesOpenID || chat.openID == nil || chat.openID == openID
+        if !requester.hubEchoesOpenID || acknowledged || chat.openID == openID { return true }
+        // Only a hub that knows no live block (and so no `open_id`) answers without the echo.
+        return chat.openID == nil && chat.liveVersion == nil
     }
 
     @ObservationIgnored private let store: ReplicaStore
@@ -259,6 +265,7 @@ final class SessionChatViewModel {
         shown = true
         observe()
         openID = requester.start(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
+        acknowledged = false
         patience?.cancel()
         patience = nil
         waitingTooLong = false
@@ -268,6 +275,7 @@ final class SessionChatViewModel {
     /// Asks the hub for the chat at once (Retry on the live line).
     func retry() {
         openID = requester.requestNow(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
+        acknowledged = false
     }
 
     /// The screen went away: stop asking.
@@ -360,6 +368,7 @@ final class SessionChatViewModel {
             },
             onWaitingForKeys: { [weak self] in self?.waitingForKeys = true },
             onChange: { [weak self] value in
+                if let echoed = value?.openID, echoed == self?.openID { self?.acknowledged = true }
                 self?.chat = value
                 if value != nil {
                     self?.waitingTooLong = false
