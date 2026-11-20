@@ -68,6 +68,11 @@ public enum WorkchatLivePresentation {
         public var heading: String { agent.ref.type.isEmpty ? title : agent.ref.type }
         /// The list row's second line: the task, then what it does now.
         public var subtitle: String { heading == title ? action : "\(title) · \(action)" }
+        /// The symbol of the agent's current step's tool; nil without a step or while its status is unresolved.
+        public var symbol: String? {
+            guard agent.ref.status == "running", let tool = agent.action?.tool else { return nil }
+            return WorkchatActivityPresenter.symbol(for: tool)
+        }
     }
     public struct DoneRow: Equatable, Identifiable, Sendable {
         public var ref: SessionFeedSubagent
