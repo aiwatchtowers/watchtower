@@ -134,8 +134,11 @@ public struct SessionChat: SliceMirror, Equatable {
     public let activityLive: SessionFeedLive?
     /// 1 from a hub that knows the live block; nil from an older one.
     public let liveVersion: Int?
-    /// Set when the hub could not read the live activity.
+    /// Set when the hub could not read the live activity, or when this build
+    /// could not decode the block it sent.
     public let liveError: String?
+    /// The hub's fixed `live_error` text, reused for an undecodable block.
+    public static let liveUnavailable = "Activity unavailable"
 
     public init(
         sessionID: Int64,
@@ -164,9 +167,17 @@ public struct SessionChat: SliceMirror, Equatable {
         live = try c.decodeIfPresent(Bool.self, forKey: .live) ?? false
         entriesMore = try c.decodeIfPresent(Int.self, forKey: .entriesMore) ?? 0
         entries = try c.decodeIfPresent([Entry].self, forKey: .entries) ?? []
-        activityLive = try c.decodeIfPresent(SessionFeedLive.self, forKey: .activityLive)
         liveVersion = try c.decodeIfPresent(Int.self, forKey: .liveVersion)
-        liveError = try c.decodeIfPresent(String.self, forKey: .liveError)
+        // A block this build cannot read must not cost the entries: the line
+        // falls back to the hub's own failure text.
+        let hubError = try c.decodeIfPresent(String.self, forKey: .liveError)
+        do {
+            activityLive = try c.decodeIfPresent(SessionFeedLive.self, forKey: .activityLive)
+            liveError = hubError
+        } catch {
+            activityLive = nil
+            liveError = Self.liveUnavailable
+        }
     }
 
     // convertFromSnakeCase maps "session_id" -> "sessionId" (lowercase d).

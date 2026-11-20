@@ -657,8 +657,8 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(live.conversation, "conv-1")
         XCTAssertTrue(live.turnActive)
         XCTAssertEqual(live.agentsState, "known")
-        XCTAssertEqual(live.agentsMore, 0)
-        XCTAssertEqual(live.stepsMore, 0)
+        XCTAssertEqual(live.agentsMore, 2)
+        XCTAssertEqual(live.stepsMore, 3)
 
         let current = try XCTUnwrap(live.current)
         XCTAssertEqual(current.id, "toolu_02")
@@ -666,6 +666,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(current.summary, "go test ./internal/db")
         XCTAssertEqual(current.startedAt, Date(timeIntervalSince1970: 1_700_000_062))
         XCTAssertNil(current.completedAt, "Go's zero completed_at is an open step")
+        XCTAssertEqual(current.more, 1)
         XCTAssertEqual(live.latest?.completedAt, Date(timeIntervalSince1970: 1_700_000_061))
 
         XCTAssertEqual(live.steps.map(\.id), ["toolu_01", "toolu_02"])
@@ -698,6 +699,22 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertNil(chat.activityLive)
         XCTAssertNil(chat.liveVersion)
         XCTAssertNil(chat.liveError)
+        XCTAssertEqual(chat.entries.count, try SessionChat.decode(payload: try fixture("session_chat")).entries.count)
+    }
+
+    /// A block this build cannot read (an agent without its required `ref`)
+    /// drops only the block: the entries survive and the line says why.
+    func testSessionChatMalformedLiveBlockKeepsEntries() throws {
+        var json = try object("session_chat")
+        var live = try XCTUnwrap(json["activity_live"] as? [String: Any])
+        live["agents"] = [["started_at": "2023-11-14T22:14:20Z", "can_open": true]]
+        json["activity_live"] = live
+        json["live_error"] = nil
+        let chat = try SessionChat.decode(payload: try data(json))
+        XCTAssertNil(chat.activityLive)
+        XCTAssertEqual(chat.liveError, "Activity unavailable")
+        XCTAssertEqual(chat.liveError, SessionChat.liveUnavailable)
+        XCTAssertEqual(chat.liveVersion, 1)
         XCTAssertEqual(chat.entries.count, try SessionChat.decode(payload: try fixture("session_chat")).entries.count)
     }
 
