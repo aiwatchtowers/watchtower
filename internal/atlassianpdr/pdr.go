@@ -30,6 +30,10 @@ const (
 	StatusUpdated Status = "updated"
 	// StatusOK is an id Atlassian did not list: nothing to do.
 	StatusOK Status = "ok"
+	// StatusUnknown is an id a lookup could not answer (Atlassian left it
+	// out of the profiles it returned): never closed, and the account's
+	// report is incomplete, so Run does not stamp last_pdr_at.
+	StatusUnknown Status = "unknown"
 )
 
 // Reporter is an Atlassian account's side of Personal Data Reporting.
@@ -84,6 +88,10 @@ type Result struct {
 	Reported int
 	Closed   int
 	Updated  int
+	// Unknown counts the ids the answer left open (StatusUnknown): the
+	// rest was acted on, but last_pdr_at is not stamped, so the account
+	// reports again on its next try.
+	Unknown int
 }
 
 // Due reports whether an account last reported at lastPDRAt (RFC 3339, ""
@@ -112,7 +120,9 @@ func parseTime(s string) (time.Time, bool) {
 // unchanged; "Re-login to finish the setup" requests the scope); a
 // whole-account success clears it, erases the closed ids in one write
 // transaction (EraseClosed), writes the refetched profiles and stamps
-// last_pdr_at.
+// last_pdr_at — unless an id was left StatusUnknown (Result.Unknown): the
+// rest is acted on, but the stamp waits for an answer for every id, so the
+// account reports again on the caller's next try.
 func Run(ctx context.Context, d *db.DB, accountID int64, r Reporter, now time.Time) (Result, error) {
 	acct, err := d.GetJiraAccount(accountID)
 	if err != nil {
@@ -162,6 +172,8 @@ func Run(ctx context.Context, d *db.DB, accountID int64, r Reporter, now time.Ti
 				closed = append(closed, id)
 			case StatusUpdated:
 				updated = append(updated, id)
+			case StatusUnknown:
+				res.Unknown++
 			case StatusOK:
 				// nothing to do (also any status Atlassian may add later)
 			}
@@ -185,6 +197,9 @@ func Run(ctx context.Context, d *db.DB, accountID int64, r Reporter, now time.Ti
 	res.Closed, res.Updated = len(closed), len(updated)
 	if err := d.SetJiraPDRScopeHint(accountID, false); err != nil {
 		return res, err
+	}
+	if res.Unknown > 0 {
+		return res, nil
 	}
 	if err := d.SetJiraLastPDR(accountID, now.UTC().Format(time.RFC3339)); err != nil {
 		return res, err

@@ -50,6 +50,47 @@ func TestPhaseAtlassianPDR_FailureWaitsBeforeRetrying(t *testing.T) {
 	assert.Len(t, trace, 2, "tried again after the wait")
 }
 
+// unknownReporter answers every id as not found (an incomplete lookup).
+type unknownReporter struct{ trace *[]string }
+
+func (r unknownReporter) Report(_ context.Context, ids []string, _ map[string]time.Time) (map[string]atlassianpdr.Status, error) {
+	*r.trace = append(*r.trace, "pdr")
+	out := map[string]atlassianpdr.Status{}
+	for _, id := range ids {
+		out[id] = atlassianpdr.StatusUnknown
+	}
+	return out, nil
+}
+
+func (unknownReporter) Profiles(context.Context, []string) ([]db.AtlassianProfile, error) {
+	return nil, nil
+}
+
+// TestPhaseAtlassianPDR_IncompleteLookupRetriesAfterTheWait: a lookup that
+// left ids unanswered stamps no last_pdr_at, so the account is due again —
+// but the next cycle waits pdrRetryAfter instead of asking every cycle.
+func TestPhaseAtlassianPDR_IncompleteLookupRetriesAfterTheWait(t *testing.T) {
+	d, database, _ := newExternalSyncTestDaemon(t)
+	seedConfluenceSource(t, database)
+	_, err := database.Exec(`INSERT INTO jira_user_map (jira_account_id) VALUES ('acme-1')`)
+	require.NoError(t, err)
+	var trace []string
+	d.SetAtlassianPDR([]PDRAccount{{ID: 1, Reporter: unknownReporter{trace: &trace}}})
+	now := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	d.pdrNow = func() time.Time { return now }
+
+	d.phaseAtlassianPDR(context.Background())
+	d.phaseAtlassianPDR(context.Background())
+	assert.Len(t, trace, 1, "the next cycle waits")
+	a, err := database.GetJiraAccount(1)
+	require.NoError(t, err)
+	assert.Empty(t, a.LastPDRAt)
+
+	now = now.Add(pdrRetryAfter)
+	d.phaseAtlassianPDR(context.Background())
+	assert.Len(t, trace, 2, "tried again after the wait, not 7 days later")
+}
+
 // TestDaemon_PDRAfterExternalSync: the PDR phase runs in the same cycle,
 // after the Confluence sync, so a profile a sync re-wrote is erased last.
 func TestDaemon_PDRAfterExternalSync(t *testing.T) {

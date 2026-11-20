@@ -698,9 +698,28 @@ type JiraIssue struct {
 	UpdatedAt               string
 	ResolvedAt              string
 	RawJSON                 string
-	CustomFieldsJSON        string
-	SyncedAt                string
-	IsDeleted               bool
+	// CustomFieldsJSON maps each mapped custom field's role to its display
+	// value; a user-picker role also lists its people, account ids kept,
+	// under CustomFieldPeopleKey (Personal Data Reporting reads them).
+	CustomFieldsJSON string
+	SyncedAt         string
+	IsDeleted        bool
+}
+
+// CustomFieldPeopleKey is the reserved key of jira_issues.custom_fields_json
+// under which the sync keeps, per user-picker role, the people the field
+// names: {"_people": {"<role>": [{"id": "<account id>", "name": "…"}]}}. The
+// role's display value is their names joined by ", ". A row written before
+// the key existed has no ids; the Personal Data Reporting erase then
+// matches its single-name values by the names stored elsewhere.
+const CustomFieldPeopleKey = "_people"
+
+// CustomFieldPerson is one person a user-picker custom field names. Name is
+// "" once Personal Data Reporting erased a closed account (the bare id
+// stays, as on the other person columns).
+type CustomFieldPerson struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // JiraCustomField represents a discovered Jira custom field.

@@ -35,8 +35,8 @@ func (LookupReporter) Profiles(context.Context, []string) ([]db.AtlassianProfile
 	return nil, nil
 }
 
-// LookupClosed looks ids up and returns the ones Atlassian shows as closed.
-// An error (403, network, anything) closes nothing: the caller erases
+// LookupClosed looks ids up and returns the ones Atlassian shows as closed,
+// and as StatusUnknown the ones its answer leaves out. An error (403, network, anything) closes nothing: the caller erases
 // nothing and tries again.
 func LookupClosed(ctx context.Context, g UsersGetter, ids []string) (map[string]Status, error) {
 	users, err := g.UsersBulkStatus(ctx, ids)
@@ -54,17 +54,25 @@ const closedDisplayName = "Former user"
 // explicitly inactive ("active": false, not an absent field) and anonymised
 // (closedDisplayName). Spike S1.5 has not fixed Atlassian's closed-account
 // marker yet, so anything less is ambiguous and erases nothing: an inactive
-// profile with a name is a deactivated person, not a closed account, and an
-// id Atlassian leaves out may only be hidden from this token.
+// profile with a name is a deactivated person, not a closed account. An id
+// Atlassian leaves out may only be hidden from this token, or not found this
+// time: it is StatusUnknown, never closed, and Run retries the account.
 func classifyBulkUsers(ids []string, users []jira.BulkUser) map[string]Status {
 	asked := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		asked[id] = true
 	}
+	answered := make(map[string]bool, len(users))
 	out := map[string]Status{}
 	for _, u := range users {
+		answered[u.AccountID] = true
 		if asked[u.AccountID] && u.Active != nil && !*u.Active && strings.EqualFold(strings.TrimSpace(u.DisplayName), closedDisplayName) {
 			out[u.AccountID] = StatusClosed
+		}
+	}
+	for _, id := range ids {
+		if !answered[id] {
+			out[id] = StatusUnknown
 		}
 	}
 	return out

@@ -803,10 +803,11 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int, fie
 	// Extract the board's mapped custom field values.
 	var storyPoints *float64
 	customFieldsMap := make(map[string]any)
+	pickerPeople := make(map[string][]db.CustomFieldPerson)
 
 	for _, fm := range fieldMap {
 		rawVal, ok := issue.CustomFields[fm.FieldID]
-		if !ok || string(rawVal) == "null" {
+		if !ok || string(rawVal) == "null" || fm.Role == db.CustomFieldPeopleKey {
 			continue
 		}
 
@@ -838,8 +839,16 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int, fie
 				if displayVal != "" {
 					customFieldsMap[fm.Role] = displayVal
 				}
+				// A user picker keeps its people's account ids too, so
+				// Personal Data Reporting can report and erase them.
+				if people := customFieldUsers(val); len(people) > 0 {
+					pickerPeople[fm.Role] = people
+				}
 			}
 		}
+	}
+	if len(pickerPeople) > 0 {
+		customFieldsMap[db.CustomFieldPeopleKey] = pickerPeople
 	}
 
 	var customFieldsJSON string
@@ -1188,6 +1197,28 @@ func (s *Syncer) normalizeTime(key, field, v string) string {
 
 // extractDisplayValue gets a human-readable value from a Jira field value.
 // Jira fields can be strings, numbers, objects with "name" or "displayName", or arrays thereof.
+// customFieldUsers returns the people a decoded custom field value names
+// — a user object ("accountId") or an array of them — each with its display
+// name (extractDisplayValue, "" when Atlassian hides it). Nil for any other
+// value.
+func customFieldUsers(val any) []db.CustomFieldPerson {
+	items, ok := val.([]any)
+	if !ok {
+		items = []any{val}
+	}
+	var out []db.CustomFieldPerson
+	for _, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if id, _ := obj["accountId"].(string); id != "" {
+			out = append(out, db.CustomFieldPerson{ID: id, Name: extractDisplayValue(obj)})
+		}
+	}
+	return out
+}
+
 func extractDisplayValue(val any) string {
 	switch v := val.(type) {
 	case string:

@@ -29,7 +29,8 @@ func (d *Daemon) SetAtlassianPDR(accounts []PDRAccount) {
 // phaseAtlassianPDR runs Personal Data Reporting for each account (#1887 §6,
 // D6): atlassianpdr.Run reports only when the account's 7 days are up, and
 // an error erases nothing; the account tries again pdrRetryAfter later (in
-// memory: a restart tries at once). Skipped for a source the organization's
+// memory: a restart tries at once) — as does one whose lookup left ids
+// unanswered (Result.Unknown, last_pdr_at not stamped). Skipped for a source the organization's
 // policy forbids (no request to it, POLICY-03) and for an account whose
 // purge holds it.
 func (d *Daemon) phaseAtlassianPDR(ctx context.Context) {
@@ -48,13 +49,20 @@ func (d *Daemon) phaseAtlassianPDR(ctx context.Context) {
 			continue
 		}
 		res, err := atlassianpdr.Run(ctx, d.db, a.ID, a.Reporter, now())
-		switch {
-		case err != nil:
-			d.logger.Printf("atlassian pdr: account %d: %v (next try in %s)", a.ID, err, pdrRetryAfter)
+		retry := func() {
 			if d.pdrRetryAt == nil {
 				d.pdrRetryAt = map[int64]time.Time{}
 			}
 			d.pdrRetryAt[a.ID] = now().Add(pdrRetryAfter)
+		}
+		switch {
+		case err != nil:
+			d.logger.Printf("atlassian pdr: account %d: %v (next try in %s)", a.ID, err, pdrRetryAfter)
+			retry()
+		case res.Unknown > 0:
+			d.logger.Printf("atlassian pdr: account %d: %d reported, %d closed erased, %d not answered (next try in %s)",
+				a.ID, res.Reported, res.Closed, res.Unknown, pdrRetryAfter)
+			retry()
 		case res.Closed > 0 || res.Updated > 0:
 			d.logger.Printf("atlassian pdr: account %d: %d reported, %d closed erased, %d updated", a.ID, res.Reported, res.Closed, res.Updated)
 		}

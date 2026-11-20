@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -88,6 +89,9 @@ func TestTokenLookup_AmbiguousErasesNothing(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+			if tc.name == "not found" {
+				assert.Empty(t, lastPDR(t, d, acct), "an id left out leaves the report incomplete")
+			}
 			assert.False(t, erased(t, d, acct))
 			assert.Equal(t, 1, count(t, d, `SELECT count(*) FROM jira_user_map WHERE jira_account_id = ?`, closedID))
 		})
@@ -95,12 +99,41 @@ func TestTokenLookup_AmbiguousErasesNothing(t *testing.T) {
 }
 
 func TestClassifyBulkUsers(t *testing.T) {
-	got := classifyBulkUsers([]string{"a", "b", "c"}, []jira.BulkUser{
+	got := classifyBulkUsers([]string{"a", "b", "c", "d"}, []jira.BulkUser{
 		{AccountID: "a", DisplayName: " former USER ", Active: ptr(false)},
 		{AccountID: "b", DisplayName: "Person B", Active: ptr(false)},
 		{AccountID: "c", DisplayName: "Former user"},
 	})
-	assert.Equal(t, map[string]Status{"a": StatusClosed}, got)
+	assert.Equal(t, map[string]Status{"a": StatusClosed, "d": StatusUnknown}, got)
+}
+
+// TestTokenLookup_OmittedIDRetried: an id the lookup leaves out is never
+// closed and leaves the report incomplete — the closed ids answered are
+// erased, but last_pdr_at stays unstamped, so the next try (not 7 days
+// later) looks every id up again; once every id is answered the account is
+// stamped.
+func TestTokenLookup_OmittedIDRetried(t *testing.T) {
+	d := db.OpenTestDB(t)
+	acct := newTokenAccount(t, d)
+	seedPeople(t, d, acct)
+	users := &fakeUsers{users: []jira.BulkUser{{AccountID: closedID, DisplayName: "Former user", Active: ptr(false)}}}
+
+	res, err := Run(context.Background(), d, acct, LookupReporter{Users: users}, t0)
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Closed)
+	assert.Equal(t, 1, res.Unknown)
+	assert.True(t, erased(t, d, acct), "the closed id answered is erased")
+	assert.Equal(t, 1, count(t, d, `SELECT count(*) FROM jira_user_map WHERE jira_account_id = ?`, liveID), "the omitted id is not closed")
+	assert.Empty(t, lastPDR(t, d, acct))
+
+	users.users = append(users.users, jira.BulkUser{AccountID: liveID, DisplayName: "Person", Active: ptr(true)})
+	res, err = Run(context.Background(), d, acct, LookupReporter{Users: users}, t0.Add(6*time.Hour))
+	require.NoError(t, err)
+	assert.False(t, res.NotDue, "retried long before 7 days")
+	assert.Zero(t, res.Unknown)
+	require.Len(t, users.asked, 2)
+	assert.ElementsMatch(t, []string{closedID, liveID}, users.asked[1])
+	assert.NotEmpty(t, lastPDR(t, d, acct))
 }
 
 func ptr[T any](v T) *T { return &v }
