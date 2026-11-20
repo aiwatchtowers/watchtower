@@ -107,8 +107,9 @@ draining the battery.
 - Timer: a `TimelineView(.periodic(by: 1))` inside the line only — it redraws one `Text` while the screen is visible
   and stops with it; the timer counts from the step's `started_at`, clamped at 0:00 for clock skew.
 - Staleness (C4): while `ReplicaFreshness` is nil the snapshot counts as current (the presentation is given
-  `observedAt = now`); when the tower is stale/offline the line shows the presentation's stale wording without timer
-  or pulse, tone `.secondary` with the warning glyph — the freshness line under the header already says why.
+  `observedAt = now`); when the tower is stale/offline it is given the heartbeat's time, so the line shows the
+  presentation's own stale wording ("Activity out of date · 42s ago") in the warning tone with Retry, without timer or
+  pulse — the freshness line under the header says why. Retry sends `session_chat_request` at once.
 - The line hides (presentation `activityHidden`) while a permission card or an inline ask stands above the composer,
   as on the Mac.
 - No turn running: no line and no reserved height (the phone's composer sits on the feed; the Mac's reserved row is a
