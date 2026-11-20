@@ -54,8 +54,19 @@ Anti-goals (a failure even if it "works")
   passes `model` to the Agent tool. (Owner rule: subagents are never below Opus — a
   session started for an audit must itself be Opus or stronger; the skill checks nothing
   here, it states it in its first line.)
-- Agents are read-only on the repository (Read, Grep, Glob, Bash for read commands).
-  Only the verifier may write, and only inside its own scratch copy (see §6.4).
+- Read-only is enforced by the tool list, not only by the prompt: the eight specialists
+  and `sec-coverage` get `tools: Read, Grep, Glob` — no Bash, so injection text inside
+  the audited code cannot make them run anything. Only `sec-verifier` has Bash, its
+  prompt lists the allowed commands (`git -C <its scratch worktree> …` read verbs,
+  `git worktree add/remove` for its own scratch copy, `go test ./internal/<pkg> -run …`
+  there), and it writes only inside that copy (see §6.4).
+- Runs need the Agent tool and the `Artifact`/`ArtifactData` tools, so they start from a
+  top-level Claude Code session with claude.ai artifacts available, not from a subagent.
+- Run from a plain terminal session, not a Watchtower workbench session: a workbench
+  session's transcript is shown in Workchat and can be sent to the phone on request
+  (`session_chat`). The skill's first line says so. The local Claude Code transcript
+  under `~/.claude/projects` still holds the agents' reports — an accepted residual on
+  the owner's own machine.
 - Existing baselines to respect on the first run: `docs/security-audit-2026-07-31.md`
   §8 (accepted risks) and `docs/review/2026-07-05-audit-security.md`. They are imported
   as the initial "accepted / fixed" set, so the first audit does not re-report them.
@@ -141,10 +152,21 @@ verification.
 
 ### 6.1 Flow
 
-0. **Ask the kind.** One `AskUserQuestion`: **Full** (whole `origin/main`) or **Range**
+0. **Preflight.** The session has the Agent, `Artifact` and `ArtifactData` tools
+   (loaded through ToolSearch if deferred); if any is missing the run stops with that
+   message before anything else — it never falls through to the first-run branch. Then
+   **find the report Artifact**: the URL in
+   `~/.config/watchtower/security-audit/config.json`; if the file is missing, the skill
+   lists the owner's artifacts (`Artifact list`) for one titled "Security audit". One
+   found → it asks the owner to confirm it and rewrites the config. None found → it asks
+   the owner "no previous audit found — start a new report?" and only a yes takes the
+   first-run branch. A config URL that no longer opens stops the run (failure table).
+   **Ask the kind.** One `AskUserQuestion`: **Full** (whole `origin/main`) or **Range**
    (between tags). For Range the skill proposes the last audited tag → the newest tag
-   (`git tag --sort=creatordate`), and the owner can name another pair. `/security-audit
-   full` and `/security-audit range <from>..<to>` skip the question.
+   (`git tag --sort=creatordate`); with no audited tag yet, the tag before the newest →
+   the newest. The owner can name another pair. The question also shows when the last
+   Full ran, because Range never revisits untouched code. `/security-audit full` and
+   `/security-audit range <from>..<to>` skip the question.
 1. **Pin the commit.** `git fetch origin main`; record the SHA. Create a detached,
    read-only worktree at that SHA under the scratchpad (`git worktree add --detach`),
    so the audit never touches the owner's checkouts and every agent reads the same tree.
@@ -154,10 +176,11 @@ verification.
    2026-07-05 audit as baseline rows. These rows have no agent fingerprint; they carry
    the old id (`D-1`, `S-3`…), the text and the paths, with status `fixed`, `accepted`
    or — for a leftover the old audit left open — `open`. A mixed item is split into one
-   row per part. (Builder's call, 2026-11-20.)
+   row per part. (Builder's call, see §10.)
 3. **Changed-since list.** `git diff --name-only <last audited SHA>..<SHA>`; the last SHA
    comes from the previous run row. Agents audit their whole surface but start with these
-   files.
+   files. On the first run there is no previous SHA: the list is empty and agents audit
+   the whole surface with no starting order.
 4. **Fan out** the eight specialists and `sec-coverage` in one parallel batch. Each gets:
    the worktree path, its slice of `surfaces.md`, the changed-since list for its paths,
    and the baseline rows for its surface (fingerprint + status + the owner's note), with
@@ -174,14 +197,20 @@ verification.
    the verifier says whether it is the same issue as one of them (same weakness, the code
    moved or was renamed, or an imported text-only row). A model-confirmed match takes
    over the old row's status and note and the row gets the new fingerprint as an alias,
-   so a refactor does not turn an accepted risk into "fixed + new". (Builder's call.)
+   so a refactor does not turn an accepted risk into "fixed + new". Because a wrong match
+   would hide a real issue under an old `accepted`/`false_positive`, such a row gets
+   `match: model` and the report shows it at the top with a **Matched by model — check**
+   badge and the old and new text side by side; the owner presses **Same issue** (badge
+   goes) or **Different issue** (the alias is dropped, the finding becomes a new row with
+   status `open`). Until the owner confirms, the finding counts in the severity totals as
+   if open. (Builder's call, see §10.)
    Then **classify:** `new`, `still open` (fingerprint open in the
    baseline), `regressed` (was `fixed`), `fixed` (was open, not found again, and its file
    changed since; if the file did not change, it stays `still open` and is flagged
    "not re-found" — a missed finding is not a fix).
 7. **Publish** (§7) and print a short terminal summary: counts per severity and per
    class, the Artifact link, coverage gaps. Nothing is written to the board (it syncs to
-   the phone): no titles, no paths, no counts. (Builder's call.)
+   the phone): no titles, no paths, no counts. (Builder's call, see §10.)
 8. **Clean up** the audit worktree.
 
 ### 6.2 `sec-coverage`
@@ -213,7 +242,7 @@ sandbox, a type that cannot carry the value). It may write a throwaway Go or Swi
 never committed, deleted at the end) and runs only `go test ./internal/<pkg> -run …`
 there — no network, no live accounts, no `make` targets that touch the owner's install.
 v1 runs Go tests only: a Swift test in a fresh worktree needs a cold `.build` (minutes,
-~5 GB), so Swift findings are confirmed by reading or stay `plausible`. (Builder's call.)
+~5 GB), so Swift findings are confirmed by reading or stay `plausible`. (Builder's call, see §10.)
 A demonstrated finding is `confirmed` with the test's output quoted.
 
 ### 6.5 Failure paths
@@ -222,6 +251,8 @@ A demonstrated finding is `confirmed` with the test's output quoted.
 |---|---|---|
 | A specialist returns nothing or garbage | Marked `failed` in the run row; its surface shows "not audited this run" in the report; the run still publishes | Dry run with one agent prompt forced to return invalid JSON |
 | A specialist hangs | The skill does not poll; agents run in one foreground batch. If the session is interrupted, nothing is published and the worktree is removed by the next run's step 1 (it removes stale `security-audit-*` worktrees first) | Manual: interrupt mid-run, re-run, see the stale worktree gone |
+| `Artifact`/`ArtifactData` tools missing in the session | Preflight (step 0) stops the run with "artifact tools are not available in this session"; nothing is created or imported | Run in a session without claude.ai artifacts |
+| `config.json` lost (new machine, cleaned `~/.config`) | Preflight looks the report up with `Artifact list` and asks the owner to confirm it; a new report is created only on the owner's explicit yes — never silently | Delete the config, run, see the existing report found |
 | `ArtifactData` read fails (offline, Artifact deleted) | The run stops before fan-out with that message — auditing without the baseline would re-report everything | Run with a wrong Artifact URL in the local config |
 | Publish fails | The report and findings JSON are already saved under `~/.config/watchtower/security-audit/runs/<date>-<sha>/` (0600, outside git); the skill prints that path and how to re-publish | Run with publishing denied |
 | Two runs at once | A lock file `~/.config/watchtower/security-audit/lock` (pid + start time); a second run refuses while the pid is alive | Start a second run during the first |
@@ -247,14 +278,20 @@ Collections:
   (`new|still_open|regressed|fixed|not_refound`) — written by runs;
   `status` (`open|in_progress|fixed|accepted|false_positive`) and `note` — written by
   the owner from the page, never by a run (a new finding is created with `status: open`
-  once).
+  once); `match` (`exact|model|owner_confirmed`) and `aliases` (earlier fingerprints) —
+  written by runs, except that **Same issue** / **Different issue** (§6.1 step 6) is the
+  owner's.
 
 Page (sketch):
 
 ```
 ┌ Security audit ─────────────────────────────── run 2026-11-20 · 3e63da8 ▾ ┐
 │  Critical 1   High 4   Medium 9   Low 6     Regressed 1   Not audited: —   │
+│  Kind: Range v0.41.0..v0.42.0 · last Full: 2026-11-20                      │
 │  [Surface ▾] [Severity ▾] [Status: open ▾] [New only ☐]   search…          │
+├ Matched by model — check (1) ──────────────────────────────────────────────┤
+│ ◆ was: S-1 "client secrets extractable"   now: auth-secrets:secret-leak …  │
+│   [Same issue]  [Different issue]                                          │
 ├────────────────────────────────────────────────────────────────────────────┤
 │ ● CRIT  NEW  llm-injection · prompt-to-write                               │
 │   Slack text reaches send_slack_message without approval via …             │
@@ -270,6 +307,9 @@ Page (sketch):
 
 States: loading (10 s timer, then "could not load the audit data" with the reason),
 empty (no runs yet), a viewer who is not the owner (read-only, controls hidden).
+The page is a claude.ai Artifact, not a Desktop screen, so the Desktop style guide does
+not apply; the sketch above is its mockup and the first publish in the plan's last task
+is shown to the owner before the plan is closed.
 
 ## 8. How Range differs from Full
 
@@ -283,7 +323,9 @@ The flow in §6.1 is the same; these steps change:
   runs over the changed files only.
 - **What they read**: the range diff and the merged PR list, told to audit the changed
   code and what it now reaches (a new caller of an old sink counts), not the whole
-  surface.
+  surface. Range is therefore shallower than Full by design: an old hole in code the
+  range did not touch is found only by a Full run. It complements Full, it does not
+  replace it; the kind question and the report header show when Full last ran.
 - **Classification**: a surface that did not run this time keeps its findings as they
   were — nothing is marked `fixed` or `not_refound` there. Its strip in the report says
   "not in this run's scope", not "failed".
@@ -300,8 +342,19 @@ The flow in §6.1 is the same; these steps change:
 - The fingerprint hash function (any stable hash of the fingerprint string).
 - The page's visual design within the sketch, following `artifact-design`.
 
-## 10. Owner decisions
+## 10. Decisions
 
-None open. Decided in the session of 2026-11-20: approach A; periodic audit with the
-report as an Artifact outside git (ask #776); no per-PR gate — the owner starts a run
-and is asked Full or Range between tags (ask #779).
+| Decision | Source |
+|---|---|
+| Approach A: surface specialists + verifier + coverage | Owner, chat 2026-11-20 |
+| Periodic audit; report is a private Artifact outside git | Owner, chat + ask #776 |
+| No per-PR gate; a run asks Full or Range between tags | Owner, ask #779 |
+| Agents omit `model` and inherit the session's (Mythos) | Builder (platform constraint) |
+| First run imports the two old audits as text-only baseline rows; mixed items split; old leftovers `open` | Builder |
+| Baseline match after a refactor is proposed by the verifier, marked `match: model`, confirmed by the owner on the page | Builder (owner confirms each match) |
+| Range audits changed code and what it reaches, not whole surfaces | Builder (follows from ask #779) |
+| Verifier runs Go tests only in v1; Swift findings confirmed by reading | Builder |
+| Nothing written to the board; run from a non-workbench session | Builder |
+| Specialists have no Bash; only the verifier does, with a listed command set | Builder |
+
+None open. Any Builder row the owner rejects in review changes only its own section.
