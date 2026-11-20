@@ -260,9 +260,13 @@ func watchedExtras(k chatKey, read ChatRead) (extra, running []string, found boo
 // full resolve runs only when the ids changed, one is not located yet, or a
 // file is gone. A changed resolution, or one with a transcript not watched,
 // asks for a read. It reads no transcript.
-func (s *SessionChatSource) checkConversations(ctx context.Context, active map[chatKey]bool, live map[int64]time.Time) {
+func (s *SessionChatSource) checkConversations(ctx context.Context, gen int, active map[chatKey]bool, live map[int64]time.Time) {
 	now := s.o.Now()
 	s.mu.Lock()
+	if s.generation != gen {
+		s.mu.Unlock()
+		return
+	}
 	var keys []chatKey
 	for k := range active {
 		if k.agent != "" || k.toolUseID != "" {
@@ -279,11 +283,10 @@ func (s *SessionChatSource) checkConversations(ctx context.Context, active map[c
 		}
 		keys = append(keys, k)
 	}
-	gen := s.generation
 	s.mu.Unlock()
 	slices.SortFunc(keys, func(a, b chatKey) int { return cmp.Compare(a.session, b.session) })
 	for _, k := range keys {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || !s.isCurrent(gen) {
 			return
 		}
 		s.checkConversation(ctx, k, gen, now)
@@ -301,11 +304,13 @@ func (s *SessionChatSource) checkConversation(ctx context.Context, k chatKey, ge
 		s.withRun(k, gen, func(r *chatRun) { r.checkedAt = now })
 		return
 	}
-	var full bool
+	var full, reresolve bool
 	var unwatched []string
 	s.withRun(k, gen, func(r *chatRun) {
 		r.checkedAt = now
-		full = !r.resolved || r.reresolve || !slices.Equal(ids, r.ids) || r.unlocated()
+		// Taken now: a file gone during the resolve below asks for another.
+		reresolve, r.reresolve = r.reresolve, false
+		full = !r.resolved || reresolve || !slices.Equal(ids, r.ids) || r.unlocated()
 		for _, c := range r.convs {
 			if !r.watched[c.Path] {
 				unwatched = append(unwatched, c.Path)
@@ -326,6 +331,7 @@ func (s *SessionChatSource) checkConversation(ctx context.Context, k chatKey, ge
 		if ctx.Err() == nil {
 			log.Printf("hub slices: resolving the conversations of session %d failed (%s)", k.session, errClass(err))
 		}
+		s.withRun(k, gen, func(r *chatRun) { r.reresolve = r.reresolve || reresolve })
 		return
 	}
 	s.withRun(k, gen, func(r *chatRun) {
@@ -334,7 +340,7 @@ func (s *SessionChatSource) checkConversation(ctx context.Context, k chatKey, ge
 		if changed && !r.last.IsZero() {
 			r.convsChanged = true
 		}
-		r.convs, r.ids, r.resolved, r.reresolve = convs, ids, true, false
+		r.convs, r.ids, r.resolved = convs, ids, true
 	})
 }
 
