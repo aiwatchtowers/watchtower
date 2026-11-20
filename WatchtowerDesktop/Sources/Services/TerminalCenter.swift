@@ -1691,10 +1691,8 @@ final class PalettedTerminalView: LocalProcessTerminalView {
         applyBackground()
     }
 
-    override func viewDidMoveToWindow() { // Metal: PalettedTerminalView+Metal.swift
-        super.viewDidMoveToWindow()
-        updateMetalForWindow()
-    }
+    /// Its window's key and occlusion observers; `viewDidMoveToWindow` (Metal and focus) is in PalettedTerminalView+Metal.swift.
+    var windowFocusObservers: NotificationObservers?
 
     // MARK: Selection under streaming output
 

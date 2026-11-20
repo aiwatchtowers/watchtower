@@ -20,6 +20,7 @@ final class TerminalMetalTests: XCTestCase {
     override func tearDown() async throws {
         PalettedTerminalView.metalUnavailable = false
         PalettedTerminalView.startMetal = { try $0.setUseMetal(true) }
+        PalettedTerminalView.redrawMetal = { $0.setNeedsDisplay($0.bounds) }
     }
 
     private func window() -> NSWindow {
@@ -128,6 +129,80 @@ final class TerminalMetalTests: XCTestCase {
         XCTAssertEqual(container.layer?.backgroundColor, TerminalPalette.background.cgColor)
         session.view.appearance = try dark
         XCTAssertEqual(container.layer?.backgroundColor?.alpha, 0)
+    }
+
+    /// A window a test can make key without activating the app.
+    private final class KeyWindow: NSWindow {
+        override var isKeyWindow: Bool { true }
+    }
+
+    private func keyWindow() -> NSWindow {
+        let window = KeyWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                               styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        addTeardownBlock { window.close() }
+        return window
+    }
+
+    /// A terminal that comes back into a window where the keyboard is
+    /// elsewhere does not keep the focus it had when it left: under Metal
+    /// the cursor is drawn from that flag (board #2126).
+    func testATerminalBackInItsWindowTakesItsFocusFromTheWindow() throws {
+        let host = keyWindow()
+        let view = terminal()
+        host.contentView?.addSubview(view)
+        XCTAssertTrue(host.makeFirstResponder(view))
+        XCTAssertTrue(view.hasFocus)
+
+        view.removeFromSuperview()
+        host.contentView?.addSubview(view)
+        XCTAssertFalse(host.firstResponder === view)
+        XCTAssertFalse(view.hasFocus, "focus kept from before it left the window")
+    }
+
+    /// A key or visibility change of its own window redraws the Metal view
+    /// at once (the cursor is drawn in the frame); another window's change
+    /// does not, nor its window's after the view left it.
+    func testItsWindowsKeyChangeRedrawsTheMetalFrame() throws {
+        let host = keyWindow()
+        let view = terminal()
+        host.contentView?.addSubview(view)
+        try XCTSkipUnless(view.isUsingMetalRenderer, "Metal does not start on this machine")
+        let metal = try XCTUnwrap(view.subviews.first { $0 is MTKView })
+        var redrawn: [NSView] = []
+        PalettedTerminalView.redrawMetal = { redrawn.append($0) }
+        let center = NotificationCenter.default
+
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                     NSWindow.didChangeOcclusionStateNotification] {
+            redrawn = []
+            center.post(name: name, object: window())
+            XCTAssertTrue(redrawn.isEmpty, "\(name.rawValue) of another window")
+            center.post(name: name, object: host)
+            XCTAssertEqual(redrawn.count, 1, name.rawValue)
+            XCTAssertTrue(redrawn.first === metal, name.rawValue)
+        }
+
+        view.removeFromSuperview()
+        redrawn = []
+        center.post(name: NSWindow.didBecomeKeyNotification, object: host)
+        XCTAssertTrue(redrawn.isEmpty, "still observing the window it left")
+    }
+
+    /// The holder removes its observers when it goes: a terminal freed
+    /// while still in a window leaves none behind.
+    func testNotificationObserversAreRemovedWithTheirHolder() {
+        let name = Notification.Name("TerminalMetalTests.probe")
+        var fired = 0
+        var holder: NotificationObservers? = NotificationObservers([
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { _ in fired += 1 }
+        ])
+        NotificationCenter.default.post(name: name, object: nil)
+        XCTAssertEqual(fired, 1)
+        XCTAssertNotNil(holder)
+        holder = nil
+        NotificationCenter.default.post(name: name, object: nil)
+        XCTAssertEqual(fired, 1)
     }
 
     /// Outside Metal the margin is the layer's colour as before; a clear
