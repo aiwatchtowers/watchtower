@@ -2,9 +2,9 @@ package sessionagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"path/filepath"
-	"strings"
+	"io/fs"
 	"time"
 
 	"watchtower/internal/db"
@@ -12,10 +12,11 @@ import (
 )
 
 // SessionRead is one ReadSession pass: the feed's entries, the live
-// snapshot of the conversation read (nil with LiveErr set when it failed,
-// nil and no error when the session has no conversation yet) and every file
-// and directory the pass read, absolute and without repeats (a watcher of
-// them sees every change the next pass would reflect).
+// snapshot of the conversation read (nil with LiveErr set when that read
+// failed or passed liveReadTimeout; nil and no error when there is no
+// conversation or its file does not exist yet) and every file and directory
+// the pass read, absolute and without repeats (a watcher of them sees every
+// change the next pass would reflect).
 type SessionRead struct {
 	Entries []sessionfeed.Entry
 	Live    *sessionfeed.Live
@@ -23,13 +24,24 @@ type SessionRead struct {
 	Paths   []string
 }
 
+// liveReadTimeout bounds the live snapshot inside a ReadSession pass, so a
+// stalled one still returns the fresh entries (with LiveErr).
+const liveReadTimeout = 10 * time.Second
+
+// errLiveTimedOut is LiveErr of a snapshot that passed liveReadTimeout.
+var errLiveTimedOut = errors.New("live snapshot timed out")
+
+// liveOf takes the live snapshot (a test seam).
+var liveOf = sessionfeed.LiveOf
+
 // ReadSession is the entries of `workbench session-feed --session S --json`
 // read whole (no cursor), or with toolUseID set those of `--subagent T`,
 // with that output's live snapshot (`live`; the subagent's own sidechain for
-// T) and read paths (`paths`) taken at now: the hub's session_chat slice
-// reads a session with it. The session's conversations come from its
-// agent's adapter. A missing session wraps db.ErrTerminalSessionNotFound; a
-// shell session is refused. A failed live read is LiveErr, never the error.
+// T) and read paths (`paths`) taken at now — the same sessionfeed.ReadChat
+// the CLI runs. The hub's session_chat slice reads a session with it. The
+// session's conversations come from its agent's adapter. A missing session
+// wraps db.ErrTerminalSessionNotFound; a shell session is refused. A failed
+// live read is LiveErr, never the error.
 func ReadSession(ctx context.Context, d *db.DB, sessionID int64, toolUseID string, dirs sessionfeed.Dirs, now time.Time) (SessionRead, error) {
 	sess, err := LoadSession(d, sessionID)
 	if err != nil {
@@ -43,50 +55,56 @@ func ReadSession(ctx context.Context, d *db.DB, sessionID int64, toolUseID strin
 	if err != nil {
 		return SessionRead{}, err
 	}
-	if toolUseID != "" {
-		res, path, reads, err := sessionfeed.FindSubagentReads(convs, toolUseID)
-		if err != nil {
-			return SessionRead{}, err
-		}
-		codex := strings.HasPrefix(toolUseID, "codex:")
-		live, liveErr := sessionfeed.LiveOf(sessionfeed.Conversation{
-			Path: path, Codex: codex, AgentSessionID: strings.TrimPrefix(toolUseID, "codex:"),
-		}, !codex, now)
-		return SessionRead{Entries: res.Entries, Live: live, LiveErr: liveErr, Paths: readPaths([]string{path}, live.Paths(), reads)}, nil
-	}
 	var lookup sessionfeed.AskLookup
-	if sess.WorkbenchID.Valid {
+	if toolUseID == "" && sess.WorkbenchID.Valid {
 		lookup = sessionfeed.AskLookupFor(d, sess.WorkbenchID.Int64)
 	}
-	feed, err := sessionfeed.Build(convs, nil, lookup)
+	return readChat(ctx, convs, lookup, toolUseID, now)
+}
+
+// readChat is ReadSession past the session lookup.
+func readChat(ctx context.Context, convs []sessionfeed.Conversation, lookup sessionfeed.AskLookup, toolUseID string, now time.Time) (SessionRead, error) {
+	read, err := sessionfeed.ReadChat(convs, sessionfeed.ReadOptions{Asks: lookup, Subagent: toolUseID, Now: now, LiveOf: boundedLiveOf(ctx)})
 	if err != nil {
 		return SessionRead{}, err
 	}
-	out := SessionRead{Entries: feed.Entries}
-	if len(convs) > 0 {
-		out.Live, out.LiveErr = sessionfeed.LiveOf(convs[len(convs)-1], false, now)
+	out := SessionRead{Live: read.Live, LiveErr: read.LiveErr, Paths: read.Paths}
+	if read.Subagent != nil {
+		out.Entries = read.Subagent.Entries
+	} else {
+		out.Entries = read.Feed.Entries
 	}
-	out.Paths = readPaths(feed.Paths, out.Live.Paths())
+	if errors.Is(out.LiveErr, fs.ErrNotExist) {
+		out.LiveErr = nil // a conversation not written yet: nothing to show, nothing failed
+	}
 	return out, nil
 }
 
-// readPaths joins read lists in order, absolute and without repeats
-// (`session-feed --json`'s paths).
-func readPaths(lists ...[]string) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, l := range lists {
-		for _, p := range l {
-			if abs, err := filepath.Abs(p); err == nil {
-				p = abs
-			}
-			if !seen[p] {
-				seen[p] = true
-				out = append(out, p)
-			}
+// boundedLiveOf is liveOf given up after liveReadTimeout or when ctx ends
+// (the snapshot itself runs on, and its result is dropped).
+func boundedLiveOf(ctx context.Context) func(sessionfeed.Conversation, bool, time.Time) (*sessionfeed.Live, error) {
+	read := liveOf
+	return func(c sessionfeed.Conversation, sidechain bool, now time.Time) (*sessionfeed.Live, error) {
+		type result struct {
+			live *sessionfeed.Live
+			err  error
+		}
+		done := make(chan result, 1)
+		go func() {
+			l, err := read(c, sidechain, now)
+			done <- result{l, err}
+		}()
+		t := time.NewTimer(liveReadTimeout)
+		defer t.Stop()
+		select {
+		case r := <-done:
+			return r.live, r.err
+		case <-t.C:
+			return nil, errLiveTimedOut
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
 	}
-	return out
 }
 
 // LoadSession is terminal_sessions row id with its stored transcript path

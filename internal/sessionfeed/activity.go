@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"watchtower/internal/rollout"
+	"watchtower/internal/secretredact"
 )
 
 // activityWindow is how much of a transcript's tail ActivityOf reads.
@@ -317,8 +318,11 @@ func firstLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// clipSummary is a one-line summary: secrets redacted first
+// (secretredact, reading a bounded window so a secret straddling the cut is
+// still seen), then cut at activitySummaryRunes with "…".
 func clipSummary(s string) string {
-	s = strings.TrimSpace(s)
+	s = strings.TrimSpace(secretredact.TextBounded(strings.TrimSpace(s), activitySummaryRunes+1))
 	if utf8.RuneCountInString(s) <= activitySummaryRunes {
 		return s
 	}

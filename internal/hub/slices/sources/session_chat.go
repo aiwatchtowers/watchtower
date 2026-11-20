@@ -8,10 +8,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"watchtower/internal/agentlog"
 	"watchtower/internal/db"
@@ -37,6 +39,10 @@ const (
 	// agents_more.
 	maxLiveSteps  = 40
 	maxLiveAgents = 32
+	// maxLiveName cuts a tool name, agent type, status or agents_state;
+	// maxLiveID an id or the conversation.
+	maxLiveName = 64
+	maxLiveID   = 128
 	// chatLiveVersion is live_version: every payload of a hub that sends the
 	// live block carries it, so a phone tells "no block" from "old hub".
 	chatLiveVersion = 1
@@ -340,9 +346,8 @@ func (s *SessionChatSource) run(ctx context.Context, k chatKey, gen int) {
 	}
 	s.mu.Lock()
 	var prev *chatPayload
-	var prevPayload []byte
 	if r, ok := s.runs[k]; ok {
-		prev, prevPayload = r.doc, r.payload
+		prev = r.doc
 	}
 	s.mu.Unlock()
 	var doc *chatPayload
@@ -364,6 +369,7 @@ func (s *SessionChatSource) run(ctx context.Context, k chatKey, gen int) {
 		_, live = s.o.Liveness().Runs[k.session]
 		block, lineErr := phoneLive(read.Live), ""
 		if read.LiveErr != nil {
+			log.Printf("hub slices: the live block of session %d failed (%s); keeping the last one", k.session, errClass(read.LiveErr))
 			block, lineErr = nil, liveErrUnavailable
 			if prev != nil {
 				block = prev.ActivityLive
@@ -375,14 +381,8 @@ func (s *SessionChatSource) run(ctx context.Context, k chatKey, gen int) {
 		}
 		// observed_at alone changing is no change: the block keeps the
 		// moment of the read that last changed it.
-		if prev != nil && prev.ActivityLive != nil && doc.ActivityLive != nil && read.LiveErr == nil {
-			same := *doc.ActivityLive
-			same.ObservedAt = prev.ActivityLive.ObservedAt
-			alt := *doc
-			alt.ActivityLive = &same
-			if b, err := wire.Marshal(&alt); err == nil && bytes.Equal(b, prevPayload) {
-				doc = prev
-			}
+		if prev != nil && sameLiveBlock(doc.ActivityLive, prev.ActivityLive) {
+			doc.ActivityLive = prev.ActivityLive
 		}
 	}
 	payload, err := wire.Marshal(doc)
@@ -402,6 +402,16 @@ func (s *SessionChatSource) run(ctx context.Context, k chatKey, gen int) {
 	if changed && s.o.OnChange != nil {
 		s.o.OnChange()
 	}
+}
+
+// sameLiveBlock: a and b are both set and differ in observed_at at most.
+func sameLiveBlock(a, b *sessionfeed.Live) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	c := *a
+	c.ObservedAt = b.ObservedAt
+	return reflect.DeepEqual(&c, b)
 }
 
 // dropAll forgets every watch and payload (no phone linked, or the hub
@@ -501,6 +511,17 @@ func chatDoc(feed []sessionfeed.Entry, sessionID int64, agentID string, live boo
 	if err != nil {
 		return nil, err
 	}
+	if len(envelope) > MaxChatBytes && block != nil {
+		// phoneLive's bounds keep a block far below this; one that still
+		// does not fit is dropped and said so, never cut.
+		block, liveErr = nil, liveErrUnavailable
+		if envelope, err = wire.Marshal(chatPayload{
+			SessionID: sessionID, AgentID: agent, Live: live, EntriesMore: len(known), Entries: []chatEntry{},
+			LiveVersion: chatLiveVersion, LiveError: liveErrTimedOut,
+		}); err != nil {
+			return nil, err
+		}
+	}
 	kept := len(entries)
 	total := len(envelope) + max(0, kept-1)
 	for _, n := range sizes {
@@ -524,24 +545,29 @@ func chatDoc(feed []sessionfeed.Entry, sessionID int64, agentID string, live boo
 
 // phoneLive is the live block the phone gets from a snapshot: every summary
 // (steps, current, latest, each agent's action) and every agent description
-// redacted then cut at maxLiveSummary, at most maxLiveSteps steps (the
-// newest) and maxLiveAgents agents, the cuts counted in steps_more and
+// redacted then cut at maxLiveSummary (sessionfeed already redacted them
+// before its own cut; this is the second layer), names cut at maxLiveName
+// and ids at maxLiveID, at most maxLiveSteps steps and maxLiveAgents
+// agents. Steps are cut from the oldest finished ones only (a running timer
+// never vanishes), counted in steps_more; agents past the cap in
 // agents_more. It never mutates l; nil stays nil.
 func phoneLive(l *sessionfeed.Live) *sessionfeed.Live {
 	if l == nil {
 		return nil
 	}
 	out := &sessionfeed.Live{
-		ObservedAt: l.ObservedAt, Conversation: l.Conversation, TurnAt: l.TurnAt, TurnActive: l.TurnActive,
+		ObservedAt: l.ObservedAt, Conversation: cutRunes(l.Conversation, maxLiveID), TurnAt: l.TurnAt, TurnActive: l.TurnActive,
 		Current: phoneAction(l.Current), Latest: phoneAction(l.Latest),
-		Agents: []sessionfeed.LiveAgent{}, AgentsState: l.AgentsState, AgentsMore: l.AgentsMore,
+		Agents: []sessionfeed.LiveAgent{}, AgentsState: cutRunes(l.AgentsState, maxLiveName), AgentsMore: l.AgentsMore,
 		Steps: []sessionfeed.LiveAction{}, StepsMore: l.StepsMore,
 	}
-	steps := l.Steps
-	if n := len(steps) - maxLiveSteps; n > 0 {
-		steps, out.StepsMore = steps[n:], out.StepsMore+n
-	}
-	for _, st := range steps {
+	drop := len(l.Steps) - maxLiveSteps
+	for _, st := range l.Steps {
+		if drop > 0 && !st.CompletedAt.IsZero() {
+			drop--
+			out.StepsMore++
+			continue
+		}
 		out.Steps = append(out.Steps, *phoneAction(&st))
 	}
 	agents := l.Agents
@@ -549,9 +575,11 @@ func phoneLive(l *sessionfeed.Live) *sessionfeed.Live {
 		agents, out.AgentsMore = agents[:maxLiveAgents], out.AgentsMore+n
 	}
 	for _, a := range agents {
-		ref := a.Ref
-		ref.Description = secretredact.TextBounded(ref.Description, maxLiveSummary)
-		ref.ParentReport = ""
+		ref := sessionfeed.SubagentRef{
+			ToolUseID: cutRunes(a.Ref.ToolUseID, maxLiveID), AgentID: cutRunes(a.Ref.AgentID, maxLiveID),
+			Type: cutRunes(a.Ref.Type, maxLiveName), Status: cutRunes(a.Ref.Status, maxLiveName),
+			Description: secretredact.TextBounded(a.Ref.Description, maxLiveSummary),
+		}
 		out.Agents = append(out.Agents, sessionfeed.LiveAgent{Ref: ref, StartedAt: a.StartedAt, Action: phoneAction(a.Action), CanOpen: a.CanOpen})
 	}
 	return out
@@ -563,8 +591,17 @@ func phoneAction(a *sessionfeed.LiveAction) *sessionfeed.LiveAction {
 		return nil
 	}
 	c := *a
+	c.ID, c.Tool = cutRunes(c.ID, maxLiveID), cutRunes(c.Tool, maxLiveName)
 	c.Summary = secretredact.TextBounded(c.Summary, maxLiveSummary)
 	return &c
+}
+
+// cutRunes keeps at most n runes of s.
+func cutRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n])
 }
 
 func chatEntryOf(e sessionfeed.Entry) chatEntry {

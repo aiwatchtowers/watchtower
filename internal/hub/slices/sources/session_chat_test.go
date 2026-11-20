@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -139,18 +140,17 @@ func chatEntries(t *testing.T, p map[string]any) []map[string]any {
 	return out
 }
 
-// encodeChatJSON encodes a live payload of session 7. The main feed carries
-// sampleLive and a live_error (every key of the Kit fixture
-// session_chat.json); an agent record carries neither, as the fixture
-// session_chat_subagent.json.
+// encodeChatJSON encodes a live payload of session 7 with sampleLive's
+// block. The main feed also carries a live_error (every key of the Kit
+// fixture session_chat.json); an agent record carries none, as the fixture
+// session_chat_subagent.json (a live subagent's record).
 func encodeChatJSON(t *testing.T, entries []sessionfeed.Entry, agent string) ([]byte, map[string]any) {
 	t.Helper()
-	var block *sessionfeed.Live
-	var liveErr string
+	liveErr := ""
 	if agent == "" {
-		block, liveErr = phoneLive(sampleLive()), liveErrUnavailable
+		liveErr = liveErrUnavailable
 	}
-	b, err := encodeChat(entries, 7, agent, true, block, liveErr)
+	b, err := encodeChat(entries, 7, agent, true, phoneLive(sampleLive()), liveErr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func TestFeed05_LiveBlockSummariesOnly(t *testing.T) {
 	at := time.Unix(1_700_000_060, 0).UTC()
 	in := &sessionfeed.Live{ObservedAt: at, TurnAt: at, TurnActive: true, AgentsState: "known", StepsMore: 3, AgentsMore: 1}
 	for i := range 50 {
-		in.Steps = append(in.Steps, sessionfeed.LiveAction{ID: "s" + itoa(i), Tool: "Bash", Summary: long, StartedAt: at})
+		in.Steps = append(in.Steps, sessionfeed.LiveAction{ID: "s" + itoa(i), Tool: "Bash", Summary: long, StartedAt: at, CompletedAt: at})
 	}
 	in.Current, in.Latest = &in.Steps[49], &in.Steps[48]
 	for i := range 40 {
@@ -450,6 +450,60 @@ func TestFeed05_LiveBlockRedactsSecrets(t *testing.T) {
 			t.Errorf("record %s: description %v not marked", it.ID, ref["description"])
 		}
 	}
+
+	// Through the real transcript reader, whose own summary cut (120 runes)
+	// comes first: a URL whose "@" lies past the cut and a GitHub token
+	// straddling it are redacted before that cut, never leak as a prefix.
+	pad := strings.Repeat("a", 90)
+	url := "echo " + pad + " https://deploy:hunter2hunter2hunter2@example.com/x" // leak-check:allow
+	ghp := "echo " + pad + " ghp_abcdefghijklmnopqrstuvwxyz0123456789"           // leak-check:allow
+	conv := filepath.Join(t.TempDir(), "conv.jsonl")
+	if err := os.WriteFile(conv, []byte(bashToolUses(t, url, ghp)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	viaReader := newChatRig(t)
+	viaReader.live[7] = time.Now()
+	rs := viaReader.source(func(context.Context, int64, string) (ChatRead, error) {
+		l, err := sessionfeed.LiveOf(sessionfeed.Conversation{Path: conv, AgentSessionID: "conv"}, false, at)
+		return ChatRead{Entries: []sessionfeed.Entry{feedEntry(0, "hi")}, Live: l, LiveErr: err}, nil
+	}, ChatTiming{})
+	viaReader.watch(7, "", "")
+	rs.RunDue(context.Background())
+	items, err = rs.Items(context.Background())
+	if err != nil || len(items) != 1 {
+		t.Fatalf("real path: items %v, %v", items, err)
+	}
+	payload := string(items[0].Payload)
+	for _, raw := range []string{"hunter2", "deploy:", "ghp_abc", "abcdefghijklmnop"} {
+		if strings.Contains(payload, raw) {
+			t.Errorf("the real path leaks %q", raw)
+		}
+	}
+	steps := decode(t, items[0].Payload)["activity_live"].(map[string]any)["steps"].([]any)
+	if len(steps) != 2 {
+		t.Fatalf("real path steps %v", steps)
+	}
+	for _, v := range steps {
+		if !strings.Contains(v.(map[string]any)["summary"].(string), "[secret]") {
+			t.Errorf("real path: step %v not marked", v)
+		}
+	}
+}
+
+// bashToolUses is a Claude transcript with one open Bash call per command.
+func bashToolUses(t *testing.T, commands ...string) string {
+	t.Helper()
+	var b strings.Builder
+	for i, c := range commands {
+		raw, err := json.Marshal(map[string]any{"type": "assistant", "uuid": "b" + itoa(i), "timestamp": "2026-10-01T10:00:06Z", "message": map[string]any{
+			"id": "mb" + itoa(i), "role": "assistant", "content": []map[string]any{{"type": "tool_use", "id": "toolu_b" + itoa(i), "name": "Bash", "input": map[string]any{"command": c}}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Write(raw)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func TestSessionChatCaps(t *testing.T) {
@@ -1132,5 +1186,90 @@ func TestSessionChat_SubagentRecordUsesSidechainLive(t *testing.T) {
 	main, err := s.o.Fetch(context.Background(), fx.session, "")
 	if err != nil || main.Live == nil || len(main.Paths) == 0 {
 		t.Fatalf("main read: live %v, paths %v, %v", main.Live, main.Paths, err)
+	}
+}
+
+// More than 40 steps: only the oldest finished ones are cut and counted; a
+// step still running before them keeps its timer.
+func TestSessionChat_PhoneLiveKeepsRunningSteps(t *testing.T) {
+	at := time.Unix(1_700_000_060, 0).UTC()
+	in := &sessionfeed.Live{StepsMore: 2}
+	in.Steps = append(in.Steps, sessionfeed.LiveAction{ID: "open", Tool: "Bash", Summary: "sleep", StartedAt: at})
+	for i := range 44 {
+		in.Steps = append(in.Steps, sessionfeed.LiveAction{ID: "s" + itoa(i), Tool: "Read", Summary: "f", StartedAt: at, CompletedAt: at.Add(time.Second)})
+	}
+	out := phoneLive(in)
+	if len(out.Steps) != 40 || out.Steps[0].ID != "open" || out.Steps[1].ID != "s5" || out.StepsMore != 2+5 {
+		t.Fatalf("%d steps, first %s, second %s, more %d", len(out.Steps), out.Steps[0].ID, out.Steps[1].ID, out.StepsMore)
+	}
+	if len(in.Steps) != 45 {
+		t.Fatal("phoneLive changed its input")
+	}
+}
+
+// A failed live read is logged with its class only; its text never reaches
+// the payload.
+func TestSessionChat_LiveErrLoggedNotPublished(t *testing.T) {
+	var buf strings.Builder
+	var mu sync.Mutex
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) { mu.Lock(); defer mu.Unlock(); return buf.Write(p) }))
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
+	r := newChatRig(t)
+	r.live[7] = time.Now()
+	s := r.source(func(context.Context, int64, string) (ChatRead, error) {
+		return ChatRead{Entries: []sessionfeed.Entry{feedEntry(0, "hi")}, LiveErr: errors.New("open /private/secret/path.jsonl: denied")}, nil
+	}, ChatTiming{})
+	r.watch(7, "", "")
+	s.RunDue(context.Background())
+	items, _ := s.Items(context.Background())
+	if len(items) != 1 || strings.Contains(string(items[0].Payload), "secret/path") {
+		t.Fatalf("payload %v", items)
+	}
+	mu.Lock()
+	logged := buf.String()
+	mu.Unlock()
+	if !strings.Contains(logged, "live block of session 7 failed") || strings.Contains(logged, "secret/path") {
+		t.Fatalf("log %q", logged)
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// Names and ids are bounded too; a block that still cannot fit the budget
+// is dropped with live_error, never cut.
+func TestSessionChat_LiveStringsBoundedAndOversizeDropped(t *testing.T) {
+	long := strings.Repeat("n", 500)
+	act := &sessionfeed.LiveAction{ID: long, Tool: long, Summary: "s"}
+	out := phoneLive(&sessionfeed.Live{Conversation: long, AgentsState: long, Current: act, Steps: []sessionfeed.LiveAction{*act},
+		Agents: []sessionfeed.LiveAgent{{Ref: sessionfeed.SubagentRef{ToolUseID: long, AgentID: long, Type: long, Status: long}, Action: act}}})
+	ag := out.Agents[0]
+	for name, n := range map[string]int{
+		"tool": runes(out.Current.Tool), "step tool": runes(out.Steps[0].Tool), "type": runes(ag.Ref.Type), "status": runes(ag.Ref.Status),
+		"agents_state": runes(out.AgentsState),
+	} {
+		if n != maxLiveName {
+			t.Errorf("%s: %d runes", name, n)
+		}
+	}
+	for name, n := range map[string]int{
+		"id": runes(out.Current.ID), "conversation": runes(out.Conversation), "tool_use_id": runes(ag.Ref.ToolUseID),
+		"agent_id": runes(ag.Ref.AgentID), "agent action id": runes(ag.Action.ID),
+	} {
+		if n != maxLiveID {
+			t.Errorf("%s: %d runes", name, n)
+		}
+	}
+	huge := &sessionfeed.Live{Conversation: strings.Repeat("x", MaxChatBytes)}
+	b, err := encodeChat([]sessionfeed.Entry{feedEntry(0, "hi")}, 7, "", true, huge, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := decode(t, b)
+	if len(b) > MaxChatBytes || p["activity_live"] != nil || p["live_error"] != liveErrUnavailable || len(chatEntries(t, p)) != 1 {
+		t.Fatalf("oversize block: %d bytes, live_error %v", len(b), p["live_error"])
 	}
 }
