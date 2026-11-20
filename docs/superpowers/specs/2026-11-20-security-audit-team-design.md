@@ -181,7 +181,8 @@ points, sinks, existing controls. Used by the context file and by the Range mapp
    run over `git diff <from>..<to>`, profile `standard`), with the proposed tag pair, the
    date of the last Full, and the engine's agent-invocation estimate; the owner may set
    an agent budget (the engine's `budget`). `/security-audit full|range <from>..<to>`
-   skips the question.
+   skips the question. `--test --report <url>` runs against a fixture Artifact and the
+   `watchtower-test/` output dir and never reads or writes `config.json`.
 2. **Pin.** `git fetch origin main --tags`; Full = `origin/main` SHA, Range = the `to`
    tag. Remove leftovers of dead runs under the cache dir, `git worktree prune`, then
    `git worktree add --detach` the target.
