@@ -1691,8 +1691,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
         applyBackground()
     }
 
-    /// GPU rendering (board #2102): `PalettedTerminalView+Metal.swift`.
-    override func viewDidMoveToWindow() {
+    override func viewDidMoveToWindow() { // Metal: PalettedTerminalView+Metal.swift
         super.viewDidMoveToWindow()
         updateMetalForWindow()
     }
@@ -2052,6 +2051,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     override func didAddSubview(_ subview: NSView) {
         super.didAddSubview(subview)
         (subview as? NSTextField)?.textColor = TerminalPalette.background
+        liftOverlaysIfMetalView(subview)
     }
 
     /// Through `backgroundOpacity`, not a bare `nativeBackgroundColor`: its

@@ -30,6 +30,13 @@ final class TerminalMetalTests: XCTestCase {
         return window
     }
 
+    /// Runs what is already queued on the main queue (FIFO), no waiting on time.
+    private func drainMainQueue() {
+        let drained = expectation(description: "main queue drained")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 5)
+    }
+
     private func terminal() -> PalettedTerminalView {
         PalettedTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
     }
@@ -62,20 +69,20 @@ final class TerminalMetalTests: XCTestCase {
         XCTAssertEqual(attempts, 1)
     }
 
-    /// A session switched away (its view leaves the window) releases the
-    /// renderer; back in a window it is on Metal again, and output fed while
-    /// away is in the grid.
-    func testLeavingTheWindowReleasesTheRendererAndReturningRestoresIt() throws {
+    /// A session switched away (its view leaves the window) keeps its
+    /// renderer — starting one again would cost every switch — and output
+    /// fed while away is in the grid when it returns.
+    func testLeavingTheWindowKeepsTheRendererAndTheText() throws {
         let view = terminal()
         window().contentView?.addSubview(view)
         try XCTSkipUnless(view.isUsingMetalRenderer, "Metal does not start on this machine")
         view.removeFromSuperview()
-        XCTAssertFalse(view.isUsingMetalRenderer)
-        XCTAssertFalse(view.subviews.contains { $0 is MTKView })
+        XCTAssertTrue(view.isUsingMetalRenderer)
 
         view.feedOutput(Array("moved".utf8)[...])
         window().contentView?.addSubview(view)
         XCTAssertTrue(view.isUsingMetalRenderer)
+        XCTAssertEqual(view.subviews.filter { $0 is MTKView }.count, 1)
         XCTAssertEqual(view.getTerminal().getLine(row: 0)?.translateToString(trimRight: true), "moved")
     }
 
@@ -88,6 +95,19 @@ final class TerminalMetalTests: XCTestCase {
         try XCTSkipUnless(view.isUsingMetalRenderer, "Metal does not start on this machine")
         XCTAssertTrue(view.subviews.first is MTKView, "\(view.subviews.map { type(of: $0) })")
         XCTAssertEqual(view.subviews.filter { $0 is MTKView }.count, 1)
+    }
+
+    /// Any Metal view SwiftTerm adds later (a window rebind, GPU recovery)
+    /// goes under the overlays too, whatever position it was added at.
+    func testALaterMetalViewIsPutUnderTheOverlays() {
+        let view = terminal()
+        let overlay = NSView()
+        view.addSubview(overlay)
+        let metal = MTKView(frame: view.bounds, device: nil)
+        view.addSubview(metal, positioned: .above, relativeTo: overlay)
+        drainMainQueue()
+        XCTAssertTrue(view.subviews.first is MTKView, "\(view.subviews.map { type(of: $0) })")
+        XCTAssertGreaterThan(view.subviews.firstIndex(of: overlay) ?? -1, view.subviews.firstIndex(of: metal) ?? Int.max)
     }
 
     /// Metal clears the terminal's layer; the host's margin still shows the
