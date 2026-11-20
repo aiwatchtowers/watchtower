@@ -135,7 +135,7 @@ struct InboxSplitView<EmptyList: View>: View {
                         .listRowSeparator(.hidden)
                     ForEach(section.items) { item in
                         InboxListRow(item: item, now: now)
-                            .tag(Optional(item.id))
+                            .tag(item.id)
                             .listRowSeparator(.hidden)
                     }
                 }

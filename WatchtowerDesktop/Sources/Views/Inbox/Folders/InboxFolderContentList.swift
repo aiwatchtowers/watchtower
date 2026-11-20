@@ -65,7 +65,7 @@ struct InboxFolderContentList<EmptyExtra: View>: View {
                         .listRowSeparator(.hidden)
                     ForEach(content.rows) { row in
                         InboxFolderListRowView(row: row, contextEntries: contextMenu(row)) { onMenu(row.id, $0) }
-                            .tag(Optional(row.id))
+                            .tag(row.id)
                             .listRowSeparator(.hidden)
                     }
                 }

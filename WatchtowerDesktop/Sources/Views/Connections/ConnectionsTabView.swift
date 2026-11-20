@@ -51,10 +51,10 @@ struct ConnectionsDetailSplit: View {
                 set: { if let new = $0 { appState.selectedConnection = new } }
             )) {
                 Section("Sources") {
-                    ForEach(ConnectionService.sources) { row($0).tag(Optional($0)) }
+                    ForEach(ConnectionService.sources) { row($0).tag($0) }
                 }
                 Section("Tools for AI") {
-                    ForEach(ConnectionService.aiTools) { row($0).tag(Optional($0)) }
+                    ForEach(ConnectionService.aiTools) { row($0).tag($0) }
                 }
             }
             // Not .sidebar: outside a NavigationSplitView its vibrancy
