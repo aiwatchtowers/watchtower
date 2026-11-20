@@ -72,7 +72,7 @@ struct ChatsTabView: View {
                 GeometryReader { proxy in
                     ScrollView {
                         VStack(alignment: .leading, spacing: 0) {
-                            switcher.padding(.horizontal, Spacing.large)
+                            switcher(now: now).padding(.horizontal, Spacing.large)
                             if let notice = center.copyNotice {
                                 Text(notice)
                                     .font(TypeScale.meta)
@@ -109,7 +109,7 @@ struct ChatsTabView: View {
         let query = center.listQuery
         let searching = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return List {
-            switcher.macsListRow()
+            switcher(now: now).macsListRow()
             if let banner = gate.banner {
                 lineRow(banner)
             }
@@ -289,9 +289,10 @@ struct ChatsTabView: View {
     /// The share of the screen a centred message sits in, below the switcher (mockups 1b, 1e–1h).
     private static let messageHeightShare: CGFloat = 0.8
 
-    /// The hub switcher chip, as on the other tabs (#1782).
-    private var switcher: some View {
-        TimelineView(.periodic(from: .now, by: 30)) { HubSwitcherChip(now: $0.date) }
+    /// The hub switcher chip, as on the other tabs (#1782), on the screen's own clock: a second `TimelineView` inside a
+    /// `List` row kept the list re-laying itself out until the watchdog killed the app (0.29.0).
+    private func switcher(now: Date) -> some View {
+        HubSwitcherChip(now: now)
     }
 }
 

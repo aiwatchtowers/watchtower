@@ -210,3 +210,19 @@ final class ChatsGateModelTests: XCTestCase {
         XCTAssertEqual(loading.banner, "Getting your chats from your tower…")
     }
 }
+
+/// The Chats tab runs on one clock: the screen's `TimelineView` passes `now` to everything under it. In 0.29.0 the
+/// hub switcher opened a second `TimelineView` inside a `List` row; the list re-laid itself out without end, the main
+/// thread stalled for 30 s and the watchdog killed the app (0x8BADF00D). A layout loop cannot be timed in a test, so
+/// the source is held to its one clock.
+final class ChatsTabOneClockTests: XCTestCase {
+    func testTheChatsTabHasOneTimelineView() throws {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerMobile
+            .appendingPathComponent("Sources/Features/Chats/ChatListView.swift")
+        let source = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertEqual(source.components(separatedBy: "TimelineView(").count - 1, 1)
+        XCTAssertTrue(source.contains("HubSwitcherChip(now: now)"))
+    }
+}
