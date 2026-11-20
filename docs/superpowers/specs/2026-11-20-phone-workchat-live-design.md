@@ -11,7 +11,7 @@ Board: #2112. Decisions: see the Decisions section.
 | D3 | The agents sheet (👥) shows live data: what each working agent does now and for how long | ask #1668 |
 | D4 | No timer-driven refresh: the phone gets an update when the transcript changes, over the socket it already has | ask #1668 ("по вебсокету без крона а по тому как прилетают апдейты") |
 | D5 | Battery is the hard constraint: no new phone-side timers, wakes or background work | ask #1668 ("очень важно чтоб не садило батарею") |
-| D6 | FEED-05 widens to carry one-line tool summaries (the live block), secrets redacted, under the same watch, lifetime and memory-only rules | **pending: the owner's explicit yes in the review of ask #1671** (focus point 1); without it the plan does not start |
+| D6 | FEED-05 widens to carry one-line tool summaries (the live block), secrets redacted, under the same watch, lifetime and memory-only rules | ask #1675 (spec approved with FEED-05 focus point; rounds #1671, #1673) |
 | C1 | The live projection (`SessionFeedLive` + `WorkchatLivePresentation` + `WorkchatActivityPresenter`) moves to `WatchtowerChatText` and is the one source for both apps | author's call: one wording, one set of tests, no Mac/phone drift |
 | C2 | The hub reads the transcript on a file-system event (fsnotify), coalesced; the 3 s tick stays only as the fallback when a watch cannot be set | author's call (D4) |
 | C3 | One publish per chat per second at most while events keep coming, trailing edge guaranteed | author's call (D5 + relay op budget) |
@@ -190,7 +190,7 @@ draining the battery.
 No new background modes, push types or wakes. Measured in the plan: phone CPU and wakeups with the chat open for 10
 minutes of a busy turn (Instruments energy log), before/after.
 
-## FEED-05 change (D6 — needs the owner's approval in this review)
+## FEED-05 change (D6 — approved, ask #1675)
 
 Today FEED-05 says the record "holds FEED-02 entries only (no tool call, tool output, thinking or hook text)". The live
 block carries the **one-line summary of tool calls** (a command line, a file path, a search pattern — what the Mac's
