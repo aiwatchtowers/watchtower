@@ -5,6 +5,30 @@
     {"at": 1700000045, "id": "s2", "kind": "agent", "text": "The fixtures look fine."}
   ],
   "entries_more": 0,
-  "live": false,
+  "live": true,
+  "activity_live": {
+    "agents": [
+      {
+        "action": {"completed_at": "0001-01-01T00:00:00Z", "id": "toolu_04", "more": 0, "started_at": "2023-11-14T22:14:44Z", "summary": "parser.go", "tool": "Read"},
+        "can_open": true,
+        "ref": {"agent_id": "c3d4", "description": "Read the parser", "status": "running", "tool_use_id": "toolu_03", "type": "Explore"},
+        "started_at": "2023-11-14T22:14:43Z"
+      }
+    ],
+    "agents_more": 0,
+    "agents_state": "known",
+    "conversation": "a1b2",
+    "current": {"completed_at": "0001-01-01T00:00:00Z", "id": "toolu_03", "more": 0, "started_at": "2023-11-14T22:14:43Z", "summary": "Read the parser", "tool": "Agent"},
+    "latest": {"completed_at": "2023-11-14T22:14:42Z", "id": "toolu_02", "more": 0, "started_at": "2023-11-14T22:14:41Z", "summary": "fixtures/*.json", "tool": "Glob"},
+    "observed_at": "2023-11-14T22:14:45Z",
+    "steps": [
+      {"completed_at": "2023-11-14T22:14:42Z", "id": "toolu_02", "more": 0, "started_at": "2023-11-14T22:14:41Z", "summary": "fixtures/*.json", "tool": "Glob"},
+      {"completed_at": "0001-01-01T00:00:00Z", "id": "toolu_03", "more": 0, "started_at": "2023-11-14T22:14:43Z", "summary": "Read the parser", "tool": "Agent"}
+    ],
+    "steps_more": 0,
+    "turn_active": true,
+    "turn_at": "2023-11-14T22:14:41Z"
+  },
+  "live_version": 1,
   "session_id": 7
 }

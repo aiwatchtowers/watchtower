@@ -179,10 +179,10 @@ var labelRules = []rule{
 			return m[1] + Mark
 		}},
 
-	// A bare "Bearer <token>" outside an Authorization header; redacted only
-	// when it looks like a token (16+ chars with a digit or mixed case), so
-	// prose such as "Bearer authentication" stays.
-	{regexp.MustCompile(`(\bBearer\s+)([A-Za-z0-9._~+/=-]{16,})`),
+	// A bare "Bearer <token>" outside an Authorization header: the next word
+	// is masked unless it is plain prose (looksLikeToken), so "Bearer
+	// authentication" and "Bearer of news" stay.
+	{regexp.MustCompile(`(\bBearer[ \t]+)([A-Za-z0-9._~+/=-]+)`),
 		func(m []string) string {
 			if !looksLikeToken(m[2]) {
 				return m[0]
@@ -197,8 +197,20 @@ var (
 	hasUpper = regexp.MustCompile(`[A-Z]`)
 )
 
+// looksLikeToken: the word after a bare "Bearer" is a credential unless it
+// is prose — all lowercase letters (token, authentication), or a short
+// all-capitals word (JWT). A digit, a ".", "-", "_" or other token
+// punctuation, mixed case, or 8+ capitals marks a credential.
 func looksLikeToken(t string) bool {
-	return hasDigit.MatchString(t) || (hasLower.MatchString(t) && hasUpper.MatchString(t))
+	switch {
+	case hasDigit.MatchString(t) || strings.ContainsAny(t, "._~+/=-"):
+		return true
+	case hasLower.MatchString(t) && hasUpper.MatchString(t):
+		return true
+	case hasUpper.MatchString(t):
+		return len(t) >= 8
+	}
+	return false
 }
 
 // replaceAll replaces each match of re in s with what repl returns for its
@@ -249,31 +261,54 @@ const boundSlack = 512
 // would have marked it as credentials.
 var openAuthority = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^\s/?#@]*$`)
 
+// partialToken is a vendor token prefix running to the end of a cut text
+// without the shape its rule needs (a JWT short of its second dot, a ghp_
+// short of 20 characters): the cut may have hidden the rest.
+var partialToken = regexp.MustCompile(`(?:\beyJ[A-Za-z0-9_.-]*|gh[pousr]_[A-Za-z0-9]*|github_pat_[A-Za-z0-9_]*|xox[abprs]-[A-Za-z0-9-]*|\bxapp-[A-Za-z0-9-]*|\bsk-[A-Za-z0-9_-]*|\b[rs]k_(?:live|test)_[A-Za-z0-9]*|\bglpat-[A-Za-z0-9_-]*|\bAIza[0-9A-Za-z_-]*|\b(?:AKIA|ASIA)[0-9A-Z]*)$`)
+
+// maskCutTail masks what a cut may have left of a secret at the end of s:
+// everything after the "://" of an open URL authority, else a vendor token
+// prefix.
+func maskCutTail(s string) string {
+	if loc := openAuthority.FindStringIndex(s); loc != nil {
+		return s[:loc[0]+strings.Index(s[loc[0]:], "://")+3] + Mark
+	}
+	if loc := partialToken.FindStringIndex(s); loc != nil {
+		return s[:loc[0]] + Mark
+	}
+	return s
+}
+
+// TextWithin redacts the first maxBytes bytes of s (cut back to a rune
+// start) and drops the rest, so its work is bounded by maxBytes. When s was
+// cut, a URL authority or a vendor token prefix running into the cut is
+// masked to the end (maskCutTail).
+func TextWithin(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return Text(s)
+	}
+	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
+	}
+	return maskCutTail(Text(s[:maxBytes]))
+}
+
 // TextBounded redacts s and keeps at most limit runes of the result. It reads
-// at most limit*utf8.UTFMax+boundSlack bytes of s, so its work does not grow
-// with s: a multi-megabyte tool argument costs the same as a short one. When
-// the text was cut inside a URL authority, everything after its "://" is
-// masked.
+// at most limit*utf8.UTFMax+boundSlack bytes of s (TextWithin), so its work
+// does not grow with s: a multi-megabyte tool argument costs the same as a
+// short one. When the text was cut inside a URL authority, everything after
+// its "://" is masked; a vendor token prefix running into a cut is masked
+// whole.
 func TextBounded(s string, limit int) string {
 	if limit <= 0 {
 		return ""
 	}
-	cut := false
-	if window := limit*utf8.UTFMax + boundSlack; len(s) > window {
-		for window > 0 && !utf8.RuneStart(s[window]) {
-			window--
-		}
-		s, cut = s[:window], true
-	}
-	s = Text(s)
+	s = TextWithin(s, limit*utf8.UTFMax+boundSlack)
 	if utf8.RuneCountInString(s) > limit {
-		s, cut = string([]rune(s)[:limit]), true
-	}
-	if !cut {
-		return s
-	}
-	if loc := openAuthority.FindStringIndex(s); loc != nil {
-		s = s[:loc[0]+strings.Index(s[loc[0]:], "://")+3] + Mark
+		s = maskCutTail(string([]rune(s)[:limit]))
 		if utf8.RuneCountInString(s) > limit {
 			s = string([]rune(s)[:limit])
 		}

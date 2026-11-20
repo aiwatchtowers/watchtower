@@ -24,6 +24,7 @@ import (
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
 	hubslices "watchtower/internal/hub/slices"
+	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/memfake"
@@ -131,6 +132,26 @@ func bubble(t *testing.T, f func(t *testing.T)) {
 	synctest.Test(t, f)
 }
 
+// idleWatcher is a session chat file watcher that never reports a change.
+type idleWatcher struct {
+	once   sync.Once
+	events chan string
+	errs   chan error
+}
+
+func newIdleWatcher() *idleWatcher {
+	return &idleWatcher{events: make(chan string), errs: make(chan error)}
+}
+
+func (w *idleWatcher) Add(string) error      { return nil }
+func (w *idleWatcher) Remove(string) error   { return nil }
+func (w *idleWatcher) Events() <-chan string { return w.events }
+func (w *idleWatcher) Errors() <-chan error  { return w.errs }
+func (w *idleWatcher) Close() error {
+	w.once.Do(func() { close(w.events); close(w.errs) })
+	return nil
+}
+
 // rig is one Run under test.
 type rig struct {
 	t      *testing.T
@@ -162,6 +183,9 @@ func (r *rig) options() Options {
 		checkEvery: 50 * time.Millisecond,
 		passEvery:  200 * time.Millisecond,
 		lockRetry:  50 * time.Millisecond,
+		// fsnotify's reader sits in a syscall, which a bubble never counts
+		// as blocked: its clock would stop.
+		chatWatcher: func() (sources.FileWatcher, error) { return newIdleWatcher(), nil },
 	}
 	if r.ctl != nil {
 		r.ctl.configure(&o)

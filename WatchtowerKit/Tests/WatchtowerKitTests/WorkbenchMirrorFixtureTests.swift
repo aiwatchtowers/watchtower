@@ -640,7 +640,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
 
         let sub = try SessionChat.decode(payload: try fixture("session_chat_subagent"))
         XCTAssertEqual(sub.agentID, "a1b2")
-        XCTAssertFalse(sub.live)
+        XCTAssertTrue(sub.live)
         XCTAssertEqual(sub.entries.count, 2)
     }
 

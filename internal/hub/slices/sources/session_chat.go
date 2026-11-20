@@ -8,16 +8,19 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"watchtower/internal/agentlog"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions/handlers"
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/secretredact"
 	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
 )
@@ -28,6 +31,27 @@ const (
 	MaxChatText    = 4000
 	MaxChatBytes   = 600_000
 	maxChatLabel   = 200
+	// maxLiveSummary cuts every summary and agent description of the live
+	// block, after redaction (FEED-05).
+	maxLiveSummary = 200
+	// maxLiveSteps and maxLiveAgents cap the live block's lists (what
+	// sessionfeed.LiveOf keeps); the cut is counted in steps_more and
+	// agents_more.
+	maxLiveSteps  = 40
+	maxLiveAgents = 32
+	// maxLiveName cuts a tool name, agent type, status or agents_state;
+	// maxLiveID an id or the conversation.
+	maxLiveName = 64
+	maxLiveID   = 128
+	// chatLiveVersion is live_version: every payload of a hub that sends the
+	// live block carries it, so a phone tells "no block" from "old hub".
+	chatLiveVersion = 1
+)
+
+// live_error's lines (one line, never the raw error: it could carry a path).
+const (
+	liveErrUnavailable = "Activity unavailable"
+	liveErrTimedOut    = "Activity read timed out"
 )
 
 // phoneFeedKinds are the FEED-02 kinds a session_chat payload carries
@@ -41,53 +65,86 @@ var phoneFeedKinds = []sessionfeed.Kind{
 // ChatTiming is the session chat runner's cadence (SessionChatRunner.Timing;
 // the watch length is handlers.ChatWatchLength).
 type ChatTiming struct {
-	// Every is the regular run of a live session.
+	// Every is the run of a live session whose files cannot be watched
+	// (the fallback tick).
 	Every time.Duration
 	// Timeout bounds one feed read.
 	Timeout time.Duration
-	// Wake is how often the loop looks for due watches.
+	// Wake is how often the loop looks for due watches and re-resolves a
+	// live session's conversations.
 	Wake time.Duration
+	// Debounce is how long after a file event a read waits for the next
+	// one; MinGap is the least time between two reads of one chat, so a
+	// burst of events reads about once per MinGap.
+	Debounce, MinGap time.Duration
 }
 
 // StandardChatTiming is SessionChatRunner.Timing.standard.
-var StandardChatTiming = ChatTiming{Every: 3 * time.Second, Timeout: 30 * time.Second, Wake: 2 * time.Second}
+var StandardChatTiming = ChatTiming{
+	Every: 3 * time.Second, Timeout: 30 * time.Second, Wake: 2 * time.Second,
+	Debounce: 250 * time.Millisecond, MinGap: time.Second,
+}
+
+// ChatRead is one read of a chat: the feed's entries, the live snapshot of
+// the conversation read (the subagent's sidechain for an agent record; nil
+// with LiveErr set when only that read failed) and the files and
+// directories read.
+type ChatRead = sessionagent.SessionRead
 
 // ChatFetch reads a session's whole feed (toolUseID "") or one subagent's.
-type ChatFetch func(ctx context.Context, sessionID int64, toolUseID string) ([]sessionfeed.Entry, error)
+type ChatFetch func(ctx context.Context, sessionID int64, toolUseID string) (ChatRead, error)
 
 // SessionChatOptions wires the session_chat source. Timing zero is
 // StandardChatTiming; Fetch nil reads the feed in-process with
-// sessionfeed.ReadSession (what `workbench session-feed --json` prints)
+// sessionagent.ReadSession (what `workbench session-feed --live --json`
+// prints)
 // under Dirs (zero = ~/.claude/projects and the Codex home); Liveness nil is
 // nothing live; Active nil is always (the hub's linked-phone gate); OnChange
 // (nil = none) is called after a run stored a payload that differs from the
 // previous one — the hub nudges the publisher's fast lane with it; Now nil
 // is time.Now and must be the clock the session_chat_request handler stamps
-// the watches with.
+// the watches with. Conversations and AgentSessions nil resolve a
+// session's transcripts and list its agent-session ids in-process under
+// Dirs (none without a database); NewWatcher nil is fsnotify.
 type SessionChatOptions struct {
-	Timing   ChatTiming
-	Fetch    ChatFetch
-	Dirs     sessionfeed.Dirs
-	Liveness func() Liveness
-	Active   func() bool
-	OnChange func()
-	Now      func() time.Time
+	Timing        ChatTiming
+	Fetch         ChatFetch
+	Conversations ChatConversations
+	AgentSessions ChatAgentSessions
+	NewWatcher    func() (FileWatcher, error)
+	Dirs          sessionfeed.Dirs
+	Liveness      func() Liveness
+	Active        func() bool
+	OnChange      func()
+	Now           func() time.Time
 }
 
 // SessionChatSource is the `session_chat` slice (FEED-05), record
 // `session_chat-<session id>` or, for a subagent's feed,
 // `session_chat-<session id>-<agent id>`: the capped chat of a workbench
 // session the phone watches (handlers.ChatWatches, opened by
-// session_chat_request for 5 minutes). Per watch it reads the feed once
-// when the watch opens, every 3 s while the session is live, and once more
-// after it stopped being live; a finished session runs once per watch.
+// session_chat_request for 5 minutes), and while the session is live its
+// live block (activity_live: one-line tool summaries, secrets redacted, see
+// phoneLive). Per watch it reads the feed once
+// when the watch opens (and again on a repeated request at least MinGap
+// later), once when the session's liveness changes, and on file events: an
+// fsnotify watch on files only (the conversation transcripts and the
+// running subagents' transcripts, chat_files.go) marks the chat dirty, read
+// Debounce after the last event and at most once per MinGap. The Wake loop
+// re-resolves a live session's conversations (a database query and a stat)
+// and reads once when they changed (a new conversation, a file that
+// appeared). A chat whose files cannot be watched reads every Every while
+// live instead.
 //
 // The payloads live in this source's memory only: never in watchtower.db
 // (FEED-01) nor the hub sidecar, sealed only when the publisher pushes them.
 // A watch that expires loses its payload (the publisher deletes the record);
 // with no linked phone every watch and payload is dropped for good, and so
 // when Run returns. A failed, undecodable or hung read keeps the last
-// payload. Wire shape: the Kit mirror WatchtowerKit.SessionChat.
+// payload; when that payload has a live block, it gains live_error so the
+// block never looks current. A read whose live part alone failed updates
+// the entries and keeps the last block with live_error. Wire shape: the Kit
+// mirror WatchtowerKit.SessionChat.
 type SessionChatSource struct {
 	w    handlers.ChatWatches
 	d    *db.DB
@@ -99,6 +156,16 @@ type SessionChatSource struct {
 	generation int
 	// wake ends the loop's wait for its next tick (a phone request).
 	wake chan struct{}
+	// fw is the one file watcher of every chat (nil while none holds a
+	// file); byPath is which chats hold each watched file, so a file two
+	// records watch is opened once and one write marks both.
+	// wmu serialises the watcher's I/O with its ownership changes (taken
+	// before mu); unwatch is the files that lost their last holder, for
+	// syncWatcher to remove unless held again.
+	fw      FileWatcher
+	byPath  map[string]map[chatKey]bool
+	wmu     sync.Mutex
+	unwatch map[string]bool
 }
 
 // chatKey is one watched feed.
@@ -119,12 +186,25 @@ type chatRun struct {
 	last       time.Time
 	payload    []byte
 	storedLive bool
+	// doc is payload before encoding: a failed read re-encodes it with
+	// live_error.
+	doc *chatPayload
+	chatFiles
 }
 
 // SessionChat builds the session_chat source over the phone's watches.
 func SessionChat(w handlers.ChatWatches, d *db.DB, o SessionChatOptions) *SessionChatSource {
 	if o.Timing == (ChatTiming{}) {
 		o.Timing = StandardChatTiming
+	}
+	if o.Timing.Debounce == 0 {
+		o.Timing.Debounce = StandardChatTiming.Debounce
+	}
+	if o.Timing.MinGap == 0 {
+		o.Timing.MinGap = StandardChatTiming.MinGap
+	}
+	if o.NewWatcher == nil {
+		o.NewWatcher = newFSWatcher
 	}
 	if o.Liveness == nil {
 		o.Liveness = func() Liveness { return Liveness{} }
@@ -135,14 +215,20 @@ func SessionChat(w handlers.ChatWatches, d *db.DB, o SessionChatOptions) *Sessio
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	s := &SessionChatSource{w: w, d: d, o: o, runs: map[chatKey]*chatRun{}, wake: make(chan struct{}, 1)}
+	s := &SessionChatSource{w: w, d: d, o: o, runs: map[chatKey]*chatRun{}, byPath: map[string]map[chatKey]bool{}, unwatch: map[string]bool{}, wake: make(chan struct{}, 1)}
+	dirs := o.Dirs
+	if dirs == (sessionfeed.Dirs{}) && (s.o.Fetch == nil || s.o.Conversations == nil) {
+		dirs = defaultFeedDirs()
+	}
+	if s.o.Conversations == nil {
+		s.o.Conversations = sessionConversations(d, dirs)
+	}
+	if s.o.AgentSessions == nil {
+		s.o.AgentSessions = sessionAgentSessions(d)
+	}
 	if s.o.Fetch == nil {
-		dirs := o.Dirs
-		if dirs == (sessionfeed.Dirs{}) {
-			dirs = defaultFeedDirs()
-		}
-		s.o.Fetch = func(ctx context.Context, id int64, toolUseID string) ([]sessionfeed.Entry, error) {
-			return sessionagent.ReadSession(ctx, d, id, toolUseID, dirs)
+		s.o.Fetch = func(ctx context.Context, id int64, toolUseID string) (ChatRead, error) {
+			return sessionagent.ReadSession(ctx, d, id, toolUseID, dirs, s.o.Now())
 		}
 	}
 	return s
@@ -172,9 +258,11 @@ func (s *SessionChatSource) Items(context.Context) ([]hubslices.Item, error) {
 		return nil, nil
 	}
 	active := s.activeKeys()
+	done := func() {}
+	defer func() { done() }() // after the unlock below
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.prune(active)
+	done = s.prune(active)
 	var items []hubslices.Item
 	for k, r := range s.runs {
 		if r.payload != nil {
@@ -198,39 +286,64 @@ func (s *SessionChatSource) Run(ctx context.Context) error {
 		} else {
 			s.dropAll()
 		}
+		// A dirty chat's read or a fallback chat's tick may be due before
+		// the next Wake.
+		var debounce <-chan time.Time
+		var timer *time.Timer
+		if at, ok := s.nextDue(); ok {
+			timer = time.NewTimer(max(at.Sub(s.o.Now()), 0))
+			debounce = timer.C
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
 		case <-s.wake:
+		case <-debounce:
+		}
+		if timer != nil {
+			timer.Stop()
 		}
 	}
 }
 
 // RequestWatches is the watches the session_chat_request handler opens:
 // each Watch also wakes the loop, so the pass that reads a new watch starts
-// at once instead of on the next tick (runners on request). A pass in
-// flight finishes first and one more follows; a burst of requests costs at
-// most that one pass, which reads only what is due (Every per watch).
+// at once instead of on the next tick (runners on request). On a watch
+// already open it asks for a read only when nothing is stored or the last
+// live read failed (the phone's Retry), MinGap after the last read at the
+// soonest; otherwise it only extends the watch. A pass in flight finishes
+// first and one more follows; a burst of requests costs at most that one
+// pass and one read.
 func (s *SessionChatSource) RequestWatches() handlers.ChatWatches {
-	return wakingWatches{ChatWatches: s.w, wake: s.wake}
+	return wakingWatches{ChatWatches: s.w, s: s}
 }
 
 type wakingWatches struct {
 	handlers.ChatWatches
-	wake chan struct{}
+	s *SessionChatSource
 }
 
 func (w wakingWatches) Watch(cw handlers.ChatWatch) {
 	w.ChatWatches.Watch(cw)
-	notify(w.wake)
+	k := chatKey{session: cw.SessionID, agent: cw.AgentID, toolUseID: cw.ToolUseID}
+	w.s.mu.Lock()
+	// The phone repeats the request every 60 s to keep the watch: only a
+	// chat with nothing stored or a failed live read (the Retry) reads.
+	if r, ok := w.s.runs[k]; ok && (r.payload == nil || r.doc != nil && r.doc.LiveError != "") {
+		r.requested = true
+	}
+	w.s.mu.Unlock()
+	notify(w.s.wake)
 }
 
 // RunDue is one pass: the due watches, one after the other. A ctx that ends
 // during the pass stops it before its next read and the read in flight
 // stores nothing. It returns the record ids whose read was started.
 func (s *SessionChatSource) RunDue(ctx context.Context) []string {
-	gen, due := s.takeDue()
+	active, live := s.activeKeys(), s.o.Liveness().Runs
+	s.checkConversations(ctx, active, live)
+	gen, due := s.takeDue(active, live)
 	var attempted []string
 	for _, k := range due {
 		if ctx.Err() != nil || !s.isCurrent(gen) {
@@ -258,24 +371,33 @@ func (s *SessionChatSource) activeKeys() map[chatKey]bool {
 	return out
 }
 
-// prune drops the runs of watches no longer open; s.mu held.
-func (s *SessionChatSource) prune(active map[chatKey]bool) {
-	for k := range s.runs {
+// prune drops the runs of watches no longer open, letting go of their
+// files; s.mu held. The returned func does the watcher's I/O and must be
+// called after unlocking.
+func (s *SessionChatSource) prune(active map[chatKey]bool) func() {
+	pruned := false
+	for k, r := range s.runs {
 		if !active[k] {
+			s.releaseAll(k, r)
 			delete(s.runs, k)
+			pruned = true
 		}
 	}
+	if !pruned {
+		return func() {}
+	}
+	return s.lockedSync
 }
 
 // takeDue drops the runs of expired watches and stamps the due ones as
 // attempted now, by session then agent id.
-func (s *SessionChatSource) takeDue() (int, []chatKey) {
-	active := s.activeKeys()
-	live := s.o.Liveness().Runs
+func (s *SessionChatSource) takeDue(active map[chatKey]bool, live map[int64]time.Time) (int, []chatKey) {
 	now := s.o.Now()
+	done := func() {}
+	defer func() { done() }() // after the unlock below
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.prune(active)
+	done = s.prune(active)
 	var due []chatKey
 	for k := range active {
 		r, ok := s.runs[k]
@@ -284,10 +406,12 @@ func (s *SessionChatSource) takeDue() (int, []chatKey) {
 			s.runs[k] = r
 		}
 		_, isLive := live[k.session]
-		if !r.last.IsZero() && (now.Sub(r.last) < s.o.Timing.Every || !isLive && r.payload != nil && !r.storedLive) {
+		r.live = isLive
+		if !s.isDue(k, r, isLive, now) {
 			continue
 		}
 		r.last = now
+		r.dirty, r.convsChanged, r.reconcile, r.requested = false, false, false, false
 		due = append(due, k)
 	}
 	slices.SortFunc(due, func(a, b chatKey) int {
@@ -296,25 +420,106 @@ func (s *SessionChatSource) takeDue() (int, []chatKey) {
 	return s.generation, due
 }
 
+// isDue says whether r reads now: its first read; then never within MinGap
+// of the last (a waiting read stays waiting), and only for a waiting read
+// (a changed conversation list, a reconcile, a Retry request), a liveness
+// change, the Every tick of a chat that ticks or a dirty chat's debounce;
+// s.mu held.
+func (s *SessionChatSource) isDue(k chatKey, r *chatRun, isLive bool, now time.Time) bool {
+	t := s.o.Timing
+	switch {
+	case r.last.IsZero():
+		return true
+	case now.Sub(r.last) < t.MinGap:
+		return false
+	case r.requested || r.convsChanged || r.reconcile || r.payload != nil && isLive != r.storedLive:
+		return true
+	}
+	tick := r.ticks(k, isLive) && (isLive || r.payload == nil || !r.fetched)
+	return tick && now.Sub(r.last) >= t.Every || r.dirty && !now.Before(r.dirtyDue(t))
+}
+
 // run reads one feed and stores its payload, unless the watch expired, the
 // source was dropped or ctx ended meanwhile.
 func (s *SessionChatSource) run(ctx context.Context, k chatKey, gen int) {
-	entries, err := bounded(ctx, s.o.Timing.Timeout, func(ctx context.Context) ([]sessionfeed.Entry, error) {
+	// The known files are watched before the read, so a write during it
+	// marks the chat dirty.
+	s.arm(k, gen)
+	read, err := bounded(ctx, s.o.Timing.Timeout, func(ctx context.Context) (ChatRead, error) {
 		return s.o.Fetch(ctx, k.session, k.toolUseID)
 	})
 	if ctx.Err() != nil {
 		return
 	}
-	switch {
-	case errors.Is(err, errRunTimedOut):
-		log.Printf("hub slices: session chat of session %d timed out; keeping the last payload", k.session)
-		return
-	case err != nil:
-		log.Printf("hub slices: session chat of session %d failed (%s); keeping the last payload", k.session, errClass(err))
-		return
+	s.withRun(k, gen, func(r *chatRun) {
+		r.failed = err != nil
+		r.fetched = r.fetched || err == nil
+	})
+	if err == nil {
+		defer s.settle(k, gen, &read)
+	} else {
+		defer s.settle(k, gen, nil)
 	}
-	_, live := s.o.Liveness().Runs[k.session]
-	payload, err := encodeChat(entries, k.session, k.agent, live)
+	s.mu.Lock()
+	var prev *chatPayload
+	if r, ok := s.runs[k]; ok {
+		prev = r.doc
+	}
+	s.mu.Unlock()
+	var doc *chatPayload
+	var live bool
+	switch {
+	case err != nil:
+		reason, lineErr := "failed ("+errClass(err)+")", liveErrUnavailable
+		if errors.Is(err, errRunTimedOut) {
+			reason, lineErr = "timed out", liveErrTimedOut
+		}
+		log.Printf("hub slices: session chat of session %d %s; keeping the last payload", k.session, reason)
+		_, live = s.o.Liveness().Runs[k.session]
+		if prev == nil {
+			if !live {
+				return
+			}
+			// Nothing stored yet for a live session: say the read failed,
+			// so the phone shows Unavailable + Retry, never Loading forever.
+			if doc, err = chatDoc(nil, k.session, k.agent, true, nil, lineErr); err != nil {
+				return
+			}
+			break
+		}
+		marked := *prev
+		switch {
+		case !live:
+			// The session stopped: its last block is no longer current, and
+			// no live error either — the dialog stays, the liveness is real.
+			marked.Live, marked.ActivityLive, marked.LiveError = false, nil, ""
+		case prev.ActivityLive == nil && prev.LiveError == "":
+			return
+		default:
+			marked.LiveError = lineErr
+		}
+		doc = &marked
+	default:
+		_, live = s.o.Liveness().Runs[k.session]
+		block, lineErr := phoneLive(read.Live), ""
+		if read.LiveErr != nil {
+			log.Printf("hub slices: the live block of session %d failed (%s); keeping the last one", k.session, errClass(read.LiveErr))
+			block, lineErr = nil, liveErrUnavailable
+			if prev != nil {
+				block = prev.ActivityLive
+			}
+		}
+		if doc, err = chatDoc(read.Entries, k.session, k.agent, live, block, lineErr); err != nil {
+			log.Printf("hub slices: encoding the session chat of session %d failed", k.session)
+			return
+		}
+		// observed_at alone changing is no change: the block keeps the
+		// moment of the read that last changed it.
+		if prev != nil && sameLiveBlock(doc.ActivityLive, prev.ActivityLive) {
+			doc.ActivityLive = prev.ActivityLive
+		}
+	}
+	payload, err := wire.Marshal(doc)
 	if err != nil {
 		log.Printf("hub slices: encoding the session chat of session %d failed", k.session)
 		return
@@ -325,7 +530,7 @@ func (s *SessionChatSource) run(ctx context.Context, k chatKey, gen int) {
 	stored := ok && active[k] && s.generation == gen
 	changed := stored && !bytes.Equal(r.payload, payload)
 	if stored {
-		r.payload, r.storedLive = payload, live
+		r.payload, r.storedLive, r.doc = payload, live, doc
 	}
 	s.mu.Unlock()
 	if changed && s.o.OnChange != nil {
@@ -333,14 +538,33 @@ func (s *SessionChatSource) run(ctx context.Context, k chatKey, gen int) {
 	}
 }
 
+// sameLiveBlock: a and b are both set and differ in observed_at at most.
+func sameLiveBlock(a, b *sessionfeed.Live) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	c := *a
+	c.ObservedAt = b.ObservedAt
+	return reflect.DeepEqual(&c, b)
+}
+
 // dropAll forgets every watch and payload (no phone linked, or the hub
 // stopped).
 func (s *SessionChatSource) dropAll() {
 	s.w.DropAll()
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
 	s.mu.Lock()
+	w := s.fw
+	s.fw = nil
+	clear(s.byPath)
+	clear(s.unwatch)
 	clear(s.runs)
 	s.generation++
 	s.mu.Unlock()
+	if w != nil {
+		_ = w.Close()
+	}
 }
 
 type chatSubagent struct {
@@ -369,15 +593,35 @@ type chatPayload struct {
 	Live        bool        `json:"live"`
 	EntriesMore int         `json:"entries_more"`
 	Entries     []chatEntry `json:"entries"`
+	// ActivityLive is the live block (phoneLive), only while the session is
+	// live; LiveError says its last read failed or hung (the block, when
+	// present, is the last good one).
+	ActivityLive *sessionfeed.Live `json:"activity_live,omitempty"`
+	LiveVersion  int               `json:"live_version"`
+	LiveError    string            `json:"live_error,omitempty"`
 }
 
 // encodeChat is SessionChatPayload.encode: the FEED-02 kinds only, cut to
 // the newest MaxChatEntries (oldest first), texts clipped at MaxChatText and
 // labels at 200, then trimmed from the oldest end until the encoded size
 // fits MaxChatBytes; everything dropped but the other kinds is counted in
-// entries_more. The payload carries no clock, so an unchanged feed encodes
-// to the same bytes.
-func encodeChat(feed []sessionfeed.Entry, sessionID int64, agentID string, live bool) ([]byte, error) {
+// entries_more. The live block (block, already phoneLive'd) and live_error
+// (liveErr) are reserved first and never cut: they travel only while the
+// session is live. The payload carries no clock but the block's
+// observed_at, so an unchanged feed encodes to the same bytes.
+func encodeChat(feed []sessionfeed.Entry, sessionID int64, agentID string, live bool, block *sessionfeed.Live, liveErr string) ([]byte, error) {
+	doc, err := chatDoc(feed, sessionID, agentID, live, block, liveErr)
+	if err != nil {
+		return nil, err
+	}
+	return wire.Marshal(doc)
+}
+
+// chatDoc is encodeChat before encoding.
+func chatDoc(feed []sessionfeed.Entry, sessionID int64, agentID string, live bool, block *sessionfeed.Live, liveErr string) (*chatPayload, error) {
+	if !live {
+		block, liveErr = nil, ""
+	}
 	known := make([]sessionfeed.Entry, 0, len(feed))
 	for _, e := range feed {
 		if slices.Contains(phoneFeedKinds, e.Kind) {
@@ -400,11 +644,27 @@ func encodeChat(feed []sessionfeed.Entry, sessionID int64, agentID string, live 
 	if agentID != "" {
 		agent = &agentID
 	}
-	envelope, err := wire.Marshal(chatPayload{SessionID: sessionID, AgentID: agent, Live: live, EntriesMore: len(known), Entries: []chatEntry{}})
+	// The envelope is measured with the largest entries_more it can carry
+	// and the longest live_error a later failed read may set, the live block
+	// included whole.
+	envelope, err := wire.Marshal(chatPayload{
+		SessionID: sessionID, AgentID: agent, Live: live, EntriesMore: len(known), Entries: []chatEntry{},
+		ActivityLive: block, LiveVersion: chatLiveVersion, LiveError: liveErrTimedOut,
+	})
 	if err != nil {
 		return nil, err
 	}
-	// The envelope is measured with the largest entries_more it can carry.
+	if len(envelope) > MaxChatBytes && block != nil {
+		// phoneLive's bounds keep a block far below this; one that still
+		// does not fit is dropped and said so, never cut.
+		block, liveErr = nil, liveErrUnavailable
+		if envelope, err = wire.Marshal(chatPayload{
+			SessionID: sessionID, AgentID: agent, Live: live, EntriesMore: len(known), Entries: []chatEntry{},
+			LiveVersion: chatLiveVersion, LiveError: liveErrTimedOut,
+		}); err != nil {
+			return nil, err
+		}
+	}
 	kept := len(entries)
 	total := len(envelope) + max(0, kept-1)
 	for _, n := range sizes {
@@ -419,10 +679,89 @@ func encodeChat(feed []sessionfeed.Entry, sessionID int64, agentID string, live 
 		dropped++
 		kept--
 	}
-	return wire.Marshal(chatPayload{
+	return &chatPayload{
 		SessionID: sessionID, AgentID: agent, Live: live,
 		EntriesMore: more + dropped, Entries: entries[dropped:],
-	})
+		ActivityLive: block, LiveVersion: chatLiveVersion, LiveError: liveErr,
+	}, nil
+}
+
+// phoneLive is the live block the phone gets from a snapshot: every summary
+// (steps, current, latest, each agent's action) and every agent description
+// redacted then cut at maxLiveSummary (sessionfeed already redacted them
+// before its own cut; this is the second layer), names cut at maxLiveName
+// and ids at maxLiveID, at most maxLiveSteps steps and maxLiveAgents
+// agents. Steps are cut from the oldest finished ones first, then the
+// oldest running ones, never the current step, all counted in steps_more;
+// agents past the cap in agents_more. It never mutates l; nil stays nil.
+func phoneLive(l *sessionfeed.Live) *sessionfeed.Live {
+	if l == nil {
+		return nil
+	}
+	out := &sessionfeed.Live{
+		ObservedAt: l.ObservedAt, Conversation: cutRunes(l.Conversation, maxLiveID), TurnAt: l.TurnAt, TurnActive: l.TurnActive,
+		Current: phoneAction(l.Current), Latest: phoneAction(l.Latest),
+		Agents: []sessionfeed.LiveAgent{}, AgentsState: cutRunes(l.AgentsState, maxLiveName), AgentsMore: l.AgentsMore,
+		Steps: []sessionfeed.LiveAction{}, StepsMore: l.StepsMore,
+	}
+	// Past maxLiveSteps the oldest finished steps go first, then the oldest
+	// running ones; the current step always stays.
+	keep := make([]bool, len(l.Steps))
+	for i := range keep {
+		keep[i] = true
+	}
+	excess := len(l.Steps) - maxLiveSteps
+	for pass := 0; pass < 2 && excess > 0; pass++ {
+		for i, st := range l.Steps {
+			if excess == 0 {
+				break
+			}
+			finished := !st.CompletedAt.IsZero()
+			if !keep[i] || (pass == 0) != finished || l.Current != nil && st.ID == l.Current.ID {
+				continue
+			}
+			keep[i] = false
+			excess--
+			out.StepsMore++
+		}
+	}
+	for i, st := range l.Steps {
+		if keep[i] {
+			out.Steps = append(out.Steps, *phoneAction(&st))
+		}
+	}
+	agents := l.Agents
+	if n := len(agents) - maxLiveAgents; n > 0 {
+		agents, out.AgentsMore = agents[:maxLiveAgents], out.AgentsMore+n
+	}
+	for _, a := range agents {
+		ref := sessionfeed.SubagentRef{
+			ToolUseID: cutRunes(a.Ref.ToolUseID, maxLiveID), AgentID: cutRunes(a.Ref.AgentID, maxLiveID),
+			Type: cutRunes(a.Ref.Type, maxLiveName), Status: cutRunes(a.Ref.Status, maxLiveName),
+			Description: secretredact.TextBounded(a.Ref.Description, maxLiveSummary),
+		}
+		out.Agents = append(out.Agents, sessionfeed.LiveAgent{Ref: ref, StartedAt: a.StartedAt, Action: phoneAction(a.Action), CanOpen: a.CanOpen})
+	}
+	return out
+}
+
+// phoneAction is a copy of a with its summary redacted and cut.
+func phoneAction(a *sessionfeed.LiveAction) *sessionfeed.LiveAction {
+	if a == nil {
+		return nil
+	}
+	c := *a
+	c.ID, c.Tool = cutRunes(c.ID, maxLiveID), cutRunes(c.Tool, maxLiveName)
+	c.Summary = secretredact.TextBounded(c.Summary, maxLiveSummary)
+	return &c
+}
+
+// cutRunes keeps at most n runes of s.
+func cutRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n])
 }
 
 func chatEntryOf(e sessionfeed.Entry) chatEntry {

@@ -8,7 +8,17 @@ import (
 
 func TestText(t *testing.T) {
 	cases := []struct{ name, in, want string }{
-		{"slack", "post with xoxb-1234567890-abcdefghij now", "post with [secret] now"},                                // leak-check:allow
+		{"slack", "post with xoxb-1234567890-abcdefghij now", "post with [secret] now"},  // leak-check:allow
+		{"bare bearer digits", "curl url Bearer abc123", "curl url Bearer [secret]"},     // leak-check:allow
+		{"bare bearer dotted", "send Bearer x.y.z now", "send Bearer [secret] now"},      // leak-check:allow
+		{"bare bearer dash", "Bearer abc-def", "Bearer [secret]"},                        // leak-check:allow
+		{"bare bearer underscore", "Bearer abc_def", "Bearer [secret]"},                  // leak-check:allow
+		{"bare bearer mixed case", "Bearer AbCdEf", "Bearer [secret]"},                   // leak-check:allow
+		{"bare bearer long capitals", "Bearer ABCDEFGHIJ", "Bearer [secret]"},            // leak-check:allow
+		{"bare bearer long token", "Bearer abcdEFGH12345678 end", "Bearer [secret] end"}, // leak-check:allow
+		{"bare bearer prose", "Bearer authentication is described", "Bearer authentication is described"},
+		{"bare bearer token word", "a Bearer token header", "a Bearer token header"},
+		{"bare bearer short capitals", "a Bearer JWT header", "a Bearer JWT header"},
 		{"github", "use ghp_abcdefghijklmnopqrstuvwxyz0123 here", "use [secret] here"},                                 // leak-check:allow
 		{"github pat", "pat github_pat_11ABCDEFG0abcdefghijkl_xyz done", "pat [secret] done"},                          // leak-check:allow
 		{"sk", "key sk-abcdefghijklmnop1234 end", "key [secret] end"},                                                  // leak-check:allow
@@ -243,5 +253,37 @@ func TestText_ManyHeadersLinear(t *testing.T) {
 	a, b := allocated(small), allocated(big)
 	if b > 20*a+64<<10 {
 		t.Fatalf("1000 headers allocated %d bytes vs %d for 100: work grows faster than the input", b, a)
+	}
+}
+
+// A vendor token prefix that runs into the read window's end is masked
+// whole: its rule never saw the full shape (a JWT short of its second dot,
+// a GitHub token short of 20 characters).
+func TestTextWithin_PartialTokenAtWindowEnd(t *testing.T) {
+	jwt := "eyJhbGciOiJIUzI1NiJ9" + strings.Repeat("A", 3000) + ".eyJzdWIiOiIxIn0.sig" // leak-check:allow
+	if got := TextBounded("auth "+jwt, 200); got != "auth "+Mark {
+		t.Fatalf("JWT straddling the window: %q", got)
+	}
+	if got := TextWithin("auth "+jwt, 1000); got != "auth "+Mark {
+		t.Fatalf("TextWithin: %q", got)
+	}
+	for _, prefix := range []string{
+		"ghp_", "github_pat_", "xoxb-", "xapp-", "sk-", "sk_live_", "glpat-", "AIza", "AKIA", "ASIA", // leak-check:allow
+	} {
+		in := "use " + prefix + "AB12"
+		if got := TextWithin(in+strings.Repeat(" x", 10), len(in)); got != "use "+Mark {
+			t.Errorf("%s cut at the window: %q", prefix, got)
+		}
+	}
+	// Not cut: a short look-alike stays, and so does a word merely ending
+	// in a prefix.
+	for _, in := range []string{"use sk-learn", "the task-sk-x", "eyJ"} {
+		if got := TextWithin(in, 1000); got != in {
+			t.Errorf("uncut %q changed: %q", in, got)
+		}
+	}
+	// A complete token inside the window is redacted by its own rule.
+	if got := TextWithin("t ghp_abcdefghijklmnopqrstuvwxyz0123 end", 1000); got != "t "+Mark+" end" { // leak-check:allow
+		t.Fatalf("complete token: %q", got)
 	}
 }
