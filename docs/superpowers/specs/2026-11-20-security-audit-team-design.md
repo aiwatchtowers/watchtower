@@ -212,7 +212,7 @@ points, sinks, existing controls. Used by the context file and by the Range mapp
    `git worktree add --detach` the target.
 3. **Owner triage in.** `ArtifactData list findings` → write the per-run "owner triage"
    section of the context (§5.1) into the engine output dir (never into the repo). First
-   run: `baseline-import.json` instead.
+   run: `baseline-import.json` instead (a row without `status` reads as `open`).
 4. **Run the engine** in full audit mode on the target with `watchtower-context.md` +
    the triage section, `repo = watchtower`, the profile and scope from step 1, and every
    delegation through `sec-audit-agent`. The engine writes its run directory, validates
@@ -262,7 +262,7 @@ counts {by verdict, by severity, regressed, resurfaced, new}, started_at, finish
 | `verdict` (needs_validation\|rejected\|confirmed), `title`, `description`, `root_cause`/`claimed_root_cause`, `trace[]`, `evidence[]`, `blockers[]`, `validation_plan`, `remediation`, `severity`, `reason` | wrapper, every run that sees it | copied from `findings.json` |
 | `first_seen_run`, `last_seen_run`, `run_state` (new\|still_open\|regressed\|resurfaced\|not_refound\|fixed) | wrapper | `resurfaced`: an `accepted`/`false_positive` finding found again as `confirmed`/`needs_validation` (its code changed) |
 | `legacy_match` (a `legacy_id`) | wrapper, only while the field is empty and `legacy_decision` is unset | the engine's schema has no such field, so the wrapper proposes it after the import: a legacy row sharing a file with the record's trace/evidence and describing the same weakness in its note; once set, or once the owner decided, no run writes it again |
-| `status` (open\|in_progress\|fixed\|accepted\|false_positive) | owner (wrapper only on create: `open`, or `false_positive` for an engine-`rejected` record; legacy rows: from `baseline-import.json`) | |
+| `status` (open\|in_progress\|fixed\|accepted\|false_positive) | owner (wrapper only on create: `open`, or `false_positive` for an engine-`rejected` record; legacy rows: the row's `status` from `baseline-import.json`, which carries one only where the old audit already published it as `fixed` or `accepted`; a row without one is created `open` and the owner adjusts it) | |
 | `note` | owner (wrapper on create: "Rejected by the engine's verifier." for an engine-`rejected` record; legacy rows: from `baseline-import.json`) | |
 | `disputed` (bool) | owner | `true` when the owner disputes a `rejected` finding (Dispute button, or reopening it to `open`/`in_progress`); the disputed list = `verdict: rejected`, `disputed: true`, `status` open\|in_progress; the wrapper never writes it |
 | `legacy_decision` (merged\|split) | owner | **Merged**: the finding takes the legacy row's `status` and `note` (owner write), the legacy row gets `merged_into: <doc-id>` and leaves the list; **Split**: `legacy_match` stays for the record, the badge goes, both rows live on |

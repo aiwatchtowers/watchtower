@@ -115,10 +115,10 @@ Manifest lists every file in `engine/` except `VERSION`, sorted by path. Check c
 7. Run row: fields from spec §7, counts by verdict, by severity, new, regressed.
 8. Batch ≤ 50 ops per `ArtifactData batch` (tool limit); updates carry `if_version`, a conflict → re-read, recompute, resend.
 
-`baseline-import.json`: `[{legacy_id, surface, status (open|fixed|accepted), files[], note}]` from §8 of `docs/security-audit-2026-07-31.md` and `docs/review/2026-07-05-audit-security.md` (text already public there); mixed items split `<id>a`/`<id>b`.
+`baseline-import.json`: `[{legacy_id, surface, status? (fixed|accepted, only where the source audit already states it; absent → created `open`), files[], note}]` from §8 of `docs/security-audit-2026-07-31.md` and `docs/review/2026-07-05-audit-security.md` (text already public there); mixed items split `<id>a`/`<id>b`.
 
 - [ ] **Step 1:** Write `import-rules.md` with one worked example per rule, including Review Focus 4 and 5.
-- [ ] **Step 2:** Write `baseline-import.json`; check `jq -e 'all(.[]; .legacy_id and (.status|IN("open","fixed","accepted")))'` and unique `legacy_id` → `true`.
+- [ ] **Step 2:** Write `baseline-import.json`; check `jq -e 'all(.[]; .legacy_id and ((has("status")|not) or (.status|IN("fixed","accepted"))))'` and unique `legacy_id` → `true`.
 - [ ] **Step 3: Commit** — `docs(security-audit): import rules and first-run baseline`.
 
 ---

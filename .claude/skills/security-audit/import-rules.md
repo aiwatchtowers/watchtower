@@ -38,7 +38,7 @@ the value of `first_seen_run` / `last_seen_run`.
   create only `status` and `note`: a record with verdict `rejected` gets
   `status: "false_positive"` and `note: "Rejected by the engine's verifier."`; every other
   new record gets `status: "open"` and no `note`; a baseline doc gets the row's `status`
-  and `note`.
+  (`open` when the row has none) and `note`.
 - *Owner fields*: `status`, `note`, `disputed`, `legacy_decision`, `merged_into`.
   `disputed: true` is written only by the page (the owner's Dispute button, or the owner
   moving a `rejected` doc to `open`/`in_progress`). **No `update` op ever names an owner
@@ -122,7 +122,10 @@ For each record in `findings.json`, compute its doc id.
 **2b — Baseline rows on the first import.** When `list findings` returned no docs at all
 (a new report), the import also creates one doc per row of `baseline-import.json`:
 `set findings/legacy-<legacy_id>` with `legacy_id`, `status` and `note` from the row —
-nothing else (`surface` and `files` stay in the file; rule 5 reads them from there).
+nothing else (`surface` and `files` stay in the file; rule 5 reads them from there). A
+row carries `status` only where the old audit already published it (`fixed` or
+`accepted`); a row without one is created with `status: "open"`, and the owner adjusts
+it in the Artifact.
 These creates come before rule 5.
 
 **Example (create).** Record `example:ssrf:fetch-preview` → doc `063e7700b0564553`, not

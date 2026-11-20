@@ -313,7 +313,8 @@ written to the Artifact and no run dir is created.
      rejected finding), and `status` `open` or `in_progress`. A `rejected` doc that is
      open without `disputed` is the engine newly rejecting an open finding — not a
      dispute, and on no list.
-   - **Legacy items**: `legacy-*` docs without `merged_into` (or the baseline rows).
+   - **Legacy items**: `legacy-*` docs without `merged_into` (or the baseline rows; a
+     row without `status` is listed as `open`).
 3. Create the run dir `<run root>/run-<N>/` (`umask 077; mkdir`, then `chmod 700`) and
    write in it:
    - `watchtower-context.md` = the repository's `watchtower-context.md`, with its
