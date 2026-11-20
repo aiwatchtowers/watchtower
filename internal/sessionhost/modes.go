@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"sort"
 	"strconv"
+	"unicode/utf8"
 )
 
 // maxPendingSeq bounds the unfinished sequence kept between Observe calls.
@@ -246,37 +247,59 @@ func (m *ModeTracker) Replay(snapshot []byte) []byte {
 	return append(out, tail...)
 }
 
-// unfinishedTail returns where an escape or CSI sequence that b ends in the
-// middle of starts, or len(b): an ESC alone, ESC [ followed only by
-// parameter and intermediate bytes (0x20–0x3F) up to the end, or a string
+// unfinishedTail returns where a sequence that b ends in the middle of
+// starts, or len(b): a UTF-8 character cut short, an ESC followed only by
+// intermediate bytes (0x20–0x2F, ESC ( awaiting its charset, say), ESC [
+// followed only by parameter and intermediate bytes (0x20–0x3F), or a string
 // sequence (OSC, DCS, APC, PM, SOS) with no terminator yet.
 func unfinishedTail(b []byte) int {
-	i := bytes.LastIndexByte(b, 0x1b)
-	if i < 0 {
-		return len(b)
+	if i := bytes.LastIndexByte(b, 0x1b); i >= 0 {
+		if openEscape(b[i+1:]) {
+			return i
+		}
 	}
-	rest := b[i+1:]
+	// A UTF-8 character is at most 4 bytes: back up over a lead byte whose
+	// continuation bytes have not all arrived.
+	for k := 1; k <= utf8.UTFMax-1 && k <= len(b); k++ {
+		c := b[len(b)-k]
+		if utf8.RuneStart(c) {
+			if c >= 0x80 && !utf8.FullRune(b[len(b)-k:]) {
+				return len(b) - k
+			}
+			break
+		}
+	}
+	return len(b)
+}
+
+// openEscape reports whether rest — what follows an ESC up to the end — is
+// still open.
+func openEscape(rest []byte) bool {
 	if len(rest) == 0 {
-		return i
+		return true
 	}
 	switch rest[0] {
 	case ']', 'P', '_', '^', 'X':
 		// OSC, DCS, APC, PM, SOS: open until BEL or ST (ESC \, whose ESC
 		// would be the last one).
 		if bytes.IndexByte(rest, 0x07) < 0 {
-			return i
+			return true
 		}
-		return len(b)
+		return false
 	case '[':
-	default:
-		return len(b)
+		for _, c := range rest[1:] {
+			if c < 0x20 || c > 0x3f {
+				return false
+			}
+		}
+		return true
 	}
-	for _, c := range rest[1:] {
-		if c < 0x20 || c > 0x3f {
-			return len(b)
+	for _, c := range rest {
+		if c < 0x20 || c > 0x2f {
+			return false
 		}
 	}
-	return i
+	return true
 }
 
 // stripKeyboard returns b without its complete kitty keyboard sequences

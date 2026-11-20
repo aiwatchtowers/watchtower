@@ -211,6 +211,11 @@ func TestUnfinishedTail(t *testing.T) {
 		"ab\x1b[31m":       7,
 		"ab\x1b]0;title":   2,
 		"ab\x1b]0;t\x07cd": 10,
+		"ab\x1b(":          2,
+		"ab\x1b(B":         5,
+		"ab\xe2\x94":       2,
+		"ab\xe2\x94\x80":   5,
+		"\xf0\x9f\x98":     0,
 		"\x1b[1mab\x1b[1;": 6,
 	} {
 		if got := unfinishedTail([]byte(in)); got != want {
