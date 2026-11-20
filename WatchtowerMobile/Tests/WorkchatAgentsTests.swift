@@ -1,5 +1,6 @@
 import WatchtowerChatText
 import WatchtowerKit
+import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
 
@@ -104,10 +105,25 @@ final class WorkchatAgentsTests: XCTestCase {
     }
 
     private func agents(
-        _ entries: [SessionChat.Entry], live: SessionFeedLive?, error: String? = nil, working: Bool = true, staleSince: Date? = nil
+        _ entries: [SessionChat.Entry],
+        live: SessionFeedLive?,
+        error: String? = nil,
+        working: Bool = true,
+        tower: WorkchatAgents.Tower = WorkchatAgents.Tower()
     ) -> WorkchatAgents {
-        WorkchatAgents(entries: entries, sessionID: 3, live: live, liveError: error, sessionWorking: working,
-                       staleSince: staleSince, now: now)
+        WorkchatAgents(entries: entries, sessionID: 3, live: live, liveError: error, sessionWorking: working, tower: tower, now: now)
+    }
+
+    /// A linked tower whose last heartbeat and publish were at `at`.
+    private func tower(heartbeatAt at: Date) -> WorkchatAgents.Tower {
+        WorkchatAgents.Tower(
+            heartbeat: HeartbeatPayload(
+                updatedAt: at, appVersion: "1.0", hubID: "hub", macName: "Acme Mac", flavor: .default,
+                lastPublishAt: at, lastRelayAt: at, relayBacklog: 0, accounts: [],
+                enabledAt: at, ownerUser: "_user", sharing: .none
+            ),
+            linked: true
+        )
     }
 
     /// The shared projection's rows for the same block, observed now.
@@ -218,7 +234,7 @@ final class WorkchatAgentsTests: XCTestCase {
     func testStaleTowerShowsNoFrozenStep() {
         let block = live([liveAgent("w1", "running", action: SessionLiveAction(tool: "Bash", summary: "go test"),
                                     startedAt: now.addingTimeInterval(-40))])
-        let result = agents([marker("w1", "running")], live: block, staleSince: now.addingTimeInterval(-2))
+        let result = agents([marker("w1", "running")], live: block, tower: tower(heartbeatAt: now.addingTimeInterval(-2101)))
         XCTAssertEqual(result.badge, .unknown)
         XCTAssertNil(result.working[0].action)
         XCTAssertNil(result.working[0].elapsed)
@@ -228,5 +244,50 @@ final class WorkchatAgentsTests: XCTestCase {
         let result = agents([marker("w1", "running"), marker("d1", "finished")], live: live([]), working: false)
         XCTAssertTrue(result.working.isEmpty)
         XCTAssertEqual(result.badge, .done(1))
+    }
+
+    func testTowerGoingStaleWhileTheSheetIsOpen() {
+        let block = live([liveAgent("w1", "running", action: SessionLiveAction(tool: "Bash", summary: "go test"),
+                                    startedAt: now.addingTimeInterval(-40))])
+        let result = agents([marker("w1", "running")], live: block, tower: tower(heartbeatAt: now))
+        XCTAssertEqual(result.working.map(\.action), ["go test"], "fresh at t0")
+        XCTAssertEqual(result.working.map(\.elapsed), ["0:40"])
+        XCTAssertEqual(result.badge, .working(1))
+        XCTAssertTrue(result.ticks)
+        // The next tick, no redraw from the parent: the heartbeat is now past `heartbeatStaleAfter`.
+        let later = now.addingTimeInterval(2101)
+        let rows = result.working(at: later)
+        XCTAssertEqual(rows.map(\.id), ["w1"], "the markers, as without live")
+        XCTAssertNil(rows[0].action)
+        XCTAssertNil(rows[0].elapsed)
+        XCTAssertEqual(result.badge(at: later), .unknown)
+        XCTAssertEqual(WorkchatAgentsText.unknownBadge, "?")
+    }
+
+    func testFinishedLiveAgentWithoutMarkerIsDoneOnce() {
+        let result = agents(
+            [marker("d1", "finished"), marker("w1", "running")],
+            live: live([liveAgent("w1", "running"), liveAgent("cut", "finished"), liveAgent("cut", "finished"),
+                        liveAgent("d1", "finished")])
+        )
+        XCTAssertEqual(result.done.map(\.id), ["d1", "tu-cut"], "the markers' first, newest first; the trimmed one once")
+        XCTAssertEqual(result.done[1].type, "Explore")
+        XCTAssertEqual(result.done[1].description, "Look cut")
+        XCTAssertEqual(result.done[1].route, SessionChatRoute(sessionID: 3, agentID: "ag-cut", toolUseID: "tu-cut"))
+        XCTAssertEqual(result.working.map(\.id), ["tu-w1"])
+        let idle = agents([marker("d1", "finished")], live: live([liveAgent("cut", "finished")]), working: false)
+        XCTAssertEqual(idle.badge, .done(2))
+    }
+
+    func testSessionNotWorkingShowsNoLiveRows() {
+        let block = live([liveAgent("w1", "running", action: SessionLiveAction(tool: "Bash", summary: "go test"),
+                                    startedAt: now.addingTimeInterval(-40))])
+        let result = agents([marker("w1", "running"), marker("d1", "finished")], live: block, working: false)
+        XCTAssertTrue(result.working.isEmpty)
+        XCTAssertTrue(result.working(at: now.addingTimeInterval(5)).isEmpty)
+        XCTAssertFalse(result.ticks)
+        XCTAssertEqual(result.badge, .done(1))
+        XCTAssertEqual(result.done.map(\.id), ["d1"])
+        XCTAssertTrue(result.doneOpenByDefault)
     }
 }
