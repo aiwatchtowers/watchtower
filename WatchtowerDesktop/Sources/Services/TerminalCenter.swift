@@ -1691,6 +1691,12 @@ final class PalettedTerminalView: LocalProcessTerminalView {
         applyBackground()
     }
 
+    /// GPU rendering (board #2102): `PalettedTerminalView+Metal.swift`.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        enableMetalIfPossible()
+    }
+
     // MARK: Selection under streaming output
 
     /// SwiftTerm clears the selection on every feed and line feed while
