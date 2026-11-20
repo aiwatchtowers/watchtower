@@ -457,8 +457,10 @@ enum TerminalHostAttachment {
 /// on every resize, and fills the margin with the terminal layer's own
 /// background — observed, so an OSC 11 colour change or reverse video
 /// (both repaint SwiftTerm's layer) recolours the margin with it, and the
-/// padding never reads as a differently coloured frame. (That is SwiftTerm's
-/// default CPU renderer; its opt-in Metal renderer clears the layer instead.)
+/// padding never reads as a differently coloured frame. SwiftTerm's Metal
+/// renderer, on while the terminal is in a window, clears that layer: the
+/// margin then takes the terminal's own background
+/// (`PalettedTerminalView.marginColor`).
 final class TerminalContainerView: NSView {
     private weak var observedTerminal: NSView?
     private var backgroundObservation: NSKeyValueObservation?
@@ -480,9 +482,12 @@ final class TerminalContainerView: NSView {
     override func didAddSubview(_ subview: NSView) {
         super.didAddSubview(subview)
         observedTerminal = subview
-        backgroundObservation = subview.layer?.observe(\.backgroundColor, options: [.initial, .new]) { [weak self] terminalLayer, _ in
+        backgroundObservation = subview.layer?.observe(\.backgroundColor, options: [.initial, .new]) { [weak self, weak subview] terminalLayer, _ in
             let color = terminalLayer.backgroundColor
-            MainActor.assumeIsolated { self?.layer?.backgroundColor = color }
+            MainActor.assumeIsolated {
+                guard let subview else { return }
+                self?.layer?.backgroundColor = PalettedTerminalView.marginColor(layerColor: color, of: subview)
+            }
         }
     }
 

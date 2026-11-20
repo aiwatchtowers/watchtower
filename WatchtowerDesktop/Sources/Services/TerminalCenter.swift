@@ -1694,7 +1694,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     /// GPU rendering (board #2102): `PalettedTerminalView+Metal.swift`.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        enableMetalIfPossible()
+        updateMetalForWindow()
     }
 
     // MARK: Selection under streaming output
@@ -2062,6 +2062,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     private func applyBackground() {
         nativeBackgroundColor = TerminalPalette.background
         backgroundOpacity = TerminalPalette.backgroundOpacity(for: effectiveAppearance)
+        keepLayerBackgroundUnderMetal()
     }
 }
 
