@@ -66,9 +66,12 @@ struct InboxRefHooks {
     /// The Core mirror of a Kit ref (the same raw values); nil for a
     /// `plan_item`, which only the hub's phone projection writes, so a Mac
     /// row never carries one (it draws as a plain row, no native actions).
-    /// Nil too for the text-id kinds `mail_sender` / `waiting_older` until
-    /// the Mac's sender and Older rows are ported onto the Go feed: such a
-    /// row draws plain, without native actions.
+    /// Nil too for the text-id kinds `mail_sender` / `waiting_older`, but
+    /// that is not what decides the Mac's rows today: Go's feed
+    /// (`inboxfeed.refsOf`) does not know those kinds yet and reads a
+    /// document that carries one as having no refs at all. Until that is
+    /// fixed (port plan Task 6), Waiting for me with an Older note and Mail
+    /// waiting show none of their rows, and their counts under-report.
     static func inboxRef(_ ref: ArtifactRef) -> InboxRef? {
         let kind: InboxRef.Kind? = switch ref.kind {
         case .inboxItem: .inboxItem
