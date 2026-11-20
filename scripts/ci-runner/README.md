@@ -182,13 +182,18 @@ covers them; Mobile App stays in the cloud.
   cache, and Go itself only drops entries unused for 5 days, which let the
   Go cache grow to 170 GB. A LaunchDaemon
   (`/Library/LaunchDaemons/dev.watchtower.ci-cache-trim.plist`, runs as `ci`)
-  runs `~ci/bin/trim-ci-caches.sh` daily at 04:30 and deletes cache files not
-  modified for more than a day (files only, so it is safe while a job runs; a
-  job at worst rebuilds one entry). Its log, capped at 500 lines, is
+  starts `~ci/bin/trim-ci-caches.sh` every hour; the script trims at most once
+  per 23 hours and never while a runner job is running (it logs
+  `skipped: job running`). A trim mirrors Go's own: it removes cache entries
+  (`<hash>-a` files, `<hash>-d` executable directories in the two-hex-digit
+  folders) whose own mtime is over a day old, and leaves everything else. A
+  job that still needs a removed entry rebuilds it. Log, capped at 500 lines:
   `~ci/Library/Logs/ci-cache-trim.log` (errors in `ci-cache-trim.err`). It is
-  installed (and the script refreshed) by re-running
-  `scripts/ci-runner/setup-mac-runner.sh`; `--uninstall` removes it. To run it
-  now: `sudo launchctl kickstart system/dev.watchtower.ci-cache-trim`.
+  installed, and the script refreshed, by re-running
+  `scripts/ci-runner/setup-mac-runner.sh`; `--uninstall` removes the daemon
+  and the script. To run it now: `sudo launchctl kickstart
+  system/dev.watchtower.ci-cache-trim` (it still waits a day since the
+  last trim: delete `~ci/Library/Logs/ci-cache-trim.stamp` to force one).
 - **Logs:** each runner logs to
   `~ci/Library/Logs/actions.runner.aiwatchtowers-watchtower.wt-mac-<name>/`
   and to `_diag/` inside its folder.

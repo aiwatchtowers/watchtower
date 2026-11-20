@@ -1,44 +1,83 @@
 #!/bin/bash
 # Daily trim of the CI user's shared build caches (see README.md, "Cache trim").
-# Runs as the `ci` user from a LaunchDaemon that setup-mac-runner.sh installs.
+# Runs as the `ci` user from a LaunchDaemon that setup-mac-runner.sh installs;
+# the daemon fires hourly and this script acts at most once a day, and only
+# while no runner job is running.
 #
-# Deletes cache FILES not modified for more than a day: Go refreshes an
-# entry's mtime when it uses one older than an hour, so anything older than a
-# day is unused. Files only, never directories, so a job that is building
-# right now at worst misses one entry and rebuilds it.
+# It mirrors Go's own cache trim: an entry is a file `<hash>-a` (or a
+# directory `<hash>-d`, a cached executable) inside one of the two-hex-digit
+# subdirectories, and it is judged by ITS OWN mtime, which Go refreshes when
+# it uses the entry. An entry unused for more than a day goes; a `-d`
+# directory goes whole (its inner file's mtime is never refreshed). Anything
+# else in the cache (fuzz/, README, trim.txt) stays. golangci-lint's cache is
+# a fork of Go's and has the same layout.
 #
 # Usage: trim-ci-caches.sh   (HOME must be the ci user's home)
-set -euo pipefail
+set -uo pipefail
 
 HOME_DIR=${HOME:?HOME is not set}
 [ "$HOME_DIR" != "/" ] || {
     echo "trim-ci-caches: HOME is /" >&2
     exit 1
 }
-LOG="$HOME_DIR/Library/Logs/ci-cache-trim.log"
+LOGDIR="$HOME_DIR/Library/Logs"
+LOG="$LOGDIR/ci-cache-trim.log"
+STAMP="$LOGDIR/ci-cache-trim.stamp"
 MAX_LOG_LINES=500
+MIN_INTERVAL=$((23 * 3600))
 
-mkdir -p "$HOME_DIR/Library/Logs"
+mkdir -p "$LOGDIR"
+log() { echo "$(date '+%F %T') $*" >>"$LOG"; }
 
-# trim <dir>: deletes files older than a day under <dir>, logs the size.
-trim() {
-    local dir=$1 before after
-    if [ ! -d "$dir" ]; then
-        echo "$(date '+%F %T') skip $dir (absent)"
-        return
+cap_log() {
+    if [ "$(wc -l <"$LOG")" -gt "$MAX_LOG_LINES" ]; then
+        tail -n "$MAX_LOG_LINES" "$LOG" >"$LOG.tmp" && mv "$LOG.tmp" "$LOG"
     fi
-    before=$(du -sk "$dir" | awk '{print $1}')
-    find "${dir:?}" -type f -mtime +1 -delete
-    after=$(du -sk "$dir" | awk '{print $1}')
-    echo "$(date '+%F %T') trimmed $dir: $((before / 1024)) MB -> $((after / 1024)) MB"
 }
 
-{
-    trim "$HOME_DIR/Library/Caches/go-build"
-    trim "$HOME_DIR/Library/Caches/golangci-lint"
-} >>"$LOG" 2>&1
+# trim <dir>: removes the cache entries under <dir> unused for over a day.
+# Returns non-zero if anything could not be removed.
+trim() {
+    local dir=$1 entry removed=0 failed=0 size
+    if [ ! -d "$dir" ]; then
+        log "skip $dir (absent)"
+        return 0
+    fi
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        # Only <dir>/<2 hex digits>/<hash>-a|-d; never anything else.
+        case "$entry" in
+        "$dir"/[0-9a-f][0-9a-f]/*-[ad]) ;;
+        *) continue ;;
+        esac
+        if [ -d "$entry" ]; then
+            rm -rf -- "${entry:?}" || failed=1
+        else
+            rm -f -- "${entry:?}" || failed=1
+        fi
+        removed=$((removed + 1))
+    done < <(find "${dir:?}" -mindepth 2 -maxdepth 2 \( -name '*-a' -o -name '*-d' \) -mtime +1 2>/dev/null)
+    size=$(du -sk "$dir" 2>/dev/null | awk '{print int($1 / 1024)}')
+    log "trimmed $dir: removed $removed entries, now ${size:-?} MB"
+    [ "$failed" -eq 0 ] || log "error: some entries of $dir could not be removed"
+    return "$failed"
+}
 
-# Keep the log bounded.
-if [ "$(wc -l <"$LOG")" -gt "$MAX_LOG_LINES" ]; then
-    tail -n "$MAX_LOG_LINES" "$LOG" >"$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+if pgrep -u "$(id -u)" -f Runner.Worker >/dev/null 2>&1; then
+    log "skipped: job running"
+    cap_log
+    exit 0
 fi
+
+now=$(date +%s)
+last=$(stat -f %m "$STAMP" 2>/dev/null || echo 0)
+if [ $((now - last)) -lt "$MIN_INTERVAL" ]; then
+    exit 0
+fi
+
+rc=0
+trim "$HOME_DIR/Library/Caches/go-build" || rc=1
+trim "$HOME_DIR/Library/Caches/golangci-lint" || rc=1
+[ "$rc" -ne 0 ] || touch "$STAMP"
+cap_log
+exit 0

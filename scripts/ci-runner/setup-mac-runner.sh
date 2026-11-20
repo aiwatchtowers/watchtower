@@ -13,16 +13,16 @@
 # asks for your sudo password. Safe to run again: it creates what is missing,
 # rewrites each runner's PATH, environment and LaunchAgent, and removes every
 # other actions-runner-* folder in ci's home (ci serves these runners only).
-# It also installs a daily LaunchDaemon (as ci) that trims ci's Go and
-# golangci-lint caches (trim-ci-caches.sh, README.md "Cache trim").
+# It also installs a LaunchDaemon (as ci) that trims ci's Go and
+# golangci-lint caches once a day, while no job runs (trim-ci-caches.sh, README.md "Cache trim").
 # It never starts a runner: ci's login does, so after a run that changed
 # anything, log ci out (while no job runs) and in again.
 #
 # Usage: scripts/ci-runner/setup-mac-runner.sh [--uninstall] [--repo OWNER/NAME]
 #            [--xcode /Applications/Xcode.app] [--allow-open-home]
 #
-#   --uninstall        stop, unregister and delete the runners and the cache
-#                      trim daemon (the ci user and its caches stay; the script prints how to
+#   --uninstall        stop, unregister and delete the runners and the
+#                      cache trim daemon and script (the ci user and its caches stay; the script prints how to
 #                      remove the user)
 #   --repo             repository the runners serve (default aiwatchtowers/watchtower)
 #   --xcode            the Xcode the jobs use, through DEVELOPER_DIR (default
@@ -171,10 +171,15 @@ runner_dirs() {
     sudo find "$1" -mindepth 1 -maxdepth 1 -type d -name 'actions-runner-*'
 }
 
-# remove_trim_daemon: unloads and deletes the daily cache trim.
+# remove_trim_daemon [home]: unloads and deletes the cache trim daemon (and
+# its script under ci's home, when the home is known).
 remove_trim_daemon() {
+    local home=${1:-}
     sudo launchctl bootout "system/$TRIM_LABEL" 2>/dev/null || true
     sudo rm -f "$TRIM_PLIST"
+    if [ -n "$home" ]; then
+        sudo rm -f "$home/bin/trim-ci-caches.sh"
+    fi
 }
 
 # install_trim_daemon <home>: a daily LaunchDaemon, run as ci, that trims the
@@ -199,23 +204,35 @@ install_trim_daemon() {
     <key>UserName</key><string>$CI_USER</string>
     <key>ProgramArguments</key><array><string>/bin/bash</string><string>$script</string></array>
     <key>EnvironmentVariables</key><dict><key>HOME</key><string>$home</string></dict>
-    <key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>30</integer></dict>
+    <key>StartInterval</key><integer>3600</integer>
     <key>Nice</key><integer>10</integer>
+    <key>LowPriorityIO</key><true/>
+    <key>ProcessType</key><string>Background</string>
     <key>StandardErrorPath</key><string>$home/Library/Logs/ci-cache-trim.err</string>
 </dict>
 </plist>
 PLIST
-    plutil -lint -s "$tmp" || die "the cache trim plist is invalid"
+    if ! plutil -lint -s "$tmp"; then
+        rm -f "$tmp"
+        die "the cache trim plist is invalid"
+    fi
     sudo launchctl bootout "system/$TRIM_LABEL" 2>/dev/null || true
+    # bootout is asynchronous: wait until the old job is gone.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        launchctl print "system/$TRIM_LABEL" >/dev/null 2>&1 || break
+        sleep 0.5
+    done
     sudo install -m 644 -o root -g wheel "$tmp" "$TRIM_PLIST"
     rm -f "$tmp"
+    sudo launchctl enable "system/$TRIM_LABEL"
     sudo launchctl bootstrap system "$TRIM_PLIST"
-    echo "   trims the Go and golangci-lint caches daily at 04:30; log: $home/Library/Logs/ci-cache-trim.log"
+    echo "   trims the Go and golangci-lint caches once a day, between jobs; log: $home/Library/Logs/ci-cache-trim.log"
 }
 
 uninstall() {
     local home uid dir
     home=$(ci_home)
+    remove_trim_daemon "$home"
     [ -n "$home" ] || die "no user $CI_USER"
     uid=$(id -u "$CI_USER")
     while IFS= read -r dir; do
