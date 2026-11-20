@@ -670,6 +670,7 @@ enum DesignShotCatalog {
             + WatchmanShotFixtures.shots // Watchman spec (#1824), design only.
             + WorkchatAgentsMockShotFixtures.shots // Workchat agents list and live steps spec (#2065), design only.
             + WorkchatAgentsShotFixtures.shots // The same states on the built views (#2065), against the mockups.
+            + SignInWaitShotFixtures.shots // Cancel for a waiting browser sign-in (#2132), design only.
     }
 }
 

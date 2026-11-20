@@ -116,6 +116,11 @@ final class DesignShotsTests: XCTestCase {
         })
     }
 
+    /// The waiting browser sign-in's mockups alone (#2132).
+    func testSignInWaitShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("sign-in-wait-") })
+    }
+
     func testChatMarkdownShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("chat-markdown-") })
     }
