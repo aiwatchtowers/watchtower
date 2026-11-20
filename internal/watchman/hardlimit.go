@@ -1577,6 +1577,9 @@ var (
 	trackerServers    = []string{"atlassian", "jira", "confluence", "linear", "github"}
 	trackerWriteVerbs = []string{"create", "update", "add", "edit", "transition", "save", "post", "submit", "write", "delete", "merge", "push", "comment", "reply", "publish"}
 	trackerReadVerbs  = []string{"get", "list", "search", "fetch", "read", "lookup"}
+	// trackerOwnWorkflow are the tools that open or edit the agent's own PR,
+	// which pass as gh pr create/edit do (spec §4).
+	trackerOwnWorkflow = map[string]bool{"create_pull_request": true, "update_pull_request": true}
 )
 
 // mailTools are fragments of MCP mail-sending tool names.
@@ -1629,6 +1632,9 @@ func trackerWrite(tool string) bool {
 	}
 	server, name := strings.ToLower(rest[:i]), rest[i+2:]
 	if !slices.ContainsFunc(trackerServers, func(f string) bool { return strings.Contains(server, f) }) {
+		return false
+	}
+	if trackerOwnWorkflow[strings.ToLower(name)] {
 		return false
 	}
 	words := nameWords(name)
