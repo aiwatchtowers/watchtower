@@ -633,3 +633,34 @@ func TestBridge_WorkspaceFlagBridgesThatWorkspaceOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, refs, "the inactive workspace's accounts are tied in its own database")
 }
+
+// TestBridge_UnreadableJiraTokenWithholdsOnlyAtlassian: a corrupt token file
+// on the oldest baked-client Jira account (the one the Atlassian block's
+// Confluence flag is read from) leaves only the Atlassian block out — a
+// guessed flag would stick — and bridges everything else, marker included,
+// reporting the account as token_unreadable.
+func TestBridge_UnreadableJiraTokenWithholdsOnlyAtlassian(t *testing.T) {
+	c := newCorpWorkspace(t)
+	require.NoError(t, os.WriteFile(jira.NewTokenStore(c.ws, c.ids["jira"]).Path(), []byte("{not json"), 0o600))
+
+	res, err := c.bridge(t)
+	require.NoError(t, err)
+	assert.Equal(t, bridgeMigrated, res.Result)
+	for _, src := range []string{"slack", "google", "linear"} {
+		assert.Contains(t, res.Tied, bridgeAccountJSON{Source: src, ID: c.ids[src]}, src)
+	}
+	assert.NotContains(t, res.Tied, bridgeAccountJSON{Source: "jira", ID: c.ids["jira"]})
+	assert.Contains(t, res.Skipped, bridgeSkipJSON{Source: "jira", ID: c.ids["jira"], Reason: "token_unreadable"})
+	assert.FileExists(t, filepath.Join(c.ws, companyMigratedMarker))
+	stored, ok, err := company.NewStore(c.ws).Get(corpSlug, "")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Nil(t, stored.Bundle.Atlassian, "no guessed Atlassian block is stored")
+	assert.NotNil(t, stored.Bundle.Google)
+
+	// The token readable again: the next run adds the block and ties Jira.
+	require.NoError(t, os.Remove(jira.NewTokenStore(c.ws, c.ids["jira"]).Path()))
+	res, err = c.bridge(t)
+	require.NoError(t, err)
+	assert.Contains(t, res.Tied, bridgeAccountJSON{Source: "jira", ID: c.ids["jira"]})
+}
