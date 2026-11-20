@@ -25,7 +25,9 @@ public struct ChatTurnRequest: Sendable, Equatable, Codable {
     /// `ChatClient.createsConversationOnTurn`). Never on chat.sock.
     public var projectID: Int64?
     /// What the composer held when it sent: kept with a send that may outlive the app, so a refused one comes back as
-    /// typed. Never on the wire.
+    /// typed. Never on the wire. Set only by the composer's own send: a client that stages files (the phone's relay
+    /// client) sends and then clears them only with a turn carrying a draft, so a card answer or an artifact comment
+    /// (no draft) leaves the pills staged — a new producer that sets it takes the staged files too.
     public var draft: ChatTurnDraft?
 
     public init(
