@@ -44,7 +44,12 @@ type Request struct {
 	LiveSessions                        []int64
 	DeclaredWorktrees, DeclaredBranches []string
 	NoSize                              bool
-	Now                                 time.Time
+	// PruneBuilds lets an apply that names no item, of a session that
+	// ended (finished or being deleted), outside a terminal session,
+	// delete the build output of the worktrees it keeps for their work
+	// (#2131, builds.go). Ignored anywhere else.
+	PruneBuilds bool
+	Now         time.Time
 	// Observer hears the evaluation (and an apply) as it goes; nil = no
 	// events. Apply's re-checks never report.
 	Observer Observer

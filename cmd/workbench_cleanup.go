@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/db"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/sessioncleanup"
 )
 
@@ -75,7 +76,25 @@ var cleanupDeps = func(database *db.DB) sessioncleanup.Deps {
 		Results: database,
 		// The projects directory the session feed reads (sessionfeed.Dirs).
 		ClaudeProjects: func() string { return sessioncleanup.ClaudeProjectsDir(agentsClaudeDir()) },
+		Lock:           workbenchCleanupLock,
 	}
+}
+
+// cleanupLockWait bounds how long an apply waits for another cleanup of
+// the same workbench (the daemon's automatic one, #2131) to end.
+const cleanupLockWait = 15 * time.Minute
+
+// workbenchCleanupLock takes the workbench's cross-process cleanup lock
+// beside the active workspace's database (sessioncleanup.LockPath),
+// waiting at most cleanupLockWait.
+func workbenchCleanupLock(ctx context.Context, workbenchID int64) (func(), error) {
+	cfg, err := loadWorkbenchCLIConfig()
+	if err != nil {
+		return nil, fmt.Errorf("loading config: %w", err)
+	}
+	wctx, cancel := context.WithTimeout(ctx, cleanupLockWait)
+	defer cancel()
+	return fsutil.LockFile(wctx, sessioncleanup.LockPath(cfg.DBPath(), workbenchID)) //nolint:wrapcheck // names the lock file
 }
 
 func runWorkbenchCleanup(cmd *cobra.Command, _ []string) error {
@@ -168,6 +187,10 @@ func cleanupRequest(f cleanupFlags, sessionGiven bool, lookupEnv func(string) (s
 	req := sessioncleanup.Request{
 		WorkbenchID: f.workbench, Sweep: f.sweep, CallerSessionID: caller, LiveSessions: f.liveSessions,
 		DeclaredWorktrees: f.worktrees, DeclaredBranches: f.branches, NoSize: f.noSize,
+		// An apply that names no item, of an ended session, outside a
+		// terminal session, also drops the build output of the worktrees
+		// it keeps (#2131); sessioncleanup checks the rest.
+		PruneBuilds: f.apply && len(f.items) == 0,
 	}
 	if f.sweep {
 		return req, nil

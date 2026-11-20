@@ -97,6 +97,11 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 	if r.Sweep && len(only) == 0 {
 		return res, ErrSweepNeedsItems
 	}
+	unlock, err := lockWorkbench(ctx, d, r)
+	if err != nil {
+		return res, err
+	}
+	defer unlock()
 	parts, err := evaluationBuilders(ctx, d, r)
 	if err != nil {
 		return res, err
@@ -111,6 +116,9 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 		a = newApplier(b, p, only)
 		a.halt = halt
 		a.run(ctx)
+		if len(only) == 0 {
+			a.pruneBuilds(ctx)
+		}
 		halt = a.halt
 		p.Items = a.items
 		plans = append(plans, p)
@@ -123,6 +131,30 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 	res.Summary = Summarize(res.Items)
 	a.save(ctx, &res) // a session's apply has one part; a sweep saves nothing
 	return res, nil
+}
+
+// lockWorkbench takes Deps.Lock for the workbench the request acts on (a
+// session's own, read first when the request names none) before anything is
+// evaluated, so two applies of one workbench — the Desktop's, the agent's,
+// the daemon's automatic one — never act on the same facts at once. No Lock
+// (tests, a caller that holds it already) locks nothing.
+func lockWorkbench(ctx context.Context, d Deps, r Request) (func(), error) {
+	if d.Lock == nil {
+		return func() {}, nil
+	}
+	id := r.WorkbenchID
+	if id == 0 && !r.Sweep && d.DB != nil {
+		s, err := d.DB.CleanupSession(ctx, r.SessionID)
+		if err != nil {
+			return nil, err // names the session already
+		}
+		id = s.WorkbenchID
+	}
+	unlock, err := d.Lock(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("waiting for another cleanup of workbench %d: %w", id, err)
+	}
+	return unlock, nil
 }
 
 // applier carries one apply: the evaluated items it updates in place and

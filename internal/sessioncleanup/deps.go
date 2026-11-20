@@ -211,6 +211,10 @@ type Deps struct {
 	// subagent records are read (auto cleanup spec 2026-11-10 §2a): the one
 	// the session feed reads; nil = ~/.claude/projects. "" = unknown.
 	ClaudeProjects func() string
+	// Lock takes the cross-process cleanup lock of a workbench, waiting
+	// until it is free or ctx is done (LockPath); an apply holds it from
+	// before its evaluation to its end. nil = no lock.
+	Lock func(ctx context.Context, workbenchID int64) (unlock func(), err error)
 	// OrphanGrace is how long an apply waits for SIGTERMed orphans to exit
 	// before it keeps the worktree; 0 = 5 s (spec §7).
 	OrphanGrace time.Duration

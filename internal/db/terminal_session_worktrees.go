@@ -290,3 +290,48 @@ func (db *DB) ListTerminalSessionActivity(ctx context.Context) ([]TerminalSessio
 	}
 	return out, nil
 }
+
+// FinishedSessionForCleanup is one session the automatic cleanup may apply
+// (board #2131): its workbench, finish and last cleanup (zero / "" = none).
+type FinishedSessionForCleanup struct {
+	SessionID, WorkbenchID int64
+	FinishedAt, CleanupAt  time.Time
+	CleanupResult          string
+}
+
+// FinishedSessionsForCleanup is every agent session of a workbench that
+// finished at or after since and is not being deleted (the Desktop's
+// background cleanup owns those), the ones never cleaned up first, then by
+// their last cleanup, oldest first. A finished_at that does not parse is
+// skipped (its row is not known to have finished); an unreadable cleanup_at
+// reads as never.
+func (db *DB) FinishedSessionsForCleanup(ctx context.Context, since time.Time) ([]FinishedSessionForCleanup, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id, project_id, finished_at, COALESCE(cleanup_at, ''),
+		COALESCE(cleanup_result, '') FROM terminal_sessions
+		WHERE project_id IS NOT NULL AND kind <> 'shell' AND finished_at IS NOT NULL AND finished_at >= ?
+		AND `+NotDeletingSQL+`
+		ORDER BY cleanup_at IS NOT NULL, cleanup_at, id`, AgentStateStamp(since))
+	if err != nil {
+		return nil, fmt.Errorf("reading finished sessions: %w", err)
+	}
+	defer rows.Close()
+	var out []FinishedSessionForCleanup
+	for rows.Next() {
+		var s FinishedSessionForCleanup
+		var finished, cleaned string
+		if err := rows.Scan(&s.SessionID, &s.WorkbenchID, &finished, &cleaned, &s.CleanupResult); err != nil {
+			return nil, fmt.Errorf("reading finished sessions: %w", err)
+		}
+		at, ok := ParseAgentStateStamp(finished)
+		if !ok {
+			continue
+		}
+		s.FinishedAt = at
+		s.CleanupAt, _ = ParseAgentStateStamp(cleaned)
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading finished sessions: %w", err)
+	}
+	return out, nil
+}

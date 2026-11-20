@@ -142,6 +142,10 @@ type Daemon struct {
 	planUsageDisable    func() error
 	messages            MessageDeliverer                             // nil = agent messages not delivered by this daemon
 	specReviewLaunch    func(ctx context.Context, askID int64) error // nil = the spec review sweep is off
+	// sessionCleanup is one automatic session-cleanup pass (#2131,
+	// session_cleanup.go); nil = none. sessionCleanupAt is the last pass.
+	sessionCleanup   func(ctx context.Context)
+	sessionCleanupAt time.Time
 	// watchmanBacktestLaunch starts a detached backtest child; nil = the weekly backtest is off.
 	watchmanBacktestLaunch func(ctx context.Context, workbenchID int64) error
 	pidPath                string
@@ -776,6 +780,7 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	d.phaseUnsnooze()
 	d.phaseApprovalSweep(ctx)
 	d.phaseTranscriptAudioCleanup()
+	d.phaseSessionCleanup(ctx)
 	// Before the index, so this cycle's descriptions are searchable now.
 	d.aiPhase(ctx, "media", d.phaseMediaDescribe)
 	d.phaseKnowledgeIndex(ctx)
