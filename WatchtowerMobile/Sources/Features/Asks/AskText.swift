@@ -19,6 +19,19 @@ enum AskText {
     static let showMore = "Show more"
     static let showLess = "Show less"
 
+    // Closing an open ask without answering it (#2114): the Mac's Dismiss. Named after the Mac's own tooltip
+    // ("Close this ask without answering"), not "Dismiss", which on the phone already removes a refused answer.
+    static let dismiss = "Close without answering"
+    static let dismissConfirmTitle = "Close this ask without answering?"
+    static let cancel = "Cancel"
+    /// What a dismissal is called once sent: the caption on its way, the outbox's summary.
+    static let dismissedLabel = "Closed without answering"
+
+    /// The confirmation's line: the agent goes on without an answer; the note, when there is one, goes with it.
+    static func dismissConfirmMessage(hasNote: Bool) -> String {
+        "The agent goes on without an answer." + (hasNote ? " Your note goes with it." : "")
+    }
+
     /// A review's verdict as a closed ask and an answer on its way name it.
     static func verdictLabel(_ verdict: OwnerAskAnswer.Verdict) -> String {
         verdict == .approved ? "Approved" : "Changes requested"

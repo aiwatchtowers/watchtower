@@ -374,6 +374,36 @@ func TestAnAskAnsweredOnTheMacIsNotOpen(t *testing.T) {
 	}
 }
 
+// #2114: the phone's Close without answering is a dismissal down ask_answer:
+// stored with its note and nothing else, whatever the kind; one that also
+// carries a pick is refused with Go's message and leaves the ask open.
+func TestADismissalFromThePhoneClosesTheAskWithItsNote(t *testing.T) {
+	e := newEnv(t)
+	s := e.seedAsk(asks.KindReview, "{}")
+	dismissal := map[string]any{
+		"verdict": "", "answers": []any{}, "checklist": []any{}, "comments": []any{}, "note": " Not now ", "dismissed": true,
+	}
+
+	wantDelivery(t, e.h.askAnswer(context.Background(), e.answerAction(s, dismissal)), deliveryNoSession)
+
+	st, stored := e.stored(s.ask)
+	want := `{"answers":[],"checklist":[],"comments":[],"dismissed":true,"note":"Not now","verdict":""}`
+	if st != "answered" || stored != want {
+		t.Fatalf("stored %s %s, want answered %s", st, stored, want)
+	}
+
+	picked := e.seedAsk(asks.KindQuestion, questions)
+	withPick := map[string]any{"answers": yes["answers"], "note": "", "dismissed": true}
+	got := e.h.askAnswer(context.Background(), e.answerAction(picked, withPick))
+	wantOutcome(t, got, wire.StatusFailed, reasonInvalidAnswer)
+	if got.Message != "dismissed: a dismissal carries no answer" {
+		t.Fatalf("message = %q", got.Message)
+	}
+	if st, _ := e.stored(picked.ask); st != "open" {
+		t.Fatalf("status = %s, want open", st)
+	}
+}
+
 // MARK: - Invalid
 
 func TestAnUnknownLabelIsInvalidAnswer(t *testing.T) {

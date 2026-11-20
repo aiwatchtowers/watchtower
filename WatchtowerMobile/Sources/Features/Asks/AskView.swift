@@ -87,7 +87,8 @@ struct AskView: View {
         .background(Color(.systemBackground))
         .scrollDismissesKeyboard(.interactively)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if form.openOnMac == nil, form.closedStatus == nil {
+            // A too-large ask's bar is Close without answering alone.
+            if form.closedStatus == nil, form.openOnMac == nil || form.showsDismiss {
                 AskSendBar(form: form, ask: ask, model: model)
             }
         }
@@ -301,25 +302,58 @@ struct AskStatusRow: View {
 }
 
 /// Send (or Next question on a question page that is not the last), or
-/// Request changes and Approve on a review (mockup 10); the footer.
+/// Request changes and Approve on a review (mockup 10); Previous and Close
+/// without answering under them; the footer. A too-large ask's bar is Close
+/// without answering alone.
 private struct AskSendBar: View {
     let form: AskFormModel
     let ask: OwnerAsk
     let model: AskViewModel
+    @State private var confirmingDismiss = false
 
     var body: some View {
         VStack(spacing: 0) {
-            actions
-            if let page = form.question, page.index > 0, form.review == nil {
-                Button(AskText.previous) { model.previous() }
-                    .frame(minHeight: PhoneMetrics.minTouch)
+            if form.openOnMac == nil {
+                actions
+            } else {
+                Divider()
             }
-            Text(form.footer)
-                .font(TypeScale.meta)
-                .foregroundStyle(.secondary)
-                .padding(.bottom, Spacing.regular)
+            secondaryRow
+            if form.openOnMac == nil {
+                Text(form.footer)
+                    .font(TypeScale.meta)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, Spacing.regular)
+            }
         }
         .background(Color(.systemBackground), ignoresSafeAreaEdges: .bottom)
+        .confirmationDialog(AskText.dismissConfirmTitle, isPresented: $confirmingDismiss, titleVisibility: .visible) {
+            Button(AskText.dismiss, role: .destructive) { Task { await model.sendDismissal(ask) } }
+            Button(AskText.cancel, role: .cancel) {}
+        } message: {
+            Text(form.dismissConfirmMessage)
+        }
+    }
+
+    /// Previous on a later question page, and Close without answering: quiet text buttons, the bar's one prominent
+    /// action stays Send (or the verdicts).
+    @ViewBuilder private var secondaryRow: some View {
+        let previous = form.question.map { $0.index > 0 } == true && form.review == nil && form.openOnMac == nil
+        if previous || form.showsDismiss {
+            HStack(spacing: Spacing.regular) {
+                if previous {
+                    Button(AskText.previous) { model.previous() }
+                        .frame(minHeight: PhoneMetrics.minTouch)
+                }
+                Spacer(minLength: 0)
+                if form.showsDismiss {
+                    Button(AskText.dismiss) { confirmingDismiss = true }
+                        .disabled(!form.canDismiss)
+                        .frame(minHeight: PhoneMetrics.minTouch)
+                }
+            }
+            .padding(.horizontal, Spacing.large)
+        }
     }
 
     @ViewBuilder private var actions: some View {

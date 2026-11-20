@@ -223,6 +223,17 @@ final class AskViewModel {
         }
     }
 
+    /// Close without answering, once confirmed: the draft's note goes as a dismissal; the rest of the draft stays
+    /// until the Mac applies it (a refusal leaves it to answer instead).
+    func sendDismissal(_ ask: OwnerAsk) async {
+        sendError = nil
+        do {
+            try await answerer.sendDismissal(ask)
+        } catch {
+            sendError = BoardWriteText.sendError(error)
+        }
+    }
+
     /// Approve or Request changes: sets the verdict and sends.
     func review(_ verdict: OwnerAskAnswer.Verdict, _ ask: OwnerAsk) async {
         drafts.update(askID) { $0.verdict = verdict }

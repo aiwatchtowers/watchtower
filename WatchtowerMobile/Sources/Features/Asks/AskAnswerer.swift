@@ -108,13 +108,26 @@ final class AskAnswerer {
 
     /// Sends the draft's answer; nothing (false) while the draft is not one
     /// the Mac would take, or an answer to the ask is already on its way.
-    /// Once it is queued, the ask's older refused answers go (as
-    /// `BoardWriter` drops a field's), so a later `applied` is never hidden
-    /// behind a stale refusal.
     @discardableResult
     func send(_ ask: OwnerAsk) async throws -> Bool {
         let draft = drafts.draft(for: ask.id)
         guard draft.isAnswerable(for: ask), let answer = draft.answer(for: ask) else { return false }
+        return try await submit(answer, to: ask)
+    }
+
+    /// Closes the ask without answering it (#2114, the Mac's Dismiss): the draft's note with `dismissed`, down the
+    /// same `ask_answer` path, overlay and refusal handling as an answer. Nothing (false) for an ask the Mac would
+    /// not take it for, a note over its bound, or while an answer to the ask is already on its way.
+    @discardableResult
+    func sendDismissal(_ ask: OwnerAsk) async throws -> Bool {
+        guard AskDraft.isDismissable(ask), let answer = drafts.draft(for: ask.id).dismissal() else { return false }
+        return try await submit(answer, to: ask)
+    }
+
+    /// Queues `answer` under one id per tap, its overlay shown first. Once it
+    /// is queued, the ask's older refused answers go (as `BoardWriter` drops
+    /// a field's), so a later `applied` is never hidden behind a stale refusal.
+    private func submit(_ answer: OwnerAskAnswer, to ask: OwnerAsk) async throws -> Bool {
         let params = try AskAnswerParams(workbenchID: ask.workbenchID, answer: answer).wireParams()
         let entity = Self.recordName(ask.id)
         let stale = try failedRows(entity)
@@ -140,8 +153,10 @@ final class AskAnswerer {
     }
 
     /// What an answer says in one line, for its caption while on its way (live link R5): the verdict, else the
-    /// picked options (and "Other: …") as the closed ask lists them; nil for a checklist or a note alone.
+    /// picked options (and "Other: …") as the closed ask lists them, or that it closes the ask unanswered; nil for a
+    /// checklist or a note alone.
     nonisolated static func answerLabel(_ answer: OwnerAskAnswer) -> String? {
+        if answer.dismissed { return AskText.dismissedLabel }
         if let verdict = answer.verdict { return AskText.verdictLabel(verdict) }
         let picked = answer.answers.flatMap { $0.labels + ($0.other.isEmpty ? [] : [AskText.otherLabel($0.other)]) }
         return picked.isEmpty ? nil : picked.joined(separator: ", ")

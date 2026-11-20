@@ -66,6 +66,21 @@ struct AskDraft: Equatable {
         )
     }
 
+    /// The ask closed without an answer (the Mac's Dismiss, Go's `Answer.Dismissed`): the note alone, never the
+    /// picks, marks, comments or verdict (Go refuses a dismissal that carries any). nil while the note is over its
+    /// bound, which the Mac would refuse.
+    func dismissal() -> OwnerAskAnswer? {
+        let note = Self.trimmed(note)
+        guard note.unicodeScalars.count <= Self.noteLimit else { return nil }
+        return OwnerAskAnswer(note: note, dismissed: true)
+    }
+
+    /// Whether the Mac takes a dismissal of this ask from the phone: one of the kinds the phone knows (a folder
+    /// suggestion, or a kind from a newer Mac, is answered on the Mac only).
+    static func isDismissable(_ ask: OwnerAsk) -> Bool {
+        ask.status == .open && OwnerAsk.Kind.knownValues.contains(ask.kind)
+    }
+
     /// Whether the Mac will take this answer: a review's verdict; every
     /// question a label from its options (one unless multi) or an Other
     /// that is not just whitespace; a note on every broken item; the note

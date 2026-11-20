@@ -124,6 +124,7 @@ enum ActionSummary {
 
     /// A review's verdict, else the first question's picks (or its "Other"); nil for a checklist.
     private static func verdict(_ answer: OwnerAskAnswer) -> String? {
+        if answer.dismissed { return AskText.dismissedLabel }
         if answer.verdict == .approved { return "Approved" }
         if answer.verdict == .changes { return "Changes requested" }
         guard let first = answer.answers.first else { return nil }

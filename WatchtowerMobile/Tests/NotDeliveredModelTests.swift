@@ -41,6 +41,7 @@ final class NotDeliveredModelTests: XCTestCase {
             workbenchID: DemoSeed.acmeID, answer: OwnerAskAnswer(answers: [.init(id: "q1", labels: ["Archive Now"])])
         ).wireParams()
         let approve = try AskAnswerParams(workbenchID: DemoSeed.acmeID, answer: OwnerAskAnswer(verdict: .approved)).wireParams()
+        let dismissal = try AskAnswerParams(workbenchID: DemoSeed.acmeID, answer: OwnerAskAnswer(dismissed: true)).wireParams()
         let done = try BoardTargetStatusParams(workbenchID: DemoSeed.acmeID, status: .done, fromStatus: .todo).wireParams()
         let comment = try BoardCommentAddParams(workbenchID: DemoSeed.acmeID, body: "Looks good").wireParams()
         let create = try BoardTargetCreateParams(
@@ -56,6 +57,7 @@ final class NotDeliveredModelTests: XCTestCase {
             (.askAnswer, "owner_ask-109", pick, "Answer “Which menu wording?” — Archive Now"),
             (.askAnswer, "owner_ask-110", approve, "Answer “Review the ask guard plan” — Approved"),
             (.askAnswer, "owner_ask-999", pick, "Answer an ask — Archive Now"),
+            (.askAnswer, "owner_ask-110", dismissal, "Answer “Review the ask guard plan” — Closed without answering"),
             (.boardTargetStatus, "workbench_target-416", done, "Move “Undo Archive Now” to Done"),
             (.boardTargetStatus, "workbench_target-999", done, "Move a task to Done"),
             (.boardCommentAdd, "workbench_target-415", comment, "Comment on “Archive Closed Targets Now”"),

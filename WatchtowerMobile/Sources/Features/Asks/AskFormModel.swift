@@ -175,6 +175,11 @@ struct AskFormModel {
     /// Under the check steps: what an unmarked step sends, and while none is
     /// marked, that Send needs one.
     let checkFooter: String
+    /// Close without answering is offered (#2114): an open ask of a kind the phone knows, too-large ones included
+    /// (a dismissal needs no payload).
+    let showsDismiss: Bool
+    /// …and would send now: no answer on its way or applied, not refused as no longer open, the note within bound.
+    let canDismiss: Bool
 
     init?(
         askID: Int64,
@@ -220,6 +225,9 @@ struct AskFormModel {
         canSendVerdict = ask.kind == .review && isEditable && withVerdict.isAnswerable(for: ask) && !Self.isNotOpen(status)
         let saidSomething = !AskDraft.trimmed(draft.note).isEmpty || draft.comments.contains { !AskDraft.trimmed($0.body).isEmpty }
         canRequestChanges = canSendVerdict && saidSomething
+        showsDismiss = AskDraft.isDismissable(ask)
+        canDismiss = showsDismiss && !isSending && applied == nil && !Self.isPending(status) && !Self.isNotOpen(status)
+            && draft.dismissal() != nil
         requestChangesHint = canSendVerdict && !saidSomething ? AskText.requestChangesNeedsWords : nil
 
         let questions = open && !clipped ? payload?.questions ?? [] : []
@@ -235,6 +243,11 @@ struct AskFormModel {
     }
 
     var footer: String { AskText.footer }
+
+    /// Close without answering's confirmation line; names the note only when one goes with it.
+    var dismissConfirmMessage: String {
+        AskText.dismissConfirmMessage(hasNote: !AskDraft.trimmed(note).isEmpty)
+    }
 
     var toneUses: [ToneUse] {
         [ToneUse(element: "ask \(askID) form header", tone: headerTone, role: .ask)]
