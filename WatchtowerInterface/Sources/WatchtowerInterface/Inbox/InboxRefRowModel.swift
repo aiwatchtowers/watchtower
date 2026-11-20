@@ -83,7 +83,7 @@ public struct InboxRefRowModel: Equatable, Sendable {
             return [.done, .snoozeHour]
         case .planItem:
             return [.check, .uncheck]
-        case .action, .unknown:
+        case .action, .mailSender, .waitingOlder, .unknown:
             return []
         }
     }
@@ -117,7 +117,7 @@ public struct InboxRefRowModel: Equatable, Sendable {
         case .reminder: ([], [.done, .snooze])
         case .idea: ([.reject], [.approve, .notNow])
         case .planItem: ([], [.check])
-        case .action, .unknown: ([], [])
+        case .action, .mailSender, .waitingOlder, .unknown: ([], [])
         }
     }
 }

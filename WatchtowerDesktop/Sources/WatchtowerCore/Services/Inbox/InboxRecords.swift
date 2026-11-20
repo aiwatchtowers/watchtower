@@ -52,7 +52,7 @@ package enum InboxRecords {
             case .inboxItem: messages.insert(fact.id)
             case .track: tracks.insert(fact.id)
             case .idea: ideas.insert(fact.id)
-            case .planItem, .unknown: break
+            case .planItem, .mailSender, .waitingOlder, .unknown: break
             }
         }
 

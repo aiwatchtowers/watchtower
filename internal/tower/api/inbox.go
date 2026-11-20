@@ -147,6 +147,80 @@ type Card struct {
 	Approval *Approval `json:"approval,omitempty"`
 	// Legacy is set on legacy cards only.
 	Legacy *LegacySection `json:"legacy,omitempty"`
+	// Section is the root list's section a root card goes in; "" on a card
+	// of any other folder (and from an older hub, which the client then
+	// places as it did before).
+	Section CardSection `json:"section,omitempty"`
+	// Mail is set on the mail-waiting built-in's card only.
+	Mail *MailFacts `json:"mail,omitempty"`
+	// People is set on the waiting-for-me built-in's card and on the
+	// Messages stand-in only.
+	People *PeopleFacts `json:"people,omitempty"`
+	// SlackToday is set on the slack-today built-in's card only.
+	SlackToday *SlackTodayFacts `json:"slack_today,omitempty"`
+}
+
+// CardSection is the root list's section a root card goes in.
+type CardSection string
+
+// The card sections.
+const (
+	// SectionNeedsYou: Waiting for me, the Messages stand-in, Mail waiting,
+	// thread briefs younger than 24 h, and root approvals and notices on a
+	// tree without Needs approval.
+	SectionNeedsYou CardSection = "needs_you"
+	// SectionToday: a Morning brief day, and Slack today whatever its stamp.
+	SectionToday CardSection = "today"
+	// SectionRunning: Track my threads and the Idea finder.
+	SectionRunning CardSection = "running"
+	// SectionDated: every other artifact. The client puts it in Today when
+	// Stamp is today in its own zone, else in Running (root) or Earlier (an
+	// owner folder).
+	SectionDated CardSection = "dated"
+)
+
+// EnumValues lists every CardSection.
+func (CardSection) EnumValues() []string { return []string{"needs_you", "today", "running", "dated"} }
+
+// MailFacts are the mail-waiting built-in's counts (MailWaitingSummary).
+type MailFacts struct {
+	Open        int `json:"open"`
+	Today       int `json:"today"`
+	Senders     int `json:"senders"`
+	TopTenShare int `json:"top_ten_share"`
+	// Stale says why the counts may be old; omitted when they are current.
+	Stale MailStale `json:"stale,omitempty"`
+}
+
+// MailStale is why the mail-waiting counts may be old. Current counts carry
+// none: the field is omitted (MailStaleNone), since an enum value cannot be
+// empty in the generated Swift.
+type MailStale string
+
+// The mail staleness values.
+const (
+	MailStaleNone          MailStale = ""
+	MailStaleStopped       MailStale = "stopped"
+	MailStaleLastRunFailed MailStale = "last_run_failed"
+)
+
+// EnumValues lists every MailStale but the omitted none.
+func (MailStale) EnumValues() []string { return []string{"stopped", "last_run_failed"} }
+
+// PeopleFacts count the people rows waiting on the owner: those from today
+// and the older ones.
+type PeopleFacts struct {
+	Today int `json:"today"`
+	Older int `json:"older"`
+}
+
+// SlackTodayFacts are the slack-today built-in's stored state.
+type SlackTodayFacts struct {
+	// Status is none (no state stored), ok or unreadable.
+	Status string `json:"status"`
+	// State is the stored state JSON when Status is ok; the Mac decodes it
+	// (SlackTodaySummary). "" otherwise.
+	State string `json:"state"`
 }
 
 // CardAutomation is the automation behind an artifact card.
@@ -207,11 +281,17 @@ const (
 	RefReminder  RefKind = "reminder"
 	RefAction    RefKind = "action"
 	RefPlanItem  RefKind = "plan_item"
+	// RefMailSender is one sender row of the mail-waiting card (RefFacts.Key
+	// is the address).
+	RefMailSender RefKind = "mail_sender"
+	// RefWaitingOlder is the waiting-for-me card's older-people row
+	// (RefFacts.Key is "people").
+	RefWaitingOlder RefKind = "waiting_older"
 )
 
 // EnumValues lists every RefKind.
 func (RefKind) EnumValues() []string {
-	return []string{"inbox_item", "track", "idea", "reminder", "action", "plan_item"}
+	return []string{"inbox_item", "track", "idea", "reminder", "action", "plan_item", "mail_sender", "waiting_older"}
 }
 
 // RefFacts is what a row's record is now.
@@ -236,6 +316,9 @@ type RefFacts struct {
 	LinkedTargetID int64  `json:"linked_target_id"`
 	IdeaKind       string `json:"idea_kind"`
 	IdeaStatus     string `json:"idea_status"`
+	// Key names a row that has no numeric id: a mail_sender's address,
+	// "people" for waiting_older; "" (omitted) on the other kinds.
+	Key string `json:"key,omitempty"`
 }
 
 // Approval is an approval card's proposal.
@@ -294,6 +377,12 @@ type Approval struct {
 	// (tools.SlackSendNeedsWorkspace): the phone offers no Approve even
 	// when its display args were clipped. Additive and optional on the wire.
 	NeedsWorkspace bool `json:"needs_workspace,omitempty"`
+	// Group is the Needs approval group the proposal is listed under
+	// (messages, tracks, targets, confluence_jira, reminders, other); ""
+	// from an older hub. Bulk: its tool may be approved in bulk
+	// (NeedsApprovalGroups.bulkTools). Additive and optional on the wire.
+	Group string `json:"group,omitempty"`
+	Bulk  bool   `json:"bulk,omitempty"`
 }
 
 // DiffKind is one diff line's kind.
@@ -379,6 +468,12 @@ type LegacyItem struct {
 	Done bool `json:"done"`
 	// Date is a Morning brief's day (yyyy-MM-dd); "" otherwise.
 	Date string `json:"date"`
+	// News and Quiet are a track's internal/tracks.HasNews and IsQuiet;
+	// false on the other kinds. Additive and optional on the wire.
+	News  bool `json:"news,omitempty"`
+	Quiet bool `json:"quiet,omitempty"`
+	// CreatedAt is an idea's creation (RFC 3339 UTC); "" otherwise.
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 // WatchRequest opens a watch (inbox.watch): the call answers ok, then the

@@ -242,6 +242,8 @@ public struct Approval: Codable, Hashable, Sendable {
     public var argsComplete: Bool?
     public var external: Bool?
     public var needsWorkspace: Bool?
+    public var group: String?
+    public var bulk: Bool?
 
     public init(
         tool: String,
@@ -264,7 +266,9 @@ public struct Approval: Codable, Hashable, Sendable {
         argsDisplay: String? = nil,
         argsComplete: Bool? = nil,
         external: Bool? = nil,
-        needsWorkspace: Bool? = nil
+        needsWorkspace: Bool? = nil,
+        group: String? = nil,
+        bulk: Bool? = nil
     ) {
         self.tool = tool
         self.title = title
@@ -287,6 +291,8 @@ public struct Approval: Codable, Hashable, Sendable {
         self.argsComplete = argsComplete
         self.external = external
         self.needsWorkspace = needsWorkspace
+        self.group = group
+        self.bulk = bulk
     }
 
     enum CodingKeys: String, CodingKey {
@@ -311,6 +317,8 @@ public struct Approval: Codable, Hashable, Sendable {
         case argsComplete = "args_complete"
         case external
         case needsWorkspace = "needs_workspace"
+        case group
+        case bulk
     }
 
     public init(from decoder: Decoder) throws {
@@ -336,6 +344,8 @@ public struct Approval: Codable, Hashable, Sendable {
         self.argsComplete = try container.decodeIfPresent(Bool.self, forKey: .argsComplete)
         self.external = try container.decodeIfPresent(Bool.self, forKey: .external)
         self.needsWorkspace = try container.decodeIfPresent(Bool.self, forKey: .needsWorkspace)
+        self.group = try container.decodeIfPresent(String.self, forKey: .group)
+        self.bulk = try container.decodeIfPresent(Bool.self, forKey: .bulk)
     }
 }
 
@@ -407,6 +417,10 @@ public struct Card: Codable, Hashable, Sendable {
     public var refFacts: [RefFacts]
     public var approval: Approval?
     public var legacy: LegacySection?
+    public var section: CardSection?
+    public var mail: MailFacts?
+    public var people: PeopleFacts?
+    public var slackToday: SlackTodayFacts?
 
     public init(
         id: String,
@@ -429,7 +443,11 @@ public struct Card: Codable, Hashable, Sendable {
         actions: [CardAction],
         refFacts: [RefFacts],
         approval: Approval? = nil,
-        legacy: LegacySection? = nil
+        legacy: LegacySection? = nil,
+        section: CardSection? = nil,
+        mail: MailFacts? = nil,
+        people: PeopleFacts? = nil,
+        slackToday: SlackTodayFacts? = nil
     ) {
         self.id = id
         self.folderID = folderID
@@ -452,6 +470,10 @@ public struct Card: Codable, Hashable, Sendable {
         self.refFacts = refFacts
         self.approval = approval
         self.legacy = legacy
+        self.section = section
+        self.mail = mail
+        self.people = people
+        self.slackToday = slackToday
     }
 
     enum CodingKeys: String, CodingKey {
@@ -476,6 +498,10 @@ public struct Card: Codable, Hashable, Sendable {
         case refFacts = "ref_facts"
         case approval
         case legacy
+        case section
+        case mail
+        case people
+        case slackToday = "slack_today"
     }
 
     public init(from decoder: Decoder) throws {
@@ -501,6 +527,10 @@ public struct Card: Codable, Hashable, Sendable {
         self.refFacts = try container.decodeIfPresent([RefFacts].self, forKey: .refFacts) ?? []
         self.approval = try container.decodeIfPresent(Approval.self, forKey: .approval)
         self.legacy = try container.decodeIfPresent(LegacySection.self, forKey: .legacy)
+        self.section = try container.decodeIfPresent(CardSection.self, forKey: .section)
+        self.mail = try container.decodeIfPresent(MailFacts.self, forKey: .mail)
+        self.people = try container.decodeIfPresent(PeopleFacts.self, forKey: .people)
+        self.slackToday = try container.decodeIfPresent(SlackTodayFacts.self, forKey: .slackToday)
     }
 }
 
@@ -595,6 +625,52 @@ public enum CardKind: Codable, Hashable, Sendable {
         case .reminder: "reminder"
         case .notice: "notice"
         case .legacy: "legacy"
+        case .unknown(let value): value
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.rawValue == rhs.rawValue
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(rawValue)
+    }
+}
+
+public enum CardSection: Codable, Hashable, Sendable {
+    case needsYou
+    case today
+    case running
+    case dated
+    /// A value this build does not know (sent by a newer Watchtower).
+    case unknown(String)
+
+    public init(rawValue: String) {
+        switch rawValue {
+        case "needs_you": self = .needsYou
+        case "today": self = .today
+        case "running": self = .running
+        case "dated": self = .dated
+        default: self = .unknown(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .needsYou: "needs_you"
+        case .today: "today"
+        case .running: "running"
+        case .dated: "dated"
         case .unknown(let value): value
         }
     }
@@ -1641,6 +1717,9 @@ public struct LegacyItem: Codable, Hashable, Sendable {
     public var stopped: Bool
     public var done: Bool
     public var date: String
+    public var news: Bool?
+    public var quiet: Bool?
+    public var createdAt: String?
 
     public init(
         refKind: RefKind,
@@ -1654,7 +1733,10 @@ public struct LegacyItem: Codable, Hashable, Sendable {
         high: Bool,
         stopped: Bool,
         done: Bool,
-        date: String
+        date: String,
+        news: Bool? = nil,
+        quiet: Bool? = nil,
+        createdAt: String? = nil
     ) {
         self.refKind = refKind
         self.id = id
@@ -1668,6 +1750,9 @@ public struct LegacyItem: Codable, Hashable, Sendable {
         self.stopped = stopped
         self.done = done
         self.date = date
+        self.news = news
+        self.quiet = quiet
+        self.createdAt = createdAt
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1683,6 +1768,9 @@ public struct LegacyItem: Codable, Hashable, Sendable {
         case stopped
         case done
         case date
+        case news
+        case quiet
+        case createdAt = "created_at"
     }
 }
 
@@ -1767,6 +1855,76 @@ public struct LegacySection: Codable, Hashable, Sendable {
     }
 }
 
+public struct MailFacts: Codable, Hashable, Sendable {
+    public var open: Int
+    public var today: Int
+    public var senders: Int
+    public var topTenShare: Int
+    public var stale: MailStale?
+
+    public init(
+        open: Int,
+        today: Int,
+        senders: Int,
+        topTenShare: Int,
+        stale: MailStale? = nil
+    ) {
+        self.open = open
+        self.today = today
+        self.senders = senders
+        self.topTenShare = topTenShare
+        self.stale = stale
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case open
+        case today
+        case senders
+        case topTenShare = "top_ten_share"
+        case stale
+    }
+}
+
+public enum MailStale: Codable, Hashable, Sendable {
+    case stopped
+    case lastRunFailed
+    /// A value this build does not know (sent by a newer Watchtower).
+    case unknown(String)
+
+    public init(rawValue: String) {
+        switch rawValue {
+        case "stopped": self = .stopped
+        case "last_run_failed": self = .lastRunFailed
+        default: self = .unknown(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .stopped: "stopped"
+        case .lastRunFailed: "last_run_failed"
+        case .unknown(let value): value
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.rawValue == rhs.rawValue
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(rawValue)
+    }
+}
+
 public struct MeetingsDeleteRequest: Codable, Hashable, Sendable {
     public var requestID: String
     public var transcriptID: Int64
@@ -1840,6 +1998,24 @@ public struct PauseResponse: Codable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case paused
+    }
+}
+
+public struct PeopleFacts: Codable, Hashable, Sendable {
+    public var today: Int
+    public var older: Int
+
+    public init(
+        today: Int,
+        older: Int
+    ) {
+        self.today = today
+        self.older = older
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case today
+        case older
     }
 }
 
@@ -1975,6 +2151,7 @@ public struct RefFacts: Codable, Hashable, Sendable {
     public var linkedTargetID: Int64
     public var ideaKind: String
     public var ideaStatus: String
+    public var key: String?
 
     public init(
         kind: RefKind,
@@ -1988,7 +2165,8 @@ public struct RefFacts: Codable, Hashable, Sendable {
         custom: Bool,
         linkedTargetID: Int64,
         ideaKind: String,
-        ideaStatus: String
+        ideaStatus: String,
+        key: String? = nil
     ) {
         self.kind = kind
         self.id = id
@@ -2002,6 +2180,7 @@ public struct RefFacts: Codable, Hashable, Sendable {
         self.linkedTargetID = linkedTargetID
         self.ideaKind = ideaKind
         self.ideaStatus = ideaStatus
+        self.key = key
     }
 
     enum CodingKeys: String, CodingKey {
@@ -2017,6 +2196,7 @@ public struct RefFacts: Codable, Hashable, Sendable {
         case linkedTargetID = "linked_target_id"
         case ideaKind = "idea_kind"
         case ideaStatus = "idea_status"
+        case key
     }
 }
 
@@ -2027,6 +2207,8 @@ public enum RefKind: Codable, Hashable, Sendable {
     case reminder
     case action
     case planItem
+    case mailSender
+    case waitingOlder
     /// A value this build does not know (sent by a newer Watchtower).
     case unknown(String)
 
@@ -2038,6 +2220,8 @@ public enum RefKind: Codable, Hashable, Sendable {
         case "reminder": self = .reminder
         case "action": self = .action
         case "plan_item": self = .planItem
+        case "mail_sender": self = .mailSender
+        case "waiting_older": self = .waitingOlder
         default: self = .unknown(rawValue)
         }
     }
@@ -2050,6 +2234,8 @@ public enum RefKind: Codable, Hashable, Sendable {
         case .reminder: "reminder"
         case .action: "action"
         case .planItem: "plan_item"
+        case .mailSender: "mail_sender"
+        case .waitingOlder: "waiting_older"
         case .unknown(let value): value
         }
     }
@@ -2325,6 +2511,24 @@ public struct ScreenIDsRequest: Codable, Hashable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.requestID = try container.decode(String.self, forKey: .requestID)
         self.iDs = try container.decodeIfPresent([Int64].self, forKey: .iDs) ?? []
+    }
+}
+
+public struct SlackTodayFacts: Codable, Hashable, Sendable {
+    public var status: String
+    public var state: String
+
+    public init(
+        status: String,
+        state: String
+    ) {
+        self.status = status
+        self.state = state
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case state
     }
 }
 
