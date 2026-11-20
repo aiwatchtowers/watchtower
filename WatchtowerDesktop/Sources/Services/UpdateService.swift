@@ -135,10 +135,11 @@ final class UpdateService {
     /// workspace created later gates the feed again. Instance property so
     /// tests can inject it.
     var companyMigrated: () -> Bool = { CompanyBridgeLaunch.workspacesMigrated() }
-    /// The company bridge run right before a migrated corp build installs a
-    /// public update (accounts signed in since the launch's run); false =
-    /// it failed and the install stops. Tests replace it.
-    var bridgeBeforeInstall: @Sendable () -> Bool = { CompanyBridgeLaunch.run() }
+    /// The company bridge run, over every workspace with a database, right
+    /// before a migrated corp build installs a public update (accounts signed
+    /// in since the launch's run); false = it failed and the install stops.
+    /// Tests replace it.
+    var bridgeBeforeInstall: @Sendable () -> Bool = { CompanyBridgeLaunch.runAll() }
 
     var channel: UpdateChannel {
         let migrated = CompanyBridgeLaunch.applies(flavor: buildFlavor) && companyMigrated()

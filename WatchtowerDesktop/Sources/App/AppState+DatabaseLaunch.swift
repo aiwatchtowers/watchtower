@@ -188,8 +188,33 @@ extension AppState {
             // The daemon's cycle generates everything itself: a launch needs
             // nothing more than a fresh daemon of the current binary.
             ensureDaemonRunning(noSync: daemonRunsWithoutSync)
+            otherWorkspacesBridge.start(dbPath: manager.dbPool.path)
         } catch {
             await handleLaunchDatabaseFailure(error)
+        }
+    }
+}
+
+/// The corp bridge of the workspaces the launch did not open (#1887 §5),
+/// started once the launch's database is open: detached and off the
+/// concurrency pool (each run may take minutes on a database with a
+/// migration backlog), so neither the splash nor the daemon waits on it.
+/// UpdateService reads the markers afresh at each check, so a later check
+/// sees them.
+@MainActor
+final class OtherWorkspacesBridge {
+    /// The bridge, given the opened workspace's name
+    /// (`CompanyBridgeLaunch.runOthers`); tests replace it.
+    var run: @Sendable (_ activeWorkspace: String) -> Void = { CompanyBridgeLaunch.runOthers(than: $0) }
+    /// The running bridge; tests await it.
+    private(set) var task: Task<Void, Never>?
+
+    /// Starts the bridge of every workspace but the one holding `dbPath`.
+    func start(dbPath: String) {
+        let active = ((dbPath as NSString).deletingLastPathComponent as NSString).lastPathComponent
+        let run = run
+        task = Task.detached {
+            await ProcessPipes.offPool { run(active) }
         }
     }
 }

@@ -590,3 +590,46 @@ func TestBridge_SlackOnOwnAppStaysUntied(t *testing.T) {
 	require.NotNil(t, e.Bundle.Slack)
 	assert.Equal(t, "T0OTHER", e.Bundle.Slack.TeamID, "the own-app row's team is not taken")
 }
+
+// TestBridge_WorkspaceFlagBridgesThatWorkspaceOnly: the app bridges every
+// workspace with a database (`company bridge --workspace <name>`), so the run
+// for an inactive one opens that workspace's database (migrating it), ties
+// its accounts and writes its marker — and leaves config.yaml's
+// active_workspace and the active workspace untouched.
+func TestBridge_WorkspaceFlagBridgesThatWorkspaceOnly(t *testing.T) {
+	active := newCorpWorkspace(t)
+	prevFlavor, prevName, prevWS := BuildFlavor, BuildCompanyName, flagWorkspace
+	t.Cleanup(func() { BuildFlavor, BuildCompanyName, flagWorkspace = prevFlavor, prevName, prevWS })
+	BuildFlavor, BuildCompanyName = "corp", corpCompany
+
+	otherDir := filepath.Join(filepath.Dir(active.ws), "other")
+	other, err := db.Open(filepath.Join(otherDir, "watchtower.db"))
+	require.NoError(t, err)
+	googleID, err := other.CreateGoogleAccount(db.GoogleAccount{Email: "b@corp.example.com"})
+	require.NoError(t, err)
+	require.NoError(t, other.Close())
+	configBefore, err := os.ReadFile(flagConfig)
+	require.NoError(t, err)
+
+	flagWorkspace = "other"
+	cmd, out := cmdWithFlags(t, companyBridgeCmd, map[string]string{"json": "true"})
+	require.NoError(t, companyBridgeCmd.RunE(cmd, nil))
+	var res companyBridgeResult
+	require.NoError(t, json.Unmarshal(out.Bytes(), &res))
+	assert.Equal(t, bridgeMigrated, res.Result)
+	assert.Contains(t, res.Tied, bridgeAccountJSON{Source: "google", ID: googleID})
+
+	assert.FileExists(t, filepath.Join(otherDir, companyMigratedMarker))
+	assert.NoFileExists(t, filepath.Join(active.ws, companyMigratedMarker), "the active workspace is not bridged")
+	configAfter, err := os.ReadFile(flagConfig)
+	require.NoError(t, err)
+	assert.Equal(t, string(configBefore), string(configAfter), "active_workspace is not rewritten")
+	assert.Empty(t, active.slugs(t), "no active-workspace account is tied")
+
+	other, err = db.Open(filepath.Join(otherDir, "watchtower.db"))
+	require.NoError(t, err)
+	defer other.Close()
+	refs, err := other.AccountsByCompany(corpSlug)
+	require.NoError(t, err)
+	assert.NotEmpty(t, refs, "the inactive workspace's accounts are tied in its own database")
+}

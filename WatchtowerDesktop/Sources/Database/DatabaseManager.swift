@@ -112,14 +112,15 @@ final class DatabaseManager: Sendable {
     }
 
     /// One launch-time CLI step (`arguments`, logged as `label`) under
-    /// `runCLIMigrations`' rules: up to 30 s, off the main actor and the
-    /// concurrency pool, stdout dropped, a failure reported with its stderr.
-    /// Returns whether the step ran and exited 0.
+    /// `runCLIMigrations`' rules: up to `timeout` seconds (30 by default), off
+    /// the main actor and the concurrency pool, stdout dropped, a failure
+    /// reported with its stderr. Returns whether the step ran and exited 0.
     @discardableResult
     static func runCLILaunchStep(
         _ arguments: [String],
         label: String,
         cliPath: String?,
+        timeout: Int = 30,
         report: @escaping @Sendable (String) -> Void
     ) -> Bool {
         guard let cliPath else {
@@ -145,7 +146,7 @@ final class DatabaseManager: Sendable {
         // C2: timeout to prevent indefinite hang on DB lock or broken CLI
         let timedOut = OSAllocatedUnfairLock(initialState: false)
         let timer = DispatchSource.makeTimerSource()
-        timer.schedule(deadline: .now() + 30)
+        timer.schedule(deadline: .now() + .seconds(timeout))
         timer.setEventHandler {
             timedOut.withLock { $0 = true }
             process.terminate()
@@ -155,7 +156,7 @@ final class DatabaseManager: Sendable {
         timer.cancel()
         let status = process.terminationStatus
         guard status != 0 else { return true }
-        let what = timedOut.withLock { $0 } ? "timed out after 30 s (exit code \(status))" : "failed with exit code \(status)"
+        let what = timedOut.withLock { $0 } ? "timed out after \(timeout) s (exit code \(status))" : "failed with exit code \(status)"
         // Off this (possibly main) thread: the drain finishes at the child's
         // EOF, which a grandchild still holding stderr could postpone.
         Task.detached {

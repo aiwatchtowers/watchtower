@@ -240,48 +240,64 @@ struct UpdateChannelTests {
         #expect(!CompanyBridgeLaunch.applies(flavor: "dev"))
         #expect(CompanyBridgeLaunch.applies(flavor: "corp"))
         var ran = false
-        CompanyBridgeLaunch.run(flavor: "", cliPath: { ran = true; return nil }()) { _ in }
-        #expect(!ran, "the public build never resolves the CLI")
+        let tracked = CompanyBridgeLaunch.launchStep(cliPath: { ran = true; return nil }()) { _ in }
+        #expect(CompanyBridgeLaunch.runActive(flavor: "", step: tracked))
+        #expect(CompanyBridgeLaunch.runAll(flavor: "dev", step: tracked))
+        #expect(!ran, "the public and dev builds never resolve the CLI")
 
-        let base = try makeWorkspaces(["alpha"])
-        defer { try? FileManager.default.removeItem(atPath: base) }
         let reports = LockedReports()
-        CompanyBridgeLaunch.run(flavor: "corp", basePath: base, cliPath: nil) { reports.append($0) }
-        #expect(reports.items == ["Company bridge (alpha) skipped: the watchtower CLI was not found"])
+        let missing = CompanyBridgeLaunch.launchStep(cliPath: nil) { reports.append($0) }
+        #expect(!CompanyBridgeLaunch.runActive(flavor: "corp", step: missing))
+        #expect(reports.items == ["Company bridge skipped: the watchtower CLI was not found"])
     }
 
-    @Test("the bridge runs once per workspace with a database; a failed one does not stop the rest")
+    @Test("the launch bridges the active workspace in 30 s, the others after it in 300 s, the install all of them")
     func bridgeRunsForEveryWorkspace() throws {
-        let base = try makeWorkspaces(["alpha", "beta"])
+        let base = try makeWorkspaces(["alpha", "beta", "gamma"])
         defer { try? FileManager.default.removeItem(atPath: base) }
         // A directory without a database is not a workspace to bridge.
         try FileManager.default.createDirectory(atPath: "\(base)/empty", withIntermediateDirectories: true)
         var calls: [[String]] = []
+        var timeouts: [Int] = []
         var alphaFails = true
-        // The fake writes the marker the way `company bridge` does on success.
-        let step: CompanyBridgeLaunch.LaunchStep = { args, _, path, _ in
-            #expect(path == "/fake/watchtower")
+        // The fake writes the marker the way `company bridge` does on success;
+        // the flag-less run is the active workspace, beta here.
+        let step: CompanyBridgeLaunch.LaunchStep = { args, _, timeout in
             calls.append(args)
-            let name = args.last ?? ""
+            timeouts.append(timeout)
+            let name = args.contains("--workspace") ? args.last ?? "" : "beta"
             if name == "alpha" && alphaFails { return false }
             FileManager.default.createFile(atPath: "\(base)/\(name)/\(CompanyBridgeLaunch.markerName)", contents: Data())
             return true
         }
 
-        #expect(!CompanyBridgeLaunch.run(flavor: "corp", basePath: base, cliPath: "/fake/watchtower", step: step))
+        // Launch: the active one inside the launch steps, untouched by the others' failure.
+        CompanyBridgeLaunch.migrateThenBridge(migrate: {}, bridge: {
+            #expect(CompanyBridgeLaunch.runActive(flavor: "corp", step: step))
+        })
+        #expect(calls == [["company", "bridge", "--json"]])
+        #expect(timeouts == [30])
+
+        // After the open: every other workspace, alpha failing.
+        calls = []
+        timeouts = []
+        #expect(!CompanyBridgeLaunch.runOthers(than: "beta", flavor: "corp", basePath: base, step: step))
         #expect(calls == [["company", "bridge", "--json", "--workspace", "alpha"],
-                          ["company", "bridge", "--json", "--workspace", "beta"]])
-        #expect(FileManager.default.fileExists(atPath: "\(base)/beta/\(CompanyBridgeLaunch.markerName)"))
+                          ["company", "bridge", "--json", "--workspace", "gamma"]])
+        #expect(timeouts == [300, 300])
+        #expect(FileManager.default.fileExists(atPath: "\(base)/gamma/\(CompanyBridgeLaunch.markerName)"))
         #expect(!CompanyBridgeLaunch.workspacesMigrated(basePath: base), "alpha's failure keeps the feed gated")
 
+        // Before an install: all of them; alpha now succeeds.
         alphaFails = false
         calls = []
-        #expect(CompanyBridgeLaunch.run(flavor: "corp", basePath: base, cliPath: "/fake/watchtower", step: step))
-        #expect(calls.count == 2, "the next run retries alpha; beta's rerun is idempotent")
+        #expect(CompanyBridgeLaunch.runAll(flavor: "corp", basePath: base, step: step))
+        #expect(calls.map { $0.last } == ["alpha", "beta", "gamma"], "every rerun is idempotent")
         #expect(CompanyBridgeLaunch.workspacesMigrated(basePath: base))
 
         calls = []
-        #expect(CompanyBridgeLaunch.run(flavor: "", basePath: base, cliPath: "/fake/watchtower", step: step))
+        #expect(CompanyBridgeLaunch.runOthers(than: "beta", flavor: "", basePath: base, step: step))
+        #expect(CompanyBridgeLaunch.runAll(flavor: "", basePath: base, step: step))
         #expect(calls.isEmpty, "the public build bridges no workspace")
     }
 
