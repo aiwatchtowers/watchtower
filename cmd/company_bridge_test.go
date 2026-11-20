@@ -577,4 +577,16 @@ func TestBridge_SlackOnOwnAppStaysUntied(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, own.CompanySlug, "an own-app row is not the company's")
 	assert.Equal(t, "3000.0003", own.ClientID, "its client id is kept")
+
+	// The other row had no client id: backfilled with the baked app, it is
+	// the oldest on that app, so its team is the bundle's and it is tied.
+	other, err := c.database.GetSlackAccount(c.ids["slack_other_team"])
+	require.NoError(t, err)
+	assert.Equal(t, corpSlackID, other.ClientID)
+	assert.Equal(t, corpSlug, other.CompanySlug)
+	e, ok, err := company.NewStore(c.ws).Get(corpSlug, "")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NotNil(t, e.Bundle.Slack)
+	assert.Equal(t, "T0OTHER", e.Bundle.Slack.TeamID, "the own-app row's team is not taken")
 }

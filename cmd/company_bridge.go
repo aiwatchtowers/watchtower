@@ -431,7 +431,10 @@ func bridgeTie(a bridgeAccount, eff companybundle.Bundle, baked corpBaked) (bool
 // and writes the company_migrated marker last. It runs at every launch of
 // the corp build and again before the app installs a public update, so
 // accounts added since are covered too. Any failure it sees undoes what this
-// run wrote (bundle, records, ties) and leaves the marker as it was; a run
+// run wrote (bundle, records, ties) and leaves the marker as it was — all
+// but the Slack client-id backfill it runs first, kept on purpose: it only
+// fills empty ids with this build's app, the value the daemon's start would
+// write anyway (A17); a run
 // killed mid-way (the app's 30 s step timeout) leaves at most a bundle or
 // records without ties, which change no account's client and which the next
 // run completes.
