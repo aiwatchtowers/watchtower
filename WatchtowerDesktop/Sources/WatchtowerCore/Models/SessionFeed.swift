@@ -1,10 +1,16 @@
 import Foundation
 import WatchtowerChatText
 
-/// `watchtower workbench session-feed --json`: the dialog of one Claude Code
-/// session, built by Go (`internal/sessionfeed`) without AI. The Desktop only
-/// decodes and shows it. An unknown `kind` decodes as-is so a newer CLI never
-/// breaks an older app; the store hides kinds it does not know.
+// `watchtower workbench session-feed --json`: the dialog of one Claude Code
+// session, built by Go (`internal/sessionfeed`) without AI. The Desktop only
+// decodes and shows it. An unknown `kind` decodes as-is so a newer CLI never
+// breaks an older app; the store hides kinds it does not know.
+//
+// The live model it shares with the phone (`SessionFeedSubagent`,
+// `SessionFeedLive`, `SessionFeedActivity`) lives in `WatchtowerChatText`.
+
+/// The Mac-only half of `SessionFeedSubagent`: its status read off this
+/// feed's entries.
 extension SessionFeedSubagent {
     /// The status of `subagent` in `entries`, the store's subagent list
     /// (`SessionFeedStore.subagents`, which a read updates in place); the copy

@@ -4,21 +4,14 @@ import WatchtowerChatText
 
 /// The Mac-only half of the live presentation (`WorkchatLivePresentation+Session`):
 /// busy from the session state, Done and a subagent's status from the feed's
-/// entries. The shared half is tested in `WatchtowerChatText`.
+/// entries — the tests of the shared classes that need Core types. The
+/// FEED-03 guard `WorkchatLivePresentationTests` stays whole beside it.
 final class WorkchatLiveSessionTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
     private let t0 = Date(timeIntervalSince1970: 1_800_000_000)
 
-    private func snapshot(
-        current: SessionLiveAction? = nil,
-        agents: [SessionLiveAgent] = [],
-        state: String = "known"
-    ) -> SessionFeedLive {
-        SessionFeedLive(observedAt: now, turnAt: now - 60, current: current, agents: agents, agentsState: state)
-    }
-
-    private func runningAgent(_ id: String) -> SessionLiveAgent {
-        SessionLiveAgent(ref: SessionFeedSubagent(toolUseID: id, status: "running"), startedAt: now - 10)
+    private func snapshot(agents: [SessionLiveAgent] = []) -> SessionFeedLive {
+        SessionFeedLive(observedAt: now, turnAt: now - 60, agents: agents, agentsState: "known")
     }
 
     private func running(_ id: String) -> SessionLiveAgent {
@@ -47,20 +40,6 @@ final class WorkchatLiveSessionTests: XCTestCase {
     }
 
     private var nineDone: [SessionFeedSubagent] { (1...9).map { finished("d\($0)") } }
-
-    /// An approval prompt hides the step and its timer, never the 👥 count.
-    func testApprovalPromptKeepsTheRunningCount() throws {
-        let busy = WorkchatLivePresentation.busy(SessionSwitcherPresentation.State(kind: .needsApproval, live: true))
-        let action = SessionLiveAction(tool: "Bash", summary: "go test", startedAt: now - 3)
-        let live = snapshot(current: action, agents: [runningAgent("bg1"), runningAgent("bg2")])
-        let result = try XCTUnwrap(WorkchatLivePresentation.row(snapshot: live, error: nil, loaded: true, working: busy,
-                                                                stateAt: now - 5, now: now, activityHidden: true))
-        XCTAssertEqual(result.agentsBadge, "2"); XCTAssertEqual(result.agentsSymbol, "person.2"); XCTAssertTrue(result.agentsEnabled)
-        XCTAssertFalse(result.activity); XCTAssertNil(result.elapsed); XCTAssertFalse(result.pulse)
-        let none = try XCTUnwrap(WorkchatLivePresentation.row(snapshot: snapshot(), error: nil, loaded: true, working: busy,
-                                                              stateAt: nil, now: now, activityHidden: true))
-        XCTAssertNil(none.agentsBadge, "no agents and no Done: the row keeps its slot, no button")
-    }
 
     /// The open subagent's status comes from the feed's current markers,
     /// not the copy pushed onto the path: finished there → no line.
