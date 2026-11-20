@@ -145,6 +145,17 @@ never a zero count. A failed hint has `live_ok:false` and a short generic `live_
 feed must not silently preserve a previous action as current. Older CLI payloads decode and display
 `Activity unavailable` with Retry.
 
+`session-feed --json` also prints `paths` (2026-11-20, #2112): every file and directory the call read
+for its output, absolute, in first-read order and without repeats, also when the live hint failed —
+`Feed.Paths` (each transcript parsed; each Claude conversation's `subagents/` directory and
+`agent-*.meta.json` sidecars, earlier conversations' included since their markers stay listed; each
+Codex rollout and child rollout read for the `subagents` list, before the cursor too), then
+`Live.Paths()` (the live transcript, its `subagents/` directory and sidecars, each subagent transcript
+or child rollout whose tail it read). A `--subagent` read lists its transcript first, then what
+`FindSubagentReads` and the drill-in's snapshot read. Sidecars are listed as files because a
+directory watch misses writes in place. The Desktop's Workchat watches these instead of polling (spec
+`2026-11-20-phone-workchat-live-design.md` §8), so a file read but not listed would never refresh it.
+
 The reader bounds the main tail to 4 MiB and returns at most 32 agent records, active first; omitted
 active records are counted in `agents_more`. Each child hint reads at most 256 KiB, without nested
 snapshot recursion. Claude tools pair by tool-use id, with subagent status from sidecar metadata;

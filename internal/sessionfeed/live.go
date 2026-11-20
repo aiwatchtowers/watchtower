@@ -38,7 +38,21 @@ type Live struct {
 	Steps           []LiveAction `json:"steps"`
 	StepsMore       int          `json:"steps_more"`
 	inspectedAgents int
+	paths           []string // files and directories this snapshot read, in read order
 }
+
+// Paths lists every file and directory the snapshot read, in read order:
+// the transcript, the session's subagents directory when it exists and each
+// agent-*.meta.json examined (Claude), and each subagent transcript or Codex
+// child rollout whose tail was read. A watcher of these sees every change
+// the next snapshot would reflect; a new sidecar shows as a directory event.
+func (l *Live) Paths() []string {
+	if l == nil {
+		return nil
+	}
+	return append([]string(nil), l.paths...)
+}
+
 type LiveAction struct {
 	ID          string    `json:"id"`
 	Tool        string    `json:"tool"`
@@ -81,7 +95,8 @@ func LiveOf(c Conversation, sidechain bool, now time.Time) (*Live, error) {
 	if err != nil {
 		return nil, err
 	}
-	live := &Live{ObservedAt: now.UTC(), Conversation: c.AgentSessionID, TurnActive: true, Agents: []LiveAgent{}, AgentsState: "known", Steps: []LiveAction{}}
+	live := &Live{ObservedAt: now.UTC(), Conversation: c.AgentSessionID, TurnActive: true, Agents: []LiveAgent{}, AgentsState: "known", Steps: []LiveAction{},
+		paths: []string{c.Path}}
 	r := liveReader{live: live, agents: map[string]*LiveAgent{}, codex: c.Codex, sidechain: sidechain, path: c.Path}
 	if cut {
 		live.AgentsState = "unknown"
@@ -233,10 +248,11 @@ func (r *liveReader) claudeLine(line []byte) {
 
 func (r *liveReader) claudeAgents() {
 	sessionDir := r.claudeSessionDir()
-	metas, err := readLiveMetas(sessionDir)
+	metas, read, err := readLiveMetas(sessionDir)
 	if err != nil {
 		r.live.AgentsState = "unknown"
 	}
+	r.live.paths = append(r.live.paths, read...)
 	for id, m := range metas {
 		a := r.agents[id]
 		if r.sidechain && a == nil {
@@ -477,7 +493,9 @@ func (r *liveReader) codexToolResult(a LiveAction, raw json.RawMessage, at time.
 }
 func (r *liveReader) agentPath(ref SubagentRef) (string, bool) {
 	if r.codex {
-		return codexChildPath(r.path, r.live.Conversation, ref.AgentID)
+		path, ok, examined := codexChildPath(r.path, r.live.Conversation, ref.AgentID)
+		r.live.paths = append(r.live.paths, examined...)
+		return path, ok
 	}
 	if ref.AgentID == "" || strings.ContainsAny(ref.AgentID, "/\\.") {
 		return "", false
@@ -493,35 +511,39 @@ func (r *liveReader) agentPath(ref SubagentRef) (string, bool) {
 // A child is discovered only under the rollout's sessions root, by UUID,
 // and must declare this exact parent in session_meta. A transcript-provided
 // path is never accepted. Symlinked files and escaped directories are refused.
-func codexChildPath(parentPath, parentID, childID string) (string, bool) {
+// examined lists every candidate whose metadata was read, the accepted one
+// and the rejected ones alike: a candidate whose first line is still
+// incomplete may qualify once it is written, and only a watch on it sees that.
+func codexChildPath(parentPath, parentID, childID string) (path string, ok bool, examined []string) {
 	if !codexIDRe.MatchString(childID) {
-		return "", false
+		return "", false, nil
 	}
 	root := filepath.Dir(parentPath)
 	for range 3 {
 		root = filepath.Dir(root)
 	}
 	if filepath.Base(root) != "sessions" {
-		return "", false
+		return "", false, nil
 	}
 	matches, _ := filepath.Glob(filepath.Join(root, "*", "*", "*", "rollout-*-"+childID+".jsonl"))
 	resolvedRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return "", false
+		return "", false, nil
 	}
-	for _, path := range matches {
-		st, e := os.Lstat(path)
+	for _, cand := range matches {
+		st, e := os.Lstat(cand)
 		if e != nil || !st.Mode().IsRegular() {
 			continue
 		}
-		resolved, e := filepath.EvalSymlinks(path)
+		resolved, e := filepath.EvalSymlinks(cand)
 		if e != nil || !strings.HasPrefix(resolved, resolvedRoot+string(filepath.Separator)) {
 			continue
 		}
-		f, _, e := rollout.Open(path)
+		f, _, e := rollout.Open(cand)
 		if e != nil {
 			continue
 		}
+		examined = append(examined, cand)
 		// Metadata is first; read only a small fixed prefix, never arbitrary
 		// file data (of a compressed child, only its first decompressed bytes).
 		buf := make([]byte, 64<<10)
@@ -532,10 +554,10 @@ func codexChildPath(parentPath, parentID, childID string) (string, bool) {
 			continue
 		}
 		if id, parent, ok := CodexChildMeta(first); ok && id == childID && parent == parentID {
-			return path, true
+			return cand, true, examined
 		}
 	}
-	return "", false
+	return "", false, examined
 }
 
 // CodexChildMeta reads a rollout's first line: the thread id of its
@@ -717,6 +739,7 @@ func (r *liveReader) reconcileAgents() {
 		// A Claude child's open call changes no status or order, so only the
 		// visible rows pay for reading their transcript tails.
 		if path, ok := claudePaths[id]; ok {
+			r.live.paths = append(r.live.paths, path)
 			if activity, err := ActivityOf(path, false, true); err == nil && activity != nil {
 				a.Action = &LiveAction{Tool: activity.Tool, Summary: activity.Summary, StartedAt: activity.StartedAt}
 			}
@@ -727,22 +750,25 @@ func (r *liveReader) reconcileAgents() {
 
 // Metadata absence is a known empty set; unreadability/malformed files are
 // not. Limit every sidecar read and the number examined during a live poll.
-func readLiveMetas(sessionDir string) (map[string]subagentMeta, error) {
+// read lists the subagents directory, when it exists, and each meta file
+// examined.
+func readLiveMetas(sessionDir string) (metas map[string]subagentMeta, read []string, err error) {
 	dir := filepath.Join(sessionDir, "subagents")
 	out := map[string]subagentMeta{}
 	st, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return out, nil
+		return out, nil, nil
 	}
 	if err != nil {
-		return out, err
+		return out, nil, err
 	}
 	if !st.IsDir() {
-		return out, fmt.Errorf("subagent metadata is not a directory")
+		return out, nil, fmt.Errorf("subagent metadata is not a directory")
 	}
+	read = []string{dir}
 	files, err := os.ReadDir(dir)
 	if err != nil {
-		return out, err
+		return out, read, err
 	}
 	var firstErr error
 	examined := 0
@@ -757,6 +783,7 @@ func readLiveMetas(sessionDir string) (map[string]subagentMeta, error) {
 		}
 		examined++
 		path := filepath.Join(dir, name)
+		read = append(read, path)
 		st, e := os.Lstat(path)
 		if e != nil || !st.Mode().IsRegular() || st.Size() > 64<<10 {
 			firstErr = fmt.Errorf("subagent metadata unavailable")
@@ -785,7 +812,7 @@ func readLiveMetas(sessionDir string) (map[string]subagentMeta, error) {
 		m.agentID = strings.TrimSuffix(strings.TrimPrefix(name, "agent-"), ".meta.json")
 		out[m.ToolUseID] = m
 	}
-	return out, firstErr
+	return out, read, firstErr
 }
 
 // Claude stores every descendant beside its parent in the root session's
