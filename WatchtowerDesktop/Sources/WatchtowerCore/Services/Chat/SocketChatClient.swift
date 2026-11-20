@@ -624,10 +624,11 @@ extension SocketChatClient {
 /// does), and blocking writes bounded by a deadline. The reader thread alone closes the descriptor, after its last
 /// read and under the lock the writes take, so no number is ever used after it may have been reused.
 ///
-/// The descriptor stays blocking (the reader thread's plain `read` relies on it); a write is bounded by
-/// `SO_SNDTIMEO`, set to what is left of the deadline before every `write`. On a blocking stream socket `POLLOUT`
-/// only says some space is free, so without the timeout a line larger than the free send buffer would block until
-/// the peer read all of it — forever when the engine stopped reading, with the actor and this lock held.
+/// The descriptor is non-blocking, so every wait is a `poll`: a write takes only what fits and the loop waits for
+/// room under one deadline for the whole line, and the reader polls for input when a read finds none. On a blocking
+/// stream socket `POLLOUT` only says some space is free, so a `write` of a line larger than that would block until
+/// the peer read all of it — forever when the engine stopped reading, with the actor and this lock held. (Darwin
+/// does not honour `MSG_DONTWAIT` on such a send, and `SO_SNDTIMEO` restarts on every bit of progress.)
 final class SocketLine: @unchecked Sendable {
     /// A write the peer does not take within this long fails (a socket whose peer stopped reading).
     static let writeBound: Double = 5
@@ -655,7 +656,7 @@ final class SocketLine: @unchecked Sendable {
                 Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard result == 0 else {
+        guard result == 0, fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) == 0 else {
             Darwin.close(fd)
             throw ChatSocketDropped()
         }
@@ -672,6 +673,12 @@ final class SocketLine: @unchecked Sendable {
         while true {
             let n = Darwin.read(fd, &chunk, chunk.count)
             if n < 0, errno == EINTR { continue }
+            if n < 0, errno == EAGAIN {
+                // Nothing yet: wait for input, the peer's end or `shutdown` (each makes the next read return).
+                var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+                _ = poll(&pfd, 1, -1)
+                continue
+            }
             guard n > 0 else { break }
             buffer.append(contentsOf: chunk[0..<n])
             var start = buffer.startIndex
@@ -705,18 +712,13 @@ final class SocketLine: @unchecked Sendable {
             let ready = poll(&pfd, 1, Int32(max(1, left * 1000)))
             if ready < 0, errno == EINTR { continue }
             guard ready > 0, pfd.revents & Int16(POLLOUT) != 0 else { return false }
-            // A blocking write waits for the whole rest; the send timeout cuts it at the deadline (a partial count,
-            // or EAGAIN when nothing more went), and the loop then fails on the passed deadline.
-            let rest = max(deadline.timeIntervalSinceNow, 0.001)
-            var timeout = timeval(tv_sec: Int(rest), tv_usec: Int32((rest - rest.rounded(.down)) * 1_000_000))
-            guard setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0 else {
-                return false
-            }
+            // Never blocks: takes what fits now (a partial count) or nothing (EAGAIN), and the loop polls again
+            // until the deadline. A peer gone gives EPIPE (SO_NOSIGPIPE keeps the signal away) and fails the line.
             let n = data.withUnsafeBytes { raw -> Int in
                 guard let base = raw.baseAddress else { return 0 }
                 return Darwin.write(fd, base + sent, raw.count - sent)
             }
-            if n < 0, errno == EINTR || errno == EAGAIN { continue }
+            if n < 0, errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
             guard n > 0 else { return false }
             sent += n
         }

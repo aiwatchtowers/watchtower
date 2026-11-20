@@ -714,7 +714,33 @@ final class SocketLineWriteBoundTests: XCTestCase {
     func testLineLargerThanTheSendBufferFailsWithinTheBound() async throws {
         let line = try SocketLine(path: path)
         XCTAssertTrue(line.write(Data("{\"id\":\"m1\"}\n".utf8), bound: 0.2), "a small line fits the buffer")
+        await assertBigLineFailsWithinTheBound(line)
+    }
 
+    /// A peer that keeps taking a few bytes at a time makes progress on every wait, yet the line as a whole must
+    /// still fail at its deadline.
+    func testSlowlyDrainingPeerStillFailsWithinTheBound() async throws {
+        let line = try SocketLine(path: path)
+        let listener = listener
+        let drained = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            let peer = accept(listener, nil, nil)
+            defer { drained.signal() }
+            guard peer >= 0 else { return }
+            var recvTimeout = timeval(tv_sec: 0, tv_usec: 100_000)
+            setsockopt(peer, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, socklen_t(MemoryLayout<timeval>.size))
+            var chunk = [UInt8](repeating: 0, count: 64)
+            // Bounded: the peer stops on its own even if the line is never closed, so no wait can hang the test.
+            let stop = Date().addingTimeInterval(2)
+            while Date() < stop, Darwin.read(peer, &chunk, chunk.count) > 0 { usleep(500) }
+            close(peer)
+        }
+        await assertBigLineFailsWithinTheBound(line)
+        XCTAssertEqual(drained.wait(timeout: .now() + 5), .success, "the draining peer stops")
+    }
+
+    /// A 4 MiB line with a 0.2 s bound returns false; then the line is shut down and its reader has closed it.
+    private func assertBigLineFailsWithinTheBound(_ line: SocketLine) async {
         let big = Data(repeating: UInt8(ascii: "x"), count: 4 << 20)
         let done = expectation(description: "the write returns")
         let result = LockedBox<(returned: Bool, ok: Bool)>((false, true))
@@ -724,8 +750,8 @@ final class SocketLineWriteBoundTests: XCTestCase {
         }
         await fulfillment(of: [done], timeout: 3)
         let outcome = result.get()
-        XCTAssertTrue(outcome.returned, "a line the peer never takes must not block past its bound")
-        XCTAssertFalse(outcome.ok, "a line the peer never takes fails")
+        XCTAssertTrue(outcome.returned, "a line the peer does not take in time must not block past its bound")
+        XCTAssertFalse(outcome.ok, "a line the peer does not take in time fails")
         // A write still blocked holds the line's lock, so only a returned one lets the line shut down and close.
         guard outcome.returned else { return }
         line.shutdown()
