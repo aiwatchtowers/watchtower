@@ -280,9 +280,10 @@ Collections:
   (`new|still_open|regressed|fixed|not_refound`) — written by runs;
   `status` (`open|in_progress|fixed|accepted|false_positive`) and `note` — written by
   the owner from the page, never by a run (a new finding is created with `status: open`
-  once); `match` (`exact|owner_confirmed`), `aliases` (earlier fingerprints) and `candidate` (a pending model match) —
-  written by runs, except that **Same issue** / **Different issue** (§6.1 step 6) is the
-  owner's.
+  once); `candidate` (a pending model match) — written by runs; `match`
+  (`exact|owner_confirmed`) and `aliases` (earlier fingerprints) — set by a run only when
+  it creates a row, afterwards changed only by the owner's **Same issue** / **Different
+  issue** (§6.1 step 6), which also clear `candidate`.
 
 Page (sketch):
 
