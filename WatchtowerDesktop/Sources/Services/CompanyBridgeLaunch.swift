@@ -7,10 +7,11 @@ import WatchtowerCore
 /// record, ties the ones the bundle covers and writes
 /// `<workspace>/company_migrated` last. It runs at launch (after the
 /// migration, before the daemon starts) and again right before a public
-/// update is installed, so an account signed in since the launch is covered.
-/// Only once every workspace carries the marker does UpdateService let the
-/// flavored build take the public feed. Go owns every write; a failure is
-/// logged and retried at the next run.
+/// update is installed, so an account signed in since the launch is covered —
+/// each time once per workspace with a database (`--workspace`), since an
+/// update replaces the app for all of them. Only once every workspace carries
+/// the marker does UpdateService let the flavored build take the public feed.
+/// Go owns every write; a failure is logged and retried at the next run.
 enum CompanyBridgeLaunch {
     /// The marker `company bridge` writes into the workspace once it is done.
     nonisolated static let markerName = "company_migrated"
@@ -40,24 +41,40 @@ enum CompanyBridgeLaunch {
         bridge()
     }
 
-    /// Runs the bridge on a corp build; blocks for up to 30 s, so call it
-    /// off the main actor and off the concurrency pool. True when the build
-    /// does not bridge or the bridge succeeded.
+    /// `DatabaseManager.runCLILaunchStep`'s shape: arguments, label, CLI
+    /// path, report; true when the step exited 0.
+    typealias LaunchStep = (_ arguments: [String], _ label: String, _ cliPath: String?,
+                            _ report: @escaping @Sendable (String) -> Void) -> Bool
+
+    /// Runs the bridge on a corp build, once for every workspace under
+    /// `basePath` with a database, through `step` (the launch step runner;
+    /// tests replace it). Each run blocks for up to 30 s, so call it off the
+    /// main actor and off the concurrency pool. A workspace that fails does not
+    /// stop the others; its marker stays missing and the next run retries it.
+    /// True when the build does not bridge or every run succeeded.
     @discardableResult
     nonisolated static func run(
         flavor: String = bundleFlavor,
+        basePath: String = Constants.databasePath,
         cliPath: @autoclosure () -> String? = Constants.findCLIPath(),
-        report: @escaping @Sendable (String) -> Void = { NSLog("[Watchtower] %@", $0) }
+        report: @escaping @Sendable (String) -> Void = { NSLog("[Watchtower] %@", $0) },
+        step: LaunchStep = { DatabaseManager.runCLILaunchStep($0, label: $1, cliPath: $2, report: $3) }
     ) -> Bool {
         guard applies(flavor: flavor) else { return true }
-        return DatabaseManager.runCLILaunchStep(
-            ["company", "bridge", "--json"], label: "Company bridge", cliPath: cliPath(), report: report
-        )
+        let path = cliPath()
+        var allBridged = true
+        for name in Constants.workspacesWithDatabase(under: basePath) {
+            // `--workspace` only picks the database for this run; the CLI
+            // never writes it back as the active workspace.
+            let bridged = step(["company", "bridge", "--json", "--workspace", name],
+                               "Company bridge (\(name))", path, report)
+            allBridged = allBridged && bridged
+        }
+        return allBridged
     }
 
     /// Whether every workspace with a database carries the marker: an update
-    /// replaces the app for all of them, and the bridge only ever runs on the
-    /// active one. No workspace at all is not migrated.
+    /// replaces the app for all of them. No workspace at all is not migrated.
     nonisolated static func workspacesMigrated(basePath: String = Constants.databasePath) -> Bool {
         let workspaces = Constants.workspacesWithDatabase(under: basePath)
         return !workspaces.isEmpty && workspaces.allSatisfy { name in

@@ -235,7 +235,7 @@ struct UpdateChannelTests {
     }
 
     @Test("the bridge runs only on a flavored build other than dev")
-    func bridgeAppliesToCorpOnly() {
+    func bridgeAppliesToCorpOnly() throws {
         #expect(!CompanyBridgeLaunch.applies(flavor: ""))
         #expect(!CompanyBridgeLaunch.applies(flavor: "dev"))
         #expect(CompanyBridgeLaunch.applies(flavor: "corp"))
@@ -243,20 +243,64 @@ struct UpdateChannelTests {
         CompanyBridgeLaunch.run(flavor: "", cliPath: { ran = true; return nil }()) { _ in }
         #expect(!ran, "the public build never resolves the CLI")
 
+        let base = try makeWorkspaces(["alpha"])
+        defer { try? FileManager.default.removeItem(atPath: base) }
         let reports = LockedReports()
-        CompanyBridgeLaunch.run(flavor: "corp", cliPath: nil) { reports.append($0) }
-        #expect(reports.items == ["Company bridge skipped: the watchtower CLI was not found"])
+        CompanyBridgeLaunch.run(flavor: "corp", basePath: base, cliPath: nil) { reports.append($0) }
+        #expect(reports.items == ["Company bridge (alpha) skipped: the watchtower CLI was not found"])
+    }
+
+    @Test("the bridge runs once per workspace with a database; a failed one does not stop the rest")
+    func bridgeRunsForEveryWorkspace() throws {
+        let base = try makeWorkspaces(["alpha", "beta"])
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        // A directory without a database is not a workspace to bridge.
+        try FileManager.default.createDirectory(atPath: "\(base)/empty", withIntermediateDirectories: true)
+        var calls: [[String]] = []
+        var alphaFails = true
+        // The fake writes the marker the way `company bridge` does on success.
+        let step: CompanyBridgeLaunch.LaunchStep = { args, _, path, _ in
+            #expect(path == "/fake/watchtower")
+            calls.append(args)
+            let name = args.last ?? ""
+            if name == "alpha" && alphaFails { return false }
+            FileManager.default.createFile(atPath: "\(base)/\(name)/\(CompanyBridgeLaunch.markerName)", contents: Data())
+            return true
+        }
+
+        #expect(!CompanyBridgeLaunch.run(flavor: "corp", basePath: base, cliPath: "/fake/watchtower", step: step))
+        #expect(calls == [["company", "bridge", "--json", "--workspace", "alpha"],
+                          ["company", "bridge", "--json", "--workspace", "beta"]])
+        #expect(FileManager.default.fileExists(atPath: "\(base)/beta/\(CompanyBridgeLaunch.markerName)"))
+        #expect(!CompanyBridgeLaunch.workspacesMigrated(basePath: base), "alpha's failure keeps the feed gated")
+
+        alphaFails = false
+        calls = []
+        #expect(CompanyBridgeLaunch.run(flavor: "corp", basePath: base, cliPath: "/fake/watchtower", step: step))
+        #expect(calls.count == 2, "the next run retries alpha; beta's rerun is idempotent")
+        #expect(CompanyBridgeLaunch.workspacesMigrated(basePath: base))
+
+        calls = []
+        #expect(CompanyBridgeLaunch.run(flavor: "", basePath: base, cliPath: "/fake/watchtower", step: step))
+        #expect(calls.isEmpty, "the public build bridges no workspace")
+    }
+
+    /// A temporary data root holding `names`, each with a `watchtower.db`.
+    private func makeWorkspaces(_ names: [String]) throws -> String {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("wt-bridge-\(UUID().uuidString)").path
+        for name in names {
+            try FileManager.default.createDirectory(atPath: "\(base)/\(name)", withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: "\(base)/\(name)/watchtower.db", contents: Data())
+        }
+        return base
     }
 
     @Test("migrated means every workspace with a database carries the marker")
     func everyWorkspaceMigrated() throws {
-        let base = FileManager.default.temporaryDirectory.appendingPathComponent("wt-bridge-\(UUID().uuidString)").path
+        let empty = FileManager.default.temporaryDirectory.appendingPathComponent("wt-bridge-\(UUID().uuidString)").path
+        #expect(!CompanyBridgeLaunch.workspacesMigrated(basePath: empty), "no workspace is not migrated")
+        let base = try makeWorkspaces(["alpha", "beta"])
         defer { try? FileManager.default.removeItem(atPath: base) }
-        #expect(!CompanyBridgeLaunch.workspacesMigrated(basePath: base), "no workspace is not migrated")
-        for name in ["alpha", "beta"] {
-            try FileManager.default.createDirectory(atPath: "\(base)/\(name)", withIntermediateDirectories: true)
-            FileManager.default.createFile(atPath: "\(base)/\(name)/watchtower.db", contents: Data())
-        }
         FileManager.default.createFile(atPath: "\(base)/alpha/\(CompanyBridgeLaunch.markerName)", contents: Data())
         #expect(!CompanyBridgeLaunch.workspacesMigrated(basePath: base))
         FileManager.default.createFile(atPath: "\(base)/beta/\(CompanyBridgeLaunch.markerName)", contents: Data())
