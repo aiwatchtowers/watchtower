@@ -36,27 +36,11 @@ struct WorkchatAgents: Equatable {
         case automatic, open, closed
     }
 
-    /// What `ReplicaFreshness` reads, kept so the sheet's clock re-judges the tower each tick without a redraw from
-    /// the parent.
-    struct Tower: Equatable {
-        var heartbeat: HeartbeatPayload?
-        var linked = false
-        var relayUnansweredSince: Date?
-
-        /// When the tower stopped sending, or nil while it sends (spec §4, C4): its last publish once
-        /// `ReplicaFreshness` says stale or offline; a kind stuck alone does not age the live block.
-        func staleSince(at now: Date) -> Date? {
-            let freshness = ReplicaFreshness(heartbeat: heartbeat, linked: linked, relayUnansweredSince: relayUnansweredSince, now: now)
-            guard let freshness, freshness.state != .stuck else { return nil }
-            return heartbeat.map { $0.lastPublishAt ?? $0.updatedAt } ?? .distantPast
-        }
-    }
-
     /// The live block as the shared presentation reads it on the phone.
     private struct Live: Equatable {
         var snapshot: SessionFeedLive?
         var error: String?
-        var tower: Tower
+        var tower: TowerFreshness
         var sessionWorking: Bool
         var done: [SessionFeedSubagent]
 
@@ -64,8 +48,7 @@ struct WorkchatAgents: Equatable {
         /// stopped, so the presentation's own staleness rule applies; never the hub's read time.
         func snapshot(at now: Date) -> SessionFeedLive? {
             var result = snapshot
-            let staleSince = tower.staleSince(at: now)
-            result?.observedAt = staleSince.map { min($0, now.addingTimeInterval(-WorkchatLivePresentation.staleAfter)) } ?? now
+            result?.observedAt = tower.staleSince(at: now) ?? now
             return result
         }
     }
@@ -88,7 +71,7 @@ struct WorkchatAgents: Equatable {
         live: SessionFeedLive? = nil,
         liveError: String? = nil,
         sessionWorking: Bool = false,
-        tower: Tower = Tower(),
+        tower: TowerFreshness = TowerFreshness(),
         now: Date = .distantPast
     ) {
         let finishedLive = Set((live?.agents ?? []).filter { $0.ref.status == "finished" }.map(\.id))

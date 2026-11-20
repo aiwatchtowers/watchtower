@@ -101,7 +101,7 @@ struct WorkchatModel: Equatable {
         permission: PermissionCardModel?,
         mac: MacReachability,
         now: Date,
-        relay: (linked: Bool, unansweredSince: Date?) = (false, nil),
+        tower: TowerFreshness = TowerFreshness(),
         sentRequestID: Int64? = nil,
         finishDelivery: SessionInputDelivery? = nil
     ) {
@@ -115,8 +115,8 @@ struct WorkchatModel: Equatable {
         entries = WorkchatAgents.dialog(chat?.entries ?? [])
         agents = WorkchatAgents(
             entries: chat?.entries ?? [], sessionID: session.id, live: chat?.activityLive, liveError: chat?.liveError,
-            sessionWorking: session.live && [.working, .needsApproval].contains(session.stateKind),
-            tower: .init(heartbeat: snapshot.heartbeat, linked: relay.linked, relayUnansweredSince: relay.unansweredSince), now: now
+            sessionWorking: WorkchatLiveLine.working(session),
+            tower: tower, now: now
         )
         let asks = snapshot.asks
             .filter { $0.status == .open && $0.sessionID == session.id }

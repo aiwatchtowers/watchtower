@@ -109,14 +109,14 @@ final class WorkchatAgentsTests: XCTestCase {
         live: SessionFeedLive?,
         error: String? = nil,
         working: Bool = true,
-        tower: WorkchatAgents.Tower = WorkchatAgents.Tower()
+        tower: TowerFreshness = TowerFreshness()
     ) -> WorkchatAgents {
         WorkchatAgents(entries: entries, sessionID: 3, live: live, liveError: error, sessionWorking: working, tower: tower, now: now)
     }
 
     /// A linked tower whose last heartbeat and publish were at `at`.
-    private func tower(heartbeatAt at: Date) -> WorkchatAgents.Tower {
-        WorkchatAgents.Tower(
+    private func tower(heartbeatAt at: Date) -> TowerFreshness {
+        TowerFreshness(
             heartbeat: HeartbeatPayload(
                 updatedAt: at, appVersion: "1.0", hubID: "hub", macName: "Acme Mac", flavor: .default,
                 lastPublishAt: at, lastRelayAt: at, relayBacklog: 0, accounts: [],

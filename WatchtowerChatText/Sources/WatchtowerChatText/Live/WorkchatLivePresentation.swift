@@ -174,7 +174,7 @@ public enum WorkchatLivePresentation {
         if error != nil || stale || (loaded && (snapshot == nil || snapshot?.observedAt == nil)) {
             let text: String
             if stale, let at = snapshot?.observedAt {
-                text = "Activity out of date · \(max(0, Int(now.timeIntervalSince(at))))s ago"
+                text = outOfDate(age: now.timeIntervalSince(at))
             } else { text = unavailable }
             return Row(symbol: stale ? "clock" : "exclamationmark.circle", text: text, elapsed: nil,
                        agentsBadge: "?", warning: true, pulse: false, retry: true, agentsEnabled: false)
@@ -278,6 +278,22 @@ public enum WorkchatLivePresentation {
             }
         }
         return ordered.map(\.element)
+    }
+
+    /// "Activity out of date · 40m ago": the snapshot's age in its largest unit (s, m, h, d), whole and floored.
+    public static func outOfDate(age: TimeInterval) -> String {
+        "Activity out of date · \(compactAge(age)) ago"
+    }
+
+    /// "42s", "40m", "3h", "2d".
+    public static func compactAge(_ age: TimeInterval) -> String {
+        let seconds = max(0, Int(age))
+        switch seconds {
+        case ..<60: return "\(seconds)s"
+        case ..<3_600: return "\(seconds / 60)m"
+        case ..<86_400: return "\(seconds / 3_600)h"
+        default: return "\(seconds / 86_400)d"
+        }
     }
 
     public static func elapsed(from start: Date?, now: Date) -> String? {
