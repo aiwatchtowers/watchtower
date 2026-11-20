@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"strconv"
+	"sync"
 	"time"
 
 	"watchtower/internal/db"
@@ -80,11 +82,29 @@ func readChat(ctx context.Context, convs []sessionfeed.Conversation, lookup sess
 	return out, nil
 }
 
+// liveInFlight is the conversations (path, sidechain) whose snapshot is
+// still running, the stalled ones a pass gave up on included: one snapshot
+// per conversation at most, so a stuck file system never piles up readers.
+var liveInFlight = struct {
+	sync.Mutex
+	m map[string]bool
+}{m: map[string]bool{}}
+
 // boundedLiveOf is liveOf given up after liveReadTimeout or when ctx ends
-// (the snapshot itself runs on, and its result is dropped).
+// (the snapshot itself runs on, and its result is dropped). While a snapshot
+// of the same conversation still runs, it starts none and returns
+// errLiveTimedOut at once.
 func boundedLiveOf(ctx context.Context) func(sessionfeed.Conversation, bool, time.Time) (*sessionfeed.Live, error) {
 	read := liveOf
 	return func(c sessionfeed.Conversation, sidechain bool, now time.Time) (*sessionfeed.Live, error) {
+		key := strconv.FormatBool(sidechain) + ":" + c.Path
+		liveInFlight.Lock()
+		if liveInFlight.m[key] {
+			liveInFlight.Unlock()
+			return nil, errLiveTimedOut
+		}
+		liveInFlight.m[key] = true
+		liveInFlight.Unlock()
 		type result struct {
 			live *sessionfeed.Live
 			err  error
@@ -92,6 +112,9 @@ func boundedLiveOf(ctx context.Context) func(sessionfeed.Conversation, bool, tim
 		done := make(chan result, 1)
 		go func() {
 			l, err := read(c, sidechain, now)
+			liveInFlight.Lock()
+			delete(liveInFlight.m, key)
+			liveInFlight.Unlock()
 			done <- result{l, err}
 		}()
 		t := time.NewTimer(liveReadTimeout)

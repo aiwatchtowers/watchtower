@@ -359,11 +359,19 @@ func (s *SessionChatSource) run(ctx context.Context, k chatKey, gen int) {
 			reason, lineErr = "timed out", liveErrTimedOut
 		}
 		log.Printf("hub slices: session chat of session %d %s; keeping the last payload", k.session, reason)
+		_, live = s.o.Liveness().Runs[k.session]
 		if prev == nil {
-			return
+			if !live {
+				return
+			}
+			// Nothing stored yet for a live session: say the read failed,
+			// so the phone shows Unavailable + Retry, never Loading forever.
+			if doc, err = chatDoc(nil, k.session, k.agent, true, nil, lineErr); err != nil {
+				return
+			}
+			break
 		}
 		marked := *prev
-		_, live = s.o.Liveness().Runs[k.session]
 		switch {
 		case !live:
 			// The session stopped: its last block is no longer current, and

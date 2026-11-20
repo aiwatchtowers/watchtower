@@ -179,10 +179,10 @@ var labelRules = []rule{
 			return m[1] + Mark
 		}},
 
-	// A bare "Bearer <token>" outside an Authorization header; redacted only
-	// when it looks like a token (16+ chars with a digit or mixed case), so
-	// prose such as "Bearer authentication" stays.
-	{regexp.MustCompile(`(\bBearer\s+)([A-Za-z0-9._~+/=-]{16,})`),
+	// A bare "Bearer <token>" outside an Authorization header: the next word
+	// is masked unless it is plain prose (looksLikeToken), so "Bearer
+	// authentication" and "Bearer of news" stay.
+	{regexp.MustCompile(`(\bBearer[ \t]+)([A-Za-z0-9._~+/=-]+)`),
 		func(m []string) string {
 			if !looksLikeToken(m[2]) {
 				return m[0]
@@ -197,8 +197,20 @@ var (
 	hasUpper = regexp.MustCompile(`[A-Z]`)
 )
 
+// looksLikeToken: the word after a bare "Bearer" is a credential unless it
+// is prose — all lowercase letters (token, authentication), or a short
+// all-capitals word (JWT). A digit, a ".", "-", "_" or other token
+// punctuation, mixed case, or 8+ capitals marks a credential.
 func looksLikeToken(t string) bool {
-	return hasDigit.MatchString(t) || (hasLower.MatchString(t) && hasUpper.MatchString(t))
+	switch {
+	case hasDigit.MatchString(t) || strings.ContainsAny(t, "._~+/=-"):
+		return true
+	case hasLower.MatchString(t) && hasUpper.MatchString(t):
+		return true
+	case hasUpper.MatchString(t):
+		return len(t) >= 8
+	}
+	return false
 }
 
 // replaceAll replaces each match of re in s with what repl returns for its

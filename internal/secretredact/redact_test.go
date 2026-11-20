@@ -8,7 +8,17 @@ import (
 
 func TestText(t *testing.T) {
 	cases := []struct{ name, in, want string }{
-		{"slack", "post with xoxb-1234567890-abcdefghij now", "post with [secret] now"},                                // leak-check:allow
+		{"slack", "post with xoxb-1234567890-abcdefghij now", "post with [secret] now"},  // leak-check:allow
+		{"bare bearer digits", "curl url Bearer abc123", "curl url Bearer [secret]"},     // leak-check:allow
+		{"bare bearer dotted", "send Bearer x.y.z now", "send Bearer [secret] now"},      // leak-check:allow
+		{"bare bearer dash", "Bearer abc-def", "Bearer [secret]"},                        // leak-check:allow
+		{"bare bearer underscore", "Bearer abc_def", "Bearer [secret]"},                  // leak-check:allow
+		{"bare bearer mixed case", "Bearer AbCdEf", "Bearer [secret]"},                   // leak-check:allow
+		{"bare bearer long capitals", "Bearer ABCDEFGHIJ", "Bearer [secret]"},            // leak-check:allow
+		{"bare bearer long token", "Bearer abcdEFGH12345678 end", "Bearer [secret] end"}, // leak-check:allow
+		{"bare bearer prose", "Bearer authentication is described", "Bearer authentication is described"},
+		{"bare bearer token word", "a Bearer token header", "a Bearer token header"},
+		{"bare bearer short capitals", "a Bearer JWT header", "a Bearer JWT header"},
 		{"github", "use ghp_abcdefghijklmnopqrstuvwxyz0123 here", "use [secret] here"},                                 // leak-check:allow
 		{"github pat", "pat github_pat_11ABCDEFG0abcdefghijkl_xyz done", "pat [secret] done"},                          // leak-check:allow
 		{"sk", "key sk-abcdefghijklmnop1234 end", "key [secret] end"},                                                  // leak-check:allow

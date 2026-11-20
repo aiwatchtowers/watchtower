@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -73,5 +74,45 @@ func TestReadChatStalledLiveReturnsEntriesWithLiveErr(t *testing.T) {
 		assert.NotEmpty(t, read.Entries)
 		assert.Nil(t, read.Live)
 		assert.ErrorIs(t, read.LiveErr, errLiveTimedOut)
+	})
+}
+
+// While a stalled snapshot still runs, the next reads of that conversation
+// start none: three reads during one stall leave exactly one snapshot
+// blocked, the later two answer at once; once it ends, the next read starts
+// a fresh one.
+func TestReadChatOneStalledLivePerConversation(t *testing.T) {
+	c := chatTranscript(t)
+	synctest.Test(t, func(t *testing.T) {
+		stall := make(chan struct{})
+		var entered atomic.Int32
+		prev := liveOf
+		liveOf = func(sessionfeed.Conversation, bool, time.Time) (*sessionfeed.Live, error) {
+			if entered.Add(1) == 1 {
+				<-stall
+			}
+			return &sessionfeed.Live{}, nil
+		}
+		defer func() { liveOf = prev }()
+		for i := range 3 {
+			start := time.Now()
+			read, err := readChat(context.Background(), []sessionfeed.Conversation{c}, nil, "", time.Now())
+			require.NoError(t, err)
+			assert.NotEmpty(t, read.Entries)
+			assert.ErrorIs(t, read.LiveErr, errLiveTimedOut)
+			want := time.Duration(0)
+			if i == 0 {
+				want = liveReadTimeout
+			}
+			assert.Equal(t, want, time.Since(start), "read %d", i)
+		}
+		synctest.Wait()
+		assert.Equal(t, int32(1), entered.Load(), "snapshots started during the stall")
+		close(stall)
+		synctest.Wait()
+		read, err := readChat(context.Background(), []sessionfeed.Conversation{c}, nil, "", time.Now())
+		require.NoError(t, err)
+		assert.NoError(t, read.LiveErr)
+		assert.Equal(t, int32(2), entered.Load())
 	})
 }

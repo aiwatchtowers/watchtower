@@ -1330,3 +1330,38 @@ func TestSessionChat_FailedReadAfterStopDropsTheBlock(t *testing.T) {
 		t.Fatalf("%d reads after the session stopped, want 2", r.callCount())
 	}
 }
+
+// The first read of a live session fails: the record still arrives, with
+// no entries and live_error, so the phone shows Unavailable + Retry instead
+// of Loading forever; a finished session publishes nothing; the next good
+// read replaces it.
+func TestSessionChat_FirstReadFailsWhileLive(t *testing.T) {
+	ctx := context.Background()
+	r := newChatRig(t)
+	r.live[7] = time.Now()
+	readErr := errors.New("unreadable")
+	s := r.source(func(context.Context, int64, string) (ChatRead, error) {
+		return ChatRead{Entries: []sessionfeed.Entry{feedEntry(0, "hi")}, Live: sampleLive()}, readErr
+	}, ChatTiming{})
+	r.watch(7, "", "")
+	r.watch(8, "", "")
+	s.RunDue(ctx)
+	got := chatItems(t, s)
+	if _, ok := got["8"]; ok {
+		t.Fatalf("a finished session's failed read published %v", got["8"])
+	}
+	p := got["7"]
+	if p == nil || p["live"] != true || num(p["live_version"]) != 1 || p["live_error"] != liveErrUnavailable ||
+		len(chatEntries(t, p)) != 0 || num(p["entries_more"]) != 0 || p["activity_live"] != nil {
+		t.Fatalf("first failed read: %v", p)
+	}
+	if r.nudges != 1 {
+		t.Fatalf("%d nudges, want 1", r.nudges)
+	}
+	readErr = nil
+	r.clock.advance(3 * time.Second)
+	s.RunDue(ctx)
+	if p := chatItems(t, s)["7"]; p["live_error"] != nil || len(chatEntries(t, p)) != 1 || p["activity_live"] == nil {
+		t.Fatalf("the good read did not replace it: %v", p)
+	}
+}
