@@ -108,6 +108,51 @@ final class GitRefsWatcherTests: XCTestCase {
                        ["/r/.git", "/elsewhere/gitdir"])
     }
 
+    /// FSEvents owns its reference to the relay through the context's
+    /// retain/release pair, whatever path it takes: a running stream keeps
+    /// the relay after the watcher's local is gone; a refused create (with or
+    /// without the retain) leaves the watcher's own reference intact. The
+    /// 0.29.0 crash was a hand release on a refused stream on top of
+    /// FSEvents' own.
+    func testTheContextBalancesFSEventsOwnReference() throws {
+        weak var running: GitRefsWatcher.Relay?
+        var context: FSEventStreamContext
+        do {
+            let relay = GitRefsWatcher.Relay()
+            running = relay
+            context = GitRefsWatcher.context(for: relay)
+            let retain = try XCTUnwrap(context.retain)
+            XCTAssertEqual(retain(context.info), UnsafeRawPointer(context.info))
+        }
+        XCTAssertNotNil(running, "the stream's reference keeps the relay")
+        try XCTUnwrap(context.release)(context.info)
+        XCTAssertNil(running, "releasing the stream frees the relay")
+
+        // A create refused after FSEvents took its reference, and one refused
+        // before: the watcher's local still owns the relay until it goes.
+        weak var refused: GitRefsWatcher.Relay?
+        do {
+            let relay = GitRefsWatcher.Relay()
+            refused = relay
+            let ctx = GitRefsWatcher.context(for: relay)
+            _ = try XCTUnwrap(ctx.retain)(ctx.info)
+            try XCTUnwrap(ctx.release)(ctx.info)
+            XCTAssertNotNil(refused)
+            _ = GitRefsWatcher.context(for: relay)
+            XCTAssertNotNil(refused)
+        }
+        XCTAssertNil(refused)
+    }
+
+    /// A worktree whose git dir is gone (removed under the page): FSEvents may
+    /// refuse the stream; creating and stopping such watchers does not crash.
+    func testWatchingMissingDirsDoesNotCrash() {
+        let missing = root.appendingPathComponent("gone/.git/worktrees/w").path
+        for _ in 0..<50 {
+            GitRefsWatcher(gitDir: missing, commonDir: missing) { _ in }.stop()
+        }
+    }
+
     private func watch(latency: TimeInterval = 0.1, onChange: @escaping @MainActor () -> Void) -> GitRefsWatcher {
         let watcher = GitRefsWatcher(gitDir: gitDir.path, commonDir: gitDir.path, latency: latency) { _ in onChange() }
         watchers.append(watcher)
