@@ -56,6 +56,22 @@ func TestSlackAccountSharedApp_RetiredIDOnly(t *testing.T) {
 	}
 }
 
+// TestSlackAccountSharedApp_CompanyTiedIsCompanyApp: the corp build's app is
+// the retired public shared app (one Slack app, one client id), so after the
+// company bridge the public build sees corp accounts on the retired id. An
+// account tied to a company bundle is that company's app (#1425, ask #1644):
+// not shared, and Re-login connects through it instead of moving.
+func TestSlackAccountSharedApp_CompanyTiedIsCompanyApp(t *testing.T) {
+	tied := db.SlackAccount{ClientID: sharedID, Status: "ok", CompanySlug: "acme"}
+	assert.False(t, SharedApp(tied, sharedID))
+	assert.Equal(t, ReloginConnect, Relogin(tied, sharedID, ""))
+	assert.Equal(t, ReloginBuiltin, Relogin(tied, sharedID, sharedID), "the corp build still signs in through its baked app")
+
+	untied := db.SlackAccount{ClientID: sharedID, Status: "ok"}
+	assert.True(t, SharedApp(untied, sharedID), "an untied account on the retired id is still shared")
+	assert.Equal(t, ReloginMove, Relogin(untied, sharedID, ""))
+}
+
 func TestSlackAccountRelogin_FirstMatchWins(t *testing.T) {
 	cases := []struct {
 		name      string

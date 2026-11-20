@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -519,4 +520,43 @@ func TestBridge_CorpBuildWithoutCompanyNameFails(t *testing.T) {
 	out, err = makeDry("BUILD_FLAVOR=corp\nBUILD_COMPANY_NAME=\"Corp Inc\"\n")
 	require.NoError(t, err, out)
 	assert.Contains(t, out, "-X 'watchtower/cmd.BuildCompanyName=Corp Inc'")
+}
+
+// TestBridge_PublicSlackOnRetiredIDStaysCompanyApp: the corp build's Slack app
+// is the public build's retired shared app (one client id). After the bridge,
+// the public build lists the tied corp account as the company's app — no
+// shared-app banner, Re-login connects — while an untied row on the same id
+// is still shared (ask #1644).
+func TestBridge_PublicSlackOnRetiredIDStaysCompanyApp(t *testing.T) {
+	c := newCorpWorkspace(t)
+	other, err := c.database.CreateSlackAccount(db.SlackAccount{TeamID: "T0STR", TeamName: "Stranger"})
+	require.NoError(t, err)
+	_, err = c.database.Exec(`UPDATE slack_accounts SET client_id = ? WHERE id IN (?, ?)`, corpSlackID, c.ids["slack"], other)
+	require.NoError(t, err)
+	_, err = c.bridge(t)
+	require.NoError(t, err)
+
+	setPublicBaked(t)
+	setBakedClients(t, "", "", "", "", "", "", "", "")
+	prevRetired := auth.RetiredSharedClientID
+	auth.RetiredSharedClientID = corpSlackID
+	t.Cleanup(func() { auth.RetiredSharedClientID = prevRetired })
+
+	accounts, err := c.database.ListSlackAccounts()
+	require.NoError(t, err)
+	var out strings.Builder
+	require.NoError(t, writeSlackAccountsJSON(&out, c.database, accounts))
+	var doc slackAccountsDoc
+	require.NoError(t, json.Unmarshal([]byte(out.String()), &doc))
+	byID := map[int64]slackAccountJSONItem{}
+	for _, a := range doc.Accounts {
+		byID[a.ID] = a
+	}
+	corp := byID[c.ids["slack"]]
+	assert.Equal(t, corpSlackID, corp.ClientID)
+	assert.False(t, corp.SharedApp, "a tied corp account is the company's app")
+	assert.Equal(t, "connect", corp.Relogin)
+	stranger := byID[other]
+	assert.True(t, stranger.SharedApp, "an untied row on the retired id is still shared")
+	assert.Equal(t, "move", stranger.Relogin)
 }
