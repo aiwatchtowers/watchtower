@@ -1,0 +1,717 @@
+<title>Security audit</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+/* Layout: summary band (run, counts, coverage) → filter bar → list | detail (two columns wide, stacked on phones) → collapsed Rejected / Coverage / Runs. */
+:root {
+  --bg: #f4f5f8;
+  --surface: #ffffff;
+  --sunken: #eceef3;
+  --line: #d8dce5;
+  --fg: #1b2030;
+  --muted: #5a6276;
+  --accent: #3b4fd8;
+  --accent-soft: #e4e8fc;
+  --crit: #b0182c; --crit-soft: #fbe3e6;
+  --high: #c2410c; --high-soft: #fdeadf;
+  --med: #a16207;  --med-soft: #fbf1d5;
+  --low: #2f6f4f;  --low-soft: #e1f1e8;
+  --info: #4b5568; --info-soft: #e8eaf0;
+  --warn-bg: #fff4d6; --warn-fg: #6b4a00; --warn-line: #e8c870;
+  --font-display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12141b; --surface: #1a1d27; --sunken: #222634; --line: #30354a;
+  --fg: #e6e8f0; --muted: #9aa1b8; --accent: #8c9bff; --accent-soft: #262c52;
+  --crit: #ff7a8a; --crit-soft: #3d1820; --high: #ff9a5c; --high-soft: #3a2014;
+  --med: #e8c25a; --med-soft: #352a10; --low: #7fd1a5; --low-soft: #15301f;
+  --info: #b2b9cc; --info-soft: #262a38;
+  --warn-bg: #3a2e0c; --warn-fg: #f3d98a; --warn-line: #6b5518;
+  color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #12141b; --surface: #1a1d27; --sunken: #222634; --line: #30354a;
+  --fg: #e6e8f0; --muted: #9aa1b8; --accent: #8c9bff; --accent-soft: #262c52;
+  --crit: #ff7a8a; --crit-soft: #3d1820; --high: #ff9a5c; --high-soft: #3a2014;
+  --med: #e8c25a; --med-soft: #352a10; --low: #7fd1a5; --low-soft: #15301f;
+  --info: #b2b9cc; --info-soft: #262a38;
+  --warn-bg: #3a2e0c; --warn-fg: #f3d98a; --warn-line: #6b5518;
+  color-scheme: dark;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 14px; line-height: 1.5; }
+.wrap { max-width: 1280px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 20px 40px; display: grid; gap: 16px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; }
+h1 { font-size: 1.5rem; font-weight: 600; }
+h2 { font-size: 1.1rem; font-weight: 600; }
+h3 { font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.mono { font-family: var(--font-mono); font-size: 0.86em; }
+.muted { color: var(--muted); }
+button, select, input, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Summary band */
+.top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.runpick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.runpick label { color: var(--muted); }
+select, input[type=search], textarea { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-width: 0; }
+.summary { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: grid; gap: 12px; }
+.facts { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--muted); }
+.facts b { color: var(--fg); font-weight: 500; }
+.counts { display: flex; flex-wrap: wrap; gap: 8px; }
+.count { display: flex; align-items: baseline; gap: 6px; padding: 4px 10px; border-radius: 999px; background: var(--sunken); font-variant-numeric: tabular-nums; }
+.count strong { font-family: var(--font-display); font-size: 1.05rem; }
+.count.hot { background: var(--crit-soft); color: var(--crit); }
+.banner { border: 1px solid var(--warn-line); background: var(--warn-bg); color: var(--warn-fg); border-radius: 8px; padding: 10px 12px; display: grid; gap: 6px; }
+.banner ul { margin: 0; padding-left: 18px; }
+.linkbtn { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; text-align: left; }
+
+/* Filters */
+.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.filters input[type=search] { flex: 1 1 200px; }
+.check { display: inline-flex; align-items: center; gap: 6px; }
+
+/* List + detail */
+.main { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); align-items: start; }
+@media (min-width: 960px) { .main { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); } }
+.list { display: grid; gap: 6px; }
+.row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; text-align: left; width: 100%; }
+.row:hover { border-color: var(--accent); }
+.row[aria-current="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.row .title { font-weight: 500; overflow-wrap: anywhere; }
+.row .chips { grid-column: 2; display: flex; flex-wrap: wrap; gap: 4px; }
+.sev { width: 10px; height: 10px; border-radius: 50%; margin-top: 6px; background: var(--info); }
+.chip { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding: 1px 7px; border-radius: 4px; background: var(--sunken); color: var(--muted); white-space: nowrap; }
+.chip.crit, .sev.crit { --c: var(--crit); }
+.chip.high, .sev.high { --c: var(--high); }
+.chip.medium, .sev.medium { --c: var(--med); }
+.chip.low, .sev.low { --c: var(--low); }
+.sev.crit, .sev.high, .sev.medium, .sev.low { background: var(--c); }
+.chip.crit { background: var(--crit-soft); color: var(--crit); }
+.chip.high { background: var(--high-soft); color: var(--high); }
+.chip.medium { background: var(--med-soft); color: var(--med); }
+.chip.low { background: var(--low-soft); color: var(--low); }
+.chip.accent { background: var(--accent-soft); color: var(--accent); }
+.chip.alert { background: var(--crit-soft); color: var(--crit); }
+.chip.warn { background: var(--warn-bg); color: var(--warn-fg); }
+.empty { padding: 24px 16px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); text-align: center; }
+
+.detail { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 16px; min-width: 0; }
+.detail section { display: grid; gap: 6px; min-width: 0; }
+.detail p { margin: 0; max-width: 72ch; overflow-wrap: anywhere; white-space: pre-wrap; }
+.trace { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+.trace li { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 2px 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+.trace li:first-child { border-top: 0; }
+.trace .kind { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); padding-top: 2px; }
+.trace .kind.sink { color: var(--crit); }
+.trace .kind.entrypoint { color: var(--accent); }
+.loc { font-family: var(--font-mono); font-size: 0.82rem; overflow-wrap: anywhere; }
+.ev { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+pre.code { margin: 0; padding: 10px; background: var(--sunken); border-radius: 6px; overflow-x: auto; font-family: var(--font-mono); font-size: 0.8rem; }
+.callout { border: 1px solid var(--warn-line); background: var(--warn-bg); color: var(--warn-fg); border-radius: 8px; padding: 10px 12px; display: grid; gap: 8px; }
+.callout.alert { border-color: var(--crit); background: var(--crit-soft); color: var(--crit); }
+.triage { border-top: 1px solid var(--line); padding-top: 14px; display: grid; gap: 10px; }
+.line { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.triage textarea { width: 100%; box-sizing: border-box; min-height: 72px; resize: vertical; }
+.btn { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.err { color: var(--crit); }
+.ok { color: var(--low); }
+
+details.fold { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+details.fold > summary { cursor: pointer; padding: 12px 16px; font-family: var(--font-display); font-weight: 600; }
+details.fold > .body { padding: 0 16px 16px; display: grid; gap: 8px; }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600; }
+.state { padding: 40px 16px; text-align: center; display: grid; gap: 6px; justify-items: center; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <div class="top">
+    <h1>Security audit</h1>
+    <div class="runpick" id="runpick" hidden>
+      <label for="run-select">Run</label>
+      <select id="run-select"></select>
+    </div>
+  </div>
+  <div id="state" class="state">
+    <h2>Loading the audit data…</h2>
+    <p class="muted">Findings and runs appear here once the store answers.</p>
+  </div>
+  <div id="app" hidden>
+    <div class="summary" id="summary"></div>
+    <div id="live-err" class="banner" hidden></div>
+    <div id="ro-note" class="muted" hidden>Read-only. Only the owner of this page can change a status, a note, or an old-audit match.</div>
+    <div class="filters" role="group" aria-label="Filters">
+      <select id="f-sev" aria-label="Severity">
+        <option value="">All severities</option>
+        <option value="critical">Critical</option><option value="high">High</option>
+        <option value="medium">Medium</option><option value="low">Low</option>
+        <option value="informational">Informational</option><option value="none">Unrated</option>
+      </select>
+      <select id="f-status" aria-label="Status">
+        <option value="active">Status: open, in progress, regressed</option>
+        <option value="">Any status</option>
+        <option value="open">Open</option><option value="in_progress">In progress</option>
+        <option value="fixed">Fixed</option><option value="accepted">Accepted</option>
+        <option value="false_positive">False positive</option>
+      </select>
+      <select id="f-verdict" aria-label="Verdict">
+        <option value="">All verdicts</option>
+        <option value="confirmed">Confirmed</option>
+        <option value="needs_validation">Needs validation</option>
+        <option value="rejected">Rejected, disputed</option>
+        <option value="legacy">Old audit items</option>
+      </select>
+      <label class="check"><input type="checkbox" id="f-new"> New in this run only</label>
+      <input type="search" id="f-q" placeholder="Search title, file, note, id…" aria-label="Search">
+    </div>
+    <div class="main">
+      <div>
+        <div class="list" id="list"></div>
+      </div>
+      <div class="detail" id="detail"></div>
+    </div>
+    <details class="fold" id="fold-rejected"><summary id="rejected-sum">Rejected</summary><div class="body" id="rejected"></div></details>
+    <details class="fold"><summary>Coverage</summary><div class="body" id="coverage"></div></details>
+    <details class="fold"><summary id="runs-sum">Runs</summary><div class="body" id="runs"></div></details>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  // ----- state -----
+  var S = {
+    db: null, isOwner: false, readOnlyForced: false,
+    runs: null, findings: null,          // arrays of {id, d}
+    runsLoaded: false, findingsLoaded: false,
+    runId: null, sel: null,
+    drafts: {},                           // docId -> note draft
+    busy: {},                             // docId -> true while a write is in flight
+    msg: {},                              // docId -> {text, cls}
+    confirmMerge: null,                   // docId awaiting Merged confirmation
+    failed: null
+  };
+  var SEV = ["critical", "high", "medium", "low", "informational", "none"];
+  var SEV_LABEL = { critical: "Critical", high: "High", medium: "Medium", low: "Low", informational: "Info", none: "Unrated" };
+  var SEV_CLASS = { critical: "crit", high: "high", medium: "medium", low: "low" };
+  var STATUS = ["open", "in_progress", "fixed", "accepted", "false_positive"];
+  var STATUS_LABEL = { open: "Open", in_progress: "In progress", fixed: "Fixed", accepted: "Accepted", false_positive: "False positive" };
+  var VERDICT_LABEL = { confirmed: "Confirmed", needs_validation: "Needs validation", rejected: "Rejected" };
+  var RUNSTATE_LABEL = { "new": "New", still_open: "Still open", regressed: "Regressed", not_refound: "Not re-found", fixed: "Fixed in code" };
+
+  // ----- DOM helpers (all data text goes through textContent) -----
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = String(text);
+    return n;
+  }
+  function add(parent) { for (var i = 1; i < arguments.length; i++) if (arguments[i]) parent.appendChild(arguments[i]); return parent; }
+  function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); return n; }
+  function str(v) { return typeof v === "string" ? v : ""; }
+  function arr(v) { return Array.isArray(v) ? v : []; }
+  function obj(v) { return v && typeof v === "object" && !Array.isArray(v) ? v : null; }
+  function day(iso) { var s = str(iso); return s ? s.slice(0, 10) : "—"; }
+
+  // ----- derived helpers -----
+  function isLegacy(f) { return !!str(f.d.legacy_id) && !str(f.d.fingerprint); }
+  function sevOf(d) { var s = obj(d.severity); var o = s && str(s.overall_severity); return SEV.indexOf(o) >= 0 ? o : "none"; }
+  function isActive(d) { return d.status === "open" || d.status === "in_progress"; }
+  function isDisputed(d) { return d.verdict === "rejected" && isActive(d); }
+  function inRejectedFold(f) { return !isLegacy(f) && f.d.verdict === "rejected" && !isActive(f.d); }
+  function curRun() { if (!S.runs) return null; for (var i = 0; i < S.runs.length; i++) if (S.runs[i].id === S.runId) return S.runs[i]; return null; }
+  function findById(id) { if (!S.findings) return null; for (var i = 0; i < S.findings.length; i++) if (S.findings[i].id === id) return S.findings[i]; return null; }
+  function legacyDoc(legacyId) { return findById("legacy-" + legacyId); }
+  function byFingerprint(fp) { if (!S.findings) return null; for (var i = 0; i < S.findings.length; i++) if (S.findings[i].d.fingerprint === fp) return S.findings[i]; return null; }
+  function notRechecked(f) {
+    var r = curRun(); if (!r || !isDisputed(f.d)) return false;
+    return arr(r.d.disputed_not_revalidated).indexOf(f.d.fingerprint) >= 0;
+  }
+  function needsLegacyCheck(d) { return !!str(d.legacy_match) && !d.legacy_decision; }
+  function titleOf(f) {
+    if (isLegacy(f)) return "Old audit item " + f.d.legacy_id;
+    return str(f.d.title) || str(f.d.fingerprint) || f.id;
+  }
+  function isNew(f) {
+    if (isLegacy(f)) return false;
+    if (S.runId) return f.d.first_seen_run === S.runId;
+    return f.d.run_state === "new";
+  }
+  function canWrite() { return S.isOwner && !S.readOnlyForced; }
+
+  // ----- loading / failure -----
+  function fail(reason) {
+    if (S.runsLoaded && S.findingsLoaded) {
+      // Data already on screen: keep it, and say it may be out of date.
+      var le = $("live-err"); le.textContent = "Live updates stopped: " + reason + " Reopen the page to see newer changes."; le.hidden = false;
+      return;
+    }
+    S.failed = reason;
+    var st = clear($("state"));
+    add(st, el("h2", null, "Could not load the audit data"), el("p", "muted", reason));
+    st.hidden = false; $("app").hidden = true; $("runpick").hidden = true;
+  }
+  var loadTimer = setTimeout(function () {
+    if (!(S.runsLoaded && S.findingsLoaded)) fail("The data store did not answer within 10 seconds. Check your connection and reopen the page.");
+  }, 10000);
+
+  function errText(e) {
+    var code = e && e.code ? e.code : "unknown";
+    if (code === "not_granted" || code === "capability_disabled" || code === "capability_removed") return "This view cannot open the audit data (" + code + ").";
+    if (code === "revoked") return "Access to the audit data was withdrawn.";
+    return "The data store refused the request (" + code + (e && e.message ? ": " + e.message : "") + ").";
+  }
+
+  function toRows(snap) {
+    return snap.docs.filter(function (s) { return s.exists; }).map(function (s) { return { id: s.id, d: s.data() || {} }; });
+  }
+
+  // ----- render -----
+  function render() {
+    if (!(S.runsLoaded && S.findingsLoaded)) return;
+    clearTimeout(loadTimer);
+    S.failed = null;
+    $("state").hidden = true; $("app").hidden = false;
+    $("ro-note").hidden = canWrite();
+
+    if (S.runs.length === 0 && S.findings.length === 0) {
+      $("app").hidden = true; $("runpick").hidden = true;
+      var st = clear($("state"));
+      add(st, el("h2", null, "No audit imported yet"),
+        el("p", "muted", "Run /security-audit in Claude Code. When a run finishes, its findings and coverage appear here."));
+      st.hidden = false;
+      return;
+    }
+    renderRunPicker();
+    renderSummary();
+    renderList();
+    renderDetail();
+    renderRejected();
+    renderCoverage();
+    renderRuns();
+  }
+
+  function sortedRuns() {
+    return S.runs.slice().sort(function (a, b) { return str(b.d.started_at).localeCompare(str(a.d.started_at)) || b.id.localeCompare(a.id); });
+  }
+  function runLabel(r) {
+    var d = r.d, k = d.kind === "full" ? "Full" : "Range " + (str(d.from) || "?") + ".." + (str(d.to) || "?");
+    return day(d.started_at) + " · " + k + (d.run_status === "incomplete" ? " · incomplete" : "");
+  }
+
+  function renderRunPicker() {
+    var runs = sortedRuns();
+    if (!S.runId || !curRun()) S.runId = runs.length ? runs[0].id : null;
+    var sel = clear($("run-select"));
+    runs.forEach(function (r) { var o = el("option", null, runLabel(r)); o.value = r.id; sel.appendChild(o); });
+    sel.value = S.runId || "";
+    $("runpick").hidden = runs.length === 0;
+  }
+
+  function renderSummary() {
+    var box = clear($("summary"));
+    var r = curRun();
+    if (!r) { add(box, el("p", "muted", "No run row yet. The findings below were imported without a run summary.")); return; }
+    var d = r.d;
+    var facts = el("div", "facts");
+    function fact(label, value) { var s = el("span", null, label + " "); add(s, el("b", null, value)); facts.appendChild(s); }
+    fact("Kind", d.kind === "full" ? "Full" : "Range " + (str(d.from) || "?") + ".." + (str(d.to) || "?"));
+    fact("Run", d.run_status === "incomplete" ? "incomplete" + (str(d.incomplete_reason) ? " (" + d.incomplete_reason + ")" : "") : "complete");
+    var cov = obj(d.coverage) || {};
+    var partial = d.kind !== "full" || d.run_status === "incomplete";
+    fact("Coverage", (partial ? "partial" : "full") + " · " + (cov.covered || 0) + " covered, " + (cov.deferred || 0) + " deferred, " + (cov.blocked || 0) + " blocked");
+    var lastFull = sortedRuns().filter(function (x) { return x.d.kind === "full" && x.d.run_status === "complete"; })[0];
+    fact("Last Full", lastFull ? day(lastFull.d.finished_at || lastFull.d.started_at) : "—");
+    fact("Commit", str(d.sha).slice(0, 10) || "—");
+    box.appendChild(facts);
+
+    var c = obj(d.counts) || {}, bv = obj(c.by_verdict) || {}, bs = obj(c.by_severity) || {};
+    var counts = el("div", "counts");
+    function count(label, n, hot) { var s = el("span", "count" + (hot && n ? " hot" : "")); add(s, el("strong", null, n || 0), el("span", null, label)); counts.appendChild(s); }
+    count("Confirmed", bv.confirmed, true);
+    count("Needs validation", bv.needs_validation);
+    count("Rejected", bv.rejected);
+    count("Regressed", c.regressed, true);
+    count("New", c["new"]);
+    ["critical", "high", "medium", "low"].forEach(function (s) { if (bs[s]) count(SEV_LABEL[s], bs[s], s === "critical" || s === "high"); });
+    box.appendChild(counts);
+
+    var dnr = arr(d.disputed_not_revalidated);
+    if (dnr.length) {
+      var b = el("div", "banner");
+      add(b, el("strong", null, dnr.length === 1 ? "1 dispute was not re-checked by this run" : dnr.length + " disputes were not re-checked by this run"),
+        el("span", null, "You reopened these rejected findings, but the engine did not validate them again. They stay disputed for the next run."));
+      var ul = el("ul");
+      dnr.forEach(function (fp) {
+        var li = el("li"), f = byFingerprint(fp);
+        if (f) { var a = el("button", "linkbtn", titleOf(f)); a.type = "button"; a.addEventListener("click", function () { select(f.id); }); li.appendChild(a); }
+        else li.appendChild(el("span", "mono", fp));
+        ul.appendChild(li);
+      });
+      b.appendChild(ul);
+      box.appendChild(b);
+    }
+  }
+
+  function matchesSearch(f, q) {
+    if (!q) return true;
+    var d = f.d, hay = [titleOf(f), d.description, d.note, d.fingerprint, d.legacy_id, d.legacy_match, d.root_cause, d.claimed_root_cause, f.id];
+    arr(d.trace).forEach(function (t) { if (obj(t)) hay.push(t.file, t.scope); });
+    arr(d.evidence).forEach(function (t) { if (obj(t)) hay.push(t.file); });
+    return hay.join("\n").toLowerCase().indexOf(q) >= 0;
+  }
+  function visibleMain() {
+    var fs = $("f-sev").value, st = $("f-status").value, vd = $("f-verdict").value, nw = $("f-new").checked, q = $("f-q").value.trim().toLowerCase();
+    return S.findings.filter(function (f) {
+      var d = f.d;
+      if (str(d.merged_into)) return false;
+      if (inRejectedFold(f)) return false;
+      if (fs && sevOf(d) !== fs) return false;
+      // "Needs attention" also keeps a regressed finding the owner had marked fixed.
+      if (st === "active" ? !(isActive(d) || d.run_state === "regressed") : (st && d.status !== st)) return false;
+      if (vd === "legacy" ? !isLegacy(f) : (vd && (isLegacy(f) || d.verdict !== vd))) return false;
+      if (nw && !isNew(f)) return false;
+      return matchesSearch(f, q);
+    }).sort(function (a, b) {
+      var rs = (b.d.run_state === "regressed") - (a.d.run_state === "regressed");
+      if (rs) return rs;
+      var la = isLegacy(a), lb = isLegacy(b);
+      if (la !== lb) return la ? 1 : -1;
+      return SEV.indexOf(sevOf(a.d)) - SEV.indexOf(sevOf(b.d)) || (isNew(b) - isNew(a)) || titleOf(a).localeCompare(titleOf(b));
+    });
+  }
+
+  function chipsFor(f) {
+    var d = f.d, c = el("div", "chips"), sev = sevOf(d);
+    if (isLegacy(f)) c.appendChild(el("span", "chip", "Old audit"));
+    else {
+      c.appendChild(el("span", "chip " + (SEV_CLASS[sev] || ""), SEV_LABEL[sev]));
+      if (isNew(f)) c.appendChild(el("span", "chip accent", "New"));
+      if (d.run_state === "regressed") c.appendChild(el("span", "chip alert", "Regressed"));
+      else if (d.run_state && d.run_state !== "new") c.appendChild(el("span", "chip", RUNSTATE_LABEL[d.run_state] || d.run_state));
+      c.appendChild(el("span", "chip", VERDICT_LABEL[d.verdict] || str(d.verdict) || "No verdict"));
+      if (isDisputed(d)) c.appendChild(el("span", "chip warn", "Disputed"));
+    }
+    c.appendChild(el("span", "chip", STATUS_LABEL[d.status] || str(d.status) || "No status"));
+    if (needsLegacyCheck(d)) c.appendChild(el("span", "chip warn", "Matches an old audit item — check"));
+    if (notRechecked(f)) c.appendChild(el("span", "chip alert", "Your dispute was not re-checked"));
+    return c;
+  }
+
+  function rowFor(f) {
+    var b = el("button", "row"); b.type = "button";
+    b.setAttribute("aria-current", S.sel === f.id ? "true" : "false");
+    add(b, el("span", "sev " + (SEV_CLASS[sevOf(f.d)] || "")), el("span", "title", titleOf(f)), chipsFor(f));
+    b.addEventListener("click", function () { select(f.id); });
+    return b;
+  }
+
+  function renderList() {
+    var list = clear($("list")), rows = visibleMain();
+    if (!rows.length) {
+      list.appendChild(el("div", "empty", S.findings.length ? "No finding matches these filters." : "This run found nothing to triage."));
+      return;
+    }
+    rows.forEach(function (f) { list.appendChild(rowFor(f)); });
+  }
+
+  function select(id) {
+    S.sel = id; S.confirmMerge = null;
+    var f = findById(id);
+    if (f && inRejectedFold(f)) $("fold-rejected").open = true;
+    renderList(); renderRejected(); renderDetail();
+    if (window.matchMedia("(max-width: 959px)").matches) $("detail").scrollIntoView({ block: "start" });
+  }
+
+  function sec(title) { var s = el("section"); s.appendChild(el("h3", null, title)); return s; }
+  function para(text) { return el("p", null, text); }
+  function loc(file, line) { return el("span", "loc", str(file) + (line ? ":" + line : "")); }
+
+  var lastDetailKey = null;
+  function renderDetail() {
+    // Build off-screen and swap in one step, so the page keeps its scroll position.
+    var host = $("detail"), box = document.createDocumentFragment();
+    var f = S.sel ? findById(S.sel) : null;
+    // Skip a re-render that would change nothing (keeps focus and caret in the note field).
+    var key = f ? [f.id, f.d, S.isOwner, S.readOnlyForced, S.runId, curRun() && curRun().d, !!S.busy[f.id], JSON.stringify(S.msg[f.id] || null), S.confirmMerge, f.d.legacy_match && legacyDoc(f.d.legacy_match) && legacyDoc(f.d.legacy_match).d] : null;
+    if (lastDetailKey && key && key.length === lastDetailKey.length && key.every(function (v, i) { return v === lastDetailKey[i]; })) return;
+    lastDetailKey = key;
+    var focusedNote = document.activeElement && document.activeElement.id === "note-input";
+    if (!f) {
+      add(box, el("h2", null, "Finding"), el("p", "muted", "Pick a finding to see its trace, evidence and triage controls."));
+      host.replaceChildren(box);
+      return;
+    }
+    var d = f.d;
+    var head = el("section");
+    add(head, el("h2", null, titleOf(f)), chipsFor(f));
+    var idline = el("div", "muted mono", isLegacy(f) ? "legacy_id " + d.legacy_id : str(d.fingerprint));
+    head.appendChild(idline);
+    box.appendChild(head);
+
+    if (notRechecked(f)) {
+      var cb = el("div", "callout alert");
+      add(cb, el("strong", null, "Your dispute was not re-checked"),
+        el("span", null, "You reopened this rejected finding, but the engine did not validate it again in this run. It stays disputed for the next run."));
+      box.appendChild(cb);
+    }
+
+    if (isLegacy(f)) {
+      var ls = sec("From the old audit");
+      ls.appendChild(para(str(d.note) || "No note."));
+      box.appendChild(ls);
+    } else {
+      if (str(d.description)) { var ds = sec("Description"); ds.appendChild(para(d.description)); box.appendChild(ds); }
+      var tr = arr(d.trace);
+      if (tr.length) {
+        var ts = sec("Trace"), ol = el("ol", "trace");
+        tr.forEach(function (t) {
+          t = obj(t) || {};
+          var li = el("li");
+          var body = el("div");
+          add(body, loc(t.file, t.line), el("span", "muted", str(t.scope) ? "  " + t.scope : ""), el("p", null, str(t.description)));
+          add(li, el("span", "kind " + str(t.kind), str(t.kind) || "step"), body);
+          ol.appendChild(li);
+        });
+        ts.appendChild(ol); box.appendChild(ts);
+      }
+      var rc = str(d.root_cause) || str(d.claimed_root_cause);
+      if (rc) { var rs = sec(str(d.root_cause) ? "Root cause" : "Claimed root cause"); rs.appendChild(para(rc)); box.appendChild(rs); }
+      if (str(d.reason)) { var rr = sec("Why the verifier rejected it"); rr.appendChild(para(d.reason)); box.appendChild(rr); }
+      var ev = arr(d.evidence);
+      if (ev.length) {
+        var es = sec("Evidence"), ul = el("ul", "ev");
+        ev.forEach(function (e) { e = obj(e) || {}; var li = el("li"); add(li, loc(e.file, e.line), el("div", null, str(e.description))); ul.appendChild(li); });
+        es.appendChild(ul); box.appendChild(es);
+      }
+      var bl = arr(d.blockers);
+      if (bl.length) {
+        var bs = sec("Blockers"), bu = el("ul", "ev");
+        bl.forEach(function (x) { bu.appendChild(el("li", null, str(x))); });
+        bs.appendChild(bu); box.appendChild(bs);
+      }
+      var vp = obj(d.validation_plan);
+      if (vp && (str(vp.local) || str(vp.deployment))) {
+        var vs = sec("Validation plan");
+        if (str(vp.local)) { vs.appendChild(el("div", "muted", "Local")); vs.appendChild(para(vp.local)); }
+        if (str(vp.deployment)) { vs.appendChild(el("div", "muted", "Deployment")); vs.appendChild(para(vp.deployment)); }
+        box.appendChild(vs);
+      }
+      var sv = obj(d.severity);
+      if (sv) {
+        var ss = sec("Severity · " + SEV_LABEL[sevOf(d)]);
+        ["likelihood", "impact"].forEach(function (k) {
+          var p = obj(sv[k]); if (!p) return;
+          ss.appendChild(para((k === "likelihood" ? "Likelihood " : "Impact ") + str(p.score) + ": " + str(p.reason)));
+        });
+        box.appendChild(ss);
+      }
+      var rm = obj(d.remediation);
+      if (rm) {
+        var ms = sec("Remediation");
+        if (str(rm.strategy)) ms.appendChild(para(rm.strategy));
+        arr(rm.code_changes).forEach(function (cc) {
+          cc = obj(cc) || {};
+          ms.appendChild(loc(cc.file_name));
+          var pre = el("pre", "code", str(cc.fixed_code)); ms.appendChild(pre);
+        });
+        box.appendChild(ms);
+      }
+      var runs = el("div", "muted", "First seen " + (str(d.first_seen_run) || "—") + " · last seen " + (str(d.last_seen_run) || "—") + (d.run_state ? " · " + (RUNSTATE_LABEL[d.run_state] || d.run_state) : ""));
+      box.appendChild(runs);
+    }
+
+    renderLegacyMatch(box, f);
+    renderTriage(box, f);
+    host.replaceChildren(box);
+    var ta = $("note-input");
+    if (focusedNote && ta && !ta.disabled) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+  }
+
+  function renderLegacyMatch(box, f) {
+    var d = f.d, lid = str(d.legacy_match);
+    if (!lid) return;
+    var lg = legacyDoc(lid);
+    if (d.legacy_decision === "merged") { box.appendChild(el("div", "muted", "Merged with old audit item " + lid + ".")); return; }
+    if (d.legacy_decision === "split") { box.appendChild(el("div", "muted", "Kept apart from old audit item " + lid + ".")); return; }
+    var c = el("div", "callout");
+    add(c, el("strong", null, "Matches an old audit item — check"),
+      el("span", null, "The import thinks this is the same weakness as old item " + lid + ". Merge them if it is, split them if it is not."));
+    if (lg) {
+      add(c, el("span", null, "Old item status: " + (STATUS_LABEL[lg.d.status] || str(lg.d.status) || "—")), para(str(lg.d.note) || "No note."));
+    } else {
+      c.appendChild(el("span", null, "The old item legacy-" + lid + " is not in the report, so it cannot be merged."));
+    }
+    if (canWrite()) {
+      var line = el("div", "line");
+      if (S.confirmMerge === f.id && lg) {
+        add(c, el("span", null, "Merging sets this finding's status to " + (STATUS_LABEL[lg.d.status] || str(lg.d.status) || "—") + " and its note to the old item's note, and removes " + lid + " from the list."));
+        var yes = el("button", "btn primary", "Merge"); yes.type = "button";
+        var no = el("button", "btn", "Cancel"); no.type = "button";
+        yes.disabled = !!S.busy[f.id];
+        yes.addEventListener("click", function () { doMerge(f.id); });
+        no.addEventListener("click", function () { S.confirmMerge = null; renderDetail(); });
+        add(line, yes, no);
+      } else {
+        var m = el("button", "btn", "Merged"); m.type = "button"; m.disabled = !lg || !!S.busy[f.id];
+        var s = el("button", "btn", "Split"); s.type = "button"; s.disabled = !!S.busy[f.id];
+        m.addEventListener("click", function () { S.confirmMerge = f.id; renderDetail(); });
+        s.addEventListener("click", function () { write(f.id, [[f.id, { legacy_decision: "split" }]], "Kept apart."); });
+        add(line, m, s);
+      }
+      c.appendChild(line);
+    }
+    box.appendChild(c);
+  }
+
+  function renderTriage(box, f) {
+    var d = f.d, t = el("section", "triage");
+    t.appendChild(el("h3", null, "Triage"));
+    if (!canWrite()) {
+      add(t, para("Status: " + (STATUS_LABEL[d.status] || str(d.status) || "—")), para("Note: " + (str(d.note) || "—")));
+      box.appendChild(t); return;
+    }
+    var busy = !!S.busy[f.id];
+    var line = el("div", "line");
+    var lab = el("label", null, "Status"); lab.htmlFor = "status-select";
+    var sel = el("select"); sel.id = "status-select"; sel.disabled = busy;
+    STATUS.forEach(function (s) { var o = el("option", null, STATUS_LABEL[s]); o.value = s; sel.appendChild(o); });
+    if (STATUS.indexOf(d.status) < 0) { var o = el("option", null, str(d.status) || "—"); o.value = str(d.status); sel.insertBefore(o, sel.firstChild); }
+    sel.value = str(d.status);
+    sel.addEventListener("change", function () { if (sel.value !== d.status) write(f.id, [[f.id, { status: sel.value }]], "Status saved."); });
+    add(line, lab, sel);
+    if (d.verdict === "rejected" && !isActive(d)) {
+      var disp = el("button", "btn", "Dispute — re-check next run"); disp.type = "button"; disp.disabled = busy;
+      disp.title = "Reopens this finding. The next run hands it back to the engine to validate again.";
+      disp.addEventListener("click", function () { write(f.id, [[f.id, { status: "open" }]], "Reopened. Add a note saying why the verifier is wrong; the next run re-checks it."); });
+      line.appendChild(disp);
+    }
+    t.appendChild(line);
+    if (d.verdict === "rejected") {
+      t.appendChild(el("div", "muted", isActive(d)
+        ? "Disputed: the next run asks the engine to validate this again. Your note goes with it."
+        : "The verifier rejected this. Reopening it (status Open or In progress) disputes the rejection."));
+    }
+    var nl = el("label", null, "Note"); nl.htmlFor = "note-input";
+    var ta = el("textarea"); ta.id = "note-input"; ta.disabled = busy;
+    ta.value = Object.prototype.hasOwnProperty.call(S.drafts, f.id) ? S.drafts[f.id] : str(d.note);
+    var save = el("button", "btn primary", "Save note"); save.type = "button";
+    function sync() { save.disabled = busy || ta.value === str(d.note); }
+    ta.addEventListener("input", function () { S.drafts[f.id] = ta.value; sync(); });
+    save.addEventListener("click", function () { var v = ta.value; write(f.id, [[f.id, { note: v }]], "Note saved.", function () { delete S.drafts[f.id]; }); });
+    sync();
+    var nline = el("div", "line"); nline.appendChild(save);
+    var m = S.msg[f.id]; if (m) nline.appendChild(el("span", m.cls, m.text));
+    add(t, nl, ta, nline);
+    box.appendChild(t);
+  }
+
+  // Sequential owner writes (each `update` names owner fields only).
+  function write(id, ops, okText, onOk) {
+    if (!canWrite() || S.busy[id]) return Promise.resolve(false);
+    S.busy[id] = true; S.msg[id] = null; renderDetail();
+    var chain = Promise.resolve();
+    ops.forEach(function (op) { chain = chain.then(function () { return S.db.collection("findings").doc(op[0]).update(op[1]); }); });
+    return chain.then(function () {
+      S.busy[id] = false; S.msg[id] = { text: okText, cls: "ok" }; S.confirmMerge = null;
+      if (onOk) onOk();
+      lastDetailKey = null; render(); return true;
+    }, function (e) {
+      S.busy[id] = false;
+      if (e && e.code === "invalid_argument" && !S.isOwnerConfirmed) S.readOnlyForced = true;
+      S.msg[id] = { text: "Not saved: " + errText(e), cls: "err" };
+      lastDetailKey = null; render(); return false;
+    });
+  }
+
+  // Merged (spec §7): the legacy row gets merged_into first (it leaves the list), then the
+  // finding takes the legacy row's status and note and records legacy_decision. Retrying
+  // after a failure of the second write is safe: both writes are idempotent.
+  function doMerge(id) {
+    var f = findById(id); if (!f) return;
+    var lg = legacyDoc(f.d.legacy_match); if (!lg) return;
+    var take = { legacy_decision: "merged" };
+    if (str(lg.d.status)) take.status = lg.d.status;
+    take.note = str(lg.d.note);
+    write(id, [[lg.id, { merged_into: id }], [id, take]], "Merged with " + f.d.legacy_match + ".", function () { delete S.drafts[id]; });
+  }
+
+  function renderRejected() {
+    var box = clear($("rejected"));
+    var q = $("f-q").value.trim().toLowerCase();
+    var all = S.findings.filter(inRejectedFold);
+    var rows = all.filter(function (f) { return matchesSearch(f, q); }).sort(function (a, b) { return titleOf(a).localeCompare(titleOf(b)); });
+    $("rejected-sum").textContent = "Rejected (" + all.length + ")";
+    box.appendChild(el("p", "muted", "The engine's verifier rejected these. Open one and choose “Dispute — re-check next run” if you think the verifier is wrong."));
+    if (!rows.length) { box.appendChild(el("div", "empty", all.length ? "No rejected finding matches the search." : "Nothing rejected.")); return; }
+    rows.forEach(function (f) { box.appendChild(rowFor(f)); });
+  }
+
+  function renderCoverage() {
+    var box = clear($("coverage")), r = curRun();
+    if (!r) { box.appendChild(el("p", "muted", "No run selected.")); return; }
+    var d = r.d, c = obj(d.coverage) || {};
+    var tw = el("div", "tablewrap"), t = el("table"), thead = el("tr"), tb = el("tr");
+    ["Covered", "Deferred", "Out of scope", "Blocked"].forEach(function (h) { thead.appendChild(el("th", null, h)); });
+    ["covered", "deferred", "out_of_scope", "blocked"].forEach(function (k) { tb.appendChild(el("td", null, c[k] || 0)); });
+    add(t, thead, tb); tw.appendChild(t);
+    box.appendChild(tw);
+    var notes = [];
+    if (d.kind !== "full") notes.push("A Range run looks only at what changed between " + (str(d.from) || "?") + " and " + (str(d.to) || "?") + ". Findings outside that range keep the state an earlier run gave them.");
+    if (d.run_status === "incomplete") notes.push("This run stopped early" + (str(d.incomplete_reason) ? " (" + d.incomplete_reason + ")" : "") + ". Deferred and blocked units were not checked; findings in them were left as they were.");
+    notes.push("Profile " + (str(d.profile) || "—") + ", budget " + (d.budget === undefined || d.budget === null ? "—" : d.budget) + ". The full engine reports stay in the run directory on the machine that ran it.");
+    notes.forEach(function (n) { box.appendChild(para(n)); });
+  }
+
+  function renderRuns() {
+    var box = clear($("runs")), runs = sortedRuns();
+    $("runs-sum").textContent = "Runs (" + runs.length + ")";
+    if (!runs.length) { box.appendChild(el("div", "empty", "No runs imported.")); return; }
+    var tw = el("div", "tablewrap"), t = el("table"), h = el("tr");
+    ["Started", "Kind", "Status", "Commit", "Confirmed", "Needs val.", "Rejected", "New", "Regressed", "Not re-checked"].forEach(function (x) { h.appendChild(el("th", null, x)); });
+    t.appendChild(h);
+    runs.forEach(function (r) {
+      var d = r.d, c = obj(d.counts) || {}, bv = obj(c.by_verdict) || {}, tr = el("tr");
+      [day(d.started_at), d.kind === "full" ? "Full" : "Range " + (str(d.from) || "?") + ".." + (str(d.to) || "?"),
+        d.run_status === "incomplete" ? "incomplete" : "complete", str(d.sha).slice(0, 10),
+        bv.confirmed || 0, bv.needs_validation || 0, bv.rejected || 0, c["new"] || 0, c.regressed || 0, arr(d.disputed_not_revalidated).length
+      ].forEach(function (v) { tr.appendChild(el("td", null, v)); });
+      t.appendChild(tr);
+    });
+    tw.appendChild(t); box.appendChild(tw);
+  }
+
+  // ----- wiring -----
+  $("run-select").addEventListener("change", function () { S.runId = this.value; lastDetailKey = null; render(); });
+  ["f-sev", "f-status", "f-verdict", "f-new"].forEach(function (id) { $(id).addEventListener("change", function () { renderList(); }); });
+  $("f-q").addEventListener("input", function () { renderList(); renderRejected(); });
+
+  function start() {
+    if (!window.claude || typeof window.claude.use !== "function") { fail("This page has to be opened on claude.ai to read the audit data."); return; }
+    window.claude.use("user").then(function (u) {
+      if (!u) return;
+      return u.isOwner().then(function (o) { S.isOwner = !!o; S.isOwnerConfirmed = !!o; lastDetailKey = null; render(); });
+    }).catch(function () {});
+    window.claude.use("db").then(function (db) {
+      if (!db) { fail("This view cannot open the audit data. Sign in to claude.ai with an account that can see this page."); return; }
+      S.db = db;
+      db.collection("runs").onSnapshot(function (snap) {
+        S.runs = toRows(snap); if (!snap.metadata.fromCache) S.runsLoaded = true; render();
+      }, function (e) { fail(errText(e)); });
+      db.collection("findings").onSnapshot(function (snap) {
+        S.findings = toRows(snap); if (!snap.metadata.fromCache) S.findingsLoaded = true; render();
+      }, function (e) { fail(errText(e)); });
+    }, function (e) { fail(errText(e)); });
+  }
+  start();
+})();
+</script>
