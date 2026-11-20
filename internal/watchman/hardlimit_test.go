@@ -180,6 +180,96 @@ func TestParkedBy(t *testing.T) {
 		{"gh pr review", bash("gh pr review 3 --approve"), LimitOutward},
 		{"gh issue comment", bash("gh issue comment 3 -b hi"), LimitOutward},
 		{"gh pr create", bash("gh pr create --fill"), ""},
+		{"jira comment", PermissionAsk{Tool: "mcp__claude_ai_Atlassian__addCommentToJiraIssue", WorkbenchFolder: "/w"}, LimitOutward},
+		{"jira create", PermissionAsk{Tool: "mcp__claude_ai_Atlassian__createJiraIssue", WorkbenchFolder: "/w"}, LimitOutward},
+		{"jira edit", PermissionAsk{Tool: "mcp__atlassian__editJiraIssue", WorkbenchFolder: "/w"}, LimitOutward},
+		{"jira transition", PermissionAsk{Tool: "mcp__claude_ai_Atlassian__transitionJiraIssue", WorkbenchFolder: "/w"}, LimitOutward},
+		{"confluence page create", PermissionAsk{Tool: "mcp__claude_ai_Atlassian__createConfluencePage", WorkbenchFolder: "/w"}, LimitOutward},
+		{"confluence page update", PermissionAsk{Tool: "mcp__claude_ai_Atlassian__updateConfluencePage", WorkbenchFolder: "/w"}, LimitOutward},
+		{"confluence footer comment", PermissionAsk{Tool: "mcp__claude_ai_Atlassian__createConfluenceFooterComment", WorkbenchFolder: "/w"}, LimitOutward},
+		{"confluence inline comment", PermissionAsk{Tool: "mcp__claude_ai_Atlassian__createConfluenceInlineComment", WorkbenchFolder: "/w"}, LimitOutward},
+		{"jira read", PermissionAsk{Tool: "mcp__claude_ai_Atlassian__getJiraIssue", WorkbenchFolder: "/w"}, ""},
+		{"jira search", PermissionAsk{Tool: "mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql", WorkbenchFolder: "/w"}, ""},
+		{"confluence read", PermissionAsk{Tool: "mcp__claude_ai_Atlassian__getConfluencePage", WorkbenchFolder: "/w"}, ""},
+		{"confluence comments read", PermissionAsk{Tool: "mcp__claude_ai_Atlassian__getConfluencePageFooterComments", WorkbenchFolder: "/w"}, ""},
+		{"slack canvas create", PermissionAsk{Tool: "mcp__claude_ai_Slack__slack_create_canvas", WorkbenchFolder: "/w"}, LimitOutward},
+		{"slack canvas update", PermissionAsk{Tool: "mcp__claude_ai_Slack__slack_update_canvas", WorkbenchFolder: "/w"}, LimitOutward},
+		{"slack canvas read", PermissionAsk{Tool: "mcp__claude_ai_Slack__slack_read_canvas", WorkbenchFolder: "/w"}, ""},
+		{"slack channel read", PermissionAsk{Tool: "mcp__claude_ai_Slack__slack_read_channel", WorkbenchFolder: "/w"}, ""},
+		{"linear create issue", PermissionAsk{Tool: "mcp__linear__create_issue", WorkbenchFolder: "/w"}, LimitOutward},
+		{"linear comment", PermissionAsk{Tool: "mcp__claude_ai_Linear__create_comment", WorkbenchFolder: "/w"}, LimitOutward},
+		{"linear save issue", PermissionAsk{Tool: "mcp__linear__save_issue", WorkbenchFolder: "/w"}, LimitOutward},
+		{"linear update issue", PermissionAsk{Tool: "mcp__Linear__update_issue", WorkbenchFolder: "/w"}, LimitOutward},
+		{"linear read", PermissionAsk{Tool: "mcp__linear__get_issue", WorkbenchFolder: "/w"}, ""},
+		{"linear list", PermissionAsk{Tool: "mcp__linear__list_issues", WorkbenchFolder: "/w"}, ""},
+		{"github create issue", PermissionAsk{Tool: "mcp__github__create_issue", WorkbenchFolder: "/w"}, LimitOutward},
+		{"github issue comment", PermissionAsk{Tool: "mcp__github__add_issue_comment", WorkbenchFolder: "/w"}, LimitOutward},
+		{"github review", PermissionAsk{Tool: "mcp__github__create_and_submit_pull_request_review", WorkbenchFolder: "/w"}, LimitOutward},
+		{"github issue_write", PermissionAsk{Tool: "mcp__plugin_github_github__issue_write", WorkbenchFolder: "/w"}, LimitOutward},
+		{"github read", PermissionAsk{Tool: "mcp__github__get_issue", WorkbenchFolder: "/w"}, ""},
+		{"github pr create is the agent's workflow", PermissionAsk{Tool: "mcp__github__create_pull_request", WorkbenchFolder: "/w"}, ""},
+		{"github pr update is the agent's workflow", PermissionAsk{Tool: "mcp__github__update_pull_request", WorkbenchFolder: "/w"}, ""},
+		{"workbench comment stays inside", PermissionAsk{Tool: "mcp__watchtower-workbench__add_comment", WorkbenchFolder: "/w"}, ""},
+		{"watchtower jira read", PermissionAsk{Tool: "mcp__watchtower__get_jira_issue", WorkbenchFolder: "/w"}, ""},
+		{"gh issue create", bash("gh issue create -t x -b y"), LimitOutward},
+		{"gh -R issue create", bash("gh -R acme/x issue create --title x"), LimitOutward},
+		{"gh issue close with comment", bash("gh issue close 3 -c done"), LimitOutward},
+		{"gh pr close --comment=", bash("gh pr close 3 --comment=bye"), LimitOutward},
+		{"gh issue view", bash("gh issue view 3"), ""},
+		{"gh issue list", bash("gh issue list --state open"), ""},
+		{"gh api comment body", bash("gh api repos/acme/x/issues/3/comments -f body=hi"), LimitOutward},
+		{"gh api --raw-field body", bash("gh api -X POST repos/acme/x/issues/3/comments --raw-field body=hi"), LimitOutward},
+		{"gh api --field=body", bash("gh api repos/acme/x/issues/3/comments --field=body=hi"), LimitOutward},
+		{"gh api -Fbody", bash("gh api repos/acme/x/issues -Fbody=hi -f title=x"), LimitOutward},
+		{"gh api graphql mutation body", bash(`gh api graphql -f query='mutation { addComment(input: {subjectId: "X", body: "hi"}) { clientMutationId } }'`), LimitOutward},
+		{"gh api GET", bash("gh api repos/acme/x/issues/3/comments"), ""},
+		{"gh api graphql read", bash(`gh api graphql -f query='{ repository(owner: "acme", name: "x") { issue(number: 3) { body } } }'`), ""},
+		{"gh api GET with fields still parks", bash("gh api repos/acme/x/issues -f state=open -X GET"), LimitOutward},
+		{"gh release create is release", bash("gh release create v1"), LimitRelease},
+		{"curl slack webhook", bash("curl -X POST -d @msg.json https://hooks.slack.com/services/T0/B0/x"), LimitOutward},
+		{"wget slack api", bash("wget --post-data=text=hi https://slack.com/api/chat.postMessage"), LimitOutward},
+		{"curl elsewhere", bash("curl -s https://example.com/status"), ""},
+		{"gh api --input file", bash("gh api repos/acme/x/issues/3/comments --input body.json"), LimitUnreadable},
+		{"gh api --input stdin", bash("echo x | gh api repos/acme/x/issues/3/comments --input -"), LimitUnreadable},
+		{"gh api -X POST title", bash("gh api -X POST repos/acme/x/issues -f title=x"), LimitOutward},
+		{"gh api -XPOST attached", bash("gh api -XPOST repos/acme/x/issues/3/lock"), LimitOutward},
+		{"gh api --method=DELETE", bash("gh api --method=DELETE repos/acme/x/issues/comments/9"), LimitOutward},
+		{"gh api --method put", bash("gh api --method put repos/acme/x/pulls/3/merge"), LimitMainRef},
+		{"gh api review event", bash("gh api repos/acme/x/pulls/3/reviews -f event=APPROVE"), LimitOutward},
+		{"gh api graphql variables", bash(`gh api graphql -f query='mutation($i: AddCommentInput!) { addComment(input: $i) { clientMutationId } }' -F 'i[body]=hi'`), LimitOutward},
+		{"gh api graphql title-only mutation", bash(`gh api graphql -f query='mutation { createIssue(input: {repositoryId: "R", title: "x"}) { issue { id } } }'`), LimitOutward},
+		{"gh api graphql Mutation case", bash(`gh api graphql -f query='MUTATION { x }'`), LimitOutward},
+		{"gh api -Fbody attached", bash("gh api repos/acme/x/issues/3/comments -Fbody=hi"), LimitOutward},
+		{"gh api -if cluster", bash("gh api repos/acme/x/issues/3/comments -if body=hi"), LimitOutward},
+		{"gh api -iFbody cluster", bash("gh api repos/acme/x/issues/3/comments -iFbody=hi"), LimitOutward},
+		{"gh api GET issues", bash("gh api repos/acme/x/issues"), ""},
+		{"gh api -X GET", bash("gh api -X GET repos/acme/x/issues --paginate"), ""},
+		{"gh api -i jq read", bash("gh api -i repos/acme/x/issues -q .[].title"), ""},
+		{"gh api graphql query", bash(`gh api graphql -f query='query{viewer{login}}'`), ""},
+		{"atlassian jira_add_comment", PermissionAsk{Tool: "mcp__atlassian__jira_add_comment", WorkbenchFolder: "/w"}, LimitOutward},
+		{"mcp-atlassian confluence_add_comment", PermissionAsk{Tool: "mcp__mcp-atlassian__confluence_add_comment", WorkbenchFolder: "/w"}, LimitOutward},
+		{"atlassian worklog", PermissionAsk{Tool: "mcp__claude_ai_Atlassian__addWorklogToJiraIssue", WorkbenchFolder: "/w"}, LimitOutward},
+		{"jira server delete", PermissionAsk{Tool: "mcp__jira__delete_issue", WorkbenchFolder: "/w"}, LimitOutward},
+		{"linear save_project", PermissionAsk{Tool: "mcp__linear__save_project", WorkbenchFolder: "/w"}, LimitOutward},
+		{"github merge_pull_request", PermissionAsk{Tool: "mcp__github__merge_pull_request", WorkbenchFolder: "/w"}, LimitOutward},
+		{"github push_files", PermissionAsk{Tool: "mcp__github__push_files", WorkbenchFolder: "/w"}, LimitOutward},
+		{"confluence comment children read", PermissionAsk{Tool: "mcp__claude_ai_Atlassian__getConfluenceCommentChildren", WorkbenchFolder: "/w"}, ""},
+		{"atlassian lookup", PermissionAsk{Tool: "mcp__claude_ai_Atlassian__lookupJiraAccountId", WorkbenchFolder: "/w"}, ""},
+		{"linear list_comments", PermissionAsk{Tool: "mcp__linear__list_comments", WorkbenchFolder: "/w"}, ""},
+		{"github search", PermissionAsk{Tool: "mcp__github__search_issues", WorkbenchFolder: "/w"}, ""},
+		{"other server add", PermissionAsk{Tool: "mcp__acme__add_note", WorkbenchFolder: "/w"}, ""},
+		{"curl webhook env", bash(`curl -d @m.json "$SLACK_WEBHOOK_URL"`), LimitOutward},
+		{"curl webhook braced env", bash(`curl -d @m.json "${TEAM_Webhook}"`), LimitOutward},
+		{"curl uppercase hooks host", bash("curl -X POST -d @m.json https://HOOKS.SLACK.COM/services/x"), LimitOutward},
+		{"curl chat.update", bash("curl -d ts=1 https://slack.com/api/chat.update"), LimitOutward},
+		{"curl chat.getPermalink", bash("curl 'https://slack.com/api/chat.getPermalink?channel=C&message_ts=1'"), ""},
+		{"gh pr close -dc", bash("gh pr close 3 -dc bye"), LimitOutward},
+		{"gh issue close -r", bash("gh issue close 3 -r completed"), ""},
+		{"gh issue close attached repo", bash("gh issue close 3 -Racme/repo"), ""},
+		{"gh pr close -dRrepo", bash("gh pr close 3 -dRacme/c"), ""},
+		{"gh pr reopen -c", bash("gh pr reopen 3 -c hi"), LimitOutward},
+		{"gh api -X=GET", bash("gh api -X=GET repos/acme/repo/issues"), ""},
+		{"gh api -X=POST", bash("gh api -X=POST repos/acme/repo/issues/3/lock"), LimitOutward},
 		{"gh issue close", bash("gh issue close 3"), ""},
 		{"gh pr edit", bash("gh pr edit 3 --title x"), ""},
 		{"echo testflight", bash("echo testflight"), ""},
@@ -674,6 +764,17 @@ func TestParkedBy_HeredocIdiomAndMoreHiddenShapes(t *testing.T) {
 	both("rm of a parent path", "make x & rm ../other/file", LimitUnreadable)
 	both("rm of a home path", "make x & rm ~/notes", LimitUnreadable)
 	both("rm of a relative path", "make x & rm build.log", "")
+	// Outward words of the release audit 0.29.0: a webhook, a body field, a new issue.
+	both("background slack webhook", "make x & curl -d @m.json https://hooks.slack.com/services/x", LimitUnreadable)
+	both("background gh api body", "make x & gh api repos/acme/x/issues/1/comments -f body=hi", LimitUnreadable)
+	both("background slack chat api", "make x & curl https://slack.com/api/chat.postMessage -d text=hi", LimitUnreadable)
+	both("background gh api read", "make x & gh api repos/acme/x/issues", LimitUnreadable)
+	both("background gh issue close", "make x & gh issue close 3", LimitUnreadable)
+	both("background slack webhook variable", `make x & curl -d @m "$SLACK_WEBHOOK_URL"`, LimitUnreadable)
+	both("background gh pr reopen", "make x & gh pr reopen 3 -c hi", LimitUnreadable)
+	both("background grep body=", "make x & grep -rn 'body=' internal", "")
+	both("body from a substitution", "body=$(cat f)", "")
+	both("background gh issue create", "make x & gh issue create -t x", LimitUnreadable)
 	// A shell on a pipe.
 	add("pipe into bash -s arg", bash("make gen | bash -s arg"), LimitUnreadable)
 	add("pipe into bash -o x script", bash("make gen | bash -o pipefail scripts/apply.sh"), "")
@@ -705,7 +806,9 @@ func TestParkedBy_HeredocIdiomAndMoreHiddenShapes(t *testing.T) {
 	both("commit heredoc then variable program", "git commit -m "+push+" && $RUN", LimitUnreadable)
 	both("echo is no message taker", "echo \"$(cat <<'EOF'\nrelease notes\nEOF\n)\"", LimitUnreadable)
 	both("git tag -a heredoc still a tag", "git tag -a v1 -m \"$(cat <<'EOF'\nfirst cut\nEOF\n)\"", LimitUnreadable)
-	both("gh issue create heredoc", "gh issue create --title x --body \"$(cat <<'EOF'\npush it before the release\nEOF\n)\"", "")
+	// A new issue is outward (release audit 0.29.0): like git tag -a above,
+	// the hidden heredoc then parks with a limit word in sight.
+	both("gh issue create heredoc", "gh issue create --title x --body \"$(cat <<'EOF'\npush it before the release\nEOF\n)\"", LimitUnreadable)
 	both("gh pr edit heredoc", "gh pr edit 3 --body \"$(cat <<'EOF'\nreview after the push\nEOF\n)\"", "")
 	both("commit heredoc then a plain command", "git commit -m \"$(cat <<'EOF'\nrelease notes\nEOF\n)\" && go test ./...", "")
 	// rm: .. is a parent only as a path segment.

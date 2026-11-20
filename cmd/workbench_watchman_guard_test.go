@@ -47,6 +47,33 @@ func TestWATCHMAN01_HardLimitsDeniedWhileArmed(t *testing.T) {
 		{watchman.LimitResetShared, bash("git reset --hard origin/feature/x")},
 		{watchman.LimitDeleteOutside, bash("rm -rf /etc/acme")},
 		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__watchtower-workbench__send_slack_message", Summary: `{"text":"hi"}`}},
+		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__claude_ai_Atlassian__addCommentToJiraIssue", Summary: `{}`}},
+		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__claude_ai_Atlassian__createJiraIssue", Summary: `{}`}},
+		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__claude_ai_Atlassian__updateConfluencePage", Summary: `{}`}},
+		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__claude_ai_Slack__slack_create_canvas", Summary: `{}`}},
+		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__linear__create_comment", Summary: `{}`}},
+		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__github__add_issue_comment", Summary: `{}`}},
+		{watchman.LimitOutward, bash("gh issue create -t x -b y")},
+		{watchman.LimitOutward, bash("gh api repos/acme/x/issues/3/comments -f body=hi")},
+		{watchman.LimitOutward, bash("curl -X POST -d @m.json https://hooks.slack.com/services/x")},
+		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__atlassian__jira_add_comment", Summary: `{}`}},
+		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__mcp-atlassian__confluence_add_comment", Summary: `{}`}},
+		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__linear__save_project", Summary: `{}`}},
+		{watchman.LimitOutward, watchman.PermissionAsk{Tool: "mcp__github__merge_pull_request", Summary: `{}`}},
+		{watchman.LimitUnreadable, bash("gh api repos/acme/x/issues/3/comments --input body.json")},
+		{watchman.LimitUnreadable, bash("echo x | gh api repos/acme/x/issues/3/comments --input -")},
+		{watchman.LimitOutward, bash("gh api -X POST repos/acme/x/issues -f title=x")},
+		{watchman.LimitOutward, bash("gh api repos/acme/x/pulls/3/reviews -f event=APPROVE")},
+		{watchman.LimitOutward, bash(`gh api graphql -f query='mutation($i: AddCommentInput!) { addComment(input: $i) { clientMutationId } }' -F 'i[body]=hi'`)},
+		{watchman.LimitOutward, bash(`gh api graphql -f query='mutation { createIssue(input: {repositoryId: "R", title: "x"}) { issue { id } } }'`)},
+		{watchman.LimitOutward, bash("gh api repos/acme/x/issues/3/comments -Fbody=hi")},
+		{watchman.LimitOutward, bash("gh api repos/acme/x/issues/3/comments -if body=hi")},
+		{watchman.LimitOutward, bash(`curl -d @m.json "$SLACK_WEBHOOK_URL"`)},
+		{watchman.LimitOutward, bash("curl -X POST -d @m.json https://HOOKS.SLACK.COM/services/x")},
+		{watchman.LimitOutward, bash("gh pr close 3 -dc bye")},
+		{watchman.LimitUnreadable, watchman.PermissionAsk{Tool: "Bash", Summary: "make x & curl https://slack.com/api/chat.postMessage -d text=hi", WorkbenchFolder: "/wb", Worktrees: []string{"/wt"}, Lenient: true, Branch: &watchman.BranchInfo{Current: "feature/x"}}},
+		{watchman.LimitUnreadable, watchman.PermissionAsk{Tool: "Bash", Summary: `make x & curl -d @m "$SLACK_WEBHOOK_URL"`, WorkbenchFolder: "/wb", Worktrees: []string{"/wt"}, Lenient: true, Branch: &watchman.BranchInfo{Current: "feature/x"}}},
+		{watchman.LimitUnreadable, watchman.PermissionAsk{Tool: "Bash", Summary: "make x & gh pr reopen 3 -c hi", WorkbenchFolder: "/wb", Worktrees: []string{"/wt"}, Lenient: true, Branch: &watchman.BranchInfo{Current: "feature/x"}}},
 		{watchman.LimitStandingGrant, file("Write", "/wt/.claude/settings.local.json")},
 		{watchman.LimitOutsideFolder, file("Edit", "/etc/hosts")},
 		{watchman.LimitOwner, bash("terraform apply -auto-approve")},
@@ -70,6 +97,26 @@ func TestWATCHMAN01_HardLimitsDeniedWhileArmed(t *testing.T) {
 	// An ordinary call is allowed while armed.
 	deny, _ := watchmanGuardDecision(hookEvent{ToolName: "Bash"}, true, bash("go test ./internal/db"), extra)
 	assert.False(t, deny)
+	// Reads of the outward tool families are allowed while armed.
+	for _, ask := range []watchman.PermissionAsk{
+		{Tool: "mcp__claude_ai_Atlassian__getJiraIssue", Summary: `{}`},
+		{Tool: "mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql", Summary: `{}`},
+		{Tool: "mcp__claude_ai_Slack__slack_read_channel", Summary: `{}`},
+		{Tool: "mcp__linear__get_issue", Summary: `{}`},
+		{Tool: "mcp__github__get_issue", Summary: `{}`},
+		bash("gh issue view 3"),
+		bash("gh api repos/acme/x/issues/3/comments"),
+		bash("gh api repos/acme/x/issues"),
+		bash(`gh api graphql -f query='query{viewer{login}}'`),
+		bash("gh issue close 3 -Racme/repo"),
+		bash("gh api -X=GET repos/acme/repo/issues"),
+		bash(`curl 'https://slack.com/api/chat.getPermalink?channel=C&message_ts=1'`),
+		{Tool: "mcp__watchtower-workbench__add_comment", Summary: `{}`},
+		{Tool: "Bash", Summary: "make x & grep -rn 'body=' internal", WorkbenchFolder: "/wb", Worktrees: []string{"/wt"}, Lenient: true},
+	} {
+		deny, limit := watchmanGuardDecision(hookEvent{ToolName: ask.Tool}, true, ask, extra)
+		assert.False(t, deny, "%s %s: %s", ask.Tool, ask.Summary, limit)
+	}
 }
 
 // countingGuardStore records each store call the guard makes.

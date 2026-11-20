@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"watchtower/internal/db"
 )
@@ -851,9 +852,10 @@ func lenientLimitHit(summary string) bool {
 
 // limitWords are the words of the actions the hard-limit table covers (a
 // merge, push, tag, release, send-pack, reset, forced branch move,
-// update-ref, rm -r/-f, an upload, a message or comment others see): a
-// hidden shape in the guard's mode parks only with one of them in sight.
-var limitWords = regexp.MustCompile(`(?i)(^|[^a-z0-9_])(merges?|mergepullrequest|automerge|push|tags?|release|send-pack|reset|rebase|update-ref|altool|testflight|itmstransporter|pilot|upload_to_testflight|mail|mailx|sendmail|mutt|comment|review)([^a-z0-9_]|$)|rm\s+-[a-z]*[rf]|(^|[^a-z0-9_])rm(\s+-\S+)*\s+['"]?(/|\.\.([/\s'";|&)]|$)|~)|(branch|checkout|switch)\s+-[a-z]*[fdmcb]`)
+// update-ref, rm -r/-f, an upload, a message, comment, issue, gh api call
+// or Slack post others see): a hidden shape in the guard's mode parks only with one
+// of them in sight.
+var limitWords = regexp.MustCompile(`(?i)(^|[^a-z0-9_])(merges?|mergepullrequest|automerge|push|tags?|release|send-pack|reset|rebase|update-ref|altool|testflight|itmstransporter|pilot|upload_to_testflight|mail|mailx|sendmail|mutt|comment|review)([^a-z0-9_]|$)|hooks\.slack\.com|slack\.com/api/chat\.|\$\{?[a-z0-9_]*webhook|gh\s+api|issue\s+create|(issue|pr)\s+(close|reopen)|rm\s+-[a-z]*[rf]|(^|[^a-z0-9_])rm(\s+-\S+)*\s+['"]?(/|\.\.([/\s'";|&)]|$)|~)|(branch|checkout|switch)\s+-[a-z]*[fdmcb]`)
 
 // lenientScanText is what the guard's mode scans for limitWords and its
 // merge backstop: the command text (comments and description lines
@@ -1556,17 +1558,45 @@ func matchDeleteOutside(r PermissionAsk) bool {
 	})
 }
 
-// outwardTools are the MCP tools whose effect other people see.
-var outwardTools = []string{"send_slack_message", "slack_send_message", "slack_send_message_draft", "slack_schedule_message", "slack_add_reaction"}
+// outwardTools are the MCP tools whose effect other people see, matched by
+// suffix whatever the server is called (claude.ai connectors, a local
+// server): Slack messages, reactions and canvases, Jira issues and
+// comments, Confluence pages and comments.
+var outwardTools = []string{
+	"send_slack_message", "slack_send_message", "slack_send_message_draft", "slack_schedule_message", "slack_add_reaction",
+	"slack_create_canvas", "slack_update_canvas",
+	"addCommentToJiraIssue", "createJiraIssue", "editJiraIssue", "transitionJiraIssue",
+	"createConfluencePage", "updateConfluencePage", "createConfluenceFooterComment", "createConfluenceInlineComment",
+}
+
+// trackerServers are fragments of MCP server names for shared trackers and
+// wikis: a tool of theirs whose name holds a write verb (trackerWriteVerbs)
+// and does not start with a read verb changes what others see. The
+// workbench's own server (add_comment stays inside it) is none of them.
+var (
+	trackerServers    = []string{"atlassian", "jira", "confluence", "linear", "github"}
+	trackerWriteVerbs = []string{"create", "update", "add", "edit", "transition", "save", "post", "submit", "write", "delete", "merge", "push", "comment", "reply", "publish"}
+	trackerReadVerbs  = []string{"get", "list", "search", "fetch", "read", "lookup"}
+	// trackerOwnWorkflow are the tools that open or edit the agent's own PR,
+	// which pass as gh pr create/edit do (spec §4).
+	trackerOwnWorkflow = map[string]bool{"create_pull_request": true, "update_pull_request": true}
+)
 
 // mailTools are fragments of MCP mail-sending tool names.
 var mailTools = []string{"send_email", "send_mail", "email_send", "mail_send", "send_draft", "draft_send"}
+
+// slackPost: a curl or wget argument that posts to Slack — an incoming
+// webhook, a chat.* write method, or a variable named like a webhook URL.
+var slackPost = regexp.MustCompile(`(?i)hooks\.slack\.com|slack\.com/api/chat\.(postmessage|update|schedulemessage|postephemeral|memessage|delete)|\$\{?[a-z0-9_]*webhook`)
 
 func matchOutward(r PermissionAsk) bool {
 	for _, t := range outwardTools {
 		if strings.HasSuffix(r.Tool, t) {
 			return true
 		}
+	}
+	if trackerWrite(r.Tool) {
+		return true
 	}
 	name := strings.ToLower(r.Tool[strings.LastIndex(r.Tool, "__")+1:])
 	if slices.ContainsFunc(mailTools, func(f string) bool { return strings.Contains(name, f) }) ||
@@ -1577,13 +1607,156 @@ func matchOutward(r PermissionAsk) bool {
 		switch c.w[0] {
 		case "mail", "mailx", "sendmail", "mutt":
 			return true
+		case "curl", "wget":
+			return slices.ContainsFunc(c.w[1:], slackPost.MatchString)
 		}
-		if verb, ok := c.ghCmd("pr"); ok && (verb == "comment" || verb == "review") {
+		if verb, ok := c.ghCmd("pr"); ok && (verb == "comment" || verb == "review" || closeComment(c, verb)) {
 			return true
 		}
-		verb, ok := c.ghCmd("issue")
-		return ok && verb == "comment"
+		if verb, ok := c.ghCmd("issue"); ok && (verb == "comment" || verb == "create" || closeComment(c, verb)) {
+			return true
+		}
+		args, ok := c.sub("gh", "api")
+		return ok && ghAPIWrite(args)
 	})
+}
+
+// trackerWrite: an MCP tool of a trackerServers server whose name words
+// (snake_case or camelCase) hold a write verb, unless the first is a read
+// verb (getConfluenceCommentChildren reads).
+func trackerWrite(tool string) bool {
+	rest, ok := strings.CutPrefix(tool, "mcp__")
+	i := strings.LastIndex(rest, "__")
+	if !ok || i < 0 {
+		return false
+	}
+	server, name := strings.ToLower(rest[:i]), rest[i+2:]
+	if !slices.ContainsFunc(trackerServers, func(f string) bool { return strings.Contains(server, f) }) {
+		return false
+	}
+	if trackerOwnWorkflow[strings.ToLower(name)] {
+		return false
+	}
+	words := nameWords(name)
+	if len(words) == 0 || slices.Contains(trackerReadVerbs, words[0]) {
+		return false
+	}
+	return slices.ContainsFunc(words, func(w string) bool { return slices.Contains(trackerWriteVerbs, w) })
+}
+
+// nameWords splits a tool name at _, - and lower-to-upper case changes,
+// lower-cased: addCommentToJiraIssue → add comment to jira issue.
+func nameWords(name string) []string {
+	var words []string
+	var cur []rune
+	flush := func() {
+		if len(cur) > 0 {
+			words = append(words, strings.ToLower(string(cur)))
+			cur = cur[:0]
+		}
+	}
+	prevLower := false
+	for _, ch := range name {
+		switch {
+		case ch == '_' || ch == '-' || ch == '.':
+			flush()
+			prevLower = false
+			continue
+		case unicode.IsUpper(ch) && prevLower:
+			flush()
+		}
+		cur = append(cur, ch)
+		prevLower = unicode.IsLower(ch) || unicode.IsDigit(ch)
+	}
+	flush()
+	return words
+}
+
+// closeComment: gh pr|issue close|reopen with a comment (-c, --comment, or
+// c in a short-option cluster such as -dc, before any option that takes a
+// value: -Racme/c is a repository).
+func closeComment(c shellCmd, verb string) bool {
+	if verb != "close" && verb != "reopen" {
+		return false
+	}
+	return slices.ContainsFunc(c.w, func(a string) bool {
+		if a == "--comment" || strings.HasPrefix(a, "--comment=") {
+			return true
+		}
+		if !strings.HasPrefix(a, "-") || strings.HasPrefix(a, "--") {
+			return false
+		}
+		for _, o := range a[1:] {
+			switch o {
+			case 'c':
+				return true
+			case 'R', 'r': // -R repo, -r reason: the rest is their value
+				return false
+			}
+		}
+		return false
+	})
+}
+
+// ghAPIValued are gh api's options that take a value; -f/-F/--field/
+// --raw-field/--input send one (gh then POSTs) and -X/--method set the
+// method. ghAPIShortValued are their one-letter forms.
+var (
+	ghAPIValued      = map[string]bool{"--method": true, "--field": true, "--raw-field": true, "--input": true, "--header": true, "--jq": true, "--template": true, "--hostname": true, "--cache": true, "--preview": true}
+	ghAPIShortValued = "XfFHpqt"
+)
+
+// ghAPIWrite: a gh api call that is no read — a method other than GET, or
+// any field or input (gh POSTs them). The graphql endpoint always POSTs;
+// it writes only with a mutation in the call.
+func ghAPIWrite(args []string) bool {
+	var method, endpoint string
+	fields := false
+	set := func(opt, val string) {
+		switch opt {
+		case "--method", "X":
+			method = val
+		case "--field", "--raw-field", "--input", "f", "F":
+			fields = true
+		}
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			if endpoint == "" && i+1 < len(args) {
+				endpoint = args[i+1]
+			}
+			i = len(args)
+		case strings.HasPrefix(a, "--"):
+			name, val, attached := strings.Cut(a, "=")
+			if !attached && ghAPIValued[name] && i+1 < len(args) {
+				i++
+				val = args[i]
+			}
+			set(name, val)
+		case strings.HasPrefix(a, "-") && len(a) > 1:
+			for j := 1; j < len(a); j++ {
+				opt := string(a[j])
+				if !strings.Contains(ghAPIShortValued, opt) {
+					continue
+				}
+				val := strings.TrimPrefix(a[j+1:], "=")
+				if a[j+1:] == "" && i+1 < len(args) {
+					i++
+					val = args[i]
+				}
+				set(opt, val)
+				break
+			}
+		case endpoint == "":
+			endpoint = a
+		}
+	}
+	if strings.TrimPrefix(endpoint, "/") == "graphql" {
+		return slices.ContainsFunc(args, func(a string) bool { return strings.Contains(strings.ToLower(a), "mutation") })
+	}
+	return fields || (method != "" && !strings.EqualFold(method, "GET"))
 }
 
 // plainPathTools show the file path alone as their summary; jsonPathTools
