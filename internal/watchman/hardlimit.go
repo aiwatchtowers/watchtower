@@ -855,7 +855,7 @@ func lenientLimitHit(summary string) bool {
 // update-ref, rm -r/-f, an upload, a message, comment, issue, gh api call
 // or Slack post others see): a hidden shape in the guard's mode parks only with one
 // of them in sight.
-var limitWords = regexp.MustCompile(`(?i)(^|[^a-z0-9_])(merges?|mergepullrequest|automerge|push|tags?|release|send-pack|reset|rebase|update-ref|altool|testflight|itmstransporter|pilot|upload_to_testflight|mail|mailx|sendmail|mutt|comment|review)([^a-z0-9_]|$)|hooks\.slack\.com|slack\.com/api/chat\.|gh\s+api|issue\s+create|(issue|pr)\s+close|rm\s+-[a-z]*[rf]|(^|[^a-z0-9_])rm(\s+-\S+)*\s+['"]?(/|\.\.([/\s'";|&)]|$)|~)|(branch|checkout|switch)\s+-[a-z]*[fdmcb]`)
+var limitWords = regexp.MustCompile(`(?i)(^|[^a-z0-9_])(merges?|mergepullrequest|automerge|push|tags?|release|send-pack|reset|rebase|update-ref|altool|testflight|itmstransporter|pilot|upload_to_testflight|mail|mailx|sendmail|mutt|comment|review)([^a-z0-9_]|$)|hooks\.slack\.com|slack\.com/api/chat\.|\$\{?[a-z0-9_]*webhook|gh\s+api|issue\s+create|(issue|pr)\s+(close|reopen)|rm\s+-[a-z]*[rf]|(^|[^a-z0-9_])rm(\s+-\S+)*\s+['"]?(/|\.\.([/\s'";|&)]|$)|~)|(branch|checkout|switch)\s+-[a-z]*[fdmcb]`)
 
 // lenientScanText is what the guard's mode scans for limitWords and its
 // merge backstop: the command text (comments and description lines
@@ -1673,7 +1673,8 @@ func nameWords(name string) []string {
 }
 
 // closeComment: gh pr|issue close|reopen with a comment (-c, --comment, or
-// c in a short-option cluster such as -dc).
+// c in a short-option cluster such as -dc, before any option that takes a
+// value: -Racme/c is a repository).
 func closeComment(c shellCmd, verb string) bool {
 	if verb != "close" && verb != "reopen" {
 		return false
@@ -1682,7 +1683,18 @@ func closeComment(c shellCmd, verb string) bool {
 		if a == "--comment" || strings.HasPrefix(a, "--comment=") {
 			return true
 		}
-		return strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a[1:], "c")
+		if !strings.HasPrefix(a, "-") || strings.HasPrefix(a, "--") {
+			return false
+		}
+		for _, o := range a[1:] {
+			switch o {
+			case 'c':
+				return true
+			case 'R', 'r': // -R repo, -r reason: the rest is their value
+				return false
+			}
+		}
+		return false
 	})
 }
 
@@ -1729,8 +1741,8 @@ func ghAPIWrite(args []string) bool {
 				if !strings.Contains(ghAPIShortValued, opt) {
 					continue
 				}
-				val := a[j+1:]
-				if val == "" && i+1 < len(args) {
+				val := strings.TrimPrefix(a[j+1:], "=")
+				if a[j+1:] == "" && i+1 < len(args) {
 					i++
 					val = args[i]
 				}

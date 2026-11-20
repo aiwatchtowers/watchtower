@@ -265,6 +265,11 @@ func TestParkedBy(t *testing.T) {
 		{"curl chat.getPermalink", bash("curl 'https://slack.com/api/chat.getPermalink?channel=C&message_ts=1'"), ""},
 		{"gh pr close -dc", bash("gh pr close 3 -dc bye"), LimitOutward},
 		{"gh issue close -r", bash("gh issue close 3 -r completed"), ""},
+		{"gh issue close attached repo", bash("gh issue close 3 -Racme/repo"), ""},
+		{"gh pr close -dRrepo", bash("gh pr close 3 -dRacme/c"), ""},
+		{"gh pr reopen -c", bash("gh pr reopen 3 -c hi"), LimitOutward},
+		{"gh api -X=GET", bash("gh api -X=GET repos/acme/repo/issues"), ""},
+		{"gh api -X=POST", bash("gh api -X=POST repos/acme/repo/issues/3/lock"), LimitOutward},
 		{"gh issue close", bash("gh issue close 3"), ""},
 		{"gh pr edit", bash("gh pr edit 3 --title x"), ""},
 		{"echo testflight", bash("echo testflight"), ""},
@@ -765,6 +770,8 @@ func TestParkedBy_HeredocIdiomAndMoreHiddenShapes(t *testing.T) {
 	both("background slack chat api", "make x & curl https://slack.com/api/chat.postMessage -d text=hi", LimitUnreadable)
 	both("background gh api read", "make x & gh api repos/acme/x/issues", LimitUnreadable)
 	both("background gh issue close", "make x & gh issue close 3", LimitUnreadable)
+	both("background slack webhook variable", `make x & curl -d @m "$SLACK_WEBHOOK_URL"`, LimitUnreadable)
+	both("background gh pr reopen", "make x & gh pr reopen 3 -c hi", LimitUnreadable)
 	both("background grep body=", "make x & grep -rn 'body=' internal", "")
 	both("body from a substitution", "body=$(cat f)", "")
 	both("background gh issue create", "make x & gh issue create -t x", LimitUnreadable)
