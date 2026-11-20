@@ -27,13 +27,17 @@ final class SessionFeedStoreTests: XCTestCase {
         subagents: String = "",
         activity: String = "null",
         before: String? = nil,
-        paths: [String]? = nil
+        paths: [String]? = nil,
+        live: Bool = false
     ) -> String {
         let beforeKey = before.map { #","before":"\#($0)""# } ?? ""
         let pathsKey = paths.map { #","paths":[\#($0.map { "\"\($0)\"" }.joined(separator: ","))]"# } ?? ""
+        let liveKey = live
+            ? #","live_ok":true,"live":{"observed_at":"2026-11-02T12:00:00Z","turn_active":true,"agents":[],"agents_state":"known"}"#
+            : ""
         return """
         {"session_id":7,"cursor":"\(cursor)","entries":[\(entries)],"subagents":[\(subagents)],
-         "activity":\(activity),"skipped":0,"unknown_records":{}\(beforeKey)\(pathsKey)}
+         "activity":\(activity),"skipped":0,"unknown_records":{}\(beforeKey)\(pathsKey)\(liveKey)}
         """
     }
 
@@ -556,7 +560,7 @@ final class SessionFeedStoreTests: XCTestCase {
     }
 
     /// A runner whose every read lists the conversation file.
-    private func pathsRunner() -> GateRunner { GateRunner([payload(paths: [conv])]) }
+    private func pathsRunner() -> GateRunner { GateRunner([payload(paths: [conv], live: true)]) }
 
     /// Follows on screen until the first read and its reconcile read are done.
     private func startFollowing(
@@ -667,7 +671,7 @@ final class SessionFeedStoreTests: XCTestCase {
     }
 
     func testFollowWithoutPathsFallsBackToTheTick() async {
-        let runner = GateRunner([payload(), payload(), payload(paths: [conv])])
+        let runner = GateRunner([payload(), payload(), payload(paths: [conv], live: true)])
         let (store, source, clock) = watchedStore(runner)
         let task = Task { await store.follow(isActive: { true }, isOnScreen: { true }) }
         await settle { runner.calls.count == 1 && clock.pendingTimers == 1 }
@@ -686,8 +690,9 @@ final class SessionFeedStoreTests: XCTestCase {
     }
 
     func testAFailedReadKeepsTheTickUntilAReadSucceeds() async {
-        let runner = FakeRunner([.success(payload(paths: [conv])), .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))]
-                                + Array(repeating: .success(payload(paths: [conv])), count: 5))
+        let runner = FakeRunner([.success(payload(paths: [conv], live: true)),
+                                 .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))]
+                                + Array(repeating: .success(payload(paths: [conv], live: true)), count: 5))
         let (store, source, clock) = watchedStore(runner)
         let task = Task { await store.follow(isActive: { true }, isOnScreen: { true }) }
         await settle { runner.calls.count == 1 && !source.openPaths.isEmpty }
@@ -706,7 +711,8 @@ final class SessionFeedStoreTests: XCTestCase {
 
     func testANewConversationFileIsReadWithoutAStateChange() async {
         let conv2 = "/p/proj/s2.jsonl"
-        let runner = GateRunner([payload(paths: [conv]), payload(paths: [conv]), payload(paths: [conv, conv2])])
+        let runner = GateRunner([payload(paths: [conv], live: true), payload(paths: [conv], live: true),
+                                 payload(paths: [conv, conv2], live: true)])
         let (store, source, clock) = watchedStore(runner)
         let task = await startFollowing(store, runner, source, clock)
         // /clear: a new conversation file appears in the conversation directory.
@@ -759,7 +765,7 @@ final class SessionFeedStoreTests: XCTestCase {
 
     func testComingBackWithAFailingReadKeepsTheTick() async {
         let runner = FakeRunner([.failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))]
-                                + Array(repeating: .success(payload(paths: [conv])), count: 5))
+                                + Array(repeating: .success(payload(paths: [conv], live: true)), count: 5))
         let (store, source, clock) = watchedStore(runner)
         let screen = Flag(false)
         let task = Task { await store.follow(isActive: { true }, isOnScreen: { screen.value }) }
@@ -828,8 +834,8 @@ final class SessionFeedStoreTests: XCTestCase {
                 + #"{"tool_use_id":"tu1","agent_id":"a1","type":"general","description":"d","status":"\#(status)"}}"#
         }
         let paths = [conv, dir, "\(dir)/agent-a1.jsonl"]
-        let runner = GateRunner([payload(subagents: marker("running"), paths: paths),
-                                 payload(subagents: marker("finished"), paths: paths)])
+        let runner = GateRunner([payload(subagents: marker("running"), paths: paths, live: true),
+                                 payload(subagents: marker("finished"), paths: paths, live: true)])
         let (store, source, clock) = watchedStore(runner)
         let task = Task { await store.follow(isActive: { true }, isOnScreen: { true }) }
         await settle { source.openPaths.count == 4 }
@@ -844,7 +850,7 @@ final class SessionFeedStoreTests: XCTestCase {
 
     func testSubagentFollowReadsOnItsTranscriptEvents() async {
         let child = "/p/proj/s1/subagents/agent-a1.jsonl"
-        let runner = GateRunner([payload(paths: [child, conv])])
+        let runner = GateRunner([payload(paths: [child, conv], live: true)])
         let (store, source, clock) = watchedStore(runner)
         let running = Flag(true)
         let task = Task {
@@ -940,9 +946,9 @@ final class SessionFeedStoreTests: XCTestCase {
         let child = "/p/proj/s1/subagents/agent-a1.jsonl"
         let runner = FakeRunner([
             .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")),
-            .success(payload(paths: [conv])),
-            .success(payload(paths: [child])),
-            .success(payload(paths: [conv]))
+            .success(payload(paths: [conv], live: true)),
+            .success(payload(paths: [child], live: true)),
+            .success(payload(paths: [conv], live: true))
         ])
         let (store, source, clock) = watchedStore(runner)
         let running = Flag(true)
@@ -958,6 +964,61 @@ final class SessionFeedStoreTests: XCTestCase {
         await settle()
         XCTAssertTrue(store.isSubagentWatched("tu1"), "both reads succeeded since: watched")
         running.value = false
+        task.cancel()
+        await task.value
+    }
+
+    func testAReadWithoutItsLiveHintKeepsTheFallbackUntilOneHasIt() async {
+        let runner = GateRunner([payload(paths: [conv]), payload(paths: [conv], live: true)])
+        let (store, source, clock) = watchedStore(runner)
+        let task = Task { await store.follow(isActive: { true }, isOnScreen: { true }) }
+        await settle { runner.calls.count == 1 && !source.openPaths.isEmpty }
+        await settle()
+        XCTAssertFalse(store.isLiveWatched, "the feed read but not its live hint: the tick stays armed")
+        clock.advance(by: .seconds(1))
+        await settle { runner.calls.count == 2 && store.isLiveWatched }
+        XCTAssertTrue(store.isLiveWatched, "a read with the hint: healthy")
+        task.cancel()
+        await task.value
+    }
+
+    func testSubagentReadWithoutItsLiveHintKeepsTheFallback() async {
+        let child = "/p/proj/s1/subagents/agent-a1.jsonl"
+        let runner = GateRunner([payload(paths: [child]), payload(paths: [child], live: true)])
+        let (store, source, clock) = watchedStore(runner)
+        let running = Flag(true)
+        let task = Task {
+            await store.followSubagent("tu1", isRunning: { running.value }, isOnScreen: { true }, onEntries: { _ in })
+        }
+        await settle { runner.calls.count == 1 && !source.openPaths.isEmpty }
+        await settle()
+        XCTAssertFalse(store.isSubagentWatched("tu1"))
+        clock.advance(by: .seconds(1))
+        await settle { runner.calls.count == 2 && store.isSubagentWatched("tu1") }
+        XCTAssertTrue(store.isSubagentWatched("tu1"))
+        running.value = false
+        task.cancel()
+        await task.value
+    }
+
+    /// An open child that finished: a resume is written into its sidecar,
+    /// which stays watched.
+    func testAnOpenFinishedChildKeepsItsSidecarWatched() async {
+        let dir = "/p/proj/s1/subagents"
+        let child = "\(dir)/agent-a1.jsonl", sidecar = "\(dir)/agent-a1.meta.json", other = "\(dir)/agent-a2.meta.json"
+        let runner = GateRunner([payload(paths: [child, sidecar, other, conv], live: true)])
+        let (store, source, clock) = watchedStore(runner)
+        let task = Task {
+            await store.followSubagent("tu1", isRunning: { true }, isOnScreen: { true }, onEntries: { _ in })
+        }
+        await settle { runner.calls.count == 1 && !source.openPaths.isEmpty }
+        XCTAssertEqual(source.openPaths, [child, sidecar, dir], "its own sidecar, not another finished agent's")
+        clock.advance(by: .seconds(1))
+        await settle { runner.calls.count == 2 }
+        source.fire(sidecar)
+        clock.advance(by: .seconds(1))
+        await settle { runner.calls.count == 3 }
+        XCTAssertEqual(runner.calls.count, 3, "a write to the sidecar is read")
         task.cancel()
         await task.value
     }

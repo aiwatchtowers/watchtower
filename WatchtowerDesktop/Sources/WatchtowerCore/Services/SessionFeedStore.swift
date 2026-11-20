@@ -81,6 +81,8 @@ package final class SessionFeedStore: ObservableObject {
     private var nextFollower = 0
     /// `paths` of the last good main read.
     private var readPaths: [String] = []
+    /// The last good main read carried its live hint (`live_ok`).
+    private var mainLiveOK = false
     /// The running subagent follows' watches, by tool-use id.
     private var subagentWatches: [String: SubagentWatch] = [:]
 
@@ -221,7 +223,10 @@ package final class SessionFeedStore: ObservableObject {
             }
             error = nil
             readPaths = payload.paths
-            mainWatch.update(mainTargets())
+            // A read without its live hint shows "unavailable": the tick
+            // runs until one with the hint succeeds.
+            mainLiveOK = payload.liveOK
+            mainWatch.update(mainTargets(), readFailed: !payload.liveOK)
         } catch {
             mainWatch.markReadFailed()
             self.error = error.localizedDescription
@@ -397,7 +402,7 @@ package final class SessionFeedStore: ObservableObject {
         func readChild() async {
             do {
                 let result = try await subagentFeed(toolUseID)
-                watch.childRead(Self.subagentTargets(result.paths, live: result.live))
+                watch.childRead(Self.childTargets(result.paths, live: result.live), ok: result.liveError == nil)
                 guard !Task.isCancelled, isCurrentObservation() else { return }
                 if isSessionActive != nil {
                     let status = observation.receiveOwn(snapshot: result.live, entries: result.entries,
@@ -426,7 +431,7 @@ package final class SessionFeedStore: ObservableObject {
                 // Only the immediate parent, never a tree-wide fan-out.
                 do {
                     let result = try await subagentFeed(parentToolUseID)
-                    watch.parentRead(Self.subagentTargets(result.paths, live: result.live))
+                    watch.parentRead(Self.subagentTargets(result.paths, live: result.live), ok: result.liveError == nil)
                     guard !Task.isCancelled, isCurrentObservation() else { return nil }
                     onError(result.liveError)
                     return result.liveError == nil ? result.live : nil
@@ -437,7 +442,7 @@ package final class SessionFeedStore: ObservableObject {
                 }
             } else if readsMainFeed || isSessionActive != nil {
                 await poller.refresh()
-                if error == nil { watch.parentRead(mainTargets()) } else { watch.parentFailed() }
+                if error == nil { watch.parentRead(mainTargets(), ok: mainLiveOK) } else { watch.parentFailed() }
                 return liveError == nil ? live : nil
             }
             return nil
@@ -478,6 +483,19 @@ package final class SessionFeedStore: ObservableObject {
 
     /// What one subagent read says to watch: its own transcript (the read's
     /// first path) and the nested agents it lists as running.
+    /// The open child's targets: also its sidecar (`agent-<id>.meta.json`)
+    /// when the read listed it, finished or not, so a resume written there
+    /// is seen.
+    private static func childTargets(_ paths: [String], live: SessionFeedLive?) -> TranscriptWatchTargets {
+        var targets = subagentTargets(paths, live: live)
+        if let transcript = paths.first, (transcript as NSString).lastPathComponent.hasPrefix("agent-"),
+           let id = TranscriptWatch.fileID(transcript) {
+            let sidecar = ((transcript as NSString).deletingLastPathComponent as NSString).appendingPathComponent("agent-\(id).meta.json")
+            if paths.contains(sidecar) { targets.current.append(sidecar) }
+        }
+        return targets
+    }
+
     private static func subagentTargets(_ paths: [String], live: SessionFeedLive?) -> TranscriptWatchTargets {
         let running = liveRunning(live)
         return TranscriptWatchTargets(paths: paths, current: paths.first.map { [$0] } ?? [], running: running, mustCover: running)
@@ -616,9 +634,10 @@ private final class SubagentWatch {
         }
     }
 
-    func childRead(_ targets: TranscriptWatchTargets) { child = targets; childFailing = false; push() }
+    /// A read came back; `ok` false: without its live hint, which keeps the tick.
+    func childRead(_ targets: TranscriptWatchTargets, ok: Bool) { child = targets; childFailing = !ok; push() }
     func childFailed() { childFailing = true; push() }
-    func parentRead(_ targets: TranscriptWatchTargets) { parent = targets; parentFailing = false; push() }
+    func parentRead(_ targets: TranscriptWatchTargets, ok: Bool) { parent = targets; parentFailing = !ok; push() }
     func parentFailed() { parentFailing = true; push() }
 
     private func push() {
