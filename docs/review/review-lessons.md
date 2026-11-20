@@ -3258,3 +3258,12 @@ Entry format:
 - weak-dimension: none. The test's doc honestly says the latch wait is pinned only probabilistically, and the mutation results back that up.
 - rule-gap (evidence for the 2026-11-19 dim-7 candidate): the "relaxed assertion names its new home" pattern worked. The relaxed test's doc now points at the new test by name. Worth promoting.
 - outcome: TBD
+
+## 2026-11-20 — fix/clirunner-strict-pool-hang (34d2bb82d: AGENT-07 guard `processRunnerRegistersOwnerLaunch` de-hung — release by a written line instead of a bare FIFO EOF, the 2 s poll replaced by event ordering (256 KiB stdout forces the drain, which starts after `register`), a held-open fallback reader so an early-failing run cannot strand the blocking writer open; test-only plus one comment in CLIRunner.swift; panel: prosecutor (3, all fixed) + codex (1, same as F1, fixed); pr-review-toolkit specialists unavailable; judge verified by reading, author's mutations (binary at /nonexistent, register removed) both fail fast) — verdict: approve
+
+- contested: none. F1 (prosecutor) and codex's single finding were the same race, and the fix's own comment ("a FIFO reader can miss the EOF of an open-then-close writer") made F2's critique of the open/close fallback self-evident. [7]
+- false-positive: none. All three prosecutor findings held and were fixed in 34d2bb82d.
+- miss: none late. Codex independently found the round-1 race and also cleared the ordering, F_SETNOSIGPIPE, CLOEXEC and catch-path reasoning, which agreed with the prosecutor.
+- weak-dimension: none. The guard kept every assertion it had before (hasLive while the child runs, revoked after it exits, consume refused), so no inventory guard was weakened.
+- rule-gap (candidate, dim 7): *a test that gates a child process on a FIFO/pipe releases it with data (a line), not only with the writer's close, and every fallback opener it adds to avoid a blocking open is held open until the blocked side has returned; open-then-close-at-once is the tell.* Also worth keeping: when a test depends on production ordering (register before drain), the production line names the test, as F3 asked.
+- outcome: TBD

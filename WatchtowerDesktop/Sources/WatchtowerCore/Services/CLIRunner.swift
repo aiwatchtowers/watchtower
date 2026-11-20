@@ -304,6 +304,8 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
             try process.run()
             // A command the Desktop starts is the owner's (AGENT-07, board
             // #568): its owner-only gesture is confirmed without a window.
+            // Registered before the drains below start: the AGENT-07 guard
+            // (`processRunnerRegistersOwnerLaunch`) relies on that order.
             OwnerConfirmGrants.shared.register(args, pid: process.processIdentifier)
         } catch {
             // The binary store mid-replace, or a copy that lost its exec bit:
