@@ -74,3 +74,72 @@ func TestModeTracker_OnReadsDefaultsAndChanges(t *testing.T) {
 		t.Fatal("2004 reset reads on")
 	}
 }
+
+// Claude Code switches the kitty keyboard protocol and modifyOtherKeys on at
+// start; a viewer attaching later must get both, or Shift+Return reaches the
+// agent as a plain Return.
+func TestModeTracker_ReplaysKeyboardModes(t *testing.T) {
+	var m ModeTracker
+	m.Observe([]byte("\x1b[?u\x1b[>0q\x1b[>5u\x1b[>4;2m"))
+	m.Observe([]byte(strings.Repeat("x", 1<<20)))
+	if got := string(m.ReplayPrefix()); got != "\x1b[>5u\x1b[>4;2m" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestModeTracker_KeyboardPopAndReset(t *testing.T) {
+	var m ModeTracker
+	m.Observe([]byte("\x1b[>5u\x1b[>4;2m"))
+	m.Observe([]byte("\x1b[<u\x1b[>4m"))
+	if got := m.ReplayPrefix(); len(got) != 0 {
+		t.Fatalf("after pop and reset got %q", got)
+	}
+	m.Observe([]byte("\x1b[>1u\x1b[>3u\x1b[<5u"))
+	if got := m.ReplayPrefix(); len(got) != 0 {
+		t.Fatalf("pop past the stack got %q", got)
+	}
+}
+
+func TestModeTracker_KeyboardSetModes(t *testing.T) {
+	var m ModeTracker
+	m.Observe([]byte("\x1b[=1u\x1b[=4;2u\x1b[>8u"))
+	if got := string(m.ReplayPrefix()); got != "\x1b[=5;1u\x1b[>8u" {
+		t.Fatalf("got %q", got)
+	}
+	m.Observe([]byte("\x1b[<u\x1b[=1;3u"))
+	if got := string(m.ReplayPrefix()); got != "\x1b[=4;1u" {
+		t.Fatalf("after pop and clear got %q", got)
+	}
+}
+
+func TestModeTracker_KeyboardSplitSequence(t *testing.T) {
+	var m ModeTracker
+	m.Observe([]byte("\x1b[>"))
+	m.Observe([]byte("5"))
+	m.Observe([]byte("u"))
+	if got := string(m.ReplayPrefix()); got != "\x1b[>5u" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// Each screen keeps its own keyboard state; the alternate screen's replays
+// after the switch to it, the normal one's before.
+func TestModeTracker_KeyboardPerScreen(t *testing.T) {
+	var m ModeTracker
+	m.Observe([]byte("\x1b[>1u\x1b[?1049h\x1b[>5u\x1b[?2004h"))
+	if got := string(m.ReplayPrefix()); got != "\x1b[>1u\x1b[?1049h\x1b[>5u\x1b[?2004h" {
+		t.Fatalf("on the alternate screen got %q", got)
+	}
+	m.Observe([]byte("\x1b[?1049l"))
+	if got := string(m.ReplayPrefix()); got != "\x1b[>1u\x1b[?2004h" {
+		t.Fatalf("back on the normal screen got %q", got)
+	}
+}
+
+func TestModeTracker_KeyboardStackBounded(t *testing.T) {
+	var m ModeTracker
+	m.Observe([]byte(strings.Repeat("\x1b[>1u", 3*maxKeyboardStack)))
+	if n := len(m.keyboard[0].stack); n != maxKeyboardStack {
+		t.Fatalf("stack = %d", n)
+	}
+}

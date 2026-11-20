@@ -370,7 +370,7 @@ func TestServer_AttachTakesOver(t *testing.T) {
 func TestServer_AttachReplaysModes(t *testing.T) {
 	path := startServer(t, Options{})
 	c1 := dial(t, path)
-	c1.launch(1, `printf '\033[?2004h'; echo hi; sleep 5`)
+	c1.launch(1, `printf '\033[>5u\033[?2004h\033[>4;2m'; echo hi; sleep 5`)
 	c1.outputUntil(func(s string) bool { return strings.Contains(s, "hi") })
 	_ = c1.nc.Close()
 
@@ -378,7 +378,8 @@ func TestServer_AttachReplaysModes(t *testing.T) {
 	c2.send(Attach, AttachReq{Row: 1, Run: "r1"})
 	c2.expect(Attached)
 	ft, p := c2.read()
-	if ft != Output || !strings.HasPrefix(string(p), "\x1b[?2004h") || !strings.Contains(string(p), "hi") {
+	// The keyboard modes come back too, so Shift+Return still arrives as itself.
+	if ft != Output || !strings.HasPrefix(string(p), "\x1b[>5u\x1b[?2004h\x1b[>4;2m") || !strings.Contains(string(p), "hi") {
 		t.Fatalf("replay = %#x %q, want the mode prefix then the tail", ft, p)
 	}
 }
