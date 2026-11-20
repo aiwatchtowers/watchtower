@@ -55,8 +55,12 @@ type Feed struct {
 	Cursor    Cursor
 	Skipped   int
 	Unknown   map[string]int
-	// Paths lists the transcripts this call parsed, in ledger order: a
-	// conversation before the cursor or without a file is not among them.
+	// Paths lists every file and directory this call read for its output,
+	// in first-read order: each transcript parsed (none before the cursor),
+	// each Claude conversation's subagents directory and agent-*.meta.json
+	// sidecars (earlier conversations' too: their markers are listed), and
+	// each Codex rollout and child rollout read for the subagents list
+	// (before the cursor too).
 	Paths []string
 }
 
@@ -67,6 +71,7 @@ type Feed struct {
 // callers upsert by ID.
 func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 	feed := &Feed{Unknown: map[string]int{}}
+	reads := &readSet{}
 	if after != nil {
 		feed.Cursor = *after
 	}
@@ -90,7 +95,7 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 	read := false // an earlier conversation counts as read
 	for i, c := range convs {
 		if afterIdx >= 0 && i < afterIdx {
-			addSubagents(subagentMarkers(c), false)
+			addSubagents(subagentMarkers(c, reads), false)
 			read = true
 			continue
 		}
@@ -103,13 +108,13 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 			return nil, err
 		}
 		if res == nil {
-			addSubagents(subagentMarkers(c), false)
+			addSubagents(subagentMarkers(c, reads), false)
 			continue
 		}
-		feed.Paths = append(feed.Paths, c.Path)
+		reads.add(c.Path)
 		ResolveSubagents(strings.TrimSuffix(c.Path, ".jsonl"), res.Entries)
 		addSubagents(res.Entries, true)
-		addSubagents(subagentMarkers(c), false)
+		addSubagents(subagentMarkers(c, reads), false)
 		if read && start == 0 {
 			feed.Entries = append(feed.Entries, separatorEntry(c.AgentSessionID, res.Entries))
 		}
@@ -120,6 +125,7 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 		addCounts(feed.Unknown, res.Unknown)
 	}
 	fillAskAnswers(feed.Entries, asks)
+	feed.Paths = reads.list
 	return feed, nil
 }
 
@@ -223,15 +229,22 @@ func parseCodexFile(c Conversation, start int64) (*Result, error) {
 // subagentMarkers lists a conversation's subagents for the feed: Claude's
 // from the sidecar meta files, Codex's from the rollout's live agents (the
 // same set FindSubagent opens, bounded to the live window). A rollout with no
-// readable activity lists none.
-func subagentMarkers(c Conversation) []Entry {
+// readable activity lists none. What it reads goes into reads; a rollout
+// whose snapshot failed is listed when it exists, so its repair is seen.
+func subagentMarkers(c Conversation, reads *readSet) []Entry {
 	if !c.Codex {
-		return metaMarkers(strings.TrimSuffix(c.Path, ".jsonl"), c.AgentSessionID)
+		out, read := metaMarkers(strings.TrimSuffix(c.Path, ".jsonl"), c.AgentSessionID)
+		reads.add(read...)
+		return out
 	}
 	live, err := LiveOf(c, false, time.Now())
 	if err != nil {
+		if st, e := os.Lstat(c.Path); e == nil && st.Mode().IsRegular() {
+			reads.add(c.Path)
+		}
 		return nil
 	}
+	reads.add(live.paths...)
 	return liveMarkers(live, c.AgentSessionID)
 }
 

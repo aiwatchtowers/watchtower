@@ -75,9 +75,10 @@ type sessionFeedJSON struct {
 	Subagents      []sessionFeedSubagentItemJSON `json:"subagents"`
 	Skipped        int                           `json:"skipped"`
 	UnknownRecords map[string]int                `json:"unknown_records"`
-	// Paths are the absolute files this call read (conversation transcripts,
-	// subagent transcripts) plus the session's subagents directory when it
-	// exists: what a watcher must observe to know the next read differs.
+	// Paths are the absolute files and directories this call read for its
+	// output — every transcript, rollout, agent-*.meta.json sidecar and
+	// subagents directory — so a watcher of them sees every change the next
+	// read would reflect.
 	Paths []string `json:"paths"`
 }
 
@@ -242,14 +243,14 @@ func requireAgentSession(sess *db.TerminalSession) error {
 func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *sessionfeed.Cursor, lookup sessionfeed.AskLookup, sub string, tail int, before string) (sessionFeedJSON, error) {
 	out := sessionFeedJSON{SessionID: id, Entries: []sessionFeedEntryJSON{}, Subagents: []sessionFeedSubagentItemJSON{}, UnknownRecords: map[string]int{}, Paths: []string{}}
 	if sub != "" {
-		res, path, err := sessionfeed.FindSubagent(convs, sub)
+		res, path, reads, err := sessionfeed.FindSubagentReads(convs, sub)
 		if err != nil {
 			return out, err
 		}
 		codex := strings.HasPrefix(sub, "codex:")
 		out.Activity = sessionFeedActivity(path, codex, !codex)
 		live := setSessionFeedLive(&out, sessionfeed.Conversation{Path: path, Codex: codex, AgentSessionID: strings.TrimPrefix(sub, "codex:")}, !codex)
-		out.Paths = sessionFeedPaths([]string{path}, live.Paths())
+		out.Paths = sessionFeedPaths([]string{path}, live.Paths(), reads)
 		var markers []sessionfeed.Entry
 		for _, e := range res.Entries {
 			if e.Kind == sessionfeed.KindSubagent {

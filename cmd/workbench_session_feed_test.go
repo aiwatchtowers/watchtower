@@ -432,20 +432,43 @@ func TestSessionFeed_JSONPrintsPaths(t *testing.T) {
 		feedToolUse("a1", "toolu_1", "Agent", map[string]any{"subagent_type": "Explore", "description": "look"}))
 	subDir := filepath.Join(fx.dir, "conv-1", "subagents")
 	require.NoError(t, os.MkdirAll(subDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(subDir, "agent-aa.meta.json"),
-		[]byte(`{"toolUseId":"toolu_1","finished":false,"agentType":"Explore"}`), 0o600))
+	meta := filepath.Join(subDir, "agent-aa.meta.json")
+	require.NoError(t, os.WriteFile(meta, []byte(`{"toolUseId":"toolu_1","finished":false,"agentType":"Explore"}`), 0o600))
 	agent := filepath.Join(subDir, "agent-aa.jsonl")
 	require.NoError(t, os.WriteFile(agent, []byte(feedUser("s1", "task")), 0o600))
 
 	got := feedPaths(t, fx.feedJSON(t))
-	assert.Equal(t, []string{conv, subDir, agent}, got)
+	assert.Equal(t, []string{conv, subDir, meta, agent}, got)
 	for _, p := range got {
 		assert.True(t, filepath.IsAbs(p), p)
 	}
 
-	// The drill-in reads the subagent's transcript and the same directory.
+	// The drill-in reads the subagent's transcript, the directory and its
+	// sidecars, and the parent transcript it found the marker in.
 	sub := feedPaths(t, fx.feedJSON(t, "--subagent", "toolu_1"))
-	assert.Equal(t, []string{agent, subDir}, sub)
+	assert.Equal(t, agent, sub[0])
+	assert.ElementsMatch(t, []string{agent, subDir, meta, conv}, sub)
+}
+
+// A /clear: conv-1's markers stay in the subagents list, read from its
+// sidecars, so its directory and meta files stay listed — also when the
+// cursor is past conv-1 and when the live snapshot of conv-2 fails.
+func TestSessionFeed_JSONPathsKeepEarlierConversationSidecars(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1", "conv-2")
+	fx.transcript(t, "conv-1", feedUser("u1", "go"),
+		feedToolUse("a1", "toolu_1", "Agent", map[string]any{"subagent_type": "Explore", "description": "look"}))
+	fx.transcript(t, "conv-2", `{"type":"future_record"}`+"\n")
+	subDir := filepath.Join(fx.dir, "conv-1", "subagents")
+	require.NoError(t, os.MkdirAll(subDir, 0o755))
+	meta := filepath.Join(subDir, "agent-aa.meta.json")
+	require.NoError(t, os.WriteFile(meta, []byte(`{"toolUseId":"toolu_1","finished":false,"agentType":"Explore"}`), 0o600))
+	c1, c2 := filepath.Join(fx.dir, "conv-1.jsonl"), filepath.Join(fx.dir, "conv-2.jsonl")
+
+	full := fx.feedJSON(t)
+	assert.Equal(t, false, full["live_ok"], "conv-2 has no activity records: the snapshot fails")
+	assert.Equal(t, []string{c1, subDir, meta, c2}, feedPaths(t, full))
+	after := fx.feedJSON(t, "--after", full["cursor"].(string))
+	assert.Equal(t, []string{subDir, meta, c2}, feedPaths(t, after))
 }
 
 func TestSessionFeed_JSONPathsWithoutSubagentsDir(t *testing.T) {

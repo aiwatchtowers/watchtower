@@ -160,7 +160,8 @@ func TestSubagent_StartedAtFromMetaMtime(t *testing.T) {
 	writeSub(t, dir, "aa", `{"agentType":"Explore","toolUseId":"toolu_1","finished":true}`, "")
 	when := time.Date(2026, 10, 1, 10, 0, 6, 0, time.UTC)
 	require.NoError(t, os.Chtimes(filepath.Join(dir, "subagents", "agent-aa.meta.json"), when, when))
-	out := metaMarkers(dir, "conv")
+	out, read := metaMarkers(dir, "conv")
+	assert.Equal(t, []string{filepath.Join(dir, "subagents"), filepath.Join(dir, "subagents", "agent-aa.meta.json")}, read)
 	require.Len(t, out, 1)
 	assert.True(t, out[0].Subagent.StartedAt.Equal(when))
 }
@@ -169,7 +170,9 @@ func TestSubagent_StartedAtZeroWithoutCallOrMeta(t *testing.T) {
 	mk := Entry{ID: "x", Kind: KindSubagent, Subagent: &SubagentRef{ToolUseID: "x"}}
 	out := ResolveSubagents(filepath.Join(t.TempDir(), "nope"), []Entry{mk})
 	assert.True(t, out[0].Subagent.StartedAt.IsZero())
-	assert.Empty(t, metaMarkers(filepath.Join(t.TempDir(), "nope"), "c"))
+	none, read := metaMarkers(filepath.Join(t.TempDir(), "nope"), "c")
+	assert.Empty(t, none)
+	assert.Empty(t, read)
 }
 
 func TestSubagent_StartedAtFallsBackToMetaWhenCallHasNoTime(t *testing.T) {

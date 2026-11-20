@@ -80,15 +80,16 @@ type subagentMeta struct {
 }
 
 // readMetas reads <sessionDir>/subagents/agent-*.meta.json by toolUseId, in
-// file-name order. Symlinks are never read.
-func readMetas(sessionDir string) (map[string]subagentMeta, []string) {
-	metas := map[string]subagentMeta{}
-	var order []string
+// file-name order. Symlinks are never read. read lists the subagents
+// directory, when it exists, and each meta file opened.
+func readMetas(sessionDir string) (metas map[string]subagentMeta, order, read []string) {
+	metas = map[string]subagentMeta{}
 	dir := filepath.Join(sessionDir, "subagents")
 	fi, err := os.Lstat(dir)
 	if err != nil || !fi.IsDir() {
-		return metas, nil
+		return metas, nil, nil
 	}
+	read = []string{dir}
 	files, _ := filepath.Glob(filepath.Join(dir, "agent-*.meta.json"))
 	sort.Strings(files)
 	for _, f := range files {
@@ -96,6 +97,7 @@ func readMetas(sessionDir string) (map[string]subagentMeta, []string) {
 		if err != nil || !fi.Mode().IsRegular() {
 			continue
 		}
+		read = append(read, f)
 		raw, err := os.ReadFile(f)
 		if err != nil {
 			continue
@@ -111,14 +113,14 @@ func readMetas(sessionDir string) (map[string]subagentMeta, []string) {
 		}
 		metas[m.ToolUseID] = m
 	}
-	return metas, order
+	return metas, order, read
 }
 
 // ResolveSubagents fills AgentID and Status of the subagent markers from
 // <sessionDir>/subagents/agent-<id>.meta.json, matched by toolUseId. Without a
 // meta file the status is "unknown". Symlinks are never read.
 func ResolveSubagents(sessionDir string, entries []Entry) []Entry {
-	metas, _ := readMetas(sessionDir)
+	metas, _, _ := readMetas(sessionDir)
 	for i := range entries {
 		ref := entries[i].Subagent
 		if entries[i].Kind != KindSubagent || ref == nil {
@@ -143,9 +145,10 @@ func ResolveSubagents(sessionDir string, entries []Entry) []Entry {
 	return entries
 }
 
-// metaMarkers builds marker entries from the sidecar meta files alone.
-func metaMarkers(sessionDir, conv string) []Entry {
-	metas, order := readMetas(sessionDir)
+// metaMarkers builds marker entries from the sidecar meta files alone; read
+// is what readMetas read.
+func metaMarkers(sessionDir, conv string) ([]Entry, []string) {
+	metas, order, read := readMetas(sessionDir)
 	var out []Entry
 	for _, id := range order {
 		m := metas[id]
@@ -160,7 +163,7 @@ func metaMarkers(sessionDir, conv string) []Entry {
 			out[len(out)-1].Subagent.Status = StatusFinished
 		}
 	}
-	return out
+	return out, read
 }
 
 // ParseSubagent reads a subagent transcript file into its own feed: the task

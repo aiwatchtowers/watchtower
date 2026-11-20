@@ -79,12 +79,13 @@ func TestLivePathsListWhatTheSnapshotRead(t *testing.T) {
 
 	dir := filepath.Join(root, "s", "subagents")
 	require.NoError(t, os.MkdirAll(dir, 0700))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "agent-a.meta.json"), []byte(`{"toolUseId":"call-a","finished":false}`), 0600))
+	meta := filepath.Join(dir, "agent-a.meta.json")
+	require.NoError(t, os.WriteFile(meta, []byte(`{"toolUseId":"call-a","finished":false}`), 0600))
 	agent := filepath.Join(dir, "agent-a.jsonl")
 	require.NoError(t, os.WriteFile(agent, []byte(assistantRec("a1", "ma", toolUse("read-a", "Read", map[string]any{"file_path": "x.go"}))), 0600))
 	live, err = LiveOf(Conversation{Path: conv, AgentSessionID: "s"}, false, liveNow)
 	require.NoError(t, err)
-	assert.Equal(t, []string{conv, dir, agent}, live.Paths())
+	assert.Equal(t, []string{conv, dir, meta, agent}, live.Paths())
 
 	var none *Live
 	assert.Nil(t, none.Paths())

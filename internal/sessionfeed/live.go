@@ -41,10 +41,11 @@ type Live struct {
 	paths           []string // files and directories this snapshot read, in read order
 }
 
-// Paths lists what the snapshot read: the transcript, the session's
-// subagents directory when it exists (Claude), and each subagent transcript
-// whose tail was read. A watcher of these sees every write the next snapshot
-// would reflect, except a subagent started after this one.
+// Paths lists every file and directory the snapshot read, in read order:
+// the transcript, the session's subagents directory when it exists and each
+// agent-*.meta.json examined (Claude), and each subagent transcript or Codex
+// child rollout whose tail was read. A watcher of these sees every change
+// the next snapshot would reflect; a new sidecar shows as a directory event.
 func (l *Live) Paths() []string {
 	if l == nil {
 		return nil
@@ -247,13 +248,11 @@ func (r *liveReader) claudeLine(line []byte) {
 
 func (r *liveReader) claudeAgents() {
 	sessionDir := r.claudeSessionDir()
-	metas, dirExists, err := readLiveMetas(sessionDir)
+	metas, read, err := readLiveMetas(sessionDir)
 	if err != nil {
 		r.live.AgentsState = "unknown"
 	}
-	if dirExists {
-		r.live.paths = append(r.live.paths, filepath.Join(sessionDir, "subagents"))
-	}
+	r.live.paths = append(r.live.paths, read...)
 	for id, m := range metas {
 		a := r.agents[id]
 		if r.sidechain && a == nil {
@@ -746,23 +745,25 @@ func (r *liveReader) reconcileAgents() {
 
 // Metadata absence is a known empty set; unreadability/malformed files are
 // not. Limit every sidecar read and the number examined during a live poll.
-// The bool reports whether the subagents directory exists.
-func readLiveMetas(sessionDir string) (map[string]subagentMeta, bool, error) {
+// read lists the subagents directory, when it exists, and each meta file
+// examined.
+func readLiveMetas(sessionDir string) (metas map[string]subagentMeta, read []string, err error) {
 	dir := filepath.Join(sessionDir, "subagents")
 	out := map[string]subagentMeta{}
 	st, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return out, false, nil
+		return out, nil, nil
 	}
 	if err != nil {
-		return out, false, err
+		return out, nil, err
 	}
 	if !st.IsDir() {
-		return out, false, fmt.Errorf("subagent metadata is not a directory")
+		return out, nil, fmt.Errorf("subagent metadata is not a directory")
 	}
+	read = []string{dir}
 	files, err := os.ReadDir(dir)
 	if err != nil {
-		return out, true, err
+		return out, read, err
 	}
 	var firstErr error
 	examined := 0
@@ -777,6 +778,7 @@ func readLiveMetas(sessionDir string) (map[string]subagentMeta, bool, error) {
 		}
 		examined++
 		path := filepath.Join(dir, name)
+		read = append(read, path)
 		st, e := os.Lstat(path)
 		if e != nil || !st.Mode().IsRegular() || st.Size() > 64<<10 {
 			firstErr = fmt.Errorf("subagent metadata unavailable")
@@ -805,7 +807,7 @@ func readLiveMetas(sessionDir string) (map[string]subagentMeta, bool, error) {
 		m.agentID = strings.TrimSuffix(strings.TrimPrefix(name, "agent-"), ".meta.json")
 		out[m.ToolUseID] = m
 	}
-	return out, true, firstErr
+	return out, read, firstErr
 }
 
 // Claude stores every descendant beside its parent in the root session's
