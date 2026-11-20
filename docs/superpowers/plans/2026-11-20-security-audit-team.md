@@ -63,7 +63,7 @@ files:
 <sha256>  <path relative to engine/>
 …
 ```
-Manifest lists every file in `engine/` except `VERSION`, sorted by path. Check command (used by the wrapper): `cd engine && sed -n '/^files:$/,$p' VERSION | tail -n +2 | shasum -a 256 -c --quiet` plus `comm -13 <(listed paths) <(find . -type f ! -name VERSION | sed 's|^\./||' | sort)` must print nothing.
+Manifest lists every file in `engine/` except `VERSION`, sorted by path. Check command (used by the wrapper): `cd engine && sed -n '/^files:$/,$p' VERSION | tail -n +2 | shasum -a 256 -c --quiet` plus `LC_ALL=C comm -13 <(sed -n '/^files:$/,$p' VERSION | tail -n +2 | sed 's/^[0-9a-f]*  //' | LC_ALL=C sort) <(find . -type f ! -name VERSION | sed 's|^\./||' | LC_ALL=C sort)` must print nothing (both sides sorted in the C locale — a locale-sorted side reports false unlisted files).
 
 - [ ] **Step 1:** `git clone` upstream into a temp dir, `git checkout c1c8a8c…`, copy `skills/security-audit/*` and `LICENSE` into `engine/` (no `.git`, nothing else).
 - [ ] **Step 2:** Generate `VERSION` from the temp clone (`shasum -a 256` of each copied file, from the clone's copy).
