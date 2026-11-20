@@ -244,3 +244,8 @@ func TestResolve_NoAdditionsWhenNotTaken(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, tmpl, "- Stored line.\n")
 }
+
+func TestMovedToBuiltin_SlackToday(t *testing.T) {
+	assert.Equal(t, "slack-today", MovedToBuiltin[InboxSlackToday])
+	assert.False(t, TakesAdditions(InboxSlackToday))
+}

@@ -150,3 +150,32 @@ func TestMail_BackfilledRowsReachTheIndex(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, im, "the inbox detector still skips the backfilled imap row")
 }
+
+// TestGmail_ThreadDocIncludesOwnerReply: the knowledge side keeps the owner's
+// sent mail — a thread's document holds the received message and the owner's
+// SENT reply in the same thread.
+func TestGmail_ThreadDocIncludesOwnerReply(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	exec(t, d, `INSERT INTO google_accounts (id, email) VALUES (1, 'owner@example.com')`)
+	at := time.Now().UTC().Add(-2 * time.Hour)
+	require.NoError(t, d.UpsertGmailMessage(1, db.GmailMessage{ID: "recv", ThreadID: "t9",
+		FromEmail: "colleague-a@example.com", FromName: "Colleague A", ToJSON: `["owner@example.com"]`, CcJSON: "[]",
+		Subject: "Budget", BodyText: "Can we cut the budget?", LabelsJSON: `["INBOX"]`,
+		InternalDate: at.Format(time.RFC3339), SyncedAt: at.Format(time.RFC3339)}))
+	reply := at.Add(time.Hour)
+	require.NoError(t, d.UpsertGmailMessage(1, db.GmailMessage{ID: "sent", ThreadID: "t9",
+		FromEmail: "owner@example.com", FromName: "Owner", ToJSON: `["colleague-a@example.com"]`, CcJSON: "[]",
+		Subject: "Re: Budget", BodyText: "Yes, by ten percent.", LabelsJSON: `["` + db.GmailSentLabel + `"]`,
+		InternalDate: reply.Format(time.RFC3339), SyncedAt: reply.Format(time.RFC3339)}))
+
+	doc, err := gmailSource{}.Build(ctx, d, "gmail:1:t9")
+	require.NoError(t, err)
+	require.NotNil(t, doc)
+	var text strings.Builder
+	for _, s := range doc.Sections {
+		text.WriteString(s.Text)
+	}
+	assert.Contains(t, text.String(), "Can we cut the budget?")
+	assert.Contains(t, text.String(), "Yes, by ten percent.", "the owner's sent reply is knowledge")
+}

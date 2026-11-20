@@ -259,6 +259,11 @@ package struct Track: FetchableRecord, Identifiable, Equatable {
         return refs.filter { !$0.ts.isEmpty }
     }
 
+    /// The source ref with the highest `ts`: the thread's newest item.
+    package var newestSourceRef: TrackSourceRef? {
+        decodedSourceRefs.max { (Double($0.ts) ?? 0) < (Double($1.ts) ?? 0) }
+    }
+
     package var decodedTags: [String] {
         guard !tags.isEmpty, tags != "[]",
               let data = tags.data(using: .utf8) else { return [] }

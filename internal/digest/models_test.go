@@ -1,6 +1,7 @@
 package digest
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -58,4 +59,17 @@ func TestTierForSource_Watchman(t *testing.T) {
 	assert.Equal(t, TierLight, TierForSource(prompts.WatchmanLabel))
 	assert.Equal(t, TierStrong, TierForSource(prompts.WatchmanJudge))
 	assert.Equal(t, TierStrong, TierForSource(prompts.WatchmanDecide))
+}
+
+// TestLLMLightSourceRoutedOnBothProviders pins the light routing of an
+// automation's llm() call (automation.llm, used by the Slack today built-in)
+// through TierForContext — the function both the Claude generator and the
+// Codex generator call to pick their model. The TierForSource half is already
+// in TestTierForSource; the Codex model pick is in the codex package's
+// TestGenerate_TierRoutingHearsDigestSource.
+func TestLLMLightSourceRoutedOnBothProviders(t *testing.T) {
+	ctx := WithSource(context.Background(), "automation.llm")
+	assert.Equal(t, TierLight, TierForContext(ctx))
+	strong := WithSource(context.Background(), "automation.llm.strong")
+	assert.Equal(t, TierStrong, TierForContext(strong))
 }

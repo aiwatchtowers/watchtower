@@ -1,0 +1,192 @@
+package db
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// GmailSentLabel is the Gmail system label on every message the mailbox owner
+// sent.
+const GmailSentLabel = "SENT"
+
+// GmailOwnSent reports whether a gmail_messages row is the owner's own sent
+// mail: its labels carry SENT, or its sender is the account's own address.
+// labelsJSON is the stored JSON array; the test is a case-sensitive substring
+// match on the quoted label so a user label id that merely contains SENT
+// never counts. Addresses compare as MailSenderKey does (spaces trimmed,
+// ASCII case folded), which is what SQLite's trim and lower do.
+// GmailOwnSentSQL is its SQL twin; the two must decide every row alike.
+func GmailOwnSent(labelsJSON, fromEmail, accountEmail string) bool {
+	if strings.Contains(labelsJSON, `"`+GmailSentLabel+`"`) {
+		return true
+	}
+	account := MailSenderKey(accountEmail)
+	return account != "" && MailSenderKey(fromEmail) == account
+}
+
+// GmailOwnSentSQL returns the SQL twin of GmailOwnSent over the table aliases
+// msg (a gmail_messages row) and acct (its google_accounts row). instr is
+// case-sensitive as strings.Contains is (LIKE would fold ASCII case). Callers
+// pass fixed aliases only, never user input.
+func GmailOwnSentSQL(msg, acct string) string {
+	return `(instr(` + msg + `.labels_json, '"` + GmailSentLabel + `"') > 0 OR (trim(` + acct + `.email) <> '' AND lower(trim(` +
+		msg + `.from_email)) = lower(trim(` + acct + `.email))))`
+}
+
+// GmailSentCatchUpAt returns when the one-time Gmail sent catch-up finished
+// for accountID as stored (RFC 3339 UTC); empty when not yet or when the account
+// does not exist.
+func (db *DB) GmailSentCatchUpAt(accountID int64) (string, error) {
+	var s string
+	err := db.QueryRow(`SELECT gmail_sent_catchup_at FROM google_accounts WHERE id = ?`, accountID).Scan(&s)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("getting gmail sent catch-up stamp for account %d: %w", accountID, err)
+	}
+	return s, nil
+}
+
+// SetGmailSentCatchUpAt stamps the one-time Gmail sent catch-up as finished.
+func (db *DB) SetGmailSentCatchUpAt(accountID int64, at time.Time) error {
+	res, err := db.Exec(`UPDATE google_accounts SET gmail_sent_catchup_at = ? WHERE id = ?`,
+		at.UTC().Format(time.RFC3339), accountID)
+	if err != nil {
+		return fmt.Errorf("setting gmail sent catch-up stamp for account %d: %w", accountID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("setting gmail sent catch-up stamp for account %d: rows affected: %w", accountID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("setting gmail sent catch-up stamp: no google_accounts row %d", accountID)
+	}
+	return nil
+}
+
+// GmailMessageStored reports whether accountID already holds a
+// gmail_messages row with the Gmail message id.
+func (db *DB) GmailMessageStored(accountID int64, id string) (bool, error) {
+	var one int
+	err := db.QueryRow(`SELECT 1 FROM gmail_messages WHERE account_id = ? AND id = ?`, accountID, id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking gmail message %s of account %d: %w", id, accountID, err)
+	}
+	return true, nil
+}
+
+// GmailItemsAnsweredByOwner returns the ids of the pending, unarchived Gmail
+// email_received inbox items whose thread holds an owner sent row (see
+// GmailOwnSent) newer than the received message. The received message's
+// internal_date is the reference; when its row is gone or its date does not
+// parse, the item's created_at stands in. The dates of every candidate are
+// read in one query and compared in Go (RFC 3339). Items whose channel_id is
+// not a Gmail one are skipped. Any read error returns the error and no ids.
+func (db *DB) GmailItemsAnsweredByOwner() ([]int, error) {
+	candidates, err := db.pendingGmailReceivedItems()
+	if err != nil {
+		return nil, err
+	}
+	type key struct {
+		ID        int    `json:"i"`
+		AccountID int64  `json:"a"`
+		ThreadID  string `json:"t"`
+		MessageID string `json:"m"`
+	}
+	keys := make([]key, 0, len(candidates))
+	createdAt := make(map[int]string, len(candidates))
+	for _, c := range candidates {
+		accountID, threadID, ok := ParseGmailChannelID(c.channelID)
+		if !ok {
+			continue
+		}
+		keys = append(keys, key{ID: c.id, AccountID: accountID, ThreadID: threadID, MessageID: c.messageTS})
+		createdAt[c.id] = c.createdAt
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	keysJSON, err := json.Marshal(keys)
+	if err != nil {
+		return nil, fmt.Errorf("encoding pending gmail items: %w", err)
+	}
+
+	rows, err := db.Query(`SELECT json_extract(c.value, '$.i'),
+		       (SELECT r.internal_date FROM gmail_messages r
+		         WHERE r.account_id = json_extract(c.value, '$.a') AND r.id = json_extract(c.value, '$.m')),
+		       (SELECT MAX(m.internal_date) FROM gmail_messages m
+		         JOIN google_accounts a ON a.id = m.account_id
+		         WHERE m.thread_id = json_extract(c.value, '$.t') AND m.account_id = json_extract(c.value, '$.a')
+		           AND `+GmailOwnSentSQL("m", "a")+`)
+		FROM json_each(?) c`, string(keysJSON))
+	if err != nil {
+		return nil, fmt.Errorf("reading owner sent mail for pending gmail items: %w", err)
+	}
+	defer rows.Close()
+	var out []int
+	for rows.Next() {
+		var id int
+		var received, sent sql.NullString
+		if err := rows.Scan(&id, &received, &sent); err != nil {
+			return nil, fmt.Errorf("scanning owner sent mail for a pending gmail item: %w", err)
+		}
+		if !sent.Valid {
+			continue
+		}
+		since, perr := time.Parse(time.RFC3339, received.String)
+		if perr != nil {
+			if since, perr = time.Parse(time.RFC3339, createdAt[id]); perr != nil {
+				continue
+			}
+		}
+		sentAt, perr := time.Parse(time.RFC3339, sent.String)
+		if perr != nil || !sentAt.After(since) {
+			continue
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading owner sent mail for pending gmail items: %w", err)
+	}
+	return out, nil
+}
+
+// gmailReceivedItem is one pending email_received inbox item.
+type gmailReceivedItem struct {
+	id                   int
+	channelID, messageTS string
+	createdAt            string
+}
+
+// pendingGmailReceivedItems reads every pending, unarchived email_received
+// item (as GetInboxItems does for the sibling auto-resolvers), fully
+// drained before the caller issues any further query (single-connection
+// SQLite).
+func (db *DB) pendingGmailReceivedItems() ([]gmailReceivedItem, error) {
+	rows, err := db.Query(`SELECT id, channel_id, message_ts, created_at FROM inbox_items
+		WHERE trigger_type = 'email_received' AND status = 'pending' AND archived_at IS NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("listing pending gmail items: %w", err)
+	}
+	defer rows.Close()
+	var out []gmailReceivedItem
+	for rows.Next() {
+		var c gmailReceivedItem
+		if err := rows.Scan(&c.id, &c.channelID, &c.messageTS, &c.createdAt); err != nil {
+			return nil, fmt.Errorf("scanning pending gmail item: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing pending gmail items: %w", err)
+	}
+	return out, nil
+}

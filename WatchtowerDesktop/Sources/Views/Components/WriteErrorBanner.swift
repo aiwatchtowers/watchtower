@@ -7,12 +7,19 @@ struct WriteErrorBanner: View {
     let message: String
     /// Nil draws no close button: the error stays until its state changes.
     let onClose: (() -> Void)?
+    /// Non-nil draws **Try Again**, which sends the failed press again.
+    var onRetry: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(3)
             Spacer()
+            if let onRetry {
+                Button("Try Again", action: onRetry)
+                    .buttonStyle(.kitQuiet)
+                    .controlSize(.small)
+            }
             if let onClose {
                 Button(action: onClose) { Image(systemName: "xmark") }
                     .buttonStyle(.borderless)

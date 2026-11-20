@@ -1,6 +1,6 @@
 # No briefing or day plan today
 
-The Inbox has no **Your day** card for today, or today's card has a brief but no plan, though yesterday's was there. Both halves are written once a day by the background sync, not when you open the Inbox.
+Today's **Morning brief** in the Inbox has nothing yet, or has a brief but no **Your day** section (the plan), though yesterday's was there. Both halves are written once a day by the background sync, not when you open the Inbox.
 
 ## What you see
 

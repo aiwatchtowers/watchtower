@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"watchtower/internal/config"
@@ -1139,5 +1141,102 @@ func TestSyncUpsertLossHoldsWatermarkBelowItsSecond(t *testing.T) {
 	}
 	if watermark != float64(s0-1) {
 		t.Fatalf("watermark = %v, want %v — a same-second upsert loss must not be excluded next cycle", watermark, s0-1)
+	}
+}
+
+// sentSyncMux lists the given ids and serves each as a message labelled
+// labels, a minute apart ending at end, recording every list query.
+func sentSyncMux(queries *[]string, end time.Time, labels string, ids ...string) *http.ServeMux {
+	var mu sync.Mutex
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/me/messages", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		*queries = append(*queries, r.URL.Query().Get("q"))
+		mu.Unlock()
+		var list []string
+		for i := len(ids) - 1; i >= 0; i-- { // newest first, like Gmail
+			list = append(list, fmt.Sprintf(`{"id":%q}`, ids[i]))
+		}
+		fmt.Fprintf(w, `{"messages":[%s]}`, strings.Join(list, ","))
+	})
+	for i, id := range ids {
+		date := end.Add(-time.Duration(len(ids)-1-i) * time.Minute).UnixMilli()
+		mux.HandleFunc("/users/me/messages/"+id, func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprintf(w, `{"id":%q,"threadId":"thr-%s","labelIds":%s,"snippet":"s","internalDate":"%d",
+              "payload":{"headers":[{"name":"From","value":"owner@example.com"},{"name":"To","value":"colleague-a@example.com"},
+              {"name":"Subject","value":"Re: plan"}]}}`, id, id, labels, date)
+		})
+	}
+	return mux
+}
+
+func TestSyncListsInboxAndSent(t *testing.T) {
+	var queries []string
+	end := time.Now().Add(-time.Hour).Truncate(time.Second)
+	s, database, accountID := newTestSyncerForMux(t, sentSyncMux(&queries, end, `["SENT"]`, "sent1"))
+
+	if _, err := s.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(queries) != 1 || queries[0] != "{in:inbox in:sent} newer_than:7d" {
+		t.Fatalf("first sync queries = %q", queries)
+	}
+	rows, err := database.GmailMessagesSyncedAfter(accountID, "2000-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ThreadID != "thr-sent1" || !strings.Contains(rows[0].LabelsJSON, `"SENT"`) {
+		t.Fatalf("stored rows = %+v, want sent1 with its thread and the SENT label", rows)
+	}
+
+	wm, err := database.GetGmailAccountWatermark(accountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wm != float64(end.Unix()) {
+		t.Fatalf("watermark = %v, want %d (a sent row moves it like any row)", wm, end.Unix())
+	}
+	queries = nil
+	if _, err := s.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprintf("{in:inbox in:sent} after:%d", end.Unix()); len(queries) != 1 || queries[0] != want {
+		t.Fatalf("watermarked sync queries = %q, want [%q]", queries, want)
+	}
+}
+
+// The first sync's window already held the sent mail, so it stamps the
+// one-time sent catch-up; a later sync leaves an unset stamp alone.
+func TestSyncFirstSyncStampsSentCatchUp(t *testing.T) {
+	var queries []string
+	end := time.Now().Add(-time.Hour).Truncate(time.Second)
+	s, database, accountID := newTestSyncerForMux(t, sentSyncMux(&queries, end, `["INBOX"]`, "in1", "in2"))
+
+	before := time.Now().Add(-time.Second)
+	if _, err := s.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stamp, err := database.GmailSentCatchUpAt(accountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at, err := time.Parse(time.RFC3339, stamp)
+	if err != nil || at.Before(before.Truncate(time.Second)) {
+		t.Fatalf("stamp after a first sync = %q (%v), want ≈ now", stamp, err)
+	}
+
+	other, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "alias@example.com", Label: "B"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetGmailAccountWatermark(other, float64(end.Add(-time.Hour).Unix())); err != nil {
+		t.Fatal(err)
+	}
+	s2 := NewSyncer(s.client, database, s.cfg, nil, other)
+	if _, err := s2.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if stamp, err := database.GmailSentCatchUpAt(other); err != nil || stamp != "" {
+		t.Fatalf("stamp after a watermarked sync = %q (%v), want ''", stamp, err)
 	}
 }

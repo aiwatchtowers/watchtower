@@ -32,10 +32,10 @@ Details: [Home](../features/home.md). A tab that stays empty is explained on [A 
 By now the sync has had time to write something for you.
 
 - **Try:** open **Inbox**. The first briefing on a new install skips the 08:00 hour, so it may already be there from Day 1.
-- **See:** the **Your day** card on top: today's plan, then one morning read with **Needs you**, **Your day** and **What happened**, each line linking to its source.
+- **See:** today's **Morning brief**: **Start here**, then **Your day** with today's plan, **Waiting on you** and **What happened**, each line linking to its source.
 - **Needs:** **Morning brief** on (Automations → **Built in**), and Slack, Google, Jira, Linear or an email account connected so Watchtower knows who you are.
 
-No briefing yet? Press **Make today's brief and plan** on today's **Your day** card to build both now. Details: [Briefings](../features/briefings.md) and [Inbox](../features/inbox.md).
+No briefing yet? Press **Make today's brief and plan** on today's **Morning brief** to build both now. Details: [Briefings](../features/briefings.md) and [Inbox](../features/inbox.md).
 
 ## Day 2: catch up after being away
 

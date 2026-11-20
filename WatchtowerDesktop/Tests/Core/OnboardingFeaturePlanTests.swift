@@ -177,6 +177,16 @@ final class OnboardingFeaturePlanTests: XCTestCase {
         XCTAssertTrue(Plan.managedFeatureIDs.isDisjoint(with: Plan.unmanagedFeatureIDs))
     }
 
+    /// Slack today stays at its default (on) whatever goals are picked: it
+    /// runs only once Slack is connected and no goal names it.
+    func testSlackTodayIsUnmanagedByOnboarding() {
+        XCTAssertTrue(Plan.unmanagedFeatureIDs.contains("slack-today"))
+        XCTAssertFalse(Plan.managedFeatureIDs.contains("slack-today"))
+        for goal in OnboardingGoal.allCases {
+            XCTAssertFalse(Plan.enabledFeatureIDs(for: [goal]).contains("slack-today"), "\(goal)")
+        }
+    }
+
     // MARK: - Selection: goals decide until a manual flip
 
     func testFreshSelectionFollowsGoals() {

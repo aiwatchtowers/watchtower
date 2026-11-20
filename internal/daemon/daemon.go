@@ -103,6 +103,16 @@ type deletionsChecker interface {
 // would otherwise silently drop the daily diff.
 var _ deletionsChecker = (*gmail.Syncer)(nil)
 
+// sentCatchUpper is the optional one-time sent catch-up a mailSyncer may
+// offer (*gmail.Syncer does; IMAP and test fakes need not).
+type sentCatchUpper interface {
+	CatchUpSent(ctx context.Context, now time.Time) (int, error)
+}
+
+// The Gmail syncer must keep offering the catch-up; a signature drift would
+// otherwise silently leave accounts synced before sent mail without it.
+var _ sentCatchUpper = (*gmail.Syncer)(nil)
+
 // minPollInterval is the minimum allowed poll interval. Values below this
 // (e.g. nanosecond-scale durations from misconfigured integer values) are
 // replaced with DefaultPollInterval. Tests may lower this for fast execution.
@@ -219,6 +229,8 @@ type Daemon struct {
 	// run showed, waitingSeen the one its gate read this cycle (both ""
 	// until known); phaseWaitingForMe's goroutine only.
 	waitingShown, waitingSeen string
+	// mailShown and mailSeen are Mail waiting's twins of them.
+	mailShown, mailSeen string
 
 	// ideasMu guards lastIdeas and lastIdeasLockSkip on every path: the Idea
 	// finder's gate reads them on the slot's goroutine and its primitive
@@ -820,6 +832,7 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	}
 	d.phaseInbox(ctx)
 	d.phaseWaitingForMe(ctx)
+	d.phaseSlackToday(ctx)
 	d.aiPhase(ctx, "stream-digests", d.phaseStreamDigests)
 	d.phaseIdeaFinder(ctx)
 	d.aiPhase(ctx, "memory", d.phaseMemory)
@@ -1252,7 +1265,7 @@ func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
 	}
 }
 
-// phaseGmailSync pulls Gmail inbox messages for every connected
+// phaseGmailSync pulls Gmail inbox and sent messages for every connected
 // google_accounts row with gmail enabled. Lightweight, runs every cycle.
 // Like phaseCalDAVSync/phaseImapSync, this loops over one syncer per
 // account — a per-account failure is logged and skipped rather than
@@ -1276,6 +1289,14 @@ func (d *Daemon) phaseGmailSync(ctx context.Context) {
 		} else {
 			if n > 0 {
 				d.logger.Printf("gmail: %d messages synced", n)
+			}
+			// Outside observePhase: catch-up rows are never news.
+			if c, ok := s.(sentCatchUpper); ok {
+				if caught, cerr := c.CatchUpSent(ctx, time.Now()); cerr != nil {
+					d.logger.Printf("gmail sent catch-up error: %v", cerr)
+				} else if caught > 0 {
+					d.logger.Printf("gmail: %d sent messages caught up", caught)
+				}
 			}
 			// Outside observePhase: deletions publish no event.
 			if c, ok := s.(deletionsChecker); ok {

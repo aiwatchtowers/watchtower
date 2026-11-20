@@ -1,6 +1,6 @@
 # Day Plan
 
-The Day Plan turns your calendar, targets and briefing into a schedule for today: time blocks plus a short backlog for whatever fits if time allows. It is the top half of the **Your day** card in the [Inbox](inbox.md), above the briefing. It is for people whose day is more than a list of meetings.
+The Day Plan turns your calendar, targets and briefing into a schedule for today: time blocks plus a short backlog for whatever fits if time allows. It is the **Your day** section of today's **Morning brief** in the [Inbox](inbox.md), under **Start here**. It is for people whose day is more than a list of meetings.
 
 ## Why use it
 
@@ -27,18 +27,20 @@ Every sync cycle after that, calendar events are synced into today's plan and co
 
 ### Find the plan
 
-In the Inbox, today's plan is on the **Morning brief** entry in the root, listed with every day you haven't read yet; Home's **Day plan** link opens today's. The plan lists all-day events, then time blocks in time order ("09:00–09:30"), then the backlog, with "3/5" done in the **Plan** header.
+In the Inbox, today's plan is under **Your day** in the **Morning brief** entry of the root; earlier days are behind **‹** and **History** in its header. Home's **Day plan** link opens today's. The plan lists all-day events, then time blocks in time order ("09:00–09:30"), then the backlog, with "3/5" done in the **Plan** header.
 
 ### Work the plan
 
 <!-- learn
-id: dayplan-work
+id: dayplan-work-brief
 title: Tick off today's plan
-text: Click an item's circle on today's **Your day** card to mark it done; the **Plan** header counts progress.
+text: Click an item's circle under **Your day** in today's **Morning brief** to mark it done; **Plan** counts progress.
 area: planning
 level: basics
 kind: feature
-since: 0.24.0
+since: next
+replaces: [dayplan-work]
+changed: The Your day card became the Your day section of the Morning brief.
 action: nav:dayPlan
 -->
 

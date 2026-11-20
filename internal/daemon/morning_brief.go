@@ -34,7 +34,7 @@ func (d *Daemon) BuiltinPrimitives() map[string]automations.PrimitiveFunc {
 	out := d.MorningBriefPrimitives()
 	for _, m := range []map[string]automations.PrimitiveFunc{
 		d.TrackMyThreadsPrimitives(), d.IdeaFinderPrimitives(), d.ReactionPrimitives(), d.WatchPrimitives(),
-		d.WaitingForMePrimitives(), d.NeedsApprovalPrimitives(),
+		d.WaitingForMePrimitives(), d.NeedsApprovalPrimitives(), d.SlackTodayPrimitives(),
 	} {
 		maps.Copy(out, m)
 	}
@@ -92,7 +92,7 @@ const briefingNoDataBackoff = time.Hour
 // stays Go.
 func (d *Daemon) phaseMorningBrief(ctx context.Context, now time.Time) {
 	if !d.builtinOn(morningBriefID) {
-		d.cancelQueuedBuiltinRuns(morningBriefID, now)
+		d.cancelQueuedBuiltinRuns(morningBriefID, now, cancelLegacy)
 		owner := db.Owner{}
 		if d.config.DayPlan.Enabled && d.dayPlanPipeline != nil && d.db != nil {
 			owner = d.dayPlanOwner(now)
@@ -127,11 +127,20 @@ func (d *Daemon) phaseMorningBrief(ctx context.Context, now time.Time) {
 	d.runDayPlanConflictPhase(ctx, now, owner)
 }
 
+// Reasons cancelQueuedBuiltinRuns logs for the cancelled runs.
+const (
+	// cancelLegacy: the built-in is on its legacy phases.
+	cancelLegacy = "it runs on its legacy phases"
+	// cancelInactive: the built-in has no legacy phase and is not active.
+	cancelInactive = "it is not active"
+)
+
 // cancelQueuedBuiltinRuns cancels built-in id's queued manual runs while it
-// is on its legacy phases (a Run Now queued before the move failed, or by a
-// CLI of this version against an older daemon): nothing would ever take
-// them. A failure is logged.
-func (d *Daemon) cancelQueuedBuiltinRuns(id string, now time.Time) {
+// is not active (on its legacy phases — a Run Now queued before the move
+// failed, or by a CLI of this version against an older daemon — or, with no
+// legacy phase, off): nothing would ever take them. why is the logged reason
+// (cancelLegacy or cancelInactive). A failure is logged.
+func (d *Daemon) cancelQueuedBuiltinRuns(id string, now time.Time, why string) {
 	if d.db == nil {
 		return
 	}
@@ -140,7 +149,7 @@ func (d *Daemon) cancelQueuedBuiltinRuns(id string, now time.Time) {
 	case err != nil:
 		d.logger.Printf("built-in %s: cancelling its queued runs: %v", id, err)
 	case n > 0:
-		d.logger.Printf("built-in %s: %d queued run(s) cancelled: it runs on its legacy phases", id, n)
+		d.logger.Printf("built-in %s: %d queued run(s) cancelled: %s", id, n, why)
 	}
 }
 

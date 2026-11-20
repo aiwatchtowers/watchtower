@@ -168,7 +168,7 @@ two). Every list takes `limit` (default 50, max 200).
 
 | Tool | Permission |
 |---|---|
-| `list_emails`, `get_email` (synced mail, newest first; `account`, `since`, `limit`, `unread_only`; a body is clipped at 32 KiB) | `gmail:read@<account>` or `gmail:read@*` |
+| `list_emails`, `get_email` (synced mail, newest first; `account`, `since`, `limit`, `unread_only`; a body is clipped at 32 KiB; `sent: true` marks the owner's own sent mail — skip it when the recipe treats mail as something that came in) | `gmail:read@<account>` or `gmail:read@*` |
 | `list_calendar_events` (`from`, `to`, optional `account`; past events included) | `calendar:read@<account>` with `account`, `calendar:read@*` without |
 | `list_jira_sprints`, `list_jira_releases` (`project`, and for sprints `board_id`, `state`) | `jira:read@<PROJECT>` or `jira:read@*` |
 | `list_meeting_recaps`, `get_meeting_recap`, `list_meeting_notes` | `meetings:read` |
@@ -484,7 +484,7 @@ const windowStart = new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString();
 const done = state.get("done") || {};
 Object.keys(done).forEach(function (id) { if (Date.parse(done[id]) < Date.parse(windowStart)) delete done[id]; });
 const mail = tool("list_emails", { account: "work", since: windowStart, limit: 50 });
-const fresh = ((mail && mail.messages) || []).filter(function (m) { return !done[m.id]; });
+const fresh = ((mail && mail.messages) || []).filter(function (m) { return !m.sent && !done[m.id]; });
 if (fresh.length > 0) {
   const summary = llm("Summarise these emails in a few bullets. Flag anything that needs a reply.", { input: fresh });
   output.inbox({ title: "New mail: " + fresh.length + " messages", body: summary });
@@ -531,7 +531,7 @@ const windowStart = new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString();
 const done = state.get("done") || {};
 Object.keys(done).forEach(function (id) { if (Date.parse(done[id]) < Date.parse(windowStart)) delete done[id]; });
 const mail = tool("list_emails", { account: "work", since: windowStart, limit: 50 });
-const fresh = ((mail && mail.messages) || []).filter(function (m) { return !done[m.id] && !muted[m.from]; });
+const fresh = ((mail && mail.messages) || []).filter(function (m) { return !m.sent && !done[m.id] && !muted[m.from]; });
 if (fresh.length > 0) {
   const summary = llm("Summarise these emails in a few bullets. Flag anything that needs a reply.", { input: fresh });
   output.inbox({

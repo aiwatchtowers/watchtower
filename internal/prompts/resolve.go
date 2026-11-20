@@ -78,6 +78,8 @@ var MovedToBuiltin = map[string]string{
 	TracksExtractBatch: "track-my-threads",
 	IdeasConsolidate:   "idea-finder",
 	ReactionCommand:    "reactions",
+
+	InboxSlackToday: "slack-today",
 }
 
 // TakesAdditions reports whether the owner's approved additions can reach the

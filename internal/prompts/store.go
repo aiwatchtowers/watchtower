@@ -70,6 +70,7 @@ const (
 	WatchmanJudge              = "watchman.judge"
 	WatchmanLabel              = "watchman.label"
 	WatchmanProfile            = "watchman.profile"
+	InboxSlackToday            = "inbox.slack_today"
 )
 
 // Store loads, caches, and persists prompt templates.

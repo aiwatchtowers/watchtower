@@ -1,6 +1,5 @@
 import Foundation
 import GRDB
-import os
 
 // MARK: - ItemClass
 
@@ -128,8 +127,6 @@ package struct InboxItem: FetchableRecord, Identifiable, Equatable {
         package let permalink: String?
     }
 
-    private static let log = Logger(subsystem: "com.watchtower.desktop", category: "inbox")
-
     /// An absent column (an older schema) is simply no list; a malformed value
     /// is logged and read as no list — the Go fold reseeds such a row.
     static func decodeMentions(_ raw: String?, itemID: Int) -> [Mention] {
@@ -137,7 +134,7 @@ package struct InboxItem: FetchableRecord, Identifiable, Equatable {
         do {
             return try JSONDecoder().decode([Mention].self, from: Data(raw.utf8))
         } catch {
-            log.error("inbox item \(itemID, privacy: .public): malformed mentions: \(error.localizedDescription, privacy: .public)")
+            InboxLog.logger.error("inbox item \(itemID, privacy: .public): malformed mentions: \(error.localizedDescription, privacy: .public)")
             return []
         }
     }

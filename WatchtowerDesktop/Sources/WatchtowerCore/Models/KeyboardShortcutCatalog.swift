@@ -71,9 +71,18 @@ package enum KeyboardShortcutCatalog {
         Area("Inbox", [
             Entry("↑ / ↓", "Move between cards"),
             Entry("Esc", "Close the card"),
-            Entry("⌘Return", "Create (new idea)")
+            Entry("⌘Return", "Create (new idea)"),
+            Entry("⌥⌘S", "Show or hide the Inbox folders"),
+            Entry("J / K", "Move between rows (Waiting for me, Mail waiting)"),
+            Entry("Return", "Open the focused row"),
+            Entry("E", "Done; on a sender, Mark All Done…"),
+            Entry("R", "Reply… (a Slack, Jira or Linear row)"),
+            Entry("S", "Open the row's Snooze menu"),
+            Entry("⌘K", "Hand to Agent… (a Waiting for me row)"),
+            Entry("M", "Mute the focused sender (Mail waiting)"),
+            Entry("K / D / L / T", "Keep, Drop, Later, Make a Target… (Idea finder's card)")
         ]),
-        Area("Workbench", note: "The Workbench menu lists most of these; ⌘1–⌘9 and ⌘[ are in the View menu.", [
+        Area("Workbench", note: "The Workbench menu lists most of these; ⌘1–⌘9, ⌘[ and ⌥⌘S are in the View menu.", [
             Entry("⌘T", "New session"),
             Entry("⌘1–⌘9", "Open session 1–9 of the sessions list"),
             Entry("⌘K", "Go to… (the Files editor keeps ⌘K)"),

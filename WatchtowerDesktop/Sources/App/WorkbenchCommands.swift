@@ -61,7 +61,8 @@ extension FocusedValues {
 
 /// The menu bar's Workbench menu (issue #288): the workbench page's chords,
 /// so macOS prints each next to its item. The only binding of each chord —
-/// the title row keeps its buttons, without shortcuts.
+/// the title row keeps its buttons, without shortcuts; ⌥⌘S (Show/Hide
+/// Sessions Panel) is the View menu's `PanelToggleCommands`.
 struct WorkbenchCommands: Commands {
     @FocusedValue(\.workbenchMenu) private var context
     let appState: AppState
@@ -92,10 +93,11 @@ struct WorkbenchCommands: Commands {
             Button("Go to…") { onPage { $0.openGoTo() } }
                 .keyboardShortcut("k", modifiers: .command)
                 .disabled(context == nil)
+            // ⌥⌘S is the View menu's (`PanelToggleCommands`), shared with
+            // the Inbox's folder rail: one item per chord.
             Button(context?.panelToggleTitle ?? "Show Sessions Panel") {
                 onPage { $0.vm.panelVisible.toggle() }
             }
-            .keyboardShortcut("s", modifiers: [.command, .option])
             .disabled(context?.canTogglePanel != true)
             // ⌘[ (Back) and ⌘1…⌘9 (Go to Item) are the View menu's shared
             // items (`ItemShortcutCommands`, spec 2026-10-26 §4, §5.4).

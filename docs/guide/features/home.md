@@ -59,7 +59,7 @@ The **Links** zone has up to four shortcuts, each shown while its tab (for the b
 - **Day plan** shows "2 of 5 done" for today's plan.
 - **Digests** has no status.
 
-**Briefing** and **Day plan** open today's **Your day** card in the [Inbox](inbox.md).
+**Briefing** and **Day plan** open today's **Morning brief** in the [Inbox](inbox.md).
 
 ### Today in numbers
 
@@ -109,9 +109,9 @@ When every feature is ready or retrying on its own, the zone shrinks to "Everyth
 
 ### The menu on the left
 
-The menu lists Home, Targets, Workbench, Automations and Calendar, then three collapsible sections:
+The menu lists Home, Inbox, Workbench, Automations and Calendar, then three collapsible sections:
 
-- **FOCUS**: Catch Up, Inbox (briefings, plans, tracks and ideas live in its root).
+- **FOCUS**: Catch Up, Targets.
 - **EXECUTION**: Project Map, Releases, Blockers, Workload.
 - **INSIGHTS**: Digests, People, Memory, Statistics.
 

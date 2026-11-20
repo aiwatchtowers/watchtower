@@ -66,6 +66,9 @@ struct InboxRefHooks {
     /// The Core mirror of a Kit ref (the same raw values); nil for a
     /// `plan_item`, which only the hub's phone projection writes, so a Mac
     /// row never carries one (it draws as a plain row, no native actions).
+    /// Nil too for the text-id kinds `mail_sender` / `waiting_older` until
+    /// the Mac's sender and Older rows are ported onto the Go feed: such a
+    /// row draws plain, without native actions.
     static func inboxRef(_ ref: ArtifactRef) -> InboxRef? {
         let kind: InboxRef.Kind? = switch ref.kind {
         case .inboxItem: .inboxItem
@@ -73,7 +76,7 @@ struct InboxRefHooks {
         case .idea: .idea
         case .reminder: .reminder
         case .action: .action
-        case .planItem: nil
+        case .planItem, .mailSender, .waitingOlder: nil
         }
         return kind.map { InboxRef(kind: $0, id: ref.id) }
     }
@@ -88,7 +91,7 @@ struct InboxRefHooks {
         case .inboxItem: hasReply ? [.open, .chat, .agent, .reply] : [.open, .chat, .agent]
         case .track, .idea: [.target]
         case .reminder: [.open]
-        case .action, .planItem: []
+        case .action, .planItem, .mailSender, .waitingOlder: []
         }
     }
 

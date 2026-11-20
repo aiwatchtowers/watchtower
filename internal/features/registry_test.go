@@ -109,6 +109,7 @@ func TestRegistry_EnabledReadsConfig(t *testing.T) {
 		"knowledge-connectors": true,
 		"claude-plan-limits":   true,
 		"approval-cards":       true, // no AI, no cost (Inbox builder B)
+		"slack-today":          true, // light AI, on by default (Inbox redesign phase 5)
 	}
 	for id, want := range wantEnabled {
 		feat, ok := ByID(id)
@@ -221,4 +222,24 @@ func TestRegistry_KnowledgeSearchIsAIFeature(t *testing.T) {
 	for _, b := range f.Benefits {
 		assert.NotContains(t, b, "no AI")
 	}
+}
+
+func TestRegistry_SlackToday(t *testing.T) {
+	f, ok := ByID("slack-today")
+	require.True(t, ok)
+	assert.Equal(t, "Slack today", f.Title)
+	assert.Equal(t, "slack_today.enabled", f.ConfigKey)
+	assert.Equal(t, CostLight, f.Cost)
+	assert.Equal(t, "bubble.left.and.text.bubble.right", f.Icon)
+	assert.Equal(t, "Once an hour at most, reads today's messages in your Slack channels and DMs (except channels muted for AI) and lists what was decided, what asks you, what needs someone and what is just news, by conversation. Light AI use.", f.Description)
+	assert.Equal(t, "What happened in your Slack today", f.Tagline)
+	assert.Equal(t, []string{
+		"Today's channels and DMs in one place",
+		"Each line marked decided, asks you, needs someone or fyi",
+		"Reads Slack directly — no digests needed",
+	}, f.Benefits)
+	assert.False(t, f.Core)
+	require.NotNil(t, f.Enabled)
+	assert.True(t, f.Enabled(defaultConfig(t)))
+	assert.False(t, f.Enabled(loadConfig(t, "slack_today:\n  enabled: false\n")))
 }

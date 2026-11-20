@@ -72,6 +72,8 @@ guarded — not relaxed.
 
 **Observable:** I reply in Slack/DM/thread, comment on a Jira issue, or RSVP a calendar invite — the corresponding inbox item disappears **without my click**. Inbox follows the conversation; I never close the same thing twice.
 
+**Mail (Gmail, amended 2026-11-11, approved by the owner in ask #634):** I reply to a Gmail message — from the account's address or a "Send mail as" alias — and its `email_received` item disappears without my click. The Gmail sync stores my sent mail (`{in:inbox in:sent}`) as ordinary mail; an item resolves (`User replied`) once its Gmail thread holds a message of mine (label `SENT`, or From = the account address) dated after the message the item came from (after the item's creation when that message is gone). A message of mine never mints an item, is never `gmail.new_messages` news and never seeds a correspondent; knowledge, memory, media, ideas and `list_emails`/`get_email` (marked `sent`) keep it. `email_cc` items still archive on their own. **Not covered:** IMAP and Outlook mail (no Sent folder sync, no thread headers) — those items archive on their own as before.
+
 **Why locked:** This is the basic promise that makes attention detection lower-friction than native Slack/Jira/Calendar notifications. Break it and the item stays pending forever, so Catch-Up's "needs you" list and the Briefing's attention section fill with work the owner already finished — which is exactly how a recap surface loses the owner's trust. With no per-item screen left, nothing else can catch a stale item; this contract is the only thing keeping the feeder honest.
 
 **Rescheduled meetings (owner decision 2026-09-29):** a `calendar_time_change` item is answered only by an RSVP the owner gives **after** the reschedule. An RSVP left over from before the move does not count, whether the provider kept it or reset it. The sync records when it saw each attendee's response change (`calendar_events.rsvp_changed`), and the item resolves once the owner's RSVP is an answer that changed at or after the reschedule stamp (`time_changed_at`, the item's `message_ts`). With no fresh answer, the item stays pending until the event has ended, and then it resolves as "Event has ended". An all-day event counts as ended at UTC midnight of its exclusive end date, the same convention the invite detector's ended-event guard uses. An answer and a move first seen in the same sync pass count as an answer to the moved meeting, because the sync cannot tell which came first. Known limit: if the event row disappears (moved beyond the sync window, or deleted upstream), nothing can answer the item or end it, so it stays pending until `ArchiveStaleActionable` archives it. `calendar_invite` is unchanged: any answered RSVP resolves it.
@@ -87,8 +89,11 @@ guarded — not relaxed.
 - `internal/inbox/pipeline_test.go::TestInbox02_CalendarTimeChangeResolvesOnceEnded`
 - `internal/inbox/pipeline_test.go::TestInbox02_CalendarTimeChangeResolvesOnAnswerWithTheMove`
 - `internal/db/targets_remind_test.go::TestInbox02_AutoResolveTargetOnClose`
+- `internal/inbox/pipeline_test.go::TestInbox02_AutoResolveGmailOnOwnerReply`
+- `internal/inbox/gmail_readers_test.go::TestInbox02_EveryGmailReaderHasASide` — every file that names `gmail_messages` has a side (skip / keep / answer / lifecycle).
+- The Gmail edge rules (2026-11-11): `internal/db/gmail_sent_test.go::TestGmailItemsAnsweredByOwner_ReplyAfterReceived`, `::TestGmailItemsAnsweredByOwner_OlderOwnMessageKeepsItem` (a reply dated after the source message only), `::TestGmailItemsAnsweredByOwner_ReplyBeforeItemCreated` and `::TestGmailItemsAnsweredByOwner_ReceivedRowGoneUsesCreatedAt` (the `created_at` fallback), `::TestGmailItemsAnsweredByOwner_AliasSentLabel` (an alias's `SENT`), `::TestGmailItemsAnsweredByOwner_OtherAccountKeepsItem` (the same account only), `::TestGmailItemsAnsweredByOwner_OnlyPendingEmailReceived` (`email_cc` untouched), `::TestGmailOwnSent_Cases` and `::TestGmailOwnSentSQL_MatchesGo` (the owner-sent predicate and its SQL twin), `internal/inbox/gmail_detector_test.go::TestDetectGmailAccounts_SkipsOwnSentFromAlias` (a message of mine never mints an item).
 
-**Locked since:** 2026-04-27 (target_due family added 2026-05-01; calendar_time_change rule amended by owner decision 2026-09-29)
+**Locked since:** 2026-04-27 (target_due family added 2026-05-01; calendar_time_change rule amended by owner decision 2026-09-29; Gmail mail added 2026-11-11, ask #634)
 
 ## INBOX-03 — Surfaces signals that would have been buried in noise — RETIRED 2026-09-14
 
@@ -131,7 +136,7 @@ INBOX-05's rule store.
 
 ## INBOX-05 — I can see and edit what the assistant has learned about me
 
-**Status:** Enforced (reworded 2026-09-14; reached from the Inbox's root ⋯ since 2026-11-08)
+**Status:** Enforced (reworded 2026-09-14; reached from the Inbox's root ⋯ since 2026-11-08; amended 2026-11-11, ask #634)
 
 **Observable:** Learned Rules — opened from the root's ⋯ in the Inbox's
 folder menu, into the reading pane (it was the "Learned" tab of the inbox
@@ -141,12 +146,18 @@ with weight, source ("learned from my feedback" / "I added this manually"), and
 an inline remove/edit. I can add a rule, remove a rule, change a weight; changes
 persist. The store is **cross-pipeline, not inbox-local**. Its **readers** are
 the digest, tracks, briefing and catch-up pipelines, which inject rules into
-their prompts via `ListLearnedRulesByPipeline`. Its **writers** are exactly two:
-this tab (manual `source='user_rule'` rows) and `watchtower catchup feedback`,
+their prompts via `ListLearnedRulesByPipeline`, and the `attention.waiting`
+primitive, which leaves out the mail of a sender with a `source_mute` rule
+scoped `email:<address>` (the address ASCII-lowercased, spaces trimmed). Its
+**writers** are exactly two: the Desktop's rules writer (manual
+`source='user_rule'` rows) — this tab, and since 2026-11-11 also **Mute** on a
+Mail waiting row and **Mute Senders…** — and `watchtower catchup feedback`,
 which mints a rule from a per-topic 👍/👎 that carried a comment. With the
 inbox's own implicit learner retired (INBOX-04), no automatic writer remains, so
 every row in the table is traceable to something the owner typed. The output a
-rule changes is a digest, track, briefing or recap — never an `inbox_items` row.
+rule changes is a digest, track, briefing, recap or the Mail waiting artifact —
+never an `inbox_items` row: a muted sender's mail stays open for Messages and
+Catch-Up.
 
 **Why locked:** Without visibility, the learning system is a black box and trust collapses. Without editability, users cannot recover from misclassifications — feedback becomes a one-way street. The rule store outliving the inbox screen makes the tab *more* load-bearing, not less: it is now the only place a learned preference can be inspected or undone.
 
@@ -155,6 +166,9 @@ rule changes is a digest, track, briefing or recap — never an `inbox_items` ro
 - `WatchtowerDesktop/Tests/InboxLearnedRulesViewModelTests.swift::test_INBOX_05_remove_rule`
 - `WatchtowerDesktop/Tests/Core/InboxLearnedRulesQueriesTests.swift::test_INBOX_05_list_rules_ordered_by_weight`
 - `internal/db/schema_contracts_test.go::TestInbox04_NoLegacyExplicitFeedbackTable` (historical name — the rule store exists and the legacy `explicit_feedback` table does not)
+- `internal/automations/builtin/inbox05_test.go::TestInbox05_MutedSenderLeavesMailWaitingOnly`
+- `internal/automations/builtin/mail_waiting_test.go::TestMailWaiting_RunLeavesInboxItemsUnchanged` (a real Mail waiting run with a muted sender leaves every `inbox_items` row unchanged)
+- `WatchtowerDesktop/Tests/InboxLearnedRulesViewModelTests.swift::test_INBOX_05_mute_sender_writes_one_user_rule` (Desktop, with Mute — lands with the Mute button in the same phase)
 
 **Locked since:** 2026-04-27 (reworded to the cross-pipeline rule store 2026-09-14)
 
@@ -246,6 +260,8 @@ deleted with the triage stage, not relaxed.
 ## Changelog
 
 - 2026-11-15 (adaptive Slack sync, #1709, plan `docs/superpowers/plans/2026-11-15-slack-adaptive-sync.md` Task 4, approved in ask #1337): **INBOX-09 extended, no guard changed.** The Slack trigger detectors compare the watermark with when a message was stored (`messages.synced_at`, migration 00189; 0 = unstamped, read as the post time through the expression index `idx_messages_synced_at`), so a message stored late — by a run the adaptive cadence delayed or by a resumed search page — is still detected, and a skipped (not due) account does not freeze the watermark. The planned fill trigger and row rewrite were dropped (a rewrite of every row took 5–7 s on a synthetic 2M-row file); unstamped rows read as their post time, so every `TestInbox09_*` guard and fixture passes unchanged. See `docs/features/slack-adaptive-sync.md`.
+- 2026-11-11 (Inbox redesign phase 2, board #1076, approved in ask #634): **INBOX-05 amended** — the store gains a reader, the `attention.waiting` primitive, which leaves out the mail of a sender with a `source_mute` rule scoped `email:<address>` (ASCII-lowercased, spaces trimmed; a rule scoped any other way, e.g. `sender:<id>`, mutes nothing there). The outputs a rule changes gain the Mail waiting artifact, still never an `inbox_items` row (`db.OpenInboxItems`, the Messages / Catch-Up reader, still returns a muted sender's mail). The writers stay exactly two: the Desktop's rules writer, now also reached from **Mute** on a Mail waiting row and **Mute Senders…**, and `watchtower catchup feedback`. Guards added: `TestInbox05_MutedSenderLeavesMailWaitingOnly` (full-row compare of the item before and after the `attention.waiting` read, called directly — no run; the run-level compare is `TestMailWaiting_RunLeavesInboxItemsUnchanged`, added in the final review) and `test_INBOX_05_mute_sender_writes_one_user_rule`; no guard relaxed.
+- 2026-11-11 (inbox redesign phase 4, board #1076, approved in ask #634): INBOX-02 extended to Gmail mail; IMAP and Outlook named as not covered. Guards added: `TestInbox02_AutoResolveGmailOnOwnerReply`, `TestInbox02_EveryGmailReaderHasASide`; no guard relaxed.
 - 2026-11-08 (Inbox builder B Task 16, approved in ask #451): **INBOX-05 amended** — the filter bar and its ⋯ are gone; Learned Rules (and Assistant Profile) are reached from the root's ⋯ in the Inbox's folder menu and still open in the reading pane. The store, its two writers, its readers and the guards are unchanged (`test_INBOX_05_add_manual_rule`, `test_INBOX_05_remove_rule`, `test_INBOX_05_list_rules_ordered_by_weight` green); `InboxReadingPaneTests::testRootMenuOffersLearnedRulesAndProfile` (not an inventory guard) pins the way in.
 - 2026-11-06 (Inbox builder B Task 9, board #1400, ask #952): no contract changed and no guard changed. **INBOX-02, INBOX-09:** the open items are now also shown by the **Waiting for me** built-in (`waiting-for-me`, `trigger: {sync: waiting_for_me}`, run by `phaseWaitingForMe` right after `phaseInbox`): its one living artifact lists them through `db.OpenInboxItems` — the Go twin of `HomeFeedQueries.openMessageClause`, at most 200, newest first, a channel-folded item (INBOX-09) one row with its count — and by the Messages legacy entry until its first run or after a failed one. An item INBOX-02 auto-resolves leaves the artifact at the next read through the Desktop's render-time check and at the next cycle's run. The detector, its auto-resolve and its watermark are untouched; the built-in only reads `inbox_items`. The shared fixture `internal/inbox/testdata/open_items.json` pins the Go and Swift open predicates (`TestOpenInboxItems_SharedFixture`).
 - 2026-11-03 (board #914/#915): INBOX-09 amended, owner decision in ask #454 ("free inbox detection, as for revoked"). A Slack account whose sync stops on the team-mismatch guard (`sync.ErrSlackTeamMismatch`: its token, or the `team.info` it answers, is for another Slack team than the data the account holds) no longer freezes the shared inbox watermark: `phaseSlackSync` gives it the revoked-token carve-out, so every other account keeps being detected while it waits for a Re-login. Its own handling is the revoked one's: the sync error is still logged and returned as the cycle's sync error, its row shows the Re-login error, and its history backfill row is paused. The known loss is the revoked one's too: its messages synced after the Re-login lie behind the watermark and are not detected (`watchtower inbox backfill-mentions` recovers them). Any other sync error, and an incomplete search, still freezes. Guard added: `TestInbox09_TeamMismatchSyncErrorDoesNotFreeze`; no guard relaxed.

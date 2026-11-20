@@ -39,6 +39,14 @@ type PrimitiveCall struct {
 	Trigger   TriggerInfo    // Kind "sync" | "manual"
 	Input     BuiltinInput
 	Role      string // the owner profile's role, resolved once per run
+	// Cursor, CursorAnchor and Floor are a window primitive's
+	// (WindowPrimitiveNames): read past rowid Cursor (0 = from the start),
+	// CursorAnchor is the id of the row the cursor was taken at (a
+	// NextAnchor; "" = none recorded), and Floor "today" cuts the window at
+	// the start of the local day ("" = no floor).
+	Cursor       int64
+	CursorAnchor string
+	Floor        string
 }
 
 // PrimitiveUsage is what one primitive call spent on its model calls. A
@@ -57,6 +65,13 @@ type PrimitiveResult struct {
 	Fields map[string]any // returned to the script next to status (e.g. briefing_id)
 	Note   string         // journalled on the step (e.g. the placeholder fallback)
 	Usage  PrimitiveUsage
+	// NextCursor, NextAnchor and Behind are a window primitive's
+	// (WindowPrimitiveNames; ignored for every other primitive): the cursor
+	// the next read starts past, the id of the row at it (passed back as
+	// CursorAnchor), and whether a cap cut the window short of its end.
+	NextCursor int64
+	NextAnchor string
+	Behind     bool
 }
 
 // The statuses a primitive may return.
@@ -379,6 +394,9 @@ func (a primitiveArgs) stepArgs(name string) map[string]any {
 // dry run, which calls nothing (a capture dry run reports the prompt first,
 // DryRunOptions.CapturePrompts) — the primitive under the run's meter.
 func (s *builtinSDK) call(env *Env, name string, raw any, argErr error) (any, error) {
+	if slices.Contains(WindowPrimitiveNames, name) {
+		return s.callWindow(env, name, raw, argErr)
+	}
 	if slices.Contains(ReadPrimitiveNames, name) {
 		return s.callRead(env, name, raw, argErr)
 	}

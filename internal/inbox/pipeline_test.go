@@ -689,6 +689,51 @@ func TestRunPicksUpGmail(t *testing.T) {
 	assert.Equal(t, 1, n, "want 1 email inbox item")
 }
 
+// TestInbox02_AutoResolveGmailOnOwnerReply guards INBOX-02 for Gmail: once the
+// owner's own sent reply in the thread is synced, the email_received item
+// closes as "User replied" without a click. An IMAP item in the same run is
+// untouched (Gmail only).
+func TestInbox02_AutoResolveGmailOnOwnerReply(t *testing.T) {
+	// BEHAVIOR INBOX-02 — see docs/inventory/inbox-pulse.md
+	// Owner replies in Gmail → email_received auto-resolves.
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+
+	acctID, err := d.CreateGoogleAccount(db.GoogleAccount{Email: "owner@example.com", Label: "acme", GmailEnabled: true})
+	require.NoError(t, err)
+	recvAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	now := time.Now().UTC().Format(time.RFC3339)
+	require.NoError(t, d.UpsertGmailMessage(acctID, db.GmailMessage{
+		ID: "r1", ThreadID: "thr-a", FromEmail: "colleague-a@example.com", Subject: "Ping",
+		ToJSON: `["owner@example.com"]`, CcJSON: `[]`, LabelsJSON: `["INBOX"]`,
+		InternalDate: recvAt.Format(time.RFC3339), SyncedAt: now,
+	}))
+	require.NoError(t, d.UpsertGmailMessage(acctID, db.GmailMessage{
+		ID: "s1", ThreadID: "thr-a", FromEmail: "owner@example.com", Subject: "Re: Ping",
+		ToJSON: `["colleague-a@example.com"]`, CcJSON: `[]`, LabelsJSON: `["SENT"]`,
+		InternalDate: recvAt.Add(5 * time.Minute).Format(time.RFC3339), SyncedAt: now,
+	}))
+	imapID, err := d.CreateInboxItem(db.InboxItem{
+		ChannelID: "imap:1:thr-a", MessageTS: "r1", SenderUserID: "colleague-a@example.com", TriggerType: "email_received",
+	})
+	require.NoError(t, err)
+
+	p := New(d, testConfig(), nil, log.Default())
+	p.SetOwner(db.Owner{ID: "U1", SlackUserID: "U1", Email: "owner@example.com"})
+	_, _, err = p.Run(context.Background())
+	require.NoError(t, err)
+
+	var status, reason string
+	require.NoError(t, d.QueryRow(`SELECT status, resolved_reason FROM inbox_items
+		WHERE trigger_type = 'email_received' AND channel_id = ?`, db.GmailChannelID(acctID, "thr-a")).Scan(&status, &reason))
+	assert.Equal(t, "resolved", status)
+	assert.Equal(t, "User replied", reason)
+
+	require.NoError(t, d.QueryRow(`SELECT status FROM inbox_items WHERE id = ?`, imapID).Scan(&status))
+	assert.Equal(t, "pending", status, "an IMAP item is not resolved by Gmail sent mail")
+}
+
 // TestInbox09_WatermarkFrozenOnDetectorError guards INBOX-09: when a detector
 // pass fails, the inbox watermark must NOT advance. Advancing it on failure
 // permanently skips the window of mentions/DMs the failed pass never scanned.

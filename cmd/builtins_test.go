@@ -76,6 +76,17 @@ func TestWireBuiltins_SlotExecutorHasMainBackends(t *testing.T) {
 	assert.Zero(t, gen.CallCount())
 }
 
+// TestCLIBuiltinBackends_HaveSlackWindow: the CLI built-in executor has
+// slack.window, so a Run Now or a dry run of Slack today from the CLI reads
+// the Slack window.
+func TestCLIBuiltinBackends_HaveSlackWindow(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "acme"}
+	database := db.OpenTestDB(t)
+	b := cliBuiltinBackends(cfg, database, &automationstest.FakeGenerator{}, log.New(io.Discard, "", 0), cliBuiltinPipes{})
+	assert.NotNil(t, b.Primitives[automations.PrimitiveSlackWindow])
+}
+
 // TestWireBuiltins_LogsAnUnusedOwnerCopy: an owner copy that is not a
 // regular file is not used, and the daemon's start says so.
 func TestWireBuiltins_LogsAnUnusedOwnerCopy(t *testing.T) {

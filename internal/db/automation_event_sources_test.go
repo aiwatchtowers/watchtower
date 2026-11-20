@@ -2,6 +2,7 @@ package db
 
 import (
 	"testing"
+	"time"
 )
 
 // seedSlackEventSources stores one labelled Slack account (id 1, owner
@@ -198,6 +199,76 @@ func TestAutomationEventSources_MailNewsFloor(t *testing.T) {
 	d, ids := seedConnectedMail(t)
 	for p, id := range ids {
 		checkMailNewsFloor(t, d, p, id)
+	}
+}
+
+// seedOwnSentMail is seedMailEventSources with both accounts connected three
+// days ago (dates relative to now).
+func seedOwnSentMail(t *testing.T) (d *DB, gmail, imap int64, connected time.Time) {
+	t.Helper()
+	d, gmail, imap = seedMailEventSources(t)
+	connected = time.Now().UTC().Add(-72 * time.Hour).Truncate(time.Second)
+	for _, q := range []string{`UPDATE google_accounts SET created_at = ?`, `UPDATE email_accounts SET created_at = ?`} {
+		if _, err := d.Exec(q, connected.Format(time.RFC3339)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return d, gmail, imap, connected
+}
+
+// storeGmail stores one Gmail row of the account with its sender and labels.
+func storeGmail(t *testing.T, d *DB, accountID int64, id, from, labels string, date time.Time) {
+	t.Helper()
+	if err := d.UpsertGmailMessage(accountID, GmailMessage{ID: id, FromEmail: from, LabelsJSON: labels,
+		InternalDate: date.Format(time.RFC3339)}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAutomationEventSources_MailCountSkipsOwnSent(t *testing.T) {
+	d, g, im, connected := seedOwnSentMail(t)
+	floor, err := d.MailNewsFloor("gmail", g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeGmail(t, d, g, "recv", "colleague-a@example.com", `["INBOX"]`, connected.Add(time.Hour))
+	storeGmail(t, d, g, "sent", "alias@example.com", `["SENT"]`, connected.Add(2*time.Hour))
+	storeGmail(t, d, g, "own", "Owner@Example.com", `[]`, connected.Add(3*time.Hour))
+	if n, err := d.CountMailAfter("gmail", g, floor); err != nil || n != 1 {
+		t.Errorf("gmail count = %d, %v; want 1 (received only)", n, err)
+	}
+
+	// IMAP has no sent rule: every stored row still counts.
+	imapFloor, err := d.MailNewsFloor("imap", im)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, date := range []time.Time{connected.Add(time.Hour), connected.Add(2 * time.Hour)} {
+		if err := d.UpsertImapMessage(ImapMessage{AccountID: im, UID: int64(i + 1), UIDValidity: 1, FromEmail: "owner@example.com",
+			InternalDate: date.Format(time.RFC3339)}, date.Format(time.RFC3339)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := d.CountMailAfter("imap", im, imapFloor); err != nil || n != 2 {
+		t.Errorf("imap count = %d, %v; want 2", n, err)
+	}
+}
+
+func TestAutomationEventSources_MailNewsFloorIgnoresOwnSent(t *testing.T) {
+	d, g, _, connected := seedOwnSentMail(t)
+	received := connected.Add(time.Hour)
+	storeGmail(t, d, g, "recv", "colleague-a@example.com", `["INBOX"]`, received)
+	storeGmail(t, d, g, "sent", "alias@example.com", `["SENT"]`, connected.Add(2*time.Hour))
+	if floor, err := d.MailNewsFloor("gmail", g); err != nil || floor != received.Format(time.RFC3339) {
+		t.Errorf("floor = %q, %v; want the newest received row %q", floor, err, received.Format(time.RFC3339))
+	}
+
+	// Only sent rows after an older received one: created_at wins when later.
+	d2, g2, _, connected2 := seedOwnSentMail(t)
+	storeGmail(t, d2, g2, "old", "colleague-a@example.com", `["INBOX"]`, connected2.Add(-time.Hour))
+	storeGmail(t, d2, g2, "sent", "owner@example.com", `[]`, connected2.Add(time.Hour))
+	if floor, err := d2.MailNewsFloor("gmail", g2); err != nil || floor != connected2.Format(time.RFC3339) {
+		t.Errorf("floor = %q, %v; want created_at %q", floor, err, connected2.Format(time.RFC3339))
 	}
 }
 

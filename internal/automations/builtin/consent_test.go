@@ -67,7 +67,8 @@ func TestBuiltinRows_UseAI(t *testing.T) {
 	f.sync(t)
 	want := map[string]bool{
 		mbID: true, "track-my-threads": true, "idea-finder": true, reactionsID: true,
-		waitingID: false, NeedsApprovalID: false,
+		waitingID: false, NeedsApprovalID: false, MailWaitingID: false,
+		SlackTodayID: true,
 	}
 	for _, id := range allIDs() {
 		w, ok := want[id]
@@ -108,11 +109,18 @@ func TestRunner_MechanicalBuiltinRunsWhilePaused(t *testing.T) {
 	f.sync(t)
 	gate := &fakeGate{due: true}
 	f.runner.gates[waitingID] = gate
+	f.runner.gates[MailWaitingID] = gate
 	pauseAI(t)
 
+	// The slot holds Waiting for me and Mail waiting; neither calls a model.
 	out := f.runner.RunSlot(context.Background(), SlotWaitingForMe)
-	if len(out) != 1 || out[0].Skipped != "" || out[0].Status != db.RunSucceeded || gate.count() != 1 {
-		t.Fatalf("Waiting for me slot = %+v, gate calls %d; want one succeeded sync run", out, gate.count())
+	if len(out) != 2 || gate.count() != 2 {
+		t.Fatalf("Waiting for me slot = %+v, gate calls %d; want two succeeded sync runs", out, gate.count())
+	}
+	for _, o := range out {
+		if o.Skipped != "" || o.Status != db.RunSucceeded {
+			t.Fatalf("Waiting for me slot = %+v; want every run succeeded", out)
+		}
 	}
 	run, err := f.d.GetAutomationRun(out[0].RunID)
 	if err != nil {

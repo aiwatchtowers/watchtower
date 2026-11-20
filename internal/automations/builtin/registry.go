@@ -13,6 +13,7 @@ import (
 
 	"watchtower/internal/automations"
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/features"
 	"watchtower/internal/prompts"
 )
@@ -25,7 +26,8 @@ var recipeFS embed.FS
 // approval).
 type Slot string
 
-// The sync slots (automations.SyncSlots; SlotWaitingForMe is in waiting.go).
+// The sync slots (automations.SyncSlots; SlotWaitingForMe is in waiting.go,
+// SlotSlackToday in slacktoday.go).
 // SlotCustomTracks holds the watch recipes (Personal), no built-in.
 const (
 	SlotMorningBrief Slot = "morning_brief"
@@ -36,7 +38,8 @@ const (
 )
 
 // RootFolder is the slug of the Inbox's root folder: an automation with no
-// route shows its artifacts there.
+// route shows its artifacts there. It is "inbox", the folder a spec's
+// "DefaultFolder inbox" names (Waiting for me, Mail waiting).
 const RootFolder = "inbox"
 
 // ParamKind is how a card parameter is edited.
@@ -76,11 +79,15 @@ type Entry struct {
 	Recipe     []byte   // the shipped recipe bytes
 	FeatureIDs []string // features registry ids whose config key is the on/off truth
 	Primitives []string // the engine primitives the recipe calls
-	Prompts    []PromptRef
-	Parameters []Parameter
-	Pipelines  []string // pipeline_runs names counted in Costs before the built-in's first run
-	Reads      []string // card copy
-	Sends      []string // card copy
+	// WindowScope is which Slack conversations the built-in's slack.window
+	// reads; every entry listing slack.window sets it (an empty scope
+	// fails the call).
+	WindowScope db.WindowScope
+	Prompts     []PromptRef
+	Parameters  []Parameter
+	Pipelines   []string // pipeline_runs names counted in Costs before the built-in's first run
+	Reads       []string // card copy
+	Sends       []string // card copy
 	// Does is the card's steps in plain words, in order.
 	Does []string
 	// DefaultFolder is the slug of the Inbox folder the built-in's artifacts
@@ -202,15 +209,54 @@ var registry = []Entry{
 		Recipe:     mustRecipe("waiting-for-me"),
 		FeatureIDs: []string{"secretary-inbox"},
 		Primitives: []string{automations.PrimitiveAttentionWaiting},
-		Reads:      []string{"The mentions, messages, tickets and mail attention detection found"},
+		Reads:      []string{"The mentions, messages and tickets attention detection found"},
 		Does: []string{
-			"Lists everything that still waits on your answer, newest first",
+			"Lists the people waiting on your answer in Slack, Jira and Linear: today, this week and older",
 			"Updates the list after every sync; an item leaves when you answer it in the source, mark it done or snooze it",
+			"Mail is in Mail waiting",
 			"Uses no AI",
 		},
 		Sends:         []string{"One Waiting for me list in your Inbox"},
 		DefaultFolder: RootFolder,
 		When:          func(*config.Config) string { return "After every sync, while attention detection is on" },
+		RunNow:        true,
+	},
+	{
+		ID:         MailWaitingID,
+		Name:       "Mail waiting",
+		Slot:       SlotWaitingForMe, // right after Waiting for me
+		Recipe:     mustRecipe(MailWaitingID),
+		FeatureIDs: []string{"secretary-inbox"},
+		Primitives: []string{automations.PrimitiveAttentionWaiting},
+		Reads:      []string{"The mail attention detection found"},
+		Does: []string{
+			"Groups the mail that waits on you by sender, the busiest first",
+			"Updates the list after every sync; muted senders are left out",
+			"Uses no AI",
+		},
+		Sends:         []string{"One Mail waiting list in your Inbox"},
+		DefaultFolder: RootFolder,
+		When:          func(*config.Config) string { return "After every sync, while attention detection is on" },
+		RunNow:        true,
+	},
+	{
+		ID:          SlackTodayID,
+		Name:        "Slack today",
+		Slot:        SlotSlackToday,
+		Recipe:      mustRecipe(SlackTodayID),
+		FeatureIDs:  []string{"slack-today"},
+		Primitives:  []string{automations.PrimitiveSlackWindow},
+		WindowScope: db.WindowScopeMemberChannels,
+		Prompts:     []PromptRef{{Name: "label", PromptID: prompts.InboxSlackToday}},
+		Reads:       []string{"Today's messages in your Slack channels and DMs, except channels muted for AI"},
+		Does: []string{
+			"Reads the new messages in your channels and DMs since its last run, today only",
+			"Marks each line decided, asks you, needs someone or fyi, and leaves out what is addressed to you personally",
+			"Keeps one Slack today list in your Inbox, updated at most once an hour",
+		},
+		Sends:         []string{"One Slack today list in your Inbox"},
+		DefaultFolder: RootFolder,
+		When:          func(*config.Config) string { return "After a sync, at most once an hour" },
 		RunNow:        true,
 	},
 	{

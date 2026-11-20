@@ -1,0 +1,23 @@
+{
+  "note": "Shared by Go (internal/tracks/news_test.go) and the Swift twin. With news = has_updates, or never read (read_at null or \"\") and the last event within 72 h of now (inclusive). Last event = later of updated_at and newest_event_at (null = no event). Quiet = not news and the last event at or before now - quiet_days x 24 h (inclusive). A last event that does not parse is unknown: never news by time, never quiet.",
+  "quiet_days": 30,
+  "cases": [
+    {"name": "has_updates_old", "now": "2026-11-10T12:00:00Z", "read_at": "2026-09-12T12:00:00Z", "has_updates": true, "updated_at": "2026-09-11T12:00:00Z", "newest_event_at": null, "has_news": true, "quiet": false},
+    {"name": "has_updates_unparseable", "now": "2026-11-10T12:00:00Z", "read_at": "2026-09-12T12:00:00Z", "has_updates": true, "updated_at": "garbage", "newest_event_at": null, "has_news": true, "quiet": false},
+    {"name": "never_read_2d", "now": "2026-11-10T12:00:00Z", "read_at": null, "has_updates": false, "updated_at": "2026-11-08T12:00:00Z", "newest_event_at": null, "has_news": true, "quiet": false},
+    {"name": "never_read_exactly_72h", "now": "2026-11-10T12:00:00Z", "read_at": null, "has_updates": false, "updated_at": "2026-11-07T12:00:00Z", "newest_event_at": null, "has_news": true, "quiet": false},
+    {"name": "never_read_72h_plus_1s", "now": "2026-11-10T12:00:00Z", "read_at": null, "has_updates": false, "updated_at": "2026-11-07T11:59:59Z", "newest_event_at": null, "has_news": false, "quiet": false},
+    {"name": "never_read_empty_string", "now": "2026-11-10T12:00:00Z", "read_at": "", "has_updates": false, "updated_at": "2026-11-09T12:00:00Z", "newest_event_at": null, "has_news": true, "quiet": false},
+    {"name": "read_10d", "now": "2026-11-10T12:00:00Z", "read_at": "2026-11-01T12:00:00Z", "has_updates": false, "updated_at": "2026-10-31T12:00:00Z", "newest_event_at": null, "has_news": false, "quiet": false},
+    {"name": "read_exactly_30d", "now": "2026-11-10T12:00:00Z", "read_at": "2026-10-12T12:00:00Z", "has_updates": false, "updated_at": "2026-10-11T12:00:00Z", "newest_event_at": null, "has_news": false, "quiet": true},
+    {"name": "read_30d_minus_1s", "now": "2026-11-10T12:00:00Z", "read_at": "2026-10-12T12:00:00Z", "has_updates": false, "updated_at": "2026-10-11T12:00:01Z", "newest_event_at": null, "has_news": false, "quiet": false},
+    {"name": "read_40d", "now": "2026-11-10T12:00:00Z", "read_at": "2026-10-02T12:00:00Z", "has_updates": false, "updated_at": "2026-10-01T12:00:00Z", "newest_event_at": null, "has_news": false, "quiet": true},
+    {"name": "never_read_40d", "now": "2026-11-10T12:00:00Z", "read_at": null, "has_updates": false, "updated_at": "2026-10-01T12:00:00Z", "newest_event_at": null, "has_news": false, "quiet": true},
+    {"name": "event_newer_than_updated", "now": "2026-11-10T12:00:00Z", "read_at": "2026-10-02T12:00:00Z", "has_updates": false, "updated_at": "2026-10-01T12:00:00Z", "newest_event_at": "2026-11-09T12:00:00Z", "has_news": false, "quiet": false},
+    {"name": "event_newer_never_read", "now": "2026-11-10T12:00:00Z", "read_at": null, "has_updates": false, "updated_at": "2026-10-01T12:00:00Z", "newest_event_at": "2026-11-09T12:00:00Z", "has_news": true, "quiet": false},
+    {"name": "fractional_seconds", "now": "2026-11-10T12:00:05.123Z", "read_at": null, "has_updates": false, "updated_at": "2026-11-07T12:00:05.123Z", "newest_event_at": null, "has_news": true, "quiet": false},
+    {"name": "unparseable_time", "now": "2026-11-10T12:00:00Z", "read_at": null, "has_updates": false, "updated_at": "garbage", "newest_event_at": "not-a-time", "has_news": false, "quiet": false},
+    {"name": "unparseable_updated_event_parses", "now": "2026-11-10T12:00:00Z", "read_at": null, "has_updates": false, "updated_at": "garbage", "newest_event_at": "2026-11-09T12:00:00Z", "has_news": true, "quiet": false},
+    {"name": "future_event_never_read", "now": "2026-11-10T12:00:00Z", "read_at": null, "has_updates": false, "updated_at": "2026-10-01T12:00:00Z", "newest_event_at": "2026-11-10T13:00:00Z", "has_news": true, "quiet": false}
+  ]
+}

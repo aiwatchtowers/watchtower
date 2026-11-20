@@ -27,6 +27,7 @@ Per-feature notes — architecture, contracts, dual paths, v1 limits — live in
 - In-app help — `in-app-help.md`
 - Attention detection — `attention-detection.md`
 - Inbox folders — `inbox-folders.md`
+- Inbox redesign — `inbox-redesign.md`
 - Source deletions and edits — `source-deletions.md`
 - Revoked access wipes the account's data — `revoke-purge.md`
 - Images and web links become knowledge — `media-knowledge.md`

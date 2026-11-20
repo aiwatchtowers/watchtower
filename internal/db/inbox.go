@@ -450,11 +450,13 @@ const (
 // detector's "+m.user_id" and "+" GROUP BY terms keep it off
 // idx_messages_user_id (every message the owner ever posted) and off the
 // primary key (walked whole to skip the grouping sort).
-// TestInboxDetectors_ReadARangeNotTheTable pins the plans.
-const (
+// TestInboxDetectors_ReadARangeNotTheTable pins the plans. The "addressed to
+// the owner" predicates come from owner_addressed.go (shared with the Slack
+// window), so this is a var block.
+var (
 	pendingMentionsHead = `SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
 		FROM messages m
-		WHERE (m.text LIKE ? OR m.text LIKE ?)
+		WHERE ` + ownerMentionSQL("m.text") + `
 		AND m.channel_id LIKE ? || ':%'
 		AND m.user_id != ?
 		AND m.user_id != ''
@@ -488,20 +490,12 @@ const (
 
 	threadRepliesSQL = `SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
 		FROM messages m
-		WHERE m.thread_ts != ''
-		  AND m.thread_ts != m.ts
-		  AND m.channel_id LIKE ? || ':%'
+		WHERE m.channel_id LIKE ? || ':%'
 		  AND m.user_id != ?
 		  AND m.user_id != ''
 		  AND ` + sinceStored + ` > ?
 		  AND m.is_deleted = 0
-		  AND EXISTS (
-		      SELECT 1 FROM messages participant
-		      WHERE participant.channel_id = m.channel_id
-		        AND participant.thread_ts = m.thread_ts
-		        AND participant.user_id = ?
-		        AND participant.ts != m.ts
-		  )
+		  AND ` + ownerThreadReplySQL("m") + `
 		  AND NOT EXISTS (
 		      SELECT 1 FROM inbox_items ii
 		      WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
@@ -513,11 +507,9 @@ const (
 		   MIN(r.user_id) as reactor_id,
 		   m.text, m.permalink, m.ts_unix
 		FROM messages m
-		CROSS JOIN reactions r ON r.channel_id = m.channel_id AND r.message_ts = m.ts
+		CROSS JOIN reactions r ON ` + attentionReactionMatchSQL("r", "m") + `
 		WHERE +m.user_id = ?
 		  AND m.channel_id LIKE ? || ':%'
-		  AND r.user_id != ?
-		  AND r.emoji IN ('question', 'grey_question', 'eyes', 'bangbang', 'exclamation', 'heavy_exclamation_mark', 'warning', 'red_circle', 'rotating_light', 'sos')
 		  AND ` + sinceStored + ` > ?
 		  AND m.is_deleted = 0
 		  AND NOT EXISTS (
@@ -603,14 +595,16 @@ func (db *DB) FindThreadRepliesToUser(accountID int64, currentUserID string, sin
 }
 
 // FindReactionRequests finds messages posted by currentUserID where someone else added
-// a question/attention reaction (question, eyes, exclamation, warning, etc.).
+// one of AttentionReactionEmoji (question, eyes, exclamation, warning, etc.).
 // accountID scopes the search to that account's own channels (m.channel_id LIKE '<accountID>:%')
 // — by channel, not by author, since a channel belongs to exactly one account.
 // sinceTS is the inbox watermark, compared with when the message was stored (sinceStored).
 func (db *DB) FindReactionRequests(accountID int64, currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
 	prefix := strconv.FormatInt(accountID, 10)
+	// One row per message; the reactor named is the lowest user id among the
+	// attention reactions by others. The ON clause's owner id binds first.
 	rows, err := db.Query(reactionRequestsSQL,
-		currentUserID, prefix, currentUserID, sinceTS)
+		currentUserID, currentUserID, prefix, sinceTS)
 	if err != nil {
 		return nil, fmt.Errorf("finding reaction requests: %w", err)
 	}

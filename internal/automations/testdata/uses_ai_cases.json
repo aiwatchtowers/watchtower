@@ -7,6 +7,7 @@
   {"permissions": ["builtin:brief.compose"], "uses_ai": true},
   {"permissions": ["builtin:attention.waiting"], "uses_ai": false},
   {"permissions": ["builtin:approvals.list"], "uses_ai": false},
+  {"permissions": ["builtin:slack.window"], "uses_ai": false},
   {"permissions": ["builtin:plan.compose"], "uses_ai": true},
   {"permissions": ["builtin:tracks.extract"], "uses_ai": true},
   {"permissions": ["builtin:ideas.consolidate"], "uses_ai": true},
