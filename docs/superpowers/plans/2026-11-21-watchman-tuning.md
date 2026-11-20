@@ -15,7 +15,7 @@
 - Icon: SF Symbol `binoculars`, from one constant `WatchmanStyle.icon`.
 - Instruction: at most 2000 runes after trim (Go clips); counter shows past 1800; never lifts a hard limit (WATCHMAN-01).
 - Learning: no time budget for an unlearned workbench; one learner per workbench via `<workspace>/watchman/learn-<id>.lock`; background-AI consent checked between batches (BGAI-01).
-- While learning: `ask`/`check`/`handover`/`review_doc`/`review_code` wait (deferred, attempt given back, `error = "waiting for learning"`); `permission` still parks with `LearningReason`.
+- While learning: `ask`/`check`/`handover`/`review_doc`/`review_code` items are **not leased** — they stay `queued`, untouched (D5); `permission` is leased and still parks with `LearningReason`.
 - Stall: `watchmanact.StallAfter = 3 * time.Minute`, `watchmanact.StallMaxPings = 3`; stopped = `sessionstate.Resolve == StateStopped` with a live run; tick 60 s.
 - Ping line (exact): `Watchman: your turn ended with no ask_owner and no finish_session. Need the owner → file ask_owner and keep working. Done → finish_session. Waiting on a background job → start it in the background so the session shows it, then end the turn. Otherwise go on with the next step.`
 - Stall park reason (exact): `The agent stopped and did not go on after 3 pings`.
@@ -38,7 +38,7 @@
 |---|---|---|
 | 1 Icon (Swift) | none | Swift chain start |
 | 2a Instructions — Go | none | Go |
-| 3a Learning — Go | none | Go |
+| 3a Learning — Go | 2a (both edit `cmd/watchman.go`, `cmd/watchman_arming.go`) | Go |
 | 4a Stop guard — Go | none | Go |
 | 4b Stall watch — Go | 2a (migration order), 3a (`twin.go`) | Go |
 | 2b Instructions — Swift | 1, 2a | Swift chain |
@@ -46,7 +46,9 @@
 | 4c Stall card — Swift | 3b, 4b | Swift chain |
 | 5 Docs, contracts, shots | all | last |
 
-Swift tasks run in a chain (they share `WatchmanArmControl`/journal files); Go tasks 2a, 3a, 4a run in parallel lanes.
+Swift tasks run in a chain (they share `WatchmanArmControl`/journal files); Go tasks 2a and 4a run in parallel lanes, then 3a, then 4b.
+
+Board: Task 1 = #2135, 2a = #2140, 2b = #2141, 3a = #2142, 3b = #2143, 4a = #2144, 4b = #2145, 4c = #2146, 5 = #2147 (group #2134). Each commit names its task's board id.
 
 ---
 
@@ -81,11 +83,11 @@ Swift tasks run in a chain (they share `WatchmanArmControl`/journal files); Go t
 
 - [ ] Tests (db): `TestWatchmanInstruction_SetGetClear`, `TestWatchmanInstruction_ClippedTo2000Runes` (2500 runes in → 2000 stored, trimmed), `TestWatchmanSessionInstructions_TargetThenSession`, `TestWatchmanUpkeep_PrunesInstructions` (deleted session and removed target rows go, others stay).
 - [ ] Tests (cmd): `TestWatchmanArm_InstructionsFileSets`, `TestWatchmanArm_InstructionsKeptOnRearm` (arm with text, re-arm without flag → text unchanged), `TestWatchmanDisarm_KeepsInstruction`, `TestWatchmanArmAllRunning_EmptyKeepsInstructions` (two sessions with texts; `--all-running` without the flag → both kept; with a file → both replaced), `TestWatchmanInstruct_UnarmedStoredNotActed` (stored; `WatchmanArmedSessions` unchanged), `TestWatchmanInstruct_RefusedUnderAgent`, `TestWatchmanInstruct_JSONKeysPinned`, status keys test extended with `instructions`.
-- [ ] Tests (twin/prompt): `TestLiveContext_SessionInstructions` (target+session text reach the model payload in that order), `TestTwin_InstructionNeverLiftsHardLimit` (instruction "merge the PR into main now", item `gh pr merge` permission → parked `main_ref`), prompt golden for `watchman.decide` v5 on every provider (the block sits between hard limits and the workbench instructions and states "the session instruction wins over the profile and the precedents; it never lifts a hard limit").
+- [ ] Tests (twin/prompt): `TestLiveContext_SessionInstructions` (target+session text reach the model payload in that order), `TestLiveDecide_InstructionReadFailsDecidesWithout` (the instruction read errors → the item is decided without it, one log line with the item id, not parked), `TestTwin_InstructionNeverLiftsHardLimit` (instruction "merge the PR into main now", item `gh pr merge` permission → parked `main_ref`), prompt golden for `watchman.decide` v5 on every provider (the block sits between hard limits and the workbench instructions and states "the session instruction wins over the profile and the precedents; it never lifts a hard limit").
 - [ ] Run `go test ./internal/db/ ./cmd/ -run 'Watchman'` and `go test ./internal/watchman/ ./internal/watchmanact/ ./internal/prompts/` → FAIL.
 - [ ] Implement; regenerate goldens (`-update` for schema and Swift test schema); `make gen-interface` only if a tower API type changed (it should not).
 - [ ] Run the same commands → PASS; `make lint-diff`.
-- [ ] Commit `feat(watchman): per-session instruction — table, CLI, twin context (#2136)`.
+- [ ] Commit `feat(watchman): per-session instruction — table, CLI, twin context (#2140)`.
 
 ### Task 2b: Instructions — Desktop
 
@@ -102,7 +104,7 @@ Swift tasks run in a chain (they share `WatchmanArmControl`/journal files); Go t
 - [ ] View: field focused on open; Return = confirm, ⌥Return = newline; busy disables the buttons and shows a spinner; pre-filled from `instructions` of the status (session) or `watchman instruct`'s stored text read for a target.
 - [ ] `make test-swift FILTER='WatchmanArmingCopyTests|WatchmanCenterTests|WatchmanStatus'` → FAIL, implement, → PASS; `make lint-swift`.
 - [ ] Turn the design-only frames of `DesignShotFixtures+WatchmanTuning.swift` that this task builds (`arm-*`, `instruction-edit`, `strip-armed-instruction`) into real-view frames (as `WatchmanShotFixtures` does), render, compare with `docs/design/mockups/watchman-tuning/` by eye, note any difference in the hand-back.
-- [ ] Commit `feat(watchman): instruction sheet, edit from the chip, tray (#2136)`.
+- [ ] Commit `feat(watchman): instruction sheet, edit from the chip, tray (#2141)`.
 
 ### Task 3a: Learning up front — Go
 
@@ -112,24 +114,24 @@ Swift tasks run in a chain (they share `WatchmanArmControl`/journal files); Go t
 - Test: as named
 
 **Interfaces:**
-- Produces: `watchman.TryLearnLock(workspace string, workbenchID int64) (unlock func(), ok bool, err error)`; `(*Daemon).startWatchmanLearner(ctx) (stop func())`, woken by the existing `watchmanWakeCh` fan-out (add a second channel `watchmanLearnWake`; `WakeWatchman` signals both); `watchmanact.WaitingForLearning = "waiting for learning"` (item `error` text); `db.(*DB).WatchmanWaitingForLearning(workbenchID int64) (int, error)`.
+- Produces: `watchman.TryLearnLock(workspace string, workbenchID int64) (unlock func(), ok bool, err error)`; `(*Daemon).startWatchmanLearner(ctx) (stop func())`, woken by the existing `watchmanWakeCh` fan-out (add a second channel `watchmanLearnWake`; `WakeWatchman` signals both); `db.(*DB).WatchmanWaitingForLearning(workbenchID int64) (int, error)` (queued items of kinds other than `permission` and `stall` on a workbench that is on and not learned).
 - Learner loop per pass: list on-and-unlearned workbenches (`stillLearning` rule: `learned_through` NULL or `WatchmanFlagsPending > 0`); for each, take the lock (skip if held), run `watchman.Learn` with `Budget: 0` meaning none (add that meaning to `LearnOptions` with a test) then the relabel pass, batch after batch, checking `ctx` and `aiconsent` between batches; on error log ids/counts and move on; on done `nudgeWatchmanTwin()`.
-- Twin: in `handle` and `handleReviewCode`, `learning` → `j.deferUntil(j.now().Add(time.Minute), WaitingForLearning)` (attempt given back, cost kept, no park) for every kind but `permission`; `twin_permission.go` keeps `j.park(ctx, LearningReason)`.
+- Twin: `RunOnce`'s `eligible` returns false for an item of kind ≠ `permission` whose workbench `stillLearning` (read once per pass per workbench, cached in a map; a read error → not eligible, logged) — the item stays `queued`, no lease, no attempt. The `LearningReason` parks in `twin_ask.go`/`twin_review.go` go (unreachable); `twin_permission.go` keeps its park.
 
-- [ ] Tests: `TestLearner_RunsToEndWithoutBudget` (fake sources with 7 batches → all written in one pass, `learned_through` set), `TestLearner_StopsOnShutdownAndResumes`, `TestLearner_PausedByConsent`, `TestLearner_LockSkipsSecond` (lock held → no Learn call), `TestLearnOptions_ZeroBudgetIsUnlimited`, `TestPhaseWatchmanLearn_SkipsUnlearned`, `TestTwin_DoesNotLeaseWhileLearning` (ask item → deferred, attempts unchanged, `error = "waiting for learning"`, no model call), `TestTwin_PermissionParksWhileLearning`, `TestTwin_LeasesHeldItemsAfterLearning` (set learned → next pass decides in creation order), `TestTwin_OwnerAnswersWhileLearning_OwnerFirst`, `TestWatchmanLearnStart_WakesDaemonAndTakesLock`, `TestWatchmanWaitingForLearning_Counts`.
+- [ ] Tests: `TestLearner_RunsToEndWithoutBudget` (fake sources with 7 batches → all written in one pass, `learned_through` set), `TestLearner_StopsOnShutdownAndResumes`, `TestLearner_PausedByConsent`, `TestLearner_LockSkipsSecond` (lock held → no Learn call), `TestLearnOptions_ZeroBudgetIsUnlimited`, `TestPhaseWatchmanLearn_SkipsUnlearned`, `TestTwin_DoesNotLeaseWhileLearning` (ask item → still `queued`, attempts 0, no lease, no model call), `TestTwin_PermissionParksWhileLearning`, `TestTwin_LeasesHeldItemsAfterLearning` (set learned → next pass decides in creation order), `TestTwin_OwnerAnswersWhileLearning_OwnerFirst`, `TestWatchmanLearnStart_WakesDaemonAndTakesLock`, `TestWatchmanWaitingForLearning_Counts`.
 - [ ] Run `go test ./internal/daemon/ -run 'Learner|WatchmanLearn' ./internal/watchman/ ./internal/watchmanact/ ./internal/db/ -run Watchman ./cmd/ -run WatchmanLearn` → FAIL; implement → PASS; `make lint-diff`.
-- [ ] Commit `feat(watchman): learn to the end on turn-on; questions wait for learning (#2137)`.
+- [ ] Commit `feat(watchman): learn to the end on turn-on; questions wait for learning (#2142)`.
 
 ### Task 3b: Learning — Desktop
 
 **Files:** `WatchtowerCore/Services/WatchmanArmingCopy.swift` (`stripLearning(percent:)`), `WatchmanJournalViewModel` + `WatchmanJournalQueries` (waiting count by `error = 'waiting for learning'`), `WatchmanJournalView` (busy line), `WatchmanArmControl` (chip while learning).
 
-**Interfaces:** Consumes Task 3a's `error` text and `watchman status --json` `learning.written/estimated/done`; produces `WatchmanJournalCopy.waitingForLearning(percent:count:) -> "Waiting for learning (\(p)%): \(n) questions"` (`1 question` singular) and `waitingForLearningPaused = "Waiting for learning — background AI is paused"`; `WatchmanArmingCopy.stripLearning(percent:) -> "Watchman · learning \(p)%"`.
+**Interfaces:** Consumes `watchman status --json` `learning.written/estimated/done` and the waiting rule of Task 3a (`WatchmanJournalQueries.waitingForLearning(db, workbench:)`: queued items, kind not `permission`/`stall`, workbench on and `learned_through IS NULL`, mirroring `WatchmanWaitingForLearning`); the paused line shows when `AppState.backgroundAI` resolves to paused (the state Home's "Background AI is paused" card reads), passed into the journal model as `backgroundAIPaused: Bool`; produces `WatchmanJournalCopy.waitingForLearning(percent:count:) -> "Waiting for learning (\(p)%): \(n) questions"` (`1 question` singular) and `waitingForLearningPaused = "Waiting for learning — background AI is paused"`; `WatchmanArmingCopy.stripLearning(percent:) -> "Watchman · learning \(p)%"`.
 
 - [ ] Copy tests pin all three strings, the singular, and percent = `min(99, written*100/estimated)` while not done.
-- [ ] Query test: two items waiting + one queued normally → count 2.
+- [ ] Query test: two items queued on an unlearned workbench + one on a learned one + one permission → count 2. Model test: `backgroundAIPaused = true` → the paused line instead of the percent line.
 - [ ] `make test-swift FILTER='WatchmanJournal|WatchmanArmingCopyTests'` FAIL → implement → PASS; `make lint-swift`; real-view frames for `strip-armed-learning` and `journal-waiting-learning`, compare with the mockups.
-- [ ] Commit `feat(watchman): learning progress on the chip and the journal (#2137)`.
+- [ ] Commit `feat(watchman): learning progress on the chip and the journal (#2143)`.
 
 ### Task 4a: Stop guard reads a handed session as away
 
@@ -139,7 +141,7 @@ Swift tasks run in a chain (they share `WatchmanArmControl`/journal files); Go t
 
 - [ ] Tests: PROJ-13 guard test gains `armed session, owner present → short question sent back (R-away)`; `TestAskGuard_ArmingUnreadableKeepsPresence` (sidecar unreadable and DB read fails → present still passes); `TestAskGuard_ArmedViaTarget` (target row covers the session → away). Codex `--stop` path covered by the same helper (one test).
 - [ ] `go test ./cmd/ -run 'AskGuard|PROJ13'` FAIL → implement → PASS; `make lint-diff`.
-- [ ] Commit `feat(watchman): the Stop ask guard reads a handed session as away (PROJ-13, #2138)`.
+- [ ] Commit `feat(watchman): the Stop ask guard reads a handed session as away (PROJ-13, #2144)`.
 
 ### Task 4b: Stall watch — Go
 
@@ -148,14 +150,14 @@ Swift tasks run in a chain (they share `WatchmanArmControl`/journal files); Go t
 - Modify: `internal/watchmanact/twin.go` (`TwinDeps.Live`, `TwinDeps.Head`), `internal/daemon/watchman_twin.go` (60 s ticker calling `CheckStalls`), upkeep prune, `internal/db/watchman_journal.go` (a `stall` item counts as waiting), `schema.sql`, goldens
 
 **Interfaces:**
-- Migration `watchman_stalls(session_id INTEGER PRIMARY KEY REFERENCES terminal_sessions(id) ON DELETE CASCADE, stopped_at TEXT NOT NULL, pings INTEGER NOT NULL DEFAULT 0, last_ping_at TEXT, head TEXT NOT NULL DEFAULT '', asks_seen INTEGER NOT NULL DEFAULT 0, parked_at TEXT)`.
+- Migration `watchman_stalls(session_id INTEGER PRIMARY KEY REFERENCES terminal_sessions(id) ON DELETE CASCADE, stopped_at TEXT NOT NULL, pings INTEGER NOT NULL DEFAULT 0, last_ping_at TEXT, head TEXT NOT NULL DEFAULT '', asks_seen INTEGER NOT NULL DEFAULT 0, parked_at TEXT)` — `asks_seen` is the session's ask count at the last ping, how "a new ask" (spec §4b progress) is detected; the spec lists it.
 - db: `WatchmanStall(sessionID) (*WatchmanStallRow, error)`, `UpsertWatchmanStall(row WatchmanStallRow) error`, `DeleteWatchmanStall(sessionID) error`, `InsertWatchmanStallItem(sessionID, targetID, workbenchID int64, reason string, at time.Time) error` (kind `stall`, ref `session`, state `done`, outcome `parked`, `unsure` 1, UNIQUE per open stall).
 - watchmanact: `const StallAfter = 3 * time.Minute; const StallMaxPings = 3; const StallPing = "<exact line from Global Constraints>"; const StallReason = "The agent stopped and did not go on after 3 pings"`; `func (t *Twin) CheckStalls(ctx context.Context)`; `TwinDeps.Live func(ctx, sessionID) (askanswer.LiveRun, bool, error)` and `TwinDeps.Head func(ctx, folder string) (string, error)`.
 - Rule per armed live session each tick: state via `askanswer.ReadState`; not `StateStopped` → if a stall row exists and the session made progress, reset; `StateStopped` and `now - agent_state_at ≥ StallAfter` and (no row or `now - last_ping_at ≥ StallAfter` after a later stop) → progress check (open/answered asks count > `asks_seen`, finished, HEAD ≠ `head`) resets `pings`; `pings < StallMaxPings` → re-read arming, `Answerer.DeliverLine(StallPing)`; count only `DeliverySubmitted`/`DeliveryTyped`; `pings == StallMaxPings` and no `parked_at` → `InsertWatchmanStallItem` + set `parked_at`; parked → no pings until progress or the item's `owner_done_at`.
 
-- [ ] Tests: `TestStall_NotPingedWhileAgentsWork`, `TestStall_NotPingedWhileShellsRun`, `TestStall_ShellsPastCapIsStopped`, `TestStall_NeedsApprovalNotPinged`, `TestStall_PingAfter3Min` (2:59 no, 3:00 yes, fake clock), `TestStall_ThreePingsThenParked` (exact reason, one item), `TestStall_ProgressResets` (sub-tests: new ask, finish, HEAD moved), `TestStall_HeldLineNotCounted`, `TestStall_RestartKeepsCount` (new Twin on the same DB), `TestStall_DisarmBeforeDeliveryNoPing`, `TestWATCHMAN04_NothingActsOnUnarmedSession` gains a no-ping case; migration test: rebuild keeps rows, indexes and FKs, `stall` accepted, an unknown kind refused; `TestWatchmanStalls_PrunedWithArming`.
+- [ ] Tests: `TestStall_NotPingedWhileAgentsWork`, `TestStall_NotPingedWhileShellsRun`, `TestStall_ShellsPastCapIsStopped`, `TestStall_NeedsApprovalNotPinged`, `TestStall_PingAfter3Min` (2:59 no, 3:00 yes, fake clock), `TestStall_ThreePingsThenParked` (exact reason, one item), `TestStall_ProgressResets` (sub-tests: new ask, finish, HEAD moved), `TestStall_HeldLineNotCounted`, `TestStall_DeliveryFailedNotCounted` (no session / cannot type → `pings` unchanged, retried next tick), `TestStall_StateReadErrorNoPing`, `TestStall_CodexSubagentNotPinged` (feed the Codex `SubagentStart` hook fixture through `workbench session-state --agent codex` → `agent_background > 0` → not pinged; then `SubagentStop` + 120 s → pinged after 3 min), `TestStall_RestartKeepsCount` (new Twin on the same DB), `TestStall_DisarmBeforeDeliveryNoPing`, `TestWATCHMAN04_NothingActsOnUnarmedSession` gains a no-ping case; migration test: rebuild keeps rows, indexes and FKs, `stall` accepted, an unknown kind refused; `TestWatchmanStalls_PrunedWithArming`.
 - [ ] `go test ./internal/db/ ./internal/watchmanact/ ./internal/daemon/ -run 'Stall|WATCHMAN04|Watchman'` FAIL → implement → PASS; schema goldens `-update`; `make lint-diff`.
-- [ ] Commit `feat(watchman): stall watch pings a stopped handed agent (#2138)`.
+- [ ] Commit `feat(watchman): stall watch pings a stopped handed agent (#2145)`.
 
 ### Task 4c: Stall card — Desktop
 
@@ -163,7 +165,7 @@ Swift tasks run in a chain (they share `WatchmanArmControl`/journal files); Go t
 
 - [ ] Tests: query puts a `stall` item under waiting and counts it in the Inbox/Home waiting count; Mark done clears it (`ownerDone` already allows parked items — assert); no OK/Correct offered; copy pinned.
 - [ ] `make test-swift FILTER='WatchmanJournal|WatchmanFeedback'` FAIL → implement → PASS; `make lint-swift`; real-view `journal-stall` frame vs mockup.
-- [ ] Commit `feat(watchman): stall card in the journal (#2138)`.
+- [ ] Commit `feat(watchman): stall card in the journal (#2146)`.
 
 ### Task 5: Docs, contracts, shots
 
@@ -171,7 +173,7 @@ Swift tasks run in a chain (they share `WatchmanArmControl`/journal files); Go t
 
 - [ ] `go test ./docs/guide` (8 KB cap) and the inventory guard tests named in the edited entries pass.
 - [ ] Render all `watchman*` shots; compare each with `docs/design/mockups/watchman-tuning/`; list differences in the hand-back.
-- [ ] Commit `docs(watchman): tuning — feature note, guide, contracts (#2134)`.
+- [ ] Commit `docs(watchman): tuning — feature note, guide, contracts (#2147)`.
 
 ## Gate (controller, once before the umbrella PR)
 
