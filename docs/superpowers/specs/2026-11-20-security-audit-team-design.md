@@ -106,7 +106,8 @@ Anti-goals
   (`REPORT.md`, `FINDINGS-DETAIL.md`, `NEEDS-VALIDATION.md`, `findings.json`,
   `run-metadata.json`) and moved to `~/security-audit-skill/watchtower-archive/`, which
   the engine never reads — the bulky per-agent dirs and ledgers are deleted, the full
-  reports are kept; `watchtower-aborted/` and `watchtower-test/` are emptied after 7
+  reports are kept for 180 days after the run and then deleted (by then the triage
+  Artifact holds what the owner decided); `watchtower-aborted/` and `watchtower-test/` are emptied after 7
   days. Wrapper state: `~/.config/watchtower/security-audit/` (`config.json` with
   the report URL, `lock`). Audit target: a detached worktree of the pinned commit under
   `~/Library/Caches/watchtower-security-audit/<run-id>/`, removed after the run.
@@ -168,7 +169,12 @@ reasoning):
     to be re-validated by a fresh verifier, never suppressed. **The owner's list wins over
     the engine's own history**: the wrapper instructs the engine's parent that a disputed
     fingerprint is never carried as a prior `rejected` record and is seeded as a `planned`
-    unit even when its source is unchanged.
+    unit even when its source is unchanged. After the engine finishes, the wrapper checks
+    the promise: every disputed fingerprint must appear in this run's coverage ledger
+    with a verifier check from this run, or in this run's `findings.json` with a fresh
+    verdict. One that does not is reported in the terminal summary and on the run row
+    (`disputed_not_revalidated: [...]`), shown on the page as **Your dispute was not
+    re-checked**, and stays in the next run's disputed list.
 
 ### 5.2 `docs/security/surfaces.md`
 
@@ -219,6 +225,7 @@ points, sinks, existing controls. Used by the context file and by the Range mapp
 | Report URL dead / `ArtifactData` read fails | Stop before the engine runs (without triage the engine would re-report accepted risks) | Wrong URL in config |
 | Engine stops early with a valid `findings.json` (budget) | The engine marks the run `incomplete`; the wrapper imports it, labels it "incomplete" in the report, keeps the run dir | Run with a tiny budget |
 | Engine run ends without a valid `findings.json` (crash, interruption, validator failure) | Nothing imported; next preflight moves the dir to `watchtower-aborted/` so it never becomes history | Interrupt a run, start another, check the dir moved |
+| The engine suppresses a disputed rejection anyway | Post-run check lists it as `disputed_not_revalidated`, page badge, carried to the next run | Fixture: dispute a rejected record, run `--test`, confirm it is re-validated or flagged |
 | Engine files changed or extra | Preflight `shasum -c` + unlisted-file check stops the run | Edit one engine file, run |
 | Import/publish fails | Engine run dir is intact; `/security-audit import <run-dir>` re-runs the import alone | Deny the publish prompt, then re-import |
 | Two runs at once | Lock refuses the second | Start a second run |
@@ -233,7 +240,7 @@ Collections and the writer of every field:
 
 `runs/<run-id>` — all written by the wrapper: `engine_run_dir, kind (full|range), from,
 to, sha, profile, budget, run_status (complete|incomplete), incomplete_reason,
-coverage {covered, deferred, out_of_scope, blocked}, counts {by verdict, by severity,
+coverage {covered, deferred, out_of_scope, blocked}, disputed_not_revalidated[], counts {by verdict, by severity,
 regressed, new}, started_at, finished_at`.
 
 `findings/<doc-id>` (doc id = first 16 hex of SHA-256 of the engine fingerprint, or
@@ -300,7 +307,7 @@ The full engine reports stay in the engine run dir; the page links to nothing lo
 | Use Cloudflare's security-audit-skill as the engine, Watchtower layer around it | Owner, chat 2026-11-20 |
 | Agents on Mythos via `CLAUDE_CODE_SUBAGENT_MODEL`, main thread on another model | Owner question, chat 2026-11-20 |
 | Engine vendored, pinned to a commit, SHA-256 manifest checked at every run; updates are reviewed PRs | Builder |
-| Only validated real runs are engine history; aborted and test runs kept apart; run dirs 0700/0600 from creation (umask 077), out of Time Machine; runs older than the newest Full reduced to their reports in an archive the engine never reads | Builder |
+| Only validated real runs are engine history; aborted and test runs kept apart; run dirs 0700/0600 from creation (umask 077), out of Time Machine; runs older than the newest Full reduced to their reports in an archive the engine never reads, deleted 180 days after the run | Builder |
 | Owner's disputed rejections handed back to the engine for re-validation | Builder |
 | Full = `deep` profile, Range = scoped `standard` | Builder |
 | Both engine roles → one read-only `sec-audit-agent` | Builder (follows from read-only) |
