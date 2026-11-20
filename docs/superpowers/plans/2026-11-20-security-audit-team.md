@@ -113,7 +113,7 @@ Manifest lists every file in `engine/` except `VERSION`, sorted by path. Check c
 5. `legacy_match` (the engine's schema has no field for it, so the wrapper decides, after the import): for each doc created this run, legacy rows whose `files` share at least one path with the record's `trace[].file`/`evidence[].file` are candidates; the parent compares the record's root cause with each candidate's `note` and sets `legacy_match` to the one describing the same weakness, else nothing. Written only when the doc's `legacy_match` is empty and `legacy_decision` is unset. The owner's Merged/Split decides; the badge marks it as a proposal.
 6. Disputed check: every fingerprint from the run's disputed list must be in `findings.json` of this run or have a ledger check from this run → else add to the run row's `disputed_not_revalidated`.
 7. Run row: fields from spec §7, counts by verdict, by severity, new, regressed.
-8. Batch ≤ 100 ops per `ArtifactData batch`.
+8. Batch ≤ 50 ops per `ArtifactData batch` (tool limit); updates carry `if_version`, a conflict → re-read, recompute, resend.
 
 `baseline-import.json`: `[{legacy_id, surface, status (open|fixed|accepted), files[], note}]` from §8 of `docs/security-audit-2026-07-31.md` and `docs/review/2026-07-05-audit-security.md` (text already public there); mixed items split `<id>a`/`<id>b`.
 

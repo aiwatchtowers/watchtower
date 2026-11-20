@@ -264,7 +264,9 @@ item — check** badge. The wrapper changes existing docs only with `ArtifactDat
 naming wrapper fields from this table, and creates with `set`.
 
 `import-rules.md` (deterministic, with worked examples): create a new fingerprint with
-`set` and `status: open`; `run_state` = `regressed` when the owner's status is `fixed`
+`set` and `status: open` — except a record the engine `rejected`, created with
+`status: false_positive` and the note "Rejected by the engine's verifier.", so that only
+an owner reopening it makes it a dispute; `run_state` = `regressed` when the owner's status is `fixed`
 and the fingerprint is back, `still_open` when it is open/in_progress, `not_refound` for
 an open finding the run's coverage ledger marks its unit `covered` without re-finding it,
 and `fixed` only when additionally its source changed since it was last seen; findings in
