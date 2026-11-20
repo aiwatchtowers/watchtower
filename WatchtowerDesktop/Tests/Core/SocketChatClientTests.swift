@@ -683,3 +683,86 @@ final class StartCounter: @unchecked Sendable {
         }
     }
 }
+
+/// `SocketLine.write` against a peer that never reads (a frozen engine): the line must fail within its bound.
+final class SocketLineWriteBoundTests: XCTestCase {
+    private var dir = ""
+    private var path = ""
+    private var listener: Int32 = -1
+
+    override func setUpWithError() throws {
+        dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("wtsl-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        path = dir + "/chat.sock"
+        // Listens but never accepts nor reads: the connection sits in the backlog and its buffer fills.
+        listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8)
+        withUnsafeMutableBytes(of: &addr.sun_path) { raw in for (i, b) in bytes.enumerated() { raw[i] = b } }
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        }
+        guard bound == 0, Darwin.listen(listener, 8) == 0 else { throw ChatSocketDropped() }
+    }
+
+    override func tearDown() {
+        if listener >= 0 { close(listener) }
+        try? FileManager.default.removeItem(atPath: dir)
+    }
+
+    func testLineLargerThanTheSendBufferFailsWithinTheBound() async throws {
+        let line = try SocketLine(path: path)
+        XCTAssertTrue(line.write(Data("{\"id\":\"m1\"}\n".utf8), bound: 0.2), "a small line fits the buffer")
+        await assertBigLineFailsWithinTheBound(line)
+    }
+
+    /// A peer that keeps taking a few bytes at a time makes progress on every wait, yet the line as a whole must
+    /// still fail at its deadline.
+    func testSlowlyDrainingPeerStillFailsWithinTheBound() async throws {
+        let line = try SocketLine(path: path)
+        let listener = listener
+        let drained = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            let peer = accept(listener, nil, nil)
+            defer { drained.signal() }
+            guard peer >= 0 else { return }
+            var recvTimeout = timeval(tv_sec: 0, tv_usec: 100_000)
+            setsockopt(peer, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, socklen_t(MemoryLayout<timeval>.size))
+            var chunk = [UInt8](repeating: 0, count: 64)
+            // Bounded: the peer stops on its own even if the line is never closed, so no wait can hang the test.
+            let stop = Date().addingTimeInterval(2)
+            while Date() < stop, Darwin.read(peer, &chunk, chunk.count) > 0 { usleep(500) }
+            close(peer)
+        }
+        await assertBigLineFailsWithinTheBound(line)
+        XCTAssertEqual(drained.wait(timeout: .now() + 5), .success, "the draining peer stops")
+    }
+
+    /// A 4 MiB line with a 0.2 s bound returns false; then the line is shut down and its reader has closed it.
+    private func assertBigLineFailsWithinTheBound(_ line: SocketLine) async {
+        let big = Data(repeating: UInt8(ascii: "x"), count: 4 << 20)
+        let done = expectation(description: "the write returns")
+        let result = LockedBox<(returned: Bool, ok: Bool)>((false, true))
+        Thread.detachNewThread {
+            result.set((true, line.write(big, bound: 0.2)))
+            done.fulfill()
+        }
+        await fulfillment(of: [done], timeout: 3)
+        let outcome = result.get()
+        XCTAssertTrue(outcome.returned, "a line the peer does not take in time must not block past its bound")
+        XCTAssertFalse(outcome.ok, "a line the peer does not take in time fails")
+        // A write still blocked holds the line's lock, so only a returned one lets the line shut down and close.
+        guard outcome.returned else { return }
+        line.shutdown()
+        for await _ in line.lines {}
+    }
+}
+
+private final class LockedBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Value
+    init(_ value: Value) { self.value = value }
+    func set(_ new: Value) { lock.withLock { value = new } }
+    func get() -> Value { lock.withLock { value } }
+}

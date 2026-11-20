@@ -131,7 +131,11 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
 
         provisioner.ensureDownloaded(large)
         _ = await entered.next()
-        await drainMainActor()
+        // The progress update comes from the detached download task: wait for it (bounded, no clock) rather than
+        // assume a fixed number of yields is enough on a loaded runner.
+        for _ in 0..<10_000 where downloadState(provisioner, large) != .downloading(progress: 0.5) {
+            await Task.yield()
+        }
 
         XCTAssertEqual(downloadState(provisioner, large), .downloading(progress: 0.5))
         XCTAssertEqual(provisioner.download(for: large)?.label, "Model large-v3")
