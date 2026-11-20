@@ -23,15 +23,20 @@ const (
 // app. It is the one rule (ask #1425), with no build-flavor input: the
 // retired id is shared, every other client id (a workspace app made by
 // setup, an MDM or link id, a company app a build bakes) is a company app.
-// An empty retiredID means nothing is shared.
+// An empty retiredID means nothing is shared. An account tied to a company
+// bundle (company_slug) is that company's app even on the retired id: the
+// corp build's baked app is the retired public one, and the company bridge
+// ties its accounts before the public build runs (ask #1644).
 func SharedApp(a db.SlackAccount, retiredID string) bool {
-	return retiredID != "" && a.ClientID == retiredID
+	return retiredID != "" && a.ClientID == retiredID && a.CompanySlug == ""
 }
 
 // Relogin says how account a signs in again, first match wins (review
-// #1439): the retired shared id signs in through the build's app while the
-// build still has that app, else it moves (never connect: the retired app
-// has no loopback redirect, so PKCE would fail); the build's own id, or an
+// #1439): an untied account on the retired shared id signs in through the
+// build's app while the build still has that app, else it moves (never
+// connect: the retired app has no loopback redirect, so PKCE would fail). A
+// company-tied row on that id is the corp app, which its admin adopts with
+// PKCE (slack app adopt --enable-pkce), so it connects like any company app; the build's own id, or an
 // empty client id while the build has an app, signs in through the build's
 // app; any other id, and an empty id with no built-in app (A17: link or
 // MDM), connects. builtinID is the client id of auth.BuiltinApp when it is

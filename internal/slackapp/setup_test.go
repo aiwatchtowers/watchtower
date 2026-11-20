@@ -334,6 +334,27 @@ func TestAdopt_SharedAppIsNotACompanyApp(t *testing.T) {
 	assert.Equal(t, 1, h.api.creates)
 }
 
+// TestAdopt_CompanyTiedRetiredIDIsACompanyApp: on the public build the corp
+// app has the retired shared id (one Slack app); once the company bridge has
+// tied the row it is the company's app here too (slackmode.SharedApp, ask
+// #1644): Create offers adopt instead of a second app, Adopt finds it by row.
+func TestAdopt_CompanyTiedRetiredIDIsACompanyApp(t *testing.T) {
+	h := newHarness(t)
+	id := h.account(t, "T0ACME", "9999.0000", "A0CORP", "ok")
+	_, err := h.db.Exec(`UPDATE slack_accounts SET company_slug = 'acme' WHERE id = ?`, id)
+	require.NoError(t, err)
+	res, err := h.r.Create(context.Background(), cfgToken)
+	require.NoError(t, err)
+	assert.Equal(t, Result{Kind: KindExistingApp, TeamID: "T0ACME", TeamName: "Acme", AppID: "A0CORP", ClientID: "9999.0000"}, res)
+	assert.Zero(t, h.api.creates)
+
+	h.api.manifests["A0CORP"] = theirManifest()
+	res, err = h.r.Adopt(context.Background(), cfgToken, "", "", "", true)
+	require.NoError(t, err)
+	assert.Equal(t, KindOK, res.Kind)
+	assert.Equal(t, "9999.0000", res.ClientID)
+}
+
 func TestAdopt_OK(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")

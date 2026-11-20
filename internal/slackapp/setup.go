@@ -12,6 +12,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/fsutil"
 	"watchtower/internal/slackconnect"
+	"watchtower/internal/slackmode"
 )
 
 // Result kinds of a setup run (the final JSON line's "result").
@@ -297,14 +298,15 @@ func recordResult(kind string, s db.SlackAppSetup) Result {
 }
 
 // companyAccount is team's oldest live account on a company app — any
-// client id but "" (not known yet) and the retired shared one.
+// client id but "" (not known yet) and the retired shared one, which a row
+// tied to a company is not (slackmode.SharedApp, ask #1644).
 func (r *Runner) companyAccount(team string) (db.SlackAccount, bool, error) {
 	accounts, err := r.DB.ListSlackAccounts()
 	if err != nil {
 		return db.SlackAccount{}, false, err
 	}
 	for _, a := range accounts {
-		if a.TeamID == team && a.Status != "removed" && a.ClientID != "" && a.ClientID != r.RetiredClientID {
+		if a.TeamID == team && a.Status != "removed" && a.ClientID != "" && !slackmode.SharedApp(a, r.RetiredClientID) {
 			return a, true, nil
 		}
 	}
