@@ -639,7 +639,7 @@ func (s *Server) attach(c *conn, bound *session, p []byte) *session {
 	sess.mu.Lock()
 	c.send(Attached, encode(sess.infoLocked()))
 	// An exited session replays too, so the owner sees why it ended.
-	replay := append(sess.modes.ReplayPrefix(), sess.ring.Snapshot()...)
+	replay := sess.modes.Replay(sess.ring.Snapshot())
 	for len(replay) > 0 {
 		n := min(len(replay), MaxPayload)
 		c.send(Output, replay[:n])
