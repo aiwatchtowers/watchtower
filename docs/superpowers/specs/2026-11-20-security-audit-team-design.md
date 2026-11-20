@@ -98,10 +98,15 @@ Anti-goals
   `~/security-audit-skill/watchtower-test/`, so neither becomes history for a later run.
   A validated but `incomplete` run stays — the engine already treats an incomplete prior
   ledger as recorded evidence and gaps only. The whole `~/security-audit-skill/` tree is
-  0700 (dirs) / 0600 (files), set by the wrapper after each run, and excluded from Time
+  0700 (dirs) / 0600 (files) from the first byte: the wrapper creates the dirs 0700 and
+  runs the session's file-writing steps under `umask 077` before the engine starts, then
+  re-applies the modes after the run as a safety net; and excluded from Time
   Machine (`tmutil addexclusion`). Retention: the wrapper keeps the newest Full run and
-  every run after it and deletes older run dirs (the triage Artifact keeps the history
-  the owner needs); `watchtower-aborted/` and `watchtower-test/` are emptied after 7
+  every run after it as engine history; an older run dir is reduced to its reports
+  (`REPORT.md`, `FINDINGS-DETAIL.md`, `NEEDS-VALIDATION.md`, `findings.json`,
+  `run-metadata.json`) and moved to `~/security-audit-skill/watchtower-archive/`, which
+  the engine never reads — the bulky per-agent dirs and ledgers are deleted, the full
+  reports are kept; `watchtower-aborted/` and `watchtower-test/` are emptied after 7
   days. Wrapper state: `~/.config/watchtower/security-audit/` (`config.json` with
   the report URL, `lock`). Audit target: a detached worktree of the pinned commit under
   `~/Library/Caches/watchtower-security-audit/<run-id>/`, removed after the run.
@@ -160,7 +165,10 @@ reasoning):
   - `fixed` fingerprints — re-checked; found again → regressed;
   - **disputed rejections** — fingerprints the engine `rejected` that the owner set to
     `open` or `in_progress`: handed to the engine as current work with the owner's note,
-    to be re-validated by a fresh verifier, never suppressed.
+    to be re-validated by a fresh verifier, never suppressed. **The owner's list wins over
+    the engine's own history**: the wrapper instructs the engine's parent that a disputed
+    fingerprint is never carried as a prior `rejected` record and is seeded as a `planned`
+    unit even when its source is unchanged.
 
 ### 5.2 `docs/security/surfaces.md`
 
@@ -173,7 +181,8 @@ points, sinks, existing controls. Used by the context file and by the Range mapp
 ### 6.1 Flow
 
 0. **Preflight.** Agent, `Artifact`, `ArtifactData` tools present; `node` found; the
-   engine's `VERSION` matches the vendored files (`git diff --quiet` on the engine dir).
+   engine passes the manifest check of §3 (`shasum -a 256 -c` on `VERSION`'s manifest, no
+   unlisted file).
    Report lookup: `config.json` → else `Artifact list` for "Security audit" (one: confirm;
    several: owner picks; none: new only on an explicit yes) → a URL that no longer opens
    stops the run. Lock: refuse while another run's pid is alive.
@@ -236,7 +245,7 @@ regressed, new}, started_at, finished_at`.
 | `legacy_id` | wrapper, on create | legacy rows only |
 | `verdict` (needs_validation\|rejected\|confirmed), `title`, `description`, `root_cause`/`claimed_root_cause`, `trace[]`, `evidence[]`, `blockers[]`, `validation_plan`, `remediation`, `severity`, `reason` | wrapper, every run that sees it | copied from `findings.json` |
 | `first_seen_run`, `last_seen_run`, `run_state` (new\|still_open\|regressed\|not_refound\|fixed) | wrapper | |
-| `legacy_match` (a `legacy_id`) | wrapper | set when the engine's record says it is the old audit item (from the context's legacy list); cleared by nobody but the owner's decision |
+| `legacy_match` (a `legacy_id`) | wrapper, only while the field is empty and `legacy_decision` is unset | set when the engine's record says it is the old audit item (from the context's legacy list); once set, or once the owner decided, no run writes it again |
 | `status` (open\|in_progress\|fixed\|accepted\|false_positive) | owner (wrapper only on create: `open`; legacy rows: from `baseline-import.json`) | |
 | `note` | owner (legacy rows: from `baseline-import.json` on create) | |
 | `legacy_decision` (merged\|split) | owner | **Merged**: the finding takes the legacy row's `status` and `note` (owner write), the legacy row gets `merged_into: <doc-id>` and leaves the list; **Split**: `legacy_match` stays for the record, the badge goes, both rows live on |
@@ -291,7 +300,7 @@ The full engine reports stay in the engine run dir; the page links to nothing lo
 | Use Cloudflare's security-audit-skill as the engine, Watchtower layer around it | Owner, chat 2026-11-20 |
 | Agents on Mythos via `CLAUDE_CODE_SUBAGENT_MODEL`, main thread on another model | Owner question, chat 2026-11-20 |
 | Engine vendored, pinned to a commit, SHA-256 manifest checked at every run; updates are reviewed PRs | Builder |
-| Only validated real runs are engine history; aborted and test runs kept apart; run dirs 0700/0600, out of Time Machine, older than the newest Full deleted | Builder |
+| Only validated real runs are engine history; aborted and test runs kept apart; run dirs 0700/0600 from creation (umask 077), out of Time Machine; runs older than the newest Full reduced to their reports in an archive the engine never reads | Builder |
 | Owner's disputed rejections handed back to the engine for re-validation | Builder |
 | Full = `deep` profile, Range = scoped `standard` | Builder |
 | Both engine roles → one read-only `sec-audit-agent` | Builder (follows from read-only) |
