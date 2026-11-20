@@ -161,11 +161,15 @@ struct CLIRunnerTests {
                              : try await runner.run(args: args)
         }
         // A run that ends before its child opens the FIFO (a launch failure)
-        // must not leave the open below blocked: a reader of our own lets it
-        // return, and the missing pid fails the test.
+        // must not leave the open below blocked: a reader of our own, held
+        // open until the test is done, lets it return whenever it starts, and
+        // the missing pid fails the test.
         let unblock = Task {
             _ = await run.result
-            let reader = open(releaseFile, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+            return open(releaseFile, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+        }
+        func closeUnblockReader() async {
+            let reader = await unblock.value
             if reader >= 0 { close(reader) }
         }
         var releaseFD = await ProcessPipes.offPool { open(releaseFile, O_WRONLY | O_CLOEXEC) }
@@ -183,14 +187,14 @@ struct CLIRunnerTests {
             close(releaseFD)
             releaseFD = -1
             _ = try await run.value
-            await unblock.value
+            await closeUnblockReader()
             #expect(!OwnerConfirmGrants.shared.hasLive(pid: child))
             #expect(!OwnerConfirmGrants.shared.consume(args, pid: child))
         } catch {
             if releaseFD >= 0 { close(releaseFD) }
             run.cancel()
             _ = await run.result // ProcessCLIRunner terminates and waits before returning.
-            await unblock.value
+            await closeUnblockReader()
             throw error
         }
     }
