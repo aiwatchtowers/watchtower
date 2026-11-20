@@ -25,6 +25,13 @@ func readOnlyHome(t *testing.T, parent, name string) string {
 	if err := os.WriteFile(file, []byte("package lib\n"), 0o444); err != nil {
 		t.Fatal(err)
 	}
+	// Give the tree its write bits back at the end, so a failing or skipped
+	// test does not leave t.TempDir a tree it cannot remove.
+	t.Cleanup(func() {
+		for dir := mod; dir != home; dir = filepath.Dir(dir) {
+			_ = os.Chmod(dir, 0o755) // absent when the cleanup under test removed it
+		}
+	})
 	for dir := mod; dir != home; dir = filepath.Dir(dir) {
 		if err := os.Chmod(dir, 0o555); err != nil {
 			t.Fatal(err)
