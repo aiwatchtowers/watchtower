@@ -256,6 +256,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(SlackPolicyShotFixtures.shots)
     }
 
+    /// The Watchman tuning spec's mockups (#2134).
+    func testWatchmanTuningShotsRender() throws {
+        try renderShots(WatchmanTuningShotFixtures.shots)
+    }
+
     /// The company setup screens spec's mockups (#1887).
     func testCompanySetupShotsRender() throws {
         try renderShots(CompanySetupShotFixtures.shots)
