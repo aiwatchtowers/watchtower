@@ -1,5 +1,7 @@
 import CoreServices
 import Foundation
+import os
+import WatchtowerCore
 
 /// What the workbench view model holds per watched folder; a seam for tests.
 @MainActor
@@ -29,9 +31,11 @@ struct GitRefsChange: Equatable, Sendable {
 final class GitRefsWatcher: GitRefsWatching {
     /// FSEvents holds this, not the watcher, so a callback after the watcher
     /// is gone finds nil instead of a freed object.
-    private final class Relay {
+    final class Relay {
         weak var watcher: GitRefsWatcher?
     }
+
+    private static let log = Logger(subsystem: Constants.bundleID, category: "git-refs-watcher")
 
     /// Real paths (FSEvents reports `/private/var/…`, not `/var/…`).
     private let gitDir: String
@@ -142,20 +146,35 @@ final class GitRefsWatcher: GitRefsWatching {
         }
     }
 
-    private func start(latency: TimeInterval) {
-        let relay = Relay()
-        relay.watcher = self
-        let retained = Unmanaged.passRetained(relay)
-        var context = FSEventStreamContext(
+    /// The stream's context for `relay`. FSEvents owns its reference through
+    /// the retain/release pair, and balances it itself: a refused create
+    /// retains and then releases the context before returning NULL (seen on
+    /// macOS 27 with an empty path list), so the watcher never releases the
+    /// relay by hand. The 0.29.0 crash in `start` was a hand-rolled
+    /// `passRetained` with `retain: nil`, released once more on that path.
+    nonisolated static func context(for relay: Relay) -> FSEventStreamContext {
+        FSEventStreamContext(
             version: 0,
-            info: retained.toOpaque(),
-            retain: nil,
+            info: Unmanaged.passUnretained(relay).toOpaque(),
+            retain: { info in
+                guard let info else { return nil }
+                _ = Unmanaged<Relay>.fromOpaque(info).retain()
+                return info
+            },
             release: { info in
                 guard let info else { return }
                 Unmanaged<Relay>.fromOpaque(info).release()
             },
             copyDescription: nil
         )
+    }
+
+    /// A stream relaying to `relay`, or nil when FSEvents refuses it (FSEvents
+    /// has then dropped its reference again). `relay` is kept alive across
+    /// the create: the context hands it over unretained.
+    nonisolated static func makeStream(
+        relay: Relay, paths: [String], latency: TimeInterval
+    ) -> FSEventStreamRef? {
         let callback: FSEventStreamCallback = { _, info, count, paths, flags, ids in
             guard let info else { return }
             let relay = Unmanaged<Relay>.fromOpaque(info).takeUnretainedValue()
@@ -168,25 +187,33 @@ final class GitRefsWatcher: GitRefsWatching {
         }
         let flags = kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer
             | kFSEventStreamCreateFlagWatchRoot | kFSEventStreamCreateFlagUseCFTypes
+        return withExtendedLifetime(relay) {
+            var context = context(for: relay)
+            return FSEventStreamCreate(
+                kCFAllocatorDefault, callback, &context, paths as CFArray,
+                FSEventStreamEventId(kFSEventStreamEventIdSinceNow), latency, FSEventStreamCreateFlags(flags)
+            )
+        }
+    }
+
+    private func start(latency: TimeInterval) {
+        let relay = Relay()
+        relay.watcher = self
         let watched = Self.watchedPaths(gitDir: gitDir, commonDir: commonDir)
         startEventID = FSEventsGetCurrentEventId()
-        guard let created = FSEventStreamCreate(
-            kCFAllocatorDefault, callback, &context, watched as CFArray,
-            FSEventStreamEventId(kFSEventStreamEventIdSinceNow), latency, FSEventStreamCreateFlags(flags)
-        ) else {
-            // FSEvents refused the stream and never took the relay. The
-            // caller's timer and app-activation reads still refresh the
+        guard let created = Self.makeStream(relay: relay, paths: watched, latency: latency) else {
+            // The caller's timer and app-activation reads still refresh the
             // header.
-            retained.release()
-            print("[GitRefsWatcher] could not watch \(watched.joined(separator: ", "))")
+            Self.log.error("could not watch \(watched.joined(separator: ", "), privacy: .private)")
             return
         }
         FSEventStreamSetDispatchQueue(created, .main)
         guard FSEventStreamStart(created) else {
-            // Never started, so nothing to stop; releasing it releases the relay.
+            // Never started, so nothing to stop; releasing it releases
+            // FSEvents' reference to the relay.
             FSEventStreamInvalidate(created)
             FSEventStreamRelease(created)
-            print("[GitRefsWatcher] could not start watching \(watched.joined(separator: ", "))")
+            Self.log.error("could not start watching \(watched.joined(separator: ", "), privacy: .private)")
             return
         }
         stream = created

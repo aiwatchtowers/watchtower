@@ -108,6 +108,39 @@ final class GitRefsWatcherTests: XCTestCase {
                        ["/r/.git", "/elsewhere/gitdir"])
     }
 
+    /// FSEvents owns its reference to the relay through the context's
+    /// retain/release pair: a running stream keeps the relay after the
+    /// watcher's local is gone, and releasing the stream frees it.
+    func testAStreamOwnsItsReferenceToTheRelay() throws {
+        weak var running: GitRefsWatcher.Relay?
+        var context: FSEventStreamContext
+        do {
+            let relay = GitRefsWatcher.Relay()
+            running = relay
+            context = GitRefsWatcher.context(for: relay)
+            let retain = try XCTUnwrap(context.retain)
+            XCTAssertEqual(retain(context.info), UnsafeRawPointer(context.info))
+        }
+        XCTAssertNotNil(running, "the stream's reference keeps the relay")
+        try XCTUnwrap(context.release)(context.info)
+        XCTAssertNil(running, "releasing the stream frees the relay")
+    }
+
+    /// The 0.29.0 crash: FSEvents refuses a stream (an empty path list makes
+    /// it do so for real) after retaining and releasing the context itself.
+    /// The relay stays its owner's, alive until the owner lets it go — the
+    /// old hand release on this path freed it under its owner.
+    func testARefusedStreamLeavesTheRelayToItsOwner() {
+        weak var refused: GitRefsWatcher.Relay?
+        do {
+            let relay = GitRefsWatcher.Relay()
+            refused = relay
+            XCTAssertNil(GitRefsWatcher.makeStream(relay: relay, paths: [], latency: 0.1))
+            XCTAssertNotNil(refused)
+        }
+        XCTAssertNil(refused)
+    }
+
     private func watch(latency: TimeInterval = 0.1, onChange: @escaping @MainActor () -> Void) -> GitRefsWatcher {
         let watcher = GitRefsWatcher(gitDir: gitDir.path, commonDir: gitDir.path, latency: latency) { _ in onChange() }
         watchers.append(watcher)
