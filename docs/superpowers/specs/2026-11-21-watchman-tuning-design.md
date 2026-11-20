@@ -1,6 +1,6 @@
 # Watchman tuning after the first night (board #2134)
 
-**Status:** draft for review · **Feature note:** `docs/features/watchman.md` · **Earlier specs:** `2026-11-16-watchman-design.md` (phases 1–2)
+**Status:** approved (ask #1705, no comments) · **Feature note:** `docs/features/watchman.md` · **Earlier specs:** `2026-11-16-watchman-design.md` (phases 1–2)
 
 The first real night with Watchman (2026-11-20) showed four gaps. This spec closes them, one task each.
 
@@ -16,9 +16,9 @@ The first real night with Watchman (2026-11-20) showed four gaps. This spec clos
 - D1 — Icon is SF Symbol `binoculars` (ask #1699).
 - D2 — Learning starts when Watchman is turned on for a workbench (Settings **Start Learning**, `watchman learn --start`, or the first hand-over) and runs in one go until done (ask #1699).
 - D3 — Instructions per session/target and "questions held while learning are decided after it" accepted (ask #1699, "Да, пиши спеку").
-- D4 — The stall ping must tell a stopped agent from one whose sub-agents or background jobs still run (ask #1699, owner's comment "надо понимать что бегут там агенты или фоновая задача"). The thresholds (3 min, 3 pings) are **this spec's proposal**, for the owner's approval in this review (he answered "тут надо смотреть"); they are constants in one place (`watchmanact.StallAfter`, `StallMaxPings`) so a later change is one line.
-- D5 — **Proposal, for the owner's approval in this review:** asks, checks, handovers and reviews asked while learning **wait queued** instead of being parked and requeued later — the outcome ask #1699 approved ("decided after learning") with one state fewer. Permission prompts are the exception: they keep parking to the owner while learning (§3), since an agent blocks on one.
-- D6 — **Proposal, for the owner's approval in this review:** the PROJ-13 amendment of §4a (a handed session reads the owner as away in the Stop guard).
+- D4 — The stall ping must tell a stopped agent from one whose sub-agents or background jobs still run (ask #1699, owner's comment "надо понимать что бегут там агенты или фоновая задача"). The thresholds (3 min, 3 pings) were this spec's proposal, **approved with the spec (ask #1705)** (he answered "тут надо смотреть"); they are constants in one place (`watchmanact.StallAfter`, `StallMaxPings`) so a later change is one line.
+- D5 — **Approved with the spec (ask #1705):** asks, checks, handovers and reviews asked while learning **wait queued** instead of being parked and requeued later — the outcome ask #1699 approved ("decided after learning") with one state fewer. Permission prompts are the exception: they keep parking to the owner while learning (§3), since an agent blocks on one.
+- D6 — **Approved with the spec (ask #1705):** the PROJ-13 amendment of §4a (a handed session reads the owner as away in the Stop guard).
 - D7 — The instruction outlives **Take back** (stored per session/target, not on the arming row), so handing over again pre-fills it (review round 1).
 
 ## 1. Icon (Task 1)
