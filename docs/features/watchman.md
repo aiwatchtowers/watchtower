@@ -17,7 +17,7 @@ Fixed categories: `design`, `scope`, `ux_text`, `tests`, `review_code`, `review_
 - `watchman_backtests` / `watchman_backtest_rows` — a run (`running`/`done`/`failed`, `verdict` `''`/`go`/`stop`, `cost_usd`, `progress`) and its per-category rows (`total`, `agree`, `wrong_high`, `cost_usd`, `baseline`, `status` `strong`/`weak`/`not_measured`).
 - `watchman_skipped_keys` (00199) — decisions a source offered that got no category, keyed by `(workbench_id, source, source_key)` (cascading with the workbench), so a lookback does not offer them again.
 
-Situation and owner words are redacted (`Redact`: known secret shapes, bearer tokens, token-looking words become `[secret]`) and clipped to 2048 runes (`SituationLimit`, `Clip`) before storage. "2 KB" means 2048 runes: a size bound, not a wire limit.
+Situation and owner words are redacted (`Redact`, which calls the shared `secretredact.Text`: known secret shapes, bearer tokens, `user:pass@` in URLs, `-u user:pass` and `--password <value>` become `[secret]`) and clipped to 2048 runes (`SituationLimit`, `Clip`) before storage. "2 KB" means 2048 runes: a size bound, not a wire limit.
 
 ## Sources (closed list, WATCHMAN-03)
 
