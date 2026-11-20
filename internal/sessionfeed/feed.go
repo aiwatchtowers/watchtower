@@ -55,6 +55,9 @@ type Feed struct {
 	Cursor    Cursor
 	Skipped   int
 	Unknown   map[string]int
+	// Paths lists the transcripts this call parsed, in ledger order: a
+	// conversation before the cursor or without a file is not among them.
+	Paths []string
 }
 
 // Build assembles the chat of the conversations in ledger order. With after,
@@ -103,6 +106,7 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 			addSubagents(subagentMarkers(c), false)
 			continue
 		}
+		feed.Paths = append(feed.Paths, c.Path)
 		ResolveSubagents(strings.TrimSuffix(c.Path, ".jsonl"), res.Entries)
 		addSubagents(res.Entries, true)
 		addSubagents(subagentMarkers(c), false)

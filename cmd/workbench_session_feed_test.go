@@ -111,7 +111,7 @@ func TestSessionFeedJSON_PinnedKeys(t *testing.T) {
 		feedUser("u3", "<task-notification>\n<task-id>t1</task-id>\n<summary>CI done</summary>\n</task-notification>"),
 	)
 	got := fx.feedJSON(t)
-	assert.Equal(t, []string{"activity", "cursor", "entries", "live", "live_ok", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(got))
+	assert.Equal(t, []string{"activity", "cursor", "entries", "live", "live_ok", "paths", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(got))
 	entries := got["entries"].([]any)
 	require.Len(t, entries, 5)
 	assert.Equal(t, []string{"at", "conversation", "id", "kind", "text"}, feedKeys(entries[0].(map[string]any)))
@@ -223,7 +223,7 @@ func TestSessionFeed_SubagentDrillIn(t *testing.T) {
 
 	top := fx.feedJSON(t, "--subagent", "toolu_1")
 	assert.Equal(t, "", top["cursor"])
-	assert.Equal(t, []string{"activity", "cursor", "entries", "live", "live_ok", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(top))
+	assert.Equal(t, []string{"activity", "cursor", "entries", "live", "live_ok", "paths", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(top))
 	assert.Len(t, top["subagents"], 1)
 	assert.Equal(t, "toolu_2", top["subagents"].([]any)[0].(map[string]any)["id"])
 
@@ -410,4 +410,59 @@ func TestSessionFeed_TailFlagRules(t *testing.T) {
 	_, err = fx.run(t, "--tail", "2", "--subagent", "toolu_x")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "none of the others can be")
+}
+
+func feedPaths(t *testing.T, m map[string]any) []string {
+	t.Helper()
+	raw, ok := m["paths"].([]any)
+	require.True(t, ok, "paths is a list: %v", m["paths"])
+	out := make([]string, 0, len(raw))
+	for _, p := range raw {
+		out = append(out, p.(string))
+	}
+	return out
+}
+
+// paths names what a watcher needs: the conversation transcript, the
+// session's subagents directory and the transcript of each subagent read.
+func TestSessionFeed_JSONPrintsPaths(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1")
+	conv := filepath.Join(fx.dir, "conv-1.jsonl")
+	fx.transcript(t, "conv-1", feedUser("u1", "go"),
+		feedToolUse("a1", "toolu_1", "Agent", map[string]any{"subagent_type": "Explore", "description": "look"}))
+	subDir := filepath.Join(fx.dir, "conv-1", "subagents")
+	require.NoError(t, os.MkdirAll(subDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(subDir, "agent-aa.meta.json"),
+		[]byte(`{"toolUseId":"toolu_1","finished":false,"agentType":"Explore"}`), 0o600))
+	agent := filepath.Join(subDir, "agent-aa.jsonl")
+	require.NoError(t, os.WriteFile(agent, []byte(feedUser("s1", "task")), 0o600))
+
+	got := feedPaths(t, fx.feedJSON(t))
+	assert.Equal(t, []string{conv, subDir, agent}, got)
+	for _, p := range got {
+		assert.True(t, filepath.IsAbs(p), p)
+	}
+
+	// The drill-in reads the subagent's transcript and the same directory.
+	sub := feedPaths(t, fx.feedJSON(t, "--subagent", "toolu_1"))
+	assert.Equal(t, []string{agent, subDir}, sub)
+}
+
+func TestSessionFeed_JSONPathsWithoutSubagentsDir(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1")
+	fx.transcript(t, "conv-1", feedUser("u1", "hello"), feedAgent("a1", "m1", "hi"))
+	got := feedPaths(t, fx.feedJSON(t))
+	assert.Equal(t, []string{filepath.Join(fx.dir, "conv-1.jsonl")}, got)
+}
+
+// A conversation before the cursor is not read, so it is not listed.
+func TestSessionFeed_JSONPathsAfterCursorOnlyRead(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1", "conv-2")
+	fx.transcript(t, "conv-1", feedUser("u1", "one"))
+	fx.transcript(t, "conv-2", feedUser("u2", "two"))
+	c1, c2 := filepath.Join(fx.dir, "conv-1.jsonl"), filepath.Join(fx.dir, "conv-2.jsonl")
+	full := fx.feedJSON(t)
+	assert.Equal(t, []string{c1, c2}, feedPaths(t, full))
+	after := fx.feedJSON(t, "--after", full["cursor"].(string))
+	assert.Equal(t, []string{c2}, feedPaths(t, after))
 }

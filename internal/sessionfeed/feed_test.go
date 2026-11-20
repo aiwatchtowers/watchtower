@@ -38,6 +38,7 @@ func TestBuild_MissingFileSkipped(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, f.Entries, 1)
 	assert.Equal(t, "x", f.Entries[0].Text)
+	assert.Equal(t, []string{b.Path}, f.Paths, "a missing transcript is not read")
 }
 
 func TestBuild_AfterCursor(t *testing.T) {
@@ -73,6 +74,10 @@ func TestBuild_AfterCursorSkipsEarlierConversations(t *testing.T) {
 	require.Len(t, f2.Entries, 2)
 	assert.Equal(t, "B:sep", f2.Entries[0].ID)
 	assert.Equal(t, "two", f2.Entries[1].Text)
+	assert.Equal(t, []string{a.Path, b.Path}, f2.Paths, "the cursor's conversation is read from its offset")
+	f3, err := Build([]Conversation{a, b}, &f2.Cursor, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{b.Path}, f3.Paths, "a conversation before the cursor is not read")
 }
 
 func TestBuild_SubagentsAlwaysListed(t *testing.T) {

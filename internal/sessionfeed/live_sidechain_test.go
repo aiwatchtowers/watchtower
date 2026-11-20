@@ -65,3 +65,27 @@ func TestLiveClaudeSidechainUsesSharedDirectoryAndOnlyItsOwnChildren(t *testing.
 		assert.Equal(t, StatusUnknown, live.Agents[0].Ref.Status)
 	}
 }
+
+// Paths lists the transcript, the subagents directory and each subagent
+// transcript the snapshot read; a session without the directory lists only
+// its transcript.
+func TestLivePathsListWhatTheSnapshotRead(t *testing.T) {
+	root := t.TempDir()
+	conv := filepath.Join(root, "s.jsonl")
+	require.NoError(t, os.WriteFile(conv, []byte(assistantRec("m1", "m1", toolUse("call-a", "Agent", map[string]any{"description": "look"}))), 0600))
+	live, err := LiveOf(Conversation{Path: conv, AgentSessionID: "s"}, false, liveNow)
+	require.NoError(t, err)
+	assert.Equal(t, []string{conv}, live.Paths())
+
+	dir := filepath.Join(root, "s", "subagents")
+	require.NoError(t, os.MkdirAll(dir, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agent-a.meta.json"), []byte(`{"toolUseId":"call-a","finished":false}`), 0600))
+	agent := filepath.Join(dir, "agent-a.jsonl")
+	require.NoError(t, os.WriteFile(agent, []byte(assistantRec("a1", "ma", toolUse("read-a", "Read", map[string]any{"file_path": "x.go"}))), 0600))
+	live, err = LiveOf(Conversation{Path: conv, AgentSessionID: "s"}, false, liveNow)
+	require.NoError(t, err)
+	assert.Equal(t, []string{conv, dir, agent}, live.Paths())
+
+	var none *Live
+	assert.Nil(t, none.Paths())
+}

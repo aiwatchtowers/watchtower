@@ -75,6 +75,10 @@ type sessionFeedJSON struct {
 	Subagents      []sessionFeedSubagentItemJSON `json:"subagents"`
 	Skipped        int                           `json:"skipped"`
 	UnknownRecords map[string]int                `json:"unknown_records"`
+	// Paths are the absolute files this call read (conversation transcripts,
+	// subagent transcripts) plus the session's subagents directory when it
+	// exists: what a watcher must observe to know the next read differs.
+	Paths []string `json:"paths"`
 }
 
 type sessionFeedEntryJSON struct {
@@ -236,7 +240,7 @@ func requireAgentSession(sess *db.TerminalSession) error {
 // buildSessionFeedOutput reads either one subagent's feed (sub set) or the
 // tab's chat after the cursor.
 func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *sessionfeed.Cursor, lookup sessionfeed.AskLookup, sub string, tail int, before string) (sessionFeedJSON, error) {
-	out := sessionFeedJSON{SessionID: id, Entries: []sessionFeedEntryJSON{}, Subagents: []sessionFeedSubagentItemJSON{}, UnknownRecords: map[string]int{}}
+	out := sessionFeedJSON{SessionID: id, Entries: []sessionFeedEntryJSON{}, Subagents: []sessionFeedSubagentItemJSON{}, UnknownRecords: map[string]int{}, Paths: []string{}}
 	if sub != "" {
 		res, path, err := sessionfeed.FindSubagent(convs, sub)
 		if err != nil {
@@ -244,7 +248,8 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 		}
 		codex := strings.HasPrefix(sub, "codex:")
 		out.Activity = sessionFeedActivity(path, codex, !codex)
-		setSessionFeedLive(&out, sessionfeed.Conversation{Path: path, Codex: codex, AgentSessionID: strings.TrimPrefix(sub, "codex:")}, !codex)
+		live := setSessionFeedLive(&out, sessionfeed.Conversation{Path: path, Codex: codex, AgentSessionID: strings.TrimPrefix(sub, "codex:")}, !codex)
+		out.Paths = sessionFeedPaths([]string{path}, live.Paths())
 		var markers []sessionfeed.Entry
 		for _, e := range res.Entries {
 			if e.Kind == sessionfeed.KindSubagent {
@@ -263,11 +268,13 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 	if feed.Cursor.Conv != "" {
 		out.Cursor = feed.Cursor.String()
 	}
+	var live *sessionfeed.Live
 	if len(convs) > 0 {
 		last := convs[len(convs)-1]
 		out.Activity = sessionFeedActivity(last.Path, last.Codex, false)
-		setSessionFeedLive(&out, last, false)
+		live = setSessionFeedLive(&out, last, false)
 	}
+	out.Paths = sessionFeedPaths(feed.Paths, live.Paths())
 	entries := feed.Entries
 	if tail > 0 {
 		entries, out.Before, err = sessionfeed.TailPage(entries, before, tail)
@@ -282,14 +289,35 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 }
 
 // The live hint has its own failure envelope: exit-0 feed reads must not
-// silently leave a previous tool looking current when the hint failed.
-func setSessionFeedLive(out *sessionFeedJSON, c sessionfeed.Conversation, sidechain bool) {
+// silently leave a previous tool looking current when the hint failed. It
+// returns the snapshot, nil on failure.
+func setSessionFeedLive(out *sessionFeedJSON, c sessionfeed.Conversation, sidechain bool) *sessionfeed.Live {
 	live, err := sessionfeed.LiveOf(c, sidechain, time.Now())
 	if err != nil {
 		out.LiveError = "Activity unavailable"
-		return
+		return nil
 	}
 	out.Live, out.LiveOK = live, true
+	return live
+}
+
+// sessionFeedPaths joins the read lists in order, absolute and without
+// repeats; never nil, so the key prints as [].
+func sessionFeedPaths(lists ...[]string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, l := range lists {
+		for _, p := range l {
+			if abs, err := filepath.Abs(p); err == nil {
+				p = abs
+			}
+			if !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
 
 // sessionFeedActivity reads the open tool call at the transcript's tail. A
