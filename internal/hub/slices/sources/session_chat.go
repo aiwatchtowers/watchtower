@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/hub/actions/handlers"
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/secretredact"
 	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
 )
@@ -28,6 +29,23 @@ const (
 	MaxChatText    = 4000
 	MaxChatBytes   = 600_000
 	maxChatLabel   = 200
+	// maxLiveSummary cuts every summary and agent description of the live
+	// block, after redaction (FEED-05).
+	maxLiveSummary = 200
+	// maxLiveSteps and maxLiveAgents cap the live block's lists (what
+	// sessionfeed.LiveOf keeps); the cut is counted in steps_more and
+	// agents_more.
+	maxLiveSteps  = 40
+	maxLiveAgents = 32
+	// chatLiveVersion is live_version: every payload of a hub that sends the
+	// live block carries it, so a phone tells "no block" from "old hub".
+	chatLiveVersion = 1
+)
+
+// live_error's lines (one line, never the raw error: it could carry a path).
+const (
+	liveErrUnavailable = "Activity unavailable"
+	liveErrTimedOut    = "Activity read timed out"
 )
 
 // phoneFeedKinds are the FEED-02 kinds a session_chat payload carries
@@ -52,12 +70,19 @@ type ChatTiming struct {
 // StandardChatTiming is SessionChatRunner.Timing.standard.
 var StandardChatTiming = ChatTiming{Every: 3 * time.Second, Timeout: 30 * time.Second, Wake: 2 * time.Second}
 
+// ChatRead is one read of a chat: the feed's entries, the live snapshot of
+// the conversation read (the subagent's sidechain for an agent record; nil
+// with LiveErr set when only that read failed) and the files and
+// directories read.
+type ChatRead = sessionagent.SessionRead
+
 // ChatFetch reads a session's whole feed (toolUseID "") or one subagent's.
-type ChatFetch func(ctx context.Context, sessionID int64, toolUseID string) ([]sessionfeed.Entry, error)
+type ChatFetch func(ctx context.Context, sessionID int64, toolUseID string) (ChatRead, error)
 
 // SessionChatOptions wires the session_chat source. Timing zero is
 // StandardChatTiming; Fetch nil reads the feed in-process with
-// sessionfeed.ReadSession (what `workbench session-feed --json` prints)
+// sessionagent.ReadSession (what `workbench session-feed --live --json`
+// prints)
 // under Dirs (zero = ~/.claude/projects and the Codex home); Liveness nil is
 // nothing live; Active nil is always (the hub's linked-phone gate); OnChange
 // (nil = none) is called after a run stored a payload that differs from the
@@ -78,7 +103,9 @@ type SessionChatOptions struct {
 // `session_chat-<session id>` or, for a subagent's feed,
 // `session_chat-<session id>-<agent id>`: the capped chat of a workbench
 // session the phone watches (handlers.ChatWatches, opened by
-// session_chat_request for 5 minutes). Per watch it reads the feed once
+// session_chat_request for 5 minutes), and while the session is live its
+// live block (activity_live: one-line tool summaries, secrets redacted, see
+// phoneLive). Per watch it reads the feed once
 // when the watch opens, every 3 s while the session is live, and once more
 // after it stopped being live; a finished session runs once per watch.
 //
@@ -87,7 +114,10 @@ type SessionChatOptions struct {
 // A watch that expires loses its payload (the publisher deletes the record);
 // with no linked phone every watch and payload is dropped for good, and so
 // when Run returns. A failed, undecodable or hung read keeps the last
-// payload. Wire shape: the Kit mirror WatchtowerKit.SessionChat.
+// payload; when that payload has a live block, it gains live_error so the
+// block never looks current. A read whose live part alone failed updates
+// the entries and keeps the last block with live_error. Wire shape: the Kit
+// mirror WatchtowerKit.SessionChat.
 type SessionChatSource struct {
 	w    handlers.ChatWatches
 	d    *db.DB
@@ -119,6 +149,9 @@ type chatRun struct {
 	last       time.Time
 	payload    []byte
 	storedLive bool
+	// doc is payload before encoding: a failed read re-encodes it with
+	// live_error.
+	doc *chatPayload
 }
 
 // SessionChat builds the session_chat source over the phone's watches.
@@ -141,8 +174,8 @@ func SessionChat(w handlers.ChatWatches, d *db.DB, o SessionChatOptions) *Sessio
 		if dirs == (sessionfeed.Dirs{}) {
 			dirs = defaultFeedDirs()
 		}
-		s.o.Fetch = func(ctx context.Context, id int64, toolUseID string) ([]sessionfeed.Entry, error) {
-			return sessionagent.ReadSession(ctx, d, id, toolUseID, dirs)
+		s.o.Fetch = func(ctx context.Context, id int64, toolUseID string) (ChatRead, error) {
+			return sessionagent.ReadSession(ctx, d, id, toolUseID, dirs, s.o.Now())
 		}
 	}
 	return s
@@ -299,22 +332,60 @@ func (s *SessionChatSource) takeDue() (int, []chatKey) {
 // run reads one feed and stores its payload, unless the watch expired, the
 // source was dropped or ctx ended meanwhile.
 func (s *SessionChatSource) run(ctx context.Context, k chatKey, gen int) {
-	entries, err := bounded(ctx, s.o.Timing.Timeout, func(ctx context.Context) ([]sessionfeed.Entry, error) {
+	read, err := bounded(ctx, s.o.Timing.Timeout, func(ctx context.Context) (ChatRead, error) {
 		return s.o.Fetch(ctx, k.session, k.toolUseID)
 	})
 	if ctx.Err() != nil {
 		return
 	}
-	switch {
-	case errors.Is(err, errRunTimedOut):
-		log.Printf("hub slices: session chat of session %d timed out; keeping the last payload", k.session)
-		return
-	case err != nil:
-		log.Printf("hub slices: session chat of session %d failed (%s); keeping the last payload", k.session, errClass(err))
-		return
+	s.mu.Lock()
+	var prev *chatPayload
+	var prevPayload []byte
+	if r, ok := s.runs[k]; ok {
+		prev, prevPayload = r.doc, r.payload
 	}
-	_, live := s.o.Liveness().Runs[k.session]
-	payload, err := encodeChat(entries, k.session, k.agent, live)
+	s.mu.Unlock()
+	var doc *chatPayload
+	var live bool
+	switch {
+	case err != nil:
+		reason, lineErr := "failed ("+errClass(err)+")", liveErrUnavailable
+		if errors.Is(err, errRunTimedOut) {
+			reason, lineErr = "timed out", liveErrTimedOut
+		}
+		log.Printf("hub slices: session chat of session %d %s; keeping the last payload", k.session, reason)
+		if prev == nil || prev.ActivityLive == nil && prev.LiveError == "" {
+			return
+		}
+		marked := *prev
+		marked.LiveError = lineErr
+		doc, live = &marked, marked.Live
+	default:
+		_, live = s.o.Liveness().Runs[k.session]
+		block, lineErr := phoneLive(read.Live), ""
+		if read.LiveErr != nil {
+			block, lineErr = nil, liveErrUnavailable
+			if prev != nil {
+				block = prev.ActivityLive
+			}
+		}
+		if doc, err = chatDoc(read.Entries, k.session, k.agent, live, block, lineErr); err != nil {
+			log.Printf("hub slices: encoding the session chat of session %d failed", k.session)
+			return
+		}
+		// observed_at alone changing is no change: the block keeps the
+		// moment of the read that last changed it.
+		if prev != nil && prev.ActivityLive != nil && doc.ActivityLive != nil && read.LiveErr == nil {
+			same := *doc.ActivityLive
+			same.ObservedAt = prev.ActivityLive.ObservedAt
+			alt := *doc
+			alt.ActivityLive = &same
+			if b, err := wire.Marshal(&alt); err == nil && bytes.Equal(b, prevPayload) {
+				doc = prev
+			}
+		}
+	}
+	payload, err := wire.Marshal(doc)
 	if err != nil {
 		log.Printf("hub slices: encoding the session chat of session %d failed", k.session)
 		return
@@ -325,7 +396,7 @@ func (s *SessionChatSource) run(ctx context.Context, k chatKey, gen int) {
 	stored := ok && active[k] && s.generation == gen
 	changed := stored && !bytes.Equal(r.payload, payload)
 	if stored {
-		r.payload, r.storedLive = payload, live
+		r.payload, r.storedLive, r.doc = payload, live, doc
 	}
 	s.mu.Unlock()
 	if changed && s.o.OnChange != nil {
@@ -369,15 +440,35 @@ type chatPayload struct {
 	Live        bool        `json:"live"`
 	EntriesMore int         `json:"entries_more"`
 	Entries     []chatEntry `json:"entries"`
+	// ActivityLive is the live block (phoneLive), only while the session is
+	// live; LiveError says its last read failed or hung (the block, when
+	// present, is the last good one).
+	ActivityLive *sessionfeed.Live `json:"activity_live,omitempty"`
+	LiveVersion  int               `json:"live_version"`
+	LiveError    string            `json:"live_error,omitempty"`
 }
 
 // encodeChat is SessionChatPayload.encode: the FEED-02 kinds only, cut to
 // the newest MaxChatEntries (oldest first), texts clipped at MaxChatText and
 // labels at 200, then trimmed from the oldest end until the encoded size
 // fits MaxChatBytes; everything dropped but the other kinds is counted in
-// entries_more. The payload carries no clock, so an unchanged feed encodes
-// to the same bytes.
-func encodeChat(feed []sessionfeed.Entry, sessionID int64, agentID string, live bool) ([]byte, error) {
+// entries_more. The live block (block, already phoneLive'd) and live_error
+// (liveErr) are reserved first and never cut: they travel only while the
+// session is live. The payload carries no clock but the block's
+// observed_at, so an unchanged feed encodes to the same bytes.
+func encodeChat(feed []sessionfeed.Entry, sessionID int64, agentID string, live bool, block *sessionfeed.Live, liveErr string) ([]byte, error) {
+	doc, err := chatDoc(feed, sessionID, agentID, live, block, liveErr)
+	if err != nil {
+		return nil, err
+	}
+	return wire.Marshal(doc)
+}
+
+// chatDoc is encodeChat before encoding.
+func chatDoc(feed []sessionfeed.Entry, sessionID int64, agentID string, live bool, block *sessionfeed.Live, liveErr string) (*chatPayload, error) {
+	if !live {
+		block, liveErr = nil, ""
+	}
 	known := make([]sessionfeed.Entry, 0, len(feed))
 	for _, e := range feed {
 		if slices.Contains(phoneFeedKinds, e.Kind) {
@@ -400,11 +491,16 @@ func encodeChat(feed []sessionfeed.Entry, sessionID int64, agentID string, live 
 	if agentID != "" {
 		agent = &agentID
 	}
-	envelope, err := wire.Marshal(chatPayload{SessionID: sessionID, AgentID: agent, Live: live, EntriesMore: len(known), Entries: []chatEntry{}})
+	// The envelope is measured with the largest entries_more it can carry
+	// and the longest live_error a later failed read may set, the live block
+	// included whole.
+	envelope, err := wire.Marshal(chatPayload{
+		SessionID: sessionID, AgentID: agent, Live: live, EntriesMore: len(known), Entries: []chatEntry{},
+		ActivityLive: block, LiveVersion: chatLiveVersion, LiveError: liveErrTimedOut,
+	})
 	if err != nil {
 		return nil, err
 	}
-	// The envelope is measured with the largest entries_more it can carry.
 	kept := len(entries)
 	total := len(envelope) + max(0, kept-1)
 	for _, n := range sizes {
@@ -419,10 +515,56 @@ func encodeChat(feed []sessionfeed.Entry, sessionID int64, agentID string, live 
 		dropped++
 		kept--
 	}
-	return wire.Marshal(chatPayload{
+	return &chatPayload{
 		SessionID: sessionID, AgentID: agent, Live: live,
 		EntriesMore: more + dropped, Entries: entries[dropped:],
-	})
+		ActivityLive: block, LiveVersion: chatLiveVersion, LiveError: liveErr,
+	}, nil
+}
+
+// phoneLive is the live block the phone gets from a snapshot: every summary
+// (steps, current, latest, each agent's action) and every agent description
+// redacted then cut at maxLiveSummary, at most maxLiveSteps steps (the
+// newest) and maxLiveAgents agents, the cuts counted in steps_more and
+// agents_more. It never mutates l; nil stays nil.
+func phoneLive(l *sessionfeed.Live) *sessionfeed.Live {
+	if l == nil {
+		return nil
+	}
+	out := &sessionfeed.Live{
+		ObservedAt: l.ObservedAt, Conversation: l.Conversation, TurnAt: l.TurnAt, TurnActive: l.TurnActive,
+		Current: phoneAction(l.Current), Latest: phoneAction(l.Latest),
+		Agents: []sessionfeed.LiveAgent{}, AgentsState: l.AgentsState, AgentsMore: l.AgentsMore,
+		Steps: []sessionfeed.LiveAction{}, StepsMore: l.StepsMore,
+	}
+	steps := l.Steps
+	if n := len(steps) - maxLiveSteps; n > 0 {
+		steps, out.StepsMore = steps[n:], out.StepsMore+n
+	}
+	for _, st := range steps {
+		out.Steps = append(out.Steps, *phoneAction(&st))
+	}
+	agents := l.Agents
+	if n := len(agents) - maxLiveAgents; n > 0 {
+		agents, out.AgentsMore = agents[:maxLiveAgents], out.AgentsMore+n
+	}
+	for _, a := range agents {
+		ref := a.Ref
+		ref.Description = secretredact.TextBounded(ref.Description, maxLiveSummary)
+		ref.ParentReport = ""
+		out.Agents = append(out.Agents, sessionfeed.LiveAgent{Ref: ref, StartedAt: a.StartedAt, Action: phoneAction(a.Action), CanOpen: a.CanOpen})
+	}
+	return out
+}
+
+// phoneAction is a copy of a with its summary redacted and cut.
+func phoneAction(a *sessionfeed.LiveAction) *sessionfeed.LiveAction {
+	if a == nil {
+		return nil
+	}
+	c := *a
+	c.Summary = secretredact.TextBounded(c.Summary, maxLiveSummary)
+	return &c
 }
 
 func chatEntryOf(e sessionfeed.Entry) chatEntry {
