@@ -14,7 +14,7 @@ text: Press **Start Learning** in Settings → Profile → Watchman to test how 
 area: development
 level: power
 kind: feature
-since: next
+since: 0.29.0
 -->
 
 Watchman reads only your own decisions in one workbench: asks you answered, your comments and verdicts in diff and spec reviews, permission prompts you allowed or denied, your own lines to agents (needs **Agent analytics** on, and Start Learning turns it on), and your own commits (made with the folder's git email) and merged pull requests in the workbench folder. Automations, dismissed asks, colleagues' and agents' commits are left out. Secrets are blanked; each text is cut to 2,048 characters.
@@ -48,7 +48,7 @@ text: In Settings → Profile → Watchman, press **Edit** on a category's rules
 area: development
 level: power
 kind: feature
-since: next
+since: 0.29.0
 -->
 
 Under **What Watchman learned**, **Edit** opens a category's rules (one per line, at most 20); **Save** pins them, so the weekly rebuild leaves them alone until you press **Unpin**. The sleep window edits the same way, as `HH:MM-HH:MM`. Under **Your hard limits**, **Add a Limit…** takes a command's first words (`terraform apply`) or a tool's name (`create_jira_issue`), and Watchman parks it for you. **Remove** takes only your own rows; the built-in ones stay.
@@ -63,7 +63,7 @@ text: Press **Hand to Watchman** on a session's strip and Watchman answers its a
 area: development
 level: power
 kind: feature
-since: next
+since: 0.29.0
 -->
 
 **Hand to Watchman** on a session's strip hands that session over; on a target's panel, every session under the target, also later ones; **Hand all running sessions to Watchman** in the menu bar, every running agent session. Until you press **Take back**, Watchman answers their asks and spec reviews (and permission prompts in Claude Code sessions) and reviews a session's changes before it may finish, whether you are at the Mac or not. The strip reads "Watchman · Sleep since 01:40".
@@ -80,7 +80,7 @@ text: Open **Inbox → Watchman** in the morning to see each night's decisions, 
 area: development
 level: power
 kind: feature
-since: next
+since: 0.29.0
 -->
 
 Everything Watchman handled lands in **Inbox → Watchman**, one night per entry from 12:00 to 12:00 the next day. Home shows last night as one line, such as "Overnight Watchman decided 14 — 2 unsure, 2 waiting for you"; click it to open the journal.
@@ -99,7 +99,7 @@ text: In **Inbox → Watchman**, press **OK** on a decision you agree with, or *
 area: development
 level: power
 kind: feature
-since: next
+since: 0.29.0
 -->
 
 **OK** keeps a decision and teaches it to Watchman. **Correct…** asks what you would have decided: the text goes to the session as a typed line, or, if the session ended, a new session starts on its target with it (not handed to Watchman). Your words are saved first, so a failed send shows "Not sent — …" with **Retry**. **Open session** shows the session; **Mark done** clears a check you ran or a waiting item you dealt with.

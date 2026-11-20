@@ -130,7 +130,7 @@ text: No company Atlassian app yet? Press **Connect with an API token** in **Con
 area: tasks
 level: next
 kind: feature
-since: next
+since: 0.29.0
 action: nav:connections
 -->
 

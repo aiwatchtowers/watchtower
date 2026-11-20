@@ -36,6 +36,7 @@ You need a 64-bit Linux with glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, Ras
 4. If it prints **Run `sudo loginctl enable-linger <user>` so Watchtower starts at boot and keeps running after you log out.**, run that command once. Watchtower never runs `sudo` itself.
 5. Only if you were told to use another relay: `watchtower config set hub.relay_origin <origin>`, then `systemctl --user restart watchtower.service`.
 6. Make a workbench: `watchtower workbench create --folder ~/code/acme`, then `watchtower integrate claude-code` (or `codex`).
+7. Run `watchtower ai background allow` if you want Watchtower to run AI on its own (digests, inbox, briefings). Until then background AI stays paused; sessions you start still run. `watchtower status` shows a **Background AI:** line.
 
 ### Link your phone
 
@@ -64,6 +65,7 @@ Download `Watchtower-CLI-<version>-arm64.zip` (Apple silicon only), put `watchto
 - **The terminal said Linked, but the phone shows nothing from the host; `hub status` shows `paused (not_vouched)` and `hub phones` shows the phone as `pending`.** The relay has not let the host in yet: your phone vouches for it right after you confirm the code. Keep the app open until it shows the host. If the phone showed an error, do what it says (update the app, renew Relay, or unlink a computer: an account holds three), then run `watchtower hub pair` again. While it waits, the host checks again on its own about once a minute.
 - **The phone stopped getting updates; `hub status` shows `paused (vouch_revoked)`.** The host is in no phone's account any more: it was removed on the phone, or the subscription moved to another account. It publishes nothing but keeps its data and sessions. Run `watchtower hub pair` and link a phone again.
 - **`hub status` shows `off (no_relay_origin)`.** This build names no relay. Run the line `hub status` prints under it: `watchtower config set hub.relay_origin <origin>`.
+- **Nothing new shows up on its own (no digests, no inbox items); `watchtower status` says Background AI is paused.** A host without the app never asked you. Run `watchtower ai background allow` (add `--yes` without a terminal).
 - **`hub status` shows `off (disabled)`.** The hub is off. Run `watchtower hub enable`, or `watchtower service install` again.
 - **The `hub` commands say "Mobile on this Mac is run by the Watchtower app." (`desktop_host`).** This Mac has the Watchtower app, which links phones itself: use **Settings → Mobile** there. `service install` refuses on it too, with **This Mac has the Watchtower app, which runs the daemon itself.**
 - **`hub status` shows `off (run_dir_unusable)`.** The session host cannot use its folder (`/run/user/<uid>`, else `~/.local/share/watchtower/.run`). Make sure the folder belongs to you and nobody else can write to it.

@@ -22,7 +22,7 @@ text: The caption says if a session works, runs a background task, waits, is in 
 area: development
 level: basics
 kind: tip
-since: next
+since: 0.29.0
 action: nav:projects
 replaces: [sessions-states-idle]
 changed: A session whose spec or plan is being reviewed reads **Spec review**.

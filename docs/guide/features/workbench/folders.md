@@ -38,7 +38,7 @@ text: Click **Put on the Bench…** in the workbench switcher or the FILES heade
 area: development
 level: power
 kind: feature
-since: next
+since: 0.29.0
 action: nav:projects
 -->
 
@@ -62,7 +62,7 @@ text: When an agent keeps working outside the bench, a **Put <name> on the bench
 area: development
 level: power
 kind: tip
-since: next
+since: 0.29.0
 action: nav:projects
 -->
 

@@ -94,7 +94,7 @@ text: In Workchat, messages between a session and its sub-sessions show as bubbl
 area: development
 level: power
 kind: feature
-since: next
+since: 0.29.0
 action: nav:projects
 -->
 
@@ -113,7 +113,7 @@ text: Click the agents button above the field to see who works now and open any 
 area: development
 level: power
 kind: feature
-since: next
+since: 0.29.0
 action: nav:projects
 replaces: [workchat-live-agents]
 changed: Agents left the conversation; finished ones sit under Done in the list.

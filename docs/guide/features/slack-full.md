@@ -24,7 +24,7 @@ text: Paste one Slack configuration token in **Connections → Slack** to create
 area: setup
 level: power
 kind: feature
-since: next
+since: 0.29.0
 action: nav:connections
 -->
 
@@ -47,7 +47,7 @@ text: Open Watchtower in Slack, go to **About** and click the connect link; Watc
 area: setup
 level: basics
 kind: feature
-since: next
+since: 0.29.0
 action: nav:connections
 -->
 

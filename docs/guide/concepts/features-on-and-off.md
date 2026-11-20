@@ -30,7 +30,7 @@ text: Press **Allow background AI…** on Home and digests, briefings and AI aut
 area: setup
 level: basics
 kind: tip
-since: next
+since: 0.29.0
 action: nav:home
 -->
 

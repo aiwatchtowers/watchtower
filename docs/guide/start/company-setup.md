@@ -27,7 +27,7 @@ text: **Set up for my company** in **Connections** sets up your company's apps o
 area: setup
 level: next
 kind: feature
-since: next
+since: 0.29.0
 action: nav:connections
 -->
 
@@ -53,7 +53,7 @@ text: Paste your company's code under **Connections → Companies** and press **
 area: setup
 level: basics
 kind: feature
-since: next
+since: 0.29.0
 action: nav:connections
 -->
 
