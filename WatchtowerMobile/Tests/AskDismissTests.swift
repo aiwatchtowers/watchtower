@@ -333,6 +333,39 @@ final class AskDismissTests: XCTestCase {
         XCTAssertTrue(try sentAnswer(fixture.store).dismissed)
     }
 
+    /// A note over the bound written on the last question page turns Close off on every page, and the reason shows
+    /// under the button there too; a too-large ask's dismissal has no note, so nothing there.
+    func testANoteOverTheBoundSaysWhyCloseIsOffOnEveryPage() async throws {
+        let fixture = try await makeFixture()
+        let twoQuestions: [String: Any] = ["kind": "question", "payload": ["questions": [
+            ["id": "a", "question": "A?", "options": [["label": "Yes"]]], ["id": "b", "question": "B?", "options": [["label": "No"]]]
+        ]]]
+        let ask = try makeAsk(170, twoQuestions)
+        let model = AskViewModel(askID: 170, drafts: fixture.drafts, answerer: fixture.answerer)
+        let snapshot = try replica([ask], fixture)
+        XCTAssertNil(try form(model, snapshot).dismissHint)
+
+        model.next(of: 2)
+        model.setNote(String(repeating: "a", count: AskDraft.noteLimit + 1))
+        let last = try form(model, snapshot)
+        XCTAssertFalse(last.canDismiss)
+        XCTAssertEqual(last.dismissHint, "The note is over 4000 characters — shorten it to send")
+        model.previous()
+        let first = try form(model, snapshot)
+        XCTAssertEqual(first.question?.isLast, false, "back on the first page, where the note field is not")
+        XCTAssertFalse(first.canDismiss)
+        XCTAssertEqual(first.dismissHint, AskText.noteTooLong)
+
+        model.setNote("Short")
+        XCTAssertNil(try form(model, snapshot).dismissHint)
+        XCTAssertTrue(try form(model, snapshot).canDismiss)
+
+        fixture.drafts.update(171) { $0.note = String(repeating: "a", count: AskDraft.noteLimit + 1) }
+        let tooLarge = try form(AskViewModel(askID: 171, drafts: fixture.drafts, answerer: fixture.answerer),
+                                try replica([try makeAsk(171, ["kind": "question", "payload_clipped": true])], fixture))
+        XCTAssertNil(tooLarge.dismissHint)
+    }
+
     // MARK: - The bar
 
     func testTheBarFollowsTheAsk() async throws {

@@ -374,9 +374,14 @@ private struct AskSendBar: View {
     }
 
     private func closeButton(_ close: BarAction) -> some View {
-        Button(close.title, action: close.action)
-            .buttonStyle(SecondaryActionStyle())
-            .disabled(!close.isEnabled)
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            Button(close.title, action: close.action)
+                .buttonStyle(SecondaryActionStyle())
+                .disabled(!close.isEnabled)
+            if let hint = form.dismissHint {
+                Text(hint).font(TypeScale.meta).foregroundStyle(PhoneTone.red.color)
+            }
+        }
     }
 
     /// A review's bar (#1787): the note always in view above Request

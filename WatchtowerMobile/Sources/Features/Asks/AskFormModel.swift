@@ -183,6 +183,9 @@ struct AskFormModel {
     let canDismiss: Bool
     /// Close without answering's confirmation line; names the note only when one goes with it.
     let dismissConfirmMessage: String
+    /// Why Close without answering is off when it is the note's length, under the button on every page (the note
+    /// field, and its own hint, sit on the last question page only).
+    let dismissHint: String?
     /// The bottom bar; nil when there is none (a closed ask, a too-large one with nothing to send).
     let bar: Bar?
 
@@ -234,6 +237,7 @@ struct AskFormModel {
         let dismissal = draft.dismissal(for: ask)
         canDismiss = dismissal != nil && !isSending && applied == nil && !Self.isPending(status) && !Self.isNotOpen(status)
         // A too-large ask's dismissal goes without the note (its screen has no note field).
+        dismissHint = showsDismiss && dismissal == nil ? AskText.noteTooLong : nil
         dismissConfirmMessage = AskText.dismissConfirmMessage(hasNote: !clipped && !AskDraft.trimmed(draft.note).isEmpty)
         requestChangesHint = canSendVerdict && !saidSomething ? AskText.requestChangesNeedsWords : nil
 

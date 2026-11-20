@@ -75,7 +75,7 @@ since: next
 
 A permission prompt and the session's open asks sit at the end of the chat. **Allow once** and **Deny** answer the prompt (see [iPhone: permission prompts and interrupts](iphone-agent-prompts.md)). A question with suggested answers takes one tap; other asks have **Open** for the full form.
 
-Under its title the form links **Open session** (the asking chat) and **Task #N** (its board target) if the phone has them. If you opened that chat in the last few minutes, the agent's last message shows above the question. **Close without answering** (the Mac's **Dismiss**) confirms, then ends the ask with your note; a too-large one, with none.
+Under its title the form links **Open session** (the asking chat) and **Task #N** (its target) if the phone has them. If you opened that chat in the last few minutes, the agent's last message before the ask shows above the question. **Close without answering** (the Mac's **Dismiss**) confirms, then ends the ask with your note (none if too large).
 
 ### Write to the session
 <!-- learn
