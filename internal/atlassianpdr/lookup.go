@@ -36,8 +36,9 @@ func (LookupReporter) Profiles(context.Context, []string) ([]db.AtlassianProfile
 }
 
 // LookupClosed looks ids up and returns the ones Atlassian shows as closed,
-// and as StatusUnknown the ones its answer leaves out. An error (403, network, anything) closes nothing: the caller erases
-// nothing and tries again.
+// and as StatusUnknown the ones its answer leaves out. An error (403,
+// network, anything) closes nothing: the caller erases nothing and tries
+// again.
 func LookupClosed(ctx context.Context, g UsersGetter, ids []string) (map[string]Status, error) {
 	users, err := g.UsersBulkStatus(ctx, ids)
 	if err != nil {

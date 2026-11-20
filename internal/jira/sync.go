@@ -840,9 +840,14 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int, fie
 					customFieldsMap[fm.Role] = displayVal
 				}
 				// A user picker keeps its people's account ids too, so
-				// Personal Data Reporting can report and erase them.
+				// Personal Data Reporting can report and erase them. Fields
+				// sharing a role merge their people, and the role's display
+				// value is then the merged names (what the erase rebuilds).
 				if people := customFieldUsers(val); len(people) > 0 {
-					pickerPeople[fm.Role] = people
+					pickerPeople[fm.Role] = mergeCustomFieldPeople(pickerPeople[fm.Role], people)
+					if names := customFieldPeopleNames(pickerPeople[fm.Role]); names != "" {
+						customFieldsMap[fm.Role] = names
+					}
 				}
 			}
 		}
@@ -1195,8 +1200,6 @@ func (s *Syncer) normalizeTime(key, field, v string) string {
 	return out
 }
 
-// extractDisplayValue gets a human-readable value from a Jira field value.
-// Jira fields can be strings, numbers, objects with "name" or "displayName", or arrays thereof.
 // customFieldUsers returns the people a decoded custom field value names
 // — a user object ("accountId") or an array of them — each with its display
 // name (extractDisplayValue, "" when Atlassian hides it). Nil for any other
@@ -1219,6 +1222,35 @@ func customFieldUsers(val any) []db.CustomFieldPerson {
 	return out
 }
 
+// mergeCustomFieldPeople appends add to list, skipping an account id
+// already listed.
+func mergeCustomFieldPeople(list, add []db.CustomFieldPerson) []db.CustomFieldPerson {
+	seen := make(map[string]bool, len(list))
+	for _, p := range list {
+		seen[p.ID] = true
+	}
+	for _, p := range add {
+		if !seen[p.ID] {
+			seen[p.ID] = true
+			list = append(list, p)
+		}
+	}
+	return list
+}
+
+// customFieldPeopleNames joins the non-empty names of people by ", ".
+func customFieldPeopleNames(people []db.CustomFieldPerson) string {
+	var names []string
+	for _, p := range people {
+		if p.Name != "" {
+			names = append(names, p.Name)
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
+// extractDisplayValue gets a human-readable value from a Jira field value.
+// Jira fields can be strings, numbers, objects with "name" or "displayName", or arrays thereof.
 func extractDisplayValue(val any) string {
 	switch v := val.(type) {
 	case string:

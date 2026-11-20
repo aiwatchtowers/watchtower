@@ -253,3 +253,36 @@ func TestSync_UserPickerCustomFieldsKeepAccountIDs(t *testing.T) {
 		"_people":{"qa_assignee":[{"id":"acme-qa","name":"Quinn"}],
 		"reviewers":[{"id":"acme-r1","name":"Ann"},{"id":"acme-r2","name":""},{"id":"acme-r3","name":"Cy"}]}}`, issue.CustomFieldsJSON)
 }
+
+// Two picker fields mapped to one role merge their people (a person in both
+// listed once), and the role's display value names them all, so each of
+// them can be reported and erased.
+func TestSync_PickerFieldsSharingARoleMerge(t *testing.T) {
+	database := openTestDB(t)
+	seedTestBoard(t, database)
+	require.NoError(t, database.UpsertJiraBoardFieldMap(1, 42, []db.JiraBoardFieldMap{
+		{FieldID: "customfield_500", Role: "reviewers"},
+		{FieldID: "customfield_501", Role: "reviewers"},
+	}))
+	srv, _ := customFieldSearchServer(t, map[string]any{
+		"customfield_500": map[string]any{"accountId": "acme-r1", "displayName": "Ann"},
+		"customfield_501": []any{
+			map[string]any{"accountId": "acme-r2", "displayName": "Bo"},
+			map[string]any{"accountId": "acme-r1", "displayName": "Ann"},
+		},
+	})
+	_, err := NewSyncer(makeTestClient(t, srv.URL), database, NewUserMapper(nil, database), []int{42}, 1).
+		Sync(context.Background())
+	require.NoError(t, err)
+
+	issue, err := database.GetJiraIssue(1, "TEST-1")
+	require.NoError(t, err)
+	require.NotNil(t, issue)
+	var got struct {
+		Reviewers string                            `json:"reviewers"`
+		People    map[string][]db.CustomFieldPerson `json:"_people"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(issue.CustomFieldsJSON), &got))
+	assert.ElementsMatch(t, []db.CustomFieldPerson{{ID: "acme-r1", Name: "Ann"}, {ID: "acme-r2", Name: "Bo"}}, got.People["reviewers"])
+	assert.ElementsMatch(t, []string{"Ann", "Bo"}, strings.Split(got.Reviewers, ", "), "the display value names the merged people")
+}
